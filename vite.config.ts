@@ -42,6 +42,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       // Registered from src/lib/pwa.ts so it can be skipped inside Electron and on file:.
       injectRegister: false,
+      // The site sits behind Cloudflare Access: the manifest request must carry the Access cookie or the install fails.
+      useCredentials: true,
       includeAssets: ['favicon.svg', 'icons/apple-touch-icon-180.png'],
       manifest: {
         id: './',
@@ -66,6 +68,8 @@ export default defineConfig({
         // App shell + every lazy chunk + fonts (woff2 only; the .woff fallbacks are never used by modern engines).
         globPatterns: ['**/*.{js,css,html,svg,png,webmanifest,woff2}'],
         navigateFallback: 'index.html',
+        // Never answer Cloudflare's own endpoints (Access login callback, logout) from the cache.
+        navigateFallbackDenylist: [/^\/cdn-cgi\//],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
