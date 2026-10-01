@@ -680,6 +680,26 @@ export const undo = () => useProject.temporal.getState().undo()
 export const redo = () => useProject.temporal.getState().redo()
 export const clearHistory = () => useProject.temporal.getState().clear()
 
+/**
+ * Toast action that undoes the edit that was just made — but only if nothing changed since.
+ * (A plain undo() from a stale toast would revert an unrelated, newer step.)
+ */
+export function undoToastAction(label = 'Hoàn tác'): { label: string; run: () => void } {
+  const after = useProject.getState().project
+  return {
+    label,
+    run: () => {
+      if (useProject.getState().project !== after) {
+        void import('./ui').then(({ toast }) =>
+          toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' }),
+        )
+        return
+      }
+      undo()
+    },
+  }
+}
+
 /** Convenience selectors */
 export const selectScene = (id: string | null | undefined) => (s: ProjectState) => (id ? s.project.scenes.find((x) => x.id === id) : undefined)
 export const selectAsset = (id: string | null | undefined) => (s: ProjectState) => (id ? s.project.assets.find((x) => x.id === id) : undefined)

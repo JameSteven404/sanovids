@@ -157,7 +157,18 @@ export const useRuns = create<RunsState>()((set, get) => ({
     return get().enqueue([take.sceneId])
   },
 
-  toggleStar: (takeId) => set((s) => ({ takes: s.takes.map((t) => (t.id === takeId ? { ...t, starred: !t.starred } : t)) })),
+  /** One chosen (starred) take per scene: starring a take un-stars its siblings. */
+  toggleStar: (takeId) =>
+    set((s) => {
+      const target = s.takes.find((t) => t.id === takeId)
+      if (!target) return s
+      const next = !target.starred
+      return {
+        takes: s.takes.map((t) =>
+          t.id === takeId ? { ...t, starred: next } : next && t.sceneId === target.sceneId && t.starred ? { ...t, starred: false } : t,
+        ),
+      }
+    }),
   removeTake: (takeId) => {
     get().cancel(takeId)
     plans.delete(takeId)

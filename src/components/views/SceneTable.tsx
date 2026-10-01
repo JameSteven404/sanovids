@@ -5,7 +5,7 @@ import { linkAssets, newScene, requestRun } from '../../actions'
 import { compileScene, isBlockOn, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Scene } from '../../core/types'
-import { sortedScenes, undo, useProject } from '../../store/project'
+import { sortedScenes, undo, useProject , undoToastAction } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar } from '../common/Media'
@@ -218,7 +218,7 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
                   className="vw-menu-item"
                   onClick={() => {
                     project().applyPreset(p.id, ids)
-                    toast(`Đã áp dụng preset “${p.name}” cho ${ids.length} cảnh.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+                    toast(`Đã áp dụng preset “${p.name}” cho ${ids.length} cảnh.`, { tone: 'success', action: undoToastAction() })
                     close()
                   }}
                 >
@@ -251,7 +251,7 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
           onClick={() => {
             const created = project().duplicateScenes(ids)
             useUI.getState().select(created)
-            toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+            toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: undoToastAction() })
           }}
         >
           <Copy size={13} /> Nhân bản
@@ -261,7 +261,7 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
           onClick={() => {
             project().removeScenes(ids)
             useUI.getState().clearSelection()
-            toast(`Đã xoá ${ids.length} cảnh.`, { action: { label: 'Hoàn tác', run: undo } })
+            toast(`Đã xoá ${ids.length} cảnh.`, { action: undoToastAction() })
           }}
         >
           <Trash size={13} /> Xoá
@@ -312,7 +312,7 @@ function AssetPicker({ sceneIds, onDone }: { sceneIds: string[]; onDone: () => v
                   title={`Bỏ nối @${a.tag} khỏi ${n} cảnh`}
                   onClick={() => {
                     useProject.getState().removeRefs(sceneIds.map((sceneId) => ({ sceneId, assetId: a.id })))
-                    toast(`Đã bỏ nối @${a.tag} khỏi ${n} cảnh.`, { action: { label: 'Hoàn tác', run: undo } })
+                    toast(`Đã bỏ nối @${a.tag} khỏi ${n} cảnh.`, { action: undoToastAction() })
                   }}
                 >
                   Bỏ

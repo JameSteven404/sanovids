@@ -185,19 +185,7 @@ export function renameAssetTag(assetId: string, raw: string): { ok: boolean; tag
  * It only undoes while that edit is still the latest change to the project: the global undo() pops the newest
  * history step, so after any later edit (typing, another unlink…) it would revert that one instead.
  */
-export function undoToastAction(label = 'Hoàn tác'): ToastAction {
-  const after = useProject.getState().project
-  return {
-    label,
-    run: () => {
-      if (useProject.getState().project !== after) {
-        toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' })
-        return
-      }
-      undo()
-    },
-  }
-}
+export { undoToastAction } from '../../store/project'
 
 // ---------------- keyboard undo inside live-edit dialogs ----------------
 function isTextField(target: EventTarget | null): boolean {

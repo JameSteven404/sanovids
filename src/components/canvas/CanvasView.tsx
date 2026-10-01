@@ -26,7 +26,7 @@ import { canvasEvents, createAssetsFromFiles, edgeId, linkAssets, newScene, pars
 import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Asset, Scene, XY } from '../../core/types'
-import { refImageCount, undo, useProject } from '../../store/project'
+import { refImageCount, undo, useProject , undoToastAction } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
@@ -645,7 +645,7 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
       useProject.getState().setFrame(target, targetHandle, source)
       toast(`@${asset.tag} → ${targetHandle === 'first' ? 'khung đầu' : 'khung cuối'} của ${sceneCode(targetScene.order)}.`, {
         tone: 'success',
-        action: { label: 'Hoàn tác', run: undo },
+        action: undoToastAction(),
       })
       return
     }
@@ -663,7 +663,7 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
     toast('Không nối được: chuỗi cảnh sẽ bị vòng lặp.', { tone: 'warning' })
     return
   }
-  toast(`${sceneCode(targetScene.order)} nối tiếp sau ${sceneCode(from.order)}.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+  toast(`${sceneCode(targetScene.order)} nối tiếp sau ${sceneCode(from.order)}.`, { tone: 'success', action: undoToastAction() })
 }
 
 /** Move a reference wire to another scene (reconnect gesture). */
@@ -690,7 +690,7 @@ function moveRefEdge(id: string, newTarget: string) {
       : added
         ? `Đã chuyển @${asset.tag} sang ${sceneCode(target.order)}.`
         : `Không thêm được @${asset.tag} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
-    { tone: added || already ? 'success' : 'warning', action: { label: 'Hoàn tác', run: undo } },
+    { tone: added || already ? 'success' : 'warning', action: undoToastAction() },
   )
 }
 

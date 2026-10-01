@@ -4,7 +4,7 @@ import JSZip from 'jszip'
 import { compileScene, sceneCode } from './core/compile'
 import type { AssetKind, XY } from './core/types'
 import { getBlob, putBlob } from './lib/imageStore'
-import { redo, undo, useProject } from './store/project'
+import { redo, undo, useProject , undoToastAction } from './store/project'
 import { useRuns } from './store/runs'
 import { toast, useUI } from './store/ui'
 
@@ -58,7 +58,7 @@ export function linkAssets(sceneIds: string[], assetIds: string[]) {
   if (res.added) {
     toast(
       `Đã nối ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''} → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped} vì vượt giới hạn ảnh)` : ''}`,
-      { tone: 'success', action: { label: 'Hoàn tác', run: undo } },
+      { tone: 'success', action: undoToastAction() },
     )
   } else if (res.skipped) {
     toast(`Không nối được: vượt giới hạn ảnh của model (${res.skipped}).`, { tone: 'warning' })
@@ -104,7 +104,7 @@ export function duplicateSelection() {
   if (!ids.length) return
   const created = useProject.getState().duplicateScenes(ids)
   useUI.getState().select(created)
-  toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+  toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: undoToastAction() })
 }
 
 /** Delete selected edges (cut links), scenes, and hide selected asset nodes from the canvas. One undo step. */
@@ -133,7 +133,7 @@ export function deleteSelection() {
     hideAssetIds.length && `ẩn ${hideAssetIds.length} thẻ khỏi canvas`,
     refs.length + seqSceneIds.length + frames.length && `${refs.length + seqSceneIds.length + frames.length} dây nối`,
   ].filter(Boolean)
-  toast(`Đã xoá ${parts.join(', ')}.`, { action: { label: 'Hoàn tác', run: undo } })
+  toast(`Đã xoá ${parts.join(', ')}.`, { action: undoToastAction() })
 }
 
 // ---------------- assets from files ----------------
@@ -199,7 +199,7 @@ export function restoreFromTake(takeId: string) {
   useProject.getState().restoreScene(take.sceneId, { prompt: take.rawPromptSnapshot, refs: take.refsSnapshot, settings: take.settings })
   toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${gone ? ` (bỏ ${gone} tham chiếu đã bị xoá khỏi thư viện)` : ''}.`, {
     tone: 'success',
-    action: { label: 'Hoàn tác', run: undo },
+    action: undoToastAction(),
   })
 }
 

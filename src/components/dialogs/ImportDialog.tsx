@@ -16,7 +16,7 @@ import {
 } from '../../core/importPrompts'
 import { MODELS } from '../../core/models'
 import type { Asset, BlockPlacement, ModelId } from '../../core/types'
-import { undo, useProject } from '../../store/project'
+import { undo, useProject , undoToastAction } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -128,7 +128,7 @@ export function ImportDialog() {
     window.setTimeout(() => focusNodes(ids), 200)
     toast(`Đã nhập ${ids.length} cảnh${result.blocks.length ? ` và ${result.blocks.length} khối prompt` : ''}.`, {
       tone: 'success',
-      action: { label: 'Hoàn tác', run: undo },
+      action: undoToastAction(),
     })
   }
 

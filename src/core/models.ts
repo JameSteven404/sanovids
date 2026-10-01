@@ -68,7 +68,7 @@ export function normalizeSettings(s: Partial<VideoSettings> & { model?: ModelId 
   const spec = MODELS[model]
   const mode = s.mode && spec.modes.includes(s.mode) ? s.mode : spec.modes[0]
   const duration = s.duration && spec.durations.includes(s.duration) ? s.duration : spec.durations.includes(15) ? 15 : spec.durations[0]
-  const resolution = s.resolution && spec.resolutions.includes(s.resolution) ? s.resolution : spec.resolutions[spec.resolutions.length - 1]
+  const resolution = s.resolution && spec.resolutions.includes(s.resolution) ? s.resolution : spec.resolutions[0]
   const ratio = s.ratio && spec.ratios.includes(s.ratio) ? s.ratio : '16:9'
   return { model, mode, duration, resolution, ratio }
 }

@@ -16,6 +16,7 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { TopBar } from './components/topbar/TopBar'
 import { SceneTable } from './components/views/SceneTable'
 import { Storyboard } from './components/views/Storyboard'
+import { useFileDropGuard } from './components/sidebar/shared'
 import { useShortcuts } from './hooks/useShortcuts'
 import { bootstrap, useSave } from './store/persist'
 import { useUI } from './store/ui'
@@ -31,6 +32,7 @@ export function App() {
 
 function Shell() {
   useShortcuts()
+  useFileDropGuard()
   const view = useUI((s) => s.view)
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
