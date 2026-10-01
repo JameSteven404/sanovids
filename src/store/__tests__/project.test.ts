@@ -58,6 +58,15 @@ describe('placing new scenes', () => {
     expect(st().project.scenes.find((s) => s.id === 's3')!.position).toEqual(grid(2))
   })
 
+  it('making room leaves unrelated (even overlapping) cards alone', () => {
+    const copy = { x: grid(6).x + 36, y: grid(6).y + 36 } // like a duplicate of S07
+    st().setPositions({ s8: copy })
+    st().createNextScene('s2')
+    const pos = (sid: string) => st().project.scenes.find((s) => s.id === sid)!.position
+    expect(pos('s8')).toEqual(copy)
+    expect(pos('s7')).toEqual(grid(6))
+  })
+
   it('an explicit position is kept as is', () => {
     const id = st().createNextScene('s2', { x: 5, y: 5 })
     expect(st().project.scenes.find((s) => s.id === id)!.position).toEqual({ x: 5, y: 5 })

@@ -79,19 +79,26 @@ function freeScenePosition(taken: XY[], start: number): XY {
   return scenePosition(start)
 }
 
-/** Positions that push scenes to the right (cascading) so none overlaps a new card at `pos`. */
+/**
+ * New positions that push scenes to the right so none overlaps a new card at `pos`. Only cards hit by the
+ * new card (or by a card pushed before them) move; unrelated cards stay where the user put them.
+ */
 function makeRoomAt(scenes: Scene[], pos: XY): Map<string, XY> {
+  const pushers: XY[] = [pos]
   const placed: XY[] = [pos]
   const moved = new Map<string, XY>()
   const byX = [...scenes].sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y)
   for (const s of byX) {
     let next = s.position
-    for (let g = 0; g < 10000; g++) {
-      const hit = placed.find((q) => cardsOverlap(q, next))
-      if (!hit) break
-      next = { x: hit.x + LAYOUT.sceneW + LAYOUT.gapX, y: next.y }
+    if (pushers.some((q) => cardsOverlap(q, next))) {
+      for (let g = 0; g < 10000; g++) {
+        const hit = placed.find((q) => cardsOverlap(q, next))
+        if (!hit) break
+        next = { x: hit.x + LAYOUT.sceneW + LAYOUT.gapX, y: next.y }
+      }
+      moved.set(s.id, next)
+      pushers.push(next)
     }
-    if (next !== s.position) moved.set(s.id, next)
     placed.push(next)
   }
   return moved
