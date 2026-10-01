@@ -4,18 +4,28 @@
 import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
 import type { Asset, AssetKind, JobStatus, Scene, Take, XY } from '../../core/types'
-import { useProject } from '../../store/project'
+import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
-/** HTML5 drag type used by the library (JSON array of asset ids). */
-export const ASSETS_MIME = 'application/x-bdp-assets'
 /** Canvas-only event: always fit the view to these ids (all when empty). `focus` (actions.focusNodes) is gentler. */
 export { FIT_EVENT } from '../../actions'
 export const GRID = 16
 export const LOD_ZOOM = 0.55
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID
+
+/**
+ * Was a take node dropped on its auto slot `auto` (so it stays auto-placed and keeps following its scene)?
+ * Auto slots are off the snap grid, and React Flow snaps every single-node drag to the grid point nearest the node's
+ * start (even a click with 2–3px of mouse jitter becomes such a "drag"), so that grid point counts as the slot too.
+ * Arrow-key moves land a whole grid step further and are real moves.
+ */
+export function isAutoSlot(auto: XY, pos: XY): boolean {
+  const on = (slot: number, v: number) => Math.abs(v - slot) < 0.5 || Math.abs(v - snap(slot)) < 0.5
+  return on(auto.x, pos.x) && on(auto.y, pos.y)
+}
 
 // ---------------- cached lookups (keyed by array identity) ----------------
 const sceneMaps = new WeakMap<Scene[], Map<string, Scene>>()
@@ -160,14 +170,19 @@ export function videoUsageOf(scenes: Scene[]): Map<string, number> {
 
 export interface TakeLayoutItem {
   id: string
+  /** The take's own scene (for an orphan: the deleted scene's id). */
   sceneId: string
-  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene). */
+  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene); orphans: slot among the orphans of `anchorId`. */
   index: number
   /** Position the user dragged the node to; null = auto. */
   explicit: XY | null
   /** Takes of the same scene hidden by the "chosen only" display (badge "+N"; only on the chosen take). */
   hidden: number
   status: JobStatus
+  /** Its scene was deleted but a scene still uses it as @video: no 'out' wire and no auto slot. */
+  orphan: boolean
+  /** Scene the node is placed next to: its own scene, or (orphan) the first scene that uses it. */
+  anchorId: string
 }
 export interface TakeLayout {
   items: TakeLayoutItem[]
@@ -176,26 +191,50 @@ export interface TakeLayout {
 
 /**
  * Which take nodes are shown and where. `all`: every take of every existing scene. `chosen`: the chosen take of
- * each scene, plus takes that some scene uses as @video (so their wires stay visible).
+ * each scene, plus takes that some scene uses as @video (so their wires stay visible). In both modes a take whose
+ * scene was deleted stays (as an orphan) while some scene uses it as @video: its wire, and the node to select or
+ * delete it, must not vanish while the video is still sent.
  */
 export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): TakeLayout {
   const idx = takeIndexOf(takes)
-  const used = mode === 'chosen' ? videoUsageOf(scenes) : null
+  const usage = videoUsageOf(scenes)
+  const used = mode === 'chosen' ? usage : null
   const items: TakeLayoutItem[] = []
   const byId = new Map<string, TakeLayoutItem>()
+  const add = (item: TakeLayoutItem) => {
+    items.push(item)
+    byId.set(item.id, item)
+  }
   for (const s of scenes) {
     const list = idx.byScene.get(s.id)
     if (!list) continue
     const chosen = idx.chosen.get(s.id)
     const shown = used ? list.filter((t) => t === chosen || used.has(t.id)) : list
     const hidden = list.length - shown.length
-    shown.forEach((t, index) => {
-      const item: TakeLayoutItem = { id: t.id, sceneId: s.id, index, explicit: t.position, hidden: t === chosen ? hidden : 0, status: t.status }
-      items.push(item)
-      byId.set(t.id, item)
-    })
+    shown.forEach((t, index) =>
+      add({ id: t.id, sceneId: s.id, index, explicit: t.position, hidden: t === chosen ? hidden : 0, status: t.status, orphan: false, anchorId: s.id }),
+    )
+  }
+  let byOrder: Scene[] | null = null
+  const perAnchor = new Map<string, number>()
+  for (const takeId of usage.keys()) {
+    const t = idx.byId.get(takeId)
+    if (!t || sceneMapOf(scenes).has(t.sceneId)) continue
+    byOrder ??= [...scenes].sort((a, b) => a.order - b.order)
+    const anchor = byOrder.find((s) => s.videoRefs.includes(takeId))!
+    const index = perAnchor.get(anchor.id) ?? 0
+    perAnchor.set(anchor.id, index + 1)
+    add({ id: t.id, sceneId: t.sceneId, index, explicit: t.position, hidden: 0, status: t.status, orphan: true, anchorId: anchor.id })
   }
   return { items, byId }
+}
+
+/**
+ * Fallback spot of the `index`-th orphan take of a scene (when it has no dragged or previously shown position): left
+ * of the scene that uses it, so its @video wire into the scene's left handle stays short.
+ */
+export function orphanTakePosition(anchorPos: XY, index: number): XY {
+  return { x: anchorPos.x - LAYOUT.takeOffsetX - (index + 1) * LAYOUT.takeW - index * LAYOUT.takeGapX, y: anchorPos.y }
 }
 
 export const STATUS_COLOR: Record<JobStatus, string> = {
@@ -298,18 +337,46 @@ export function hitTest(x: number, y: number, root: HTMLElement | null): { kind:
   return null
 }
 
-export function readAssetIds(dt: DataTransfer | null): string[] | null {
-  if (!dt || !Array.from(dt.types).includes(ASSETS_MIME)) return null
-  try {
-    const ids = JSON.parse(dt.getData(ASSETS_MIME)) as unknown
-    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : null
-  } catch {
-    return null
-  }
-}
-export const hasAssetDrag = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes(ASSETS_MIME)
-export const hasFileDrag = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files')
+// ---------------- HTML5 drag & drop (payload types: src/lib/dnd.ts) ----------------
+const hasType = (dt: DataTransfer | null, type: string) => !!dt && Array.from(dt.types).includes(type)
+/** Library cards (asset ids). */
+export const hasAssetDrag = (dt: DataTransfer | null) => hasType(dt, ASSETS_MIME)
+/** Generated videos (take ids) from the library "Video đã tạo" list or a take strip. */
+export const hasTakeDrag = (dt: DataTransfer | null) => hasType(dt, TAKES_MIME)
+export const hasFileDrag = (dt: DataTransfer | null) => hasType(dt, 'Files')
+/** Asset ids of a drop (only readable in `drop`), or null when it is not an asset drag. */
+export const readAssetIds = (dt: DataTransfer | null): string[] | null => (dt && hasAssetDrag(dt) ? readIds(dt, ASSETS_MIME) : null)
+/** Take ids of a drop (only readable in `drop`); empty when it is not a take drag. */
+export const readTakeIds = (dt: DataTransfer | null): string[] => (dt && hasTakeDrag(dt) ? readIds(dt, TAKES_MIME) : [])
 export const imageFiles = (dt: DataTransfer | null) => (dt ? Array.from(dt.files).filter((f) => /^image\//.test(f.type)) : [])
+
+/**
+ * Can these dragged takes become @video of `sceneId`? At least one must be finished and come from another scene.
+ * Safe inside a ui selector (returns a boolean).
+ */
+export function takesUsableFor(takeIds: string[], sceneId: string): boolean {
+  const byId = takeIndexOf(useRuns.getState().takes).byId
+  return takeIds.some((id) => {
+    const t = byId.get(id)
+    return !!t && t.status === 'completed' && t.sceneId !== sceneId
+  })
+}
+
+/** A drag over this element would land on empty canvas (not on a node, the minimap or another overlay). */
+export function isEmptyCanvasTarget(target: EventTarget | null): boolean {
+  const el = typeof Element !== 'undefined' && target instanceof Element ? target : null
+  if (!el || !el.closest('.react-flow')) return false
+  return !el.closest('.react-flow__node, .react-flow__panel, .react-flow__minimap, .react-flow__edgelabel-renderer')
+}
+
+/**
+ * Should a key pressed in an inline text field on a node (scene title) reach the global shortcuts? Ctrl/Cmd combos
+ * do (useShortcuts: Ctrl+S saves, Ctrl+Enter runs, the others are ignored while typing); plain keys and Escape (the
+ * field cancels the edit itself) do not.
+ */
+export function inlineEditKeyBubbles(e: { key: string; ctrlKey: boolean; metaKey: boolean }): boolean {
+  return (e.ctrlKey || e.metaKey) && e.key !== 'Escape'
+}
 
 // ---------------- hover store (edges + cut button need a little grace period) ----------------
 interface CanvasLocal {

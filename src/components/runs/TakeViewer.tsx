@@ -19,16 +19,17 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, focusNodes, linkTakes, restoreFromTake, runNow } from '../../actions'
-import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
-import { MODE_LABEL, MODELS, settingsLabel } from '../../core/models'
+import { createSceneFromTake, downloadTake, focusNodes, linkTakes, runNow, takeFileBase } from '../../actions'
+import { compileScene, sceneCode, takeCode } from '../../core/compile'
+import { MODE_LABEL, MODELS, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
 import { deleteMedia, useMediaUrl } from '../../lib/imageStore'
-import { useProject } from '../../store/project'
+import { undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
+import { restoredFromTake, snapshotImageNumbers } from './restore'
 import { TakeStrip } from './TakeStrip'
 import {
   downloadMedia,
@@ -61,6 +62,31 @@ export function TakeViewer({ takeId }: { takeId: string }) {
 
 function openTake(id: string) {
   useUI.getState().openDialog({ kind: 'take', takeId: id })
+}
+
+/**
+ * "Khôi phục prompt này": the scene's prompt, references and settings as they were when the take ran, in one
+ * undo step. References deleted since are dropped and the old prompt's @image_N / @video_N tokens are
+ * renumbered to match (see restore.ts) — otherwise they would point at the wrong media.
+ */
+function restoreTake(takeId: string) {
+  const runs = useRuns.getState()
+  const take = runs.takes.find((t) => t.id === takeId)
+  if (!take) return
+  const store = useProject.getState()
+  const project = store.project
+  if (!project.scenes.some((s) => s.id === take.sceneId)) {
+    toast('Cảnh của take này đã bị xoá.', { tone: 'warning' })
+    return
+  }
+  const live = new Set(runs.takes.map((t) => t.id))
+  const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber })
+  store.restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
+  const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video'].filter(Boolean)
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.`, {
+    tone: 'success',
+    action: undoToastAction(),
+  })
 }
 
 function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void }) {
@@ -123,18 +149,24 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     if (newest && newest.id !== take.id) openTake(newest.id)
   }
 
-  const download = async (which: 'video' | 'poster') => {
-    const id = which === 'video' ? take.videoId : take.posterId
-    if (!id) return
-    const ok = await downloadMedia(id, `${code}_T${take.number}`, which === 'video' ? 'webm' : 'jpg')
+  /** Secondary: just the poster frame (the big button saves the video + prompt). */
+  const downloadPoster = async () => {
+    if (!take.posterId) return
+    const ok = await downloadMedia(take.posterId, takeFileBase(take.id), 'jpg')
     if (!ok) toast('Không tìm thấy file trong bộ nhớ trình duyệt.', { tone: 'error' })
   }
+  const failedOrCancelled = take.status === 'failed' || take.status === 'cancelled'
 
   const gotoScene = () => {
     if (!scene) return
     onClose()
-    useUI.getState().select([scene.id])
-    focusNodes([scene.id])
+    const ui = useUI.getState()
+    ui.select([scene.id])
+    if (ui.view !== 'canvas') {
+      // Opened from the Table / Storyboard: show the canvas, let it mount and measure its nodes, then focus.
+      ui.setView('canvas')
+      window.setTimeout(() => focusNodes([scene.id]), 150)
+    } else focusNodes([scene.id])
   }
 
   return (
@@ -167,36 +199,29 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
             {confirmDelete ? 'Bấm lần nữa để xoá' : 'Xoá take'}
           </button>
           <span className="rq-spacer" />
-          {take.posterId && (
-            <button type="button" className="btn btn-ghost" onClick={() => void download('poster')} title={`Tải ảnh poster ${code}_T${take.number}`}>
+          {take.posterId && take.videoId && (
+            <button type="button" className="btn btn-ghost" onClick={() => void downloadPoster()} title={`Chỉ tải ảnh poster ${code}_T${take.number} (.jpg)`}>
               <ImageIcon size={14} />
-              Poster
+              Tải poster
             </button>
           )}
           <button
             type="button"
             className="btn"
-            disabled={!take.videoId && !take.posterId}
-            onClick={() => void download(take.videoId ? 'video' : 'poster')}
-            title={take.videoId ? `Tải ${code}_T${take.number}.webm` : 'Take này chưa có video — tải ảnh poster'}
-          >
-            <Download size={14} />
-            Tải về
-          </button>
-          <button
-            type="button"
-            className="btn"
             disabled={!scene}
-            onClick={() => restoreFromTake(take.id)}
+            onClick={() => restoreTake(take.id)}
             title="Đưa prompt, tham chiếu và cấu hình của cảnh về đúng như lúc chạy take này"
           >
             <Undo2 size={14} />
             Khôi phục prompt này
           </button>
-          <button type="button" className="btn btn-primary" disabled={!scene} onClick={rerun} title="Chạy lại cảnh với prompt hiện tại">
-            <RotateCcw size={14} />
-            Chạy lại
-          </button>
+          {!failedOrCancelled && (
+            <button type="button" className="btn" disabled={!scene} onClick={rerun} title="Chạy lại cảnh với prompt hiện tại">
+              <RotateCcw size={14} />
+              Chạy lại
+            </button>
+          )}
+          <BigActionButton key={take.id} take={take} label={`${code}_T${take.number}`} onRerun={scene ? rerun : undefined} />
         </>
       }
     >
@@ -220,6 +245,53 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * The footer's big primary button (same rule as the take node): "Tải video" when finished (video + prompt .txt,
+ * see actions.downloadTake), disabled with the progress while queued/processing, "Chạy lại" after a failure/cancel.
+ */
+function BigActionButton({ take, label, onRerun }: { take: Take; label: string; onRerun?: () => void }) {
+  const [saving, setSaving] = useState(false)
+  if (take.status === 'completed') {
+    const hasVideo = !!take.videoId
+    const save = async () => {
+      if (saving) return
+      setSaving(true)
+      try {
+        await downloadTake(take.id)
+      } finally {
+        setSaving(false)
+      }
+    }
+    return (
+      <button
+        type="button"
+        className="btn btn-primary btn-lg rq-dl-big"
+        disabled={saving || (!hasVideo && !take.posterId)}
+        onClick={() => void save()}
+        title={hasVideo ? `Tải video ${label} (kèm file .txt chứa prompt nếu bật trong Cài đặt)` : 'Take này không có video (trình duyệt không ghi được) — tải ảnh poster'}
+      >
+        {saving ? <LoaderCircle size={17} className="rq-spin" /> : <Download size={17} />}
+        {saving ? 'Đang lưu…' : hasVideo ? 'Tải video' : 'Tải poster'}
+      </button>
+    )
+  }
+  if (isActive(take)) {
+    const pct = take.status === 'processing' ? take.progress : 0
+    return (
+      <button type="button" className="btn btn-primary btn-lg rq-dl-big busy" disabled style={{ ['--p' as string]: `${pct}%` }} title="Video đang được tạo">
+        <LoaderCircle size={17} className="rq-spin" />
+        {take.status === 'processing' ? `Đang tạo ${pct}%` : 'Đang chờ…'}
+      </button>
+    )
+  }
+  return (
+    <button type="button" className="btn btn-primary btn-lg rq-dl-big" disabled={!onRerun} onClick={onRerun} title="Chạy lại cảnh với prompt hiện tại">
+      <RotateCcw size={17} />
+      Chạy lại
+    </button>
+  )
+}
 
 function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const videoUrl = useMediaUrl(take.videoId)
@@ -306,12 +378,13 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
-    const slots = imageSlotsFor(assets, take.refsSnapshot)
+    // Numbers as the take was sent: an asset deleted since keeps its slot so later numbers don't shift.
+    const numbers = snapshotImageNumbers(assets, take.refsSnapshot)
     const found: { asset: Asset; n: number | undefined }[] = []
     let missing = 0
     for (const id of take.refsSnapshot) {
       const a = map.get(id)
-      if (a) found.push({ asset: a, n: slots.find((s) => s.assetId === id)?.n })
+      if (a) found.push({ asset: a, n: numbers.get(id) })
       else missing++
     }
     return { found, missing }
@@ -567,12 +640,16 @@ function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefine
     ),
   )
   const ready = take.status === 'completed'
+  // The new scene copies the source scene's settings: a mode without reference videos would never send @video_1.
+  const acceptsVideo = !scene || usesVideoRefs(scene.settings)
 
   const continueTitle = !ready
     ? 'Video chưa tạo xong'
     : !scene
       ? 'Cảnh gốc của video này đã bị xoá'
-      : `Cảnh mới ngay bên dưới ${sceneCode(scene.order)}: video này thành @video_1, giữ ảnh tham chiếu và cấu hình`
+      : !acceptsVideo
+        ? `Chế độ ${MODE_LABEL[scene.settings.mode]} của ${MODELS[scene.settings.model]?.name ?? scene.settings.model} ở ${sceneCode(scene.order)} không nhận video tham chiếu — đổi sang chế độ nhận video (vd. Ảnh → Video) rồi thử lại`
+        : `Cảnh mới ngay bên dưới ${sceneCode(scene.order)}: video này thành @video_1, giữ ảnh tham chiếu và cấu hình`
   const linkTitle = !ready
     ? 'Video chưa tạo xong'
     : targets.length
@@ -590,7 +667,7 @@ function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefine
         <button
           type="button"
           className="btn btn-sm"
-          disabled={!ready || !scene}
+          disabled={!ready || !scene || !acceptsVideo}
           title={continueTitle}
           onClick={() => {
             if (createSceneFromTake(take.id)) onClose()
@@ -604,6 +681,9 @@ function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefine
           {targets.length > 1 ? `Dùng làm @video cho ${targets.length} cảnh đang chọn` : 'Dùng làm @video cho cảnh đang chọn'}
         </button>
       </div>
+      {ready && scene && !acceptsVideo && (
+        <div className="faint rq-small">Chế độ hiện tại của {sceneCode(scene.order)} không nhận video tham chiếu nên chưa tạo cảnh tiếp nối được.</div>
+      )}
       {usedBy.length > 0 && <div className="faint rq-small">Đang là video tham chiếu ở: {usedBy.join(', ')}</div>}
     </div>
   )

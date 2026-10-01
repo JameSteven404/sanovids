@@ -1,4 +1,4 @@
-// Bàn Dựng Phim — desktop shell (Electron).
+// SanoVids — desktop shell (Electron).
 // Serves the built web app (dist/) through a privileged custom protocol app://bdp/ so the page has a stable,
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
@@ -11,7 +11,7 @@ const SCHEME = 'app'
 const HOST = 'bdp'
 const ORIGIN = `${SCHEME}://${HOST}`
 const DIST = path.join(__dirname, '..', 'dist')
-const TITLE = 'Bàn Dựng Phim'
+const TITLE = 'SanoVids'
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -39,8 +39,8 @@ const MIME = {
 
 // Same data folder for `npm run desktop`, the installer and the portable .exe (ASCII, independent of the
 // product name), so projects survive updates and switching between the two builds.
-app.setPath('userData', path.join(app.getPath('appData'), 'BanDungPhim'))
-app.setAppUserModelId('vn.bandungphim.app')
+app.setPath('userData', path.join(app.getPath('appData'), 'SanoVids'))
+app.setAppUserModelId('com.sanovids.app')
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -163,6 +163,19 @@ function createWindow() {
     if (url.startsWith(ORIGIN + '/')) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
+  })
+
+  // Downloads (Tải video, .zip, export) go straight to the Downloads folder without a save dialog,
+  // with " (2)", " (3)"… appended instead of overwriting an existing file. Explorer opens on the file when done.
+  webContents.session.on('will-download', (_event, item) => {
+    const dir = app.getPath('downloads')
+    const parsed = path.parse(item.getFilename())
+    let target = path.join(dir, parsed.base)
+    for (let i = 2; fs.existsSync(target) && i < 1000; i++) target = path.join(dir, `${parsed.name} (${i})${parsed.ext}`)
+    item.setSavePath(target)
+    item.once('done', (_e, state) => {
+      if (state === 'completed' && !webContents.isDestroyed()) webContents.send('bdp:downloaded', target)
+    })
   })
 
   void win.loadURL(`${ORIGIN}/index.html`)

@@ -39,3 +39,33 @@ export function findMention(text: string, caret: number): MentionToken | null {
 
 export const sameToken = (a: MentionToken | null, b: MentionToken | null) =>
   a === b || (!!a && !!b && a.start === b.start && a.end === b.end && a.query === b.query)
+
+/** Max height of the "@" popup (as in inspector.css `.in-mention`). */
+export const POPUP_MAX_H = 380
+const POPUP_MIN_H = 120
+const MARGIN = 8
+
+export interface PopupPlacement {
+  top?: number
+  bottom?: number
+  maxHeight: number
+}
+
+/**
+ * Vertical placement of the "@" popup for a caret line at `yTop` (viewport px, `lineH` tall): below the caret when
+ * the estimated height `estH` fits, else on the side with more room. `maxHeight` keeps the whole popup (list +
+ * footer) inside the viewport; the list scrolls inside it.
+ */
+export function popupPlacement(yTop: number, lineH: number, estH: number, viewH: number): PopupPlacement {
+  const below = yTop + lineH + 6
+  const roomBelow = viewH - MARGIN - below
+  const roomAbove = yTop - 4 - MARGIN
+  const fit = (room: number) => Math.floor(Math.max(Math.min(POPUP_MIN_H, viewH - 2 * MARGIN), Math.min(POPUP_MAX_H, room)))
+  if (estH > roomBelow && roomAbove > roomBelow) {
+    const maxHeight = fit(roomAbove)
+    // bottom edge 4px above the caret line, but never pushed off the top / bottom of the viewport
+    return { bottom: Math.round(Math.max(MARGIN, Math.min(viewH - yTop + 4, viewH - MARGIN - maxHeight))), maxHeight }
+  }
+  const maxHeight = fit(roomBelow)
+  return { top: Math.round(Math.max(MARGIN, Math.min(below, viewH - MARGIN - maxHeight))), maxHeight }
+}

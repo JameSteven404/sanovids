@@ -1,7 +1,7 @@
-import { ChevronDown, ChevronUp, CircleStop, Coins, Eye, ListVideo, LocateFixed, RotateCcw, Settings2, Sparkles, Trash, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, CircleStop, Coins, Download, Eye, ListVideo, LoaderCircle, LocateFixed, RotateCcw, Settings2, Sparkles, Trash, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { focusNodes, runNow } from '../../actions'
+import { downloadTake, focusNodes, runNow } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
@@ -163,11 +163,13 @@ function QueuePanel() {
           title="Chỉnh tốc độ, tỉ lệ lỗi và số luồng của nhà cung cấp giả"
         >
           <Settings2 size={13} />
-          Mock: {SPEED_LABEL[mock.speed]} · lỗi {Math.round(mock.failRate * 100)}% · {mock.concurrency} luồng
+          <span className="rq-btn-label">
+            Mock: {SPEED_LABEL[mock.speed]} · lỗi {Math.round(mock.failRate * 100)}% · {mock.concurrency} luồng
+          </span>
         </button>
         <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách">
           <Trash size={13} />
-          Dọn job lỗi/đã huỷ{clearable.length ? ` (${clearable.length})` : ''}
+          <span className="rq-btn-label">Dọn job lỗi/đã huỷ{clearable.length ? ` (${clearable.length})` : ''}</span>
         </button>
       </div>
 
@@ -215,6 +217,16 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   const refunded = take.status === 'failed' || take.status === 'cancelled'
   const open = () => useUI.getState().openDialog({ kind: 'take', takeId: take.id })
   const goto = () => gotoTake(take, scene)
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      await downloadTake(take.id)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -284,6 +296,18 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
           <button type="button" className="btn btn-ghost btn-sm" onClick={open}>
             <Eye size={13} />
             Xem
+          </button>
+        )}
+        {take.status === 'completed' && (
+          <button
+            type="button"
+            className="icon-btn rq-icon-sm rq-dl-icon"
+            disabled={saving}
+            onClick={() => void save()}
+            title={`Tải video ${code}_T${take.number}`}
+            aria-label={`Tải video ${code} T${take.number}`}
+          >
+            {saving ? <LoaderCircle size={14} className="rq-spin" /> : <Download size={14} />}
           </button>
         )}
         <button type="button" className="icon-btn rq-icon-sm" disabled={!scene} onClick={goto} title="Đi tới video này trên canvas" aria-label="Đi tới video trên canvas">

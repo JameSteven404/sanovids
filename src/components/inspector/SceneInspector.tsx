@@ -1,12 +1,14 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Film, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
+import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, createSceneFromTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
+import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { costOf, MODE_LABEL, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
+import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -21,11 +23,11 @@ import { TakePicker } from './TakePicker'
 import { imageOptsFor, legacyAssets, replaceLegacyTags } from './tokens'
 import { useReorder } from './useReorder'
 
-/** HTML5 drag payload of library cards (JSON array of asset ids) — same contract as the sidebar / canvas. */
-const ASSET_MIME = 'application/x-bdp-assets'
+/** Row reordering inside the lists below (drag payload = row index). Library cards / takes use src/lib/dnd.ts. */
 const REF_MIME = 'application/x-bdp-refidx'
 const VREF_MIME = 'application/x-bdp-vrefidx'
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files')
+const isTakeDrag = (e: DragEvent) => Array.from(e.dataTransfer.types).includes(TAKES_MIME)
 
 export function SceneInspector({ sceneId }: { sceneId: string }) {
   const exists = useProject((s) => s.project.scenes.some((x) => x.id === sceneId))
@@ -245,7 +247,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   const sends = usesRefs(settings)
   const over = sends && slots.length > spec.maxRefImages
   const sent = sends ? Math.min(slots.length, spec.maxRefImages) : 0
-  const isLibDrag = (e: DragEvent) => e.dataTransfer.types.includes(ASSET_MIME)
+  const isLibDrag = (e: DragEvent) => Array.from(e.dataTransfer.types).includes(ASSETS_MIME)
 
   return (
     <Section
@@ -283,12 +285,8 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
           }
           e.preventDefault()
           setLibOver(null)
-          try {
-            const ids = JSON.parse(e.dataTransfer.getData(ASSET_MIME)) as unknown
-            if (Array.isArray(ids)) linkAssets([sceneId], ids.filter((x): x is string => typeof x === 'string'))
-          } catch {
-            /* ignore malformed payload */
-          }
+          const ids = readIds(e.dataTransfer, ASSETS_MIME)
+          if (ids.length) linkAssets([sceneId], ids)
         }}
       >
         {rows.length === 0 && (
@@ -439,6 +437,8 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
   const infos = useTakeInfos(videoRefs)
   const [picker, setPicker] = useState(false)
   const addBtn = useRef<HTMLButtonElement>(null)
+  /** Generated videos (takes) dragged over the list from the canvas strip / sidebar. */
+  const [takeOver, setTakeOver] = useState(false)
   const moveRow = (from: number, to: number) =>
     changeMedia(sceneId, () => useProject.getState().moveVideoRef(sceneId, from, to), { renumbered: 'Đã đánh lại số trong prompt.' })
   const reorder = useReorder(infos.length, VREF_MIME, moveRow)
@@ -472,10 +472,29 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
         </span>
       }
     >
-      <div className="in-refs">
+      <div
+        className={`in-refs ${takeOver ? 'is-take-over' : ''}`}
+        onDragOver={(e) => {
+          if (!isTakeDrag(e)) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = e.dataTransfer.effectAllowed === 'link' ? 'link' : 'copy'
+          if (!takeOver) setTakeOver(true)
+        }}
+        onDragLeave={(e) => {
+          if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) setTakeOver(false)
+        }}
+        onDrop={(e) => {
+          if (!isTakeDrag(e)) return
+          e.preventDefault()
+          setTakeOver(false)
+          const ids = readIds(e.dataTransfer, TAKES_MIME)
+          if (ids.length) linkTakes([sceneId], ids)
+        }}
+      >
         {infos.length === 0 && (
           <div className="in-refs-empty">
-            Chưa có video tham chiếu. Kéo dây từ một video (take) trên canvas vào cảnh này, hoặc bấm “Thêm video”. Video được gọi trong prompt bằng <span className="mono">@video_1</span>…
+            Chưa có video tham chiếu. Kéo một video (take) vào đây hoặc nối dây từ video trên canvas vào cảnh này, hoặc bấm “Thêm video”. Video được gọi trong prompt bằng{' '}
+            <span className="mono">@video_1</span>…
           </div>
         )}
         {infos.map((t, i) => {
@@ -517,6 +536,7 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
             </div>
           )
         })}
+        {takeOver && <div className="in-refs-drop is-video">Thả để dùng làm video tham chiếu (@video) của cảnh này</div>}
       </div>
 
       {over && (
@@ -595,6 +615,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
           <Film size={14} /> Chưa có take nào. Mỗi lần chạy tạo một video (T1, T2…) nối ra từ cảnh trên canvas.
         </div>
       )}
+      {completed.length > 0 && <DownloadRow takes={completed} chosenId={chosen?.id} />}
       {shown.length > 0 && (
         <div className="in-continue-row">
           <span className="in-continue-label">
@@ -622,6 +643,48 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
     </Section>
   )
 })
+
+/** "⬇ Tải" — one button per finished take: the video (+ the prompt .txt) to Downloads or the chosen folder. */
+function DownloadRow({ takes, chosenId }: { takes: { id: string; number: number; starred: boolean }[]; chosenId: string | undefined }) {
+  const folderName = useDownloadPrefs((s) => s.folderName)
+  const withPrompt = useDownloadPrefs((s) => s.withPrompt)
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
+  const save = async (takeId: string) => {
+    setBusy((b) => new Set(b).add(takeId))
+    try {
+      await downloadTake(takeId)
+    } finally {
+      setBusy((b) => {
+        const next = new Set(b)
+        next.delete(takeId)
+        return next
+      })
+    }
+  }
+  const where = folderName ? ` vào thư mục “${folderName}”` : ' (thư mục Downloads)'
+  return (
+    <div className="in-download-row">
+      {takes.map((t) => {
+        const saving = busy.has(t.id)
+        return (
+          <button
+            type="button"
+            key={t.id}
+            className={`btn btn-sm btn-ghost in-download ${t.id === chosenId ? 'is-chosen' : ''}`}
+            onClick={() => void save(t.id)}
+            disabled={saving}
+            aria-busy={saving}
+            title={`Tải video T${t.number}${withPrompt ? ' + prompt (.txt)' : ''}${where}`}
+          >
+            <Download size={12} />
+            {saving ? `Đang tải T${t.number}…` : `Tải T${t.number}`}
+            {t.starred && <Star size={11} fill="currentColor" className="in-star" />}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 // ---------------- 6. note ----------------
 const NoteSection = memo(function NoteSection({ sceneId }: { sceneId: string }) {

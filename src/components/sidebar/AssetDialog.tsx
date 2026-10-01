@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, ImagePlus, Info, Link2, Pin, PinOff, RefreshCw, Star, Trash2, Unlink, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ImagePlus, Info, Link2, Pin, PinOff, RefreshCw, Star, Trash2, TriangleAlert, Unlink, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { addImagesToAsset, focusNodes } from '../../actions'
@@ -15,11 +15,13 @@ import {
   checkTag,
   countMentions,
   hasFiles,
+  imageRenumberNote,
   imageTokenLabels,
   KIND_META,
   KIND_ORDER,
   nextAssetPosition,
   renameAssetTag,
+  scenesWithShiftedImageTokens,
   undoToastAction,
   useDialogUndoKeys,
   useFileDropGuard,
@@ -231,17 +233,46 @@ function TagField({ asset }: { asset: Asset }) {
 
 // ---------------- images ----------------
 /**
- * Change the images of an asset (add / remove / reorder). The project store renumbers the @image tokens of every
- * scene using it in the same undo step; tell the user when prompts were rewritten so the toast can undo it.
+ * Scenes whose @image tokens will point at another photo after changing the asset's images from index `from`
+ * (to `to`) — only when automatic renumbering is off (Settings); with it on the store rewrites them. Read BEFORE
+ * the change.
  */
-function setAssetImages(asset: Asset, imageIds: string[], what: 'remove' | 'move') {
+function staleTokenScenes(assetId: string, from: number, to?: number): string[] {
+  const p = useProject.getState().project
+  if (p.settings.autoRenumber) return []
+  return scenesWithShiftedImageTokens(p.assets, p.scenes, assetId, from, to)
+}
+
+/** " · tự đánh lại số đang tắt — kiểm tra số @image trong S02, S05" */
+function staleNote(sceneIds: string[]): string {
+  const orders = new Map(useProject.getState().project.scenes.map((s) => [s.id, s.order]))
+  const codes = sceneIds
+    .map((id) => orders.get(id))
+    .filter((o): o is number => o !== undefined)
+    .sort((a, b) => a - b)
+    .map(sceneCode)
+  const list = codes.length > 4 ? `${codes.slice(0, 4).join(', ')}… (${codes.length} cảnh)` : codes.join(', ')
+  return ` · tự đánh lại số đang tắt — hãy sửa số @image trong ${list}`
+}
+
+/**
+ * Change the images of an asset (remove / reorder). The project store renumbers the @image tokens of every
+ * scene using it in the same undo step; tell the user when prompts were rewritten so the toast can undo it. With
+ * renumbering off (Settings) the tokens are left as written: warn about the scenes whose numbers now point elsewhere.
+ * `from` / `to`: range of image indexes whose numbers change (`to` omitted = every number after `from`).
+ */
+function setAssetImages(asset: Asset, imageIds: string[], what: 'remove' | 'move', from: number, to?: number) {
   const before = useProject.getState().project.scenes
+  const stale = staleTokenScenes(asset.id, from, to)
   useProject.getState().updateAsset(asset.id, { imageIds })
   const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
-  if (what === 'remove') {
-    toast(`Đã bỏ 1 ảnh của “${asset.name}”${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
+  const done = what === 'remove' ? `Đã bỏ 1 ảnh của “${asset.name}”` : 'Đã đổi thứ tự ảnh'
+  if (stale.length) {
+    toast(`${done}${staleNote(stale)}.`, { tone: 'warning', action: undoToastAction() })
+  } else if (what === 'remove') {
+    toast(`${done}${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
   } else if (rewritten) {
-    toast(`Đã đổi thứ tự ảnh · đánh lại số @image trong ${rewritten} prompt.`, { action: undoToastAction() })
+    toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { action: undoToastAction() })
   }
 }
 
@@ -252,11 +283,18 @@ async function addImageFiles(asset: Asset, files: File[]) {
     return
   }
   const before = useProject.getState().project.scenes
+  // New images go after the asset's current ones: the numbers after them move.
+  const count = useProject.getState().project.assets.find((a) => a.id === asset.id)?.imageIds.length ?? asset.imageIds.length
+  const stale = staleTokenScenes(asset.id, count)
   await addImagesToAsset(asset.id, images)
   // Only count scenes using this asset: other prompts may have been edited while the files were being stored.
   const after = useProject.getState().project.scenes
   const using = new Set(after.filter((s) => s.refs.includes(asset.id)).map((s) => s.id))
   const rewritten = changedPrompts(before, after).filter((id) => using.has(id)).length
+  if (stale.length) {
+    toast(`Đã thêm ${images.length} ảnh cho “${asset.name}”${staleNote(stale)}.`, { tone: 'warning', action: undoToastAction() })
+    return
+  }
   toast(`Đã thêm ${images.length} ảnh cho “${asset.name}”${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, {
     tone: 'success',
     action: rewritten ? undoToastAction() : undefined,
@@ -268,12 +306,14 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
   const input = useRef<HTMLInputElement>(null)
   const ids = asset.imageIds
   const used = useProject((s) => s.project.scenes.reduce((n, sc) => n + (sc.refs.includes(asset.id) ? 1 : 0), 0))
+  const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
+  const note = imageRenumberNote(autoRenumber, used)
   const move = (from: number, to: number) => {
     if (to < 0 || to >= ids.length) return
     const next = [...ids]
     const [x] = next.splice(from, 1)
     next.splice(to, 0, x)
-    setAssetImages(asset, next, 'move')
+    setAssetImages(asset, next, 'move', Math.min(from, to), Math.max(from, to))
   }
   const add = (files: File[]) => addImageFiles(asset, files)
   const maxSd = MODELS.seedance_2_5.maxRefImages
@@ -301,7 +341,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
               <button className="sb-card-btn" title="Sang phải" disabled={i === ids.length - 1} onClick={() => move(i, i + 1)}>
                 <ArrowRight size={12} />
               </button>
-              <button className="sb-card-btn danger" title="Bỏ ảnh này" onClick={() => setAssetImages(asset, ids.filter((x) => x !== id), 'remove')}>
+              <button className="sb-card-btn danger" title="Bỏ ảnh này" onClick={() => setAssetImages(asset, ids.filter((x) => x !== id), 'remove', i)}>
                 <X size={12} />
               </button>
             </div>
@@ -328,11 +368,9 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
         Mỗi ảnh chiếm một số <span className="mono">@image_N</span> theo thứ tự trên (ảnh chính đầu tiên). Giới hạn: {MODELS.seedance_2_5.name} {maxSd} ảnh,{' '}
         {MODELS.minimax_h3.name} {maxH3} ảnh mỗi cảnh.
       </small>
-      <small className="sb-renumber-hint">
-        <RefreshCw size={11} />
-        <span>
-          Đổi ảnh sẽ tự đánh lại số @image trong các cảnh đang dùng{used ? ` (${used} cảnh)` : ''}.
-        </span>
+      <small className={`sb-renumber-hint${note.warn ? ' warn' : ''}`}>
+        {note.warn ? <TriangleAlert size={11} /> : <RefreshCw size={11} />}
+        <span>{note.text}</span>
       </small>
     </div>
   )

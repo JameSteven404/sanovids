@@ -1,10 +1,10 @@
 {
-  "name": "ban-dung-phim",
-  "productName": "Bàn Dựng Phim",
+  "name": "sanovids",
+  "productName": "SanoVids",
   "private": true,
   "version": "0.1.0",
-  "description": "Bàn Dựng Phim — dựng phim AI theo từng cảnh trên canvas",
-  "author": "Bàn Dựng Phim",
+  "description": "SanoVids — dựng phim AI theo từng cảnh trên canvas",
+  "author": "SanoVids",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -41,10 +41,10 @@
     "vitest": "^5.0.3"
   },
   "build": {
-    "appId": "vn.bandungphim.app",
-    "productName": "Bàn Dựng Phim",
-    "executableName": "BanDungPhim",
-    "copyright": "© 2026 Bàn Dựng Phim",
+    "appId": "com.sanovids.app",
+    "productName": "SanoVids",
+    "executableName": "SanoVids",
+    "copyright": "© 2026 SanoVids",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -77,18 +77,18 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Bàn Dựng Phim",
-      "uninstallDisplayName": "Bàn Dựng Phim",
+      "shortcutName": "SanoVids",
+      "uninstallDisplayName": "SanoVids",
       "installerLanguages": [
         "vi_VN",
         "en_US"
       ],
       "language": "1066",
       "multiLanguageInstaller": true,
-      "artifactName": "Ban-Dung-Phim-Setup-${version}.${ext}"
+      "artifactName": "SanoVids-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "Ban-Dung-Phim-Portable-${version}.${ext}"
+      "artifactName": "SanoVids-Portable-${version}.${ext}"
     }
   }
 }

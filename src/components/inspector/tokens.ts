@@ -192,8 +192,22 @@ export function suggestionToken(s: MediaSuggestion): string | null {
 const OPENERS = /[\s([{"'“‘]$/
 const CLOSERS = /^[\s.,;:!?)\]}"'’”]/
 
-/** Insert `token` replacing text[start, end), padding with spaces so it never glues to a word. */
-export function insertAt(text: string, start: number, end: number, token: string): { insert: string; next: string; caret: number } {
+const WORD_CH = /[\p{L}\p{M}\p{N}_@]/u
+
+/** Where dropped media tokens go: a drop inside a word (or an @token) moves to the end of it, so it is never split. */
+export function snapToWordEnd(text: string, at: number): number {
+  let i = Math.max(0, Math.min(at, text.length))
+  if (i === 0 || i === text.length || !WORD_CH.test(text[i - 1]) || !WORD_CH.test(text[i])) return i
+  while (i < text.length && WORD_CH.test(text[i])) i++
+  return i
+}
+
+/**
+ * Insert `token` replacing text[start, end), padding with spaces so it never glues to a word.
+ * `last`: index in `next` of the "@" of the last inserted token (`token` may be several joined tokens), where the
+ * "@" popup must stay closed when the caret ends right after it (inserted before "." for example).
+ */
+export function insertAt(text: string, start: number, end: number, token: string): { insert: string; next: string; caret: number; last: number } {
   const before = text.slice(0, start)
   const after = text.slice(end)
   const lead = before && !OPENERS.test(before) ? ' ' : ''
@@ -201,7 +215,18 @@ export function insertAt(text: string, start: number, end: number, token: string
   const insert = lead + token + trail
   // Caret after the token: skip an existing following space so the user can keep typing.
   const caret = start + insert.length + (!trail && after.startsWith(' ') ? 1 : 0)
-  return { insert, next: before + insert + after, caret }
+  return { insert, next: before + insert + after, caret, last: start + lead.length + Math.max(0, token.lastIndexOf('@')) }
+}
+
+/**
+ * Where offset `pos` of `prev` lands after an external rewrite into `next` (token renumbering, undo…): kept before
+ * the first changed character, shifted by the length change after it.
+ */
+export function remapOffset(prev: string, next: string, pos: number): number {
+  let p = 0
+  const lim = Math.min(prev.length, next.length)
+  while (p < lim && prev.charCodeAt(p) === next.charCodeAt(p)) p++
+  return Math.min(next.length, pos <= p ? pos : Math.max(p, pos + next.length - prev.length))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -225,6 +250,19 @@ export function legacyAssets(text: string, assets: Asset[]): Asset[] {
     if (a) out.push(a)
   }
   return out
+}
+
+/**
+ * Toast after "Đổi @Tên → @image_N": how many were replaced and why the others were skipped (no image yet, or
+ * over the model's image limit). Null when there is nothing to add (limit refusals were already reported).
+ */
+export function legacyFixMessage(replaced: number, noImage: number, overLimit: number): { text: string; tone: 'success' | 'warning' } | null {
+  if (replaced) {
+    const skipped = [noImage ? `${noImage} mục chưa có ảnh` : '', overLimit ? `${overLimit} mục vượt giới hạn ảnh của model` : ''].filter(Boolean).join(', ')
+    return { text: `Đã đổi ${replaced} @Tên thành @image_N${skipped ? ` (bỏ qua ${skipped})` : ''}.`, tone: 'success' }
+  }
+  if (noImage) return { text: `Bỏ qua ${noImage} mục chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.`, tone: 'warning' }
+  return null
 }
 
 /** Replace legacy @Tag mentions whose lower-cased tag is in `tokens` with the mapped "@image_N". */

@@ -4,21 +4,10 @@ import { MENTION_RE } from '../../core/compile'
 import type { JobStatus, Take } from '../../core/types'
 import { useRuns } from '../../store/runs'
 
-/** HTML5 drag payloads (shared contract with the sidebar / canvas): JSON arrays of asset ids / take ids. */
-export const ASSET_MIME = 'application/x-bdp-assets'
-export const TAKES_MIME = 'application/x-bdp-takes'
+// Asset / take drag payloads (ASSETS_MIME, TAKES_MIME, readIds) live in src/lib/dnd.ts — shared with the
+// library, canvas and prompt editor. Only the table's own row-reorder payload is defined here.
+/** Scene id being reordered with the table's drag handle. */
 export const SCENE_MIME = 'application/x-bdp-scene'
-
-/** Parse a JSON array of ids from a drag payload ([] when missing or malformed). */
-export function readIds(raw: string): string[] {
-  if (!raw) return []
-  try {
-    const v: unknown = JSON.parse(raw)
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return []
-  }
-}
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: 'Đang chờ',

@@ -1,6 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
-import { chooseTake, layoutTakes, takeIndexOf, takeLayoutSig, takeSummary, videoUsageOf } from '../canvasModel'
+import { ASSETS_MIME, TAKES_MIME } from '../../../lib/dnd'
+import { defaultTakePosition, LAYOUT } from '../../../store/project'
+import { useRuns } from '../../../store/runs'
+import {
+  chooseTake,
+  hasAssetDrag,
+  hasTakeDrag,
+  inlineEditKeyBubbles,
+  isAutoSlot,
+  isEmptyCanvasTarget,
+  layoutTakes,
+  orphanTakePosition,
+  readAssetIds,
+  readTakeIds,
+  takeIndexOf,
+  takeLayoutSig,
+  takesUsableFor,
+  takeSummary,
+  videoUsageOf,
+} from '../canvasModel'
 
 const scene = (id: string, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -107,6 +126,81 @@ describe('layoutTakes', () => {
   it('keeps explicit positions', () => {
     const l = layoutTakes([take('x', 's1', 1, { position: { x: 5, y: 6 } })], scenes, 'all')
     expect(l.items[0].explicit).toEqual({ x: 5, y: 6 })
+    expect(l.items[0]).toMatchObject({ orphan: false, anchorId: 's1' })
+  })
+
+  it('keeps takes of a deleted scene while a scene uses them as @video (anchored at the first user by order)', () => {
+    // Array order is not scene order: s3 (order 3) comes first but s2 (order 2) is the anchor.
+    const withOrphans = [
+      scene('s3', { order: 3, videoRefs: ['o1'] }),
+      scene('s1', { order: 1 }),
+      scene('s2', { order: 2, videoRefs: ['o2', 'o1'] }),
+    ]
+    const list = [take('a1', 's1', 1), take('o1', 'gone', 1, { position: { x: 7, y: 8 } }), take('o2', 'gone', 2), take('o3', 'gone', 3)]
+    for (const mode of ['all', 'chosen'] as const) {
+      const l = layoutTakes(list, withOrphans, mode)
+      expect(l.items.map((i) => [i.id, i.orphan, i.anchorId, i.index, i.hidden])).toEqual([
+        ['a1', false, 's1', 0, 0],
+        ['o1', true, 's2', 0, 0],
+        ['o2', true, 's2', 1, 0],
+      ])
+      expect(l.byId.get('o1')).toMatchObject({ sceneId: 'gone', explicit: { x: 7, y: 8 } })
+      expect(l.byId.has('o3')).toBe(false) // not used by any scene
+    }
+  })
+})
+
+describe('orphanTakePosition', () => {
+  it('sits left of the scene that uses it, one slot further left per orphan', () => {
+    const anchor = { x: 420, y: 308 }
+    const first = orphanTakePosition(anchor, 0)
+    const second = orphanTakePosition(anchor, 1)
+    expect(first.y).toBe(anchor.y)
+    expect(first.x + LAYOUT.takeW).toBeLessThan(anchor.x)
+    expect(second.x + LAYOUT.takeW).toBeLessThanOrEqual(first.x)
+  })
+})
+
+describe('isAutoSlot', () => {
+  /** React Flow's snapPosition (@xyflow/system) with snapGrid [16, 16]. */
+  const rfSnap = (p: { x: number; y: number }) => ({ x: 16 * Math.round(p.x / 16), y: 16 * Math.round(p.y / 16) })
+
+  it('counts the grid point a snapped click-drag lands on as the slot, but not a real move', () => {
+    // Auto slots of a grid-aligned scene (x ≡ 8 mod 16) and of auto-layout rows (x ≡ 12, y ≡ 12 / 4 mod 16).
+    const scenes = [
+      { x: 416, y: 64 },
+      { x: 420, y: 60 },
+      { x: 420, y: 308 },
+      { x: -400, y: -188 },
+    ]
+    for (const sp of scenes) {
+      for (const index of [0, 1, 2]) {
+        const auto = defaultTakePosition(sp, index)
+        expect(isAutoSlot(auto, auto)).toBe(true)
+        // A drag that starts and ends at the node: React Flow snaps the node to the grid point nearest its start.
+        expect(isAutoSlot(auto, rfSnap(auto))).toBe(true)
+        // Arrow keys move one grid step (then snap); dragging a cell or more away is a real move.
+        for (const d of [
+          { x: 16, y: 0 },
+          { x: -16, y: 0 },
+          { x: 0, y: 16 },
+          { x: 0, y: -16 },
+          { x: 40, y: 40 },
+        ]) {
+          expect(isAutoSlot(auto, rfSnap({ x: auto.x + d.x, y: auto.y + d.y }))).toBe(false)
+        }
+      }
+    }
+  })
+})
+
+describe('inlineEditKeyBubbles', () => {
+  const key = (k: string, mods: { ctrlKey?: boolean; metaKey?: boolean } = {}) => ({ key: k, ctrlKey: false, metaKey: false, ...mods })
+  it('lets Ctrl/Cmd shortcuts reach the global handler, keeps typing keys and Escape in the field', () => {
+    expect(inlineEditKeyBubbles(key('s', { ctrlKey: true }))).toBe(true)
+    expect(inlineEditKeyBubbles(key('Enter', { metaKey: true }))).toBe(true)
+    expect(inlineEditKeyBubbles(key('Escape', { ctrlKey: true }))).toBe(false)
+    for (const k of ['a', 'Delete', 'Backspace', 'Enter', 'Escape', 'c', 'n']) expect(inlineEditKeyBubbles(key(k))).toBe(false)
   })
 })
 
@@ -116,5 +210,42 @@ describe('videoUsageOf', () => {
     expect(m.get('t1')).toBe(2)
     expect(m.get('t2')).toBe(1)
     expect(m.get('t3')).toBeUndefined()
+  })
+})
+
+/** Minimal DataTransfer stand-in (node test environment). */
+const transfer = (data: Record<string, string>) => ({ types: Object.keys(data), getData: (t: string) => data[t] ?? '' }) as unknown as DataTransfer
+
+describe('drag payloads (shared MIME types)', () => {
+  it('tells take drags from asset drags and reads their ids', () => {
+    const takes = transfer({ [TAKES_MIME]: JSON.stringify(['t1', 't2', 3]) })
+    const assets = transfer({ [ASSETS_MIME]: JSON.stringify(['a1']) })
+    expect(hasTakeDrag(takes)).toBe(true)
+    expect(hasAssetDrag(takes)).toBe(false)
+    expect(readTakeIds(takes)).toEqual(['t1', 't2'])
+    expect(readAssetIds(takes)).toBeNull()
+    expect(hasTakeDrag(assets)).toBe(false)
+    expect(readAssetIds(assets)).toEqual(['a1'])
+    expect(readTakeIds(assets)).toEqual([])
+    expect(readTakeIds(transfer({ [TAKES_MIME]: 'not json' }))).toEqual([])
+    expect(hasTakeDrag(null)).toBe(false)
+  })
+
+  it('isEmptyCanvasTarget is false without a DOM element', () => {
+    expect(isEmptyCanvasTarget(null)).toBe(false)
+  })
+})
+
+describe('takesUsableFor', () => {
+  const initial = useRuns.getState().takes
+  afterEach(() => useRuns.setState({ takes: initial }))
+
+  it('needs a finished take from another scene', () => {
+    useRuns.setState({ takes: [take('done', 's1', 1), take('busy', 's1', 2, { status: 'processing', progress: 30 })] })
+    expect(takesUsableFor(['done'], 's2')).toBe(true)
+    expect(takesUsableFor(['done'], 's1')).toBe(false) // own scene
+    expect(takesUsableFor(['busy'], 's2')).toBe(false) // not finished
+    expect(takesUsableFor(['busy', 'done'], 's2')).toBe(true)
+    expect(takesUsableFor(['gone'], 's2')).toBe(false)
   })
 })

@@ -317,7 +317,7 @@ export async function deleteProject(id: string): Promise<void> {
 
 // ---------------- export / import (portable .json with embedded images) ----------------
 interface ExportFile {
-  format: 'ban-dung-phim'
+  format: 'sanovids' | 'ban-dung-phim'
   version: 1 | 2
   project: unknown
   media: Record<string, string> // image id -> data URL
@@ -342,19 +342,19 @@ export async function exportProjectFile(): Promise<void> {
       if (blob) media[id] = await blobToDataUrl(blob)
     }
   }
-  const file: ExportFile = { format: 'ban-dung-phim', version: 2, project, media }
+  const file: ExportFile = { format: 'sanovids', version: 2, project, media }
   const blob = new Blob([JSON.stringify(file)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${project.name.replace(/[<>:"/\\|?*]/g, '-')}.bdp.json`
+  a.download = `${project.name.replace(/[<>:"/\\|?*]/g, '-')}.sanovids.json`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }
 
 export async function importProjectFile(file: File): Promise<void> {
   const data = JSON.parse(await file.text()) as ExportFile
-  if (data?.format !== 'ban-dung-phim' || !data.project) throw new Error('File không đúng định dạng Bàn Dựng Phim.')
+  if ((data?.format !== 'sanovids' && data?.format !== 'ban-dung-phim') || !data.project) throw new Error('File không đúng định dạng dự án SanoVids.')
   const idMap = new Map<string, string>()
   for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
     idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))

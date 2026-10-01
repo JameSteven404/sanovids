@@ -24,9 +24,10 @@ const HEADER_LINE = /^\s*={3,}\s*(\S.*?)\s*={3,}\s*$/
 const toLF = (s: string) => s.replace(/\r\n?/g, '\n')
 
 function headerTitle(raw: string): string {
-  // "S01: Dawn climb" / "S01 · Dawn climb" / "S01" / "Dawn climb"
+  // "S01: Dawn climb" / "S01 · Dawn climb" / "S01" / "Dawn climb", plus the take code of the app's own
+  // prompts.txt ("Tải tất cả take ★"): "S01_T2 - Dawn climb" / "S02_T1" / "S03·T2: Dawn climb".
   return raw
-    .replace(/^S\d+\s*(?:[:·\-–—|.]\s*)?/i, '')
+    .replace(/^S\d+(?:\s*[_·]?\s*T\d+\b)?\s*(?:[:·\-–—|.]\s*)?/i, '')
     .replace(/^["“'](.*)["”']$/, '$1')
     .trim()
 }

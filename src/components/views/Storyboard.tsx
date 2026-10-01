@@ -1,12 +1,12 @@
-import { CirclePlay, Clapperboard, Eye, LoaderCircle, Play, Plus, Star, TriangleAlert } from 'lucide-react'
+import { CirclePlay, Clapperboard, Download, Eye, LoaderCircle, Play, Plus, Star, TriangleAlert } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { newScene, requestRun } from '../../actions'
+import { downloadChosenTakesZip, downloadTake, newScene, requestRun } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { sortedScenes, useProject } from '../../store/project'
-import { useUI } from '../../store/ui'
+import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { formatRuntime, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
 import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
@@ -41,6 +41,20 @@ export function Storyboard() {
   const starredRuntime = cards.reduce((t, c) => t + (c.starred?.settings.duration ?? 0), 0)
   const plannedRuntime = cards.reduce((t, c) => t + c.scene.settings.duration, 0)
   const missing = cards.filter((c) => !c.starred)
+  // Same pick as actions.chosenTakeIds(): the ★ take, else the newest finished take of each scene.
+  const chosenCount = cards.reduce((n, c) => n + (c.show ? 1 : 0), 0)
+  const [zipping, setZipping] = useState(false)
+  const downloadAll = async () => {
+    if (zipping) return
+    setZipping(true)
+    try {
+      await downloadChosenTakesZip()
+    } catch (e) {
+      toast(`Không tạo được file .zip: ${(e as Error).message}`, { tone: 'error' })
+    } finally {
+      setZipping(false)
+    }
+  }
 
   const items: PlayerItem[] = useMemo(
     () =>
@@ -100,6 +114,19 @@ export function Storyboard() {
           </span>
         </div>
         <div className="vw-head-actions">
+          <button
+            className="btn btn-sm"
+            disabled={!chosenCount || zipping}
+            onClick={() => void downloadAll()}
+            title={
+              chosenCount
+                ? `Một file .zip gồm take ★ (hoặc take mới nhất đã xong) của ${chosenCount} cảnh, đặt tên S01_T2 - tên cảnh theo thứ tự, kèm prompts.txt`
+                : 'Chưa có video nào tạo xong'
+            }
+          >
+            {zipping ? <LoaderCircle size={14} className="vw-spin" /> : <Download size={14} />}
+            {zipping ? 'Đang nén…' : 'Tải tất cả video chọn (.zip)'}
+          </button>
           <button className="btn btn-sm btn-primary" onClick={() => setPlayFrom(0)} title="Phát lần lượt take ★ (hoặc take mới nhất) của từng cảnh">
             <CirclePlay size={14} /> Phát liền
           </button>
@@ -230,6 +257,19 @@ const StoryCard = memo(function StoryCard({
                 }}
               >
                 <Eye size={12} /> Xem take
+              </button>
+            )}
+            {show && (
+              <button
+                className="btn btn-sm"
+                title={`Tải video ${code}_T${show.number}`}
+                aria-label={`Tải video ${code} T${show.number}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void downloadTake(show.id)
+                }}
+              >
+                <Download size={12} /> Tải
               </button>
             )}
             <button

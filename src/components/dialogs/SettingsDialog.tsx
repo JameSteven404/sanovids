@@ -1,5 +1,6 @@
-import { AppWindow, Coins, Download, FileUp, Globe, LoaderCircle, MonitorCheck, MonitorDown, Sparkles } from 'lucide-react'
+import { AppWindow, Coins, Download, FileUp, FolderDown, FolderOpen, Globe, LoaderCircle, MonitorCheck, MonitorDown, Sparkles } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
+import { canPickFolder, clearDownloadFolder, pickDownloadFolder, useDownloadPrefs } from '../../lib/downloads'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
@@ -35,6 +36,7 @@ export function SettingsDialog() {
           <DataSettings onDone={closeDialog} />
         </div>
         <div className="dg-settings-col">
+          <DownloadSettings />
           <MockSettings />
           <CreditSettings />
         </div>
@@ -139,7 +141,7 @@ function AppSettings() {
       </div>
       {!canInstall && !installed && !desktop && (
         <div className="dg-field-hint">
-          Chrome / Edge / Brave: bấm biểu tượng cài đặt trên thanh địa chỉ, hoặc menu ⋮ → “Cài đặt Bàn Dựng Phim”. Trang phải được mở qua http(s).
+          Chrome / Edge / Brave: bấm biểu tượng cài đặt trên thanh địa chỉ, hoặc menu ⋮ → “Cài đặt SanoVids”. Trang phải được mở qua http(s).
         </div>
       )}
       {!desktop && (
@@ -148,13 +150,90 @@ function AppSettings() {
           <div>
             <b>Bản cài Windows (.exe)</b>
             <p>
-              Trong thư mục dự án chạy <code>npm run dist:win</code> → thư mục <code>release/</code> có bộ cài <code>Ban-Dung-Phim-Setup-…exe</code> và bản portable (chạy
+              Trong thư mục dự án chạy <code>npm run dist:win</code> → thư mục <code>release/</code> có bộ cài <code>SanoVids-Setup-…exe</code> và bản portable <code>SanoVids-Portable-…exe</code> (chạy
               không cần cài). Chép sang máy khác để cài; nếu Windows SmartScreen cảnh báo, chọn “More info → Run anyway”.
             </p>
           </div>
         </div>
       )}
-      <div className="dg-field-hint">Mỗi trình duyệt / bản app giữ dữ liệu riêng. Chuyển máy: Xuất dự án ở mục Dữ liệu rồi Nhập file .bdp.json ở máy kia.</div>
+      <div className="dg-field-hint">Mỗi trình duyệt / bản app giữ dữ liệu riêng. Chuyển máy: Xuất dự án ở mục Dữ liệu rồi Nhập file .sanovids.json ở máy kia (file .bdp.json cũ vẫn nhập được).</div>
+    </Section>
+  )
+}
+
+function DownloadSettings() {
+  const autoDownload = useDownloadPrefs((s) => s.autoDownload)
+  const withPrompt = useDownloadPrefs((s) => s.withPrompt)
+  const folderName = useDownloadPrefs((s) => s.folderName)
+  const setPrefs = useDownloadPrefs((s) => s.set)
+  const { desktop } = usePwaInstall()
+  const canPick = canPickFolder()
+  const [busy, setBusy] = useState(false)
+
+  const pick = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const name = await pickDownloadFolder()
+      if (name) toast(`Video sẽ được lưu vào thư mục “${name}”.`, { tone: 'success' })
+    } finally {
+      setBusy(false)
+    }
+  }
+  const resetToDownloads = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await clearDownloadFolder()
+      toast('Video sẽ được lưu vào thư mục Downloads.', { tone: 'success' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  let hint: ReactNode
+  if (folderName) {
+    hint = `Video được ghi thẳng vào thư mục “${folderName}”. Sau khi mở lại app, ${desktop ? 'app' : 'trình duyệt'} có thể hỏi lại quyền ghi vào thư mục khi bạn bấm tải.`
+  } else if (desktop) {
+    hint = 'Bản desktop: khi chưa chọn thư mục, video được lưu tự động vào thư mục Downloads của máy (không hỏi nơi lưu).'
+  } else if (canPick) {
+    hint = 'Chưa chọn thư mục: trình duyệt tải về thư mục Downloads (hoặc hỏi nơi lưu, tuỳ cài đặt của trình duyệt).'
+  } else {
+    hint = 'Trình duyệt này không cho chọn thư mục — video được tải về thư mục Downloads. Dùng Chrome / Edge / Brave hoặc bản desktop để lưu thẳng vào một thư mục.'
+  }
+
+  return (
+    <Section title="Tải video" desc="Nút “Tải video” lưu file video đặt tên theo cảnh (S03_T2 - tên cảnh), giống canvasapp.">
+      <Toggle
+        checked={autoDownload}
+        onChange={(v) => setPrefs({ autoDownload: v })}
+        label="Tự tải video khi tạo xong"
+        hint={`Mỗi take hoàn thành được lưu ngay, không cần bấm.${!desktop && !folderName ? ' Lần đầu trình duyệt có thể hỏi “Cho phép tải nhiều tệp”.' : ''}`}
+      />
+      <Toggle
+        checked={withPrompt}
+        onChange={(v) => setPrefs({ withPrompt: v })}
+        label="Kèm file .txt chứa prompt"
+        hint="Lưu thêm “S03_T2 - tên cảnh.txt” chứa đúng prompt đã gửi, cạnh file video."
+      />
+      <div className="dg-folder">
+        <span className={`dg-folder-icon${folderName ? ' on' : ''}`}>{folderName ? <FolderOpen size={16} /> : <FolderDown size={16} />}</span>
+        <span className="dg-folder-text">
+          <small>Thư mục lưu:</small>
+          <b title={folderName ?? 'Thư mục Downloads mặc định'}>{folderName ?? 'Downloads mặc định'}</b>
+        </span>
+        {canPick && (
+          <button className="btn btn-sm" disabled={busy} onClick={() => void pick()} title="Chọn một thư mục trên máy để lưu video vào đó">
+            {busy ? <LoaderCircle size={13} className="dg-spin" /> : <FolderOpen size={13} />} Chọn thư mục…
+          </button>
+        )}
+        {folderName && (
+          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void resetToDownloads()} title="Bỏ thư mục đã chọn, lưu vào Downloads">
+            Dùng Downloads
+          </button>
+        )}
+      </div>
+      <div className="dg-field-hint">{hint}</div>
     </Section>
   )
 }
@@ -266,11 +345,11 @@ function DataSettings({ onDone }: { onDone: () => void }) {
   return (
     <Section title="Dữ liệu" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác.">
       <div className="dg-data-actions" aria-busy={!!busy}>
-        <button className="btn" disabled={!!busy} onClick={() => void run('export', exportProjectFile, 'Đã xuất dự án (.bdp.json).')}>
+        <button className="btn" disabled={!!busy} onClick={() => void run('export', exportProjectFile, 'Đã xuất dự án (.sanovids.json).')}>
           {icon('export', <Download size={14} />)} {busy === 'export' ? 'Đang xuất…' : 'Xuất dự án'}
         </button>
         <button className="btn" disabled={!!busy} onClick={() => fileRef.current?.click()}>
-          {icon('import', <FileUp size={14} />)} {busy === 'import' ? 'Đang nhập…' : 'Nhập file .bdp.json'}
+          {icon('import', <FileUp size={14} />)} {busy === 'import' ? 'Đang nhập…' : 'Nhập file .sanovids.json'}
         </button>
         <input
           ref={fileRef}

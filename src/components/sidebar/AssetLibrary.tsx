@@ -3,7 +3,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, focusNodes, linkAssets, selectedSceneIds } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
+import { ASSETS_MIME } from '../../lib/dnd'
 import { cachedUrl } from '../../lib/imageStore'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
@@ -11,15 +13,17 @@ import { MediaImg } from '../common/Media'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
 import {
-  ASSET_MIME,
   imageTokenLabels,
   KIND_META,
   KIND_ORDER,
+  libraryCardKey,
   matchesQuery,
+  newAssetKind,
   nextAssetPosition,
   undoToastAction,
   usePrefState,
   useSceneCode,
+  useSceneMediaFlags,
   useSelectedSceneIds,
   useSingleSceneId,
 } from './shared'
@@ -52,7 +56,7 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
     return
   }
   e.dataTransfer.effectAllowed = 'all'
-  e.dataTransfer.setData(ASSET_MIME, JSON.stringify(list.map((a) => a.id)))
+  e.dataTransfer.setData(ASSETS_MIME, JSON.stringify(list.map((a) => a.id)))
   // Plain-text fallback (dropped into any text field): the names. The @image number depends on the target scene,
   // so scene drop targets read the asset ids above and link + number them themselves.
   e.dataTransfer.setData('text/plain', list.map((a) => a.name || a.tag).join(', '))
@@ -62,7 +66,7 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
       url: cachedUrl(a.imageIds[0]),
       letter: (a.name || a.tag).slice(0, 1).toUpperCase(),
       color: a.color,
-      shape: a.kind === 'character' ? ('round' as const) : ('square' as const),
+      shape: 'square' as const,
     })),
     list.length === 1 ? list[0].name || '@' + list[0].tag : `${list.length} mục`,
   )
@@ -111,10 +115,13 @@ function linkToScene(sceneId: string, assetId: string) {
   const asset = p.assets.find((a) => a.id === assetId)
   // Not linked: ensureAssetToken already explained why (image limit of the model).
   if (!scene || !asset || !scene.refs.includes(assetId)) return
-  toast(`Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}.`, {
-    tone: 'success',
-    action: undoToastAction(),
-  })
+  const sends = usesRefs(scene.settings)
+  toast(
+    `Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}${
+      sends ? '' : ' · chế độ hiện tại của cảnh không gửi ảnh tham chiếu (nối vẫn được giữ khi đổi chế độ)'
+    }.`,
+    { tone: sends ? 'success' : 'warning', action: undoToastAction() },
+  )
 }
 
 async function copyToken(token: string, code: string) {
@@ -140,18 +147,37 @@ interface CardProps {
   singleCode: string
   /** "@image_N" (or range) in that scene; '' = linked but no image yet; undefined = not linked there. */
   token: string | undefined
+  /** The single selected scene's model / mode sends reference images (false: its @image numbers do nothing). */
+  sendsImages: boolean
+  /** "MiniMax-H3": model of that scene, for the explanations. */
+  sceneModel: string
   /** How many assets a drag / link from this card would carry. */
   groupSize: number
   onSelect: (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) => void
 }
 
-const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, linked, selScenes, singleId, singleCode, token, groupSize, onSelect }: CardProps) {
+const AssetCard = memo(function AssetCard({
+  asset,
+  usage,
+  selected,
+  dragging,
+  linked,
+  selScenes,
+  singleId,
+  singleCode,
+  token,
+  sendsImages,
+  sceneModel,
+  groupSize,
+  onSelect,
+}: CardProps) {
   const { Icon, label } = KIND_META[asset.kind]
   const many = selected && groupSize > 1
   const linkTitle = selScenes
     ? `Nối ${many ? `${groupSize} mục đã chọn` : `“${asset.name}”`} vào ${selScenes} cảnh đang chọn`
     : 'Nối vào cảnh đang chọn — hãy chọn cảnh trước'
   const firstToken = token ? token.replace(/–\d+$/, '') : ''
+  const offNote = `${sceneModel || 'Model'} ở chế độ hiện tại của ${singleCode} không gửi ảnh tham chiếu`
   return (
     <div
       className={`sb-card${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
@@ -168,11 +194,20 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
         onSelect(e, asset.id)
       }}
       onKeyDown={(e) => {
+        const action = libraryCardKey(e.key)
+        if (action === 'block') {
+          // Also from the card's own buttons: the global Delete shortcut acts on the canvas selection (scenes,
+          // generated videos), not on this card — it must never run from here.
+          e.preventDefault()
+          e.stopPropagation()
+          if (!e.repeat) toast('Phím Delete không xoá mục thư viện — mở mục (Enter) rồi bấm “Xoá khỏi thư viện”.', { tone: 'info' })
+          return
+        }
         if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter') {
+        if (action === 'open') {
           e.preventDefault()
           openAsset(asset.id)
-        } else if (e.key === ' ') {
+        } else if (action === 'toggle') {
           e.preventDefault()
           useUI.getState().toggleLibrary(asset.id, e.ctrlKey || e.metaKey || e.shiftKey)
         }
@@ -200,12 +235,19 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
         {asset.imageIds.length > 1 && <span className="sb-card-imgs" title={`${asset.imageIds.length} ảnh — mỗi ảnh một số @image`}>{asset.imageIds.length} ảnh</span>}
         {singleId ? (
           token !== undefined ? (
-            token ? (
+            token && !sendsImages ? (
+              <span key="off" className="sb-token sb-card-token off" title={`${token} trong ${singleCode} — ${offNote}, số này chưa có tác dụng.`}>
+                {token}
+              </span>
+            ) : token ? (
               <button
+                key="tok"
                 className="sb-token sb-card-token"
                 title={`${token} trong ${singleCode}${asset.imageIds.length > 1 ? ` (${asset.imageIds.length} ảnh)` : ''} · bấm để copy ${firstToken}`}
                 onClick={(e) => {
                   e.stopPropagation()
+                  // 2nd click of a double-click on "+ Nối": this button replaced it under the pointer.
+                  if (e.detail > 1) return
                   void copyToken(firstToken, singleCode)
                 }}
                 onDoubleClick={(e) => e.stopPropagation()}
@@ -213,16 +255,22 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
                 {token}
               </button>
             ) : (
-              <span className="sb-token sb-card-token muted" title={`Đã nối vào ${singleCode} nhưng chưa có ảnh nên chưa có số @image`}>
+              <span key="nonum" className="sb-token sb-card-token muted" title={`Đã nối vào ${singleCode} nhưng chưa có ảnh nên chưa có số @image`}>
                 Đã nối
               </span>
             )
           ) : (
             <button
+              key="link"
               className="sb-connect sb-card-token"
-              title={`Nối “${asset.name}” vào ${singleCode} (thêm một số @image)`}
+              title={
+                sendsImages
+                  ? `Nối “${asset.name}” vào ${singleCode} (thêm một số @image)`
+                  : `Nối “${asset.name}” vào ${singleCode} — ${offNote} (nối vẫn được giữ khi đổi chế độ)`
+              }
               onClick={(e) => {
                 e.stopPropagation()
+                if (e.detail > 1) return
                 linkToScene(singleId, asset.id)
               }}
               onDoubleClick={(e) => e.stopPropagation()}
@@ -288,7 +336,18 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
 })
 
 // ---------------- library ----------------
-export function AssetLibrary({ query, collapsed, onToggle }: { query: string; collapsed: boolean; onToggle: () => void }) {
+export function AssetLibrary({
+  query,
+  collapsed,
+  onToggle,
+  onExpand,
+}: {
+  query: string
+  collapsed: boolean
+  onToggle: () => void
+  /** Open the section (no-op when open): new items must not land in a collapsed, invisible library. */
+  onExpand: () => void
+}) {
   const assets = useProject((s) => s.project.assets)
   const usage = useProject(useShallow(usageSelector))
   const librarySelection = useUI((s) => s.librarySelection)
@@ -296,6 +355,7 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
   const selectedScenes = useSelectedSceneIds()
   const singleId = useSingleSceneId()
   const singleCode = useSceneCode(singleId)
+  const media = useSceneMediaFlags(singleId)
   const linked = useProject(
     useShallow((s) => {
       if (selectedScenes.length < 2) return EMPTY_COUNTS
@@ -314,6 +374,11 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
     }),
   )
   const [kind, setKind] = usePrefState<KindFilter>('sb-kind', 'all')
+  // The tab is remembered per browser, not per project, and the tabs are hidden while the library is empty:
+  // reset it there so new items are not silently given (and hidden behind) another project's tab.
+  useEffect(() => {
+    if (!assets.length && kind !== 'all') setKind('all')
+  }, [assets.length, kind, setKind])
   const [fileOver, setFileOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const anchor = useRef<string | null>(null)
@@ -362,21 +427,25 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
     [visible],
   )
 
-  const defaultKind: AssetKind = kind === 'all' ? 'character' : kind
+  const defaultKind: AssetKind = newAssetKind(kind, assets.length)
+  const kindLabel = KIND_META[defaultKind].label.toLowerCase()
 
   const addFiles = async (files: File[]) => {
     if (!files.length) return
     const ids = await createAssetsFromFiles(files, { kind: defaultKind })
-    if (ids.length) useUI.getState().setLibrarySelection(ids)
+    if (!ids.length) return
+    useUI.getState().setLibrarySelection(ids)
+    onExpand()
   }
 
   const createEmpty = () => {
     const id = useProject.getState().addAsset({ name: KIND_META[defaultKind].newName, kind: defaultKind })
     useUI.getState().setLibrarySelection([id])
+    onExpand()
     openAsset(id)
   }
 
-  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(ASSET_MIME)
+  const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes('Files') && !e.dataTransfer.types.includes(ASSETS_MIME)
 
   const kinds: KindFilter[] = ['all', ...KIND_ORDER.filter((k) => counts[k] > 0 || kind === k)]
 
@@ -395,11 +464,19 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
           )
         })}
       </div>
-      {singleId && (
-        <div className="sb-explain">
-          Số <span className="sb-tok">@image</span> trong <b className="sb-accent">{singleCode}</b> · bấm số để copy, <b>+ Nối</b> để thêm.
-        </div>
-      )}
+      {singleId &&
+        (media.images ? (
+          <div className="sb-explain">
+            Số <span className="sb-tok">@image</span> trong <b className="sb-accent">{singleCode}</b> · bấm số để copy, <b>+ Nối</b> để thêm.
+          </div>
+        ) : (
+          <div
+            className="sb-explain warn"
+            title={`${media.model} ở chế độ hiện tại của ${singleCode} không gửi ảnh tham chiếu: số @image trong prompt chỉ là chữ. Các nối vẫn được giữ — đổi chế độ / model trong Inspector để gửi ảnh.`}
+          >
+            <b className="sb-accent">{singleCode}</b> ({media.model}) ở chế độ này không gửi ảnh — số <span className="sb-tok off">@image</span> chưa có tác dụng.
+          </div>
+        ))}
     </>
   )
 
@@ -440,11 +517,15 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
       footer={assets.length ? footer : undefined}
       actions={
         <>
-          <button className="btn btn-ghost btn-sm" title="Thêm ảnh vào thư viện (chọn nhiều file được)" onClick={() => fileInput.current?.click()}>
+          <button
+            className="btn btn-ghost btn-sm"
+            title={`Thêm ảnh vào thư viện thành ${kindLabel} (chọn nhiều file được)`}
+            onClick={() => fileInput.current?.click()}
+          >
             <ImagePlus size={13} />
             Thêm
           </button>
-          <button className="icon-btn sb-xs" title={`Tạo ${KIND_META[defaultKind].label.toLowerCase()} trống (chưa có ảnh)`} onClick={createEmpty}>
+          <button className="icon-btn sb-xs" title={`Tạo ${kindLabel} trống (chưa có ảnh)`} onClick={createEmpty}>
             <Plus size={14} />
           </button>
           <input
@@ -521,6 +602,8 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
               singleId={singleId}
               singleCode={singleCode}
               token={singleId ? tokens[a.id] : undefined}
+              sendsImages={media.images}
+              sceneModel={media.model}
               groupSize={selection.length}
               onSelect={onSelect}
             />
@@ -530,7 +613,7 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
       {fileOver && (
         <div className="sb-dropzone">
           <ImagePlus size={20} />
-          Thả ảnh để thêm vào {KIND_META[defaultKind].label.toLowerCase()}
+          Thả ảnh để thêm vào {kindLabel}
         </div>
       )}
     </Section>

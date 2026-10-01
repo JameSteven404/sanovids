@@ -93,3 +93,57 @@ export function caretCoordinates(el: HTMLTextAreaElement, position: number): Car
     height,
   }
 }
+
+// ---------------- text offset under a point (drops) ----------------
+interface CaretPointDoc {
+  caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+}
+
+function caretAt(x: number, y: number): { node: Node; offset: number } | null {
+  const d = document as unknown as CaretPointDoc
+  if (typeof d.caretPositionFromPoint === 'function') {
+    const p = d.caretPositionFromPoint(x, y)
+    return p ? { node: p.offsetNode, offset: p.offset } : null
+  }
+  if (typeof d.caretRangeFromPoint === 'function') {
+    const r = d.caretRangeFromPoint(x, y)
+    return r ? { node: r.startContainer, offset: r.startOffset } : null
+  }
+  return null
+}
+
+/**
+ * Index in `ta.value` under the viewport point (x, y), or null when the browser cannot tell.
+ * `mirror` renders the same text with the same metrics and scroll offset behind the textarea (the editor's
+ * backdrop): browsers that cannot map a point inside a textarea (caretRangeFromPoint lands in its shadow tree)
+ * are asked about the mirror instead, with the textarea made transparent to hit testing for that one query.
+ */
+export function offsetFromPoint(ta: HTMLTextAreaElement, mirror: HTMLElement | null, x: number, y: number): number | null {
+  const len = ta.value.length
+  try {
+    // Spec behavior (Firefox, Chromium 128+): the text control itself, with an offset into its value.
+    const hit = caretAt(x, y)
+    if (hit && hit.node === ta) return Math.min(hit.offset, len)
+  } catch {
+    /* fall through */
+  }
+  if (!mirror) return null
+  const taPointer = ta.style.pointerEvents
+  const mirrorPointer = mirror.style.pointerEvents
+  ta.style.pointerEvents = 'none'
+  mirror.style.pointerEvents = 'auto'
+  try {
+    const hit = caretAt(x, y)
+    if (!hit || !mirror.contains(hit.node)) return null
+    const range = document.createRange()
+    range.setStart(mirror, 0)
+    range.setEnd(hit.node, hit.offset)
+    return Math.min(range.toString().length, len)
+  } catch {
+    return null
+  } finally {
+    ta.style.pointerEvents = taPointer
+    mirror.style.pointerEvents = mirrorPointer
+  }
+}

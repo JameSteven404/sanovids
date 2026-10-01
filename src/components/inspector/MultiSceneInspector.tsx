@@ -9,7 +9,7 @@ import type { Asset, Scene } from '../../core/types'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { STATUS_TEXT, useTakeInfos } from './hooks'
+import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
 import { flushPromptEditor } from './PromptEditor'
 import { TakePicker } from './TakePicker'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
@@ -186,12 +186,14 @@ const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: S
   const allIds = useMemo(() => takeIds.filter((id) => counts.get(id) === n), [takeIds, counts, n])
   const accepting = scenes.filter((s) => usesVideoRefs(s.settings)).length
 
-  const removeFromAll = (takeId: string) => {
+  const removeFromAll = (take: TakeInfo) => {
     flushAll(ids)
-    const pairs = scenes.filter((s) => s.videoRefs.includes(takeId)).map((s) => ({ sceneId: s.id, takeId }))
+    const pairs = scenes.filter((s) => s.videoRefs.includes(take.id)).map((s) => ({ sceneId: s.id, takeId: take.id }))
+    // A deleted take has no "S03·T2" label (takeLabel falls back to "video"): its tokens become plain "video".
+    const label = take.status ? takeLabel(take.id) : 'đã xoá'
     // One undo step; @video_N tokens of the removed video become "video S03·T2" and the others are renumbered.
-    useProject.getState().deleteItems({ videoRefs: pairs }, (id) => 'video ' + takeLabel(id))
-    toast(`Đã bỏ video ${takeLabel(takeId)} khỏi ${pairs.length} cảnh (số @video trong prompt được đánh lại).`, { action: undoToastAction() })
+    useProject.getState().deleteItems({ videoRefs: pairs }, () => (take.status ? 'video ' + label : 'video'))
+    toast(`Đã bỏ video ${label} khỏi ${pairs.length} cảnh (số @video trong prompt được đánh lại).`, { action: undoToastAction() })
   }
 
   return (
@@ -215,7 +217,7 @@ const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: S
                   <Plus size={12} /> Tất cả
                 </button>
               )}
-              <button type="button" className="in-x" onClick={() => removeFromAll(t.id)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ ${t.label} khỏi tất cả`}>
+              <button type="button" className="in-x" onClick={() => removeFromAll(t)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ ${t.label} khỏi tất cả`}>
                 <X size={13} />
               </button>
             </div>

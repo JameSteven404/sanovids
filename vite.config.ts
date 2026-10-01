@@ -45,8 +45,8 @@ export default defineConfig({
       includeAssets: ['favicon.svg', 'icons/apple-touch-icon-180.png'],
       manifest: {
         id: './',
-        name: 'Bàn Dựng Phim',
-        short_name: 'Bàn Dựng',
+        name: 'SanoVids',
+        short_name: 'SanoVids',
         description: 'Dựng phim AI theo từng cảnh trên canvas: kịch bản, ảnh tham chiếu, video và take.',
         lang: 'vi',
         dir: 'ltr',

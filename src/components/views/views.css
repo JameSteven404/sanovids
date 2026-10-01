@@ -322,6 +322,17 @@
   border-color: rgba(79, 182, 168, 0.5);
   background: rgba(79, 182, 168, 0.05);
 }
+/* a take (video) is being dragged: rows that can use it as @video light up */
+.vw-row.take-drag:not(.take-over):not(.selected) {
+  background: rgba(180, 140, 255, 0.035);
+}
+.vw-row.take-drag .vw-cell-videos {
+  border-color: rgba(180, 140, 255, 0.55);
+  background: var(--video-soft, rgba(180, 140, 255, 0.16));
+}
+.vw-row.take-drag .vw-cell-videos .vw-faint-cell {
+  color: var(--video, #b48cff);
+}
 .vw-avatars {
   display: flex;
   align-items: center;
@@ -382,6 +393,8 @@
   display: flex;
   align-items: center;
   height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed transparent;
 }
 .vw-vrefs {
   display: flex;
@@ -900,6 +913,8 @@
 }
 .vw-card-hover-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
 }
 .vw-card-hover-actions .btn {
@@ -1126,6 +1141,13 @@
 }
 .vw-player-pp:hover {
   background: #fff;
+}
+/* "Tải video này": big download button for the clip on screen */
+.vw-player-dl {
+  flex: none;
+  height: 40px;
+  padding: 0 18px;
+  font-size: 13.5px;
 }
 .vw-player-timeline {
   flex: 1;

@@ -1,5 +1,5 @@
 @echo off
-rem Ban Dung Phim - che do phat trien (tu tai lai khi sua code).
+rem SanoVids - che do phat trien (tu tai lai khi sua code).
 cd /d "%~dp0"
 if not exist node_modules (
   echo Dang cai thu vien lan dau...

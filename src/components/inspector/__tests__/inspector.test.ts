@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset } from '../../../core/types'
-import { findMention, fold } from '../mentions'
+import { findMention, fold, popupPlacement, POPUP_MAX_H } from '../mentions'
+import { changedSource, existingIds, pickView, type SelectionParts } from '../selection'
 import { patchFits, patchLabel } from '../SettingsFields'
 import {
   imageOptsFor,
   insertAt,
   legacyAssets,
+  legacyFixMessage,
   mediaCountLabel,
+  remapOffset,
   replaceLegacyTags,
   segmentPrompt,
+  snapToWordEnd,
   suggestMedia,
   suggestionToken,
   type ImageOpt,
@@ -177,5 +181,125 @@ describe('patchFits (batch settings on scenes with different models)', () => {
   it('labels the value', () => {
     expect(patchLabel({ resolution: '2k' })).toBe('2K')
     expect(patchLabel({ duration: 30 })).toBe('30s')
+  })
+})
+
+describe('snapToWordEnd (drop position)', () => {
+  it('keeps positions at word boundaries', () => {
+    const t = 'At dusk, @image_1 climbs'
+    expect(snapToWordEnd(t, 0)).toBe(0)
+    expect(snapToWordEnd(t, 2)).toBe(2) // after "At"
+    expect(snapToWordEnd(t, 3)).toBe(3) // before "dusk"
+    expect(snapToWordEnd(t, 7)).toBe(7) // before ","
+    expect(snapToWordEnd(t, t.length)).toBe(t.length)
+    expect(snapToWordEnd(t, 999)).toBe(t.length)
+    expect(snapToWordEnd(t, -3)).toBe(0)
+  })
+  it('moves a drop inside a word or a token to its end', () => {
+    const t = 'At dusk, @image_1 climbs'
+    expect(snapToWordEnd(t, 5)).toBe(7) // "du|sk"
+    expect(snapToWordEnd(t, 12)).toBe(17) // "@im|age_1"
+    expect(snapToWordEnd(t, 10)).toBe(17) // "@|image_1"
+    expect(snapToWordEnd('Bé Ánh sáng', 4)).toBe(6) // vietnamese letters
+  })
+  it('combines with insertAt without splitting words', () => {
+    const t = 'hello world'
+    const at = snapToWordEnd(t, 2)
+    expect(insertAt(t, at, at, '@image_1 @image_2').next).toBe('hello @image_1 @image_2 world')
+  })
+})
+
+describe('legend insert (caret after an external rewrite, "@" popup)', () => {
+  it('remaps a remembered caret through token renumbering', () => {
+    const prev = '@image_1 and @image_2 walk into the forest.'
+    const next = 'Elara and @image_1 walk into the forest.' // image 1 removed: renamed, the others renumbered
+    const pos = prev.indexOf(' into') // caret after "walk"
+    expect(remapOffset(prev, next, pos)).toBe(next.indexOf(' into'))
+    // before the first change: unchanged; past the end: clamped
+    expect(remapOffset('abc @image_2', 'abc @image_1', 2)).toBe(2)
+    expect(remapOffset('abc @image_12 x', 'abc @image_1 x', 15)).toBe(14)
+    expect(remapOffset('same', 'same', 3)).toBe(3)
+  })
+  it('legend inserts never split a word', () => {
+    const t = 'walk into the forest.'
+    const at = snapToWordEnd(t, t.indexOf('est'))
+    expect(insertAt(t, at, at, '@image_2').next).toBe('walk into the forest @image_2.')
+  })
+  it('reports where the last inserted token starts (popup stays closed there)', () => {
+    const t = 'walks.'
+    const r = insertAt(t, 5, 5, '@image_1')
+    expect(r.next).toBe('walks @image_1.')
+    expect(r.last).toBe(6)
+    expect(findMention(r.next, r.caret)?.start).toBe(r.last) // caret right after the token, before "."
+    const multi = insertAt('go.', 2, 2, '@image_1 @video_2')
+    expect(multi.next.slice(multi.last)).toBe('@video_2.')
+    expect(insertAt('(x', 1, 1, '@image_3').last).toBe(1)
+  })
+})
+
+describe('legacyFixMessage', () => {
+  it('does not report image-limit refusals as missing images', () => {
+    expect(legacyFixMessage(0, 0, 1)).toBeNull() // ensureAssetToken already reported the limit
+    expect(legacyFixMessage(2, 0, 1)).toEqual({ text: 'Đã đổi 2 @Tên thành @image_N (bỏ qua 1 mục vượt giới hạn ảnh của model).', tone: 'success' })
+    expect(legacyFixMessage(1, 1, 0)?.text).toBe('Đã đổi 1 @Tên thành @image_N (bỏ qua 1 mục chưa có ảnh).')
+    expect(legacyFixMessage(1, 1, 2)?.text).toContain('1 mục chưa có ảnh, 2 mục vượt giới hạn')
+    expect(legacyFixMessage(0, 2, 1)).toEqual({ text: 'Bỏ qua 2 mục chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.', tone: 'warning' })
+    expect(legacyFixMessage(1, 0, 0)?.text).toBe('Đã đổi 1 @Tên thành @image_N.')
+  })
+})
+
+describe('popupPlacement ("@" popup stays inside the viewport)', () => {
+  it('goes below when it fits', () => {
+    expect(popupPlacement(100, 20, 300, 900)).toEqual({ top: 126, maxHeight: POPUP_MAX_H })
+  })
+  it('flips above when it fits there only', () => {
+    const p = popupPlacement(700, 20, 300, 900)
+    expect(p.bottom).toBe(900 - 700 + 4)
+    expect(p.top).toBeUndefined()
+  })
+  it('neither side fits: the side with more room, height capped to it', () => {
+    const viewH = 700
+    const p = popupPlacement(350, 20, 400, viewH) // below: 316px, above: 338px
+    expect(p.top).toBeUndefined()
+    expect(p.maxHeight).toBe(338)
+    expect(viewH - p.bottom! - p.maxHeight).toBeGreaterThanOrEqual(8) // top edge on screen
+    const q = popupPlacement(300, 20, 400, viewH) // below: 366px, above: 288px
+    expect(q.bottom).toBeUndefined()
+    expect(q.top! + q.maxHeight).toBeLessThanOrEqual(viewH - 8) // footer on screen
+  })
+  it('keeps the popup on screen when the caret is scrolled out of view', () => {
+    expect(popupPlacement(-50, 20, 400, 700).top).toBe(8)
+    expect(popupPlacement(900, 20, 400, 700).bottom).toBe(8)
+  })
+})
+
+describe('inspector panel for the selection', () => {
+  const sel = (over: Partial<SelectionParts>): SelectionParts => ({ scenes: [], canvasAssets: [], takes: [], libraryAssets: [], ...over })
+  it('a take clicked after a library card shows the take', () => {
+    expect(pickView(sel({ takes: ['t1'], libraryAssets: ['a'] }), 'canvas')).toEqual({ kind: 'takes', ids: ['t1'] })
+    expect(pickView(sel({ canvasAssets: ['b'], libraryAssets: ['a'] }), 'canvas')).toEqual({ kind: 'asset', id: 'b' })
+  })
+  it('a library card clicked after a canvas node shows the card', () => {
+    expect(pickView(sel({ takes: ['t1'], libraryAssets: ['a'] }), 'library')).toEqual({ kind: 'asset', id: 'a' })
+    expect(pickView(sel({ canvasAssets: ['b'], libraryAssets: ['a', 'c'] }), 'library')).toEqual({ kind: 'assets', ids: ['a', 'c'] })
+  })
+  it('scenes win, the library shows when the canvas has nothing else', () => {
+    expect(pickView(sel({ scenes: ['s1'], libraryAssets: ['a'] }), 'library')).toEqual({ kind: 'scene', id: 's1' })
+    expect(pickView(sel({ scenes: ['s1', 's2'] }), 'canvas')).toEqual({ kind: 'scenes', ids: ['s1', 's2'] })
+    expect(pickView(sel({ libraryAssets: ['a'] }), 'canvas')).toEqual({ kind: 'asset', id: 'a' })
+    expect(pickView(sel({}), 'library')).toEqual({ kind: 'empty' })
+  })
+  it('tracks which selection changed last', () => {
+    const none = { selectedIds: [] as string[], librarySelection: [] as string[] }
+    const lib = { ...none, librarySelection: ['x'] }
+    expect(changedSource(lib, none, 'canvas')).toBe('library')
+    const take = { ...lib, selectedIds: ['t1'] }
+    expect(changedSource(take, lib, 'library')).toBe('canvas')
+    expect(changedSource({ ...take, librarySelection: [] }, take, 'library')).toBe('canvas') // library cleared
+    expect(changedSource(take, take, 'library')).toBe('library') // unrelated ui change
+  })
+  it('keeps only existing ids, in selection order', () => {
+    expect(existingIds([{ id: 'a' }, { id: 'b' }], ['b', 'zz', 'a'])).toEqual(['b', 'a'])
+    expect(existingIds([{ id: 'a' }], [])).toBe(existingIds([{ id: 'b' }], [])) // stable empty list
   })
 })

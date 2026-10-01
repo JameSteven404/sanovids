@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { MODE_LABEL, MODELS, costOf, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
@@ -15,9 +15,16 @@ const presetUsageSelector = (s: ProjectState) => {
   return m
 }
 
-function PresetEditor({ preset }: { preset: Preset }) {
+/** `focusName`: the preset was just created — focus and select its name so it can be typed right away. */
+function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolean }) {
   const [name, setName] = useState(preset.name)
   useEffect(() => setName(preset.name), [preset.name])
+  const nameRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (!focusName) return
+    nameRef.current?.focus()
+    nameRef.current?.select()
+  }, [focusName])
   const spec = MODELS[preset.model]
   const update = (patch: Partial<Omit<Preset, 'id'>>) => useProject.getState().updatePreset(preset.id, patch)
   const commitName = () => {
@@ -30,6 +37,7 @@ function PresetEditor({ preset }: { preset: Preset }) {
       <label className="field sb-span2">
         <span>Tên preset</span>
         <input
+          ref={nameRef}
           className="input sb-input-sm"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -118,10 +126,12 @@ interface RowProps {
   /** All selected scenes currently use this preset. */
   active: boolean
   editing: boolean
+  /** Just created: its editor focuses the name field. */
+  fresh: boolean
   onEdit: (id: string | null) => void
 }
 
-const PresetRow = memo(function PresetRow({ preset, usage, selected, active, editing, onEdit }: RowProps) {
+const PresetRow = memo(function PresetRow({ preset, usage, selected, active, editing, fresh, onEdit }: RowProps) {
   const spec = MODELS[preset.model]
   const n = selected.length
   const apply = () => {
@@ -174,12 +184,21 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
           </button>
         </div>
       </div>
-      {editing && <PresetEditor preset={preset} />}
+      {editing && <PresetEditor preset={preset} focusName={fresh} />}
     </div>
   )
 })
 
-export function PresetsPanel({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+export function PresetsPanel({
+  collapsed,
+  onToggle,
+  onExpand,
+}: {
+  collapsed: boolean
+  onToggle: () => void
+  /** Open the section (no-op when open). */
+  onExpand: () => void
+}) {
   const presets = useProject((s) => s.project.presets)
   const usage = useProject(useShallow(presetUsageSelector))
   const selected = useSelectedSceneIds()
@@ -195,6 +214,12 @@ export function PresetsPanel({ collapsed, onToggle }: { collapsed: boolean; onTo
     return id ?? null
   })
   const [editing, setEditing] = useState<string | null>(null)
+  /** Preset created by "+ Preset" (its editor focuses the name); cleared by any other edit toggle. */
+  const [fresh, setFresh] = useState<string | null>(null)
+  const onEdit = useCallback((id: string | null) => {
+    setFresh(null)
+    setEditing(id)
+  }, [])
 
   const add = () => {
     const st = useProject.getState()
@@ -203,8 +228,14 @@ export function PresetsPanel({ collapsed, onToggle }: { collapsed: boolean; onTo
     // Copy only the video settings (never the id/name of another preset).
     const base: Partial<VideoSettings> = { model: src.model, mode: src.mode, duration: src.duration, resolution: src.resolution, ratio: src.ratio }
     const id = st.addPreset({ ...base, name: from ? 'Preset từ cảnh' : 'Preset mới' })
+    // The header button also shows while the section is collapsed: open it so the new preset's editor is visible.
+    onExpand()
+    setFresh(id)
     setEditing(id)
-    if (from) toast('Đã tạo preset từ cấu hình của cảnh đang chọn — đặt tên cho nó.', { tone: 'success' })
+    toast(from ? 'Đã tạo preset từ cấu hình của cảnh đang chọn — đặt tên cho nó.' : 'Đã tạo preset mới — đặt tên cho nó.', {
+      tone: 'success',
+      action: undoToastAction(),
+    })
   }
 
   return (
@@ -256,7 +287,8 @@ export function PresetsPanel({ collapsed, onToggle }: { collapsed: boolean; onTo
               selected={selected}
               active={activeId === p.id}
               editing={editing === p.id}
-              onEdit={setEditing}
+              fresh={fresh === p.id}
+              onEdit={onEdit}
             />
           ))}
         </div>

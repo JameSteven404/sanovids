@@ -88,6 +88,9 @@ export interface UIState {
   toggleLibrary: (id: string, additive: boolean) => void
   setHovered: (id: string | null) => void
   setDraggingAssets: (ids: string[] | null) => void
+  /** Take ids being dragged (HTML5 DnD from the library / take strips), to highlight drop targets. */
+  draggingTakeIds: string[] | null
+  setDraggingTakes: (ids: string[] | null) => void
 
   setDragPos: (pos: Record<string, XY>) => void
   clearDragPos: (ids?: string[]) => void
@@ -118,6 +121,7 @@ export const useUI = create<UIState>()((set, get) => ({
   librarySelection: [],
   hoveredId: null,
   draggingAssetIds: null,
+  draggingTakeIds: null,
   dragPos: {},
   measured: {},
   dialog: { kind: 'none' },
@@ -172,6 +176,7 @@ export const useUI = create<UIState>()((set, get) => ({
     }),
   setHovered: (hoveredId) => set((s) => (s.hoveredId === hoveredId ? s : { hoveredId })),
   setDraggingAssets: (draggingAssetIds) => set({ draggingAssetIds }),
+  setDraggingTakes: (draggingTakeIds) => set({ draggingTakeIds }),
 
   setDragPos: (pos) => set((s) => ({ dragPos: { ...s.dragPos, ...pos } })),
   clearDragPos: (ids) =>

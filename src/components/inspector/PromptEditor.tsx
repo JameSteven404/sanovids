@@ -6,6 +6,8 @@
 //   (same font metrics, scroll synced) draws the colored text behind it.
 // - Typing "@" opens a caret-anchored popup: linked images, linked videos, library assets ("Nối & chèn").
 // - Legend under the textarea: one chip per image / video; click inserts, hover highlights occurrences.
+// - Library cards / generated videos dropped on the textarea are linked to the scene and their @image_N /
+//   @video_N tokens inserted where they were dropped (plain text drops keep the browser's behavior).
 import { AtSign, Film, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
 import {
   memo,
@@ -16,27 +18,33 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { ensureAssetToken } from '../../actions'
-import { sceneCode } from '../../core/compile'
+import { ensureAssetToken, linkTakes } from '../../actions'
+import { assetByTag, sceneCode, tokenForVideo } from '../../core/compile'
 import type { Asset } from '../../core/types'
+import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { caretCoordinates } from './caret'
+import { caretCoordinates, offsetFromPoint } from './caret'
 import { useTakeInfos } from './hooks'
-import { findMention, sameToken, type MentionToken } from './mentions'
+import { findMention, popupPlacement, sameToken, type MentionToken } from './mentions'
 import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
 import {
   imageOptsFor,
   insertAt,
   legacyAssets,
+  legacyFixMessage,
   mediaCountLabel,
+  remapOffset,
   replaceLegacyTags,
   segmentPrompt,
+  snapToWordEnd,
   suggestionToken,
   suggestMedia,
   type ImageOpt,
@@ -47,6 +55,8 @@ import {
 } from './tokens'
 
 const COMMIT_MS = 160
+/** Longest pause during which an "@Tag" still being typed holds the commit (see schedule()). */
+const HOLD_MAX_MS = 1500
 const FIELD_SIZING = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('field-sizing', 'content')
 
 /** Flush functions of mounted editors, so other panels can commit pending text before changing refs. */
@@ -82,6 +92,63 @@ function undoAutoLink(sceneId: string, linked: string[]) {
   const { text } = replaceLegacyTags(scene.prompt, byTag)
   st.restoreScene(sceneId, { prompt: text, refs: scene.refs.filter((r) => !linked.includes(r)), videoRefs: scene.videoRefs, settings: scene.settings })
   toast(`Đã bỏ nối ${assets.map((a) => '@' + a.tag).join(', ')} — giữ tên trong prompt.`, { action: undoToastAction() })
+}
+
+// ---------------- media drops ----------------
+type MediaDrag = 'assets' | 'takes'
+interface DropCaret {
+  left: number
+  top: number
+  height: number
+}
+
+/** Library cards / generated videos being dragged. Anything else (plain text, files) keeps the default behavior. */
+function mediaDragKind(dt: DataTransfer | null): MediaDrag | null {
+  if (!dt) return null
+  const types = Array.from(dt.types)
+  return types.includes(ASSETS_MIME) ? 'assets' : types.includes(TAKES_MIME) ? 'takes' : null
+}
+
+/** A drop effect the drag source allows (an effect outside `effectAllowed` cancels the drop). */
+function allowedEffect(dt: DataTransfer): DataTransfer['dropEffect'] {
+  const a = dt.effectAllowed
+  if (a === 'link' || a === 'linkMove') return 'link'
+  if (a === 'move') return 'move'
+  return 'copy'
+}
+
+/** Link dropped library assets to the scene (when needed) and return their @image_N tokens, in drop order. */
+function tokensForAssets(sceneId: string, ids: string[]): string[] {
+  const { project } = useProject.getState()
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  if (!scene) return []
+  const tokens: string[] = []
+  const linked: string[] = []
+  let noImage = 0
+  for (const id of new Set(ids)) {
+    const asset = project.assets.find((a) => a.id === id)
+    if (!asset) continue
+    if (!asset.imageIds.length) {
+      noImage++
+      continue
+    }
+    const token = ensureAssetToken(sceneId, id)
+    if (!token) break // over the model's image limit (already reported); the next ones would fail too
+    tokens.push(token)
+    if (!scene.refs.includes(id)) linked.push(asset.name)
+  }
+  if (linked.length) toast(`Đã nối ${linked.join(', ')} vào ${sceneCode(scene.order)} → ${tokens.join(' ')}.`, { tone: 'success' })
+  if (noImage) toast(`Bỏ qua ${noImage} mục chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.`, { tone: 'warning' })
+  return tokens
+}
+
+/** Link dropped takes as reference videos (only finished ones, never the scene's own) and return their @video_N tokens. */
+function tokensForTakes(sceneId: string, ids: string[]): string[] {
+  const unique = [...new Set(ids)]
+  linkTakes([sceneId], unique)
+  const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+  if (!scene) return []
+  return unique.map((id) => tokenForVideo(scene, id)).filter((t): t is string => !!t)
 }
 
 export function PromptEditor({ sceneId }: { sceneId: string }) {
@@ -132,12 +199,22 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     },
     [sceneId],
   )
+  /** Time of the last keystroke (onChange), for the commit hold below. */
+  const lastInputAt = useRef(0)
   const schedule = useCallback(() => {
+    lastInputAt.current = Date.now()
     if (timerRef.current !== null) return
     const tick = () => {
       timerRef.current = null
-      // Hold the commit while an "@xxx" is still being typed, so a half-typed legacy "@Lumi…" is not auto-linked.
-      if (mentionRef.current) {
+      // Hold the commit while the "@xxx" being typed is an asset tag (committing links it), so a half-typed legacy
+      // "@Lumi…" is not auto-linked on the way to "@Lumina". Other words ("@image_1", "@foo") link nothing. Never
+      // hold past a pause: the store (preview, scene card, autosave) must not wait for a blur.
+      const m = mentionRef.current
+      if (
+        m &&
+        Date.now() - lastInputAt.current < HOLD_MAX_MS &&
+        assetByTag(useProject.getState().project.assets, textRef.current.slice(m.start + 1, m.end))
+      ) {
         timerRef.current = setTimeout(tick, COMMIT_MS)
         return
       }
@@ -149,7 +226,16 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   useEffect(() => {
     const flush = () => void commit()
     flushers.set(sceneId, flush)
+    // Closing the window / app or hiding the tab does not blur the textarea: commit before the autosave flushes
+    // (capture phase on window runs before persist.ts' own pagehide / visibilitychange listeners).
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush, true)
+    window.addEventListener('visibilitychange', onHidden, true)
     return () => {
+      window.removeEventListener('pagehide', flush, true)
+      window.removeEventListener('visibilitychange', onHidden, true)
       flush()
       if (flushers.get(sceneId) === flush) flushers.delete(sceneId)
     }
@@ -167,14 +253,12 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     committedRef.current = storePrompt
     textRef.current = storePrompt
     const ta = taRef.current
-    if (ta && document.activeElement === ta) {
-      // keep the caret roughly where it was
-      const caret = ta.selectionStart
-      let p = 0
-      const lim = Math.min(prev.length, storePrompt.length)
-      while (p < lim && prev.charCodeAt(p) === storePrompt.charCodeAt(p)) p++
-      pendingSel.current = caret <= p ? caret : Math.max(p, caret + storePrompt.length - prev.length)
-    }
+    // keep the caret roughly where it was
+    if (ta && document.activeElement === ta) pendingSel.current = remapOffset(prev, storePrompt, ta.selectionStart)
+    // …and the remembered one too (legend chips insert there while the textarea is blurred, e.g. after a ref was
+    // removed from the list below and the prompt renumbered).
+    const sel = lastSel.current
+    if (sel) lastSel.current = { start: remapOffset(prev, storePrompt, sel.start), end: remapOffset(prev, storePrompt, sel.end) }
     setText(storePrompt)
   }, [storePrompt])
 
@@ -256,9 +340,11 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       const ta = taRef.current
       const value = textRef.current
       if (!ta) return
-      const { insert, next, caret } = insertAt(value, start, end, token)
+      const { insert, next, caret, last } = insertAt(value, start, end, token)
       // Caret target is applied by the layout effect after the re-render (set first: the render may happen inside execCommand).
       pendingSel.current = caret
+      // Don't open the "@" popup for the inserted token when the caret ends right after it (inserted before a ".").
+      dismissedAt.current = last
       ta.focus()
       ta.setSelectionRange(start, end)
       // execCommand keeps the textarea's native undo stack (Ctrl+Z) working; it fires onChange.
@@ -283,7 +369,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       const tok = (ta && findMention(textRef.current, ta.selectionStart)) || mentionRef.current
       if (!tok) return
       setToken(null)
-      // If the caret ends right after the token (e.g. before "."), don't reopen the popup for it.
+      // Stay closed on this token even when linking fails below (replaceRange moves this to the inserted token).
       dismissedAt.current = tok.start
       let token = suggestionToken(s)
       if (s.type === 'link') {
@@ -296,18 +382,89 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     [replaceRange, sceneId, setToken],
   )
 
-  /** Legend chip: insert a token at the caret (or the last caret position). */
+  /** Legend chip: insert a token at the caret (or the last caret position), never inside a word. */
   const insertAtCaret = useCallback(
     (token: string) => {
       const ta = taRef.current
       if (!ta) return
+      const value = textRef.current
+      const len = value.length
       const focused = document.activeElement === ta
-      const len = textRef.current.length
       const sel = focused ? { start: ta.selectionStart, end: ta.selectionEnd } : (lastSel.current ?? { start: len, end: len })
-      replaceRange(Math.min(sel.start, len), Math.min(sel.end, len), token)
+      const start = Math.min(sel.start, len)
+      const end = Math.min(sel.end, len)
+      if (start !== end) replaceRange(start, end, token)
+      else {
+        const at = snapToWordEnd(value, start)
+        replaceRange(at, at, token)
+      }
     },
     [replaceRange],
   )
+
+  // ---------- drops: library cards (@image_N) and generated videos (@video_N) ----------
+  const [drop, setDrop] = useState<{ kind: MediaDrag; caret: DropCaret | null } | null>(null)
+  /** Last dragover point and the text offset it maps to (dragover fires continuously while still). */
+  const dropPoint = useRef<{ x: number; y: number; at: number } | null>(null)
+
+  /** Text offset where tokens dropped at (x, y) go: under the pointer, else the current / last selection. */
+  const dropOffset = useCallback((x: number, y: number): number => {
+    const ta = taRef.current
+    const value = textRef.current
+    if (!ta) return value.length
+    const cached = dropPoint.current
+    if (cached && cached.x === x && cached.y === y) return cached.at
+    let at = offsetFromPoint(ta, backRef.current, x, y)
+    if (at === null) {
+      const sel = document.activeElement === ta ? { start: ta.selectionStart, end: ta.selectionEnd } : lastSel.current
+      at = sel ? sel.end : value.length
+    }
+    at = snapToWordEnd(value, Math.min(at, value.length))
+    dropPoint.current = { x, y, at }
+    return at
+  }, [])
+
+  const endDrop = useCallback(() => {
+    dropPoint.current = null
+    setDrop(null)
+  }, [])
+
+  const onDragOver = (e: ReactDragEvent<HTMLTextAreaElement>) => {
+    const kind = mediaDragKind(e.dataTransfer)
+    if (!kind) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = allowedEffect(e.dataTransfer)
+    const ta = e.currentTarget
+    const prevAt = dropPoint.current?.at
+    const at = dropOffset(e.clientX, e.clientY)
+    if (drop?.kind === kind && drop.caret && prevAt === at) return
+    // Draw our own insertion caret at the (word-snapped) drop position: browsers drop their native drag caret
+    // once the page handles the drag.
+    const c = caretCoordinates(ta, at)
+    const top = c.top - ta.scrollTop
+    const caret = top + c.height > 0 && top < ta.offsetHeight ? { left: c.left - ta.scrollLeft, top, height: c.height } : null
+    setDrop({ kind, caret })
+  }
+
+  const onDrop = (e: ReactDragEvent<HTMLTextAreaElement>) => {
+    const kind = mediaDragKind(e.dataTransfer)
+    if (!kind) {
+      endDrop()
+      return // plain text: the browser inserts it (onChange follows)
+    }
+    e.preventDefault()
+    const ids = readIds(e.dataTransfer, kind === 'assets' ? ASSETS_MIME : TAKES_MIME)
+    const at = dropOffset(e.clientX, e.clientY)
+    endDrop()
+    if (!ids.length) return
+    commit()
+    // Appending refs / videoRefs never renumbers existing tokens, so `at` stays valid.
+    const tokens = kind === 'assets' ? tokensForAssets(sceneId, ids) : tokensForTakes(sceneId, ids)
+    if (!tokens.length) return
+    const pos = Math.min(at, textRef.current.length)
+    // replaceRange keeps the "@" popup closed for the last token when the caret ends right after it.
+    replaceRange(pos, pos, tokens.join(' '))
+  }
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return
@@ -355,25 +512,28 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     commit({ silent: true })
     const tokens = new Map<string, string>()
     let noImage = 0
+    let overLimit = 0
     for (const a of legacyAssets(textRef.current, useProject.getState().project.assets)) {
-      const tok = a.imageIds.length ? ensureAssetToken(sceneId, a.id) : null
+      if (!a.imageIds.length) {
+        noImage++
+        continue
+      }
+      // null = could not be linked: over the model's image limit (ensureAssetToken already said so).
+      const tok = ensureAssetToken(sceneId, a.id)
       if (tok) tokens.set(a.tag.toLowerCase(), tok)
-      else noImage++
+      else overLimit++
     }
     const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
     if (!scene) return
     const { text: next, replaced } = replaceLegacyTags(scene.prompt, tokens)
     if (replaced) useProject.getState().updateScene(sceneId, { prompt: next })
-    if (replaced) {
-      toast(`Đã đổi ${replaced} @Tên thành @image_N${noImage ? ` (bỏ qua ${noImage} mục chưa có ảnh)` : ''}.`, { tone: 'success', action: undoToastAction() })
-    } else if (noImage) {
-      toast('Các mục được nhắc chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.', { tone: 'warning' })
-    }
+    const msg = legacyFixMessage(replaced, noImage, overLimit)
+    if (msg) toast(msg.text, { tone: msg.tone, ...(replaced ? { action: undoToastAction() } : {}) })
   }, [commit, sceneId])
 
   return (
     <div className="in-pe">
-      <div className="in-pe-wrap">
+      <div className={`in-pe-wrap ${drop ? `is-drop is-drop-${drop.kind}` : ''}`}>
         <Backdrop backRef={backRef} segs={segs} hl={hl} />
         <textarea
           ref={taRef}
@@ -395,6 +555,10 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
           }}
           onScroll={syncBackdrop}
           onKeyDown={onKeyDown}
+          onDragEnter={onDragOver}
+          onDragOver={onDragOver}
+          onDragLeave={endDrop}
+          onDrop={onDrop}
           onBlur={(e) => {
             lastSel.current = { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd }
             commit()
@@ -413,6 +577,20 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
         >
           {tall ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </button>
+        {drop?.caret && <span className="in-pe-dropcaret" style={{ left: drop.caret.left, top: drop.caret.top, height: drop.caret.height }} aria-hidden="true" />}
+        {drop && (
+          <div className="in-pe-drophint" aria-hidden="true">
+            {drop.kind === 'assets' ? (
+              <>
+                <ImageIcon size={12} /> Thả để nối & chèn <b>@image_N</b> tại đây
+              </>
+            ) : (
+              <>
+                <Film size={12} /> Thả để dùng làm <b>@video_N</b> tại đây
+              </>
+            )}
+          </div>
+        )}
       </div>
       {mention && suggestions.length > 0 && (
         <MentionPopup
@@ -428,7 +606,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       <div className="in-pe-meta">
         <span className="in-pe-hint">
           <AtSign size={12} />
-          Gõ <span className="kbd">@</span> để chèn ảnh / video tham chiếu
+          Gõ <span className="kbd">@</span> hoặc kéo nhân vật / video vào ô để chèn tham chiếu
         </span>
         <span className="mono faint" title="Số ký tự của prompt (được gửi đúng như viết)">
           {fmt(charCount)} ký tự
@@ -542,7 +720,7 @@ const TokenLegend = memo(function TokenLegend({
 
 // ---------------- popup ----------------
 const POP_W = 312
-type PopPos = { left: number; top?: number; bottom?: number }
+type PopPos = { left: number; top?: number; bottom?: number; maxHeight: number }
 
 const GROUP_LABEL: Record<MediaSuggestion['type'], string> = {
   image: 'Ảnh đã nối',
@@ -582,12 +760,10 @@ const MentionPopup = memo(function MentionPopup({
       const yTop = r.top + c.top - ta.scrollTop
       const estH = Math.min(400, 72 + count * 40)
       const left = Math.round(Math.max(8, Math.min(x - 12, window.innerWidth - POP_W - 8)))
-      const below = yTop + c.height + 6
-      const next: PopPos =
-        below + estH > window.innerHeight - 8 && yTop - estH - 6 > 8
-          ? { left, bottom: Math.round(window.innerHeight - yTop + 4) }
-          : { left, top: Math.round(Math.min(below, window.innerHeight - 60)) }
-      setPos((p) => (p && p.left === next.left && p.top === next.top && p.bottom === next.bottom ? p : next))
+      const next: PopPos = { left, ...popupPlacement(yTop, c.height, estH, window.innerHeight) }
+      setPos((p) =>
+        p && p.left === next.left && p.top === next.top && p.bottom === next.bottom && p.maxHeight === next.maxHeight ? p : next,
+      )
     }
     const onScroll = (e: Event) => {
       if (e.target instanceof Node && popRef.current?.contains(e.target)) return
@@ -607,12 +783,24 @@ const MentionPopup = memo(function MentionPopup({
     listRef.current?.querySelector<HTMLElement>(`[data-idx="${active}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [active])
 
+  // Hover follows real pointer moves only: arrow keys scroll rows under a resting pointer, which fires mouseenter
+  // (and may fire a mousemove at the same point) on the row now under it — that must not steal the highlight.
+  const lastPoint = useRef<{ x: number; y: number } | null>(null)
+  const onListMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const pt = lastPoint.current
+    if (pt && pt.x === e.clientX && pt.y === e.clientY) return
+    lastPoint.current = { x: e.clientX, y: e.clientY }
+    const row = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-idx]') : null
+    const idx = row ? Number(row.dataset.idx) : NaN
+    if (Number.isInteger(idx) && idx !== active) onHover(idx)
+  }
+
   if (!pos) return null
   return createPortal(
     <div
       ref={popRef}
       className="in-mention"
-      style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: POP_W }}
+      style={{ left: pos.left, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight, width: POP_W }}
       onMouseDown={(e) => e.preventDefault() /* keep focus in the textarea */}
       role="listbox"
     >
@@ -626,7 +814,7 @@ const MentionPopup = memo(function MentionPopup({
           <span>Chèn ảnh / video tham chiếu</span>
         )}
       </div>
-      <div className="in-mention-list" ref={listRef}>
+      <div className="in-mention-list" ref={listRef} onMouseMove={onListMove}>
         {items.map((s, i) => (
           <MentionRow
             key={s.type === 'image' ? 'i' + s.n : s.type === 'video' ? 'v' + s.n : 'l' + s.assetId}
@@ -634,7 +822,6 @@ const MentionPopup = memo(function MentionPopup({
             idx={i}
             group={!query && (i === 0 || items[i - 1].type !== s.type) ? GROUP_LABEL[s.type] : null}
             active={i === active}
-            onHover={onHover}
             onPick={onPick}
           />
         ))}
@@ -661,14 +848,12 @@ function MentionRow({
   idx,
   group,
   active,
-  onHover,
   onPick,
 }: {
   s: MediaSuggestion
   idx: number
   group: string | null
   active: boolean
-  onHover: (i: number) => void
   onPick: (s: MediaSuggestion) => void
 }) {
   return (
@@ -680,7 +865,6 @@ function MentionRow({
         role="option"
         aria-selected={active}
         className={`in-mention-item is-${s.type} ${active ? 'active' : ''}`}
-        onMouseEnter={() => onHover(idx)}
         onClick={() => onPick(s)}
       >
         {s.type === 'image' && (

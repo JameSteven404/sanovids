@@ -2,18 +2,17 @@
 import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { imageSlotsFor, MENTION_RE, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import type { Asset, AssetKind, Project, Scene, Take, XY } from '../../core/types'
+import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
+import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import type { Asset, AssetKind, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 
-/** HTML5 drag payload contract shared with the canvas / scene table: JSON array of asset ids. */
-export const ASSET_MIME = 'application/x-bdp-assets'
 /**
- * HTML5 drag payload for finished videos (takes) dragged from the "Video đã tạo" list: JSON array of take ids.
- * Drop targets (canvas scene cards, scene table rows) link them as reference videos with `actions.linkTakes`.
+ * HTML5 drag payload types now live in `src/lib/dnd.ts` (ASSETS_MIME, TAKES_MIME, readIds); import them from there.
+ * @deprecated aliases kept so older imports from this module keep compiling.
  */
-export const TAKE_MIME = 'application/x-bdp-takes'
+export { ASSETS_MIME as ASSET_MIME, TAKES_MIME as TAKE_MIME } from '../../lib/dnd'
 
 export const EMPTY_IDS: string[] = []
 
@@ -62,6 +61,79 @@ export function imageTokenLabels(assets: Asset[], refs: string[]): Record<string
   }
   for (const [id, [first, last]] of range) out[id] = first === last ? `@image_${first}` : `@image_${first}–${last}`
   return out
+}
+
+/**
+ * Scenes using `assetId` whose prompt has an @image_N token pointing at the asset's images `fromImage..toImage`
+ * (indexes inside the asset; `toImage` defaults to "and every number after it"). These are the tokens that
+ * point at another photo after removing / reordering / adding images of the asset when automatic renumbering
+ * is off. `assets` / `scenes` must be the state BEFORE the change.
+ */
+export function scenesWithShiftedImageTokens(assets: Asset[], scenes: Scene[], assetId: string, fromImage: number, toImage = Infinity): string[] {
+  const out: string[] = []
+  for (const sc of scenes) {
+    const at = sc.refs.indexOf(assetId)
+    if (at < 0) continue
+    const base = imageSlotsFor(assets, sc.refs.slice(0, at)).length + 1
+    const lo = base + fromImage
+    const hi = base + toImage
+    if (parseTokens(sc.prompt).some((t) => t.kind === 'image' && t.n >= lo && t.n <= hi)) out.push(sc.id)
+  }
+  return out
+}
+
+/** Hint under an asset's images: what changing them does to the @image numbers of the scenes using it. */
+export function imageRenumberNote(autoRenumber: boolean, used: number): { text: string; warn: boolean } {
+  if (autoRenumber) return { text: `Đổi ảnh sẽ tự đánh lại số @image trong các cảnh đang dùng${used ? ` (${used} cảnh)` : ''}.`, warn: false }
+  return {
+    text: used
+      ? `Tự đánh lại số @image đang tắt (Cài đặt) — đổi / bỏ / thêm ảnh sẽ làm số @image trong ${used} cảnh đang dùng trỏ sang ảnh khác; hãy tự sửa prompt.`
+      : 'Tự đánh lại số @image đang tắt (Cài đặt) — đổi ảnh sẽ không sửa prompt của các cảnh.',
+    warn: true,
+  }
+}
+
+// ---------------- library cards ----------------
+/**
+ * What a key pressed on a focused library card does. Delete / Backspace are swallowed ('block'): the global
+ * shortcut would delete the canvas selection (scenes, generated videos), a different selection than the
+ * library's — a library item is deleted from its dialog.
+ */
+export function libraryCardKey(key: string): 'open' | 'toggle' | 'block' | null {
+  if (key === 'Enter') return 'open'
+  if (key === ' ') return 'toggle'
+  if (key === 'Delete' || key === 'Backspace') return 'block'
+  return null
+}
+
+/**
+ * Kind given to new library items: the active kind tab, or "character" when the filter is "all" or the library is
+ * empty (the remembered tab is per browser and its tabs are hidden while the library is empty).
+ */
+export function newAssetKind(filter: 'all' | AssetKind, assetCount: number): AssetKind {
+  return filter === 'all' || assetCount === 0 ? 'character' : filter
+}
+
+// ---------------- what the selected scene's model / mode sends ----------------
+export interface SceneMediaFlags {
+  /** Reference images (@image_N) are sent. */
+  images: boolean
+  /** Reference videos (@video_N) are accepted. */
+  videos: boolean
+  /** Model name, e.g. "MiniMax-H3" ('' when no scene). */
+  model: string
+}
+
+const ALL_MEDIA: SceneMediaFlags = { images: true, videos: true, model: '' }
+
+export function sceneMediaFlags(settings: VideoSettings | undefined): SceneMediaFlags {
+  if (!settings) return ALL_MEDIA
+  return { images: usesRefs(settings), videos: usesVideoRefs(settings), model: MODELS[settings.model]?.name ?? settings.model }
+}
+
+/** sceneMediaFlags of one scene (primitive fields: no re-render while its prompt is typed). */
+export function useSceneMediaFlags(sceneId: string | null): SceneMediaFlags {
+  return useProject(useShallow((s) => sceneMediaFlags(sceneId ? s.project.scenes.find((sc) => sc.id === sceneId)?.settings : undefined)))
 }
 
 // ---------------- finished videos (takes) ----------------

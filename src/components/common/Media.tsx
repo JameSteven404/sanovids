@@ -9,12 +9,12 @@ export function MediaImg({ id, alt = '', className = 'media-img', style }: { id:
   return url ? <img src={url} alt={alt} className={className} style={style} draggable={false} /> : <div className={className} style={style} />
 }
 
-/** Round (characters) or square (locations/props) thumbnail of an asset's primary image. */
+/** Square thumbnail of an asset's primary image (all kinds). */
 export function AssetAvatar({ asset, size = 28, ring = false }: { asset: Asset; size?: number; ring?: boolean }) {
   const url = useMediaUrl(asset.imageIds[0])
   return (
     <span
-      className={`asset-avatar ${asset.kind === 'character' ? '' : 'square'}`}
+      className="asset-avatar square"
       style={{ width: size, height: size, ['--avatar-ring' as string]: ring ? asset.color : 'transparent' }}
       title={`${asset.name} · @${asset.tag}`}
     >

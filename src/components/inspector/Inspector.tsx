@@ -1,11 +1,11 @@
 // Right panel. Switches on the selection:
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
+// Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
 import { CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, focusNodes, newScene } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import type { Project } from '../../core/types'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
@@ -16,40 +16,31 @@ import './inspector.css'
 import { MultiSceneInspector } from './MultiSceneInspector'
 import { SceneInspector } from './SceneInspector'
 import { STATUS_TEXT, useTakeInfos } from './hooks'
-import { EMPTY_IDS } from './shared'
+import { changedSource, existingIds, pickView, type SelectionSource } from './selection'
 
-function pickScenes(p: Project, selected: string[]): string[] {
-  if (!selected.length) return EMPTY_IDS
-  const ids = new Set(p.scenes.map((s) => s.id))
-  return selected.filter((id) => ids.has(id))
-}
-function pickAssets(p: Project, selected: string[], library: string[]): string[] {
-  if (!selected.length && !library.length) return EMPTY_IDS
-  const ids = new Set(p.assets.map((a) => a.id))
-  const onCanvas = selected.filter((id) => ids.has(id))
-  return onCanvas.length ? onCanvas : library.filter((id) => ids.has(id))
-}
+/** Which selection the user changed last (kept outside React so it survives the panel being closed). */
+let lastSource: SelectionSource = 'canvas'
+useUI.subscribe((s, prev) => {
+  lastSource = changedSource(s, prev, lastSource)
+})
 
 export function Inspector() {
   const selectedIds = useUI((s) => s.selectedIds)
   const librarySelection = useUI((s) => s.librarySelection)
-  const sceneIds = useProject(useShallow((s) => pickScenes(s.project, selectedIds)))
-  const assetIds = useProject(useShallow((s) => pickAssets(s.project, selectedIds, librarySelection)))
-  const takeIds = useRuns(
-    useShallow((s) => {
-      if (!selectedIds.length) return EMPTY_IDS
-      const ids = new Set(s.takes.map((t) => t.id))
-      return selectedIds.filter((id) => ids.has(id))
-    }),
-  )
+  const scenes = useProject(useShallow((s) => existingIds(s.project.scenes, selectedIds)))
+  const canvasAssets = useProject(useShallow((s) => existingIds(s.project.assets, selectedIds)))
+  const libraryAssets = useProject(useShallow((s) => existingIds(s.project.assets, librarySelection)))
+  const takes = useRuns(useShallow((s) => existingIds(s.takes, selectedIds)))
   useFileDropGuard()
 
+  // Re-rendered on every selection change (both are subscribed above), after lastSource was updated.
+  const view = pickView({ scenes, canvasAssets, takes, libraryAssets }, lastSource)
   let content
-  if (sceneIds.length === 1) content = <SceneInspector key={sceneIds[0]} sceneId={sceneIds[0]} />
-  else if (sceneIds.length > 1) content = <MultiSceneInspector sceneIds={sceneIds} />
-  else if (assetIds.length === 1) content = <AssetInspector key={assetIds[0]} assetId={assetIds[0]} />
-  else if (assetIds.length > 1) content = <MultiAssetSummary assetIds={assetIds} />
-  else if (takeIds.length) content = <TakeSummary takeIds={takeIds} />
+  if (view.kind === 'scene') content = <SceneInspector key={view.id} sceneId={view.id} />
+  else if (view.kind === 'scenes') content = <MultiSceneInspector sceneIds={view.ids} />
+  else if (view.kind === 'asset') content = <AssetInspector key={view.id} assetId={view.id} />
+  else if (view.kind === 'assets') content = <MultiAssetSummary assetIds={view.ids} />
+  else if (view.kind === 'takes') content = <TakeSummary takeIds={view.ids} />
   else content = <EmptyInspector />
 
   return (

@@ -41,6 +41,19 @@ describe('splitPrompts / parsePromptText', () => {
       { title: '', text: 'third' },
     ])
   })
+  it('reads titles from the take headers of the exported prompts.txt ("=== S01_T2 - Title ===")', () => {
+    const items = parsePromptText('=== S01_T2 - Ngọn đèn ===\nfirst\n\n=== S02_T1 ===\nsecond\n=== S03·T4: Đêm ===\nthird\n=== S04 T1 ===\nfourth')
+    expect(items).toEqual([
+      { title: 'Ngọn đèn', text: 'first' },
+      { title: '', text: 'second' },
+      { title: 'Đêm', text: 'third' },
+      { title: '', text: 'fourth' },
+    ])
+  })
+  it('does not eat titles that only start like a take code', () => {
+    const items = parsePromptText('=== S01 · Tối ===\na\n=== S02: Twilight ===\nb\n=== S03 · T-Rex ===\nc')
+    expect(items.map((i) => i.title)).toEqual(['Tối', 'Twilight', 'T-Rex'])
+  })
   it('keeps @image_N / @video_N tokens and paragraphs exactly as written', () => {
     const body = 'Style line.\n\nMara (@image_1) walks.\nContinue from @video_2.'
     expect(parsePromptText(`---\n${body}\n---`)).toEqual([{ title: '', text: body }])
@@ -130,6 +143,14 @@ describe('applyImageMapping', () => {
     expect(m.pending).toEqual([1, 3, 4])
     // b → 1; pending 1 → 2, 3 → 3, 4 → 4
     expect(m.prompt).toBe('@image_2 @image_1 @image_4 @image_3')
+  })
+
+  it('renumbers a prompt that links none of the assigned assets (the dialog preview must not say "unchanged")', () => {
+    const m = applyImageMapping('Dog @image_2 at @image_3', ['a'], assets)
+    expect(m.refs).toEqual([])
+    expect(m.images).toBe(0)
+    expect(m.pending).toEqual([2, 3])
+    expect(m.prompt).toBe('Dog @image_1 at @image_2')
   })
 
   it('ignores assets without images and unknown ids; no usable mapping keeps the prompt untouched', () => {

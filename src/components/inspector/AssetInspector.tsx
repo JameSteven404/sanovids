@@ -10,9 +10,22 @@ import { LAYOUT, selectAsset, undoToastAction, useProject, type ProjectState } f
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
-import { renameAssetTag } from '../sidebar/shared'
+import { changedPrompts, renameAssetTag } from '../sidebar/shared'
 
 const SEP = '\u0001'
+
+/**
+ * Run a change to this asset's images or links. The store renumbers the @image_N tokens of the scenes using it in
+ * the same undo step (the prompts are not visible from this panel): say so, with "Hoàn tác" (spec §2).
+ * `done` is always announced when `always`, else only when prompts were rewritten.
+ */
+function withRenumberToast(run: () => void, done: string, always = false) {
+  const before = useProject.getState().project.scenes
+  run()
+  const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
+  if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
+  else if (always) toast(`${done}.`, { action: undoToastAction() })
+}
 
 export function AssetInspector({ assetId }: { assetId: string }) {
   const asset = useProject(selectAsset(assetId))
@@ -128,7 +141,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
                 <button
                   type="button"
                   className="in-image-make"
-                  onClick={() => update({ imageIds: [id, ...asset.imageIds.filter((x) => x !== id)] })}
+                  onClick={() => withRenumberToast(() => update({ imageIds: [id, ...asset.imageIds.filter((x) => x !== id)] }), 'Đã đổi ảnh chính')}
                   title="Đặt làm ảnh chính"
                 >
                   Đặt chính
@@ -137,7 +150,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
               <button
                 type="button"
                 className="in-image-x"
-                onClick={() => update({ imageIds: asset.imageIds.filter((x) => x !== id) })}
+                onClick={() => withRenumberToast(() => update({ imageIds: asset.imageIds.filter((x) => x !== id) }), `Đã bỏ 1 ảnh của “${asset.name}”`, true)}
                 title="Bỏ ảnh này"
                 aria-label="Bỏ ảnh"
               >
@@ -200,8 +213,7 @@ const UsedIn = memo(function UsedIn({ assetId, tag }: { assetId: string; tag: st
   )
   const refRows = rows.filter((r) => r.isRef)
   const removeAll = () => {
-    useProject.getState().removeRefs(refRows.map((r) => ({ sceneId: r.id, assetId })))
-    toast(`Đã bỏ @${tag} khỏi ${refRows.length} cảnh.`, { action: undoToastAction() })
+    withRenumberToast(() => useProject.getState().removeRefs(refRows.map((r) => ({ sceneId: r.id, assetId }))), `Đã bỏ @${tag} khỏi ${refRows.length} cảnh`, true)
   }
   return (
     <Section
@@ -240,10 +252,7 @@ const UsedIn = memo(function UsedIn({ assetId, tag }: { assetId: string; tag: st
                 <button
                   type="button"
                   className="in-x"
-                  onClick={() => {
-                    useProject.getState().removeRef(r.id, assetId)
-                    toast(`Đã bỏ @${tag} khỏi ${sceneCode(r.order)}.`, { action: undoToastAction() })
-                  }}
+                  onClick={() => withRenumberToast(() => useProject.getState().removeRef(r.id, assetId), `Đã bỏ @${tag} khỏi ${sceneCode(r.order)}`, true)}
                   title="Bỏ nối khỏi cảnh này"
                   aria-label="Bỏ nối"
                 >
@@ -299,10 +308,16 @@ function ScenePicker({ assetId, ignoreRef, onClose }: { assetId: string; ignoreR
       emptyText="Chưa có cảnh nào."
       onClose={onClose}
       onPick={(sceneId) => {
-        const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+        const { project } = useProject.getState()
+        const scene = project.scenes.find((s) => s.id === sceneId)
         if (!scene) return
-        if (scene.refs.includes(assetId)) useProject.getState().removeRef(sceneId, assetId)
-        else linkAssets([sceneId], [assetId])
+        if (!scene.refs.includes(assetId)) {
+          linkAssets([sceneId], [assetId])
+          return
+        }
+        // Un-linking turns this asset's @image_N tokens into its name and renumbers the others (like UsedIn's X).
+        const tag = project.assets.find((a) => a.id === assetId)?.tag ?? ''
+        withRenumberToast(() => useProject.getState().removeRef(sceneId, assetId), `Đã bỏ @${tag} khỏi ${sceneCode(scene.order)}`, true)
       }}
     />
   )

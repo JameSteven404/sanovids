@@ -16,6 +16,8 @@
   --accent-soft: rgba(232, 137, 74, 0.14);
   --ref: #4fb6a8; /* teal: reference connections */
   --ref-soft: rgba(79, 182, 168, 0.16);
+  --video: #b48cff; /* purple: generated videos, @video_N, video references */
+  --video-soft: rgba(180, 140, 255, 0.16);
   --seq: #8d93a0; /* continuity / sequence edges */
   --first: #4cc38a; /* first frame */
   --last: #b48cff; /* last frame */
@@ -467,13 +469,14 @@ textarea {
 .asset-avatar {
   position: relative;
   flex: none;
-  border-radius: 50%;
+  /* Square thumbnails everywhere (user preference): faces and places keep their real framing. */
+  border-radius: max(3px, 14%);
   overflow: hidden;
   background: var(--panel-3);
   box-shadow: 0 0 0 2px var(--avatar-ring, transparent);
 }
 .asset-avatar.square {
-  border-radius: 8px;
+  border-radius: max(3px, 14%);
 }
 .asset-avatar img {
   width: 100%;

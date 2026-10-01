@@ -9,7 +9,8 @@ import { create } from 'zustand'
 import { assetByTag, extractMentions, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
 import { newId, pickColor } from '../core/ids'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
-import type { Asset, Preset, Project, ProjectSettings, Scene, VideoSettings, XY } from '../core/types'
+import type { Asset, Preset, Project, ProjectSettings, Scene, Size, VideoSettings, XY } from '../core/types'
+import { toast } from './ui'
 
 // ---------- undo coalescing (typing in a textarea should not create one history step per key) ----------
 let coalesceKey: string | null = null
@@ -41,12 +42,25 @@ export const LAYOUT = {
   assetH: 210,
   assetGapY: 28,
 }
+/** Resize limits of canvas nodes (React Flow NodeResizer min/max). Defaults are LAYOUT sizes. */
+export const NODE_SIZE = {
+  scene: { minW: 240, maxW: 720, minH: 150, maxH: 760 },
+  take: { minW: 180, maxW: 640, minH: 150, maxH: 560 },
+  asset: { minW: 140, maxW: 420, minH: 150, maxH: 520 },
+}
+
+export function clampSize(kind: keyof typeof NODE_SIZE, size: Size): Size {
+  const l = NODE_SIZE[kind]
+  return { w: Math.round(Math.max(l.minW, Math.min(l.maxW, size.w))), h: Math.round(Math.max(l.minH, Math.min(l.maxH, size.h))) }
+}
+
 /** Height of one scene row (scene card or its takes, whichever is taller, plus the gap). */
 export const ROW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH) + LAYOUT.gapY
 
 /** Default canvas position of the i-th take (0 = oldest) of a scene at `scenePos`. */
-export function defaultTakePosition(scenePos: XY, index: number): XY {
-  return { x: scenePos.x + LAYOUT.sceneW + LAYOUT.takeOffsetX + index * (LAYOUT.takeW + LAYOUT.takeGapX), y: scenePos.y }
+/** `sceneW` = actual width of the scene card (resized cards push their takes right). `takeW` likewise. */
+export function defaultTakePosition(scenePos: XY, index: number, sceneW: number = LAYOUT.sceneW, takeW: number = LAYOUT.takeW): XY {
+  return { x: scenePos.x + sceneW + LAYOUT.takeOffsetX + index * (takeW + LAYOUT.takeGapX), y: scenePos.y }
 }
 
 export function defaultProjectSettings(): ProjectSettings {
@@ -218,6 +232,8 @@ export interface ProjectState {
   addVideoRefs: (sceneIds: string[], takeIds: string[]) => AddRefsResult
   removeVideoRef: (sceneId: string, takeId: string, label?: string) => void
   moveVideoRef: (sceneId: string, fromIndex: number, toIndex: number) => void
+  /** Move a video reference from one scene to another in one undo step (refused when the target is full). Returns false when refused. */
+  moveVideoRefToScene: (takeId: string, fromSceneId: string, toSceneId: string, label?: string) => boolean
   /** A take was deleted: drop it from every scene (tokens become `labels[takeId]`). */
   removeTakesEverywhere: (takeIds: string[], labels: Record<string, string>) => void
 
@@ -226,6 +242,8 @@ export interface ProjectState {
 
   // layout
   setPositions: (positions: Record<string, XY>) => void
+  /** Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too (resizing from the left/top edge). */
+  setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
   autoLayout: () => void
 
   // bulk
@@ -562,6 +580,24 @@ export const useProject = create<ProjectState>()(
             videoRefs.splice(Math.max(0, Math.min(videoRefs.length, toIndex)), 0, t)
             return withMedia(p, s, { videoRefs })
           }),
+        moveVideoRefToScene: (takeId, fromSceneId, toSceneId, label = 'video') => {
+          if (fromSceneId === toSceneId) return true
+          const p = get().project
+          const target = p.scenes.find((s) => s.id === toSceneId)
+          if (!target) return false
+          const already = target.videoRefs.includes(takeId)
+          const limit = usesVideoRefs(target.settings) ? MODELS[target.settings.model].maxRefVideos : 0
+          if (!already && target.videoRefs.length >= limit) return false
+          mutate((pp) => ({
+            ...pp,
+            scenes: pp.scenes.map((s) => {
+              if (s.id === fromSceneId) return withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => t !== takeId) }, pp.assets, () => label)
+              if (s.id === toSceneId && !already) return { ...s, videoRefs: [...s.videoRefs, takeId] }
+              return s
+            }),
+          }))
+          return true
+        },
         removeTakesEverywhere: (takeIds, labels) => {
           const dead = new Set(takeIds)
           const p = get().project
@@ -625,6 +661,24 @@ export const useProject = create<ProjectState>()(
             ...p,
             scenes: p.scenes.map((s) => (positions[s.id] ? { ...s, position: positions[s.id] } : s)),
             assets: p.assets.map((a) => (positions[a.id] && a.position ? { ...a, position: positions[a.id] } : a)),
+          })),
+        setNodeSizes: (sizes, positions = {}) =>
+          mutate((p) => ({
+            ...p,
+            scenes: p.scenes.map((s) =>
+              s.id in sizes || positions[s.id]
+                ? { ...s, size: s.id in sizes ? (sizes[s.id] ? clampSize('scene', sizes[s.id]!) : null) : s.size, position: positions[s.id] ?? s.position }
+                : s,
+            ),
+            assets: p.assets.map((a) =>
+              a.id in sizes || (positions[a.id] && a.position)
+                ? {
+                    ...a,
+                    size: a.id in sizes ? (sizes[a.id] ? clampSize('asset', sizes[a.id]!) : null) : a.size,
+                    position: positions[a.id] && a.position ? positions[a.id] : a.position,
+                  }
+                : a,
+            ),
           })),
         autoLayout: () =>
           mutate((p) => {
@@ -703,9 +757,7 @@ export function undoToastAction(label = 'Hoàn tác'): { label: string; run: () 
     label,
     run: () => {
       if (useProject.getState().project !== after) {
-        void import('./ui').then(({ toast }) =>
-          toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' }),
-        )
+        toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' })
         return
       }
       undo()

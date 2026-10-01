@@ -1,4 +1,4 @@
-# Bàn Dựng Phim — demo
+# SanoVids — demo
 
 Node-canvas app for producing AI films scene by scene (replacement concept for canvasapp.io.vn).
 Demo phase: frontend only, runs locally, **mock video provider** (no network, no real cost).
@@ -17,7 +17,7 @@ Vite 8 + React 19 + TypeScript 7 (`tsc` is the native compiler) + `@xyflow/react
 - `src/store/project.ts` — undoable project store (zundo). Every refs/videoRefs change renumbers prompt tokens in the same undo step. `LAYOUT`, `ROW_H`, `defaultTakePosition`: one scene per row, its takes to the right.
 - `src/store/runs.ts` — takes (= video nodes on the canvas, `take.position`) + mock job queue (not undoable). `removeTakes` also drops them from every scene's videoRefs.
 - `src/store/ui.ts` — selection (scene, asset and take ids), view, dialogs, drag overlay, toasts, `takeDisplay`.
-- `src/store/persist.ts` — IndexedDB autosave (+ localStorage emergency backup), project list, export/import `.bdp.json`. All functions are async. Media blobs: `src/lib/imageStore.ts`.
+- `src/store/persist.ts` — IndexedDB autosave (+ localStorage emergency backup), project list, export/import `.sanovids.json`. All functions are async. Media blobs: `src/lib/imageStore.ts`.
 - `src/actions.ts` — shared commands (linkAssets, linkTakes, ensureAssetToken, createSceneFromTake, deleteSelection, run, copy, zip). UI calls these. Use `undoToastAction()` from the project store for toast undo buttons.
 - Edge ids: `ref:<assetId>-><sceneId>`, `first:`/`last:` (H3 frames), `out:<sceneId>-><takeId>`, `vref:<takeId>-><sceneId>` (see `edgeId`/`parseEdgeId`).
 

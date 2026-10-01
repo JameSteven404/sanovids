@@ -1,4 +1,4 @@
-// Domain model for "Bàn Dựng Phim" (schema v2).
+// Domain model for "SanoVids" (schema v2).
 // The project (assets, presets, scenes, positions) is undoable.
 // Runs (takes + jobs) live in a separate store and are NOT part of undo history.
 //
@@ -18,6 +18,12 @@ export interface XY {
   y: number
 }
 
+/** Canvas node size set by the user (resize handle). Missing/null = default size. */
+export interface Size {
+  w: number
+  h: number
+}
+
 /** A reusable reference: a character, a location, a prop... One asset can hold several images. */
 export interface Asset {
   id: string
@@ -31,6 +37,8 @@ export interface Asset {
   color: string
   /** Shown as a node on the canvas when set. Assets always exist in the library regardless. */
   position: XY | null
+  /** Canvas node size (null/undefined = default). */
+  size?: Size | null
 }
 
 export interface VideoSettings {
@@ -65,6 +73,8 @@ export interface Scene {
   lastFrame: string | null
   color: string | null
   position: XY
+  /** Canvas card size (null/undefined = default). */
+  size?: Size | null
   note: string
 }
 
@@ -114,6 +124,8 @@ export interface Take {
   error: string | null
   /** Canvas position once the user dragged the node; null = auto (to the right of its scene). */
   position: XY | null
+  /** Canvas node size (null/undefined = default). */
+  size?: Size | null
 }
 
 export interface CompiledImage {

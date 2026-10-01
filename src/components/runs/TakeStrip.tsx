@@ -2,6 +2,7 @@ import { Ban, CircleAlert, Clock, LoaderCircle, Star } from 'lucide-react'
 import { memo, useMemo, type SyntheticEvent } from 'react'
 import { settingsLabel } from '../../core/models'
 import type { Take } from '../../core/types'
+import { TAKES_MIME } from '../../lib/dnd'
 import { useSceneTakes } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
@@ -9,8 +10,6 @@ import { STATUS_LABEL, toggleChosenTake } from './shared'
 import './runs.css'
 
 const SM_MAX = 5
-/** HTML5 drag payload for takes (JSON array of take ids), same contract as the sidebar's "Video đã tạo" list. */
-const TAKES_MIME = 'application/x-bdp-takes'
 
 const stop = (e: SyntheticEvent) => e.stopPropagation()
 
@@ -98,9 +97,12 @@ const TakeThumb = memo(function TakeThumb({ take, size, active }: { take: Take; 
               e.stopPropagation()
               e.dataTransfer.setData(TAKES_MIME, JSON.stringify([take.id]))
               e.dataTransfer.effectAllowed = 'copy'
+              // Lets drop targets (table rows, scene cards) light up while the take is in the air.
+              useUI.getState().setDraggingTakes([take.id])
             }
           : undefined
       }
+      onDragEnd={draggable ? () => useUI.getState().setDraggingTakes(null) : undefined}
     >
       <button type="button" className="rq-thumb-open nodrag nopan" onClick={() => openTake(take.id)} aria-label={`Xem take T${take.number}`}>
         {take.posterId ? <MediaImg id={take.posterId} className="rq-thumb-img" /> : <span className="rq-thumb-ph" />}

@@ -1,10 +1,12 @@
 import {
   Clapperboard,
   Coins,
+  Download,
   FileInput,
   FolderOpen,
   Keyboard,
   LayoutGrid,
+  LoaderCircle,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -19,6 +21,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useRef, useState } from 'react'
 import { useStore } from 'zustand'
+import { downloadChosenTakesZip } from '../../actions'
 import type { ViewMode } from '../../core/types'
 import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
@@ -37,11 +40,11 @@ export function TopBar() {
   return (
     <header className="tb">
       <div className="tb-left">
-        <div className="tb-brand" title="Bàn Dựng Phim — bản demo">
+        <div className="tb-brand" title="SanoVids — bản demo">
           <span className="tb-logo">
             <Clapperboard size={15} strokeWidth={2.2} />
           </span>
-          <span className="tb-brand-text">Bàn Dựng</span>
+          <span className="tb-brand-text">SanoVids</span>
         </div>
         <span className="tb-divider" />
         <ProjectName />
@@ -64,6 +67,7 @@ export function TopBar() {
           <FileInput size={14} />
           <span className="tb-hide-md">Nhập prompt</span>
         </button>
+        <DownloadAllButton />
         <span className="tb-divider" />
         <button className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt dự án & demo" aria-label="Cài đặt">
           <Settings size={16} />
@@ -216,6 +220,49 @@ function RunningIndicator() {
         {processing ? `${processing} đang chạy` : `${waiting} đang chờ`}
         {processing > 0 && waiting > 0 && ` · ${waiting} chờ`}
       </span>
+    </button>
+  )
+}
+
+/**
+ * Number of scenes that have a finished take — i.e. `actions.chosenTakeIds().length` (★ take, else the newest
+ * finished one). Selects primitives only, so the top bar does not re-render on every progress tick.
+ */
+function useChosenTakeCount(): number {
+  const sceneKey = useProject((s) => s.project.scenes.map((x) => x.id).join('|'))
+  return useRuns((s) => {
+    if (!sceneKey) return 0
+    const scenes = new Set(sceneKey.split('|'))
+    const done = new Set<string>()
+    for (const t of s.takes) if (t.status === 'completed' && scenes.has(t.sceneId)) done.add(t.sceneId)
+    return done.size
+  })
+}
+
+/** "Tải tất cả video chọn (.zip)": the chosen take of every scene in one zip (actions.downloadChosenTakesZip). */
+function DownloadAllButton() {
+  const count = useChosenTakeCount()
+  const [busy, setBusy] = useState(false)
+  const run = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await downloadChosenTakesZip()
+    } catch (e) {
+      toast(`Không tạo được file .zip: ${(e as Error).message}`, { tone: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+  const title = busy
+    ? 'Đang nén video…'
+    : count
+      ? `Tải tất cả video chọn (.zip) — take ★ (hoặc take mới nhất đã xong) của ${count} cảnh, kèm prompts.txt`
+      : 'Tải tất cả video chọn (.zip) — chưa có video nào tạo xong'
+  return (
+    <button className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">
+      {busy ? <LoaderCircle size={16} className="tb-spin" /> : <Download size={16} />}
+      {count > 0 && !busy && <span className="tb-download-n">{count > 99 ? '99+' : count}</span>}
     </button>
   )
 }

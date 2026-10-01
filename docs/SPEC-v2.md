@@ -46,3 +46,8 @@ User feedback (Vietnamese, paraphrased):
 - Same big button in the TakeViewer footer and in the Storyboard player.
 - "Tải tất cả take ★" (top bar menu / storyboard header): one .zip with the chosen take of every scene, named `S01_T2 - title.webm` in scene order, plus `prompts.txt`.
 - Optional (Settings): "Tự tải video khi xong" toggle + folder picker (File System Access API `showDirectoryPicker`, remembered in IndexedDB; fallback = browser Downloads).
+
+## 7. Round 3 requests (2026-10-01)
+- **App name: "SanoVids"** (package `sanovids`, appId `com.sanovids.app`, exe `SanoVids-Setup-<v>.exe` / `SanoVids-Portable-<v>.exe`, data folder `%APPDATA%\SanoVids`, export files `.sanovids.json` — old `.bdp.json` still import). Top bar brand shows "SanoVids". IndexedDB database names stay unchanged (keeps existing data).
+- **Square avatars everywhere** (no circles for characters): `AssetAvatar` is square now; every area must drop `border-radius: 50%` on asset/character thumbnails (keep circles only for status dots, spinners, handles, kbd-like pills).
+- **Resizable nodes**: scene cards, take (video) nodes and asset nodes get React Flow `NodeResizer` (visible on selection/hover, min/max from `NODE_SIZE` in store/project.ts). Sizes persist: scenes/assets via `project.setNodeSizes(sizes, positions?)` (one undo step; positions when resizing from left/top edges), takes via `runs.setTakeSizes`. Double-click a resize handle → back to default (null). Content adapts: scene card shows more prompt lines and more avatars when taller/wider; take node poster grows (keeps 16:9, controls stay at the bottom with the big download button); asset node image grows. Auto-placed takes start right of the scene's actual width (`defaultTakePosition(pos, i, sceneW, takeW)`).

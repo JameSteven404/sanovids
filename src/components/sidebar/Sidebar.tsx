@@ -44,6 +44,10 @@ export function Sidebar() {
   const toggleLibrary = useCallback(() => toggle('library'), [toggle])
   const toggleTakes = useCallback(() => toggle('takes'), [toggle])
   const togglePresets = useCallback(() => toggle('presets'), [toggle])
+  /** Open a section (no-op when already open), e.g. after "+ Preset" / "Thêm" so the new item is visible. */
+  const expand = useCallback((id: SectionId) => setCollapsed((c) => (c[id] ? { ...c, [id]: false } : c)), [])
+  const expandLibrary = useCallback(() => expand('library'), [expand])
+  const expandPresets = useCallback(() => expand('presets'), [expand])
 
   return (
     <div className="sb">
@@ -75,9 +79,9 @@ export function Sidebar() {
         </label>
       </div>
       <div className="sb-sections">
-        <AssetLibrary query={query} collapsed={collapsed.library} onToggle={toggleLibrary} />
+        <AssetLibrary query={query} collapsed={collapsed.library} onToggle={toggleLibrary} onExpand={expandLibrary} />
         <TakesPanel query={query} collapsed={collapsed.takes} onToggle={toggleTakes} />
-        <PresetsPanel collapsed={collapsed.presets} onToggle={togglePresets} />
+        <PresetsPanel collapsed={collapsed.presets} onToggle={togglePresets} onExpand={expandPresets} />
       </div>
     </div>
   )

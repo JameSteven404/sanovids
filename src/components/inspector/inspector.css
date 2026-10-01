@@ -331,6 +331,56 @@
 .in-pe-expand:focus-visible {
   opacity: 1;
 }
+/* Library cards (@image_N) / generated videos (@video_N) dragged over the prompt. */
+.in-pe-wrap.is-drop-assets {
+  --in-drop: var(--ref);
+  --in-drop-soft: var(--ref-soft);
+}
+.in-pe-wrap.is-drop-takes {
+  --in-drop: var(--video, #b48cff);
+  --in-drop-soft: var(--video-soft, rgba(180, 140, 255, 0.16));
+}
+.in-pe-wrap.is-drop .textarea.in-pe-ta {
+  border-color: var(--in-drop);
+  box-shadow: 0 0 0 3px var(--in-drop-soft);
+}
+.in-pe-dropcaret {
+  position: absolute;
+  z-index: 2;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--in-drop);
+  pointer-events: none;
+}
+.in-pe-drophint {
+  position: absolute;
+  z-index: 2;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100% - 12px);
+  padding: 3px 8px;
+  border: 1px solid var(--in-drop);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.in-pe-drophint svg {
+  flex: none;
+  color: var(--in-drop);
+}
+.in-pe-drophint b {
+  color: var(--in-drop);
+  font-weight: 600;
+}
 .in-pe-meta {
   display: flex;
   align-items: center;
@@ -457,7 +507,7 @@
   flex: none;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 4px;
   object-fit: cover;
   background: var(--panel-3);
 }
@@ -673,6 +723,13 @@
   color: var(--ref);
   font-weight: 600;
   font-size: 12px;
+}
+.in-refs.is-take-over {
+  background: var(--video-soft, rgba(180, 140, 255, 0.16));
+  box-shadow: 0 0 0 2px var(--video, #b48cff);
+}
+.in-refs-drop.is-video {
+  color: var(--video, #b48cff);
 }
 .in-refs-empty {
   padding: 12px;
@@ -1213,6 +1270,20 @@ span.in-check {
   margin-bottom: 10px;
   color: var(--text-faint);
   font-size: 12px;
+}
+.in-download-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.btn.in-download {
+  gap: 5px;
+}
+.btn.in-download.is-chosen {
+  border-color: var(--accent);
+  color: var(--text);
 }
 .in-continue-row {
   display: flex;

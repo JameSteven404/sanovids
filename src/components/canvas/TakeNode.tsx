@@ -1,12 +1,13 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, CircleAlert, Clock, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { Ban, CircleAlert, Clock, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useState, type SyntheticEvent } from 'react'
-import { requestRun, takeLabel } from '../../actions'
+import { downloadTake, requestRun, takeLabel } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
-import type { JobStatus } from '../../core/types'
+import type { JobStatus, Take } from '../../core/types'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -116,6 +117,11 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           <span className="cv-take-settings" title={settingsLabel(take.settings)}>
             {settingsLabel(take.settings)}
           </span>
+          {order === undefined && (
+            <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
+              cảnh đã xoá
+            </span>
+          )}
           {usage > 0 && (
             <span className="cv-take-used" title={`Đang dùng làm @video ở ${usage} cảnh`}>
               @v·{usage}
@@ -144,6 +150,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           </span>
         </div>
       )}
+      {!far && <TakeMainButton take={take} code={code} order={order} />}
 
       <Handle type="target" position={Position.Left} id="in" className="cv-h cv-h-take-in" isConnectable={false} />
       <Handle
@@ -160,6 +167,68 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
 }
 
 export const TakeNode = memo(TakeNodeView)
+
+/**
+ * The node's main action, full width at the bottom (like canvasapp's "Tải MP4"): download the finished video
+ * (+ prompt .txt), show the progress while it is generated, or run the scene again after a failure / cancel.
+ * Wrapped so presses (even on the disabled button) never select, drag or pan the node.
+ */
+function TakeMainButton({ take, code, order }: { take: Take; code: string; order: number | undefined }) {
+  const [saving, setSaving] = useState(false)
+  const folder = useDownloadPrefs((s) => s.folderName)
+  const withPrompt = useDownloadPrefs((s) => s.withPrompt)
+  let button
+  if (take.status === 'completed') {
+    const what = withPrompt ? 'video + prompt (.txt)' : 'video'
+    button = (
+      <button
+        className="cv-take-main"
+        disabled={saving}
+        title={folder ? `Lưu ${what} của ${code} vào thư mục “${folder}”` : `Tải ${what} của ${code} về máy`}
+        aria-label={`Tải video ${code}`}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (saving) return
+          setSaving(true)
+          void downloadTake(take.id).finally(() => setSaving(false))
+        }}
+      >
+        {saving ? <LoaderCircle size={15} className="cv-spin" /> : <Download size={15} strokeWidth={2.4} />}
+        <span>{saving ? 'Đang lưu…' : 'Tải video'}</span>
+      </button>
+    )
+  } else if (take.status === 'processing' || take.status === 'queued') {
+    const processing = take.status === 'processing'
+    button = (
+      <button className="cv-take-main is-busy" disabled aria-label={processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}>
+        {processing && <i className="cv-take-main-fill" style={{ width: `${Math.max(3, take.progress)}%` }} />}
+        {processing ? <LoaderCircle size={14} className="cv-spin" /> : <Clock size={14} />}
+        <span>{processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}</span>
+      </button>
+    )
+  } else {
+    button = (
+      <button
+        className="cv-take-main is-retry"
+        disabled={order === undefined}
+        title={order === undefined ? 'Cảnh của take này đã bị xoá' : `Chạy lại ${sceneCode(order)} (tạo take mới)`}
+        aria-label="Chạy lại"
+        onClick={(e) => {
+          e.stopPropagation()
+          requestRun([take.sceneId])
+        }}
+      >
+        <RotateCcw size={14} strokeWidth={2.4} />
+        <span>Chạy lại</span>
+      </button>
+    )
+  }
+  return (
+    <div className="cv-take-main-wrap nodrag nopan" onPointerDown={stop} onDoubleClick={stop} onClick={stop}>
+      {button}
+    </div>
+  )
+}
 
 function TakeStatusOverlay({ status, progress, error }: { status: string; progress: number; error: string | null }) {
   if (status === 'completed') return null

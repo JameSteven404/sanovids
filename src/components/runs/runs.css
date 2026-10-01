@@ -429,10 +429,16 @@
   background: var(--bg-elev);
   font-size: 12px;
   min-width: 0;
+  /* Narrow center (1100px window, wide side panels): items shrink with an ellipsis instead of spilling over the
+     inspector. The demo note gives way first, then the wallet and the button labels. */
+  overflow: hidden;
 }
 .rq-wallet {
   color: var(--text-dim);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rq-wallet b {
   color: var(--text);
@@ -447,13 +453,24 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  flex-shrink: 100;
 }
 .rq-demo-note svg {
   color: var(--warn);
   flex: none;
 }
 .rq-panel-head .btn {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.rq-panel-head .btn > svg {
   flex: none;
+}
+.rq-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rq-list {
@@ -1261,4 +1278,28 @@ button.rq-vchip:hover {
 .rq-confirming {
   background: rgba(239, 91, 91, 0.16);
   border-color: var(--danger);
+}
+
+/* =====================================================================================================
+   Big download button (take viewer footer) — "⬇ Tải video", progress while the take is being made
+   ===================================================================================================== */
+.rq-dl-big {
+  min-width: 168px;
+  gap: 8px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px -8px rgba(232, 137, 74, 0.7);
+}
+.rq-dl-big.busy {
+  --p: 0%;
+  color: var(--text);
+  border-color: rgba(232, 137, 74, 0.45);
+  background: linear-gradient(90deg, rgba(232, 137, 74, 0.38) var(--p), var(--panel-2) var(--p));
+  box-shadow: none;
+}
+.rq-dl-big.busy:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+.rq-dl-icon:not(:disabled):hover {
+  color: var(--accent);
 }

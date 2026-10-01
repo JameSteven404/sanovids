@@ -22,11 +22,23 @@ import {
   type OnConnectStart,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { canvasEvents, createAssetsFromFiles, edgeId, linkAssets, linkTakes, newScene, parseEdgeId, takeLabel, type EdgeKind } from '../../actions'
+import {
+  canvasEvents,
+  createAssetsFromFiles,
+  createSceneFromTake,
+  edgeId,
+  linkAssets,
+  linkTakes,
+  newScene,
+  parseEdgeId,
+  takeLabel,
+  videoLabel,
+  type EdgeKind,
+} from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { MODELS } from '../../core/models'
+import { MODELS, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, XY } from '../../core/types'
-import { defaultTakePosition, refImageCount, undo, undoToastAction, useProject } from '../../store/project'
+import { defaultTakePosition, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
@@ -40,11 +52,16 @@ import {
   FIT_EVENT,
   hasAssetDrag,
   hasFileDrag,
+  hasTakeDrag,
   hitTest,
   imageFiles,
+  isAutoSlot,
+  isEmptyCanvasTarget,
   keepHover,
   layoutTakes,
+  orphanTakePosition,
   readAssetIds,
+  readTakeIds,
   sceneMapOf,
   scheduleHoverEnd,
   snap,
@@ -118,6 +135,7 @@ function CanvasInner() {
   const interaction = useUI((s) => s.interaction)
   const showMinimap = useUI((s) => s.showMinimap)
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
+  const takeDrag = useUI((s) => !!s.draggingTakeIds)
   const hoveredEdgeId = useCanvasLocal((s) => s.hoveredEdgeId)
   const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
@@ -159,9 +177,14 @@ function CanvasInner() {
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
     for (const item of takeLayout.items) {
-      const scene = sm.get(item.sceneId)!
-      // Auto-placed takes follow their scene live while it is dragged.
-      const base = item.explicit ?? defaultTakePosition(dragPos[scene.id] ?? scene.position, item.index)
+      const anchor = sm.get(item.anchorId)!
+      // Auto-placed takes follow their scene live while it is dragged. An orphan (its scene was just deleted) stays
+      // where it was shown; without a previous spot it goes next to the scene that uses it.
+      const base =
+        item.explicit ??
+        (item.orphan
+          ? (prevCache.get(item.id)?.position ?? orphanTakePosition(anchor.position, item.index))
+          : defaultTakePosition(dragPos[anchor.id] ?? anchor.position, item.index))
       let data = takeData.current.get(item.id)
       if (!data || data.hidden !== item.hidden || data.status !== item.status) data = { hidden: item.hidden, status: item.status }
       dataNext.set(item.id, data)
@@ -256,7 +279,7 @@ function CanvasInner() {
 
   // Dim everything not connected to the hovered node (pure CSS, no node churn).
   const dimCss = useMemo(() => {
-    if (!hoveredId || connecting || libraryDrag) return ''
+    if (!hoveredId || connecting || libraryDrag || takeDrag) return ''
     const lit = new Set([hoveredId])
     for (const r of rawEdges) {
       if (r.source === hoveredId) lit.add(r.target)
@@ -265,7 +288,7 @@ function CanvasInner() {
     if (lit.size < 2) return ''
     const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
     return `.cv-stage .react-flow__node${nots}{opacity:.38}`
-  }, [hoveredId, rawEdges, connecting, libraryDrag])
+  }, [hoveredId, rawEdges, connecting, libraryDrag, takeDrag])
 
   // While wiring a take, its own scene is not a valid target (a scene cannot reference its own video).
   const ownSceneCss = useMemo(() => {
@@ -339,12 +362,13 @@ function CanvasInner() {
       for (const [id, pos] of Object.entries(commit)) {
         const item = layout.byId.get(id)
         if (item) {
-          const scene = sm.get(item.sceneId)
+          const scene = item.orphan ? undefined : sm.get(item.sceneId)
           const take = takes.get(id)
-          if (!scene || !take) continue
-          // Dropped exactly on its auto slot: keep it auto-placed (it keeps following the scene).
-          const auto = defaultTakePosition(commit[scene.id] ?? scene.position, item.index)
-          const next = samePos(auto, pos) ? null : pos
+          if (!take || (!scene && !item.orphan)) continue
+          // Dropped on its auto slot (snapped to the grid): keep it auto-placed (it keeps following the scene).
+          // Orphans (scene deleted) have no auto slot: wherever they are dropped is kept.
+          const auto = scene ? defaultTakePosition(commit[scene.id] ?? scene.position, item.index) : null
+          const next = auto && isAutoSlot(auto, pos) ? null : pos
           takeCommit[id] = next
           if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
         } else {
@@ -547,10 +571,29 @@ function CanvasInner() {
   }
 
   const onDragOver = (e: DragEvent) => {
+    if (hasTakeDrag(e.dataTransfer)) {
+      // A video only drops on empty canvas here (scene cards handle their own drop): elsewhere the drop is refused.
+      if (isEmptyCanvasTarget(e.target)) e.preventDefault()
+      return
+    }
     if (!hasAssetDrag(e.dataTransfer) && !hasFileDrag(e.dataTransfer)) return
     e.preventDefault()
   }
   const onDrop = (e: DragEvent) => {
+    if (hasTakeDrag(e.dataTransfer)) {
+      e.preventDefault()
+      useUI.getState().setDraggingTakes(null)
+      if (!isEmptyCanvasTarget(e.target)) return
+      const ids = readTakeIds(e.dataTransfer)
+      if (ids.length === 1) {
+        // Continuation scene (take as @video_1) with its card's top-left corner near the drop point.
+        const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+        createSceneFromTake(ids[0], { x: snap(p.x - 140), y: snap(p.y - 40) })
+      } else if (ids.length > 1) {
+        toast('Thả từng video ra nền để tạo cảnh tiếp nối — hoặc thả vào một cảnh để dùng làm @video.', { tone: 'info' })
+      }
+      return
+    }
     if (!hasAssetDrag(e.dataTransfer) && !hasFileDrag(e.dataTransfer)) return
     e.preventDefault()
     useUI.getState().setDraggingAssets(null)
@@ -575,7 +618,13 @@ function CanvasInner() {
   const closeMenu = useCallback(() => setMenu(null), [])
 
   const handMode = interaction === 'hand'
-  const stageCls = ['cv-stage', handMode ? 'mode-hand' : 'mode-select', connKind && `cv-connecting cv-connecting-${connKind}`, libraryDrag && 'cv-library-drag']
+  const stageCls = [
+    'cv-stage',
+    handMode ? 'mode-hand' : 'mode-select',
+    connKind && `cv-connecting cv-connecting-${connKind}`,
+    libraryDrag && 'cv-library-drag',
+    takeDrag && 'cv-take-drag',
+  ]
     .filter(Boolean)
     .join(' ')
 
@@ -703,6 +752,7 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout): Raw
     }
   }
   for (const item of takes.items) {
+    if (item.orphan) continue // its scene was deleted
     out.push({
       id: edgeId('out', item.sceneId, item.id),
       kind: 'out',
@@ -779,7 +829,7 @@ function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
   )
 }
 
-/** Move a @video reference: add it to the new scene first (may be refused), then drop it from the old one. */
+/** Move a @video reference to another scene in one undo step; refused (original link kept) when the target is full. */
 function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
   const take = takeIndexOf(useRuns.getState().takes).byId.get(takeId)
   const target = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
@@ -790,30 +840,16 @@ function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
     return
   }
   const already = target.videoRefs.includes(takeId)
-  if (!already) {
-    const res = useProject.getState().addVideoRefs([newTarget], [takeId])
-    if (!res.added) {
-      toast(`${sceneCode(target.order)} không nhận thêm video tham chiếu (model/chế độ) — giữ nguyên nối cũ.`, { tone: 'warning' })
-      return
-    }
+  if (!useProject.getState().moveVideoRefToScene(takeId, fromSceneId, newTarget, videoLabel(takeId))) {
+    const spec = MODELS[target.settings.model]
+    const why = usesVideoRefs(target.settings) ? `đã đủ ${spec.maxRefVideos} video của ${spec.name}` : `chế độ hiện tại của ${spec.name} không nhận video`
+    toast(`${sceneCode(target.order)} không nhận thêm video tham chiếu (${why}) — giữ nguyên nối cũ.`, { tone: 'warning' })
+    return
   }
-  useProject.getState().removeVideoRef(fromSceneId, takeId, 'video ' + label)
   useUI.getState().setSelectedEdges([])
-  // Two history steps (add + remove): the toast undoes both, if nothing changed since.
-  const after = useProject.getState().project
   toast(already ? `${sceneCode(target.order)} đã có ${label} — bỏ nối ở cảnh cũ.` : `Đã chuyển ${label} sang ${sceneCode(target.order)}.`, {
     tone: 'success',
-    action: {
-      label: 'Hoàn tác',
-      run: () => {
-        if (useProject.getState().project !== after) {
-          toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' })
-          return
-        }
-        undo()
-        if (!already) undo()
-      },
-    },
+    action: undoToastAction(),
   })
 }
 

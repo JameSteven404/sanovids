@@ -134,6 +134,10 @@
   color: var(--accent);
 }
 .sb-sec-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -183,6 +187,9 @@
   font-size: 11.5px;
   color: var(--text-dim);
   line-height: 1.4;
+}
+.sb-explain.warn {
+  color: var(--warn);
 }
 .sb-accent {
   color: var(--accent);
@@ -493,6 +500,25 @@
   background: var(--sb-video);
   color: #17112b;
 }
+/* the selected scene's model / mode does not send this media: number shown muted (not copyable), "+ Nối" off */
+.sb-token.off,
+.sb-token.video.off {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: rgba(10, 11, 13, 0.72);
+  color: var(--text-faint);
+  text-decoration: line-through;
+  cursor: help;
+  filter: none;
+}
+.sb-connect.video.off,
+.sb-connect.video.off:hover {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
 .sb-card-token {
   position: absolute;
   right: 5px;
@@ -589,7 +615,7 @@
 .sb-drag-ghost-av {
   width: 30px;
   height: 30px;
-  border-radius: 50%;
+  border-radius: 8px;
   overflow: hidden;
   border: 2px solid #24262b;
   display: inline-flex;
@@ -600,9 +626,6 @@
 }
 .sb-drag-ghost-av + .sb-drag-ghost-av {
   margin-left: -10px;
-}
-.sb-drag-ghost-av.square {
-  border-radius: 8px;
 }
 .sb-drag-ghost-av.wide {
   width: 48px;
@@ -679,12 +702,15 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* rows adapt to the panel width (see the @container rules below) */
+  container: sb-takes / inline-size;
 }
 .sb-take {
   position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   min-height: 42px;
   padding: 4px;
   border-radius: 8px;
@@ -757,13 +783,18 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 .sb-take-code {
+  min-width: 0;
   font-size: 11.5px;
   font-weight: 700;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sb-take-used {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -772,14 +803,34 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+/* 2nd line: @video number / "+ Nối" of the selected scene, then the scene title (takes what is left) */
+.sb-take-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 1px;
+}
+.sb-take-sub .sb-token,
+.sb-take-sub .sb-connect {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 17px;
+  line-height: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sb-take-title {
+  flex: 1 1 0;
+  min-width: 0;
   font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-take-star {
+/* row buttons (download ⬇, star ★): shown on hover / keyboard focus */
+.sb-take-btn {
   flex: none;
   width: 22px;
   height: 22px;
@@ -795,17 +846,61 @@
   opacity: 0;
   transition: opacity 0.12s;
 }
-.sb-take:hover .sb-take-star,
-.sb-take:focus-within .sb-take-star,
+.sb-take:hover .sb-take-btn,
+.sb-take:focus-within .sb-take-btn,
+.sb-take-btn.busy,
 .sb-take-star.on {
   opacity: 1;
 }
-.sb-take-star:hover {
+.sb-take-btn:hover:not(:disabled) {
   background: var(--panel-3);
   color: var(--text);
 }
+.sb-take-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.sb-take-btn:disabled {
+  cursor: progress;
+}
+.sb-take-dl:hover:not(:disabled),
+.sb-take-dl.busy {
+  color: var(--sb-video);
+}
 .sb-take-star.on {
   color: var(--warn);
+}
+/* narrow left panel: smaller poster, then none, so the code and the ⬇ / ★ buttons stay inside the row */
+@container sb-takes (max-width: 220px) {
+  .sb-take {
+    gap: 6px;
+  }
+  .sb-take-media {
+    width: 44px;
+  }
+}
+@container sb-takes (max-width: 190px) {
+  .sb-take-media {
+    display: none;
+  }
+}
+.sb-zip-all.busy,
+.sb-zip-all:disabled {
+  cursor: progress;
+  color: var(--sb-video);
+}
+.sb-spin {
+  animation: sb-spin 0.9s linear infinite;
+}
+@keyframes sb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sb-spin {
+    animation-duration: 2.4s;
+  }
 }
 
 /* asset dialog: renumbering hint under the images */
@@ -818,6 +913,14 @@
 }
 .sb-renumber-hint svg {
   flex: none;
+}
+.sb-renumber-hint.warn {
+  align-items: flex-start;
+  color: var(--warn);
+  line-height: 1.4;
+}
+.sb-renumber-hint.warn svg {
+  margin-top: 2px;
 }
 
 /* ---------- presets ---------- */
@@ -1106,6 +1209,10 @@
 }
 .sb-tok.video {
   color: var(--sb-video);
+}
+.sb-tok.off {
+  color: var(--text-faint);
+  text-decoration: line-through;
 }
 
 /* images editor */

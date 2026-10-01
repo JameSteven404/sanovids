@@ -5,12 +5,13 @@ import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../ac
 import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
+import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
-import { ASSET_MIME, latestOf, MentionText, MenuButton, readIds, SCENE_MIME, STATUS_LABEL, starredTake, TAKES_MIME, useTakesByScene } from './shared'
+import { latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
 import './views.css'
 
 /** Scene id being reordered via the drag handle (dataTransfer is unreadable during dragover). */
@@ -382,6 +383,14 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
     return compileScene(project, scene, { takeStatus: (t) => (status.get(t) === '-' ? undefined : status.get(t)) }).warnings.join('\n')
   }, [scene, assets, videoStatus])
   const libraryDragging = useUI((s) => s.draggingAssetIds !== null)
+  // A finished take is being dragged (take strip, library, canvas) and this row can use it as @video:
+  // every row lights up except the scene that made all of the dragged takes (no self references).
+  const takeDragging = useUI((s) => {
+    const ids = s.draggingTakeIds
+    if (!ids?.length) return false
+    const takes = useRuns.getState().takes
+    return ids.some((t) => takes.find((x) => x.id === t)?.sceneId !== id)
+  })
   const [mediaOver, setMediaOver] = useState<MediaOver>(null)
   const [dropPos, setDropPos] = useState<'above' | 'below' | null>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -410,7 +419,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
 
   const onDragOver = (e: DragEvent) => {
     const types = e.dataTransfer.types
-    const media: MediaOver = types.includes(ASSET_MIME) ? 'assets' : types.includes(TAKES_MIME) ? 'takes' : null
+    const media: MediaOver = types.includes(ASSETS_MIME) ? 'assets' : types.includes(TAKES_MIME) ? 'takes' : null
     if (media) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
@@ -434,8 +443,8 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
     const pos = dropPos
     setMediaOver(null)
     setDropPos(null)
-    const assetIds = readIds(e.dataTransfer.getData(ASSET_MIME))
-    const takeIds = readIds(e.dataTransfer.getData(TAKES_MIME))
+    const assetIds = readIds(e.dataTransfer, ASSETS_MIME)
+    const takeIds = readIds(e.dataTransfer, TAKES_MIME)
     if (assetIds.length || takeIds.length) {
       e.preventDefault()
       const to = targets()
@@ -443,7 +452,10 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         linkAssets(to, assetIds)
         useUI.getState().setDraggingAssets(null)
       }
-      if (takeIds.length) linkTakes(to, takeIds)
+      if (takeIds.length) {
+        linkTakes(to, takeIds)
+        useUI.getState().setDraggingTakes(null)
+      }
       return
     }
     const moving = draggingSceneId
@@ -467,7 +479,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
       data-row={id}
       role="row"
       aria-selected={selected}
-      className={`vw-tr vw-row ${selected ? 'selected' : ''} ${mediaOver === 'assets' ? 'asset-over' : ''} ${mediaOver === 'takes' ? 'take-over' : ''} ${libraryDragging ? 'lib-drag' : ''} ${dropPos ? 'drop-' + dropPos : ''}`}
+      className={`vw-tr vw-row ${selected ? 'selected' : ''} ${mediaOver === 'assets' ? 'asset-over' : ''} ${mediaOver === 'takes' ? 'take-over' : ''} ${libraryDragging ? 'lib-drag' : ''} ${takeDragging ? 'take-drag' : ''} ${dropPos ? 'drop-' + dropPos : ''}`}
       onClick={(e) => onRowClick(id, e)}
       onDoubleClick={() => useUI.getState().setRightOpen(true)}
       onDragOver={onDragOver}
@@ -553,7 +565,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
             {scene.videoRefs.length > 3 && <span className="vw-avatar-more">+{scene.videoRefs.length - 3}</span>}
           </span>
         ) : (
-          <span className="vw-faint-cell">—</span>
+          <span className="vw-faint-cell">{takeDragging ? 'Thả video vào' : '—'}</span>
         )}
       </span>
       <span className="vw-cell-prompt" title={scene.prompt.slice(0, 600)}>

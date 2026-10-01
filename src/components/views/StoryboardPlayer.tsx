@@ -1,6 +1,7 @@
 // "Phát liền": plays every scene's chosen take in order (webm when the mock recorded one, else poster).
-import { Pause, Play, RotateCcw, SkipBack, SkipForward, Star, X } from 'lucide-react'
+import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
 import { MediaImg } from '../common/Media'
@@ -29,6 +30,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   const [ended, setEnded] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [video, setVideo] = useState<VideoState>(null)
+  const [saving, setSaving] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
 
   const item = items[index] as PlayerItem | undefined
@@ -128,6 +130,16 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   const totalS = items.reduce((t, i) => t + i.duration, 0)
   const take = item.take
   const posterId = take?.posterId ?? null
+  const canSave = take?.status === 'completed'
+  const save = async () => {
+    if (!take || saving) return
+    setSaving(true)
+    try {
+      await downloadTake(take.id)
+    } finally {
+      setSaving(false)
+    }
+  }
   const segProgress = (i: number) => {
     if (i < index || (ended && i === index)) return 1
     if (i > index) return 0
@@ -239,6 +251,15 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
             </button>
           ))}
         </div>
+        <button
+          className="btn btn-primary vw-player-dl"
+          disabled={!canSave || saving}
+          onClick={() => void save()}
+          title={canSave && take ? `Tải video ${item.code}_T${take.number} (kèm prompt nếu bật trong Cài đặt)` : 'Cảnh này chưa có video tạo xong'}
+        >
+          {saving ? <LoaderCircle size={15} className="vw-spin" /> : <Download size={15} />}
+          Tải video này
+        </button>
       </div>
     </div>
   )

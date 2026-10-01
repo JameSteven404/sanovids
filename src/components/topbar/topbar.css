@@ -262,6 +262,36 @@
 .tb-import {
   flex: none;
 }
+/* "Tải tất cả video chọn (.zip)" + number of scenes with a finished take */
+.tb-download {
+  position: relative;
+  flex: none;
+}
+.tb-download-n {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--video, #b48cff);
+  color: #150f20;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+.tb-spin {
+  animation: tb-spin 0.9s linear infinite;
+}
+@keyframes tb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .tb-panels {
   display: inline-flex;
   gap: 2px;

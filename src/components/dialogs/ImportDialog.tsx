@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Images, Info, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
-import { Fragment, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { fitNodes } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import {
@@ -52,6 +52,32 @@ function TokenText({ text, imageCount }: { text: string; imageCount?: number }) 
   )
 }
 
+/** Event an Escape in a `data-esc-clear` input sends to it so it clears its query (see AssetGrid). */
+const ESC_CLEAR_EVENT = 'dg-esc-clear'
+
+/**
+ * Escape typed in a text field of this dialog leaves the field (a search box with text clears first) instead
+ * of closing the dialog and losing the pasted prompts. Registered once, as a window capture listener in a
+ * layout effect, so it runs before Modal's Escape listener (a passive effect) and can stop it.
+ */
+function useFieldEscape() {
+  useLayoutEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target
+      const field = t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && (t.type === 'text' || t.type === 'search'))
+      if (!field || !t.closest('.modal')) return
+      e.stopImmediatePropagation()
+      if (e.isComposing) return
+      e.preventDefault()
+      if (t instanceof HTMLInputElement && t.value && t.dataset.escClear !== undefined) t.dispatchEvent(new Event(ESC_CLEAR_EVENT))
+      else t.blur()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+}
+
 export function ImportDialog() {
   const closeDialog = useUI((s) => s.closeDialog)
   const assets = useProject((s) => s.project.assets)
@@ -75,6 +101,14 @@ export function ImportDialog() {
   const effMapping: ImageMapping = useMemo(() => Array.from({ length: summary.maxImage }, (_, i) => mapping[i] ?? null), [mapping, summary.maxImage])
   const mapped = hasMapping(effMapping, assets)
   const assigned = effMapping.filter((id) => id && assets.some((a) => a.id === id && a.imageIds.length)).length
+
+  // Everything lives in local state: closing the dialog (Esc, backdrop, ×, Huỷ) throws it away, so ask first.
+  const dirty = !!text.trim() || files.length > 0 || mapping.some(Boolean)
+  const requestClose = () => {
+    if (dirty && !window.confirm('Đóng và bỏ các prompt đã dán / file đã thêm / ảnh đã gán?')) return
+    closeDialog()
+  }
+  useFieldEscape()
 
   const create = (withMapping: boolean) => {
     if (!items.length) return
@@ -122,7 +156,7 @@ export function ImportDialog() {
             'Chưa có prompt nào'
           )}
         </span>
-        <button className="btn" onClick={closeDialog}>
+        <button className="btn" onClick={requestClose}>
           Huỷ
         </button>
         <button className="btn btn-primary" disabled={!items.length} onClick={() => setStep(2)}>
@@ -201,7 +235,7 @@ export function ImportDialog() {
   }
 
   return (
-    <Modal title="Nhập prompt cũ" onClose={closeDialog} size="xwide" headerExtra={stepper} footer={footer}>
+    <Modal title="Nhập prompt cũ" onClose={requestClose} size="xwide" headerExtra={stepper} footer={footer}>
       {body}
     </Modal>
   )
@@ -323,7 +357,14 @@ function StepInput({
           </div>
         )}
 
-        <button className="dg-sample" onClick={() => setText(SAMPLE_IMPORT_TEXT)}>
+        <button
+          className="dg-sample"
+          onClick={() => {
+            // Don't silently wipe what the user pasted (there is no undo for this local text).
+            if (text.trim() && text !== SAMPLE_IMPORT_TEXT && !window.confirm('Thay nội dung đã dán bằng 3 prompt ví dụ? Nội dung hiện tại sẽ mất.')) return
+            setText(SAMPLE_IMPORT_TEXT)
+          }}
+        >
           <Sparkles size={15} />
           <span>
             <b>Dùng ví dụ</b>
@@ -501,7 +542,10 @@ function StepMapping({
 
   const results = useMemo(() => items.map((it) => applyImageMapping(it.text, mapping, assets, { onlyMentioned })), [items, mapping, assets, onlyMentioned])
   const overLimit = results.filter((r) => r.images > imageLimit).length
-  const withPending = results.filter((r) => r.refs.length > 0 && r.pending.length > 0).length
+  // As soon as one number has an asset, every prompt is renumbered — also prompts that link none of the assigned
+  // assets (their numbers then start right after zero linked images). Base the preview on that, not on refs.
+  const active = hasMapping(mapping, assets)
+  const withPending = active ? results.filter((r) => r.pending.length > 0).length : 0
 
   const assign = (n: number, id: string | null) => {
     const next = [...mapping]
@@ -516,6 +560,7 @@ function StepMapping({
 
   const idx = Math.min(preview, items.length - 1)
   const res = results[idx]
+  const renumbered = res.prompt !== items[idx].text
   const resAssets = res.refs.map((id) => byId.get(id)).filter((a): a is Asset => !!a)
 
   return (
@@ -608,12 +653,12 @@ function StepMapping({
           </div>
           <div className="dg-preview-body">
             <div className="dg-pv-prompt">
-              <TokenText text={res.prompt} imageCount={res.refs.length ? res.images : undefined} />
+              <TokenText text={res.prompt} imageCount={active ? res.images : undefined} />
             </div>
           </div>
           <div className="dg-pv-foot faint">
-            {res.refs.length ? `${res.images} ảnh tham chiếu` : 'Prompt giữ nguyên'}
-            {res.refs.length > 0 && res.pending.length > 0 && ` · ${res.pending.length} số chưa gán (đỏ)`}
+            {res.refs.length ? `${res.images} ảnh tham chiếu` : renumbered ? 'Chưa nối ảnh nào · số @image đã được đánh lại' : 'Prompt giữ nguyên'}
+            {active && res.pending.length > 0 && ` · ${res.pending.length} số chưa gán (đỏ)`}
           </div>
         </div>
 
@@ -653,12 +698,22 @@ function AssetGrid({ assets, selected, onPick }: { assets: Asset[]; selected: st
   const [q, setQ] = useState('')
   const query = q.trim().toLowerCase()
   const list = query ? assets.filter((a) => a.name.toLowerCase().includes(query) || a.tag.toLowerCase().includes(query)) : assets
+  const showSearch = assets.length > 8
+  const searchRef = useRef<HTMLInputElement>(null)
+  // Escape in the search box clears it (useFieldEscape) instead of closing the dialog.
+  useEffect(() => {
+    const el = searchRef.current
+    if (!el) return
+    const clear = () => setQ('')
+    el.addEventListener(ESC_CLEAR_EVENT, clear)
+    return () => el.removeEventListener(ESC_CLEAR_EVENT, clear)
+  }, [showSearch])
   return (
     <div className="dg-asset-picker">
-      {assets.length > 8 && (
+      {showSearch && (
         <label className="dg-search">
           <Search size={13} />
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong thư viện…" />
+          <input ref={searchRef} data-esc-clear="" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong thư viện…" />
         </label>
       )}
       <div className="dg-asset-grid">

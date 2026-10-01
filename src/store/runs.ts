@@ -5,9 +5,10 @@ import { compileScene, sceneCode, takeCode } from '../core/compile'
 import { newId } from '../core/ids'
 import { costOf, settingsLabel } from '../core/models'
 import { migrateTake } from '../core/migrate'
-import type { Scene, Take, XY } from '../core/types'
+import type { Scene, Size, Take, XY } from '../core/types'
+import { useDownloadPrefs } from '../lib/downloads'
 import { renderMockTake } from '../lib/mockProvider'
-import { useProject } from './project'
+import { clampSize, useProject } from './project'
 
 export type MockSpeed = 'fast' | 'normal' | 'slow'
 export interface MockSettings {
@@ -51,6 +52,8 @@ export interface RunsState {
   removeTakes: (takeIds: string[]) => void
   /** Canvas positions of take nodes (null = back to auto placement). */
   setTakePositions: (positions: Record<string, XY | null>) => void
+  /** Canvas sizes of take nodes (null = default size). */
+  setTakeSizes: (sizes: Record<string, Size | null>) => void
   setMock: (patch: Partial<MockSettings>) => void
   addCredits: (n: number) => void
 }
@@ -192,6 +195,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
     set((s) => ({ takes: s.takes.filter((t) => !dead.has(t.id)) }))
     useProject.getState().removeTakesEverywhere(takeIds, labels)
   },
+  setTakeSizes: (sizes) =>
+    set((s) => ({ takes: s.takes.map((t) => (t.id in sizes ? { ...t, size: sizes[t.id] ? clampSize('take', sizes[t.id]!) : null } : t)) })),
   setTakePositions: (positions) =>
     set((s) => ({ takes: s.takes.map((t) => (t.id in positions ? { ...t, position: positions[t.id] } : t)) })),
   setMock: (patch) => {
@@ -289,6 +294,10 @@ async function finish(take: Take) {
         t.id === take.id ? { ...t, status: 'completed', progress: 100, finishedAt: Date.now(), posterId: out.posterId, videoId: out.videoId } : t,
       ),
     }))
+    if (useDownloadPrefs.getState().autoDownload) {
+      // Lazy import avoids a static cycle (actions imports this store).
+      void import('../actions').then(({ downloadTake }) => downloadTake(take.id, { auto: true }))
+    }
   } catch (e) {
     useRuns.setState((s) => ({
       takes: s.takes.map((t) => (t.id === take.id ? { ...t, status: 'failed', finishedAt: Date.now(), error: String((e as Error).message ?? e) } : t)),

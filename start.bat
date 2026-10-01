@@ -1,5 +1,5 @@
 @echo off
-rem Ban Dung Phim - chay ban build (nhanh). Lan dau se tu cai thu vien va build.
+rem SanoVids - chay ban build (nhanh). Lan dau se tu cai thu vien va build.
 rem Sau khi sua code / cap nhat: chay "npm run build" (hoac xoa thu muc dist) roi mo lai file nay.
 cd /d "%~dp0"
 if not exist node_modules (

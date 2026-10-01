@@ -1,10 +1,10 @@
 // Scene card on the canvas. Memoized; reads its own scene from the store by id.
 // Its takes are separate Take nodes to the right (wired from the 'take' handle); the card only shows a status line.
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
+import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, linkAssets, requestRun, takeLabel } from '../../actions'
+import { createAssetsFromFiles, linkAssets, linkTakes, requestRun, takeLabel, videoLabel } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene } from '../../core/types'
@@ -18,13 +18,17 @@ import {
   countScenes,
   hasAssetDrag,
   hasFileDrag,
+  hasTakeDrag,
   imageFiles,
+  inlineEditKeyBubbles,
   LOD_ZOOM,
   readAssetIds,
+  readTakeIds,
   sceneMapOf,
   STATUS_COLOR,
   STATUS_LABEL,
   takeIndexOf,
+  takesUsableFor,
   takeSummary,
   targetScenesFor,
   type TakeSummary,
@@ -43,6 +47,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   const status = useRuns((s) => takeSummary(s.takes, id).status)
   const progress = useRuns((s) => (takeSummary(s.takes, id).status === 'processing' ? takeSummary(s.takes, id).progress : 0))
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
+  // A video (take) is being dragged from the library / a take strip: light up the scenes that can use it as @video.
+  const takeTarget = useUI((s) => !!s.draggingTakeIds && takesUsableFor(s.draggingTakeIds, id))
   const multi = useUI((s) => (selected ? countScenes(s.selectedIds) : 0))
   const transform = scene?.settings.mode === 'transform'
   // Handles are added/removed with the H3 transform mode: re-measure them (not needed on mount).
@@ -54,28 +60,43 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     updateInternals(id)
   }, [id, transform, updateInternals])
 
-  // ---- HTML5 drop from the library (asset ids) or the OS (image files) ----
-  const [dropHint, setDropHint] = useState<string | null>(null)
+  // ---- HTML5 drop: library cards (asset ids), generated videos (take ids → @video) or OS image files ----
+  const [dropHint, setDropHint] = useState<DropHint | null>(null)
   const depth = useRef(0)
-  const accepts = (e: DragEvent) => hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)
+  const accepts = (e: DragEvent) => hasTakeDrag(e.dataTransfer) || hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)
   const onDragEnter = (e: DragEvent) => {
     if (!accepts(e)) return
     e.preventDefault()
     depth.current++
-    const n = targetScenesFor(id).length
-    const files = !hasAssetDrag(e.dataTransfer)
-    setDropHint(files ? (n > 1 ? `Tạo & nối ảnh vào ${n} cảnh` : 'Thả ảnh để tạo & nối') : n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối')
+    setDropHint(dropHintFor(id, e.dataTransfer))
   }
   const onDragOver = (e: DragEvent) => {
     if (!accepts(e)) return
+    // Always swallow it here so a refused video never falls through to the canvas (which would create a scene).
     e.preventDefault()
     e.stopPropagation()
+    if (dropHint?.kind === 'bad') e.dataTransfer.dropEffect = 'none'
   }
   const onDragLeave = (e: DragEvent) => {
     if (!accepts(e)) return
     depth.current = Math.max(0, depth.current - 1)
     if (!depth.current) setDropHint(null)
   }
+  // A cancelled or refused drop (Esc, "bad" video) may skip the matching dragleave: reset when any drag ends.
+  const hinting = !!dropHint
+  useEffect(() => {
+    if (!hinting) return
+    const reset = () => {
+      depth.current = 0
+      setDropHint(null)
+    }
+    window.addEventListener('dragend', reset, true)
+    window.addEventListener('drop', reset, true)
+    return () => {
+      window.removeEventListener('dragend', reset, true)
+      window.removeEventListener('drop', reset, true)
+    }
+  }, [hinting])
   const onDrop = (e: DragEvent) => {
     if (!accepts(e)) return
     e.preventDefault()
@@ -83,6 +104,13 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     depth.current = 0
     setDropHint(null)
     const targets = targetScenesFor(id)
+    if (hasTakeDrag(e.dataTransfer)) {
+      const takeIds = readTakeIds(e.dataTransfer)
+      useUI.getState().setDraggingTakes(null)
+      // linkTakes checks readiness, own-scene loops and model limits, and reports (multi-target like assets).
+      if (takeIds.length) linkTakes(targets, takeIds)
+      return
+    }
     const ids = readAssetIds(e.dataTransfer)
     useUI.getState().setDraggingAssets(null)
     if (ids && ids.length) {
@@ -95,7 +123,16 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
 
   if (!scene) return null
   const running = status === 'processing'
-  const cls = ['cv-scene', selected && 'is-selected', dropHint && 'is-drop', libraryDrag && 'is-drop-target', running && 'is-running', far && 'is-far']
+  const cls = [
+    'cv-scene',
+    selected && 'is-selected',
+    dropHint && 'is-drop',
+    dropHint && dropHint.kind !== 'asset' && `is-drop-${dropHint.kind}`,
+    libraryDrag && 'is-drop-target',
+    takeTarget && 'is-take-target',
+    running && 'is-running',
+    far && 'is-far',
+  ]
     .filter(Boolean)
     .join(' ')
   return (
@@ -109,8 +146,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
       {far ? <SceneFar scene={scene} status={status} /> : <SceneFull scene={scene} status={status} />}
 
       <div className="cv-drop-hint">
-        <Link2 size={14} />
-        {dropHint}
+        {dropHint?.kind === 'take' ? <Film size={14} /> : dropHint?.kind === 'bad' ? <Ban size={14} /> : <Link2 size={14} />}
+        {dropHint?.text}
       </div>
       <div className="cv-conn-hint asset">
         <Link2 size={14} />
@@ -146,6 +183,30 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
 }
 
 export const SceneNode = memo(SceneNodeView)
+
+interface DropHint {
+  /** asset: images / library cards (teal) · take: video → @video (purple) · bad: this video cannot be used here. */
+  kind: 'asset' | 'take' | 'bad'
+  text: string
+}
+
+/** What dropping this drag on the scene would do. Payload ids are unreadable before `drop`, so take drags are judged
+ *  by `ui.draggingTakeIds` (announced by the drag source); without it the drop is accepted and linkTakes reports. */
+function dropHintFor(sceneId: string, dt: DataTransfer): DropHint {
+  const targets = targetScenesFor(sceneId)
+  const n = targets.length
+  if (hasTakeDrag(dt)) {
+    const dragging = useUI.getState().draggingTakeIds
+    if (dragging?.length && !targets.some((sid) => takesUsableFor(dragging, sid))) {
+      const byId = takeIndexOf(useRuns.getState().takes).byId
+      const ready = dragging.some((t) => byId.get(t)?.status === 'completed')
+      return { kind: 'bad', text: ready ? 'Video của chính cảnh này — không dùng được' : 'Video chưa tạo xong' }
+    }
+    return { kind: 'take', text: n > 1 ? `Dùng làm @video cho ${n} cảnh đã chọn` : 'Thả để dùng làm @video' }
+  }
+  if (!hasAssetDrag(dt)) return { kind: 'asset', text: n > 1 ? `Tạo & nối ảnh vào ${n} cảnh` : 'Thả ảnh để tạo & nối' }
+  return { kind: 'asset', text: n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối' }
+}
 
 // ---------------------------------------------------------------------------------------------
 function SceneFar({ scene, status }: { scene: Scene; status: TakeSummary['status'] }) {
@@ -201,7 +262,12 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
   else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
   else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
   else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
-  else if (videoStatus && videoStatus.split(',').some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
+  else if (scene.videoRefs.length) {
+    // '' = the take no longer exists (e.g. an undo brought back a reference to a deleted video).
+    const sts = videoStatus.split(',')
+    if (sts.includes('')) reason = 'Video tham chiếu đã bị xoá (bỏ @video đó)'
+    else if (sts.some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
+  }
 
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0
   return (
@@ -316,7 +382,7 @@ function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[
             aria-label={`Bỏ video tham chiếu ${i + 1}`}
             onClick={(e) => {
               e.stopPropagation()
-              useProject.getState().removeVideoRef(sceneId, takeId, 'video ' + takeLabel(takeId))
+              useProject.getState().removeVideoRef(sceneId, takeId, videoLabel(takeId))
             }}
           >
             <X size={9} strokeWidth={3} />
@@ -363,7 +429,10 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
         onBlur={commit}
         onFocus={(e) => e.currentTarget.select()}
         onKeyDown={(e) => {
-          e.stopPropagation()
+          // Keep typing keys (Delete, Backspace, Enter, Escape…) away from the canvas and global shortcuts, but let
+          // Ctrl/Cmd combos through: useShortcuts handles Ctrl+S (save) and Ctrl+Enter (run) even while typing and
+          // ignores the other ones in a text field.
+          if (!inlineEditKeyBubbles(e)) e.stopPropagation()
           if (e.key === 'Enter') commit()
           else if (e.key === 'Escape') {
             pending.current = null

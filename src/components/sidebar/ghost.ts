@@ -6,8 +6,8 @@ export interface GhostItem {
   url: string | null
   letter: string
   color: string
-  /** 'round' = character avatar, 'square' = other assets, 'wide' = 16:9 video poster. */
-  shape: 'round' | 'square' | 'wide'
+  /** 'square' = library item (square avatars everywhere, characters included), 'wide' = 16:9 video poster. */
+  shape: 'square' | 'wide'
 }
 
 /** Offscreen element used as the drag image: overlapping thumbnails + label (+ count when several). */
@@ -18,7 +18,7 @@ function buildGhost(items: GhostItem[], label: string, video: boolean): HTMLElem
   stack.className = 'sb-drag-ghost-stack'
   for (const it of items.slice(0, 4)) {
     const av = document.createElement('span')
-    av.className = 'sb-drag-ghost-av' + (it.shape === 'round' ? '' : ' ' + it.shape)
+    av.className = 'sb-drag-ghost-av ' + it.shape
     av.style.background = it.color
     if (it.url) {
       const img = document.createElement('img')

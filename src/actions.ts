@@ -1,8 +1,8 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
-import JSZip from 'jszip'
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import type { AssetKind, XY } from './core/types'
+import { saveFiles, takeFiles, useDownloadPrefs, type FileToSave } from './lib/downloads'
 import { getBlob, putBlob } from './lib/imageStore'
 import { redo, undo, undoToastAction, useProject } from './store/project'
 import { useRuns } from './store/runs'
@@ -55,7 +55,7 @@ export function selectedTakeIds(): string[] {
   return selectedIds.filter((id) => takes.has(id))
 }
 
-/** "video S03·T2" — label used for a take in toasts and when a @video token loses its video. */
+/** "S03·T2" — short label of a take (toasts, file names). Tokens that lose their video become `videoLabel(id)`. */
 export function takeLabel(takeId: string): string {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
   if (!take) return 'video'
@@ -229,7 +229,7 @@ export function deleteSelection() {
 
   const links = refs.length + videoRefs.length + frames.length
   if (sceneIds.length || hideAssetIds.length || links) {
-    useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, takeLabel)
+    useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
   }
   let takesDeleted = 0
   if (takeIds.length) {
@@ -352,6 +352,7 @@ export async function downloadSceneZip(sceneId: string) {
   const c = compiledFor(sceneId)
   if (!c) return
   const { project, scene, compiled } = c
+  const { default: JSZip } = await import('jszip')
   const zip = new JSZip()
   zip.file('prompt.txt', compiled.text)
   for (const img of compiled.images) {
@@ -375,6 +376,83 @@ export async function downloadSceneZip(sceneId: string) {
   a.download = `${sceneCode(scene.order)}${scene.title ? '_' + scene.title.replace(/[<>:"/\\|?*]/g, '-') : ''}.zip`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+
+/** Text a @video_N token becomes when its video is removed from a scene. */
+export const videoLabel = (takeId: string) => 'video ' + takeLabel(takeId)
+
+// ---------------- downloading videos ----------------
+/** "S03_T2 - Ánh sáng trong hang" */
+export function takeFileBase(takeId: string): string {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take) return 'video'
+  const scene = useProject.getState().project.scenes.find((s) => s.id === take.sceneId)
+  const code = `${scene ? sceneCode(scene.order) : 'S00'}_T${take.number}`
+  return scene?.title ? `${code} - ${scene.title}` : code
+}
+
+/** One-click download of a finished take: the video (+ a .txt with the prompt that was sent). */
+export async function downloadTake(takeId: string, opts: { auto?: boolean } = {}) {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take || take.status !== 'completed') {
+    if (!opts.auto) toast('Video chưa tạo xong.', { tone: 'warning' })
+    return false
+  }
+  const files = await takeFiles(take, takeFileBase(takeId), useDownloadPrefs.getState().withPrompt)
+  if (!files.length) {
+    if (!opts.auto) toast('Không tìm thấy file video của take này.', { tone: 'error' })
+    return false
+  }
+  try {
+    const res = await saveFiles(files, !opts.auto)
+    toast(
+      res.to === 'folder'
+        ? `Đã lưu ${takeLabel(takeId)} vào thư mục “${res.folder}”.`
+        : `Đã tải ${takeLabel(takeId)}${files.length > 1 ? ' + prompt' : ''}.`,
+      { tone: 'success' },
+    )
+    return true
+  } catch (e) {
+    toast(`Không lưu được video: ${(e as Error).message}`, { tone: 'error' })
+    return false
+  }
+}
+
+/** The chosen take of every scene (starred, else the latest completed), in scene order. */
+export function chosenTakeIds(): string[] {
+  const takes = useRuns.getState().takes
+  const scenes = [...useProject.getState().project.scenes].sort((a, b) => a.order - b.order)
+  const out: string[] = []
+  for (const s of scenes) {
+    const own = takes.filter((t) => t.sceneId === s.id && t.status === 'completed')
+    const pick = own.find((t) => t.starred) ?? own.sort((a, b) => b.number - a.number)[0]
+    if (pick) out.push(pick.id)
+  }
+  return out
+}
+
+/** Zip of the chosen take of every scene (S01_T2 - title.webm …) + prompts.txt. */
+export async function downloadChosenTakesZip() {
+  const ids = chosenTakeIds()
+  if (!ids.length) {
+    toast('Chưa có video nào tạo xong.', { tone: 'warning' })
+    return
+  }
+  const { default: JSZip } = await import('jszip')
+  const zip = new JSZip()
+  const prompts: string[] = []
+  for (const id of ids) {
+    const take = useRuns.getState().takes.find((t) => t.id === id)!
+    const base = takeFileBase(id)
+    for (const f of await takeFiles(take, base, false)) zip.file(f.name, f.data)
+    prompts.push(`=== ${base} ===\n${take.promptSnapshot}`)
+  }
+  zip.file('prompts.txt', prompts.join('\n\n'))
+  const blob = await zip.generateAsync({ type: 'blob' })
+  const name = `${useProject.getState().project.name.replace(/[<>:"/\\|?*]/g, '-')} - video chọn.zip`
+  const file: FileToSave = { name, data: blob }
+  const res = await saveFiles([file], true)
+  toast(res.to === 'folder' ? `Đã lưu ${ids.length} video vào “${res.folder}”.` : `Đã tải ${ids.length} video (.zip).`, { tone: 'success' })
 }
 
 export { undo, redo }
