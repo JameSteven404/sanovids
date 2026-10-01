@@ -225,6 +225,12 @@ export function compileScene(project: Project, scene: Scene, opts: CompileOption
   const tokens = parseTokens(text)
   const usedImages = new Set<number>()
   const usedVideos = new Set<number>()
+  if (!sendsImages && tokens.some((t) => t.kind === 'image')) {
+    warnings.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh: các @image_N sẽ chỉ là chữ trong prompt.`)
+  }
+  if (!sendsVideos && tokens.some((t) => t.kind === 'video')) {
+    warnings.push(`Chế độ này của ${spec.name} không gửi video: các @video_N sẽ chỉ là chữ trong prompt.`)
+  }
   for (const t of tokens) {
     if (t.kind === 'image') {
       usedImages.add(t.n)

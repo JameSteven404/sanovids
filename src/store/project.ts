@@ -33,7 +33,7 @@ export const LAYOUT = {
   scenesY: 60,
   /** Take (video) nodes */
   takeW: 224,
-  takeH: 176,
+  takeH: 200,
   takeGapX: 16,
   /** Distance between the scene card's right edge and its first take. */
   takeOffsetX: 64,
@@ -229,7 +229,8 @@ export interface ProjectState {
   moveRefToScene: (assetId: string, fromSceneId: string, toSceneId: string) => void
 
   // video references (takes used as @video_N)
-  addVideoRefs: (sceneIds: string[], takeIds: string[]) => AddRefsResult
+  /** `exclude(sceneId, takeId)` skips pairs (e.g. a take of the scene itself). */
+  addVideoRefs: (sceneIds: string[], takeIds: string[], exclude?: (sceneId: string, takeId: string) => boolean) => AddRefsResult
   removeVideoRef: (sceneId: string, takeId: string, label?: string) => void
   moveVideoRef: (sceneId: string, fromIndex: number, toIndex: number) => void
   /** Move a video reference from one scene to another in one undo step (refused when the target is full). Returns false when refused. */
@@ -546,7 +547,7 @@ export const useProject = create<ProjectState>()(
         },
 
         // ---------------- video references ----------------
-        addVideoRefs: (sceneIds, takeIds) => {
+        addVideoRefs: (sceneIds, takeIds, exclude) => {
           const p = get().project
           const result: AddRefsResult = { added: 0, skipped: 0, scenes: 0 }
           const ids = new Set(sceneIds)
@@ -555,6 +556,7 @@ export const useProject = create<ProjectState>()(
             const limit = usesVideoRefs(s.settings) ? MODELS[s.settings.model].maxRefVideos : 0
             let videoRefs = s.videoRefs
             for (const t of takeIds) {
+              if (exclude?.(s.id, t)) continue
               if (videoRefs.includes(t)) continue
               if (videoRefs.length >= limit) {
                 result.skipped++
@@ -602,14 +604,22 @@ export const useProject = create<ProjectState>()(
           const dead = new Set(takeIds)
           const p = get().project
           if (!p.scenes.some((s) => s.videoRefs.some((t) => dead.has(t)))) return
-          mutate((pp) => ({
+          // Deleting a take is not undoable, so dropping its references must not become an undo step either
+          // (undo would otherwise bring back a @video that points at nothing).
+          const history = useProject.temporal.getState()
+          history.pause()
+          try {
+            mutate((pp) => ({
             ...pp,
             scenes: pp.scenes.map((s) =>
               s.videoRefs.some((t) => dead.has(t))
-                ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video')
-                : s,
-            ),
-          }))
+                  ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video')
+                  : s,
+              ),
+            }))
+          } finally {
+            history.resume()
+          }
         },
 
         deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [] }, videoLabel) =>

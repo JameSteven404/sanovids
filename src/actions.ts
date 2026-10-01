@@ -1,6 +1,8 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
+import { usesVideoRefs } from './core/models'
+import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
 import { saveFiles, takeFiles, useDownloadPrefs, type FileToSave } from './lib/downloads'
 import { getBlob, putBlob } from './lib/imageStore'
@@ -97,7 +99,8 @@ export function linkTakes(sceneIds: string[], takeIds: string[]) {
     toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó.', { tone: 'warning' })
     return
   }
-  const res = useProject.getState().addVideoRefs(targets, ready.filter((t) => targets.some((sid) => ownScene.get(t) !== sid)))
+  // Per pair: a scene never gets one of its own takes, even when several scenes and takes are linked at once.
+  const res = useProject.getState().addVideoRefs(targets, ready, (sid, t) => ownScene.get(t) === sid)
   if (res.added) {
     toast(`Đã nối ${ready.map(takeLabel).join(', ')} làm video tham chiếu → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped})` : ''}`, {
       tone: 'success',
@@ -180,6 +183,10 @@ export function createSceneFromTake(takeId: string, position?: XY) {
     toast('Cảnh gốc của video này đã bị xoá.', { tone: 'warning' })
     return null
   }
+  if (!usesVideoRefs(source.settings)) {
+    toast('Chế độ của cảnh gốc không nhận video tham chiếu. Đổi model/chế độ (ví dụ Seedance 2.5) rồi thử lại.', { tone: 'warning' })
+    return null
+  }
   const id = useProject.getState().createNextScene(source.id, position, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   focusNodes([id])
@@ -228,21 +235,25 @@ export function deleteSelection() {
   }
 
   const links = refs.length + videoRefs.length + frames.length
-  if (sceneIds.length || hideAssetIds.length || links) {
-    useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
-  }
-  let takesDeleted = 0
+  // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
     const usedBy = project.scenes.filter((s) => !deadScenes.has(s.id) && s.videoRefs.some((t) => takeIds.includes(t)))
-    const ok =
-      !usedBy.length ||
-      window.confirm(
+    if (
+      usedBy.length &&
+      !window.confirm(
         `${takeIds.length} video đang được dùng làm @video ở ${usedBy.length} cảnh (${usedBy.map((s) => sceneCode(s.order)).join(', ')}).\nXoá video và bỏ các tham chiếu đó?`,
       )
-    if (ok) {
-      useRuns.getState().removeTakes(takeIds)
-      takesDeleted = takeIds.length
-    }
+    )
+      return
+  }
+  // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
+  let takesDeleted = 0
+  if (takeIds.length) {
+    useRuns.getState().removeTakes(takeIds)
+    takesDeleted = takeIds.length
+  }
+  if (sceneIds.length || hideAssetIds.length || links) {
+    useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
   }
   if (!sceneIds.length && !hideAssetIds.length && !links && !takesDeleted) return
   useUI.getState().clearSelection()
@@ -315,13 +326,12 @@ export function restoreFromTake(takeId: string) {
     return
   }
   const live = new Set(runs.takes.map((t) => t.id))
-  const gone =
-    take.refsSnapshot.filter((id) => !project.assets.some((a) => a.id === id)).length + take.videoRefsSnapshot.filter((id) => !live.has(id)).length
+  // Tokens of references that no longer exist are renumbered / replaced, like removing a reference by hand.
+  const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber, videoLabel })
   // One store mutation = one undo step, so the toast's "Hoàn tác" reverts everything together.
-  useProject
-    .getState()
-    .restoreScene(take.sceneId, { prompt: take.rawPromptSnapshot, refs: take.refsSnapshot, videoRefs: take.videoRefsSnapshot, settings: take.settings }, live)
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${gone ? ` (bỏ ${gone} tham chiếu không còn tồn tại)` : ''}.`, {
+  useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
+  const extra = r.gone ? ` (bỏ ${r.gone} tham chiếu không còn tồn tại${r.renumbered ? ', đã đánh lại số @image/@video' : ''})` : ''
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${extra}.`, {
     tone: 'success',
     action: undoToastAction(),
   })
@@ -379,7 +389,7 @@ export async function downloadSceneZip(sceneId: string) {
 }
 
 /** Text a @video_N token becomes when its video is removed from a scene. */
-export const videoLabel = (takeId: string) => 'video ' + takeLabel(takeId)
+export const videoLabel = (takeId: string) => (useRuns.getState().takes.some((t) => t.id === takeId) ? 'video ' + takeLabel(takeId) : 'video')
 
 // ---------------- downloading videos ----------------
 /** "S03_T2 - Ánh sáng trong hang" */
