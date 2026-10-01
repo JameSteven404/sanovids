@@ -1,9 +1,12 @@
-// Scene prompt editor with @mentions.
+// Scene prompt editor. The prompt is sent exactly as written; media are referenced with numbered tokens
+// @image_N (scene.refs order) and @video_N (scene.videoRefs order).
 // - The textarea is controlled by LOCAL state so typing in a 6k+ char prompt stays instant; the store is
-//   updated through a short throttle (and immediately on blur / mention insert / Ctrl shortcuts).
-// - `project.setScenePrompt` auto-links newly @mentioned assets → toast with "Hoàn tác".
-// - Typing "@" opens a caret-anchored popup (mirror-div caret coordinates) with keyboard navigation.
-import { AtSign, ChevronDown, Link2, Maximize2, Minimize2, Plus, Unlink, UserPlus, X } from 'lucide-react'
+//   updated through a short throttle (and immediately on blur / token insert / Ctrl shortcuts).
+// - Tokens are highlighted INSIDE the textarea: the textarea text is transparent and a backdrop mirror layer
+//   (same font metrics, scroll synced) draws the colored text behind it.
+// - Typing "@" opens a caret-anchored popup: linked images, linked videos, library assets ("Nối & chèn").
+// - Legend under the textarea: one chip per image / video; click inserts, hover highlights occurrences.
+import { AtSign, Film, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -17,81 +20,111 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { linkAssets } from '../../actions'
-import { assetByTag, extractMentions, MENTION_RE, sceneCode } from '../../core/compile'
-import { usesRefs } from '../../core/models'
-import type { Asset, AssetKind } from '../../core/types'
-import { useProject } from '../../store/project'
-import { toast, useUI } from '../../store/ui'
-import { AssetAvatar } from '../common/Media'
-import { undoToastAction } from '../sidebar/shared'
+import { ensureAssetToken } from '../../actions'
+import { sceneCode } from '../../core/compile'
+import type { Asset } from '../../core/types'
+import { undoToastAction, useProject } from '../../store/project'
+import { toast } from '../../store/ui'
+import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates } from './caret'
-import { findMention, insertion, rankAssets, sameToken, type MentionToken } from './mentions'
-import { EMPTY_IDS, fmt, KIND_ICON, KIND_LABEL, KINDS, useDismiss, usePref } from './shared'
+import { useTakeInfos } from './hooks'
+import { findMention, sameToken, type MentionToken } from './mentions'
+import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
+import {
+  imageOptsFor,
+  insertAt,
+  legacyAssets,
+  mediaCountLabel,
+  replaceLegacyTags,
+  segmentPrompt,
+  suggestionToken,
+  suggestMedia,
+  type ImageOpt,
+  type LibraryOpt,
+  type MediaSuggestion,
+  type Seg,
+  type VideoOpt,
+} from './tokens'
 
 const COMMIT_MS = 160
-const VALID_TAG = /^[\p{L}\p{N}_]+$/u
 const FIELD_SIZING = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('field-sizing', 'content')
 
-/** Flush functions of mounted editors, so toast actions can commit pending text first. */
+/** Flush functions of mounted editors, so other panels can commit pending text before changing refs. */
 const flushers = new Map<string, () => void>()
 
-type Suggestion = { type: 'asset'; asset: Asset; linked: boolean } | { type: 'create'; tag: string }
+/** Commit the text being typed in the prompt editor of `sceneId` (no-op when none is mounted). */
+export function flushPromptEditor(sceneId: string) {
+  flushers.get(sceneId)?.()
+}
 
-/** Toast for auto-linked assets. "Hoàn tác" unlinks them and turns their @mentions into plain names
- *  (otherwise the next keystroke would link them again). */
+export type TokenHighlight = { kind: 'image' | 'video'; n: number } | null
+
+/** Toast for assets auto-linked by legacy @Tag mentions (pasted text). "Hoàn tác" unlinks them and turns
+ *  their @Tag mentions into plain names, in one undo step (otherwise the next edit would link them again). */
 function announceLinked(sceneId: string, linked: string[]) {
   const { project } = useProject.getState()
   const scene = project.scenes.find((s) => s.id === sceneId)
-  const tags = linked.map((id) => project.assets.find((a) => a.id === id)).filter((a): a is Asset => !!a).map((a) => '@' + a.tag)
-  if (!scene || !tags.length) return
-  toast(`Đã tự nối ${tags.join(', ')} vào ${sceneCode(scene.order)}`, {
+  const names = linked.map((id) => project.assets.find((a) => a.id === id)).filter((a): a is Asset => !!a).map((a) => '@' + a.tag)
+  if (!scene || !names.length) return
+  toast(`Đã tự nối ${names.join(', ')} vào ${sceneCode(scene.order)}. Bấm “Đổi @Tên → @image_N” bên dưới ô prompt để dùng số.`, {
     tone: 'success',
     action: { label: 'Hoàn tác', run: () => undoAutoLink(sceneId, linked) },
   })
 }
 
 function undoAutoLink(sceneId: string, linked: string[]) {
-  flushers.get(sceneId)?.()
+  flushPromptEditor(sceneId)
   const st = useProject.getState()
   const scene = st.project.scenes.find((s) => s.id === sceneId)
   if (!scene) return
   const assets = linked.map((id) => st.project.assets.find((a) => a.id === id)).filter((a): a is Asset => !!a)
-  const byTag = new Map(assets.map((a) => [a.tag.toLowerCase(), a]))
-  const prompt = scene.prompt.replace(MENTION_RE, (whole, tag: string) => byTag.get(tag.toLowerCase())?.name ?? whole)
-  st.updateScene(sceneId, { prompt, refs: scene.refs.filter((r) => !linked.includes(r)) })
+  const byTag = new Map(assets.map((a) => [a.tag.toLowerCase(), a.name]))
+  const { text } = replaceLegacyTags(scene.prompt, byTag)
+  st.restoreScene(sceneId, { prompt: text, refs: scene.refs.filter((r) => !linked.includes(r)), videoRefs: scene.videoRefs, settings: scene.settings })
   toast(`Đã bỏ nối ${assets.map((a) => '@' + a.tag).join(', ')} — giữ tên trong prompt.`, { action: undoToastAction() })
 }
 
 export function PromptEditor({ sceneId }: { sceneId: string }) {
   const storePrompt = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.prompt ?? '')
   const refs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.refs) ?? EMPTY_IDS
-  const sendsRefs = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    return sc ? usesRefs(sc.settings) : true
-  })
+  const videoRefs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.videoRefs) ?? EMPTY_IDS
   const assets = useProject((s) => s.project.assets)
+  const takeInfos = useTakeInfos(videoRefs)
+
+  const imageOpts = useMemo(() => imageOptsFor(assets, refs), [assets, refs])
+  const videoOpts = useMemo<VideoOpt[]>(
+    () => takeInfos.map((t, i) => ({ n: i + 1, takeId: t.id, label: t.label, posterId: t.posterId, status: t.status ?? 'deleted' })),
+    [takeInfos],
+  )
+  const libraryOpts = useMemo<LibraryOpt[]>(
+    () => assets.filter((a) => a.imageIds.length && !refs.includes(a.id)).map((a) => ({ assetId: a.id, name: a.name, tag: a.tag, kind: a.kind })),
+    [assets, refs],
+  )
 
   const [text, setText] = useState(storePrompt)
   const textRef = useRef(storePrompt)
   const committedRef = useRef(storePrompt)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  const backRef = useRef<HTMLDivElement>(null)
   const pendingSel = useRef<number | null>(null)
+  /** Last selection, so legend chips insert at the caret even after the textarea lost focus. */
+  const lastSel = useRef<{ start: number; end: number } | null>(null)
   const dismissedAt = useRef<number | null>(null)
-  /** The @token currently being typed (mirrors `mention` state, readable from timers). */
+  /** The "@xxx" currently being typed (mirrors `mention` state, readable from timers). */
   const mentionRef = useRef<MentionToken | null>(null)
   const [tall, setTall] = usePref('promptTall', false)
+  const [hl, setHl] = useState<TokenHighlight>(null)
 
   // ---------- commit to the store ----------
   const commit = useCallback(
-    (opts: { silent?: boolean; force?: boolean } = {}): string[] => {
+    (opts: { silent?: boolean } = {}): string[] => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
         timerRef.current = null
       }
       const next = textRef.current
-      if (!opts.force && next === committedRef.current) return []
+      if (next === committedRef.current) return []
       committedRef.current = next
       const linked = useProject.getState().setScenePrompt(sceneId, next)
       if (linked.length && !opts.silent) announceLinked(sceneId, linked)
@@ -103,8 +136,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     if (timerRef.current !== null) return
     const tick = () => {
       timerRef.current = null
-      // Hold the commit while an @token is still being typed, so "@Lumi…" on the way to "@Luminara"
-      // is not auto-linked. Blur, picking, Esc or a space end the token and let it through.
+      // Hold the commit while an "@xxx" is still being typed, so a half-typed legacy "@Lumi…" is not auto-linked.
       if (mentionRef.current) {
         timerRef.current = setTimeout(tick, COMMIT_MS)
         return
@@ -123,7 +155,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     }
   }, [sceneId, commit])
 
-  // ---------- external changes (undo, restore from take, import…) ----------
+  // ---------- external changes (undo, renumbering, restore from take…) ----------
   // Layout effect: replace the text before paint so the old prompt never flashes.
   useLayoutEffect(() => {
     if (storePrompt === committedRef.current) return
@@ -146,6 +178,19 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     setText(storePrompt)
   }, [storePrompt])
 
+  /** Keep the backdrop's text box identical to the textarea's (scrollbar width, scroll offset). */
+  const syncBackdrop = useCallback(() => {
+    const ta = taRef.current
+    const back = backRef.current
+    if (!ta || !back) return
+    const cs = getComputedStyle(ta)
+    const borders = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0)
+    const scrollbar = Math.max(0, ta.offsetWidth - ta.clientWidth - borders)
+    const pr = `${(parseFloat(cs.paddingRight) || 0) + scrollbar}px`
+    if (back.style.paddingRight !== pr) back.style.paddingRight = pr
+    back.scrollTop = ta.scrollTop
+  }, [])
+
   useLayoutEffect(() => {
     const ta = taRef.current
     if (!ta) return
@@ -158,9 +203,18 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       ta.style.height = 'auto'
       ta.style.height = `${ta.scrollHeight + 2}px`
     }
-  }, [text])
+    syncBackdrop()
+  }, [text, tall, syncBackdrop])
 
-  // ---------- mention popup ----------
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => syncBackdrop())
+    ro.observe(ta)
+    return () => ro.disconnect()
+  }, [syncBackdrop])
+
+  // ---------- "@" popup ----------
   const [mention, setMention] = useState<MentionToken | null>(null)
   const [active, setActive] = useState(0)
 
@@ -175,6 +229,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   /** `typing`: called from onChange (may open the popup). Caret moves only update or close it. */
   const updateMention = useCallback(
     (value: string, selStart: number, selEnd: number, typing: boolean) => {
+      lastSel.current = { start: selStart, end: selEnd }
       const raw = selStart === selEnd ? findMention(value, selStart) : null
       if (!typing && raw && raw.start !== mentionRef.current?.start) {
         setToken(null)
@@ -190,28 +245,22 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     [setToken],
   )
 
-  const suggestions = useMemo<Suggestion[]>(() => {
-    if (!mention) return []
-    const list: Suggestion[] = rankAssets(assets, mention.query, refs).map((asset) => ({ type: 'asset', asset, linked: refs.includes(asset.id) }))
-    const q = mention.query
-    if (q && VALID_TAG.test(q) && !assetByTag(assets, q)) list.push({ type: 'create', tag: q })
-    return list
-  }, [mention, assets, refs])
+  const suggestions = useMemo<MediaSuggestion[]>(
+    () => (mention ? suggestMedia(mention.query, imageOpts, videoOpts, libraryOpts) : []),
+    [mention, imageOpts, videoOpts, libraryOpts],
+  )
 
-  const insertTag = useCallback(
-    (tag: string, opts: { createdId?: string } = {}) => {
+  /** Replace text[start, end) with `token` (+ spacing) through the native undo stack, then commit. */
+  const replaceRange = useCallback(
+    (start: number, end: number, token: string) => {
       const ta = taRef.current
       const value = textRef.current
-      const tok = (ta && findMention(value, ta.selectionStart)) || mentionRef.current
-      if (!ta || !tok) return
-      const { insert, next, caret } = insertion(value, tok, tag)
-      setToken(null)
-      // If the caret ends right after the tag (e.g. before "."), don't reopen the popup for it.
-      dismissedAt.current = tok.start
+      if (!ta) return
+      const { insert, next, caret } = insertAt(value, start, end, token)
       // Caret target is applied by the layout effect after the re-render (set first: the render may happen inside execCommand).
       pendingSel.current = caret
       ta.focus()
-      ta.setSelectionRange(tok.start, tok.end)
+      ta.setSelectionRange(start, end)
       // execCommand keeps the textarea's native undo stack (Ctrl+Z) working; it fires onChange.
       let ok = false
       try {
@@ -223,33 +272,41 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
         textRef.current = next
         setText(next)
       }
-      // Commit now: auto-link immediately instead of after the typing throttle.
-      const linked = commit({ silent: !!opts.createdId })
-      if (opts.createdId) {
-        const { project } = useProject.getState()
-        const scene = project.scenes.find((s) => s.id === sceneId)
-        const asset = project.assets.find((a) => a.id === opts.createdId)
-        if (asset && scene) {
-          toast(`Đã tạo @${asset.tag} trong thư viện${linked.includes(asset.id) ? ` và nối vào ${sceneCode(scene.order)}` : ''}. Thêm ảnh để dùng làm tham chiếu.`, {
-            tone: 'success',
-            action: { label: 'Thêm ảnh', run: () => useUI.getState().openDialog({ kind: 'asset', assetId: asset.id }) },
-          })
-        }
-      }
+      commit()
     },
-    [commit, sceneId, setToken],
+    [commit],
   )
 
   const pick = useCallback(
-    (s: Suggestion) => {
-      if (s.type === 'asset') insertTag(s.asset.tag)
-      else {
-        const id = useProject.getState().addAsset({ name: s.tag, tag: s.tag, kind: 'character' })
-        const tag = useProject.getState().project.assets.find((a) => a.id === id)?.tag ?? s.tag
-        insertTag(tag, { createdId: id })
+    (s: MediaSuggestion) => {
+      const ta = taRef.current
+      const tok = (ta && findMention(textRef.current, ta.selectionStart)) || mentionRef.current
+      if (!tok) return
+      setToken(null)
+      // If the caret ends right after the token (e.g. before "."), don't reopen the popup for it.
+      dismissedAt.current = tok.start
+      let token = suggestionToken(s)
+      if (s.type === 'link') {
+        token = ensureAssetToken(sceneId, s.assetId)
+        if (!token) return
+        toast(`Đã nối ${s.name} vào cảnh → ${token}.`, { tone: 'success' })
       }
+      if (token) replaceRange(tok.start, tok.end, token)
     },
-    [insertTag],
+    [replaceRange, sceneId, setToken],
+  )
+
+  /** Legend chip: insert a token at the caret (or the last caret position). */
+  const insertAtCaret = useCallback(
+    (token: string) => {
+      const ta = taRef.current
+      if (!ta) return
+      const focused = document.activeElement === ta
+      const len = textRef.current.length
+      const sel = focused ? { start: ta.selectionStart, end: ta.selectionEnd } : (lastSel.current ?? { start: len, end: len })
+      replaceRange(Math.min(sel.start, len), Math.min(sel.end, len), token)
+    },
+    [replaceRange],
   )
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -285,91 +342,46 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     if (e.ctrlKey || e.metaKey) commit()
   }
 
-  // ---------- derived (deferred so long prompts don't slow typing) ----------
+  // ---------- highlight + derived ----------
+  const legacyTags = useMemo(() => new Set(assets.map((a) => a.tag.toLowerCase())), [assets])
+  // The backdrop must follow the textarea synchronously (its text is the only visible copy).
+  const segs = useMemo(() => segmentPrompt(text, imageOpts.length, videoRefs.length, legacyTags), [text, imageOpts.length, videoRefs.length, legacyTags])
+  // Everything else may lag behind fast typing.
   const deferredText = useDeferredValue(text)
   const charCount = useMemo(() => [...deferredText].length, [deferredText])
-  const mentionedTags = useMemo(() => extractMentions(deferredText), [deferredText])
-  const mentionedIds = useMemo(() => {
-    const set = new Set<string>()
-    for (const t of mentionedTags) {
-      const a = assetByTag(assets, t)
-      if (a) set.add(a.id)
+  const legacy = useMemo(() => legacyAssets(deferredText, assets), [deferredText, assets])
+
+  const fixLegacy = useCallback(() => {
+    commit({ silent: true })
+    const tokens = new Map<string, string>()
+    let noImage = 0
+    for (const a of legacyAssets(textRef.current, useProject.getState().project.assets)) {
+      const tok = a.imageIds.length ? ensureAssetToken(sceneId, a.id) : null
+      if (tok) tokens.set(a.tag.toLowerCase(), tok)
+      else noImage++
     }
-    return set
-  }, [mentionedTags, assets])
-
-  // "Bỏ nối @X?" — the last mention of a linked asset was removed. Never auto-unlink.
-  const prevMentioned = useRef<Set<string> | null>(null)
-  const [unlinkHints, setUnlinkHints] = useState<string[]>([])
-  useEffect(() => {
-    const prev = prevMentioned.current
-    prevMentioned.current = mentionedIds
-    setUnlinkHints((h) => {
-      let next = h.filter((id) => refs.includes(id) && !mentionedIds.has(id))
-      if (prev) for (const id of prev) if (!mentionedIds.has(id) && refs.includes(id) && !next.includes(id)) next = [...next, id]
-      return next.length === h.length && next.every((x, i) => x === h[i]) ? h : next
-    })
-  }, [mentionedIds, refs])
-
-  const activeQuery = mention?.query.toLowerCase() ?? null
-  const unknownTags = useMemo(
-    () => mentionedTags.filter((t) => !assetByTag(assets, t) && t.toLowerCase() !== activeQuery),
-    [mentionedTags, assets, activeQuery],
-  )
-  // Mentioned (committed text) but not linked — e.g. over the model's image limit, or unlinked by hand.
-  const notLinked = useMemo(() => {
-    if (!sendsRefs) return []
-    const out: Asset[] = []
-    for (const t of extractMentions(storePrompt)) {
-      const a = assetByTag(assets, t)
-      if (a && !refs.includes(a.id)) out.push(a)
+    const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+    if (!scene) return
+    const { text: next, replaced } = replaceLegacyTags(scene.prompt, tokens)
+    if (replaced) useProject.getState().updateScene(sceneId, { prompt: next })
+    if (replaced) {
+      toast(`Đã đổi ${replaced} @Tên thành @image_N${noImage ? ` (bỏ qua ${noImage} mục chưa có ảnh)` : ''}.`, { tone: 'success', action: undoToastAction() })
+    } else if (noImage) {
+      toast('Các mục được nhắc chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.', { tone: 'warning' })
     }
-    return out
-  }, [storePrompt, assets, refs, sendsRefs])
-
-  const relink = useCallback(() => {
-    textRef.current = taRef.current?.value ?? textRef.current
-    return commit({ force: true, silent: true })
-  }, [commit])
-
-  const onCreateUnknown = useCallback(
-    (tag: string, kind: AssetKind) => {
-      const id = useProject.getState().addAsset({ name: tag, tag, kind })
-      const linked = relink()
-      const { project } = useProject.getState()
-      const scene = project.scenes.find((s) => s.id === sceneId)
-      const asset = project.assets.find((a) => a.id === id)
-      if (!asset) return
-      toast(
-        `Đã tạo ${KIND_LABEL[kind].toLowerCase()} @${asset.tag}${linked.includes(id) && scene ? ` và nối vào ${sceneCode(scene.order)}` : ''}.`,
-        { tone: 'success', action: { label: 'Thêm ảnh', run: () => useUI.getState().openDialog({ kind: 'asset', assetId: id }) } },
-      )
-    },
-    [relink, sceneId],
-  )
-
-  const onUnlink = useCallback(
-    (assetId: string) => {
-      const a = useProject.getState().project.assets.find((x) => x.id === assetId)
-      useProject.getState().removeRef(sceneId, assetId)
-      setUnlinkHints((h) => h.filter((x) => x !== assetId))
-      if (a) toast(`Đã bỏ nối @${a.tag}.`, { action: undoToastAction() })
-    },
-    [sceneId],
-  )
-  const onDismissHint = useCallback((assetId: string) => setUnlinkHints((h) => h.filter((x) => x !== assetId)), [])
-  const onLink = useCallback((assetId: string) => linkAssets([sceneId], [assetId]), [sceneId])
+  }, [commit, sceneId])
 
   return (
     <div className="in-pe">
       <div className="in-pe-wrap">
+        <Backdrop backRef={backRef} segs={segs} hl={hl} />
         <textarea
           ref={taRef}
           className={`textarea in-pe-ta ${tall ? 'is-tall' : ''} ${FIELD_SIZING ? 'auto-size' : ''}`}
           value={text}
           spellCheck={false}
           rows={8}
-          placeholder={'Mô tả cảnh… Gõ @ để chèn nhân vật / bối cảnh từ thư viện.\nVí dụ: At dusk @Elara climbs the last rocky slope above @LangNui…'}
+          placeholder={'Mô tả cảnh… Gõ @ để chèn ảnh (@image_1) hoặc video (@video_1) tham chiếu.\nVí dụ: At dusk @image_1 climbs the last rocky slope above @image_2…'}
           onChange={(e) => {
             const v = e.target.value
             textRef.current = v
@@ -381,8 +393,10 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
             const ta = e.currentTarget
             updateMention(ta.value, ta.selectionStart, ta.selectionEnd, false)
           }}
+          onScroll={syncBackdrop}
           onKeyDown={onKeyDown}
-          onBlur={() => {
+          onBlur={(e) => {
+            lastSel.current = { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd }
             commit()
             setToken(null)
           }}
@@ -412,31 +426,129 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
         />
       )}
       <div className="in-pe-meta">
-        <span className="in-pe-legend">
+        <span className="in-pe-hint">
           <AtSign size={12} />
-          Gõ <span className="kbd">@</span> để chèn nhân vật — tự nối vào cảnh
+          Gõ <span className="kbd">@</span> để chèn ảnh / video tham chiếu
         </span>
-        <span className="mono faint" title="Số ký tự của riêng prompt cảnh (chưa gồm khối prompt)">
+        <span className="mono faint" title="Số ký tự của prompt (được gửi đúng như viết)">
           {fmt(charCount)} ký tự
         </span>
       </div>
-      <MentionChips
-        unknownTags={unknownTags}
-        unlinkHints={unlinkHints}
-        notLinked={notLinked}
-        assets={assets}
-        onCreate={onCreateUnknown}
-        onUnlink={onUnlink}
-        onDismissHint={onDismissHint}
-        onLink={onLink}
-      />
+      {legacy.length > 0 && <LegacyFix assets={legacy} imageOpts={imageOpts} onFix={fixLegacy} />}
+      <TokenLegend images={imageOpts} videos={videoOpts} onInsert={insertAtCaret} onHover={setHl} />
     </div>
   )
 }
 
+// ---------------- backdrop (token highlighting inside the textarea) ----------------
+const Backdrop = memo(function Backdrop({ backRef, segs, hl }: { backRef: RefObject<HTMLDivElement | null>; segs: Seg[]; hl: TokenHighlight }) {
+  return (
+    <div ref={backRef} className={`in-pe-back ${hl ? 'has-hl' : ''}`} aria-hidden="true">
+      {segs.map((s, i) => {
+        if (s.kind === 'text') return s.text
+        const isHl = !!hl && hl.kind === s.kind && hl.n === s.n
+        return (
+          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''} ${isHl ? 'is-hl' : ''}`}>
+            {s.text}
+          </mark>
+        )
+      })}
+      {/* A trailing newline needs something after it to take up a line, like it does in the textarea. */}
+      {'​'}
+    </div>
+  )
+})
+
+// ---------------- legacy @Tag quick fix ----------------
+const LegacyFix = memo(function LegacyFix({ assets, imageOpts, onFix }: { assets: Asset[]; imageOpts: ImageOpt[]; onFix: () => void }) {
+  const first = assets[0]
+  const slot = imageOpts.find((o) => o.assetId === first.id)
+  const label = assets.length === 1 ? `Đổi @${first.tag} → ${slot ? `@image_${slot.n}` : '@image_N'}` : `Đổi ${assets.length} @Tên → @image_N`
+  return (
+    <div className="in-pe-chips">
+      <span className="in-hint-chip is-legacy" title="Prompt đang dùng @Tên kiểu cũ. Vẫn chạy được (tự đổi khi gửi), nhưng @image_N rõ ràng hơn.">
+        <WandSparkles size={12} />
+        <span>
+          Có {assets.map((a) => '@' + a.tag).slice(0, 3).join(', ')}
+          {assets.length > 3 ? '…' : ''} kiểu cũ
+        </span>
+        <button type="button" className="in-hint-btn" onMouseDown={(e) => e.preventDefault()} onClick={onFix}>
+          {label}
+        </button>
+      </span>
+    </div>
+  )
+})
+
+// ---------------- legend ----------------
+const TokenLegend = memo(function TokenLegend({
+  images,
+  videos,
+  onInsert,
+  onHover,
+}: {
+  images: ImageOpt[]
+  videos: VideoOpt[]
+  onInsert: (token: string) => void
+  onHover: (h: TokenHighlight) => void
+}) {
+  if (!images.length && !videos.length) {
+    return <div className="in-legend-empty faint">Chưa có ảnh / video tham chiếu — gõ @ để nối từ thư viện, hoặc kéo nhân vật / video vào cảnh.</div>
+  }
+  const keep = (e: { preventDefault: () => void }) => e.preventDefault() // keep the caret in the textarea
+  return (
+    <div className="in-legend" onMouseLeave={() => onHover(null)}>
+      <span className="in-legend-count">{mediaCountLabel(images.length, videos.length)}</span>
+      {images.map((o) => (
+        <button
+          type="button"
+          key={'i' + o.n}
+          className="in-legend-chip is-image"
+          onMouseDown={keep}
+          onClick={() => onInsert(`@image_${o.n}`)}
+          onMouseEnter={() => onHover({ kind: 'image', n: o.n })}
+          onFocus={() => onHover({ kind: 'image', n: o.n })}
+          onBlur={() => onHover(null)}
+          title={`Chèn @image_${o.n} (${o.name}${o.imageTotal > 1 ? `, ảnh ${o.imageIndex + 1}/${o.imageTotal}` : ''})`}
+        >
+          <MediaImg id={o.imageId} className="in-legend-thumb" />
+          <span className="in-legend-tok">@image_{o.n}</span>
+          <span className="in-legend-name">
+            · {o.name}
+            {o.imageTotal > 1 ? ` (${o.imageIndex + 1})` : ''}
+          </span>
+        </button>
+      ))}
+      {videos.map((v) => (
+        <button
+          type="button"
+          key={'v' + v.n}
+          className={`in-legend-chip is-video ${v.status === 'completed' ? '' : 'is-off'}`}
+          onMouseDown={keep}
+          onClick={() => onInsert(`@video_${v.n}`)}
+          onMouseEnter={() => onHover({ kind: 'video', n: v.n })}
+          onFocus={() => onHover({ kind: 'video', n: v.n })}
+          onBlur={() => onHover(null)}
+          title={`Chèn @video_${v.n} (${v.label})`}
+        >
+          {v.posterId ? <MediaImg id={v.posterId} className="in-legend-thumb is-wide" /> : <Film size={12} className="in-legend-icon" />}
+          <span className="in-legend-tok">@video_{v.n}</span>
+          <span className="in-legend-name">· {v.label}</span>
+        </button>
+      ))}
+    </div>
+  )
+})
+
 // ---------------- popup ----------------
-const POP_W = 296
+const POP_W = 312
 type PopPos = { left: number; top?: number; bottom?: number }
+
+const GROUP_LABEL: Record<MediaSuggestion['type'], string> = {
+  image: 'Ảnh đã nối',
+  video: 'Video đã nối',
+  link: 'Thư viện — nối & chèn',
+}
 
 const MentionPopup = memo(function MentionPopup({
   taRef,
@@ -450,10 +562,10 @@ const MentionPopup = memo(function MentionPopup({
   taRef: RefObject<HTMLTextAreaElement | null>
   anchor: number
   query: string
-  items: Suggestion[]
+  items: MediaSuggestion[]
   active: number
   onHover: (i: number) => void
-  onPick: (s: Suggestion) => void
+  onPick: (s: MediaSuggestion) => void
 }) {
   const [pos, setPos] = useState<PopPos | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -468,7 +580,7 @@ const MentionPopup = memo(function MentionPopup({
       const r = ta.getBoundingClientRect()
       const x = r.left + c.left - ta.scrollLeft
       const yTop = r.top + c.top - ta.scrollTop
-      const estH = Math.min(380, 64 + count * 38)
+      const estH = Math.min(400, 72 + count * 40)
       const left = Math.round(Math.max(8, Math.min(x - 12, window.innerWidth - POP_W - 8)))
       const below = yTop + c.height + 6
       const next: PopPos =
@@ -508,37 +620,24 @@ const MentionPopup = memo(function MentionPopup({
         <AtSign size={11} />
         {query ? (
           <span>
-            Chèn <b>@{query}</b>…
+            Tìm <b>@{query}</b>…
           </span>
         ) : (
-          <span>Chèn tham chiếu</span>
+          <span>Chèn ảnh / video tham chiếu</span>
         )}
       </div>
       <div className="in-mention-list" ref={listRef}>
-        {items.map((s, i) =>
-          s.type === 'asset' ? (
-            <MentionItem key={s.asset.id} s={s} idx={i} active={i === active} onHover={onHover} onPick={onPick} />
-          ) : (
-            <button
-              type="button"
-              key="__create"
-              data-idx={i}
-              role="option"
-              aria-selected={i === active}
-              className={`in-mention-item is-create ${i === active ? 'active' : ''}`}
-              onMouseEnter={() => onHover(i)}
-              onClick={() => onPick(s)}
-            >
-              <span className="in-mention-plus">
-                <UserPlus size={13} />
-              </span>
-              <span className="in-mention-text">
-                <span className="in-mention-name">Tạo nhân vật @{s.tag}</span>
-                <span className="in-mention-tag">Thêm vào thư viện, ảnh bổ sung sau</span>
-              </span>
-            </button>
-          ),
-        )}
+        {items.map((s, i) => (
+          <MentionRow
+            key={s.type === 'image' ? 'i' + s.n : s.type === 'video' ? 'v' + s.n : 'l' + s.assetId}
+            s={s}
+            idx={i}
+            group={!query && (i === 0 || items[i - 1].type !== s.type) ? GROUP_LABEL[s.type] : null}
+            active={i === active}
+            onHover={onHover}
+            onPick={onPick}
+          />
+        ))}
       </div>
       <div className="in-mention-foot">
         <span>
@@ -557,151 +656,80 @@ const MentionPopup = memo(function MentionPopup({
   )
 })
 
-function MentionItem({
+function MentionRow({
   s,
   idx,
+  group,
   active,
   onHover,
   onPick,
 }: {
-  s: Extract<Suggestion, { type: 'asset' }>
+  s: MediaSuggestion
   idx: number
+  group: string | null
   active: boolean
   onHover: (i: number) => void
-  onPick: (s: Suggestion) => void
+  onPick: (s: MediaSuggestion) => void
 }) {
-  const Icon = KIND_ICON[s.asset.kind]
   return (
-    <button
-      type="button"
-      data-idx={idx}
-      role="option"
-      aria-selected={active}
-      className={`in-mention-item ${active ? 'active' : ''}`}
-      onMouseEnter={() => onHover(idx)}
-      onClick={() => onPick(s)}
-    >
-      <AssetAvatar asset={s.asset} size={26} />
+    <>
+      {group && <div className="in-mention-group">{group}</div>}
+      <button
+        type="button"
+        data-idx={idx}
+        role="option"
+        aria-selected={active}
+        className={`in-mention-item is-${s.type} ${active ? 'active' : ''}`}
+        onMouseEnter={() => onHover(idx)}
+        onClick={() => onPick(s)}
+      >
+        {s.type === 'image' && (
+          <>
+            <MediaImg id={s.imageId} className="in-mention-thumb" />
+            <span className="in-mention-text">
+              <span className="in-mention-name">
+                <span className="in-mention-tok">@image_{s.n}</span> · {s.name}
+              </span>
+              <span className="in-mention-tag">
+                {KIND_LABEL[s.kind]}
+                {s.imageTotal > 1 ? ` · ảnh ${s.imageIndex + 1}/${s.imageTotal}` : ''}
+              </span>
+            </span>
+            <ImageIcon size={12} className="in-mention-kindicon" />
+          </>
+        )}
+        {s.type === 'video' && (
+          <>
+            {s.posterId ? <MediaImg id={s.posterId} className="in-mention-thumb is-wide" /> : <span className="in-mention-thumb is-wide in-mention-nothumb"><Film size={12} /></span>}
+            <span className="in-mention-text">
+              <span className="in-mention-name">
+                <span className="in-mention-tok">@video_{s.n}</span> · {s.label}
+              </span>
+              <span className="in-mention-tag">{s.status === 'completed' ? 'Video tham chiếu' : 'Video chưa sẵn sàng'}</span>
+            </span>
+            <Film size={12} className="in-mention-kindicon" />
+          </>
+        )}
+        {s.type === 'link' && <LibraryRow s={s} />}
+      </button>
+    </>
+  )
+}
+
+function LibraryRow({ s }: { s: Extract<MediaSuggestion, { type: 'link' }> }) {
+  const asset = useProject((st) => st.project.assets.find((a) => a.id === s.assetId))
+  return (
+    <>
+      {asset ? <AssetAvatar asset={asset} size={26} /> : <span className="in-mention-thumb" />}
       <span className="in-mention-text">
-        <span className="in-mention-name">{s.asset.name}</span>
-        <span className="in-mention-tag">@{s.asset.tag}</span>
+        <span className="in-mention-name">{s.name}</span>
+        <span className="in-mention-tag">
+          @{s.tag} · {KIND_LABEL[s.kind]}
+        </span>
       </span>
-      {s.linked && (
-        <span className="in-mention-linked" title="Đã nối vào cảnh">
-          <Link2 size={11} />
-        </span>
-      )}
-      <span className="in-mention-kind" title={KIND_LABEL[s.asset.kind]}>
-        <Icon size={11} />
-        {KIND_LABEL[s.asset.kind]}
+      <span className="in-mention-link" title="Nối vào cảnh rồi chèn số @image_N">
+        <Link2 size={11} /> Nối & chèn
       </span>
-    </button>
-  )
-}
-
-// ---------------- chips under the editor ----------------
-const MentionChips = memo(function MentionChips({
-  unknownTags,
-  unlinkHints,
-  notLinked,
-  assets,
-  onCreate,
-  onUnlink,
-  onDismissHint,
-  onLink,
-}: {
-  unknownTags: string[]
-  unlinkHints: string[]
-  notLinked: Asset[]
-  assets: Asset[]
-  onCreate: (tag: string, kind: AssetKind) => void
-  onUnlink: (assetId: string) => void
-  onDismissHint: (assetId: string) => void
-  onLink: (assetId: string) => void
-}) {
-  const hintAssets = unlinkHints.map((id) => assets.find((a) => a.id === id)).filter((a): a is Asset => !!a)
-  if (!unknownTags.length && !hintAssets.length && !notLinked.length) return null
-  return (
-    <div className="in-pe-chips">
-      {hintAssets.map((a) => (
-        <span key={'u' + a.id} className="in-hint-chip is-unlink">
-          <AssetAvatar asset={a} size={18} />
-          <span>
-            Bỏ nối <b>@{a.tag}</b>?
-          </span>
-          <button type="button" className="in-hint-btn" onClick={() => onUnlink(a.id)} title="Không còn nhắc trong prompt — bỏ khỏi tham chiếu của cảnh">
-            <Unlink size={11} /> Bỏ nối
-          </button>
-          <button type="button" className="in-hint-x" onClick={() => onDismissHint(a.id)} aria-label="Giữ nối" title="Giữ nối">
-            <X size={11} />
-          </button>
-        </span>
-      ))}
-      {notLinked.map((a) => (
-        <span key={'n' + a.id} className="in-hint-chip is-notlinked" title={`@${a.tag} có trong prompt nhưng chưa được nối — sẽ được thay bằng tên "${a.name}"`}>
-          <AssetAvatar asset={a} size={18} />
-          <span>
-            <b>@{a.tag}</b> chưa nối
-          </span>
-          <button type="button" className="in-hint-btn" onClick={() => onLink(a.id)}>
-            <Link2 size={11} /> Nối
-          </button>
-        </span>
-      ))}
-      {unknownTags.map((t) => (
-        <UnknownChip key={'x' + t} tag={t} onCreate={onCreate} />
-      ))}
-    </div>
-  )
-})
-
-function UnknownChip({ tag, onCreate }: { tag: string; onCreate: (tag: string, kind: AssetKind) => void }) {
-  const [menu, setMenu] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  return (
-    <span className="in-hint-chip is-unknown" title={`@${tag} không có trong thư viện — sẽ giữ nguyên chữ khi gửi`}>
-      <span className="in-unknown-at">@{tag}</span>
-      <button type="button" className="in-hint-btn" onClick={() => onCreate(tag, 'character')}>
-        <Plus size={11} /> Tạo nhân vật @{tag}
-      </button>
-      <button ref={btnRef} type="button" className="in-hint-x" onClick={() => setMenu((m) => !m)} aria-label="Chọn loại" title="Tạo loại khác…">
-        <ChevronDown size={11} />
-      </button>
-      {menu && <KindMenu menuRef={menuRef} ignoreRef={btnRef} onClose={() => setMenu(false)} onPick={(k) => onCreate(tag, k)} />}
-    </span>
-  )
-}
-
-function KindMenu({
-  menuRef,
-  ignoreRef,
-  onClose,
-  onPick,
-}: {
-  menuRef: RefObject<HTMLDivElement | null>
-  ignoreRef: RefObject<HTMLElement | null>
-  onClose: () => void
-  onPick: (k: AssetKind) => void
-}) {
-  useDismiss(menuRef, onClose, ignoreRef)
-  return (
-    <div ref={menuRef} className="in-menu">
-      {KINDS.map((k) => {
-        const Icon = KIND_ICON[k]
-        return (
-          <button
-            type="button"
-            key={k}
-            onClick={() => {
-              onClose()
-              onPick(k)
-            }}
-          >
-            <Icon size={13} /> {KIND_LABEL[k]}
-          </button>
-        )
-      })}
-    </div>
+    </>
   )
 }

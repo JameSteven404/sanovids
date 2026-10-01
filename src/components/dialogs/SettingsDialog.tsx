@@ -1,12 +1,13 @@
-import { Coins, Download, FileUp, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { DEFAULT_REFERENCES_TEMPLATE } from '../../core/compile'
+import { AppWindow, Coins, Download, FileUp, Globe, LoaderCircle, MonitorCheck, MonitorDown, Sparkles } from 'lucide-react'
+import { useRef, useState, type ReactNode } from 'react'
+import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
 import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
+import { errorText } from './shared'
 
 const SPEEDS: { id: MockSpeed; label: string; hint: string }[] = [
   { id: 'fast', label: 'Nhanh', hint: '3–6 giây / video' },
@@ -14,15 +15,23 @@ const SPEEDS: { id: MockSpeed; label: string; hint: string }[] = [
   { id: 'slow', label: 'Chậm', hint: '22–38 giây / video' },
 ]
 
-const SAMPLE_LIST = '@image_1 = Elara (young woman, auburn braid); @image_2 = Làng núi'
-
 export function SettingsDialog() {
   const closeDialog = useUI((s) => s.closeDialog)
   return (
-    <Modal title="Cài đặt" onClose={closeDialog} size="wide" footer={<button className="btn btn-primary" onClick={closeDialog}>Xong</button>}>
+    <Modal
+      title="Cài đặt"
+      onClose={closeDialog}
+      size="wide"
+      footer={
+        <button className="btn btn-primary" onClick={closeDialog}>
+          Xong
+        </button>
+      }
+    >
       <div className="dg-settings">
         <div className="dg-settings-col">
           <PromptSettings />
+          <AppSettings />
           <DataSettings onDone={closeDialog} />
         </div>
         <div className="dg-settings-col">
@@ -67,68 +76,85 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
 // ---------------------------------------------------------------------------------------------
 
 function PromptSettings() {
-  const settings = useProject((s) => s.project.settings)
+  const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
   const update = useProject((s) => s.updateProjectSettings)
-  const [tpl, setTpl] = useState(settings.referencesTemplate)
-  const tplRef = useRef(tpl)
-  tplRef.current = tpl
-  const projectId = useRef(useProject.getState().project.id)
+  return (
+    <Section title="Prompt" desc="Prompt được gửi đúng như bạn viết. Ảnh và video tham chiếu được gọi bằng số: @image_1, @video_1…">
+      <Toggle
+        checked={autoRenumber}
+        onChange={(v) => update({ autoRenumber: v })}
+        label="Tự đánh lại số @image/@video khi đổi tham chiếu"
+        hint="Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh/video (hoàn tác được). Tắt nếu muốn tự quản lý số."
+      />
+    </Section>
+  )
+}
 
-  // Template edits are committed on blur / close (one undo step instead of one per key).
-  // Skipped if another project was opened meanwhile (import / new demo from this dialog).
-  const commit = () => {
-    const { project } = useProject.getState()
-    if (project.id !== projectId.current) return
-    if (tplRef.current !== project.settings.referencesTemplate) useProject.getState().updateProjectSettings({ referencesTemplate: tplRef.current })
+function AppSettings() {
+  const { canInstall, installed, desktop, promptInstall } = usePwaInstall()
+  const [busy, setBusy] = useState(false)
+  const info = desktop ? desktopInfo() : null
+
+  const install = async () => {
+    setBusy(true)
+    try {
+      await promptInstall()
+    } finally {
+      setBusy(false)
+    }
   }
-  useEffect(() => () => commit(), [])
 
-  const missingToken = !tpl.includes('{list}')
-  const preview = (tpl || DEFAULT_REFERENCES_TEMPLATE).replace('{list}', SAMPLE_LIST)
+  let icon: ReactNode
+  let title: string
+  let sub: string
+  if (desktop) {
+    icon = <MonitorCheck size={17} />
+    title = 'Đang chạy dạng app (bản desktop)'
+    sub = info?.version ? `Phiên bản ${info.version}` : 'Bản cài trên máy tính'
+  } else if (installed) {
+    icon = <AppWindow size={17} />
+    title = 'Đang chạy dạng app'
+    sub = 'Mở từ biểu tượng app, chạy được cả khi không có mạng.'
+  } else {
+    icon = <Globe size={17} />
+    title = 'Đang chạy trên trình duyệt'
+    sub = canInstall ? 'Có thể cài thành app: cửa sổ riêng, mở nhanh, dùng offline.' : 'Cài thành app để có cửa sổ riêng và dùng offline.'
+  }
 
   return (
-    <Section title="Prompt cuối" desc="Những phần được tự động thêm khi biên dịch prompt của mỗi cảnh.">
-      <Toggle
-        checked={settings.autoReferences}
-        onChange={(v) => update({ autoReferences: v })}
-        label="Tự thêm đoạn References"
-        hint="Liệt kê @image_N = tên (mô tả) theo đúng thứ tự ảnh được nối."
-      />
-      <Toggle
-        checked={settings.autoContinuity}
-        onChange={(v) => update({ autoContinuity: v })}
-        label="Tự thêm câu nối tiếp cảnh trước"
-        hint="“Continue directly from the previous scene (S03: …)” khi cảnh có Tiếp nối từ."
-      />
-      <div className={`dg-field ${settings.autoReferences ? '' : 'disabled'}`}>
-        <div className="dg-label-row">
-          <span className="label">Mẫu đoạn References</span>
-          <button
-            className="btn btn-ghost btn-sm"
-            disabled={tpl === DEFAULT_REFERENCES_TEMPLATE}
-            onClick={() => {
-              setTpl(DEFAULT_REFERENCES_TEMPLATE)
-              tplRef.current = DEFAULT_REFERENCES_TEMPLATE
-              commit()
-            }}
-          >
-            <RotateCcw size={12} /> Mặc định
+    <Section title="Ứng dụng" desc="Dùng ngay trên web, hoặc cài thành app trên máy.">
+      <div className="dg-app">
+        <div className="dg-app-status">
+          <span className={`dg-app-icon${installed || desktop ? ' on' : ''}`}>{icon}</span>
+          <span>
+            <b>{title}</b>
+            <small>{sub}</small>
+          </span>
+        </div>
+        {canInstall && !installed && (
+          <button className="btn btn-primary" disabled={busy} onClick={() => void install()}>
+            {busy ? <LoaderCircle size={14} className="dg-spin" /> : <Download size={14} />} Cài app
           </button>
-        </div>
-        <textarea className="textarea dg-tpl" rows={3} value={tpl} onChange={(e) => setTpl(e.target.value)} onBlur={commit} spellCheck={false} />
-        <div className="dg-field-hint">
-          <code>{'{list}'}</code> được thay bằng danh sách ảnh tham chiếu.
-          {missingToken && (
-            <span className="dg-warn-inline">
-              <TriangleAlert size={12} /> Thiếu <code>{'{list}'}</code> — danh sách sẽ không xuất hiện.
-            </span>
-          )}
-        </div>
-        <div className="dg-tpl-preview">
-          <span className="label">Ví dụ</span>
-          <p>{preview}</p>
-        </div>
+        )}
       </div>
+      {!canInstall && !installed && !desktop && (
+        <div className="dg-field-hint">
+          Chrome / Edge / Brave: bấm biểu tượng cài đặt trên thanh địa chỉ, hoặc menu ⋮ → “Cài đặt Bàn Dựng Phim”. Trang phải được mở qua http(s).
+        </div>
+      )}
+      {!desktop && (
+        <div className="dg-app-exe">
+          <MonitorDown size={16} />
+          <div>
+            <b>Bản cài Windows (.exe)</b>
+            <p>
+              Trong thư mục dự án chạy <code>npm run dist:win</code> → thư mục <code>release/</code> có bộ cài <code>Ban-Dung-Phim-Setup-…exe</code> và bản portable (chạy
+              không cần cài). Chép sang máy khác để cài; nếu Windows SmartScreen cảnh báo, chọn “More info → Run anyway”.
+            </p>
+          </div>
+        </div>
+      )}
+      <div className="dg-field-hint">Mỗi trình duyệt / bản app giữ dữ liệu riêng. Chuyển máy: Xuất dự án ở mục Dữ liệu rồi Nhập file .bdp.json ở máy kia.</div>
     </Section>
   )
 }
@@ -215,31 +241,36 @@ function CreditSettings() {
   )
 }
 
+type DataJob = 'export' | 'import' | 'demo'
+
 function DataSettings({ onDone }: { onDone: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [busy, setBusy] = useState<null | 'export' | 'import' | 'demo'>(null)
+  const [busy, setBusy] = useState<DataJob | null>(null)
 
-  const run = async (kind: 'export' | 'import' | 'demo', fn: () => Promise<void>, ok: string, close = false) => {
+  const run = async (kind: DataJob, fn: () => Promise<void>, ok: string, close = false) => {
+    if (busy) return
     setBusy(kind)
     try {
       await fn()
       toast(ok, { tone: 'success' })
       if (close) onDone()
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Có lỗi xảy ra.', { tone: 'error' })
+      toast(errorText(e), { tone: 'error' })
     } finally {
       setBusy(null)
     }
   }
 
+  const icon = (kind: DataJob, idle: ReactNode) => (busy === kind ? <LoaderCircle size={14} className="dg-spin" /> : idle)
+
   return (
-    <Section title="Dữ liệu" desc="Dự án được lưu tự động trong trình duyệt này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển máy.">
-      <div className="dg-data-actions">
-        <button className="btn" disabled={!!busy} onClick={() => run('export', exportProjectFile, 'Đã xuất dự án (.bdp.json).')}>
-          <Download size={14} /> {busy === 'export' ? 'Đang xuất…' : 'Xuất dự án'}
+    <Section title="Dữ liệu" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác.">
+      <div className="dg-data-actions" aria-busy={!!busy}>
+        <button className="btn" disabled={!!busy} onClick={() => void run('export', exportProjectFile, 'Đã xuất dự án (.bdp.json).')}>
+          {icon('export', <Download size={14} />)} {busy === 'export' ? 'Đang xuất…' : 'Xuất dự án'}
         </button>
         <button className="btn" disabled={!!busy} onClick={() => fileRef.current?.click()}>
-          <FileUp size={14} /> {busy === 'import' ? 'Đang nhập…' : 'Nhập file .bdp.json'}
+          {icon('import', <FileUp size={14} />)} {busy === 'import' ? 'Đang nhập…' : 'Nhập file .bdp.json'}
         </button>
         <input
           ref={fileRef}
@@ -252,11 +283,11 @@ function DataSettings({ onDone }: { onDone: () => void }) {
             if (f) void run('import', () => importProjectFile(f), `Đã mở dự án từ “${f.name}”.`, true)
           }}
         />
-        <button className="btn" disabled={!!busy} onClick={() => run('demo', createDemo, 'Đã tạo dự án demo mới.', true)}>
-          <Sparkles size={14} /> {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án demo'}
+        <button className="btn" disabled={!!busy} onClick={() => void run('demo', createDemo, 'Đã tạo dự án demo mới.', true)}>
+          {icon('demo', <Sparkles size={14} />)} {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án demo'}
         </button>
       </div>
-      <div className="dg-field-hint">“Tạo lại dự án demo” mở một dự án demo mới; dự án hiện tại vẫn nằm trong danh sách Dự án.</div>
+      <div className="dg-field-hint">“Tạo lại dự án demo” mở một dự án demo mới; dự án hiện tại vẫn nằm trong danh sách Dự án. File nhập vào mở thành dự án mới (không kèm video đã tạo).</div>
     </Section>
   )
 }

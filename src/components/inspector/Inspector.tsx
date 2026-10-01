@@ -1,18 +1,21 @@
 // Right panel. Switches on the selection:
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
-// · several assets → short summary · nothing → tips.
-import { FileText, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
+// · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
+import { CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
-import { newScene } from '../../actions'
+import { createSceneFromTake, focusNodes, newScene } from '../../actions'
+import { sceneCode } from '../../core/compile'
 import type { Project } from '../../core/types'
 import { useProject } from '../../store/project'
+import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
-import { AssetChip } from '../common/Media'
+import { AssetChip, MediaImg } from '../common/Media'
 import { useFileDropGuard } from '../sidebar/shared'
 import { AssetInspector } from './AssetInspector'
 import './inspector.css'
 import { MultiSceneInspector } from './MultiSceneInspector'
 import { SceneInspector } from './SceneInspector'
+import { STATUS_TEXT, useTakeInfos } from './hooks'
 import { EMPTY_IDS } from './shared'
 
 function pickScenes(p: Project, selected: string[]): string[] {
@@ -32,6 +35,13 @@ export function Inspector() {
   const librarySelection = useUI((s) => s.librarySelection)
   const sceneIds = useProject(useShallow((s) => pickScenes(s.project, selectedIds)))
   const assetIds = useProject(useShallow((s) => pickAssets(s.project, selectedIds, librarySelection)))
+  const takeIds = useRuns(
+    useShallow((s) => {
+      if (!selectedIds.length) return EMPTY_IDS
+      const ids = new Set(s.takes.map((t) => t.id))
+      return selectedIds.filter((id) => ids.has(id))
+    }),
+  )
   useFileDropGuard()
 
   let content
@@ -39,6 +49,7 @@ export function Inspector() {
   else if (sceneIds.length > 1) content = <MultiSceneInspector sceneIds={sceneIds} />
   else if (assetIds.length === 1) content = <AssetInspector key={assetIds[0]} assetId={assetIds[0]} />
   else if (assetIds.length > 1) content = <MultiAssetSummary assetIds={assetIds} />
+  else if (takeIds.length) content = <TakeSummary takeIds={takeIds} />
   else content = <EmptyInspector />
 
   return (
@@ -73,6 +84,76 @@ function MultiAssetSummary({ assetIds }: { assetIds: string[] }) {
   )
 }
 
+/** Take (video) nodes selected on the canvas: what they are and how to continue from them. */
+function TakeSummary({ takeIds }: { takeIds: string[] }) {
+  const infos = useTakeInfos(takeIds)
+  const usedBy = useProject(
+    useShallow((s) =>
+      s.project.scenes
+        .filter((sc) => sc.videoRefs.some((t) => takeIds.includes(t)))
+        .sort((a, b) => a.order - b.order)
+        .map((sc) => sc.id + '' + sc.order),
+    ),
+  )
+  const single = infos.length === 1 ? infos[0] : null
+  return (
+    <div className="in-empty in-take-sum">
+      {single?.posterId ? (
+        <button type="button" className="in-take-poster" onClick={() => useUI.getState().openDialog({ kind: 'take', takeId: single.id })} title="Xem video">
+          <MediaImg id={single.posterId} className="media-img" />
+        </button>
+      ) : (
+        <div className="in-empty-icon">
+          <Film size={18} />
+        </div>
+      )}
+      <h3>{single ? `Video ${single.label}` : `${infos.length} video đang chọn`}</h3>
+      {single?.status && (
+        <p className="muted">
+          <span className={`status-dot ${single.status}`} /> {STATUS_TEXT[single.status]}
+          {single.status === 'processing' ? ` · ${single.progress}%` : ''}
+        </p>
+      )}
+      {usedBy.length > 0 && (
+        <div className="in-chip-wrap">
+          <span className="faint">Dùng làm @video ở</span>
+          {usedBy.map((k) => {
+            const [id, order] = k.split('')
+            return (
+              <button
+                type="button"
+                key={id}
+                className="in-code-chip mono"
+                onClick={() => {
+                  useUI.getState().select([id])
+                  focusNodes([id])
+                }}
+              >
+                {sceneCode(Number(order))}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {single && (
+        <div className="in-empty-actions">
+          <button type="button" className="btn" onClick={() => useUI.getState().openDialog({ kind: 'take', takeId: single.id })}>
+            <Eye size={14} /> Xem
+          </button>
+          {single.status === 'completed' && (
+            <button type="button" className="btn btn-primary" onClick={() => createSceneFromTake(single.id)}>
+              <CornerDownRight size={14} /> Tạo cảnh tiếp nối
+            </button>
+          )}
+        </div>
+      )}
+      <p className="muted">
+        Kéo dây từ video sang một cảnh để dùng làm <span className="mono">@video_N</span>, hoặc chọn video + cảnh rồi bấm <span className="kbd">C</span>.
+      </p>
+    </div>
+  )
+}
+
 const SHORTCUTS: [string, string][] = [
   ['N', 'Cảnh mới / cảnh tiếp theo'],
   ['C', 'Nối mục đang chọn vào cảnh'],
@@ -84,7 +165,8 @@ const SHORTCUTS: [string, string][] = [
 ]
 
 function EmptyInspector() {
-  const counts = useProject(useShallow((s) => [s.project.scenes.length, s.project.assets.length, s.project.blocks.length]))
+  const counts = useProject(useShallow((s) => [s.project.scenes.length, s.project.assets.length]))
+  const takeCount = useRuns((s) => s.takes.length)
   const openDialog = useUI((s) => s.openDialog)
   return (
     <div className="in-empty">
@@ -101,7 +183,7 @@ function EmptyInspector() {
           <b>{counts[1]}</b> tham chiếu
         </span>
         <span>
-          <b>{counts[2]}</b> khối prompt
+          <b>{takeCount}</b> video
         </span>
       </div>
 
@@ -116,8 +198,9 @@ function EmptyInspector() {
             Chọn nhiều nhân vật + nhiều cảnh rồi bấm <span className="kbd">C</span> — nối tất cả một lần.
           </li>
           <li>
-            Gõ <span className="kbd">@Tên</span> trong prompt — tự nối vào cảnh.
+            Gõ <span className="kbd">@</span> trong prompt để chèn <span className="mono">@image_1</span>, <span className="mono">@video_1</span>… hoặc nối & chèn từ thư viện.
           </li>
+          <li>Kéo dây từ một video (take) sang cảnh khác để dùng làm video tham chiếu.</li>
         </ul>
       </div>
 

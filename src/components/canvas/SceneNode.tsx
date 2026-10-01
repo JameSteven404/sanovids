@@ -1,9 +1,11 @@
 // Scene card on the canvas. Memoized; reads its own scene from the store by id.
+// Its takes are separate Take nodes to the right (wired from the 'take' handle); the card only shows a status line.
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
+import { Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
-import { assetByTag, compileScene, sceneCode } from '../../core/compile'
+import { useShallow } from 'zustand/react/shallow'
+import { createAssetsFromFiles, linkAssets, requestRun, takeLabel } from '../../actions'
+import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene } from '../../core/types'
 import { useMediaUrl } from '../../lib/imageStore'
@@ -11,7 +13,6 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { TakeStrip } from '../runs/TakeStrip'
 import {
   assetMapOf,
   countScenes,
@@ -23,6 +24,7 @@ import {
   sceneMapOf,
   STATUS_COLOR,
   STATUS_LABEL,
+  takeIndexOf,
   takeSummary,
   targetScenesFor,
   type TakeSummary,
@@ -32,6 +34,7 @@ import './canvas.css'
 export type SceneFlowNode = Node<Record<string, unknown>, 'scene'>
 
 const MAX_AVATARS = 6
+const MAX_VIDEO_THUMBS = 4
 const EMPTY_ASSETS: Asset[] = []
 
 function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
@@ -113,13 +116,21 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
         <Link2 size={14} />
         {multi > 1 ? `Nối vào ${multi} cảnh đã chọn` : 'Thả để nối'}
       </div>
-      <div className="cv-conn-hint scene">
-        <Link2 size={14} />
-        Nối tiếp sau cảnh này
+      <div className="cv-conn-hint take">
+        <Film size={14} />
+        {multi > 1 ? `Dùng làm @video cho ${multi} cảnh` : 'Dùng làm @video'}
       </div>
 
-      <Handle type="target" position={Position.Left} id="ref" className="cv-h cv-h-ref" isConnectableStart={false} title="Tham chiếu: kéo nhân vật vào đây" />
-      <Handle type="source" position={Position.Right} id="seq" className="cv-h cv-h-seq" title="Kéo sang cảnh khác: nối tiếp (cảnh sau)" />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="ref"
+        className="cv-h cv-h-ref"
+        isConnectableStart={false}
+        title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
+      />
+      {/* Takes are created by running the scene, never by wiring: this handle only anchors the 'out' wires. */}
+      <Handle type="source" position={Position.Right} id="take" className="cv-h cv-h-takes" isConnectable={false} title="Các video (take) tạo từ cảnh này" />
       {transform && (
         <>
           <Handle type="target" position={Position.Left} id="first" className="cv-h cv-h-first" isConnectableStart={false} title="Khung đầu">
@@ -155,38 +166,33 @@ function SceneFar({ scene, status }: { scene: Scene; status: TakeSummary['status
 // ---------------------------------------------------------------------------------------------
 function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['status'] }) {
   const assets = useProject((s) => s.project.assets)
-  const blocks = useProject((s) => s.project.blocks)
   const settings = useProject((s) => s.project.settings)
-  const prev = useProject((s) => (scene.continueFrom ? sceneMapOf(s.project.scenes).get(scene.continueFrom) : undefined))
   const presetName = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId)?.name : undefined))
-  const takeCount = useRuns((s) => takeSummary(s.takes, scene.id).count)
+  // Status of each @video ref as one string: stable while takes only make progress.
+  const videoStatus = useRuns((s) => {
+    if (!scene.videoRefs.length) return ''
+    const byId = takeIndexOf(s.takes).byId
+    return scene.videoRefs.map((t) => byId.get(t)?.status ?? '').join(',')
+  })
 
   const compiled = useMemo<CompiledPrompt>(() => {
-    const project: Project = {
-      id: '',
-      name: '',
-      schemaVersion: 1,
-      createdAt: 0,
-      updatedAt: 0,
-      presets: [],
-      assets,
-      blocks,
-      settings,
-      scenes: prev ? [prev] : [],
-    }
-    return compileScene(project, scene)
-  }, [assets, blocks, settings, prev, scene])
+    const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings, scenes: [scene] }
+    const statuses = videoStatus.split(',')
+    return compileScene(project, scene, { takeStatus: (id) => statuses[scene.videoRefs.indexOf(id)] || undefined })
+  }, [assets, settings, scene, videoStatus])
 
   const refAssets = useMemo(() => {
     const map = assetMapOf(assets)
     const out = scene.refs.map((r) => map.get(r)).filter((a): a is Asset => !!a)
     return out.length ? out : EMPTY_ASSETS
   }, [assets, scene.refs])
-  const imageN = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const img of compiled.images) if (!m.has(img.assetId)) m.set(img.assetId, img.n)
-    return m
-  }, [compiled.images])
+  /** First @image number of each linked asset (every image of an asset gets its own number) + total images. */
+  const slots = useMemo(() => {
+    const first = new Map<string, number>()
+    const all = imageSlotsFor(assets, scene.refs)
+    for (const s of all) if (!first.has(s.assetId)) first.set(s.assetId, s.n)
+    return { first, total: all.length }
+  }, [assets, scene.refs])
 
   const spec = MODELS[scene.settings.model]
   const cost = costOf(scene.settings)
@@ -195,7 +201,9 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
   else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
   else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
   else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
+  else if (videoStatus && videoStatus.split(',').some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
 
+  const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0
   return (
     <>
       <div className="cv-scene-head">
@@ -208,25 +216,32 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
       </div>
 
       <div className="cv-refs">
-        {refAssets.length ? (
+        {hasMedia ? (
           <>
             {refAssets.slice(0, MAX_AVATARS).map((a) => (
-              <RefAvatar key={a.id} asset={a} n={imageN.get(a.id)} sceneId={scene.id} />
+              <RefAvatar key={a.id} asset={a} n={slots.first.get(a.id)} sceneId={scene.id} />
             ))}
             {refAssets.length > MAX_AVATARS && (
-              <span className="cv-av-more" title={refAssets.slice(MAX_AVATARS).map((a) => '@' + a.tag).join(', ')}>
+              <span className="cv-av-more" title={refAssets.slice(MAX_AVATARS).map((a) => a.name).join(', ')}>
                 +{refAssets.length - MAX_AVATARS}
               </span>
             )}
+            {scene.videoRefs.length > 0 && <VideoRefs sceneId={scene.id} videoRefs={scene.videoRefs} />}
           </>
         ) : (
           <span className="cv-refs-empty">
-            <ImagePlus size={13} /> Kéo nhân vật vào đây
+            <ImagePlus size={13} /> Kéo nhân vật hoặc video vào đây
           </span>
         )}
       </div>
 
-      <div className="cv-prompt">{scene.prompt.trim() ? <Excerpt text={scene.prompt} assets={assets} /> : <span className="faint">Chưa có prompt</span>}</div>
+      <div className="cv-prompt">
+        {scene.prompt.trim() ? (
+          <Excerpt text={scene.prompt} assets={assets} images={slots.total} videos={scene.videoRefs.length} />
+        ) : (
+          <span className="faint">Chưa có prompt</span>
+        )}
+      </div>
 
       <div className="cv-scene-foot">
         <span className="cv-settings" title={presetName ? `Preset: ${presetName}` : undefined}>
@@ -256,12 +271,60 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
         </span>
       </div>
 
-      {takeCount > 0 && (
-        <div className="cv-takes nodrag">
-          <TakeStrip sceneId={scene.id} size="sm" />
-        </div>
-      )}
+      <TakeLine sceneId={scene.id} />
     </>
+  )
+}
+
+/** "3 take · ★ T2 · đang chạy 45%" — the takes themselves are nodes to the right of the card. */
+function TakeLine({ sceneId }: { sceneId: string }) {
+  const count = useRuns((s) => takeSummary(s.takes, sceneId).count)
+  const starred = useRuns((s) => takeSummary(s.takes, sceneId).starredNumber)
+  const active = useRuns((s) => takeSummary(s.takes, sceneId).active)
+  const progress = useRuns((s) => {
+    const sum = takeSummary(s.takes, sceneId)
+    return sum.status === 'processing' ? sum.progress : -1
+  })
+  if (!count) return null
+  return (
+    <div className="cv-take-line">
+      <Clapperboard size={12} />
+      <span>{count} take</span>
+      {starred !== null && <span className="cv-take-line-star">★ T{starred}</span>}
+      {active > 0 && <span className="cv-take-line-run">{progress >= 0 ? `đang chạy ${progress}%` : `${active} đang chờ`}</span>}
+    </div>
+  )
+}
+
+/** Small purple thumbs of the scene's @video refs: v1, v2… (× removes the reference; tokens are renumbered). */
+function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[] }) {
+  const posters = useRuns(
+    useShallow((s) => {
+      const byId = takeIndexOf(s.takes).byId
+      return videoRefs.map((id) => byId.get(id)?.posterId ?? null)
+    }),
+  )
+  return (
+    <span className="cv-vrefs">
+      {videoRefs.slice(0, MAX_VIDEO_THUMBS).map((takeId, i) => (
+        <span key={takeId} className="cv-vref" title={`@video_${i + 1} · ${takeLabel(takeId)}`}>
+          <MediaImg id={posters[i]} className="cv-vref-img" />
+          <span className="cv-vref-n">v{i + 1}</span>
+          <button
+            className="cv-av-x nodrag"
+            title={`Bỏ @video_${i + 1}`}
+            aria-label={`Bỏ video tham chiếu ${i + 1}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              useProject.getState().removeVideoRef(sceneId, takeId, 'video ' + takeLabel(takeId))
+            }}
+          >
+            <X size={9} strokeWidth={3} />
+          </button>
+        </span>
+      ))}
+      {videoRefs.length > MAX_VIDEO_THUMBS && <span className="cv-av-more">+{videoRefs.length - MAX_VIDEO_THUMBS}</span>}
+    </span>
   )
 }
 
@@ -326,18 +389,17 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   )
 }
 
+/** Avatar of a linked asset with its first @image number as a badge. */
 function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined; sceneId: string }) {
   const url = useMediaUrl(asset.imageIds[0])
+  const range = n !== undefined && asset.imageIds.length > 1 ? `@image_${n}…${n + asset.imageIds.length - 1}` : n !== undefined ? `@image_${n}` : 'chưa có ảnh'
   return (
-    <span
-      className={`cv-av ${asset.kind === 'character' ? '' : 'sq'}`}
-      style={{ ['--av-c' as string]: asset.color }}
-      title={`@${asset.tag} · ${n ? '@image_' + n : 'không gửi ảnh'}`}
-    >
+    <span className={`cv-av ${asset.kind === 'character' ? '' : 'sq'}`} style={{ ['--av-c' as string]: asset.color }} title={`${asset.name} · ${range}`}>
       {url ? <img src={url} alt={asset.name} draggable={false} /> : <i style={{ background: asset.color }}>{asset.name.slice(0, 1).toUpperCase()}</i>}
+      {n !== undefined && <b className="cv-av-n">{n}</b>}
       <button
         className="cv-av-x nodrag"
-        title={`Bỏ nối @${asset.tag}`}
+        title={`Bỏ nối ${asset.name}`}
         aria-label={`Bỏ nối ${asset.name}`}
         onClick={(e) => {
           e.stopPropagation()
@@ -351,7 +413,9 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
 }
 
 const SPLIT_RE = /(@[\p{L}\p{N}_]+)/u
-function Excerpt({ text, assets }: { text: string; assets: Asset[] }) {
+const TOKEN_ONLY = /^@(image|video)_(\d+)$/i
+/** Prompt excerpt: @image_N teal, @video_N purple, numbers without media red, legacy @Tag of a library asset teal. */
+function Excerpt({ text, assets, images, videos }: { text: string; assets: Asset[]; images: number; videos: number }) {
   const parts = useMemo(() => {
     const src = text.length > 280 ? text.slice(0, 280) : text
     const out: ReactNode[] = []
@@ -360,12 +424,25 @@ function Excerpt({ text, assets }: { text: string; assets: Asset[] }) {
         if (part) out.push(part)
         return
       }
-      const tag = part.slice(1)
-      if (/^image_\d+$/i.test(tag)) out.push(<span key={i} className="cv-m img">{part}</span>)
-      else if (assetByTag(assets, tag)) out.push(<span key={i} className="cv-m">{part}</span>)
-      else out.push(<span key={i} className="cv-m unknown" title="Chưa có trong thư viện">{part}</span>)
+      const tok = TOKEN_ONLY.exec(part)
+      if (tok) {
+        const video = tok[1].toLowerCase() === 'video'
+        const n = Number(tok[2])
+        const ok = n >= 1 && n <= (video ? videos : images)
+        out.push(
+          <span key={i} className={`cv-m ${video ? 'vid' : 'img'}${ok ? '' : ' bad'}`} title={ok ? undefined : `Cảnh không có ${video ? 'video' : 'ảnh'} số ${n}`}>
+            {part}
+          </span>,
+        )
+      } else if (assetByTag(assets, part.slice(1))) {
+        out.push(
+          <span key={i} className="cv-m">
+            {part}
+          </span>,
+        )
+      } else out.push(part)
     })
     return out
-  }, [text, assets])
+  }, [text, assets, images, videos])
   return <>{parts}</>
 }

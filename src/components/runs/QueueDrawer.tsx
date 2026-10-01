@@ -214,11 +214,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   const elapsed = takeElapsed(take, now)
   const refunded = take.status === 'failed' || take.status === 'cancelled'
   const open = () => useUI.getState().openDialog({ kind: 'take', takeId: take.id })
-  const goto = () => {
-    if (!scene) return
-    useUI.getState().select([scene.id])
-    focusNodes([scene.id])
-  }
+  const goto = () => gotoTake(take, scene)
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -290,7 +286,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
             Xem
           </button>
         )}
-        <button type="button" className="icon-btn rq-icon-sm" disabled={!scene} onClick={goto} title="Đi tới cảnh" aria-label="Đi tới cảnh">
+        <button type="button" className="icon-btn rq-icon-sm" disabled={!scene} onClick={goto} title="Đi tới video này trên canvas" aria-label="Đi tới video trên canvas">
           <LocateFixed size={14} />
         </button>
         {refunded && (
@@ -308,6 +304,38 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
     </div>
   )
 })
+
+/**
+ * Is this take node visible in the canvas "Chỉ take chọn" mode? Same rule as the canvas: the scene's chosen take
+ * (starred, else the newest completed, else the newest) plus every take used as a @video reference.
+ */
+function shownWhenChosenOnly(take: Take): boolean {
+  if (useProject.getState().project.scenes.some((s) => s.videoRefs.includes(take.id))) return true
+  const list = useRuns
+    .getState()
+    .takes.filter((t) => t.sceneId === take.sceneId)
+    .sort((a, b) => b.number - a.number)
+  const chosen = list.find((t) => t.starred) ?? list.find((t) => t.status === 'completed') ?? list[0]
+  return chosen?.id === take.id
+}
+
+/**
+ * "Đi tới": select the take (video) node and bring it into view on the canvas. When the canvas only shows the
+ * chosen take of each scene and this one is hidden, go to its scene instead.
+ */
+function gotoTake(take: Take, scene: Scene | undefined) {
+  if (!scene) return
+  const ui = useUI.getState()
+  const hidden = ui.takeDisplay === 'chosen' && !shownWhenChosenOnly(take)
+  const target = hidden ? scene.id : take.id
+  if (hidden) toast(`T${take.number} đang ẩn (canvas chỉ hiện take chọn) — đã đưa tới cảnh ${sceneCode(scene.order)}.`)
+  ui.select([target])
+  if (ui.view !== 'canvas') {
+    ui.setView('canvas')
+    // Let the canvas mount and measure its nodes first.
+    window.setTimeout(() => focusNodes([target]), 150)
+  } else focusNodes([target])
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 

@@ -1,12 +1,15 @@
 // Undoable project store (zustand + zundo).
-// Everything the user authors lives here: assets, prompt blocks, presets, scenes, positions.
+// Everything the user authors lives here: assets, presets, scenes (prompt, image refs, video refs), positions.
 // Runs/takes live in ./runs.ts and UI-only state in ./ui.ts (not undoable).
+//
+// Whenever a scene's image refs / video refs change (or the images of an asset change), the @image_N / @video_N
+// tokens in the affected prompts are renumbered in the same undo step (project.settings.autoRenumber).
 import { temporal } from 'zundo'
 import { create } from 'zustand'
-import { DEFAULT_REFERENCES_TEMPLATE, extractMentions, assetByTag, uniqueTag } from '../core/compile'
+import { assetByTag, extractMentions, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
 import { newId, pickColor } from '../core/ids'
-import { MODELS, normalizeSettings } from '../core/models'
-import type { Asset, PromptBlock, Preset, Project, ProjectSettings, Scene, VideoSettings, XY } from '../core/types'
+import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
+import type { Asset, Preset, Project, ProjectSettings, Scene, VideoSettings, XY } from '../core/types'
 
 // ---------- undo coalescing (typing in a textarea should not create one history step per key) ----------
 let coalesceKey: string | null = null
@@ -17,18 +20,37 @@ function coalesce(key: string) {
   coalesceKey = key
 }
 
+/**
+ * Canvas layout. Scenes are laid out one per row (S01 above S02…); each scene's takes (video nodes) extend to the
+ * right of it in the same row. Assets sit in a column on the left.
+ */
 export const LAYOUT = {
   sceneW: 280,
-  sceneH: 210,
-  gapX: 48,
-  gapY: 56,
-  perRow: 5,
+  sceneH: 200,
+  gapY: 48,
   scenesX: 420,
   scenesY: 60,
+  /** Take (video) nodes */
+  takeW: 224,
+  takeH: 176,
+  takeGapX: 16,
+  /** Distance between the scene card's right edge and its first take. */
+  takeOffsetX: 64,
   assetX: 40,
   assetW: 180,
   assetH: 210,
   assetGapY: 28,
+}
+/** Height of one scene row (scene card or its takes, whichever is taller, plus the gap). */
+export const ROW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH) + LAYOUT.gapY
+
+/** Default canvas position of the i-th take (0 = oldest) of a scene at `scenePos`. */
+export function defaultTakePosition(scenePos: XY, index: number): XY {
+  return { x: scenePos.x + LAYOUT.sceneW + LAYOUT.takeOffsetX + index * (LAYOUT.takeW + LAYOUT.takeGapX), y: scenePos.y }
+}
+
+export function defaultProjectSettings(): ProjectSettings {
+  return { autoRenumber: true }
 }
 
 export function emptyProject(name = 'Dự án mới'): Project {
@@ -36,19 +58,14 @@ export function emptyProject(name = 'Dự án mới'): Project {
   return {
     id: newId('prj'),
     name,
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt: now,
     updatedAt: now,
     assets: [],
-    blocks: [],
     presets: defaultPresets(),
     scenes: [],
     settings: defaultProjectSettings(),
   }
-}
-
-export function defaultProjectSettings(): ProjectSettings {
-  return { referencesTemplate: DEFAULT_REFERENCES_TEMPLATE, autoReferences: true, autoContinuity: true }
 }
 
 export function defaultPresets(): Preset[] {
@@ -59,18 +76,16 @@ export function defaultPresets(): Preset[] {
   ]
 }
 
-function scenePosition(index: number): XY {
-  const col = index % LAYOUT.perRow
-  const row = Math.floor(index / LAYOUT.perRow)
-  return { x: LAYOUT.scenesX + col * (LAYOUT.sceneW + LAYOUT.gapX), y: LAYOUT.scenesY + row * (LAYOUT.sceneH + LAYOUT.gapY) }
+export function scenePosition(index: number): XY {
+  return { x: LAYOUT.scenesX, y: LAYOUT.scenesY + index * ROW_H }
 }
 
-/** Would scene cards at `a` and `b` overlap (cards closer than half a gap count as overlapping)? */
+/** Would scene cards at `a` and `b` overlap (closer than half a gap counts as overlapping)? */
 function cardsOverlap(a: XY, b: XY): boolean {
-  return Math.abs(a.x - b.x) < LAYOUT.sceneW + LAYOUT.gapX / 2 && Math.abs(a.y - b.y) < LAYOUT.sceneH + LAYOUT.gapY / 2
+  return Math.abs(a.x - b.x) < LAYOUT.sceneW + 24 && Math.abs(a.y - b.y) < LAYOUT.sceneH + LAYOUT.gapY / 2
 }
 
-/** First grid slot from `start` on whose card would not overlap any card at `taken`. */
+/** First row slot from `start` on whose card would not overlap any card at `taken`. */
 function freeScenePosition(taken: XY[], start: number): XY {
   for (let i = start; i < start + 10000; i++) {
     const pos = scenePosition(i)
@@ -80,21 +95,21 @@ function freeScenePosition(taken: XY[], start: number): XY {
 }
 
 /**
- * New positions that push scenes to the right so none overlaps a new card at `pos`. Only cards hit by the
- * new card (or by a card pushed before them) move; unrelated cards stay where the user put them.
+ * Positions that push scenes DOWN so none overlaps a new card at `pos`. Only cards hit by the new card
+ * (or by a card pushed before them) move; unrelated cards stay where the user put them.
  */
 function makeRoomAt(scenes: Scene[], pos: XY): Map<string, XY> {
   const pushers: XY[] = [pos]
   const placed: XY[] = [pos]
   const moved = new Map<string, XY>()
-  const byX = [...scenes].sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y)
-  for (const s of byX) {
+  const byY = [...scenes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
+  for (const s of byY) {
     let next = s.position
     if (pushers.some((q) => cardsOverlap(q, next))) {
       for (let g = 0; g < 10000; g++) {
         const hit = placed.find((q) => cardsOverlap(q, next))
         if (!hit) break
-        next = { x: hit.x + LAYOUT.sceneW + LAYOUT.gapX, y: next.y }
+        next = { x: next.x, y: hit.y + ROW_H }
       }
       moved.set(s.id, next)
       pushers.push(next)
@@ -113,21 +128,45 @@ export function refImageCount(project: Project, assetIds: string[]): number {
   return assetIds.reduce((t, id) => t + Math.max(1, project.assets.find((a) => a.id === id)?.imageIds.length ?? 0), 0)
 }
 
-/** Would linking prev -> scene create a loop in the continuity chain? */
-function createsCycle(scenes: Scene[], sceneId: string, prevId: string): boolean {
-  const byId = new Map(scenes.map((s) => [s.id, s]))
-  let cur: string | null = prevId
-  for (let guard = 0; cur && guard < 10000; guard++) {
-    if (cur === sceneId) return true
-    cur = byId.get(cur)?.continueFrom ?? null
+/** Text used in a prompt when the video a @video_N token pointed to is removed. */
+export type VideoLabel = (takeId: string) => string
+
+/**
+ * Return `scene` with new media lists; renumbers its prompt tokens when enabled.
+ * `assetsBefore` resolves names of removed images, `assetsAfter` numbers the new list.
+ */
+function withMedia(
+  project: Project,
+  scene: Scene,
+  next: { refs?: string[]; videoRefs?: string[] },
+  assetsAfter: Asset[] = project.assets,
+  videoLabel: VideoLabel = () => 'video',
+): Scene {
+  const refs = next.refs ?? scene.refs
+  const videoRefs = next.videoRefs ?? scene.videoRefs
+  if (refs === scene.refs && videoRefs === scene.videoRefs && assetsAfter === project.assets) return scene
+  let prompt = scene.prompt
+  if (project.settings.autoRenumber && /@(image|video)_\d/i.test(prompt)) {
+    const before = mediaKeys(project.assets, scene.refs, scene.videoRefs)
+    const after = mediaKeys(assetsAfter, refs, videoRefs)
+    const names = new Map(project.assets.map((a) => [a.id, a.name]))
+    prompt = remapTokens(prompt, before, after, (kind, key) => (kind === 'image' ? names.get(key.split(':')[0]) ?? 'ảnh' : videoLabel(key))).text
   }
-  return false
+  return { ...scene, refs, videoRefs, prompt }
 }
 
 export interface AddRefsResult {
   added: number
   skipped: number
   scenes: number
+}
+
+export interface DeleteItems {
+  sceneIds?: string[]
+  hideAssetIds?: string[]
+  refs?: { sceneId: string; assetId: string }[]
+  videoRefs?: { sceneId: string; takeId: string }[]
+  frames?: { sceneId: string; which: 'first' | 'last' }[]
 }
 
 export interface ProjectState {
@@ -140,19 +179,12 @@ export interface ProjectState {
 
   // assets
   addAsset: (partial: Partial<Asset> & { name: string }) => string
+  /** Changing `imageIds` renumbers the prompts of every scene that uses the asset. */
   updateAsset: (id: string, patch: Partial<Omit<Asset, 'id'>>) => void
   removeAssets: (ids: string[]) => void
   setAssetOnCanvas: (id: string, position: XY | null) => void
   /** Batched version: one undo step for many assets. */
   setAssetsOnCanvas: (positions: Record<string, XY | null>) => void
-
-  // blocks
-  addBlock: (partial?: Partial<PromptBlock>) => string
-  updateBlock: (id: string, patch: Partial<Omit<PromptBlock, 'id'>>) => void
-  removeBlock: (id: string) => void
-  moveBlock: (id: string, toIndex: number) => void
-  /** on=undefined clears the override (scene follows block default). */
-  setBlockOverride: (sceneIds: string[], blockId: string, on: boolean | undefined) => void
 
   // presets
   addPreset: (partial: Partial<Preset> & { name: string }) => string
@@ -162,42 +194,42 @@ export interface ProjectState {
 
   // scenes
   addScene: (partial?: Partial<Scene>, opts?: { afterId?: string; position?: XY }) => string
-  updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings'>>) => void
-  /** Prompt edits are coalesced in the undo history and auto-link @mentioned assets. Returns newly linked asset ids. */
+  updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs'>>) => void
+  /** Prompt edits are coalesced in the undo history; legacy @Tag mentions auto-link their asset. Returns newly linked asset ids. */
   setScenePrompt: (id: string, prompt: string) => string[]
   updateSettings: (sceneIds: string[], patch: Partial<VideoSettings>) => void
-  /** Restore prompt, refs and settings (e.g. from a take) in one undo step. Refs to deleted assets are dropped. */
-  restoreScene: (id: string, data: { prompt: string; refs: string[]; settings: VideoSettings }) => void
+  /** Restore prompt, refs, video refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
+  restoreScene: (id: string, data: { prompt: string; refs: string[]; videoRefs?: string[]; settings: VideoSettings }, liveTakeIds?: Set<string>) => void
   removeScenes: (ids: string[]) => void
   duplicateScenes: (ids: string[]) => string[]
-  /** New scene right after `fromId`, inheriting refs, block overrides and settings; continues from it. */
-  createNextScene: (fromId: string, position?: XY) => string
+  /** New scene right after `fromId` (placed below it), inheriting refs, video refs and settings, with an empty prompt. */
+  createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'prompt' | 'videoRefs' | 'title'>>) => string
   moveScene: (id: string, toOrder: number) => void
-  setContinueFrom: (sceneId: string, prevId: string | null) => boolean
   setFrame: (sceneId: string, which: 'first' | 'last', assetId: string | null) => void
 
-  // references (the "connections")
+  // image references
   addRefs: (sceneIds: string[], assetIds: string[]) => AddRefsResult
   removeRef: (sceneId: string, assetId: string) => void
   removeRefs: (pairs: { sceneId: string; assetId: string }[]) => void
   moveRef: (sceneId: string, fromIndex: number, toIndex: number) => void
   moveRefToScene: (assetId: string, fromSceneId: string, toSceneId: string) => void
 
-  /** One undo step: delete scenes, hide assets from canvas, cut ref / sequence / frame links. */
-  deleteItems: (items: {
-    sceneIds?: string[]
-    hideAssetIds?: string[]
-    refs?: { sceneId: string; assetId: string }[]
-    seqSceneIds?: string[]
-    frames?: { sceneId: string; which: 'first' | 'last' }[]
-  }) => void
+  // video references (takes used as @video_N)
+  addVideoRefs: (sceneIds: string[], takeIds: string[]) => AddRefsResult
+  removeVideoRef: (sceneId: string, takeId: string, label?: string) => void
+  moveVideoRef: (sceneId: string, fromIndex: number, toIndex: number) => void
+  /** A take was deleted: drop it from every scene (tokens become `labels[takeId]`). */
+  removeTakesEverywhere: (takeIds: string[], labels: Record<string, string>) => void
+
+  /** One undo step: delete scenes, hide assets from canvas, cut image / video / frame links. */
+  deleteItems: (items: DeleteItems, videoLabel?: VideoLabel) => void
 
   // layout
   setPositions: (positions: Record<string, XY>) => void
   autoLayout: () => void
 
   // bulk
-  applyImport: (data: { blocks: PromptBlock[]; scenes: Partial<Scene>[] }) => void
+  applyImport: (data: { scenes: Partial<Scene>[] }) => string[]
 }
 
 const touch = (p: Project): Project => ({ ...p, updatedAt: Date.now() })
@@ -206,9 +238,27 @@ export const useProject = create<ProjectState>()(
   temporal(
     (set, get) => {
       const mutate = (fn: (p: Project) => Project) => set((s) => ({ project: touch(fn(s.project)) }))
-      const mapScenes = (ids: string[], fn: (s: Scene) => Scene) => {
+      const mapScenes = (ids: string[], fn: (s: Scene, p: Project) => Scene) => {
         const idSet = new Set(ids)
-        mutate((p) => ({ ...p, scenes: p.scenes.map((s) => (idSet.has(s.id) ? fn(s) : s)) }))
+        mutate((p) => ({ ...p, scenes: p.scenes.map((s) => (idSet.has(s.id) ? fn(s, p) : s)) }))
+      }
+      const buildScene = (p: Project, partial: Partial<Scene>, position: XY, order: number): Scene => {
+        const draftPreset = p.presets[0]
+        return {
+          id: partial.id ?? newId('scn'),
+          order,
+          title: partial.title ?? '',
+          prompt: partial.prompt ?? '',
+          refs: partial.refs ?? [],
+          videoRefs: partial.videoRefs ?? [],
+          presetId: partial.presetId !== undefined ? partial.presetId : partial.settings ? null : draftPreset?.id ?? null,
+          settings: normalizeSettings(partial.settings ?? (draftPreset ? { ...draftPreset } : {})),
+          firstFrame: partial.firstFrame ?? null,
+          lastFrame: partial.lastFrame ?? null,
+          color: partial.color ?? null,
+          position,
+          note: partial.note ?? '',
+        }
       }
 
       return {
@@ -239,87 +289,43 @@ export const useProject = create<ProjectState>()(
           if (patch.name !== undefined || patch.description !== undefined) coalesce('asset:' + id)
           mutate((p) => {
             const others = p.assets.filter((a) => a.id !== id).map((a) => a.tag)
+            const assets = p.assets.map((a) => {
+              if (a.id !== id) return a
+              const next = { ...a, ...patch }
+              if (patch.tag !== undefined) next.tag = uniqueTag(patch.tag || next.name, others)
+              return next
+            })
+            const imagesChanged = patch.imageIds !== undefined
             return {
               ...p,
-              assets: p.assets.map((a) => {
-                if (a.id !== id) return a
-                const next = { ...a, ...patch }
-                if (patch.tag !== undefined) next.tag = uniqueTag(patch.tag || next.name, others)
-                return next
-              }),
+              assets,
+              scenes: imagesChanged ? p.scenes.map((s) => (s.refs.includes(id) ? withMedia(p, s, { refs: s.refs }, assets) : s)) : p.scenes,
             }
           })
         },
         removeAssets: (ids) => {
-          const set_ = new Set(ids)
-          mutate((p) => ({
-            ...p,
-            assets: p.assets.filter((a) => !set_.has(a.id)),
-            scenes: p.scenes.map((s) =>
-              s.refs.some((r) => set_.has(r)) || (s.firstFrame && set_.has(s.firstFrame)) || (s.lastFrame && set_.has(s.lastFrame))
-                ? {
-                    ...s,
-                    refs: s.refs.filter((r) => !set_.has(r)),
-                    firstFrame: s.firstFrame && set_.has(s.firstFrame) ? null : s.firstFrame,
-                    lastFrame: s.lastFrame && set_.has(s.lastFrame) ? null : s.lastFrame,
-                  }
-                : s,
-            ),
-          }))
+          const dead = new Set(ids)
+          mutate((p) => {
+            const assets = p.assets.filter((a) => !dead.has(a.id))
+            return {
+              ...p,
+              assets,
+              scenes: p.scenes.map((s) => {
+                const touched = s.refs.some((r) => dead.has(r)) || (s.firstFrame && dead.has(s.firstFrame)) || (s.lastFrame && dead.has(s.lastFrame))
+                if (!touched) return s
+                const next = withMedia(p, s, { refs: s.refs.filter((r) => !dead.has(r)) }, assets)
+                return {
+                  ...next,
+                  firstFrame: s.firstFrame && dead.has(s.firstFrame) ? null : s.firstFrame,
+                  lastFrame: s.lastFrame && dead.has(s.lastFrame) ? null : s.lastFrame,
+                }
+              }),
+            }
+          })
         },
         setAssetOnCanvas: (id, position) => mutate((p) => ({ ...p, assets: p.assets.map((a) => (a.id === id ? { ...a, position } : a)) })),
         setAssetsOnCanvas: (positions) =>
           mutate((p) => ({ ...p, assets: p.assets.map((a) => (a.id in positions ? { ...a, position: positions[a.id] } : a)) })),
-
-        // ---------------- blocks ----------------
-        addBlock: (partial = {}) => {
-          const id = partial.id ?? newId('blk')
-          mutate((p) => ({
-            ...p,
-            blocks: [
-              ...p.blocks,
-              {
-                id,
-                title: partial.title ?? 'Khối mới',
-                text: partial.text ?? '',
-                placement: partial.placement ?? 'after',
-                defaultOn: partial.defaultOn ?? true,
-                color: partial.color ?? pickColor(p.blocks.length + 3),
-              },
-            ],
-          }))
-          return id
-        },
-        updateBlock: (id, patch) => {
-          if (patch.text !== undefined || patch.title !== undefined) coalesce('block:' + id)
-          mutate((p) => ({ ...p, blocks: p.blocks.map((b) => (b.id === id ? { ...b, ...patch } : b)) }))
-        },
-        removeBlock: (id) =>
-          mutate((p) => ({
-            ...p,
-            blocks: p.blocks.filter((b) => b.id !== id),
-            scenes: p.scenes.map((s) => {
-              if (!(id in s.blockOverrides)) return s
-              const { [id]: _drop, ...rest } = s.blockOverrides
-              return { ...s, blockOverrides: rest }
-            }),
-          })),
-        moveBlock: (id, toIndex) =>
-          mutate((p) => {
-            const list = [...p.blocks]
-            const from = list.findIndex((b) => b.id === id)
-            if (from < 0) return p
-            const [b] = list.splice(from, 1)
-            list.splice(Math.max(0, Math.min(list.length, toIndex)), 0, b)
-            return { ...p, blocks: list }
-          }),
-        setBlockOverride: (sceneIds, blockId, on) =>
-          mapScenes(sceneIds, (s) => {
-            const next = { ...s.blockOverrides }
-            if (on === undefined) delete next[blockId]
-            else next[blockId] = on
-            return { ...s, blockOverrides: next }
-          }),
 
         // ---------------- presets ----------------
         addPreset: (partial) => {
@@ -343,36 +349,19 @@ export const useProject = create<ProjectState>()(
           const preset = get().project.presets.find((x) => x.id === presetId)
           if (!preset) return
           const { id: _id, name: _name, ...settings } = preset
-          mapScenes(sceneIds, (s) => ({ ...s, presetId, settings: normalizeSettings({ ...settings, mode: settings.mode }) }))
+          mapScenes(sceneIds, (s) => ({ ...s, presetId, settings: normalizeSettings(settings) }))
         },
 
         // ---------------- scenes ----------------
         addScene: (partial = {}, opts = {}) => {
           const p = get().project
-          const id = partial.id ?? newId('scn')
           const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
           const after = opts.afterId ? sorted.find((s) => s.id === opts.afterId) : undefined
           const order = after ? after.order + 0.5 : sorted.length + 1
-          const draftPreset = p.presets[0]
-          const settings = normalizeSettings(partial.settings ?? (draftPreset ? { ...draftPreset } : {}))
-          const scene: Scene = {
-            id,
-            order,
-            title: partial.title ?? '',
-            prompt: partial.prompt ?? '',
-            refs: partial.refs ?? [],
-            blockOverrides: partial.blockOverrides ?? {},
-            presetId: partial.presetId ?? (partial.settings ? null : draftPreset?.id ?? null),
-            settings,
-            continueFrom: partial.continueFrom ?? null,
-            firstFrame: partial.firstFrame ?? null,
-            lastFrame: partial.lastFrame ?? null,
-            color: partial.color ?? null,
-            position: opts.position ?? partial.position ?? freeScenePosition(p.scenes.map((s) => s.position), p.scenes.length),
-            note: partial.note ?? '',
-          }
+          const position = opts.position ?? partial.position ?? freeScenePosition(p.scenes.map((s) => s.position), p.scenes.length)
+          const scene = buildScene(p, partial, position, order)
           mutate((pp) => ({ ...pp, scenes: renumber([...pp.scenes, scene]) }))
-          return id
+          return scene.id
         },
         updateScene: (id, patch) => {
           if (patch.title !== undefined || patch.note !== undefined) coalesce('scene:' + id)
@@ -397,34 +386,34 @@ export const useProject = create<ProjectState>()(
           return linked
         },
         updateSettings: (sceneIds, patch) =>
-          mapScenes(sceneIds, (s) => ({ ...s, presetId: null, settings: normalizeSettings({ ...s.settings, ...patch }) })),
-        restoreScene: (id, { prompt, refs, settings }) =>
+          mapScenes(sceneIds, (s) => {
+            const settings = normalizeSettings({ ...s.settings, ...patch })
+            const same = (Object.keys(settings) as (keyof VideoSettings)[]).every((k) => settings[k] === s.settings[k])
+            return same ? s : { ...s, presetId: null, settings }
+          }),
+        restoreScene: (id, { prompt, refs, videoRefs, settings }, liveTakeIds) =>
           mutate((p) => {
             const alive = new Set(p.assets.map((a) => a.id))
             return {
               ...p,
-              scenes: p.scenes.map((s) =>
-                s.id === id
-                  ? { ...s, prompt, refs: refs.filter((r) => alive.has(r)), presetId: null, settings: normalizeSettings({ ...s.settings, ...settings }) }
-                  : s,
-              ),
+              scenes: p.scenes.map((s) => {
+                if (s.id !== id) return s
+                const nextSettings = normalizeSettings({ ...s.settings, ...settings })
+                const same = (Object.keys(nextSettings) as (keyof VideoSettings)[]).every((k) => nextSettings[k] === s.settings[k])
+                return {
+                  ...s,
+                  prompt,
+                  refs: refs.filter((r) => alive.has(r)),
+                  videoRefs: (videoRefs ?? s.videoRefs).filter((t) => !liveTakeIds || liveTakeIds.has(t)),
+                  presetId: same ? s.presetId : null,
+                  settings: nextSettings,
+                }
+              }),
             }
           }),
         removeScenes: (ids) => {
-          const set_ = new Set(ids)
-          mutate((p) => {
-            const byId = new Map(p.scenes.map((s) => [s.id, s]))
-            // Re-link successors of removed scenes to the nearest surviving predecessor.
-            const survivorPrev = (prev: string | null): string | null => {
-              let cur = prev
-              for (let g = 0; cur && set_.has(cur) && g < 10000; g++) cur = byId.get(cur)?.continueFrom ?? null
-              return cur
-            }
-            const scenes = p.scenes
-              .filter((s) => !set_.has(s.id))
-              .map((s) => (s.continueFrom && set_.has(s.continueFrom) ? { ...s, continueFrom: survivorPrev(s.continueFrom) } : s))
-            return { ...p, scenes: renumber(scenes) }
-          })
+          const dead = new Set(ids)
+          mutate((p) => ({ ...p, scenes: renumber(p.scenes.filter((s) => !dead.has(s.id))) }))
         },
         duplicateScenes: (ids) => {
           const p = get().project
@@ -444,36 +433,24 @@ export const useProject = create<ProjectState>()(
           mutate((pp) => ({ ...pp, scenes: renumber([...pp.scenes, ...copies]) }))
           return created
         },
-        createNextScene: (fromId, position) => {
+        createNextScene: (fromId, position, overrides = {}) => {
           const p = get().project
           const from = p.scenes.find((s) => s.id === fromId)
           if (!from) return get().addScene()
-          const id = newId('scn')
-          const next: Scene = {
-            ...from,
-            id,
-            order: from.order + 0.5,
-            title: '',
-            prompt: '',
-            note: '',
-            continueFrom: from.id,
-            position: position ?? { x: from.position.x + LAYOUT.sceneW + LAYOUT.gapX, y: from.position.y },
-          }
-          // Default spot (right of `from`) is usually the next card of the row: shift those cards right to make room.
-          const moved = position ? new Map<string, XY>() : makeRoomAt(p.scenes, next.position)
+          const pos = position ?? { x: from.position.x, y: from.position.y + ROW_H }
+          const next = buildScene(
+            p,
+            { refs: from.refs, videoRefs: from.videoRefs, settings: from.settings, presetId: from.presetId, firstFrame: from.firstFrame, lastFrame: from.lastFrame, ...overrides },
+            pos,
+            from.order + 0.5,
+          )
+          // Default spot (below `from`) is usually the next row: push those cards down to make room.
+          const moved = position ? new Map<string, XY>() : makeRoomAt(p.scenes, pos)
           mutate((pp) => ({
             ...pp,
-            // Whatever continued from `from` now continues from the new scene (insert into the chain).
-            scenes: renumber([
-              ...pp.scenes.map((s) => {
-                const pos = moved.get(s.id)
-                const linked = s.continueFrom === from.id ? { ...s, continueFrom: id } : s
-                return pos ? { ...linked, position: pos } : linked
-              }),
-              next,
-            ]),
+            scenes: renumber([...pp.scenes.map((s) => (moved.has(s.id) ? { ...s, position: moved.get(s.id)! } : s)), next]),
           }))
-          return id
+          return next.id
         },
         moveScene: (id, toOrder) =>
           mutate((p) => {
@@ -484,15 +461,10 @@ export const useProject = create<ProjectState>()(
             sorted.splice(Math.max(0, Math.min(sorted.length, toOrder - 1)), 0, s)
             return { ...p, scenes: sorted.map((x, i) => (x.order === i + 1 ? x : { ...x, order: i + 1 })) }
           }),
-        setContinueFrom: (sceneId, prevId) => {
-          if (prevId && (prevId === sceneId || createsCycle(get().project.scenes, sceneId, prevId))) return false
-          mapScenes([sceneId], (s) => ({ ...s, continueFrom: prevId }))
-          return true
-        },
         setFrame: (sceneId, which, assetId) =>
           mapScenes([sceneId], (s) => (which === 'first' ? { ...s, firstFrame: assetId } : { ...s, lastFrame: assetId })),
 
-        // ---------------- references ----------------
+        // ---------------- image references ----------------
         addRefs: (sceneIds, assetIds) => {
           const p = get().project
           const result: AddRefsResult = { added: 0, skipped: 0, scenes: 0 }
@@ -502,7 +474,6 @@ export const useProject = create<ProjectState>()(
             if (!ids.has(s.id)) return s
             const limit = MODELS[s.settings.model].maxRefImages
             let refs = s.refs
-            let changed = false
             for (const a of assets) {
               if (refs.includes(a)) continue
               if (refImageCount(p, [...refs, a]) > limit) {
@@ -511,50 +482,101 @@ export const useProject = create<ProjectState>()(
               }
               refs = [...refs, a]
               result.added++
-              changed = true
             }
-            if (changed) result.scenes++
-            return changed ? { ...s, refs } : s
+            if (refs === s.refs) return s
+            result.scenes++
+            // Appending never changes existing numbers, so no renumbering is needed.
+            return { ...s, refs }
           })
           if (result.added) mutate((pp) => ({ ...pp, scenes }))
           return result
         },
-        removeRef: (sceneId, assetId) => mapScenes([sceneId], (s) => ({ ...s, refs: s.refs.filter((r) => r !== assetId) })),
+        removeRef: (sceneId, assetId) => mapScenes([sceneId], (s, p) => withMedia(p, s, { refs: s.refs.filter((r) => r !== assetId) })),
         removeRefs: (pairs) => {
           const bySceneId = new Map<string, Set<string>>()
           for (const { sceneId, assetId } of pairs) {
             if (!bySceneId.has(sceneId)) bySceneId.set(sceneId, new Set())
             bySceneId.get(sceneId)!.add(assetId)
           }
-          mapScenes([...bySceneId.keys()], (s) => ({ ...s, refs: s.refs.filter((r) => !bySceneId.get(s.id)!.has(r)) }))
+          mapScenes([...bySceneId.keys()], (s, p) => withMedia(p, s, { refs: s.refs.filter((r) => !bySceneId.get(s.id)!.has(r)) }))
         },
         moveRef: (sceneId, fromIndex, toIndex) =>
-          mapScenes([sceneId], (s) => {
+          mapScenes([sceneId], (s, p) => {
             const refs = [...s.refs]
             const [r] = refs.splice(fromIndex, 1)
             if (r === undefined) return s
             refs.splice(Math.max(0, Math.min(refs.length, toIndex)), 0, r)
-            return { ...s, refs }
+            return withMedia(p, s, { refs })
           }),
         moveRefToScene: (assetId, fromSceneId, toSceneId) => {
           if (fromSceneId === toSceneId) return
           const p = get().project
           const target = p.scenes.find((s) => s.id === toSceneId)
           if (!target) return
-          const canAdd = !target.refs.includes(assetId) && refImageCount(p, [...target.refs, assetId]) <= MODELS[target.settings.model].maxRefImages
+          const already = target.refs.includes(assetId)
+          const canAdd = !already && refImageCount(p, [...target.refs, assetId]) <= MODELS[target.settings.model].maxRefImages
           // Target is over its image limit: reject the move and keep the original link.
-          if (!canAdd && !target.refs.includes(assetId)) return
+          if (!canAdd && !already) return
           mutate((pp) => ({
             ...pp,
             scenes: pp.scenes.map((s) => {
-              if (s.id === fromSceneId) return { ...s, refs: s.refs.filter((r) => r !== assetId) }
+              if (s.id === fromSceneId) return withMedia(pp, s, { refs: s.refs.filter((r) => r !== assetId) })
               if (s.id === toSceneId && canAdd) return { ...s, refs: [...s.refs, assetId] }
               return s
             }),
           }))
         },
 
-        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], seqSceneIds = [], frames = [] }) =>
+        // ---------------- video references ----------------
+        addVideoRefs: (sceneIds, takeIds) => {
+          const p = get().project
+          const result: AddRefsResult = { added: 0, skipped: 0, scenes: 0 }
+          const ids = new Set(sceneIds)
+          const scenes = p.scenes.map((s) => {
+            if (!ids.has(s.id)) return s
+            const limit = usesVideoRefs(s.settings) ? MODELS[s.settings.model].maxRefVideos : 0
+            let videoRefs = s.videoRefs
+            for (const t of takeIds) {
+              if (videoRefs.includes(t)) continue
+              if (videoRefs.length >= limit) {
+                result.skipped++
+                continue
+              }
+              videoRefs = [...videoRefs, t]
+              result.added++
+            }
+            if (videoRefs === s.videoRefs) return s
+            result.scenes++
+            return { ...s, videoRefs }
+          })
+          if (result.added) mutate((pp) => ({ ...pp, scenes }))
+          return result
+        },
+        removeVideoRef: (sceneId, takeId, label = 'video') =>
+          mapScenes([sceneId], (s, p) => withMedia(p, s, { videoRefs: s.videoRefs.filter((t) => t !== takeId) }, p.assets, () => label)),
+        moveVideoRef: (sceneId, fromIndex, toIndex) =>
+          mapScenes([sceneId], (s, p) => {
+            const videoRefs = [...s.videoRefs]
+            const [t] = videoRefs.splice(fromIndex, 1)
+            if (t === undefined) return s
+            videoRefs.splice(Math.max(0, Math.min(videoRefs.length, toIndex)), 0, t)
+            return withMedia(p, s, { videoRefs })
+          }),
+        removeTakesEverywhere: (takeIds, labels) => {
+          const dead = new Set(takeIds)
+          const p = get().project
+          if (!p.scenes.some((s) => s.videoRefs.some((t) => dead.has(t)))) return
+          mutate((pp) => ({
+            ...pp,
+            scenes: pp.scenes.map((s) =>
+              s.videoRefs.some((t) => dead.has(t))
+                ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video')
+                : s,
+            ),
+          }))
+        },
+
+        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [] }, videoLabel) =>
           mutate((p) => {
             const dead = new Set(sceneIds)
             const hide = new Set(hideAssetIds)
@@ -563,20 +585,27 @@ export const useProject = create<ProjectState>()(
               if (!cutRefs.has(r.sceneId)) cutRefs.set(r.sceneId, new Set())
               cutRefs.get(r.sceneId)!.add(r.assetId)
             }
-            const cutSeq = new Set(seqSceneIds)
-            const byId = new Map(p.scenes.map((s) => [s.id, s]))
-            const survivorPrev = (prev: string | null): string | null => {
-              let cur = prev
-              for (let g = 0; cur && dead.has(cur) && g < 10000; g++) cur = byId.get(cur)?.continueFrom ?? null
-              return cur
+            const cutVideos = new Map<string, Set<string>>()
+            for (const r of videoRefs) {
+              if (!cutVideos.has(r.sceneId)) cutVideos.set(r.sceneId, new Set())
+              cutVideos.get(r.sceneId)!.add(r.takeId)
             }
             const scenes = p.scenes
               .filter((s) => !dead.has(s.id))
               .map((s) => {
                 let next = s
-                if (cutRefs.has(s.id)) next = { ...next, refs: next.refs.filter((r) => !cutRefs.get(s.id)!.has(r)) }
-                if (cutSeq.has(s.id)) next = { ...next, continueFrom: null }
-                else if (next.continueFrom && dead.has(next.continueFrom)) next = { ...next, continueFrom: survivorPrev(next.continueFrom) }
+                if (cutRefs.has(s.id) || cutVideos.has(s.id)) {
+                  next = withMedia(
+                    p,
+                    s,
+                    {
+                      refs: cutRefs.has(s.id) ? s.refs.filter((r) => !cutRefs.get(s.id)!.has(r)) : s.refs,
+                      videoRefs: cutVideos.has(s.id) ? s.videoRefs.filter((t) => !cutVideos.get(s.id)!.has(t)) : s.videoRefs,
+                    },
+                    p.assets,
+                    videoLabel,
+                  )
+                }
                 for (const f of frames) {
                   if (f.sceneId !== s.id) continue
                   next = f.which === 'first' ? { ...next, firstFrame: null } : { ...next, lastFrame: null }
@@ -611,38 +640,22 @@ export const useProject = create<ProjectState>()(
             return { ...p, assets, scenes: p.scenes.map((s) => ({ ...s, position: pos.get(s.id)! })) }
           }),
 
-        applyImport: ({ blocks, scenes }) =>
+        applyImport: ({ scenes }) => {
+          const created: string[] = []
           mutate((p) => {
             const start = p.scenes.length
-            const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
-            let prev = sorted[sorted.length - 1]?.id ?? null
-            const draft = p.presets[0]
             const taken = p.scenes.map((s) => s.position)
-            const created: Scene[] = scenes.map((partial, i) => {
+            const list: Scene[] = scenes.map((partial, i) => {
               const position = freeScenePosition(taken, start + i)
               taken.push(position)
-              const id = partial.id ?? newId('scn')
-              const s: Scene = {
-                id,
-                order: start + i + 1,
-                title: partial.title ?? '',
-                prompt: partial.prompt ?? '',
-                refs: partial.refs ?? [],
-                blockOverrides: partial.blockOverrides ?? {},
-                presetId: partial.presetId ?? draft?.id ?? null,
-                settings: normalizeSettings(partial.settings ?? (draft ? { ...draft } : {})),
-                continueFrom: partial.continueFrom !== undefined ? partial.continueFrom : prev,
-                firstFrame: null,
-                lastFrame: null,
-                color: null,
-                position,
-                note: partial.note ?? '',
-              }
-              prev = id
+              const s = buildScene(p, partial, position, start + i + 1)
+              created.push(s.id)
               return s
             })
-            return { ...p, blocks: [...p.blocks, ...blocks], scenes: renumber([...p.scenes, ...created]) }
-          }),
+            return { ...p, scenes: renumber([...p.scenes, ...list]) }
+          })
+          return created
+        },
       }
     },
     {

@@ -42,7 +42,7 @@ export function useShortcuts(): void {
       // ---- always available (even while typing) ----
       if (mod && key === 's') {
         e.preventDefault()
-        if (flush()) toast('Đã lưu', { tone: 'success' })
+        void flush().then((ok) => ok && toast('Đã lưu', { tone: 'success' }))
         return
       }
       if (mod && key === 'Enter') {

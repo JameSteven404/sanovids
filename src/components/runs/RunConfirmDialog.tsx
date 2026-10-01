@@ -16,6 +16,9 @@ interface Row {
   check: SceneRunCheck
   assets: Asset[]
   images: number
+  /** Reference videos (@video_N) and how many of them are finished takes. */
+  videos: number
+  videosReady: number
 }
 
 interface TakeStat {
@@ -29,12 +32,21 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
   const project = useProject((s) => s.project)
   const takes = useRuns((s) => s.takes)
   const credits = useRuns((s) => s.credits)
+  // Status of every reference video of these scenes, as one string: re-check only when one of them changes.
+  const videoKey = useRuns((s) => {
+    const ids = new Set(sceneIds)
+    const refs = project.scenes.filter((sc) => ids.has(sc.id) && sc.videoRefs.length)
+    if (!refs.length) return ''
+    const status = new Map(s.takes.map((t) => [t.id, t.status]))
+    return refs.map((sc) => sc.videoRefs.map((t) => status.get(t) ?? '-').join(',')).join('|')
+  })
   const [onlyNew, setOnlyNew] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
 
   const rows = useMemo<Row[]>(() => {
     const checks = new Map(useRuns.getState().check(sceneIds).map((c) => [c.sceneId, c]))
     const assetMap = new Map(project.assets.map((a) => [a.id, a]))
+    const status = new Map(useRuns.getState().takes.map((t) => [t.id, t.status]))
     return project.scenes
       .filter((s) => checks.has(s.id))
       .sort((a, b) => a.order - b.order)
@@ -45,9 +57,12 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
           check: checks.get(scene.id)!,
           assets: scene.refs.map((id) => assetMap.get(id)).filter((a): a is Asset => !!a),
           images: compiled.images.length,
+          videos: scene.videoRefs.length,
+          videosReady: scene.videoRefs.filter((t) => status.get(t) === 'completed').length,
         }
       })
-  }, [project, sceneIds])
+    // videoKey: re-run the check when a reference video finishes (or is deleted).
+  }, [project, sceneIds, videoKey])
 
   const stats = useMemo(() => {
     const m = new Map<string, TakeStat>()
@@ -153,11 +168,11 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
             <colgroup>
               <col className="rq-w-check" />
               <col className="rq-w-code" />
-              <col />
-              <col className="rq-w-model" />
+              <col className="rq-w-title" />
               <col className="rq-w-settings" />
               <col className="rq-w-refs" />
-              <col />
+              <col className="rq-w-videos" />
+              <col className="rq-w-warn" />
               <col className="rq-w-credit" />
               <col className="rq-w-status" />
             </colgroup>
@@ -168,9 +183,9 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
                 </th>
                 <th>Cảnh</th>
                 <th>Tên</th>
-                <th>Model</th>
                 <th>Cấu hình</th>
-                <th>Tham chiếu</th>
+                <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
+                <th title="Video tham chiếu (@video_N)">Video</th>
                 <th>Cảnh báo</th>
                 <th className="num">Credit</th>
                 <th>Trạng thái</th>
@@ -199,7 +214,7 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
 }
 
 function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeStat | undefined; included: boolean; onToggle: () => void }) {
-  const { scene, check, assets, images } = row
+  const { scene, check, assets, images, videos, videosReady } = row
   const spec = MODELS[scene.settings.model]
   const warnings = check.warnings
   return (
@@ -213,23 +228,35 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
       <td className="rq-cell-title" title={scene.title || undefined}>
         {scene.title || <span className="faint">Chưa đặt tên</span>}
       </td>
-      <td>
+      <td className="rq-cell-settings" title={`${spec?.name ?? scene.settings.model} · ${settingsLabel(scene.settings)}`}>
         <span className="rq-model">
           <i style={{ background: spec?.color }} />
           {spec?.short ?? scene.settings.model}
         </span>
+        <span className="mono rq-settings-line">{settingsLabel(scene.settings)}</span>
       </td>
-      <td className="mono rq-nowrap">{settingsLabel(scene.settings)}</td>
       <td>
         {assets.length ? (
-          <span className="rq-refs" title={assets.map((a) => '@' + a.tag).join(', ')}>
+          <span className="rq-refs" title={`${images} ảnh tham chiếu: ${assets.map((a) => a.name).join(', ')}`}>
             <span className="rq-avatars">
-              {assets.slice(0, 4).map((a) => (
+              {assets.slice(0, 3).map((a) => (
                 <AssetAvatar key={a.id} asset={a} size={18} />
               ))}
             </span>
-            {assets.length > 4 && <span className="faint">+{assets.length - 4}</span>}
-            <span className="faint mono">{images} ảnh</span>
+            <span className="faint mono">{images}</span>
+          </span>
+        ) : (
+          <span className="faint">—</span>
+        )}
+      </td>
+      <td className="mono">
+        {videos ? (
+          <span
+            className={videosReady < videos ? 'rq-vcount pending' : 'rq-vcount'}
+            title={videosReady < videos ? `${videos - videosReady}/${videos} video tham chiếu chưa tạo xong` : `${videos} video tham chiếu (@video_1…)`}
+          >
+            {videos}
+            {videosReady < videos && <TriangleAlert size={11} />}
           </span>
         ) : (
           <span className="faint">—</span>
@@ -247,7 +274,7 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
         )}
       </td>
       <td className="num mono">{check.cost}</td>
-      <td>
+      <td className="rq-cell-status">
         {!check.ok ? (
           <span className="rq-skip">Bỏ qua: {check.reason}</span>
         ) : !included ? (

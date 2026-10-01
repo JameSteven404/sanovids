@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <pattern id="s" width="43.44" height="43.44" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="21.72" height="43.44" fill="#e8894a"/>
+    </pattern>
+  </defs>
+  <rect width="512" height="512" rx="108" fill="#e8894a"/>
+  <g transform="translate(0 10)">
+    <rect x="113" y="215" width="286" height="46" rx="13" fill="#fff"/>
+    <rect x="125" y="224" width="262" height="28" rx="4" fill="url(#s)"/>
+    <rect x="113" y="271" width="286" height="133" rx="20" fill="#fff"/>
+    <path d="M233 300 L294 335 L233 371 Z" fill="#e8894a"/>
+    <g transform="rotate(-14 120 202)">
+      <rect x="113" y="154" width="286" height="46" rx="13" fill="#fff"/>
+      <rect x="125" y="162" width="262" height="29" rx="4" fill="url(#s)"/>
+    </g>
+  </g>
+</svg>

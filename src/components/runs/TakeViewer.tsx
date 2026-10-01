@@ -7,7 +7,9 @@ import {
   Copy,
   Download,
   FileDiff,
+  Film,
   Image as ImageIcon,
+  Link2,
   LoaderCircle,
   LocateFixed,
   RotateCcw,
@@ -15,16 +17,17 @@ import {
   Trash,
   Undo2,
 } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { focusNodes, restoreFromTake, runNow } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { createSceneFromTake, focusNodes, linkTakes, restoreFromTake, runNow } from '../../actions'
+import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { MODE_LABEL, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
 import { deleteMedia, useMediaUrl } from '../../lib/imageStore'
 import { useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
-import { AssetChip } from '../common/Media'
+import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { TakeStrip } from './TakeStrip'
 import {
@@ -209,7 +212,7 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
           </div>
         </div>
         <div className="rq-tv-right">
-          <Details take={take} scene={scene} onGoto={gotoScene} />
+          <Details take={take} scene={scene} onGoto={gotoScene} onClose={onClose} />
         </div>
       </div>
     </Modal>
@@ -293,7 +296,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined; onGoto: () => void }) {
+function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | undefined; onGoto: () => void; onClose: () => void }) {
   const project = useProject((s) => s.project)
   const assets = project.assets
   const current = useMemo(() => (scene ? compileScene(project, scene) : null), [project, scene])
@@ -303,11 +306,12 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
-    const found: Asset[] = []
+    const slots = imageSlotsFor(assets, take.refsSnapshot)
+    const found: { asset: Asset; n: number | undefined }[] = []
     let missing = 0
     for (const id of take.refsSnapshot) {
       const a = map.get(id)
-      if (a) found.push(a)
+      if (a) found.push({ asset: a, n: slots.find((s) => s.assetId === id)?.n })
       else missing++
     }
     return { found, missing }
@@ -321,9 +325,10 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
     const refsAdded = scene.refs.filter((id) => !take.refsSnapshot.includes(id)).map(tagOf)
     const refsRemoved = take.refsSnapshot.filter((id) => !scene.refs.includes(id)).map(tagOf)
     const refsReordered = !refsAdded.length && !refsRemoved.length && scene.refs.join('|') !== take.refsSnapshot.join('|')
+    const videosChanged = scene.videoRefs.join('|') !== take.videoRefsSnapshot.join('|')
     const diff = promptChanged ? paragraphDiff(take.promptSnapshot, current.text) : { removed: [], added: [] }
-    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered
-    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, diff, any }
+    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered || videosChanged
+    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, videosChanged, diff, any }
   }, [scene, current, take, assets])
 
   const copy = async () => {
@@ -392,21 +397,39 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
         )}
       </dl>
 
+      <UseTake take={take} scene={scene} onClose={onClose} />
+
       <div className="rq-sec">
         <div className="section-title">
-          <span>Tham chiếu lúc chạy</span>
+          <span>Ảnh tham chiếu lúc chạy</span>
           <span className="faint">{take.refsSnapshot.length}</span>
         </div>
         {refAssets.found.length ? (
           <div className="rq-chips">
-            {refAssets.found.map((a, i) => (
-              <AssetChip key={a.id} asset={a} index={i + 1} />
+            {refAssets.found.map(({ asset, n }) => (
+              <AssetChip key={asset.id} asset={asset} index={n} />
             ))}
           </div>
         ) : (
-          <div className="faint rq-small">Không có tham chiếu.</div>
+          <div className="faint rq-small">Không có ảnh tham chiếu.</div>
         )}
         {refAssets.missing > 0 && <div className="faint rq-small">{refAssets.missing} mục đã bị xoá khỏi thư viện.</div>}
+      </div>
+
+      <div className="rq-sec">
+        <div className="section-title">
+          <span>Video tham chiếu lúc chạy</span>
+          <span className="faint">{take.videoRefsSnapshot.length}</span>
+        </div>
+        {take.videoRefsSnapshot.length ? (
+          <div className="rq-vchips">
+            {take.videoRefsSnapshot.map((id, i) => (
+              <VideoRefChip key={id} takeId={id} n={i + 1} />
+            ))}
+          </div>
+        ) : (
+          <div className="faint rq-small">Không dùng video tham chiếu.</div>
+        )}
       </div>
 
       <div className="rq-sec rq-sec-prompt">
@@ -430,7 +453,8 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
               {[
                 changes.promptChanged && 'nội dung prompt',
                 changes.settingsChanged && 'cấu hình',
-                (changes.refsAdded.length || changes.refsRemoved.length || changes.refsReordered) && 'tham chiếu',
+                (changes.refsAdded.length || changes.refsRemoved.length || changes.refsReordered) && 'ảnh tham chiếu',
+                changes.videosChanged && 'video tham chiếu',
               ]
                 .filter(Boolean)
                 .join(', ')}
@@ -475,6 +499,12 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
                 <b>Tham chiếu:</b> thứ tự đã đổi (số @image thay đổi).
               </div>
             )}
+            {changes.videosChanged && (
+              <div className="rq-diff-line">
+                <b>Video tham chiếu:</b> {take.videoRefsSnapshot.length} → {scene.videoRefs.length} video
+                {take.videoRefsSnapshot.length === scene.videoRefs.length ? ' (đã đổi video hoặc thứ tự @video)' : ''}.
+              </div>
+            )}
             {changes.diff.removed.map((p, i) => (
               <div key={'-' + i} className="rq-diff-para del">
                 <span className="rq-diff-sign">−</span>
@@ -514,3 +544,89 @@ function Details({ take, scene, onGoto }: { take: Take; scene: Scene | undefined
   )
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** "Dùng video này": continue the story from this take, or use it as @video for the selected scenes. */
+function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefined; onClose: () => void }) {
+  const selectedIds = useUI((s) => s.selectedIds)
+  // Selected scenes other than the take's own scene (a scene cannot reference its own video).
+  const targets = useProject(
+    useShallow((s) => {
+      const sel = new Set(selectedIds)
+      return s.project.scenes.filter((x) => sel.has(x.id) && x.id !== take.sceneId).map((x) => x.id)
+    }),
+  )
+  const ownSelected = selectedIds.includes(take.sceneId)
+  const usedBy = useProject(
+    useShallow((s) =>
+      s.project.scenes
+        .filter((x) => x.videoRefs.includes(take.id))
+        .sort((a, b) => a.order - b.order)
+        .map((x) => `${sceneCode(x.order)} (@video_${x.videoRefs.indexOf(take.id) + 1})`),
+    ),
+  )
+  const ready = take.status === 'completed'
+
+  const continueTitle = !ready
+    ? 'Video chưa tạo xong'
+    : !scene
+      ? 'Cảnh gốc của video này đã bị xoá'
+      : `Cảnh mới ngay bên dưới ${sceneCode(scene.order)}: video này thành @video_1, giữ ảnh tham chiếu và cấu hình`
+  const linkTitle = !ready
+    ? 'Video chưa tạo xong'
+    : targets.length
+      ? `Thêm video này vào video tham chiếu của ${targets.length} cảnh đang chọn`
+      : ownSelected
+        ? 'Không thể dùng video của chính cảnh này — chọn cảnh khác trên canvas hoặc Bảng cảnh trước'
+        : 'Chưa chọn cảnh nào — chọn cảnh trên canvas hoặc Bảng cảnh trước'
+
+  return (
+    <div className="rq-sec rq-use">
+      <div className="section-title">
+        <span>Dùng video này</span>
+      </div>
+      <div className="rq-use-actions">
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={!ready || !scene}
+          title={continueTitle}
+          onClick={() => {
+            if (createSceneFromTake(take.id)) onClose()
+          }}
+        >
+          <Film size={13} />
+          Tạo cảnh tiếp nối
+        </button>
+        <button type="button" className="btn btn-sm" disabled={!ready || !targets.length} title={linkTitle} onClick={() => linkTakes(targets, [take.id])}>
+          <Link2 size={13} />
+          {targets.length > 1 ? `Dùng làm @video cho ${targets.length} cảnh đang chọn` : 'Dùng làm @video cho cảnh đang chọn'}
+        </button>
+      </div>
+      {usedBy.length > 0 && <div className="faint rq-small">Đang là video tham chiếu ở: {usedBy.join(', ')}</div>}
+    </div>
+  )
+}
+
+/** One reference video of the take (v1 = @video_1): poster, label, click to open it. */
+const VideoRefChip = memo(function VideoRefChip({ takeId, n }: { takeId: string; n: number }) {
+  const ref = useRuns((s) => s.takes.find((t) => t.id === takeId))
+  const order = useProject((s) => (ref ? s.project.scenes.find((x) => x.id === ref.sceneId)?.order : undefined))
+  if (!ref) {
+    return (
+      <span className="rq-vchip missing" title="Video này đã bị xoá">
+        <span className="rq-vchip-thumb" />
+        <span className="rq-vchip-n">v{n}</span>
+        <span className="faint">đã xoá</span>
+      </span>
+    )
+  }
+  return (
+    <button type="button" className="rq-vchip" onClick={() => openTake(ref.id)} title={`@video_${n} · ${takeCode(order, ref.number)} — bấm để xem`}>
+      <span className="rq-vchip-thumb">{ref.posterId ? <MediaImg id={ref.posterId} className="rq-thumb-img" /> : null}</span>
+      <span className="rq-vchip-n">v{n}</span>
+      <span className="mono">{takeCode(order, ref.number)}</span>
+    </button>
+  )
+})

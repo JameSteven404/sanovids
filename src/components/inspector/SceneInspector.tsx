@@ -1,39 +1,31 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import {
-  ArrowRight,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  CopyPlus,
-  Film,
-  GripVertical,
-  Info,
-  Play,
-  Plus,
-  Trash,
-  TriangleAlert,
-  X,
-} from 'lucide-react'
+import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Film, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, focusNodes, linkAssets, nextScene, requestRun } from '../../actions'
-import { compileScene, extractMentions, MENTION_RE, sceneCode } from '../../core/compile'
-import { costOf, MODE_LABEL, MODELS, usesRefs } from '../../core/models'
-import type { Asset, Project, Scene, VideoSettings } from '../../core/types'
-import { useProject } from '../../store/project'
+import { createAssetsFromFiles, createSceneFromTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
+import { sceneCode } from '../../core/compile'
+import { costOf, MODE_LABEL, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import type { Asset } from '../../core/types'
+import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar } from '../common/Media'
+import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
-import { hasFiles, undoToastAction } from '../sidebar/shared'
 import { FinalPromptPreview } from './FinalPromptPreview'
-import { PromptEditor } from './PromptEditor'
+import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
+import { flushPromptEditor, PromptEditor } from './PromptEditor'
 import { SettingsFields } from './SettingsFields'
-import { AssetPicker, EMPTY_IDS, KIND_LABEL, Section, triOf, TriToggle, triValue, useSceneField, type Tri } from './shared'
+import { AssetPicker, EMPTY_IDS, KIND_LABEL, Section, useSceneField } from './shared'
+import { TakePicker } from './TakePicker'
+import { imageOptsFor, legacyAssets, replaceLegacyTags } from './tokens'
+import { useReorder } from './useReorder'
 
+/** HTML5 drag payload of library cards (JSON array of asset ids) — same contract as the sidebar / canvas. */
 const ASSET_MIME = 'application/x-bdp-assets'
 const REF_MIME = 'application/x-bdp-refidx'
+const VREF_MIME = 'application/x-bdp-vrefidx'
+const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files')
 
 export function SceneInspector({ sceneId }: { sceneId: string }) {
   const exists = useProject((s) => s.project.scenes.some((x) => x.id === sceneId))
@@ -46,12 +38,28 @@ export function SceneInspector({ sceneId }: { sceneId: string }) {
         <PromptEditor sceneId={sceneId} />
       </Section>
       <RefsSection sceneId={sceneId} />
-      <BlocksSection sceneId={sceneId} />
+      <VideoRefsSection sceneId={sceneId} />
       <FinalPromptPreview sceneId={sceneId} />
       <TakesSection sceneId={sceneId} />
       <NoteSection sceneId={sceneId} />
     </div>
   )
+}
+
+// ---------------- helpers ----------------
+const promptOf = (sceneId: string) => useProject.getState().project.scenes.find((s) => s.id === sceneId)?.prompt
+
+/**
+ * Run a refs / videoRefs change (the store renumbers @image_N / @video_N tokens in the same undo step) and tell
+ * the user when the prompt text changed. Pending typing is committed first so it is renumbered too.
+ */
+function changeMedia(sceneId: string, run: () => void, msg: { renumbered: string; plain?: string }) {
+  flushPromptEditor(sceneId)
+  const before = promptOf(sceneId)
+  run()
+  const after = promptOf(sceneId)
+  if (after !== before) toast(msg.renumbered, { tone: 'info', action: undoToastAction() })
+  else if (msg.plain) toast(msg.plain, { action: undoToastAction() })
 }
 
 // ---------------- 1. header ----------------
@@ -63,7 +71,7 @@ interface SceneOpt {
 const SEP = '\u0001'
 
 /** Stable list of all scenes (id/order/title), sorted by order. */
-export function useSceneOptions(): SceneOpt[] {
+function useSceneOptions(): SceneOpt[] {
   const keys = useProject(useShallow((s) => s.project.scenes.map((x) => `${x.order}${SEP}${x.id}${SEP}${x.title}`)))
   return useMemo(
     () =>
@@ -77,7 +85,7 @@ export function useSceneOptions(): SceneOpt[] {
   )
 }
 
-function goToScene(id: string) {
+function goTo(id: string) {
   useUI.getState().select([id])
   focusNodes([id])
 }
@@ -85,16 +93,11 @@ function goToScene(id: string) {
 const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) {
   const order = useSceneField(sceneId, (s) => s.order) ?? 0
   const title = useSceneField(sceneId, (s) => s.title) ?? ''
-  const continueFrom = useSceneField(sceneId, (s) => s.continueFrom) ?? null
   const options = useSceneOptions()
   const idx = options.findIndex((o) => o.id === sceneId)
   const prev = idx > 0 ? options[idx - 1] : undefined
   const next = idx >= 0 && idx < options.length - 1 ? options[idx + 1] : undefined
 
-  const onContinue = (value: string) => {
-    const ok = useProject.getState().setContinueFrom(sceneId, value || null)
-    if (!ok) toast('Không thể tiếp nối: sẽ tạo vòng lặp giữa các cảnh.', { tone: 'warning' })
-  }
   const onDuplicate = () => {
     const created = useProject.getState().duplicateScenes([sceneId])
     if (created[0]) {
@@ -122,31 +125,17 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
           aria-label="Tên cảnh"
         />
         <div className="in-head-nav">
-          <button type="button" className="icon-btn in-icon-sm" disabled={!prev} onClick={() => prev && goToScene(prev.id)} title={prev ? `Cảnh trước: ${sceneCode(prev.order)}` : 'Đây là cảnh đầu'}>
+          <button type="button" className="icon-btn in-icon-sm" disabled={!prev} onClick={() => prev && goTo(prev.id)} title={prev ? `Cảnh trước: ${sceneCode(prev.order)}` : 'Đây là cảnh đầu'}>
             <ChevronLeft size={15} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm" disabled={!next} onClick={() => next && goToScene(next.id)} title={next ? `Cảnh sau: ${sceneCode(next.order)}` : 'Đây là cảnh cuối'}>
+          <button type="button" className="icon-btn in-icon-sm" disabled={!next} onClick={() => next && goTo(next.id)} title={next ? `Cảnh sau: ${sceneCode(next.order)}` : 'Đây là cảnh cuối'}>
             <ChevronRight size={15} />
           </button>
         </div>
       </div>
       <div className="in-head-row in-head-sub">
-        <label className="in-continue">
-          <span>Tiếp nối từ</span>
-          <select className="select in-sm" value={continueFrom ?? ''} onChange={(e) => onContinue(e.target.value)}>
-            <option value="">— Không (mở đầu chuỗi)</option>
-            {options
-              .filter((o) => o.id !== sceneId)
-              .map((o) => (
-                <option key={o.id} value={o.id}>
-                  {sceneCode(o.order)}
-                  {o.title ? ` · ${o.title}` : ''}
-                </option>
-              ))}
-          </select>
-        </label>
         <div className="in-head-actions">
-          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title="Tạo cảnh tiếp theo (N) — giữ nhân vật, khối, cấu hình">
+          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title="Tạo cảnh tiếp theo bên dưới (N) — giữ ảnh/video tham chiếu và cấu hình">
             <ArrowRight size={14} />
           </button>
           <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title="Nhân bản cảnh (Ctrl+D)">
@@ -195,74 +184,31 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
   )
 })
 
-// ---------------- 4. references ----------------
-export function refNumbering(assets: Asset[], refs: string[], settings: VideoSettings) {
-  const scene: Scene = {
-    id: '_',
-    order: 1,
-    title: '',
-    prompt: '',
-    refs,
-    blockOverrides: {},
-    presetId: null,
-    settings,
-    continueFrom: null,
-    firstFrame: null,
-    lastFrame: null,
-    color: null,
-    position: { x: 0, y: 0 },
-    note: '',
-  }
-  const stub: Project = {
-    id: '_',
-    name: '',
-    schemaVersion: 1,
-    createdAt: 0,
-    updatedAt: 0,
-    assets,
-    blocks: [],
-    presets: [],
-    scenes: [scene],
-    settings: { referencesTemplate: '', autoReferences: false, autoContinuity: false },
-  }
-  const c = compileScene(stub, scene)
-  const byAsset = new Map<string, number[]>()
-  for (const img of c.images) {
-    const l = byAsset.get(img.assetId)
-    if (l) l.push(img.n)
-    else byAsset.set(img.assetId, [img.n])
-  }
-  const total = refs.reduce((t, id) => t + (assets.find((a) => a.id === id)?.imageIds.length ?? 0), 0)
-  return { byAsset, total, sent: c.images.length }
-}
-
+// ---------------- 3. reference images (@image_N) ----------------
 function tokensLabel(ns: number[]): string {
   if (!ns.length) return ''
   if (ns.length <= 2) return ns.map((n) => `@image_${n}`).join(', ')
   return `@image_${ns[0]}…${ns[ns.length - 1]}`
 }
 
-/** Remove a ref; warn when the prompt still mentions it (it would be re-linked on the next edit). */
-function removeRefWithHint(sceneId: string, asset: Asset) {
-  const st = useProject.getState()
-  st.removeRef(sceneId, asset.id)
-  const scene = st.project.scenes.find((s) => s.id === sceneId)
-  const mentioned = !!scene && extractMentions(scene.prompt).some((t) => t.toLowerCase() === asset.tag.toLowerCase())
-  if (!mentioned) {
-    toast(`Đã bỏ nối @${asset.tag}.`, { action: undoToastAction() })
-    return
-  }
-  toast(`Đã bỏ nối @${asset.tag} — prompt vẫn nhắc @${asset.tag} nên sẽ tự nối lại khi sửa prompt.`, {
+/** Remove a ref (tokens renumber); offer to turn a remaining legacy @Tag into the name (it would re-link). */
+function removeRef(sceneId: string, asset: Asset) {
+  changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), {
+    renumbered: `Đã bỏ nối ${asset.name} — đã đánh lại số trong prompt (ảnh của ${asset.name} đổi thành tên).`,
+    plain: `Đã bỏ nối ${asset.name}.`,
+  })
+  const prompt = promptOf(sceneId) ?? ''
+  if (!legacyAssets(prompt, [asset]).length) return
+  toast(`Prompt vẫn nhắc @${asset.tag} nên sẽ tự nối lại khi sửa prompt.`, {
     tone: 'warning',
     ms: 8000,
     action: {
       label: 'Đổi @ thành tên',
       run: () => {
-        const cur = useProject.getState().project.scenes.find((s) => s.id === sceneId)
-        if (!cur) return
-        const key = asset.tag.toLowerCase()
-        const prompt = cur.prompt.replace(MENTION_RE, (whole, tag: string) => (tag.toLowerCase() === key ? asset.name : whole))
-        useProject.getState().updateScene(sceneId, { prompt })
+        const cur = promptOf(sceneId)
+        if (cur === undefined) return
+        const { text } = replaceLegacyTags(cur, new Map([[asset.tag.toLowerCase(), asset.name]]))
+        useProject.getState().updateScene(sceneId, { prompt: text })
       },
     },
   })
@@ -274,59 +220,41 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   const assets = useProject((s) => s.project.assets)
   const [picker, setPicker] = useState(false)
   const addBtn = useRef<HTMLButtonElement>(null)
-  const [dragFrom, setDragFrom] = useState<number | null>(null)
-  const [dropAt, setDropAt] = useState<number | null>(null)
   /** What is being dragged over the list from outside: library cards or image files. */
   const [libOver, setLibOver] = useState<'assets' | 'files' | null>(null)
 
-  const numbering = useMemo(() => (settings ? refNumbering(assets, refs, settings) : null), [assets, refs, settings])
-  if (!settings || !numbering) return null
-  const spec = MODELS[settings.model]
-  const sends = usesRefs(settings)
-  // Modes that send no images drop nothing: refs are only named in the prompt.
-  const over = sends && numbering.total > spec.maxRefImages
+  const slots = useMemo(() => imageOptsFor(assets, refs), [assets, refs])
   // Rows keep their index in scene.refs: refs may hold ids of deleted assets (e.g. restored from an old take),
   // and moveRef works on the raw list.
-  const rows = refs.flatMap((id, index) => {
-    const a = assets.find((x) => x.id === id)
-    return a ? [{ a, index }] : []
-  })
+  const rows = useMemo(
+    () =>
+      refs.flatMap((id, index) => {
+        const a = assets.find((x) => x.id === id)
+        return a ? [{ a, index }] : []
+      }),
+    [refs, assets],
+  )
   const moveRow = (from: number, to: number) => {
     if (from === to || !rows[from] || !rows[to]) return
-    useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index)
+    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), { renumbered: 'Đã đánh lại số trong prompt.' })
   }
+  const reorder = useReorder(rows.length, REF_MIME, moveRow)
+  if (!settings) return null
 
-  const onRowDragOver = (e: DragEvent, i: number) => {
-    if (dragFrom === null) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const at = e.clientY < r.top + r.height / 2 ? i : i + 1
-    if (at !== dropAt) setDropAt(at)
-  }
-  const finishDrag = () => {
-    setDragFrom(null)
-    setDropAt(null)
-  }
-  const onRowDrop = (e: DragEvent) => {
-    if (dragFrom === null || dropAt === null) return
-    e.preventDefault()
-    e.stopPropagation()
-    const to = dropAt > dragFrom ? dropAt - 1 : dropAt
-    moveRow(dragFrom, to)
-    finishDrag()
-  }
+  const spec = MODELS[settings.model]
+  const sends = usesRefs(settings)
+  const over = sends && slots.length > spec.maxRefImages
+  const sent = sends ? Math.min(slots.length, spec.maxRefImages) : 0
   const isLibDrag = (e: DragEvent) => e.dataTransfer.types.includes(ASSET_MIME)
-  const isFileDrag = (e: DragEvent) => hasFiles(e.dataTransfer)
 
   return (
     <Section
       id="refs"
-      title="Tham chiếu"
+      title="Ảnh tham chiếu"
       meta={
         <span className="in-meta">
-          <span className={`badge ${over ? 'danger' : sends && numbering.sent ? 'ref' : ''}`} title="Số ảnh gửi kèm / giới hạn của model">
-            {sends ? `${numbering.sent}/${spec.maxRefImages} ảnh` : 'không gửi ảnh'}
+          <span className={`badge ${over ? 'danger' : sent ? 'ref' : ''}`} title="Số ảnh gửi kèm / giới hạn của model">
+            {sends ? `${sent}/${spec.maxRefImages} ảnh` : 'không gửi ảnh'}
           </span>
         </span>
       }
@@ -334,7 +262,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
       <div
         className={`in-refs ${libOver ? 'is-lib-over' : ''}`}
         onDragOver={(e) => {
-          const kind = isLibDrag(e) ? 'assets' : isFileDrag(e) ? 'files' : null
+          const kind = isLibDrag(e) ? 'assets' : hasFiles(e.dataTransfer) ? 'files' : null
           if (!kind) return
           e.preventDefault()
           e.dataTransfer.dropEffect = kind === 'assets' ? 'link' : 'copy'
@@ -345,7 +273,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         }}
         onDrop={(e) => {
           if (!isLibDrag(e)) {
-            if (!isFileDrag(e)) return
+            if (!hasFiles(e.dataTransfer)) return
             // Image files: add them to the library, then link them here (same as dropping on the scene card).
             e.preventDefault()
             setLibOver(null)
@@ -365,65 +293,43 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
       >
         {rows.length === 0 && (
           <div className="in-refs-empty">
-            Chưa có tham chiếu. Gõ <span className="kbd">@</span> trong prompt, kéo nhân vật từ thư viện vào đây, hoặc bấm “Thêm”.
+            Chưa có ảnh tham chiếu. Gõ <span className="kbd">@</span> trong prompt, kéo nhân vật từ thư viện vào đây, hoặc bấm “Thêm ảnh”.
           </div>
         )}
         {rows.map(({ a }, i) => {
-          const ns = numbering.byAsset.get(a.id) ?? []
+          const ns = slots.filter((s) => s.assetId === a.id).map((s) => s.n)
+          const sentNs = ns.filter((n) => n <= spec.maxRefImages)
           return (
-            <div
-              key={a.id}
-              className={`in-ref ${dragFrom === i ? 'is-dragging' : ''} ${dropAt === i && dragFrom !== null ? 'drop-before' : ''} ${
-                dropAt === i + 1 && i === rows.length - 1 && dragFrom !== null ? 'drop-after' : ''
-              }`}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(REF_MIME, String(i))
-                e.dataTransfer.effectAllowed = 'move'
-                setDragFrom(i)
-              }}
-              onDragOver={(e) => onRowDragOver(e, i)}
-              onDrop={onRowDrop}
-              onDragEnd={finishDrag}
-            >
-              <button
-                type="button"
-                className="in-grip"
-                title="Kéo để đổi thứ tự (↑/↓)"
-                aria-label={`Đổi thứ tự @${a.tag}`}
-                onKeyDown={(e) => {
-                  if (e.key === 'ArrowUp' && i > 0) {
-                    e.preventDefault()
-                    moveRow(i, i - 1)
-                  } else if (e.key === 'ArrowDown' && i < rows.length - 1) {
-                    e.preventDefault()
-                    moveRow(i, i + 1)
-                  }
-                }}
-              >
+            <div key={a.id} className={`in-ref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
+              <button type="button" className="in-grip" title="Kéo để đổi thứ tự (↑/↓) — số @image trong prompt tự cập nhật" aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
                 <GripVertical size={13} />
               </button>
               <AssetAvatar asset={a} size={28} />
               <button type="button" className="in-ref-name" onClick={() => useUI.getState().openDialog({ kind: 'asset', assetId: a.id })} title="Sửa chi tiết">
                 <span className="in-ref-title">{a.name}</span>
                 <span className="in-ref-tag">
-                  @{a.tag} · {KIND_LABEL[a.kind]}
+                  {KIND_LABEL[a.kind]}
+                  {a.imageIds.length > 1 ? ` · ${a.imageIds.length} ảnh` : ''}
                 </span>
               </button>
-              {sends ? (
-                ns.length ? (
-                  <span className="in-token" title={ns.map((n) => `@image_${n}`).join(', ')}>
-                    {tokensLabel(ns)}
-                  </span>
-                ) : (
-                  <span className="in-token is-off" title={a.imageIds.length ? 'Vượt giới hạn ảnh — không được gửi' : 'Chưa có ảnh — không được gửi'}>
-                    {a.imageIds.length ? 'vượt giới hạn' : 'chưa có ảnh'}
-                  </span>
-                )
+              {!ns.length ? (
+                <span className="in-token is-off" title="Chưa có ảnh — không được gửi">
+                  chưa có ảnh
+                </span>
+              ) : !sends ? (
+                <span className="in-token is-off" title="Chế độ này không gửi ảnh tham chiếu">
+                  {tokensLabel(ns)}
+                </span>
+              ) : sentNs.length ? (
+                <span className="in-token" title={ns.map((n) => `@image_${n}`).join(', ')}>
+                  {tokensLabel(ns)}
+                </span>
               ) : (
-                <span className="in-token is-off">theo tên</span>
+                <span className="in-token is-off" title="Vượt giới hạn ảnh — không được gửi">
+                  vượt giới hạn
+                </span>
               )}
-              <button type="button" className="in-x" onClick={() => removeRefWithHint(sceneId, a)} title="Bỏ nối" aria-label={`Bỏ nối @${a.tag}`}>
+              <button type="button" className="in-x" onClick={() => removeRef(sceneId, a)} title="Bỏ nối" aria-label={`Bỏ nối ${a.name}`}>
                 <X size={13} />
               </button>
             </div>
@@ -436,7 +342,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         <div className="in-note danger">
           <TriangleAlert size={13} />
           <span>
-            {spec.name} nhận tối đa {spec.maxRefImages} ảnh; đang có {numbering.total} ảnh — {numbering.total - spec.maxRefImages} ảnh cuối sẽ bị bỏ.
+            {spec.name} nhận tối đa {spec.maxRefImages} ảnh; đang có {slots.length} ảnh — {slots.length - spec.maxRefImages} ảnh cuối sẽ bị bỏ.
           </span>
         </div>
       )}
@@ -444,23 +350,17 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         <div className="in-note">
           <Info size={13} />
           <span>
-            Chế độ “{MODE_LABEL[settings.mode]}” của {spec.name} không gửi ảnh tham chiếu — @Tag sẽ được thay bằng tên.
+            Chế độ “{MODE_LABEL[settings.mode]}” của {spec.name} không gửi ảnh tham chiếu.
           </span>
         </div>
       )}
 
       <div className="in-pop-host">
         <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>
-          <Plus size={13} /> Thêm tham chiếu
+          <Plus size={13} /> Thêm ảnh
         </button>
         {picker && (
-          <AssetPicker
-            exclude={refs}
-            ignoreRef={addBtn}
-            title="Nối vào cảnh"
-            onClose={() => setPicker(false)}
-            onPick={(id) => linkAssets([sceneId], [id])}
-          />
+          <AssetPicker exclude={refs} ignoreRef={addBtn} title="Nối vào cảnh" onClose={() => setPicker(false)} onPick={(id) => linkAssets([sceneId], [id])} />
         )}
       </div>
 
@@ -493,7 +393,7 @@ function FrameSlot({ sceneId, which, label, assetId, assets }: { sceneId: string
             <AssetAvatar asset={asset} size={30} />
             <span className="in-frame-name">
               <b>{asset.name}</b>
-              <span className="faint">@{asset.tag}</span>
+              <span className="faint">{KIND_LABEL[asset.kind]}</span>
             </span>
           </>
         ) : (
@@ -523,59 +423,154 @@ function FrameSlot({ sceneId, which, label, assetId, assets }: { sceneId: string
   )
 }
 
-// ---------------- 5. prompt blocks ----------------
-const BlocksSection = memo(function BlocksSection({ sceneId }: { sceneId: string }) {
-  const blocks = useProject((s) => s.project.blocks)
-  const overrides = useSceneField(sceneId, (s) => s.blockOverrides)
-  if (!overrides) return null
-  const onCount = blocks.filter((b) => overrides[b.id] ?? b.defaultOn).length
-  const setTri = (blockId: string, t: Tri) => useProject.getState().setBlockOverride([sceneId], blockId, triValue(t))
+// ---------------- 4. reference videos (@video_N) ----------------
+function removeVideoRef(sceneId: string, take: TakeInfo) {
+  const label = take.status ? takeLabel(take.id) : 'đã xoá'
+  // A @video_N token of the removed video becomes plain text ("video S03·T2").
+  changeMedia(sceneId, () => useProject.getState().removeVideoRef(sceneId, take.id, take.status ? 'video ' + label : 'video'), {
+    renumbered: `Đã bỏ video ${label} — đã đánh lại số @video trong prompt.`,
+    plain: `Đã bỏ video ${label}.`,
+  })
+}
+
+const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: string }) {
+  const videoRefs = useSceneField(sceneId, (s) => s.videoRefs) ?? EMPTY_IDS
+  const settings = useSceneField(sceneId, (s) => s.settings)
+  const infos = useTakeInfos(videoRefs)
+  const [picker, setPicker] = useState(false)
+  const addBtn = useRef<HTMLButtonElement>(null)
+  const moveRow = (from: number, to: number) =>
+    changeMedia(sceneId, () => useProject.getState().moveVideoRef(sceneId, from, to), { renumbered: 'Đã đánh lại số trong prompt.' })
+  const reorder = useReorder(infos.length, VREF_MIME, moveRow)
+  if (!settings) return null
+
+  const spec = MODELS[settings.model]
+  const sends = usesVideoRefs(settings)
+  const over = sends && videoRefs.length > spec.maxRefVideos
+  if (!sends && !videoRefs.length) {
+    return (
+      <Section id="vrefs" title="Video tham chiếu" meta={<span className="in-meta"><span className="badge">không nhận video</span></span>} defaultOpen={false}>
+        <div className="in-note">
+          <Info size={13} />
+          <span>
+            {spec.name} ở chế độ “{MODE_LABEL[settings.mode]}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{MODE_LABEL.i2v}” của MiniMax-H3.
+          </span>
+        </div>
+      </Section>
+    )
+  }
+
   return (
-    <Section id="blocks" title="Khối prompt" meta={blocks.length > 0 && <span className="badge">{`${onCount}/${blocks.length} bật`}</span>}>
-      {blocks.length === 0 ? (
-        <div className="in-refs-empty">Chưa có khối prompt. Tạo ở mục “Khối prompt” bên trái — sửa một lần, áp dụng cho mọi cảnh.</div>
-      ) : (
-        <div className="in-blocks">
-          {blocks.map((b) => {
-            const ov = overrides[b.id]
-            const on = ov ?? b.defaultOn
-            return (
-              <div key={b.id} className={`in-block ${on ? 'is-on' : 'is-off'}`} style={{ ['--block' as string]: b.color }}>
-                <button
-                  type="button"
-                  className={`in-check ${on ? 'on' : ''}`}
-                  onClick={() => {
-                    const next = !on
-                    useProject.getState().setBlockOverride([sceneId], b.id, next === b.defaultOn ? undefined : next)
-                  }}
-                  title={on ? 'Đang bật — bấm để tắt cho cảnh này' : 'Đang tắt — bấm để bật cho cảnh này'}
-                  aria-pressed={on}
-                >
-                  {on && <Check size={11} strokeWidth={3} />}
-                </button>
-                <button type="button" className="in-block-title" onClick={() => useUI.getState().openDialog({ kind: 'block', blockId: b.id })} title={b.text.slice(0, 300)}>
-                  <span className="in-block-name">{b.title || 'Khối'}</span>
-                  <span className="in-block-place">{b.placement === 'before' ? 'Trước' : 'Sau'}</span>
-                </button>
-                <TriToggle value={triOf(ov)} defaultOn={b.defaultOn} onChange={(t) => setTri(b.id, t)} />
-              </div>
-            )
-          })}
+    <Section
+      id="vrefs"
+      title="Video tham chiếu"
+      meta={
+        <span className="in-meta">
+          <span className={`badge ${over || !sends ? 'danger' : videoRefs.length ? 'video' : ''}`} title="Số video gửi kèm / giới hạn của model">
+            {sends ? `${Math.min(videoRefs.length, spec.maxRefVideos)}/${spec.maxRefVideos} video` : 'không nhận video'}
+          </span>
+        </span>
+      }
+    >
+      <div className="in-refs">
+        {infos.length === 0 && (
+          <div className="in-refs-empty">
+            Chưa có video tham chiếu. Kéo dây từ một video (take) trên canvas vào cảnh này, hoặc bấm “Thêm video”. Video được gọi trong prompt bằng <span className="mono">@video_1</span>…
+          </div>
+        )}
+        {infos.map((t, i) => {
+          const n = i + 1
+          const off = !sends || n > spec.maxRefVideos
+          return (
+            <div key={t.id} className={`in-ref in-vref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
+              <button type="button" className="in-grip" title="Kéo để đổi thứ tự (↑/↓) — số @video trong prompt tự cập nhật" aria-label={`Đổi thứ tự ${t.label}`} onKeyDown={reorder.gripKeyDown(i)}>
+                <GripVertical size={13} />
+              </button>
+              <button
+                type="button"
+                className="in-vref-thumb"
+                onClick={() => t.status && useUI.getState().openDialog({ kind: 'take', takeId: t.id })}
+                disabled={!t.status}
+                title="Xem video"
+              >
+                {t.posterId ? <MediaImg id={t.posterId} className="media-img" /> : <Film size={13} />}
+              </button>
+              <button type="button" className="in-ref-name" onClick={() => t.status && goTo(t.id)} disabled={!t.status} title="Chọn video trên canvas">
+                <span className="in-ref-title">{t.label}</span>
+                <span className="in-ref-tag">
+                  {t.status ? (
+                    <>
+                      <span className={`status-dot ${t.status}`} /> {STATUS_TEXT[t.status]}
+                      {t.status === 'processing' ? ` ${t.progress}%` : ''}
+                    </>
+                  ) : (
+                    'Take đã bị xoá'
+                  )}
+                </span>
+              </button>
+              <span className={`in-token is-video ${off || t.status !== 'completed' ? 'is-off' : ''}`} title={off ? 'Không được gửi' : `@video_${n}`}>
+                @video_{n}
+              </span>
+              <button type="button" className="in-x" onClick={() => removeVideoRef(sceneId, t)} title="Bỏ video tham chiếu" aria-label={`Bỏ ${t.label}`}>
+                <X size={13} />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      {over && (
+        <div className="in-note danger">
+          <TriangleAlert size={13} />
+          <span>
+            {spec.name} nhận tối đa {spec.maxRefVideos} video; {videoRefs.length - spec.maxRefVideos} video cuối sẽ không được gửi.
+          </span>
+        </div>
+      )}
+      {!sends && (
+        <div className="in-note danger">
+          <TriangleAlert size={13} />
+          <span>
+            {spec.name} ở chế độ “{MODE_LABEL[settings.mode]}” không nhận video tham chiếu — các video trên sẽ không được gửi.
+          </span>
+        </div>
+      )}
+
+      {sends && (
+        <div className="in-pop-host">
+          <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>
+            <Plus size={13} /> Thêm video
+          </button>
+          {picker && (
+            <TakePicker
+              excludeSceneIds={[sceneId]}
+              exclude={videoRefs}
+              ignoreRef={addBtn}
+              title="Dùng video làm tham chiếu"
+              onClose={() => setPicker(false)}
+              onPick={(takeId) => linkTakes([sceneId], [takeId])}
+            />
+          )}
         </div>
       )}
     </Section>
   )
 })
 
-// ---------------- 7. takes + run ----------------
+// ---------------- 5. takes + run ----------------
 const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }) {
   const takes = useSceneTakes(sceneId)
   const settings = useSceneField(sceneId, (s) => s.settings)
   const promptEmpty = useSceneField(sceneId, (s) => !s.prompt.trim()) ?? true
   const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
+  const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
   if (!settings) return null
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
   const reason = promptEmpty ? 'Prompt trống' : framesMissing ? 'Thiếu khung đầu/cuối' : null
+  const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
+  const shown = completed.slice(-6)
+  if (chosen && !shown.includes(chosen)) shown.splice(0, 1, chosen)
+  shown.sort((a, b) => a.number - b.number)
   return (
     <Section
       id="takes"
@@ -597,16 +592,29 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
         </div>
       ) : (
         <div className="in-takes-empty">
-          <Film size={14} /> Chưa có take nào. Mỗi lần chạy tạo một take (T1, T2…) để so sánh.
+          <Film size={14} /> Chưa có take nào. Mỗi lần chạy tạo một video (T1, T2…) nối ra từ cảnh trên canvas.
         </div>
       )}
-      <button
-        type="button"
-        className="btn btn-primary btn-lg in-run"
-        onClick={() => requestRun([sceneId])}
-        disabled={!!reason}
-        title={reason ?? 'Xem chi phí và chạy (Ctrl+Enter)'}
-      >
+      {shown.length > 0 && (
+        <div className="in-continue-row">
+          <span className="in-continue-label">
+            <CornerDownRight size={13} /> Tạo cảnh tiếp nối từ
+          </span>
+          {shown.map((t) => (
+            <button
+              type="button"
+              key={t.id}
+              className={`btn btn-sm ${t.id === chosen?.id ? 'in-continue-main' : 'btn-ghost'}`}
+              onClick={() => createSceneFromTake(t.id)}
+              title={`Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình`}
+            >
+              T{t.number}
+              {t.starred && <Star size={11} fill="currentColor" className="in-star" />}
+            </button>
+          ))}
+        </div>
+      )}
+      <button type="button" className="btn btn-primary btn-lg in-run" onClick={() => requestRun([sceneId])} disabled={!!reason} title={reason ?? 'Xem chi phí và chạy (Ctrl+Enter)'}>
         <Play size={14} fill="currentColor" />
         Chạy · {settings.duration}s · {costOf(settings)} credit
       </button>
@@ -615,7 +623,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   )
 })
 
-// ---------------- 8. note ----------------
+// ---------------- 6. note ----------------
 const NoteSection = memo(function NoteSection({ sceneId }: { sceneId: string }) {
   const note = useSceneField(sceneId, (s) => s.note) ?? ''
   return (

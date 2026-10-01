@@ -30,6 +30,10 @@
   padding: 0 2px;
   font-weight: 600;
 }
+.rq-tok.video {
+  background: rgba(180, 140, 255, 0.16);
+  color: var(--video, #b48cff);
+}
 
 /* ---------- status badge ---------- */
 .rq-badge {
@@ -670,46 +674,50 @@
 }
 .rq-table-wrap {
   max-height: min(52vh, 520px);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-/* Fixed layout: column widths come from the <colgroup>, title + warnings share the rest and truncate. */
+/* Fixed layout, no minimum width: the table always fits the dialog. Name + warnings share what is left and truncate;
+   the settings and status cells wrap onto two lines instead of pushing the table wider. */
 .rq-table {
   width: 100%;
-  min-width: 860px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12.5px;
 }
 .rq-table col.rq-w-check {
-  width: 34px;
+  width: 32px;
 }
 .rq-table col.rq-w-code {
-  width: 58px;
+  width: 56px;
 }
-.rq-table col.rq-w-model {
-  width: 78px;
+.rq-table col.rq-w-title {
+  width: 22%;
 }
 .rq-table col.rq-w-settings {
-  width: 140px;
+  width: 112px;
 }
 .rq-table col.rq-w-refs {
-  width: 128px;
+  width: 84px;
+}
+.rq-table col.rq-w-videos {
+  width: 56px;
 }
 .rq-table col.rq-w-credit {
-  width: 66px;
+  width: 56px;
 }
 .rq-table col.rq-w-status {
-  width: 160px;
+  width: 150px;
 }
 .rq-table th {
   position: sticky;
   top: 0;
   z-index: 1;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 8px;
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
   font-size: 10.5px;
@@ -724,7 +732,7 @@
 }
 .rq-table td {
   height: 38px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
   overflow: hidden;
@@ -763,9 +771,34 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rq-nowrap {
+.rq-cell-settings {
+  line-height: 1.3;
+}
+.rq-cell-settings > span {
+  display: flex;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+}
+.rq-cell-settings > .rq-settings-line {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.rq-vcount {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--video, #b48cff);
+  font-weight: 600;
+}
+.rq-vcount.pending {
+  color: var(--warn);
+}
+.rq-cell-status {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .rq-model {
   display: inline-flex;
@@ -782,7 +815,9 @@
 .rq-refs {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
   white-space: nowrap;
   font-size: 11.5px;
 }
@@ -1090,6 +1125,52 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+/* take viewer: "Dùng video này" + reference videos */
+.rq-use-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rq-vchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rq-vchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px 0 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(180, 140, 255, 0.45);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+button.rq-vchip:hover {
+  border-color: var(--video, #b48cff);
+  background: var(--panel-3);
+}
+.rq-vchip.missing {
+  cursor: default;
+  border-color: rgba(239, 91, 91, 0.45);
+}
+.rq-vchip-thumb {
+  display: block;
+  width: 36px;
+  height: 20px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--panel-3);
+}
+.rq-vchip-n {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--video, #b48cff);
 }
 .rq-diff-flag {
   display: flex;

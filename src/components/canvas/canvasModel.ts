@@ -1,10 +1,12 @@
-// Canvas-local helpers: cached lookups, selection expansion, hit-testing and a tiny hover store.
+// Canvas-local helpers: cached lookups (scenes, assets, takes), take-node layout, selection expansion, hit-testing
+// and a tiny hover store.
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
-import type { Asset, AssetKind, JobStatus, Scene, Take } from '../../core/types'
+import type { Asset, AssetKind, JobStatus, Scene, Take, XY } from '../../core/types'
 import { useProject } from '../../store/project'
-import { useUI } from '../../store/ui'
+import { useRuns } from '../../store/runs'
+import { useUI, type TakeDisplay } from '../../store/ui'
 
 /** HTML5 drag type used by the library (JSON array of asset ids). */
 export const ASSETS_MIME = 'application/x-bdp-assets'
@@ -48,49 +50,152 @@ export function usageOf(scenes: Scene[]): Map<string, number> {
   return m
 }
 
+// ---------------- takes (video nodes) ----------------
+export interface TakeIndex {
+  byId: Map<string, Take>
+  /** Takes of each scene, oldest (lowest number) first. */
+  byScene: Map<string, Take[]>
+  /** Chosen take per scene: starred, else latest completed, else latest. */
+  chosen: Map<string, Take>
+}
+const takeIndexes = new WeakMap<Take[], TakeIndex>()
+/** Cached per takes array: every node selector shares one index per store update. */
+export function takeIndexOf(takes: Take[]): TakeIndex {
+  let idx = takeIndexes.get(takes)
+  if (idx) return idx
+  const byId = new Map<string, Take>()
+  const byScene = new Map<string, Take[]>()
+  for (const t of takes) {
+    byId.set(t.id, t)
+    const list = byScene.get(t.sceneId)
+    if (list) list.push(t)
+    else byScene.set(t.sceneId, [t])
+  }
+  const chosen = new Map<string, Take>()
+  for (const [sceneId, list] of byScene) {
+    list.sort((a, b) => a.number - b.number)
+    chosen.set(sceneId, chooseTake(list)!)
+  }
+  idx = { byId, byScene, chosen }
+  takeIndexes.set(takes, idx)
+  return idx
+}
+
+/** Starred take, else the latest completed one, else the latest. `list` is sorted oldest first. */
+export function chooseTake(list: Take[]): Take | undefined {
+  let completed: Take | undefined
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i]
+    if (t.starred) return t
+    if (!completed && t.status === 'completed') completed = t
+  }
+  return completed ?? list[list.length - 1]
+}
+
 export interface TakeSummary {
   count: number
+  /** Status / progress of the latest take. */
   status: JobStatus | null
   progress: number
-  /** Poster of the starred take (newest starred), else of the newest completed take. */
+  /** Number of the starred take, if any. */
+  starredNumber: number | null
+  /** Queued or processing takes. */
+  active: number
+  /** Poster of the chosen take, else of the newest completed take. */
   posterId: string | null
 }
-const EMPTY_SUMMARY: TakeSummary = { count: 0, status: null, progress: 0, posterId: null }
-const takeMaps = new WeakMap<Take[], Map<string, TakeSummary>>()
-function takeMapOf(takes: Take[]): Map<string, TakeSummary> {
-  let m = takeMaps.get(takes)
-  if (m) return m
-  m = new Map()
-  const latest = new Map<string, Take>()
-  const starred = new Map<string, Take>()
-  const completed = new Map<string, Take>()
-  const counts = new Map<string, number>()
-  for (const t of takes) {
-    counts.set(t.sceneId, (counts.get(t.sceneId) ?? 0) + 1)
-    const l = latest.get(t.sceneId)
-    if (!l || t.number > l.number) latest.set(t.sceneId, t)
-    if (t.starred && t.posterId) {
-      const s = starred.get(t.sceneId)
-      if (!s || t.number > s.number) starred.set(t.sceneId, t)
+const EMPTY_SUMMARY: TakeSummary = { count: 0, status: null, progress: 0, starredNumber: null, active: 0, posterId: null }
+const summaries = new WeakMap<Take[], Map<string, TakeSummary>>()
+export function takeSummary(takes: Take[], sceneId: string): TakeSummary {
+  let m = summaries.get(takes)
+  if (!m) {
+    m = new Map()
+    const idx = takeIndexOf(takes)
+    for (const [id, list] of idx.byScene) {
+      const latest = list[list.length - 1]
+      const chosen = idx.chosen.get(id)
+      let posterId = chosen?.posterId ?? null
+      if (!posterId) for (let i = list.length - 1; i >= 0 && !posterId; i--) if (list[i].status === 'completed') posterId = list[i].posterId
+      m.set(id, {
+        count: list.length,
+        status: latest.status,
+        progress: latest.progress,
+        starredNumber: list.find((t) => t.starred)?.number ?? null,
+        active: list.filter((t) => t.status === 'queued' || t.status === 'processing').length,
+        posterId,
+      })
     }
-    if (t.status === 'completed' && t.posterId) {
-      const c = completed.get(t.sceneId)
-      if (!c || t.number > c.number) completed.set(t.sceneId, t)
-    }
+    summaries.set(takes, m)
   }
-  for (const [sceneId, l] of latest) {
-    m.set(sceneId, {
-      count: counts.get(sceneId) ?? 0,
-      status: l.status,
-      progress: l.progress,
-      posterId: (starred.get(sceneId) ?? completed.get(sceneId))?.posterId ?? null,
-    })
+  return m.get(sceneId) ?? EMPTY_SUMMARY
+}
+
+/**
+ * Everything the canvas LAYOUT of take nodes depends on (+ status, for the minimap), as one string: a stable zustand
+ * selection. Progress ticks do not change it, so the node list is not rebuilt 5×/s while videos render.
+ */
+const layoutSigs = new WeakMap<Take[], string>()
+export function takeLayoutSig(takes: Take[]): string {
+  let sig = layoutSigs.get(takes)
+  if (sig === undefined) {
+    sig = takes
+      .map((t) => `${t.id}:${t.sceneId}:${t.number}:${t.position ? `${t.position.x},${t.position.y}` : ''}:${t.starred ? 1 : 0}:${t.status}`)
+      .join('|')
+    layoutSigs.set(takes, sig)
   }
-  takeMaps.set(takes, m)
+  return sig
+}
+
+const videoUsage = new WeakMap<Scene[], Map<string, number>>()
+/** take id -> number of scenes that use it as @video. */
+export function videoUsageOf(scenes: Scene[]): Map<string, number> {
+  let m = videoUsage.get(scenes)
+  if (!m) {
+    m = new Map()
+    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
+    videoUsage.set(scenes, m)
+  }
   return m
 }
-export function takeSummary(takes: Take[], sceneId: string): TakeSummary {
-  return takeMapOf(takes).get(sceneId) ?? EMPTY_SUMMARY
+
+export interface TakeLayoutItem {
+  id: string
+  sceneId: string
+  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene). */
+  index: number
+  /** Position the user dragged the node to; null = auto. */
+  explicit: XY | null
+  /** Takes of the same scene hidden by the "chosen only" display (badge "+N"; only on the chosen take). */
+  hidden: number
+  status: JobStatus
+}
+export interface TakeLayout {
+  items: TakeLayoutItem[]
+  byId: Map<string, TakeLayoutItem>
+}
+
+/**
+ * Which take nodes are shown and where. `all`: every take of every existing scene. `chosen`: the chosen take of
+ * each scene, plus takes that some scene uses as @video (so their wires stay visible).
+ */
+export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): TakeLayout {
+  const idx = takeIndexOf(takes)
+  const used = mode === 'chosen' ? videoUsageOf(scenes) : null
+  const items: TakeLayoutItem[] = []
+  const byId = new Map<string, TakeLayoutItem>()
+  for (const s of scenes) {
+    const list = idx.byScene.get(s.id)
+    if (!list) continue
+    const chosen = idx.chosen.get(s.id)
+    const shown = used ? list.filter((t) => t === chosen || used.has(t.id)) : list
+    const hidden = list.length - shown.length
+    shown.forEach((t, index) => {
+      const item: TakeLayoutItem = { id: t.id, sceneId: s.id, index, explicit: t.position, hidden: t === chosen ? hidden : 0, status: t.status }
+      items.push(item)
+      byId.set(t.id, item)
+    })
+  }
+  return { items, byId }
 }
 
 export const STATUS_COLOR: Record<JobStatus, string> = {
@@ -131,6 +236,15 @@ export function countScenes(ids: string[]): number {
   return n
 }
 
+/** Count of selected ids that are take nodes. */
+export function countTakes(ids: string[]): number {
+  if (!ids.length) return 0
+  const map = takeIndexOf(useRuns.getState().takes).byId
+  let n = 0
+  for (const id of ids) if (map.has(id)) n++
+  return n
+}
+
 // ---------------- multi-target expansion ----------------
 /** Dropping on a scene that is part of a multi-scene selection targets the whole selection. */
 export function targetScenesFor(sceneId: string): string[] {
@@ -145,6 +259,13 @@ export function sourceAssetsFor(assetId: string): string[] {
   const assets = assetMapOf(useProject.getState().project.assets)
   const sel = useUI.getState().selectedIds.filter((id) => assets.has(id))
   return sel.length > 1 && sel.includes(assetId) ? sel : [assetId]
+}
+
+/** Dragging from a take that is part of a multi-take canvas selection carries that selection. */
+export function sourceTakesFor(takeId: string): string[] {
+  const takes = takeIndexOf(useRuns.getState().takes).byId
+  const sel = useUI.getState().selectedIds.filter((id) => takes.has(id))
+  return sel.length > 1 && sel.includes(takeId) ? sel : [takeId]
 }
 
 /** Height the queue drawer covers at the bottom of the canvas (runs.css `--rq-drawer-h`: 36px bar, 272px open). */

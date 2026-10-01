@@ -1,33 +1,44 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { Project, Scene, XY } from '../../core/types'
-import { LAYOUT, redo, undo, useProject } from '../project'
-
-const step = { x: LAYOUT.sceneW + LAYOUT.gapX, y: LAYOUT.sceneH + LAYOUT.gapY }
-const grid = (i: number): XY => ({
-  x: LAYOUT.scenesX + (i % LAYOUT.perRow) * step.x,
-  y: LAYOUT.scenesY + Math.floor(i / LAYOUT.perRow) * step.y,
-})
+import type { Project, Scene } from '../../core/types'
+import { LAYOUT, redo, ROW_H, scenePosition, undo, useProject } from '../project'
 
 const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
-  id: 's' + (i + 1), order: i + 1, title: '', prompt: '', refs: [], blockOverrides: {}, presetId: null,
+  id: 's' + (i + 1),
+  order: i + 1,
+  title: '',
+  prompt: '',
+  refs: [],
+  videoRefs: [],
+  presetId: null,
   settings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
-  continueFrom: i ? 's' + i : null, firstFrame: null, lastFrame: null, color: null, position: grid(i), note: '', ...over,
+  firstFrame: null,
+  lastFrame: null,
+  color: null,
+  position: scenePosition(i),
+  note: '',
+  ...over,
 })
 
-const project = (n = 8): Project => ({
-  id: 'p', name: 'P', schemaVersion: 1, createdAt: 0, updatedAt: 0, presets: [], blocks: [],
-  settings: { referencesTemplate: '{list}', autoReferences: true, autoContinuity: true },
+const project = (n = 6): Project => ({
+  id: 'p',
+  name: 'P',
+  schemaVersion: 2,
+  createdAt: 0,
+  updatedAt: 0,
+  presets: [],
+  settings: { autoRenumber: true },
   assets: [
-    { id: 'a', kind: 'character', name: 'Elara', tag: 'Elara', description: '', imageIds: ['i1', 'i2', 'i3', 'i4', 'i5'], color: '#fff', position: null },
-    { id: 'b', kind: 'character', name: 'Lumi', tag: 'Lumi', description: '', imageIds: ['i6', 'i7', 'i8', 'i9', 'i10'], color: '#fff', position: null },
+    { id: 'a', kind: 'character', name: 'Elara', tag: 'Elara', description: '', imageIds: ['i1', 'i2'], color: '#fff', position: null },
+    { id: 'b', kind: 'character', name: 'Lumi', tag: 'Lumi', description: '', imageIds: ['i3'], color: '#fff', position: null },
+    { id: 'c', kind: 'location', name: 'Cave', tag: 'Cave', description: '', imageIds: ['i4'], color: '#fff', position: null },
   ],
   scenes: Array.from({ length: n }, (_, i) => scene(i)),
 })
 
 const st = () => useProject.getState()
 const history = () => useProject.temporal.getState()
+const sc = (id: string) => st().project.scenes.find((s) => s.id === id)!
 
-/** Pairs of scene ids whose cards overlap. */
 function overlapping(scenes: Scene[]): string[][] {
   const out: string[][] = []
   for (let i = 0; i < scenes.length; i++)
@@ -45,67 +56,94 @@ beforeEach(() => {
 })
 
 describe('placing new scenes', () => {
-  it('next scene in the middle of a row makes room instead of covering the neighbour', () => {
+  it('next scene goes below its source and pushes the following rows down', () => {
     const id = st().createNextScene('s2')
-    const scenes = st().project.scenes
-    expect(overlapping(scenes)).toEqual([])
-    const pos = (sid: string) => scenes.find((s) => s.id === sid)!.position
-    expect(pos(id)).toEqual(grid(2))
-    expect(pos('s3')).toEqual({ x: grid(3).x, y: grid(3).y })
-    expect(pos('s5').x).toBe(grid(4).x + step.x)
-    expect(pos('s6')).toEqual(grid(5)) // next row untouched
-    history().undo()
-    expect(st().project.scenes.find((s) => s.id === 's3')!.position).toEqual(grid(2))
-  })
-
-  it('making room leaves unrelated (even overlapping) cards alone', () => {
-    const copy = { x: grid(6).x + 36, y: grid(6).y + 36 } // like a duplicate of S07
-    st().setPositions({ s8: copy })
-    st().createNextScene('s2')
-    const pos = (sid: string) => st().project.scenes.find((s) => s.id === sid)!.position
-    expect(pos('s8')).toEqual(copy)
-    expect(pos('s7')).toEqual(grid(6))
-  })
-
-  it('an explicit position is kept as is', () => {
-    const id = st().createNextScene('s2', { x: 5, y: 5 })
-    expect(st().project.scenes.find((s) => s.id === id)!.position).toEqual({ x: 5, y: 5 })
-  })
-
-  it('add scene after a deletion does not land on an existing card', () => {
-    st().removeScenes(['s3'])
-    const id = st().addScene()
+    const created = sc(id)
+    expect(created.position).toEqual({ x: LAYOUT.scenesX, y: scenePosition(1).y + ROW_H })
+    expect(created.order).toBe(3)
     expect(overlapping(st().project.scenes)).toEqual([])
-    expect(st().project.scenes.find((s) => s.id === id)!.position).toEqual(grid(8))
+    expect(sc('s3').position.y).toBeGreaterThan(created.position.y)
   })
-
-  it('import after a deletion does not stack scenes on existing cards', () => {
-    st().removeScenes(['s3'])
-    st().applyImport({ blocks: [], scenes: [{ prompt: 'one' }, { prompt: 'two' }, { prompt: 'three' }] })
-    expect(st().project.scenes).toHaveLength(10)
+  it('next scene inherits refs, video refs and settings with an empty prompt (overrides win)', () => {
+    st().addRefs(['s1'], ['a'])
+    st().addVideoRefs(['s1'], ['t1'])
+    st().updateScene('s1', { prompt: 'x' })
+    const id = st().createNextScene('s1', undefined, { prompt: 'Continue from @video_1: ' })
+    expect(sc(id).refs).toEqual(['a'])
+    expect(sc(id).videoRefs).toEqual(['t1'])
+    expect(sc(id).prompt).toBe('Continue from @video_1: ')
+  })
+  it('add scene after a deletion does not land on an existing card', () => {
+    st().removeScenes(['s2'])
+    st().addScene()
     expect(overlapping(st().project.scenes)).toEqual([])
   })
 })
 
-describe('restoreScene', () => {
-  it('is one undo step and drops refs to deleted assets', () => {
-    st().updateScene('s1', { prompt: 'current', refs: ['a'] })
-    history().clear()
-    st().restoreScene('s1', {
-      prompt: 'old',
-      refs: ['b', 'gone'],
-      settings: { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' },
-    })
-    let s = st().project.scenes.find((x) => x.id === 's1')!
-    expect(s.prompt).toBe('old')
-    expect(s.refs).toEqual(['b'])
-    expect(s.settings.model).toBe('minimax_h3')
-    expect(history().pastStates).toHaveLength(1)
+describe('token renumbering', () => {
+  beforeEach(() => {
+    st().addRefs(['s1'], ['a', 'b', 'c']) // a=@image_1,2  b=@image_3  c=@image_4
+    st().updateScene('s1', { prompt: '@image_1 @image_2 with @image_3 in @image_4' })
+  })
+  it('reordering refs keeps every token on its image', () => {
+    st().moveRef('s1', 2, 0) // c, a, b → c=1 a=2,3 b=4
+    expect(sc('s1').prompt).toBe('@image_2 @image_3 with @image_4 in @image_1')
+  })
+  it('removing a ref renumbers the rest and names the removed one', () => {
+    st().removeRef('s1', 'a')
+    expect(sc('s1').prompt).toBe('Elara Elara with @image_1 in @image_2')
     undo()
-    s = st().project.scenes.find((x) => x.id === 's1')!
-    expect(s.prompt).toBe('current')
-    expect(s.refs).toEqual(['a'])
-    expect(s.settings.model).toBe('seedance_2_5')
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_4')
+  })
+  it('adding an image to an asset shifts the following numbers in every scene using it', () => {
+    st().updateAsset('a', { imageIds: ['i1', 'i2', 'i9'] })
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_4 in @image_5')
+  })
+  it('deleting an asset from the library renumbers', () => {
+    st().removeAssets(['b'])
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with Lumi in @image_3')
+  })
+  it('can be turned off', () => {
+    st().updateProjectSettings({ autoRenumber: false })
+    st().moveRef('s1', 2, 0)
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_4')
+  })
+})
+
+describe('video references', () => {
+  it('respects the model limit and renumbers on removal', () => {
+    const res = st().addVideoRefs(['s1'], ['t1', 't2', 't3'])
+    expect(res.added).toBe(3)
+    st().updateScene('s1', { prompt: '@video_1 then @video_3' })
+    st().removeVideoRef('s1', 't1', 'video S01·T1')
+    expect(sc('s1').videoRefs).toEqual(['t2', 't3'])
+    expect(sc('s1').prompt).toBe('video S01·T1 then @video_2')
+  })
+  it('H3 accepts at most 3 videos and no videos in t2v', () => {
+    st().updateSettings(['s2'], { model: 'minimax_h3', mode: 'i2v' })
+    expect(st().addVideoRefs(['s2'], ['t1', 't2', 't3', 't4']).skipped).toBe(1)
+    st().updateSettings(['s3'], { model: 'minimax_h3', mode: 't2v' })
+    expect(st().addVideoRefs(['s3'], ['t1']).added).toBe(0)
+  })
+  it('removing a take everywhere is one undo step', () => {
+    st().addVideoRefs(['s1', 's2'], ['t1'])
+    st().updateScene('s2', { prompt: 'from @video_1' })
+    st().removeTakesEverywhere(['t1'], { t1: 'video S01·T1' })
+    expect(sc('s1').videoRefs).toEqual([])
+    expect(sc('s2').prompt).toBe('from video S01·T1')
+    undo()
+    expect(sc('s2').videoRefs).toEqual(['t1'])
+  })
+})
+
+describe('restoreScene', () => {
+  it('is one undo step and drops dangling refs', () => {
+    st().addRefs(['s1'], ['a'])
+    st().restoreScene('s1', { prompt: 'old', refs: ['a', 'gone'], videoRefs: ['t1', 'dead'], settings: sc('s1').settings }, new Set(['t1']))
+    expect(sc('s1').refs).toEqual(['a'])
+    expect(sc('s1').videoRefs).toEqual(['t1'])
+    undo()
+    expect(sc('s1').prompt).toBe('')
   })
 })
 
@@ -114,37 +152,23 @@ describe('undo history', () => {
     st().setScenePrompt('s1', 'a')
     st().setScenePrompt('s1', 'ab')
     undo()
-    expect(st().project.scenes[0].prompt).toBe('')
-    st().setScenePrompt('s1', 'NEW')
-    expect(history().futureStates).toHaveLength(0)
-    redo()
-    expect(st().project.scenes[0].prompt).toBe('NEW')
+    st().setScenePrompt('s1', 'x')
+    expect(history().futureStates.length).toBe(0)
     undo()
-    expect(st().project.scenes[0].prompt).toBe('')
-  })
-
-  it('the temporal store undo (used directly by some toasts) also ends the typing burst', () => {
-    st().setScenePrompt('s1', 'a')
-    history().undo()
-    st().setScenePrompt('s1', 'b')
-    expect(history().pastStates).toHaveLength(1)
-    expect(history().futureStates).toHaveLength(0)
+    expect(sc('s1').prompt).toBe('')
+    redo()
+    expect(sc('s1').prompt).toBe('x')
   })
 })
 
 describe('moveRefToScene', () => {
   it('keeps the original link when the target is over its image limit', () => {
-    const h3 = { model: 'minimax_h3' as const, mode: 'i2v' as const, duration: 5 as const, resolution: '768p' as const, ratio: '16:9' as const }
-    st().loadProject({ ...project(), scenes: [scene(0, { refs: ['a'] }), scene(1, { refs: ['b'], settings: h3 })] })
-    history().clear()
+    st().updateSettings(['s2'], { model: 'minimax_h3', mode: 'i2v' })
+    st().addRefs(['s1'], ['a'])
+    // H3 accepts 9 images: fill s2 with 9 one-image assets
+    for (let i = 0; i < 9; i++) st().addAsset({ id: 'x' + i, name: 'X' + i, imageIds: ['m' + i] })
+    st().addRefs(['s2'], Array.from({ length: 9 }, (_, i) => 'x' + i))
     st().moveRefToScene('a', 's1', 's2')
-    expect(st().project.scenes.map((s) => s.refs)).toEqual([['a'], ['b']])
-    expect(history().pastStates).toHaveLength(0)
-  })
-
-  it('still moves when the target has room', () => {
-    st().loadProject({ ...project(), scenes: [scene(0, { refs: ['a'] }), scene(1)] })
-    st().moveRefToScene('a', 's1', 's2')
-    expect(st().project.scenes.map((s) => s.refs)).toEqual([[], ['a']])
+    expect(sc('s1').refs).toEqual(['a'])
   })
 })

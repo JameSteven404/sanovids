@@ -2,15 +2,18 @@
 import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { MENTION_RE, slugTag, uniqueTag } from '../../core/compile'
-import type { AssetKind, Project, XY } from '../../core/types'
+import { imageSlotsFor, MENTION_RE, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
+import type { Asset, AssetKind, Project, Scene, Take, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
-import { toast, useUI, type ToastAction } from '../../store/ui'
+import { useUI } from '../../store/ui'
 
 /** HTML5 drag payload contract shared with the canvas / scene table: JSON array of asset ids. */
 export const ASSET_MIME = 'application/x-bdp-assets'
-/** Internal payload used to reorder prompt blocks inside the sidebar. */
-export const BLOCK_MIME = 'application/x-bdp-block'
+/**
+ * HTML5 drag payload for finished videos (takes) dragged from the "Video đã tạo" list: JSON array of take ids.
+ * Drop targets (canvas scene cards, scene table rows) link them as reference videos with `actions.linkTakes`.
+ */
+export const TAKE_MIME = 'application/x-bdp-takes'
 
 export const EMPTY_IDS: string[] = []
 
@@ -42,16 +45,41 @@ export function matchesQuery(query: string, ...fields: string[]): boolean {
   return q.split(/\s+/).every((term) => hay.includes(term.replace(/^@/, '')))
 }
 
-// ---------------- persistence of small UI prefs ----------------
-export function readPref<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem('bdp:pref:' + key)
-    return raw == null ? fallback : { ...fallback, ...(JSON.parse(raw) as T) }
-  } catch {
-    return fallback
+// ---------------- @image numbers ----------------
+/**
+ * "@image_N" label of every asset referenced by `refs` (scene.refs order, one number per image).
+ * An asset with several images gets a range ("@image_2–4"); a linked asset without image gets "" (linked, no number).
+ * Values are strings so a zustand selector returning this map stays shallow-comparable.
+ */
+export function imageTokenLabels(assets: Asset[], refs: string[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const id of refs) out[id] = ''
+  const range = new Map<string, [number, number]>()
+  for (const s of imageSlotsFor(assets, refs)) {
+    const r = range.get(s.assetId)
+    if (r) r[1] = s.n
+    else range.set(s.assetId, [s.n, s.n])
   }
+  for (const [id, [first, last]] of range) out[id] = first === last ? `@image_${first}` : `@image_${first}–${last}`
+  return out
 }
 
+// ---------------- finished videos (takes) ----------------
+/** Completed takes whose scene still exists, newest first. */
+export function finishedTakes(takes: Take[], sceneIds: ReadonlySet<string>): Take[] {
+  return takes
+    .filter((t) => t.status === 'completed' && sceneIds.has(t.sceneId))
+    .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt) || b.number - a.number)
+}
+
+/** Search fields for a take: "S03·T2" plus the spellings people type ("S03-T2", "S03T2", "s3 t2"), scene title. */
+export function takeSearchFields(sceneOrder: number | undefined, takeNumber: number, sceneTitle = ''): string[] {
+  const code = takeCode(sceneOrder, takeNumber)
+  const [s, t] = code.split('·')
+  return [code, `${s}-${t}`, `${s}${t}`, `${s} ${t}`, sceneOrder ? `S${sceneOrder} T${takeNumber}` : '', sceneTitle]
+}
+
+// ---------------- persistence of small UI prefs ----------------
 export function readPrefValue<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem('bdp:pref:' + key)
@@ -91,6 +119,18 @@ export function useSelectedSceneIds(): string[] {
   )
 }
 
+/** Id of the scene when exactly one scene is selected, else null. */
+export function useSingleSceneId(): string | null {
+  const selected = useSelectedSceneIds()
+  return selected.length === 1 ? selected[0] : null
+}
+
+/** "S03" of a scene (primitive selection: no re-render while its prompt is being typed). */
+export function useSceneCode(sceneId: string | null): string {
+  const order = useProject((s) => (sceneId ? s.project.scenes.find((sc) => sc.id === sceneId)?.order ?? 0 : 0))
+  return order ? sceneCode(order) : ''
+}
+
 // ---------------- canvas placement ----------------
 /** Next free slot in the asset column on the left of the canvas. */
 export function nextAssetPosition(project: Project): XY {
@@ -102,6 +142,8 @@ export function nextAssetPosition(project: Project): XY {
 }
 
 // ---------------- tag rename ----------------
+// The tag is a short handle used to find an asset (library search, the "@" popup of the prompt editor) and by
+// legacy "@Tag" mentions in old prompts, which are still converted to @image_N when sending.
 export interface TagCheck {
   /** Normalized tag that would be stored. */
   tag: string
@@ -117,7 +159,7 @@ export function checkTag(project: Project, assetId: string, raw: string): TagChe
   const tag = slugTag(cleaned)
   const owner = project.assets.find((a) => a.id !== assetId && a.tag.toLowerCase() === tag.toLowerCase())
   if (owner) return { tag, error: `@${tag} đã được dùng cho “${owner.name}”.`, changed: false }
-  if (/^image_\d+$/i.test(tag)) return { tag, error: 'Tag không được trùng dạng @image_N.', changed: false }
+  if (/^(image|video)_\d+$/i.test(tag)) return { tag, error: 'Tag không được trùng dạng @image_N / @video_N.', changed: false }
   return { tag, error: null, changed: tag !== asset?.tag }
 }
 
@@ -127,18 +169,18 @@ function renameMentions(text: string, oldTag: string, nextTag: string): string {
   return text.replace(MENTION_RE, (whole, tag: string) => (tag.toLowerCase() === key ? '@' + nextTag : whole))
 }
 
-/** How many scene prompts / blocks mention @tag. */
+/** How many scene prompts still mention the legacy @tag. */
 export function countMentions(project: Project, tag: string): number {
   const key = tag.toLowerCase()
   const has = (text: string) => {
     for (const m of text.matchAll(MENTION_RE)) if (m[1].toLowerCase() === key) return true
     return false
   }
-  return project.scenes.filter((s) => has(s.prompt)).length + project.blocks.filter((b) => has(b.text)).length
+  return project.scenes.filter((s) => has(s.prompt)).length
 }
 
 /**
- * Rename an asset's tag and rewrite its @mentions in every scene prompt and block, as ONE undo step.
+ * Rename an asset's tag and rewrite its legacy @mentions in every scene prompt, as ONE undo step.
  * (Workaround until the project store has a `renameTag` action: zundo tracks `useProject.setState` too.)
  */
 export function renameAssetTag(assetId: string, raw: string): { ok: boolean; tag: string; rewritten: number; error?: string } {
@@ -160,23 +202,22 @@ export function renameAssetTag(assetId: string, raw: string): { ok: boolean; tag
       rewritten++
       return { ...sc, prompt }
     })
-    const blocks = p.blocks.map((b) => {
-      const text = renameMentions(b.text, oldTag, next)
-      if (text === b.text) return b
-      rewritten++
-      return { ...b, text }
-    })
     return {
       project: {
         ...p,
         updatedAt: Date.now(),
         assets: p.assets.map((a) => (a.id === assetId ? { ...a, tag: next } : a)),
         scenes,
-        blocks,
       },
     }
   })
   return { ok: true, tag: next, rewritten }
+}
+
+/** Ids of scenes whose prompt differs between two versions of the scene list (e.g. after an automatic renumbering). */
+export function changedPrompts(before: Scene[], after: Scene[]): string[] {
+  const old = new Map(before.map((s) => [s.id, s.prompt]))
+  return after.filter((s) => old.has(s.id) && old.get(s.id) !== s.prompt).map((s) => s.id)
 }
 
 // ---------------- undo from a toast ----------------
@@ -197,8 +238,8 @@ function isTextField(target: EventTarget | null): boolean {
 }
 
 /**
- * Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y while the asset / block dialog is open (the global shortcuts are off while a
- * dialog is open). Text fields keep their native text undo.
+ * Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y while the asset dialog is open (the global shortcuts are off while a dialog is
+ * open). Text fields keep their native text undo.
  */
 export function useDialogUndoKeys() {
   useEffect(() => {
@@ -240,8 +281,4 @@ export function useFileDropGuard() {
       if (hasFiles(e.dataTransfer)) e.preventDefault()
     })
   }, [])
-}
-
-export function plural(n: number, word: string): string {
-  return `${n.toLocaleString('vi-VN')} ${word}`
 }

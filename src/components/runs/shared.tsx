@@ -134,14 +134,14 @@ export function StatusBadge({ take, showProgress = true }: { take: Pick<Take, 's
   )
 }
 
-/** Prompt text with @image_N tokens highlighted. */
+/** Prompt text with @image_N (teal) and @video_N (purple) tokens highlighted. */
 export function HighlightedPrompt({ text }: { text: string }) {
-  const parts = text.split(/(@image_\d+)/g)
+  const parts = text.split(/(@(?:image|video)_\d+)\b/gi)
   return (
     <>
       {parts.map((p, i) =>
         i % 2 === 1 ? (
-          <mark key={i} className="rq-tok">
+          <mark key={i} className={/^@video/i.test(p) ? 'rq-tok video' : 'rq-tok'}>
             {p}
           </mark>
         ) : (
@@ -152,7 +152,7 @@ export function HighlightedPrompt({ text }: { text: string }) {
   )
 }
 
-/** Paragraph-level diff between two compiled prompts (blank-line separated). */
+/** Paragraph-level diff between two prompts (blank-line separated). */
 export function paragraphDiff(before: string, after: string): { removed: string[]; added: string[] } {
   const split = (s: string) =>
     s

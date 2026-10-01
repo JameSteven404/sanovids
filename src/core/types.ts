@@ -1,11 +1,15 @@
-// Domain model for "Bàn Dựng Phim".
-// The project (assets, blocks, presets, scenes, positions) is undoable.
+// Domain model for "Bàn Dựng Phim" (schema v2).
+// The project (assets, presets, scenes, positions) is undoable.
 // Runs (takes + jobs) live in a separate store and are NOT part of undo history.
+//
+// v2: the prompt is exactly what the user writes. Media references are numbered tokens:
+//   @image_N — N-th reference image of the scene (scene.refs order, each image of an asset gets its own number)
+//   @video_N — N-th reference video of the scene (scene.videoRefs order, ids of completed takes)
+// Tokens are renumbered automatically when references are reordered/removed (see core/compile.ts remapTokens).
 
 export type ModelId = 'seedance_2_5' | 'minimax_h3'
 export type Mode = 't2v' | 'i2v' | 'transform'
 export type AssetKind = 'character' | 'location' | 'prop' | 'style'
-export type BlockPlacement = 'before' | 'after'
 export type EdgeMode = 'hidden' | 'selected' | 'all'
 export type ViewMode = 'canvas' | 'table' | 'storyboard'
 
@@ -19,25 +23,14 @@ export interface Asset {
   id: string
   kind: AssetKind
   name: string
-  /** Mention tag without "@", unique per project, e.g. "Elara" -> typed as @Elara in prompts. */
+  /** Short tag without "@", unique per project (search + legacy @Tag mentions). */
   tag: string
   description: string
-  /** Keys into the image store (IndexedDB). First image is the primary one. */
+  /** Keys into the media store (IndexedDB). First image is the primary one. */
   imageIds: string[]
   color: string
   /** Shown as a node on the canvas when set. Assets always exist in the library regardless. */
   position: XY | null
-}
-
-/** Reusable prompt paragraph (style bible). Applied to every scene unless the scene overrides it. */
-export interface PromptBlock {
-  id: string
-  title: string
-  text: string
-  placement: BlockPlacement
-  /** Default on/off for scenes that have no override. */
-  defaultOn: boolean
-  color: string
 }
 
 export interface VideoSettings {
@@ -58,17 +51,15 @@ export interface Scene {
   /** Display order, 1-based. S01, S02... Kept dense by the store. */
   order: number
   title: string
-  /** Scene-specific prompt. May contain @Tag mentions (asset tags). */
+  /** The prompt exactly as it will be sent, with @image_N / @video_N tokens. */
   prompt: string
   /** Ordered asset ids used as reference images. Order decides @image_N numbering. */
   refs: string[]
-  /** Per-scene override of block on/off. Missing key = use block.defaultOn. */
-  blockOverrides: Record<string, boolean>
+  /** Ordered take ids (completed videos) used as reference videos. Order decides @video_N numbering. */
+  videoRefs: string[]
   /** Preset the settings came from (informational; settings are copied, not linked). */
   presetId: string | null
   settings: VideoSettings
-  /** Previous scene this one continues from (story sequence edge). */
-  continueFrom: string | null
   /** H3 transform frames: asset ids for first and last frame. */
   firstFrame: string | null
   lastFrame: string | null
@@ -78,22 +69,17 @@ export interface Scene {
 }
 
 export interface ProjectSettings {
-  /** Template for the auto-generated references paragraph. Tokens: {list} */
-  referencesTemplate: string
-  /** Whether to add the auto references paragraph at all. */
-  autoReferences: boolean
-  /** Add "Continue from the previous scene (Sxx: title)." line when continueFrom is set. */
-  autoContinuity: boolean
+  /** Rewrite @image_N / @video_N tokens when references are reordered or removed. */
+  autoRenumber: boolean
 }
 
 export interface Project {
   id: string
   name: string
-  schemaVersion: 1
+  schemaVersion: 2
   createdAt: number
   updatedAt: number
   assets: Asset[]
-  blocks: PromptBlock[]
   presets: Preset[]
   scenes: Scene[]
   settings: ProjectSettings
@@ -101,7 +87,7 @@ export interface Project {
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
 
-/** One generation attempt of a scene. */
+/** One generation attempt of a scene. Shown as a Take (video) node on the canvas. */
 export interface Take {
   id: string
   sceneId: string
@@ -114,17 +100,20 @@ export interface Take {
   finishedAt: number | null
   /** Exact compiled prompt that was sent. */
   promptSnapshot: string
-  /** Scene prompt (raw, with @Tags) at the time of the run, for "restore prompt". */
+  /** Scene prompt at the time of the run, for "restore prompt". */
   rawPromptSnapshot: string
   refsSnapshot: string[]
+  videoRefsSnapshot: string[]
   settings: VideoSettings
   cost: number
   starred: boolean
-  /** Image-store key of the poster frame. */
+  /** Media-store key of the poster frame. */
   posterId: string | null
-  /** Image-store key of a short demo video (webm) when the mock could record one. */
+  /** Media-store key of the (demo) video. */
   videoId: string | null
   error: string | null
+  /** Canvas position once the user dragged the node; null = auto (to the right of its scene). */
+  position: XY | null
 }
 
 export interface CompiledImage {
@@ -134,12 +123,22 @@ export interface CompiledImage {
   imageId: string
 }
 
+export interface CompiledVideo {
+  /** 1-based N in @video_N */
+  n: number
+  takeId: string
+}
+
 export interface CompiledPrompt {
   text: string
   images: CompiledImage[]
-  /** Assets in reference order. */
+  videos: CompiledVideo[]
+  /** Assets in reference order (only those that send at least one image). */
   assetIds: string[]
   charCount: number
   limit: number
+  /** Problems that likely produce a wrong video. */
   warnings: string[]
+  /** Low-priority hints (e.g. a connected image never mentioned in the prompt). */
+  notes: string[]
 }

@@ -1,7 +1,7 @@
 // Small menu shown when a connection is released on empty canvas.
-import { ArrowRight, Clapperboard, Link2, X } from 'lucide-react'
+import { Clapperboard, Film, Link2, X } from 'lucide-react'
 import { useEffect, useRef } from 'react'
-import { linkAssets, selectedSceneIds } from '../../actions'
+import { createSceneFromTake, linkAssets, linkTakes, selectedSceneIds, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import type { XY } from '../../core/types'
 import { useProject } from '../../store/project'
@@ -15,7 +15,8 @@ export interface ConnectMenuState {
   y: number
   /** Flow coordinates of the drop point. */
   flow: XY
-  source: { kind: 'asset'; assetIds: string[] } | { kind: 'scene'; sceneId: string }
+  /** `takeId` = the take whose handle was dragged; `takeIds` = it plus the other selected takes it carries. */
+  source: { kind: 'asset'; assetIds: string[] } | { kind: 'take'; takeId: string; takeIds: string[] }
 }
 
 export function ConnectMenu({ menu, onClose }: { menu: ConnectMenuState; onClose: () => void }) {
@@ -70,19 +71,28 @@ export function ConnectMenu({ menu, onClose }: { menu: ConnectMenuState; onClose
       })
     }
   } else {
-    const fromId = menu.source.sceneId
-    const from = sceneMapOf(project.scenes).get(fromId)
+    const { takeId, takeIds } = menu.source
+    const label = takeLabel(takeId)
     items.push({
-      key: 'next',
-      icon: ArrowRight,
-      label: 'Tạo cảnh tiếp theo ở đây',
-      hint: from ? `nối tiếp ${sceneCode(from.order)}, giữ nhân vật & cấu hình` : undefined,
+      key: 'continue',
+      icon: Film,
+      label: 'Tạo cảnh tiếp nối từ video này',
+      hint: `${label} thành @video_1, giữ ảnh tham chiếu & cấu hình`,
       primary: true,
       run: () => {
-        const id = useProject.getState().createNextScene(fromId, pos)
-        useUI.getState().select([id])
+        createSceneFromTake(takeId, pos)
       },
     })
+    if (selScenes.length) {
+      const what = takeIds.length > 1 ? `${takeIds.length} video` : label
+      items.push({
+        key: 'sel',
+        icon: Link2,
+        label: `Dùng làm @video cho ${selScenes.length} cảnh đang chọn`,
+        hint: what,
+        run: () => linkTakes(selScenes, takeIds),
+      })
+    }
   }
   items.push({ key: 'cancel', icon: X, label: 'Huỷ', run: () => {} })
 

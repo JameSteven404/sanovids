@@ -1,17 +1,32 @@
 import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, focusNodes, linkAssets, selectedSceneIds } from '../../actions'
+import { createAssetsFromFiles, ensureAssetToken, focusNodes, linkAssets, selectedSceneIds } from '../../actions'
+import { sceneCode } from '../../core/compile'
 import type { Asset, AssetKind } from '../../core/types'
 import { cachedUrl } from '../../lib/imageStore'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { Section } from './bits'
-import { ASSET_MIME, KIND_META, KIND_ORDER, matchesQuery, nextAssetPosition, undoToastAction, usePrefState, useSelectedSceneIds } from './shared'
+import { setDragGhost } from './ghost'
+import {
+  ASSET_MIME,
+  imageTokenLabels,
+  KIND_META,
+  KIND_ORDER,
+  matchesQuery,
+  nextAssetPosition,
+  undoToastAction,
+  usePrefState,
+  useSceneCode,
+  useSelectedSceneIds,
+  useSingleSceneId,
+} from './shared'
 
 type KindFilter = 'all' | AssetKind
 const EMPTY_COUNTS: Record<string, number> = {}
+const EMPTY_LABELS: Record<string, string> = {}
 
 /** Number of scenes whose refs include each asset. */
 const usageSelector = (s: ProjectState) => {
@@ -28,42 +43,6 @@ function dragIdsFor(id: string): string[] {
   return librarySelection.filter((x) => exists.has(x))
 }
 
-/** Offscreen element used as the drag image: overlapping avatars + count. */
-function buildDragGhost(list: Asset[]): HTMLElement {
-  const el = document.createElement('div')
-  el.className = 'sb-drag-ghost'
-  const stack = document.createElement('div')
-  stack.className = 'sb-drag-ghost-stack'
-  for (const a of list.slice(0, 4)) {
-    const av = document.createElement('span')
-    av.className = 'sb-drag-ghost-av' + (a.kind === 'character' ? '' : ' square')
-    av.style.background = a.color
-    const url = cachedUrl(a.imageIds[0])
-    if (url) {
-      const img = document.createElement('img')
-      img.src = url
-      img.alt = ''
-      av.appendChild(img)
-    } else {
-      av.textContent = (a.name || a.tag).slice(0, 1).toUpperCase()
-    }
-    stack.appendChild(av)
-  }
-  el.appendChild(stack)
-  const label = document.createElement('span')
-  label.className = 'sb-drag-ghost-label'
-  label.textContent = list.length === 1 ? '@' + list[0].tag : `${list.length} mục`
-  el.appendChild(label)
-  if (list.length > 1) {
-    const count = document.createElement('span')
-    count.className = 'sb-drag-ghost-count'
-    count.textContent = String(list.length)
-    el.appendChild(count)
-  }
-  document.body.appendChild(el)
-  return el
-}
-
 function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   const ids = dragIdsFor(id)
   const byId = new Map(useProject.getState().project.assets.map((a) => [a.id, a]))
@@ -74,15 +53,19 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   }
   e.dataTransfer.effectAllowed = 'all'
   e.dataTransfer.setData(ASSET_MIME, JSON.stringify(list.map((a) => a.id)))
-  // Dropping into a text field inserts the mentions (the prompt editor then auto-links them).
-  e.dataTransfer.setData('text/plain', list.map((a) => '@' + a.tag).join(' ') + ' ')
-  try {
-    const ghost = buildDragGhost(list)
-    e.dataTransfer.setDragImage(ghost, 22, 22)
-    setTimeout(() => ghost.remove(), 0)
-  } catch {
-    /* custom drag image is optional */
-  }
+  // Plain-text fallback (dropped into any text field): the names. The @image number depends on the target scene,
+  // so scene drop targets read the asset ids above and link + number them themselves.
+  e.dataTransfer.setData('text/plain', list.map((a) => a.name || a.tag).join(', '))
+  setDragGhost(
+    e,
+    list.map((a) => ({
+      url: cachedUrl(a.imageIds[0]),
+      letter: (a.name || a.tag).slice(0, 1).toUpperCase(),
+      color: a.color,
+      shape: a.kind === 'character' ? ('round' as const) : ('square' as const),
+    })),
+    list.length === 1 ? list[0].name || '@' + list[0].tag : `${list.length} mục`,
+  )
   useUI.getState().setDraggingAssets(list.map((a) => a.id))
 }
 
@@ -103,10 +86,10 @@ function toggleOnCanvas(id: string) {
   if (asset.position) {
     st.setAssetOnCanvas(id, null)
     if (ui.selectedIds.includes(id)) ui.select(ui.selectedIds.filter((x) => x !== id))
-    toast(`Đã bỏ @${asset.tag} khỏi canvas — vẫn còn trong thư viện, các nối giữ nguyên.`, { action: undoToastAction() })
+    toast(`Đã bỏ “${asset.name}” khỏi canvas — vẫn còn trong thư viện, các nối giữ nguyên.`, { action: undoToastAction() })
   } else {
     st.setAssetOnCanvas(id, nextAssetPosition(st.project))
-    toast(`Đã đặt @${asset.tag} lên canvas.`, { tone: 'success', action: undoToastAction() })
+    toast(`Đã đặt “${asset.name}” lên canvas.`, { tone: 'success', action: undoToastAction() })
     if (ui.view === 'canvas') setTimeout(() => focusNodes([id]), 80)
   }
 }
@@ -120,6 +103,29 @@ function linkCardToSelection(id: string) {
   linkAssets(scenes, dragIdsFor(id))
 }
 
+/** "+ Nối" on a card while one scene is selected: link it and tell which @image number it got. */
+function linkToScene(sceneId: string, assetId: string) {
+  const token = ensureAssetToken(sceneId, assetId)
+  const p = useProject.getState().project
+  const scene = p.scenes.find((s) => s.id === sceneId)
+  const asset = p.assets.find((a) => a.id === assetId)
+  // Not linked: ensureAssetToken already explained why (image limit of the model).
+  if (!scene || !asset || !scene.refs.includes(assetId)) return
+  toast(`Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}.`, {
+    tone: 'success',
+    action: undoToastAction(),
+  })
+}
+
+async function copyToken(token: string, code: string) {
+  try {
+    await navigator.clipboard.writeText(token)
+    toast(`Đã copy ${token} — dán vào prompt của ${code}.`, { tone: 'success' })
+  } catch {
+    toast('Trình duyệt chặn clipboard.', { tone: 'error' })
+  }
+}
+
 // ---------------- card ----------------
 interface CardProps {
   asset: Asset
@@ -129,17 +135,23 @@ interface CardProps {
   /** Number of selected scenes that already reference this asset. */
   linked: number
   selScenes: number
+  /** Exactly one scene selected: its id / code, else null / ''. */
+  singleId: string | null
+  singleCode: string
+  /** "@image_N" (or range) in that scene; '' = linked but no image yet; undefined = not linked there. */
+  token: string | undefined
   /** How many assets a drag / link from this card would carry. */
   groupSize: number
-  onSelect: (e: MouseEvent, id: string) => void
+  onSelect: (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) => void
 }
 
-const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, linked, selScenes, groupSize, onSelect }: CardProps) {
+const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, linked, selScenes, singleId, singleCode, token, groupSize, onSelect }: CardProps) {
   const { Icon, label } = KIND_META[asset.kind]
   const many = selected && groupSize > 1
   const linkTitle = selScenes
-    ? `Nối ${many ? `${groupSize} mục đã chọn` : '@' + asset.tag} vào ${selScenes} cảnh đang chọn`
+    ? `Nối ${many ? `${groupSize} mục đã chọn` : `“${asset.name}”`} vào ${selScenes} cảnh đang chọn`
     : 'Nối vào cảnh đang chọn — hãy chọn cảnh trước'
+  const firstToken = token ? token.replace(/–\d+$/, '') : ''
   return (
     <div
       className={`sb-card${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
@@ -185,15 +197,46 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
           <Icon size={11} />
           {asset.position && <i className="sb-card-oncanvas" title="Đang có trên canvas" />}
         </span>
-        {asset.imageIds.length > 1 && <span className="sb-card-imgs" title={`${asset.imageIds.length} ảnh`}>{asset.imageIds.length} ảnh</span>}
-        <span className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Dùng ở ${usage} cảnh` : 'Chưa nối vào cảnh nào'}>
-          <Link2 size={10} />
-          {usage}
-        </span>
-        {selScenes > 0 && linked > 0 && (
-          <span className="sb-card-linked" title={`Đã nối vào ${linked}/${selScenes} cảnh đang chọn`}>
-            {selScenes === 1 ? 'Đã nối' : `${linked}/${selScenes}`}
-          </span>
+        {asset.imageIds.length > 1 && <span className="sb-card-imgs" title={`${asset.imageIds.length} ảnh — mỗi ảnh một số @image`}>{asset.imageIds.length} ảnh</span>}
+        {singleId ? (
+          token !== undefined ? (
+            token ? (
+              <button
+                className="sb-token sb-card-token"
+                title={`${token} trong ${singleCode}${asset.imageIds.length > 1 ? ` (${asset.imageIds.length} ảnh)` : ''} · bấm để copy ${firstToken}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void copyToken(firstToken, singleCode)
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                {token}
+              </button>
+            ) : (
+              <span className="sb-token sb-card-token muted" title={`Đã nối vào ${singleCode} nhưng chưa có ảnh nên chưa có số @image`}>
+                Đã nối
+              </span>
+            )
+          ) : (
+            <button
+              className="sb-connect sb-card-token"
+              title={`Nối “${asset.name}” vào ${singleCode} (thêm một số @image)`}
+              onClick={(e) => {
+                e.stopPropagation()
+                linkToScene(singleId, asset.id)
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              + Nối
+            </button>
+          )
+        ) : (
+          selScenes > 1 &&
+          linked > 0 && (
+            <span className="sb-card-linked" title={`Đã nối vào ${linked}/${selScenes} cảnh đang chọn`}>
+              {linked}/{selScenes}
+            </span>
+          )
         )}
         <div className="sb-card-actions">
           <button
@@ -207,18 +250,20 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
           >
             {asset.position ? <PinOff size={12} /> : <Pin size={12} />}
           </button>
-          <button
-            className={`sb-card-btn${selScenes ? ' ref' : ' off'}`}
-            title={linkTitle}
-            aria-disabled={!selScenes}
-            onClick={(e) => {
-              e.stopPropagation()
-              linkCardToSelection(asset.id)
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-          >
-            <Link2 size={12} />
-          </button>
+          {!singleId && (
+            <button
+              className={`sb-card-btn${selScenes ? ' ref' : ' off'}`}
+              title={linkTitle}
+              aria-disabled={!selScenes}
+              onClick={(e) => {
+                e.stopPropagation()
+                linkCardToSelection(asset.id)
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <Link2 size={12} />
+            </button>
+          )}
           <button
             className="sb-card-btn"
             title="Sửa"
@@ -234,7 +279,9 @@ const AssetCard = memo(function AssetCard({ asset, usage, selected, dragging, li
       </div>
       <div className="sb-card-info">
         <div className="sb-card-name">{asset.name || <span className="faint">Chưa đặt tên</span>}</div>
-        <div className="sb-card-tag">@{asset.tag}</div>
+        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Là ảnh tham chiếu của ${usage} cảnh` : 'Chưa nối vào cảnh nào'}>
+          {usage ? `dùng ở ${usage} cảnh` : 'chưa dùng'}
+        </div>
       </div>
     </div>
   )
@@ -247,13 +294,23 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
   const librarySelection = useUI((s) => s.librarySelection)
   const draggingIds = useUI((s) => s.draggingAssetIds)
   const selectedScenes = useSelectedSceneIds()
+  const singleId = useSingleSceneId()
+  const singleCode = useSceneCode(singleId)
   const linked = useProject(
     useShallow((s) => {
-      if (!selectedScenes.length) return EMPTY_COUNTS
+      if (selectedScenes.length < 2) return EMPTY_COUNTS
       const sel = new Set(selectedScenes)
       const m: Record<string, number> = {}
       for (const sc of s.project.scenes) if (sel.has(sc.id)) for (const r of sc.refs) m[r] = (m[r] ?? 0) + 1
       return m
+    }),
+  )
+  /** @image labels of the single selected scene (string values: shallow-stable while the prompt is typed). */
+  const tokens = useProject(
+    useShallow((s) => {
+      if (!singleId) return EMPTY_LABELS
+      const sc = s.project.scenes.find((x) => x.id === singleId)
+      return sc ? imageTokenLabels(s.project.assets, sc.refs) : EMPTY_LABELS
     }),
   )
   const [kind, setKind] = usePrefState<KindFilter>('sb-kind', 'all')
@@ -287,7 +344,7 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
   }, [draggingIds])
 
   const onSelect = useCallback(
-    (e: MouseEvent, id: string) => {
+    (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) => {
       const ui = useUI.getState()
       if (e.shiftKey && anchor.current && anchor.current !== id) {
         const ids = visible.map((a) => a.id)
@@ -324,19 +381,26 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
   const kinds: KindFilter[] = ['all', ...KIND_ORDER.filter((k) => counts[k] > 0 || kind === k)]
 
   const toolbar = (
-    <div className="sb-kinds" role="tablist" aria-label="Lọc theo loại">
-      {kinds.map((k) => {
-        const meta = k === 'all' ? null : KIND_META[k]
-        const Icon = meta?.Icon
-        return (
-          <button key={k} role="tab" aria-selected={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
-            {Icon && <Icon size={11} />}
-            <span>{meta ? meta.label : 'Tất cả'}</span>
-            <span className="sb-kind-n">{counts[k]}</span>
-          </button>
-        )
-      })}
-    </div>
+    <>
+      <div className="sb-kinds" role="tablist" aria-label="Lọc theo loại">
+        {kinds.map((k) => {
+          const meta = k === 'all' ? null : KIND_META[k]
+          const Icon = meta?.Icon
+          return (
+            <button key={k} role="tab" aria-selected={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
+              {Icon && <Icon size={11} />}
+              <span>{meta ? meta.label : 'Tất cả'}</span>
+              <span className="sb-kind-n">{counts[k]}</span>
+            </button>
+          )
+        })}
+      </div>
+      {singleId && (
+        <div className="sb-explain">
+          Số <span className="sb-tok">@image</span> trong <b className="sb-accent">{singleCode}</b> · bấm số để copy, <b>+ Nối</b> để thêm.
+        </div>
+      )}
+    </>
   )
 
   const footer = selection.length ? (
@@ -454,6 +518,9 @@ export function AssetLibrary({ query, collapsed, onToggle }: { query: string; co
               dragging={dragSet.has(a.id)}
               linked={linked[a.id] ?? 0}
               selScenes={selectedScenes.length}
+              singleId={singleId}
+              singleCode={singleCode}
+              token={singleId ? tokens[a.id] : undefined}
               groupSize={selection.length}
               onSelect={onSelect}
             />

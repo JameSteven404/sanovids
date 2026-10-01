@@ -21,10 +21,10 @@ export type DialogState =
   | { kind: 'runConfirm'; sceneIds: string[] }
   | { kind: 'take'; takeId: string }
   | { kind: 'asset'; assetId: string }
-  | { kind: 'block'; blockId: string }
   | { kind: 'projects' }
 
 export type InteractionMode = 'hand' | 'select'
+export type TakeDisplay = 'all' | 'chosen'
 
 const pref = <T,>(key: string, fallback: T): T => {
   try {
@@ -74,6 +74,9 @@ export interface UIState {
   cycleEdgeMode: () => void
   setInteraction: (m: InteractionMode) => void
   toggleMinimap: () => void
+  /** Canvas: show every take node, or only the chosen (starred, else latest) take of each scene. */
+  takeDisplay: TakeDisplay
+  setTakeDisplay: (d: TakeDisplay) => void
   setQueueOpen: (open: boolean) => void
   setLeftOpen: (open: boolean) => void
   setRightOpen: (open: boolean) => void
@@ -105,6 +108,7 @@ export const useUI = create<UIState>()((set, get) => ({
   edgeMode: pref<EdgeMode>('edgeMode', 'selected'),
   interaction: pref<InteractionMode>('interaction', 'hand'),
   showMinimap: pref('minimap', true),
+  takeDisplay: pref<TakeDisplay>('takeDisplay', 'all'),
   queueOpen: false,
   leftOpen: pref('leftOpen', true),
   rightOpen: pref('rightOpen', true),
@@ -134,6 +138,10 @@ export const useUI = create<UIState>()((set, get) => ({
   setInteraction: (interaction) => {
     savePref('interaction', interaction)
     set({ interaction })
+  },
+  setTakeDisplay: (takeDisplay) => {
+    savePref('takeDisplay', takeDisplay)
+    set({ takeDisplay })
   },
   toggleMinimap: () => {
     savePref('minimap', !get().showMinimap)

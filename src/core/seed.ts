@@ -1,8 +1,9 @@
 // Demo project so the app is testable on first open. Content is original sample text.
+// Prompts use the numbered tokens of each scene's refs (order of `refs` = @image_1, @image_2, …).
 import { avatarSvg, putBlob } from '../lib/imageStore'
-import { defaultPresets, defaultProjectSettings, LAYOUT } from '../store/project'
+import { defaultPresets, defaultProjectSettings, LAYOUT, scenePosition } from '../store/project'
 import { newId } from './ids'
-import type { Asset, Project, PromptBlock, Scene } from './types'
+import type { Asset, Project, Scene } from './types'
 
 const ASSETS: { name: string; tag: string; kind: Asset['kind']; description: string; color: string; onCanvas: boolean }[] = [
   { name: 'Elara', tag: 'Elara', kind: 'character', description: 'young woman, long auburn braid, green wool cloak', color: '#e8894a', onCanvas: true },
@@ -13,59 +14,52 @@ const ASSETS: { name: string; tag: string; kind: Asset['kind']; description: str
   { name: 'Mặt dây chuyền', tag: 'MatDay', kind: 'prop', description: 'silver pendant with a moonstone', color: '#c9b14a', onCanvas: false },
 ]
 
-const BLOCKS: Omit<PromptBlock, 'id'>[] = [
-  {
-    title: 'Phong cách phim',
-    placement: 'before',
-    defaultOn: true,
-    color: '#e8894a',
-    text: 'Live-action fantasy drama scene, naturalistic realistic footage with film-style editing: shots joined by soft motivated cuts, one clear action per shot, every cut easy to follow.',
-  },
-  {
-    title: 'Ánh sáng & bối cảnh',
-    placement: 'before',
-    defaultOn: false,
-    color: '#8bc34a',
-    text: 'Setting and light: the village always looks the same — stone houses, pine forest, cold mountain air, soft overcast daylight or warm firelight at night.',
-  },
-  {
-    title: 'Âm thanh (không nhạc)',
-    placement: 'after',
-    defaultOn: true,
-    color: '#5ac8fa',
-    text: 'Audio: natural ambient sound only. No music of any kind: no score, no drums, no choir, no singing, no humming. No narration, no subtitles, no on-screen text.',
-  },
-  {
-    title: 'Nguyên bản',
-    placement: 'after',
-    defaultOn: true,
-    color: '#b48cff',
-    text: 'Originality: all characters, creatures and designs are original to this story; do not imitate any existing film, game or franchise.',
-  },
-  {
-    title: 'Liên tục nhân vật',
-    placement: 'after',
-    defaultOn: true,
-    color: '#d66b9a',
-    text: 'Continuity: exactly one Elara and one Aurelian, each with one head, two arms and two legs, never duplicated, same clothes and hair as their reference images in every shot.',
-  },
-  {
-    title: 'Ràng buộc lặp lại',
-    placement: 'after',
-    defaultOn: true,
-    color: '#a3a3a3',
-    text: 'Constraints, repeated: no music, no extra dialogue, no subtitles, no on-screen text, no extra people or animals.',
-  },
-]
+const STYLE = 'Live-action fantasy drama, naturalistic realistic footage, soft motivated cuts, one clear action per shot.'
+const AUDIO = 'Audio: natural ambient sound only, no music, no narration, no subtitles.'
 
 const SCENES: { title: string; prompt: string; refs: string[]; preset: 'draft' | 'final' }[] = [
-  { title: 'Leo dốc lúc chiều tà', preset: 'final', refs: ['Elara', 'LangNui'], prompt: 'At dusk @Elara climbs the last rocky slope above @LangNui, breathing hard, then stops and looks back at the lights of the village.' },
-  { title: 'Ánh sáng trong hang', preset: 'final', refs: ['Elara', 'Lumi'], prompt: 'Inside a narrow cave @Elara follows a soft blue glow and discovers @Lumi curled on a crystal ledge. She kneels slowly, hand open.' },
-  { title: 'Lumi tỉnh dậy', preset: 'draft', refs: ['Elara', 'Lumi'], prompt: '@Lumi opens its glowing eyes, sniffs @Elara\'s fingers, then climbs onto her shoulder. She laughs quietly.' },
-  { title: 'Trở về làng', preset: 'draft', refs: ['Elara', 'Lumi', 'LangNui'], prompt: '@Elara walks back into @LangNui at night carrying @Lumi under her cloak, glancing around to make sure nobody sees.' },
-  { title: 'Aurelian nghi ngờ', preset: 'draft', refs: ['Elara', 'Aurelian'], prompt: '@Aurelian waits by the fire, arms crossed. When @Elara enters he notices a faint blue light under her cloak. "What are you hiding?"' },
-  { title: 'Lời thú nhận', preset: 'draft', refs: ['Elara', 'Aurelian', 'Lumi'], prompt: '@Elara slowly opens her cloak. @Lumi peeks out. @Aurelian steps back, then lowers his guard and kneels to look closer.' },
-  { title: 'Bình minh', preset: 'draft', refs: ['Elara', 'Aurelian', 'LangNui'], prompt: 'Morning over @LangNui. @Elara and @Aurelian stand at the edge of the village watching the mist lift from the pine forest.' },
+  {
+    title: 'Leo dốc lúc chiều tà',
+    preset: 'final',
+    refs: ['Elara', 'LangNui'],
+    prompt: `${STYLE}\n\nAt dusk @image_1 climbs the last rocky slope above the village in @image_2, breathing hard, then stops and looks back at the lights below.\n\n${AUDIO}`,
+  },
+  {
+    title: 'Ánh sáng trong hang',
+    preset: 'final',
+    refs: ['Elara', 'Lumi'],
+    prompt: `${STYLE}\n\nInside a narrow cave @image_1 follows a soft blue glow and discovers @image_2 curled on a crystal ledge. She kneels slowly, hand open.\n\n${AUDIO}`,
+  },
+  {
+    title: 'Lumi tỉnh dậy',
+    preset: 'draft',
+    refs: ['Elara', 'Lumi'],
+    prompt: `${STYLE}\n\n@image_2 opens its glowing eyes, sniffs @image_1's fingers, then climbs onto her shoulder. She laughs quietly.\n\n${AUDIO}`,
+  },
+  {
+    title: 'Trở về làng',
+    preset: 'draft',
+    refs: ['Elara', 'Lumi', 'LangNui'],
+    prompt: `${STYLE}\n\n@image_1 walks back into the village of @image_3 at night carrying @image_2 under her cloak, glancing around to make sure nobody sees.\n\n${AUDIO}`,
+  },
+  {
+    title: 'Aurelian nghi ngờ',
+    preset: 'draft',
+    refs: ['Elara', 'Aurelian'],
+    prompt: `${STYLE}\n\n@image_2 waits by the fire, arms crossed. When @image_1 enters he notices a faint blue light under her cloak. "What are you hiding?"\n\n${AUDIO}`,
+  },
+  {
+    title: 'Lời thú nhận',
+    preset: 'draft',
+    refs: ['Elara', 'Aurelian', 'Lumi'],
+    prompt: `${STYLE}\n\n@image_1 slowly opens her cloak. @image_3 peeks out. @image_2 steps back, then lowers his guard and kneels to look closer.\n\n${AUDIO}`,
+  },
+  {
+    title: 'Bình minh',
+    preset: 'draft',
+    refs: ['Elara', 'Aurelian', 'LangNui'],
+    prompt: `${STYLE}\n\nMorning over the village of @image_3. @image_1 and @image_2 stand at its edge watching the mist lift from the pine forest.\n\n${AUDIO}`,
+  },
   { title: '', preset: 'draft', refs: [], prompt: '' },
 ]
 
@@ -89,43 +83,34 @@ export async function createDemoProject(): Promise<Project> {
   }
   const byTag = new Map(assets.map((a) => [a.tag, a.id]))
   const presets = defaultPresets()
-  const blocks: PromptBlock[] = BLOCKS.map((b) => ({ ...b, id: newId('blk') }))
 
-  let prev: string | null = null
   const scenes: Scene[] = SCENES.map((s, i) => {
     const preset = presets.find((p) => p.id === (s.preset === 'final' ? 'preset_final' : 'preset_draft'))!
     const { id: _pid, name: _pname, ...settings } = preset
-    const id = newId('scn')
-    const col = i % LAYOUT.perRow
-    const row = Math.floor(i / LAYOUT.perRow)
-    const scene: Scene = {
-      id,
+    return {
+      id: newId('scn'),
       order: i + 1,
       title: s.title,
       prompt: s.prompt,
       refs: s.refs.map((t) => byTag.get(t)!).filter(Boolean),
-      blockOverrides: i === 1 ? { [blocks[1].id]: true } : {},
+      videoRefs: [],
       presetId: preset.id,
       settings,
-      continueFrom: prev,
       firstFrame: null,
       lastFrame: null,
       color: null,
-      position: { x: LAYOUT.scenesX + col * (LAYOUT.sceneW + LAYOUT.gapX), y: LAYOUT.scenesY + row * (LAYOUT.sceneH + LAYOUT.gapY) },
+      position: scenePosition(i),
       note: '',
     }
-    prev = id
-    return scene
   })
 
   return {
     id: newId('prj'),
     name: 'Phim demo: Elara & Lumi',
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt: now,
     updatedAt: now,
     assets,
-    blocks,
     presets,
     scenes,
     settings: defaultProjectSettings(),

@@ -1,17 +1,22 @@
-// Inspector for several selected scenes: batch settings, common references, blocks, run / duplicate / delete.
-import { ClipboardCopy, CopyPlus, Play, Plus, Trash, X } from 'lucide-react'
+// Inspector for several selected scenes: batch settings, common reference images and videos, run / duplicate / delete.
+import { ClipboardCopy, CopyPlus, Film, Info, Play, Plus, Trash, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { focusNodes, linkAssets, requestRun } from '../../actions'
+import { focusNodes, linkAssets, linkTakes, requestRun, takeLabel } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
-import { costOf } from '../../core/models'
+import { costOf, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
-import { useProject } from '../../store/project'
+import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar } from '../common/Media'
-import { undoToastAction } from '../sidebar/shared'
+import { AssetAvatar, MediaImg } from '../common/Media'
+import { STATUS_TEXT, useTakeInfos } from './hooks'
+import { flushPromptEditor } from './PromptEditor'
+import { TakePicker } from './TakePicker'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
-import { AssetPicker, fmt, KIND_LABEL, Section, triOf, TriToggle, triValue, type Tri } from './shared'
+import { AssetPicker, EMPTY_IDS, fmt, KIND_LABEL, Section } from './shared'
+
+/** Commit any prompt being typed before a batch change renumbers tokens. */
+const flushAll = (ids: string[]) => ids.forEach(flushPromptEditor)
 
 export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
   const scenes = useProject(
@@ -28,7 +33,7 @@ export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
       <MultiHeader scenes={sorted} />
       <MultiSettings scenes={sorted} ids={ids} />
       <MultiRefs scenes={sorted} ids={ids} />
-      <MultiBlocks scenes={sorted} ids={ids} />
+      <MultiVideoRefs scenes={sorted} ids={ids} />
       <MultiActions scenes={sorted} ids={ids} />
     </div>
   )
@@ -118,13 +123,14 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   const allIds = useMemo(() => union.filter((u) => u.count === n).map((u) => u.asset.id), [union, n])
 
   const removeFromAll = (a: Asset) => {
+    flushAll(ids)
     const pairs = scenes.filter((s) => s.refs.includes(a.id)).map((s) => ({ sceneId: s.id, assetId: a.id }))
     useProject.getState().removeRefs(pairs)
-    toast(`Đã bỏ @${a.tag} khỏi ${pairs.length} cảnh.`, { action: undoToastAction() })
+    toast(`Đã bỏ ${a.name} khỏi ${pairs.length} cảnh (số @image trong prompt được đánh lại).`, { action: undoToastAction() })
   }
 
   return (
-    <Section id="m-refs" title="Tham chiếu chung" meta={<span className="badge">{union.length}</span>}>
+    <Section id="m-refs" title="Ảnh tham chiếu chung" meta={<span className="badge">{union.length}</span>}>
       {union.length === 0 && <div className="in-refs-empty">Các cảnh đang chọn chưa có tham chiếu nào.</div>}
       <div className="in-refs">
         {union.map(({ asset: a, count }) => (
@@ -132,9 +138,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
             <AssetAvatar asset={a} size={28} />
             <button type="button" className="in-ref-name" onClick={() => useUI.getState().openDialog({ kind: 'asset', assetId: a.id })} title="Sửa chi tiết">
               <span className="in-ref-title">{a.name}</span>
-              <span className="in-ref-tag">
-                @{a.tag} · {KIND_LABEL[a.kind]}
-              </span>
+              <span className="in-ref-tag">{KIND_LABEL[a.kind]}</span>
             </button>
             <span className={`in-token ${count === n ? '' : 'is-partial'}`} title={`Có trong ${count}/${n} cảnh`}>
               {count}/{n} cảnh
@@ -144,7 +148,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
                 <Plus size={12} /> Tất cả
               </button>
             )}
-            <button type="button" className="in-x" onClick={() => removeFromAll(a)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ @${a.tag} khỏi tất cả`}>
+            <button type="button" className="in-x" onClick={() => removeFromAll(a)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ ${a.name} khỏi tất cả`}>
               <X size={13} />
             </button>
           </div>
@@ -168,33 +172,79 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   )
 })
 
-const MultiBlocks = memo(function MultiBlocks({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
-  const blocks = useProject((s) => s.project.blocks)
-  if (!blocks.length) return null
+const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
+  const [picker, setPicker] = useState(false)
+  const addBtn = useRef<HTMLButtonElement>(null)
+  const counts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
+    return m
+  }, [scenes])
+  const takeIds = useMemo(() => [...counts.keys()], [counts])
+  const infos = useTakeInfos(takeIds)
+  const n = scenes.length
+  const allIds = useMemo(() => takeIds.filter((id) => counts.get(id) === n), [takeIds, counts, n])
+  const accepting = scenes.filter((s) => usesVideoRefs(s.settings)).length
+
+  const removeFromAll = (takeId: string) => {
+    flushAll(ids)
+    const pairs = scenes.filter((s) => s.videoRefs.includes(takeId)).map((s) => ({ sceneId: s.id, takeId }))
+    // One undo step; @video_N tokens of the removed video become "video S03·T2" and the others are renumbered.
+    useProject.getState().deleteItems({ videoRefs: pairs }, (id) => 'video ' + takeLabel(id))
+    toast(`Đã bỏ video ${takeLabel(takeId)} khỏi ${pairs.length} cảnh (số @video trong prompt được đánh lại).`, { action: undoToastAction() })
+  }
+
   return (
-    <Section id="m-blocks" title="Khối prompt (tất cả)">
-      <div className="in-blocks">
-        {blocks.map((b) => {
-          const vals = scenes.map((s) => s.blockOverrides[b.id])
-          const same = vals.every((v) => v === vals[0])
-          const tri: Tri | null = same ? triOf(vals[0]) : null
-          const onCount = scenes.filter((s) => s.blockOverrides[b.id] ?? b.defaultOn).length
-          const allOn = onCount === scenes.length
+    <Section id="m-vrefs" title="Video tham chiếu chung" meta={<span className="badge">{takeIds.length}</span>}>
+      {takeIds.length === 0 && <div className="in-refs-empty">Các cảnh đang chọn chưa dùng video tham chiếu nào.</div>}
+      <div className="in-refs">
+        {infos.map((t) => {
+          const count = counts.get(t.id) ?? 0
           return (
-            <div key={b.id} className={`in-block ${onCount ? 'is-on' : 'is-off'}`} style={{ ['--block' as string]: b.color }}>
-              <span className={`in-check ${allOn ? 'on' : onCount ? 'partial' : ''}`} aria-hidden />
-              <button type="button" className="in-block-title" onClick={() => useUI.getState().openDialog({ kind: 'block', blockId: b.id })} title={b.text.slice(0, 300)}>
-                <span className="in-block-name">{b.title || 'Khối'}</span>
-                <span className="in-block-place">
-                  bật {onCount}/{scenes.length}
-                  {tri === null ? ' · hỗn hợp' : ''}
-                </span>
+            <div key={t.id} className="in-ref in-vref is-multi">
+              <span className="in-vref-thumb">{t.posterId ? <MediaImg id={t.posterId} className="media-img" /> : <Film size={13} />}</span>
+              <span className="in-ref-name is-static">
+                <span className="in-ref-title">{t.label}</span>
+                <span className="in-ref-tag">{t.status ? STATUS_TEXT[t.status] : 'Take đã bị xoá'}</span>
+              </span>
+              <span className={`in-token is-video ${count === n ? '' : 'is-partial'}`} title={`Có trong ${count}/${n} cảnh`}>
+                {count}/{n} cảnh
+              </span>
+              {count < n && t.status === 'completed' && (
+                <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => linkTakes(ids, [t.id])} title="Dùng cho tất cả cảnh đang chọn">
+                  <Plus size={12} /> Tất cả
+                </button>
+              )}
+              <button type="button" className="in-x" onClick={() => removeFromAll(t.id)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ ${t.label} khỏi tất cả`}>
+                <X size={13} />
               </button>
-              <TriToggle value={tri} defaultOn={b.defaultOn} onChange={(t) => useProject.getState().setBlockOverride(ids, b.id, triValue(t))} />
             </div>
           )
         })}
       </div>
+      {accepting < n && (
+        <div className="in-note">
+          <Info size={13} />
+          <span>{n - accepting} cảnh có model/chế độ không nhận video tham chiếu — sẽ được bỏ qua khi thêm.</span>
+        </div>
+      )}
+      {accepting > 0 && (
+        <div className="in-pop-host">
+          <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>
+            <Plus size={13} /> Thêm video vào {n} cảnh
+          </button>
+          {picker && (
+            <TakePicker
+              excludeSceneIds={EMPTY_IDS}
+              exclude={allIds}
+              ignoreRef={addBtn}
+              title={`Dùng video cho ${n} cảnh`}
+              onClose={() => setPicker(false)}
+              onPick={(takeId) => linkTakes(ids, [takeId])}
+            />
+          )}
+        </div>
+      )}
     </Section>
   )
 })

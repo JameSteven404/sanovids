@@ -1,10 +1,11 @@
 // Takes (generation attempts) and the demo job queue. Not undoable.
 // The queue engine is provider-agnostic in shape: today it drives the mock provider.
 import { create } from 'zustand'
-import { compileScene, sceneCode } from '../core/compile'
+import { compileScene, sceneCode, takeCode } from '../core/compile'
 import { newId } from '../core/ids'
 import { costOf, settingsLabel } from '../core/models'
-import type { Scene, Take } from '../core/types'
+import { migrateTake } from '../core/migrate'
+import type { Scene, Take, XY } from '../core/types'
 import { renderMockTake } from '../lib/mockProvider'
 import { useProject } from './project'
 
@@ -46,6 +47,10 @@ export interface RunsState {
   retry: (takeId: string) => EnqueueResult | null
   toggleStar: (takeId: string) => void
   removeTake: (takeId: string) => void
+  /** Delete takes (cancelling running ones) and drop them from every scene's @video refs. */
+  removeTakes: (takeIds: string[]) => void
+  /** Canvas positions of take nodes (null = back to auto placement). */
+  setTakePositions: (positions: Record<string, XY | null>) => void
   setMock: (patch: Partial<MockSettings>) => void
   addCredits: (n: number) => void
 }
@@ -80,7 +85,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
   loadRuns: (data) => {
     plans.clear()
     // Anything that was running when the page closed restarts from the queue.
-    const takes = (data?.takes ?? []).map((t) => (t.status === 'processing' ? { ...t, status: 'queued' as const, progress: 0, startedAt: null } : t))
+    const takes = (data?.takes ?? []).map(migrateTake).map((t) => (t.status === 'processing' ? { ...t, status: 'queued' as const, progress: 0, startedAt: null } : t))
     set({ takes, credits: data?.credits ?? 377, spent: data?.spent ?? 0 })
     ensureEngine()
   },
@@ -91,12 +96,14 @@ export const useRuns = create<RunsState>()((set, get) => ({
       .map((id) => project.scenes.find((s) => s.id === id))
       .filter((s): s is Scene => !!s)
       .map((scene) => {
-        const compiled = compileScene(project, scene)
+        const takes = get().takes
+        const compiled = compileScene(project, scene, { takeStatus: (id) => takes.find((t) => t.id === id)?.status })
         let reason: string | null = null
         if (!scene.prompt.trim()) reason = 'Prompt trống'
         else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
         else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
         else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
+        else if (scene.videoRefs.some((id) => takes.find((t) => t.id === id)?.status !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
         return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: compiled.warnings }
       })
   },
@@ -127,12 +134,14 @@ export const useRuns = create<RunsState>()((set, get) => ({
         promptSnapshot: compiled.text,
         rawPromptSnapshot: scene.prompt,
         refsSnapshot: [...scene.refs],
+        videoRefsSnapshot: [...scene.videoRefs],
         settings: { ...scene.settings },
         cost: c.cost,
         starred: false,
         posterId: null,
         videoId: null,
         error: null,
+        position: null,
       }
     })
     set((s) => ({ takes: [...s.takes, ...created], credits: s.credits - cost, spent: s.spent + cost }))
@@ -169,11 +178,22 @@ export const useRuns = create<RunsState>()((set, get) => ({
         ),
       }
     }),
-  removeTake: (takeId) => {
-    get().cancel(takeId)
-    plans.delete(takeId)
-    set((s) => ({ takes: s.takes.filter((t) => t.id !== takeId) }))
+  removeTake: (takeId) => get().removeTakes([takeId]),
+  removeTakes: (takeIds) => {
+    const dead = new Set(takeIds)
+    const project = useProject.getState().project
+    const labels: Record<string, string> = {}
+    for (const t of get().takes) {
+      if (!dead.has(t.id)) continue
+      labels[t.id] = 'video ' + takeCode(project.scenes.find((s) => s.id === t.sceneId)?.order, t.number)
+      get().cancel(t.id)
+      plans.delete(t.id)
+    }
+    set((s) => ({ takes: s.takes.filter((t) => !dead.has(t.id)) }))
+    useProject.getState().removeTakesEverywhere(takeIds, labels)
   },
+  setTakePositions: (positions) =>
+    set((s) => ({ takes: s.takes.map((t) => (t.id in positions ? { ...t, position: positions[t.id] } : t)) })),
   setMock: (patch) => {
     const mock = { ...get().mock, ...patch }
     try {
@@ -245,7 +265,10 @@ function tick() {
 async function finish(take: Take) {
   const project = useProject.getState().project
   const scene = project.scenes.find((s) => s.id === take.sceneId)
-  const imageIds = take.refsSnapshot.flatMap((id) => project.assets.find((a) => a.id === id)?.imageIds ?? [])
+  const takes = useRuns.getState().takes
+  // Reference videos show up in the demo clip through their poster frames.
+  const videoPosters = take.videoRefsSnapshot.map((id) => takes.find((t) => t.id === id)?.posterId).filter((x): x is string => !!x)
+  const imageIds = [...videoPosters, ...take.refsSnapshot.flatMap((id) => project.assets.find((a) => a.id === id)?.imageIds ?? [])]
   try {
     const out = await renderMockTake({
       takeId: take.id,

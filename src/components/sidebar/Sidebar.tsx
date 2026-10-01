@@ -1,20 +1,28 @@
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AssetLibrary } from './AssetLibrary'
-import { BlocksPanel } from './BlocksPanel'
 import { PresetsPanel } from './PresetsPanel'
-import { readPref, useFileDropGuard, writePref } from './shared'
+import { readPrefValue, useFileDropGuard, writePref } from './shared'
+import { TakesPanel } from './TakesPanel'
 import './sidebar.css'
 
-type SectionId = 'library' | 'blocks' | 'presets'
+type SectionId = 'library' | 'takes' | 'presets'
 type Collapsed = Record<SectionId, boolean>
 const PREF_KEY = 'sb-collapsed'
-const DEFAULT_COLLAPSED: Collapsed = { library: false, blocks: false, presets: false }
+const SECTIONS: SectionId[] = ['library', 'takes', 'presets']
 
-/** Left column: search + Thư viện / Khối prompt / Preset, each collapsible with its own scroll. */
+/** Only the known sections (an older saved value may carry keys of removed sections). */
+function loadCollapsed(): Collapsed {
+  const saved = readPrefValue<Partial<Record<string, unknown>>>(PREF_KEY, {})
+  const out = { library: false, takes: false, presets: false }
+  for (const id of SECTIONS) if (typeof saved?.[id] === 'boolean') out[id] = saved[id] as boolean
+  return out
+}
+
+/** Left column: search + Thư viện / Video đã tạo / Preset, each collapsible with its own scroll. */
 export function Sidebar() {
   const [query, setQuery] = useState('')
-  const [collapsed, setCollapsed] = useState<Collapsed>(() => readPref(PREF_KEY, DEFAULT_COLLAPSED))
+  const [collapsed, setCollapsed] = useState<Collapsed>(loadCollapsed)
   const inputRef = useRef<HTMLInputElement>(null)
   useFileDropGuard()
 
@@ -34,7 +42,7 @@ export function Sidebar() {
 
   const toggle = useCallback((id: SectionId) => setCollapsed((c) => ({ ...c, [id]: !c[id] })), [])
   const toggleLibrary = useCallback(() => toggle('library'), [toggle])
-  const toggleBlocks = useCallback(() => toggle('blocks'), [toggle])
+  const toggleTakes = useCallback(() => toggle('takes'), [toggle])
   const togglePresets = useCallback(() => toggle('presets'), [toggle])
 
   return (
@@ -45,7 +53,7 @@ export function Sidebar() {
           <input
             ref={inputRef}
             className="input sb-search-input"
-            placeholder="Tìm nhân vật, khối prompt…"
+            placeholder="Tìm nhân vật, bối cảnh, video…"
             value={query}
             spellCheck={false}
             onChange={(e) => setQuery(e.target.value)}
@@ -68,7 +76,7 @@ export function Sidebar() {
       </div>
       <div className="sb-sections">
         <AssetLibrary query={query} collapsed={collapsed.library} onToggle={toggleLibrary} />
-        <BlocksPanel query={query} collapsed={collapsed.blocks} onToggle={toggleBlocks} />
+        <TakesPanel query={query} collapsed={collapsed.takes} onToggle={toggleTakes} />
         <PresetsPanel collapsed={collapsed.presets} onToggle={togglePresets} />
       </div>
     </div>

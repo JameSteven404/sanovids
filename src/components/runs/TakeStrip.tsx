@@ -9,6 +9,8 @@ import { STATUS_LABEL, toggleChosenTake } from './shared'
 import './runs.css'
 
 const SM_MAX = 5
+/** HTML5 drag payload for takes (JSON array of take ids), same contract as the sidebar's "Video đã tạo" list. */
+const TAKES_MIME = 'application/x-bdp-takes'
 
 const stop = (e: SyntheticEvent) => e.stopPropagation()
 
@@ -83,8 +85,23 @@ const TakeThumb = memo(function TakeThumb({ take, size, active }: { take: Take; 
     ` · ${settingsLabel(take.settings)} · ${take.cost} credit${take.starred ? ' · ★ đã chọn' : ''}` +
     (take.error && take.status === 'failed' ? `\n${take.error}` : '')
 
+  // Finished takes can be dragged onto a scene (canvas card / table row) to become its @video reference.
+  const draggable = take.status === 'completed'
   return (
-    <div className={`rq-thumb ${size} ${take.status}${take.starred ? ' starred' : ''}${active ? ' active' : ''}`} title={title}>
+    <div
+      className={`rq-thumb ${size} ${take.status}${take.starred ? ' starred' : ''}${active ? ' active' : ''}`}
+      title={draggable ? `${title}\nKéo thả vào cảnh khác để dùng làm @video` : title}
+      draggable={draggable}
+      onDragStart={
+        draggable
+          ? (e) => {
+              e.stopPropagation()
+              e.dataTransfer.setData(TAKES_MIME, JSON.stringify([take.id]))
+              e.dataTransfer.effectAllowed = 'copy'
+            }
+          : undefined
+      }
+    >
       <button type="button" className="rq-thumb-open nodrag nopan" onClick={() => openTake(take.id)} aria-label={`Xem take T${take.number}`}>
         {take.posterId ? <MediaImg id={take.posterId} className="rq-thumb-img" /> : <span className="rq-thumb-ph" />}
         {take.status === 'processing' && (

@@ -20,10 +20,10 @@ import {
 import { memo, useEffect, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 import type { ViewMode } from '../../core/types'
-import { useSave } from '../../store/persist'
+import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
 import { useActiveCount, useRuns } from '../../store/runs'
-import { useUI } from '../../store/ui'
+import { toast, useUI } from '../../store/ui'
 import './topbar.css'
 
 const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = [
@@ -127,21 +127,36 @@ const ProjectName = memo(function ProjectName() {
   )
 })
 
+/** Autosave status; clicking saves right away (same as Ctrl+S). */
 function SaveStatus() {
   const status = useSave((s) => s.status)
   const savedAt = useSave((s) => s.savedAt)
-  const label = status === 'saving' ? 'Đang lưu…' : status === 'error' ? 'Lỗi lưu' : status === 'saved' ? 'Đã lưu' : 'Chưa lưu'
+  const [busy, setBusy] = useState(false)
+  const shown = busy ? 'saving' : status
+  const label = shown === 'saving' ? 'Đang lưu…' : shown === 'error' ? 'Lỗi lưu' : shown === 'saved' ? 'Đã lưu' : 'Chưa lưu'
   const title =
     status === 'error'
-      ? 'Không ghi được vào bộ nhớ trình duyệt. Thử xuất dự án ra file trong Cài đặt.'
-      : savedAt
-        ? `Tự động lưu trên trình duyệt này · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}`
-        : 'Tự động lưu trên trình duyệt này'
+      ? 'Không ghi được vào bộ nhớ của trình duyệt. Bấm để thử lưu lại, hoặc xuất dự án ra file trong Cài đặt.'
+      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — bấm để lưu ngay (Ctrl+S)`
+
+  const save = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const ok = await flush()
+      toast(ok ? 'Đã lưu' : 'Không lưu được. Thử xuất dự án ra file trong Cài đặt.', { tone: ok ? 'success' : 'error' })
+    } catch {
+      toast('Không lưu được. Thử xuất dự án ra file trong Cài đặt.', { tone: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
-    <span className={`tb-save ${status}`} title={title}>
+    <button type="button" className={`tb-save ${shown}`} title={title} onClick={() => void save()} disabled={busy} aria-label={`${label} — lưu ngay`}>
       <i className="tb-save-dot" />
       <span className="tb-hide-sm">{label}</span>
-    </span>
+    </button>
   )
 }
 

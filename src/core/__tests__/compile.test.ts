@@ -1,72 +1,102 @@
 import { describe, expect, it } from 'vitest'
-import { compileScene, extractMentions, slugTag, uniqueTag } from '../compile'
+import { compileScene, extractMentions, mediaKeys, parseTokens, remapTokens, slugTag, tokenForAsset, uniqueTag } from '../compile'
 import type { Project, Scene } from '../types'
 
 const scene = (over: Partial<Scene> = {}): Scene => ({
-  id: 's1', order: 1, title: 'Test', prompt: '', refs: [], blockOverrides: {}, presetId: null,
+  id: 's1',
+  order: 1,
+  title: 'Test',
+  prompt: '',
+  refs: [],
+  videoRefs: [],
+  presetId: null,
   settings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
-  continueFrom: null, firstFrame: null, lastFrame: null, color: null, position: { x: 0, y: 0 }, note: '', ...over,
+  firstFrame: null,
+  lastFrame: null,
+  color: null,
+  position: { x: 0, y: 0 },
+  note: '',
+  ...over,
 })
 const project = (scenes: Scene[]): Project => ({
-  id: 'p', name: 'P', schemaVersion: 1, createdAt: 0, updatedAt: 0, presets: [],
-  settings: { referencesTemplate: 'Refs: {list}.', autoReferences: true, autoContinuity: true },
+  id: 'p',
+  name: 'P',
+  schemaVersion: 2,
+  createdAt: 0,
+  updatedAt: 0,
+  presets: [],
+  settings: { autoRenumber: true },
   assets: [
     { id: 'a', kind: 'character', name: 'Elara', tag: 'Elara', description: 'red hair', imageIds: ['i1', 'i2'], color: '#fff', position: null },
     { id: 'b', kind: 'character', name: 'Bé An', tag: 'BeAn', description: '', imageIds: ['i3'], color: '#fff', position: null },
     { id: 'c', kind: 'location', name: 'Cave', tag: 'Cave', description: '', imageIds: ['i4'], color: '#fff', position: null },
   ],
-  blocks: [
-    { id: 'b1', title: 'Style', text: 'STYLE @Elara', placement: 'before', defaultOn: true, color: '#fff' },
-    { id: 'b2', title: 'Audio', text: 'AUDIO', placement: 'after', defaultOn: true, color: '#fff' },
-    { id: 'b3', title: 'Off', text: 'OFF', placement: 'after', defaultOn: false, color: '#fff' },
-  ],
   scenes,
 })
 
 describe('compileScene', () => {
-  it('numbers images in ref order and replaces mentions', () => {
-    const s = scene({ prompt: '@BeAn hugs @Elara in @Cave', refs: ['b', 'a'] })
+  it('sends the prompt as written and numbers images in ref order', () => {
+    const s = scene({ prompt: '@image_1 hugs @image_2 near @image_4', refs: ['b', 'a', 'c'] })
     const out = compileScene(project([s]), s)
-    expect(out.images.map((i) => [i.n, i.assetId])).toEqual([[1, 'b'], [2, 'a'], [3, 'a']])
-    expect(out.text).toBe('STYLE @image_2\n\n@image_1 hugs @image_2 in Cave\n\nRefs: @image_1 = Bé An; @image_2, @image_3 = Elara (red hair).\n\nAUDIO')
-    expect(out.warnings.some((w) => w.includes('@Cave'))).toBe(true)
+    expect(out.text).toBe('@image_1 hugs @image_2 near @image_4')
+    expect(out.images.map((i) => [i.n, i.assetId])).toEqual([
+      [1, 'b'],
+      [2, 'a'],
+      [3, 'a'],
+      [4, 'c'],
+    ])
+    expect(out.warnings).toEqual([])
+    expect(out.notes.some((n) => n.includes('@image_3'))).toBe(true)
   })
-  it('respects block overrides and continuity line', () => {
-    const prev = scene({ id: 's0', order: 1, title: 'Before', prompt: 'x' })
-    const s = scene({ id: 's1', order: 2, prompt: 'go', continueFrom: 's0', blockOverrides: { b1: false, b3: true } })
-    const out = compileScene(project([prev, s]), s)
-    expect(out.text).toBe('Continue directly from the previous scene (S01: Before).\n\ngo\n\nAUDIO\n\nOFF')
+  it('converts legacy @Tag mentions and warns about unlinked ones', () => {
+    const s = scene({ prompt: '@BeAn and @Elara in @Cave', refs: ['b', 'a'] })
+    const out = compileScene(project([s]), s)
+    expect(out.text).toBe('@image_1 and @image_2 in Cave')
+    expect(out.warnings.some((w) => w.includes('Cave'))).toBe(true)
   })
-  it('h3 t2v sends no images and uses names', () => {
-    const s = scene({ prompt: '@Elara walks', refs: ['a'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } })
+  it('warns about tokens that point nowhere', () => {
+    const s = scene({ prompt: '@image_5 and @video_1', refs: ['b'] })
+    const out = compileScene(project([s]), s)
+    expect(out.warnings.some((w) => w.includes('@image_5'))).toBe(true)
+    expect(out.warnings.some((w) => w.includes('@video_1'))).toBe(true)
+  })
+  it('numbers reference videos and checks their status', () => {
+    const s = scene({ prompt: 'Continue from @video_1 then @video_2', videoRefs: ['t1', 't2'] })
+    const out = compileScene(project([s]), s, { takeStatus: (id) => (id === 't1' ? 'completed' : 'processing') })
+    expect(out.videos).toEqual([
+      { n: 1, takeId: 't1' },
+      { n: 2, takeId: 't2' },
+    ])
+    expect(out.warnings).toEqual(['@video_2 chưa tạo xong.'])
+  })
+  it('h3 t2v sends no images and uses the H3 prompt limit', () => {
+    const s = scene({ prompt: 'walks', refs: ['a'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } })
     const out = compileScene(project([s]), s)
     expect(out.images).toHaveLength(0)
-    expect(out.text).toContain('Elara walks')
     expect(out.limit).toBe(7000)
   })
-  it('leaves raw @image_N tokens alone', () => {
-    const s = scene({ prompt: 'use @image_3 here' })
-    expect(compileScene(project([s]), s).text).toContain('@image_3')
+})
+
+describe('tokens', () => {
+  it('parses tokens with positions', () => {
+    expect(parseTokens('a @image_2 b @Video_10')).toEqual([
+      { kind: 'image', n: 2, start: 2, end: 10 },
+      { kind: 'video', n: 10, start: 13, end: 22 },
+    ])
   })
-  it('skips the auto continuity line when an active block already covers it', () => {
-    const prev = scene({ id: 's0', order: 1, prompt: 'x' })
-    const s = scene({ id: 's1', order: 2, prompt: 'go', continueFrom: 's0', blockOverrides: { b1: false } })
-    const p = project([prev, s])
-    p.blocks.push({ id: 'b4', title: 'Cont', text: 'This continues from the previous scene.', placement: 'before', defaultOn: true, color: '#fff' })
-    expect(compileScene(p, s).text).toBe('This continues from the previous scene.\n\ngo\n\nAUDIO')
-    // A switched-off block does not count.
-    const off = { ...s, blockOverrides: { b1: false, b4: false } }
-    expect(compileScene(p, off).text).toBe('Continue directly from the previous scene (S01: Test).\n\ngo\n\nAUDIO')
+  it('remaps tokens after a reorder and a removal', () => {
+    const p = project([])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'], ['t1', 't2'])
+    // a has 2 images: a=1,2  b=3  c=4. Remove a, move c first: c=1 b=2
+    const after = mediaKeys(p.assets, ['c', 'b'], ['t2'])
+    const out = remapTokens('@image_1 @image_3 @image_4 @image_9 @video_2 @video_1', before, after, (k, key) => `[${k}:${key}]`)
+    expect(out.text).toBe('[image:a:i1] @image_2 @image_1 @image_9 @video_1 [video:t1]')
+    expect(out.dropped).toBe(2)
   })
-  it('does not call a linked asset without images "not linked"', () => {
-    const s = scene({ prompt: '@Foo waves', refs: ['f'] })
-    const p = project([s])
-    p.assets.push({ id: 'f', kind: 'character', name: 'Foo', tag: 'Foo', description: '', imageIds: [], color: '#fff', position: null })
-    const out = compileScene(p, s)
-    expect(out.warnings.some((w) => w.includes('chưa có ảnh'))).toBe(true)
-    expect(out.warnings.some((w) => w.includes('@Foo có trong prompt nhưng chưa được nối'))).toBe(false)
-    const unlinked = { ...s, refs: [] }
-    expect(compileScene(p, unlinked).warnings.some((w) => w.includes('@Foo có trong prompt nhưng chưa được nối'))).toBe(true)
+  it('token for an asset is its primary image number', () => {
+    const s = scene({ refs: ['b', 'a'] })
+    expect(tokenForAsset(project([s]), s, 'a')).toBe('@image_2')
+    expect(tokenForAsset(project([s]), s, 'c')).toBeNull()
   })
 })
 

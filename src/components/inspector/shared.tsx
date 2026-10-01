@@ -97,32 +97,6 @@ export function Section({
   )
 }
 
-// ---------------- 3-state block toggle ----------------
-export type Tri = 'default' | 'on' | 'off'
-export const triOf = (v: boolean | undefined): Tri => (v === undefined ? 'default' : v ? 'on' : 'off')
-export const triValue = (t: Tri): boolean | undefined => (t === 'default' ? undefined : t === 'on')
-
-export function TriToggle({ value, onChange, defaultOn }: { value: Tri | null; onChange: (v: Tri) => void; defaultOn: boolean }) {
-  return (
-    <div className="in-tri" role="group" aria-label="Trạng thái khối">
-      <button
-        type="button"
-        className={value === 'default' ? 'active is-default' : ''}
-        onClick={() => onChange('default')}
-        title={`Theo mặc định của khối (đang ${defaultOn ? 'bật' : 'tắt'})`}
-      >
-        Mặc định
-      </button>
-      <button type="button" className={value === 'on' ? 'active is-on' : ''} onClick={() => onChange('on')} title="Luôn bật cho cảnh này">
-        Bật
-      </button>
-      <button type="button" className={value === 'off' ? 'active is-off' : ''} onClick={() => onChange('off')} title="Luôn tắt cho cảnh này">
-        Tắt
-      </button>
-    </div>
-  )
-}
-
 // ---------------- popover with search + list ----------------
 export interface PickItem {
   id: string

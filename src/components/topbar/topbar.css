@@ -102,10 +102,26 @@
   align-items: center;
   gap: 6px;
   flex: none;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   font-size: 11.5px;
   color: var(--text-faint);
-  padding: 0 4px;
   white-space: nowrap;
+  cursor: pointer;
+}
+.tb-save:hover {
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+.tb-save:disabled {
+  cursor: progress;
+}
+.tb-save:focus-visible {
+  outline: none;
+  border-color: var(--accent);
 }
 .tb-save-dot {
   width: 7px;

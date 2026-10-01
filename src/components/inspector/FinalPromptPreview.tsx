@@ -1,34 +1,45 @@
-// "Prompt cuối": the exact text that would be sent (blocks + scene prompt + auto references),
-// with @image_N tokens highlighted and each source paragraph labelled.
-import { ChevronDown, Copy, Download, TriangleAlert } from 'lucide-react'
-import { memo, useDeferredValue, useMemo, type ReactNode } from 'react'
+// "Prompt cuối": the exact text that would be sent (the prompt as written, legacy @Tag converted to @image_N),
+// with @image_N / @video_N tokens highlighted, char count, warnings (amber) and notes (grey).
+import { ChevronDown, Copy, Download, Info, TriangleAlert } from 'lucide-react'
+import { memo, useDeferredValue, useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { copyCompiledPrompt, downloadSceneZip } from '../../actions'
 import { compileScene } from '../../core/compile'
-import type { Asset, CompiledPrompt } from '../../core/types'
+import type { Asset, Project, Scene } from '../../core/types'
 import { useProject } from '../../store/project'
-import { splitCompiled, type PromptPart } from './promptParts'
-import { fmt, usePref } from './shared'
+import { useRuns } from '../../store/runs'
+import { useTakeInfos } from './hooks'
+import { EMPTY_IDS, fmt, usePref } from './shared'
+import { imageOptsFor, segmentPrompt } from './tokens'
 
-const TOKEN_G = /@image_\d+|@[\p{L}\p{N}_]+/gu
+/** compileScene only reads the assets and the scene: avoid subscribing to the whole project. */
+function compileFor(assets: Asset[], scene: Scene, takeStatus: (id: string) => string | undefined) {
+  const stub: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, assets, presets: [], scenes: [scene], settings: { autoRenumber: true } }
+  return compileScene(stub, scene, { takeStatus })
+}
 
 export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
-  const project = useProject((s) => s.project)
+  const liveScene = useProject((s) => s.project.scenes.find((x) => x.id === sceneId))
+  const liveAssets = useProject((s) => s.project.assets)
   // Compiling on every keystroke is cheap but not free with 6k+ char prompts: let React defer it.
-  const deferred = useDeferredValue(project)
-  const scene = useMemo(() => deferred.scenes.find((s) => s.id === sceneId), [deferred, sceneId])
-  const compiled = useMemo(() => (scene ? compileScene(deferred, scene) : null), [deferred, scene])
-  const parts = useMemo(() => (scene && compiled ? splitCompiled(deferred, scene, compiled) : []), [deferred, scene, compiled])
+  const scene = useDeferredValue(liveScene)
+  const assets = useDeferredValue(liveAssets)
+  const videoRefs = scene?.videoRefs ?? EMPTY_IDS
+  const statuses = useRuns(useShallow((s) => videoRefs.map((id) => s.takes.find((t) => t.id === id)?.status ?? '')))
+  const takeInfos = useTakeInfos(videoRefs)
   const [open, setOpen] = usePref('finalOpen', true)
-  const imageNames = useMemo(() => {
-    const names = new Map<number, string>()
-    if (!compiled) return names
-    const byId = new Map<string, Asset>(deferred.assets.map((a) => [a.id, a]))
-    for (const img of compiled.images) {
-      const a = byId.get(img.assetId)
-      if (a) names.set(img.n, a.name)
-    }
-    return names
-  }, [deferred.assets, compiled])
+
+  const compiled = useMemo(() => {
+    if (!scene) return null
+    const byId = new Map(videoRefs.map((id, i) => [id, statuses[i] || undefined]))
+    return compileFor(assets, scene, (id) => byId.get(id))
+  }, [assets, scene, videoRefs, statuses])
+  const names = useMemo(() => {
+    const images = new Map<number, string>()
+    if (scene) for (const o of imageOptsFor(assets, scene.refs)) images.set(o.n, o.name)
+    const videos = new Map<number, string>(takeInfos.map((t, i) => [i + 1, t.label]))
+    return { images, videos }
+  }, [assets, scene, takeInfos])
 
   if (!scene || !compiled) return null
   const over = compiled.charCount > compiled.limit
@@ -56,10 +67,14 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
             <button type="button" className="btn btn-sm" onClick={() => void copyCompiledPrompt(sceneId)}>
               <Copy size={13} /> Copy prompt
             </button>
-            <button type="button" className="btn btn-sm" onClick={() => void downloadSceneZip(sceneId)} title="Ảnh tham chiếu được đặt tên theo thứ tự @image (01_Elara.png…) + prompt.txt">
-              <Download size={13} /> Tải ảnh + prompt (.zip)
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => void downloadSceneZip(sceneId)}
+              title="Ảnh / video tham chiếu đặt tên theo số (image_01_Elara.png, video_01_S03-T2.webm) + prompt.txt"
+            >
+              <Download size={13} /> Tải tham chiếu + prompt (.zip)
             </button>
-            <span className="in-final-hint faint">Dùng cho canvasapp</span>
           </div>
           {compiled.warnings.length > 0 && (
             <ul className="in-warnings">
@@ -71,7 +86,17 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
               ))}
             </ul>
           )}
-          <FinalText parts={parts} imageNames={imageNames} compiled={compiled} />
+          {compiled.notes.length > 0 && (
+            <ul className="in-notes">
+              {compiled.notes.map((w, i) => (
+                <li key={i}>
+                  <Info size={12} />
+                  <span>{w}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <FinalText text={compiled.text} imageCount={names.images.size} videoCount={videoRefs.length} names={names} />
         </div>
       )}
     </section>
@@ -79,52 +104,29 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
 }
 
 const FinalText = memo(function FinalText({
-  parts,
-  imageNames,
-  compiled,
+  text,
+  imageCount,
+  videoCount,
+  names,
 }: {
-  parts: PromptPart[]
-  imageNames: Map<number, string>
-  compiled: CompiledPrompt
+  text: string
+  imageCount: number
+  videoCount: number
+  names: { images: Map<number, string>; videos: Map<number, string> }
 }) {
-  if (!compiled.text) return <div className="empty">Chưa có nội dung — viết prompt cho cảnh hoặc bật khối prompt.</div>
+  const segs = useMemo(() => segmentPrompt(text, imageCount, videoCount), [text, imageCount, videoCount])
+  if (!text) return <div className="empty">Chưa có nội dung — viết prompt cho cảnh.</div>
   return (
     <div className="in-final-text">
-      {parts.map((p) => (
-        <div key={p.key} className={`in-part kind-${p.kind}`} style={p.color ? { ['--part' as string]: p.color } : undefined}>
-          {p.label && <div className="in-part-label">{p.label}</div>}
-          <div className="in-part-text">{highlight(p.text, imageNames)}</div>
-        </div>
-      ))}
+      {segs.map((s, i) => {
+        if (s.kind === 'text') return s.text
+        const name = s.n !== undefined ? (s.kind === 'image' ? names.images : names.videos).get(s.n) : undefined
+        return (
+          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''}`} title={s.invalid ? `${s.text} không tồn tại` : name ? `${s.text} = ${name}` : s.text}>
+            {s.text}
+          </mark>
+        )
+      })}
     </div>
   )
 })
-
-function highlight(text: string, imageNames: Map<number, string>): ReactNode[] {
-  const out: ReactNode[] = []
-  let last = 0
-  let i = 0
-  for (const m of text.matchAll(TOKEN_G)) {
-    const idx = m.index ?? 0
-    if (idx > last) out.push(text.slice(last, idx))
-    const tok = m[0]
-    const img = /^@image_(\d+)$/.exec(tok)
-    if (img) {
-      const name = imageNames.get(Number(img[1]))
-      out.push(
-        <mark key={i++} className="in-img-token" title={name ? `${tok} = ${name}` : tok}>
-          {tok}
-        </mark>,
-      )
-    } else {
-      out.push(
-        <mark key={i++} className="in-unknown-token" title="Không có trong thư viện — giữ nguyên chữ">
-          {tok}
-        </mark>,
-      )
-    }
-    last = idx + tok.length
-  }
-  if (last < text.length) out.push(text.slice(last))
-  return out
-}

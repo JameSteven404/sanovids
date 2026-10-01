@@ -66,26 +66,6 @@ export function Section({ title, icon, count, actions, collapsed, onToggle, grow
   )
 }
 
-// ---------------- switch ----------------
-export function Switch({ on, onChange, title, size = 'md', disabled }: { on: boolean; onChange: (v: boolean) => void; title?: string; size?: 'sm' | 'md'; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      title={title}
-      disabled={disabled}
-      className={`sb-switch ${size} ${on ? 'on' : ''}`}
-      onClick={(e) => {
-        e.stopPropagation()
-        onChange(!on)
-      }}
-    >
-      <i />
-    </button>
-  )
-}
-
 // ---------------- two-step confirm button ----------------
 /** First click arms the button ("Xác nhận…"), second click runs. Disarms after a few seconds. */
 export function ConfirmButton({
@@ -148,40 +128,6 @@ export function ColorSwatches({ value, onChange }: { value: string; onChange: (c
           onClick={() => onChange(c)}
         >
           {value.toLowerCase() === c.toLowerCase() && <Check size={12} strokeWidth={3} />}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-// ---------------- segmented control ----------------
-export function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-  size = 'md',
-}: {
-  value: T | null
-  options: { value: T; label: ReactNode; title?: string }[]
-  onChange: (v: T) => void
-  size?: 'sm' | 'md'
-}) {
-  return (
-    <div className={`sb-seg ${size}`} role="radiogroup">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={value === o.value}
-          className={value === o.value ? 'active' : ''}
-          title={o.title}
-          onClick={(e) => {
-            e.stopPropagation()
-            onChange(o.value)
-          }}
-        >
-          {o.label}
         </button>
       ))}
     </div>

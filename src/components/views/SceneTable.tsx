@@ -1,16 +1,16 @@
 import { ChevronDown, Copy, FileInput, GripVertical, Link2, Play, Plus, Search, SlidersHorizontal, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { linkAssets, newScene, requestRun } from '../../actions'
-import { compileScene, isBlockOn, sceneCode } from '../../core/compile'
+import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../actions'
+import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
-import type { Scene } from '../../core/types'
-import { sortedScenes, undo, useProject , undoToastAction } from '../../store/project'
-import { useSceneTakes } from '../../store/runs'
+import type { Asset, Scene } from '../../core/types'
+import { sortedScenes, undoToastAction, useProject } from '../../store/project'
+import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar } from '../common/Media'
+import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
-import { ASSET_MIME, latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
+import { ASSET_MIME, latestOf, MentionText, MenuButton, readIds, SCENE_MIME, STATUS_LABEL, starredTake, TAKES_MIME, useTakesByScene } from './shared'
 import './views.css'
 
 /** Scene id being reordered via the drag handle (dataTransfer is unreadable during dragover). */
@@ -106,7 +106,7 @@ export function SceneTable() {
             <SlidersHorizontal size={22} />
           </div>
           <h3>Chưa có cảnh nào</h3>
-          <p>Tạo cảnh đầu tiên, hoặc nhập lại các prompt cũ — các đoạn lặp lại sẽ được gom thành khối prompt.</p>
+          <p>Tạo cảnh đầu tiên, hoặc nhập lại các prompt cũ (dán hoặc file .txt) — mỗi prompt thành một cảnh, giữ nguyên @image_N / @video_N.</p>
           <div className="vw-empty-actions">
             <button className="btn btn-primary" onClick={() => newScene()}>
               <Plus size={15} /> Cảnh mới
@@ -139,9 +139,9 @@ export function SceneTable() {
             </span>
             <span>Cảnh</span>
             <span>Tên</span>
-            <span>Nhân vật</span>
+            <span title="Ảnh tham chiếu — số trên ảnh là N trong @image_N">Nhân vật</span>
+            <span title="Video tham chiếu — v1 là @video_1">Video tham chiếu</span>
             <span>Prompt</span>
-            <span className="vw-c">Khối</span>
             <span>Cấu hình</span>
             <span className="vw-r">Credit</span>
             <span>Take</span>
@@ -178,7 +178,7 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
         <div className="vw-head-title">
           <h2>Bảng cảnh</h2>
           <span className="badge">{scenes.length} cảnh</span>
-          <span className="vw-head-hint">Bấm vào dòng để chọn · Shift/Ctrl để chọn nhiều · kéo nhân vật từ thư viện thả vào dòng để nối</span>
+          <span className="vw-head-hint">Bấm vào dòng để chọn · Shift/Ctrl để chọn nhiều · kéo nhân vật hoặc video từ thư viện thả vào dòng để nối</span>
         </div>
         <div className="vw-head-actions">
           <button className="btn btn-sm" onClick={() => useUI.getState().openDialog({ kind: 'import' })}>
@@ -368,33 +368,53 @@ interface RowProps {
   onToggle: (id: string) => void
 }
 
+type MediaOver = 'assets' | 'takes' | null
+
 const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRowClick, onToggle }: RowProps) {
   const id = scene.id
   const assets = useProject((s) => s.project.assets)
-  const blocks = useProject((s) => s.project.blocks)
   const preset = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId) : undefined))
-  const warnings = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === id)
-    return sc ? compileScene(s.project, sc).warnings.join('\n') : ''
-  })
+  // Status of each reference video, as one string (cheap + stable): drives the "video not ready" warning.
+  const videoStatus = useRuns((s) => (scene.videoRefs.length ? scene.videoRefs.map((t) => s.takes.find((x) => x.id === t)?.status ?? '-').join(',') : ''))
+  const warnings = useMemo(() => {
+    const status = new Map(scene.videoRefs.map((t, i) => [t, videoStatus.split(',')[i]]))
+    const project = { ...useProject.getState().project, assets }
+    return compileScene(project, scene, { takeStatus: (t) => (status.get(t) === '-' ? undefined : status.get(t)) }).warnings.join('\n')
+  }, [scene, assets, videoStatus])
   const libraryDragging = useUI((s) => s.draggingAssetIds !== null)
-  const [assetOver, setAssetOver] = useState(false)
+  const [mediaOver, setMediaOver] = useState<MediaOver>(null)
   const [dropPos, setDropPos] = useState<'above' | 'below' | null>(null)
   const rowRef = useRef<HTMLDivElement>(null)
 
   const code = sceneCode(scene.order)
-  const refAssets = scene.refs.map((r) => assets.find((a) => a.id === r)).filter((a): a is NonNullable<typeof a> => !!a)
-  const onBlocks = blocks.filter((b) => isBlockOn(scene, b))
+  const refAssets = useMemo(() => {
+    const byId = new Map(assets.map((a) => [a.id, a]))
+    const slots = imageSlotsFor(assets, scene.refs)
+    return scene.refs
+      .map((r) => byId.get(r))
+      .filter((a): a is Asset => !!a)
+      .map((asset) => ({ asset, numbers: slots.filter((s) => s.assetId === asset.id).map((s) => s.n) }))
+  }, [assets, scene.refs])
   const cost = costOf(scene.settings)
   const spec = MODELS[scene.settings.model]
   const multiTarget = selected && selectionCount > 1
 
+  const targets = () => {
+    if (!multiTarget) return [id]
+    const sel = new Set(useUI.getState().selectedIds)
+    return useProject
+      .getState()
+      .project.scenes.filter((s) => sel.has(s.id))
+      .map((s) => s.id)
+  }
+
   const onDragOver = (e: DragEvent) => {
     const types = e.dataTransfer.types
-    if (types.includes(ASSET_MIME)) {
+    const media: MediaOver = types.includes(ASSET_MIME) ? 'assets' : types.includes(TAKES_MIME) ? 'takes' : null
+    if (media) {
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
-      if (!assetOver) setAssetOver(true)
+      if (mediaOver !== media) setMediaOver(media)
       return
     }
     if (types.includes(SCENE_MIME) && draggingSceneId && draggingSceneId !== id) {
@@ -407,31 +427,23 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
   }
   const onDragLeave = (e: DragEvent) => {
     if (rowRef.current && e.relatedTarget instanceof Node && rowRef.current.contains(e.relatedTarget)) return
-    setAssetOver(false)
+    setMediaOver(null)
     setDropPos(null)
   }
   const onDrop = (e: DragEvent) => {
     const pos = dropPos
-    setAssetOver(false)
+    setMediaOver(null)
     setDropPos(null)
-    const raw = e.dataTransfer.getData(ASSET_MIME)
-    if (raw) {
+    const assetIds = readIds(e.dataTransfer.getData(ASSET_MIME))
+    const takeIds = readIds(e.dataTransfer.getData(TAKES_MIME))
+    if (assetIds.length || takeIds.length) {
       e.preventDefault()
-      let assetIds: string[] = []
-      try {
-        assetIds = JSON.parse(raw) as string[]
-      } catch {
-        return
+      const to = targets()
+      if (assetIds.length) {
+        linkAssets(to, assetIds)
+        useUI.getState().setDraggingAssets(null)
       }
-      const ui = useUI.getState()
-      const targets = multiTarget
-        ? useProject
-            .getState()
-            .project.scenes.filter((s) => ui.selectedIds.includes(s.id))
-            .map((s) => s.id)
-        : [id]
-      linkAssets(targets, assetIds)
-      ui.setDraggingAssets(null)
+      if (takeIds.length) linkTakes(to, takeIds)
       return
     }
     const moving = draggingSceneId
@@ -447,7 +459,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
     }
   }
 
-  const latestStatus = <RowStatus sceneId={id} />
+  const dropHint = multiTarget ? `Nối vào ${selectionCount} cảnh đã chọn` : 'Thả để nối'
 
   return (
     <div
@@ -455,7 +467,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
       data-row={id}
       role="row"
       aria-selected={selected}
-      className={`vw-tr vw-row ${selected ? 'selected' : ''} ${assetOver ? 'asset-over' : ''} ${libraryDragging ? 'lib-drag' : ''} ${dropPos ? 'drop-' + dropPos : ''}`}
+      className={`vw-tr vw-row ${selected ? 'selected' : ''} ${mediaOver === 'assets' ? 'asset-over' : ''} ${mediaOver === 'takes' ? 'take-over' : ''} ${libraryDragging ? 'lib-drag' : ''} ${dropPos ? 'drop-' + dropPos : ''}`}
       onClick={(e) => onRowClick(id, e)}
       onDoubleClick={() => useUI.getState().setRightOpen(true)}
       onDragOver={onDragOver}
@@ -503,42 +515,49 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         />
       </span>
       <span className="vw-cell-refs">
-        {assetOver ? (
-          <span className="vw-drop-hint">{multiTarget ? `Nối vào ${selectionCount} cảnh đã chọn` : 'Thả để nối'}</span>
+        {mediaOver === 'assets' ? (
+          <span className="vw-drop-hint">{dropHint}</span>
         ) : refAssets.length ? (
           <span className="vw-avatars">
-            {refAssets.slice(0, 5).map((a) => (
+            {refAssets.slice(0, 4).map(({ asset: a, numbers }) => (
               <span
                 key={a.id}
                 className="vw-avatar"
+                title={`${a.name} · ${numbers.length ? numbers.map((n) => '@image_' + n).join(', ') : 'chưa có ảnh'}`}
                 onDoubleClick={(e) => {
                   e.stopPropagation()
                   useUI.getState().openDialog({ kind: 'asset', assetId: a.id })
                 }}
               >
                 <AssetAvatar asset={a} size={24} />
+                <span className={`vw-num${numbers.length ? '' : ' none'}`}>
+                  {numbers.length ? numbers[0] : '!'}
+                  {numbers.length > 1 ? '+' : ''}
+                </span>
               </span>
             ))}
-            {refAssets.length > 5 && <span className="vw-avatar-more">+{refAssets.length - 5}</span>}
+            {refAssets.length > 4 && <span className="vw-avatar-more">+{refAssets.length - 4}</span>}
           </span>
         ) : (
           <span className="vw-faint-cell">Kéo nhân vật vào</span>
         )}
       </span>
+      <span className="vw-cell-videos">
+        {mediaOver === 'takes' ? (
+          <span className="vw-drop-hint video">{dropHint}</span>
+        ) : scene.videoRefs.length ? (
+          <span className="vw-vrefs">
+            {scene.videoRefs.slice(0, 3).map((takeId, i) => (
+              <VideoRefThumb key={takeId} sceneId={id} takeId={takeId} n={i + 1} />
+            ))}
+            {scene.videoRefs.length > 3 && <span className="vw-avatar-more">+{scene.videoRefs.length - 3}</span>}
+          </span>
+        ) : (
+          <span className="vw-faint-cell">—</span>
+        )}
+      </span>
       <span className="vw-cell-prompt" title={scene.prompt.slice(0, 600)}>
         {scene.prompt.trim() ? <MentionText text={scene.prompt.replace(/\s+/g, ' ')} max={120} /> : <span className="vw-faint-cell">Chưa có prompt</span>}
-      </span>
-      <span className="vw-c vw-cell-blocks" title={onBlocks.length ? onBlocks.map((b) => '• ' + b.title).join('\n') : 'Không có khối nào bật'}>
-        <span className={onBlocks.length ? '' : 'faint'}>
-          {onBlocks.length}/{blocks.length}
-        </span>
-        {blocks.length > 0 && (
-          <span className="vw-block-dots">
-            {blocks.slice(0, 8).map((b) => (
-              <i key={b.id} style={{ background: isBlockOn(scene, b) ? b.color : undefined }} />
-            ))}
-          </span>
-        )}
       </span>
       <span className="vw-cell-settings">
         <span className="vw-settings-line">
@@ -556,7 +575,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         <TakeStrip sceneId={id} size="sm" max={3} />
       </span>
       <span className="vw-cell-status">
-        {latestStatus}
+        <RowStatus sceneId={id} />
         {warnings && (
           <span className="vw-warn" title={warnings}>
             <TriangleAlert size={13} />
@@ -578,6 +597,50 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         </button>
       </span>
     </div>
+  )
+})
+
+/** One reference video of a scene (purple thumb, "v1" = @video_1). Click opens the take, × removes the reference. */
+const VideoRefThumb = memo(function VideoRefThumb({ sceneId, takeId, n }: { sceneId: string; takeId: string; n: number }) {
+  const take = useRuns((s) => s.takes.find((t) => t.id === takeId))
+  const order = useProject((s) => (take ? s.project.scenes.find((x) => x.id === take.sceneId)?.order : undefined))
+  const label = take ? takeCode(order, take.number) : 'đã xoá'
+  const ready = take?.status === 'completed'
+  const remove = () => {
+    useProject.getState().removeVideoRef(sceneId, takeId, `video ${take ? takeLabel(takeId) : ''}`.trim())
+    toast(`Đã bỏ video tham chiếu ${label} (@video_${n}).`, { action: undoToastAction() })
+  }
+  return (
+    <span
+      className={`vw-vref${take ? '' : ' missing'}${ready ? '' : ' pending'}`}
+      title={`@video_${n} · ${take ? label : 'video đã bị xoá'}${take && !ready ? ' · chưa tạo xong' : ''}`}
+    >
+      <button
+        type="button"
+        className="vw-vref-open"
+        disabled={!take}
+        onClick={(e) => {
+          e.stopPropagation()
+          useUI.getState().openDialog({ kind: 'take', takeId })
+        }}
+        aria-label={`Xem @video_${n}`}
+      >
+        {take?.posterId ? <MediaImg id={take.posterId} className="vw-vref-img" /> : <span className="vw-vref-ph" />}
+        <span className="vw-vref-n">v{n}</span>
+      </button>
+      <button
+        type="button"
+        className="vw-vref-x"
+        onClick={(e) => {
+          e.stopPropagation()
+          remove()
+        }}
+        title={`Bỏ @video_${n}`}
+        aria-label={`Bỏ @video_${n}`}
+      >
+        <X size={10} />
+      </button>
+    </span>
   )
 })
 

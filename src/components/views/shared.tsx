@@ -4,8 +4,21 @@ import { MENTION_RE } from '../../core/compile'
 import type { JobStatus, Take } from '../../core/types'
 import { useRuns } from '../../store/runs'
 
+/** HTML5 drag payloads (shared contract with the sidebar / canvas): JSON arrays of asset ids / take ids. */
 export const ASSET_MIME = 'application/x-bdp-assets'
+export const TAKES_MIME = 'application/x-bdp-takes'
 export const SCENE_MIME = 'application/x-bdp-scene'
+
+/** Parse a JSON array of ids from a drag payload ([] when missing or malformed). */
+export function readIds(raw: string): string[] {
+  if (!raw) return []
+  try {
+    const v: unknown = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: 'Đang chờ',
@@ -62,7 +75,7 @@ export function formatRuntime(seconds: number): string {
   return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`
 }
 
-/** Text with @mentions highlighted (teal), truncated to `max` characters. */
+/** Text with @image_N (teal), @video_N (purple) and legacy @Tag mentions highlighted, truncated to `max` characters. */
 export function MentionText({ text, max }: { text: string; max?: number }) {
   const clipped = max && text.length > max ? text.slice(0, max).trimEnd() + '…' : text
   const parts: ReactNode[] = []
@@ -71,8 +84,9 @@ export function MentionText({ text, max }: { text: string; max?: number }) {
   for (const m of clipped.matchAll(MENTION_RE)) {
     const i = m.index ?? 0
     if (i > last) parts.push(clipped.slice(last, i))
+    const kind = /^@image_\d+$/i.test(m[0]) ? ' image' : /^@video_\d+$/i.test(m[0]) ? ' video' : ''
     parts.push(
-      <span key={k++} className={/^@image_\d+$/i.test(m[0]) ? 'vw-mention raw' : 'vw-mention'}>
+      <span key={k++} className={`vw-mention${kind}`}>
         {m[0]}
       </span>,
     )

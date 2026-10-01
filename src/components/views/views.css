@@ -188,9 +188,10 @@
   overflow: auto;
 }
 .vw-table {
-  /* Take column: TakeStrip sm with max 3 → "+NN" (≤30px) + 3×44px thumbs + gaps + 14px padding. */
-  --vw-cols: 22px 30px 50px minmax(140px, 1.1fr) 148px minmax(220px, 2fr) 62px 172px 58px 186px 132px 40px;
-  min-width: 1260px;
+  /* Take column: TakeStrip sm with max 3 → "+NN" (≤30px) + 3×44px thumbs + gaps + 14px padding.
+     Video column: 3 × 38px thumbs + "+N". */
+  --vw-cols: 22px 30px 50px minmax(140px, 1.1fr) 168px 150px minmax(220px, 2fr) 172px 58px 186px 132px 40px;
+  min-width: 1380px;
 }
 .vw-tr {
   display: grid;
@@ -239,6 +240,10 @@
 .vw-row.asset-over {
   background: var(--ref-soft);
   box-shadow: inset 0 0 0 1px var(--ref);
+}
+.vw-row.take-over {
+  background: rgba(180, 140, 255, 0.1);
+  box-shadow: inset 0 0 0 1px var(--video, #b48cff);
 }
 .vw-row.drop-above {
   box-shadow: inset 0 2px 0 var(--accent);
@@ -322,13 +327,38 @@
   align-items: center;
 }
 .vw-avatar {
+  position: relative;
   display: inline-flex;
-  margin-right: -6px;
   border-radius: 50%;
   box-shadow: 0 0 0 2px var(--bg);
 }
 .vw-row.selected .vw-avatar {
   box-shadow: 0 0 0 2px #1e1915;
+}
+.vw-avatar + .vw-avatar {
+  margin-left: 4px;
+}
+/* N of @image_N on each avatar */
+.vw-num {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--ref);
+  color: #0d1714;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px var(--bg);
+  pointer-events: none;
+}
+.vw-num.none {
+  background: var(--warn);
 }
 .vw-avatar-more {
   margin-left: 10px;
@@ -341,6 +371,101 @@
   font-weight: 600;
   color: var(--ref);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vw-drop-hint.video {
+  color: var(--video, #b48cff);
+}
+/* reference videos (v1 = @video_1) */
+.vw-cell-videos {
+  display: flex;
+  align-items: center;
+  height: 34px;
+}
+.vw-vrefs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.vw-vref {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.vw-vref-open {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 22px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 4px;
+  border: 1px solid rgba(180, 140, 255, 0.6);
+  background: var(--panel-3);
+  cursor: pointer;
+}
+.vw-vref-open:hover {
+  border-color: var(--video, #b48cff);
+}
+.vw-vref-open:disabled {
+  cursor: default;
+}
+.vw-vref.pending .vw-vref-open {
+  border-style: dashed;
+  opacity: 0.7;
+}
+.vw-vref.missing .vw-vref-open {
+  border-color: rgba(239, 91, 91, 0.6);
+}
+.vw-vref-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.vw-vref-ph {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.vw-vref-n {
+  position: absolute;
+  left: 1px;
+  bottom: 1px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(20, 14, 34, 0.82);
+  color: var(--video, #b48cff);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+}
+.vw-vref-x {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 0;
+  background: var(--panel-3);
+  color: var(--text-dim);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  cursor: pointer;
+}
+.vw-vref:hover .vw-vref-x,
+.vw-vref-x:focus-visible {
+  display: inline-flex;
+}
+.vw-vref-x:hover {
+  background: var(--danger);
+  color: #fff;
 }
 .vw-faint-cell {
   color: var(--text-faint);
@@ -360,28 +485,14 @@
   color: var(--ref);
   font-weight: 500;
 }
-.vw-mention.raw {
-  color: var(--warn);
+.vw-mention.image,
+.vw-mention.video {
   font-family: var(--mono);
   font-size: 11px;
+  font-weight: 600;
 }
-.vw-cell-blocks {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-}
-.vw-block-dots {
-  display: flex;
-  gap: 2px;
-}
-.vw-block-dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 1px;
-  background: var(--panel-3);
+.vw-mention.video {
+  color: var(--video, #b48cff);
 }
 .vw-cell-settings {
   display: flex;

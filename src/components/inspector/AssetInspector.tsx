@@ -6,11 +6,11 @@ import { addImagesToAsset, focusNodes, linkAssets } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
 import type { AssetKind } from '../../core/types'
-import { LAYOUT, selectAsset, useProject, type ProjectState } from '../../store/project'
+import { LAYOUT, selectAsset, undoToastAction, useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
-import { renameAssetTag, undoToastAction } from '../sidebar/shared'
+import { renameAssetTag } from '../sidebar/shared'
 
 const SEP = '\u0001'
 
@@ -33,7 +33,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       return
     }
     if (res.tag !== raw) toast(`Tag đã được chuẩn hoá thành @${res.tag} (không dấu, không trùng).`, { tone: 'info' })
-    if (res.rewritten) toast(`Đã đổi @${asset.tag} → @${res.tag} trong ${res.rewritten} prompt/khối.`, { tone: 'success', action: undoToastAction() })
+    if (res.rewritten) toast(`Đã đổi @${asset.tag} → @${res.tag} trong ${res.rewritten} prompt.`, { tone: 'success', action: undoToastAction() })
   }
 
   const toggleCanvas = () => {
@@ -100,7 +100,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
             onChange={(e) => update({ description: e.target.value })}
           />
         </label>
-        <div className="in-help">Mô tả được thêm vào đoạn “References” tự động: @image_N = {asset.name} (mô tả).</div>
+        <div className="in-help">Ghi chú cho bạn (không gửi đi). Trong prompt, ảnh của {asset.name} được gọi bằng số @image_N của từng cảnh.</div>
         <div className="in-swatches" role="radiogroup" aria-label="Màu">
           {PALETTE.map((c) => (
             <button
@@ -216,7 +216,7 @@ const UsedIn = memo(function UsedIn({ assetId, tag }: { assetId: string; tag: st
       }
     >
       {rows.length === 0 ? (
-        <div className="in-refs-empty">Chưa nối vào cảnh nào. Kéo thẻ này vào một cảnh, hoặc gõ @{tag} trong prompt.</div>
+        <div className="in-refs-empty">Chưa nối vào cảnh nào. Kéo thẻ này vào một cảnh, hoặc gõ @ trong prompt của cảnh để nối & chèn.</div>
       ) : (
         <div className="in-usedin">
           {rows.map((r) => (

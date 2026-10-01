@@ -1,23 +1,25 @@
-import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, FileText, Layers, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
-import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { useShallow } from 'zustand/react/shallow'
-import { focusNodes } from '../../actions'
-import { assetByTag, extractMentions, sceneCode } from '../../core/compile'
+import { ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Images, Info, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
+import { Fragment, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { fitNodes } from '../../actions'
+import { sceneCode } from '../../core/compile'
 import {
-  analyzePrompts,
-  applyImport,
-  imageTokens,
+  applyImageMapping,
+  buildImportScenes,
+  hasMapping,
+  itemsFromFiles,
   parsePromptText,
+  previewItem,
   SAMPLE_IMPORT_TEXT,
-  type ImportCandidate,
+  summarizeImport,
+  type ImageMapping,
   type ImportItem,
-  type PromptAnalysis,
-  type SelectedCandidate,
+  type ImportSummary,
 } from '../../core/importPrompts'
-import { MODELS } from '../../core/models'
-import type { Asset, BlockPlacement, ModelId } from '../../core/types'
-import { undo, useProject , undoToastAction } from '../../store/project'
+import { MODELS, normalizeSettings, settingsLabel } from '../../core/models'
+import type { Asset } from '../../core/types'
+import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
+import { AssetAvatar, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
 
@@ -25,36 +27,29 @@ interface FileItem {
   name: string
   text: string
 }
-interface Choice {
-  on: boolean
-  title: string
-  placement: BlockPlacement
-  mergeVariants: boolean
-}
 type Step = 1 | 2 | 3
 
-const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: 'Dán prompt' },
-  { n: 2, label: 'Chọn khối' },
-  { n: 3, label: 'Xác nhận' },
-]
-
 const fmt = (n: number) => n.toLocaleString('vi-VN')
+const TOKEN_SPLIT = /(@(?:image|video)_\d+)\b/gi
 
-/** Assets mentioned as @Tag in a prompt, within the model's image limit. */
-function mentionedRefs(prompt: string, assets: Asset[], model: ModelId): string[] {
-  const limit = MODELS[model].maxRefImages
-  const refs: string[] = []
-  let images = 0
-  for (const tag of extractMentions(prompt)) {
-    const a = assetByTag(assets, tag)
-    if (!a || refs.includes(a.id)) continue
-    const n = Math.max(1, a.imageIds.length)
-    if (images + n > limit) continue
-    refs.push(a.id)
-    images += n
-  }
-  return refs
+/** Prompt text with @image_N (teal) / @video_N (purple) highlighted. `imageCount` marks numbers past it as unresolved. */
+function TokenText({ text, imageCount }: { text: string; imageCount?: number }) {
+  const parts = text.split(TOKEN_SPLIT)
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (i % 2 === 0) return <Fragment key={i}>{p}</Fragment>
+        const video = /^@video/i.test(p)
+        const n = Number(p.slice(p.indexOf('_') + 1))
+        const bad = !video && imageCount !== undefined && n > imageCount
+        return (
+          <mark key={i} className={`dg-tok ${video ? 'video' : 'image'}${bad ? ' bad' : ''}`}>
+            {p}
+          </mark>
+        )
+      })}
+    </>
+  )
 }
 
 export function ImportDialog() {
@@ -62,80 +57,49 @@ export function ImportDialog() {
   const assets = useProject((s) => s.project.assets)
   const projectName = useProject((s) => s.project.name)
   const sceneCount = useProject((s) => s.project.scenes.length)
-  const blockCount = useProject((s) => s.project.blocks.length)
   const draftPreset = useProject((s) => s.project.presets[0])
-  const existingOn = useProject(useShallow((s) => s.project.blocks.filter((b) => b.defaultOn).map((b) => b.title)))
 
   const [step, setStep] = useState<Step>(1)
   const [text, setText] = useState('')
   const [files, setFiles] = useState<FileItem[]>([])
-  const [analysis, setAnalysis] = useState<PromptAnalysis | null>(null)
-  const [choices, setChoices] = useState<Record<string, Choice>>({})
-  const [disableExisting, setDisableExisting] = useState(true)
-  const [autoLink, setAutoLink] = useState(true)
+  const [mapping, setMapping] = useState<ImageMapping>([])
+  const [onlyMentioned, setOnlyMentioned] = useState(true)
 
-  const items: ImportItem[] = useMemo(
-    () => [...parsePromptText(text), ...files.map((f) => ({ title: f.name, text: f.text.trim() })).filter((i) => i.text)],
-    [text, files],
-  )
-  const prompts = useMemo(() => items.map((i) => i.text), [items])
-  const titles = useMemo(() => items.map((i) => i.title), [items])
+  const items: ImportItem[] = useMemo(() => [...parsePromptText(text), ...itemsFromFiles(files)], [text, files])
+  const summary = useMemo(() => summarizeImport(items), [items])
+  // New scenes get the project's first preset (same rule as project.applyImport).
+  const settings = useMemo(() => normalizeSettings(draftPreset ?? {}), [draftPreset])
+  const spec = MODELS[settings.model]
+  const charLimit = spec.promptLimit(settings.mode)
 
-  const selected: SelectedCandidate[] = useMemo(
-    () =>
-      (analysis?.candidates ?? [])
-        .filter((c) => choices[c.key]?.on)
-        .map((c) => ({ ...c, title: choices[c.key].title, placement: choices[c.key].placement, mergeVariants: choices[c.key].mergeVariants })),
-    [analysis, choices],
-  )
-  const result = useMemo(
-    () => (step >= 2 ? applyImport(prompts, selected, { titles, colorOffset: blockCount + 2 }) : null),
-    [step, prompts, selected, titles, blockCount],
-  )
+  const effMapping: ImageMapping = useMemo(() => Array.from({ length: summary.maxImage }, (_, i) => mapping[i] ?? null), [mapping, summary.maxImage])
+  const mapped = hasMapping(effMapping, assets)
+  const assigned = effMapping.filter((id) => id && assets.some((a) => a.id === id && a.imageIds.length)).length
 
-  const model: ModelId = draftPreset?.model ?? 'seedance_2_5'
-  const refsByScene = useMemo(
-    () => (result && autoLink ? result.scenes.map((s) => mentionedRefs(s.prompt, assets, model)) : []),
-    [result, autoLink, assets, model],
-  )
-
-  const goReview = () => {
-    const a = analyzePrompts(prompts)
-    setAnalysis(a)
-    setChoices((prev) =>
-      Object.fromEntries(a.candidates.map((c) => [c.key, prev[c.key] ?? { on: true, title: c.title, placement: c.placement, mergeVariants: false }])),
-    )
-    setStep(2)
-  }
-
-  const confirm = () => {
-    if (!result) return
-    const st = useProject.getState()
-    const offExisting: Record<string, boolean> = disableExisting
-      ? Object.fromEntries(st.project.blocks.filter((b) => b.defaultOn).map((b) => [b.id, false]))
-      : {}
-    const scenes = result.scenes.map((s, i) => ({
-      ...s,
-      blockOverrides: { ...offExisting, ...s.blockOverrides },
-      refs: autoLink ? (refsByScene[i] ?? []) : [],
-    }))
-    st.applyImport({ blocks: result.blocks, scenes })
-    const ids = scenes.map((s) => s.id)
+  const create = (withMapping: boolean) => {
+    if (!items.length) return
+    const scenes = buildImportScenes(items, withMapping ? { mapping: effMapping, assets, onlyMentioned } : {})
+    const ids = useProject.getState().applyImport({ scenes })
+    const undo = undoToastAction()
+    const linked = scenes.filter((s) => s.refs.length).length
     const ui = useUI.getState()
     ui.closeDialog()
     ui.setView('canvas')
     ui.select(ids)
-    window.setTimeout(() => focusNodes(ids), 200)
-    toast(`Đã nhập ${ids.length} cảnh${result.blocks.length ? ` và ${result.blocks.length} khối prompt` : ''}.`, {
-      tone: 'success',
-      action: undoToastAction(),
-    })
+    window.setTimeout(() => fitNodes(ids), 200)
+    toast(`Đã nhập ${ids.length} cảnh${linked ? ` · nối ảnh tham chiếu cho ${linked} cảnh` : ''}.`, { tone: 'success', action: undo })
   }
 
+  const hasImages = summary.maxImage > 0
+  const steps: { n: Step; label: string; off?: boolean }[] = [
+    { n: 1, label: 'Dán prompt' },
+    { n: 2, label: 'Xem trước' },
+    { n: 3, label: 'Gán ảnh theo số', off: step > 1 && !hasImages },
+  ]
   const stepper = (
     <ol className="dg-steps">
-      {STEPS.map((s) => (
-        <li key={s.n} className={step === s.n ? 'active' : step > s.n ? 'done' : ''}>
+      {steps.map((s) => (
+        <li key={s.n} className={step === s.n ? 'active' : step > s.n ? 'done' : s.off ? 'off' : ''} title={s.off ? 'Không có token @image_N nào để gán' : undefined}>
           <span>{step > s.n ? <Check size={11} strokeWidth={3} /> : s.n}</span>
           {s.label}
         </li>
@@ -146,14 +110,13 @@ export function ImportDialog() {
   let body: ReactNode
   let footer: ReactNode
   if (step === 1) {
-    const chars = prompts.reduce((t, p) => t + p.length, 0)
     body = <StepInput text={text} setText={setText} files={files} setFiles={setFiles} items={items} />
     footer = (
       <>
         <span className="dg-foot-info">
           {items.length ? (
             <>
-              Nhận diện <b>{items.length}</b> prompt · {fmt(chars)} ký tự
+              Nhận diện <b>{items.length}</b> prompt · {fmt(summary.chars)} ký tự
             </>
           ) : (
             'Chưa có prompt nào'
@@ -162,133 +125,76 @@ export function ImportDialog() {
         <button className="btn" onClick={closeDialog}>
           Huỷ
         </button>
-        <button className="btn btn-primary" disabled={!items.length} onClick={goReview}>
-          Tìm đoạn lặp lại <ArrowRight size={14} />
+        <button className="btn btn-primary" disabled={!items.length} onClick={() => setStep(2)}>
+          Xem trước <ArrowRight size={14} />
         </button>
       </>
     )
-  } else if (step === 2 && analysis && result) {
+  } else if (step === 2) {
     body = (
-      <StepReview
-        analysis={analysis}
-        prompts={prompts}
-        titles={titles}
-        choices={choices}
-        setChoices={setChoices}
-        result={result}
-        existingOn={existingOn}
-        disableExisting={disableExisting}
-        setDisableExisting={setDisableExisting}
-        autoLink={autoLink}
-        setAutoLink={setAutoLink}
+      <StepPreview
+        items={items}
+        summary={summary}
         startOrder={sceneCount + 1}
+        charLimit={charLimit}
+        presetLine={`${draftPreset?.name ? `“${draftPreset.name}” · ` : ''}${spec.short} · ${settingsLabel(settings)}`}
+        modelName={spec.name}
+        projectName={projectName}
       />
     )
     footer = (
       <>
         <span className="dg-foot-info">
-          <b>{selected.length}</b> khối · tiết kiệm ~<b>{fmt(result.stats.savedPerScene)}</b> ký tự mỗi cảnh
+          <b>{items.length}</b> cảnh mới · {sceneCode(sceneCount + 1)}
+          {items.length > 1 ? ` → ${sceneCode(sceneCount + items.length)}` : ''}
         </span>
         <button className="btn" onClick={() => setStep(1)}>
           <ArrowLeft size={14} /> Quay lại
         </button>
-        <button className="btn btn-primary" onClick={() => setStep(3)}>
-          Tiếp tục <ArrowRight size={14} />
-        </button>
+        {hasImages ? (
+          <>
+            <button className="btn" onClick={() => create(false)} title="Giữ nguyên token @image_N, nối ảnh sau">
+              Nhập ngay, không gán ảnh
+            </button>
+            <button className="btn btn-primary" onClick={() => setStep(3)}>
+              Gán ảnh theo số <ArrowRight size={14} />
+            </button>
+          </>
+        ) : (
+          <button className="btn btn-primary" onClick={() => create(false)}>
+            <Check size={14} /> Nhập {items.length} cảnh
+          </button>
+        )}
       </>
     )
-  } else if (result) {
-    const first = sceneCode(sceneCount + 1)
-    const last = sceneCode(sceneCount + result.scenes.length)
-    const linkedScenes = refsByScene.filter((r) => r.length).length
+  } else {
     body = (
-      <div className="dg-confirm">
-        <div className="dg-confirm-summary">
-          <h3>
-            Sẽ thêm vào “{projectName}”
-          </h3>
-          <ul>
-            <li>
-              <b>{result.scenes.length}</b> cảnh mới ({first}
-              {result.scenes.length > 1 ? ` → ${last}` : ''}), nối tiếp nhau, cấu hình theo preset “{draftPreset?.name ?? 'mặc định'}”.
-            </li>
-            <li>
-              <b>{result.blocks.length}</b> khối prompt mới
-              {result.blocks.length > 0 && (
-                <span className="dg-chip-row">
-                  {result.blocks.map((b) => (
-                    <span key={b.id} className="dg-block-chip" style={{ borderColor: b.color + '88' }}>
-                      <i style={{ background: b.color }} />
-                      {b.title}
-                      <small>{b.placement === 'before' ? 'trước' : 'sau'}</small>
-                    </span>
-                  ))}
-                </span>
-              )}
-            </li>
-            {disableExisting && existingOn.length > 0 && (
-              <li>
-                Tắt {existingOn.length} khối có sẵn cho các cảnh mới để prompt giữ đúng như cũ.
-              </li>
-            )}
-            {autoLink && (
-              <li>
-                Tự nối @Tag có trong thư viện: <b>{linkedScenes}</b> cảnh.
-              </li>
-            )}
-            {result.stats.imageTokenPrompts > 0 && (
-              <li className="dg-warn-li">
-                <TriangleAlert size={13} /> {result.stats.imageTokenPrompts} prompt còn token <code>@image_N</code> — được giữ nguyên, sau này có thể đổi thành @Tag
-                của thư viện.
-              </li>
-            )}
-            {result.stats.emptyScenes > 0 && (
-              <li className="dg-warn-li">
-                <TriangleAlert size={13} /> {result.stats.emptyScenes} cảnh chỉ còn khối, phần prompt riêng trống.
-              </li>
-            )}
-          </ul>
-          <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng Ctrl+Z.</p>
-        </div>
-        <div className="dg-confirm-table">
-          <div className="dg-ct-row dg-ct-head">
-            <span>Cảnh</span>
-            <span>Tên</span>
-            <span className="r">Prompt riêng</span>
-            <span className="r">Khối bật</span>
-            <span>Nối</span>
-          </div>
-          {result.scenes.map((s, i) => {
-            const on = result.blocks.filter((b) => s.blockOverrides[b.id] ?? b.defaultOn).length
-            const refs = (refsByScene[i] ?? []).map((id) => assets.find((a) => a.id === id)).filter((a): a is Asset => !!a)
-            return (
-              <div key={s.id} className="dg-ct-row">
-                <span className="mono dg-code">{sceneCode(sceneCount + i + 1)}</span>
-                <span className={s.title ? 'dg-ellipsis' : 'faint'}>{s.title || 'Chưa đặt tên'}</span>
-                <span className="r mono">
-                  {fmt([...s.prompt].length)}
-                  <span className="faint"> / {fmt([...prompts[i]].length)}</span>
-                </span>
-                <span className="r mono">
-                  {on}/{result.blocks.length}
-                </span>
-                <span className="dg-ellipsis faint">
-                  {refs.length ? refs.map((a) => '@' + a.tag).join(' ') : imageTokens(s.prompt).length ? imageTokens(s.prompt).join(' ') : '—'}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      <StepMapping
+        items={items}
+        summary={summary}
+        assets={assets}
+        mapping={effMapping}
+        setMapping={setMapping}
+        onlyMentioned={onlyMentioned}
+        setOnlyMentioned={setOnlyMentioned}
+        startOrder={sceneCount + 1}
+        imageLimit={spec.maxRefImages}
+        modelName={spec.name}
+      />
     )
     footer = (
       <>
-        <span className="dg-foot-info">Cảnh mới sẽ được chọn sẵn trên canvas.</span>
+        <span className="dg-foot-info">
+          Đã gán <b>{assigned}</b>/{summary.maxImage} số
+        </span>
         <button className="btn" onClick={() => setStep(2)}>
           <ArrowLeft size={14} /> Quay lại
         </button>
-        <button className="btn btn-primary" onClick={confirm}>
-          <Check size={14} /> Nhập {result.scenes.length} cảnh
+        <button className="btn" onClick={() => create(false)} title="Giữ nguyên token @image_N, không nối ảnh nào">
+          Bỏ qua, không gán
+        </button>
+        <button className="btn btn-primary" onClick={() => create(mapped)}>
+          <Check size={14} /> Nhập {items.length} cảnh
         </button>
       </>
     )
@@ -302,6 +208,7 @@ export function ImportDialog() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Step 1 — paste text / drop .txt files
 
 function StepInput({
   text,
@@ -325,7 +232,7 @@ function StepInput({
       toast('Chỉ nhận file văn bản .txt (mỗi file = một cảnh).', { tone: 'warning' })
       return
     }
-    const read = await Promise.all(ok.map(async (f) => ({ name: f.name.replace(/\.[^.]+$/, ''), text: await f.text() })))
+    const read = await Promise.all(ok.map(async (f) => ({ name: f.name, text: await f.text() })))
     setFiles((prev) => [...prev, ...read].sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true })))
     if (ok.length < list.length) toast(`Bỏ qua ${list.length - ok.length} file không phải .txt.`, { tone: 'warning' })
   }
@@ -343,7 +250,8 @@ function StepInput({
     void addFiles([...e.dataTransfer.files])
   }
 
-  const textCount = items.length - files.filter((f) => f.text.trim()).length
+  const fileCount = files.filter((f) => f.text.trim()).length
+  const textCount = items.length - fileCount
 
   return (
     <div className={`dg-import-input ${over ? 'over' : ''}`} onDragOver={onDragOver} onDragLeave={() => setOver(false)} onDrop={onDrop}>
@@ -357,12 +265,25 @@ function StepInput({
           value={text}
           onChange={(e) => setText(e.target.value)}
           spellCheck={false}
-          placeholder={'Dán nhiều prompt, mỗi prompt cách nhau bằng một dòng ---\n\nPrompt 1 …\n\n---\n\nPrompt 2 …\n\nCó thể đặt tên cảnh bằng dòng: === S01: Tên cảnh ==='}
+          placeholder={
+            'Dán nhiều prompt, mỗi prompt cách nhau bằng một dòng ---\n\nPrompt 1 … Mara (@image_1) bước vào …\n\n---\n\nPrompt 2 …\n\nCó thể đặt tên cảnh bằng dòng: === S01: Tên cảnh ==='
+          }
         />
       </div>
 
       <div className="dg-import-side">
-        <div className="dg-drop" onClick={() => inputRef.current?.click()} role="button" tabIndex={0}>
+        <div
+          className="dg-drop"
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              inputRef.current?.click()
+            }
+          }}
+          role="button"
+          tabIndex={0}
+        >
           <Upload size={20} />
           <b>Thả file .txt vào đây</b>
           <span>hoặc bấm để chọn nhiều file — mỗi file là một cảnh, tên file thành tên cảnh</span>
@@ -406,7 +327,7 @@ function StepInput({
           <Sparkles size={15} />
           <span>
             <b>Dùng ví dụ</b>
-            <small>3 prompt mẫu có đoạn phong cách, âm thanh và ràng buộc lặp lại</small>
+            <small>3 prompt mẫu có ảnh tham chiếu @image_1 … @image_3</small>
           </span>
         </button>
 
@@ -419,7 +340,9 @@ function StepInput({
             <li>
               Dòng <code>=== S03: Tên cảnh ===</code> vừa ngăn cách vừa đặt tên cảnh (định dạng của “Copy tất cả prompt”).
             </li>
-            <li>Đoạn văn (cách nhau bằng dòng trống) lặp lại ở nhiều prompt sẽ được đề xuất thành khối prompt.</li>
+            <li>
+              Prompt được giữ nguyên văn, kể cả token <code>@image_N</code> và <code>@video_N</code>. Bước sau có thể gán ảnh thư viện cho từng số.
+            </li>
           </ul>
         </div>
       </div>
@@ -428,235 +351,328 @@ function StepInput({
 }
 
 // ---------------------------------------------------------------------------------------------
+// Step 2 — preview the scenes
 
-function StepReview({
-  analysis,
-  prompts,
-  titles,
-  choices,
-  setChoices,
-  result,
-  existingOn,
-  disableExisting,
-  setDisableExisting,
-  autoLink,
-  setAutoLink,
+function StepPreview({
+  items,
+  summary,
   startOrder,
+  charLimit,
+  presetLine,
+  modelName,
+  projectName,
 }: {
-  analysis: PromptAnalysis
-  prompts: string[]
-  titles: string[]
-  choices: Record<string, Choice>
-  setChoices: (fn: (prev: Record<string, Choice>) => Record<string, Choice>) => void
-  result: ReturnType<typeof applyImport>
-  existingOn: string[]
-  disableExisting: boolean
-  setDisableExisting: (v: boolean) => void
-  autoLink: boolean
-  setAutoLink: (v: boolean) => void
+  items: ImportItem[]
+  summary: ImportSummary
   startOrder: number
+  charLimit: number
+  presetLine: string
+  modelName: string
+  projectName: string
 }) {
-  const [preview, setPreview] = useState(0)
-  const n = prompts.length
-  const cands = analysis.candidates
-  const onCount = cands.filter((c) => choices[c.key]?.on).length
-  const patch = (key: string, p: Partial<Choice>) => setChoices((prev) => ({ ...prev, [key]: { ...prev[key], ...p } }))
-  const setAll = (on: boolean) => setChoices((prev) => Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, { ...v, on }])))
+  const previews = useMemo(() => items.map((i) => previewItem(i, 3)), [items])
+  const tooLong = previews.filter((p) => p.chars > charLimit).length
+  const avg = Math.round(summary.chars / Math.max(1, summary.prompts))
 
-  const idx = Math.min(preview, result.scenes.length - 1)
-  const scene = result.scenes[idx]
-  const sceneBlocks = result.blocks.filter((b) => scene.blockOverrides[b.id] ?? b.defaultOn)
-  const before = sceneBlocks.filter((b) => b.placement === 'before')
-  const after = sceneBlocks.filter((b) => b.placement === 'after')
-  const { stats } = result
+  return (
+    <div className="dg-review">
+      <div className="dg-review-main">
+        <div className="dg-label-row">
+          <span className="section-title">Cảnh sẽ được tạo</span>
+          <span className="faint">thêm vào “{projectName}”</span>
+        </div>
+        <div className="dg-pv-list" role="list">
+          {previews.map((p, i) => (
+            <div key={i} className="dg-pv-row" role="listitem">
+              <span className="mono dg-code">{sceneCode(startOrder + i)}</span>
+              <div className="dg-pv-main">
+                <div className={`dg-pv-title dg-ellipsis${p.title ? '' : ' faint'}`}>{p.title || 'Chưa đặt tên'}</div>
+                <div className="dg-pv-excerpt">
+                  <TokenText text={p.excerpt} />
+                </div>
+              </div>
+              <div className="dg-pv-meta">
+                <span className={`mono${p.chars > charLimit ? ' dg-over' : ''}`} title={p.chars > charLimit ? `Vượt giới hạn ${fmt(charLimit)} ký tự của ${modelName}` : 'Số ký tự'}>
+                  {fmt(p.chars)} ký tự
+                </span>
+                <span className="dg-pv-tokens">
+                  {p.images.length > 0 && (
+                    <span className="dg-tok-count image" title={p.images.map((n) => '@image_' + n).join(', ')}>
+                      {p.images.length} ảnh
+                    </span>
+                  )}
+                  {p.videos.length > 0 && (
+                    <span className="dg-tok-count video" title={p.videos.map((n) => '@video_' + n).join(', ')}>
+                      {p.videos.length} video
+                    </span>
+                  )}
+                  {!p.images.length && !p.videos.length && <span className="faint">không có token</span>}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <aside className="dg-review-side">
+        <div className="dg-stats">
+          <div>
+            <b>{summary.prompts}</b>
+            <span>cảnh</span>
+          </div>
+          <div>
+            <b>{fmt(avg)}</b>
+            <span>ký tự TB</span>
+          </div>
+          <div>
+            <b>{summary.maxImage ? `@${summary.maxImage}` : '—'}</b>
+            <span>ảnh cao nhất</span>
+          </div>
+        </div>
+
+        <div className="dg-callout">
+          <Info size={14} />
+          <span>Prompt được gửi đúng như đã viết — không tự thêm đoạn nào. Cảnh mới dùng cấu hình {presetLine}.</span>
+        </div>
+        {summary.maxImage > 0 && (
+          <div className="dg-callout ref">
+            <Images size={14} />
+            <span>
+              {summary.withImages} prompt dùng ảnh tham chiếu (tới <code>@image_{summary.maxImage}</code>). Bước tiếp theo: chọn ảnh trong thư viện cho từng số — hoặc nhập
+              ngay rồi nối ảnh sau.
+            </span>
+          </div>
+        )}
+        {summary.maxVideo > 0 && (
+          <div className="dg-callout video">
+            <Info size={14} />
+            <span>
+              {summary.withVideos} prompt có <code>@video_N</code>. Token được giữ nguyên; sau khi nhập, nối video (take) vào cảnh trên canvas để dùng làm video tham chiếu.
+            </span>
+          </div>
+        )}
+        {tooLong > 0 && (
+          <div className="dg-callout warn">
+            <TriangleAlert size={14} />
+            <span>
+              {tooLong} prompt dài hơn giới hạn {fmt(charLimit)} ký tự của {modelName} — cần rút gọn trước khi chạy.
+            </span>
+          </div>
+        )}
+        <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng Ctrl+Z.</p>
+      </aside>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step 3 — "Gán ảnh theo số": one library asset per @image_N, applied to every imported scene
+
+function StepMapping({
+  items,
+  summary,
+  assets,
+  mapping,
+  setMapping,
+  onlyMentioned,
+  setOnlyMentioned,
+  startOrder,
+  imageLimit,
+  modelName,
+}: {
+  items: ImportItem[]
+  summary: ImportSummary
+  assets: Asset[]
+  mapping: ImageMapping
+  setMapping: (m: ImageMapping) => void
+  onlyMentioned: boolean
+  setOnlyMentioned: (v: boolean) => void
+  startOrder: number
+  imageLimit: number
+  modelName: string
+}) {
+  const usable = useMemo(() => assets.filter((a) => a.imageIds.length > 0), [assets])
+  const byId = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets])
+  const [open, setOpen] = useState<number | null>(() => (usable.length ? 1 : null))
+  const [preview, setPreview] = useState(() => {
+    const i = items.findIndex((it) => /@image_\d/i.test(it.text))
+    return i < 0 ? 0 : i
+  })
+
+  const results = useMemo(() => items.map((it) => applyImageMapping(it.text, mapping, assets, { onlyMentioned })), [items, mapping, assets, onlyMentioned])
+  const overLimit = results.filter((r) => r.images > imageLimit).length
+  const withPending = results.filter((r) => r.refs.length > 0 && r.pending.length > 0).length
+
+  const assign = (n: number, id: string | null) => {
+    const next = [...mapping]
+    next[n - 1] = id
+    setMapping(next)
+    // Move on to the next number that is still empty.
+    if (id) {
+      const after = next.findIndex((x, i) => i >= n && !x)
+      setOpen(after >= 0 ? after + 1 : null)
+    } else setOpen(null)
+  }
+
+  const idx = Math.min(preview, items.length - 1)
+  const res = results[idx]
+  const resAssets = res.refs.map((id) => byId.get(id)).filter((a): a is Asset => !!a)
 
   return (
     <div className="dg-review">
       <div className="dg-review-main">
         <div className="dg-label-row">
           <span className="section-title">
-            <Layers size={13} /> Đoạn lặp lại → khối prompt
+            <Images size={13} /> Gán ảnh cho từng số
           </span>
-          {cands.length > 0 && (
-            <span className="dg-review-bulk">
-              <span className="faint">
-                {onCount}/{cands.length} đã chọn
-              </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setAll(onCount !== cands.length)}>
-                {onCount === cands.length ? 'Bỏ chọn hết' : 'Chọn hết'}
-              </button>
-            </span>
+          {mapping.some(Boolean) && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setMapping([])}>
+              Bỏ gán hết
+            </button>
           )}
         </div>
         <p className="dg-help">
-          Đoạn văn xuất hiện ở ít nhất {analysis.threshold} prompt được đề xuất. Khối được chèn vào mọi cảnh từng có đoạn đó — sửa một lần, áp dụng cho tất cả.
+          Prompt cũ đánh số ảnh <code>@image_1</code>, <code>@image_2</code>… theo thứ tự ảnh đã đính kèm. Chọn ảnh thư viện tương ứng — áp dụng cho cả {items.length} cảnh, số
+          trong prompt được sửa để luôn trỏ đúng ảnh.
         </p>
 
-        {cands.length === 0 ? (
+        {!usable.length ? (
           <div className="empty dg-review-empty">
-            Không tìm thấy đoạn nào lặp lại ở ít nhất {analysis.threshold} prompt.
+            Thư viện chưa có ảnh nào để gán.
             <br />
-            Vẫn có thể nhập {n} cảnh với nguyên văn prompt.
+            Thêm nhân vật/bối cảnh vào thư viện trước, hoặc bấm “Bỏ qua, không gán” để nhập và nối ảnh sau.
           </div>
         ) : (
-          <div className="dg-cands">
-            {cands.map((c) => (
-              <CandidateCard key={c.key} c={c} total={n} choice={choices[c.key]} onPatch={(p) => patch(c.key, p)} />
-            ))}
+          <div className="dg-map-list">
+            {mapping.map((id, i) => {
+              const n = i + 1
+              const asset = id ? byId.get(id) : undefined
+              const isOpen = open === n
+              const usage = summary.imageUsage[i] ?? 0
+              return (
+                <div key={n} className={`dg-map${isOpen ? ' open' : ''}${asset ? ' set' : ''}`}>
+                  <div className="dg-map-row">
+                    <mark className="dg-tok image">@image_{n}</mark>
+                    <span className={`dg-map-usage${usage ? '' : ' faint'}`}>{usage ? `ở ${usage}/${items.length} prompt` : 'không prompt nào dùng'}</span>
+                    <button className="dg-map-pick" onClick={() => setOpen(isOpen ? null : n)} aria-expanded={isOpen}>
+                      {asset ? (
+                        <>
+                          <AssetAvatar asset={asset} size={22} />
+                          <span className="dg-ellipsis">{asset.name}</span>
+                          <span className="faint">@{asset.tag}</span>
+                          {asset.imageIds.length > 1 && <span className="badge">{asset.imageIds.length} ảnh</span>}
+                        </>
+                      ) : (
+                        <span className="faint">Chọn ảnh trong thư viện…</span>
+                      )}
+                      <ChevronDown size={14} className="dg-map-chev" />
+                    </button>
+                    {asset && (
+                      <button className="dg-x" onClick={() => assign(n, null)} title="Bỏ gán" aria-label={`Bỏ gán @image_${n}`}>
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                  {isOpen && <AssetGrid assets={usable} selected={id} onPick={(picked) => assign(n, picked)} />}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
 
       <aside className="dg-review-side">
-        <div className="dg-stats">
-          <div>
-            <b>{n}</b>
-            <span>cảnh</span>
-          </div>
-          <div>
-            <b>{result.blocks.length}</b>
-            <span>khối mới</span>
-          </div>
-          <div>
-            <b>−{fmt(stats.savedPerScene)}</b>
-            <span>ký tự / cảnh</span>
-          </div>
-        </div>
-        <div className="dg-bar-compare" title={`${fmt(stats.charsBefore)} → ${fmt(stats.charsAfter)} ký tự prompt riêng`}>
-          <div className="dg-bar-label">
-            <span>Prompt riêng</span>
-            <span className="mono">
-              {fmt(Math.round(stats.charsBefore / Math.max(1, n)))} → {fmt(Math.round(stats.charsAfter / Math.max(1, n)))} ký tự TB
-            </span>
-          </div>
-          <div className="progress">
-            <i style={{ width: `${stats.charsBefore ? Math.max(2, (stats.charsAfter / stats.charsBefore) * 100) : 100}%`, background: 'var(--ref)' }} />
-          </div>
-        </div>
-
-        {stats.imageTokenPrompts > 0 && (
-          <div className="dg-callout warn">
-            <TriangleAlert size={14} />
-            <span>
-              {stats.imageTokenPrompts} prompt có token <code>@image_N</code>. Token được giữ nguyên; sau khi nhập có thể nối ảnh thư viện và đổi thành @Tag.
-            </span>
-          </div>
-        )}
-
         <div className="dg-preview">
           <div className="dg-label-row">
             <span className="label">Xem trước</span>
             <select className="select dg-preview-select" value={idx} onChange={(e) => setPreview(Number(e.target.value))}>
-              {result.scenes.map((s, i) => (
-                <option key={s.id} value={i}>
+              {items.map((it, i) => (
+                <option key={i} value={i}>
                   {sceneCode(startOrder + i)}
-                  {titles[i] ? ` · ${titles[i]}` : ''}
+                  {it.title ? ` · ${it.title}` : ''}
                 </option>
               ))}
             </select>
           </div>
+          <div className="dg-pv-refs">
+            {resAssets.length ? (
+              resAssets.map((a) => (
+                <span key={a.id} className="dg-pv-ref" title={`${a.name} · @${a.tag}`}>
+                  <AssetAvatar asset={a} size={20} />
+                  <span className="dg-ellipsis">{a.name}</span>
+                </span>
+              ))
+            ) : (
+              <span className="faint">Cảnh này chưa nối ảnh nào.</span>
+            )}
+          </div>
           <div className="dg-preview-body">
-            {before.map((b) => (
-              <span key={b.id} className="dg-pv-block" style={{ borderColor: b.color }}>
-                {b.title}
-              </span>
-            ))}
-            <div className="dg-pv-prompt">{scene.prompt || <span className="faint">(prompt riêng trống)</span>}</div>
-            {after.map((b) => (
-              <span key={b.id} className="dg-pv-block" style={{ borderColor: b.color }}>
-                {b.title}
-              </span>
-            ))}
+            <div className="dg-pv-prompt">
+              <TokenText text={res.prompt} imageCount={res.refs.length ? res.images : undefined} />
+            </div>
           </div>
           <div className="dg-pv-foot faint">
-            {fmt([...prompts[idx]].length)} → {fmt([...scene.prompt].length)} ký tự riêng · {sceneBlocks.length} khối bật
+            {res.refs.length ? `${res.images} ảnh tham chiếu` : 'Prompt giữ nguyên'}
+            {res.refs.length > 0 && res.pending.length > 0 && ` · ${res.pending.length} số chưa gán (đỏ)`}
           </div>
         </div>
 
         <div className="dg-options">
-          {existingOn.length > 0 && (
-            <label className="checkbox">
-              <input type="checkbox" checked={disableExisting} onChange={(e) => setDisableExisting(e.target.checked)} />
-              <span>
-                Tắt {existingOn.length} khối có sẵn của dự án cho các cảnh mới
-                <small className="dg-opt-sub">{existingOn.slice(0, 4).join(', ') + (existingOn.length > 4 ? '…' : '')}</small>
-              </span>
-            </label>
-          )}
           <label className="checkbox">
-            <input type="checkbox" checked={autoLink} onChange={(e) => setAutoLink(e.target.checked)} />
+            <input type="checkbox" checked={onlyMentioned} onChange={(e) => setOnlyMentioned(e.target.checked)} />
             <span>
-              Tự nối @Tag đã có trong thư viện
-              <small className="dg-opt-sub">Ví dụ @Elara trong prompt → nối nhân vật Elara vào cảnh</small>
+              Chỉ nối ảnh mà từng prompt có nhắc tới
+              <small className="dg-opt-sub">Tắt để mọi cảnh nhận đủ ảnh đã gán (ảnh không nhắc tới vẫn được gửi).</small>
             </span>
           </label>
         </div>
+
+        {withPending > 0 && (
+          <div className="dg-callout warn">
+            <TriangleAlert size={14} />
+            <span>
+              {withPending} cảnh còn số chưa gán: các số đó được đánh lại ngay sau ảnh đã nối. Nối thêm ảnh vào cảnh sau (theo đúng thứ tự) là khớp lại.
+            </span>
+          </div>
+        )}
+        {overLimit > 0 && (
+          <div className="dg-callout warn">
+            <TriangleAlert size={14} />
+            <span>
+              {overLimit} cảnh vượt giới hạn {imageLimit} ảnh của {modelName}; ảnh cuối sẽ không được gửi.
+            </span>
+          </div>
+        )}
+        <p className="dg-note">Nhân vật có nhiều ảnh chiếm nhiều số liên tiếp. Gán cùng một nhân vật cho hai số → số thứ hai dùng ảnh thứ hai của nhân vật đó.</p>
       </aside>
     </div>
   )
 }
 
-function CandidateCard({ c, total, choice, onPatch }: { c: ImportCandidate; total: number; choice: Choice | undefined; onPatch: (p: Partial<Choice>) => void }) {
-  const [expanded, setExpanded] = useState(false)
-  const [showVariants, setShowVariants] = useState(false)
-  if (!choice) return null
-  const variants = c.variants.length
-  const exact = c.variants[0]?.count ?? c.count
+function AssetGrid({ assets, selected, onPick }: { assets: Asset[]; selected: string | null; onPick: (id: string) => void }) {
+  const [q, setQ] = useState('')
+  const query = q.trim().toLowerCase()
+  const list = query ? assets.filter((a) => a.name.toLowerCase().includes(query) || a.tag.toLowerCase().includes(query)) : assets
   return (
-    <div className={`dg-cand ${choice.on ? 'on' : ''}`}>
-      <div className="dg-cand-head">
-        <input type="checkbox" className="dg-cand-check" checked={choice.on} onChange={(e) => onPatch({ on: e.target.checked })} aria-label="Dùng làm khối" />
-        <input
-          className="input dg-cand-title"
-          value={choice.title}
-          onChange={(e) => onPatch({ title: e.target.value })}
-          placeholder="Tên khối"
-          disabled={!choice.on}
-          aria-label="Tên khối"
-        />
-        <div className="dg-seg" role="radiogroup" aria-label="Vị trí">
-          {(['before', 'after'] as const).map((p) => (
-            <button key={p} className={choice.placement === p ? 'active' : ''} disabled={!choice.on} onClick={() => onPatch({ placement: p })} role="radio" aria-checked={choice.placement === p}>
-              {p === 'before' ? 'Trước prompt' : 'Sau prompt'}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="dg-cand-meta">
-        <span className="dg-cand-count">
-          xuất hiện ở <b>{c.count}</b>/{total} prompt
-        </span>
-        <span className="dg-cand-bar">
-          <i style={{ width: `${(c.count / Math.max(1, total)) * 100}%` }} />
-        </span>
-        <span className="faint">{c.avgPosition < 0.35 ? 'thường ở đầu' : c.avgPosition > 0.65 ? 'thường ở cuối' : 'thường ở giữa'}</span>
-        {variants > 1 && (
-          <button className="dg-variants-btn" onClick={() => setShowVariants((v) => !v)}>
-            {showVariants ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            {variants} biến thể
-          </button>
-        )}
-      </div>
-      <div className={`dg-cand-text ${expanded ? 'expanded' : ''}`} onClick={() => setExpanded((e) => !e)} title={expanded ? 'Thu gọn' : 'Xem toàn bộ'}>
-        {c.text}
-      </div>
-      {variants > 1 && showVariants && (
-        <div className="dg-variants">
-          <p>
-            Văn bản khối lấy theo bản phổ biến nhất ({exact} prompt). Prompt có bản khác giữ nguyên đoạn đó và tắt khối này — trừ khi gộp.
-          </p>
-          {c.variants.slice(1).map((v) => (
-            <div key={v.key} className="dg-variant">
-              <span className="badge">{v.count}×</span>
-              <span>{v.text}</span>
-            </div>
-          ))}
-          <label className="checkbox">
-            <input type="checkbox" checked={choice.mergeVariants} disabled={!choice.on} onChange={(e) => onPatch({ mergeVariants: e.target.checked })} />
-            Gộp các biến thể vào khối (bỏ phần khác biệt)
-          </label>
-        </div>
+    <div className="dg-asset-picker">
+      {assets.length > 8 && (
+        <label className="dg-search">
+          <Search size={13} />
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong thư viện…" />
+        </label>
       )}
+      <div className="dg-asset-grid">
+        {list.map((a) => (
+          <button key={a.id} className={`dg-asset-tile${a.id === selected ? ' on' : ''}`} onClick={() => onPick(a.id)} title={`${a.name} · @${a.tag}`}>
+            <span className="dg-asset-img" style={{ borderColor: a.color }}>
+              <MediaImg id={a.imageIds[0]} className="dg-asset-thumb" alt={a.name} />
+              {a.imageIds.length > 1 && <span className="dg-asset-count">{a.imageIds.length}</span>}
+            </span>
+            <span className="dg-asset-name dg-ellipsis">{a.name}</span>
+          </button>
+        ))}
+        {!list.length && <div className="faint dg-asset-none">Không tìm thấy “{q}”.</div>}
+      </div>
     </div>
   )
 }

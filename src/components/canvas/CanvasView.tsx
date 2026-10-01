@@ -1,10 +1,10 @@
-// The canvas board. Nodes and edges are DERIVED from the project store (scenes, assets, refs);
-// React Flow is fully controlled: drag positions live in ui.dragPos until drag end (one undo step),
-// selection is mirrored into ui.selectedIds / ui.selectedEdgeIds.
+// The canvas board. Nodes and edges are DERIVED from the stores: scenes and on-canvas assets (project store) and
+// takes = video nodes (runs store). React Flow is fully controlled: drag positions live in ui.dragPos until drag end
+// (scenes/assets: one undo step in the project; takes: runs.setTakePositions, not undoable), selection is mirrored
+// into ui.selectedIds / ui.selectedEdgeIds.
 import {
   Background,
   BackgroundVariant,
-  MarkerType,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
@@ -14,25 +14,25 @@ import {
   useStoreApi,
   type Connection,
   type EdgeChange,
+  type EdgeMouseHandler,
   type FinalConnectionState,
   type HandleType,
   type NodeChange,
   type NodeMouseHandler,
-  type EdgeMouseHandler,
   type OnConnectStart,
 } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { canvasEvents, createAssetsFromFiles, edgeId, linkAssets, newScene, parseEdgeId, type EdgeKind } from '../../actions'
+import { canvasEvents, createAssetsFromFiles, edgeId, linkAssets, linkTakes, newScene, parseEdgeId, takeLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Asset, Scene, XY } from '../../core/types'
-import { refImageCount, undo, useProject , undoToastAction } from '../../store/project'
+import { defaultTakePosition, refImageCount, undo, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
-import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
+import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } from './edges'
 import {
   assetMapOf,
   clientPoint,
@@ -43,23 +43,28 @@ import {
   hitTest,
   imageFiles,
   keepHover,
+  layoutTakes,
   readAssetIds,
   sceneMapOf,
   scheduleHoverEnd,
   snap,
   sourceAssetsFor,
+  sourceTakesFor,
   STATUS_HEX,
-  takeSummary,
+  takeIndexOf,
+  takeLayoutSig,
   targetScenesFor,
   useCanvasLocal,
+  type TakeLayout,
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
+import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import './canvas.css'
 
-type CanvasNode = SceneFlowNode | AssetFlowNode
+type CanvasNode = SceneFlowNode | AssetFlowNode | TakeFlowNode
+type NodeType = CanvasNode['type'] & string
 
-const nodeTypes = { scene: SceneNode, asset: AssetNode }
-const SEQ_MARKER = { type: MarkerType.ArrowClosed, color: '#8d93a0', width: 14, height: 14 }
+const nodeTypes = { scene: SceneNode, asset: AssetNode, take: TakeNode }
 const SNAP_GRID: [number, number] = [16, 16]
 const MULTI_KEYS = ['Control', 'Meta', 'Shift']
 const FIT_OPTIONS = { padding: 0.12, maxZoom: 1 }
@@ -67,6 +72,7 @@ const FIT_OPTIONS = { padding: 0.12, maxZoom: 1 }
 const TOOLBAR_ROOM = 56
 /** Room kept below the ConnectMenu's top edge (tallest menu ≈ 3 items) so it stays above the queue drawer. */
 const MENU_ROOM = 154
+const EMPTY_DATA: Record<string, unknown> = {}
 
 interface RawEdge {
   id: string
@@ -91,6 +97,8 @@ export function CanvasView() {
   )
 }
 
+const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
+
 function CanvasInner() {
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
@@ -98,6 +106,9 @@ function CanvasInner() {
 
   const scenes = useProject((s) => s.project.scenes)
   const assets = useProject((s) => s.project.assets)
+  // Only what the take nodes' layout/status depends on (not progress): a string, so render ticks don't rebuild the graph.
+  const takeSig = useRuns((s) => takeLayoutSig(s.takes))
+  const takeDisplay = useUI((s) => s.takeDisplay)
   const dragPos = useUI((s) => s.dragPos)
   const measured = useUI((s) => s.measured)
   const selectedIds = useUI((s) => s.selectedIds)
@@ -108,48 +119,61 @@ function CanvasInner() {
   const showMinimap = useUI((s) => s.showMinimap)
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
   const hoveredEdgeId = useCanvasLocal((s) => s.hoveredEdgeId)
-  const connecting = useConnection((c) => (c.inProgress ? (c.fromNode.type === 'asset' ? 'asset' : 'scene') : null))
+  const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
+  const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
+  const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
+
+  // ---------------- take nodes: which are shown, where ----------------
+  // `takeSig` stands for the layout-relevant part of runs.takes (read fresh here).
+  const takeLayout = useMemo(() => layoutTakes(useRuns.getState().takes, scenes, takeDisplay), [takeSig, scenes, takeDisplay])
+  const layoutRef = useRef<TakeLayout>(takeLayout)
+  layoutRef.current = takeLayout
 
   // ---------------- derived nodes (cached per id so unchanged nodes keep their identity) ----------------
   const nodeCache = useRef(new Map<string, CanvasNode>())
-  const dataCache = useRef(new Map<string, Record<string, unknown>>())
+  const takeData = useRef(new Map<string, TakeNodeData>())
   const nodes = useMemo(() => {
     const prevCache = nodeCache.current
     const next = new Map<string, CanvasNode>()
     const sel = new Set(selectedIds)
     const out: CanvasNode[] = []
-    const dataFor = (id: string) => {
-      let d = dataCache.current.get(id)
-      if (!d) {
-        d = {}
-        dataCache.current.set(id, d)
-      }
-      return d
-    }
-    const push = (id: string, type: 'scene' | 'asset', base: XY) => {
-      const position = dragPos[id] ?? base
+    const push = (id: string, type: NodeType, base: XY, data: Record<string, unknown>) => {
+      const prev = prevCache.get(id)
+      let position = dragPos[id] ?? base
+      if (prev && samePos(prev.position, position)) position = prev.position
       const m = measured[id]
       const selected = sel.has(id)
       const dragging = id in dragPos
-      const prev = prevCache.get(id)
       let node: CanvasNode
-      if (prev && prev.type === type && prev.position === position && prev.selected === selected && prev.measured === m && prev.dragging === dragging) {
+      if (prev && prev.type === type && prev.position === position && prev.selected === selected && prev.measured === m && prev.dragging === dragging && prev.data === data) {
         node = prev
       } else {
-        node = { id, type, position, data: dataFor(id), selected, dragging, measured: m } as CanvasNode
+        node = { id, type, position, data, selected, dragging, measured: m } as CanvasNode
       }
       next.set(id, node)
       out.push(node)
     }
-    for (const a of assets) if (a.position) push(a.id, 'asset', a.position)
-    for (const s of scenes) push(s.id, 'scene', s.position)
+    for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA)
+    for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA)
+    const sm = sceneMapOf(scenes)
+    const dataNext = new Map<string, TakeNodeData>()
+    for (const item of takeLayout.items) {
+      const scene = sm.get(item.sceneId)!
+      // Auto-placed takes follow their scene live while it is dragged.
+      const base = item.explicit ?? defaultTakePosition(dragPos[scene.id] ?? scene.position, item.index)
+      let data = takeData.current.get(item.id)
+      if (!data || data.hidden !== item.hidden || data.status !== item.status) data = { hidden: item.hidden, status: item.status }
+      dataNext.set(item.id, data)
+      push(item.id, 'take', base, data)
+    }
+    takeData.current = dataNext
     nodeCache.current = next
     return out
-  }, [scenes, assets, dragPos, measured, selectedIds])
+  }, [scenes, assets, takeLayout, dragPos, measured, selectedIds])
 
   // ---------------- derived edges ----------------
-  const rawEdges = useMemo(() => buildRawEdges(scenes, assets), [scenes, assets])
+  const rawEdges = useMemo(() => buildRawEdges(scenes, assets, takeLayout), [scenes, assets, takeLayout])
   const edgeCache = useRef(new Map<string, LinkEdge>())
   const edges = useMemo(() => {
     const sel = new Set(selectedIds)
@@ -162,7 +186,8 @@ function CanvasInner() {
       const touchesSel = sel.has(r.source) || sel.has(r.target)
       const isSel = selEdges.has(r.id)
       const isHover = hoveredEdgeId === r.id
-      const visible = edgeMode === 'all' || touchesHover || isSel || isHover || (edgeMode === 'selected' && touchesSel)
+      // Scene → take wires are shown with their scene/take whenever it is selected or hovered, whatever the mode.
+      const visible = edgeMode === 'all' || touchesHover || isSel || isHover || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
       if (!visible) continue
       const highlight = touchesHover || touchesSel || isSel || isHover
       const prev = prevCache.get(r.id)
@@ -172,6 +197,7 @@ function CanvasInner() {
         edge = prev
       } else {
         const data: LinkEdgeData = { kind: r.kind, index: r.index, count: r.count, color: r.color, highlight }
+        const isOut = r.kind === 'out'
         edge = {
           id: r.id,
           type: r.kind,
@@ -180,8 +206,10 @@ function CanvasInner() {
           sourceHandle: r.sourceHandle,
           targetHandle: r.targetHandle,
           selected: isSel,
-          reconnectable: r.kind === 'ref' ? 'target' : false,
-          markerEnd: r.kind === 'seq' ? SEQ_MARKER : undefined,
+          selectable: !isOut,
+          deletable: !isOut,
+          focusable: !isOut,
+          reconnectable: r.kind === 'ref' || r.kind === 'vref' ? 'target' : false,
           data,
         }
       }
@@ -201,6 +229,15 @@ function CanvasInner() {
     const kept = ui.selectedEdgeIds.filter((id) => live.has(id))
     if (kept.length !== ui.selectedEdgeIds.length) ui.setSelectedEdges(kept)
   }, [rawEdges])
+
+  // Same for take nodes hidden by "Chỉ take chọn": a hidden take must not stay selected (Delete would remove it).
+  useEffect(() => {
+    const ui = useUI.getState()
+    if (!ui.selectedIds.length) return
+    const all = takeIndexOf(useRuns.getState().takes).byId
+    const kept = ui.selectedIds.filter((id) => !all.has(id) || takeLayout.byId.has(id))
+    if (kept.length !== ui.selectedIds.length) ui.select(kept)
+  }, [takeLayout])
 
   // Node selection changed outside React Flow (N, Ctrl+A, Inspector / queue "Đi tới cảnh", drops…): drop the wire
   // selection too, like a plain click on a node does. Wires are canvas-only, so leaving the canvas clears them as well.
@@ -226,9 +263,18 @@ function CanvasInner() {
       else if (r.target === hoveredId) lit.add(r.source)
     }
     if (lit.size < 2) return ''
-    const nots = [...lit].map((id) => `:not([data-id="${id.replace(/"/g, '')}"])`).join('')
+    const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
     return `.cv-stage .react-flow__node${nots}{opacity:.38}`
   }, [hoveredId, rawEdges, connecting, libraryDrag])
+
+  // While wiring a take, its own scene is not a valid target (a scene cannot reference its own video).
+  const ownSceneCss = useMemo(() => {
+    if (connKind !== 'take' || !connFrom) return ''
+    const sceneId = takeIndexOf(useRuns.getState().takes).byId.get(connFrom)?.sceneId
+    if (!sceneId) return ''
+    const sel = `.cv-stage .react-flow__node[data-id="${cssId(sceneId)}"] .cv-scene`
+    return `${sel}{box-shadow:none!important;border-color:var(--border-strong)!important;opacity:.55}${sel} .cv-conn-hint{display:none!important}`
+  }, [connKind, connFrom])
 
   // ---------------- React Flow change handlers ----------------
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
@@ -265,17 +311,50 @@ function CanvasInner() {
         return changed ? { measured: m } : s
       })
     }
-    if (Object.keys(drag).length) ui.setDragPos(drag)
+
+    // An auto-placed take dragged together with its scene just follows the scene (stays auto-placed).
+    const layout = layoutRef.current
     const commitIds = Object.keys(commit)
+    const movingIds = Object.keys(drag).concat(commitIds)
+    if (movingIds.length) {
+      const moving = new Set(movingIds)
+      for (const id of movingIds) {
+        const item = layout.byId.get(id)
+        if (item && !item.explicit && moving.has(item.sceneId)) {
+          delete drag[id]
+          delete commit[id]
+        }
+      }
+    }
+    if (Object.keys(drag).length) ui.setDragPos(drag)
     if (commitIds.length) {
       const project = useProject.getState().project
       const sm = sceneMapOf(project.scenes)
       const am = assetMapOf(project.assets)
-      const moved = commitIds.some((id) => {
-        const cur = sm.get(id)?.position ?? am.get(id)?.position
-        return !cur || cur.x !== commit[id].x || cur.y !== commit[id].y
-      })
-      if (moved) useProject.getState().setPositions(commit)
+      const takes = takeIndexOf(useRuns.getState().takes).byId
+      const projectCommit: Record<string, XY> = {}
+      const takeCommit: Record<string, XY | null> = {}
+      let projectMoved = false
+      let takesMoved = false
+      for (const [id, pos] of Object.entries(commit)) {
+        const item = layout.byId.get(id)
+        if (item) {
+          const scene = sm.get(item.sceneId)
+          const take = takes.get(id)
+          if (!scene || !take) continue
+          // Dropped exactly on its auto slot: keep it auto-placed (it keeps following the scene).
+          const auto = defaultTakePosition(commit[scene.id] ?? scene.position, item.index)
+          const next = samePos(auto, pos) ? null : pos
+          takeCommit[id] = next
+          if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
+        } else {
+          projectCommit[id] = pos
+          const cur = sm.get(id)?.position ?? am.get(id)?.position
+          if (!samePos(cur ?? undefined, pos)) projectMoved = true
+        }
+      }
+      if (projectMoved) useProject.getState().setPositions(projectCommit)
+      if (takesMoved) useRuns.getState().setTakePositions(takeCommit)
       ui.clearDragPos(commitIds)
     }
     if (sel) {
@@ -294,12 +373,13 @@ function CanvasInner() {
     (changes: EdgeChange<LinkEdge>[]) => {
       const ui = useUI.getState()
       // Box selection also selects every wire touching a boxed node (even ones leaving the box): accept wire
-      // selection only from explicit clicks, otherwise Delete would cut refs / continuity outside the box.
+      // selection only from explicit clicks, otherwise Delete would cut references outside the box.
       const { userSelectionActive, userSelectionRect } = rfStore.getState()
       const boxing = userSelectionActive || !!userSelectionRect
       let sel: Set<string> | null = null
       for (const c of changes) {
         if (c.type !== 'select' || (c.selected && boxing)) continue
+        if (c.selected && parseEdgeId(c.id)?.kind === 'out') continue
         sel ??= new Set(ui.selectedEdgeIds)
         if (c.selected) sel.add(c.id)
         else sel.delete(c.id)
@@ -332,10 +412,12 @@ function CanvasInner() {
       }
       const from = state.fromNode
       if (!from || state.fromHandle?.type !== 'source') return
+      if (from.type !== 'asset' && from.type !== 'take') return
       const pt = clientPoint(event)
       const hit = hitTest(pt.x, pt.y, stageRef.current)
       if (!hit) return
       if (hit.kind === 'node') {
+        // Released anywhere over a scene card (not only on its handle).
         if (hit.id !== from.id && sceneMapOf(useProject.getState().project.scenes).has(hit.id)) connectNodes(from.id, hit.id, 'ref')
         return
       }
@@ -347,7 +429,7 @@ function CanvasInner() {
         // Keep the whole menu above the queue drawer (it paints over the canvas, z-index 40 > menu 20).
         y: Math.max(8, Math.min(pt.y - rect.top, rect.height - drawerInset(stage) - MENU_ROOM)),
         flow: rf.screenToFlowPosition(pt),
-        source: from.type === 'asset' ? { kind: 'asset', assetIds: sourceAssetsFor(from.id) } : { kind: 'scene', sceneId: from.id },
+        source: from.type === 'asset' ? { kind: 'asset', assetIds: sourceAssetsFor(from.id) } : { kind: 'take', takeId: from.id, takeIds: sourceTakesFor(from.id) },
       })
     },
     [rf],
@@ -356,12 +438,11 @@ function CanvasInner() {
   const isValidConnection = useCallback((c: LinkEdge | Connection) => {
     if (c.source === c.target) return false
     const p = useProject.getState().project
-    const sm = sceneMapOf(p.scenes)
-    const am = assetMapOf(p.assets)
-    if (!sm.has(c.target)) return false
+    if (!sceneMapOf(p.scenes).has(c.target)) return false
     const th = c.targetHandle ?? 'ref'
-    if (am.has(c.source)) return th === 'ref' || th === 'first' || th === 'last'
-    if (sm.has(c.source)) return th === 'ref'
+    if (assetMapOf(p.assets).has(c.source)) return th === 'ref' || th === 'first' || th === 'last'
+    const take = takeIndexOf(useRuns.getState().takes).byId.get(c.source)
+    if (take) return th === 'ref' && take.status === 'completed' && take.sceneId !== c.target
     return false
   }, [])
 
@@ -371,7 +452,7 @@ function CanvasInner() {
   }, [])
   const onReconnect = useCallback((oldEdge: LinkEdge, c: Connection) => {
     if (reconnecting.current) reconnecting.current.done = true
-    moveRefEdge(oldEdge.id, c.target)
+    moveEdge(oldEdge.id, c.target)
   }, [])
   const onReconnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, edge: LinkEdge, _h: HandleType, _state: FinalConnectionState) => {
@@ -382,7 +463,7 @@ function CanvasInner() {
       const hit = hitTest(pt.x, pt.y, stageRef.current)
       if (!hit) return
       if (hit.kind === 'node') {
-        if (hit.id !== edge.target && sceneMapOf(useProject.getState().project.scenes).has(hit.id)) moveRefEdge(edge.id, hit.id)
+        if (hit.id !== edge.target && sceneMapOf(useProject.getState().project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
         return
       }
       // Dropped on empty canvas: cut the wire.
@@ -400,6 +481,7 @@ function CanvasInner() {
     scheduleHoverEnd(() => useUI.getState().setHovered(null))
   }, [])
   const onEdgeMouseEnter: EdgeMouseHandler<LinkEdge> = useCallback((_e, edge) => {
+    if (edge.type === 'out') return
     keepHover()
     useCanvasLocal.getState().setHoveredEdge(edge.id)
   }, [])
@@ -493,13 +575,13 @@ function CanvasInner() {
   const closeMenu = useCallback(() => setMenu(null), [])
 
   const handMode = interaction === 'hand'
-  const stageCls = ['cv-stage', handMode ? 'mode-hand' : 'mode-select', connecting && `cv-connecting cv-connecting-${connecting}`, libraryDrag && 'cv-library-drag']
+  const stageCls = ['cv-stage', handMode ? 'mode-hand' : 'mode-select', connKind && `cv-connecting cv-connecting-${connKind}`, libraryDrag && 'cv-library-drag']
     .filter(Boolean)
     .join(' ')
 
   return (
     <div ref={stageRef} className={stageCls} onDoubleClick={onDoubleClick} onDragOver={onDragOver} onDrop={onDrop}>
-      {dimCss && <style>{dimCss}</style>}
+      {(dimCss || ownSceneCss) && <style>{dimCss + ownSceneCss}</style>}
       <ReactFlow<CanvasNode, LinkEdge>
         nodes={nodes}
         edges={edges}
@@ -577,40 +659,31 @@ function CanvasInner() {
   )
 }
 
+const cssId = (id: string) => id.replace(/["\\]/g, '')
+
 // ---------------------------------------------------------------------------------------------
-function buildRawEdges(scenes: Scene[], assets: Asset[]): RawEdge[] {
+/** Every wire that can be drawn (visibility by edge mode is decided later). Only wires between shown nodes. */
+function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout): RawEdge[] {
   const onCanvas = new Map<string, Asset>()
   for (const a of assets) if (a.position) onCanvas.set(a.id, a)
-  const sceneIds = new Set(scenes.map((s) => s.id))
   const out: RawEdge[] = []
   for (const s of scenes) {
-    const refs = s.refs.filter((r) => onCanvas.has(r))
-    refs.forEach((r, index) => {
-      out.push({
-        id: edgeId('ref', r, s.id),
-        kind: 'ref',
-        source: r,
-        target: s.id,
-        sourceHandle: 'out',
-        targetHandle: 'ref',
-        index,
-        count: refs.length,
-        color: onCanvas.get(r)!.color,
-      })
-    })
-    if (s.continueFrom && sceneIds.has(s.continueFrom)) {
-      out.push({
-        id: edgeId('seq', s.continueFrom, s.id),
-        kind: 'seq',
-        source: s.continueFrom,
-        target: s.id,
-        sourceHandle: 'seq',
-        targetHandle: 'ref',
-        index: 0,
-        count: 1,
-        color: '#8d93a0',
-      })
+    // Image refs and video refs both arrive at the left 'ref' handle: spread them together.
+    const incoming: RawEdge[] = []
+    for (const r of s.refs) {
+      const a = onCanvas.get(r)
+      if (!a) continue
+      incoming.push({ id: edgeId('ref', r, s.id), kind: 'ref', source: r, target: s.id, sourceHandle: 'out', targetHandle: 'ref', index: 0, count: 0, color: a.color })
     }
+    for (const t of s.videoRefs) {
+      if (!takes.byId.has(t)) continue
+      incoming.push({ id: edgeId('vref', t, s.id), kind: 'vref', source: t, target: s.id, sourceHandle: 'out', targetHandle: 'ref', index: 0, count: 0, color: VIDEO_COLOR })
+    }
+    incoming.forEach((e, index) => {
+      e.index = index
+      e.count = incoming.length
+      out.push(e)
+    })
     if (s.settings.mode === 'transform') {
       for (const which of ['first', 'last'] as const) {
         const aid = which === 'first' ? s.firstFrame : s.lastFrame
@@ -629,21 +702,32 @@ function buildRawEdges(scenes: Scene[], assets: Asset[]): RawEdge[] {
       }
     }
   }
+  for (const item of takes.items) {
+    out.push({
+      id: edgeId('out', item.sceneId, item.id),
+      kind: 'out',
+      source: item.sceneId,
+      target: item.id,
+      sourceHandle: 'take',
+      targetHandle: 'in',
+      index: 0,
+      count: 1,
+      color: '#6d7179',
+    })
+  }
   return out
 }
 
-/** Apply a finished connection gesture. `targetHandle` decides ref vs first/last frame. */
+/** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. Take: @video ref. */
 function connectNodes(source: string, target: string, targetHandle: string | null | undefined) {
   const project = useProject.getState().project
-  const sm = sceneMapOf(project.scenes)
-  const am = assetMapOf(project.assets)
-  const targetScene = sm.get(target)
+  const targetScene = sceneMapOf(project.scenes).get(target)
   if (!targetScene || source === target) return
-  const asset = am.get(source)
+  const asset = assetMapOf(project.assets).get(source)
   if (asset) {
     if (targetHandle === 'first' || targetHandle === 'last') {
       useProject.getState().setFrame(target, targetHandle, source)
-      toast(`@${asset.tag} → ${targetHandle === 'first' ? 'khung đầu' : 'khung cuối'} của ${sceneCode(targetScene.order)}.`, {
+      toast(`${asset.name} → ${targetHandle === 'first' ? 'khung đầu' : 'khung cuối'} của ${sceneCode(targetScene.order)}.`, {
         tone: 'success',
         action: undoToastAction(),
       })
@@ -652,50 +736,92 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
     linkAssets(targetScenesFor(target), sourceAssetsFor(source))
     return
   }
-  const from = sm.get(source)
-  if (!from) return
-  if (targetScene.continueFrom === source) {
-    toast(`${sceneCode(targetScene.order)} đã nối tiếp sau ${sceneCode(from.order)}.`, { tone: 'info' })
+  const take = takeIndexOf(useRuns.getState().takes).byId.get(source)
+  if (!take) return
+  if (take.status !== 'completed') {
+    toast('Video chưa tạo xong.', { tone: 'warning' })
     return
   }
-  const ok = useProject.getState().setContinueFrom(target, source)
-  if (!ok) {
-    toast('Không nối được: chuỗi cảnh sẽ bị vòng lặp.', { tone: 'warning' })
-    return
-  }
-  toast(`${sceneCode(targetScene.order)} nối tiếp sau ${sceneCode(from.order)}.`, { tone: 'success', action: undoToastAction() })
+  // linkTakes checks readiness, own-scene loops and model limits, and reports.
+  linkTakes(targetScenesFor(target), sourceTakesFor(source))
 }
 
-/** Move a reference wire to another scene (reconnect gesture). */
-function moveRefEdge(id: string, newTarget: string) {
+/** Reconnect gesture: move an image or video reference wire to another scene. */
+function moveEdge(id: string, newTarget: string) {
   const e = parseEdgeId(id)
-  if (!e || e.kind !== 'ref' || e.to === newTarget) return
+  if (!e || e.to === newTarget) return
+  if (e.kind === 'ref') moveRefEdge(e.from, e.to, newTarget)
+  else if (e.kind === 'vref') moveVideoEdge(e.from, e.to, newTarget)
+}
+
+function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
   const project = useProject.getState().project
   const target = sceneMapOf(project.scenes).get(newTarget)
-  const asset = assetMapOf(project.assets).get(e.from)
+  const asset = assetMapOf(project.assets).get(assetId)
   if (!target || !asset) return
-  const already = target.refs.includes(e.from)
+  const already = target.refs.includes(assetId)
   // Target at its image limit: refuse the move and keep the original link (nothing changes).
-  if (!already && refImageCount(project, [...target.refs, e.from]) > MODELS[target.settings.model].maxRefImages) {
-    toast(`Không chuyển được @${asset.tag} sang ${sceneCode(target.order)} (vượt giới hạn ảnh) — giữ nguyên nối cũ.`, { tone: 'warning' })
+  if (!already && refImageCount(project, [...target.refs, assetId]) > MODELS[target.settings.model].maxRefImages) {
+    toast(`Không chuyển được ${asset.name} sang ${sceneCode(target.order)} (vượt giới hạn ảnh) — giữ nguyên nối cũ.`, { tone: 'warning' })
     return
   }
-  useProject.getState().moveRefToScene(e.from, e.to, newTarget)
+  useProject.getState().moveRefToScene(assetId, fromSceneId, newTarget)
   const after = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
-  const added = !!after?.refs.includes(e.from)
+  const added = !!after?.refs.includes(assetId)
   useUI.getState().setSelectedEdges([])
   toast(
     already
-      ? `${sceneCode(target.order)} đã có @${asset.tag} — bỏ nối ở cảnh cũ.`
+      ? `${sceneCode(target.order)} đã có ${asset.name} — bỏ nối ở cảnh cũ.`
       : added
-        ? `Đã chuyển @${asset.tag} sang ${sceneCode(target.order)}.`
-        : `Không thêm được @${asset.tag} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
+        ? `Đã chuyển ${asset.name} sang ${sceneCode(target.order)}.`
+        : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
     { tone: added || already ? 'success' : 'warning', action: undoToastAction() },
   )
 }
 
+/** Move a @video reference: add it to the new scene first (may be refused), then drop it from the old one. */
+function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
+  const take = takeIndexOf(useRuns.getState().takes).byId.get(takeId)
+  const target = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
+  if (!take || !target) return
+  const label = takeLabel(takeId)
+  if (take.sceneId === newTarget) {
+    toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó — giữ nguyên nối cũ.', { tone: 'warning' })
+    return
+  }
+  const already = target.videoRefs.includes(takeId)
+  if (!already) {
+    const res = useProject.getState().addVideoRefs([newTarget], [takeId])
+    if (!res.added) {
+      toast(`${sceneCode(target.order)} không nhận thêm video tham chiếu (model/chế độ) — giữ nguyên nối cũ.`, { tone: 'warning' })
+      return
+    }
+  }
+  useProject.getState().removeVideoRef(fromSceneId, takeId, 'video ' + label)
+  useUI.getState().setSelectedEdges([])
+  // Two history steps (add + remove): the toast undoes both, if nothing changed since.
+  const after = useProject.getState().project
+  toast(already ? `${sceneCode(target.order)} đã có ${label} — bỏ nối ở cảnh cũ.` : `Đã chuyển ${label} sang ${sceneCode(target.order)}.`, {
+    tone: 'success',
+    action: {
+      label: 'Hoàn tác',
+      run: () => {
+        if (useProject.getState().project !== after) {
+          toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' })
+          return
+        }
+        undo()
+        if (!already) undo()
+      },
+    },
+  })
+}
+
 function minimapColor(node: CanvasNode): string {
   if (node.type === 'asset') return assetMapOf(useProject.getState().project.assets).get(node.id)?.color ?? '#6d7179'
-  const st = takeSummary(useRuns.getState().takes, node.id).status
-  return st ? STATUS_HEX[st] : '#3b3f47'
+  if (node.type === 'take') {
+    const st = takeIndexOf(useRuns.getState().takes).byId.get(node.id)?.status
+    return st ? STATUS_HEX[st] : '#3b3f47'
+  }
+  return sceneMapOf(useProject.getState().project.scenes).get(node.id)?.color ?? '#5b606b'
 }

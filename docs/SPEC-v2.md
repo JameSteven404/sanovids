@@ -33,3 +33,16 @@ User feedback (Vietnamese, paraphrased):
 
 ## 4. Resizable side panels (done in the app shell)
 - `components/common/PanelResizer.tsx`: drag the border between a side panel and the center to resize (left 200–520px, right 300–680px, center ≥ 360px), double-click resets, arrow keys ±16px (Shift ±64), dragging ~90px past the minimum collapses the panel. Widths persist in localStorage (`bdp:pref:leftW` / `bdp:pref:rightW`) and live in the CSS variables `--left-w` / `--right-w` on `.app`. Components must not hardcode panel widths.
+
+## 5. Desktop app (.exe) — Electron + electron-builder
+- `electron/main.cjs`: one BrowserWindow (min 1100×700, dark background `#0f1012`, title "Bàn Dựng Phim", no default menu bar; keep DevTools on Ctrl+Shift+I), loads the built app through a privileged custom protocol `app://bdp/` (standard + secure + supportFetchAPI + corsEnabled, registered before ready) that serves files from `dist/` — so IndexedDB/localStorage get a stable origin and data persists between launches. External links open in the default browser. Single-instance lock.
+- Vite `base: './'` so the build works from the custom protocol and any static host. The service worker (PWA) is NOT registered inside Electron (`navigator.userAgent` contains "Electron" or `window.bdpDesktop`), only on http(s).
+- `electron/preload.cjs` exposes `window.bdpDesktop = { version }` (contextIsolation on, nodeIntegration off).
+- electron-builder (config in package.json "build"): appId `vn.bandungphim.app`, productName "Bàn Dựng Phim", files `dist/**` + `electron/**`, icon `build/icon.png` (512×512, generated), Windows targets **nsis** (assisted installer: choose directory, desktop + start-menu shortcuts, Vietnamese + English installer languages, artifactName `Ban-Dung-Phim-Setup-${version}.exe`) and **portable** (`Ban-Dung-Phim-Portable-${version}.exe`). Output dir `release/` (git-ignored).
+- Scripts: `npm run desktop` (build + run Electron locally), `npm run dist:win` (build + both .exe). Unsigned: document the SmartScreen "More info → Run anyway" step in README.
+
+## 6. Big download button (user request, like canvasapp's "Tải MP4")
+- Every Take node gets a full-width primary button at the bottom: "⬇ Tải video" (completed) → downloads the video blob as `S03_T2 - <scene title>.<ext>` plus `S03_T2 - <scene title>.txt` with the prompt that was sent (canvasapp saved .mp4 + .txt the same way). While queued/processing the button is disabled and shows the progress ("Đang tạo 42%"); failed → "Chạy lại"; cancelled → "Chạy lại".
+- Same big button in the TakeViewer footer and in the Storyboard player.
+- "Tải tất cả take ★" (top bar menu / storyboard header): one .zip with the chosen take of every scene, named `S01_T2 - title.webm` in scene order, plus `prompts.txt`.
+- Optional (Settings): "Tự tải video khi xong" toggle + folder picker (File System Access API `showDirectoryPicker`, remembered in IndexedDB; fallback = browser Downloads).

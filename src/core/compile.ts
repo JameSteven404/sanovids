@@ -1,15 +1,21 @@
-import { MODELS, usesRefs } from './models'
-import type { Asset, CompiledImage, CompiledPrompt, Project, PromptBlock, Scene } from './types'
+import { MODELS, usesRefs, usesVideoRefs } from './models'
+import type { Asset, CompiledImage, CompiledPrompt, CompiledVideo, Project, Scene } from './types'
 
-/** @Tag mention: letters (incl. Vietnamese), digits, underscore. */
+/** Legacy @Tag mention: letters (incl. Vietnamese), digits, underscore. Also matches @image_N/@video_N. */
 export const MENTION_RE = /@([\p{L}\p{N}_]+)/gu
-const RAW_IMAGE_TOKEN = /^image_\d+$/i
+/** Numbered media token. Group 1 = kind, group 2 = number. */
+export const TOKEN_RE = /@(image|video)_(\d+)\b/gi
+const RAW_TOKEN = /^(image|video)_\d+$/i
 
 export function sceneCode(order: number): string {
   return 'S' + String(order).padStart(2, '0')
 }
 
-/** Strip Vietnamese diacritics and spaces to build a mention tag: "Bé An" -> "BeAn". */
+export function takeCode(sceneOrder: number | null | undefined, takeNumber: number): string {
+  return `${sceneOrder ? sceneCode(sceneOrder) : 'S??'}·T${takeNumber}`
+}
+
+/** Strip Vietnamese diacritics and spaces to build a tag: "Bé An" -> "BeAn". */
 export function slugTag(name: string): string {
   const base = name
     .normalize('NFD')
@@ -26,20 +32,21 @@ export function slugTag(name: string): string {
 
 export function uniqueTag(name: string, taken: Iterable<string>): string {
   const set = new Set([...taken].map((t) => t.toLowerCase()))
-  const base = slugTag(name)
+  let base = slugTag(name)
+  if (RAW_TOKEN.test(base)) base = base + 'X'
   if (!set.has(base.toLowerCase())) return base
   for (let i = 2; i < 999; i++) if (!set.has((base + i).toLowerCase())) return base + i
   return base + Date.now()
 }
 
-/** Tags mentioned in a text, in order of first appearance, without duplicates (case-insensitive). */
+/** Legacy @Tag mentions in a text, in order of first appearance, without duplicates (case-insensitive). */
 export function extractMentions(text: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const m of text.matchAll(MENTION_RE)) {
     const tag = m[1]
     const key = tag.toLowerCase()
-    if (RAW_IMAGE_TOKEN.test(tag) || seen.has(key)) continue
+    if (RAW_TOKEN.test(tag) || seen.has(key)) continue
     seen.add(key)
     out.push(tag)
   }
@@ -51,123 +58,191 @@ export function assetByTag(assets: Asset[], tag: string): Asset | undefined {
   return assets.find((a) => a.tag.toLowerCase() === key)
 }
 
-export function isBlockOn(scene: Scene, block: PromptBlock): boolean {
-  return scene.blockOverrides[block.id] ?? block.defaultOn
+// ---------------------------------------------------------------------------------------------
+// Numbered tokens
+// ---------------------------------------------------------------------------------------------
+
+export interface TokenMatch {
+  kind: 'image' | 'video'
+  n: number
+  start: number
+  end: number
 }
 
-export const DEFAULT_REFERENCES_TEMPLATE =
-  "References (upload in this order; use each image only for that character's or place's look): {list}."
+/** All @image_N / @video_N tokens with their positions (for highlighting and validation). */
+export function parseTokens(text: string): TokenMatch[] {
+  const out: TokenMatch[] = []
+  for (const m of text.matchAll(TOKEN_RE)) {
+    out.push({ kind: m[1].toLowerCase() as 'image' | 'video', n: Number(m[2]), start: m.index!, end: m.index! + m[0].length })
+  }
+  return out
+}
 
-/**
- * The automatic "continue from the previous scene" line, or null when auto-continuity is off, the scene
- * continues from nothing, or its prompt / an active block already talks about the previous scene.
- */
-export function continuityLine(project: Project, scene: Scene): string | null {
-  if (!project.settings.autoContinuity || !scene.continueFrom) return null
-  const prev = project.scenes.find((s) => s.id === scene.continueFrom)
-  if (!prev) return null
-  const texts = [scene.prompt, ...project.blocks.filter((b) => isBlockOn(scene, b)).map((b) => b.text)]
-  if (texts.some((t) => /previous scene/i.test(t))) return null
-  return `Continue directly from the previous scene (${sceneCode(prev.order)}${prev.title ? ': ' + prev.title : ''}).`
+export interface ImageSlot {
+  n: number
+  assetId: string
+  imageId: string
+  /** Index of the image inside its asset (0 = primary). */
+  imageIndex: number
+}
+
+/** Numbered reference images of a list of asset ids (each image of an asset gets its own number). */
+export function imageSlotsFor(assets: Asset[], refs: string[]): ImageSlot[] {
+  const byId = new Map(assets.map((a) => [a.id, a]))
+  const out: ImageSlot[] = []
+  for (const id of refs) {
+    const a = byId.get(id)
+    if (!a) continue
+    a.imageIds.forEach((imageId, imageIndex) => out.push({ n: out.length + 1, assetId: a.id, imageId, imageIndex }))
+  }
+  return out
+}
+
+export function imageSlots(project: Project, scene: Scene): ImageSlot[] {
+  return imageSlotsFor(project.assets, scene.refs)
+}
+
+/** Stable identity of an image slot used by the renumbering (survives reorders). */
+export const imageKey = (s: { assetId: string; imageId: string }) => `${s.assetId}:${s.imageId}`
+
+/** "@image_N" for the primary image of an asset in this scene, or null when the asset is not linked / has no image. */
+export function tokenForAsset(project: Project, scene: Scene, assetId: string): string | null {
+  const slot = imageSlots(project, scene).find((s) => s.assetId === assetId)
+  return slot ? `@image_${slot.n}` : null
+}
+
+export function tokenForVideo(scene: Scene, takeId: string): string | null {
+  const i = scene.videoRefs.indexOf(takeId)
+  return i >= 0 ? `@video_${i + 1}` : null
 }
 
 /**
- * Compile the final prompt that would be sent to the provider for one scene.
- * Pure function: same input -> same output. Used by the inspector preview, the run queue and "Copy".
+ * Rewrite @image_N / @video_N tokens after the references changed so every token keeps pointing at the same
+ * image/video. Tokens whose image/video disappeared are replaced with `fallback(kind, key)` (e.g. the asset name).
+ * Tokens that were already invalid (number out of range before the change) are left untouched.
  */
-export function compileScene(project: Project, scene: Scene): CompiledPrompt {
+export function remapTokens(
+  text: string,
+  before: { images: string[]; videos: string[] },
+  after: { images: string[]; videos: string[] },
+  fallback: (kind: 'image' | 'video', key: string) => string,
+): { text: string; dropped: number; changed: boolean } {
+  let dropped = 0
+  let changed = false
+  const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawN: string) => {
+    const kind = rawKind.toLowerCase() as 'image' | 'video'
+    const oldKeys = kind === 'image' ? before.images : before.videos
+    const newKeys = kind === 'image' ? after.images : after.videos
+    const key = oldKeys[Number(rawN) - 1]
+    if (key === undefined) return whole
+    const idx = newKeys.indexOf(key)
+    const next = idx >= 0 ? `@${kind}_${idx + 1}` : fallback(kind, key)
+    if (idx < 0) dropped++
+    if (next !== whole) changed = true
+    return next
+  })
+  return { text: out, dropped, changed }
+}
+
+/** Keys of a scene's media before/after a change — input for remapTokens. */
+export function mediaKeys(assets: Asset[], refs: string[], videoRefs: string[]) {
+  return { images: imageSlotsFor(assets, refs).map(imageKey), videos: [...videoRefs] }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Compile
+// ---------------------------------------------------------------------------------------------
+
+export interface CompileOptions {
+  /** Status of takes by id, to warn about reference videos that are not usable. */
+  takeStatus?: (takeId: string) => string | undefined
+}
+
+/**
+ * Compile the prompt that would be sent for one scene. Pure function.
+ * The text is the scene prompt as written; legacy @Tag mentions are converted to @image_N.
+ */
+export function compileScene(project: Project, scene: Scene, opts: CompileOptions = {}): CompiledPrompt {
   const spec = MODELS[scene.settings.model]
   const limit = spec.promptLimit(scene.settings.mode)
   const warnings: string[] = []
+  const notes: string[] = []
+  const sendsImages = usesRefs(scene.settings)
+  const sendsVideos = usesVideoRefs(scene.settings)
   const assetMap = new Map(project.assets.map((a) => [a.id, a]))
-  const sendsRefs = usesRefs(scene.settings)
 
-  // 1) Number the reference images in scene.refs order.
-  const images: CompiledImage[] = []
-  const firstN = new Map<string, number[]>()
-  const refAssets: Asset[] = []
-  if (sendsRefs) {
-    for (const id of scene.refs) {
-      const asset = assetMap.get(id)
-      if (!asset) continue
-      if (!asset.imageIds.length) {
-        warnings.push(`@${asset.tag} chưa có ảnh nên không được gửi.`)
-        continue
-      }
-      const ns: number[] = []
-      for (const imageId of asset.imageIds) {
-        if (images.length >= spec.maxRefImages) break
-        const n = images.length + 1
-        images.push({ n, assetId: asset.id, imageId })
-        ns.push(n)
-      }
-      if (ns.length) {
-        firstN.set(asset.id, ns)
-        refAssets.push(asset)
-      }
-    }
-    const totalImages = scene.refs.reduce((t, id) => t + (assetMap.get(id)?.imageIds.length ?? 0), 0)
-    if (totalImages > spec.maxRefImages) {
-      warnings.push(`${spec.name} nhận tối đa ${spec.maxRefImages} ảnh; ${totalImages - spec.maxRefImages} ảnh cuối bị bỏ.`)
-    }
-    if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
+  // Images
+  const allSlots = imageSlots(project, scene)
+  const images: CompiledImage[] = sendsImages ? allSlots.slice(0, spec.maxRefImages).map(({ n, assetId, imageId }) => ({ n, assetId, imageId })) : []
+  if (sendsImages && allSlots.length > spec.maxRefImages) {
+    warnings.push(`${spec.name} nhận tối đa ${spec.maxRefImages} ảnh; ${allSlots.length - spec.maxRefImages} ảnh cuối sẽ không được gửi.`)
+  }
+  for (const id of scene.refs) {
+    const a = assetMap.get(id)
+    if (a && !a.imageIds.length) warnings.push(`“${a.name}” chưa có ảnh nên không được gửi.`)
+  }
+  if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
+  if (!sendsImages && scene.refs.length) notes.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh tham chiếu.`)
+
+  // Videos
+  const videos: CompiledVideo[] = sendsVideos ? scene.videoRefs.slice(0, spec.maxRefVideos).map((takeId, i) => ({ n: i + 1, takeId })) : []
+  if (sendsVideos && scene.videoRefs.length > spec.maxRefVideos) {
+    warnings.push(`${spec.name} nhận tối đa ${spec.maxRefVideos} video tham chiếu; ${scene.videoRefs.length - spec.maxRefVideos} video cuối sẽ không được gửi.`)
+  }
+  if (!sendsVideos && scene.videoRefs.length) warnings.push(`Chế độ này của ${spec.name} không nhận video tham chiếu.`)
+  if (opts.takeStatus) {
+    scene.videoRefs.forEach((id, i) => {
+      const st = opts.takeStatus!(id)
+      if (st === undefined) warnings.push(`@video_${i + 1} trỏ tới một take đã bị xoá.`)
+      else if (st !== 'completed') warnings.push(`@video_${i + 1} chưa tạo xong.`)
+    })
   }
 
-  if (scene.settings.mode === 'transform') {
-    if (!scene.firstFrame || !scene.lastFrame) warnings.push('Chế độ Khung đầu → cuối cần đủ Khung đầu và Khung cuối.')
+  if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) {
+    warnings.push('Chế độ Khung đầu → cuối cần đủ Khung đầu và Khung cuối.')
   }
 
-  // 2) Replace @Tag mentions.
+  // Legacy @Tag mentions -> @image_N
   const unknown = new Set<string>()
   const notLinked = new Set<string>()
-  const replaceMentions = (text: string) =>
-    text.replace(MENTION_RE, (whole, tag: string) => {
-      if (RAW_IMAGE_TOKEN.test(tag)) return whole
-      const asset = assetByTag(project.assets, tag)
-      if (!asset) {
-        unknown.add(tag)
-        return whole
-      }
-      const ns = firstN.get(asset.id)
-      if (ns && ns.length) return `@image_${ns[0]}`
-      // Linked but sending no image (no images / over the model limit) already has its own warning.
-      if (sendsRefs && !scene.refs.includes(asset.id)) notLinked.add(asset.tag)
-      return asset.name
-    })
+  const text = scene.prompt.trim().replace(MENTION_RE, (whole, tag: string) => {
+    if (RAW_TOKEN.test(tag)) return whole
+    const asset = assetByTag(project.assets, tag)
+    if (!asset) {
+      // Not an asset tag: probably just an "@" in the text. Only report things that look like tags.
+      if (/^\p{Lu}/u.test(tag)) unknown.add(tag)
+      return whole
+    }
+    const slot = allSlots.find((s) => s.assetId === asset.id)
+    if (slot) return `@image_${slot.n}`
+    notLinked.add(asset.name)
+    return asset.name
+  })
+  for (const t of unknown) notes.push(`@${t} không phải nhân vật trong thư viện nên được giữ nguyên.`)
+  for (const t of notLinked) warnings.push(`“${t}” được nhắc trong prompt nhưng chưa nối vào cảnh.`)
 
-  const parts: string[] = []
-  const before = project.blocks.filter((b) => b.placement === 'before' && isBlockOn(scene, b))
-  const after = project.blocks.filter((b) => b.placement === 'after' && isBlockOn(scene, b))
-  for (const b of before) if (b.text.trim()) parts.push(replaceMentions(b.text.trim()))
-
-  const continuity = continuityLine(project, scene)
-  if (continuity) parts.push(continuity)
-
-  const body = replaceMentions(scene.prompt.trim())
-  if (body) parts.push(body)
-  else warnings.push('Prompt của cảnh đang trống.')
-
-  if (project.settings.autoReferences && refAssets.length) {
-    const list = refAssets
-      .map((a) => {
-        const ns = firstN.get(a.id) ?? []
-        const tokens = ns.map((n) => `@image_${n}`).join(', ')
-        const desc = a.description.trim() ? ` (${a.description.trim()})` : ''
-        return `${tokens} = ${a.name}${desc}`
-      })
-      .join('; ')
-    const template = project.settings.referencesTemplate || DEFAULT_REFERENCES_TEMPLATE
-    parts.push(template.replace('{list}', list))
+  // Token validation
+  const tokens = parseTokens(text)
+  const usedImages = new Set<number>()
+  const usedVideos = new Set<number>()
+  for (const t of tokens) {
+    if (t.kind === 'image') {
+      usedImages.add(t.n)
+      if (t.n < 1 || t.n > allSlots.length) warnings.push(`@image_${t.n} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
+    } else {
+      usedVideos.add(t.n)
+      if (t.n < 1 || t.n > scene.videoRefs.length) warnings.push(`@video_${t.n} không tồn tại (cảnh có ${scene.videoRefs.length} video).`)
+    }
   }
+  const unusedImages = images.filter((i) => !usedImages.has(i.n)).map((i) => `@image_${i.n}`)
+  if (unusedImages.length) notes.push(`${unusedImages.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)
+  const unusedVideos = videos.filter((v) => !usedVideos.has(v.n)).map((v) => `@video_${v.n}`)
+  if (unusedVideos.length) notes.push(`${unusedVideos.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)
 
-  for (const b of after) if (b.text.trim()) parts.push(replaceMentions(b.text.trim()))
-
-  for (const t of unknown) warnings.push(`Không tìm thấy @${t} trong thư viện.`)
-  for (const t of notLinked) warnings.push(`@${t} có trong prompt nhưng chưa được nối vào cảnh.`)
-
-  const text = parts.join('\n\n')
+  if (!text) warnings.push('Prompt của cảnh đang trống.')
   const charCount = [...text].length
   if (charCount > limit) warnings.push(`Prompt dài ${charCount.toLocaleString('vi-VN')} ký tự, vượt giới hạn ${limit.toLocaleString('vi-VN')}.`)
 
-  return { text, images, assetIds: refAssets.map((a) => a.id), charCount, limit, warnings }
+  const assetIds = [...new Set(images.map((i) => i.assetId))]
+  return { text, images, videos, assetIds, charCount, limit, warnings: [...new Set(warnings)], notes }
 }

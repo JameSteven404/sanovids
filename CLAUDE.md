@@ -10,16 +10,16 @@ Demo phase: frontend only, runs locally, **mock video provider** (no network, no
 ## Stack
 Vite 8 + React 19 + TypeScript 7 (`tsc` is the native compiler) + `@xyflow/react` 12 (React Flow) + zustand 5 + zundo (undo/redo) + lucide-react 1.x + idb-keyval + jszip.
 
-## Architecture (read before editing)
-- `src/core/types.ts` — domain model. `Scene.refs` (ordered asset ids) IS the connection data; canvas wires are only a view of it.
-- `src/core/compile.ts` — pure prompt compiler: blocks + scene prompt + auto "References" paragraph, `@Tag` → `@image_N`. Covered by tests in `src/core/__tests__`.
-- `src/core/models.ts` — model capabilities (Seedance 2.5, MiniMax-H3), credit pricing, `costOf`, `normalizeSettings`.
-- `src/store/project.ts` — undoable project store (zundo). All authoring mutations live here. Text edits are coalesced into one undo step.
-- `src/store/runs.ts` — takes + mock job queue engine (not undoable). `src/lib/mockProvider.ts` renders poster/webm.
-- `src/store/ui.ts` — selection, view, dialogs, drag overlay, toasts (not undoable).
-- `src/store/persist.ts` — localStorage autosave, project list, export/import `.bdp.json`. Media blobs in IndexedDB (`src/lib/imageStore.ts`).
-- `src/actions.ts` — shared commands (connect, delete, duplicate, run, copy prompt, zip). UI calls these.
-- Edge ids: `ref:<assetId>-><sceneId>`, `seq:<prevSceneId>-><sceneId>`, `first:<assetId>-><sceneId>`, `last:...` (see `edgeId`/`parseEdgeId`).
+## Architecture (read before editing) — schema v2, see docs/SPEC-v2.md
+- `src/core/types.ts` — domain model. `Scene.refs` (ordered asset ids) = reference images → `@image_N`; `Scene.videoRefs` (ordered take ids) = reference videos → `@video_N`. Canvas wires are only a view of these lists. No prompt blocks, no auto references paragraph, no scene→scene continuity link.
+- `src/core/compile.ts` — pure: the prompt is sent as written; token helpers (`parseTokens`, `imageSlots`, `tokenForAsset`, `remapTokens`), validation warnings/notes. `src/core/migrate.ts` upgrades v1 data. Tests in `src/core/__tests__`, `src/store/__tests__`.
+- `src/core/models.ts` — model capabilities (image/video limits), credit pricing, `costOf`, `normalizeSettings`.
+- `src/store/project.ts` — undoable project store (zundo). Every refs/videoRefs change renumbers prompt tokens in the same undo step. `LAYOUT`, `ROW_H`, `defaultTakePosition`: one scene per row, its takes to the right.
+- `src/store/runs.ts` — takes (= video nodes on the canvas, `take.position`) + mock job queue (not undoable). `removeTakes` also drops them from every scene's videoRefs.
+- `src/store/ui.ts` — selection (scene, asset and take ids), view, dialogs, drag overlay, toasts, `takeDisplay`.
+- `src/store/persist.ts` — IndexedDB autosave (+ localStorage emergency backup), project list, export/import `.bdp.json`. All functions are async. Media blobs: `src/lib/imageStore.ts`.
+- `src/actions.ts` — shared commands (linkAssets, linkTakes, ensureAssetToken, createSceneFromTake, deleteSelection, run, copy, zip). UI calls these. Use `undoToastAction()` from the project store for toast undo buttons.
+- Edge ids: `ref:<assetId>-><sceneId>`, `first:`/`last:` (H3 frames), `out:<sceneId>-><takeId>`, `vref:<takeId>-><sceneId>` (see `edgeId`/`parseEdgeId`).
 
 ## Conventions
 - UI text in Vietnamese; model names stay English (Seedance 2.5, MiniMax-H3).

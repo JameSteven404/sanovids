@@ -1,23 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import {
-  analyzePrompts,
-  applyImport,
-  imageTokens,
-  normalizeKey,
+  applyImageMapping,
+  buildImportScenes,
+  fileTitle,
+  hasMapping,
+  itemsFromFiles,
   parsePromptText,
+  previewItem,
   SAMPLE_IMPORT_TEXT,
-  splitParagraphs,
+  scanTokens,
   splitPrompts,
-  suggestTitle,
-  type SelectedCandidate,
+  summarizeImport,
 } from '../importPrompts'
+import type { Asset } from '../types'
 
-const STYLE = 'Moody live-action drama, natural light, handheld camera, soft cuts between shots.'
-const AUDIO = 'Audio: ambient sound only. No music, no narration, no subtitles.'
-const RULES = 'Constraints, repeated: no logos, no on-screen text, no extra people in frame.'
-const prompt = (...paras: string[]) => paras.join('\n\n')
+const asset = (id: string, images = 1): Asset => ({
+  id,
+  kind: 'character',
+  name: id.toUpperCase(),
+  tag: id,
+  description: '',
+  imageIds: Array.from({ length: images }, (_, i) => `${id}-img${i}`),
+  color: '#fff',
+  position: null,
+})
 
-describe('splitPrompts', () => {
+describe('splitPrompts / parsePromptText', () => {
   it('splits on ---, === and *** lines (3+ chars) and drops empty chunks', () => {
     const text = 'one\n---\ntwo\n\n=====\n\nthree\r\n***\r\nfour\n------\n\n---\n'
     expect(splitPrompts(text)).toEqual(['one', 'two', 'three', 'four'])
@@ -33,156 +41,157 @@ describe('splitPrompts', () => {
       { title: '', text: 'third' },
     ])
   })
-})
-
-describe('splitParagraphs / normalizeKey', () => {
-  it('splits on blank lines (including whitespace-only lines) and trims', () => {
-    expect(splitParagraphs('  a\nb  \n \t\n\n c \n\nd')).toEqual(['a\nb', 'c', 'd'])
-  })
-  it('normalizes case and whitespace', () => {
-    expect(normalizeKey('  Audio:\n  Ambient   ONLY ')).toBe('audio: ambient only')
+  it('keeps @image_N / @video_N tokens and paragraphs exactly as written', () => {
+    const body = 'Style line.\n\nMara (@image_1) walks.\nContinue from @video_2.'
+    expect(parsePromptText(`---\n${body}\n---`)).toEqual([{ title: '', text: body }])
   })
 })
 
-describe('suggestTitle', () => {
-  it('uses the leading label', () => {
-    expect(suggestTitle(AUDIO)).toBe('Audio')
-    expect(suggestTitle(RULES)).toBe('Constraints')
-    expect(suggestTitle('**Âm thanh:** chỉ tiếng gió')).toBe('Âm thanh')
+describe('itemsFromFiles', () => {
+  it('uses the file name without extension as title, natural order, drops empty files', () => {
+    const items = itemsFromFiles([
+      { name: 'video 10.txt', text: 'ten' },
+      { name: 'video 2.txt', text: ' two\r\nlines ' },
+      { name: 'empty.txt', text: '  \n ' },
+      { name: 'Cảnh đầu.md', text: 'first' },
+    ])
+    expect(items).toEqual([
+      { title: 'Cảnh đầu', text: 'first' },
+      { title: 'video 2', text: 'two\nlines' },
+      { title: 'video 10', text: 'ten' },
+    ])
   })
-  it('falls back to the first words of the first clause', () => {
-    expect(suggestTitle(STYLE)).toBe('Moody live-action drama')
-    expect(suggestTitle('a very long opening sentence without any label or comma at all')).toBe('A very long opening sentence…')
+  it('fileTitle strips only the last extension', () => {
+    expect(fileTitle('S01.prompt.txt')).toBe('S01.prompt')
+    expect(fileTitle('no-ext')).toBe('no-ext')
   })
 })
 
-describe('analyzePrompts', () => {
-  const prompts = [
-    prompt(STYLE, 'Scene one action.', AUDIO, RULES),
-    prompt(STYLE, 'Scene two action.', AUDIO, RULES),
-    prompt(STYLE, 'Scene three action.', AUDIO),
-    prompt('Scene four action, no boilerplate at all.'),
+describe('scanTokens / previewItem / summarizeImport', () => {
+  it('finds distinct token numbers, case-insensitive, ignoring @image_0 and lookalikes', () => {
+    expect(scanTokens('@image_3 and @IMAGE_1, @image_3 again, @video_2, @image_0, @imageX, @image_12b')).toEqual({ images: [1, 3], videos: [2] })
+  })
+  it('previews the first lines, counts characters (code points) and tokens', () => {
+    const text = 'Dòng một @image_2\n\n  dòng hai\nba\nbốn 😀'
+    const p = previewItem({ title: 'A', text }, 2)
+    expect(p).toEqual({ title: 'A', excerpt: 'Dòng một @image_2\ndòng hai', chars: [...text].length, images: [2], videos: [] })
+    expect(p.chars).toBe(text.length - 1) // the emoji is one character, two UTF-16 units
+  })
+  it('summarizes counts and how many prompts mention each image number', () => {
+    const s = summarizeImport([
+      { title: '', text: '@image_1 @image_3' },
+      { title: '', text: '@image_1 @video_1' },
+      { title: '', text: 'no tokens' },
+    ])
+    expect(s).toMatchObject({ prompts: 3, maxImage: 3, maxVideo: 1, withImages: 2, withVideos: 1, imageUsage: [2, 0, 1] })
+    expect(summarizeImport([]).maxImage).toBe(0)
+  })
+})
+
+describe('applyImageMapping', () => {
+  const assets = [asset('a'), asset('b'), asset('c'), asset('multi', 2), asset('noimg', 0)]
+
+  it('links mentioned assets in number order and keeps the numbers when they line up', () => {
+    const m = applyImageMapping('@image_1 meets @image_2.', ['a', 'b'], assets)
+    expect(m).toEqual({ prompt: '@image_1 meets @image_2.', refs: ['a', 'b'], images: 2, pending: [] })
+  })
+
+  it('renumbers tokens when only some numbers are mentioned (onlyMentioned)', () => {
+    const m = applyImageMapping('Only @image_3 here, @image_3 again.', ['a', 'b', 'c'], assets)
+    expect(m.refs).toEqual(['c'])
+    expect(m.prompt).toBe('Only @image_1 here, @image_1 again.')
+  })
+
+  it('links every assigned asset when onlyMentioned is off', () => {
+    const m = applyImageMapping('Only @image_3.', ['a', 'b', 'c'], assets, { onlyMentioned: false })
+    expect(m.refs).toEqual(['a', 'b', 'c'])
+    expect(m.prompt).toBe('Only @image_3.')
+  })
+
+  it('accounts for assets with several images (each image has its own number)', () => {
+    const m = applyImageMapping('@image_1 and @image_2', ['multi', 'b'], assets)
+    // multi → @image_1 + @image_2 (its second picture), b → @image_3
+    expect(m.refs).toEqual(['multi', 'b'])
+    expect(m.images).toBe(3)
+    expect(m.prompt).toBe('@image_1 and @image_3')
+  })
+
+  it('maps repeated assets to their next images', () => {
+    const m = applyImageMapping('front @image_1, back @image_2, friend @image_3', ['multi', 'multi', 'a'], assets)
+    expect(m.refs).toEqual(['multi', 'a'])
+    expect(m.prompt).toBe('front @image_1, back @image_2, friend @image_3')
+    // A one-image asset used twice: both numbers point at its only picture.
+    expect(applyImageMapping('@image_1 / @image_2', ['a', 'a'], assets).prompt).toBe('@image_1 / @image_1')
+  })
+
+  it('renumbers unassigned numbers after the linked images, in order', () => {
+    const m = applyImageMapping('@image_1 @image_2 @image_4 @image_3', [null, 'b', null, null], assets)
+    expect(m.refs).toEqual(['b'])
+    expect(m.pending).toEqual([1, 3, 4])
+    // b → 1; pending 1 → 2, 3 → 3, 4 → 4
+    expect(m.prompt).toBe('@image_2 @image_1 @image_4 @image_3')
+  })
+
+  it('ignores assets without images and unknown ids; no usable mapping keeps the prompt untouched', () => {
+    const text = 'Keep @image_2 and @Image_5 as written.'
+    expect(applyImageMapping(text, ['noimg', 'ghost'], assets)).toEqual({ prompt: text, refs: [], images: 0, pending: [2, 5] })
+    expect(applyImageMapping(text, [], assets).prompt).toBe(text)
+  })
+
+  it('never touches @video_N tokens', () => {
+    const m = applyImageMapping('Continue from @video_1 with @image_2.', [null, 'a'], assets)
+    expect(m.prompt).toBe('Continue from @video_1 with @image_1.')
+  })
+
+  it('hasMapping is true only with an assigned asset that has images', () => {
+    expect(hasMapping(undefined, assets)).toBe(false)
+    expect(hasMapping([null, 'noimg'], assets)).toBe(false)
+    expect(hasMapping([null, 'a'], assets)).toBe(true)
+  })
+})
+
+describe('buildImportScenes', () => {
+  const items = [
+    { title: ' One ', text: 'A @image_1 and @image_2' },
+    { title: '', text: 'B only @image_2' },
+    { title: 'Three', text: 'C no tokens' },
   ]
+  const assets = [asset('x'), asset('y')]
 
-  it('suggests paragraphs repeated in >= max(2, 30%) prompts, ordered by position', () => {
-    const a = analyzePrompts(prompts)
-    expect(a.threshold).toBe(2)
-    expect(a.paragraphs[0]).toHaveLength(4)
-    expect(a.candidates.map((c) => [c.title, c.count, c.placement])).toEqual([
-      ['Moody live-action drama', 3, 'before'],
-      ['Audio', 3, 'after'],
-      ['Constraints', 2, 'after'],
+  it('keeps prompts as written without a mapping', () => {
+    expect(buildImportScenes(items)).toEqual([
+      { title: 'One', prompt: 'A @image_1 and @image_2', refs: [] },
+      { title: '', prompt: 'B only @image_2', refs: [] },
+      { title: 'Three', prompt: 'C no tokens', refs: [] },
     ])
-    expect(a.candidates[0].prompts).toEqual([0, 1, 2])
-    expect(a.candidates[0].avgPosition).toBe(0)
+    expect(buildImportScenes(items, { mapping: [null, null], assets }).map((s) => s.prompt)).toEqual(items.map((i) => i.text))
   })
 
-  it('ignores paragraphs below the threshold', () => {
-    const many = Array.from({ length: 10 }, (_, i) => prompt(`Unique scene ${i} with plenty of words.`, i < 3 ? RULES : 'Other closing line here.'))
-    const a = analyzePrompts(many)
-    expect(a.threshold).toBe(3)
-    // Same position → the more frequent one first.
-    expect(a.candidates.map((c) => [c.title, c.count])).toEqual([
-      ['Other closing line here', 7],
-      ['Constraints', 3],
+  it('applies one mapping to every scene', () => {
+    const scenes = buildImportScenes(items, { mapping: ['x', 'y'], assets })
+    expect(scenes.map((s) => [s.prompt, s.refs])).toEqual([
+      ['A @image_1 and @image_2', ['x', 'y']],
+      ['B only @image_1', ['y']],
+      ['C no tokens', []],
     ])
-    const few = Array.from({ length: 10 }, (_, i) => prompt(`Unique scene ${i} with plenty of words.`, i < 2 ? RULES : `Closing ${i}.`))
-    expect(analyzePrompts(few).candidates).toEqual([])
-  })
-
-  it('groups near-duplicates sharing the first 48 normalized chars and picks the most frequent variant', () => {
-    const variant = RULES + ' Keep the lantern lit.'
-    const a = analyzePrompts([prompt('A1 scene text.', RULES), prompt('A2 scene text.', variant), prompt('A3 scene text.', RULES)])
-    expect(a.candidates).toHaveLength(1)
-    const c = a.candidates[0]
-    expect(c.count).toBe(3)
-    expect(c.text).toBe(RULES)
-    expect(c.variants.map((v) => v.count)).toEqual([2, 1])
-    expect(c.variants[1].text).toBe(variant)
-  })
-
-  it('does not suggest a group whose text is never repeated verbatim', () => {
-    const opener = 'Live-action fantasy drama scene, naturalistic footage with editing: '
-    const a = analyzePrompts([opener + 'she runs.', opener + 'he waits.', opener + 'they talk.'])
-    expect(a.candidates).toHaveLength(0)
-  })
-})
-
-describe('applyImport', () => {
-  const variant = RULES + ' Keep the lantern lit.'
-  const prompts = [
-    prompt(STYLE, 'Scene one with @image_1.', AUDIO, RULES),
-    prompt(STYLE, 'Scene two.', AUDIO, variant),
-    prompt(STYLE, 'Scene three.', RULES),
-  ]
-  const all = (): SelectedCandidate[] => analyzePrompts(prompts).candidates
-
-  it('creates blocks and strips exact matches from the scene prompts', () => {
-    const res = applyImport(prompts, all(), { titles: ['One', 'Two'] })
-    expect(res.blocks.map((b) => [b.title, b.placement, b.defaultOn])).toEqual([
-      ['Moody live-action drama', 'before', true],
-      ['Audio', 'after', true],
-      ['Constraints', 'after', true],
+    const all = buildImportScenes(items, { mapping: ['x', 'y'], assets, onlyMentioned: false })
+    expect(all.map((s) => s.refs)).toEqual([
+      ['x', 'y'],
+      ['x', 'y'],
+      ['x', 'y'],
     ])
-    expect(res.blocks[0].text).toBe(STYLE)
-    expect(res.scenes.map((s) => s.title)).toEqual(['One', 'Two', ''])
-    expect(res.scenes[0].prompt).toBe('Scene one with @image_1.')
-    expect(res.scenes[0].blockOverrides).toEqual({})
-  })
-
-  it('keeps a different variant inline and turns the block off for that scene', () => {
-    const res = applyImport(prompts, all())
-    const rules = res.blocks.find((b) => b.title === 'Constraints')!
-    const audio = res.blocks.find((b) => b.title === 'Audio')!
-    expect(res.scenes[1].prompt).toBe(prompt('Scene two.', variant))
-    expect(res.scenes[1].blockOverrides).toEqual({ [rules.id]: false })
-    // Scene three never had the audio paragraph.
-    expect(res.scenes[2].blockOverrides).toEqual({ [audio.id]: false })
-  })
-
-  it('merges variants into the block when asked', () => {
-    const cands = all().map((c) => ({ ...c, mergeVariants: true }))
-    const res = applyImport(prompts, cands)
-    expect(res.scenes[1].prompt).toBe('Scene two.')
-    expect(res.scenes[1].blockOverrides).toEqual({})
-  })
-
-  it('uses the majority for defaultOn and edited titles / placement', () => {
-    const cands = all()
-    const rules = { ...cands[2], title: 'Ràng buộc', placement: 'before' as const }
-    const ps = [prompt('x scene.', RULES), prompt('y scene.', RULES), prompt('z scene.'), prompt('w scene.'), prompt('v scene.')]
-    const res = applyImport(ps, [rules])
-    expect(res.blocks[0]).toMatchObject({ title: 'Ràng buộc', placement: 'before', defaultOn: false })
-    expect(res.scenes.map((s) => s.blockOverrides[res.blocks[0].id])).toEqual([true, true, undefined, undefined, undefined])
-  })
-
-  it('reports stats and keeps @image_N tokens', () => {
-    const res = applyImport(prompts, all())
-    expect(res.stats.prompts).toBe(3)
-    expect(res.stats.imageTokenPrompts).toBe(1)
-    expect(res.stats.charsAfter).toBeLessThan(res.stats.charsBefore)
-    expect(res.stats.savedPerScene).toBe(Math.round((res.stats.charsBefore - res.stats.charsAfter) / 3))
-    expect(imageTokens(res.scenes[0].prompt)).toEqual(['@image_1'])
-  })
-
-  it('with nothing selected keeps prompts intact', () => {
-    const res = applyImport(prompts, [])
-    expect(res.blocks).toEqual([])
-    expect(res.scenes.map((s) => s.prompt)).toEqual(prompts)
-    expect(res.stats.savedPerScene).toBe(0)
+    expect(all[1].prompt).toBe('B only @image_2')
   })
 })
 
 describe('sample prompts', () => {
-  it('detects the style header, audio rules and constraints (with one variant)', () => {
+  it('has 3 titled prompts using @image_1..3', () => {
     const items = parsePromptText(SAMPLE_IMPORT_TEXT)
     expect(items).toHaveLength(3)
     expect(items.every((i) => i.title.length > 0)).toBe(true)
-    const a = analyzePrompts(items.map((i) => i.text))
-    expect(a.candidates.map((c) => [c.title, c.count, c.placement, c.variants.length])).toEqual([
-      ['Cinematic live-action short film', 3, 'before', 1],
-      ['Audio', 3, 'after', 1],
-      ['Constraints', 3, 'after', 2],
-    ])
+    const s = summarizeImport(items)
+    expect(s.maxImage).toBe(3)
+    expect(s.imageUsage).toEqual([3, 2, 2])
+    expect(s.maxVideo).toBe(0)
   })
 })

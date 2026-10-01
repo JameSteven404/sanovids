@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, ImagePlus, Info, Link2, Pin, PinOff, Star, Trash2, Unlink, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ImagePlus, Info, Link2, Pin, PinOff, RefreshCw, Star, Trash2, Unlink, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { addImagesToAsset, focusNodes } from '../../actions'
@@ -10,7 +10,20 @@ import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { ColorSwatches, ConfirmButton } from './bits'
-import { checkTag, countMentions, hasFiles, KIND_META, KIND_ORDER, nextAssetPosition, renameAssetTag, undoToastAction, useDialogUndoKeys, useFileDropGuard } from './shared'
+import {
+  changedPrompts,
+  checkTag,
+  countMentions,
+  hasFiles,
+  imageTokenLabels,
+  KIND_META,
+  KIND_ORDER,
+  nextAssetPosition,
+  renameAssetTag,
+  undoToastAction,
+  useDialogUndoKeys,
+  useFileDropGuard,
+} from './shared'
 import './sidebar.css'
 
 /** Library item editor. Every change applies live (undoable); "Xong" just closes. */
@@ -34,13 +47,16 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
   const [fileOver, setFileOver] = useState(false)
 
   const remove = () => {
-    const tag = asset.tag
+    const name = asset.name || asset.tag
+    const before = useProject.getState().project.scenes
     useProject.getState().removeAssets([asset.id])
+    const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
+    const action = undoToastAction()
     const ui = useUI.getState()
     ui.setLibrarySelection(ui.librarySelection.filter((x) => x !== asset.id))
     if (ui.selectedIds.includes(asset.id)) ui.select(ui.selectedIds.filter((x) => x !== asset.id))
     onClose()
-    toast(`Đã xoá @${tag} khỏi thư viện và mọi cảnh.`, { action: undoToastAction() })
+    toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action })
   }
 
   const title = (
@@ -118,23 +134,21 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
             </div>
           </div>
           <label className="field">
-            <span>Mô tả ngắn (tiếng Anh)</span>
+            <span>Ghi chú / mô tả</span>
             <textarea
               className="textarea"
-              rows={3}
+              rows={2}
               value={asset.description}
               placeholder="young woman, long auburn braid, green wool cloak"
               onChange={(e) => update({ description: e.target.value })}
             />
+            <small className="faint">Chỉ để ghi nhớ và tìm kiếm — không tự thêm vào prompt.</small>
           </label>
           <div className="sb-explain-box">
             <Info size={13} />
             <div>
-              Mô tả được đưa vào đoạn <b>References</b> tự động của mỗi cảnh có nối mục này, giúp model biết ảnh nào là ai:
-              <div className="sb-ref-preview mono">
-                <span className="sb-tok">@image_1</span> = {asset.name || asset.tag}
-                {asset.description.trim() ? ` (${asset.description.trim()})` : ''}
-              </div>
+              Prompt được gửi đúng như bạn viết. Trong prompt, gọi ảnh của mục này bằng số <span className="sb-tok">@image_N</span> — số tuỳ theo
+              thứ tự tham chiếu của từng cảnh (xem cột bên phải). Gõ <span className="kbd">@</span> trong ô prompt để chèn đúng số.
             </div>
           </div>
           <ImagesEditor asset={asset} over={fileOver} />
@@ -181,7 +195,7 @@ function TagField({ asset }: { asset: Asset }) {
       return
     }
     setDraft(res.tag)
-    toast(`Đã đổi tag thành @${res.tag}${res.rewritten ? ` · cập nhật ${res.rewritten} prompt/khối` : ''}.`, {
+    toast(`Đã đổi tag thành @${res.tag}${res.rewritten ? ` · cập nhật ${res.rewritten} prompt` : ''}.`, {
       tone: 'success',
       action: undoToastAction(),
     })
@@ -189,7 +203,7 @@ function TagField({ asset }: { asset: Asset }) {
 
   return (
     <label className="field">
-      <span>Tag gọi trong prompt</span>
+      <span title="Tên ngắn để tìm nhanh trong thư viện và khi gõ @ trong prompt">Tag (tìm nhanh)</span>
       <div className={`sb-tag-input${error && focused ? ' error' : ''}`}>
         <span className="sb-tag-at">@</span>
         <input
@@ -208,7 +222,7 @@ function TagField({ asset }: { asset: Asset }) {
         <small className={`sb-field-note${error ? ' error' : ''}`}>
           {error
             ? error
-            : `${check.tag !== draft.trim() ? `Sẽ lưu là @${check.tag}. ` : ''}${mentions ? `Tự cập nhật @${asset.tag} trong ${mentions} prompt/khối.` : 'Enter để lưu.'}`}
+            : `${check.tag !== draft.trim() ? `Sẽ lưu là @${check.tag}. ` : ''}${mentions ? `Tự cập nhật @${asset.tag} trong ${mentions} prompt.` : 'Enter để lưu.'}`}
         </small>
       )}
     </label>
@@ -216,27 +230,50 @@ function TagField({ asset }: { asset: Asset }) {
 }
 
 // ---------------- images ----------------
+/**
+ * Change the images of an asset (add / remove / reorder). The project store renumbers the @image tokens of every
+ * scene using it in the same undo step; tell the user when prompts were rewritten so the toast can undo it.
+ */
+function setAssetImages(asset: Asset, imageIds: string[], what: 'remove' | 'move') {
+  const before = useProject.getState().project.scenes
+  useProject.getState().updateAsset(asset.id, { imageIds })
+  const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
+  if (what === 'remove') {
+    toast(`Đã bỏ 1 ảnh của “${asset.name}”${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
+  } else if (rewritten) {
+    toast(`Đã đổi thứ tự ảnh · đánh lại số @image trong ${rewritten} prompt.`, { action: undoToastAction() })
+  }
+}
+
 async function addImageFiles(asset: Asset, files: File[]) {
   const images = files.filter((f) => /^image\//.test(f.type))
   if (!images.length) {
     if (files.length) toast('Chỉ nhận file ảnh (JPG, PNG, WEBP).', { tone: 'warning' })
     return
   }
+  const before = useProject.getState().project.scenes
   await addImagesToAsset(asset.id, images)
-  toast(`Đã thêm ${images.length} ảnh cho @${asset.tag}.`, { tone: 'success' })
+  // Only count scenes using this asset: other prompts may have been edited while the files were being stored.
+  const after = useProject.getState().project.scenes
+  const using = new Set(after.filter((s) => s.refs.includes(asset.id)).map((s) => s.id))
+  const rewritten = changedPrompts(before, after).filter((id) => using.has(id)).length
+  toast(`Đã thêm ${images.length} ảnh cho “${asset.name}”${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, {
+    tone: 'success',
+    action: rewritten ? undoToastAction() : undefined,
+  })
 }
 
 /** `over`: image files are being dragged over the dialog (the whole body is the drop zone). */
 function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
   const input = useRef<HTMLInputElement>(null)
   const ids = asset.imageIds
-  const setIds = (imageIds: string[]) => useProject.getState().updateAsset(asset.id, { imageIds })
+  const used = useProject((s) => s.project.scenes.reduce((n, sc) => n + (sc.refs.includes(asset.id) ? 1 : 0), 0))
   const move = (from: number, to: number) => {
     if (to < 0 || to >= ids.length) return
     const next = [...ids]
     const [x] = next.splice(from, 1)
     next.splice(to, 0, x)
-    setIds(next)
+    setAssetImages(asset, next, 'move')
   }
   const add = (files: File[]) => addImageFiles(asset, files)
   const maxSd = MODELS.seedance_2_5.maxRefImages
@@ -264,7 +301,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
               <button className="sb-card-btn" title="Sang phải" disabled={i === ids.length - 1} onClick={() => move(i, i + 1)}>
                 <ArrowRight size={12} />
               </button>
-              <button className="sb-card-btn danger" title="Bỏ ảnh này" onClick={() => setIds(ids.filter((x) => x !== id))}>
+              <button className="sb-card-btn danger" title="Bỏ ảnh này" onClick={() => setAssetImages(asset, ids.filter((x) => x !== id), 'remove')}>
                 <X size={12} />
               </button>
             </div>
@@ -291,6 +328,12 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
         Mỗi ảnh chiếm một số <span className="mono">@image_N</span> theo thứ tự trên (ảnh chính đầu tiên). Giới hạn: {MODELS.seedance_2_5.name} {maxSd} ảnh,{' '}
         {MODELS.minimax_h3.name} {maxH3} ảnh mỗi cảnh.
       </small>
+      <small className="sb-renumber-hint">
+        <RefreshCw size={11} />
+        <span>
+          Đổi ảnh sẽ tự đánh lại số @image trong các cảnh đang dùng{used ? ` (${used} cảnh)` : ''}.
+        </span>
+      </small>
     </div>
   )
 }
@@ -300,6 +343,7 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
   const scenes = useProject(useShallow((s) => s.project.scenes.filter((sc) => sc.refs.includes(asset.id) || sc.firstFrame === asset.id || sc.lastFrame === asset.id)))
   const sorted = useMemo(() => [...scenes].sort((a, b) => a.order - b.order), [scenes])
   const refScenes = sorted.filter((s) => s.refs.includes(asset.id))
+  const assets = useProject((s) => s.project.assets)
 
   const goTo = (sceneId: string) => {
     const ui = useUI.getState()
@@ -309,8 +353,20 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
   }
 
   const removeAll = () => {
+    const before = useProject.getState().project.scenes
     useProject.getState().removeRefs(refScenes.map((s) => ({ sceneId: s.id, assetId: asset.id })))
-    toast(`Đã bỏ @${asset.tag} khỏi ${refScenes.length} cảnh.`, { action: undoToastAction() })
+    const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
+    toast(`Đã bỏ “${asset.name}” khỏi ${refScenes.length} cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, {
+      action: undoToastAction(),
+    })
+  }
+
+  const unlinkOne = (sceneId: string, order: number) => {
+    const before = useProject.getState().project.scenes
+    useProject.getState().removeRef(sceneId, asset.id)
+    if (changedPrompts(before, useProject.getState().project.scenes).length) {
+      toast(`Đã bỏ “${asset.name}” khỏi ${sceneCode(order)} · đánh lại số @image trong prompt.`, { action: undoToastAction() })
+    }
   }
 
   const toggleCanvas = () => {
@@ -337,18 +393,23 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
       {!sorted.length ? (
         <div className="empty sb-empty">
           Chưa nối vào cảnh nào.
-          <div className="faint">Kéo thẻ này từ thư viện vào cảnh, hoặc gõ @{asset.tag} trong prompt.</div>
+          <div className="faint">Kéo thẻ này từ thư viện vào cảnh, hoặc gõ @ trong ô prompt rồi chọn “{asset.name || asset.tag}”.</div>
         </div>
       ) : (
         <div className="sb-usage">
           {sorted.map((s) => {
             const idx = s.refs.indexOf(asset.id)
+            const label = idx >= 0 ? imageTokenLabels(assets, s.refs)[asset.id] : ''
             const frame = s.firstFrame === asset.id ? 'Khung đầu' : s.lastFrame === asset.id ? 'Khung cuối' : null
             return (
               <div key={s.id} className="sb-usage-row" onClick={() => goTo(s.id)} title="Đi tới cảnh">
                 <span className="badge accent mono">{sceneCode(s.order)}</span>
                 <span className="sb-usage-title">{s.title || <span className="faint">Chưa đặt tên</span>}</span>
-                {idx >= 0 && <span className="sb-usage-pos faint" title="Thứ tự trong danh sách tham chiếu của cảnh">#{idx + 1}</span>}
+                {idx >= 0 && (
+                  <span className={`sb-usage-pos${label ? '' : ' faint'}`} title={label ? `Số gọi ảnh này trong prompt của ${sceneCode(s.order)}` : 'Chưa có ảnh nên chưa có số @image'}>
+                    {label || 'chưa có số'}
+                  </span>
+                )}
                 {frame && <span className="badge ok">{frame}</span>}
                 {idx >= 0 && (
                   <button
@@ -356,7 +417,7 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
                     title={`Bỏ nối khỏi ${sceneCode(s.order)}`}
                     onClick={(e) => {
                       e.stopPropagation()
-                      useProject.getState().removeRef(s.id, asset.id)
+                      unlinkOne(s.id, s.order)
                     }}
                   >
                     <X size={12} />
