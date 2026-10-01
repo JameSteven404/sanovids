@@ -7,21 +7,24 @@ import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, linkAssets, linkTakes, requestRun, takeLabel, videoLabel } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
-import type { Asset, CompiledPrompt, Project, Scene } from '../../core/types'
+import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { useMediaUrl } from '../../lib/imageStore'
-import { useProject } from '../../store/project'
+import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import {
   assetMapOf,
+  avatarSlots,
   countScenes,
+  excerptChars,
   hasAssetDrag,
   hasFileDrag,
   hasTakeDrag,
   imageFiles,
   inlineEditKeyBubbles,
   LOD_ZOOM,
+  promptLines,
   readAssetIds,
   readTakeIds,
   sceneMapOf,
@@ -33,11 +36,11 @@ import {
   targetScenesFor,
   type TakeSummary,
 } from './canvasModel'
+import { NodeSizer, useNodeBox } from './NodeSizer'
 import './canvas.css'
 
 export type SceneFlowNode = Node<Record<string, unknown>, 'scene'>
 
-const MAX_AVATARS = 6
 const MAX_VIDEO_THUMBS = 4
 const EMPTY_ASSETS: Asset[] = []
 
@@ -50,6 +53,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   // A video (take) is being dragged from the library / a take strip: light up the scenes that can use it as @video.
   const takeTarget = useUI((s) => !!s.draggingTakeIds && takesUsableFor(s.draggingTakeIds, id))
   const multi = useUI((s) => (selected ? countScenes(s.selectedIds) : 0))
+  const box = useNodeBox(id, scene?.size)
   const transform = scene?.settings.mode === 'transform'
   // Handles are added/removed with the H3 transform mode: re-measure them (not needed on mount).
   const updateInternals = useUpdateNodeInternals()
@@ -132,53 +136,57 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     takeTarget && 'is-take-target',
     running && 'is-running',
     far && 'is-far',
+    box && 'is-sized',
   ]
     .filter(Boolean)
     .join(' ')
   return (
-    <div className={cls} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
-      {scene.color && <span className="cv-scene-stripe" style={{ background: scene.color }} />}
-      {running && (
-        <div className="cv-run-bar">
-          <i style={{ width: `${Math.max(3, progress)}%` }} />
+    <>
+      <div className={cls} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+        {scene.color && <span className="cv-scene-stripe" style={{ background: scene.color }} />}
+        {running && (
+          <div className="cv-run-bar">
+            <i style={{ width: `${Math.max(3, progress)}%` }} />
+          </div>
+        )}
+        {far ? <SceneFar scene={scene} status={status} /> : <SceneFull scene={scene} status={status} box={box} />}
+
+        <div className="cv-drop-hint">
+          {dropHint?.kind === 'take' ? <Film size={14} /> : dropHint?.kind === 'bad' ? <Ban size={14} /> : <Link2 size={14} />}
+          {dropHint?.text}
         </div>
-      )}
-      {far ? <SceneFar scene={scene} status={status} /> : <SceneFull scene={scene} status={status} />}
+        <div className="cv-conn-hint asset">
+          <Link2 size={14} />
+          {multi > 1 ? `Nối vào ${multi} cảnh đã chọn` : 'Thả để nối'}
+        </div>
+        <div className="cv-conn-hint take">
+          <Film size={14} />
+          {multi > 1 ? `Dùng làm @video cho ${multi} cảnh` : 'Dùng làm @video'}
+        </div>
 
-      <div className="cv-drop-hint">
-        {dropHint?.kind === 'take' ? <Film size={14} /> : dropHint?.kind === 'bad' ? <Ban size={14} /> : <Link2 size={14} />}
-        {dropHint?.text}
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="ref"
+          className="cv-h cv-h-ref"
+          isConnectableStart={false}
+          title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
+        />
+        {/* Takes are created by running the scene, never by wiring: this handle only anchors the 'out' wires. */}
+        <Handle type="source" position={Position.Right} id="take" className="cv-h cv-h-takes" isConnectable={false} title="Các video (take) tạo từ cảnh này" />
+        {transform && (
+          <>
+            <Handle type="target" position={Position.Left} id="first" className="cv-h cv-h-first" isConnectableStart={false} title="Khung đầu">
+              <span className="cv-h-label">ĐẦU</span>
+            </Handle>
+            <Handle type="target" position={Position.Left} id="last" className="cv-h cv-h-last" isConnectableStart={false} title="Khung cuối">
+              <span className="cv-h-label">CUỐI</span>
+            </Handle>
+          </>
+        )}
       </div>
-      <div className="cv-conn-hint asset">
-        <Link2 size={14} />
-        {multi > 1 ? `Nối vào ${multi} cảnh đã chọn` : 'Thả để nối'}
-      </div>
-      <div className="cv-conn-hint take">
-        <Film size={14} />
-        {multi > 1 ? `Dùng làm @video cho ${multi} cảnh` : 'Dùng làm @video'}
-      </div>
-
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="ref"
-        className="cv-h cv-h-ref"
-        isConnectableStart={false}
-        title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
-      />
-      {/* Takes are created by running the scene, never by wiring: this handle only anchors the 'out' wires. */}
-      <Handle type="source" position={Position.Right} id="take" className="cv-h cv-h-takes" isConnectable={false} title="Các video (take) tạo từ cảnh này" />
-      {transform && (
-        <>
-          <Handle type="target" position={Position.Left} id="first" className="cv-h cv-h-first" isConnectableStart={false} title="Khung đầu">
-            <span className="cv-h-label">ĐẦU</span>
-          </Handle>
-          <Handle type="target" position={Position.Left} id="last" className="cv-h cv-h-last" isConnectableStart={false} title="Khung cuối">
-            <span className="cv-h-label">CUỐI</span>
-          </Handle>
-        </>
-      )}
-    </div>
+      <NodeSizer id={id} kind="scene" selected={!!selected} sized={!!box} />
+    </>
   )
 }
 
@@ -225,7 +233,8 @@ function SceneFar({ scene, status }: { scene: Scene; status: TakeSummary['status
 }
 
 // ---------------------------------------------------------------------------------------------
-function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['status'] }) {
+/** `box`: size of a resized card (null = default): more prompt lines when taller, more avatars when wider. */
+function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['status']; box: Size | null }) {
   const assets = useProject((s) => s.project.assets)
   const settings = useProject((s) => s.project.settings)
   const presetName = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId)?.name : undefined))
@@ -269,9 +278,13 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
     else if (sts.some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
   }
 
+  const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0
+  const maxAvatars = avatarSlots(box?.w ?? LAYOUT.sceneW, Math.min(scene.videoRefs.length, MAX_VIDEO_THUMBS))
+  const lines = box ? promptLines(box.h, hasTakes) : 2
+  const maxChars = box ? excerptChars(lines, box.w) : 280
   return (
-    <>
+    <div className="cv-scene-body">
       <div className="cv-scene-head">
         <span className="cv-code">{sceneCode(scene.order)}</span>
         <EditableTitle sceneId={scene.id} title={scene.title} />
@@ -284,12 +297,12 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
       <div className="cv-refs">
         {hasMedia ? (
           <>
-            {refAssets.slice(0, MAX_AVATARS).map((a) => (
+            {refAssets.slice(0, maxAvatars).map((a) => (
               <RefAvatar key={a.id} asset={a} n={slots.first.get(a.id)} sceneId={scene.id} />
             ))}
-            {refAssets.length > MAX_AVATARS && (
-              <span className="cv-av-more" title={refAssets.slice(MAX_AVATARS).map((a) => a.name).join(', ')}>
-                +{refAssets.length - MAX_AVATARS}
+            {refAssets.length > maxAvatars && (
+              <span className="cv-av-more" title={refAssets.slice(maxAvatars).map((a) => a.name).join(', ')}>
+                +{refAssets.length - maxAvatars}
               </span>
             )}
             {scene.videoRefs.length > 0 && <VideoRefs sceneId={scene.id} videoRefs={scene.videoRefs} />}
@@ -301,16 +314,18 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
         )}
       </div>
 
-      <div className="cv-prompt">
-        {scene.prompt.trim() ? (
-          <Excerpt text={scene.prompt} assets={assets} images={slots.total} videos={scene.videoRefs.length} />
-        ) : (
-          <span className="faint">Chưa có prompt</span>
-        )}
+      <div className="cv-prompt-box">
+        <div className="cv-prompt" style={box ? { WebkitLineClamp: lines } : undefined}>
+          {scene.prompt.trim() ? (
+            <Excerpt text={scene.prompt} assets={assets} images={slots.total} videos={scene.videoRefs.length} maxChars={maxChars} />
+          ) : (
+            <span className="faint">Chưa có prompt</span>
+          )}
+        </div>
       </div>
 
       <div className="cv-scene-foot">
-        <span className="cv-settings" title={presetName ? `Preset: ${presetName}` : undefined}>
+        <span className="cv-settings" title={presetName ? `${settingsLabel(scene.settings)} · Preset: ${presetName}` : settingsLabel(scene.settings)}>
           {settingsLabel(scene.settings)}
         </span>
         {presetName && <span className="cv-preset">{presetName}</span>}
@@ -338,7 +353,7 @@ function SceneFull({ scene, status }: { scene: Scene; status: TakeSummary['statu
       </div>
 
       <TakeLine sceneId={scene.id} />
-    </>
+    </div>
   )
 }
 
@@ -463,7 +478,7 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
   const url = useMediaUrl(asset.imageIds[0])
   const range = n !== undefined && asset.imageIds.length > 1 ? `@image_${n}…${n + asset.imageIds.length - 1}` : n !== undefined ? `@image_${n}` : 'chưa có ảnh'
   return (
-    <span className={`cv-av ${asset.kind === 'character' ? '' : 'sq'}`} style={{ ['--av-c' as string]: asset.color }} title={`${asset.name} · ${range}`}>
+    <span className="cv-av" style={{ ['--av-c' as string]: asset.color }} title={`${asset.name} · ${range}`}>
       {url ? <img src={url} alt={asset.name} draggable={false} /> : <i style={{ background: asset.color }}>{asset.name.slice(0, 1).toUpperCase()}</i>}
       {n !== undefined && <b className="cv-av-n">{n}</b>}
       <button
@@ -484,9 +499,9 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
 const SPLIT_RE = /(@[\p{L}\p{N}_]+)/u
 const TOKEN_ONLY = /^@(image|video)_(\d+)$/i
 /** Prompt excerpt: @image_N teal, @video_N purple, numbers without media red, legacy @Tag of a library asset teal. */
-function Excerpt({ text, assets, images, videos }: { text: string; assets: Asset[]; images: number; videos: number }) {
+function Excerpt({ text, assets, images, videos, maxChars }: { text: string; assets: Asset[]; images: number; videos: number; maxChars: number }) {
   const parts = useMemo(() => {
-    const src = text.length > 280 ? text.slice(0, 280) : text
+    const src = text.length > maxChars ? text.slice(0, maxChars) : text
     const out: ReactNode[] = []
     src.split(SPLIT_RE).forEach((part, i) => {
       if (i % 2 === 0) {
@@ -512,6 +527,6 @@ function Excerpt({ text, assets, images, videos }: { text: string; assets: Asset
       } else out.push(part)
     })
     return out
-  }, [text, assets, images, videos])
+  }, [text, assets, images, videos, maxChars])
   return <>{parts}</>
 }

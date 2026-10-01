@@ -1,8 +1,8 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, CircleAlert, Clock, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
-import { memo, useState, type SyntheticEvent } from 'react'
+import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { downloadTake, requestRun, takeLabel } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
@@ -13,7 +13,8 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { LOD_ZOOM, sceneMapOf, STATUS_LABEL, takeIndexOf, videoUsageOf } from './canvasModel'
+import { fitMedia, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
+import { NodeSizer, useNodeBox } from './NodeSizer'
 import './canvas.css'
 
 /** `status` is only carried so the node object changes with it (minimap color); the node reads its take itself. */
@@ -51,118 +52,140 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const [hover, setHover] = useState(false)
   const done = take?.status === 'completed'
   const videoUrl = useMediaUrl(hover && done && !far ? take?.videoId : null)
+  const box = useNodeBox(id, take?.size)
+  // Resized node: the poster keeps 16:9 and grows with the node; footer + big button stay pinned at the bottom.
+  const media = box ? fitMedia(box.w, box.h, far ? 0 : TAKE_CHROME) : null
+  // Wire anchors stay at the middle of the (grown) poster.
+  const handleTop = media ? Math.round(media.h / 2) + 1 : null
+  const handleStyle = handleTop !== null ? { top: handleTop } : undefined
+  // The anchors can move while the node box stays the same (zooming across the LOD level changes the poster height):
+  // React Flow only re-measures handles when the node's size changes, so ask for it (not needed on mount).
+  const updateInternals = useUpdateNodeInternals()
+  const lastTop = useRef(handleTop)
+  useEffect(() => {
+    if (lastTop.current === handleTop) return
+    lastTop.current = handleTop
+    updateInternals(id)
+  }, [id, handleTop, updateInternals])
   if (!take) return null
 
   const code = takeCode(order, take.number)
   const canStar = done || take.starred
   const hidden = data?.hidden ?? 0
-  const cls = ['cv-take', `st-${take.status}`, selected && 'is-selected', take.starred && 'is-starred', far && 'is-far'].filter(Boolean).join(' ')
+  const cls = ['cv-take', `st-${take.status}`, selected && 'is-selected', take.starred && 'is-starred', far && 'is-far', box && 'is-sized']
+    .filter(Boolean)
+    .join(' ')
 
   return (
-    <div
-      className={cls}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onDoubleClick={(e) => {
-        e.stopPropagation()
-        openTake(id)
-      }}
-    >
-      <div className="cv-take-media">
-        {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster empty" />}
-        {videoUrl && <video className="cv-take-video" src={videoUrl} muted loop autoPlay playsInline />}
-        <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
+    <>
+      <div
+        className={cls}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onDoubleClick={(e) => {
+          e.stopPropagation()
+          openTake(id)
+        }}
+      >
+        <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
+          {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster empty" />}
+          {videoUrl && <video className="cv-take-video" src={videoUrl} muted loop autoPlay playsInline />}
+          <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
 
-        <span className="cv-take-code">{code}</span>
-        {!far && (
-          <button
-            className={`cv-take-star nodrag nopan ${take.starred ? 'on' : ''}`}
-            disabled={!canStar}
-            title={canStar ? (take.starred ? 'Bỏ chọn take này' : 'Chọn take này cho cảnh (★)') : 'Chỉ chọn được take đã tạo xong'}
-            aria-label={take.starred ? 'Bỏ chọn take' : 'Chọn take'}
-            aria-pressed={take.starred}
-            onPointerDown={stop}
-            onDoubleClick={stop}
-            onClick={(e) => {
-              e.stopPropagation()
-              useRuns.getState().toggleStar(id)
-            }}
-          >
-            <Star size={13} fill={take.starred ? 'currentColor' : 'none'} />
-          </button>
-        )}
-        {hidden > 0 && (
-          <button
-            className="cv-take-more nodrag nopan"
-            title={`${hidden} take khác của cảnh này đang ẩn — bấm để xem tất cả`}
-            onPointerDown={stop}
-            onDoubleClick={stop}
-            onClick={(e) => {
-              e.stopPropagation()
-              openTake(id)
-            }}
-          >
-            +{hidden}
-          </button>
-        )}
-        {(take.status === 'processing' || take.status === 'queued') && (
-          <div className="cv-take-bar">
-            <i style={{ width: `${take.status === 'processing' ? Math.max(3, take.progress) : 0}%` }} />
-          </div>
-        )}
-      </div>
-
-      {!far && (
-        <div className="cv-take-foot">
-          <span className="cv-take-settings" title={settingsLabel(take.settings)}>
-            {settingsLabel(take.settings)}
-          </span>
-          {order === undefined && (
-            <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
-              cảnh đã xoá
-            </span>
-          )}
-          {usage > 0 && (
-            <span className="cv-take-used" title={`Đang dùng làm @video ở ${usage} cảnh`}>
-              @v·{usage}
-            </span>
-          )}
-          <span className="cv-spacer" />
-          <span className="cv-take-actions nodrag nopan" onPointerDown={stop} onDoubleClick={stop}>
-            <button className="cv-take-btn" title="Xem" aria-label="Xem take" onClick={(e) => (e.stopPropagation(), openTake(id))}>
-              <Eye size={13} />
-            </button>
+          <span className="cv-take-code">{code}</span>
+          {!far && (
             <button
-              className="cv-take-btn"
-              title={`Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`}
-              aria-label="Chạy lại"
-              disabled={order === undefined}
+              className={`cv-take-star nodrag nopan ${take.starred ? 'on' : ''}`}
+              disabled={!canStar}
+              title={canStar ? (take.starred ? 'Bỏ chọn take này' : 'Chọn take này cho cảnh (★)') : 'Chỉ chọn được take đã tạo xong'}
+              aria-label={take.starred ? 'Bỏ chọn take' : 'Chọn take'}
+              aria-pressed={take.starred}
+              onPointerDown={stop}
+              onDoubleClick={stop}
               onClick={(e) => {
                 e.stopPropagation()
-                requestRun([take.sceneId])
+                useRuns.getState().toggleStar(id)
               }}
             >
-              <RotateCcw size={13} />
+              <Star size={13} fill={take.starred ? 'currentColor' : 'none'} />
             </button>
-            <button className="cv-take-btn danger" title="Xoá take" aria-label="Xoá take" onClick={(e) => (e.stopPropagation(), deleteTake(id))}>
-              <Trash2 size={13} />
+          )}
+          {hidden > 0 && (
+            <button
+              className="cv-take-more nodrag nopan"
+              title={`${hidden} take khác của cảnh này đang ẩn — bấm để xem tất cả`}
+              onPointerDown={stop}
+              onDoubleClick={stop}
+              onClick={(e) => {
+                e.stopPropagation()
+                openTake(id)
+              }}
+            >
+              +{hidden}
             </button>
-          </span>
+          )}
+          {(take.status === 'processing' || take.status === 'queued') && (
+            <div className="cv-take-bar">
+              <i style={{ width: `${take.status === 'processing' ? Math.max(3, take.progress) : 0}%` }} />
+            </div>
+          )}
         </div>
-      )}
-      {!far && <TakeMainButton take={take} code={code} order={order} />}
 
-      <Handle type="target" position={Position.Left} id="in" className="cv-h cv-h-take-in" isConnectable={false} />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="out"
-        className={`cv-h cv-h-video ${done ? '' : 'is-off'}`}
-        isConnectableStart={done}
-        isConnectableEnd={false}
-        title={done ? 'Kéo vào cảnh để dùng làm @video · thả ra nền để tạo cảnh tiếp nối' : 'Video chưa tạo xong'}
-      />
-    </div>
+        {box && <div className="cv-take-fill" />}
+        {!far && (
+          <div className="cv-take-foot">
+            <span className="cv-take-settings" title={settingsLabel(take.settings)}>
+              {settingsLabel(take.settings)}
+            </span>
+            {order === undefined && (
+              <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
+                cảnh đã xoá
+              </span>
+            )}
+            {usage > 0 && (
+              <span className="cv-take-used" title={`Đang dùng làm @video ở ${usage} cảnh`}>
+                @v·{usage}
+              </span>
+            )}
+            <span className="cv-spacer" />
+            <span className="cv-take-actions nodrag nopan" onPointerDown={stop} onDoubleClick={stop}>
+              <button className="cv-take-btn" title="Xem" aria-label="Xem take" onClick={(e) => (e.stopPropagation(), openTake(id))}>
+                <Eye size={13} />
+              </button>
+              <button
+                className="cv-take-btn"
+                title={`Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`}
+                aria-label="Chạy lại"
+                disabled={order === undefined}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  requestRun([take.sceneId])
+                }}
+              >
+                <RotateCcw size={13} />
+              </button>
+              <button className="cv-take-btn danger" title="Xoá take" aria-label="Xoá take" onClick={(e) => (e.stopPropagation(), deleteTake(id))}>
+                <Trash2 size={13} />
+              </button>
+            </span>
+          </div>
+        )}
+        {!far && <TakeMainButton take={take} code={code} order={order} />}
+
+        <Handle type="target" position={Position.Left} id="in" className="cv-h cv-h-take-in" style={handleStyle} isConnectable={false} />
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="out"
+          className={`cv-h cv-h-video ${done ? '' : 'is-off'}`}
+          style={handleStyle}
+          isConnectableStart={done}
+          isConnectableEnd={false}
+          title={done ? 'Kéo vào cảnh để dùng làm @video · thả ra nền để tạo cảnh tiếp nối' : 'Video chưa tạo xong'}
+        />
+      </div>
+      <NodeSizer id={id} kind="take" selected={!!selected} sized={!!box} />
+    </>
   )
 }
 

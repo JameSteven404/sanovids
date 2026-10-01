@@ -1143,6 +1143,10 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+/* AssetChip holds a square AssetAvatar: rounded rect, not the shared pill (the corner would poke past the curve) */
+.rq-chips > .chip {
+  border-radius: 7px;
+}
 /* take viewer: "Dùng video này" + reference videos */
 .rq-use-actions {
   display: flex;

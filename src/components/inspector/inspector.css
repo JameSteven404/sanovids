@@ -482,7 +482,8 @@
   height: 24px;
   max-width: 100%;
   padding: 0 7px 0 3px;
-  border-radius: 999px;
+  /* rounded rect, not a pill: the square thumbnail sits flush without poking past the curve */
+  border-radius: 7px;
   border: 1px solid var(--border-strong);
   background: var(--panel-2);
   color: var(--text-dim);
@@ -1741,6 +1742,10 @@ button.in-code-chip:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+/* AssetChip holds a square AssetAvatar: rounded rect, not the shared pill (the corner would poke past the curve) */
+.in-chip-wrap > .chip {
+  border-radius: 7px;
 }
 
 /* take (video) selection */

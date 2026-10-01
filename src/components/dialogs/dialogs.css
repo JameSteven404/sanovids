@@ -680,7 +680,8 @@
   max-width: 150px;
   height: 26px;
   padding: 0 9px 0 3px;
-  border-radius: 999px;
+  /* rounded rect (square AssetAvatar inside), not a pill */
+  border-radius: 7px;
   border: 1px solid var(--border);
   background: var(--panel-2);
 }

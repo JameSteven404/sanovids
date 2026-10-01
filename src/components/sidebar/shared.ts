@@ -204,12 +204,15 @@ export function useSceneCode(sceneId: string | null): string {
 }
 
 // ---------------- canvas placement ----------------
-/** Next free slot in the asset column on the left of the canvas. */
+/**
+ * Next free slot in the asset column on the left of the canvas: below the lowest bottom edge, so an asset node
+ * the user made taller (resize handle, `asset.size`) is not overlapped.
+ */
 export function nextAssetPosition(project: Project): XY {
   const placed = project.assets.filter((a) => a.position)
   if (!placed.length) return { x: LAYOUT.assetX, y: LAYOUT.scenesY }
   const x = Math.min(...placed.map((a) => a.position!.x))
-  const y = Math.max(...placed.map((a) => a.position!.y)) + LAYOUT.assetH + LAYOUT.assetGapY
+  const y = Math.max(...placed.map((a) => a.position!.y + (a.size?.h ?? LAYOUT.assetH))) + LAYOUT.assetGapY
   return { x, y }
 }
 

@@ -506,6 +506,10 @@ textarea {
   font-weight: 500;
   white-space: nowrap;
 }
+/* A square avatar flush inside a pill would poke past the curve: use a rounded rectangle instead. */
+.chip:has(> .asset-avatar) {
+  border-radius: 7px;
+}
 .chip .x {
   border: 0;
   background: transparent;

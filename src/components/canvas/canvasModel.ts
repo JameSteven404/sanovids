@@ -3,9 +3,9 @@
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
-import type { Asset, AssetKind, JobStatus, Scene, Take, XY } from '../../core/types'
+import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
-import { LAYOUT, useProject } from '../../store/project'
+import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
@@ -149,7 +149,10 @@ export function takeLayoutSig(takes: Take[]): string {
   let sig = layoutSigs.get(takes)
   if (sig === undefined) {
     sig = takes
-      .map((t) => `${t.id}:${t.sceneId}:${t.number}:${t.position ? `${t.position.x},${t.position.y}` : ''}:${t.starred ? 1 : 0}:${t.status}`)
+      .map(
+        (t) =>
+          `${t.id}:${t.sceneId}:${t.number}:${t.position ? `${t.position.x},${t.position.y}` : ''}:${t.size ? `${t.size.w}x${t.size.h}` : ''}:${t.starred ? 1 : 0}:${t.status}`,
+      )
       .join('|')
     layoutSigs.set(takes, sig)
   }
@@ -183,6 +186,8 @@ export interface TakeLayoutItem {
   orphan: boolean
   /** Scene the node is placed next to: its own scene, or (orphan) the first scene that uses it. */
   anchorId: string
+  /** Size set by the user (resize handle); null = default (LAYOUT.takeW × auto). */
+  size: Size | null
 }
 export interface TakeLayout {
   items: TakeLayoutItem[]
@@ -212,7 +217,17 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
     const shown = used ? list.filter((t) => t === chosen || used.has(t.id)) : list
     const hidden = list.length - shown.length
     shown.forEach((t, index) =>
-      add({ id: t.id, sceneId: s.id, index, explicit: t.position, hidden: t === chosen ? hidden : 0, status: t.status, orphan: false, anchorId: s.id }),
+      add({
+        id: t.id,
+        sceneId: s.id,
+        index,
+        explicit: t.position,
+        hidden: t === chosen ? hidden : 0,
+        status: t.status,
+        orphan: false,
+        anchorId: s.id,
+        size: t.size ?? null,
+      }),
     )
   }
   let byOrder: Scene[] | null = null
@@ -224,7 +239,7 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
     const anchor = byOrder.find((s) => s.videoRefs.includes(takeId))!
     const index = perAnchor.get(anchor.id) ?? 0
     perAnchor.set(anchor.id, index + 1)
-    add({ id: t.id, sceneId: t.sceneId, index, explicit: t.position, hidden: 0, status: t.status, orphan: true, anchorId: anchor.id })
+    add({ id: t.id, sceneId: t.sceneId, index, explicit: t.position, hidden: 0, status: t.status, orphan: true, anchorId: anchor.id, size: t.size ?? null })
   }
   return { items, byId }
 }
@@ -233,8 +248,100 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
  * Fallback spot of the `index`-th orphan take of a scene (when it has no dragged or previously shown position): left
  * of the scene that uses it, so its @video wire into the scene's left handle stays short.
  */
-export function orphanTakePosition(anchorPos: XY, index: number): XY {
-  return { x: anchorPos.x - LAYOUT.takeOffsetX - (index + 1) * LAYOUT.takeW - index * LAYOUT.takeGapX, y: anchorPos.y }
+export function orphanTakePosition(
+  anchorPos: XY,
+  index: number,
+  slotX: number = index * (LAYOUT.takeW + LAYOUT.takeGapX),
+  width: number = LAYOUT.takeW,
+): XY {
+  return { x: anchorPos.x - LAYOUT.takeOffsetX - slotX - width, y: anchorPos.y }
+}
+
+/**
+ * Horizontal offset of each take node inside its row: the summed widths (+ gaps) of the takes placed before it next
+ * to the same scene (orphans: left of their anchor, counted separately). Takes may have different widths (resized),
+ * so slots are accumulated instead of `index × (takeW + gap)`. Explicitly placed takes keep their slot reserved.
+ */
+export function takeSlots(items: readonly Pick<TakeLayoutItem, 'id' | 'anchorId' | 'orphan'>[], widthOf: (id: string) => number): Map<string, number> {
+  const acc = new Map<string, number>()
+  const out = new Map<string, number>()
+  for (const item of items) {
+    const key = (item.orphan ? 'o:' : 's:') + item.anchorId
+    const x = acc.get(key) ?? 0
+    out.set(item.id, x)
+    acc.set(key, x + widthOf(item.id) + LAYOUT.takeGapX)
+  }
+  return out
+}
+
+/** Auto position of a take `slotX` px into the row right of a scene card `sceneW` wide (see takeSlots). */
+export function autoTakePosition(scenePos: XY, sceneW: number, slotX: number): XY {
+  return defaultTakePosition(scenePos, 0, sceneW + slotX)
+}
+
+// ---------------- node sizes (resize handles) ----------------
+export type SizedKind = keyof typeof NODE_SIZE
+/** Live box of a node while its resize handle is dragged (committed once on resize end). */
+export interface ResizeBox {
+  w: number
+  h: number
+  /** Set when the resize moved the node (dragging the left / top edge). */
+  x?: number
+  y?: number
+}
+
+/** Prompt line height of the scene card (12px × 1.42). */
+export const PROMPT_LINE_H = 17
+/** Scene card chrome around the prompt: head, refs row, footer (+ the take status line when the scene has takes). */
+export const SCENE_CHROME = 118
+export const SCENE_TAKE_LINE_H = 22
+/** Prompt lines that fit a scene card `h` px tall (at least 2, like the default card). */
+export function promptLines(h: number, hasTakeLine = false): number {
+  const avail = h - SCENE_CHROME - (hasTakeLine ? SCENE_TAKE_LINE_H : 0)
+  return Math.max(2, Math.floor(avail / PROMPT_LINE_H))
+}
+/** Characters of the prompt worth rendering for `lines` lines in a card `w` px wide (never below the default 280). */
+export function excerptChars(lines: number, w: number): number {
+  return Math.max(280, Math.ceil(lines * Math.max(1, (w - 22) / 5.5)))
+}
+
+export const DEFAULT_AVATARS = 6
+const AVATAR_STEP = 19
+/** Avatars shown before "+N" in a scene card `w` px wide, leaving room for `videoThumbs` @video thumbs. */
+export function avatarSlots(w: number, videoThumbs = 0): number {
+  const videoW = videoThumbs ? 12 + videoThumbs * 38 : 0
+  const fit = Math.floor((w - 22 - videoW - 40) / AVATAR_STEP)
+  const wanted = DEFAULT_AVATARS + Math.floor((w - LAYOUT.sceneW) / AVATAR_STEP)
+  return Math.max(2, Math.min(wanted, fit))
+}
+
+/** Take node: chrome below the poster (footer + big download button). */
+export const TAKE_CHROME = 74
+/** Largest 16:9 box that fits a node `w` × `h` (1px borders) above `chrome` px of controls. */
+export function fitMedia(w: number, h: number, chrome: number): { w: number; h: number } {
+  const innerW = Math.max(0, w - 2)
+  const maxH = Math.max(0, h - 2 - chrome)
+  const ph = Math.min((innerW * 9) / 16, maxH)
+  return { w: Math.round((ph * 16) / 9), h: Math.round(ph) }
+}
+
+/** Asset node: borders + padding + name + meta rows around the image (2 + 17 + 8+19 + 3+16). */
+export const ASSET_CHROME = 65
+/** Side of the square asset image in a node `w` × `h`. */
+export function assetImageSide(w: number, h: number): number {
+  return Math.max(40, Math.floor(Math.min(w - 18, h - ASSET_CHROME)))
+}
+
+/** Back to the default size (scene / asset: one undo step; take: runs store). */
+export function resetNodeSize(id: string) {
+  const p = useProject.getState().project
+  const cur = sceneMapOf(p.scenes).get(id) ?? assetMapOf(p.assets).get(id)
+  if (cur) {
+    if (cur.size) useProject.getState().setNodeSizes({ [id]: null })
+    return
+  }
+  const take = takeIndexOf(useRuns.getState().takes).byId.get(id)
+  if (take?.size) useRuns.getState().setTakeSizes({ [id]: null })
 }
 
 export const STATUS_COLOR: Record<JobStatus, string> = {
@@ -382,10 +489,23 @@ export function inlineEditKeyBubbles(e: { key: string; ctrlKey: boolean; metaKey
 interface CanvasLocal {
   hoveredEdgeId: string | null
   setHoveredEdge: (id: string | null) => void
+  /** Nodes whose resize handle is being dragged: their live box (committed to the stores on resize end). */
+  resizing: Record<string, ResizeBox>
+  setResizing: (boxes: Record<string, ResizeBox>) => void
+  clearResizing: (id: string) => void
 }
 export const useCanvasLocal = create<CanvasLocal>()((set) => ({
   hoveredEdgeId: null,
   setHoveredEdge: (hoveredEdgeId) => set((s) => (s.hoveredEdgeId === hoveredEdgeId ? s : { hoveredEdgeId })),
+  resizing: {},
+  setResizing: (boxes) => set((s) => ({ resizing: { ...s.resizing, ...boxes } })),
+  clearResizing: (id) =>
+    set((s) => {
+      if (!(id in s.resizing)) return s
+      const next = { ...s.resizing }
+      delete next[id]
+      return { resizing: next }
+    }),
 }))
 
 let leaveTimer: ReturnType<typeof setTimeout> | null = null

@@ -6,11 +6,11 @@ import { addImagesToAsset, focusNodes, linkAssets } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
 import type { AssetKind } from '../../core/types'
-import { LAYOUT, selectAsset, undoToastAction, useProject, type ProjectState } from '../../store/project'
+import { selectAsset, undoToastAction, useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
-import { changedPrompts, renameAssetTag } from '../sidebar/shared'
+import { changedPrompts, nextAssetPosition, renameAssetTag } from '../sidebar/shared'
 
 const SEP = '\u0001'
 
@@ -55,9 +55,8 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       toast(`Đã bỏ @${asset.tag} khỏi canvas (vẫn còn trong thư viện).`, { action: undoToastAction() })
       return
     }
-    const onCanvas = useProject.getState().project.assets.filter((a) => a.position)
-    const y = onCanvas.length ? Math.max(...onCanvas.map((a) => a.position!.y)) + LAYOUT.assetH + LAYOUT.assetGapY : LAYOUT.scenesY
-    useProject.getState().setAssetOnCanvas(assetId, { x: LAYOUT.assetX, y })
+    // Same slot as the library's "Đặt lên canvas" (below the lowest asset node, resized heights included).
+    useProject.getState().setAssetOnCanvas(assetId, nextAssetPosition(useProject.getState().project))
     useUI.getState().select([assetId])
     focusNodes([assetId])
   }

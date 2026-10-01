@@ -1,7 +1,8 @@
 // The canvas board. Nodes and edges are DERIVED from the stores: scenes and on-canvas assets (project store) and
 // takes = video nodes (runs store). React Flow is fully controlled: drag positions live in ui.dragPos until drag end
 // (scenes/assets: one undo step in the project; takes: runs.setTakePositions, not undoable), selection is mirrored
-// into ui.selectedIds / ui.selectedEdgeIds.
+// into ui.selectedIds / ui.selectedEdgeIds. Resize handles (NodeSizer): the live box lives in useCanvasLocal.resizing
+// until resize end, then one commit (scenes/assets: project.setNodeSizes, one undo step; takes: runs.setTakeSizes).
 import {
   Background,
   BackgroundVariant,
@@ -37,8 +38,8 @@ import {
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, usesVideoRefs } from '../../core/models'
-import type { Asset, Scene, XY } from '../../core/types'
-import { defaultTakePosition, refImageCount, undoToastAction, useProject } from '../../store/project'
+import type { Asset, Scene, Size, XY } from '../../core/types'
+import { LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
@@ -47,6 +48,7 @@ import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
 import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } from './edges'
 import {
   assetMapOf,
+  autoTakePosition,
   clientPoint,
   drawerInset,
   FIT_EVENT,
@@ -62,6 +64,7 @@ import {
   orphanTakePosition,
   readAssetIds,
   readTakeIds,
+  resetNodeSize,
   sceneMapOf,
   scheduleHoverEnd,
   snap,
@@ -70,8 +73,10 @@ import {
   STATUS_HEX,
   takeIndexOf,
   takeLayoutSig,
+  takeSlots,
   targetScenesFor,
   useCanvasLocal,
+  type ResizeBox,
   type TakeLayout,
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
@@ -115,6 +120,7 @@ export function CanvasView() {
 }
 
 const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
+const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? s.size?.w ?? LAYOUT.sceneW
 
 function CanvasInner() {
   const rf = useReactFlow<CanvasNode, LinkEdge>()
@@ -137,6 +143,7 @@ function CanvasInner() {
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
   const hoveredEdgeId = useCanvasLocal((s) => s.hoveredEdgeId)
+  const resizing = useCanvasLocal((s) => s.resizing)
   const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
   const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
@@ -151,49 +158,77 @@ function CanvasInner() {
   // ---------------- derived nodes (cached per id so unchanged nodes keep their identity) ----------------
   const nodeCache = useRef(new Map<string, CanvasNode>())
   const takeData = useRef(new Map<string, TakeNodeData>())
+  /** Row offset of each take (accumulated widths of the takes before it) and its current auto spot. */
+  const slotsRef = useRef(new Map<string, number>())
+  const autoRef = useRef(new Map<string, XY>())
   const nodes = useMemo(() => {
     const prevCache = nodeCache.current
     const next = new Map<string, CanvasNode>()
     const sel = new Set(selectedIds)
     const out: CanvasNode[] = []
-    const push = (id: string, type: NodeType, base: XY, data: Record<string, unknown>) => {
+    const push = (id: string, type: NodeType, base: XY, data: Record<string, unknown>, size: Size | null | undefined) => {
       const prev = prevCache.get(id)
-      let position = dragPos[id] ?? base
+      // A resize from the left / top edge moves the node live too.
+      const live = resizing[id]
+      let position = live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : (dragPos[id] ?? base)
       if (prev && samePos(prev.position, position)) position = prev.position
       const m = measured[id]
       const selected = sel.has(id)
       const dragging = id in dragPos
+      // Stored (or live) size sizes the React Flow wrapper; the card fills it. No size = CSS default (auto height).
+      const width = live?.w ?? size?.w
+      const height = live?.h ?? size?.h
       let node: CanvasNode
-      if (prev && prev.type === type && prev.position === position && prev.selected === selected && prev.measured === m && prev.dragging === dragging && prev.data === data) {
+      if (
+        prev &&
+        prev.type === type &&
+        prev.position === position &&
+        prev.selected === selected &&
+        prev.measured === m &&
+        prev.dragging === dragging &&
+        prev.data === data &&
+        prev.width === width &&
+        prev.height === height
+      ) {
         node = prev
       } else {
-        node = { id, type, position, data, selected, dragging, measured: m } as CanvasNode
+        node = { id, type, position, data, selected, dragging, measured: m, width, height } as CanvasNode
       }
       next.set(id, node)
       out.push(node)
     }
-    for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA)
-    for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA)
+    for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA, a.size)
+    for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA, s.size)
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
+    // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes before it.
+    const slots = takeSlots(takeLayout.items, (id) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW)
+    const autos = new Map<string, XY>()
     for (const item of takeLayout.items) {
       const anchor = sm.get(item.anchorId)!
-      // Auto-placed takes follow their scene live while it is dragged. An orphan (its scene was just deleted) stays
-      // where it was shown; without a previous spot it goes next to the scene that uses it.
+      const slot = slots.get(item.id) ?? 0
+      const live = resizing[anchor.id]
+      const anchorPos = dragPos[anchor.id] ?? (live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : anchor.position)
+      // Auto-placed takes follow their scene live while it is dragged or resized. An orphan (its scene was just
+      // deleted) stays where it was shown; without a previous spot it goes next to the scene that uses it.
+      const auto = item.orphan ? null : autoTakePosition(anchorPos, sceneWidth(anchor, live), slot)
+      if (auto) autos.set(item.id, auto)
       const base =
         item.explicit ??
-        (item.orphan
-          ? (prevCache.get(item.id)?.position ?? orphanTakePosition(anchor.position, item.index))
-          : defaultTakePosition(dragPos[anchor.id] ?? anchor.position, item.index))
+        auto ??
+        prevCache.get(item.id)?.position ??
+        orphanTakePosition(anchor.position, item.index, slot, item.size?.w ?? LAYOUT.takeW)
       let data = takeData.current.get(item.id)
       if (!data || data.hidden !== item.hidden || data.status !== item.status) data = { hidden: item.hidden, status: item.status }
       dataNext.set(item.id, data)
-      push(item.id, 'take', base, data)
+      push(item.id, 'take', base, data, item.size)
     }
+    slotsRef.current = slots
+    autoRef.current = autos
     takeData.current = dataNext
     nodeCache.current = next
     return out
-  }, [scenes, assets, takeLayout, dragPos, measured, selectedIds])
+  }, [scenes, assets, takeLayout, dragPos, measured, selectedIds, resizing])
 
   // ---------------- derived edges ----------------
   const rawEdges = useMemo(() => buildRawEdges(scenes, assets, takeLayout), [scenes, assets, takeLayout])
@@ -306,12 +341,25 @@ function CanvasInner() {
     const drag: Record<string, XY> = {}
     const commit: Record<string, XY> = {}
     let sel: Set<string> | null = null
+    // NodeResizer: 'dimensions' changes carry `resizing` (true while dragging a handle, false on release) and come
+    // with a plain 'position' change (no `dragging`) when the left / top edge moves the node.
+    const resizeIds = new Set<string>()
+    for (const c of changes) if (c.type === 'dimensions' && c.resizing !== undefined) resizeIds.add(c.id)
+    const liveBoxes = useCanvasLocal.getState().resizing
+    const live: Record<string, ResizeBox> = {}
+    const ended: string[] = []
+    const liveOf = (id: string): ResizeBox => live[id] ?? liveBoxes[id] ?? { w: 0, h: 0 }
     for (const c of changes) {
       if (c.type === 'dimensions') {
-        if (c.dimensions) dims[c.id] = { width: c.dimensions.width, height: c.dimensions.height }
+        if (c.resizing === true) {
+          if (c.dimensions) live[c.id] = { ...liveOf(c.id), w: c.dimensions.width, h: c.dimensions.height }
+        } else if (c.resizing === false) {
+          ended.push(c.id)
+        } else if (c.dimensions) dims[c.id] = { width: c.dimensions.width, height: c.dimensions.height }
       } else if (c.type === 'position') {
         if (!c.position) continue
-        if (c.dragging) drag[c.id] = c.position
+        if (resizeIds.has(c.id)) live[c.id] = { ...liveOf(c.id), x: c.position.x, y: c.position.y }
+        else if (c.dragging) drag[c.id] = c.position
         else commit[c.id] = c.position
       } else if (c.type === 'select') {
         sel ??= new Set(ui.selectedIds)
@@ -320,6 +368,8 @@ function CanvasInner() {
       }
       // 'remove' / 'add' / 'replace' are ignored: deletion goes through actions.deleteSelection.
     }
+    if (Object.keys(live).length) useCanvasLocal.getState().setResizing(live)
+    for (const id of ended) commitResize(id, autoRef.current)
     if (Object.keys(dims).length) {
       useUI.setState((s) => {
         let changed = false
@@ -367,7 +417,7 @@ function CanvasInner() {
           if (!take || (!scene && !item.orphan)) continue
           // Dropped on its auto slot (snapped to the grid): keep it auto-placed (it keeps following the scene).
           // Orphans (scene deleted) have no auto slot: wherever they are dropped is kept.
-          const auto = scene ? defaultTakePosition(commit[scene.id] ?? scene.position, item.index) : null
+          const auto = scene ? autoTakePosition(commit[scene.id] ?? scene.position, sceneWidth(scene), slotsRef.current.get(id) ?? 0) : null
           const next = auto && isAutoSlot(auto, pos) ? null : pos
           takeCommit[id] = next
           if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
@@ -495,6 +545,14 @@ function CanvasInner() {
     },
     [],
   )
+
+  // Double-click on a resize handle: back to the default size.
+  const onNodeDoubleClick: NodeMouseHandler<CanvasNode> = useCallback((e, node) => {
+    const target = e.target as Element | null
+    if (!target?.closest?.('.react-flow__resize-control')) return
+    e.stopPropagation()
+    resetNodeSize(node.id)
+  }, [])
 
   // ---------------- hover ----------------
   const onNodeMouseEnter: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => {
@@ -647,6 +705,7 @@ function CanvasInner() {
         onReconnect={onReconnect}
         onReconnectEnd={onReconnectEnd}
         reconnectRadius={14}
+        onNodeDoubleClick={onNodeDoubleClick}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onEdgeMouseEnter={onEdgeMouseEnter}
@@ -766,6 +825,36 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout): Raw
     })
   }
   return out
+}
+
+/**
+ * Resize handle released: store the node's new size once (and its new position when the left / top edge moved it).
+ * A press without any drag leaves no live box and changes nothing.
+ */
+function commitResize(id: string, autos: Map<string, XY>) {
+  const local = useCanvasLocal.getState()
+  const box = local.resizing[id]
+  if (!box) return
+  local.clearResizing(id)
+  if (!box.w || !box.h) return
+  const size = { w: Math.round(box.w), h: Math.round(box.h) }
+  const pos = box.x !== undefined && box.y !== undefined ? { x: box.x, y: box.y } : null
+  const project = useProject.getState().project
+  const entity = sceneMapOf(project.scenes).get(id) ?? assetMapOf(project.assets).get(id)
+  if (entity) {
+    const cur = entity.size
+    const moved = pos && entity.position && !samePos(entity.position, pos) ? { [id]: pos } : undefined
+    if (cur && cur.w === size.w && cur.h === size.h && !moved) return
+    useProject.getState().setNodeSizes({ [id]: size }, moved)
+    return
+  }
+  const take = takeIndexOf(useRuns.getState().takes).byId.get(id)
+  if (!take) return
+  const runs = useRuns.getState()
+  if (!take.size || take.size.w !== size.w || take.size.h !== size.h) runs.setTakeSizes({ [id]: size })
+  // Resized from the left / top: it now stays where it was dragged to (an auto-placed take becomes explicit).
+  const shown = take.position ?? autos.get(id)
+  if (pos && !samePos(shown ?? undefined, pos)) runs.setTakePositions({ [id]: pos })
 }
 
 /** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. Take: @video ref. */

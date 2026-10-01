@@ -245,7 +245,8 @@ export interface ProjectState {
   setPositions: (positions: Record<string, XY>) => void
   /** Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too (resizing from the left/top edge). */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
-  autoLayout: () => void
+  /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes) when known. */
+  autoLayout: (rowHeights?: Record<string, number>) => void
 
   // bulk
   applyImport: (data: { scenes: Partial<Scene>[] }) => string[]
@@ -690,15 +691,22 @@ export const useProject = create<ProjectState>()(
                 : a,
             ),
           })),
-        autoLayout: () =>
+        autoLayout: (rowHeights = {}) =>
           mutate((p) => {
             const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
-            const pos = new Map(sorted.map((s, i) => [s.id, scenePosition(i)]))
+            // Rows grow with resized scene cards / takes so nothing overlaps the next row.
+            const pos = new Map<string, XY>()
+            let rowY = LAYOUT.scenesY
+            for (const s of sorted) {
+              pos.set(s.id, { x: LAYOUT.scenesX, y: rowY })
+              const h = Math.max(LAYOUT.sceneH, LAYOUT.takeH, s.size?.h ?? 0, rowHeights[s.id] ?? 0)
+              rowY += h + LAYOUT.gapY
+            }
             let y = LAYOUT.scenesY
             const assets = p.assets.map((a) => {
               if (!a.position) return a
               const next = { ...a, position: { x: LAYOUT.assetX, y } }
-              y += LAYOUT.assetH + LAYOUT.assetGapY
+              y += Math.max(LAYOUT.assetH, a.size?.h ?? 0) + LAYOUT.assetGapY
               return next
             })
             return { ...p, assets, scenes: p.scenes.map((s) => ({ ...s, position: pos.get(s.id)! })) }

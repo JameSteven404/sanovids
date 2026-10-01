@@ -304,13 +304,10 @@
   width: 24px;
   height: 24px;
   margin-right: -5px;
-  border-radius: 50%;
+  border-radius: 6px;
   box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px color-mix(in srgb, var(--av-c, transparent) 55%, transparent);
   background: var(--panel-3);
   transition: transform 0.12s, margin 0.12s;
-}
-.cv-av.sq {
-  border-radius: 6px;
 }
 .cv-av > img,
 .cv-av > i {
@@ -462,6 +459,10 @@
   min-width: 0;
 }
 .cv-settings {
+  /* shrinks first (narrow / resized card) so the cost and the run button always stay visible */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
   font-size: 10.5px;
@@ -719,17 +720,10 @@
 .cv-asset-img {
   position: relative;
   width: 100%;
-  height: 118px;
+  aspect-ratio: 1;
   border-radius: 8px;
   overflow: hidden;
   background: var(--panel-3);
-}
-.cv-asset-img.round {
-  width: 118px;
-  margin: 0 auto;
-  border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px color-mix(in srgb, var(--asset-c) 70%, transparent);
-  overflow: visible;
 }
 .cv-asset-img img {
   display: block;
@@ -760,10 +754,6 @@
   font-size: 10px;
   font-weight: 600;
   color: #fff;
-}
-.cv-asset-img.round .cv-asset-count {
-  right: -6px;
-  bottom: 2px;
 }
 .cv-asset-name {
   display: flex;
@@ -996,7 +986,11 @@
 }
 /* Take whose scene was deleted (kept because a scene still uses it as @video). */
 .cv-take-orphan {
-  flex: none;
+  /* may shrink (narrow resized take) so the action buttons stay inside the node */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0 5px;
   border-radius: 4px;
   background: rgba(229, 185, 60, 0.14);
@@ -1106,6 +1100,114 @@
 .cv-take-main.is-retry:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* ============================== resizable nodes (NodeSizer) ============================== */
+/* A resized node: React Flow sizes the wrapper (node.width / node.height), the card fills it. */
+.cv-scene.is-sized,
+.cv-take.is-sized,
+.cv-asset.is-sized {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+.cv-scene.is-sized > .cv-scene-body,
+.cv-scene.is-sized > .cv-far {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.cv-scene.is-sized .cv-scene-body > * {
+  flex: none;
+}
+.cv-scene.is-sized .cv-scene-body > .cv-prompt-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.cv-scene.is-sized .cv-far-poster {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+.cv-take.is-sized .cv-take-media {
+  flex: none;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cv-take-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.cv-take.is-sized .cv-take-foot,
+.cv-take.is-sized .cv-take-main-wrap {
+  flex: none;
+}
+.cv-asset.is-sized .cv-asset-img {
+  flex: none;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cv-asset.is-sized .cv-asset-name {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+/* resize handles: corners + edges (wider invisible grab area); subtle while only hovered */
+.cv-stage .react-flow__resize-control.handle.cv-rs-handle {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--panel);
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  z-index: 5;
+}
+.cv-stage .react-flow__resize-control.handle.cv-rs-handle::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+}
+.cv-stage .react-flow__resize-control.handle.cv-rs-handle.is-subtle {
+  background: var(--text-faint);
+  opacity: 0.6;
+}
+.cv-stage .react-flow__resize-control.line.cv-rs-line {
+  border-color: transparent;
+  z-index: 2;
+}
+.cv-stage .react-flow__resize-control.line.cv-rs-line.left,
+.cv-stage .react-flow__resize-control.line.cv-rs-line.right {
+  width: 8px;
+}
+.cv-stage .react-flow__resize-control.line.cv-rs-line.top,
+.cv-stage .react-flow__resize-control.line.cv-rs-line.bottom {
+  height: 8px;
+}
+.cv-rs-reset {
+  position: absolute;
+  right: 0;
+  top: -26px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.cv-rs-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ============================== edges ============================== */
