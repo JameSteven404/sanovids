@@ -1,0 +1,31 @@
+# Thư viện & bản build
+node_modules/
+dist/
+dist-ssr/
+*.local
+coverage/
+
+# Log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Biến môi trường / API key (KHÔNG bao giờ đưa lên GitHub)
+.env
+.env.*
+!.env.example
+
+# Cài đặt cục bộ của Claude Code / editor
+.claude/settings.local.json
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.sw?
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
+desktop.ini

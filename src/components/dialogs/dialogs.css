@@ -1,0 +1,1049 @@
+/* Dialogs (dg-): import, settings, projects, shortcuts */
+.dg-ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dg-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+}
+.dg-foot-info {
+  margin-right: auto;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.dg-foot-info b {
+  color: var(--text);
+}
+.dg-note {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.dg-help {
+  margin: 2px 0 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.dg-x {
+  display: inline-flex;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.dg-x:hover {
+  color: var(--danger);
+  background: rgba(239, 91, 91, 0.1);
+}
+:is(.dg-import-input, .dg-review, .dg-confirm, .dg-settings) code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+/* segmented buttons */
+.dg-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 7px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  flex: none;
+}
+.dg-seg button {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dg-seg button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.dg-seg button.active {
+  background: var(--panel-3);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.dg-seg button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.dg-seg small {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.dg-seg-full {
+  display: flex;
+}
+.dg-seg-full button {
+  flex: 1;
+  padding: 5px 8px;
+}
+
+/* ---------- import: stepper ---------- */
+.dg-steps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.dg-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 4px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.dg-steps li + li::before {
+  content: '';
+  width: 16px;
+  height: 1px;
+  background: var(--border-strong);
+  margin: 0 6px 0 -8px;
+}
+.dg-steps li > span {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+.dg-steps li.active {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.dg-steps li.active > span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1209;
+}
+.dg-steps li.done {
+  color: var(--text-dim);
+}
+.dg-steps li.done > span {
+  background: rgba(76, 195, 138, 0.16);
+  border-color: rgba(76, 195, 138, 0.5);
+  color: var(--ok);
+}
+
+/* ---------- import: step 1 ---------- */
+.dg-import-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  min-height: 460px;
+  border-radius: var(--radius);
+  outline: 2px dashed transparent;
+  outline-offset: 4px;
+  transition: outline-color 0.12s;
+}
+.dg-import-input.over {
+  outline-color: var(--ref);
+}
+.dg-import-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dg-import-textarea {
+  flex: 1;
+  min-height: 420px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+}
+.dg-import-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.dg-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 14px;
+  border-radius: var(--radius);
+  border: 1.5px dashed var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.dg-drop:hover,
+.dg-import-input.over .dg-drop {
+  border-color: var(--ref);
+  background: var(--ref-soft);
+  color: var(--text);
+}
+.dg-drop svg {
+  color: var(--ref);
+}
+.dg-drop b {
+  font-weight: 600;
+  color: var(--text);
+}
+.dg-drop span {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.dg-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dg-files-list {
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+.dg-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px 5px 9px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.dg-file:last-child {
+  border-bottom: 0;
+}
+.dg-file > svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.dg-file > .dg-ellipsis {
+  flex: 1;
+}
+.dg-file .mono {
+  font-size: 10.5px;
+}
+.dg-sample {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(232, 137, 74, 0.4);
+  background: var(--accent-soft);
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+.dg-sample:hover {
+  background: rgba(232, 137, 74, 0.22);
+}
+.dg-sample > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.dg-sample b {
+  color: var(--text);
+  font-weight: 600;
+}
+.dg-sample small {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.dg-tips {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.dg-tips ul {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ---------- import: step 2 ---------- */
+.dg-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+.dg-review-main {
+  min-width: 0;
+}
+.dg-review-main .section-title {
+  justify-content: flex-start;
+}
+.dg-review-bulk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.dg-review-empty {
+  padding: 28px 16px;
+  line-height: 1.7;
+}
+.dg-cands {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dg-cand {
+  padding: 10px 12px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  opacity: 0.6;
+  transition: opacity 0.12s, border-color 0.12s;
+}
+.dg-cand.on {
+  opacity: 1;
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.dg-cand-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dg-cand-check {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex: none;
+  cursor: pointer;
+}
+.dg-cand-title.input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  min-height: 30px;
+  font-weight: 600;
+}
+.dg-cand-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 8px 0 6px 26px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.dg-cand-count b {
+  color: var(--text);
+}
+.dg-cand-bar {
+  width: 80px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+.dg-cand-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ref);
+}
+.dg-variants-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px 1px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(229, 185, 60, 0.45);
+  background: rgba(229, 185, 60, 0.1);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dg-cand-text {
+  margin-left: 26px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: pointer;
+}
+.dg-cand-text.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+.dg-variants {
+  margin: 8px 0 0 26px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed rgba(229, 185, 60, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.dg-variants p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.dg-variant {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.dg-variant .badge {
+  flex: none;
+  font-family: var(--font);
+}
+.dg-review-side {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dg-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.dg-stats > div {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.dg-stats b {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dg-stats span {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.dg-bar-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dg-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.dg-bar-label .mono {
+  font-size: 11px;
+}
+.dg-callout {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dg-callout.warn {
+  background: rgba(229, 185, 60, 0.08);
+  border: 1px solid rgba(229, 185, 60, 0.35);
+}
+.dg-callout.warn > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn);
+}
+.dg-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dg-preview-select.select {
+  width: auto;
+  max-width: 220px;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 26px 0 8px;
+  font-size: 12px;
+}
+.dg-preview-body {
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.dg-pv-block {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border-left: 3px solid;
+  background: var(--panel-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.dg-pv-prompt {
+  align-self: stretch;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  padding: 2px 2px;
+}
+.dg-pv-foot {
+  font-size: 11px;
+}
+.dg-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.dg-options .checkbox {
+  align-items: flex-start;
+  font-size: 12.5px;
+}
+.dg-options .checkbox input {
+  margin-top: 2px;
+  flex: none;
+}
+.dg-opt-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ---------- import: step 3 ---------- */
+.dg-confirm {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.dg-confirm-summary h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.dg-confirm-summary ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.dg-confirm-summary li {
+  padding-left: 14px;
+  position: relative;
+}
+.dg-confirm-summary li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.dg-confirm-summary li b {
+  color: var(--text);
+}
+.dg-confirm-summary li.dg-warn-li::before {
+  display: none;
+}
+.dg-confirm-summary li.dg-warn-li {
+  padding-left: 0;
+  color: var(--warn);
+}
+.dg-confirm-summary li.dg-warn-li svg {
+  vertical-align: -2px;
+}
+.dg-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.dg-block-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid;
+  background: var(--panel-2);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.dg-block-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+.dg-block-chip small {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+.dg-confirm-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  max-height: 440px;
+  background: var(--bg-elev);
+}
+.dg-ct-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1.4fr) 120px 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.dg-ct-row:last-child {
+  border-bottom: 0;
+}
+.dg-ct-row .r {
+  text-align: right;
+}
+.dg-ct-row .mono {
+  font-size: 11.5px;
+}
+.dg-ct-head {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.dg-code {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* ---------- settings ---------- */
+.dg-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.dg-settings-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.dg-section {
+  padding: 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dg-section header h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.dg-section header p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+.dg-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+}
+.dg-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 500;
+}
+.dg-toggle-text small {
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  line-height: 1.45;
+}
+.dg-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  transition: background 0.15s, border-color 0.15s;
+}
+.dg-switch input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.dg-switch i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.15s, background 0.15s;
+  pointer-events: none;
+}
+.dg-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.dg-switch.on i {
+  transform: translateX(14px);
+  background: #1a1209;
+}
+.dg-switch:focus-within {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.dg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dg-field.disabled {
+  opacity: 0.55;
+}
+.dg-tpl {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.dg-field-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.dg-warn-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warn);
+}
+.dg-tpl-preview {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px dashed var(--border-strong);
+}
+.dg-tpl-preview p {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.dg-value {
+  font-size: 12px;
+  color: var(--text);
+}
+.dg-range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.dg-credit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.dg-credit-num {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.dg-credit-num svg {
+  align-self: center;
+  color: var(--warn);
+}
+.dg-credit-num b {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dg-credit-num span {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.dg-credit-spent {
+  font-size: 12px;
+  flex: 1;
+}
+.dg-data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------- projects ---------- */
+.dg-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dg-projects-create {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.dg-new {
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  gap: 8px;
+}
+.dg-new .input {
+  flex: 1;
+}
+.dg-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  width: 220px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text-faint);
+}
+.dg-search:focus-within {
+  border-color: var(--accent);
+}
+.dg-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12.5px;
+}
+.dg-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+}
+.dg-project {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  transition: border-color 0.12s;
+}
+.dg-project:hover {
+  border-color: var(--border-strong);
+}
+.dg-project.current {
+  border-color: rgba(232, 137, 74, 0.5);
+  background: linear-gradient(0deg, rgba(232, 137, 74, 0.05), rgba(232, 137, 74, 0.05)), var(--bg-elev);
+}
+.dg-project-icon {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--panel-3);
+  color: var(--text-dim);
+}
+.dg-project.current .dg-project-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.dg-project-info {
+  flex: 1;
+  min-width: 0;
+}
+.dg-project-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.dg-project-meta {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 1px;
+}
+.dg-project-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.dg-project-actions.confirm span {
+  font-size: 12px;
+  color: #ff8a8a;
+  margin-right: 4px;
+}
+.dg-danger-icon:hover {
+  color: var(--danger);
+  background: rgba(239, 91, 91, 0.1);
+}
+
+/* ---------- shortcuts ---------- */
+.dg-shortcuts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 24px;
+}
+.dg-sc-col {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.dg-sc-group h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.dg-sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.dg-sc-row:last-child {
+  border-bottom: 0;
+}
+.dg-sc-label {
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.dg-sc-row.gesture {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+.dg-sc-gesture {
+  flex: none;
+  width: 150px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dg-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.dg-keys-or,
+.dg-keys-plus {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 0 1px;
+}
+.dg-keys-or {
+  padding: 0 4px;
+}

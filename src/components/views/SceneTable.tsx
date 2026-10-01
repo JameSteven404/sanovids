@@ -1,0 +1,595 @@
+import { ChevronDown, Copy, FileInput, GripVertical, Link2, Play, Plus, Search, SlidersHorizontal, Star, Trash, TriangleAlert, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { linkAssets, newScene, requestRun } from '../../actions'
+import { compileScene, isBlockOn, sceneCode } from '../../core/compile'
+import { costOf, MODELS, settingsLabel } from '../../core/models'
+import type { Scene } from '../../core/types'
+import { sortedScenes, undo, useProject } from '../../store/project'
+import { useSceneTakes } from '../../store/runs'
+import { toast, useUI } from '../../store/ui'
+import { AssetAvatar } from '../common/Media'
+import { TakeStrip } from '../runs/TakeStrip'
+import { ASSET_MIME, latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
+import './views.css'
+
+/** Scene id being reordered via the drag handle (dataTransfer is unreadable during dragover). */
+let draggingSceneId: string | null = null
+
+export function SceneTable() {
+  const scenes = useProject(useShallow((s) => sortedScenes(s.project)))
+  const selectedIds = useUI((s) => s.selectedIds)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const scenesRef = useRef(scenes)
+  scenesRef.current = scenes
+  const anchorRef = useRef<string | null>(null)
+  const cursorRef = useRef<string | null>(null)
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedScenes = useMemo(() => scenes.filter((s) => selectedSet.has(s.id)), [scenes, selectedSet])
+
+  const selectRange = useCallback((fromId: string, toId: string, additive: boolean) => {
+    const order = scenesRef.current.map((s) => s.id)
+    const a = order.indexOf(fromId)
+    const b = order.indexOf(toId)
+    if (a < 0 || b < 0) return
+    const range = order.slice(Math.min(a, b), Math.max(a, b) + 1)
+    const ui = useUI.getState()
+    ui.select(additive ? [...new Set([...ui.selectedIds, ...range])] : range)
+  }, [])
+
+  const toggle = useCallback((id: string) => {
+    const ui = useUI.getState()
+    const cur = ui.selectedIds
+    ui.select(cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])
+    anchorRef.current = id
+    cursorRef.current = id
+  }, [])
+
+  const onRowClick = useCallback(
+    (id: string, e: MouseEvent) => {
+      const additive = e.ctrlKey || e.metaKey
+      if (e.shiftKey && anchorRef.current) {
+        selectRange(anchorRef.current, id, additive)
+        cursorRef.current = id
+        return
+      }
+      if (additive) return toggle(id)
+      useUI.getState().select([id])
+      anchorRef.current = id
+      cursorRef.current = id
+    },
+    [selectRange, toggle],
+  )
+
+  // ↑ / ↓ move the selection (Shift extends it).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t?.closest?.('input:not([type="checkbox"]), textarea, select, [contenteditable="true"], [role="menu"]')) return
+      const ui = useUI.getState()
+      if (ui.dialog.kind !== 'none') return
+      const list = scenesRef.current
+      if (!list.length) return
+      e.preventDefault()
+      const sel = ui.selectedIds.filter((id) => list.some((s) => s.id === id))
+      const cursor = cursorRef.current && sel.includes(cursorRef.current) ? cursorRef.current : sel[sel.length - 1]
+      const idx = cursor ? list.findIndex((s) => s.id === cursor) : -1
+      const nextIdx = e.key === 'ArrowDown' ? Math.min(list.length - 1, idx + 1) : idx < 0 ? 0 : Math.max(0, idx - 1)
+      const id = list[nextIdx].id
+      if (e.shiftKey && anchorRef.current && list.some((s) => s.id === anchorRef.current)) selectRange(anchorRef.current, id, false)
+      else {
+        ui.select([id])
+        anchorRef.current = id
+      }
+      cursorRef.current = id
+      scrollRef.current?.querySelector(`[data-row="${id}"]`)?.scrollIntoView({ block: 'nearest' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectRange])
+
+  const allSelected = scenes.length > 0 && selectedScenes.length === scenes.length
+  const someSelected = selectedScenes.length > 0 && !allSelected
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected
+  }, [someSelected])
+
+  if (!scenes.length) {
+    return (
+      <div className="vw-root">
+        <div className="vw-empty-state">
+          <div className="vw-empty-icon">
+            <SlidersHorizontal size={22} />
+          </div>
+          <h3>Chưa có cảnh nào</h3>
+          <p>Tạo cảnh đầu tiên, hoặc nhập lại các prompt cũ — các đoạn lặp lại sẽ được gom thành khối prompt.</p>
+          <div className="vw-empty-actions">
+            <button className="btn btn-primary" onClick={() => newScene()}>
+              <Plus size={15} /> Cảnh mới
+            </button>
+            <button className="btn" onClick={() => useUI.getState().openDialog({ kind: 'import' })}>
+              <FileInput size={15} /> Nhập prompt cũ
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="vw-root vw-table-root">
+      <TableHeader scenes={scenes} selected={selectedScenes} />
+      <div className="vw-table-scroll" ref={scrollRef}>
+        <div className="vw-table" role="table" aria-label="Bảng cảnh">
+          <div className="vw-tr vw-thead" role="row">
+            <span />
+            <span className="vw-cell-check">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allSelected}
+                onChange={() => useUI.getState().select(allSelected ? [] : scenes.map((s) => s.id))}
+                title={allSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả cảnh'}
+                aria-label="Chọn tất cả"
+              />
+            </span>
+            <span>Cảnh</span>
+            <span>Tên</span>
+            <span>Nhân vật</span>
+            <span>Prompt</span>
+            <span className="vw-c">Khối</span>
+            <span>Cấu hình</span>
+            <span className="vw-r">Credit</span>
+            <span>Take</span>
+            <span>Trạng thái</span>
+            <span />
+          </div>
+          {scenes.map((s) => (
+            <SceneRow
+              key={s.id}
+              scene={s}
+              selected={selectedSet.has(s.id)}
+              selectionCount={selectedSet.has(s.id) ? selectedScenes.length : 0}
+              onRowClick={onRowClick}
+              onToggle={toggle}
+            />
+          ))}
+        </div>
+      </div>
+      <TableFooter scenes={scenes} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------------------------
+
+function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] }) {
+  const presets = useProject((s) => s.project.presets)
+  const ids = selected.map((s) => s.id)
+  const cost = selected.reduce((t, s) => t + costOf(s.settings), 0)
+
+  if (!selected.length) {
+    return (
+      <div className="vw-head">
+        <div className="vw-head-title">
+          <h2>Bảng cảnh</h2>
+          <span className="badge">{scenes.length} cảnh</span>
+          <span className="vw-head-hint">Bấm vào dòng để chọn · Shift/Ctrl để chọn nhiều · kéo nhân vật từ thư viện thả vào dòng để nối</span>
+        </div>
+        <div className="vw-head-actions">
+          <button className="btn btn-sm" onClick={() => useUI.getState().openDialog({ kind: 'import' })}>
+            <FileInput size={14} /> Nhập prompt
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={() => newScene()}>
+            <Plus size={14} /> Cảnh
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const project = () => useProject.getState()
+  return (
+    <div className="vw-head vw-bulk">
+      <div className="vw-head-title">
+        <button className="icon-btn" onClick={() => useUI.getState().clearSelection()} title="Bỏ chọn (Esc)" aria-label="Bỏ chọn">
+          <X size={15} />
+        </button>
+        <b>{selected.length} cảnh đã chọn</b>
+      </div>
+      <div className="vw-head-actions">
+        <MenuButton
+          label={
+            <>
+              Áp dụng preset <ChevronDown size={13} />
+            </>
+          }
+          width={260}
+        >
+          {(close) =>
+            presets.length ? (
+              presets.map((p) => (
+                <button
+                  key={p.id}
+                  className="vw-menu-item"
+                  onClick={() => {
+                    project().applyPreset(p.id, ids)
+                    toast(`Đã áp dụng preset “${p.name}” cho ${ids.length} cảnh.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+                    close()
+                  }}
+                >
+                  <span className="vw-menu-main">{p.name}</span>
+                  <span className="vw-menu-sub">
+                    {MODELS[p.model].short} · {settingsLabel(p)} · {costOf(p)} cr
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className="vw-menu-empty">Chưa có preset nào.</div>
+            )
+          }
+        </MenuButton>
+        <MenuButton
+          label={
+            <>
+              <Link2 size={13} /> Nối nhân vật <ChevronDown size={13} />
+            </>
+          }
+          width={300}
+        >
+          {(close) => <AssetPicker sceneIds={ids} onDone={close} />}
+        </MenuButton>
+        <button className="btn btn-sm btn-primary" onClick={() => requestRun(ids)} title="Mở bảng xác nhận chạy">
+          <Play size={13} /> Chạy {selected.length} · {cost} cr
+        </button>
+        <button
+          className="btn btn-sm"
+          onClick={() => {
+            const created = project().duplicateScenes(ids)
+            useUI.getState().select(created)
+            toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: { label: 'Hoàn tác', run: undo } })
+          }}
+        >
+          <Copy size={13} /> Nhân bản
+        </button>
+        <button
+          className="btn btn-sm btn-danger"
+          onClick={() => {
+            project().removeScenes(ids)
+            useUI.getState().clearSelection()
+            toast(`Đã xoá ${ids.length} cảnh.`, { action: { label: 'Hoàn tác', run: undo } })
+          }}
+        >
+          <Trash size={13} /> Xoá
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function AssetPicker({ sceneIds, onDone }: { sceneIds: string[]; onDone: () => void }) {
+  const assets = useProject((s) => s.project.assets)
+  const scenes = useProject((s) => s.project.scenes)
+  const [q, setQ] = useState('')
+  const idSet = useMemo(() => new Set(sceneIds), [sceneIds])
+  const query = q.trim().toLowerCase()
+  const list = assets.filter((a) => !query || a.name.toLowerCase().includes(query) || a.tag.toLowerCase().includes(query))
+  const usage = (assetId: string) => scenes.filter((s) => idSet.has(s.id) && s.refs.includes(assetId)).length
+  return (
+    <div className="vw-picker">
+      <label className="vw-picker-search">
+        <Search size={13} />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm nhân vật, bối cảnh…" />
+      </label>
+      <div className="vw-picker-list">
+        {list.map((a) => {
+          const n = usage(a.id)
+          return (
+            <div key={a.id} className="vw-picker-row">
+              <button
+                className="vw-menu-item"
+                onClick={() => {
+                  linkAssets(sceneIds, [a.id])
+                  onDone()
+                }}
+                title={`Nối @${a.tag} vào ${sceneIds.length} cảnh`}
+              >
+                <AssetAvatar asset={a} size={24} />
+                <span className="vw-menu-main">
+                  {a.name} <span className="faint">@{a.tag}</span>
+                </span>
+                <span className={`vw-menu-count ${n === sceneIds.length ? 'full' : ''}`}>
+                  {n}/{sceneIds.length}
+                </span>
+              </button>
+              {n > 0 && (
+                <button
+                  className="vw-picker-unlink"
+                  title={`Bỏ nối @${a.tag} khỏi ${n} cảnh`}
+                  onClick={() => {
+                    useProject.getState().removeRefs(sceneIds.map((sceneId) => ({ sceneId, assetId: a.id })))
+                    toast(`Đã bỏ nối @${a.tag} khỏi ${n} cảnh.`, { action: { label: 'Hoàn tác', run: undo } })
+                  }}
+                >
+                  Bỏ
+                </button>
+              )}
+            </div>
+          )
+        })}
+        {!list.length && <div className="vw-menu-empty">{assets.length ? 'Không tìm thấy.' : 'Thư viện đang trống.'}</div>}
+      </div>
+    </div>
+  )
+}
+
+function TableFooter({ scenes }: { scenes: Scene[] }) {
+  const byScene = useTakesByScene()
+  const total = scenes.reduce((t, s) => t + costOf(s.settings), 0)
+  const starred = scenes.filter((s) => starredTake(byScene.get(s.id) ?? [])).length
+  const withTakes = scenes.filter((s) => (byScene.get(s.id) ?? []).some((t) => t.status === 'completed')).length
+  return (
+    <div className="vw-foot">
+      <span>
+        <b>{scenes.length}</b> cảnh
+      </span>
+      <span className="vw-foot-sep" />
+      <span>
+        Chạy tất cả ≈ <b>{total.toLocaleString('vi-VN')}</b> credit
+      </span>
+      <span className="vw-foot-sep" />
+      <span>
+        <b>{withTakes}</b> cảnh có take xong
+      </span>
+      <span className="vw-foot-sep" />
+      <span>
+        <Star size={12} className="vw-star-ico" /> <b>{starred}</b>/{scenes.length} cảnh có take chọn
+      </span>
+      <span className="vw-foot-hint">
+        <span className="kbd">↑</span>
+        <span className="kbd">↓</span> chuyển cảnh · <span className="kbd">Shift</span> chọn nhiều
+      </span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------------------------
+
+interface RowProps {
+  scene: Scene
+  selected: boolean
+  /** Number of selected scenes when this row is selected, else 0 (keeps unselected rows from re-rendering). */
+  selectionCount: number
+  onRowClick: (id: string, e: MouseEvent) => void
+  onToggle: (id: string) => void
+}
+
+const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRowClick, onToggle }: RowProps) {
+  const id = scene.id
+  const assets = useProject((s) => s.project.assets)
+  const blocks = useProject((s) => s.project.blocks)
+  const preset = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId) : undefined))
+  const warnings = useProject((s) => {
+    const sc = s.project.scenes.find((x) => x.id === id)
+    return sc ? compileScene(s.project, sc).warnings.join('\n') : ''
+  })
+  const libraryDragging = useUI((s) => s.draggingAssetIds !== null)
+  const [assetOver, setAssetOver] = useState(false)
+  const [dropPos, setDropPos] = useState<'above' | 'below' | null>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
+
+  const code = sceneCode(scene.order)
+  const refAssets = scene.refs.map((r) => assets.find((a) => a.id === r)).filter((a): a is NonNullable<typeof a> => !!a)
+  const onBlocks = blocks.filter((b) => isBlockOn(scene, b))
+  const cost = costOf(scene.settings)
+  const spec = MODELS[scene.settings.model]
+  const multiTarget = selected && selectionCount > 1
+
+  const onDragOver = (e: DragEvent) => {
+    const types = e.dataTransfer.types
+    if (types.includes(ASSET_MIME)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      if (!assetOver) setAssetOver(true)
+      return
+    }
+    if (types.includes(SCENE_MIME) && draggingSceneId && draggingSceneId !== id) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const rect = rowRef.current!.getBoundingClientRect()
+      const pos = e.clientY < rect.top + rect.height / 2 ? 'above' : 'below'
+      if (pos !== dropPos) setDropPos(pos)
+    }
+  }
+  const onDragLeave = (e: DragEvent) => {
+    if (rowRef.current && e.relatedTarget instanceof Node && rowRef.current.contains(e.relatedTarget)) return
+    setAssetOver(false)
+    setDropPos(null)
+  }
+  const onDrop = (e: DragEvent) => {
+    const pos = dropPos
+    setAssetOver(false)
+    setDropPos(null)
+    const raw = e.dataTransfer.getData(ASSET_MIME)
+    if (raw) {
+      e.preventDefault()
+      let assetIds: string[] = []
+      try {
+        assetIds = JSON.parse(raw) as string[]
+      } catch {
+        return
+      }
+      const ui = useUI.getState()
+      const targets = multiTarget
+        ? useProject
+            .getState()
+            .project.scenes.filter((s) => ui.selectedIds.includes(s.id))
+            .map((s) => s.id)
+        : [id]
+      linkAssets(targets, assetIds)
+      ui.setDraggingAssets(null)
+      return
+    }
+    const moving = draggingSceneId
+    if (moving && moving !== id && pos) {
+      e.preventDefault()
+      const list = sortedScenes(useProject.getState().project)
+      const d = list.find((s) => s.id === moving)?.order
+      const k = scene.order
+      if (!d) return
+      const idxRemaining = k < d ? k - 1 : k - 2
+      const toOrder = (pos === 'above' ? idxRemaining : idxRemaining + 1) + 1
+      if (toOrder !== d) useProject.getState().moveScene(moving, toOrder)
+    }
+  }
+
+  const latestStatus = <RowStatus sceneId={id} />
+
+  return (
+    <div
+      ref={rowRef}
+      data-row={id}
+      role="row"
+      aria-selected={selected}
+      className={`vw-tr vw-row ${selected ? 'selected' : ''} ${assetOver ? 'asset-over' : ''} ${libraryDragging ? 'lib-drag' : ''} ${dropPos ? 'drop-' + dropPos : ''}`}
+      onClick={(e) => onRowClick(id, e)}
+      onDoubleClick={() => useUI.getState().setRightOpen(true)}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <span
+        className="vw-handle"
+        draggable
+        title="Kéo để đổi thứ tự"
+        onClick={(e) => e.stopPropagation()}
+        onDragStart={(e) => {
+          draggingSceneId = id
+          e.dataTransfer.setData(SCENE_MIME, id)
+          e.dataTransfer.effectAllowed = 'move'
+          if (rowRef.current) e.dataTransfer.setDragImage(rowRef.current, 16, 18)
+        }}
+        onDragEnd={() => {
+          draggingSceneId = null
+        }}
+      >
+        <GripVertical size={14} />
+      </span>
+      <span className="vw-cell-check" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={selected} onChange={() => onToggle(id)} aria-label={`Chọn ${code}`} />
+      </span>
+      <span className="vw-code" style={scene.color ? { color: scene.color } : undefined}>
+        {code}
+      </span>
+      <span className="vw-cell-title">
+        <input
+          className="vw-cell-input"
+          value={scene.title}
+          placeholder="Chưa đặt tên"
+          onChange={(e) => useProject.getState().updateScene(id, { title: e.target.value })}
+          onClick={(e) => {
+            if (e.shiftKey || e.ctrlKey || e.metaKey) return
+            e.stopPropagation()
+            if (!useUI.getState().selectedIds.includes(id) || selectionCount > 1) useUI.getState().select([id])
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur()
+          }}
+          aria-label={`Tên ${code}`}
+        />
+      </span>
+      <span className="vw-cell-refs">
+        {assetOver ? (
+          <span className="vw-drop-hint">{multiTarget ? `Nối vào ${selectionCount} cảnh đã chọn` : 'Thả để nối'}</span>
+        ) : refAssets.length ? (
+          <span className="vw-avatars">
+            {refAssets.slice(0, 5).map((a) => (
+              <span
+                key={a.id}
+                className="vw-avatar"
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  useUI.getState().openDialog({ kind: 'asset', assetId: a.id })
+                }}
+              >
+                <AssetAvatar asset={a} size={24} />
+              </span>
+            ))}
+            {refAssets.length > 5 && <span className="vw-avatar-more">+{refAssets.length - 5}</span>}
+          </span>
+        ) : (
+          <span className="vw-faint-cell">Kéo nhân vật vào</span>
+        )}
+      </span>
+      <span className="vw-cell-prompt" title={scene.prompt.slice(0, 600)}>
+        {scene.prompt.trim() ? <MentionText text={scene.prompt.replace(/\s+/g, ' ')} max={120} /> : <span className="vw-faint-cell">Chưa có prompt</span>}
+      </span>
+      <span className="vw-c vw-cell-blocks" title={onBlocks.length ? onBlocks.map((b) => '• ' + b.title).join('\n') : 'Không có khối nào bật'}>
+        <span className={onBlocks.length ? '' : 'faint'}>
+          {onBlocks.length}/{blocks.length}
+        </span>
+        {blocks.length > 0 && (
+          <span className="vw-block-dots">
+            {blocks.slice(0, 8).map((b) => (
+              <i key={b.id} style={{ background: isBlockOn(scene, b) ? b.color : undefined }} />
+            ))}
+          </span>
+        )}
+      </span>
+      <span className="vw-cell-settings">
+        <span className="vw-settings-line">
+          <i className="vw-model-dot" style={{ background: spec.color }} title={spec.name} />
+          {spec.short} · {settingsLabel(scene.settings)}
+        </span>
+        {preset && <span className="vw-preset">{preset.name}</span>}
+      </span>
+      <span className="vw-r vw-cell-cost">
+        {cost}
+        <span className="faint"> cr</span>
+      </span>
+      <span className="vw-cell-takes">
+        {/* 3 thumbs + "+N" fit the 186px column; more would clip the newest takes. */}
+        <TakeStrip sceneId={id} size="sm" max={3} />
+      </span>
+      <span className="vw-cell-status">
+        {latestStatus}
+        {warnings && (
+          <span className="vw-warn" title={warnings}>
+            <TriangleAlert size={13} />
+          </span>
+        )}
+      </span>
+      <span className="vw-cell-run">
+        <button
+          className="vw-run"
+          disabled={!scene.prompt.trim()}
+          title={scene.prompt.trim() ? `Chạy ${code} · ${settingsLabel(scene.settings)} · ${cost} credit` : 'Prompt trống — chưa chạy được'}
+          onClick={(e) => {
+            e.stopPropagation()
+            requestRun([id])
+          }}
+          aria-label={`Chạy ${code}`}
+        >
+          <Play size={13} />
+        </button>
+      </span>
+    </div>
+  )
+})
+
+function RowStatus({ sceneId }: { sceneId: string }) {
+  const takes = useSceneTakes(sceneId)
+  const latest = latestOf(takes)
+  if (!latest) return <span className="vw-status faint">Chưa chạy</span>
+  return (
+    <span className={`vw-status ${latest.status}`} title={latest.error ?? undefined}>
+      <i className={`status-dot ${latest.status}`} />
+      {latest.status === 'processing' ? `${STATUS_LABEL.processing} ${latest.progress}%` : STATUS_LABEL[latest.status]}
+      <span className="faint">· T{latest.number}</span>
+    </span>
+  )
+}

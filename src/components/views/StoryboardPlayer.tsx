@@ -1,0 +1,245 @@
+// "Phát liền": plays every scene's chosen take in order (webm when the mock recorded one, else poster).
+import { Pause, Play, RotateCcw, SkipBack, SkipForward, Star, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Take } from '../../core/types'
+import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { MediaImg } from '../common/Media'
+import { formatRuntime } from './shared'
+
+export interface PlayerItem {
+  sceneId: string
+  code: string
+  title: string
+  take: Take | null
+  /** Seconds (take or scene setting). Stills are shown for duration / 5 in the demo. */
+  duration: number
+}
+
+/** Length of a demo clip recorded by the mock provider when the webm has no duration metadata. */
+const MOCK_CLIP_S = 3
+const TICK = 100
+
+const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
+
+type VideoState = { id: string; url: string | null; failed: boolean } | null
+
+export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[]; start: number; onClose: () => void }) {
+  const [index, setIndex] = useState(() => Math.min(Math.max(0, start), Math.max(0, items.length - 1)))
+  const [paused, setPaused] = useState(false)
+  const [ended, setEnded] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const [video, setVideo] = useState<VideoState>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  const item = items[index] as PlayerItem | undefined
+  const videoId = item?.take?.videoId ?? null
+
+  // Resolve the video object URL for the current item.
+  useEffect(() => {
+    if (!videoId) {
+      setVideo(null)
+      return
+    }
+    const hit = cachedUrl(videoId)
+    setVideo({ id: videoId, url: hit, failed: false })
+    if (hit) return
+    let alive = true
+    getUrl(videoId).then((url) => alive && setVideo({ id: videoId, url, failed: !url }))
+    return () => {
+      alive = false
+    }
+  }, [videoId])
+
+  const mode: 'video' | 'loading' | 'still' =
+    videoId && video?.id === videoId && !video.failed ? (video.url ? 'video' : 'loading') : videoId && video?.id !== videoId ? 'loading' : 'still'
+
+  const indexRef = useRef(index)
+  indexRef.current = index
+  const next = useCallback(() => {
+    setElapsed(0)
+    const i = indexRef.current
+    if (i >= items.length - 1) setEnded(true)
+    else setIndex(i + 1)
+  }, [items.length])
+  const prev = useCallback(() => {
+    setElapsed(0)
+    setEnded(false)
+    setIndex((i) => Math.max(0, i - 1))
+  }, [])
+  const jump = useCallback((i: number) => {
+    setElapsed(0)
+    setEnded(false)
+    setPaused(false)
+    setIndex(i)
+  }, [])
+
+  // Stills (poster / slate): advance on a timer.
+  const hasItem = !!item
+  useEffect(() => {
+    if (mode !== 'still' || paused || ended || !hasItem) return
+    const id = window.setInterval(() => setElapsed((e) => e + TICK), TICK)
+    return () => window.clearInterval(id)
+  }, [mode, paused, ended, hasItem, index])
+  useEffect(() => {
+    if (mode === 'still' && item && elapsed >= stillMs(item)) next()
+  }, [mode, elapsed, item, next])
+
+  // Video: follow pause state; safety net in case 'ended' never fires.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || mode !== 'video') return
+    if (paused || ended) v.pause()
+    else void v.play().catch(() => undefined)
+  }, [paused, ended, mode, index])
+  useEffect(() => {
+    if (mode !== 'video' || paused || ended) return
+    const id = window.setTimeout(next, 15000)
+    return () => window.clearTimeout(id)
+  }, [mode, paused, ended, index, next])
+
+  // Keyboard: Space pause, ←/→ prev/next, Esc close. Captured so global shortcuts don't fire: every
+  // other key is stopped too (F / 1-3 would switch view, N / Delete / Ctrl+Z edit the project behind
+  // the overlay) — only Ctrl/Cmd+S still reaches useShortcuts. Default actions (Tab, Enter) still work.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const handled = e.key === 'Escape' || e.key === ' ' || e.key === 'ArrowLeft' || e.key === 'ArrowRight'
+      if (!handled) {
+        if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')) e.stopPropagation()
+        return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape') onClose()
+      else if (e.key === ' ') {
+        if (ended) {
+          jump(0)
+          return
+        }
+        setPaused((p) => !p)
+      } else if (e.key === 'ArrowLeft') prev()
+      else next()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose, prev, next, jump, ended])
+
+  if (!item) return null
+
+  const totalS = items.reduce((t, i) => t + i.duration, 0)
+  const take = item.take
+  const posterId = take?.posterId ?? null
+  const segProgress = (i: number) => {
+    if (i < index || (ended && i === index)) return 1
+    if (i > index) return 0
+    if (mode === 'still') return Math.min(1, elapsed / stillMs(item))
+    if (mode === 'video') {
+      const v = videoRef.current
+      const d = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : MOCK_CLIP_S
+      return Math.min(1, elapsed / 1000 / d)
+    }
+    return 0
+  }
+
+  return (
+    <div className="vw-player" role="dialog" aria-modal="true" aria-label="Phát liền storyboard">
+      <div className="vw-player-top">
+        <span className="vw-player-title">
+          Phát liền · <b>{item.code}</b>
+          <span className="faint">
+            {' '}
+            ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
+          </span>
+        </span>
+        <span className="vw-player-note">Demo: video giả ~3 giây · cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="vw-player-stage">
+        <div className="vw-player-frame">
+          {mode === 'video' && video?.url ? (
+            <video
+              key={video.id}
+              ref={videoRef}
+              className="vw-player-media"
+              src={video.url}
+              autoPlay
+              muted
+              playsInline
+              onTimeUpdate={(e) => setElapsed(e.currentTarget.currentTime * 1000)}
+              onEnded={next}
+              onError={() => setVideo((v) => (v ? { ...v, failed: true } : v))}
+            />
+          ) : posterId ? (
+            <MediaImg id={posterId} className="vw-player-media" />
+          ) : (
+            <div className="vw-player-slate">
+              <span>{item.code}</span>
+              <small>{item.title || 'Chưa đặt tên'}</small>
+              <em>Chưa có take hoàn thành</em>
+            </div>
+          )}
+          {mode === 'loading' && <div className="vw-player-loading">Đang tải video…</div>}
+
+          <div className="vw-player-caption">
+            <span className="vw-player-code">
+              {item.code}
+              {take && (
+                <span className="vw-player-take">
+                  {take.starred && <Star size={11} fill="currentColor" />}T{take.number}
+                </span>
+              )}
+            </span>
+            {item.title && <span className="vw-player-scene-title">{item.title}</span>}
+            {take && mode === 'still' && <span className="vw-player-sub">Không có video — hiển thị poster</span>}
+          </div>
+
+          {ended && (
+            <div className="vw-player-end">
+              <h3>Hết phim</h3>
+              <p>
+                {items.length} cảnh · {formatRuntime(totalS)}
+              </p>
+              <div>
+                <button className="btn btn-primary" onClick={() => jump(0)}>
+                  <RotateCcw size={14} /> Phát lại
+                </button>
+                <button className="btn" onClick={onClose}>
+                  Đóng
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="vw-player-controls">
+        <div className="vw-player-buttons">
+          <button className="icon-btn" onClick={prev} disabled={index === 0} title="Cảnh trước (←)" aria-label="Cảnh trước">
+            <SkipBack size={16} />
+          </button>
+          <button className="vw-player-pp" onClick={() => (ended ? jump(0) : setPaused((p) => !p))} title="Phát / tạm dừng (Space)" aria-label="Phát / tạm dừng">
+            {paused || ended ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
+          </button>
+          <button className="icon-btn" onClick={next} disabled={ended} title="Cảnh sau (→)" aria-label="Cảnh sau">
+            <SkipForward size={16} />
+          </button>
+        </div>
+        <div className="vw-player-timeline">
+          {items.map((it, i) => (
+            <button
+              key={it.sceneId}
+              className={`vw-seg ${i === index ? 'current' : ''} ${it.take ? '' : 'empty'}`}
+              style={{ flexGrow: Math.max(1, it.duration) }}
+              onClick={() => jump(i)}
+              title={`${it.code}${it.title ? ' · ' + it.title : ''} · ${it.duration}s${it.take ? ` · T${it.take.number}` : ' · chưa có take'}`}
+            >
+              <i style={{ width: `${segProgress(i) * 100}%` }} />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}

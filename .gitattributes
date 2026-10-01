@@ -1,0 +1,7 @@
+# Chuẩn hoá xuống dòng: LF trong repo, riêng file .bat giữ CRLF để chạy được trên Windows
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
