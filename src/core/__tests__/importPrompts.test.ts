@@ -164,12 +164,12 @@ describe('applyImageMapping', () => {
     expect(applyImageMapping('@image_1 / @image_2', ['a', 'a'], assets).prompt).toBe('@image_1 / @image_1')
   })
 
-  it('renumbers unassigned numbers after the linked images, in order', () => {
+  it('turns unassigned numbers into @image_?N placeholders (never live tokens)', () => {
     const m = applyImageMapping('@image_1 @image_2 @image_4 @image_3', [null, 'b', null, null], assets)
     expect(m.refs).toEqual(['b'])
     expect(m.pending).toEqual([1, 3, 4])
     // b → 1; pending 1 → 2, 3 → 3, 4 → 4
-    expect(m.prompt).toBe('@image_2 @image_1 @image_4 @image_3')
+    expect(m.prompt).toBe('@image_?1 @image_1 @image_?4 @image_?3')
   })
 
   it('renumbers a prompt that links none of the assigned assets (the dialog preview must not say "unchanged")', () => {
@@ -177,7 +177,7 @@ describe('applyImageMapping', () => {
     expect(m.refs).toEqual([])
     expect(m.images).toBe(0)
     expect(m.pending).toEqual([2, 3])
-    expect(m.prompt).toBe('Dog @image_1 at @image_2')
+    expect(m.prompt).toBe('Dog @image_?2 at @image_?3')
   })
 
   it('ignores assets without images and unknown ids; no usable mapping keeps the prompt untouched', () => {

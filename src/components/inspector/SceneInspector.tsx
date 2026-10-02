@@ -1,19 +1,21 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
+import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
-import { sceneCode } from '../../core/compile'
+import { compileScene, sceneCode } from '../../core/compile'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
+import { formatCredits } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
+import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -178,8 +180,10 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
   // A preset edited after it was applied no longer describes the scene: show "Tuỳ chỉnh" (picking it re-applies it).
   const presetId = settings ? appliedPresetId(storedPresetId, settings, presets) : null
   const presetIds = useMemo(() => [presetId], [presetId])
+  const creditKind = useCreditKind()
   if (!settings) return null
   const preset = presets.find((p) => p.id === presetId)
+  const cost = costOf(settings)
   return (
     <Section
       id="settings"
@@ -187,7 +191,10 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
       meta={
         <span className="in-meta">
           {preset && <span className="badge">{preset.name}</span>}
-          <span className="badge accent">{costOf(settings)} credit</span>
+          <span className={`badge in-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
+            {creditKind === 'demo' && <FlaskConical size={11} />}
+            {formatCredits(cost, creditKind)}
+          </span>
         </span>
       }
     >
@@ -626,13 +633,29 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   const settings = useSceneField(sceneId, (s) => s.settings)
   const promptEmpty = useSceneField(sceneId, (s) => !s.prompt.trim()) ?? true
   const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
+  const hasVideoRefs = useSceneField(sceneId, (s) => s.videoRefs.length > 0) ?? false
+  // Tokens with no picture/video in the request (character sync): a string, so the selector result is stable.
+  const unsent = useProject((s) => {
+    const sc = s.project.scenes.find((x) => x.id === sceneId)
+    return sc ? compileScene(s.project, sc).unsentTokens.slice(0, 2).join(', ') : ''
+  })
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
+  const creditKind = useCreditKind()
   if (!settings) return null
+  const cost = costOf(settings)
   // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
   const acceptsVideo = usesVideoRefs(settings)
   const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
-  const reason = promptEmpty ? 'Prompt trống' : framesMissing ? 'Thiếu khung đầu/cuối' : null
+  const reason = promptEmpty
+    ? 'Prompt trống'
+    : framesMissing
+      ? 'Thiếu khung đầu/cuối'
+      : unsent
+        ? `Prompt nhắc ${unsent} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
+        : hasVideoRefs && creditKind === 'canvasapp'
+          ? 'Cổng canvasapp chưa hỗ trợ video tham chiếu (@video) — bỏ @video hoặc chạy bằng Demo'
+          : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
   const shown = completed.slice(-6)
   if (chosen && !shown.includes(chosen)) shown.splice(0, 1, chosen)
@@ -674,7 +697,11 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
               className={`btn btn-sm ${t.id === chosen?.id ? 'in-continue-main' : 'btn-ghost'}`}
               onClick={() => createSceneFromTake(t.id)}
               disabled={!acceptsVideo}
-              title={acceptsVideo ? `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình` : noVideoTitle}
+              title={
+                !acceptsVideo
+                  ? noVideoTitle
+                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${creditKind === 'canvasapp' ? ' · Lưu ý: cổng canvasapp chưa nhận video tham chiếu — cảnh này chỉ chạy được bằng Demo' : ''}`
+              }
             >
               T{t.number}
               {t.starred && <Star size={11} fill="currentColor" className="in-star" />}
@@ -682,9 +709,15 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
           ))}
         </div>
       )}
-      <button type="button" className="btn btn-primary btn-lg in-run" onClick={() => requestRun([sceneId])} disabled={!!reason} title={reason ?? 'Xem chi phí và chạy (Ctrl+Enter)'}>
+      <button
+        type="button"
+        className="btn btn-primary btn-lg in-run"
+        onClick={() => requestRun([sceneId])}
+        disabled={!!reason}
+        title={reason ?? costTitle(cost, creditKind, 'Xem chi phí và chạy (Ctrl+Enter) · ')}
+      >
         <Play size={14} fill="currentColor" />
-        Chạy · {settings.duration}s · {costOf(settings)} credit
+        Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
       </button>
       {reason && <div className="in-run-reason">{reason} — chưa thể chạy.</div>}
     </Section>

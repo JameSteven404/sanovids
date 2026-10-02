@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createCanvasappApi, CanvasappError, errorFromResponse, type Transport, type TransportRequest, type TransportResponse } from '../canvasapp/api'
-import { createCanvasappProvider, memoryStorage, MIN_POLL_MS, STATE_KEY } from '../canvasapp/adapter'
+import { createCanvasappProvider, JOBS_KEY, memoryStorage, MIN_POLL_MS, STATE_KEY } from '../canvasapp/adapter'
 import { BRIDGE_PROJECT_NAME, canvasNodeId } from '../canvasapp/mapping'
 import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/transport'
 import type { JobRequest } from '../types'
@@ -221,6 +221,40 @@ describe('canvasapp adapter', () => {
     expect(provider.bridgeProjectId()).toBeNull()
     expect(provider.uploadCacheSize()).toBe(0)
     expect(storage.get(STATE_KEY)).toBeNull()
+  })
+
+  it('a key that already got its job is never posted again (also after a restart, also after logout)', async () => {
+    const { provider, server, storage } = setup()
+    const a = await provider.submit(req())
+    expect(await provider.submit(req())).toEqual(a)
+    const [same1, same2] = await Promise.all([provider.submit(req({ key: 'take_2', takeId: 'take_2' })), provider.submit(req({ key: 'take_2', takeId: 'take_2' }))])
+    expect(same1).toEqual(same2)
+    expect(server.state.jobs.length).toBe(2)
+
+    provider.reset() // logout: bridge project + uploads forgotten, the job ledger kept
+    expect(storage.get(STATE_KEY)).toBeNull()
+    expect(JSON.parse(storage.get(JOBS_KEY)!).jobs.take_1.remoteId).toBe(a.remoteId)
+    const again = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
+    expect(await again.submit(req())).toEqual(a)
+    expect(await again.recover!(req())).toEqual(a)
+    expect(await again.recover!(req({ key: 'never_sent', takeId: 'never_sent' }))).toBeNull()
+    expect(server.state.jobs.length).toBe(2)
+  })
+
+  it('stops before posting when the take is cancelled; a refused job leaves no "sent" record', async () => {
+    const { provider, server, storage } = setup()
+    await expect(provider.submit(req(), { isCancelled: () => true })).rejects.toMatchObject({ code: 'cancelled' })
+    expect(server.calls.filter((c) => c.path === '/api/video-jobs' && c.method === 'POST').length).toBe(0)
+
+    server.state.extra = (r) => (r.method === 'POST' && r.path === '/api/video-jobs' ? json({ detail: 'Không đủ credit' }, 402) : undefined)
+    await expect(provider.submit(req())).rejects.toMatchObject({ code: 'bad-request', message: expect.stringMatching(/không đủ credit/i) })
+    expect(JSON.parse(storage.get(JOBS_KEY)!).sent).toEqual({})
+    // not enough credits says nothing about the uploads: kept (no pointless re-upload after a top-up)
+    expect(provider.uploadCacheSize()).toBe(2)
+
+    server.state.extra = (r) => (r.method === 'POST' && r.path === '/api/video-jobs' ? json({ detail: 'upload_ids không hợp lệ' }, 400) : undefined)
+    await expect(provider.submit(req())).rejects.toMatchObject({ code: 'bad-request' })
+    expect(provider.uploadCacheSize()).toBe(0) // re-uploaded next time (an upload may have been the problem)
   })
 
   it('serialises concurrent submits (uploads of one take never interleave with another)', async () => {

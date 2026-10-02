@@ -1,12 +1,14 @@
-import { Check, ChevronDown, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, FlaskConical, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { MODELS, costOf, modeLabel, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
+import { formatCredits } from '../../lib/credits'
+import { useCreditKind } from '../../store/credits'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast } from '../../store/ui'
 import { ConfirmButton, Section } from './bits'
-import { appliedPresetId, modelSpec, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
+import { appliedPresetId, costTitle, creditTone, modelSpec, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
 
 /** Number of scenes running with each preset (applied, and not changed since — by the scene or by editing the preset). */
 const presetUsageSelector = (s: ProjectState) => {
@@ -30,6 +32,8 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
     nameRef.current?.select()
   }, [focusName])
   const spec = modelSpec(preset.model)
+  const creditKind = useCreditKind()
+  const cost = costOf(preset)
   const update = (patch: Partial<Omit<Preset, 'id'>>) => useProject.getState().updatePreset(preset.id, patch)
   const commitName = () => {
     const next = name.trim()
@@ -104,7 +108,11 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
       <div className="field">
         <span>Chi phí</span>
         <div className="sb-cost-box">
-          {costOf(preset)} credit <span className="faint">/ lần chạy</span>
+          <span className={`sb-cost-pill ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
+            {creditKind === 'demo' && <FlaskConical size={11} />}
+            {formatCredits(cost, creditKind)}
+          </span>
+          <span className="faint">/ lần chạy</span>
         </div>
       </div>
       <div className="sb-preset-edit-foot sb-span2">
@@ -137,6 +145,8 @@ interface RowProps {
 
 const PresetRow = memo(function PresetRow({ preset, usage, selected, active, editing, fresh, onEdit }: RowProps) {
   const spec = modelSpec(preset.model)
+  const creditKind = useCreditKind()
+  const cost = costOf(preset)
   const n = selected.length
   const apply = () => {
     if (!n) return
@@ -170,7 +180,10 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
             {spec.modes.length > 1 && <span className="faint"> · {modeLabel(preset.mode, spec.id)}</span>}
           </div>
           <div className="sb-preset-sub faint">
-            <b className="sb-cost">{costOf(preset)} cr</b>
+            <b className={`sb-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
+              {formatCredits(cost, creditKind, { short: true })}
+            </b>
+            {creditKind === 'demo' && <span className="sb-demo-mark">demo</span>}
             {usage > 0 ? ` · dùng ở ${usage} cảnh` : ' · chưa dùng'}
           </div>
         </div>

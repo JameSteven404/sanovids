@@ -3,7 +3,7 @@
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
-import { deleteTakes, downloadTake, requestRun } from '../../actions'
+import { deleteTakes, downloadTake, rerunTake } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
@@ -196,7 +196,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
                 disabled={order === undefined}
                 onClick={(e) => {
                   e.stopPropagation()
-                  requestRun([take.sceneId])
+                  rerunTake(take.id)
                 }}
               >
                 <RotateCcw size={14} strokeWidth={1.75} />
@@ -273,7 +273,7 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
         aria-label="Chạy lại"
         onClick={(e) => {
           e.stopPropagation()
-          requestRun([take.sceneId])
+          rerunTake(take.id)
         }}
       >
         <RotateCcw size={14} strokeWidth={2.4} />

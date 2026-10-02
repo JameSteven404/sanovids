@@ -8,12 +8,15 @@ import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeL
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
+import { formatCredits } from '../../lib/credits'
 import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
+import { useCreditKind } from '../../store/credits'
 import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { costTitle, creditTone } from '../sidebar/shared'
 import {
   assetMapOf,
   avatarSlots,
@@ -270,11 +273,15 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
 
   const spec = MODELS[scene.settings.model]
   const cost = costOf(scene.settings)
+  // Wallet of the next run: demo play money or real canvasapp credits (docs/SPEC-v2.md §9).
+  const creditKind = useCreditKind()
   let reason: string | null = null
   if (!scene.prompt.trim()) reason = 'Prompt trống'
   else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
   else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
   else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
+  else if (compiled.unsentTokens.length) reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 2).join(', ')} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
+  else if (scene.videoRefs.length && creditKind === 'canvasapp') reason = 'Cổng canvasapp chưa hỗ trợ video tham chiếu (@video) — bỏ @video hoặc chạy bằng Demo'
   else if (scene.videoRefs.length) {
     // '' = the take no longer exists (e.g. an undo brought back a reference to a deleted video).
     const sts = videoStatus.split(',')
@@ -340,8 +347,11 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
             {compiled.warnings.length > 1 ? compiled.warnings.length : null}
           </span>
         )}
-        <span className="cv-cost">{cost} cr</span>
-        <span className="cv-run-wrap" title={reason ? `Chưa chạy được: ${reason}` : `Chạy ${sceneCode(scene.order)} · ${cost} credit`}>
+        <span className={`cv-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind)}>
+          {formatCredits(cost, creditKind, { short: true })}
+          {creditKind === 'demo' && <span className="cv-cost-mark">demo</span>}
+        </span>
+        <span className="cv-run-wrap" title={reason ? `Chưa chạy được: ${reason}` : costTitle(cost, creditKind, `Chạy ${sceneCode(scene.order)} · `)}>
           <button
             className="cv-run nodrag"
             disabled={!!reason}

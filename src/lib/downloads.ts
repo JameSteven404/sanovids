@@ -296,12 +296,19 @@ export function extOfBlob(blob: Blob, fallback = 'webm'): string {
   return fallback
 }
 
-/** Files for one take: `<base>.<ext>` (video, or poster when there is no video) + `<base>.txt` with the prompt. */
-export async function takeFiles(take: { videoId: string | null; posterId: string | null; promptSnapshot: string }, base: string, withPrompt: boolean) {
-  const files: FileToSave[] = []
+/**
+ * Files for one take: `<base>.<ext>` (video, or poster when there is no video) + `<base>.txt` with the prompt.
+ * EMPTY when that video / poster is missing from storage — never a lone prompt .txt that would look like a download.
+ */
+export async function takeFiles(
+  take: { videoId: string | null; posterId: string | null; promptSnapshot: string },
+  base: string,
+  withPrompt: boolean,
+): Promise<FileToSave[]> {
   const id = take.videoId ?? take.posterId
   const blob = id ? await getBlob(id) : null
-  if (blob) files.push({ name: `${safeFileName(base)}.${extOfBlob(blob, take.videoId ? 'webm' : 'jpg')}`, data: blob })
+  if (!blob) return []
+  const files: FileToSave[] = [{ name: `${safeFileName(base)}.${extOfBlob(blob, take.videoId ? 'webm' : 'jpg')}`, data: blob }]
   if (withPrompt && take.promptSnapshot) files.push({ name: `${safeFileName(base)}.txt`, data: take.promptSnapshot })
   return files
 }

@@ -14,6 +14,8 @@ export interface MockRenderInput {
   color: string
   /** Image-store keys of the reference images, in @image order. */
   imageIds: string[]
+  /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "@video_1"); defaults to @image_<index>. */
+  labels?: string[]
   recordVideo: boolean
 }
 
@@ -111,8 +113,12 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
   const rand = rng(seed)
   const hue = seed % 360
   const u = Math.min(w, h) / 360 // type scale
-  const urls = (await Promise.all(input.imageIds.slice(0, 4).map(async (id) => (await getUrl(id)) ?? ''))).filter(Boolean)
-  const loaded = (await Promise.all(urls.map(loadImage))).filter((x): x is HTMLImageElement => !!x)
+  // Keep each label with its picture: a missing or broken image is skipped WITHOUT renumbering the others.
+  const picked = input.imageIds.slice(0, 4).map((id, i) => ({ id, label: input.labels?.[i] ?? `@image_${i + 1}` }))
+  const withUrls = await Promise.all(picked.map(async (p) => ({ ...p, url: (await getUrl(p.id)) ?? '' })))
+  const withImgs = await Promise.all(withUrls.filter((p) => p.url).map(async (p) => ({ label: p.label, img: await loadImage(p.url) })))
+  const loadedItems = withImgs.filter((p): p is { label: string; img: HTMLImageElement } => !!p.img)
+  const loaded = loadedItems.map((p) => p.img)
   const words = input.prompt.replace(/@(\p{L}[\p{L}\p{N}_]*)/gu, '$1').replace(/\s+/g, ' ').trim()
 
   // Seeded scenery: two mountain ridges, a glow and floating dust.
@@ -200,7 +206,7 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
       ctx.stroke()
       ctx.font = `600 ${11 * u}px "JetBrains Mono", monospace`
       ctx.fillStyle = 'rgba(255,255,255,0.7)'
-      ctx.fillText(`@image_${i + 1}`, x + 6 * u, y + size + 16 * u)
+      ctx.fillText(loadedItems[i]?.label ?? `@image_${i + 1}`, x + 6 * u, y + size + 16 * u)
     })
 
     // Vignette.

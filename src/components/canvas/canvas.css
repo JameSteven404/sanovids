@@ -635,10 +635,46 @@
   font-weight: 600;
   cursor: help;
 }
+/*
+ * Cost chip (docs/SPEC-v2.md §9 — same language as the inspector, presets panel and scene table):
+ * demo play money = neutral text in a dashed outline + a small "demo" mark; real canvasapp credits = solid --info
+ * tint (the top bar credit pill's color — the accent stays for the Run button).
+ */
 .cv-cost {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   white-space: nowrap;
   font-weight: 600;
-  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.cv-cost.is-real {
+  border-color: color-mix(in srgb, var(--info) 26%, transparent);
+  background: var(--info-soft);
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+}
+.cv-cost.is-demo {
+  padding-right: 4px;
+  border-style: dashed;
+  border-color: var(--text-faint);
+  background: transparent;
+  color: var(--text-dim);
+}
+.cv-cost-mark {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 12px;
 }
 .cv-run-wrap {
   display: inline-flex;

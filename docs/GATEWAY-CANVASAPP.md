@@ -41,6 +41,7 @@ Nguyên tắc an toàn (bắt buộc):
                                                  │ IPC (contextBridge, electron/preload.cjs)
  ┌───────────────────────────── Electron main (electron/main.cjs) ──────────────────────────────┐
  │  canvasapp:status | canvasapp:login | canvasapp:logout | canvasapp:request                     │
+ │  canvasapp:checkout (nạp credit: cửa sổ modal trang SePay thật, xem §5b)                      │
  │   • chỉ nhận lời gọi từ app://bdp/…                                                             │
  │   • allowlist method + path (+ query project_id), id chỉ gồm [A-Za-z0-9_-]                     │
  │   • thêm X-CSRF-Token từ cookie canvas_csrf; JSON ≤ 2 MB, ảnh ≤ 20 MB (multipart tự dựng)       │
@@ -62,6 +63,7 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 | `poll(remoteIds)` | → `[{remoteId, state, progress?, error?}]` |
 | `fetchResult(remoteId)` | → `{ video: Blob, poster?: Blob }` (thiếu poster → engine tự cắt khung hình từ video) |
 | `cancel?(remoteId)` | mock: có. canvasapp: **không** (xem §6) |
+| `recover?(req)` | tìm job mà một lần gửi trước của `req.key` có thể đã tạo (trang đóng/tải lại lúc gửi) — **không bao giờ** tạo job. canvasapp: có |
 
 Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ không có = demo):
 `provider` (`'mock' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
@@ -124,26 +126,113 @@ sổ `https://canvasapp.io.vn/` (phân vùng `persist:canvasapp`, sandbox, khôn
 **Gửi (submit)** — runs engine chọn take `queued` (≤ 2 take canvasapp đang chạy) → `processing` → `submit(req)`:
 1. kiểm tra (`validateRequest`): prompt, giới hạn ký tự (H3 t2v/i2v 7.000), video tham chiếu, i2v cần ảnh, transform cần 2 khung, tuỳ chọn của `/api/video-profiles` nếu đã tải;
 2. phiên "SanoVids bridge": dùng id đã nhớ → nếu chưa có thì tìm theo tên → nếu chưa có thì tạo;
-3. tải lên các ảnh chưa có trong cache (tuần tự; chỉ JPG/PNG/WEBP);
+3. kiểm tra **mọi** ảnh có trong máy trước (thiếu ảnh → lỗi rõ ràng "Không tìm thấy ảnh tham chiếu @image_N…", chưa tải lên gì, chưa trả gì), rồi tải lên các ảnh chưa có trong cache (tuần tự; chỉ JPG/PNG/WEBP);
 4. `PUT …/canvas` (404 → tạo lại phiên một lần);
-5. `POST /api/video-jobs` → `job_id` → `remoteId = "<project_id>:<job_id>"` lưu vào take.
-Các lần submit được xếp hàng nối tiếp (không chen nhau). Lỗi → take `failed` với lý do tiếng Việt (không trừ credit demo).
+5. ghi trước "đã gửi" (`sent[take.id]`, localStorage `bdp:canvasapp:jobs`) → `POST /api/video-jobs` → `job_id` →
+   `remoteId = "<project_id>:<job_id>"` lưu vào take **và** vào sổ `jobs[take.id]` (đồng bộ, ngay khi có câu trả lời).
+Các lần submit được xếp hàng nối tiếp (không chen nhau). Take bị huỷ (hoặc cảnh bị xoá) trong lúc chờ/đang tải ảnh →
+dừng **trước** `POST`, không bị trừ credit (cảnh bị xoá: take quay lại hàng đợi, chạy tiếp nếu Hoàn tác). Lỗi chắc chắn
+(401, 402/400 thiếu credit, 403, 404, 429, sai dữ liệu) → take `failed` với lý do tiếng Việt, không tự gửi lại.
+`POST` không có câu trả lời rõ (mất mạng, quá giờ, 5xx, 200 mà không có `job_id`) → canvasapp **có thể đã tạo job**:
+đợi 15 s, đọc danh sách job tìm đúng job đó (cùng `client_request_id` nếu danh sách có trường này, nếu không thì job
+**duy nhất** mới xuất hiện trên node của cảnh, không thuộc take nào khác); đọc lần 2 sau 15 s nữa; không có → gửi lại
+**một lần** với **cùng** body và `client_request_id`; vẫn không rõ → take `failed` với `UNKNOWN_SUBMIT_ERROR`
+("không rõ đã trừ credit chưa"). `useRuns.retry(takeId)` cho take đó gửi lại **chính take đó** (cùng khoá; tìm job trước).
 
 **Theo dõi (poll)** — mỗi nhà cung cấp một lời gọi: canvasapp gom mọi take đang chạy thành **1** `GET /api/video-jobs?project_id=…`,
-không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main cache 15 s). Lỗi khi poll (mạng, 401, 429…) **không**
-làm hỏng take: engine giữ take đang chạy, nghỉ 1 → 2 → 4 → … tối đa 10 phút, và đặt `useRuns.providerIssue` để UI báo.
+không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main cache 15 s, bỏ cache mỗi lần `POST /api/video-jobs`).
+Lỗi khi poll (mạng, 401, 429…) **không** làm hỏng take: engine giữ take đang chạy, nghỉ 1 → 2 → 4 → … tối đa 10 phút, và
+đặt `useRuns.providerIssue` để UI báo. Sau 401, đăng nhập lại (đọc được số dư) → hết nghỉ, poll lại ở lượt kế.
 
 **Tải kết quả** — `completed` → `GET /api/video-jobs/{job_id}/stream` (nhị phân qua IPC) → Blob `video/mp4` → engine cắt
 poster (≤ 640 px, `providers/poster.ts`) → `putBlob` → take `completed` (+ tự tải về máy nếu bật "Tự tải video").
+Tải hỏng (mạng, phiên…) → take **vẫn** "đang tạo 99%" và thử lại sau 30 s, 1, 2, 5 phút; hỏng cả 5 lần → `failed` với lời
+nhắn "đã tạo xong, đã trừ credit — tải trực tiếp trên canvasapp, chạy lại sẽ trừ thêm".
 
-**Mở lại app** — take canvasapp đang `processing` có `remoteId` được giữ nguyên và **tiếp tục poll** (không gửi lại = không
-trả tiền hai lần). Take đang gửi dở (chưa có `remoteId`) được gửi lại với cùng `client_request_id`.
+**Mở lại app / đổi dự án** — take canvasapp đang `processing` có `remoteId` được giữ nguyên và **tiếp tục poll** (không gửi
+lại = không trả tiền hai lần). Take đang gửi dở (chưa có `remoteId` trên take — trang đóng/tải lại lúc gửi, hoặc lưu
+chậm) → `provider.recover()`: lấy `jobs[take.id]` trong sổ, hoặc đợi lần gửi còn đang chạy, hoặc (có `sent[take.id]`) tìm
+job trong danh sách như trên. Tìm thấy → poll tiếp; không thấy → `failed` với `UNKNOWN_SUBMIT_ERROR`. **Không bao giờ**
+tự `POST` lại. Đổi sang dự án khác lúc đang gửi không huỷ lần gửi đó; mở lại dự án → take tìm lại job.
 
 ## 5. Credit
 
 - Take canvasapp **không** trừ credit demo của SanoVids (`charged: false`) và không được "hoàn" khi lỗi — tiền thật nằm ở
   tài khoản canvasapp (hiện ở Cài đặt, từ `GET /api/me` → `credits_balance`; 1 credit ≈ 1.000đ).
 - Bảng giá trong `core/models.ts` trùng với canvasapp nên ước tính trong hộp xác nhận vẫn đúng.
+
+## 5b. Nạp credit (top-up tài khoản canvasapp của chính người dùng) — SPEC-v2 §10
+
+SanoVids **không** có hệ thống credit riêng: "Nạp credit" chỉ mở đúng luồng nạp tiền của canvasapp.io.vn, trong app.
+
+Quy tắc an toàn (bắt buộc):
+
+- SanoVids **không bao giờ** thấy, hỏi hay gõ thông tin ngân hàng/thẻ. Người dùng tự trả trên **trang thật của SePay**
+  (quét QR bằng app ngân hàng). SanoVids không chèn script, không điền gì, không bấm gì trên trang thanh toán.
+- Chỉ mở URL thanh toán **do chính canvasapp trả về**, và chỉ khi URL là `https://` + host `sepay.vn` / `*.sepay.vn`
+  (kiểm tra 2 lần: renderer `core/topup.ts checkoutUrlAllowed` và main `checkoutUrlAllowed` bản CJS — main không tin renderer).
+- Không bao giờ tự xác nhận: "đã nhận tiền" chỉ khi canvasapp trả `status` = `paid` / `reconciled`.
+- Test chỉ dùng transport/bridge giả, không gọi API thật.
+
+Các mảnh:
+
+| Mảnh | Nội dung |
+|---|---|
+| `src/core/topup.ts` (thuần, có test) | `TOPUP_PRESETS` 30k/50k/100k/200k; `validateTopupAmount` (số nguyên VND, 10.000–10.000.000, bội 1.000; nhận "50.000", "50,000", "50k", "1,5tr"); `creditsForAmount`; `formatVnd`; `mapTopupStatus` → `{ phase, label, final }`; `checkoutUrlAllowed`; `parsePaymentReturn`; `TOPUP_ORDER_TTL_MS` (10 phút), `TOPUP_POLL_MS` (2 s), `TOPUP_HISTORY_KINDS` |
+| `api.ts` | `authState()` (`topup_enabled === true` mới mở nạp), `createTopup(amountVnd)` → `{ checkout_url, fields, order_id }`, `getTopup(orderId)` → `{ status, amount_vnd, … }`, `creditHistory({ kind, offset, limit })` → `{ balance, items, next_offset }`. Lỗi như mọi endpoint khác (401 → `login-required`) |
+| `transport.ts` | `openCheckout({ checkoutUrl, fields })` → `{ result, orderId, blockedHost }`; từ chối trước khi gọi bridge nếu URL không phải SePay (`forbidden`), không có bridge (`unavailable`), bản desktop cũ chưa có `checkout` (`unsupported`), đang có cửa sổ thanh toán (`busy`) |
+| `electron/main.cjs` | allowlist thêm `POST /api/payments/topups`, `GET /api/payments/topups/:id` (id `[A-Za-z0-9_-]`), `GET /api/credits/history` (chỉ query `kind` ∈ all/topup/video/refund/adjustment, `offset`, `limit` là số, mỗi khoá 1 lần). IPC `canvasapp:checkout` |
+| `electron/preload.cjs` | `bdpDesktop.canvasapp.checkout({ checkoutUrl, fields })` |
+
+Luồng:
+
+```
+Dialog "Nạp credit" ── authState(): đã đăng nhập + topup_enabled? ── không → nút khoá + giải thích
+   │ validateTopupAmount("50k") → 50.000đ = 50 credit
+   ▼
+api.createTopup(50000) ──► POST /api/payments/topups {amount_vnd}  ──► { checkout_url, fields }
+   │ checkoutUrlAllowed(checkout_url)? (không → báo, KHÔNG mở)
+   ▼
+openCheckout() ─IPC─► main: kiểm tra lại URL + fields ─► 1 cửa sổ modal "Thanh toán nạp credit"
+                       (parent = cửa sổ chính, partition persist:canvasapp, sandbox, contextIsolation, không preload)
+                       trang data: cục bộ tự POST form (mọi tên/giá trị được escape HTML; CSP: chỉ 1 script theo hash,
+                       form-action chỉ *.sepay.vn + canvasapp) ─► trang SePay thật → người dùng tự quét QR
+   ◄─ { result, orderId } khi cửa sổ quay về https://canvasapp.io.vn/…?payment=success|cancel|error&topup_order=<id>
+      (chặn ở will-navigate/will-redirect, không tải trang canvasapp, đóng cửa sổ)
+      | { result:'closed', orderId:null } người dùng đóng cửa sổ
+      | { result:'timeout' } sau 15 phút (SanoVids đóng cửa sổ)
+   ▼
+poll api.getTopup(orderId) mỗi 3 s (đến hết hạn đơn 10 phút + 30 s; lỗi đọc → giãn dần, 5 lần liền / 401 → dừng, "Thử lại") → mapTopupStatus:
+   pending → "Đang chờ thanh toán…" · paid/reconciled → "Đã nhận tiền ✓" → refreshRealCredits({ force: true })
+   reconcile_required → "đang đối soát" (dừng poll, xem Lịch sử) · expired · rejected
+```
+
+Chính sách điều hướng của cửa sổ thanh toán (khung chính): cho phép `https://sepay.vn`, `https://*.sepay.vn` và
+`https://canvasapp.io.vn`; URL quay về có `payment` + `topup_order` → kết thúc. Mọi thứ khác (trang khác, `http:`,
+deep link app ngân hàng `xxx://`) → **chặn** và ghi `blockedHost` (chỉ tên host, không bao giờ cả URL). `window.open` →
+không mở trong app; chỉ link `https` của SePay / canvasapp được mở bằng trình duyệt mặc định (link khác: chặn, ghi
+`blockedHost`). Không `<webview>`. Tiêu đề cửa sổ giữ nguyên "Thanh toán nạp credit". Luật điều hướng nằm trong khối
+`// <checkout-rules>` của `main.cjs` (`classifyCheckoutNavigation`, `checkoutExternalAllowed`) và được test chạy nguyên văn.
+
+Quyền web trong partition `persist:canvasapp` (Electron mặc định cho **mọi** quyền): cửa sổ thanh toán chỉ được ghi
+clipboard (nút "sao chép" số tài khoản / nội dung CK trên SePay); cửa sổ đăng nhập không được camera/mic, vị trí,
+thông báo, chụp màn hình, `openExternal`, MIDI, HID/USB/serial…; không thiết bị nào được cấp (`setDevicePermissionHandler`
+→ false); Web Bluetooth luôn huỷ chọn thiết bị.
+
+**VERIFY** khi dùng thật lần đầu (tài khoản thật, nạp 10.000đ):
+
+- [ ] `checkout_url` thật có host thuộc `sepay.vn` không (nếu khác → SanoVids từ chối; cập nhật `CHECKOUT_HOST_SUFFIX` ở **cả** `core/topup.ts` và `main.cjs` sau khi xác nhận là của SePay).
+- [ ] `fields` chỉ gồm chuỗi/số, tên field nằm trong `[A-Za-z0-9_.[\]-]` (nếu không → `bad-response`).
+- [ ] SePay có nhận POST từ trang `data:` (header `Origin: null`) không. Nếu bị từ chối: chuyển sang `webContents.loadURL(checkoutUrl, { postData })` — **không** giả `Origin`.
+- [ ] Trang SePay có điều hướng khung chính sang host khác (cổng NAPAS/ngân hàng…) không → xem `blockedHost` trong kết quả; chỉ mở rộng allowlist sau khi xác nhận.
+- [ ] URL quay về đúng dạng `https://canvasapp.io.vn/...?payment=…&topup_order=…`.
+- [ ] Phản hồi `POST /api/payments/topups` có kèm mã đơn không (khoá nào: `order_id` / `topup_order` / `id`) — để vẫn poll được khi người dùng đóng cửa sổ sau khi đã trả.
+- [ ] Dạng thật của `GET /api/payments/topups/{id}` và `GET /api/credits/history` (tên trường `delta`, `amount_vnd`, `next_offset`).
+- [ ] Credit hiển thị trong SanoVids tăng đúng sau `paid` (so với trang canvasapp).
+
+Thử thủ công thêm (§9): 13. Bản web: "Nạp credit" khoá kèm giải thích. 14. Nạp 10.000đ: cửa sổ SePay mở, quét QR, cửa sổ tự
+đóng, "Đã nhận tiền ✓", số credit tăng 10. 15. Mở cửa sổ rồi đóng ngay → "đã huỷ/đóng", không trừ gì. 16. Bấm huỷ trên
+SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịch sử credit: lọc Nạp / Tạo video, "Xem thêm".
 
 ## 6. Giới hạn & rủi ro
 
@@ -153,7 +242,7 @@ trả tiền hai lần). Take đang gửi dở (chưa có `remoteId`) được g
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request song song, ≤ 2 job, poll ≥ 15 s, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie; **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
-| Trả tiền hai lần | `client_request_id = take.id`; không gửi lại take đã có `remoteId`; thiếu `job_id` trong phản hồi → báo lỗi và khuyên kiểm tra trên canvasapp trước khi chạy lại |
+| Trả tiền hai lần | `client_request_id = take.id`; sổ `jobs`/`sent` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job không bao giờ `POST` lại; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi. Test: `providers/__tests__/canvasapp-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
@@ -175,12 +264,16 @@ trả tiền hai lần). Take đang gửi dở (chưa có `remoteId`) được g
 - [ ] UI: nhãn nhà cung cấp trên take node / hàng đợi; hộp xác nhận chạy (RunConfirmDialog) ghi "credit canvasapp" thay vì credit demo khi đang dùng cổng, và không chặn vì thiếu credit demo; hiển thị `useRuns.providerIssue` (toast/banner "Đăng nhập lại canvasapp").
 - [ ] Nạp `/api/video-profiles` khi đăng nhập (`canvasappProvider().refreshProfiles()`) và dùng `capabilities()` để giới hạn lựa chọn model/mode trong inspector.
 - [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; `order` 0 hay 1; máy chủ có dedupe `client_request_id` không; `GET /api/projects` trả mảng hay `{projects}`; canvas tối thiểu có đủ trường không; `/stream` có chuyển hướng không.
+- [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không; danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
+- [ ] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` nên gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá) thay vì tạo take mới.
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
 - [ ] Tải video lớn: stream thẳng ra file trong main thay vì bytes qua IPC; dùng `download-token` nếu cần.
 - [ ] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take.
 - [ ] Khi có API chính thức / token từ bên vận hành: thay `transport.ts` (vd. HTTP + API key do người dùng nhập, lưu bằng `safeStorage`), giữ nguyên `adapter`/`mapping`.
 
 ## 9. Kế hoạch thử thủ công (cho người dùng)
+
+> Bản rút gọn, tốn ít credit nhất (8 credit) cho lần tự kiểm tra cuối: **docs/TEST-REAL-CREDITS.md**.
 
 Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mới build, một dự án SanoVids có 2–3 cảnh ngắn (5 s, độ phân giải thấp nhất để rẻ).
 
@@ -196,5 +289,10 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành.
 11. **Huỷ** — huỷ take đang chạy: SanoVids ghi "Đã huỷ"; ghi nhận job trên canvasapp vẫn chạy (đúng như cảnh báo).
 12. **Quay lại demo** — chọn Demo giả lập → take mới là demo, không gọi mạng.
+13. **Huỷ lúc đang gửi** — chạy 2 cảnh có ảnh, huỷ take thứ hai ngay (khi take đầu còn đang tải ảnh) → trên canvasapp chỉ có 1 job; take huỷ ghi "không bị trừ credit".
+14. **Rút mạng lúc bấm chạy** — tắt Wi-Fi ngay sau khi bấm chạy, bật lại sau ~20 s → take tự tìm lại/gửi lại; trên canvasapp chỉ có **1** job cho take đó.
+
+Tự động (không mạng, không tốn tiền): `npx vitest run src/providers/__tests__/canvasapp-e2e.test.ts` chạy toàn bộ luồng thật
+(engine → adapter → transport → cầu nối giả lập canvasapp) cho các trường hợp trên.
 
 Ghi lại mọi lỗi kèm thông báo hiển thị (và, nếu có, mã lỗi trong DevTools: `Ctrl+Shift+I` → Console).

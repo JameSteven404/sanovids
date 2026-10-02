@@ -248,9 +248,9 @@
 }
 .vw-table {
   /* Take column: TakeStrip sm with max 3 → "+NN" (≤30px) + 3×44px thumbs + gaps + 14px padding.
-     Video column: 3 × 38px thumbs + "+N". */
-  --vw-cols: 22px 30px 50px minmax(140px, 1.1fr) 168px 150px minmax(220px, 2fr) 172px 58px 186px 132px 40px;
-  min-width: 1396px; /* 1380px of columns + the 8px inset on both sides */
+     Video column: 3 × 38px thumbs + "+N". Credit column: fits the "Credit demo" header and "1.234 cr". */
+  --vw-cols: 22px 30px 50px minmax(140px, 1.1fr) 168px 150px minmax(220px, 2fr) 172px 84px 186px 132px 40px;
+  min-width: 1422px; /* 1394px of columns + the 8px inset on both sides + 12px slack (as before) */
   padding: 0 8px 8px;
 }
 .vw-tr {
@@ -684,6 +684,66 @@
   font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+/*
+ * Cost labels (docs/SPEC-v2.md §9 — same language as the canvas card, inspector and presets panel):
+ * demo play money = neutral + dashed (underline / outline / "demo" mark), real canvasapp credits = --info tint (the
+ * top bar credit pill's color — the accent stays for the Run buttons).
+ */
+.vw-cell-cost.is-real,
+.vw-cost-text.is-real {
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+  font-weight: 600;
+}
+.vw-cell-cost.is-demo,
+.vw-cost-text.is-demo {
+  color: var(--text-dim);
+}
+.vw-th-demo {
+  text-decoration: underline dashed var(--text-faint);
+  text-decoration-thickness: 1px;
+  /* 2px: the header cell clips overflow (ellipsis), a lower underline could be cut off */
+  text-underline-offset: 2px;
+  cursor: help;
+}
+.vw-demo-mark {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px dashed var(--text-faint);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 12px;
+  vertical-align: 1px;
+}
+/* amount inside the filled "Chạy N" button: drawn in the button's own text color (--on-accent) */
+.vw-btn-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.vw-btn-cost.is-real {
+  background: color-mix(in srgb, var(--on-accent) 16%, transparent);
+}
+.vw-btn-cost.is-demo {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--on-accent) 62%, transparent);
+}
+.vw-btn-cost-mark {
+  /* full --on-accent: a dimmed 9px mark on the orange fill was hard to read in the light theme */
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }
 .vw-cell-takes {
   display: flex;
@@ -778,6 +838,30 @@
   color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+.vw-foot-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.vw-foot .vw-cost-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: help;
+}
+.vw-foot .vw-cost-pill.is-real {
+  border-color: color-mix(in srgb, var(--info) 26%, transparent);
+  background: var(--info-soft);
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+}
+.vw-foot .vw-cost-pill.is-demo {
+  border-style: dashed;
+  border-color: var(--text-faint);
+  color: var(--text-dim);
 }
 .vw-foot-sep {
   width: 1px;

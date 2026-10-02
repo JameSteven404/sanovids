@@ -2,8 +2,9 @@
 import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { imageSlotsFor, mediaKeys, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import { MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
+import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
+import { costOf, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
+import { CREDIT_SOURCE_LABEL, DEMO_CREDIT_HINT, formatCreditNumber, formatCredits, formatVnd, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
 import { assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
@@ -117,45 +118,8 @@ export function scenesWithShiftedImageTokens(assets: Asset[], scenes: Scene[], a
   return out
 }
 
-/**
- * Does an @image_N / @video_N token of `prompt` point at another image / video after a media change? `before` /
- * `after` are mediaKeys() of the scene. A token that pointed at nothing before (number too high) is not counted.
- */
-export function tokensShifted(prompt: string, before: { images: string[]; videos: string[] }, after: { images: string[]; videos: string[] }): boolean {
-  return parseTokens(prompt).some((t) => {
-    const was = (t.kind === 'image' ? before.images : before.videos)[t.n - 1]
-    return was !== undefined && (t.kind === 'image' ? after.images : after.videos)[t.n - 1] !== was
-  })
-}
-
-/**
- * Scenes whose prompt was left as written although its @image_N / @video_N tokens now point at another picture or
- * video (automatic renumbering off, Settings), comparing the project before and after a refs / asset-image change.
- * Rewritten prompts are the store's renumbering at work and are not listed.
- */
-export function scenesWithStaleTokens(before: Project, after: Project): string[] {
-  const old = new Map(before.scenes.map((s) => [s.id, s]))
-  const out: string[] = []
-  for (const sc of after.scenes) {
-    const prev = old.get(sc.id)
-    if (!prev || prev.prompt !== sc.prompt || !/@(image|video)_\d/i.test(sc.prompt)) continue
-    if (prev.refs === sc.refs && prev.videoRefs === sc.videoRefs && before.assets === after.assets) continue
-    if (tokensShifted(sc.prompt, mediaKeys(before.assets, prev.refs, prev.videoRefs), mediaKeys(after.assets, sc.refs, sc.videoRefs))) out.push(sc.id)
-  }
-  return out
-}
-
-/** " · tự đánh lại số đang tắt — hãy sửa số @image trong S02, S05" (scene codes in order, at most 4 listed). */
-export function staleTokenNote(project: Project, sceneIds: string[], what = '@image'): string {
-  const orders = new Map(project.scenes.map((s) => [s.id, s.order]))
-  const codes = sceneIds
-    .map((id) => orders.get(id))
-    .filter((o): o is number => o !== undefined)
-    .sort((a, b) => a - b)
-    .map(sceneCode)
-  const list = codes.length > 4 ? `${codes.slice(0, 4).join(', ')}… (${codes.length} cảnh)` : codes.join(', ')
-  return ` · tự đánh lại số đang tắt — hãy sửa số ${what} trong ${list}`
-}
+// Moved to core/staleTokens (pure, shared with canvas edits and actions); re-exported for existing imports.
+export { scenesWithStaleTokens, staleTokenNote, tokensShifted } from '../../core/staleTokens'
 
 /** Hint under an asset's images: what changing them does to the @image numbers of the scenes using it. */
 export function imageRenumberNote(autoRenumber: boolean, used: number): { text: string; warn: boolean } {
@@ -441,6 +405,40 @@ export function useFileDropGuard() {
       if (hasFiles(e.dataTransfer)) e.preventDefault()
     })
   }, [])
+}
+
+// ---------------- costs: demo vs real credits (docs/SPEC-v2.md §9) ----------------
+// Every cost label of the workspace (scene card, inspector, presets, scene table) shows the wallet the NEXT run pays
+// with: `useCreditKind()` from store/credits (same value as useCreditInfo().kind, without subscribing to balances).
+// Amounts go through lib/credits formatCredits(n, kind, { short }). Look (each area's CSS, tokens only):
+//   is-demo  play money — neutral text, dashed outline / dashed underline, a small "demo" mark next to short amounts;
+//   is-real  real canvasapp credits — solid --info tint (fill or text), the color of the top bar credit pill; the
+//            accent stays for Run. Inside a filled Run button both kinds are drawn in the button's text color.
+
+/** Modifier class of a cost label. */
+export function creditTone(kind: CreditKind): 'is-demo' | 'is-real' {
+  return kind === 'demo' ? 'is-demo' : 'is-real'
+}
+
+/** Per-run cost of several scenes added up (what "Chạy tất cả" / a batch run costs). */
+export function totalCost(scenes: readonly { settings: VideoSettings }[]): number {
+  return scenes.reduce((t, s) => t + costOf(s.settings), 0)
+}
+
+/** Second tooltip line of a canvasapp cost: the table is an estimate, the real account is billed by canvasapp. */
+export const REAL_COST_HINT = 'Ước tính — trừ trên tài khoản canvasapp khi job được nhận'
+
+/**
+ * Tooltip of a cost, two lines: the amount with its wallet, then what that wallet means. `lead` goes first
+ * ("Chạy S01 · ").
+ *   demo       "Chạy S01 · 20 credit demo\nCredit giả lập — không phải tiền thật"
+ *   canvasapp  "Chạy S01 · ≈ 20 credit canvasapp (≈ 20.000đ)\nƯớc tính — trừ trên tài khoản canvasapp khi job được nhận"
+ * An unknown amount shows "—" (never a made-up number).
+ */
+export function costTitle(n: number | null | undefined, kind: CreditKind, lead = ''): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return `${lead}${formatCredits(n, kind)}`
+  if (kind === 'demo') return `${lead}${formatCredits(n, 'demo')}\n${DEMO_CREDIT_HINT}`
+  return `${lead}≈ ${formatCreditNumber(n)} ${CREDIT_SOURCE_LABEL.canvasapp} (≈ ${formatVnd(n)})\n${REAL_COST_HINT}`
 }
 
 // ---------------- library masonry ----------------

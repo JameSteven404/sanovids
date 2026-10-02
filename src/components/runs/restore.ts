@@ -7,6 +7,7 @@
 // The exact image list of the run is only known when the take carries `imageKeysSnapshot` (the image keys it was
 // sent with, in order). Older takes do not: the image slots are then rebuilt from the assets as they are now.
 import { imageKey, mediaKeys, remapTokens, TOKEN_RE } from '../../core/compile'
+import { tokensShifted } from '../../core/staleTokens'
 import type { Asset, Take } from '../../core/types'
 
 /** Key of an image slot whose asset was deleted (its image count is unknown, counted as one image). */
@@ -60,6 +61,11 @@ export interface RestoredScene {
   /** True when tokens of the prompt were rewritten. */
   renumbered: boolean
   /**
+   * Renumbering off and the prompt kept tokens that now point at another image / video than when the take ran
+   * (a reference was deleted, or a character's pictures changed): the user must check them.
+   */
+  stale: boolean
+  /**
    * @image tokens whose number could not be resolved for sure: they come after a deleted asset of an older take
    * (no image snapshot), whose image count is unknown. They were renumbered as if that asset had one image —
    * the user should check them.
@@ -86,14 +92,18 @@ export function restoredFromTake(
   let prompt = take.rawPromptSnapshot
   let renumbered = false
   let uncertain = 0
-  if (!opts.renumber || !/@(image|video)_\d/i.test(prompt)) return { prompt, refs, videoRefs, gone, renumbered, uncertain }
+  if (!/@(image|video)_\d/i.test(prompt)) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
 
   const exact = exactImageKeys(take)
   const beforeImages = snapshotImageKeys(assets, take.refsSnapshot, exact)
   const after = mediaKeys(assets, refs, videoRefs)
   // With the exact snapshot, images added to / removed from an asset since the run also shift the numbers.
   const imagesMoved = !!exact && beforeImages.join('|') !== after.images.join('|')
-  if (gone === 0 && !imagesMoved) return { prompt, refs, videoRefs, gone, renumbered, uncertain }
+  if (gone === 0 && !imagesMoved) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
+  if (!opts.renumber) {
+    const stale = tokensShifted(prompt, { images: beforeImages, videos: take.videoRefsSnapshot }, after)
+    return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale }
+  }
 
   // Old take: past the first deleted asset the slots are a guess (its real image count is unknown).
   const guessFrom = beforeImages.findIndex(isMissingKey)
@@ -109,5 +119,5 @@ export function restoredFromTake(
   )
   prompt = res.text
   renumbered = res.changed
-  return { prompt, refs, videoRefs, gone, renumbered, uncertain }
+  return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
 }

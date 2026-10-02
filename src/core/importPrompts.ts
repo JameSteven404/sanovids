@@ -9,7 +9,7 @@
 //   text / .txt files ──parsePromptText / itemsFromFiles──▶ items (title + prompt)
 //   items ──previewItem / summarizeImport──▶ what the dialog shows
 //   items + mapping ──buildImportScenes──▶ { title, prompt, refs }[] for project.applyImport()
-import { imageSlotsFor, TOKEN_RE } from './compile'
+import { imageSlotsFor, TOKEN_RE, unboundToken } from './compile'
 import type { Asset } from './types'
 
 export interface ImportItem {
@@ -236,9 +236,9 @@ export function hasMapping(mapping: ImageMapping | undefined, assets: Asset[]): 
  *   (default) only the assets whose number the prompt mentions are linked.
  * - The k-th number assigned to the same asset points at its k-th image (wrapping to the primary image when
  *   the asset has fewer images), so "@image_1 = Elara, @image_2 = Elara" keeps two different pictures.
- * - Tokens are renumbered to the image numbers of the new refs. Mentioned numbers without an asset are
- *   renumbered right after the linked images, in their original order: linking the missing assets later
- *   (appending, which never renumbers) makes them line up again. Until then they show as invalid tokens.
+ * - Tokens are renumbered to the image numbers of the new refs. Mentioned numbers without an asset become
+ *   placeholders "@image_?N" (they must never silently point at whatever image is linked next); the scene
+ *   will not run until the user links a picture and writes the right number.
  * - Assets without images are ignored (they would not get a number). @video_N tokens are never touched.
  * - Without any usable assignment the prompt is returned unchanged.
  */
@@ -276,12 +276,11 @@ export function applyImageMapping(
     if (slot) renumber.set(n, slot.n)
   }
   const pending = mentioned.filter((n) => !renumber.has(n))
-  pending.forEach((n, i) => renumber.set(n, slots.length + i + 1))
 
   const text = prompt.replace(TOKEN_RE, (whole, kind: string, raw: string) => {
     if (kind.toLowerCase() !== 'image') return whole
     const next = renumber.get(Number(raw))
-    return next === undefined ? whole : `@image_${next}`
+    return next === undefined ? unboundToken('image', raw) : `@image_${next}`
   })
   return { prompt: text, refs, images: slots.length, pending }
 }

@@ -6,6 +6,9 @@ export const MENTION_RE = /@([\p{L}\p{N}_]+)/gu
 /** Numbered media token. Group 1 = kind, group 2 = number. */
 export const TOKEN_RE = /@(image|video)_(\d+)\b/gi
 const RAW_TOKEN = /^(image|video)_\d+$/i
+/** Placeholder for a number that has no image/video yet (e.g. left over by an edit or an import): "@image_?3". */
+export const UNBOUND_RE = /@(image|video)_\?(\d+)/gi
+export const unboundToken = (kind: 'image' | 'video', n: number | string) => `@${kind}_?${n}`
 
 export function sceneCode(order: number): string {
   return 'S' + String(order).padStart(2, '0')
@@ -130,10 +133,18 @@ export function tokenForVideo(scene: Scene, takeId: string): string | null {
   return i >= 0 ? `@video_${i + 1}` : null
 }
 
+/** `after` starts with every key of `before`, in the same order (only new media added at the end). */
+const isAppend = (before: string[], after: string[]) => after.length >= before.length && before.every((k, i) => after[i] === k)
+/** Asset id of an image key ("assetId:imageId"); a video key is the take id itself. */
+const ownerOfKey = (kind: 'image' | 'video', key: string) => (kind === 'image' ? key.slice(0, key.indexOf(':')) : key)
+
 /**
  * Rewrite @image_N / @video_N tokens after the references changed so every token keeps pointing at the same
  * image/video. Tokens whose image/video disappeared are replaced with `fallback(kind, key)` (e.g. the asset name).
- * Tokens that were already invalid (number out of range before the change) are left untouched.
+ * A token that pointed at nothing before (typed ahead: "write the prompt first, link the pictures later") keeps its
+ * number only when the change is a pure append of NEW assets/takes: it then names the newly linked one by position,
+ * or still waits for one. Any other change (insert, removal, reorder, a character getting more pictures) would
+ * shift it onto a picture it never meant — wrong character — so it becomes a visible "@image_?N" placeholder.
  */
 export function remapTokens(
   text: string,
@@ -148,7 +159,12 @@ export function remapTokens(
     const oldKeys = kind === 'image' ? before.images : before.videos
     const newKeys = kind === 'image' ? after.images : after.videos
     const key = oldKeys[Number(rawN) - 1]
-    if (key === undefined) return whole
+    if (key === undefined) {
+      const target = newKeys[Number(rawN) - 1]
+      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(kind, k) === ownerOfKey(kind, target)))) return whole
+      changed = true
+      return unboundToken(kind, rawN)
+    }
     const idx = newKeys.indexOf(key)
     const next = idx >= 0 ? `@${kind}_${idx + 1}` : fallback(kind, key)
     if (idx < 0) dropped++
@@ -245,14 +261,34 @@ export function compileScene(project: Project, scene: Scene, opts: CompileOption
   if (!sendsVideos && tokens.some((t) => t.kind === 'video')) {
     warnings.push(`Chế độ này của ${spec.name} không gửi video: các @video_N sẽ chỉ là chữ trong prompt.`)
   }
+  const unsent = new Set<string>()
   for (const t of tokens) {
+    const tok = `@${t.kind}_${t.n}`
     if (t.kind === 'image') {
       usedImages.add(t.n)
-      if (t.n < 1 || t.n > allSlots.length) warnings.push(`@image_${t.n} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
+      if (t.n < 1 || t.n > allSlots.length) {
+        warnings.push(`${tok} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
+        unsent.add(tok)
+      } else if (sendsImages && t.n > images.length) {
+        warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefImages} ảnh) — nhân vật đó không có trong video.`)
+        unsent.add(tok)
+      } else if (!sendsImages) unsent.add(tok)
     } else {
       usedVideos.add(t.n)
-      if (t.n < 1 || t.n > scene.videoRefs.length) warnings.push(`@video_${t.n} không tồn tại (cảnh có ${scene.videoRefs.length} video).`)
+      if (t.n < 1 || t.n > scene.videoRefs.length) {
+        warnings.push(`${tok} không tồn tại (cảnh có ${scene.videoRefs.length} video).`)
+        unsent.add(tok)
+      } else if (sendsVideos && t.n > videos.length) {
+        warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefVideos} video).`)
+        unsent.add(tok)
+      } else if (!sendsVideos) unsent.add(tok)
     }
+  }
+  for (const m of text.matchAll(UNBOUND_RE)) {
+    const tok = m[0]
+    if (unsent.has(tok)) continue
+    unsent.add(tok)
+    warnings.push(`${tok} chưa gắn ${m[1].toLowerCase() === 'image' ? 'ảnh' : 'video'} nào — nối vào cảnh rồi sửa thành số đúng (vd. @${m[1].toLowerCase()}_1).`)
   }
   const unusedImages = images.filter((i) => !usedImages.has(i.n)).map((i) => `@image_${i.n}`)
   if (unusedImages.length) notes.push(`${unusedImages.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)
@@ -264,5 +300,5 @@ export function compileScene(project: Project, scene: Scene, opts: CompileOption
   if (charCount > limit) warnings.push(`Prompt dài ${charCount.toLocaleString('vi-VN')} ký tự, vượt giới hạn ${limit.toLocaleString('vi-VN')}.`)
 
   const assetIds = [...new Set(images.map((i) => i.assetId))]
-  return { text, images, videos, assetIds, charCount, limit, warnings: [...new Set(warnings)], notes }
+  return { text, images, videos, assetIds, charCount, limit, warnings: [...new Set(warnings)], notes, unsentTokens: [...unsent] }
 }

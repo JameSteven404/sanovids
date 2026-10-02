@@ -4,12 +4,14 @@ import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { focusNodes, linkAssets, linkTakes, requestRun, takeLabel } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
-import { costOf, usesVideoRefs } from '../../core/models'
+import { usesVideoRefs } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
+import { formatCredits } from '../../lib/credits'
+import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { appliedPresetId, changedPrompts, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, changedPrompts, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote, totalCost } from '../sidebar/shared'
 import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
 import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
@@ -59,7 +61,8 @@ export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
 }
 
 const MultiHeader = memo(function MultiHeader({ scenes }: { scenes: Scene[] }) {
-  const total = scenes.reduce((t, s) => t + costOf(s.settings), 0)
+  const creditKind = useCreditKind()
+  const total = totalCost(scenes)
   const seconds = scenes.reduce((t, s) => t + s.settings.duration, 0)
   const shown = scenes.slice(0, 18)
   return (
@@ -69,7 +72,11 @@ const MultiHeader = memo(function MultiHeader({ scenes }: { scenes: Scene[] }) {
         <div className="in-head-title">
           <b>{scenes.length} cảnh đang chọn</b>
           <span className="faint">
-            Chạy tất cả ≈ {fmt(total)} credit · {fmt(seconds)} giây video
+            Chạy tất cả ≈{' '}
+            <span className={`in-cost-text ${creditTone(creditKind)}`} title={costTitle(total, creditKind, `Chạy ${scenes.length} cảnh · `)}>
+              {formatCredits(total, creditKind)}
+            </span>{' '}
+            · {fmt(seconds)} giây video
           </span>
         </div>
       </div>
@@ -276,7 +283,8 @@ const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: S
 })
 
 const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
-  const total = scenes.reduce((t, s) => t + costOf(s.settings), 0)
+  const creditKind = useCreditKind()
+  const total = totalCost(scenes)
   const onDuplicate = () => {
     const created = useProject.getState().duplicateScenes(ids)
     useUI.getState().select(created)
@@ -303,8 +311,13 @@ const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene
   }
   return (
     <section className="in-section in-multi-actions">
-      <button type="button" className="btn btn-primary btn-lg in-run" onClick={() => requestRun(ids)}>
-        <Play size={14} fill="currentColor" /> Chạy {ids.length} cảnh · {fmt(total)} credit
+      <button
+        type="button"
+        className="btn btn-primary btn-lg in-run"
+        onClick={() => requestRun(ids)}
+        title={costTitle(total, creditKind, `Xem chi phí và chạy ${ids.length} cảnh · `)}
+      >
+        <Play size={14} fill="currentColor" /> Chạy {ids.length} cảnh ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(total, creditKind)}</span>
       </button>
       <div className="in-action-row">
         <button type="button" className="btn btn-sm" onClick={onDuplicate} title="Ctrl+D">

@@ -1,0 +1,215 @@
+/* Credit pill (tb-cp): the top bar and the queue drawer bar (CreditPill.tsx). Tokens only, both appearances.
+   demo = neutral + dashed outline + "DEMO" tag (play money); real = solid tint (the user's canvasapp account). */
+.tb-cp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-width: 0;
+  height: 26px;
+  margin: 0 2px;
+  padding: 0 10px 0 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.12s ease-out,
+    color 0.12s ease-out,
+    border-color 0.12s ease-out;
+}
+.tb-cp:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.tb-cp:active {
+  transform: scale(0.98);
+}
+.tb-cp.sm {
+  height: 24px;
+  margin: 0;
+  padding: 0 9px 0 7px;
+  font-size: 11.5px;
+}
+.tb-cp-icon {
+  display: inline-flex;
+  flex: none;
+}
+.tb-cp .lucide {
+  stroke-width: 1.75px;
+}
+.tb-cp-num {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tb-cp.low .tb-cp-num {
+  color: var(--danger-text);
+}
+.tb-cp-src {
+  font-weight: 600;
+}
+.tb-cp-sep {
+  opacity: 0.7;
+}
+.tb-cp-spin {
+  animation: tb-cp-spin 0.9s linear infinite;
+}
+@keyframes tb-cp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* demo: quiet, dashed — clearly not money */
+.tb-cp.demo {
+  padding-right: 4px;
+  border: 1px dashed var(--border-strong);
+}
+.tb-cp.sm.demo {
+  padding-right: 3px;
+}
+.tb-cp.demo:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tb-cp.demo .tb-cp-icon {
+  color: var(--text-dim);
+}
+.tb-cp-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  /* --text-dim, not --text-faint: "DEMO" must stay readable on the fill in both appearances. */
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* canvasapp: solid tint (real account); the number keeps the primary text color */
+.tb-cp.real,
+.tb-cp.login,
+.tb-cp.loading {
+  background: var(--info-soft);
+  border-color: color-mix(in srgb, var(--info) 26%, transparent);
+  color: var(--info);
+}
+.tb-cp.real:hover,
+.tb-cp.login:hover,
+.tb-cp.loading:hover {
+  background: color-mix(in srgb, var(--info) 24%, transparent);
+}
+.tb-cp.login .tb-cp-num {
+  color: var(--info);
+}
+.tb-cp.loading .tb-cp-num {
+  color: var(--text-dim);
+}
+/* the real balance could not be read / refreshed */
+.tb-cp.problem {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  color: var(--warn);
+}
+.tb-cp.problem:hover {
+  background: color-mix(in srgb, var(--warn) 24%, transparent);
+}
+/* Light appearance: tinted text on a pale fill of the same tint is too faint for small labels; mixing in the text
+   color brings it to about 4:1 and keeps the hue (same rule as the top bar's provider / running pills). */
+:root[data-theme='light'] .tb-cp.real,
+:root[data-theme='light'] .tb-cp.login,
+:root[data-theme='light'] .tb-cp.loading,
+:root[data-theme='light'] .tb-cp.login .tb-cp-num {
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+}
+:root[data-theme='light'] .tb-cp.problem {
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+}
+
+/* "+" (Nạp credit) right next to the real balance */
+.tb-cp-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin: 0 2px;
+}
+.tb-cp-group > .tb-cp {
+  margin: 0;
+}
+.tb-cp-add {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--info) 26%, transparent);
+  background: var(--info-soft);
+  color: var(--info);
+  cursor: pointer;
+  transition: background 0.12s ease-out;
+}
+.tb-cp-add.sm {
+  width: 24px;
+  height: 24px;
+}
+.tb-cp-add:hover {
+  background: color-mix(in srgb, var(--info) 24%, transparent);
+}
+.tb-cp-add:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.tb-cp-add:active {
+  transform: scale(0.96);
+}
+/* low balance: the "+" asks for attention */
+.tb-cp-add.low {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.tb-cp-add .lucide {
+  stroke-width: 2.25px;
+}
+:root[data-theme='light'] .tb-cp-add:not(.low) {
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+}
+
+/* Top bar: narrower windows drop the words first (tooltip + aria-label keep them); "DEMO" always stays. */
+@media (max-width: 1360px) {
+  .tb .tb-cp-unit {
+    display: none;
+  }
+}
+@media (max-width: 1120px) {
+  .tb .tb-cp.real .tb-cp-src,
+  .tb .tb-cp.loading .tb-cp-src,
+  .tb .tb-cp.problem .tb-cp-src {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-cp,
+  .tb-cp-add {
+    transition: none;
+  }
+  .tb-cp:active,
+  .tb-cp-add:active {
+    transform: none;
+  }
+  .tb-cp-spin {
+    animation: none;
+  }
+}

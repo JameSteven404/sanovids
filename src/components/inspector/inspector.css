@@ -14,6 +14,8 @@
   --in-video-ink: color-mix(in srgb, var(--video) 72%, var(--text));
   /* 72% like the others: at 82% the light orange ink stayed under 4:1 on white / on --accent-soft */
   --in-accent-ink: color-mix(in srgb, var(--accent) 72%, var(--text));
+  /* real canvasapp credits (docs/SPEC-v2.md §9): --info like the top bar credit pill */
+  --in-credit-ink: color-mix(in srgb, var(--info) 80%, var(--text));
   /* solid teal behind --on-accent text: a touch deeper in light (white text) and lighter in dark (dark text) */
   --in-ref-fill: color-mix(in srgb, var(--ref) 80%, var(--text));
 }
@@ -1570,6 +1572,58 @@ span.in-check {
 }
 .btn.in-run:active:not(:disabled) {
   transform: scale(0.98);
+}
+/*
+ * Cost labels (docs/SPEC-v2.md §9 — same language as the canvas card, presets panel and scene table):
+ * demo play money = neutral + dashed (outline / underline), real canvasapp credits = solid --info tint (the top bar
+ * credit pill's color — the accent stays for the Run button).
+ */
+.badge.in-cost {
+  border: 1px solid transparent;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.badge.in-cost.is-real {
+  border-color: color-mix(in srgb, var(--info) 26%, transparent);
+  background: var(--info-soft);
+  color: var(--in-credit-ink);
+}
+.badge.in-cost.is-demo {
+  border-style: dashed;
+  border-color: var(--text-faint);
+  background: transparent;
+  color: var(--text-dim);
+}
+.in-cost-text {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.in-cost-text.is-real {
+  color: var(--in-credit-ink);
+}
+.in-cost-text.is-demo {
+  color: var(--text-dim);
+  text-decoration: underline dashed var(--text-faint);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+/* the amount inside a filled run button: drawn in the button's own text color (--on-accent) */
+.in-run-cost {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.in-run-cost.is-real {
+  background: color-mix(in srgb, var(--on-accent) 16%, transparent);
+}
+.in-run-cost.is-demo {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--on-accent) 62%, transparent);
 }
 .in-run-reason {
   margin-top: 6px;

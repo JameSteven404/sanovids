@@ -116,8 +116,12 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   useUI.getState().setDraggingAssets(list.map((a) => a.id))
 }
 
-function endAssetDrag() {
-  useUI.getState().setDraggingAssets(null)
+function endAssetDrag(e: DragEvent<HTMLElement>) {
+  const ui = useUI.getState()
+  ui.setDraggingAssets(null)
+  // A multi-card selection that was dropped somewhere has been used: forget it, so a later drag or "C" does not
+  // silently carry the same cards again.
+  if (e.dataTransfer.dropEffect !== 'none' && ui.librarySelection.length > 1) ui.setLibrarySelection([])
 }
 
 // ---------------- card actions ----------------
@@ -497,7 +501,9 @@ export function AssetLibrary({
     if (!files.length) return
     const ids = await createAssetsFromFiles(files, { kind: defaultKind })
     if (!ids.length) return
-    useUI.getState().setLibrarySelection(ids)
+    // Select a single new card only: a whole new batch selected would ride along with the next drag of ANY of its
+    // cards (dragIdsFor) and link every new picture to the scene — the user meant one.
+    useUI.getState().setLibrarySelection(ids.length === 1 ? ids : [])
     onExpand()
   }
 

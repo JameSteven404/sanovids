@@ -11,6 +11,8 @@
 //                                          cleared by the next successful poll. Running takes are kept meanwhile.
 //   useRuns(s => s.engineElsewhere)         (store/runs) true = this tab has queued/running takes but another
 //                                          tab/window of the project runs the queue (this one only shows progress).
+//   canvasappApi()                          shared canvasapp API client over the desktop transport (store/credits reads
+//                                          the real balance with canvasappApi().me()).
 //   Take fields (core/types): provider, remoteId, charged (false = not paid with demo credits), framesSnapshot,
 //   imageKeysSnapshot. The take whose provider is 'canvasapp' and status 'failed' with UNKNOWN_SUBMIT_ERROR
 //   (store/runs) was never resubmitted: the user must check canvasapp.io.vn.
@@ -19,7 +21,7 @@
 // NOTE: do not import lib/pwa or store/* here (runs.ts imports this module; avoid import cycles).
 import { create } from 'zustand'
 import { getBlob } from '../lib/imageStore'
-import { createCanvasappApi } from './canvasapp/api'
+import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, type CanvasappProvider } from './canvasapp/adapter'
 import { createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE } from './canvasapp/transport'
 import type { ProviderId, VideoProvider } from './types'
@@ -57,15 +59,22 @@ export const useProviderPrefs = create<ProviderPrefs>()((set) => ({
 
 const registry = new Map<ProviderId, VideoProvider>()
 let canvasapp: CanvasappProvider | null = null
+let canvasappClient: CanvasappApi | null = null
 
 export function registerProvider(p: VideoProvider): void {
   registry.set(p.id, p)
 }
 
+/** The canvasapp API client over the desktop transport (created on first use, shared with the provider). */
+export function canvasappApi(): CanvasappApi {
+  if (!canvasappClient) canvasappClient = createCanvasappApi(createDesktopTransport())
+  return canvasappClient
+}
+
 /** The canvasapp gateway provider (created on first use). */
 export function canvasappProvider(): CanvasappProvider {
   if (!canvasapp) {
-    canvasapp = createCanvasappProvider({ api: createCanvasappApi(createDesktopTransport()), getBlob, storage: browserStorage() })
+    canvasapp = createCanvasappProvider({ api: canvasappApi(), getBlob, storage: browserStorage() })
   }
   return canvasapp
 }

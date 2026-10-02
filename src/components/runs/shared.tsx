@@ -14,14 +14,7 @@ export function useActiveProvider(): ProviderId {
   return activeProviderId()
 }
 
-/** The take's cost came out of the local demo credits (refunded when it fails or is cancelled). Old takes: yes. */
-export const chargedLocally = (t: Pick<Take, 'charged'>): boolean => t.charged !== false
-
-/** Unit of a cost, by provider: demo credits are play money, canvasapp credits are the user's real account. */
-export const CREDIT_UNIT: Record<ProviderId, string> = { mock: 'credit demo', canvasapp: 'credit canvasapp' }
-
-/** 1 canvasapp credit ≈ 1.000đ (docs/GATEWAY-CANVASAPP.md). */
-export const vndOf = (credits: number) => `${(credits * 1000).toLocaleString('vi-VN')}đ`
+// Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
 const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo', canvasapp: 'canvasapp' }
 
@@ -29,7 +22,10 @@ const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo', canvasapp: 'c
 export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
   const id = provider ?? (take ? providerOf(take) : 'mock')
   return (
-    <span className={`rq-prov ${id}`} title={id === 'mock' ? 'Demo giả lập — video giả, không tốn tiền' : `${PROVIDER_LABEL[id]} — video thật, tốn credit của tài khoản`}>
+    <span
+      className={`rq-prov ${id}`}
+      title={id === 'mock' ? 'Demo giả lập — video giả, trả bằng credit demo (không phải tiền thật)' : `${PROVIDER_LABEL[id]} — video thật, trả bằng credit canvasapp của tài khoản bạn`}
+    >
       {id === 'mock' ? <Sparkles size={10} /> : <Cloud size={10} />}
       {PROVIDER_SHORT[id]}
     </span>

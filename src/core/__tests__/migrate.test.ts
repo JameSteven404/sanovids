@@ -95,8 +95,8 @@ describe('dropVideoRefs (copy / import without the takes)', () => {
     const scene = { ...p.scenes[0], refs: ['a'], videoRefs: ['t1', 't2'], prompt: '@image_1 after @video_2 and @video_1, @video_3' }
     const out = dropVideoRefs({ ...p, scenes: [scene] }, (t) => (t === 't1' ? 'video S01·T1' : 'video'))
     expect(out.scenes[0].videoRefs).toEqual([])
-    // @video_3 was already invalid: left as is (and still reported by the compile warnings)
-    expect(out.scenes[0].prompt).toBe('@image_1 after video and video S01·T1, @video_3')
+    // @video_3 was already invalid: it becomes a visible placeholder (blocked from running by the compile check)
+    expect(out.scenes[0].prompt).toBe('@image_1 after video and video S01·T1, @video_?3')
   })
   it('returns the same project when there is nothing to drop', () => {
     const p = migrateProject(v1)

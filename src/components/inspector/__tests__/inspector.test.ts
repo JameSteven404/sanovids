@@ -89,6 +89,19 @@ describe('segmentPrompt', () => {
     expect(segs[1].text).toBe(' meets @Bob at ')
     expect(segs[2].invalid).toBe(true)
   })
+  it('marks tokens past what is really sent, and "@image_?N" placeholders, as invalid', () => {
+    const text = '@image_1 and @image_10, @video_2 then @image_?3'
+    const segs = segmentPrompt(text, 12, 2, undefined, { images: 9, videos: 1 })
+    expect(segs.map((s) => s.text).join('')).toBe(text)
+    expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.text, s.reason ?? null])).toEqual([
+      ['@image_1', null],
+      ['@image_10', 'unsent'],
+      ['@video_2', 'unsent'],
+      ['@image_?3', 'unbound'],
+    ])
+    // a mode that sends no images: every image token is unsent
+    expect(segmentPrompt('@image_1', 3, 0, undefined, { images: 0, videos: 0 })[0].reason).toBe('unsent')
+  })
   it('does not treat longer words as tokens and handles empty text', () => {
     expect(segmentPrompt('@image_12abc', 20, 0).map((s) => s.kind)).toEqual(['text'])
     expect(segmentPrompt('', 1, 1)).toEqual([])

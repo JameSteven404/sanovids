@@ -19,10 +19,11 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, runNow, takeFileBase } from '../../actions'
-import { compileScene, sceneCode, takeCode } from '../../core/compile'
+import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, rerunTake, takeFileBase } from '../../actions'
+import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
+import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useMediaUrl } from '../../lib/imageStore'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { undoToastAction, useProject } from '../../store/project'
@@ -30,11 +31,10 @@ import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
+import { takeCostLine } from './creditText'
 import { exactImageKeys, restoredFromTake, snapshotImageNumbers } from './restore'
 import { TakeStrip } from './TakeStrip'
 import {
-  chargedLocally,
-  CREDIT_UNIT,
   downloadMedia,
   formatClock,
   formatDuration,
@@ -88,11 +88,15 @@ function restoreTake(takeId: string) {
   store.restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
   const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video'].filter(Boolean)
   // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
-  const check = r.uncertain ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.` : ''
+  const check = r.uncertain
+    ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.`
+    : r.stale
+      ? ' Tự đánh lại số đang tắt — số @image/@video trong prompt có thể không còn đúng ảnh/video, hãy kiểm tra.'
+      : ''
   toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.${check}`, {
-    tone: r.uncertain ? 'warning' : 'success',
+    tone: check ? 'warning' : 'success',
     action: undoToastAction(),
-    ms: r.uncertain ? 9000 : undefined,
+    ms: check ? 9000 : undefined,
   })
 }
 
@@ -152,16 +156,9 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     else onClose()
   }
 
-  const rerun = () => {
-    const res = runNow([take.sceneId])
-    if (res.error) return
-    // Follow the new take so its progress (then video) shows right here.
-    const newest = useRuns
-      .getState()
-      .takes.filter((t) => t.sceneId === take.sceneId)
-      .sort((a, b) => b.number - a.number)[0]
-    if (newest && newest.id !== take.id) openTake(newest.id)
-  }
+  // Through the cost dialog like every paid run (wallet + price shown, no double submit); it then opens the new take
+  // here so its progress, then the video, shows in the viewer.
+  const rerun = () => rerunTake(take.id, { follow: true })
 
   /** Secondary: just the poster frame (the big button saves the video + prompt). */
   const downloadPoster = async () => {
@@ -322,8 +319,13 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const active = isActive(take)
   const now = useNow(active)
   const provider = providerOf(take)
-  // Demo credits are refunded on failure / cancel; a real provider bills the user's own account.
-  const refundNote = chargedLocally(take) ? <div className="rq-stage-faint">Đã hoàn {take.cost} credit demo.</div> : null
+  // Demo credits are refunded on failure / cancel; canvasapp bills (and refunds) the user's own account itself.
+  const demoPaid = chargedDemo(take)
+  const refundNote = demoPaid ? (
+    <div className="rq-stage-faint">Đã hoàn {formatCredits(take.cost, 'demo')} (giả lập).</div>
+  ) : provider === 'canvasapp' && take.remoteId ? (
+    <div className="rq-stage-faint">Credit canvasapp: hoàn hay không do canvasapp quyết định — xem lịch sử credit trên canvasapp.io.vn.</div>
+  ) : null
 
   let content: ReactNode
   if (take.status === 'completed' && videoUrl) {
@@ -353,10 +355,18 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
           type="button"
           className="btn btn-sm"
           onClick={() => useRuns.getState().cancel(take.id)}
-          title={chargedLocally(take) ? undefined : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`}
+          title={
+            demoPaid
+              ? undefined
+              : take.status === 'queued' && !take.remoteId && !take.submitUnknown
+                ? `Huỷ trước khi gửi sang ${PROVIDER_LABEL[provider]} — không bị trừ credit`
+                : take.submitUnknown && !take.remoteId
+                  ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, kiểm tra trên canvasapp.io.vn`
+                : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`
+          }
         >
           <CircleStop size={13} />
-          {chargedLocally(take) ? `Huỷ job · hoàn ${take.cost} credit demo` : 'Huỷ job'}
+          {demoPaid ? `Huỷ job · hoàn ${formatCredits(take.cost, 'demo')}` : 'Huỷ job'}
         </button>
       </div>
     )
@@ -408,7 +418,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
   const [showDiff, setShowDiff] = useState(false)
   const spec = MODELS[take.settings.model]
   const provider = providerOf(take)
-  const refunded = (take.status === 'failed' || take.status === 'cancelled') && chargedLocally(take)
+  const cost = takeCostLine(take)
 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
@@ -433,9 +443,14 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
     const refsRemoved = take.refsSnapshot.filter((id) => !scene.refs.includes(id)).map(tagOf)
     const refsReordered = !refsAdded.length && !refsRemoved.length && scene.refs.join('|') !== take.refsSnapshot.join('|')
     const videosChanged = scene.videoRefs.join('|') !== take.videoRefsSnapshot.join('|')
+    // Same assets in the same order, but a character got / lost / reordered pictures since the run: the same
+    // @image_N may now be another picture. Only knowable for takes that carry the exact image list.
+    const exact = exactImageKeys(take)
+    const imagesChanged =
+      !!exact && !refsAdded.length && !refsRemoved.length && !refsReordered && imageSlotsFor(assets, scene.refs).map(imageKey).join('|') !== exact.join('|')
     const diff = promptChanged ? paragraphDiff(take.promptSnapshot, current.text) : { removed: [], added: [] }
-    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered || videosChanged
-    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, videosChanged, diff, any }
+    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered || imagesChanged || videosChanged
+    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, imagesChanged, videosChanged, diff, any }
   }, [scene, current, take, assets])
 
   const copy = async () => {
@@ -485,11 +500,9 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           <span className="faint">{PROVIDER_LABEL[provider]}</span>
         </dd>
         <dt>Chi phí</dt>
-        <dd>
-          <span className={`mono${refunded ? ' rq-struck' : ''}`}>
-            {take.cost} {CREDIT_UNIT[provider]}
-          </span>
-          {refunded && <span className="faint"> · đã hoàn</span>}
+        <dd className={`rq-info-cost ${cost.kind}`}>
+          <span className={`mono${cost.struck ? ' rq-struck' : ''}`}>{cost.amount}</span>
+          <span className="rq-cost-note"> · {cost.note}</span>
         </dd>
         <dt>Tạo lúc</dt>
         <dd className="mono">{formatClock(take.createdAt)}</dd>
@@ -568,6 +581,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
                 changes.promptChanged && 'nội dung prompt',
                 changes.settingsChanged && 'cấu hình',
                 (changes.refsAdded.length || changes.refsRemoved.length || changes.refsReordered) && 'ảnh tham chiếu',
+                changes.imagesChanged && 'ảnh của nhân vật',
                 changes.videosChanged && 'video tham chiếu',
               ]
                 .filter(Boolean)
@@ -611,6 +625,11 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
             {changes.refsReordered && (
               <div className="rq-diff-line">
                 <b>Tham chiếu:</b> thứ tự đã đổi (số @image thay đổi).
+              </div>
+            )}
+            {changes.imagesChanged && (
+              <div className="rq-diff-line">
+                <b>Ảnh của nhân vật:</b> đã thêm, bớt hoặc đổi thứ tự ảnh từ lúc chạy — cùng một @image_N giờ có thể là tấm khác.
               </div>
             )}
             {changes.videosChanged && (

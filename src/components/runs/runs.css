@@ -485,34 +485,11 @@
   background: var(--info-soft);
   color: var(--info);
 }
-.rq-credit-pill {
+/* The credit pill (topbar/CreditPill, shared with the top bar) sits in the bar: its own clicks never toggle the drawer. */
+.rq-bar-credit {
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: var(--hover);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 11.5px;
-  white-space: nowrap;
   flex: none;
-}
-.rq-credit-pill svg {
-  color: var(--accent);
-}
-.rq-credit-pill b {
-  color: var(--text);
-  font-weight: 600;
-}
-.rq-credit-pill.real {
-  background: var(--info-soft);
-  border-color: color-mix(in srgb, var(--info) 25%, transparent);
-  color: var(--info);
-}
-.rq-credit-pill.real svg {
-  color: var(--info);
+  min-width: 0;
 }
 .rq-chevron {
   display: inline-flex;
@@ -715,7 +692,7 @@
 .rq-row {
   position: relative;
   display: grid;
-  grid-template-columns: 64px minmax(160px, 1fr) 128px 86px 54px auto;
+  grid-template-columns: 64px minmax(160px, 1fr) 128px 86px 72px auto;
   align-items: center;
   gap: 12px;
   min-height: 48px;
@@ -836,9 +813,30 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.rq-row-cost.refunded {
+.rq-row-cost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.rq-row-cost.canvasapp {
+  color: var(--info);
+}
+.rq-row-cost.struck > .mono {
   text-decoration: line-through;
   color: var(--text-faint);
+}
+/* small "demo" mark next to a short demo amount ("20 cr demo"): play money, never mistaken for real credits */
+.rq-demo-mark {
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px dashed var(--border-strong);
+  /* --text-dim, not --text-faint: at 9.5px the mark must stay readable in both appearances (like the "DEMO" tag). */
+  color: var(--text-dim);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 13px;
+  letter-spacing: 0.02em;
 }
 .rq-row-actions {
   display: flex;
@@ -893,9 +891,10 @@
   }
 }
 @container rq-drawer (max-width: 560px) {
-  /* chips and the credit pill keep their icon (+ number); the words are in the tooltip */
+  /* chips and the credit pill keep their icon (+ number, + "DEMO"); the words are in the tooltip */
   .rq-chip-text,
-  .rq-pill-label,
+  .rq-bar .tb-cp-unit,
+  .rq-bar .tb-cp-src,
   .rq-mini .progress {
     display: none;
   }
@@ -990,6 +989,10 @@
 }
 .rq-stat.short > b {
   color: var(--danger-text);
+}
+/* canvasapp: a low real balance only warns (canvasapp decides), it never blocks the run */
+.rq-stat.real.short > b {
+  color: var(--warn);
 }
 .rq-stat-provider > .rq-prov {
   align-self: flex-start;
@@ -1272,10 +1275,53 @@
 .rq-balance.short b:last-of-type {
   color: var(--danger-text);
 }
+.rq-balance.real {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  white-space: normal;
+}
+.rq-balance.real.short b:last-of-type {
+  color: var(--warn);
+}
+/* "trừ trên canvasapp khi job được nhận": says when real money moves — secondary, not placeholder-faint */
+.rq-balance-note {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
 .rq-short {
   color: var(--danger-text);
   font-weight: 600;
   font-size: 12px;
+}
+.rq-short.warn {
+  color: var(--warn);
+}
+/* Run dialog header: which credits the run spends */
+.rq-src {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rq-src.demo {
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+}
+.rq-src.real {
+  background: var(--info-soft);
+  border: 1px solid color-mix(in srgb, var(--info) 26%, transparent);
+  color: var(--info);
+}
+:root[data-theme='light'] .rq-src.real,
+:root[data-theme='light'] .rq-row-cost.canvasapp,
+:root[data-theme='light'] .rq-info-cost.canvasapp .rq-cost-note {
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
 
 /* =====================================================================================================
@@ -1497,6 +1543,13 @@
 .rq-struck {
   text-decoration: line-through;
   color: var(--text-faint);
+}
+/* take viewer "Chi phí": the amount + which credits paid it */
+.rq-cost-note {
+  color: var(--text-dim);
+}
+.rq-info-cost.canvasapp .rq-cost-note {
+  color: var(--info);
 }
 .rq-err-text {
   color: var(--danger-text);

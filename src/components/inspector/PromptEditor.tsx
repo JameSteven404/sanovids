@@ -26,7 +26,7 @@ import {
 import { createPortal } from 'react-dom'
 import { takeLabel } from '../../actions'
 import { assetByTag, sceneCode } from '../../core/compile'
-import { MODELS, usesVideoRefs } from '../../core/models'
+import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { undoToastAction, useProject } from '../../store/project'
@@ -181,6 +181,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   const refs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.refs) ?? EMPTY_IDS
   const videoRefs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.videoRefs) ?? EMPTY_IDS
   const assets = useProject((s) => s.project.assets)
+  const settings = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.settings)
   const takeInfos = useTakeInfos(videoRefs)
 
   const imageOpts = useMemo(() => imageOptsFor(assets, refs), [assets, refs])
@@ -559,7 +560,14 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   // ---------- highlight + derived ----------
   const legacyTags = useMemo(() => new Set(assets.map((a) => a.tag.toLowerCase())), [assets])
   // The backdrop must follow the textarea synchronously (its text is the only visible copy).
-  const segs = useMemo(() => segmentPrompt(text, imageOpts.length, videoRefs.length, legacyTags), [text, imageOpts.length, videoRefs.length, legacyTags])
+  // What the request really carries: a token past the model's limit (or in a mode without references) is shown
+  // invalid, like a missing one — the model would never see that picture.
+  const sentImages = settings && usesRefs(settings) ? Math.min(imageOpts.length, MODELS[settings.model].maxRefImages) : 0
+  const sentVideos = settings && usesVideoRefs(settings) ? Math.min(videoRefs.length, MODELS[settings.model].maxRefVideos) : 0
+  const segs = useMemo(
+    () => segmentPrompt(text, imageOpts.length, videoRefs.length, legacyTags, { images: sentImages, videos: sentVideos }),
+    [text, imageOpts.length, videoRefs.length, legacyTags, sentImages, sentVideos],
+  )
   // Everything else may lag behind fast typing.
   const deferredText = useDeferredValue(text)
   const charCount = useMemo(() => [...deferredText].length, [deferredText])
