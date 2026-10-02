@@ -3,10 +3,11 @@
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
+import { chooseTake, videoUsageOf } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { aspectOf, useImageMeta } from '../../lib/imageMeta'
-import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject } from '../../store/project'
+import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
@@ -92,16 +93,7 @@ export function takeIndexOf(takes: Take[]): TakeIndex {
   return idx
 }
 
-/** Starred take, else the latest completed one, else the latest. `list` is sorted oldest first. */
-export function chooseTake(list: Take[]): Take | undefined {
-  let completed: Take | undefined
-  for (let i = list.length - 1; i >= 0; i--) {
-    const t = list[i]
-    if (t.starred) return t
-    if (!completed && t.status === 'completed') completed = t
-  }
-  return completed ?? list[list.length - 1]
-}
+export { chooseTake, videoUsageOf }
 
 export interface TakeSummary {
   count: number
@@ -158,18 +150,6 @@ export function takeLayoutSig(takes: Take[]): string {
     layoutSigs.set(takes, sig)
   }
   return sig
-}
-
-const videoUsage = new WeakMap<Scene[], Map<string, number>>()
-/** take id -> number of scenes that use it as @video. */
-export function videoUsageOf(scenes: Scene[]): Map<string, number> {
-  let m = videoUsage.get(scenes)
-  if (!m) {
-    m = new Map()
-    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
-    videoUsage.set(scenes, m)
-  }
-  return m
 }
 
 export interface TakeLayoutItem {
@@ -259,18 +239,27 @@ export function orphanTakePosition(
 }
 
 /**
- * Horizontal offset of each take node inside its row: the summed widths (+ gaps) of the takes placed before it next
- * to the same scene (orphans: left of their anchor, counted separately). Takes may have different widths (resized),
- * so slots are accumulated instead of `index × (takeW + gap)`. Explicitly placed takes keep their slot reserved.
+ * Horizontal offset of each take node inside its row: the summed widths (+ gaps) of the auto-placed takes before it
+ * next to the same scene (orphans: left of their anchor, counted separately). Takes may have different widths
+ * (resized), so slots are accumulated instead of `index × (takeW + gap)`.
+ * A take the user dragged away (`explicit`) leaves the row and reserves no room, so the next new take lands right
+ * next to the scene instead of after every video ever made (10 takes, 9 dragged away: the 10th used to land ~2,200px
+ * right of the card). One only nudged on its slot (`keeps(id, slotX)` true, see core/takes keepsSlot) keeps it, so
+ * the takes after it do not slide under it. An explicit take's slot is where it would go back into the row (dropping
+ * it there makes it auto-placed again, see isAutoSlot).
  */
-export function takeSlots(items: readonly Pick<TakeLayoutItem, 'id' | 'anchorId' | 'orphan'>[], widthOf: (id: string) => number): Map<string, number> {
+export function takeSlots(
+  items: readonly (Pick<TakeLayoutItem, 'id' | 'anchorId' | 'orphan'> & { explicit?: XY | null })[],
+  widthOf: (id: string) => number,
+  keeps?: (id: string, slotX: number) => boolean,
+): Map<string, number> {
   const acc = new Map<string, number>()
   const out = new Map<string, number>()
   for (const item of items) {
     const key = (item.orphan ? 'o:' : 's:') + item.anchorId
     const x = acc.get(key) ?? 0
     out.set(item.id, x)
-    acc.set(key, x + widthOf(item.id) + LAYOUT.takeGapX)
+    if (!item.explicit || keeps?.(item.id, x)) acc.set(key, x + widthOf(item.id) + LAYOUT.takeGapX)
   }
   return out
 }
@@ -522,6 +511,121 @@ export function sourceTakesFor(takeId: string): string[] {
   const takes = takeIndexOf(useRuns.getState().takes).byId
   const sel = useUI.getState().selectedIds.filter((id) => takes.has(id))
   return sel.length > 1 && sel.includes(takeId) ? sel : [takeId]
+}
+
+// ---------------- viewport moves (focus / reveal / fit) ----------------
+export interface Viewport {
+  x: number
+  y: number
+  zoom: number
+}
+/** Stage of the canvas in px: `bottom` px at the bottom are covered (queue drawer + toolbar band). */
+export interface StageSize {
+  w: number
+  h: number
+  bottom: number
+}
+/** Room kept free around a revealed / focused node (px): the top keeps clear of the toasts below the top bar. */
+export const VIEW_MARGIN = { top: 64, side: 32, bottom: 24 }
+
+/** Visible part of the canvas in flow coordinates (without the covered bottom band). */
+export function visibleFlowRect(vp: Viewport, stage: StageSize): Box {
+  return { x: -vp.x / vp.zoom, y: -vp.y / vp.zoom, w: stage.w / vp.zoom, h: Math.max(0, stage.h - stage.bottom) / vp.zoom }
+}
+
+/** Smallest box around all `boxes` (null when empty). */
+export function unionBox(boxes: readonly Box[]): Box | null {
+  if (!boxes.length) return null
+  let x1 = Infinity
+  let y1 = Infinity
+  let x2 = -Infinity
+  let y2 = -Infinity
+  for (const b of boxes) {
+    x1 = Math.min(x1, b.x)
+    y1 = Math.min(y1, b.y)
+    x2 = Math.max(x2, b.x + b.w)
+    y2 = Math.max(y2, b.y + b.h)
+  }
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+}
+
+/** Is `box` entirely on screen (above the covered band)? */
+export function boxOnScreen(box: Box, vp: Viewport, stage: StageSize): boolean {
+  const v = visibleFlowRect(vp, stage)
+  return box.x >= v.x && box.y >= v.y && box.x + box.w <= v.x + v.w && box.y + box.h <= v.y + v.h
+}
+
+/** Free area of the stage (px) for a revealed / focused node. */
+function stageArea(stage: StageSize) {
+  const left = VIEW_MARGIN.side
+  const right = Math.max(left + 1, stage.w - VIEW_MARGIN.side)
+  const top = Math.min(VIEW_MARGIN.top, Math.max(0, (stage.h - stage.bottom) / 3))
+  const bottom = Math.max(top + 1, stage.h - stage.bottom - VIEW_MARGIN.bottom)
+  return { left, right, top, bottom }
+}
+
+/** Viewport with `box` centred in the free area at `zoom`. */
+function centred(box: Box, stage: StageSize, zoom: number): Viewport {
+  const a = stageArea(stage)
+  return { x: (a.left + a.right) / 2 - (box.x + box.w / 2) * zoom, y: (a.top + a.bottom) / 2 - (box.y + box.h / 2) * zoom, zoom }
+}
+
+/**
+ * A node was just created: the viewport that shows it by panning the least, at the SAME zoom (the rest of the board
+ * must not fly away). Zooms out only when the box cannot fit at all. null = already entirely visible (no move).
+ */
+export function revealViewport(box: Box, vp: Viewport, stage: StageSize, minZoom = 0.1): Viewport | null {
+  if (boxOnScreen(box, vp, stage)) return null
+  const a = stageArea(stage)
+  const zoom = Math.max(minZoom, Math.min(vp.zoom, (a.right - a.left) / Math.max(1, box.w), (a.bottom - a.top) / Math.max(1, box.h)))
+  if (zoom < vp.zoom) return centred(box, stage, zoom)
+  let { x, y } = vp
+  const sx1 = box.x * zoom + x
+  const sx2 = (box.x + box.w) * zoom + x
+  if (sx1 < a.left) x += a.left - sx1
+  else if (sx2 > a.right) x -= sx2 - a.right
+  const sy1 = box.y * zoom + y
+  const sy2 = (box.y + box.h) * zoom + y
+  if (sy1 < a.top) y += a.top - sy1
+  else if (sy2 > a.bottom) y -= sy2 - a.bottom
+  return { x, y, zoom }
+}
+
+/**
+ * "Đi tới" a node that is off-screen: centred, zoomed in to at least `readable` (never out from the current zoom
+ * unless it cannot fit). null = already entirely visible.
+ */
+export function focusViewport(box: Box, vp: Viewport, stage: StageSize, readable = 0.8, minZoom = 0.1): Viewport | null {
+  if (boxOnScreen(box, vp, stage)) return null
+  const a = stageArea(stage)
+  const fit = Math.min((a.right - a.left) / Math.max(1, box.w), (a.bottom - a.top) / Math.max(1, box.h))
+  return centred(box, stage, Math.max(minZoom, Math.min(Math.max(vp.zoom, readable), fit)))
+}
+
+/** Size a node is drawn at before React Flow measured it (new or never rendered): the default card sizes. */
+export function fallbackNodeSize(type: string | undefined): { w: number; h: number } {
+  if (type === 'take') return { w: LAYOUT.takeW, h: LAYOUT.takeH }
+  if (type === 'asset') return { w: ASSET_DEFAULT_W, h: assetDefaultLayout(1).h }
+  return { w: LAYOUT.sceneW, h: NODE_SIZE.scene.minH }
+}
+
+/**
+ * Positions of several cards dropped at once, from `base`: rows of `perRow` cards (each card's own width + `gap`),
+ * each row below the tallest card of the previous one — not one long line thousands of px wide.
+ */
+export function gridPositions(base: XY, sizes: readonly { w: number; h: number }[], perRow = 4, gap: number = LAYOUT.assetGapY): XY[] {
+  const out: XY[] = []
+  let y = base.y
+  for (let i = 0; i < sizes.length; i += perRow) {
+    const row = sizes.slice(i, i + perRow)
+    let x = base.x
+    for (const s of row) {
+      out.push({ x, y })
+      x += s.w + gap
+    }
+    y += Math.max(...row.map((s) => s.h)) + gap
+  }
+  return out
 }
 
 /** Height the queue drawer covers at the bottom of the canvas (runs.css `--rq-drawer-h`: 36px bar, 272px open). */

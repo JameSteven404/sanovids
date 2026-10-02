@@ -40,6 +40,7 @@ import { createMockProvider, DEFAULT_MOCK_SETTINGS, type MockSettings } from '..
 import { posterFromVideo } from '../providers/poster'
 import {
   isSubmitCancelled,
+  isSubmitDeferred,
   isSubmitUncertain,
   providerOf,
   type JobFrame,
@@ -162,8 +163,8 @@ function emitRun(type: RunEventType, take: Pick<Take, 'id' | 'provider'>) {
 const TICK_MS = 200
 /** Floor for remote providers, whatever they declare (canvasapp's own site polls every 60 s). */
 const MIN_REMOTE_POLL_MS = 15_000
-/** Hard cap for remote providers. */
-const MAX_REMOTE_CONCURRENCY = 2
+/** Hard cap of jobs running at once for remote providers (canvasapp: MAX_CONCURRENCY). */
+export const MAX_REMOTE_CONCURRENCY = 10
 
 let engine: ReturnType<typeof setInterval> | null = null
 /** Takes whose submit() is in flight. */
@@ -175,6 +176,8 @@ const polling = new Set<ProviderId>()
 const lastPoll = new Map<ProviderId, number>()
 /** Back-off after poll errors: provider → time before which we don't poll again. */
 const pollPausedUntil = new Map<ProviderId, number>()
+/** A submit was deferred (provider: "try later", nothing sent): provider → time before which no queued take starts. */
+const startPausedUntil = new Map<ProviderId, number>()
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
@@ -479,6 +482,7 @@ function resetEngineState() {
   polling.clear()
   lastPoll.clear()
   pollPausedUntil.clear()
+  startPausedUntil.clear()
   pollFailures.clear()
   ownedHere.clear()
   fetchFailures.clear()
@@ -683,12 +687,21 @@ function tick() {
   // the scene is gone; Undo of the delete brings the scene back and the take runs).
   const running = new Map<ProviderId, number>()
   for (const t of active) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
+  // A remote provider gets ONE new submit at a time: a take is only marked running once the previous one has its
+  // remote id (the canvasapp adapter sends them one by one anyway). The takes behind it stay honestly "queued": they
+  // cancel cleanly, and a page closed meanwhile leaves at most one take whose submit is unknown — not up to 10.
+  const sending = new Set<ProviderId>()
+  for (const t of active) if (providerOf(t) !== 'mock' && !remoteIdOf(t)) sending.add(providerOf(t))
   const started: Take[] = []
   for (const t of queued) {
     if (!scenes.has(t.sceneId)) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
+    if (pid !== 'mock') {
+      if (sending.has(pid) || now < (startPausedUntil.get(pid) ?? 0)) continue
+      sending.add(pid)
+    }
     running.set(pid, n + 1)
     started.push(t)
   }
@@ -825,13 +838,19 @@ async function submitTake(id: string) {
     emitRun('submitted', t)
   } catch (e) {
     if (gen !== generation) return
-    if (isSubmitCancelled(e)) {
+    const deferred = isSubmitDeferred(e)
+    if (deferred) {
+      // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while.
+      startPausedUntil.set(pid, Date.now() + pollIntervalFor(pid))
+    }
+    if (deferred || isSubmitCancelled(e)) {
       // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").
       const cur = findTake(id)
       // (A take re-sent after a lost answer keeps its "maybe billed" state: the first request may have been charged.)
       if (cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
       else if (cur?.status === 'processing' && !remoteIdOf(cur)) {
-        // Its scene was deleted: back to the queue (it waits there until an Undo brings the scene back).
+        // Deferred, or its scene was deleted: back to the queue (it waits there for its turn, or until an Undo brings
+        // the scene back).
         ownedHere.delete(id)
         patchTake(id, { status: 'queued', progress: 0, startedAt: null })
       }

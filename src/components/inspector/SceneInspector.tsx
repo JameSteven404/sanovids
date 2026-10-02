@@ -3,7 +3,7 @@
 import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
+import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
@@ -120,7 +120,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
     const created = useProject.getState().duplicateScenes([sceneId])
     if (created[0]) {
       useUI.getState().select(created)
-      focusNodes(created)
+      revealNodes(created)
     }
     toast('Đã nhân bản cảnh.', { tone: 'success', action: undoToastAction() })
   }

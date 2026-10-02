@@ -153,6 +153,13 @@ export class ProviderError extends Error {
 export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'cancelled'
 
 /**
+ * submit() sent nothing and asks to be tried again later (code 'deferred'; e.g. canvasapp's bridge canvas has no room
+ * until a running job ends): the engine puts the take back in the queue and waits a poll interval before starting
+ * another take of that provider. Nothing was billed.
+ */
+export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
+
+/**
  * submit() failed in a way that leaves it UNKNOWN whether the provider created (and billed) the job — e.g. the
  * connection broke after the request was sent. Such a take must never be submitted again under a new key.
  */

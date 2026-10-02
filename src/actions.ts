@@ -10,16 +10,48 @@ import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
 import { prepareFolderAccess, saveFiles, savePendingDownloads, takeFiles, useDownloadPrefs, type FileToSave, type SaveResult } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
-import { redo, setTakeHeightSource, undo, undoToastAction, useProject } from './store/project'
+import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
+import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
-// Scene rows on the canvas grow with their tallest (resized) take: the project store's layout asks the runs store.
-setTakeHeightSource((sceneId) => {
-  let h = 0
-  for (const t of useRuns.getState().takes) if (t.sceneId === sceneId && t.size && t.size.h > h) h = t.size.h
-  return h
+// Scene rows on the canvas grow with their tallest (resized) take, and new nodes step over take rows and videos placed
+// by hand: the project store's layout asks the runs store (only takes shown in a row count for that row).
+setTakeLayoutSource(takeLayoutSource)
+
+// ---------------- where the user is working (placement of new nodes) ----------------
+/** Scene selected most recently (kept after the selection is cleared): a new scene goes below it. */
+let recentSceneId: string | null = null
+/** Remember (or forget, null) the scene the user worked on last. Selecting a scene does it. */
+export function noteRecentScene(id: string | null) {
+  recentSceneId = id
+}
+useUI.subscribe((s, prev) => {
+  if (s.selectedIds === prev.selectedIds || !s.selectedIds.length) return
+  const scenes = useProject.getState().project.scenes
+  for (let i = s.selectedIds.length - 1; i >= 0; i--) {
+    const id = s.selectedIds[i]
+    if (scenes.some((sc) => sc.id === id)) {
+      recentSceneId = id
+      return
+    }
+  }
 })
+
+/** Visible area of the canvas in flow coordinates (registered by CanvasView while it is shown). */
+let canvasViewSource: (() => Box | null) | null = null
+export function setCanvasViewSource(fn: () => Box | null): () => void {
+  canvasViewSource = fn
+  return () => {
+    if (canvasViewSource === fn) canvasViewSource = null
+  }
+}
+
+/** Where a new scene should go: below the scene worked on last, within what the canvas shows (project.newScenePosition). */
+export function placementHint(): PlaceHint {
+  const view = useUI.getState().view === 'canvas' ? (canvasViewSource?.() ?? null) : null
+  return { anchorId: recentSceneId, view }
+}
 
 // ---------------- edge ids ----------------
 /**
@@ -42,9 +74,18 @@ export const FIT_EVENT = 'fit'
 export function fitNodes(ids: string[] = []) {
   canvasEvents.dispatchEvent(new CustomEvent(FIT_EVENT, { detail: ids }))
 }
-/** Ask the canvas to pan to these node ids if they are off-screen (all nodes when empty). */
+/** Ask the canvas to go to these node ids if they are off-screen ("Đi tới": centred, zoomed in to a readable size). */
 export function focusNodes(ids: string[] = []) {
   canvasEvents.dispatchEvent(new CustomEvent('focus', { detail: ids }))
+}
+/** Canvas event of revealNodes. */
+export const REVEAL_EVENT = 'reveal'
+/**
+ * A node was just created: if it is off-screen, pan just enough to show it — keeping the zoom, so the rest of the
+ * board does not fly away.
+ */
+export function revealNodes(ids: string[]) {
+  if (ids.length) canvasEvents.dispatchEvent(new CustomEvent(REVEAL_EVENT, { detail: ids }))
 }
 
 // ---------------- selection helpers ----------------
@@ -174,10 +215,15 @@ export function ensureAssetToken(sceneId: string, assetId: string): string | nul
 }
 
 // ---------------- create / delete / duplicate ----------------
+/**
+ * New empty scene. `position` (a double-click on the canvas): there, moved down just enough not to cover a node.
+ * Otherwise next to where the user works (placementHint).
+ */
 export function newScene(position?: XY) {
-  const id = useProject.getState().addScene({}, position ? { position } : {})
+  const st = useProject.getState()
+  const id = st.addScene({}, position ? { position: freeSpotFrom(st.project, position) } : { hint: placementHint() })
   useUI.getState().select([id])
-  focusNodes([id])
+  revealNodes([id])
   return id
 }
 
@@ -189,14 +235,16 @@ export function nextScene(position?: XY) {
   if (!from) return newScene(position)
   const id = useProject.getState().createNextScene(from.id, position)
   useUI.getState().select([id])
-  focusNodes([id])
+  revealNodes([id])
   toast(`Đã tạo cảnh tiếp theo sau ${sceneCode(from.order)} (giữ ảnh/video tham chiếu và cấu hình).`, { tone: 'success', action: undoToastAction() })
   return id
 }
 
 /**
  * New scene that continues from a finished take: same references as the take's scene, the take as @video_1
- * and a prompt starter. Placed below the source scene (or at `position`).
+ * and a prompt starter. Placed at `position`; else right of the take when the user dragged it out of its scene's row
+ * (that is where they look at it); else below the source scene — also for a take only nudged on its slot or resized
+ * in place: it is still in the row, and the card right of it would sit where the scene's next take goes.
  */
 export function createSceneFromTake(takeId: string, position?: XY) {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
@@ -215,9 +263,15 @@ export function createSceneFromTake(takeId: string, position?: XY) {
     toast('Chế độ của cảnh gốc không nhận video tham chiếu. Đổi model/chế độ (ví dụ Seedance 2.5) rồi thử lại.', { tone: 'warning' })
     return null
   }
-  const id = useProject.getState().createNextScene(source.id, position, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
+  const leftRow = !!take.position && currentTakeRows().offRow.has(take.id)
+  const at =
+    position ??
+    (leftRow && take.position
+      ? freeSpotFrom(project, { x: take.position.x + (take.size?.w ?? LAYOUT.takeW) + LAYOUT.takeOffsetX, y: take.position.y })
+      : undefined)
+  const id = useProject.getState().createNextScene(source.id, at, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
-  focusNodes([id])
+  revealNodes([id])
   // canvasapp (and its simulation in development mode) takes no reference video yet
   if (creditKindOf(activeProviderId()) !== 'demo')
     toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {

@@ -6,6 +6,7 @@
 import {
   Background,
   BackgroundVariant,
+  getViewportForBounds,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
@@ -34,16 +35,19 @@ import {
   newScene,
   nextScene,
   parseEdgeId,
+  REVEAL_EVENT,
+  setCanvasViewSource,
   takeLabel,
   videoLabel,
   type EdgeKind,
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, usesVideoRefs } from '../../core/models'
+import { keepsSlot } from '../../core/takes'
 import type { Asset, Scene, Size, XY } from '../../core/types'
 import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
-import { LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
+import { LAYOUT, refImageCount, undoToastAction, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
@@ -52,10 +56,15 @@ import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
 import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } from './edges'
 import {
   assetMapOf,
+  assetNodeHeight,
+  ASSET_DEFAULT_W,
   autoTakePosition,
   clientPoint,
   drawerInset,
+  fallbackNodeSize,
   FIT_EVENT,
+  focusViewport,
+  gridPositions,
   hasAssetDrag,
   hasFileDrag,
   hasTakeDrag,
@@ -70,6 +79,7 @@ import {
   readAssetIds,
   readTakeIds,
   resetNodeSize,
+  revealViewport,
   sceneMapOf,
   scheduleHoverEnd,
   selectionSeed,
@@ -82,8 +92,11 @@ import {
   takeSlots,
   targetScenesFor,
   toolbarDensity,
+  unionBox,
   useCanvasLocal,
+  visibleFlowRect,
   type ResizeBox,
+  type StageSize,
   type TakeLayout,
   type ToolbarDensity,
 } from './canvasModel'
@@ -227,8 +240,18 @@ function CanvasInner() {
     for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA, s.size)
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
-    // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes before it.
-    const slots = takeSlots(takeLayout.items, (id) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW)
+    // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes in the row before it
+    // (a take dragged away leaves the row; one only nudged on its slot keeps it).
+    const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
+    const slots = takeSlots(takeLayout.items, widthOf, (id, slotX) => {
+      const item = takeLayout.byId.get(id)
+      const anchor = item && sm.get(item.anchorId)
+      if (!item?.explicit || !anchor) return false
+      const slot = item.orphan
+        ? orphanTakePosition(anchor.position, item.index, slotX, widthOf(id))
+        : autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      return keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
+    })
     const autos = new Map<string, XY>()
     for (const item of takeLayout.items) {
       const anchor = sm.get(item.anchorId)!
@@ -665,46 +688,73 @@ function CanvasInner() {
     [],
   )
 
-  // ---------------- focus / fit requests ----------------
+  // ---------------- focus / reveal / fit requests ----------------
+  /** Stage size and the band the queue drawer (36px bar, 272px open) and the toolbar above it cover at the bottom. */
+  const stageSize = useCallback((): StageSize | null => {
+    const stage = stageRef.current
+    if (!stage || !stage.clientWidth || !stage.clientHeight) return null
+    return { w: stage.clientWidth, h: stage.clientHeight, bottom: drawerInset(stage) + TOOLBAR_ROOM }
+  }, [])
+
+  // New nodes are placed next to what the canvas shows (actions.placementHint → project.newScenePosition).
+  useEffect(
+    () =>
+      setCanvasViewSource(() => {
+        const size = stageSize()
+        return size ? visibleFlowRect(rf.getViewport(), size) : null
+      }),
+    [rf, stageSize],
+  )
+
   useEffect(() => {
-    const run = (ids: string[], force: boolean) => {
+    /**
+     * Box of a node from its stored position and its size — the measured one, else the stored one, else the default
+     * card size. A node React Flow has not measured yet (just created, or never rendered) still has a real box: fitting
+     * "measured nodes only" gave empty bounds and sent the view to the canvas origin.
+     */
+    const boxOf = (id: string): Box | null => {
+      const n = rf.getInternalNode(id)
+      if (!n) return null
+      const fb = fallbackNodeSize(n.type)
+      const p = n.internals.positionAbsolute
+      return { x: p.x, y: p.y, w: n.measured?.width || n.width || fb.w, h: n.measured?.height || n.height || fb.h }
+    }
+    type Mode = 'focus' | 'reveal' | 'fit'
+    const run = (ids: string[], mode: Mode, attempt = 0) => {
       if (!ids.length) {
-        void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
+        if (mode === 'fit') void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
         return
       }
-      const present = ids.filter((id) => rf.getInternalNode(id))
-      if (!present.length) return
-      const stage = stageRef.current
-      // The queue drawer (36px bar, 272px open) and the toolbar above it cover the bottom of the stage.
-      const covered = drawerInset(stage) + TOOLBAR_ROOM
-      if (!force && stage) {
-        const b = rf.getNodesBounds(present)
-        const rect = stage.getBoundingClientRect()
-        const tl = rf.screenToFlowPosition({ x: rect.left, y: rect.top })
-        const br = rf.screenToFlowPosition({ x: rect.right, y: rect.bottom - covered })
-        if (b.x >= tl.x && b.y >= tl.y && b.x + b.width <= br.x && b.y + b.height <= br.y) return
+      const boxes = ids.map(boxOf).filter((b): b is Box => !!b)
+      // Nodes created a moment ago (or a canvas just opened) may not be on the board yet: look again a little later.
+      if (!boxes.length && attempt < 3) {
+        setTimeout(() => run(ids, mode, attempt + 1), 100)
+        return
       }
-      const zoom = rf.getZoom()
-      // Same 0.25 padding as before on top/sides; the bottom also keeps the covered band clear.
-      const h = stage?.clientHeight ?? 0
-      const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(covered + h * 0.1)}px` as const }
-      void rf.fitView({ nodes: present.map((id) => ({ id })), padding, duration: 300, maxZoom: force ? 1.2 : Math.max(zoom, 0.8) })
+      const box = unionBox(boxes)
+      const size = stageSize()
+      if (!box || !size) return
+      const vp = rf.getViewport()
+      let next: { x: number; y: number; zoom: number } | null
+      if (mode === 'fit') {
+        // Same 0.25 padding as before on top/sides; the bottom also keeps the covered band clear.
+        const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(size.bottom + size.h * 0.1)}px` as const }
+        next = getViewportForBounds({ x: box.x, y: box.y, width: box.w, height: box.h }, size.w, size.h, 0.1, 1.2, padding)
+      } else if (mode === 'reveal') next = revealViewport(box, vp, size)
+      else next = focusViewport(box, vp, size)
+      if (next) void rf.setViewport(next, { duration: 300 })
     }
-    const onFocus = (e: Event) => {
-      const ids = ((e as CustomEvent<string[]>).detail ?? []).slice()
-      setTimeout(() => run(ids, false), 60)
+    const listen = (type: string, mode: Mode, delay: number) => {
+      const handler = (e: Event) => {
+        const ids = ((e as CustomEvent<string[]>).detail ?? []).slice()
+        setTimeout(() => run(ids, mode), delay)
+      }
+      canvasEvents.addEventListener(type, handler)
+      return () => canvasEvents.removeEventListener(type, handler)
     }
-    const onFit = (e: Event) => {
-      const ids = ((e as CustomEvent<string[]>).detail ?? []).slice()
-      setTimeout(() => run(ids, true), 30)
-    }
-    canvasEvents.addEventListener('focus', onFocus)
-    canvasEvents.addEventListener(FIT_EVENT, onFit)
-    return () => {
-      canvasEvents.removeEventListener('focus', onFocus)
-      canvasEvents.removeEventListener(FIT_EVENT, onFit)
-    }
-  }, [rf])
+    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30)]
+    return () => offs.forEach((off) => off())
+  }, [rf, stageSize])
 
   // ---------------- pane gestures: double-click to create, drop from library / OS ----------------
   // The empty canvas' "Cảnh mới" button disappears on its first click: when it was double-clicked, the second click
@@ -755,11 +805,27 @@ function CanvasInner() {
     if (ids && ids.length) {
       const map = assetMapOf(useProject.getState().project.assets)
       const valid = ids.filter((id) => map.has(id))
-      useProject.getState().setAssetsOnCanvas(Object.fromEntries(valid.map((id, i) => [id, { x: base.x + i * 208, y: base.y }])))
-      if (valid.length) {
-        useUI.getState().select(valid)
-        toast(`Đã đặt ${valid.length} mục lên canvas — kéo chấm bên phải vào cảnh để nối.`, { tone: 'success' })
-      }
+      if (!valid.length) return
+      // One card goes where it is dropped (even one already on the canvas: the user moves it here). Several: the ones
+      // not on the canvas yet, in rows of 4 from the drop point; cards already on the canvas stay where they are.
+      const fresh = valid.length === 1 ? valid : valid.filter((id) => !map.get(id)!.position)
+      const measured = useUI.getState().measured
+      const spots = gridPositions(
+        base,
+        fresh.map((id) => {
+          const a = map.get(id)!
+          return { w: a.size?.w ?? ASSET_DEFAULT_W, h: assetNodeHeight(a, measured[id]?.height) }
+        }),
+      )
+      if (fresh.length) useProject.getState().setAssetsOnCanvas(Object.fromEntries(fresh.map((id, i) => [id, spots[i]])))
+      useUI.getState().select(valid)
+      const kept = valid.length - fresh.length
+      toast(
+        fresh.length
+          ? `Đã đặt ${fresh.length} mục lên canvas${kept ? ` (${kept} mục đã có sẵn trên canvas — giữ nguyên chỗ)` : ''} — kéo chấm bên phải vào cảnh để nối.`
+          : `${kept} mục này đã có trên canvas — đã chọn chúng, giữ nguyên chỗ.`,
+        { tone: fresh.length ? 'success' : 'info', ...(fresh.length ? { action: undoToastAction() } : {}) },
+      )
       return
     }
     const files = imageFiles(e.dataTransfer)

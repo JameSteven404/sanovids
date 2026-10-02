@@ -196,7 +196,7 @@ export function GatewaySection() {
       )}
 
       <div className="dg-field-hint">
-        Giới hạn: tối đa 2 job cùng lúc, kiểm tra tiến độ mỗi 20 giây. Chưa hỗ trợ video tham chiếu (@video_N). Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids
+        Giới hạn: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), kiểm tra tiến độ mỗi 20 giây. Chưa hỗ trợ video tham chiếu (@video_N). Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids
         bridge”).
       </div>
     </section>

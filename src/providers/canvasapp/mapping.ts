@@ -505,10 +505,37 @@ const ROW_GAP = 80
  * uses it (a second one only when one video node takes the same upload twice). Ids are UUIDs, coordinates integers.
  * Within canvasapp's client limits: 40 nodes, 30 image uploads on the canvas — plus a prompt budget. Newest entries
  * first; an older entry that would go past a limit is left out — the newest entry is always kept (validateRequest
- * caps it at 30 references).
+ * caps it at 30 references). See planBridgeCanvas for the scene being submitted and the scenes still running.
  */
-export function bridgeCanvas(entries: BridgeEntry[]): CanvasPayload {
-  const sorted = [...entries].sort((a, b) => b.usedAt - a.usedAt)
+export function bridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptions = {}): CanvasPayload {
+  return planBridgeCanvas(entries, opts).canvas
+}
+
+export interface BridgeCanvasOptions {
+  /** Scene being submitted: placed first whatever its usedAt (equal or older timestamps never leave it out). */
+  current?: string
+  /** Scenes whose job may still be running: placed right after `current` and never left out to make room. */
+  keep?: ReadonlySet<string>
+}
+
+export interface BridgePlan {
+  canvas: CanvasPayload
+  /** Scenes left off the canvas for lack of room (entries that may go). */
+  dropped: string[]
+  /** `keep` scenes that do not fit: such a canvas must not be saved (a running job would lose its node). */
+  missing: string[]
+}
+
+/**
+ * bridgeCanvas, saying what did not fit. Order: `current`, then the `keep` scenes, then the others — newest first in
+ * each group. The first entry is always on the canvas; a later one past a limit is left out (`dropped`, or `missing`
+ * for a `keep` scene).
+ */
+export function planBridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptions = {}): BridgePlan {
+  const rank = (e: BridgeEntry) => (e.sceneId === opts.current ? 0 : opts.keep?.has(e.sceneId) ? 1 : 2)
+  const sorted = [...entries].sort((a, b) => rank(a) - rank(b) || b.usedAt - a.usedAt)
+  const dropped: string[] = []
+  const missing: string[] = []
   const nodes: CanvasNode[] = []
   /** image node key (slotImages) → node id */
   const images = new Map<string, string>()
@@ -522,7 +549,11 @@ export function bridgeCanvas(entries: BridgeEntry[]): CanvasPayload {
     const fresh = wanted.filter((w) => !images.has(w.key)).length
     // each image node holds exactly one upload: image uploads on the canvas = image nodes
     const tooBig = nodes.length + 1 + fresh > MAX_BRIDGE_NODES || images.size + fresh > MAX_BRIDGE_IMAGES || promptChars + e.prompt.length > MAX_BRIDGE_PROMPT_CHARS
-    if (nodes.length > 0 && tooBig) continue
+    if (nodes.length > 0 && tooBig) {
+      if (rank(e) === 1) missing.push(e.sceneId)
+      else dropped.push(e.sceneId)
+      continue
+    }
     promptChars += e.prompt.length
     const vid = canvasNodeId(e.sceneId)
     const video: CanvasVideoNode = {
@@ -568,5 +599,5 @@ export function bridgeCanvas(entries: BridgeEntry[]): CanvasPayload {
     y0 += Math.max(VIDEO_NODE_H, Math.ceil(placed / IMG_COLS) * IMG_ROW_H) + ROW_GAP
   }
   // normalizeConnections() returns every reference edge first, then the frame edges
-  return { nodes, connections: [...references, ...frames], viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 } }
+  return { canvas: { nodes, connections: [...references, ...frames], viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 } }, dropped, missing }
 }
