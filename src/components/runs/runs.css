@@ -86,7 +86,7 @@
   color: var(--text-faint);
 }
 
-/* ---------- provider chip (Demo | canvasapp) ---------- */
+/* ---------- provider chip (Dev | canvasapp | Demo cũ) ---------- */
 .rq-prov {
   display: inline-flex;
   align-items: center;
@@ -105,6 +105,11 @@
 .rq-prov.canvasapp {
   background: var(--info-soft);
   color: var(--info);
+}
+/* development mode: simulated — dashed outline, neutral */
+.rq-prov.dev {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
 }
 
 /* =====================================================================================================
@@ -549,6 +554,16 @@
 }
 .rq-demo-note.real svg {
   color: var(--info);
+}
+.rq-demo-note.dev {
+  color: var(--text-dim);
+}
+.rq-demo-note.dev svg {
+  color: var(--accent);
+}
+/* "Bảng phát triển · 2 lỗi giả": faults armed on the simulated server */
+.rq-panel-head .btn.rq-dev-armed {
+  color: var(--warn);
 }
 .rq-panel-head .btn {
   flex: 0 1 auto;
@@ -1246,6 +1261,42 @@
   color: var(--text);
   font-weight: 600;
 }
+/* development mode: simulated — dashed and neutral (like every simulated credit), the bug icon in the accent */
+.rq-confirm-note.sim {
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.rq-confirm-note.sim svg {
+  color: var(--accent);
+}
+.rq-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rq-info-job {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.rq-info-job .rq-link {
+  font-size: 12px;
+}
+.rq-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 4px;
+}
 .rq-foot-info {
   margin-right: auto;
   display: flex;
@@ -1267,6 +1318,9 @@
 }
 .rq-balance.real svg {
   color: var(--info);
+}
+.rq-balance.real.sim svg {
+  color: var(--text-dim);
 }
 .rq-balance b {
   color: var(--text);

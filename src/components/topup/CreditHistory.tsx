@@ -17,6 +17,8 @@ export interface CreditHistoryProps {
   load?: (q: CreditHistoryQuery) => Promise<CreditHistoryPage>
   /** "Đăng nhập canvasapp" when canvasapp answers 401. Hidden when absent. */
   onLogin?: () => void
+  /** The history is the simulated account's (development mode). Default: the active gateway's. */
+  simulated?: boolean
 }
 
 const defaultLoad = (q: CreditHistoryQuery) => activeGateway().api.creditHistory(q)
@@ -29,7 +31,7 @@ const KIND_ICON: Record<HistoryItemKind, ReactNode> = {
   other: <Coins size={15} />,
 }
 
-export function CreditHistory({ reloadKey = 0, load = defaultLoad, onLogin }: CreditHistoryProps) {
+export function CreditHistory({ reloadKey = 0, load = defaultLoad, onLogin, simulated }: CreditHistoryProps) {
   const [s, dispatch] = useReducer(historyReducer, HISTORY_INITIAL)
   const seq = useRef(0)
   const kindRef = useRef<TopupHistoryKind>(s.kind)
@@ -89,7 +91,7 @@ export function CreditHistory({ reloadKey = 0, load = defaultLoad, onLogin }: Cr
           <div className="tu-empty-actions">
             {loginNeeded && onLogin && (
               <button type="button" className="btn btn-sm btn-primary" onClick={onLogin}>
-                <LogIn size={13} /> Đăng nhập canvasapp
+                <LogIn size={13} /> {(simulated ?? activeGateway().simulated) ? 'Đăng nhập (giả lập)' : 'Đăng nhập canvasapp'}
               </button>
             )}
             <button type="button" className="btn btn-sm" onClick={reload}>
@@ -102,7 +104,9 @@ export function CreditHistory({ reloadKey = 0, load = defaultLoad, onLogin }: Cr
           <div className="tu-empty">
             <ReceiptText size={22} />
             <b>{historyEmptyText(s.kind)}</b>
-            <span>Các lần nạp, trừ credit khi tạo video, hoàn và điều chỉnh của tài khoản canvasapp hiện ở đây.</span>
+            <span>
+              Các lần nạp, trừ credit khi tạo video, hoàn và điều chỉnh của tài khoản {activeGateway().simulated ? 'canvasapp giả lập (credit dev)' : 'canvasapp'} hiện ở đây.
+            </span>
           </div>
         ) : (
           <div className="tu-empty loading" aria-busy="true">

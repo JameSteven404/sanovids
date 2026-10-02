@@ -18,7 +18,7 @@
 //   formatVnd(credits)                       "1.234.000đ" (1 credit ≈ 1.000đ; meaningful for canvasapp — and its
 //                                            simulation — only).
 //   CREDIT_SOURCE_LABEL[kind]                "credit dev" | "credit demo" | "credit canvasapp".
-//   DEV_CREDIT_HINT                          tooltip for every dev amount: "Credit giả lập của chế độ phát triển — …".
+//   DEV_CREDIT_HINT                          tooltip for every dev amount: "Credit giả lập của chế độ Phát triển — …".
 //   DEMO_CREDIT_HINT                         tooltip for every demo amount: "Credit giả lập — không phải tiền thật".
 //   CREDIT_HINT[kind]                        the tooltip of a kind (canvasapp: null).
 //   CREDIT_MARK[kind]                        small mark next to a short fake amount ("20 cr" + "dev" / "demo");
@@ -38,7 +38,7 @@ export const DEMO_CREDITS_DEFAULT = 1000
 export const VND_PER_CREDIT = 1000
 
 export const DEMO_CREDIT_HINT = 'Credit giả lập — không phải tiền thật'
-export const DEV_CREDIT_HINT = 'Credit giả lập của chế độ phát triển — không phải tiền thật'
+export const DEV_CREDIT_HINT = 'Credit giả lập của chế độ Phát triển — không phải tiền thật'
 
 export const CREDIT_HINT: Record<CreditKind, string | null> = { demo: DEMO_CREDIT_HINT, dev: DEV_CREDIT_HINT, canvasapp: null }
 

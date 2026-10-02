@@ -1,7 +1,7 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { deleteTakes, downloadTake, rerunTake } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
@@ -147,9 +147,12 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
 
           <span className="cv-take-code">{code}</span>
           {provider !== 'mock' && !far && (
-            <span className="cv-take-provider" title={`Video tạo trên ${PROVIDER_LABEL[provider] ?? provider}`}>
-              <Cloud size={10} strokeWidth={2.2} aria-hidden />
-              {PROVIDER_LABEL[provider] ?? provider}
+            <span
+              className={`cv-take-provider${provider === 'dev' ? ' dev' : ''}`}
+              title={provider === 'dev' ? 'Video giả của chế độ Phát triển (canvasapp giả lập, credit dev)' : `Video tạo trên ${PROVIDER_LABEL[provider] ?? provider}`}
+            >
+              {provider === 'dev' ? <Bug size={10} strokeWidth={2.2} aria-hidden /> : <Cloud size={10} strokeWidth={2.2} aria-hidden />}
+              {provider === 'dev' ? 'DEV' : (PROVIDER_LABEL[provider] ?? provider)}
             </span>
           )}
           {!far && (

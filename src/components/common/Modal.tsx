@@ -1,6 +1,6 @@
 import { X } from 'lucide-react'
 import { useEffect, useId, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
-import { isTextEntry, trapTab, useOverlayFocus } from './focus'
+import { isTextEntry, keyForTopOverlay, trapTab, useOverlayFocus } from './focus'
 import './common.css'
 
 interface ModalProps {
@@ -31,6 +31,8 @@ export function Modal({ title, onClose, children, footer, size = 'normal', heade
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // A sheet above the dialogs (development mode's login / SePay) handles its own Escape — wherever focus is.
+      if (keyForTopOverlay(e)) return
       const root = ref.current
       const target = e.target
       // Typing in one of our fields: let the key reach the field; onKeyDown below handles what it leaves over.

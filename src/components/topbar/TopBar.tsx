@@ -1,4 +1,5 @@
 import {
+  Bug,
   Clapperboard,
   Download,
   FileInput,
@@ -25,15 +26,17 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useStore } from 'zustand'
-import { downloadChosenTakesZip } from '../../actions'
+import { downloadChosenTakesZip, openDevPanel } from '../../actions'
 import type { ViewMode } from '../../core/types'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
-import { activeProviderId, PROVIDER_LABEL, useProviderPrefs, type ProviderId } from '../../providers'
+import { activeProviderId, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
+import { useDevServer } from '../../providers/dev'
 import { startRealCreditsSync } from '../../store/credits'
 import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
 import { useActiveCount, useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from './CreditPill'
 import './topbar.css'
 
@@ -49,13 +52,14 @@ const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = 
  */
 export function TopBar() {
   const openDialog = useUI((s) => s.openDialog)
-  // Real canvasapp balance: refreshed on focus / visibility / every 60 s while canvasapp runs new takes, and after
-  // every canvasapp job (store/credits). Ref-counted, so the pills' own useCreditInfo() share this one sync.
+  // Gateway balance (the simulated account in development mode, else the real canvasapp one): refreshed on focus /
+  // visibility / every 60 s, and after every job of that gateway (store/credits). Ref-counted, so the pills' own
+  // useCreditInfo() share this one sync.
   useEffect(() => startRealCreditsSync(), [])
   return (
     <header className="tb material">
       <div className="tb-left">
-        <div className="tb-brand" title="SanoVids — bản demo">
+        <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
           <span className="tb-logo" aria-hidden="true">
             <Clapperboard size={14} />
           </span>
@@ -79,6 +83,7 @@ export function TopBar() {
         <RunningIndicator />
         <ProviderBadge />
         <CreditPill />
+        <DevButton />
         <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
           <FileInput size={16} />
           <span className="tb-hide-md">Nhập prompt</span>
@@ -86,7 +91,7 @@ export function TopBar() {
         <DownloadAllButton />
         <span className="tb-divider" />
         <AppearanceButton />
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt dự án & demo" aria-label="Cài đặt">
+        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video, chế độ Phát triển)" aria-label="Cài đặt">
           <Settings size={16} />
         </button>
         <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
@@ -303,17 +308,16 @@ function RunningIndicator() {
 }
 
 /**
- * Warning shown only while the provider new takes use is not the demo AND reports a problem
- * (useRuns.providerIssue), e.g. the canvasapp session expired. Opens Settings. Without a problem the credit pill
- * ("canvasapp · 1.234 credit") already names the provider, so nothing extra is shown.
+ * Warning shown only while the provider new takes use (development mode or canvasapp) reports a problem
+ * (useRuns.providerIssue), e.g. the session expired. Opens Settings. Without a problem the credit pill
+ * ("DEV 1.000 credit" / "canvasapp · 1.234 credit") already names the provider, so nothing extra is shown.
  */
 function ProviderBadge() {
   // Subscribed so the badge follows the Settings choice; the bridge check inside activeProviderId() is static.
-  const chosen = useProviderPrefs((s) => s.provider)
+  useProviderPrefs((s) => s.provider)
   const issue = useRuns((s) => s.providerIssue)
   const openDialog = useUI((s) => s.openDialog)
-  const id: ProviderId = chosen === 'mock' ? 'mock' : activeProviderId()
-  if (id === 'mock') return null
+  const id = activeProviderId()
   const problem = issue && issue.provider === id ? issue.message.trim().replace(/[.\s]+$/, '') || issue.code : null
   if (!problem) return null
   const title = `Video mới chạy qua ${PROVIDER_LABEL[id]} — đang gặp sự cố: ${problem}. Bấm để mở Cài đặt.`
@@ -322,6 +326,25 @@ function ProviderBadge() {
       <TriangleAlert size={13} />
       {/* Icon only in narrower windows: the tooltip and aria-label carry the full text. */}
       <span className="tb-hide-md">Sự cố</span>
+    </button>
+  )
+}
+
+/**
+ * Development mode only: the bug button that opens "Bảng phát triển" (faults, request log, simulated jobs). A small
+ * count shows how many faults are armed on the simulated server, so a forgotten one never looks like a real bug.
+ */
+function DevButton() {
+  useProviderPrefs((s) => s.provider)
+  const armed = useDevServer((s) => activeFaultCount(s.snapshot))
+  if (activeProviderId() !== 'dev') return null
+  const title = armed
+    ? `Bảng phát triển — đang bật ${armed} lỗi giả trên canvasapp giả lập. Bấm để xem / tắt.`
+    : 'Bảng phát triển (chế độ Phát triển): trạng thái máy chủ giả lập, gây lỗi, nhật ký yêu cầu, job'
+  return (
+    <button type="button" className={`icon-btn tb-dev${armed ? ' armed' : ''}`} onClick={() => openDevPanel(armed ? 'faults' : undefined)} title={title} aria-label={title}>
+      <Bug size={16} />
+      {armed > 0 && <span className="tb-dev-n">{armed > 9 ? '9+' : armed}</span>}
     </button>
   )
 }

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useImageSize } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useUI } from '../../store/ui'
-import { trapTab, useOverlayFocus } from './focus'
+import { keyForTopOverlay, trapTab, useOverlayFocus } from './focus'
 import './common.css'
 
 /**
@@ -28,6 +28,8 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A sheet above every overlay (development mode's login / SePay) gets its own keys.
+      if (keyForTopOverlay(e)) return
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()

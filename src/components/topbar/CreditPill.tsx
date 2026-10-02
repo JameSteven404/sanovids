@@ -33,7 +33,7 @@ export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<bo
     useUI.getState().openDialog({ kind: 'settings' })
     return Promise.resolve(false)
   }
-  const name = gateway.simulated ? 'canvasapp giả lập (chế độ phát triển)' : 'canvasapp.io.vn'
+  const name = gateway.simulated ? 'canvasapp giả lập (chế độ Phát triển)' : 'canvasapp.io.vn'
   const run = async (): Promise<boolean> => {
     try {
       const st = await bridge.login()

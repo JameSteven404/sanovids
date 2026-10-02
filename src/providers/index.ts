@@ -32,7 +32,7 @@ import { getBlob } from '../lib/imageStore'
 import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
-import { devBridge, resetDevServer } from './dev'
+import { devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import type { ProviderId, VideoProvider } from './types'
 
 export type { ProviderId, VideoProvider } from './types'
@@ -106,20 +106,29 @@ export function canvasappProvider(): CanvasappProvider {
 
 /** Engine poll interval (and floor) of the dev provider: the simulated site may be polled every 3 s. */
 export const DEV_POLL_MS = 3_000
+/**
+ * The dev provider reuses a job-list answer this long. Below DEV_POLL_MS minus the simulated latency (150 ms by
+ * default, + "Chậm" faults): the cache is stamped when the answer arrives, so a 3 s cache would skip every other poll.
+ */
+export const DEV_LIST_CACHE_MS = 2_000
 /** localStorage prefix of the dev provider's own records (bridge project, upload cache, job ledger). */
 export const DEV_CLIENT_STORAGE_PREFIX = 'bdp:dev:client/'
 export const DEV_PROVIDER_LABEL = 'Phát triển (giả lập)'
 
 /** The API client of the simulated canvasapp (the real api.ts + desktop transport, over the in-app dev bridge). */
 export function devApi(): CanvasappApi {
-  if (!devClient) devClient = createCanvasappApi(createDesktopTransport(devBridge))
+  // Its errors name the simulation ("canvasapp giả lập"), never send the user to the real site (dev/wording.ts).
+  if (!devClient) devClient = withDevWording(createCanvasappApi(createDesktopTransport(devBridge)))
   return devClient
 }
 
-/** The dev provider: the real canvasapp adapter, as 'dev', polling the simulated site every 3 s. */
+/**
+ * The dev provider: the real canvasapp adapter, as 'dev', polling the simulated site every 3 s. Its messages (take
+ * errors, provider issues) are in development-mode words: "kiểm tra trong Bảng phát triển", not on canvasapp.io.vn.
+ */
 export function devProvider(): CanvasappProvider {
   if (!dev) {
-    dev = createCanvasappProvider({
+    const adapter = createCanvasappProvider({
       id: 'dev',
       label: DEV_PROVIDER_LABEL,
       api: devApi(),
@@ -127,7 +136,9 @@ export function devProvider(): CanvasappProvider {
       storage: browserStorage(DEV_CLIENT_STORAGE_PREFIX),
       minPollMs: DEV_POLL_MS,
       pollIntervalMs: DEV_POLL_MS,
+      listCacheMs: DEV_LIST_CACHE_MS,
     })
+    dev = withDevWording(adapter, { poll: devResult, available: devResult })
   }
   return dev
 }

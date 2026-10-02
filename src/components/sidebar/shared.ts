@@ -438,7 +438,7 @@ export const REAL_COST_HINT = 'Ước tính — trừ trên tài khoản canvasa
 /**
  * Tooltip of a cost, two lines: the amount with its wallet, then what that wallet means. `lead` goes first
  * ("Chạy S01 · ").
- *   dev        "Chạy S01 · 20 credit dev\nCredit giả lập của chế độ phát triển — không phải tiền thật"
+ *   dev        "Chạy S01 · 20 credit dev\nCredit giả lập của chế độ Phát triển — không phải tiền thật"
  *   demo       "Chạy S01 · 20 credit demo\nCredit giả lập — không phải tiền thật"
  *   canvasapp  "Chạy S01 · ≈ 20 credit canvasapp (≈ 20.000đ)\nƯớc tính — trừ trên tài khoản canvasapp khi job được nhận"
  * An unknown amount shows "—" (never a made-up number).

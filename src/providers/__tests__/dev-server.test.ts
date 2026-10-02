@@ -675,6 +675,204 @@ describe('dev server: persistence and reset', () => {
   })
 })
 
+describe('dev server: one account for every tab (each tab runs its own copy on the same storage)', () => {
+  it('nothing done in one tab is lost when another tab (started earlier) saves; a reload sees both', async () => {
+    const storage = memoryStorage()
+    const blobs = memoryBlobStore()
+    const a = setup({}, { storage, blobs })
+    const b = setup({}, { storage, blobs }) // opened before tab A did anything
+    const { projectId, body } = await prepared(a)
+    const jobId = jobIdOf(await a.api.createVideoJob(body() as never))
+    expect(a.server.balance()).toBe(1000 - COST)
+
+    // tab B sees tab A's account, and its own change keeps A's work
+    expect(b.server.isAuthenticated()).toBe(true)
+    expect(await b.api.me()).toMatchObject({ credits_balance: 1000 - COST })
+    expect((await b.api.listVideoJobs(projectId)).map((j) => j.job_id)).toEqual([jobId])
+    b.server.setBalance(b.server.balance() + 100)
+    expect(a.server.balance()).toBe(1100 - COST)
+    expect(a.server.snapshot().jobs.map((j) => j.job_id)).toEqual([jobId])
+
+    // a reload (a third copy) has everything: login, project, job, both balance changes, every history line
+    const c = setup({}, { storage, blobs })
+    expect(c.server.snapshot()).toMatchObject({ authenticated: true, balance: 1100 - COST, historyCount: 3, jobs: [{ job_id: jobId }] })
+    expect(await c.api.listProjects()).toEqual([{ project_id: projectId, name: 'SanoVids bridge' }])
+    // logging out in one tab logs out the shared session (like canvasapp's cookie)
+    c.server.logout()
+    await expect(a.api.me()).rejects.toMatchObject({ code: 'login-required' })
+  })
+
+  it('sync() (the window "storage" event) takes another tab’s save and tells the listeners; ids never collide', async () => {
+    const storage = memoryStorage()
+    const a = setup({}, { storage })
+    const b = setup({}, { storage })
+    let told = 0
+    b.server.subscribe(() => told++)
+    expect(b.server.sync()).toBe(false)
+    a.server.login()
+    a.server.setConfig({ speed: 'realistic' })
+    expect(b.server.sync()).toBe(true)
+    expect(told).toBe(1)
+    expect(b.server.snapshot()).toMatchObject({ authenticated: true, config: { speed: 'realistic' } })
+    // uploads from both tabs: different ids, all kept
+    const ua = await a.api.uploadImage(png('A'), uploadFilename('img_a', 'image/png'))
+    const ub = await b.api.uploadImage(png('B'), uploadFilename('img_b', 'image/png'))
+    expect(ua).not.toBe(ub)
+    expect(setup({}, { storage }).server.snapshot().uploads.map((u) => u.imageId)).toEqual(['img_b', 'img_a'])
+  })
+})
+
+describe('dev server: faults combine', () => {
+  it('"slow" adds up with every other fault; a rule for the endpoint beats a "*" rule; nothing hides another', async () => {
+    const s = setup({ latencyMs: 0 })
+    const { body } = await prepared(s)
+    s.server.addFault({ endpoint: '*', fault: { kind: 'slow', ms: 3000 }, sticky: true })
+    s.server.addFault({ endpoint: '*', fault: { kind: 'response', status: 429, json: { detail: 'Too many requests' } }, sticky: true })
+    s.server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    s.sleeps.length = 0
+    clearDevLog()
+    await expect(s.api.createVideoJob(body() as never)).rejects.toMatchObject({ code: 'network' })
+    // lost answer → created and billed, after the 3 s delay; the 429 "*" rule did not hide it
+    expect(s.server.snapshot().jobs).toHaveLength(1)
+    expect(s.sleeps).toEqual([3000])
+    expect(useDevLog.getState().entries.at(-1)).toMatchObject({ endpoint: 'job-create', fault: 'slow 3000ms + lost-response', processed: true })
+    // the one-shot rule is used up; the sticky ones stay (and fired)
+    expect(s.server.faults().map((r) => [r.fault.kind, r.hits])).toEqual([
+      ['slow', 1],
+      ['response', 0],
+    ])
+    // other endpoints meet the "*" rules: slow AND 429
+    s.sleeps.length = 0
+    await expect(s.api.me()).rejects.toMatchObject({ code: 'rate-limited' })
+    expect(s.sleeps).toEqual([3000])
+    expect(s.server.faults().map((r) => r.hits)).toEqual([2, 1])
+  })
+})
+
+describe('dev server: the clock moves on by itself', () => {
+  it('a payment / a failed job that is due shows in /api/me and the credit history without reading the order / jobs', async () => {
+    const s = setup()
+    const { body } = await prepared(s)
+    const order = await s.api.createTopup(50_000)
+    expect(s.server.simulatePayment(order.order_id!, 'paid', 2_000)).toBe(true)
+    s.server.setJobFaults({ failNext: 'Hỏng (giả lập)' })
+    await s.api.createVideoJob(body() as never)
+    expect((await s.api.me()).credits_balance).toBe(1000 - COST)
+    s.advance(60_000)
+    // nobody read GET /api/payments/topups/{id} or the job list: the account moved on anyway
+    expect((await s.api.me()).credits_balance).toBe(1050)
+    const kinds = (await s.api.creditHistory({})).items.map((h) => h.type)
+    expect(kinds.slice(0, 2).sort()).toEqual(['refund', 'topup'])
+  })
+})
+
+describe('dev server: what is saved', () => {
+  /** A finished job record as the server saves it. */
+  const savedJob = (n: number, over: Record<string, unknown> = {}) => ({
+    job_id: `job-${n}`,
+    number: n,
+    project_id: 'p',
+    canvas_node_id: 'n',
+    client_request_id: `key-${n}`,
+    model_profile: 'seedance_2_5',
+    mode: 't2v',
+    duration: 5,
+    resolution: '480p',
+    aspect_ratio: '16:9',
+    prompt: 'x',
+    generate_audio: true,
+    upload_ids: [],
+    first_frame_upload_id: null,
+    last_frame_upload_id: null,
+    cost: 1,
+    created_at: START - 1_000_000 + n,
+    plan: { queuedMs: 1, totalMs: 2, failAt: 0.5, failMessage: null, expire: false },
+    status: 'completed',
+    progress: 100,
+    finished_at: START - 900_000,
+    error_message: null,
+    download_available: true,
+    refunded: false,
+    ...over,
+  })
+  const savedState = (over: Record<string, unknown>) =>
+    JSON.stringify({ v: 1, salt: 'abc', seq: 10, authenticated: true, balance: 500, projects: [], uploads: [], jobs: [], history: [], topups: [], ...over })
+
+  it('a damaged record is dropped, never fatal: the snapshot (and the dev panel) still work', () => {
+    const storage = memoryStorage()
+    storage.set('bdp:dev:state', savedState({ jobs: [{}, null, 7, savedJob(1), { ...savedJob(2), upload_ids: 'nope' }], topups: [null, { order_id: 'x' }], uploads: [null, {}], history: [null], projects: [null, { project_id: 'p' }] }))
+    const s = setup({}, { storage })
+    const snap = s.server.snapshot()
+    expect(snap).toMatchObject({ authenticated: true, balance: 500, topups: [], uploads: [], historyCount: 0 })
+    expect(snap.jobs.map((j) => j.job_id)).toEqual(['job-2', 'job-1'])
+    expect(snap.jobs[0].upload_ids).toEqual([])
+    expect(snap.projects).toEqual([{ project_id: 'p', name: 'Phiên mới', nodes: 0, savedAt: null }])
+  })
+
+  it('jobs let go (over the cap, or too big for localStorage) take their videos with them; running jobs stay', async () => {
+    const storage = memoryStorage()
+    const blobs = memoryBlobStore()
+    const jobs = Array.from({ length: 205 }, (_, i) => savedJob(i + 1))
+    storage.set('bdp:dev:state', savedState({ jobs }))
+    for (const j of jobs) await blobs.set(`dev:video:${j.job_id}`, new Blob(['v']))
+    const s = setup({}, { storage, blobs })
+    s.server.setBalance(600) // any save
+    await until(() => true)
+    const kept = s.server.snapshot().jobs.map((j) => j.job_id)
+    expect(kept).toHaveLength(200)
+    expect(kept).not.toContain('job-5')
+    expect(await blobs.get('dev:video:job-5')).toBeNull()
+    expect(await blobs.get('dev:video:job-6')).not.toBeNull()
+
+    // long prompts: the oldest FINISHED jobs go until the saved text fits
+    const big = Array.from({ length: 100 }, (_, i) => savedJob(i + 1, { prompt: 'p'.repeat(20_000), ...(i < 3 ? { status: 'processing', progress: 50, finished_at: null, download_available: false, created_at: START, plan: { queuedMs: 1, totalMs: 3_600_000, failAt: 0.5, failMessage: null, expire: false } } : {}) }))
+    storage.set('bdp:dev:state', savedState({ jobs: big }))
+    const t = setup({}, { storage, blobs })
+    t.server.setBalance(700)
+    expect(storage.get('bdp:dev:state')!.length).toBeLessThanOrEqual(1_500_000)
+    const left = t.server.snapshot().jobs.map((j) => j.job_id)
+    expect(left).toEqual(expect.arrayContaining(['job-1', 'job-2', 'job-3'])) // running: never dropped
+    expect(left.length).toBeLessThan(100)
+    expect(left).toContain('job-100')
+  })
+
+  it('a save that fails (storage full) is reported and the change is not undone by the next read', () => {
+    const inner = memoryStorage()
+    let full = false
+    const storage = {
+      get: inner.get,
+      remove: inner.remove,
+      set: (k: string, v: string) => {
+        if (full) throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' })
+        inner.set(k, v)
+      },
+    }
+    const s = setup({}, { storage: storage as ReturnType<typeof memoryStorage> })
+    s.server.login()
+    full = true
+    s.server.setBalance(500)
+    expect(s.server.balance()).toBe(500)
+    expect(s.server.snapshot().persistProblem).toMatch(/đầy/)
+    full = false
+    s.server.setBalance(400)
+    expect(s.server.snapshot().persistProblem).toBeNull()
+    expect(setup({}, { storage: storage as ReturnType<typeof memoryStorage> }).server.balance()).toBe(400)
+  })
+
+  it('"Hết phiên (401)" is remembered as an armed fault until the next login (a plain logout is not one)', () => {
+    const storage = memoryStorage()
+    const s = setup({}, { storage })
+    s.server.login()
+    s.server.expireSession()
+    expect(s.server.snapshot()).toMatchObject({ authenticated: false, sessionExpired: true })
+    expect(setup({}, { storage }).server.snapshot().sessionExpired).toBe(true)
+    s.server.login()
+    expect(s.server.snapshot()).toMatchObject({ authenticated: true, sessionExpired: false })
+    s.server.logout()
+    expect(s.server.snapshot()).toMatchObject({ authenticated: false, sessionExpired: false })
+  })
+})
+
 describe('request log', () => {
   it('keeps the last 300 requests; long strings are cut, files are logged as sizes (never their bytes)', async () => {
     const s = setup()

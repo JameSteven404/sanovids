@@ -102,3 +102,41 @@ export function avatarSvg(label: string, color: string, kind: 'character' | 'loc
 </svg>`
   return new Blob([svg], { type: 'image/svg+xml' })
 }
+
+/**
+ * The same avatar as a PNG: canvasapp — and development mode, which runs the same gateway code — only takes
+ * JPG / PNG / WEBP, so the sample project's pictures must be raster images to be runnable there. Falls back to the
+ * SVG where the page cannot draw it (tests, a browser that refuses), never throws.
+ */
+export async function avatarPng(label: string, color: string, kind: 'character' | 'location' | 'prop' | 'style' = 'character'): Promise<Blob> {
+  const svg = avatarSvg(label, color, kind)
+  if (typeof document === 'undefined' || typeof Image === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return svg
+  const url = URL.createObjectURL(svg)
+  try {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), 3000)
+      img.onload = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      img.onerror = () => {
+        clearTimeout(timer)
+        reject(new Error('svg'))
+      }
+      img.src = url
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = 320
+    canvas.height = 320
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return svg
+    ctx.drawImage(img, 0, 0, 320, 320)
+    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    return png && png.size > 0 ? png : svg
+  } catch {
+    return svg
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}

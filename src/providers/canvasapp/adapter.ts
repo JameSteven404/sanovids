@@ -131,6 +131,11 @@ export interface CanvasappProviderDeps {
    * (VideoProvider.minPollIntervalMs) when given. Only the in-app dev simulator passes less.
    */
   minPollMs?: number
+  /**
+   * How long a job-list answer is reused (default minPollMs). It is stamped when the answer ARRIVES: keep it below the
+   * poll interval minus the latency, or every other poll is served from the cache (the dev simulator: 2 s under 3 s).
+   */
+  listCacheMs?: number
   /** Media-store lookup (lib/imageStore getBlob). */
   getBlob: (imageId: string) => Promise<Blob | null>
   storage?: KeyValueStorage
@@ -217,6 +222,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const minPollMs = Math.max(0, deps.minPollMs ?? MIN_POLL_MS)
   const pollMs = Math.max(minPollMs, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
+  const listCacheMs = Math.max(0, Math.min(minPollMs, deps.listCacheMs ?? minPollMs))
 
   let state: GatewayState = load()
   let ledger: JobLedger = loadLedger()
@@ -553,8 +559,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
   async function jobsOf(projectId: string): Promise<CanvasJob[]> {
     const hit = lists.get(projectId)
-    // minPollMs (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
-    if (hit && now() - hit.at < minPollMs) return hit.jobs
+    // ≤ minPollMs (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
+    if (hit && now() - hit.at < listCacheMs) return hit.jobs
     const jobs = await api.listVideoJobs(projectId)
     lists.set(projectId, { at: now(), jobs })
     return jobs

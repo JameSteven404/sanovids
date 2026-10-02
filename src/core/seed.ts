@@ -1,6 +1,6 @@
 // Demo project so the app is testable on first open. Content is original sample text.
 // Prompts use the numbered tokens of each scene's refs (order of `refs` = @image_1, @image_2, …).
-import { avatarSvg, putBlob } from '../lib/imageStore'
+import { avatarPng, putBlob } from '../lib/imageStore'
 import { defaultPresets, defaultProjectSettings, LAYOUT, scenePosition } from '../store/project'
 import { newId } from './ids'
 import type { Asset, Project, Scene } from './types'
@@ -68,7 +68,8 @@ export async function createDemoProject(): Promise<Project> {
   let assetY = LAYOUT.scenesY
   const assets: Asset[] = []
   for (const a of ASSETS) {
-    const imageId = await putBlob(avatarSvg(a.name, a.color, a.kind), 'img')
+    // PNG (not SVG): the sample project must run in development mode / on canvasapp, which take JPG/PNG/WEBP only.
+    const imageId = await putBlob(await avatarPng(a.name, a.color, a.kind), 'img')
     assets.push({
       id: newId('ast'),
       kind: a.kind,

@@ -45,6 +45,28 @@
   background: var(--panel-2);
   border: 1px solid var(--border);
 }
+/* development mode: the simulated account — dashed, neutral (never the look of real money) */
+.tu-balance.dev {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+}
+.tu-balance.dev .tu-balance-icon {
+  background: var(--panel-3);
+  color: var(--text-dim);
+}
+.tu-dev-tag {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
 .tu-balance-icon {
   flex: none;
   display: inline-flex;
@@ -299,6 +321,10 @@
   line-height: 1.5;
   color: var(--text-dim);
 }
+.tu-note.dev {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+}
 .tu-note > svg {
   flex: none;
   margin-top: 1px;
@@ -357,7 +383,9 @@
   color: var(--text-dim);
 }
 
-/* ---------- order status ---------- */
+/* ---------- order status ----------
+   Tone classes are prefixed (tone-progress, tone-ok…): a bare "progress" would pick up the global 4px progress bar
+   (.progress in base.css) and collapse the card — found with development mode's simulated SePay. */
 .tu-status {
   --tu-tone: var(--accent);
   --tu-tone-soft: var(--accent-soft);
@@ -369,20 +397,20 @@
   background: var(--panel-2);
   border: 1px solid var(--border);
 }
-.tu-status.ok {
+.tu-status.tone-ok {
   --tu-tone: var(--ok);
   --tu-tone-soft: var(--ok-soft);
   border-color: color-mix(in srgb, var(--ok) 30%, transparent);
 }
-.tu-status.warn {
+.tu-status.tone-warn {
   --tu-tone: var(--warn);
   --tu-tone-soft: var(--warn-soft);
 }
-.tu-status.danger {
+.tu-status.tone-danger {
   --tu-tone: var(--danger-text);
   --tu-tone-soft: var(--danger-soft);
 }
-.tu-status.neutral {
+.tu-status.tone-neutral {
   --tu-tone: var(--text-dim);
   --tu-tone-soft: var(--hover);
 }
@@ -411,7 +439,7 @@
   line-height: 1.25;
   color: var(--text);
 }
-.tu-status.ok .tu-status-title {
+.tu-status.tone-ok .tu-status-title {
   color: var(--ok);
 }
 .tu-status-detail {

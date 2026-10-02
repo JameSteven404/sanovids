@@ -6,6 +6,7 @@
 //   activeFaultCount(snapshot)                faults armed on the simulated server (rules + job faults + session ended).
 //   DEV_UI_FAULTS                             one-click faults of the "Gây lỗi" tab (Vietnamese label / hint / action).
 //   uiFaultRule(item, sticky)                 the server rule (DevFaultInput) of a 'rule' item, sticky or one-shot.
+//   faultArmedText(item, sticky, n)           the toast after "Bật": "Đã bật lỗi giả: … (2 lần)" / "(giữ)".
 //   faultKindText(fault) / faultRuleText(rule) Vietnamese description of a fault / an armed rule.
 //   customFaultInput(form)                    the custom-rule form → DevFaultInput, or a Vietnamese error.
 //   statusTone(entry) / statusText(entry)     request-log status chip.
@@ -42,11 +43,11 @@ export const DEV_PANEL_TABS: { id: DevPanelTab; label: string }[] = [
   { id: 'jobs', label: 'Job & đơn nạp' },
 ]
 
-/** Faults armed on the simulated server: rules, job-level faults and an ended session. */
-export function activeFaultCount(s: Pick<DevServerSnapshot, 'faults' | 'jobFaults'> | null | undefined): number {
+/** Faults armed on the simulated server: rules, job-level faults and a session ended by "Hết phiên (401)". */
+export function activeFaultCount(s: Pick<DevServerSnapshot, 'faults' | 'jobFaults' | 'sessionExpired'> | null | undefined): number {
   if (!s) return 0
   const j = s.jobFaults
-  return s.faults.length + (j.failNext !== null ? 1 : 0) + (j.expireNext ? 1 : 0) + (j.streamFailures > 0 ? 1 : 0)
+  return s.faults.length + (j.failNext !== null ? 1 : 0) + (j.expireNext ? 1 : 0) + (j.streamFailures > 0 ? 1 : 0) + (s.sessionExpired ? 1 : 0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -148,7 +149,7 @@ export const DEV_UI_FAULTS: DevUiFault[] = [
   }),
   rule('profiles-500', 'Cấu hình model lỗi (500)'),
   rule('list-network', 'Mất mạng khi đọc danh sách job'),
-  rule('stream-network', 'Mất mạng khi tải video (3 lần)'),
+  rule('stream-network', 'Mất mạng khi tải video'),
   rule('offline', 'Mất mạng hoàn toàn'),
 ]
 
@@ -157,6 +158,17 @@ export function uiFaultRule(item: DevUiFault, sticky: boolean): DevFaultInput | 
   if (item.action.type !== 'rule') return null
   const { rule: r } = item.action
   return { endpoint: r.endpoint, fault: r.fault, sticky, ...(sticky ? {} : { times: r.times ?? 1 }), label: item.label }
+}
+
+/**
+ * The toast after "Bật": how often the fault happens comes from the rule itself (a preset may fire several times),
+ * "(giữ)" for a sticky one; `count` = N of "Tải video lỗi N lần".
+ */
+export function faultArmedText(item: DevUiFault, sticky: boolean, count = 1): string {
+  let suffix = ''
+  if (item.action.type === 'rule') suffix = sticky ? ' (giữ)' : ` (${uiFaultRule(item, false)?.times ?? 1} lần)`
+  else if (item.action.type === 'stream-failures') suffix = ` (N = ${count})`
+  return `Đã bật lỗi giả: ${item.label}${suffix}.`
 }
 
 export function faultKindText(f: DevFault): string {
@@ -315,6 +327,50 @@ export function logExport(entries: readonly DevLogEntry[], snapshot: DevServerSn
     null,
     2,
   )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Simulated SePay page
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A QR-looking placeholder for the simulated SePay page: `size`×`size` modules (true = dark), three finder squares,
+ * the rest from a hash of `seed` — the same order always draws the same picture. It is NOT a scannable code.
+ */
+export function placeholderQr(seed: string, size = 25): boolean[][] {
+  let h = 2166136261
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0
+  const next = () => {
+    h ^= h << 13
+    h >>>= 0
+    h ^= h >>> 17
+    h ^= h << 5
+    h >>>= 0
+    return h
+  }
+  const grid = Array.from({ length: size }, () => Array.from({ length: size }, () => (next() & 3) === 0 || (next() & 7) === 1))
+  const finder = (r0: number, c0: number) => {
+    for (let r = -1; r <= 7; r++)
+      for (let c = -1; c <= 7; c++) {
+        const rr = r0 + r
+        const cc = c0 + c
+        if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue
+        const ring = r === -1 || c === -1 || r === 7 || c === 7
+        const edge = r === 0 || c === 0 || r === 6 || c === 6
+        const core = r >= 2 && r <= 4 && c >= 2 && c <= 4
+        grid[rr][cc] = !ring && (edge || core)
+      }
+  }
+  finder(0, 0)
+  finder(0, size - 7)
+  finder(size - 7, 0)
+  return grid
+}
+
+/** "14:59" — minutes:seconds left until `until` (never negative). */
+export function minutesLeft(until: number, now: number): string {
+  const s = Math.max(0, Math.ceil((until - now) / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -6,6 +6,36 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [Chưa phát hành] — Chế độ Phát triển thay cho Demo
+
+✨ **Chế độ Phát triển (mặc định)** — để tìm và sửa lỗi mà không tốn tiền
+- Thay cho "Demo giả lập": SanoVids chạy **đúng mã của cổng canvasapp thật** (đăng nhập, số dư, tải ảnh lên, canvas cầu nối, tạo job, theo dõi, tải video, nạp credit qua SePay, lịch sử credit) nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, credit dev không phải tiền thật. Chạy được cả trên web.
+- Ô credit: **DEV 1.000 credit** (viền đứt), **DEV · Đăng nhập** mở trang đăng nhập giả lập, nút **+** mở nạp credit với **trang SePay giả lập** (Thanh toán thành công / Huỷ / Lỗi / Đóng cửa sổ).
+- Video giả ghi nhãn **@image_1, @image_2…** lên từng ảnh theo đúng thứ tự canvasapp nhận, để kiểm tra đúng nhân vật bằng mắt.
+
+✨ **Bảng phát triển** (nút 🐞 trên thanh trên cùng, Cài đặt → Chế độ Phát triển)
+- **Trạng thái**: đăng nhập / đăng xuất / hết phiên, đặt số dư, tốc độ (≈ 8 giây hoặc thực tế 60–90 giây), bật/tắt nạp credit, chống trùng job, 402/400, độ trễ, tỉ lệ lỗi, bật/tắt model và chế độ, xoá dữ liệu giả lập.
+- **Gây lỗi** một chạm (một lần hoặc “giữ”): mất mạng, mất câu trả lời sau khi đã tạo job, 502, 200 không có mã job, 402, 422, Invalid canvas payload, hết phiên 401, 429, job tiếp theo lỗi / hết hạn, tải video lỗi N lần, tải ảnh lên lỗi, chậm 3 giây… hoặc tự tạo lỗi.
+- **Nhật ký** mọi yêu cầu (JSON, lọc, **Copy nhật ký** để báo lỗi) và **Kiểm tra nhân vật** cho từng lần tạo job.
+- **Job & đơn nạp**: hoàn tất / cho lỗi / cho hết hạn job, quyết định kết quả đơn nạp, xem ảnh đã tải lên.
+
+🐞 Sửa lỗi tìm được nhờ chế độ Phát triển
+- Ô trạng thái “Đang chờ thanh toán” trong Nạp credit bị **co còn một dòng** (lỗi trùng tên class) — giờ hiện đầy đủ.
+- Dự án mẫu dùng ảnh SVG nên **không chạy được qua cổng canvasapp** (chỉ nhận JPG/PNG/WEBP) — dự án mẫu tạo mới giờ dùng ảnh PNG.
+
+🛠️ Chế độ Phát triển giống canvasapp thật hơn
+- Mở SanoVids ở **nhiều tab** giờ dùng **chung một tài khoản giả lập** (trước đây tab này có thể ghi đè job, số dư, lịch sử của tab kia).
+- Lỗi giả **cộng dồn**: “Chậm 3 giây” (giữ) không còn che mất lỗi bật sau nó; lỗi bật cho đúng một yêu cầu được ưu tiên hơn lỗi “mọi yêu cầu”. “Hết phiên (401)” được đếm là một lỗi đang bật cho tới khi đăng nhập lại.
+- “Invalid canvas payload (400)” giờ áp cho cả lần SanoVids tự thử lại, nên đúng như mô tả: take báo lỗi, không gửi job, không trừ credit.
+- Tiến độ job giả lập được đọc đúng **mỗi 3 giây** (trước đây thực tế 6 giây); số dư thấy ngay tiền nạp / tiền hoàn đã tới hạn.
+- Thông báo lỗi của take ở chế độ Phát triển chỉ tới **Bảng phát triển** thay vì bảo kiểm tra trên canvasapp.io.vn; thông báo “chưa đăng nhập” chỉ đúng chỗ đăng nhập (ô credit hoặc Cài đặt → Nhà cung cấp video) ở cả hai chế độ.
+- Nạp credit: đơn nạp đã xong của chế độ kia được bỏ khi đổi nhà cung cấp — chế độ Phát triển không còn gọi canvasapp thật vì một đơn cũ.
+- Nhấn Esc sau khi bấm ra ngoài trang SePay giả lập chỉ đóng trang đó, không đóng hộp Nạp credit bên dưới. Dữ liệu giả lập hỏng một phần không làm treo Bảng phát triển (có nút xoá để bắt đầu lại); dữ liệu cũ được dọn bớt, có cảnh báo khi bộ nhớ trình duyệt đầy.
+
+🛠️ “Dự án demo” đổi tên thành **Dự án mẫu**. Take tạo bằng demo cũ vẫn xem, tải, xoá được (ghi “Demo cũ”).
+
+⚠️ Giống cổng thật, chế độ Phát triển **chưa nhận video tham chiếu `@video_N`** (demo cũ thì có): bỏ `@video_N` để chạy cảnh tiếp nối.
+
 ## [0.2.4] — 2026-10-02
 
 🐞 **Tag ảnh viết kiểu `@Image 1` giờ được nhận đúng** (sửa gấp)

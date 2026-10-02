@@ -22,8 +22,11 @@ import { answerDevCheckout, checkoutPromptOpen, closeDevPrompts, openCheckoutPro
 import { matchDevRoute, MAX_JSON_BYTES, MAX_UPLOAD_BYTES } from './routes'
 import type { DevCanvasapp } from './server'
 
-/** Job-list answers reused this long (main.cjs: 15 s for the real site; the dev engine polls every 3 s). */
-export const DEV_JOB_LIST_CACHE_MS = 3_000
+/**
+ * Job-list answers reused this long (main.cjs: 15 s for the real site, polled every 20 s). The dev engine polls every
+ * 3 s and the answer is stamped when it arrives (after the simulated latency): 2 s, so no poll is served stale.
+ */
+export const DEV_JOB_LIST_CACHE_MS = 2_000
 /** The checkout window closes by itself after this long (main.cjs CHECKOUT_TIMEOUT_MS). */
 export const DEV_CHECKOUT_TIMEOUT_MS = 15 * 60_000
 
@@ -146,7 +149,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
       if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: now(), result: clone(copy) })
       return copy
     } catch (e) {
-      return gatewayError('network', `Không kết nối được tới canvasapp.io.vn (${e instanceof Error ? e.message : String(e)}).`)
+      return gatewayError('network', `Không kết nối được tới canvasapp giả lập (${e instanceof Error ? e.message : String(e)}).`)
     } finally {
       if (createsJob) {
         jobsEpoch++
@@ -160,7 +163,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     if (!res.ok) return res
     if (res.status === 401) return { ok: true, authenticated: false }
     const j = res.json as { authenticated?: unknown } | undefined
-    if (res.status !== 200 || !j || typeof j !== 'object') return { ok: false, code: 'bad-response', message: `canvasapp.io.vn trả về mã ${res.status}.` }
+    if (res.status !== 200 || !j || typeof j !== 'object') return { ok: false, code: 'bad-response', message: `canvasapp giả lập trả về mã ${res.status}.` }
     return { ok: true, authenticated: j.authenticated === true }
   }
 

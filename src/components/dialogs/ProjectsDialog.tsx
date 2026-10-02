@@ -120,8 +120,8 @@ export function ProjectsDialog() {
               {is('create') ? <Spin /> : <Plus size={14} />} Dự án trống
             </button>
           </div>
-          <button className="btn" disabled={!!busy} onClick={() => void run({ kind: 'demo' }, createDemo, () => 'Đã tạo dự án demo.', true)}>
-            {is('demo') ? <Spin /> : <Sparkles size={14} />} Dự án demo
+          <button className="btn" disabled={!!busy} onClick={() => void run({ kind: 'demo' }, createDemo, () => 'Đã tạo dự án mẫu.', true)}>
+            {is('demo') ? <Spin /> : <Sparkles size={14} />} Dự án mẫu
           </button>
           <button className="btn" disabled={!!busy} onClick={() => fileRef.current?.click()}>
             {is('import') ? <Spin /> : <FileUp size={14} />} Nhập file

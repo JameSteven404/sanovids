@@ -242,7 +242,7 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   const limit = promptLimitOf(req.model, req.mode)
   // runVideoNode() / promptLength(): the trimmed prompt, counted in code points
   if ([...prompt].length > limit) out.push(`Prompt dài hơn giới hạn ${limit.toLocaleString('vi-VN')} ký tự của canvasapp.`)
-  if (req.videos.length) out.push('Cổng canvasapp chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu hoặc dùng Demo giả lập.')
+  if (req.videos.length) out.push('Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu khỏi cảnh.')
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')

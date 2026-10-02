@@ -37,6 +37,21 @@ describe('topupGate', () => {
     expect(topupGate(desk(), 'history').ok).toBe(true)
   })
 
+  it('development mode (simulated gateway, web too): same gate, texts name the simulation and the dev panel', () => {
+    // the dev bridge exists everywhere, so a web build is not refused
+    const web = { desktop: false, bridge: true, checkout: true, simulated: true }
+    expect(topupGate({ ...web, auth: ok() })).toMatchObject({ ok: true, state: 'ready' })
+    const login = topupGate({ ...web, auth: ok(false) })
+    expect(login).toMatchObject({ state: 'login', action: 'login', actionLabel: 'Đăng nhập (giả lập)' })
+    expect(login.title).toContain('giả lập')
+    expect(login.message).not.toContain('canvasapp.io.vn')
+    const off = topupGate({ ...web, auth: ok(true, false) })
+    expect(off.state).toBe('disabled')
+    expect(off.message).toContain('Bảng phát triển')
+    expect(topupGate({ ...web, auth: { state: 'error', message: 'Mất mạng (giả lập).', loginRequired: false } }).message).toContain('Bảng phát triển')
+    expect(topupGate({ ...web, auth: { state: 'loading' } }).title).toContain('giả lập')
+  })
+
   it('web build: explains and points to the gateway settings', () => {
     const g = topupGate({ desktop: false, bridge: false, checkout: false, auth: { state: 'idle' } })
     expect(g).toMatchObject({ ok: false, state: 'web', action: 'settings', message: GATE_WEB_TEXT })

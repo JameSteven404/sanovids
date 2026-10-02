@@ -5,7 +5,7 @@ import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './c
 import { staleNoteSince } from './core/staleTokens'
 import { usesVideoRefs } from './core/models'
 import { creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId } from './providers'
+import { activeProviderId, providerOf } from './providers'
 import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
 import { prepareFolderAccess, saveFiles, savePendingDownloads, takeFiles, useDownloadPrefs, type FileToSave, type SaveResult } from './lib/downloads'
@@ -220,7 +220,7 @@ export function createSceneFromTake(takeId: string, position?: XY) {
   focusNodes([id])
   // canvasapp (and its simulation in development mode) takes no reference video yet
   if (creditKindOf(activeProviderId()) !== 'demo')
-    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {
+    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {
       tone: 'warning',
       action: undoToastAction(),
       ms: 9000,
@@ -418,9 +418,13 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     requestRun([take.sceneId], opts)
     return
   }
+  const dev = providerOf(take) === 'dev'
   const ok = window.confirm(
-    `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
-      'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
+    dev
+      ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +
+          'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
+      : `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
+          'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
   )
   if (!ok) return
   const res = useRuns.getState().retry(takeId)

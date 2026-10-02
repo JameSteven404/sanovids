@@ -8,10 +8,13 @@ import {
   CUSTOM_FAULT_DEFAULT,
   customFaultInput,
   DEV_UI_FAULTS,
+  faultArmedText,
   faultKindText,
   faultRuleText,
   filterLog,
   logExport,
+  minutesLeft,
+  placeholderQr,
   statusText,
   statusTone,
   uiFaultRule,
@@ -19,6 +22,7 @@ import {
 
 const snap = (patch: Partial<DevServerSnapshot> = {}): DevServerSnapshot => ({
   authenticated: true,
+  sessionExpired: false,
   balance: 1000,
   config: DEV_CONFIG_DEFAULT,
   faults: [],
@@ -28,6 +32,7 @@ const snap = (patch: Partial<DevServerSnapshot> = {}): DevServerSnapshot => ({
   uploads: [],
   topups: [],
   historyCount: 1,
+  persistProblem: null,
   ...patch,
 })
 
@@ -52,6 +57,11 @@ describe('activeFaultCount', () => {
     expect(activeFaultCount(snap())).toBe(0)
     const rule = { id: 'f1', endpoint: 'me' as const, fault: { kind: 'network' as const }, sticky: true, remaining: 0, hits: 0, label: null }
     expect(activeFaultCount(snap({ faults: [rule], jobFaults: { failNext: 'x', expireNext: true, streamFailures: 2 } }))).toBe(4)
+  })
+
+  it('counts a session ended by "Hết phiên (401)", not a plain logout', () => {
+    expect(activeFaultCount(snap({ authenticated: false }))).toBe(0)
+    expect(activeFaultCount(snap({ authenticated: false, sessionExpired: true }))).toBe(1)
   })
 })
 
@@ -93,6 +103,19 @@ describe('DEV_UI_FAULTS', () => {
     expect(DEV_UI_FAULTS.find((f) => f.id === 'offline')!.stickyByDefault).toBe(true)
     // non-rule items have no server rule
     expect(uiFaultRule(DEV_UI_FAULTS.find((f) => f.id === 'fail-next')!, true)).toBeNull()
+    // "Invalid canvas payload" covers the adapter's retry with only the current scene (else the job is sent anyway)
+    expect(uiFaultRule(DEV_UI_FAULTS.find((f) => f.id === 'canvas-400')!, false)).toMatchObject({ endpoint: 'canvas-put', times: 2 })
+  })
+
+  it('the arming toast says how often, from the rule itself', () => {
+    const item = (id: string) => DEV_UI_FAULTS.find((f) => f.id === id)!
+    expect(faultArmedText(item('job-lost'), false)).toBe('Đã bật lỗi giả: Mất phản hồi sau khi tạo job (đã trừ tiền) (1 lần).')
+    expect(faultArmedText(item('stream-network'), false)).toBe('Đã bật lỗi giả: Mất mạng khi tải video (3 lần).')
+    expect(faultArmedText(item('stream-network'), true)).toBe('Đã bật lỗi giả: Mất mạng khi tải video (giữ).')
+    expect(faultArmedText(item('canvas-400'), false)).toBe('Đã bật lỗi giả: Invalid canvas payload (400) (2 lần).')
+    expect(faultArmedText(item('stream-failures'), false, 4)).toBe('Đã bật lỗi giả: Tải video lỗi N lần (N = 4).')
+    expect(faultArmedText(item('fail-next'), false)).toBe('Đã bật lỗi giả: Job tiếp theo lỗi.')
+    for (const f of DEV_UI_FAULTS) expect(faultArmedText(f, false)).not.toMatch(/\(\d+ lần\) \(/)
   })
 })
 
@@ -155,6 +178,33 @@ describe('request log', () => {
     const data = JSON.parse(text)
     expect(data).toMatchObject({ app: 'SanoVids', mode: 'dev', exportedAt: '2026-10-02T08:00:00.000Z', server: { balance: 42 } })
     expect(data.entries[0].at).toBe('2026-10-02T07:00:00.000Z')
+  })
+})
+
+describe('simulated SePay page', () => {
+  it('draws the same placeholder QR for the same order, with the three finder squares', () => {
+    const a = placeholderQr('DEVTOP00001ABCD')
+    expect(a).toHaveLength(25)
+    expect(a.every((row) => row.length === 25)).toBe(true)
+    expect(placeholderQr('DEVTOP00001ABCD')).toEqual(a)
+    expect(placeholderQr('DEVTOP00002ABCD')).not.toEqual(a)
+    // finder squares: dark outer ring, light gap, dark 3×3 core — top-left, top-right, bottom-left
+    for (const [r, c] of [
+      [0, 0],
+      [0, 18],
+      [18, 0],
+    ]) {
+      expect(a[r][c]).toBe(true)
+      expect(a[r + 1][c + 1]).toBe(false)
+      expect(a[r + 3][c + 3]).toBe(true)
+    }
+  })
+
+  it('counts down mm:ss, never below 0:00', () => {
+    expect(minutesLeft(15 * 60_000, 0)).toBe('15:00')
+    expect(minutesLeft(61_000, 0)).toBe('1:01')
+    expect(minutesLeft(500, 0)).toBe('0:01')
+    expect(minutesLeft(0, 10_000)).toBe('0:00')
   })
 })
 

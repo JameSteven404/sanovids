@@ -7,6 +7,8 @@
 //   devServer(): DevCanvasapp            the app's dev server (created on first use; state in localStorage
 //                                        'bdp:dev:state' / 'bdp:dev:config', blobs in IndexedDB 'sanovids-dev').
 //                                        Settings, faults, balance, login, force a job…: see DevCanvasapp in server.ts.
+//                                        Every tab has its own copy on the SAME saved account: it re-reads it before
+//                                        each request / change, and on the window 'storage' event (another tab saved).
 //   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too).
 //   devVideoRenderer                     the in-page renderer the dev server draws finished videos with (WebM).
 //   useDevServer                         zustand store { snapshot: DevServerSnapshot | null } — refreshed on every
@@ -17,16 +19,26 @@
 //                                        resetDevMode(), which also clears SanoVids' own dev-mode caches.
 //   useDevLog / clearDevLog              request log (log.ts).   useDevPrompts / answerDevLogin / answerDevCheckout
 //                                        the login + SePay sheets (prompts.ts).
+//   devWording / withDevWording          development-mode words for the real gateway's messages (wording.ts).
 // ---- For tests / embedding ----
 //   setDevServer(server | null)          replace the app's dev server (null = the default one again, on next use).
 import { clear, createStore, del, get, set } from 'idb-keyval'
 import { create } from 'zustand'
 import { renderMockBlobs } from '../../lib/mockProvider'
-import { browserStorage } from '../canvasapp/adapter'
+import type { KeyValueStorage } from '../canvasapp/adapter'
 import type { CanvasappBridge } from '../canvasapp/transport'
 import { createDevBridge } from './bridge'
 import { closeDevPrompts } from './prompts'
-import { createDevCanvasapp, memoryBlobStore, type DevBlobStore, type DevCanvasapp, type DevRenderer, type DevServerSnapshot } from './server'
+import {
+  createDevCanvasapp,
+  DEV_CONFIG_KEY,
+  DEV_STATE_KEY,
+  memoryBlobStore,
+  type DevBlobStore,
+  type DevCanvasapp,
+  type DevRenderer,
+  type DevServerSnapshot,
+} from './server'
 
 export * from './server'
 export * from './log'
@@ -34,6 +46,7 @@ export * from './prompts'
 export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridgeOptions } from './bridge'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
+export { devError, devResult, devWording, withDevWording } from './wording'
 
 /** Blobs of the dev server in their own IndexedDB database (wiped by reset); in memory where IndexedDB is missing. */
 function idbBlobStore(): DevBlobStore {
@@ -46,6 +59,22 @@ function idbBlobStore(): DevBlobStore {
     del: (k) => del(k, db()),
     clear: () => clear(db()),
   }
+}
+
+/**
+ * localStorage for the dev server's account. Unlike the adapter's browserStorage(), a failed write THROWS: the server
+ * reports it (snapshot().persistProblem) instead of silently going back to the old account on the next read.
+ */
+const devAccountStorage: KeyValueStorage = {
+  get: (k) => {
+    try {
+      return localStorage.getItem(k)
+    } catch {
+      return null
+    }
+  },
+  set: (k, v) => localStorage.setItem(k, v),
+  remove: (k) => localStorage.removeItem(k),
 }
 
 /** The finished video, drawn in the page by the demo renderer: the job's pictures labelled @image_N, a DEV tag. */
@@ -80,18 +109,44 @@ export const useDevServer = create<DevServerStore>()(() => ({ snapshot: null }))
 let server: DevCanvasapp | null = null
 let unwire: (() => void) | null = null
 
+/** The server's snapshot for the UI store; a failure (should not happen) leaves the last one rather than throwing. */
+function publish(s: DevCanvasapp) {
+  try {
+    useDevServer.setState({ snapshot: s.snapshot() })
+  } catch (e) {
+    console.error('[dev] snapshot failed', e)
+  }
+}
+
 function wire(s: DevCanvasapp) {
   unwire?.()
   unwire = s.subscribe(() => {
-    if (server === s) useDevServer.setState({ snapshot: s.snapshot() })
+    if (server === s) publish(s)
   })
-  useDevServer.setState({ snapshot: s.snapshot() })
+  publish(s)
+}
+
+let storageListening = false
+
+/** Another tab saved the dev account / settings: this tab's copy of the server takes it (and the UI follows). */
+function listenToOtherTabs() {
+  if (storageListening || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+  storageListening = true
+  window.addEventListener('storage', (e) => {
+    if (e.key !== null && e.key !== DEV_STATE_KEY && e.key !== DEV_CONFIG_KEY) return
+    try {
+      server?.sync()
+    } catch (err) {
+      console.error('[dev] sync failed', err)
+    }
+  })
 }
 
 export function devServer(): DevCanvasapp {
   if (!server) {
-    server = createDevCanvasapp({ storage: browserStorage(), blobs: idbBlobStore(), render: devVideoRenderer })
+    server = createDevCanvasapp({ storage: devAccountStorage, blobs: idbBlobStore(), render: devVideoRenderer })
     wire(server)
+    listenToOtherTabs()
   }
   return server
 }
@@ -126,7 +181,7 @@ export function startDevSnapshotTicker(intervalMs = 1000): () => void {
       const cur = server ?? s
       const snap = useDevServer.getState().snapshot
       if (snap && !snap.jobs.some((j) => j.status === 'queued' || j.status === 'processing') && !snap.topups.some((o) => o.status === 'pending')) return
-      useDevServer.setState({ snapshot: cur.snapshot() })
+      publish(cur)
     }, intervalMs)
   }
   let stopped = false

@@ -1159,7 +1159,8 @@ button.cv-asset-count:hover {
   font-weight: 600;
   pointer-events: none;
 }
-/* which service generated the video (only for non-demo takes): small glass pill on the poster */
+/* which service generated the video (development mode "DEV" or canvasapp; not for old demo takes): small glass pill on
+   the poster */
 .cv-take-provider {
   position: absolute;
   left: 6px;
@@ -1187,6 +1188,11 @@ button.cv-asset-count:hover {
 .cv-take-provider > svg {
   flex: none;
   opacity: 0.85;
+}
+/* development mode: a fake clip — dashed outline, letter-spaced "DEV" (like the simulated credit pill) */
+.cv-take-provider.dev {
+  border-style: dashed;
+  letter-spacing: 0.06em;
 }
 .cv-take.is-far .cv-take-code {
   left: 8px;

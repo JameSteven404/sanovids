@@ -44,6 +44,8 @@ export interface GateInput {
   auth: AuthProbe
   /** The real-credit store got a 401 (store/credits status 'login-required'). */
   loginRequired?: boolean
+  /** Development mode: the gateway is the in-app simulated canvasapp (texts say so and point at the dev panel). */
+  simulated?: boolean
 }
 
 export type GateState = 'ready' | 'checking' | 'web' | 'old-desktop' | 'unsupported' | 'login' | 'disabled' | 'error'
@@ -85,28 +87,57 @@ export function topupGate(input: GateInput, scope: 'topup' | 'history' = 'topup'
   }
   if (scope === 'topup' && !input.checkout) return gate('unsupported', 'Cần cập nhật SanoVids', CHECKOUT_UNSUPPORTED)
   const { auth } = input
-  if (auth.state === 'idle' || auth.state === 'loading') return gate('checking', 'Đang kiểm tra tài khoản canvasapp…', 'Đang hỏi canvasapp.io.vn trạng thái đăng nhập.')
+  const sim = !!input.simulated
+  if (auth.state === 'idle' || auth.state === 'loading') {
+    return sim
+      ? gate('checking', 'Đang kiểm tra tài khoản giả lập…', 'Đang hỏi canvasapp giả lập (chế độ Phát triển) trạng thái đăng nhập.')
+      : gate('checking', 'Đang kiểm tra tài khoản canvasapp…', 'Đang hỏi canvasapp.io.vn trạng thái đăng nhập.')
+  }
   const login = () =>
-    gate(
-      'login',
-      'Chưa đăng nhập canvasapp.io.vn',
-      `Đăng nhập trên trang của canvasapp (cửa sổ riêng — SanoVids không thấy mật khẩu) để dùng ${what}.`,
-      'login',
-      'Đăng nhập canvasapp',
-    )
+    sim
+      ? gate(
+          'login',
+          'Chưa đăng nhập tài khoản giả lập',
+          `Đăng nhập trên trang đăng nhập giả lập (không cần mật khẩu, không gọi mạng) để dùng ${what}.`,
+          'login',
+          'Đăng nhập (giả lập)',
+        )
+      : gate(
+          'login',
+          'Chưa đăng nhập canvasapp.io.vn',
+          `Đăng nhập trên trang của canvasapp (cửa sổ riêng — SanoVids không thấy mật khẩu) để dùng ${what}.`,
+          'login',
+          'Đăng nhập canvasapp',
+        )
   if (auth.state === 'error') {
     if (auth.loginRequired) return login()
-    return gate('error', 'Không kiểm tra được tài khoản canvasapp', auth.message || 'Không kết nối được tới canvasapp.io.vn.', 'retry', 'Thử lại')
+    return sim
+      ? gate(
+          'error',
+          'Không kiểm tra được tài khoản giả lập',
+          `${auth.message || 'Không kết nối được tới canvasapp giả lập.'} — có thể do một lỗi giả đang bật trong Bảng phát triển.`,
+          'retry',
+          'Thử lại',
+        )
+      : gate('error', 'Không kiểm tra được tài khoản canvasapp', auth.message || 'Không kết nối được tới canvasapp.io.vn.', 'retry', 'Thử lại')
   }
   if (!auth.authenticated || input.loginRequired) return login()
   if (scope === 'topup' && !auth.topupEnabled) {
-    return gate(
-      'disabled',
-      'canvasapp đang tạm đóng nạp credit',
-      'canvasapp.io.vn đang không mở chức năng nạp credit (topup_enabled = false). Thử lại sau, hoặc xem thông báo trên canvasapp.io.vn.',
-      'retry',
-      'Kiểm tra lại',
-    )
+    return sim
+      ? gate(
+          'disabled',
+          'canvasapp giả lập đang tắt nạp credit',
+          'Máy chủ giả lập đang trả topup_enabled = false. Bật lại trong Bảng phát triển › Trạng thái › “Cho phép nạp credit”.',
+          'retry',
+          'Kiểm tra lại',
+        )
+      : gate(
+          'disabled',
+          'canvasapp đang tạm đóng nạp credit',
+          'canvasapp.io.vn đang không mở chức năng nạp credit (topup_enabled = false). Thử lại sau, hoặc xem thông báo trên canvasapp.io.vn.',
+          'retry',
+          'Kiểm tra lại',
+        )
   }
   return gate('ready', '', '')
 }

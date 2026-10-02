@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, rerunTake, takeFileBase } from '../../actions'
+import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, openDevPanel, rerunTake, takeFileBase } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
@@ -27,6 +27,7 @@ import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useMediaUrl } from '../../lib/imageStore'
 import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -376,12 +377,23 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const active = isActive(take)
   const now = useNow(active)
   const provider = providerOf(take)
-  // Demo credits are refunded on failure / cancel; canvasapp bills (and refunds) the user's own account itself.
+  // Old demo credits were refunded by SanoVids on failure / cancel; canvasapp — and its simulation in development mode —
+  // bills (and refunds) the account itself.
   const demoPaid = chargedDemo(take)
+  // Where to check an uncertain charge: the real site, or the dev panel for the simulation.
+  const checkWhere = provider === 'dev' ? 'kiểm tra trong Bảng phát triển' : 'kiểm tra trên canvasapp.io.vn'
   const refundNote = demoPaid ? (
     <div className="rq-stage-faint">Đã hoàn {formatCredits(take.cost, 'demo')} (giả lập).</div>
   ) : provider === 'canvasapp' && take.remoteId ? (
     <div className="rq-stage-faint">Credit canvasapp: hoàn hay không do canvasapp quyết định — xem lịch sử credit trên canvasapp.io.vn.</div>
+  ) : provider === 'dev' && take.remoteId ? (
+    <div className="rq-stage-faint">
+      Credit dev (giả lập): máy chủ giả lập hoàn khi job lỗi ở đó — xem Lịch sử credit hoặc{' '}
+      <button type="button" className="rq-link" onClick={() => openDevPanel('jobs')}>
+        Bảng phát triển
+      </button>
+      .
+    </div>
   ) : null
 
   let content: ReactNode
@@ -402,7 +414,13 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
           <span className="mono">{take.status === 'processing' ? `${pct}%` : '…'}</span>
         </div>
         <div className="rq-stage-msg">
-          {take.status === 'processing' ? (provider === 'mock' ? 'Đang tạo video (demo)…' : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`) : 'Đang chờ trong hàng đợi…'}
+          {take.status === 'processing'
+            ? provider === 'mock'
+              ? 'Đang tạo video (demo cũ)…'
+              : provider === 'dev'
+                ? 'Đang tạo video trên canvasapp giả lập (chế độ Phát triển)…'
+                : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`
+            : 'Đang chờ trong hàng đợi…'}
         </div>
         <div className="rq-stage-faint mono">
           {take.status === 'processing' ? 'đã chạy ' : 'đã chờ '}
@@ -418,7 +436,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
               : take.status === 'queued' && !take.remoteId && !take.submitUnknown
                 ? `Huỷ trước khi gửi sang ${PROVIDER_LABEL[provider]} — không bị trừ credit`
                 : take.submitUnknown && !take.remoteId
-                  ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, kiểm tra trên canvasapp.io.vn`
+                  ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, ${checkWhere}`
                 : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`
           }
         >
@@ -573,6 +591,21 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           {formatClock(take.finishedAt)}
           {take.startedAt && take.finishedAt ? <span className="faint"> · tạo trong {formatDuration(take.finishedAt - take.startedAt)}</span> : null}
         </dd>
+        {take.remoteId && provider !== 'mock' && (
+          <>
+            <dt>Mã job</dt>
+            <dd className="rq-info-job">
+              <span className="mono" title={`job_id trên ${PROVIDER_LABEL[provider]}: ${decodeRemoteId(take.remoteId)?.jobId ?? take.remoteId}`}>
+                {(decodeRemoteId(take.remoteId)?.jobId ?? take.remoteId).slice(0, 8)}…
+              </span>
+              {provider === 'dev' && (
+                <button type="button" className="rq-link" onClick={() => openDevPanel('jobs')} title="Xem job này trên máy chủ giả lập (hoàn tất / cho lỗi / cho hết hạn)">
+                  xem trong Bảng phát triển
+                </button>
+              )}
+            </dd>
+          </>
+        )}
         {take.error && take.status === 'failed' && (
           <>
             <dt>Lỗi</dt>

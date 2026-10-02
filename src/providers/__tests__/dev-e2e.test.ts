@@ -28,7 +28,7 @@ import { costOf } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
-import { isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import { DEV_UNKNOWN_SUBMIT_ERROR, isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, useRuns, type RunEvent } from '../../store/runs'
 import { memoryStorage } from '../canvasapp/adapter'
 import { openCheckout } from '../canvasapp/transport'
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
@@ -38,6 +38,7 @@ import {
   clearDevLog,
   closeDevPrompts,
   createDevCanvasapp,
+  DEV_FAULT_PRESETS,
   devBridge,
   memoryBlobStore,
   setDevServer,
@@ -221,6 +222,11 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     expect(take(t.id).status).toBe('failed')
     expect(take(t.id).error).toMatch(/đăng nhập/i)
     expect(useRuns.getState().providerIssue).toMatchObject({ provider: 'dev', code: 'login-required' })
+    // in development-mode words: the simulated site, where to log in — never the real canvasapp.io.vn
+    expect(take(t.id).error).toContain('canvasapp giả lập')
+    expect(take(t.id).error).toContain('Nhà cung cấp video')
+    expect(take(t.id).error).not.toContain('canvasapp.io.vn')
+    expect(useRuns.getState().providerIssue?.message).not.toContain('canvasapp.io.vn')
     expect(server.snapshot().jobs).toHaveLength(0)
     expect(useRealCredits.getState().status).toBe('login-required')
 
@@ -246,6 +252,41 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
   })
 })
 
+describe('dev mode e2e: polling cadence and ready-made faults', () => {
+  it('with the default simulated latency the job list is really read every ~3 s (never every other poll)', async () => {
+    server.login()
+    server.setConfig({ latencyMs: 150, speed: 'realistic' })
+    const [t] = enqueue('s1')
+    await run(40_000)
+    expect(take(t.id).status).toBe('processing')
+    // requests that reached the simulated server (a gateway cache hit is logged with fault 'gateway-cache')
+    const at = logOf('jobs-list')
+      .filter((e) => e.fault === null)
+      .map((e) => e.at)
+    expect(at.length).toBeGreaterThan(6)
+    for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeLessThan(2 * DEV_POLL_MS)
+  })
+
+  it('"Invalid canvas payload (400)" as shipped: the take fails without sending a job, even with older scenes on the canvas', async () => {
+    server.login()
+    const [first] = enqueue('s1')
+    await run(20_000)
+    expect(take(first.id).status).toBe('completed')
+    const balance = server.balance()
+
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'canvas-400')!.rule)
+    const [t] = enqueue('s2')
+    await run(5_000)
+    expect(take(t.id).status).toBe('failed')
+    expect(take(t.id).error).toContain('Invalid canvas payload')
+    expect(take(t.id).error).toContain('không bị trừ credit')
+    expect(logOf('canvas-put').slice(-2).map((e) => e.status)).toEqual([400, 400]) // the adapter's retry with only s2 too
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(balance)
+    expect(server.faults()).toEqual([])
+  })
+})
+
 describe('dev mode e2e: idempotency', () => {
   it('answer lost AND the job list unreadable → "không rõ" (never re-posted); retry finds the job — one job, one charge', async () => {
     server.login()
@@ -253,7 +294,9 @@ describe('dev mode e2e: idempotency', () => {
     const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
     const [t] = enqueue('s1')
     await run(60_000)
-    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    // a dev take is sent to the Bảng phát triển, not to canvasapp.io.vn (that site never saw it)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: DEV_UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(take(t.id).error).not.toContain('canvasapp.io.vn')
     expect(isUncertainSubmit(take(t.id))).toBe(true)
     expect(logOf('job-create')).toHaveLength(1) // never posted again by itself
     expect(server.snapshot().jobs).toHaveLength(1) // ...but the simulated canvasapp did create (and bill) it

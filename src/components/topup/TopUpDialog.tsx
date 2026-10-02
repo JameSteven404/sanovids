@@ -1,5 +1,6 @@
 // "Nạp credit canvasapp" sheet — docs/SPEC-v2.md §10. Tops up the user's OWN canvasapp.io.vn account (SanoVids has no
-// credit system of its own). Two tabs: "Nạp credit" (presets / custom amount → "Mở thanh toán QR" → the real SePay
+// credit system of its own). In development mode (§11) the same sheet tops up the SIMULATED account through the
+// simulated SePay sheet (components/dev/DevSheets) — "Nạp credit dev (giả lập)", no money, no network. Two tabs: "Nạp credit" (presets / custom amount → "Mở thanh toán QR" → the real SePay
 // page in the desktop checkout window → canvasapp's order status) and "Lịch sử credit" (CreditHistory.tsx).
 //
 // Safety: SanoVids never asks for, sees or types bank/card data, never scripts the payment page and never says
@@ -32,7 +33,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { TOPUP_PRESETS } from '../../core/topup'
 import { formatCreditNumber, formatVnd as creditsInVnd } from '../../lib/credits'
 import { usePwaInstall } from '../../lib/pwa'
-import { canvasappErrorText, isLoginRequired } from '../../providers/canvasapp/api'
+import { activeGateway } from '../../providers'
+import { canvasappErrorText, isLoginRequired, type CreditHistoryQuery } from '../../providers/canvasapp/api'
 import { hasCheckoutBridge } from '../../providers/canvasapp/transport'
 import { refreshRealCredits, useRealCredits, type RealCreditsState } from '../../store/credits'
 import { useUI, type TopUpTab } from '../../store/ui'
@@ -119,7 +121,11 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
   }, [])
 
   const { desktop } = usePwaInstall()
+  // The order's gateway while one is in flight, else the active one (appFlow): title, gate, login and history follow
+  // it; the balance card shows the ACTIVE gateway's balance (the credits store), labelled as such.
   const gateway = flowGateway()
+  const dev = gateway.simulated
+  const historyLoad = useCallback((q: CreditHistoryQuery) => flowGateway().api.creditHistory(q), [])
   const bridge = !!gateway.bridge()
   const checkout = hasCheckoutBridge(gateway.bridge)
   const realLoginRequired = useRealCredits((s) => s.status === 'login-required')
@@ -136,7 +142,7 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
     void refreshRealCredits()
   }, [bridge, recheck, realLoginRequired])
 
-  const gateInput = { desktop, bridge, checkout, auth: probe, loginRequired: realLoginRequired }
+  const gateInput = { desktop, bridge, checkout, auth: probe, loginRequired: realLoginRequired, simulated: dev }
   const topupGateView = topupGate(gateInput, 'topup')
   const historyGateView = topupGate(gateInput, 'history')
 
@@ -153,7 +159,7 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
     setLoggingIn(true)
     let ok = false
     try {
-      ok = await loginToCanvasapp()
+      ok = await loginToCanvasapp(flowGateway())
     } finally {
       setLoggingIn(false)
       recheck()
@@ -244,15 +250,31 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
   }
 
   return (
-    <Modal title="Nạp credit canvasapp" onClose={close} footer={footer}>
+    <Modal
+      title={dev ? 'Nạp credit dev (giả lập)' : 'Nạp credit canvasapp'}
+      headerExtra={
+        dev ? (
+          <span className="tu-dev-tag" title="Chế độ Phát triển: canvasapp và SePay đều giả lập — không có tiền thật, không gọi mạng">
+            DEV
+          </span>
+        ) : undefined
+      }
+      onClose={close}
+      footer={footer}
+    >
       <div className="tu-sheet">
-        <BalanceCard />
+        <BalanceCard dev={activeGateway().simulated} />
         <TabSwitch value={tab} onChange={showTab} busy={inFlight} />
 
         <div role="tabpanel" id={`tu-panel-${tab}`} aria-labelledby={`tu-tab-${tab}`} className="tu-panel">
           {tab === 'history' ? (
             historyGateView.ok ? (
-              <CreditHistory reloadKey={`${flow.phase === 'paid' ? (flow.checkedAt ?? 0) : 0}:${loginEpoch}`} onLogin={() => void login()} />
+              <CreditHistory
+                reloadKey={`${flow.phase === 'paid' ? (flow.checkedAt ?? 0) : 0}:${loginEpoch}`}
+                load={historyLoad}
+                simulated={dev}
+                onLogin={() => void login()}
+              />
             ) : (
               <GateNotice gate={historyGateView} busy={loggingIn || checking} onAction={onGateAction} />
             )
@@ -261,7 +283,7 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
           ) : !topupGateView.ok ? (
             <GateNotice gate={topupGateView} busy={loggingIn || checking} onAction={onGateAction} />
           ) : (
-            <AmountForm text={amountText} onText={setAmountText} onSubmit={startOrder} />
+            <AmountForm text={amountText} onText={setAmountText} onSubmit={startOrder} dev={dev} />
           )}
         </div>
       </div>
@@ -273,11 +295,11 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
 
 type RealView = Pick<RealCreditsState, 'balance' | 'status' | 'refreshing'>
 
-function balanceNote(real: RealView): string {
-  if (real.balance !== null) return `≈ ${creditsInVnd(real.balance)} · 1 credit ≈ 1.000đ`
+function balanceNote(real: RealView, dev: boolean): string {
+  if (real.balance !== null) return dev ? 'Credit giả lập của chế độ Phát triển — không phải tiền thật' : `≈ ${creditsInVnd(real.balance)} · 1 credit ≈ 1.000đ`
   switch (real.status) {
     case 'login-required':
-      return 'Chưa đăng nhập canvasapp'
+      return dev ? 'Chưa đăng nhập tài khoản giả lập' : 'Chưa đăng nhập canvasapp'
     case 'unavailable':
       return 'Chỉ đọc được trong bản desktop'
     case 'error':
@@ -287,21 +309,21 @@ function balanceNote(real: RealView): string {
   }
 }
 
-function BalanceCard() {
+function BalanceCard({ dev }: { dev: boolean }) {
   const real = useRealCredits(useShallow((s): RealView => ({ balance: s.balance, status: s.status, refreshing: s.refreshing })))
   const canRead = real.status !== 'unavailable'
   return (
-    <div className="tu-balance">
+    <div className={`tu-balance${dev ? ' dev' : ''}`}>
       <span className="tu-balance-icon" aria-hidden="true">
         <Wallet size={18} />
       </span>
       <div className="tu-balance-text">
-        <span className="tu-label">Số dư canvasapp · credit thật</span>
+        <span className="tu-label">{dev ? 'Số dư DEV · credit giả lập' : 'Số dư canvasapp · credit thật'}</span>
         <span className="tu-balance-num">
           <b>{formatCreditNumber(real.balance)}</b>
-          {real.balance !== null && <span> credit</span>}
+          {real.balance !== null && <span>{dev ? ' credit dev' : ' credit'}</span>}
         </span>
-        <small>{balanceNote(real)}</small>
+        <small>{balanceNote(real, dev)}</small>
       </div>
       {canRead && (
         <button
@@ -309,8 +331,8 @@ function BalanceCard() {
           className="icon-btn"
           onClick={() => void refreshRealCredits({ force: true })}
           disabled={real.refreshing}
-          title="Đọc lại số dư từ canvasapp"
-          aria-label="Đọc lại số dư canvasapp"
+          title={dev ? 'Đọc lại số dư từ canvasapp giả lập' : 'Đọc lại số dư từ canvasapp'}
+          aria-label={dev ? 'Đọc lại số dư giả lập' : 'Đọc lại số dư canvasapp'}
         >
           {real.refreshing ? <LoaderCircle size={15} className="tu-spin" /> : <RefreshCw size={15} />}
         </button>
@@ -392,7 +414,7 @@ function GateNotice({ gate, busy, onAction }: { gate: GateView; busy: boolean; o
   )
 }
 
-function AmountForm({ text, onText, onSubmit }: { text: string; onText: (t: string) => void; onSubmit: () => void }) {
+function AmountForm({ text, onText, onSubmit, dev }: { text: string; onText: (t: string) => void; onSubmit: () => void; dev: boolean }) {
   const hint = amountHint(text)
   const presets = TOPUP_PRESETS.map(presetView)
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -447,15 +469,28 @@ function AmountForm({ text, onText, onSubmit }: { text: string; onText: (t: stri
         </span>
       </label>
 
-      <div className="tu-note">
-        <ShieldCheck size={15} />
-        <div>
-          <b>1.000đ = 1 credit · Thanh toán bằng QR trên trang SePay của canvasapp · SanoVids không nhận thông tin ngân hàng.</b>
-          <span>
-            Credit được cộng vào tài khoản canvasapp.io.vn của bạn (tiền thật) ngay khi canvasapp xác nhận đã nhận tiền. Đơn nạp có hiệu lực 10 phút.
-          </span>
+      {dev ? (
+        <div className="tu-note dev">
+          <ShieldCheck size={15} />
+          <div>
+            <b>SePay giả lập · 1.000đ = 1 credit dev · Không có tiền thật, không gọi mạng.</b>
+            <span>
+              “Mở thanh toán QR” mở trang SePay giả ngay trong app: chọn Thanh toán thành công / Huỷ / Lỗi thanh toán / Đóng cửa sổ để thử từng trường hợp. Credit dev được
+              cộng khi canvasapp giả lập xác nhận (≈ 2 giây sau). Đơn nạp có hiệu lực 10 phút như thật.
+            </span>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="tu-note">
+          <ShieldCheck size={15} />
+          <div>
+            <b>1.000đ = 1 credit · Thanh toán bằng QR trên trang SePay của canvasapp · SanoVids không nhận thông tin ngân hàng.</b>
+            <span>
+              Credit được cộng vào tài khoản canvasapp.io.vn của bạn (tiền thật) ngay khi canvasapp xác nhận đã nhận tiền. Đơn nạp có hiệu lực 10 phút.
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -506,7 +541,7 @@ function StatusCard({
   const canStop = (flow.phase === 'waiting' && flow.windowClosedEarly) || flow.phase === 'untracked' || (flow.phase === 'error' && flow.error?.retry === 'poll')
 
   return (
-    <div className={`tu-status ${v.tone}`}>
+    <div className={`tu-status tone-${v.tone}`}>
       <span className="tu-status-icon" aria-hidden="true">
         {statusIcon(v.icon)}
       </span>
