@@ -17,7 +17,7 @@ import {
   Trash,
   Undo2,
 } from 'lucide-react'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, rerunTake, takeFileBase } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
@@ -25,6 +25,7 @@ import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/mode
 import type { Asset, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useMediaUrl } from '../../lib/imageStore'
+import { playWithSound, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
@@ -98,6 +99,32 @@ function restoreTake(takeId: string) {
     action: undoToastAction(),
     ms: check ? 9000 : undefined,
   })
+}
+
+/** The viewer's player: starts with sound when the speaker switch is on; its own mute button updates the switch. */
+function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
+  const ref = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const v = ref.current
+    if (v) void playWithSound(v, usePlayback.getState().sound)
+  }, [url])
+  return (
+    <video
+      ref={ref}
+      className="rq-video"
+      src={url}
+      poster={poster ?? undefined}
+      loop
+      controls
+      playsInline
+      muted
+      onVolumeChange={(e) => {
+        // Only a change the user made (not the muted start while autoplay with sound is refused).
+        const v = e.currentTarget
+        if (!v.paused) usePlayback.getState().setSound(!v.muted)
+      }}
+    />
+  )
 }
 
 function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void }) {
@@ -329,7 +356,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
 
   let content: ReactNode
   if (take.status === 'completed' && videoUrl) {
-    content = <video key={videoUrl} className="rq-video" src={videoUrl} poster={posterUrl ?? undefined} autoPlay muted loop controls playsInline />
+    content = <ViewerVideo key={videoUrl} url={videoUrl} poster={posterUrl} />
   } else if (take.status === 'completed') {
     content = (
       <>

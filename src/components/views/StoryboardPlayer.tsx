@@ -1,9 +1,10 @@
 // "Phát liền": plays every scene's chosen take in order (webm when the mock recorded one, else poster).
-import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, Volume2, VolumeX, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { playWithSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
@@ -31,6 +32,22 @@ const STALL_MS = 6000
 const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
 
 type VideoState = { id: string; url: string | null; failed: boolean } | null
+
+/** Speaker switch of the player (shared with the canvas preview and the take viewer). A click may always unmute. */
+function SoundButton({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null> }) {
+  const sound = usePlayback((s) => s.sound)
+  const toggle = () => {
+    const next = !sound
+    usePlayback.getState().setSound(next)
+    const v = videoRef.current
+    if (v) v.muted = !next
+  }
+  return (
+    <button className="icon-btn" onClick={toggle} title={sound ? 'Tắt tiếng' : 'Bật tiếng'} aria-label={sound ? 'Tắt tiếng' : 'Bật tiếng'} aria-pressed={sound}>
+      {sound ? <Volume2 size={18} /> : <VolumeX size={18} />}
+    </button>
+  )
+}
 
 export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[]; start: number; onClose: () => void }) {
   const [index, setIndex] = useState(() => Math.min(Math.max(0, start), Math.max(0, items.length - 1)))
@@ -102,8 +119,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     const v = videoRef.current
     if (!v || mode !== 'video') return
     if (paused || ended) v.pause()
-    else void v.play().catch(() => undefined)
-  }, [paused, ended, mode, index])
+    else void playWithSound(v, usePlayback.getState().sound)
+  }, [paused, ended, mode, index, video?.id])
   // Watchdog (see STALL_MS): last time the video's currentTime moved.
   const progressAt = useRef(0)
   const lastTime = useRef(-1)
@@ -114,7 +131,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     lastTime.current = -1
     const id = window.setInterval(() => {
       const v = videoRef.current
-      // A hidden tab may pause the (muted) video: that is not a stall.
+      // A hidden tab may pause the video: that is not a stall.
       if (document.hidden) progressAt.current = Date.now()
       else if (v && v.currentTime !== lastTime.current) {
         lastTime.current = v.currentTime
@@ -200,6 +217,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
           </span>
         </span>
         <span className="vw-player-note">{hasDemo ? 'Demo: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <SoundButton videoRef={videoRef} />
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>

@@ -1,7 +1,7 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { deleteTakes, downloadTake, rerunTake } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
@@ -9,6 +9,7 @@ import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
+import { playWithSound, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -74,6 +75,54 @@ function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
   )
 }
 
+/**
+ * Hover preview of a finished take: plays with sound when the speaker switch is on (shared with the take viewer and
+ * the storyboard player). If the browser refuses sound before any click on the page, it plays muted and the
+ * speaker shows muted — one click on it turns the sound on.
+ */
+function HoverVideo({ url }: { url: string }) {
+  const ref = useRef<HTMLVideoElement>(null)
+  const sound = usePlayback((s) => s.sound)
+  const [audible, setAudible] = useState(false)
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    let live = true
+    void playWithSound(v, sound).then((on) => live && setAudible(on))
+    return () => {
+      live = false
+    }
+  }, [url, sound])
+  const toggle = (e: SyntheticEvent) => {
+    e.stopPropagation()
+    const v = ref.current
+    const next = !audible
+    usePlayback.getState().setSound(next)
+    // A click is a user gesture: unmuting here is always allowed.
+    if (v) {
+      v.muted = !next
+      if (next) void v.play().catch(() => undefined)
+    }
+    setAudible(next)
+  }
+  return (
+    <>
+      <video ref={ref} className="cv-take-video" src={url} loop playsInline muted />
+      <button
+        className={`cv-take-sound nodrag nopan${audible ? ' on' : ''}`}
+        title={audible ? 'Tắt tiếng xem trước' : 'Bật tiếng xem trước'}
+        aria-label={audible ? 'Tắt tiếng' : 'Bật tiếng'}
+        aria-pressed={audible}
+        onPointerDown={stop}
+        onDoubleClick={stop}
+        onClick={toggle}
+      >
+        {audible ? <Volume2 size={13} /> : <VolumeX size={13} />}
+      </button>
+    </>
+  )
+}
+
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
   const order = useProject((s) => (take ? sceneMapOf(s.project.scenes).get(take.sceneId)?.order : undefined))
@@ -120,7 +169,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
       >
         <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
           {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster empty" />}
-          {videoUrl && <video className="cv-take-video" src={videoUrl} muted loop autoPlay playsInline />}
+          {videoUrl && <HoverVideo url={videoUrl} />}
           <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
 
           <span className="cv-take-code">{code}</span>

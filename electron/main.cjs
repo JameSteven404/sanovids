@@ -132,6 +132,8 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
+      // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
+      autoplayPolicy: 'no-user-gesture-required',
       additionalArguments: [`--bdp-version=${app.getVersion()}`],
     },
   })

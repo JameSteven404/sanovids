@@ -1223,6 +1223,30 @@ button.cv-asset-count:hover {
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* speaker switch of the hover preview, left of the star */
+.cv-take-sound {
+  position: absolute;
+  right: 36px;
+  top: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--cv-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: color-mix(in srgb, var(--cv-on-media) 80%, transparent);
+  cursor: pointer;
+  transition: color 0.15s var(--cv-ease);
+}
+.cv-take-sound:hover,
+.cv-take-sound.on {
+  color: var(--cv-on-media);
+}
 .cv-take-more {
   position: absolute;
   right: 6px;
@@ -1960,6 +1984,7 @@ button.cv-asset-count:hover {
 .cv-sel-hint-btn:focus-visible,
 .cv-take-btn:focus-visible,
 .cv-take-star:focus-visible,
+.cv-take-sound:focus-visible,
 .cv-take-more:focus-visible,
 .cv-asset-zoom:focus-visible,
 .cv-asset-count:focus-visible,
