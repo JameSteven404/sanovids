@@ -152,6 +152,20 @@ export interface WireSource {
   takeReady?: boolean
   /** Take sources: its own scene (a scene cannot reference its own video). */
   takeSceneId?: string | null
+  /**
+   * The scene end of an existing image / @video wire is being moved (reconnect): it can only go to another scene —
+   * never into a folder (that would neither move the wire nor save the video).
+   */
+  reconnect?: boolean
+}
+
+// The scene end of a wire is being dragged (CanvasView onReconnectStart → onReconnectEnd): the connection line reads it.
+let reconnectingWire = false
+export function setWireReconnecting(on: boolean): void {
+  reconnectingWire = on
+}
+export function isWireReconnecting(): boolean {
+  return reconnectingWire
 }
 
 export type WireVerdict = 'valid' | 'invalid' | 'idle'
@@ -163,6 +177,7 @@ export type WireVerdict = 'valid' | 'invalid' | 'idle'
  */
 export function wireVerdict(src: WireSource, over: { id: string; type?: string | null } | null): WireVerdict {
   if (!over || over.id === src.id) return 'idle'
+  if (src.reconnect && over.type !== 'scene') return 'invalid'
   switch (src.type) {
     case 'asset':
       return over.type === 'scene' ? 'valid' : 'invalid'

@@ -47,15 +47,26 @@ export function Toggle({
   hint?: ReactNode
   disabled?: boolean
 }) {
+  const titleId = useId()
   const hintId = useId()
+  // The whole row stays clickable (<label>), but the switch is named by its title only; the hint is its description
+  // (not read twice: as part of the name and again as the description).
   return (
     <label className={`dg-toggle-row${disabled ? ' disabled' : ''}`}>
       <span className="dg-toggle-text">
-        <span>{label}</span>
+        <span id={titleId}>{label}</span>
         {hint && <small id={hintId}>{hint}</small>}
       </span>
       <span className={`dg-switch ${checked ? 'on' : ''}`}>
-        <input type="checkbox" role="switch" checked={checked} disabled={disabled} aria-describedby={hint ? hintId : undefined} onChange={(e) => onChange(e.target.checked)} />
+        <input
+          type="checkbox"
+          role="switch"
+          checked={checked}
+          disabled={disabled}
+          aria-labelledby={titleId}
+          aria-describedby={hint ? hintId : undefined}
+          onChange={(e) => onChange(e.target.checked)}
+        />
         <i />
       </span>
     </label>

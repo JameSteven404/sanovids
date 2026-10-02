@@ -6,12 +6,13 @@ import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/r
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
 import { folderMapOf, shortPath } from '../../core/folders'
-import { chooseFolderPlace, grantFolderAccess, linkTakesToFolder, openFolderNode, removeFolderNode } from '../../folderActions'
+import { chooseFolderPlace, grantFolderAccess, linkTakesToFolder, openFolderNode, refreshFolderNode, removeFolderNode } from '../../folderActions'
 import { desktopFiles } from '../../lib/desktopFiles'
-import { checkFolderAccess, useFolderStatus, folderRuntime, type FolderRuntime } from '../../lib/saveFolders'
+import { useFolderStatus, folderRuntime, type FolderRuntime } from '../../lib/saveFolders'
 import { useProject } from '../../store/project'
+import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
-import { hasTakeDrag, LOD_ZOOM, readTakeIds } from './canvasModel'
+import { hasTakeDrag, LOD_ZOOM, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
 import './saving.css'
 
 export type FolderFlowNode = Node<Record<string, unknown>, 'folder'>
@@ -24,6 +25,13 @@ function timeText(at: number): string {
   const today = new Date().toDateString() === d.toDateString()
   const hm = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
   return today ? hm : `${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} ${hm}`
+}
+
+/** How many ids of a link list are in `live`. */
+function liveCount(ids: readonly string[] | undefined, live: ReadonlyMap<string, unknown>): number {
+  let n = 0
+  for (const x of ids ?? []) if (live.has(x)) n++
+  return n
 }
 
 /** One status line under the name: what the folder needs, or what was saved. */
@@ -49,6 +57,9 @@ function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 
 
 function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const folder = useProject((s) => folderMapOf(s.project.folders).get(id))
+  // Links that are drawn: only videos / scenes that still exist (a number, so a stable selector result).
+  const autoN = useProject((s) => liveCount(folder?.autoScenes, sceneMapOf(s.project.scenes)))
+  const takeN = useRuns((s) => liveCount(folder?.takes, takeIndexOf(s.takes).byId))
   const stored = useFolderStatus((s) => s.byId[id])
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
@@ -57,10 +68,10 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const depth = useRef(0)
   const path = folder?.path ?? null
 
-  // Can we write there (now, and whenever the node is pointed at another folder)?
+  // Can we write there (now, and whenever the node is pointed at another folder)? Saves still waiting (also from
+  // before a reload / restart) are written as soon as it can.
   useEffect(() => {
-    const f = folderMapOf(useProject.getState().project.folders).get(id)
-    if (f) void checkFolderAccess(f)
+    void refreshFolderNode(id)
   }, [id, path])
 
   // A cancelled drop may skip dragleave: reset when any drag ends.
@@ -82,8 +93,6 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const rt = stored ?? folderRuntime(id)
   const desktop = !!desktopFiles()
   const status = statusOf(rt, !!path)
-  const autoN = folder.autoScenes?.length ?? 0
-  const takeN = folder.takes?.length ?? 0
   const links = [autoN && `tự lưu ${autoN} cảnh`, takeN && `${takeN} video đã nối`].filter(Boolean).join(' · ')
   const needsPick = rt.access === 'pick' || rt.access === 'missing'
   const needsGrant = rt.access === 'ask'

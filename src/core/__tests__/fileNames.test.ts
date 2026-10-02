@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanFileBase, cleanTakeFileName, companionFor, freeNames, numberedName, safeFileName, splitExt, uniqueInSet } from '../fileNames'
+import { cleanFileBase, cleanTakeFileName, companionFor, cutText, freeNames, numberedName, safeFileName, splitExt, uniqueInSet } from '../fileNames'
 
 describe('file names are safe on every OS', () => {
   it('keeps ordinary Vietnamese names as they are', () => {
@@ -33,6 +33,38 @@ describe('file names are safe on every OS', () => {
 
   it('cuts very long names', () => {
     expect(cleanFileBase('x'.repeat(500)).length).toBe(120)
+  })
+
+  it('never a Windows device name with spaces before the dot either ("nul .txt"), nor CONIN$ / CONOUT$', () => {
+    expect(cleanFileBase('nul .txt')).toBe('_nul .txt')
+    expect(cleanFileBase('Aux .mp4')).toBe('_Aux .mp4')
+    expect(cleanFileBase('COM1 .x')).toBe('_COM1 .x')
+    expect(cleanFileBase('Con ...và mẹ')).toBe('_Con ...và mẹ')
+    expect(cleanFileBase('CONOUT$.txt')).toBe('_CONOUT$.txt')
+    expect(cleanFileBase('conin$')).toBe('_conin$')
+    // names that only start like one stay
+    expect(cleanFileBase('Con mèo')).toBe('Con mèo')
+    expect(cleanFileBase('Nul và mẹ')).toBe('Nul và mẹ')
+  })
+
+  it('drops invisible characters that would disguise a name', () => {
+    const rlo = String.fromCodePoint(0x202e)
+    const zwsp = String.fromCodePoint(0x200b)
+    const bom = String.fromCodePoint(0xfeff)
+    expect(cleanFileBase(`a${rlo}4pm.exe`)).toBe('a4pm.exe')
+    expect(cleanFileBase(`S01${zwsp}_T1`)).toBe('S01_T1')
+    expect(cleanFileBase(`${bom}Cảnh`)).toBe('Cảnh')
+  })
+
+  it('never cuts an emoji in half (it would become a broken character on disk)', () => {
+    const clapper = String.fromCodePoint(0x1f3ac)
+    const out = cleanFileBase('a'.repeat(119) + clapper + 'xyz')
+    expect(out).toBe('a'.repeat(119))
+    expect(cleanFileBase('a'.repeat(118) + clapper + 'xyz')).toBe('a'.repeat(118) + clapper)
+    expect(cutText('ab' + clapper, 3)).toBe('ab')
+    expect(cutText('abc', 5)).toBe('abc')
+    // a lone half is dropped
+    expect(cleanFileBase('Cảnh' + String.fromCharCode(0xd83c))).toBe('Cảnh')
   })
 
   it('is not fooled by non-strings', () => {

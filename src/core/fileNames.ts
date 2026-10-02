@@ -3,8 +3,12 @@
 
 /** Characters Windows / macOS refuse in a file name, plus control characters (a path separator is one of them). */
 const BAD_CHARS = /[<>:"/\\|?*\u0000-\u001f\u007f]/g
-/** Device names Windows reserves, with or without an extension ("CON", "nul.txt", "COM1"). */
-const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i
+/** Device names Windows reserves, with or without an extension ("CON", "nul.txt", "COM1", also "nul .txt" / "Con ...x"). */
+const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)\s*(\..*)?$/i
+/** Invisible format characters (bidi overrides / isolates, zero-width, BOM, soft hyphen): a name shows what it is. */
+const FORMAT_CHARS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g
+/** Half of a surrogate pair on its own (it would become U+FFFD on disk). */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
 /** Longest base name kept (the extension and a " (12)" suffix are added after it). */
 export const MAX_BASE_LENGTH = 120
 /** Extensions SanoVids adds itself: typed at the end of a new name they are dropped ("Cảnh mở đầu.mp4" → "Cảnh mở đầu"). */
@@ -17,10 +21,18 @@ const OWN_EXT = /\.(mp4|webm|mov|mkv|m4v|txt|jpe?g|png|webp|zip)$/i
  */
 export function cleanFileBase(raw: unknown): string {
   if (typeof raw !== 'string') return ''
-  let s = raw.normalize('NFC').replace(BAD_CHARS, '-').replace(/\s+/g, ' ').trim()
-  s = s.slice(0, MAX_BASE_LENGTH).replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+  let s = raw.replace(LONE_SURROGATE, '').normalize('NFC').replace(FORMAT_CHARS, '')
+  s = s.replace(BAD_CHARS, '-').replace(/\s+/g, ' ').trim()
+  s = cutText(s, MAX_BASE_LENGTH).replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (RESERVED.test(s)) s = '_' + s
   return s
+}
+
+/** The first `max` UTF-16 units of `s`, never ending on half of an emoji (a surrogate pair). */
+export function cutText(s: string, max: number): string {
+  if (s.length <= max) return s
+  const out = s.slice(0, max)
+  return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out
 }
 
 /** A safe file name, never empty ("video" when nothing usable is left). */

@@ -117,7 +117,7 @@ import {
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
-import { isWireClick, markFreshWires, newWireIds, wireClickAction, type WirePress } from './wireFx'
+import { isWireClick, markFreshWires, newWireIds, setWireReconnecting, wireClickAction, type WirePress } from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
 import './wires.css'
@@ -674,6 +674,8 @@ function CanvasInner() {
     if (c.source === c.target) return false
     const p = useProject.getState().project
     if (folderMapOf(p.folders).has(c.target)) {
+      // Moving the scene end of an image / @video wire: it only goes to another scene (moveEdge), never into a folder.
+      if (reconnecting.current) return false
       // Into a folder: a video from its purple dot, or a scene from its right dot (auto-save).
       if (sceneMapOf(p.scenes).has(c.source)) return c.sourceHandle === 'take'
       return c.sourceHandle === 'out' && takeIndexOf(useRuns.getState().takes).byId.has(c.source)
@@ -688,6 +690,7 @@ function CanvasInner() {
 
   const onReconnectStart = useCallback((_e: ReactMouseEvent, _edge: LinkEdge, _h: HandleType) => {
     reconnecting.current = { done: false }
+    setWireReconnecting(true)
     setMenu(null)
   }, [])
   const onReconnect = useCallback((oldEdge: LinkEdge, c: Connection) => {
@@ -698,12 +701,23 @@ function CanvasInner() {
     (event: MouseEvent | TouchEvent, edge: LinkEdge, _h: HandleType, _state: FinalConnectionState) => {
       const r = reconnecting.current
       reconnecting.current = null
+      setWireReconnecting(false)
       if (!r || r.done) return
       const pt = clientPoint(event)
       const hit = hitTest(pt.x, pt.y, stageRef.current)
       if (!hit) return
       if (hit.kind === 'node') {
-        if (hit.id !== edge.target && sceneMapOf(useProject.getState().project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
+        const project = useProject.getState().project
+        if (hit.id !== edge.target && sceneMapOf(project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
+        else if (folderMapOf(project.folders).has(hit.id)) {
+          // Released on a folder: the wire stays where it was (and says why, instead of doing nothing).
+          toast(
+            edge.type === 'vref'
+              ? 'Dây @video chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ. Để lưu video vào thư mục, kéo dây từ chấm tím của video vào thư mục.'
+              : 'Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.',
+            { tone: 'info', ms: 7000 },
+          )
+        }
         return
       }
       // Dropped on empty canvas: cut the wire.
@@ -741,6 +755,7 @@ function CanvasInner() {
       keepHover()
       useCanvasLocal.getState().setHoveredEdge(null)
       useUI.getState().setHovered(null)
+      setWireReconnecting(false)
     },
     [],
   )

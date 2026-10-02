@@ -7,12 +7,14 @@ import {
   cubicPath,
   isFreshWire,
   isWireClick,
+  isWireReconnecting,
   markFreshWires,
   MAX_FRESH_WIRES,
   nearestT,
   newWireIds,
   parseCubicPath,
   pickNodeAt,
+  setWireReconnecting,
   snapHandleFor,
   splitCubic,
   splitWirePath,
@@ -158,6 +160,21 @@ describe('dragging a wire: verdict, color, snap handle', () => {
     expect(wireVerdict({ ...src, takeReady: false }, scene2)).toBe('invalid')
     expect(wireVerdict(src, folder)).toBe('valid')
     expect(wireVerdict(src, takeNode)).toBe('invalid')
+  })
+  it('moving the scene end of an existing @video / image wire: only to another scene, never into a folder', () => {
+    const vref = { type: 'take' as const, id: 't1', takeReady: true, takeSceneId: 's1', reconnect: true }
+    expect(wireVerdict(vref, folder)).toBe('invalid')
+    expect(wireVerdict(vref, scene2)).toBe('valid')
+    expect(wireVerdict(vref, scene)).toBe('invalid')
+    expect(wireVerdict(vref, takeNode)).toBe('invalid')
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, folder)).toBe('invalid')
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, scene2)).toBe('valid')
+    expect(wireVerdict(vref, null)).toBe('idle')
+    // the flag CanvasView sets for the connection line
+    expect(isWireReconnecting()).toBe(false)
+    setWireReconnecting(true)
+    expect(isWireReconnecting()).toBe(true)
+    setWireReconnecting(false)
   })
   it("a scene's right dot goes into folders; a folder's dot to videos and scenes", () => {
     expect(wireVerdict({ type: 'scene', id: 's1' }, folder)).toBe('valid')

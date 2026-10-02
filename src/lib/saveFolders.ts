@@ -4,7 +4,7 @@
 //   Web (Chromium): a File System Access directory handle per folder id, kept in IndexedDB. After a restart the browser
 //     usually asks again before writing ("Cấp lại quyền": needs a click). Firefox / Safari cannot write folders.
 // Runtime state of each node (access, counters, last error, saves waiting for the permission) is the small store below;
-// its counters are kept per browser (localStorage), not in the project.
+// its counters and the saves still waiting are kept per browser / computer (localStorage), not in the project.
 import { del, get, set } from 'idb-keyval'
 import { create } from 'zustand'
 import type { SaveFolder } from '../core/types'
@@ -38,20 +38,54 @@ export interface FolderRuntime {
 
 const STATS_KEY = 'bdp:folder-stats'
 /** Per folder id: counters for the node, and the takes already saved there (a wire never copies one twice by itself). */
-type Stats = Record<string, { saved: number; lastAt: number | null; lastName: string | null; takes?: string[] }>
+export interface FolderStats {
+  saved: number
+  lastAt: number | null
+  lastName: string | null
+  takes?: string[]
+}
+type Stats = Record<string, FolderStats>
 /** Take ids remembered per folder (the most recent ones). */
 const MAX_REMEMBERED_TAKES = 500
 
-function readStats(): Stats {
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+/** Folder ids as object keys ('__proto__' would set the prototype, not a key). */
+const isKey = (k: string) => !!k && k !== '__proto__'
+/** Ids without duplicates or non-strings; past `max` the most recent ones (the end of the list). */
+const idList = (v: unknown, max: number): string[] =>
+  Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string' && !!x && x.length <= 200))].slice(-max) : []
+
+/**
+ * bdp:folder-stats as stored, repaired value by value: a broken entry must never break a save ("3" + 1, a string
+ * where the take list should be). Entries that are not objects are dropped.
+ */
+export function parseFolderStats(raw: unknown): Stats {
+  const out: Stats = {}
+  if (!isRecord(raw)) return out
+  for (const [id, v] of Object.entries(raw)) {
+    if (!isKey(id) || !isRecord(v)) continue
+    const entry: FolderStats = {
+      saved: typeof v.saved === 'number' && Number.isFinite(v.saved) && v.saved >= 0 ? Math.floor(v.saved) : 0,
+      lastAt: typeof v.lastAt === 'number' && Number.isFinite(v.lastAt) && v.lastAt > 0 ? v.lastAt : null,
+      lastName: typeof v.lastName === 'string' && v.lastName ? v.lastName.slice(0, 300) : null,
+    }
+    const takes = idList(v.takes, MAX_REMEMBERED_TAKES)
+    if (takes.length) entry.takes = takes
+    out[id] = entry
+  }
+  return out
+}
+
+/** A stored JSON value (null when there is none, or when storage cannot be read). */
+function readJson(key: string): unknown {
   try {
-    const raw = localStorage.getItem(STATS_KEY)
-    const parsed = raw ? (JSON.parse(raw) as unknown) : null
-    return parsed && typeof parsed === 'object' ? (parsed as Stats) : {}
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as unknown) : null
   } catch {
-    return {}
+    return null
   }
 }
-let stats: Stats = readStats()
+let stats: Stats = parseFolderStats(readJson(STATS_KEY))
 function writeStats() {
   try {
     localStorage.setItem(STATS_KEY, JSON.stringify(stats))
@@ -80,7 +114,9 @@ export const useFolderStatus = create<FolderStatusState>()((setState) => ({
 
 function runtimeSeed(id: string): FolderRuntime {
   const st = stats[id]
-  return st ? { ...EMPTY, saved: st.saved || 0, lastAt: st.lastAt ?? null, lastName: st.lastName ?? null } : EMPTY
+  const pending = waitingCache[id]?.length ?? 0
+  if (!st && !pending) return EMPTY
+  return { ...EMPTY, saved: st?.saved ?? 0, lastAt: st?.lastAt ?? null, lastName: st?.lastName ?? null, pending }
 }
 
 /** Runtime state of a folder node (a stable object until it changes). */
@@ -106,6 +142,80 @@ export function wasSavedTo(folderId: string, takeId: string): boolean {
   return !!stats[folderId]?.takes?.includes(takeId)
 }
 
+// ---------------- saves still waiting (per browser / computer, kept across reloads and restarts) ----------------
+// A save that could not be written yet (permission to give again, folder to choose again) waits here, and so does a
+// save while it is being written (an app closed in the middle leaves it here, so it is written again later).
+const WAITING_KEY = 'bdp:folder-waiting'
+/** Saves remembered per folder (the most recent ones). */
+const MAX_WAITING = 200
+type Waiting = Record<string, string[]>
+
+/** bdp:folder-waiting as stored (folder id → take ids), repaired. */
+export function parseFolderWaiting(raw: unknown): Waiting {
+  const out: Waiting = {}
+  if (!isRecord(raw)) return out
+  for (const [id, v] of Object.entries(raw)) {
+    if (!isKey(id)) continue
+    const ids = idList(v, MAX_WAITING)
+    if (ids.length) out[id] = ids
+  }
+  return out
+}
+
+/** Last known list (also what is used where there is no localStorage: tests, a blocked storage). */
+let waitingCache: Waiting = parseFolderWaiting(readJson(WAITING_KEY))
+
+/** The stored list, read again each time (another tab may have saved or added some meanwhile). */
+function readWaiting(): Waiting {
+  try {
+    if (typeof localStorage === 'undefined') return waitingCache
+    waitingCache = parseFolderWaiting(readJson(WAITING_KEY))
+  } catch {
+    /* storage not readable: keep the last known list */
+  }
+  return waitingCache
+}
+function writeWaiting(all: Waiting) {
+  waitingCache = all
+  try {
+    if (Object.keys(all).length) localStorage.setItem(WAITING_KEY, JSON.stringify(all))
+    else localStorage.removeItem(WAITING_KEY)
+  } catch {
+    /* quota / private mode: the list still holds for this session */
+  }
+}
+
+/** Takes waiting to be saved into this folder (oldest first). */
+export function waitingTakes(folderId: string): string[] {
+  return readWaiting()[folderId] ?? []
+}
+
+/** Add (`on`) or remove takes from the folder's waiting list; the node shows "N video chờ lưu". Returns how many wait. */
+export function markWaiting(folderId: string, takeIds: readonly string[], on: boolean): number {
+  const all = { ...readWaiting() }
+  const cur = all[folderId] ?? []
+  const drop = new Set(takeIds)
+  const next = on ? [...cur.filter((t) => !drop.has(t)), ...takeIds].slice(-MAX_WAITING) : cur.filter((t) => !drop.has(t))
+  if (next.length !== cur.length || next.some((t, i) => t !== cur[i])) {
+    if (next.length) all[folderId] = next
+    else delete all[folderId]
+    writeWaiting(all)
+  }
+  patch(folderId, { pending: next.length })
+  return next.length
+}
+
+// Another tab saved / queued some: keep the "chờ lưu" counts of the nodes shown here right.
+function onStorage(e: StorageEvent) {
+  if (e.key !== WAITING_KEY && e.key !== null) return
+  const all = readWaiting()
+  for (const id of Object.keys(useFolderStatus.getState().byId)) patch(id, { pending: all[id]?.length ?? 0 })
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', onStorage)
+  if (import.meta.hot) import.meta.hot.dispose(() => window.removeEventListener('storage', onStorage))
+}
+
 // ---------------- where folders can be used ----------------
 const hasDirPicker = () => typeof window !== 'undefined' && 'showDirectoryPicker' in window
 
@@ -128,6 +238,12 @@ async function folderHandle(folderId: string): Promise<DirHandle | null> {
 /** Keep the browser's handle of a folder node (picked just now) under its id. */
 export async function rememberFolderHandle(folderId: string, handle: unknown): Promise<void> {
   if (handle) await set(handleKey(folderId), handle, settingsStore).catch(() => undefined)
+}
+
+/** Duplicate of a project: its folder node (new id) keeps the original's folder (web: the same directory handle). */
+export async function copyFolderHandle(fromId: string, toId: string): Promise<void> {
+  const handle = await folderHandle(fromId)
+  if (handle) await rememberFolderHandle(toId, handle)
 }
 
 export async function forgetFolderHandle(folderId: string): Promise<void> {
@@ -277,9 +393,4 @@ export async function revealFolder(folder: SaveFolder): Promise<string | null> {
 /** Mark a node busy / not busy (spinner while a save is written). */
 export function setFolderBusy(id: string, busy: boolean) {
   patch(id, { busy })
-}
-
-/** Auto-saves waiting for the permission of a folder (web), shown as "N video chờ lưu". */
-export function setFolderPending(id: string, pending: number) {
-  patch(id, { pending })
 }

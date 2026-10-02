@@ -102,6 +102,7 @@ export function renderNameTemplate(template: string, values: NameValues): string
     if (!TOKEN_IDS.has(p.id)) return p.raw
     return (values[p.id as NameToken] ?? '').replace(/\s+/g, ' ').trim()
   })
+  let emptied = false
   parts.forEach((p, i) => {
     if (p.kind !== 'token' || !TOKEN_IDS.has(p.id) || out[i]) return
     const prev = i > 0 && parts[i - 1].kind === 'text' ? i - 1 : -1
@@ -114,12 +115,19 @@ export function renderNameTemplate(template: string, values: NameValues): string
         out[next] = out[next].slice(1)
       }
     }
-    // The separator in front of the token goes; when nothing real comes before it, the one after it goes too.
-    const hasHead = trimSepStart(out.slice(0, i).join('')) !== ''
+    // The separator in front of the token goes; when nothing real comes before it (the start of the name, or an
+    // opening bracket: "({title}, {model})" → "(Seedance 2.5)"), the one after it goes too.
     if (prev >= 0) out[prev] = trimSepEnd(out[prev])
-    if (!hasHead && next >= 0) out[next] = trimSepStart(out[next])
+    const head = trimSepEnd(out.slice(0, i).join(''))
+    if ((!head || OPENERS[head.slice(-1)]) && next >= 0) out[next] = trimSepStart(out[next])
+    emptied = true
   })
-  return cleanFileBase(out.join(''))
+  if (!emptied) return cleanFileBase(out.join(''))
+  // Brackets of the template left empty by several empty tokens ("({title}{model})") go too, with the space in front
+  // of them. Values are held out while looking (a scene title may hold "()" of its own).
+  const skeleton = out.map((t, i) => (parts[i].kind === 'token' && t ? `\u0000${i}\u0000` : t)).join('')
+  const name = skeleton.replace(/\s*(\(\s*\)|\[\s*\])/g, '').replace(/\u0000(\d+)\u0000/g, (_m, i: string) => out[Number(i)])
+  return cleanFileBase(name)
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')

@@ -797,15 +797,26 @@ function registerCanvasappGateway() {
 // Nothing is ever overwritten except the file the user confirmed in the save dialog: other names get " (2)".
 // ---------------------------------------------------------------------------------------------------------------
 
-// <save-rules> (pure; src/lib/__tests__/saveRules.test.ts runs this block as-is with node:path's win32 and posix)
+// <save-rules> (rules, and writing with an injected fs; src/lib/__tests__/saveRules.test.ts runs this block as-is with
+// node:path's win32 and posix, and a temp folder)
 const SAVE_MAX_FILES = 4
 const SAVE_MAX_FILE_BYTES = 1024 * 1024 * 1024 // 1 GB per file
 const SAVE_MAX_TEXT_CHARS = 2_000_000
 const SAVE_MAX_NAME = 180
 const SAVE_MAX_PATH = 1024
 const SAVE_MAX_FOLDERS = 200
-const SAVE_RESERVED_RE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i
+// Windows device names, also as "nul .txt" / "Con ...x" (spaces before the first dot are ignored there too).
+const SAVE_RESERVED_RE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)\s*(\..*)?$/i
 const SAVE_BAD_CHARS_RE = /[<>:"/\\|?*\u0000-\u001f\u007f]/g
+// Invisible format characters (bidi overrides / isolates, zero-width, BOM, soft hyphen): a name never shows another
+// extension than the one it has (an RLO character shows "a<RLO>gpj.exe" as "aexe.jpg"). Lone surrogates would
+// become U+FFFD on disk.
+const SAVE_FORMAT_CHARS_RE = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g
+const SAVE_LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+// The only types SanoVids writes: videos, posters, the prompt .txt, the .zip of videos, the settings .json.
+const SAVE_ALLOWED_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'txt', 'zip', 'json'])
+// What the save dialog may write next to the chosen file (the prompt .txt).
+const SAVE_COMPANION_EXT = new Set(['txt'])
 const SAVE_FILTER_LABELS = {
   mp4: 'Video MP4',
   webm: 'Video WebM',
@@ -830,16 +841,24 @@ function saveNameExt(name) {
  */
 function sanitizeSaveName(raw) {
   if (typeof raw !== 'string') return null
-  let s = raw.normalize('NFC').replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
+  let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
+  s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
   s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (!s) return null
   if (s.length > SAVE_MAX_NAME) {
     const ext = saveNameExt(s)
     const tail = ext && ext.length <= 8 ? '.' + ext : ''
-    s = s.slice(0, SAVE_MAX_NAME - tail.length).replace(/[.\s]+$/, '') + tail
+    s = cutSaveText(s, SAVE_MAX_NAME - tail.length).replace(/[.\s]+$/, '') + tail
   }
   if (SAVE_RESERVED_RE.test(s)) s = '_' + s
   return s
+}
+
+/** The first `max` UTF-16 units of `s`, never ending on half of an emoji (a surrogate pair). */
+function cutSaveText(s, max) {
+  if (s.length <= max) return s
+  const out = s.slice(0, max)
+  return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out
 }
 
 /** "clip.mp4", 2 → "clip (2).mp4" (same rule as the web app). */
@@ -896,6 +915,8 @@ function checkSaveFiles(files) {
     if (!f || typeof f !== 'object') return { error: 'File không hợp lệ.' }
     const name = sanitizeSaveName(f.name)
     if (!name) return { error: 'Tên file không hợp lệ.' }
+    // Never a program, a shortcut or a settings file of Windows (.exe, .lnk, .url, desktop.ini…), whatever the page says.
+    if (!SAVE_ALLOWED_EXT.has(saveNameExt(name))) return { error: 'Loại file này không được phép lưu.' }
     if (seen.has(name.toLowerCase())) return { error: 'Hai file trùng tên.' }
     seen.add(name.toLowerCase())
     if (f.bytes instanceof Uint8Array) {
@@ -914,6 +935,8 @@ function checkSaveAsArgs(args) {
   if (!args || typeof args !== 'object') return { error: 'Yêu cầu không hợp lệ.' }
   const checked = checkSaveFiles(args.files)
   if (checked.error) return checked
+  // Files written next to the chosen one are never shown in the dialog: only the prompt .txt.
+  if (checked.files.slice(1).some((f) => !SAVE_COMPANION_EXT.has(saveNameExt(f.name)))) return { error: 'Chỉ lưu kèm được file .txt.' }
   const suggestedName = sanitizeSaveName(typeof args.suggestedName === 'string' && args.suggestedName ? args.suggestedName : checked.files[0].name)
   if (!suggestedName) return { error: 'Tên file không hợp lệ.' }
   const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim().slice(0, 80) : saveDialogTitle(checked.files[0].name)
@@ -951,6 +974,112 @@ function isDirectChild(dir, target, pathMod) {
   const d = folderKey(dir, pathMod)
   const parent = folderKey(pathMod.dirname(target), pathMod)
   return !!d && d === parent && pathMod.basename(target) !== '' && pathMod.basename(target) !== '..'
+}
+
+// ---- writing (fs injected: node's fs.promises here, a fake or a temp folder in the tests) ----
+const saveFileData = (f) => (f.bytes ? Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength) : f.text)
+const saveError = (code, message = code) => Object.assign(new Error(message), { code })
+const saveSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Is nothing at `p`? (Unreadable = taken: never risk a name that may exist.) */
+async function savePathFree(fsp, p) {
+  try {
+    await fsp.lstat(p)
+    return false
+  } catch (e) {
+    return !!e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')
+  }
+}
+
+/** Write `data` to a new temp file "<target>.<random>.part" next to `target` (never an existing file). Returns its path. */
+async function writeSavePart(fsp, target, data) {
+  for (let k = 0; k < 5; k++) {
+    const part = `${target}.${Math.random().toString(36).slice(2, 8)}.part`
+    try {
+      await fsp.writeFile(part, data, { flag: 'wx' })
+      return part
+    } catch (e) {
+      // 'wx' created it: a write cut short (disk full…) leaves nothing behind.
+      if (!e || e.code !== 'EEXIST') {
+        await fsp.unlink(part).catch(() => undefined)
+        throw e
+      }
+    }
+  }
+  throw saveError('EEXIST')
+}
+
+/** Rename, retrying a moment while Windows (an antivirus, the indexer) still holds the new file. */
+async function renameSaveFile(fsp, from, to) {
+  for (let k = 0; ; k++) {
+    try {
+      return await fsp.rename(from, to)
+    } catch (e) {
+      if (k >= 8 || !e || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e
+      await saveSleep(40 * (k + 1))
+    }
+  }
+}
+
+/**
+ * Give a finished temp file its real name without ever replacing a file: a hard link fails when the name exists
+ * (EEXIST); drives without hard links (FAT / exFAT sticks, some shares) rename after checking the name is free.
+ */
+async function claimSaveName(fsp, part, target) {
+  try {
+    await fsp.link(part, target)
+    await fsp.unlink(part).catch(() => undefined)
+    return
+  } catch (e) {
+    if (e && e.code === 'EEXIST') throw e
+  }
+  if (!(await savePathFree(fsp, target))) throw saveError('EEXIST')
+  await renameSaveFile(fsp, part, target)
+}
+
+/**
+ * Write files into `dir` without overwriting anything: the same " (n)" for the whole group (video + .txt stay
+ * matched). Each file is written to a ".part" file first and only then given its name, so an app closed in the middle
+ * never leaves a cut video under the real name. On any failure the files of this attempt are removed again.
+ */
+async function writeGroupExclusive(dir, files, fsp, pathMod) {
+  for (let n = 1; n < 1000; n++) {
+    const names = files.map((f) => numberedSaveName(f.name, n))
+    let free = true
+    for (const x of names) if (!(await savePathFree(fsp, pathMod.join(dir, x)))) free = false
+    if (!free) continue
+    const written = []
+    let part = null
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const target = pathMod.join(dir, names[i])
+        if (!isDirectChild(dir, target, pathMod)) throw saveError('EINVAL', 'bad name')
+        part = await writeSavePart(fsp, target, saveFileData(files[i]))
+        await claimSaveName(fsp, part, target)
+        part = null
+        written.push(target)
+      }
+      return names
+    } catch (e) {
+      // Only what this attempt created goes (its names did not exist before it).
+      if (part) await fsp.unlink(part).catch(() => undefined)
+      for (const w of written) await fsp.unlink(w).catch(() => undefined)
+      if (e && e.code === 'EEXIST') continue
+      throw e
+    }
+  }
+  throw saveError('ENAMETOOLONG', 'no free name')
+}
+
+/** Replace `target` (the user confirmed it in the save dialog) all at once: never left half old, half new. */
+async function writeSaveReplacing(fsp, target, data) {
+  const part = await writeSavePart(fsp, target, data)
+  try {
+    await renameSaveFile(fsp, part, target)
+  } catch (e) {
+    await fsp.unlink(part).catch(() => undefined)
+    throw e
+  }
 }
 // </save-rules>
 
@@ -1007,38 +1136,12 @@ function fsErrorText(e) {
   }
 }
 
-const fileData = (f) => (f.bytes ? Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength) : f.text)
-
 async function isDirectory(p) {
   try {
     return (await fs.promises.stat(p)).isDirectory()
   } catch {
     return false
   }
-}
-
-/** Write files into `dir` without overwriting anything: the same " (n)" for the whole group (video + .txt stay matched). */
-async function writeGroupExclusive(dir, files) {
-  for (let n = 1; n < 1000; n++) {
-    const names = files.map((f) => numberedSaveName(f.name, n))
-    if (names.some((x) => fs.existsSync(path.join(dir, x)))) continue
-    const written = []
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const target = path.join(dir, names[i])
-        if (!isDirectChild(dir, target, path)) throw Object.assign(new Error('bad name'), { code: 'EINVAL' })
-        await fs.promises.writeFile(target, fileData(files[i]), { flag: 'wx' })
-        written.push(target)
-      }
-      return names
-    } catch (e) {
-      // Only files created by this attempt ('wx': they did not exist) are removed again.
-      for (const w of written) await fs.promises.unlink(w).catch(() => undefined)
-      if (e && e.code === 'EEXIST') continue
-      throw e
-    }
-  }
-  throw Object.assign(new Error('no free name'), { code: 'ENAMETOOLONG' })
 }
 
 async function filesPickFolder(win) {
@@ -1075,7 +1178,7 @@ async function filesWriteToFolder(args) {
   const checked = checkSaveFiles(args.files)
   if (checked.error) return fileError('bad-request', checked.error)
   try {
-    return { ok: true, names: await writeGroupExclusive(dir, checked.files) }
+    return { ok: true, names: await writeGroupExclusive(dir, checked.files, fs.promises, path) }
   } catch (e) {
     return fileError(e && e.code === 'ENOENT' ? 'missing' : 'write-failed', fsErrorText(e))
   }
@@ -1111,11 +1214,11 @@ async function filesSaveAs(win, args) {
   const targetDir = path.dirname(target)
   try {
     if (target === chosen) {
-      // The user confirmed this exact file in the dialog (it asks before replacing one): plain write.
-      await fs.promises.writeFile(target, fileData(primary))
+      // The user confirmed this exact file in the dialog (it asks before replacing one): replaced all at once.
+      await writeSaveReplacing(fs.promises, target, saveFileData(primary))
     } else {
       // The extension was added here, after the dialog: that file was never confirmed, so it is not overwritten.
-      const [written] = await writeGroupExclusive(targetDir, [{ ...primary, name: path.basename(target) }])
+      const [written] = await writeGroupExclusive(targetDir, [{ ...primary, name: path.basename(target) }], fs.promises, path)
       target = path.join(targetDir, written)
     }
     const names = [path.basename(target)]
@@ -1123,7 +1226,7 @@ async function filesSaveAs(win, args) {
       const name = companionSaveName(target, f.name, path)
       if (!name) continue
       // Companions never overwrite: "<chosen name>.txt", else "<chosen name> (2).txt"…
-      const [written] = await writeGroupExclusive(targetDir, [{ ...f, name }])
+      const [written] = await writeGroupExclusive(targetDir, [{ ...f, name }], fs.promises, path)
       names.push(written)
     }
     await storeSaveState({ ...loadSaveState(), lastSaveDir: targetDir })

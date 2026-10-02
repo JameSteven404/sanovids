@@ -12,15 +12,16 @@ import { takeFiles, useDownloadPrefs } from './lib/downloads'
 import {
   canUseFolders,
   checkFolderAccess,
+  markWaiting,
   noteFolderSaved,
   pickFolderLocation,
   rememberFolderHandle,
   requestFolderAccess,
   revealFolder,
   setFolderBusy,
-  setFolderPending,
   UNSUPPORTED_TEXT,
   useFolderStatus,
+  waitingTakes,
   wasSavedTo,
   writeToFolder,
 } from './lib/saveFolders'
@@ -33,24 +34,24 @@ const takeOf = (id: string) => useRuns.getState().takes.find((t) => t.id === id)
 
 /** `folderId:takeId` saved (or being saved) automatically this session: a finished take is never auto-saved twice. */
 const autoSaved = new Set<string>()
-/** Saves that could not be written yet (permission to give again, folder to choose again): folder id → take ids. */
-const waiting = new Map<string, Set<string>>()
+// Saves that could not be written yet (permission to give again, folder to choose again) wait in lib/saveFolders
+// (waitingTakes / markWaiting): kept per browser / computer, so a reload or a restart does not lose them.
 /** The "chờ lưu" toast shown per folder (one at a time, not one per finished video). */
 const waitingToast = new Map<string, number>()
+/** Folders whose waiting saves are being written by this tab (a click and the node's own check never run twice). */
+const flushing = new Set<string>()
+/** `folderId:takeId` being written by this tab right now (also where Web Locks are missing). */
+const inFlight = new Set<string>()
 
-function addWaiting(folderId: string, takeId: string) {
-  const set = waiting.get(folderId) ?? new Set<string>()
-  set.add(takeId)
-  waiting.set(folderId, set)
-  setFolderPending(folderId, set.size)
-}
-function dropWaiting(folderId: string, takeId: string) {
-  const set = waiting.get(folderId)
-  if (!set?.delete(takeId)) return
-  if (!set.size) waiting.delete(folderId)
-  setFolderPending(folderId, set.size)
-}
 const toastShown = (id: number | undefined) => id !== undefined && useUI.getState().toasts.some((t) => t.id === id)
+
+/** Nothing waits for this folder any more: its "Chưa lưu được … [Chọn thư mục]" toast goes away. */
+function clearWaitingToast(folderId: string) {
+  if (waitingTakes(folderId).length) return
+  const id = waitingToast.get(folderId)
+  waitingToast.delete(folderId)
+  if (id !== undefined) useUI.getState().dismissToast(id)
+}
 
 // ---------------- saving ----------------
 export interface FolderSaveOptions {
@@ -59,10 +60,25 @@ export interface FolderSaveOptions {
 }
 
 /**
+ * Saves into one folder run one at a time, across tabs too (Web Locks): a save noted as waiting while it is written is
+ * never written a second time by another tab or by the node's own check (they read the waiting list inside the lock).
+ */
+async function withFolderLock<T>(folderId: string, fn: () => Promise<T>): Promise<T> {
+  const locks = (globalThis.navigator as { locks?: LockManager } | undefined)?.locks
+  if (!locks?.request) return fn()
+  return locks.request(`sanovids:folder-save:${folderId}`, () => fn())
+}
+
+/**
  * Copy one finished take (video + prompt .txt when "kèm prompt" is on) into a folder node's folder, never
  * overwriting. Says what happened in a toast. Returns true when the files were written.
  */
 export async function saveTakeToFolder(takeId: string, folderId: string, opts: FolderSaveOptions = {}): Promise<boolean> {
+  return withFolderLock(folderId, () => saveNow(takeId, folderId, opts))
+}
+
+/** saveTakeToFolder, inside the folder's lock. */
+async function saveNow(takeId: string, folderId: string, opts: FolderSaveOptions): Promise<boolean> {
   const folder = folderOf(folderId)
   const take = takeOf(takeId)
   if (!folder || !take || take.status !== 'completed') return false
@@ -72,6 +88,11 @@ export async function saveTakeToFolder(takeId: string, folderId: string, opts: F
     toast(`Không tìm thấy file video của ${what} để lưu vào “${folder.name}”.`, { tone: 'error' })
     return false
   }
+  // Noted as waiting while it is written: if the app is closed in the middle, it is written again later.
+  const key = `${folderId}:${takeId}`
+  const wasWaiting = waitingTakes(folderId).includes(takeId)
+  markWaiting(folderId, [takeId], true)
+  inFlight.add(key)
   setFolderBusy(folderId, true)
   let res: Awaited<ReturnType<typeof writeToFolder>>
   try {
@@ -79,20 +100,22 @@ export async function saveTakeToFolder(takeId: string, folderId: string, opts: F
   } catch (e) {
     res = { ok: false, access: 'ok', message: (e as Error)?.message || String(e) }
   } finally {
+    inFlight.delete(key)
     setFolderBusy(folderId, false)
   }
   const label = `${what}${files.length > 1 ? ' + prompt' : ''}`
   if (res.ok) {
-    dropWaiting(folderId, takeId)
+    markWaiting(folderId, [takeId], false)
+    clearWaitingToast(folderId)
     noteFolderSaved(folderId, res.names, takeId)
     const renamed = res.names[0] && res.names[0] !== files[0].name ? ` (tên “${res.names[0]}” vì đã có file trùng tên)` : ''
     toast(`Đã lưu ${label} vào thư mục “${folder.name}”${renamed}.`, { tone: 'success' })
     return true
   }
   if (res.access === 'ask' || res.access === 'pick' || res.access === 'missing') {
-    addWaiting(folderId, takeId)
+    // Stays in the waiting list: saved by "Cấp lại quyền" / "Chọn lại thư mục", or when the folder is back.
     if (toastShown(waitingToast.get(folderId))) return false
-    const n = waiting.get(folderId)?.size ?? 1
+    const n = waitingTakes(folderId).length || 1
     const ask = res.access === 'ask'
     waitingToast.set(
       folderId,
@@ -111,20 +134,53 @@ export async function saveTakeToFolder(takeId: string, folderId: string, opts: F
     )
     return false
   }
+  // Another problem (disk full…): said now, not retried by itself (unless it was already waiting before).
+  if (!wasWaiting) markWaiting(folderId, [takeId], false)
   toast(`Không lưu được ${label} vào “${folder.name}”: ${res.message}`, { tone: 'error', ms: 9000 })
   return false
 }
 
-/** Save what waited for this folder (after the permission was given back or the folder chosen again). */
-async function flushWaiting(folderId: string) {
-  const ids = [...(waiting.get(folderId) ?? [])]
-  for (const id of ids) {
-    if (!takeOf(id)) {
-      dropWaiting(folderId, id)
-      continue
-    }
-    if (!(await saveTakeToFolder(id, folderId))) break
+/** Waiting saves of videos that are gone (deleted, or not in this project) are dropped. */
+function pruneWaiting(folderId: string) {
+  const gone = waitingTakes(folderId).filter((id) => takeOf(id)?.status !== 'completed')
+  if (gone.length) markWaiting(folderId, gone, false)
+  clearWaitingToast(folderId)
+}
+
+/**
+ * Save what waited for this folder (after the permission was given back, the folder chosen again, or when the node
+ * finds the folder writable again). `auto`: no permission prompt (not after a click). Runs after the saves into the
+ * folder being written (this tab or another), which end their own wait.
+ */
+async function flushWaiting(folderId: string, auto = false) {
+  if (flushing.has(folderId)) return
+  flushing.add(folderId)
+  try {
+    await withFolderLock(folderId, async () => {
+      pruneWaiting(folderId)
+      // Read again inside the lock: another tab may have saved some meanwhile.
+      for (const id of waitingTakes(folderId)) {
+        if (inFlight.has(`${folderId}:${id}`)) continue
+        if (!(await saveNow(id, folderId, { auto }))) break
+      }
+    })
+  } finally {
+    flushing.delete(folderId)
   }
+}
+
+/**
+ * A folder node is shown (or points at another folder): check it can be written, forget waiting saves of videos that
+ * are gone, and save the waiting ones when the folder is writable again (desktop: the drive is back; web: the
+ * permission was kept) — they also wait across a reload or a restart.
+ */
+export async function refreshFolderNode(folderId: string): Promise<void> {
+  const folder = folderOf(folderId)
+  if (!folder) return
+  const access = await checkFolderAccess(folder)
+  if (!folderOf(folderId)) return
+  pruneWaiting(folderId)
+  if (access === 'ok' && waitingTakes(folderId).length) await flushWaiting(folderId, true)
 }
 
 /** A take just finished: save it into every folder it or its scene is wired into. */
@@ -316,8 +372,9 @@ export async function chooseFolderPlace(folderId: string): Promise<boolean> {
     return false
   }
   if (picked.handle) await rememberFolderHandle(folderId, picked.handle)
-  // Web keeps the path a desktop build stored (the same project may be opened there again).
-  useProject.getState().updateFolder(folderId, { name: picked.name, path: picked.path ?? folder.path })
+  // Web keeps the path a desktop build stored (the same project may be opened there again). Not an undo step: the
+  // browser's folder handle just stored is not undoable either (Ctrl+Z must not show the old name while saves go here).
+  useProject.getState().setFolderPlace(folderId, { name: picked.name, path: picked.path ?? folder.path })
   const now = folderOf(folderId)
   if (now) await checkFolderAccess(now)
   useFolderStatus.getState().patch(folderId, { error: null })

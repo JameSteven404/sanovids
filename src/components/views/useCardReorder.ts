@@ -352,6 +352,12 @@ function createReorder(env: { current: ReorderEnv }, setTarget: (t: DropTarget |
       const grid = env.current.gridRef.current
       if (grid) delete grid.dataset.reordering
       setTarget(null)
+      // The lifted card and the shifted ones go back at once (also when cards were added / removed: the slide below
+      // only looks at the cards of the new list).
+      const touched = [...new Set([s.el, ...s.cards])].filter((c) => c.style.transform)
+      instant(touched, () => touched.forEach((c) => (c.style.transform = '')))
+      const at = next.indexOf(s.id)
+      if (s.phase === 'drag' && at >= 0) env.current.onCancel?.(s.id, at)
     }
     const key = next.join('|')
     const p = pending && pending.key === key ? pending : null

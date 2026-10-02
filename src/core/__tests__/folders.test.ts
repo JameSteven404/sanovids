@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { folderBaseName, folderMapOf, folderTargetsFor, isLinked, normalizeFolders, shortPath, withLink } from '../folders'
+import { dropFolderLinks, folderBaseName, folderMapOf, foldersForCopy, folderTargetsFor, isLinked, normalizeFolders, shortPath, withLink } from '../folders'
 import { migrateProject, migrateTake } from '../migrate'
 import type { SaveFolder } from '../types'
 
@@ -88,6 +88,47 @@ describe('wires into a folder', () => {
     expect(folderTargetsFor(fs, { id: 't2', sceneId: 's1' }).map((f) => f.id)).toEqual(['a', 'c'])
     expect(folderTargetsFor(fs, { id: 't3', sceneId: 's2' })).toEqual([])
     expect(folderTargetsFor(undefined, { id: 't1', sceneId: 's1' })).toEqual([])
+  })
+
+  it('forgets links to deleted takes / scenes (same array when nothing changes)', () => {
+    const fs = [folder({ id: 'a', takes: ['t1', 't2'], autoScenes: ['s1'] }), folder({ id: 'b', takes: ['t1'] }), folder({ id: 'c', autoScenes: ['s2'] })]
+    const out = dropFolderLinks(fs, { takes: new Set(['t1']) })!
+    expect(out[0].takes).toEqual(['t2'])
+    expect(out[0].autoScenes).toEqual(['s1'])
+    expect(out[1]).not.toHaveProperty('takes')
+    expect(out[2]).toBe(fs[2])
+    const noScenes = dropFolderLinks(fs, { scenes: new Set(['s1', 's2']) })!
+    expect(noScenes[0]).not.toHaveProperty('autoScenes')
+    expect(noScenes[2]).not.toHaveProperty('autoScenes')
+    expect(dropFolderLinks(fs, { takes: new Set(['t9']), scenes: new Set(['s9']) })).toBe(fs)
+    expect(dropFolderLinks(fs, {})).toBe(fs)
+    expect(dropFolderLinks(undefined, { takes: new Set(['t1']) })).toBeUndefined()
+  })
+
+  it('a copied project gets new folder ids and no take links; a file from elsewhere also no path', () => {
+    const fs = [folder({ id: 'f1', takes: ['t1'], autoScenes: ['s1'] }), folder({ id: 'f2', path: null })]
+    const dup = foldersForCopy(fs, { keepPath: true, taken: new Set(['s1']) })
+    expect(dup.folders).toHaveLength(2)
+    expect(dup.folders![0].id).not.toBe('f1')
+    expect(dup.folders![0]).toMatchObject({ name: 'Phim', path: 'C:\\Videos\\Phim', autoScenes: ['s1'] })
+    expect(dup.folders![0]).not.toHaveProperty('takes')
+    expect(new Set(dup.folders!.map((f) => f.id)).size).toBe(2)
+    expect([...dup.ids]).toEqual([
+      ['f1', dup.folders![0].id],
+      ['f2', dup.folders![1].id],
+    ])
+    const imported = foldersForCopy(fs, { keepPath: false })
+    expect(imported.folders!.every((f) => f.path === null)).toBe(true)
+    expect(fs[0].path).toBe('C:\\Videos\\Phim') // the original is not touched
+    expect(foldersForCopy(undefined, { keepPath: true })).toEqual({ folders: undefined, ids: new Map() })
+  })
+
+  it('a long link list keeps its most recent links', () => {
+    const takes = Array.from({ length: 1005 }, (_, i) => `t${i}`)
+    const [f] = normalizeFolders([{ id: 'f1', name: 'x', takes }])
+    expect(f.takes).toHaveLength(1000)
+    expect(f.takes![0]).toBe('t5')
+    expect(f.takes![999]).toBe('t1004')
   })
 
   it('looks folders up by id (cached per array)', () => {

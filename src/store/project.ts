@@ -7,7 +7,7 @@
 import { temporal } from 'zundo'
 import { create } from 'zustand'
 import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
-import { FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
+import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
@@ -458,8 +458,11 @@ export interface ProjectState {
   // folder nodes
   /** Add a folder node (with its first wires, in the same undo step). Returns its id. */
   addFolder: (folder: NewFolder) => string
-  /** Point a folder node at another folder (pick it again) or rename it. */
-  updateFolder: (id: string, patch: Partial<Pick<SaveFolder, 'name' | 'path'>>) => void
+  /**
+   * "Chọn lại thư mục": point a folder node at another folder (its name and path). Not an undo step: applied to the
+   * whole undo history too (the folder access it goes with is not undoable).
+   */
+  setFolderPlace: (id: string, place: Pick<SaveFolder, 'name' | 'path'>) => void
   /** Wire takes ('save') or scenes ('autosave') into a folder (one undo step). Returns the ids that were not wired yet. */
   linkFolder: (folderId: string, kind: FolderLinkKind, fromIds: string[]) => string[]
   /** Cut one wire into a folder. */
@@ -487,6 +490,36 @@ export const useProject = create<ProjectState>()(
   temporal(
     (set, get) => {
       const mutate = (fn: (p: Project) => Project) => set((s) => ({ project: touch(fn(s.project)) }))
+      /**
+       * A change that is not an edit (no undo step) and that no undo / redo may take back: applied to the current project
+       * and to every snapshot of the history. `fn` returns its input when it changes nothing.
+       */
+      const applyEverywhere = (fn: (p: Project) => Project) => {
+        const history = useProject.temporal.getState()
+        const onSnap = (snap: Partial<ProjectState>): Partial<ProjectState> => {
+          if (!snap.project) return snap
+          const next = fn(snap.project)
+          return next === snap.project ? snap : { ...snap, project: next }
+        }
+        const pastStates = history.pastStates.map(onSnap)
+        const futureStates = history.futureStates.map(onSnap)
+        const changed = (a: Partial<ProjectState>[], b: Partial<ProjectState>[]) => a.some((x, i) => x !== b[i])
+        if (changed(pastStates, history.pastStates) || changed(futureStates, history.futureStates)) {
+          useProject.temporal.setState({ pastStates, futureStates })
+        }
+        const p = get().project
+        const next = fn(p)
+        if (next !== p) {
+          history.pause()
+          try {
+            set({ project: touch(next) })
+          } finally {
+            history.resume()
+          }
+        }
+        // A typing burst must not continue across it.
+        lastKey = null
+      }
       const mapScenes = (ids: string[], fn: (s: Scene, p: Project) => Scene) => {
         const idSet = new Set(ids)
         mutate((p) => ({ ...p, scenes: p.scenes.map((s) => (idSet.has(s.id) ? fn(s, p) : s)) }))
@@ -674,7 +707,10 @@ export const useProject = create<ProjectState>()(
           }),
         removeScenes: (ids) => {
           const dead = new Set(ids)
-          mutate((p) => ({ ...p, scenes: renumber(p.scenes.filter((s) => !dead.has(s.id))) }))
+          mutate((p) => {
+            const folders = dropFolderLinks(p.folders, { scenes: dead })
+            return { ...p, scenes: renumber(p.scenes.filter((s) => !dead.has(s.id))), ...(folders !== p.folders ? { folders } : {}) }
+          })
         },
         duplicateScenes: (ids) => {
           const p = get().project
@@ -848,42 +884,25 @@ export const useProject = create<ProjectState>()(
           const dead = new Set(takeIds)
           if (!dead.size) return
           const uses = (s: Scene) => s.videoRefs.some((t) => dead.has(t))
-          const clean = (pp: Project): Project =>
-            pp.scenes.some(uses)
-              ? {
-                  ...pp,
-                  scenes: pp.scenes.map((s) =>
-                    uses(s) ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video') : s,
-                  ),
-                }
-              : pp
+          const clean = (pp: Project): Project => {
+            let out = pp
+            if (pp.scenes.some(uses)) {
+              out = {
+                ...out,
+                scenes: pp.scenes.map((s) =>
+                  uses(s) ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video') : s,
+                ),
+              }
+            }
+            // Folder nodes forget the deleted videos too ("N video đã nối" counts only what is there).
+            const folders = dropFolderLinks(pp.folders, { takes: dead })
+            if (folders !== pp.folders) out = { ...out, folders }
+            return out
+          }
           // Deleting a take is not undoable, so dropping its references must not become an undo step either, and no
           // undo/redo may bring them back (a @video pointing at nothing blocks the scene): every snapshot in the
           // history is cleaned the same way, not only the current project.
-          const history = useProject.temporal.getState()
-          const cleanSnap = (snap: Partial<ProjectState>): Partial<ProjectState> => {
-            if (!snap.project) return snap
-            const next = clean(snap.project)
-            return next === snap.project ? snap : { ...snap, project: next }
-          }
-          const pastStates = history.pastStates.map(cleanSnap)
-          const futureStates = history.futureStates.map(cleanSnap)
-          const changed = (a: Partial<ProjectState>[], b: Partial<ProjectState>[]) => a.some((x, i) => x !== b[i])
-          if (changed(pastStates, history.pastStates) || changed(futureStates, history.futureStates)) {
-            useProject.temporal.setState({ pastStates, futureStates })
-          }
-          const p = get().project
-          const next = clean(p)
-          if (next !== p) {
-            history.pause()
-            try {
-              set({ project: touch(next) })
-            } finally {
-              history.resume()
-            }
-          }
-          // A typing burst must not continue across the deletion.
-          lastKey = null
+          applyEverywhere(clean)
         },
 
         // ---------------- folder nodes ----------------
@@ -898,12 +917,11 @@ export const useProject = create<ProjectState>()(
           mutate((pp) => ({ ...pp, folders: [...(pp.folders ?? []), next] }))
           return id
         },
-        updateFolder: (id, patch) => {
-          const cur = get().project.folders?.find((f) => f.id === id)
-          if (!cur) return
-          const next = { ...cur, ...patch }
-          if (next.name === cur.name && next.path === cur.path) return
-          mutate((p) => ({ ...p, folders: (p.folders ?? []).map((f) => (f.id === id ? { ...f, ...patch } : f)) }))
+        setFolderPlace: (id, place) => {
+          const at = (f: SaveFolder) => (f.id === id && (f.name !== place.name || f.path !== place.path) ? { ...f, name: place.name, path: place.path } : f)
+          // Where a node writes is not an edit: the browser keeps the folder itself (its handle) outside the project and
+          // the undo history, so no undo / redo may show the old folder's name while saves go to the new one.
+          applyEverywhere((p) => (p.folders?.some((f) => at(f) !== f) ? { ...p, folders: p.folders.map(at) } : p))
         },
         linkFolder: (folderId, kind, fromIds) => {
           const cur = get().project.folders?.find((f) => f.id === folderId)
@@ -973,6 +991,8 @@ export const useProject = create<ProjectState>()(
                 .filter((f) => !deadFolders.has(f.id))
                 .map((f) => folderLinks.reduce((acc, l) => (l.folderId === f.id ? withLink(acc, l.kind, l.from, false) : acc), f))
             }
+            // A deleted scene's auto-save wires go with it (Undo brings both back).
+            folders = dropFolderLinks(folders, { scenes: dead })
             return {
               ...p,
               assets: hide.size ? p.assets.map((a) => (hide.has(a.id) ? { ...a, position: null } : a)) : p.assets,

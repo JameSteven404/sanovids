@@ -1183,9 +1183,11 @@
 }
 
 /* ---------- settings: "Cơ bản / Nâng cao" switch + search (sticky toolbar at the top of the sheet body) ---------- */
-/* a steady sheet: it does not shrink and jump while search results come and go */
-.dg-set {
-  min-height: min(520px, 62vh);
+/* a steady sheet: one fixed height while it is open, so it never shrinks / re-centres (and moves the search field
+   under the caret) while search results come and go or the level changes; the body scrolls inside it */
+.modal:has(> .modal-body > .dg-set) {
+  height: min(860px, calc(100vh - 48px));
+  height: min(860px, calc(100dvh - 48px));
 }
 /* a control reached with Tab never hides under the sticky bar */
 .modal-body:has(> .dg-set) {

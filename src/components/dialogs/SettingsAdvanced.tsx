@@ -1,7 +1,7 @@
 // Settings → "Nâng cao": motion & toasts, file names & .zip, side-panel layout, backup / restore of the settings,
 // the demo provider and the demo wallet (the canvasapp gateway is GatewaySection.tsx).
 import { Braces, FileDown, FileUp, FlaskConical, LayoutPanelLeft, Plus, RotateCcw, TriangleAlert } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type FocusEvent } from 'react'
 import { DEFAULT_NAME_TEMPLATE, checkNameTemplate, nameDate, nameTime, NAME_TOKENS, renderNameTemplate, type NameValues } from '../../core/nameTemplate'
 import { MOTION_LABEL, MOTION_LEVELS, systemReducedMotion, useCanvasPrefs, useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
 import { DEMO_CREDIT_HINT, DEMO_CREDITS_DEFAULT, formatCreditNumber, formatCredits } from '../../lib/credits'
@@ -116,13 +116,24 @@ export function NameTemplateSetting({ label, hint }: RowProps) {
   const insert = (token: string) => {
     const el = inputRef.current
     const text = `{${token}}`
-    const start = el?.selectionStart ?? value.length
-    const end = el?.selectionEnd ?? value.length
-    change(value.slice(0, start) + text + value.slice(end))
+    // The field's own text (a separator just typed at the end is not trimmed away), with its caret.
+    const cur = el ? el.value : value
+    const start = Math.min(el?.selectionStart ?? cur.length, cur.length)
+    const end = Math.min(el?.selectionEnd ?? cur.length, cur.length)
+    change(cur.slice(0, start) + text + cur.slice(end))
     requestAnimationFrame(() => {
       el?.focus()
       el?.setSelectionRange(start + text.length, start + text.length)
     })
+  }
+  /**
+   * Leaving the field (or a chip): a valid text goes back to following the saved template (trimmed); an invalid one
+   * stays with its error. Moving between the field and its chips keeps the draft as typed (" - " before a chip).
+   */
+  const onLeave = (e: FocusEvent<HTMLElement>) => {
+    const to = e.relatedTarget
+    if (to instanceof Element && (to === inputRef.current || to.closest('.dg-name-tpl .dg-token'))) return
+    if (checkNameTemplate(draft).ok) setDraft(null)
   }
 
   const sample = sampleValues(projectName || 'Phim ngắn')
@@ -163,15 +174,21 @@ export function NameTemplateSetting({ label, hint }: RowProps) {
           aria-invalid={!check.ok}
           aria-describedby={`${id}-help ${id}-msg`}
           onChange={(e) => change(e.target.value)}
-          onBlur={() => {
-            // A valid text goes back to following the saved template (trimmed); an invalid one stays with its error.
-            if (checkNameTemplate(draft).ok) setDraft(null)
-          }}
+          onBlur={onLeave}
         />
       </div>
       <div className="dg-tokens" role="group" aria-label="Chèn mã vào mẫu tên">
         {NAME_TOKENS.map((t) => (
-          <button key={t.id} type="button" className="dg-token mono" onClick={() => insert(t.id)} title={`${t.label} — ví dụ “${t.example}”. Bấm để chèn.`}>
+          <button
+            key={t.id}
+            type="button"
+            className="dg-token mono"
+            // A mouse press keeps the focus (and the caret) in the field: the chip inserts where the caret is.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => insert(t.id)}
+            onBlur={onLeave}
+            title={`${t.label} — ví dụ “${t.example}”. Bấm để chèn.`}
+          >
             {`{${t.id}}`}
           </button>
         ))}

@@ -11,8 +11,9 @@ export type FolderLinkKind = 'save' | 'autosave'
 
 const MAX_LINKS = 1000
 const isXY = (v: unknown): v is XY => !!v && typeof v === 'object' && Number.isFinite((v as XY).x) && Number.isFinite((v as XY).y)
+/** Link list without duplicates; past MAX_LINKS the most recent links (the end of the list) are kept. */
 const uniqueStrings = (v: unknown, keep: (s: string) => boolean = () => true): string[] =>
-  Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string' && !!x && keep(x)))].slice(0, MAX_LINKS) : []
+  Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string' && !!x && keep(x)))].slice(-MAX_LINKS) : []
 
 /** "C:\Users\me\Videos\Phim A" / "/home/me/Phim A/" → "Phim A" ('' when there is none). */
 export function folderBaseName(path: string): string {
@@ -54,6 +55,55 @@ export function normalizeFolders(raw: unknown, taken: ReadonlySet<string> = new 
     out.push(folder)
   })
   return out
+}
+
+/**
+ * Folder nodes without the links to takes / scenes that are gone (deleted videos, deleted scenes). The same array when
+ * nothing changes; an emptied list loses its key (like withLink).
+ */
+export function dropFolderLinks(
+  folders: readonly SaveFolder[] | undefined,
+  dead: { takes?: ReadonlySet<string>; scenes?: ReadonlySet<string> },
+): SaveFolder[] | undefined {
+  if (!folders) return folders
+  const takesGone = (f: SaveFolder) => !!dead.takes?.size && !!f.takes?.some((t) => dead.takes!.has(t))
+  const scenesGone = (f: SaveFolder) => !!dead.scenes?.size && !!f.autoScenes?.some((s) => dead.scenes!.has(s))
+  if (!folders.some((f) => takesGone(f) || scenesGone(f))) return folders as SaveFolder[]
+  return folders.map((f) => {
+    if (!takesGone(f) && !scenesGone(f)) return f
+    const out: SaveFolder = { ...f }
+    const takes = takesGone(f) ? f.takes!.filter((t) => !dead.takes!.has(t)) : f.takes
+    const autoScenes = scenesGone(f) ? f.autoScenes!.filter((s) => !dead.scenes!.has(s)) : f.autoScenes
+    if (takes?.length) out.takes = takes
+    else delete out.takes
+    if (autoScenes?.length) out.autoScenes = autoScenes
+    else delete out.autoScenes
+    return out
+  })
+}
+
+/**
+ * Folder nodes for a copy of the project (Duplicate, import of a .sanovids.json): every node gets a new id, so the copy
+ * never shares the original's folder access, waiting saves or counters (all kept per folder id); links to takes go
+ * (takes are not copied); `keepPath: false` also forgets where the folder was on the computer (a file from elsewhere
+ * must never choose where this computer writes: the node asks "Chọn lại thư mục"). `ids`: old id → new id.
+ */
+export function foldersForCopy(
+  folders: readonly SaveFolder[] | undefined,
+  opts: { keepPath: boolean; taken?: ReadonlySet<string> },
+): { folders: SaveFolder[] | undefined; ids: Map<string, string> } {
+  const ids = new Map<string, string>()
+  if (!folders?.length) return { folders: folders as SaveFolder[] | undefined, ids }
+  const used = new Set(opts.taken ?? [])
+  const out = folders.map((f) => {
+    let id = newId('fld')
+    while (used.has(id)) id = newId('fld')
+    used.add(id)
+    ids.set(f.id, id)
+    const { takes: _takes, ...rest } = f
+    return { ...rest, id, path: opts.keepPath ? f.path : null }
+  })
+  return { folders: out, ids }
 }
 
 /** Is `fromId` wired into the folder as `kind`? */

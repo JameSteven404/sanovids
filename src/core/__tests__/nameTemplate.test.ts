@@ -32,6 +32,21 @@ describe('renderNameTemplate', () => {
     expect(renderNameTemplate('{scene} ({title})', v)).toBe('S03 (Ánh sáng trong hang)')
   })
 
+  it('an empty token right after an opening bracket takes the separator after it', () => {
+    const noTitle = { ...v, title: '' }
+    expect(renderNameTemplate('{scene} ({title}, {model}) {take}', noTitle)).toBe('S03 (Seedance 2.5) T2')
+    expect(renderNameTemplate('{scene} [{title} - {model}] {take}', noTitle)).toBe('S03 [Seedance 2.5] T2')
+    expect(renderNameTemplate('{scene} ({title}, {model}) {take}', v)).toBe('S03 (Ánh sáng trong hang, Seedance 2.5) T2')
+    expect(renderNameTemplate('{scene} ({model}, {title}) {take}', noTitle)).toBe('S03 (Seedance 2.5) T2')
+  })
+
+  it('brackets left empty by several empty tokens go away; brackets inside a value stay', () => {
+    const none = { ...v, title: '', model: '' }
+    expect(renderNameTemplate('{scene} ({title}, {model}) {take}', none)).toBe('S03 T2')
+    expect(renderNameTemplate('{scene} [{title}{model}]', none)).toBe('S03')
+    expect(renderNameTemplate('{scene} ({title}) {model}', { ...v, title: 'Cảnh (bản nháp) ()', model: '' })).toBe('S03 (Cảnh (bản nháp) ())')
+  })
+
   it('values never break the file name', () => {
     expect(renderNameTemplate('{scene} - {title}', { ...v, title: 'A/B: "C"?' })).toBe('S03 - A-B- -C--')
     expect(renderNameTemplate('{title}', { title: '..\\..\\x' })).toBe('-..-x')

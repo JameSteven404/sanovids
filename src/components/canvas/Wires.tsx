@@ -20,7 +20,7 @@ import { canvasEvents, WIRES_CUT_EVENT, type WireCutDetail } from '../../actions
 import { motionLevel, useCanvasPrefs, useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
 import { useRuns } from '../../store/runs'
 import { takeIndexOf } from './canvasModel'
-import { pickNodeAt, snapHandleFor, splitWirePath, wireDragColor, wireVerdict, type Pt, type WireSource, type WireSourceType } from './wireFx'
+import { isWireReconnecting, pickNodeAt, snapHandleFor, splitWirePath, wireDragColor, wireVerdict, type Pt, type WireSource, type WireSourceType } from './wireFx'
 
 const SOURCE_TYPES: readonly string[] = ['asset', 'take', 'scene', 'folder']
 
@@ -48,7 +48,7 @@ export function WireConnectionLine({
   } else {
     // Released anywhere on a card also links (onConnectEnd hit-tests the card): judge the card under the pointer.
     const over = pickNodeAt(store.getState().nodeLookup.values(), end, fromNode.id)
-    const src: WireSource = { type, id: fromNode.id }
+    const src: WireSource = { type, id: fromNode.id, reconnect: isWireReconnecting() }
     if (type === 'take') {
       const take = takeIndexOf(useRuns.getState().takes).byId.get(fromNode.id)
       src.takeReady = take?.status === 'completed'
