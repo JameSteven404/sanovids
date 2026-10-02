@@ -767,7 +767,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
           const job = byId.get(jobId)
           if (job) {
             misses.delete(remoteId)
-            out.push(mapJobStatus(remoteId, job))
+            out.push(mapJobStatus(remoteId, job, deps.id === 'dev' ? 'canvasapp giả lập' : 'canvasapp'))
             continue
           }
           const n = (misses.get(remoteId) ?? 0) + 1

@@ -246,7 +246,7 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     server.setJobFaults({ failNext: 'Nội dung vi phạm chính sách (giả lập)' })
     const [t] = enqueue('s1')
     await run(20_000)
-    expect(take(t.id)).toMatchObject({ status: 'failed', error: 'canvasapp: Nội dung vi phạm chính sách (giả lập)' })
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: 'canvasapp giả lập: Nội dung vi phạm chính sách (giả lập)' })
     expect(server.balance()).toBe(1000)
     expect(useRealCredits.getState().balance).toBe(1000)
   })
