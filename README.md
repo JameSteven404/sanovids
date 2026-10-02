@@ -4,10 +4,12 @@
 
 📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)**
 
-Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. Chạy được **trên web**, **cài như app** (PWA) hoặc bằng **file `.exe` trên Windows**.
+Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. SanoVids là **ứng dụng desktop cho Windows** (file `.exe`).
+
+> 🖥️ **Chỉ còn bản app.** Từ 2026-10-02 bản web (sanovids.sanovids.workers.dev) đã **ngừng và tắt hẳn**. Mọi tính năng mới và bản sửa lỗi chỉ phát hành cho bản desktop — tải ở mục [Releases](https://github.com/JameSteven404/sanovids/releases/latest).
 
 > ℹ️ **Hai cách tạo video:**
-> - **Chế độ Phát triển** (mặc định, cả web lẫn desktop): chạy **đúng mã của cổng canvasapp thật** nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, không tốn tiền (credit dev giả lập). Có đủ đăng nhập, credit, nạp credit qua SePay giả, lịch sử credit, và **Bảng phát triển** để gây lỗi có chủ đích, xem nhật ký từng yêu cầu — dùng để làm quen và **tìm, sửa lỗi** trước khi dùng tiền thật. Xem mục [Chế độ Phát triển](#-chế-độ-phát-triển-tìm-và-sửa-lỗi).
+> - **Chế độ Phát triển** (mặc định): chạy **đúng mã của cổng canvasapp thật** nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, không tốn tiền (credit dev giả lập). Có đủ đăng nhập, credit, nạp credit qua SePay giả, lịch sử credit, và **Bảng phát triển** để gây lỗi có chủ đích, xem nhật ký từng yêu cầu — dùng để làm quen và **tìm, sửa lỗi** trước khi dùng tiền thật. Xem mục [Chế độ Phát triển](#-chế-độ-phát-triển-tìm-và-sửa-lỗi).
 > - **Cổng canvasapp.io.vn** (thử nghiệm, **chỉ bản desktop `.exe`**): tạo video thật bằng **tài khoản canvasapp của chính bạn**, trừ **credit thật**. Xem mục [Tạo video thật qua canvasapp.io.vn](#-tạo-video-thật-qua-canvasappiovn-bản-desktop).
 
 ---
@@ -122,8 +124,8 @@ Vào mục **[Releases](https://github.com/JameSteven404/sanovids/releases)** (h
 - Dữ liệu của bản desktop nằm ở `%APPDATA%\SanoVids` trên từng máy. Muốn mang dự án sang máy khác, dùng **Cài đặt → Xuất dự án** rồi **Nhập** ở máy kia.
 - Video tải về được lưu vào thư mục **Downloads**, hoặc thư mục bạn chọn trong Cài đặt.
 
-### Cài như app từ trình duyệt (PWA)
-Mở bản web bằng Chrome / Edge / Brave, rồi bấm biểu tượng **Cài đặt ứng dụng** trên thanh địa chỉ (hoặc **Cài đặt → Ứng dụng → Cài app** trong SanoVids). App có cửa sổ riêng, icon riêng và chạy được khi không có mạng.
+### Bản web / PWA (đã ngừng)
+Bản web và bản cài từ trình duyệt (PWA) **không còn được cập nhật** và địa chỉ web đã tắt. Nếu máy bạn còn biểu tượng SanoVids cài từ trình duyệt, hãy gỡ nó và dùng bản `.exe`. `npm run dev` vẫn chạy được trên máy để phát triển.
 
 ---
 
@@ -148,14 +150,14 @@ npm run dev
 | Lệnh | Tác dụng |
 |---|---|
 | `npm run dev` | Bản phát triển tại http://localhost:5180 |
-| `npm run build` | Kiểm tra kiểu và build bản chạy thật vào `dist/` (đưa lên host web tĩnh nào cũng chạy) |
+| `npm run build` | Kiểm tra kiểu và build giao diện vào `dist/` (bản desktop đóng gói thư mục này) |
 | `npm run preview` | Chạy thử bản đã build |
 | `npm run desktop` | Build rồi mở bản desktop (Electron) trên máy |
 | `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/`; bản cũ tự chuyển vào `release/ban-cu/` |
 | `npm run icons` | Tạo lại icon ứng dụng |
 | `npm run typecheck` / `npm test` | Kiểm tra TypeScript / chạy unit test |
 
-> 💾 Dữ liệu được lưu **ngay trên máy** (IndexedDB của trình duyệt hoặc của app desktop), không gửi đi đâu.
+> 💾 Dữ liệu được lưu **ngay trên máy** (trong app desktop, thư mục `%APPDATA%\SanoVids`), không gửi đi đâu.
 
 ---
 
