@@ -6,6 +6,22 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.4.2] — 2026-10-02 — Dây nối chạm đúng tâm chấm tròn
+
+🐞 **Dây nối không còn toả rộng cạnh chấm**
+- Mọi loại dây (ảnh, `@video`, khung đầu/cuối, cảnh → video, lưu và tự lưu vào Thư mục) giờ **bắt đầu và kết thúc đúng tâm chấm tròn**. Đúng trên mọi loại node, kể cả thẻ đã đổi kích thước hay thu nhỏ khi zoom xa, ở mọi mức zoom (đo lệch 0 px).
+- Cảnh nhận nhiều dây (ví dụ 10 dây `@video` vào một cảnh) không còn bị xoè thành "răng lược" cạnh chấm: các dây **chụm mượt vào một chấm**, chấm nằm đè lên đầu dây. Chọn một dây không làm cả bó nhảy chỗ.
+- Dây lúc đang kéo, chỗ hút khi rê tới, dây sau khi thả và nút nắm đầu dây đều ở cùng một điểm: thả tay ra dây không còn giật.
+- Chấm phóng to khi rê chuột / đang nối không còn làm đầu dây lệch vài px sau đó.
+
+🛠️ **Chấm nối đồng bộ, dễ bấm hơn**
+- Mọi chấm cùng một kiểu: cùng cỡ, viền màu nền, cùng hiệu ứng khi rê chuột / đang nối.
+- Chấm tham chiếu của cảnh **đổi màu theo dây đang nối vào**: xanh ngọc cho ảnh, tím cho video, hai màu khi có cả hai.
+- Dây đang chọn hoặc đang rê chuột được vẽ nổi lên trên các dây khác trong bó.
+- Bấm vào chấm không còn cắt nhầm dây, cũng không còn đổi kích thước thẻ nhầm khi thẻ đang được rê chuột / chọn. Bấm vào thân dây để cắt vẫn như cũ.
+- Chấm của node video luôn nằm giữa ảnh, kể cả khi đổi kích thước: không còn nhảy 8 px. Dây cảnh → video vẫn thẳng hàng.
+- Nhãn **ĐẦU / CUỐI** (MiniMax-H3 khung đầu/cuối) nằm ngay bên trái chấm, ngoài thẻ, không còn đè lên dòng thông số.
+
 ## [0.4.1] — 2026-10-02
 
 🛠️ **Node Thư mục gọn gàng hơn**
@@ -215,6 +231,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.4.2]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.2
 [0.4.1]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.1
 [0.4.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.3.0
