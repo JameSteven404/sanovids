@@ -13,6 +13,7 @@ import {
   autoTakePosition,
   avatarSlots,
   DEFAULT_AVATARS,
+  DOT_TOP,
   excerptChars,
   fitMedia,
   layoutTakes,
@@ -23,9 +24,13 @@ import {
   previewSize,
   promptLines,
   PROMPT_LINE_H,
+  RESIZE_DOT_GAP,
+  resizeEdgeClip,
   SCENE_CHROME,
   TAKE_CHROME,
+  takeDotTop,
   takeLayoutSig,
+  TAKE_POSTER_H,
   takeSlots,
   useCanvasLocal,
 } from '../canvasModel'
@@ -167,7 +172,56 @@ describe('take / asset media', () => {
     expect(short.w / short.h).toBeCloseTo(16 / 9, 1)
     expect(fitMedia(10, 10, TAKE_CHROME)).toEqual({ w: 0, h: 0 })
   })
+})
 
+describe('connection dots', () => {
+  it("a take's dots sit at the middle of its poster: default, resized and zoomed out", () => {
+    // Default card: the CSS 16:9 poster inside the 1px borders.
+    expect(TAKE_POSTER_H).toBeCloseTo(((LAYOUT.takeW - 2) * 9) / 16, 6)
+    expect(takeDotTop(null, false)).toBe(DOT_TOP)
+    expect(takeDotTop(null, true)).toBe(DOT_TOP)
+    expect(DOT_TOP).toBeCloseTo(TAKE_POSTER_H / 2, 6)
+    // Resized: the grown poster's middle, near or far (the far card has no controls under the poster).
+    for (const box of [
+      { w: 440, h: 360 },
+      { w: 552, h: 312 },
+      { w: 180, h: 150 },
+      { w: 640, h: 560 },
+    ]) {
+      expect(takeDotTop(box, false)).toBe(fitMedia(box.w, box.h, TAKE_CHROME).h / 2)
+      expect(takeDotTop(box, true)).toBe(fitMedia(box.w, box.h, 0).h / 2)
+    }
+  })
+
+  it('resizing a take a little never makes its dots jump (one rule for default and resized takes)', () => {
+    // The default size given explicitly, and a few px around it: the dots stay within a pixel of the default spot.
+    for (const [w, h] of [
+      [LAYOUT.takeW, LAYOUT.takeH],
+      [LAYOUT.takeW + 4, LAYOUT.takeH],
+      [LAYOUT.takeW, LAYOUT.takeH + 6],
+      [LAYOUT.takeW - 2, LAYOUT.takeH - 2],
+    ])
+      expect(Math.abs(takeDotTop({ w, h }, false) - DOT_TOP)).toBeLessThanOrEqual(1.5)
+  })
+
+  it('resizeEdgeClip: no dot, no clip', () => {
+    expect(resizeEdgeClip([])).toBeNull()
+    expect(resizeEdgeClip([Number.NaN])).toBeNull()
+  })
+
+  it('resizeEdgeClip: a gap of ±RESIZE_DOT_GAP around each dot, the rest of the edge kept', () => {
+    const a = 71 - RESIZE_DOT_GAP
+    const b = 71 + RESIZE_DOT_GAP
+    expect(resizeEdgeClip([71])).toBe(`polygon(0 0, 100% 0, 100% ${a}px, 0 ${a}px, 0 ${b}px, 100% ${b}px, 100% 100%, 0 100%)`)
+    // Two dots far apart: two gaps, in order whatever the input order.
+    const two = resizeEdgeClip([300, 63.44], 10)!
+    expect(two).toBe('polygon(0 0, 100% 0, 100% 53.44px, 0 53.44px, 0 73.44px, 100% 73.44px, 100% 290px, 0 290px, 0 310px, 100% 310px, 100% 100%, 0 100%)')
+  })
+
+  it('resizeEdgeClip: close dots (H3 first / last frames) share one gap; a gap never starts above the node', () => {
+    expect(resizeEdgeClip([119, 143], 12)).toBe('polygon(0 0, 100% 0, 100% 107px, 0 107px, 0 155px, 100% 155px, 100% 100%, 0 100%)')
+    expect(resizeEdgeClip([5], 12)).toBe('polygon(0 0, 100% 0, 100% 0px, 0 0px, 0 17px, 100% 17px, 100% 100%, 0 100%)')
+  })
 })
 
 describe('asset node: whole image at its own aspect ratio', () => {

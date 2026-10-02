@@ -1,9 +1,9 @@
 // Asset card on the canvas (character / location / prop / style). Source of reference wires.
 // Shows the WHOLE primary image at its own aspect ratio (never cropped): by default the card follows the image
 // (width ASSET_DEFAULT_W, height = image + name/meta rows); once resized, the picture letterboxes inside the card.
-import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { Box, MapPin, Maximize2, Palette, User } from 'lucide-react'
-import { memo, useEffect, useRef, type SyntheticEvent } from 'react'
+import { memo, type SyntheticEvent } from 'react'
 import { viewAssetImages } from '../../actions'
 import type { AssetKind } from '../../core/types'
 import { aspectOf, useImageSize } from '../../lib/imageMeta'
@@ -11,7 +11,7 @@ import { useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
 import { ASSET_MAX_ASPECT, ASSET_MIN_ASPECT, assetDefaultLayout, assetMapOf, KIND_LABEL, LOD_ZOOM, usageOf } from './canvasModel'
-import { NodeSizer, useNodeBox } from './NodeSizer'
+import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import './canvas.css'
 
 export type AssetFlowNode = Node<Record<string, unknown>, 'asset'>
@@ -32,13 +32,7 @@ function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
   const aspect = primary ? aspectOf(imgSize, 1, ASSET_MIN_ASPECT, ASSET_MAX_ASPECT) : 1
 
   // The default card changes height once the aspect is known: re-measure the node (handle bounds) right away.
-  const updateInternals = useUpdateNodeInternals()
-  const lastAspect = useRef(aspect)
-  useEffect(() => {
-    if (lastAspect.current === aspect) return
-    lastAspect.current = aspect
-    updateInternals(id)
-  }, [id, aspect, updateInternals])
+  useRemeasureOn(id, aspect)
 
   if (!asset) return null
   // Unknown kind (data from a newer version / a broken import): fall back to the character icon instead of crashing.

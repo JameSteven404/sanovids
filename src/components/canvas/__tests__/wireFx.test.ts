@@ -1,4 +1,5 @@
 // Wires: click vs drag (click-to-cut), the cut animation's split, what a dragged wire would do over a card, new wires.
+import { Position } from '@xyflow/react'
 import { describe, expect, it } from 'vitest'
 import {
   CLICK_MAX_MS,
@@ -14,14 +15,20 @@ import {
   newWireIds,
   parseCubicPath,
   pickNodeAt,
+  refDotTones,
   setWireReconnecting,
   snapHandleFor,
   splitCubic,
   splitWirePath,
   SPLIT_MIN_T,
+  trimCubic,
   wireClickAction,
   wireDragColor,
+  WIRE_HIT_TRIM,
+  wireHitPath,
+  wirePath,
   wireVerdict,
+  wireZ,
   type Cubic,
   type WirePress,
 } from '../wireFx'
@@ -239,5 +246,108 @@ describe('wires that just appeared', () => {
     expect(isFreshWire('x', 10_200)).toBe(true)
     expect(isFreshWire('x', 12_000)).toBe(false)
     expect(isFreshWire('y', 10_100)).toBe(false)
+  })
+})
+
+describe('wires on the dots', () => {
+  const dot = { x: 1840.5, y: 371 }
+  const into = (sx: number, sy: number) =>
+    wirePath({ sourceX: sx, sourceY: sy, sourcePosition: Position.Right, targetX: dot.x, targetY: dot.y, targetPosition: Position.Left })
+  // A bundle like S08's: ten videos stacked in a column, one to the right of the scene (a backward wire), one far away.
+  const sources = [...Array.from({ length: 10 }, (_, i) => ({ x: 1400, y: 40 + i * 120 })), { x: 1844, y: 900 }, { x: -600, y: -300 }]
+
+  it('every wire into one dot ends at its center, arriving from its side (no fan-out beside the dot)', () => {
+    for (const s of sources) {
+      const c = parseCubicPath(into(s.x, s.y)[0])!
+      expect(c[0]).toEqual({ x: s.x, y: s.y })
+      expect(c[3]).toEqual(dot)
+      // Horizontal tangent at both dots: the bundle merges smoothly into the dot from the left.
+      expect(c[2].y).toBe(dot.y)
+      expect(c[2].x).toBeLessThan(dot.x)
+      expect(c[1].y).toBe(s.y)
+      expect(c[1].x).toBeGreaterThan(s.x)
+    }
+  })
+
+  it('the label point is on the wire', () => {
+    const [d, x, y] = into(1400, 40)
+    const c = parseCubicPath(d)!
+    const p = cubicAt(c, nearestT(c, { x, y }))
+    expect(Math.hypot(p.x - x, p.y - y)).toBeLessThan(0.5)
+  })
+
+  it('trimCubic keeps the same curve, minus the asked length at each end', () => {
+    const c: Cubic = [
+      { x: 0, y: 0 },
+      { x: 120, y: 0 },
+      { x: 120, y: 300 },
+      { x: 240, y: 300 },
+    ]
+    const t = trimCubic(c, 7, 7)!
+    expect(Math.hypot(t[0].x - c[0].x, t[0].y - c[0].y)).toBeCloseTo(7, 3)
+    expect(Math.hypot(t[3].x - c[3].x, t[3].y - c[3].y)).toBeCloseTo(7, 3)
+    // Points of the trimmed curve lie on the original one.
+    for (const u of [0, 0.25, 0.5, 0.75, 1]) {
+      const p = cubicAt(t, u)
+      const q = cubicAt(c, nearestT(c, p))
+      expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeLessThan(0.05)
+    }
+    expect(trimCubic(c, 0, 0)).toEqual(c)
+  })
+
+  it('a wire shorter than both trims has no trimmed part', () => {
+    const c: Cubic = [
+      { x: 0, y: 0 },
+      { x: 3, y: 0 },
+      { x: 5, y: 0 },
+      { x: 10, y: 0 },
+    ]
+    expect(trimCubic(c, 7, 7)).toBeNull()
+    expect(wireHitPath(cubicPath(c))).toBe(cubicPath(c))
+  })
+
+  it("the hit band stops at the dots' rims, so a click on a dot never cuts the wires under it", () => {
+    for (const s of sources) {
+      const hit = parseCubicPath(wireHitPath(into(s.x, s.y)[0]))!
+      expect(Math.hypot(hit[3].x - dot.x, hit[3].y - dot.y)).toBeCloseTo(WIRE_HIT_TRIM, 1)
+      expect(Math.hypot(hit[0].x - s.x, hit[0].y - s.y)).toBeCloseTo(WIRE_HIT_TRIM, 1)
+      // It ends on the dot's left, the side the wire arrives from (level with the dot unless the wire comes back
+      // from the right of the scene and turns at the last moment).
+      expect(hit[3].x).toBeLessThan(dot.x)
+      if (s.x < dot.x - 100) expect(Math.abs(hit[3].y - dot.y)).toBeLessThan(0.5)
+    }
+    expect(WIRE_HIT_TRIM).toBeGreaterThanOrEqual(6 + 1) // a 12px dot + its 1px outline
+    expect(wireHitPath('M0,0 L10,10')).toBe('M0,0 L10,10')
+  })
+
+  it('wireZ: the wire in focus is stacked on top, every wire stays under the cards (z ≤ 0)', () => {
+    const z = (selected: boolean, hovered: boolean, highlight: boolean) => wireZ({ selected, hovered, highlight })
+    expect(z(true, false, false)).toBe(0)
+    expect(z(true, true, true)).toBe(0)
+    expect(z(false, true, false)).toBeLessThan(z(true, false, false))
+    expect(z(false, false, true)).toBeLessThan(z(false, true, true))
+    expect(z(false, false, false)).toBeLessThan(z(false, false, true))
+    for (const a of [true, false]) for (const b of [true, false]) for (const c of [true, false]) expect(z(a, b, c)).toBeLessThanOrEqual(0)
+  })
+})
+
+describe("refDotTones: a scene's reference dot takes the color of the wires drawn into it", () => {
+  type Kind = 'ref' | 'vref' | 'first' | 'last' | 'out' | 'save' | 'autosave'
+  const w = (kind: Kind, target: string, targetHandle = kind === 'ref' || kind === 'vref' ? 'ref' : 'in') => ({ kind, target, targetHandle })
+  it('images only (or nothing) → no entry (teal); videos only → video; both → mixed', () => {
+    const tones = refDotTones([w('ref', 'img'), w('vref', 'vid'), w('vref', 'vid'), w('ref', 'mix'), w('vref', 'mix')])
+    expect(tones.has('img')).toBe(false)
+    expect(tones.get('vid')).toBe('video')
+    expect(tones.get('mix')).toBe('mixed')
+    expect(tones.has('none')).toBe(false)
+  })
+  it('only wires into the reference dot count (frames, take / folder wires do not)', () => {
+    const tones = refDotTones([w('vref', 's1'), w('first', 's1', 'first'), w('last', 's1', 'last'), w('ref', 's2', 'first'), w('save', 's3'), w('autosave', 's3')])
+    expect(tones.get('s1')).toBe('video')
+    expect(tones.size).toBe(1)
+  })
+  it('a reference with no wire on the canvas does not color the dot', () => {
+    // The scene references an image that is not on the canvas: buildRawEdges draws no wire for it, so only @video wires arrive.
+    expect(refDotTones([w('vref', 's8')]).get('s8')).toBe('video')
   })
 })

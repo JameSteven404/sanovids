@@ -12,6 +12,11 @@
 .cv-stage .react-flow__edge.selectable .cv-wire-hit {
   cursor: pointer;
 }
+/* Only the hit band takes the pointer. The drawn wire runs on under its dots to their centers, and the band stops at
+   the dots' rims (wireFx.wireHitPath): a click on a dot never cuts the wires that end in it. */
+.cv-stage .react-flow__edge .cv-wire:not(.cv-wire-out) {
+  pointer-events: none;
+}
 /*
  * Click-to-cut: the wire's hit band shows scissors (hotspot = the blades' pivot). A cursor image is its own document,
  * so theme tokens cannot reach it: dark blades on a white halo read on the light and the dark canvas alike.

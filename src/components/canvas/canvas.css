@@ -136,94 +136,130 @@
   display: block;
 }
 
-/* ---- handles ---- */
+/* ---- handles (connection dots) ----
+ * The element React Flow measures is a 0×0 anchor at the dot's CENTER: React Flow ends a wire on the handle box's
+ * outer edge, which for a 0×0 box is its center, so every wire, the line drawn while dragging one, its snap and the
+ * reconnect grip all meet at the middle of the dot. The dot itself is the ::after (cards paint over wires, so it covers
+ * the wire ends); ::before is the larger invisible grab area. Only the pseudo-elements ever scale: a transform on the
+ * anchor would be stored by React Flow's re-measure (getBoundingClientRect) as a shifted wire end.
+ * Variants only set: --h (dot diameter), --h-c (color), --h-fill (fill, default --h-c), --h-glow (hover / connecting
+ * ring), --h-ring (idle outline), --h-grab (grab-area diameter). Dots sit on the middle of the card's 1px border.
+ */
 .cv-stage .cv-h {
-  width: 12px;
-  height: 12px;
+  --h: 12px;
+  --h-c: var(--ref);
+  --h-glow: var(--ref-soft);
+  --h-ring: var(--cv-handle-line);
+  --h-grab: 28px;
+  width: 0;
+  height: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  transform: none;
+  z-index: 3;
+}
+.cv-stage .react-flow__handle-left.cv-h {
+  left: -0.5px;
+}
+.cv-stage .react-flow__handle-right.cv-h {
+  right: -0.5px;
+}
+.cv-stage .cv-h::after {
+  content: '';
+  position: absolute;
+  inset: calc(var(--h) / -2);
+  box-sizing: border-box;
   border-radius: 50%;
   border: 2px solid var(--panel);
-  background: var(--ref);
-  box-shadow: var(--cv-handle-line);
-  transition: transform 0.12s, box-shadow 0.12s;
-  z-index: 3;
+  background: var(--h-fill, var(--h-c));
+  box-shadow: var(--h-ring);
+  transition:
+    transform 0.12s,
+    box-shadow 0.12s,
+    background-color 0.12s;
 }
 .cv-stage .cv-h::before {
   /* larger invisible grab area */
   content: '';
   position: absolute;
-  inset: -9px;
+  inset: calc(var(--h-grab) / -2);
   border-radius: 50%;
 }
-.cv-stage .cv-h:hover,
-.cv-stage .cv-h.connectingto,
-.cv-stage .cv-h.connectingfrom {
-  transform: translate(-50%, -50%) scale(1.35);
-  box-shadow: 0 0 0 4px var(--ref-soft);
+.cv-stage .cv-h:hover::after,
+.cv-stage .cv-h.connectingto::after,
+.cv-stage .cv-h.connectingfrom::after {
+  transform: scale(1.35);
+  box-shadow: 0 0 0 4px var(--h-glow);
 }
-.cv-stage .react-flow__handle-right.cv-h:hover,
-.cv-stage .react-flow__handle-right.cv-h.connectingfrom {
-  transform: translate(50%, -50%) scale(1.35);
+/* the scene's ref / take dots and the take's in / out dots get their `top` inline (canvasModel DOT_TOP / takeDotTop:
+   the middle of the take's poster, so the scene → take wire of an unresized row runs straight) */
+/* a scene's reference dot takes the color of what is wired into it: images teal, videos purple, both = two-tone */
+.cv-stage .cv-h-ref.is-video {
+  --h-c: var(--video);
+  --h-glow: var(--video-soft);
 }
-.cv-stage .cv-h-ref,
-.cv-stage .cv-h-takes,
-.cv-stage .cv-h-take-in,
-.cv-stage .cv-h-video {
-  top: 70px;
+.cv-stage .cv-h-ref.is-mixed {
+  --h-fill: linear-gradient(135deg, var(--ref) 50%, var(--video) 50%);
 }
-/* anchors of the scene -> take wires: not draggable */
+/* anchors of the scene -> take wires: small, not draggable (the scene's can start a "tự lưu" wire: saving.css) */
 .cv-stage .cv-h-takes,
 .cv-stage .cv-h-take-in {
-  width: 8px;
-  height: 8px;
-  border-width: 1.5px;
-  background: var(--seq);
+  --h: 8px;
+  --h-c: var(--seq);
   cursor: default;
-  z-index: 2;
+}
+.cv-stage .cv-h-takes::after,
+.cv-stage .cv-h-take-in::after {
+  border-width: 1.5px;
 }
 .cv-stage .cv-h-takes::before,
 .cv-stage .cv-h-take-in::before {
   display: none;
 }
-.cv-stage .react-flow__handle-right.cv-h-takes:hover {
-  transform: translate(50%, -50%);
-  box-shadow: var(--cv-handle-line);
-}
-.cv-stage .cv-h-take-in:hover {
-  transform: translate(-50%, -50%);
-  box-shadow: var(--cv-handle-line);
+.cv-stage .cv-h-take-in:hover::after {
+  transform: none;
+  box-shadow: var(--h-ring);
 }
 .cv-stage .cv-h-video {
-  width: 14px;
-  height: 14px;
-  background: var(--video);
-}
-.cv-stage .cv-h-video:hover,
-.cv-stage .cv-h-video.connectingfrom {
-  box-shadow: 0 0 0 4px var(--video-soft);
+  --h-c: var(--video);
+  --h-glow: var(--video-soft);
 }
 .cv-stage .cv-h-video.is-off {
-  background: var(--panel-3);
+  --h-c: var(--panel-3);
   cursor: not-allowed;
 }
-.cv-stage .react-flow__handle-right.cv-h-video.is-off:hover {
-  transform: translate(50%, -50%);
-  box-shadow: var(--cv-handle-line);
+.cv-stage .cv-h-video.is-off:hover::after {
+  transform: none;
+  box-shadow: var(--h-ring);
 }
 .cv-stage .cv-h-first {
   top: calc(100% - 52px);
-  background: var(--first);
+  --h-c: var(--first);
+  --h-glow: color-mix(in srgb, var(--first) 18%, transparent);
 }
 .cv-stage .cv-h-last {
   top: calc(100% - 28px);
-  background: var(--last);
+  --h-c: var(--last);
+  --h-glow: color-mix(in srgb, var(--last) 18%, transparent);
 }
+/*
+ * ĐẦU / CUỐI: a small tag just left of its dot, outside the card (inside, it ran over the footer and take line). The
+ * frame wire runs in under it (the tag has the board's color), so it reads as the label of that wire's end.
+ */
 .cv-stage .cv-h-label {
   position: absolute;
-  left: 14px;
-  top: 50%;
+  right: 9px;
+  top: 0;
   transform: translateY(-50%);
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--canvas-bg, var(--bg));
   font-size: 9px;
   font-weight: 700;
+  line-height: 11px;
   letter-spacing: 0.06em;
   pointer-events: none;
   white-space: nowrap;
@@ -233,11 +269,6 @@
 }
 .cv-stage .cv-h-last .cv-h-label {
   color: var(--last);
-}
-.cv-stage .cv-h-out {
-  width: 14px;
-  height: 14px;
-  background: var(--ref);
 }
 .cv-stage .is-far .cv-h-label {
   opacity: 0.7;
@@ -1773,6 +1804,13 @@ button.cv-asset-count:hover {
 .cv-stage .react-flow__resize-control.line.cv-rs-line.right {
   width: 8px;
 }
+/* the side edges leave a gap around the node's dots (NodeSizer / canvasModel.resizeEdgeClip): a press there is the dot's */
+.cv-stage .react-flow__resize-control.line.cv-rs-line.left {
+  clip-path: var(--rs-clip-l, none);
+}
+.cv-stage .react-flow__resize-control.line.cv-rs-line.right {
+  clip-path: var(--rs-clip-r, none);
+}
 .cv-stage .react-flow__resize-control.line.cv-rs-line.top,
 .cv-stage .react-flow__resize-control.line.cv-rs-line.bottom {
   height: 8px;
@@ -2266,13 +2304,9 @@ button.cv-asset-count:hover {
   .cv-tb-btn:active:not(:disabled) {
     transform: none;
   }
-  .cv-stage .cv-h:hover,
-  .cv-stage .cv-h.connectingto,
-  .cv-stage .cv-h.connectingfrom {
-    transform: translate(-50%, -50%);
-  }
-  .cv-stage .react-flow__handle-right.cv-h:hover,
-  .cv-stage .react-flow__handle-right.cv-h.connectingfrom {
-    transform: translate(50%, -50%);
+  .cv-stage .cv-h:hover::after,
+  .cv-stage .cv-h.connectingto::after,
+  .cv-stage .cv-h.connectingfrom::after {
+    transform: none;
   }
 }

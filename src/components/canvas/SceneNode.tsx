@@ -1,6 +1,6 @@
 // Scene card on the canvas. Memoized; reads its own scene from the store by id.
 // Its takes are separate Take nodes to the right (wired from the 'take' handle); the card only shows a status line.
-import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -21,6 +21,7 @@ import {
   assetMapOf,
   avatarSlots,
   countScenes,
+  DOT_TOP,
   excerptChars,
   hasAssetDrag,
   hasFileDrag,
@@ -42,16 +43,22 @@ import {
   type TakeSummary,
 } from './canvasModel'
 import { cutEdge } from './edges'
-import { NodeSizer, useNodeBox } from './NodeSizer'
+import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
+import type { RefDotTone } from './wireFx'
 import './canvas.css'
 
-export type SceneFlowNode = Node<Record<string, unknown>, 'scene'>
+/** `refDot`: what the wires drawn into the reference dot carry (CanvasView, wireFx.refDotTones); absent = images only / none. */
+export type SceneNodeData = { refDot?: RefDotTone }
+export type SceneFlowNode = Node<SceneNodeData, 'scene'>
 
 const MAX_VIDEO_THUMBS = 4
 const EMPTY_ASSETS: Asset[] = []
 
-function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
+/** The scene's two dots sit at the height of an unresized take's dots: the scene → take wire runs straight. */
+const DOT_STYLE = { top: DOT_TOP }
+
+function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const status = useRuns((s) => takeSummary(s.takes, id).status)
@@ -62,14 +69,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   const multi = useUI((s) => (selected ? countScenes(s.selectedIds) : 0))
   const box = useNodeBox(id, scene?.size)
   const transform = scene?.settings.mode === 'transform'
-  // Handles are added/removed with the H3 transform mode: re-measure them (not needed on mount).
-  const updateInternals = useUpdateNodeInternals()
-  const lastTransform = useRef(transform)
-  useEffect(() => {
-    if (lastTransform.current === transform) return
-    lastTransform.current = transform
-    updateInternals(id)
-  }, [id, transform, updateInternals])
+  // Handles are added/removed with the H3 transform mode: re-measure them.
+  useRemeasureOn(id, transform)
 
   // ---- HTML5 drop: library cards (asset ids), generated videos (take ids → @video) or OS image files ----
   const [dropHint, setDropHint] = useState<DropHint | null>(null)
@@ -134,6 +135,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
 
   if (!scene) return null
   const running = status === 'processing'
+  // The reference dot takes the color of the wires drawn into it: teal images, purple videos, two-tone for both.
+  const refDot = data?.refDot ? ` is-${data.refDot}` : ''
   const cls = [
     'cv-scene',
     selected && 'is-selected',
@@ -175,7 +178,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           type="target"
           position={Position.Left}
           id="ref"
-          className="cv-h cv-h-ref"
+          className={`cv-h cv-h-ref${refDot}`}
+          style={DOT_STYLE}
           isConnectableStart={false}
           title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
         />
@@ -188,6 +192,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           position={Position.Right}
           id="take"
           className="cv-h cv-h-takes"
+          style={DOT_STYLE}
           isConnectableStart
           isConnectableEnd={false}
           title="Các video (take) tạo từ cảnh này · kéo chấm này vào một Thư mục để tự lưu mọi video mới của cảnh"

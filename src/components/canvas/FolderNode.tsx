@@ -13,6 +13,7 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { hasTakeDrag, LOD_ZOOM, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
+import { useRemeasureOn } from './NodeSizer'
 import './saving.css'
 
 export type FolderFlowNode = Node<Record<string, unknown>, 'folder'>
@@ -62,6 +63,8 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const takeN = useRuns((s) => liveCount(folder?.takes, takeIndexOf(s.takes).byId))
   const stored = useFolderStatus((s) => s.byId[id])
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  // The dot moves down in the far layout (saving.css): re-measure even when the card keeps its height.
+  useRemeasureOn(id, far)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
   const [drop, setDrop] = useState(false)
   const [busyAction, setBusyAction] = useState(false)

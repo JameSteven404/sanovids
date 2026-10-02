@@ -1,8 +1,10 @@
-// Pure helpers behind the canvas wires' interactions and effects (no React, no DOM — tested in __tests__/wireFx.test.ts):
+// Pure helpers behind the canvas wires' interactions and effects (no DOM — tested in __tests__/wireFx.test.ts):
 // - click vs drag on a wire (click-to-cut must never fire at the end of a pan, a drag or a pinch),
 // - the cut animation's geometry (split the drawn bezier where it was clicked),
+// - wires on the dots: the drawn path (dot center to dot center), its hit band (stops at the dots' rims), stacking,
 // - what a wire being dragged would do where it is (valid / invalid target, its color, the handle it snaps to),
 // - which wires just appeared (they draw themselves in once).
+import { getBezierPath, type Position } from '@xyflow/react'
 import type { EdgeKind } from '../../actions'
 
 export type Pt = { x: number; y: number }
@@ -140,6 +142,108 @@ export function splitWirePath(d: string, at: Pt | null): { toSource: string; toT
   const t = Math.min(1 - SPLIT_MIN_T, Math.max(SPLIT_MIN_T, raw))
   const [a, b] = splitCubic(c, t)
   return { toSource: cubicPath(a), toTarget: cubicPath(b), point: a[3] }
+}
+
+// ---------------------------------------------------------------- wires on the dots
+/** Bend of every wire and of the line drawn while dragging one: the dropped wire keeps the shape it was dragged with. */
+export const WIRE_CURVATURE = 0.3
+
+export interface WireEnds {
+  sourceX: number
+  sourceY: number
+  sourcePosition: Position
+  targetX: number
+  targetY: number
+  targetPosition: Position
+}
+
+/**
+ * A wire's drawn path + its middle (for the × button). The ends are React Flow's handle points, which are the dots'
+ * centers (canvas.css "handles": 0×0 anchors), and are used as they are, for every kind: wires into the same dot all
+ * end at its center, each leaving / arriving along its dot's side (horizontal tangent), so a bundle fans in smoothly
+ * and merges under the dot instead of stacking up beside it.
+ */
+export function wirePath(e: WireEnds): [path: string, labelX: number, labelY: number] {
+  const [d, x, y] = getBezierPath({ ...e, curvature: WIRE_CURVATURE })
+  return [d, x, y]
+}
+
+/**
+ * How far (flow px) each end of a wire's invisible hit band stops short of the dot's center. A wire is drawn from dot
+ * center to dot center (it runs on under the dot, which paints over it); its hit band stops at the dot's rim (radius 6 +
+ * the 1px outline), so a click on a dot never lands on the wires under it and cuts one (a scene's left dot lets clicks
+ * through while no wire is being dragged).
+ */
+export const WIRE_HIT_TRIM = 7
+
+/** Curve parameter where `c` first gets `dist` away (straight line) from its start, or from its end (`fromEnd`). */
+function tAtDistance(c: Cubic, dist: number, fromEnd: boolean, samples = 32): number | null {
+  const end = fromEnd ? c[3] : c[0]
+  const tOf = (i: number) => (fromEnd ? 1 - i / samples : i / samples)
+  const d2 = dist * dist
+  for (let i = 1; i <= samples; i++) {
+    if (dist2(cubicAt(c, tOf(i)), end) < d2) continue
+    // First sample past `dist`: refine between it and the previous one.
+    let lo = tOf(i - 1)
+    let hi = tOf(i)
+    for (let k = 0; k < 20; k++) {
+      const m = (lo + hi) / 2
+      if (dist2(cubicAt(c, m), end) < d2) lo = m
+      else hi = m
+    }
+    return (lo + hi) / 2
+  }
+  return null
+}
+
+/** The part of `c` that is more than `startTrim` from its start and `endTrim` from its end; null if nothing is left. */
+export function trimCubic(c: Cubic, startTrim: number, endTrim: number): Cubic | null {
+  const t0 = startTrim > 0 ? tAtDistance(c, startTrim, false) : 0
+  const t1 = endTrim > 0 ? tAtDistance(c, endTrim, true) : 1
+  if (t0 === null || t1 === null || t1 - t0 < 1e-3) return null
+  const [head] = splitCubic(c, t1)
+  return t0 > 0 ? splitCubic(head, t0 / t1)[1] : head
+}
+
+/** A wire's hit band: its drawn path minus `trim` at both ends (unchanged when it is too short or not one cubic). */
+export function wireHitPath(d: string, trim = WIRE_HIT_TRIM): string {
+  const c = parseCubicPath(d)
+  const t = c ? trimCubic(c, trim, trim) : null
+  return t ? cubicPath(t) : d
+}
+
+/** Color of a scene's reference dot when wires other than images are drawn into it (canvas.css .cv-h-ref.is-…). */
+export type RefDotTone = 'video' | 'mixed'
+
+/**
+ * The color of each scene's reference dot, from the wires actually drawn into it ('ref' handle): only @video wires →
+ * 'video' (purple), images and @video → 'mixed' (two-tone). Scenes with only image wires, or none, are left out (teal).
+ * A reference that has no wire (an image that is not on the canvas, a deleted video) does not color the dot.
+ */
+export function refDotTones(wires: Iterable<{ kind: EdgeKind; target: string; targetHandle?: string | null }>): Map<string, RefDotTone> {
+  const seen = new Map<string, { image: boolean; video: boolean }>()
+  for (const w of wires) {
+    if (w.targetHandle !== 'ref' || (w.kind !== 'ref' && w.kind !== 'vref')) continue
+    const s = seen.get(w.target) ?? { image: false, video: false }
+    if (w.kind === 'ref') s.image = true
+    else s.video = true
+    seen.set(w.target, s)
+  }
+  const out = new Map<string, RefDotTone>()
+  for (const [id, s] of seen) if (s.video) out.set(id, s.image ? 'mixed' : 'video')
+  return out
+}
+
+/**
+ * Stacking of a wire among the others (edge zIndex). All ≤ 0: the cards come later in the same stacking context at
+ * z 0, so every wire stays under the cards and their dots. Where many wires meet at one dot, the one in focus is drawn
+ * (and hit) on top: selected > hovered > lit (touches the hovered / selected card) > the rest.
+ */
+export function wireZ(o: { selected: boolean; hovered: boolean; highlight: boolean }): number {
+  if (o.selected) return 0
+  if (o.hovered) return -1
+  if (o.highlight) return -2
+  return -3
 }
 
 // ---------------------------------------------------------------- dragging a wire

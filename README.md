@@ -23,6 +23,7 @@
 - **Nối hàng loạt**: chọn nhiều nhân vật hoặc video cùng nhiều cảnh rồi bấm `C`.
 - **Dây ẩn mặc định**, chỉ hiện dây của cảnh đang chọn hoặc đang trỏ chuột vào (đổi được: Ẩn / Đang chọn / Tất cả).
 - **Bấm vào dây là cắt** (có Hoàn tác), hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại. Hoạt ảnh kéo và cắt dây mượt, giảm được trong Cài đặt.
+- **Dây luôn chạm đúng tâm chấm tròn**: nhiều dây vào một cảnh thì chụm gọn vào một chấm, không xoè rộng. Chấm tham chiếu của cảnh mang màu của dây nối vào (xanh ngọc = ảnh, tím = video, hai màu khi có cả hai).
 - **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ, sắp xếp tự động.
 - **Node mới hiện ngay cạnh chỗ bạn đang làm**: cảnh mới nằm ngay dưới cảnh bạn vừa chọn (hoặc trong vùng đang nhìn), không đè lên thẻ khác; khung nhìn chỉ trượt vừa đủ để thấy node mới, **giữ nguyên mức zoom**. Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, không che thanh công cụ canvas.
 - Chế độ "Chỉ take chọn" chỉ hiện video ★ của mỗi cảnh cho gọn.

@@ -261,45 +261,35 @@
   font-size: 22px;
 }
 
-/* its dot: indigo, at the middle of the head row — every wire into the folder ends here */
+/* its dot: indigo, at the middle of the head row — every wire into the folder ends here (canvas.css "handles") */
 .cv-stage .cv-h.cv-h-folder {
   top: 25px;
-  width: 14px;
-  height: 14px;
-  background: var(--save);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--save) 22%, transparent);
+  --h-c: var(--save);
+  --h-glow: var(--save-soft);
+  --h-ring: 0 0 0 3px color-mix(in srgb, var(--save) 22%, transparent);
 }
-.cv-stage .cv-h.cv-h-folder:hover,
-.cv-stage .cv-h.cv-h-folder.connectingto,
-.cv-stage .cv-h.cv-h-folder.connectingfrom {
-  box-shadow: 0 0 0 4px var(--save-soft);
-}
+/* FolderNode re-measures the node when this changes (useRemeasureOn), so its wires follow the dot */
 .cv-stage .is-far .cv-h.cv-h-folder {
   top: 40px;
 }
 
 /* the scene's right dot (anchor of its take wires) can also be dragged to a folder: "tự lưu" */
 .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes {
+  --h-grab: 18px;
   cursor: crosshair;
 }
 .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes::before {
   display: block;
-  inset: -6px;
 }
 .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes:hover,
 .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes.connectingfrom {
-  background: var(--save);
-  transform: translate(50%, -50%) scale(1.35);
-  box-shadow: 0 0 0 4px var(--save-soft);
+  --h-c: var(--save);
+  --h-glow: var(--save-soft);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .cv-folder-btn:active:not(:disabled) {
     transform: none;
-  }
-  .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes:hover,
-  .cv-stage .react-flow__node .react-flow__handle-right.cv-h-takes.connectingfrom {
-    transform: translate(50%, -50%);
   }
 }
 
