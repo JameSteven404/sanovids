@@ -1182,6 +1182,204 @@
   gap: 8px;
 }
 
+/* ---------- settings: "Cơ bản / Nâng cao" switch + search (sticky toolbar at the top of the sheet body) ---------- */
+/* a steady sheet: it does not shrink and jump while search results come and go */
+.dg-set {
+  min-height: min(520px, 62vh);
+}
+/* a control reached with Tab never hides under the sticky bar */
+.modal-body:has(> .dg-set) {
+  scroll-padding-top: 84px;
+}
+.dg-set-bar {
+  position: sticky;
+  /* sticky offsets count from the body's content box: -16px = its padding-top, so the bar sits at the very top */
+  top: -16px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  /* full width of the sheet body, flush with its top edge (cancels .modal-body's padding) */
+  margin: -16px -20px 0;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.dg-set-levels {
+  flex: 1 1 260px;
+  max-width: 340px;
+  min-width: 0;
+}
+/* while searching the results come from both levels: the switch steps back */
+.dg-set-levels.searching .dg-seg {
+  opacity: 0.55;
+}
+.dg-search.dg-set-search {
+  flex: 1 1 200px;
+  max-width: 340px;
+  width: auto;
+  height: 34px;
+  margin-left: auto;
+}
+/* narrow sheet: switch and search each take a full line */
+@media (max-width: 600px) {
+  .dg-set-levels,
+  .dg-search.dg-set-search {
+    flex-basis: 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+  .modal-body:has(> .dg-set) {
+    scroll-padding-top: 130px;
+  }
+}
+.dg-set-search input::-webkit-search-cancel-button {
+  display: none; /* our own × button */
+}
+.dg-set-search .dg-x {
+  margin-right: -4px;
+}
+.dg-set-status {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dg-set-status:empty {
+  margin-top: 0;
+}
+.dg-set-status + div {
+  margin-top: 14px;
+}
+.dg-set-level {
+  margin: 0 0 -8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+.dg-set-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.dg-toggle-row.disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+/* a row with a button on the right (layout reset, restore defaults) */
+.dg-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.dg-action-row > .btn {
+  flex: none;
+}
+.dg-field > .dg-toggle-text + .dg-data-actions {
+  margin-top: 2px;
+}
+.dg-confirm {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.dg-confirm > div:not(.dg-confirm-actions) {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.dg-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* "Cách đặt tên file": template field, token chips, live example, error / warning */
+.dg-name-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.dg-name-input > svg {
+  position: absolute;
+  left: 10px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.dg-name-input .input {
+  padding-left: 30px;
+  font-size: 12.5px;
+}
+.dg-name-input .input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+.dg-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dg-token {
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease-out,
+    border-color 0.12s ease-out,
+    color 0.12s ease-out;
+}
+.dg-token:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent-ink);
+}
+.dg-token:active {
+  transform: scale(0.97);
+}
+.dg-token:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.dg-field-error,
+.dg-field-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.dg-field-error {
+  color: var(--danger-text);
+}
+.dg-field-warn {
+  color: var(--text-dim);
+}
+.dg-field-error > svg,
+.dg-field-warn > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.dg-field-warn > svg {
+  color: var(--warn);
+}
+.dg-name-preview {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.dg-name-preview b {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* ---------- projects: inset list with rounded rows ---------- */
 .dg-projects {
   display: flex;
@@ -1411,8 +1609,12 @@
   .dg-project,
   .dg-x,
   .dg-search,
-  .dg-import-input {
+  .dg-import-input,
+  .dg-token {
     transition: none;
+  }
+  .dg-token:active {
+    transform: none;
   }
   .dg-spin {
     animation-duration: 2.4s;

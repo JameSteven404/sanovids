@@ -6,6 +6,7 @@ import { sceneCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
@@ -78,6 +79,7 @@ export function Storyboard() {
   const missing = cards.filter((c) => !c.starred)
   // Same pick as actions.chosenTakeIds(): the ★ take, else the newest finished take of each scene.
   const chosenCount = cards.reduce((n, c) => n + (c.show ? 1 : 0), 0)
+  const zipPrompts = useDownloadPrefs((s) => s.zipPrompts)
   const [zipping, setZipping] = useState(false)
   const downloadAll = async () => {
     if (zipping) return
@@ -279,7 +281,7 @@ export function Storyboard() {
             onClick={() => void downloadAll()}
             title={
               chosenCount
-                ? `Một file .zip gồm take ★ (hoặc take mới nhất đã xong) của ${chosenCount} cảnh, đặt tên S01_T2 - tên cảnh theo thứ tự, kèm prompts.txt`
+                ? `Một file .zip gồm take ★ (hoặc take mới nhất đã xong) của ${chosenCount} cảnh, theo thứ tự cảnh, đặt tên theo Cài đặt → Tên file${zipPrompts ? ', kèm prompts.txt' : ''}`
                 : 'Chưa có video nào tạo xong'
             }
           >

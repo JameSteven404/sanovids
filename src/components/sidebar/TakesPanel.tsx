@@ -306,6 +306,7 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
   const folderName = useDownloadPrefs((s) => s.folderName)
   const askWhere = useDownloadPrefs((s) => s.askWhere)
+  const zipPrompts = useDownloadPrefs((s) => s.zipPrompts)
   const folderHint = askWhere ? ' — chọn nơi lưu và tên file' : folderName ? ` → thư mục “${folderName}”` : ''
   const saveHint = `${withPrompt ? 'video + prompt .txt' : 'video'}${folderHint}`
   /** One chosen take per scene that has a finished video (= what the .zip contains). */
@@ -343,7 +344,7 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
   }
   const zipTitle = zipping
     ? 'Đang nén video…'
-    : `Tải tất cả video chọn (.zip) · ${chosenCount} video: take ★ của mỗi cảnh (chưa có ★ thì take mới nhất), theo thứ tự cảnh, kèm prompts.txt${folderHint}`
+    : `Tải tất cả video chọn (.zip) · ${chosenCount} video: take ★ của mỗi cảnh (chưa có ★ thì take mới nhất), theo thứ tự cảnh${zipPrompts ? ', kèm prompts.txt' : ''}${folderHint}`
 
   return (
     <Section

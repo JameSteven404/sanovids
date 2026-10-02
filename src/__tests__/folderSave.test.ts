@@ -21,7 +21,8 @@ vi.mock('../lib/imageStore', () => {
   }
 })
 
-import { deleteSelection, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
+import { deleteSelection, downloadChosenTakesZip, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
+import { DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
 import type { Project, Scene } from '../core/types'
 import { linkScenesToFolder, linkTakesToFolder, removeFolderNode, saveTakeToFolder } from '../folderActions'
 import type { DesktopFile, DesktopFilesBridge } from '../lib/desktopFiles'
@@ -295,5 +296,52 @@ describe('"Tên file" and "Hỏi nơi lưu & tên file"', () => {
     const id = await runToCompletion('s2')
     await downloadTake(id, { auto: true })
     expect(desk.saveAs).toHaveLength(0)
+  })
+})
+
+describe('Cài đặt: "Cách đặt tên file", "Kèm file .txt", "Kèm prompts.txt trong file .zip"', () => {
+  afterEach(() => useDownloadPrefs.setState({ nameTemplate: DEFAULT_NAME_TEMPLATE, zipPrompts: true }))
+
+  it('the default name follows the template; a name typed for the take still wins', async () => {
+    const id = await runToCompletion('s1')
+    const untitled = await runToCompletion('s2')
+    useDownloadPrefs.getState().set({ nameTemplate: '{project} - {scene}{take} ({title})' })
+    expect(takeFileBase(id)).toBe('P - S01T1 (Mở đầu)')
+    expect(takeFileBase(untitled)).toBe('P - S02T1')
+    expect(renameTake(id, 'Bản cuối')).toBe('Bản cuối')
+    expect(renameTake(id, '')).toBe('P - S01T1 (Mở đầu)')
+    expect(takeOf(id)).not.toHaveProperty('fileName')
+    // an invalid template is refused (the last valid one stays)
+    useDownloadPrefs.getState().set({ nameTemplate: '{nope}' })
+    expect(useDownloadPrefs.getState().nameTemplate).toBe('{project} - {scene}{take} ({title})')
+    expect(await downloadTake(id)).toBe(true)
+    expect(desk.saveAs[0].files.map((f) => f.name)).toEqual(['P - S01T1 (Mở đầu).mp4', 'P - S01T1 (Mở đầu).txt'])
+  })
+
+  it('"Kèm file .txt chứa prompt" off: the download is the video alone', async () => {
+    const id = await runToCompletion('s1')
+    useDownloadPrefs.getState().set({ withPrompt: false })
+    expect(await downloadTake(id)).toBe(true)
+    expect(desk.saveAs[0].files.map((f) => f.name)).toEqual(['S01_T1 - Mở đầu.mp4'])
+  })
+
+  it('the .zip of the chosen videos has prompts.txt only when the setting is on', async () => {
+    await runToCompletion('s1')
+    await runToCompletion('s2')
+    // JSZip schedules its work with timers: let it run on real ones.
+    const zipEntries = async () => {
+      vi.useRealTimers()
+      try {
+        await downloadChosenTakesZip()
+        const { default: JSZip } = await import('jszip')
+        const zip = await JSZip.loadAsync(desk.saveAs[desk.saveAs.length - 1].files[0].bytes!)
+        return Object.keys(zip.files).sort()
+      } finally {
+        vi.useFakeTimers()
+      }
+    }
+    expect(await zipEntries()).toEqual(['S01_T1 - Mở đầu.mp4', 'S02_T1.mp4', 'prompts.txt'])
+    useDownloadPrefs.getState().set({ zipPrompts: false })
+    expect(await zipEntries()).toEqual(['S01_T1 - Mở đầu.mp4', 'S02_T1.mp4'])
   })
 })

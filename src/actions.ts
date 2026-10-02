@@ -3,7 +3,8 @@
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { staleNoteSince } from './core/staleTokens'
-import { usesVideoRefs } from './core/models'
+import { MODELS, usesVideoRefs } from './core/models'
+import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { creditKindOf, formatCredits } from './lib/credits'
 import { activeProviderId } from './providers'
 import { restoredFromTake } from './components/runs/restore'
@@ -631,13 +632,34 @@ export async function downloadSceneZip(sceneId: string) {
 export const videoLabel = (takeId: string) => (useRuns.getState().takes.some((t) => t.id === takeId) ? 'video ' + takeLabel(takeId) : 'video')
 
 // ---------------- downloading videos ----------------
-/** Default file name of a take (without extension): "S03_T2 - Ánh sáng trong hang". */
-export function defaultTakeFileBase(takeId: string): string {
+/**
+ * Values of the file-name template tokens for a take (core/nameTemplate): {scene} "S03", {take} "T2", {title} the
+ * scene title, {project}, {date} / {time} when the take was created, {model}.
+ */
+export function takeNameValues(takeId: string): NameValues | null {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
-  if (!take) return 'video'
-  const scene = useProject.getState().project.scenes.find((s) => s.id === take.sceneId)
-  const code = `${scene ? sceneCode(scene.order) : 'S00'}_T${take.number}`
-  return scene?.title ? `${code} - ${scene.title}` : code
+  if (!take) return null
+  const project = useProject.getState().project
+  const scene = project.scenes.find((s) => s.id === take.sceneId)
+  return {
+    scene: scene ? sceneCode(scene.order) : 'S00',
+    take: `T${take.number}`,
+    title: scene?.title ?? '',
+    project: project.name,
+    date: nameDate(take.createdAt),
+    time: nameTime(take.createdAt),
+    model: MODELS[take.settings?.model]?.name ?? '',
+  }
+}
+
+/**
+ * Default file name of a take (without extension), from the "Cách đặt tên file" template (Settings → Nâng cao;
+ * default '{scene}_{take} - {title}' → "S03_T2 - Ánh sáng trong hang", "S03_T2" when the scene has no title).
+ */
+export function defaultTakeFileBase(takeId: string): string {
+  const values = takeNameValues(takeId)
+  if (!values) return 'video'
+  return renderNameTemplate(useDownloadPrefs.getState().nameTemplate, values) || `${values.scene}_${values.take}`
 }
 
 /** File name of a take's video (without extension): the name the user gave it ("Tên file"), else the default one. */
@@ -757,7 +779,7 @@ export function chosenTakeIds(): string[] {
   return out
 }
 
-/** Zip of the chosen take of every scene (S01_T2 - title.webm …) + prompts.txt. */
+/** Zip of the chosen take of every scene (S01_T2 - title.webm …) + prompts.txt (pref zipPrompts). */
 export async function downloadChosenTakesZip() {
   const ids = chosenTakeIds()
   if (!ids.length) {
@@ -782,7 +804,8 @@ export async function downloadChosenTakesZip() {
     for (const f of await takeFiles(take, base, false)) zip.file(uniqueInSet(f.name, used), f.data)
     prompts.push(`=== ${base} ===\n${take.promptSnapshot}`)
   }
-  zip.file('prompts.txt', prompts.join('\n\n'))
+  // "Kèm prompts.txt trong file .zip" (Settings → Nâng cao).
+  if (useDownloadPrefs.getState().zipPrompts) zip.file('prompts.txt', prompts.join('\n\n'))
   const blob = await zip.generateAsync({ type: 'blob' })
   const file: FileToSave = { name, data: blob }
   try {

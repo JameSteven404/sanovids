@@ -33,7 +33,7 @@ import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/cr
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
 import { activeProviderId, getProvider, providerBlockedReason, registerProvider } from '../providers'
-import { createMockProvider, DEFAULT_MOCK_SETTINGS, type MockSettings } from '../providers/mock'
+import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
   isSubmitCancelled,
@@ -252,7 +252,7 @@ export function ownsEngine(): boolean {
 function savedMock(): MockSettings {
   try {
     const raw = localStorage.getItem('bdp:pref:mock')
-    if (raw) return { ...DEFAULT_MOCK_SETTINGS, ...JSON.parse(raw) }
+    if (raw) return parseMockSettings(JSON.parse(raw))
   } catch {
     /* ignore */
   }
@@ -455,7 +455,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
       }
     }),
   setMock: (patch) => {
-    const mock = { ...get().mock, ...patch }
+    const mock = parseMockSettings(patch, get().mock)
     try {
       localStorage.setItem('bdp:pref:mock', JSON.stringify(mock))
     } catch {

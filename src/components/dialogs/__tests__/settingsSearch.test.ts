@@ -1,0 +1,67 @@
+// Settings search: level filter without a query; accent-free, multi-word matching across both levels with a query.
+import { describe, expect, it } from 'vitest'
+import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
+
+const groups: SearchGroup[] = [
+  {
+    id: 'downloads',
+    level: 'basic',
+    title: 'Tải video',
+    rows: [
+      { id: 'askWhere', label: 'Hỏi nơi lưu & đổi tên mỗi lần tải', keywords: 'save as hộp thoại' },
+      { id: 'withPrompt', label: 'Kèm file .txt chứa prompt', hint: 'Lưu thêm file .txt cạnh video' },
+    ],
+  },
+  { id: 'playback', level: 'basic', title: 'Âm thanh video', rows: [{ id: 'sound', label: 'Bật tiếng khi xem video', keywords: 'loa mute' }] },
+  {
+    id: 'files',
+    level: 'advanced',
+    title: 'Tên file & file .zip',
+    rows: [
+      { id: 'nameTemplate', label: 'Cách đặt tên file', keywords: 'template' },
+      { id: 'zipPrompts', label: 'Kèm prompts.txt trong file .zip' },
+    ],
+  },
+  { id: 'gateway', level: 'advanced', title: 'Cổng canvasapp.io.vn', desc: 'Đăng nhập canvasapp', keywords: 'credit thật' },
+]
+
+const ids = (m: ReturnType<typeof matchSettings>) => m.map((x) => `${x.group.id}:${x.rows.map((r) => r.id).join(',')}`)
+
+describe('matchSettings', () => {
+  it('no query: every group of the chosen level, all rows', () => {
+    expect(ids(matchSettings(groups, 'basic', ''))).toEqual(['downloads:askWhere,withPrompt', 'playback:sound'])
+    expect(ids(matchSettings(groups, 'advanced', '   '))).toEqual(['files:nameTemplate,zipPrompts', 'gateway:'])
+  })
+
+  it('a query looks in both levels, ignoring case and accents', () => {
+    expect(ids(matchSettings(groups, 'basic', 'TXT'))).toEqual(['downloads:withPrompt', 'files:zipPrompts'])
+    expect(ids(matchSettings(groups, 'advanced', 'am thanh'))).toEqual(['playback:sound'])
+    expect(ids(matchSettings(groups, 'basic', 'đổi tên'))).toEqual(['downloads:askWhere'])
+    expect(ids(matchSettings(groups, 'basic', 'doi ten'))).toEqual(['downloads:askWhere'])
+  })
+
+  it('every word must match; the group title counts for all its rows', () => {
+    expect(ids(matchSettings(groups, 'basic', 'tải hộp thoại'))).toEqual(['downloads:askWhere'])
+    expect(ids(matchSettings(groups, 'basic', 'tai video'))).toEqual(['downloads:askWhere,withPrompt'])
+    expect(ids(matchSettings(groups, 'basic', 'zip template'))).toEqual(['files:nameTemplate'])
+    expect(matchSettings(groups, 'basic', 'không có gì')).toEqual([])
+  })
+
+  it('a block group is found by its title, description or keywords', () => {
+    expect(ids(matchSettings(groups, 'basic', 'credit'))).toEqual(['gateway:'])
+    expect(ids(matchSettings(groups, 'basic', 'dang nhap'))).toEqual(['gateway:'])
+  })
+
+  it('resultCount counts rows, a block as one', () => {
+    expect(resultCount(matchSettings(groups, 'basic', 'txt'))).toBe(2)
+    expect(resultCount(matchSettings(groups, 'basic', 'credit'))).toBe(1)
+  })
+})
+
+describe('foldText / searchWords', () => {
+  it('folds Vietnamese', () => {
+    expect(foldText('Đổi Tên Âm Thanh')).toBe('doi ten am thanh')
+    expect(searchWords('  Hỏi   nơi lưu ')).toEqual(['hoi', 'noi', 'luu'])
+    expect(searchWords('')).toEqual([])
+  })
+})

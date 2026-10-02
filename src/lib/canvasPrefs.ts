@@ -88,3 +88,24 @@ export function useMotionLevel(): MotionLevel {
   const reduced = useSyncExternalStore(subscribeReduced, systemReducedMotion, () => false)
   return motionLevel(pref, reduced)
 }
+
+/**
+ * Call once at startup: mirrors the effective level on <html data-motion="full|reduced|off"> and keeps it in sync
+ * with the pref (Settings → "Hiệu ứng chuyển động") and the OS setting. styles/app.css uses it app-wide: 'reduced'
+ * keeps fades but nothing glides or scales, 'off' drops every transition and animation. Returns a cleanup.
+ */
+export function initMotion(): () => void {
+  if (typeof document === 'undefined') return () => undefined
+  const apply = () => {
+    document.documentElement.dataset.motion = motionLevel(useCanvasPrefs.getState().animations)
+  }
+  apply()
+  const offPref = useCanvasPrefs.subscribe((s, prev) => {
+    if (s.animations !== prev.animations) apply()
+  })
+  const offOs = subscribeReduced(apply)
+  return () => {
+    offPref()
+    offOs()
+  }
+}

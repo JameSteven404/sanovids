@@ -7,6 +7,7 @@
 import { createStore, del, get, set } from 'idb-keyval'
 import { create } from 'zustand'
 import { companionFor, freeNames, safeFileName } from '../core/fileNames'
+import { checkNameTemplate, DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
 import { desktopFiles, toDesktopFiles } from './desktopFiles'
 import { getBlob } from './imageStore'
 
@@ -22,44 +23,73 @@ export interface DownloadPrefs {
   autoDownload: boolean
   /** Name of the chosen folder (null = browser Downloads). */
   folderName: string | null
-  /** Also save a .txt with the prompt next to each video (like canvasapp). */
+  /** Also save a .txt with the prompt next to each video (like canvasapp). Folder nodes follow it too. */
   withPrompt: boolean
   /**
    * "Hỏi nơi lưu & tên file": a click on Tải video / the zip asks where to save and under which name (save dialog).
    * Auto-downloads and folder nodes never ask.
    */
   askWhere: boolean
+  /** "Tải .zip các video chọn" adds a prompts.txt with the prompt of every video (default on). */
+  zipPrompts: boolean
+  /** Default file name of a video (core/nameTemplate), e.g. '{scene}_{take} - {title}'. A take's own "Tên file" wins. */
+  nameTemplate: string
 }
 
-const DEFAULT_PREFS: DownloadPrefs = { autoDownload: false, folderName: null, withPrompt: true, askWhere: true }
+export const DOWNLOAD_PREFS_KEY = 'bdp:pref:downloads'
+export const DEFAULT_DOWNLOAD_PREFS: DownloadPrefs = {
+  autoDownload: false,
+  folderName: null,
+  withPrompt: true,
+  askWhere: true,
+  zipPrompts: true,
+  nameTemplate: DEFAULT_NAME_TEMPLATE,
+}
+const BOOL_KEYS = ['autoDownload', 'withPrompt', 'askWhere', 'zipPrompts'] as const
+
+/** The valid part of `patch` (wrong types, an invalid name template… are left out). */
+export function validDownloadPatch(patch: unknown): Partial<DownloadPrefs> {
+  const out: Partial<DownloadPrefs> = {}
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return out
+  const p = patch as Partial<Record<keyof DownloadPrefs, unknown>>
+  for (const k of BOOL_KEYS) if (typeof p[k] === 'boolean') out[k] = p[k]
+  if (p.folderName === null || (typeof p.folderName === 'string' && p.folderName.trim())) out.folderName = p.folderName as string | null
+  if (p.nameTemplate !== undefined) {
+    const c = checkNameTemplate(p.nameTemplate)
+    if (c.ok) out.nameTemplate = c.template
+  }
+  return out
+}
+
+/** Stored JSON → prefs: every value checked, anything missing or wrong falls back to its default. */
+export function parseDownloadPrefs(raw: string | null | undefined): DownloadPrefs {
+  if (!raw) return { ...DEFAULT_DOWNLOAD_PREFS }
+  try {
+    return { ...DEFAULT_DOWNLOAD_PREFS, ...validDownloadPatch(JSON.parse(raw)) }
+  } catch {
+    return { ...DEFAULT_DOWNLOAD_PREFS }
+  }
+}
 
 function readPrefs(): DownloadPrefs {
   try {
-    const raw = localStorage.getItem('bdp:pref:downloads')
-    if (raw) {
-      const saved = JSON.parse(raw) as Partial<DownloadPrefs>
-      return {
-        autoDownload: typeof saved.autoDownload === 'boolean' ? saved.autoDownload : DEFAULT_PREFS.autoDownload,
-        folderName: typeof saved.folderName === 'string' ? saved.folderName : null,
-        withPrompt: typeof saved.withPrompt === 'boolean' ? saved.withPrompt : DEFAULT_PREFS.withPrompt,
-        askWhere: typeof saved.askWhere === 'boolean' ? saved.askWhere : DEFAULT_PREFS.askWhere,
-      }
-    }
+    return parseDownloadPrefs(localStorage.getItem(DOWNLOAD_PREFS_KEY))
   } catch {
-    /* ignore */
+    return { ...DEFAULT_DOWNLOAD_PREFS }
   }
-  return { ...DEFAULT_PREFS }
 }
 
 export const useDownloadPrefs = create<DownloadPrefs & { set: (patch: Partial<DownloadPrefs>) => void }>()((setState, getState) => ({
   ...readPrefs(),
   set: (patch) => {
-    setState(patch)
-    const { autoDownload, folderName, withPrompt, askWhere } = getState()
+    const next = validDownloadPatch(patch)
+    if (!Object.keys(next).length) return
+    setState(next)
+    const { autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate } = getState()
     try {
-      localStorage.setItem('bdp:pref:downloads', JSON.stringify({ autoDownload, folderName, withPrompt, askWhere }))
+      localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify({ autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate }))
     } catch {
-      /* ignore */
+      /* storage unavailable: the choice lasts for this session */
     }
   },
 }))

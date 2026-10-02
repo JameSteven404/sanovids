@@ -35,10 +35,43 @@ export type TopUpTab = 'topup' | 'history'
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'
 
-const pref = <T,>(key: string, fallback: T): T => {
+/** "Thời gian hiện thông báo" (Cài đặt → Nâng cao): how long toasts stay. */
+export type ToastTime = 'short' | 'normal' | 'long' | 'xlong'
+export const TOAST_TIMES: readonly ToastTime[] = ['short', 'normal', 'long', 'xlong']
+/** Multiplier of every toast's time on screen (2.8 s for a plain toast, 6 s with a button, at 'normal'). */
+export const TOAST_SCALE: Record<ToastTime, number> = { short: 0.7, normal: 1, long: 1.8, xlong: 3 }
+export const TOAST_TIME_LABEL: Record<ToastTime, string> = { short: 'Ngắn', normal: 'Vừa', long: 'Dài', xlong: 'Rất dài' }
+/** Plain toast time (ms) at 'normal'; a toast with a button (Hoàn tác…) stays longer. */
+export const TOAST_BASE_MS = 2800
+export const TOAST_ACTION_MS = 6000
+
+export const VIEW_MODES: readonly ViewMode[] = ['canvas', 'table', 'storyboard']
+export const EDGE_MODES: readonly EdgeMode[] = ['hidden', 'selected', 'all']
+export const INTERACTION_MODES: readonly InteractionMode[] = ['hand', 'select']
+export const TAKE_DISPLAYS: readonly TakeDisplay[] = ['all', 'chosen']
+
+/** Value check for a stored UI pref. */
+export type PrefCheck<T> = (v: unknown) => v is T
+export const oneOf =
+  <T extends string>(list: readonly T[]): PrefCheck<T> =>
+  (v): v is T =>
+    typeof v === 'string' && (list as readonly string[]).includes(v)
+export const isBool: PrefCheck<boolean> = (v): v is boolean => typeof v === 'boolean'
+
+/** A stored pref (JSON text) → its value, or `fallback` when missing, unreadable or not valid. */
+export function parsePref<T>(raw: string | null | undefined, fallback: T, valid: PrefCheck<T>): T {
+  if (raw == null) return fallback
   try {
-    const raw = localStorage.getItem('bdp:pref:' + key)
-    return raw == null ? fallback : (JSON.parse(raw) as T)
+    const v: unknown = JSON.parse(raw)
+    return valid(v) ? v : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const pref = <T,>(key: string, fallback: T, valid: PrefCheck<T>): T => {
+  try {
+    return parsePref(localStorage.getItem('bdp:pref:' + key), fallback, valid)
   } catch {
     return fallback
   }
@@ -86,6 +119,10 @@ export interface UIState {
   /** Canvas: show every take node, or only the chosen (starred, else latest) take of each scene. */
   takeDisplay: TakeDisplay
   setTakeDisplay: (d: TakeDisplay) => void
+  setMinimap: (show: boolean) => void
+  /** How long toasts stay on screen (Settings). */
+  toastTime: ToastTime
+  setToastTime: (t: ToastTime) => void
   setQueueOpen: (open: boolean) => void
   setLeftOpen: (open: boolean) => void
   setRightOpen: (open: boolean) => void
@@ -114,17 +151,17 @@ export interface UIState {
 }
 
 let toastSeq = 1
-const EDGE_MODES: EdgeMode[] = ['hidden', 'selected', 'all']
 
 export const useUI = create<UIState>()((set, get) => ({
-  view: pref<ViewMode>('view', 'canvas'),
-  edgeMode: pref<EdgeMode>('edgeMode', 'selected'),
-  interaction: pref<InteractionMode>('interaction', 'hand'),
-  showMinimap: pref('minimap', true),
-  takeDisplay: pref<TakeDisplay>('takeDisplay', 'all'),
+  view: pref('view', 'canvas', oneOf(VIEW_MODES)),
+  edgeMode: pref('edgeMode', 'selected', oneOf(EDGE_MODES)),
+  interaction: pref('interaction', 'hand', oneOf(INTERACTION_MODES)),
+  showMinimap: pref('minimap', true, isBool),
+  takeDisplay: pref('takeDisplay', 'all', oneOf(TAKE_DISPLAYS)),
+  toastTime: pref('toastTime', 'normal', oneOf(TOAST_TIMES)),
   queueOpen: false,
-  leftOpen: pref('leftOpen', true),
-  rightOpen: pref('rightOpen', true),
+  leftOpen: pref('leftOpen', true, isBool),
+  rightOpen: pref('rightOpen', true, isBool),
 
   selectedIds: [],
   selectedEdgeIds: [],
@@ -142,6 +179,7 @@ export const useUI = create<UIState>()((set, get) => ({
     set({ view })
   },
   setEdgeMode: (edgeMode) => {
+    if (!EDGE_MODES.includes(edgeMode)) return
     savePref('edgeMode', edgeMode)
     set({ edgeMode })
   },
@@ -150,16 +188,25 @@ export const useUI = create<UIState>()((set, get) => ({
     get().setEdgeMode(next)
   },
   setInteraction: (interaction) => {
+    if (!INTERACTION_MODES.includes(interaction)) return
     savePref('interaction', interaction)
     set({ interaction })
   },
   setTakeDisplay: (takeDisplay) => {
+    if (!TAKE_DISPLAYS.includes(takeDisplay)) return
     savePref('takeDisplay', takeDisplay)
     set({ takeDisplay })
   },
-  toggleMinimap: () => {
-    savePref('minimap', !get().showMinimap)
-    set({ showMinimap: !get().showMinimap })
+  toggleMinimap: () => get().setMinimap(!get().showMinimap),
+  setMinimap: (showMinimap) => {
+    if (typeof showMinimap !== 'boolean') return
+    savePref('minimap', showMinimap)
+    set({ showMinimap })
+  },
+  setToastTime: (toastTime) => {
+    if (!TOAST_TIMES.includes(toastTime)) return
+    savePref('toastTime', toastTime)
+    set({ toastTime })
   },
   setQueueOpen: (queueOpen) => set({ queueOpen }),
   setLeftOpen: (leftOpen) => {
@@ -212,7 +259,8 @@ export const useUI = create<UIState>()((set, get) => ({
     if (opts.persistent) t.persistent = true
     set((s) => ({ toasts: keepToasts([...s.toasts, t]) }))
     if (!opts.persistent) {
-      const ms = opts.ms ?? (opts.action ? 6000 : 2800)
+      // "Thời gian hiện thông báo" scales every toast (explicit times too: a 20 s "waiting" toast becomes 36 s on 'long').
+      const ms = (opts.ms ?? (opts.action ? TOAST_ACTION_MS : TOAST_BASE_MS)) * (TOAST_SCALE[get().toastTime] ?? 1)
       // Clamp: setTimeout fires at once for delays above 2^31-1 ms.
       setTimeout(() => get().dismissToast(id), Math.min(Math.max(0, ms), 2 ** 31 - 1))
     }
