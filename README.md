@@ -22,7 +22,7 @@
 - **Kéo dây từ nhân vật thả vào bất kỳ đâu trên thẻ cảnh** để nối ảnh tham chiếu. Kéo nhân vật từ Thư viện vào cảnh cũng được.
 - **Nối hàng loạt**: chọn nhiều nhân vật hoặc video cùng nhiều cảnh rồi bấm `C`.
 - **Dây ẩn mặc định**, chỉ hiện dây của cảnh đang chọn hoặc đang trỏ chuột vào (đổi được: Ẩn / Đang chọn / Tất cả).
-- Cắt dây bằng nút × hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại.
+- **Bấm vào dây là cắt** (có Hoàn tác), hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại. Hoạt ảnh kéo và cắt dây mượt, giảm được trong Cài đặt.
 - **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ, sắp xếp tự động.
 - **Node mới hiện ngay cạnh chỗ bạn đang làm**: cảnh mới nằm ngay dưới cảnh bạn vừa chọn (hoặc trong vùng đang nhìn), không đè lên thẻ khác; khung nhìn chỉ trượt vừa đủ để thấy node mới, **giữ nguyên mức zoom**. Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, không che thanh công cụ canvas.
 - Chế độ "Chỉ take chọn" chỉ hiện video ★ của mỗi cảnh cho gọn.
@@ -46,6 +46,11 @@
 - Đánh dấu ★ take chọn, khôi phục prompt của take cũ.
 - **Tải video**: một nút cho từng video (kèm file `.txt` chứa prompt), **"Tải tất cả video chọn (.zip)"**, hoặc bật **Tự tải video khi tạo xong** vào thư mục bạn chọn.
 
+### Lưu video
+- **Tải video…** mở hộp **Save As** của Windows để chọn nơi lưu và **đổi tên**. File `.txt` prompt được lưu cạnh video (tắt được trong Cài đặt).
+- **Đổi tên video đầu ra** ngay trên node video hoặc trong cửa sổ xem take. Có **mẫu đặt tên** (`{scene}`, `{take}`, `{title}`, `{date}`…) trong Cài đặt → Nâng cao.
+- **Node Thư mục**: nối **video → Thư mục** để chép vào đó; nối **cảnh → Thư mục** để mọi video mới của cảnh tự lưu vào khi xong. Không ghi đè file có sẵn.
+
 ### Xem video
 - **Rê chuột lên node Video** để xem ngay trên canvas, **có tiếng**. Thanh điều khiển ở đáy video: **thanh thời gian** (bấm hoặc kéo để tua), **phát/dừng**, **tốc độ** (0,5× → 2×), **âm lượng** (bấm loa để tắt/bật, kéo thanh hoặc lăn chuột để chỉnh).
 - Đã bấm vào điều khiển thì video **giữ mở** kể cả khi chuột rời node; bấm ra chỗ trống trên canvas để đóng. Rê sang node khác thì video đang mở tự dừng (không bao giờ hai video cùng kêu).
@@ -53,7 +58,8 @@
 
 ### Các màn hình khác
 - **Bảng cảnh**: xem dạng bảng, sắp xếp thứ tự, sửa hàng loạt.
-- **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, nút **Phát liền**.
+- **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, **kéo-thả để sắp xếp lại** (hoặc Alt + mũi tên), nút **Phát liền**.
+- **Cài đặt** chia **Cơ bản / Nâng cao**, có ô tìm kiếm, sao lưu / khôi phục cài đặt.
 - Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh) để sao lưu hoặc chuyển máy.
 - Giao diện kiểu Apple, chế độ **Sáng / Tối / Theo hệ thống**.
 
