@@ -5,7 +5,7 @@ import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../ac
 import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
-import { DEMO_CREDIT_HINT, formatCredits, type CreditKind } from '../../lib/credits'
+import { CREDIT_HINT, CREDIT_MARK, CREDIT_SOURCE_LABEL, formatCredits, type CreditKind } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useCreditKind } from '../../store/credits'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
@@ -163,9 +163,13 @@ export function SceneTable() {
             <span>Cấu hình</span>
             <span
               className="vw-r"
-              title={creditKind === 'demo' ? `Chi phí mỗi lần chạy, bằng credit demo\n${DEMO_CREDIT_HINT}` : `Chi phí ước tính mỗi lần chạy, bằng credit canvasapp\n${REAL_COST_HINT}`}
+              title={
+                CREDIT_HINT[creditKind]
+                  ? `Chi phí mỗi lần chạy, bằng ${CREDIT_SOURCE_LABEL[creditKind]}\n${CREDIT_HINT[creditKind]}`
+                  : `Chi phí ước tính mỗi lần chạy, bằng credit canvasapp\n${REAL_COST_HINT}`
+              }
             >
-              {creditKind === 'demo' ? <span className="vw-th-demo">Credit demo</span> : 'Credit'}
+              {CREDIT_MARK[creditKind] ? <span className="vw-th-demo">Credit {CREDIT_MARK[creditKind]}</span> : 'Credit'}
             </span>
             <span>Take</span>
             <span>Trạng thái</span>
@@ -250,7 +254,7 @@ function TableHeader({ scenes, selected, creditKind }: { scenes: Scene[]; select
                   <span className="vw-menu-sub" title={costTitle(costOf(p), creditKind, 'Mỗi lần chạy · ')}>
                     {MODELS[p.model].short} · {settingsLabel(p)} ·{' '}
                     <span className={`vw-cost-text ${creditTone(creditKind)}`}>{formatCredits(costOf(p), creditKind, { short: true })}</span>
-                    {creditKind === 'demo' && <span className="vw-demo-mark">demo</span>}
+                    {CREDIT_MARK[creditKind] && <span className="vw-demo-mark">{CREDIT_MARK[creditKind]}</span>}
                   </span>
                 </button>
               ))
@@ -274,7 +278,7 @@ function TableHeader({ scenes, selected, creditKind }: { scenes: Scene[]; select
           <Play size={13} /> Chạy {selected.length} ·
           <span className={`vw-btn-cost ${creditTone(creditKind)}`}>
             {formatCredits(cost, creditKind, { short: true })}
-            {creditKind === 'demo' && <span className="vw-btn-cost-mark">demo</span>}
+            {CREDIT_MARK[creditKind] && <span className="vw-btn-cost-mark">{CREDIT_MARK[creditKind]}</span>}
           </span>
         </button>
         <button

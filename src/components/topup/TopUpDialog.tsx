@@ -32,14 +32,13 @@ import { useShallow } from 'zustand/react/shallow'
 import { TOPUP_PRESETS } from '../../core/topup'
 import { formatCreditNumber, formatVnd as creditsInVnd } from '../../lib/credits'
 import { usePwaInstall } from '../../lib/pwa'
-import { canvasappApi } from '../../providers'
 import { canvasappErrorText, isLoginRequired } from '../../providers/canvasapp/api'
-import { canvasappBridge, hasCheckoutBridge } from '../../providers/canvasapp/transport'
+import { hasCheckoutBridge } from '../../providers/canvasapp/transport'
 import { refreshRealCredits, useRealCredits, type RealCreditsState } from '../../store/credits'
 import { useUI, type TopUpTab } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import { loginToCanvasapp } from '../topbar/CreditPill'
-import { topupFlow, useTopupFlowState } from './appFlow'
+import { flowGateway, topupFlow, useTopupFlowState } from './appFlow'
 import { CreditHistory } from './CreditHistory'
 import { canReopen, isOrderInFlight, type TopupFlowState } from './topupFlow'
 import {
@@ -73,8 +72,9 @@ function useAuthProbe(enabled: boolean) {
     const id = ++seq.current
     setChecking(true)
     setProbe((p) => (p.state === 'idle' ? { state: 'loading' } : p))
-    canvasappApi()
-      .authState()
+    // the gateway of the order in flight, else the active one (development mode: the simulated canvasapp)
+    flowGateway()
+      .api.authState()
       .then(
         (st) => {
           if (id !== seq.current) return
@@ -119,8 +119,9 @@ export function TopUpDialog({ tab: requestedTab }: { tab?: TopUpTab }) {
   }, [])
 
   const { desktop } = usePwaInstall()
-  const bridge = !!canvasappBridge()
-  const checkout = hasCheckoutBridge()
+  const gateway = flowGateway()
+  const bridge = !!gateway.bridge()
+  const checkout = hasCheckoutBridge(gateway.bridge)
   const realLoginRequired = useRealCredits((s) => s.status === 'login-required')
   const { probe, checking, run: recheck } = useAuthProbe(bridge)
   const [loggingIn, setLoggingIn] = useState(false)

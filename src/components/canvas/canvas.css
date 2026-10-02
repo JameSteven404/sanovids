@@ -647,7 +647,7 @@
 }
 /*
  * Cost chip (docs/SPEC-v2.md §9 — same language as the inspector, presets panel and scene table):
- * demo play money = neutral text in a dashed outline + a small "demo" mark; real canvasapp credits = solid --info
+ * simulated credits (dev / old demo) = neutral text in a dashed outline + a small "demo" mark; real canvasapp credits = solid --info
  * tint (the top bar credit pill's color — the accent stays for the Run button).
  */
 .cv-cost {
@@ -669,7 +669,7 @@
   background: var(--info-soft);
   color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
-.cv-cost.is-demo {
+.cv-cost.is-sim {
   padding-right: 4px;
   border-style: dashed;
   border-color: var(--text-faint);

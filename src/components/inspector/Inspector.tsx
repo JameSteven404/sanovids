@@ -2,7 +2,7 @@
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
 // Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
-import { Cloud, CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
+import { Bug, Cloud, CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, focusNodes, newScene } from '../../actions'
 import { sceneCode } from '../../core/compile'
@@ -174,7 +174,7 @@ function EmptyInspector() {
   const counts = useProject(useShallow((s) => [s.project.scenes.length, s.project.assets.length]))
   const takeCount = useRuns((s) => s.takes.length)
   const openDialog = useUI((s) => s.openDialog)
-  // Which provider the next run uses (docs/SPEC-v2.md §9): "no cost" is only true for the demo provider.
+  // Which provider the next run uses (docs/SPEC-v2.md §9, §11): "no cost" is only true for simulated credits.
   const creditKind = useCreditKind()
   return (
     <div className="in-empty">
@@ -237,9 +237,13 @@ function EmptyInspector() {
           <FileText size={14} /> Nhập prompt cũ
         </button>
       </div>
-      {creditKind === 'demo' ? (
+      {creditKind === 'dev' ? (
         <p className="in-empty-foot faint">
-          <Sparkles size={12} /> Chế độ demo: video giả, credit giả lập — không tốn tiền thật.
+          <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy, video giả, credit dev — không tốn tiền thật.
+        </p>
+      ) : creditKind === 'demo' ? (
+        <p className="in-empty-foot faint">
+          <Sparkles size={12} /> Demo cũ: video giả, credit giả lập — không tốn tiền thật.
         </p>
       ) : (
         <p className="in-empty-foot faint">

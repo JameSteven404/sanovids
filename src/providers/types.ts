@@ -1,7 +1,8 @@
 // Video provider abstraction. The queue engine (store/runs.ts) only talks to providers through this interface:
 //   submit(request) → remote id (stored on the take) → poll(remote ids) → fetchResult(remote id) → blobs.
-// The mock provider (providers/mock.ts) is the default. The canvasapp.io.vn gateway (providers/canvasapp/) is an
-// opt-in, desktop-only experiment. See docs/GATEWAY-CANVASAPP.md.
+// Providers: 'dev' (development mode, the default: the canvasapp gateway code talking to an in-app simulation of
+// canvasapp.io.vn — providers/dev/, no network), 'canvasapp' (the real gateway, desktop only — providers/canvasapp/,
+// docs/GATEWAY-CANVASAPP.md) and 'mock' (the old demo, providers/mock.ts: only for takes saved before dev mode).
 import type { Mode, ModelId, Take, TakeProvider } from '../core/types'
 
 export type ProviderId = TakeProvider
@@ -112,6 +113,11 @@ export interface SubmitOptions {
 export interface VideoProvider {
   id: ProviderId
   label: string
+  /**
+   * Floor the queue engine applies to this provider's poll interval (ms). Omitted = the engine's floor for remote
+   * providers (15 s, canvasapp's own site polls every 60 s). Only the in-app dev simulator declares less.
+   */
+  minPollIntervalMs?: number
   available(): Promise<ProviderAvailability>
   capabilities(model: ModelId): ProviderCapabilities
   /**
@@ -159,5 +165,5 @@ export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'o
  */
 export type RunTake = Take
 
-/** Provider that runs a take ('mock' for takes saved before providers existed). */
+/** Provider that runs a take ('mock' = the old demo, for takes saved before providers existed). */
 export const providerOf = (t: Pick<Take, 'provider'>): ProviderId => t.provider ?? 'mock'

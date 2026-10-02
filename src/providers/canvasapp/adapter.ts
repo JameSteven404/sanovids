@@ -25,7 +25,7 @@
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
 import type { ModelId } from '../../core/types'
 import { capabilitiesFromModels } from '../capabilities'
-import type { JobRequest, ProviderAvailability, ProviderCapabilities, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
+import type { JobRequest, ProviderAvailability, ProviderCapabilities, ProviderId, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
   ALLOWED_IMAGE_TYPES,
@@ -93,24 +93,28 @@ export const memoryStorage = (): KeyValueStorage => {
   return { get: (k) => m.get(k) ?? null, set: (k, v) => void m.set(k, v), remove: (k) => void m.delete(k) }
 }
 
-export const browserStorage = (): KeyValueStorage => ({
+/**
+ * localStorage as a KeyValueStorage. `prefix` namespaces every key (the dev-mode provider uses one, so its bridge
+ * project, upload cache and job ledger never mix with the real canvasapp ones).
+ */
+export const browserStorage = (prefix = ''): KeyValueStorage => ({
   get: (k) => {
     try {
-      return localStorage.getItem(k)
+      return localStorage.getItem(prefix + k)
     } catch {
       return null
     }
   },
   set: (k, v) => {
     try {
-      localStorage.setItem(k, v)
+      localStorage.setItem(prefix + k, v)
     } catch {
       /* ignore */
     }
   },
   remove: (k) => {
     try {
-      localStorage.removeItem(k)
+      localStorage.removeItem(prefix + k)
     } catch {
       /* ignore */
     }
@@ -119,13 +123,21 @@ export const browserStorage = (): KeyValueStorage => ({
 
 export interface CanvasappProviderDeps {
   api: CanvasappApi
+  /** Provider id / label (default 'canvasapp' / 'canvasapp.io.vn'). The dev mode runs this same adapter as 'dev'. */
+  id?: ProviderId
+  label?: string
+  /**
+   * Polling floor (default MIN_POLL_MS = 15 s, for the real site). Also declared to the engine
+   * (VideoProvider.minPollIntervalMs) when given. Only the in-app dev simulator passes less.
+   */
+  minPollMs?: number
   /** Media-store lookup (lib/imageStore getBlob). */
   getBlob: (imageId: string) => Promise<Blob | null>
   storage?: KeyValueStorage
   now?: () => number
   /** Waits between looks at the job list after an unanswered POST (tests: fake timers). Default setTimeout. */
   sleep?: (ms: number) => Promise<void>
-  /** ≥ MIN_POLL_MS. */
+  /** ≥ minPollMs (MIN_POLL_MS by default). */
   pollIntervalMs?: number
   generateAudio?: () => boolean
   /** Pixel size of a picture (H3 transform frames' ratio); null = unreadable. Default createImageBitmap. */
@@ -203,7 +215,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const storage = deps.storage ?? memoryStorage()
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
-  const pollMs = Math.max(MIN_POLL_MS, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
+  const minPollMs = Math.max(0, deps.minPollMs ?? MIN_POLL_MS)
+  const pollMs = Math.max(minPollMs, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
 
   let state: GatewayState = load()
   let ledger: JobLedger = loadLedger()
@@ -540,16 +553,17 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
   async function jobsOf(projectId: string): Promise<CanvasJob[]> {
     const hit = lists.get(projectId)
-    // MIN_POLL_MS (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
-    if (hit && now() - hit.at < MIN_POLL_MS) return hit.jobs
+    // minPollMs (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
+    if (hit && now() - hit.at < minPollMs) return hit.jobs
     const jobs = await api.listVideoJobs(projectId)
     lists.set(projectId, { at: now(), jobs })
     return jobs
   }
 
   return {
-    id: 'canvasapp',
-    label: 'canvasapp.io.vn',
+    id: deps.id ?? 'canvasapp',
+    label: deps.label ?? 'canvasapp.io.vn',
+    ...(deps.minPollMs !== undefined ? { minPollIntervalMs: minPollMs } : {}),
 
     available: async (): Promise<ProviderAvailability> => {
       const t = await api.transport.available()

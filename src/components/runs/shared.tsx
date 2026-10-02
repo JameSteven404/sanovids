@@ -16,7 +16,13 @@ export function useActiveProvider(): ProviderId {
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
-const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo', canvasapp: 'canvasapp' }
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'Dev', canvasapp: 'canvasapp' }
+
+const PROVIDER_TITLE: Record<ProviderId, string> = {
+  mock: 'Demo cũ — video giả, trả bằng credit demo (không phải tiền thật)',
+  dev: 'Phát triển (giả lập) — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật)',
+  canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
+}
 
 /** Small chip naming the provider a take ran on (queue rows, take viewer). */
 export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
@@ -24,7 +30,7 @@ export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'
   return (
     <span
       className={`rq-prov ${id}`}
-      title={id === 'mock' ? 'Demo giả lập — video giả, trả bằng credit demo (không phải tiền thật)' : `${PROVIDER_LABEL[id]} — video thật, trả bằng credit canvasapp của tài khoản bạn`}
+      title={PROVIDER_TITLE[id] ?? PROVIDER_LABEL[id]}
     >
       {id === 'mock' ? <Sparkles size={10} /> : <Cloud size={10} />}
       {PROVIDER_SHORT[id]}

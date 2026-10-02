@@ -52,14 +52,17 @@ describe('formatCreditNumber', () => {
 describe('units and labels', () => {
   it('creditUnitLabel', () => {
     expect(creditUnitLabel('demo')).toBe('credit demo')
+    expect(creditUnitLabel('dev')).toBe('credit dev')
     expect(creditUnitLabel('canvasapp')).toBe('credit')
     expect(creditUnitLabel('demo', { short: true })).toBe('cr')
+    expect(creditUnitLabel('dev', { short: true })).toBe('cr')
   })
 
   it('kind of a provider, source labels, đồng', () => {
     expect(creditKindOf('mock')).toBe('demo')
+    expect(creditKindOf('dev')).toBe('dev')
     expect(creditKindOf('canvasapp')).toBe('canvasapp')
-    expect(CREDIT_SOURCE_LABEL).toEqual({ demo: 'credit demo', canvasapp: 'credit canvasapp' })
+    expect(CREDIT_SOURCE_LABEL).toEqual({ demo: 'credit demo', dev: 'credit dev', canvasapp: 'credit canvasapp' })
     expect(formatVnd(1234)).toBe('1.234.000đ')
     expect(formatVnd(0.5)).toBe('500đ')
     expect(formatVnd(null)).toBe('—')
@@ -72,5 +75,6 @@ describe('units and labels', () => {
     expect(chargedDemo({ provider: 'mock', charged: false })).toBe(false)
     expect(chargedDemo({ provider: 'canvasapp', charged: false })).toBe(false)
     expect(chargedDemo({ provider: 'canvasapp', charged: true })).toBe(false)
+    expect(chargedDemo({ provider: 'dev', charged: true })).toBe(false) // development mode bills the simulated account
   })
 })

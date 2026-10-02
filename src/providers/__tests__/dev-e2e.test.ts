@@ -1,0 +1,305 @@
+// Development mode end to end, as the app wires it, without any network:
+//   the real queue engine (store/runs) → getProvider('dev') = the real canvasapp adapter as 'dev' → devApi() (real
+//   api.ts + desktop transport) → devBridge() (simulated electron gateway) → the dev server (simulated canvasapp).
+// Also the balance (store/credits through activeGateway()), the login sheet and the top-up flow (components/topup
+// topupFlow) against the same simulated account.
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const media = vi.hoisted(() => new Map<string, Blob>())
+vi.mock('../../lib/imageStore', () => {
+  let n = 0
+  return {
+    putBlob: vi.fn(async (b: Blob, prefix = 'img') => {
+      const id = `${prefix}_${++n}`
+      media.set(id, b)
+      return id
+    }),
+    getBlob: vi.fn(async (id: string) => media.get(id) ?? null),
+    getUrl: vi.fn(async () => null),
+    cachedUrl: () => null,
+    deleteMedia: vi.fn(async (id: string) => void media.delete(id)),
+    dataUrlToBlob: () => new Blob(),
+    useMediaUrl: () => null,
+  }
+})
+
+import { createTopupFlow } from '../../components/topup/topupFlow'
+import { costOf } from '../../core/models'
+import type { Asset, Project, Scene, Take } from '../../core/types'
+import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
+import { useProject } from '../../store/project'
+import { isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import { memoryStorage } from '../canvasapp/adapter'
+import { openCheckout } from '../canvasapp/transport'
+import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
+import {
+  answerDevCheckout,
+  answerDevLogin,
+  clearDevLog,
+  closeDevPrompts,
+  createDevCanvasapp,
+  devBridge,
+  memoryBlobStore,
+  setDevServer,
+  useDevLog,
+  useDevPrompts,
+  type DevCanvasapp,
+  type DevRenderInput,
+} from '../dev'
+import { activeGateway, activeProviderId, DEV_POLL_MS, devApi, gatewayFor, getProvider, normalizeProviderChoice, PROVIDER_LABEL, resetDevMode, useProviderPrefs } from '../index'
+
+const asset = (id: string, name: string, imageIds: string[]): Asset => ({ id, kind: 'character', name, tag: name, description: '', imageIds, color: '#fff', position: null })
+
+const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
+  id,
+  order,
+  title: 'Cảnh ' + order,
+  prompt: 'Một con đường vắng',
+  refs: [],
+  videoRefs: [],
+  presetId: null,
+  settings: { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' },
+  firstFrame: null,
+  lastFrame: null,
+  color: null,
+  position: { x: 0, y: order * 300 },
+  note: '',
+  ...over,
+})
+
+const PROMPT = '@image_1 ôm @image_3 dưới mưa'
+const S1 = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' } as const
+const S1_COST = costOf(S1)
+
+const project = (): Project => ({
+  id: 'p',
+  name: 'P',
+  schemaVersion: 2,
+  createdAt: 0,
+  updatedAt: 0,
+  presets: [],
+  settings: { autoRenumber: true },
+  assets: [asset('elara', 'Elara', ['img_e1']), asset('lumi', 'Lumi', ['img_l1', 'img_l2'])],
+  scenes: [scene('s1', 1, { title: 'Ôm nhau', prompt: PROMPT, refs: ['elara', 'lumi'], settings: { ...S1 } }), scene('s2', 2)],
+})
+
+let server: DevCanvasapp
+let renders: { input: DevRenderInput; contents: (string | null)[] }[] = []
+let stopSync: () => void = () => undefined
+let events: RunEvent[] = []
+let offEvents: () => void = () => undefined
+
+const takes = () => useRuns.getState().takes
+const take = (id: string) => takes().find((t) => t.id === id)!
+const run = (ms: number) => vi.advanceTimersByTimeAsync(ms)
+const enqueue = (...ids: string[]): Take[] => {
+  const r = useRuns.getState().enqueue(ids)
+  expect(r.error).toBeUndefined()
+  return takes().slice(-r.queued)
+}
+const logOf = (endpoint: string) => useDevLog.getState().entries.filter((e) => e.endpoint === endpoint)
+
+beforeEach(async () => {
+  vi.useFakeTimers()
+  setEngineLockManager(null)
+  setEngineHooks({})
+  media.clear()
+  for (const id of ['img_e1', 'img_l1', 'img_l2']) media.set(id, new Blob(['IMG:' + id], { type: 'image/png' }))
+  renders = []
+  server = createDevCanvasapp({
+    storage: memoryStorage(),
+    blobs: memoryBlobStore(),
+    random: () => 0.5,
+    render: async (input) => {
+      renders.push({ input, contents: await Promise.all(input.images.map((i) => (i.blob ? i.blob.text() : Promise.resolve(null)))) })
+      return new Blob([`WEBM:#${input.jobNumber}`], { type: 'video/webm' })
+    },
+  })
+  setDevServer(server)
+  await resetDevMode() // the app's own reset: fresh simulated account + fresh dev provider (no leftovers)
+  server.setConfig({ latencyMs: 0 })
+  clearDevLog()
+  useProviderPrefs.setState({ provider: 'dev' })
+  useProject.getState().loadProject(project())
+  useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+  resetRealCredits()
+  stopSync = startRealCreditsSync()
+  events = []
+  offEvents = onRunEvent((e) => events.push(e))
+})
+
+afterEach(async () => {
+  offEvents()
+  stopSync()
+  closeDevPrompts()
+  useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+  await run(250)
+  vi.useRealTimers()
+  resetRealCredits()
+  setDevServer(null)
+  // no request ever left the gateway's allowlist
+  expect(useDevLog.getState().entries.filter((e) => e.fault === 'not-allowed')).toEqual([])
+})
+
+afterAll(() => {
+  setEngineLockManager(undefined)
+  setEngineHooks({})
+})
+
+describe('dev mode e2e: the default for new takes', () => {
+  it('new takes run on dev (web too): no desktop bridge needed, balance read from the simulated account', async () => {
+    expect(activeProviderId()).toBe('dev')
+    expect(activeGateway()).toMatchObject({ id: 'dev', simulated: true, label: PROVIDER_LABEL.dev })
+    expect(activeGateway().api).toBe(devApi())
+    expect(getProvider('dev')).toMatchObject({ id: 'dev', label: 'Phát triển (giả lập)', minPollIntervalMs: DEV_POLL_MS })
+    useProviderPrefs.getState().setProvider('mock') // the old demo is not selectable any more
+    expect(useProviderPrefs.getState().provider).toBe('dev')
+    expect(['mock', 'dev', 'canvasapp', null, 'x'].map(normalizeProviderChoice)).toEqual(['dev', 'dev', 'canvasapp', 'dev', 'dev'])
+    expect(gatewayFor('mock')).toBeNull()
+    // without the desktop bridge, choosing canvasapp still runs new takes in dev mode (never a real request)
+    useProviderPrefs.getState().setProvider('canvasapp')
+    expect(activeProviderId()).toBe('dev')
+    expect(gatewayFor('canvasapp')!.bridge()).toBeNull()
+    useProviderPrefs.getState().setProvider('dev')
+    server.login()
+    await refreshRealCredits({ force: true })
+    expect(getCreditInfo()).toMatchObject({ kind: 'dev', balance: 1000, status: 'ok' })
+  })
+})
+
+describe('dev mode e2e: happy path through the real engine and adapter', () => {
+  it('enqueue → uploads → bridge canvas → job → polling every 3 s → stream → completed; charged once, balance follows', async () => {
+    server.login()
+    const [t] = enqueue('s1')
+    expect(t).toMatchObject({ provider: 'dev', charged: false, status: 'queued', cost: S1_COST })
+    await run(300)
+    const calls = useDevLog.getState().entries.filter((e) => !['me', 'auth-state'].includes(String(e.endpoint)))
+    expect(calls.map((e) => e.endpoint).slice(0, 9)).toEqual([
+      'video-profiles',
+      'projects-list',
+      'project-create',
+      'project-rename',
+      'upload',
+      'upload',
+      'upload',
+      'canvas-put',
+      'job-create',
+    ])
+    expect(calls.every((e) => e.status !== null && e.status < 300)).toBe(true)
+    const [job] = server.snapshot().jobs
+    expect(job).toMatchObject({ prompt: PROMPT, canvas_node_id: canvasNodeId('s1'), client_request_id: clientRequestIdFor(t.id), cost: S1_COST })
+    expect(server.snapshot().uploads.map((u) => u.imageId).reverse()).toEqual(['img_e1', 'img_l1', 'img_l2'])
+    expect(take(t.id).remoteId).toBe(`${job.project_id}:${job.job_id}`)
+    expect(events).toContainEqual({ type: 'submitted', takeId: t.id, provider: 'dev' })
+    expect(useRealCredits.getState()).toMatchObject({ status: 'ok', balance: 1000 - S1_COST })
+    expect(useRuns.getState()).toMatchObject({ credits: 1000, spent: 0 }) // the old demo wallet is untouched
+
+    await run(4_000)
+    expect(take(t.id).status).toBe('processing')
+    expect(take(t.id).progress).toBeGreaterThan(1)
+    await run(12_000)
+    const done = take(t.id)
+    expect(done.status).toBe('completed')
+    expect(media.get(done.videoId!)!.type).toBe('video/webm')
+    expect(await media.get(done.videoId!)!.text()).toBe('WEBM:#1')
+    // the video shows the pictures canvasapp received, in @image order
+    expect(renders).toHaveLength(1)
+    expect(renders[0].input.images.map((i) => i.label)).toEqual(['@image_1', '@image_2', '@image_3'])
+    expect(renders[0].contents).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2'])
+    // polled gently: never closer than the dev floor (3 s)
+    const at = logOf('jobs-list').filter((e) => e.fault === null).map((e) => e.at)
+    expect(at.length).toBeGreaterThan(1)
+    for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(DEV_POLL_MS)
+    expect(server.balance()).toBe(1000 - S1_COST)
+    expect(useRealCredits.getState().balance).toBe(1000 - S1_COST)
+    expect(events).toContainEqual({ type: 'completed', takeId: t.id, provider: 'dev' })
+  })
+
+  it('logged out at first: the take fails with the login message; the simulated login sheet logs in and polling resumes', async () => {
+    const [t] = enqueue('s1')
+    await run(300)
+    expect(take(t.id).status).toBe('failed')
+    expect(take(t.id).error).toMatch(/đăng nhập/i)
+    expect(useRuns.getState().providerIssue).toMatchObject({ provider: 'dev', code: 'login-required' })
+    expect(server.snapshot().jobs).toHaveLength(0)
+    expect(useRealCredits.getState().status).toBe('login-required')
+
+    const login = devBridge().login()
+    await vi.waitFor(() => expect(useDevPrompts.getState().login).not.toBeNull())
+    answerDevLogin(true)
+    expect(await login).toEqual({ ok: true, authenticated: true })
+    await refreshRealCredits({ force: true })
+    expect(useRealCredits.getState()).toMatchObject({ status: 'ok', balance: 1000 })
+    const [again] = enqueue('s1')
+    await run(20_000)
+    expect(take(again.id).status).toBe('completed')
+  })
+
+  it('a job that fails on the simulated canvasapp: the take fails with its message, the credits come back', async () => {
+    server.login()
+    server.setJobFaults({ failNext: 'Nội dung vi phạm chính sách (giả lập)' })
+    const [t] = enqueue('s1')
+    await run(20_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: 'canvasapp: Nội dung vi phạm chính sách (giả lập)' })
+    expect(server.balance()).toBe(1000)
+    expect(useRealCredits.getState().balance).toBe(1000)
+  })
+})
+
+describe('dev mode e2e: idempotency', () => {
+  it('answer lost AND the job list unreadable → "không rõ" (never re-posted); retry finds the job — one job, one charge', async () => {
+    server.login()
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const [t] = enqueue('s1')
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUncertainSubmit(take(t.id))).toBe(true)
+    expect(logOf('job-create')).toHaveLength(1) // never posted again by itself
+    expect(server.snapshot().jobs).toHaveLength(1) // ...but the simulated canvasapp did create (and bill) it
+    expect(server.balance()).toBe(1000 - S1_COST)
+    await run(5 * 60_000)
+    expect(logOf('job-create')).toHaveLength(1)
+
+    // the network is back; the user retries THIS take: the adapter looks for the job first and adopts it
+    server.removeFault(listDown.id)
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    expect(takes()).toHaveLength(1)
+    await run(30_000)
+    const [job] = server.snapshot().jobs
+    expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: `${job.project_id}:${job.job_id}` })
+    expect(logOf('job-create')).toHaveLength(1)
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(1000 - S1_COST)
+  })
+
+  it('answer lost once (list readable) → the job is found and adopted 15 s later, never paid twice', async () => {
+    server.login()
+    server.setConfig({ dedupe: false }) // even a careless server: SanoVids must not post a second time when it finds the job
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const [t] = enqueue('s1')
+    await run(60_000)
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(1000 - S1_COST)
+    expect(take(t.id).remoteId).toBe(`${server.snapshot().jobs[0].project_id}:${server.snapshot().jobs[0].job_id}`)
+    expect(['processing', 'completed']).toContain(take(t.id).status)
+  })
+})
+
+describe('dev mode e2e: top-up', () => {
+  it('the top-up flow runs end to end on the simulated account: order → SePay sheet → paid → balance', async () => {
+    server.login()
+    const flow = createTopupFlow({ api: () => activeGateway().api, checkout: (args) => openCheckout(args, activeGateway().bridge) })
+    const started = flow.start(100_000)
+    await vi.waitFor(() => expect(useDevPrompts.getState().checkout).not.toBeNull())
+    expect(flow.store.getState().phase).toBe('checkout')
+    answerDevCheckout('success')
+    expect(await started).toBe(true)
+    expect(flow.store.getState().phase).toBe('waiting')
+    await run(10_000)
+    expect(flow.store.getState()).toMatchObject({ phase: 'paid', paidCredits: 100 })
+    expect(server.balance()).toBe(1100)
+    expect((await activeGateway().api.creditHistory({ kind: 'topup' })).items[0]).toMatchObject({ delta: 100, amount_vnd: 100_000 })
+    flow.dispose()
+  })
+})

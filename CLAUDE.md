@@ -1,7 +1,7 @@
 # SanoVids — demo
 
 Node-canvas app for producing AI films scene by scene (replacement concept for canvasapp.io.vn).
-Demo phase: frontend only, runs locally, **mock video provider** (no network, no real cost).
+Frontend (web + Electron desktop). New takes run in **development mode** by default: the real canvasapp gateway code against an in-app **simulated canvasapp.io.vn** (`src/providers/dev/` — no network, fake "credit dev"); the real canvasapp.io.vn gateway is opt-in in the desktop app. The old mock demo only runs takes saved before.
 
 ## Run
 - `npm run dev` → http://localhost:5180 (or double-click `start.bat`)
@@ -15,7 +15,8 @@ Vite 8 + React 19 + TypeScript 7 (`tsc` is the native compiler) + `@xyflow/react
 - `src/core/compile.ts` — pure: the prompt is sent as written; token helpers (`parseTokens`, `imageSlots`, `tokenForAsset`, `remapTokens`), validation warnings/notes. Character sync rules: a token with no media in the request (`unsentTokens`: past the model cap, mode without refs, or an `@image_?N` placeholder) blocks the run; `remapTokens` keeps typed-ahead numbers only on a pure append of new assets, otherwise turns them into `@image_?N`. The queue sends `take.imageKeysSnapshot` (captured with `promptSnapshot`), never the live refs — see `src/__tests__/characterSync.test.ts`. `src/core/staleTokens.ts`: warnings when renumbering is off. `src/core/migrate.ts` upgrades v1 data. Tests in `src/core/__tests__`, `src/store/__tests__`.
 - `src/core/models.ts` — model capabilities (image/video limits), credit pricing, `costOf`, `normalizeSettings`.
 - `src/store/project.ts` — undoable project store (zundo). Every refs/videoRefs change renumbers prompt tokens in the same undo step. `LAYOUT`, `ROW_H`, `defaultTakePosition`: one scene per row, its takes to the right.
-- `src/store/runs.ts` — takes (= video nodes on the canvas, `take.position`) + mock job queue (not undoable). `removeTakes` also drops them from every scene's videoRefs.
+- `src/store/runs.ts` — takes (= video nodes on the canvas, `take.position`) + the job queue engine (not undoable). `removeTakes` also drops them from every scene's videoRefs.
+- `src/providers/` — `index.ts`: registry, `activeProviderId()` ('dev' | 'canvasapp', never 'mock'), `activeGateway()` (api + bridge of the dev or real gateway — balance, login, top-up, history all go through it), `resetDevMode()`. `canvasapp/`: the real gateway (api, adapter, mapping, transport). `dev/`: development mode — `server.ts` (simulated canvasapp, faults, persistence), `bridge.ts` (simulated electron gateway), `prompts.ts` (login / SePay sheets), `log.ts` (request log), `validate.ts` + `routes.ts` (strict rules shared with tests / main.cjs allowlist). See docs/SPEC-v2.md §11.
 - `src/store/ui.ts` — selection (scene, asset and take ids), view, dialogs, drag overlay, toasts, `takeDisplay`.
 - `src/store/persist.ts` — IndexedDB autosave (+ localStorage emergency backup), project list, export/import `.sanovids.json`. All functions are async. Media blobs: `src/lib/imageStore.ts`.
 - `src/actions.ts` — shared commands (linkAssets, linkTakes, ensureAssetToken, createSceneFromTake, deleteSelection, run, copy, zip). UI calls these. Use `undoToastAction()` from the project store for toast undo buttons.

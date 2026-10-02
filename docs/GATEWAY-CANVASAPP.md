@@ -20,6 +20,9 @@ Nguyên tắc an toàn (bắt buộc):
   tự kiểm tra 60 s/lần), tải ảnh lên tuần tự và chỉ một lần cho mỗi ảnh.
 - Đây là **API nội bộ không chính thức** của canvasapp. Chỉ dùng khi đã được bên vận hành canvasapp.io.vn cho phép.
 
+## 1b. Chế độ phát triển (giả lập canvasapp ngay trong app)
+Mặc định take mới chạy ở **chế độ phát triển**: CHÍNH mã cổng canvasapp (api.ts, adapter.ts, mapping.ts, transport.ts) nói chuyện với một canvasapp.io.vn giả lập trong app (`src/providers/dev/`) — không gọi mạng, credit giả lập ("credit dev"), có đăng nhập / nạp credit qua SePay giả / lịch sử credit, và có thể gây lỗi có chủ đích (mất mạng, mất câu trả lời, 402, 422, 429, job lỗi…) để tìm bug. Xem docs/SPEC-v2.md §11.
+
 ## 2. Kiến trúc
 
 ```

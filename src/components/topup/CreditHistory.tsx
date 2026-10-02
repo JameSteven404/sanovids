@@ -5,7 +5,7 @@
 import { ArrowDownToLine, Clapperboard, Coins, LoaderCircle, LogIn, ReceiptText, RefreshCw, SlidersHorizontal, TriangleAlert, Undo2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import { TOPUP_HISTORY_KIND_LABEL, TOPUP_HISTORY_KINDS, type TopupHistoryKind } from '../../core/topup'
-import { canvasappApi } from '../../providers'
+import { activeGateway } from '../../providers'
 import { CanvasappError, canvasappErrorText, type CreditHistoryItem, type CreditHistoryPage, type CreditHistoryQuery } from '../../providers/canvasapp/api'
 import { HISTORY_INITIAL, HISTORY_PAGE_SIZE, historyEmptyText, historyReducer, historyRowView, type HistoryItemKind } from './topupModel'
 import './topup.css'
@@ -19,7 +19,7 @@ export interface CreditHistoryProps {
   onLogin?: () => void
 }
 
-const defaultLoad = (q: CreditHistoryQuery) => canvasappApi().creditHistory(q)
+const defaultLoad = (q: CreditHistoryQuery) => activeGateway().api.creditHistory(q)
 
 const KIND_ICON: Record<HistoryItemKind, ReactNode> = {
   topup: <ArrowDownToLine size={15} />,

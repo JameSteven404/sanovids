@@ -1,73 +1,82 @@
 // Credit balances shown in the UI — docs/SPEC-v2.md §9 "Demo credits vs real credits". Not undoable, not persisted.
 //
-// Two wallets, never mixed up:
-//   demo       useRuns.credits (store/runs): local play money, spent only by the mock provider. Not real money.
-//   canvasapp  the user's real canvasapp.io.vn balance: GET /api/me → credits_balance, through the desktop bridge
-//              (providers canvasappApi()). Kept here in `useRealCredits`. Never invented: null ("—") until known.
+// Wallets, never mixed up:
+//   dev        development mode (the default): the balance of the SIMULATED canvasapp account (providers/dev), read
+//              from its GET /api/me exactly like the real one — fake credits, no network.
+//   canvasapp  the user's real canvasapp.io.vn balance: GET /api/me → credits_balance, through the desktop bridge.
+//   demo       useRuns.credits (store/runs): the old demo's local play money (legacy 'mock' takes only).
+// The dev / canvasapp balance is the "gateway balance" kept in `useRealCredits`, read through activeGateway().api
+// (providers/index) — reset and read again whenever the active gateway changes. Never invented: null ("—") until known.
 //
 // ---- API for the UI ----
 //   useCreditInfo(): CreditInfo          THE way to show a balance. Re-renders when the provider choice or a balance
 //                                        changes. Mounting it also starts the background sync (ref-counted).
-//     kind: 'demo' | 'canvasapp'         follows the provider NEW takes use (activeProviderId(), Settings choice).
-//     balance: number | null             demo: useRuns.credits. canvasapp: last confirmed real balance, null = unknown.
+//     kind: 'dev' | 'canvasapp'          follows the provider NEW takes use (activeProviderId(), Settings choice);
+//                                        ('demo' only from creditInfoFrom for legacy displays).
+//     balance: number | null             last confirmed balance of the active gateway, null = unknown.
 //     status: 'ok' | 'loading' | 'login-required' | 'unavailable' | 'error'
-//                                        demo: always 'ok'. canvasapp: 'loading' until the first answer;
-//                                        'login-required' after a 401 (balance null → show "Đăng nhập");
-//                                        'unavailable' outside the desktop app (balance null);
-//                                        'error' otherwise (balance = last known value or null, see `error`).
-//     refresh(): Promise<void>           canvasapp: re-read now (forced, bypasses the 15 s throttle). demo: no-op.
-//     updatedAt, error, refreshing       when the real balance was confirmed / Vietnamese problem text / read in flight.
+//                                        'loading' until the first answer; 'login-required' after a 401 (balance
+//                                        null → show "Đăng nhập"); 'unavailable' when the gateway cannot be used here
+//                                        (real canvasapp outside the desktop app); 'error' otherwise (balance = last
+//                                        known value or null, see `error`). demo: always 'ok'.
+//     refresh(): Promise<void>           re-read now (forced, bypasses the 15 s throttle). demo: no-op.
+//     updatedAt, error, refreshing       when the balance was confirmed / Vietnamese problem text / read in flight.
 //   useCreditKind(): CreditKind          just the kind (cheaper when no balance is shown).
 //   getCreditInfo(): CreditInfo          non-reactive snapshot (actions, dialogs computing "after" balances).
-//   Formatting (lib/credits, re-exported here): formatCredits(n, kind, { short }) → "20 credit demo" | "20 credit" |
-//     short "20 cr"; creditUnitLabel(kind); formatVnd(n) → "20.000đ"; DEMO_CREDIT_HINT (demo tooltip);
-//     CREDIT_SOURCE_LABEL[kind] → "credit demo" | "credit canvasapp".
+//   Formatting (lib/credits, re-exported here): formatCredits(n, kind, { short }) → "20 credit dev" | "20 credit" |
+//     "20 credit demo" | short "20 cr"; creditUnitLabel(kind); formatVnd(n) → "20.000đ"; DEV_CREDIT_HINT /
+//     DEMO_CREDIT_HINT / CREDIT_HINT[kind] (tooltips); CREDIT_SOURCE_LABEL[kind]; isSimulatedCredit(kind).
 //   Demo wallet actions live in store/runs: addCredits(n), resetDemoCredits() (→ DEMO_CREDITS_DEFAULT = 1000, spent 0).
 //
-// ---- Real balance store ----
+// ---- Gateway balance store ----
 //   useRealCredits                       zustand store RealCreditsState { balance, status ('idle' before the first
-//                                        read), updatedAt, error, refreshing }.
-//   refreshRealCredits({ force? })       read /api/me. Never throws; resolves with the new state.
+//                                        read), updatedAt, error, refreshing } — of the ACTIVE gateway (dev or
+//                                        canvasapp). Emptied (status 'idle') when the active gateway changes.
+//   refreshRealCredits({ force? })       read /api/me of the active gateway. Never throws; resolves with the new state.
 //                                        - concurrent calls share the request in flight (dedupe);
 //                                        - without force nothing is sent when the last read started < 15 s ago;
 //                                        - force while a read is in flight queues ONE more read after it (the running
 //                                          one may predate a charge), shared by every forced caller meanwhile.
 //                                        401 → 'login-required' (balance cleared); no desktop bridge → 'unavailable'
 //                                        (no request sent); other errors → 'error' (last known balance kept).
-//   resetRealCredits()                   forget everything (call after logging out of canvasapp); a read in flight
-//                                        is ignored when it lands.
+//   resetRealCredits()                   forget everything (call after logging out); a read in flight is ignored when
+//                                        it lands.
 //   startRealCreditsSync(): () => void   ref-counted background sync; returns its stop function. useCreditInfo()
-//                                        calls it, so the app needs no extra wiring. While the active provider is
-//                                        canvasapp: refresh when sync starts / canvasapp gets chosen, on window focus,
-//                                        when the tab becomes visible, and every 60 s while visible (all throttled).
-//                                        Whatever the active provider: a forced refresh after every canvasapp job is
-//                                        submitted / completed / failed / cancelled (store/runs onRunEvent).
+//                                        calls it, so the app needs no extra wiring. Refresh when sync starts / the
+//                                        active gateway changes, on window focus, when the tab becomes visible, and
+//                                        every 60 s while visible (all throttled); a forced refresh after every job of
+//                                        the active gateway is submitted / completed / failed / cancelled
+//                                        (store/runs onRunEvent).
 //   For tests / embedding: createRealCredits(deps) and createCreditsSync(deps) (fake transport, fake window).
 import { useEffect, useMemo } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { creditKindOf, type CreditKind } from '../lib/credits'
-import { activeProviderId, canvasappApi, useProviderPrefs } from '../providers'
+import { activeGateway, activeProviderId, useProviderPrefs } from '../providers'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi } from '../providers/canvasapp/api'
 import { WEB_UNAVAILABLE } from '../providers/canvasapp/transport'
 import { onRunEvent, resumeProviderPolling, useRuns, type RunEvent } from './runs'
 
 export {
+  CREDIT_HINT,
+  CREDIT_MARK,
   CREDIT_SOURCE_LABEL,
   creditKindOf,
   creditUnitLabel,
   DEMO_CREDIT_HINT,
   DEMO_CREDITS_DEFAULT,
+  DEV_CREDIT_HINT,
   formatCreditNumber,
   formatCredits,
   formatVnd,
+  isSimulatedCredit,
   type CreditFormatOptions,
   type CreditKind,
 } from '../lib/credits'
 
 /** Without force, the real balance is not read again sooner than this after the last read started. */
 export const CREDITS_MIN_REFRESH_MS = 15_000
-/** Background refresh period while the window is visible and canvasapp is the active provider. */
+/** Background refresh period while the window is visible (a gateway is active). */
 export const CREDITS_SYNC_INTERVAL_MS = 60_000
 
 export type RealCreditsStatus = 'idle' | 'loading' | 'ok' | 'login-required' | 'unavailable' | 'error'
@@ -198,12 +207,16 @@ export interface SyncEnv {
 
 export interface CreditsSyncDeps {
   refresh: (opts?: RefreshOptions) => Promise<unknown>
-  /** True while the provider for new takes is canvasapp. */
+  /** True while the provider for new takes reads a gateway balance (dev / canvasapp). */
   isActive: () => boolean
+  /** Which gateway is active ('dev' | 'canvasapp'): a change while active → forced read. Optional. */
+  activeKey?: () => string | null
   /** Called whenever the provider choice may have changed. Returns unsubscribe. */
   subscribeActive: (listener: () => void) => () => void
   /** Take lifecycle events (store/runs onRunEvent). Returns unsubscribe. */
   subscribeJobs: (listener: (e: RunEvent) => void) => () => void
+  /** Whether a job event changes the balance shown (default: any provider but the old demo). */
+  isGatewayJob?: (e: RunEvent) => boolean
   /** Window / document to listen on (default: the page's, when present). */
   env?: () => SyncEnv
   /** Default CREDITS_SYNC_INTERVAL_MS. */
@@ -235,14 +248,19 @@ export function createCreditsSync(deps: CreditsSyncDeps): { start: () => () => v
     doc?.addEventListener('visibilitychange', onVisibility)
     const timer = setInterval(maybeRefresh, deps.intervalMs ?? CREDITS_SYNC_INTERVAL_MS)
     let wasActive = deps.isActive()
+    let wasKey = deps.activeKey?.() ?? null
     const offActive = deps.subscribeActive(() => {
       const active = deps.isActive()
+      const key = deps.activeKey?.() ?? null
       if (active && !wasActive) maybeRefresh()
+      else if (active && key !== wasKey && visible()) void deps.refresh({ force: true })
       wasActive = active
+      wasKey = key
     })
-    // A canvasapp job changes the real balance whichever provider is chosen for new takes now.
+    const gatewayJob = deps.isGatewayJob ?? ((e: RunEvent) => e.provider !== 'mock')
+    // A job of the gateway changes its balance (charged when accepted, refunded on failure).
     const offJobs = deps.subscribeJobs((e) => {
-      if (e.provider === 'canvasapp') void deps.refresh({ force: true })
+      if (gatewayJob(e)) void deps.refresh({ force: true })
     })
     maybeRefresh()
     return () => {
@@ -277,23 +295,35 @@ export function createCreditsSync(deps: CreditsSyncDeps): { start: () => () => v
 // Default instance (the app's)
 // ---------------------------------------------------------------------------------------------
 
-const realCredits = createRealCredits({ api: () => canvasappApi() })
+const realCredits = createRealCredits({ api: () => activeGateway().api })
 
 export const useRealCredits = realCredits.store
 export const refreshRealCredits = realCredits.refresh
 export const resetRealCredits = realCredits.reset
 
-// Every confirmed balance proves the canvasapp session works: running canvasapp takes whose polling backed off after
-// a 401 poll again at the next interval (the user logged in again) instead of waiting up to 10 minutes.
+// The balance belongs to ONE gateway: when new takes switch between dev and canvasapp, forget it (the sync below then
+// reads the new one). Registered before any sync listener, so the reset always comes first.
+let balanceGateway = activeProviderId()
+useProviderPrefs.subscribe(() => {
+  const id = activeProviderId()
+  if (id === balanceGateway) return
+  balanceGateway = id
+  resetRealCredits()
+})
+
+// Every confirmed balance proves the gateway session works: running takes whose polling backed off after a 401 poll
+// again at the next interval (the user logged in again) instead of waiting up to 10 minutes.
 useRealCredits.subscribe((s, prev) => {
-  if (prev.refreshing && !s.refreshing && s.status === 'ok') resumeProviderPolling('canvasapp')
+  if (prev.refreshing && !s.refreshing && s.status === 'ok') resumeProviderPolling(activeProviderId())
 })
 
 const sync = createCreditsSync({
   refresh: refreshRealCredits,
-  isActive: () => activeProviderId() === 'canvasapp',
+  isActive: () => creditKindOf(activeProviderId()) !== 'demo',
+  activeKey: () => activeProviderId(),
   subscribeActive: (listener) => useProviderPrefs.subscribe(() => listener()),
   subscribeJobs: onRunEvent,
+  isGatewayJob: (e) => e.provider === activeProviderId(),
 })
 
 export const startRealCreditsSync = sync.start
@@ -309,13 +339,13 @@ export interface CreditInfo {
   /** null = unknown: show "—", never a made-up number. */
   balance: number | null
   status: CreditStatus
-  /** canvasapp: forced re-read of the real balance. demo: no-op. */
+  /** dev / canvasapp: forced re-read of the gateway balance. demo: no-op. */
   refresh: () => Promise<void>
-  /** canvasapp: when the balance was confirmed. demo: null. */
+  /** dev / canvasapp: when the balance was confirmed. demo: null. */
   updatedAt: number | null
-  /** Vietnamese problem text (canvasapp), else null. */
+  /** Vietnamese problem text (dev / canvasapp), else null. */
   error: string | null
-  /** canvasapp read in flight. */
+  /** dev / canvasapp read in flight. */
   refreshing: boolean
 }
 
@@ -324,7 +354,7 @@ type RealView = Pick<RealCreditsState, 'balance' | 'status' | 'updatedAt' | 'err
 const refreshDemo = (): Promise<void> => Promise.resolve()
 const refreshReal = (): Promise<void> => refreshRealCredits({ force: true }).then(() => undefined)
 
-/** Pure: the CreditInfo for a kind, the demo balance and the real-balance state. */
+/** Pure: the CreditInfo for a kind, the demo balance and the gateway-balance state (dev and canvasapp read the latter). */
 export function creditInfoFrom(kind: CreditKind, demoCredits: number, real: RealView): CreditInfo {
   if (kind === 'demo') {
     return { kind, balance: demoCredits, status: 'ok', refresh: refreshDemo, updatedAt: null, error: null, refreshing: false }

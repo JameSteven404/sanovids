@@ -1211,7 +1211,7 @@
 }
 /*
  * Cost labels (docs/SPEC-v2.md §9 — same language as the canvas card, inspector and scene table):
- * demo play money = neutral + dashed (mark / outline), real canvasapp credits = --info tint (the top bar credit
+ * simulated credits (dev / old demo) = neutral + dashed (mark / outline), real canvasapp credits = --info tint (the top bar credit
  * pill's color — the accent stays for primary actions).
  */
 .sb-cost {
@@ -1221,7 +1221,7 @@
 .sb-cost.is-real {
   color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
-.sb-cost.is-demo {
+.sb-cost.is-sim {
   color: var(--text-dim);
 }
 .sb-demo-mark {
@@ -1310,7 +1310,7 @@
   background: var(--info-soft);
   color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
-.sb-cost-pill.is-demo {
+.sb-cost-pill.is-sim {
   border-style: dashed;
   border-color: var(--text-faint);
   color: var(--text-dim);

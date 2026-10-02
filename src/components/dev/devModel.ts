@@ -1,0 +1,408 @@
+// What the development-mode UI shows (Bảng phát triển, top bar bug button) — pure, no stores, no React. Tested in
+// __tests__/devModel.test.ts. docs/SPEC-v2.md §11.
+//
+// ---- API ----
+//   DEV_PANEL_TABS / DevPanelTab              the panel's tabs (Trạng thái · Gây lỗi · Nhật ký · Job & đơn nạp).
+//   activeFaultCount(snapshot)                faults armed on the simulated server (rules + job faults + session ended).
+//   DEV_UI_FAULTS                             one-click faults of the "Gây lỗi" tab (Vietnamese label / hint / action).
+//   uiFaultRule(item, sticky)                 the server rule (DevFaultInput) of a 'rule' item, sticky or one-shot.
+//   faultKindText(fault) / faultRuleText(rule) Vietnamese description of a fault / an armed rule.
+//   customFaultInput(form)                    the custom-rule form → DevFaultInput, or a Vietnamese error.
+//   statusTone(entry) / statusText(entry)     request-log status chip.
+//   filterLog(entries, query, onlyProblems)   newest first, filtered.
+//   logExport(entries, snapshot, now)         "Copy nhật ký" text (JSON) for bug reports.
+//   characterCheck(body, ctx)                 "Kiểm tra nhân vật" of a POST /api/video-jobs body: each upload in order
+//                                             as @image_N → SanoVids image → asset; @image_N of the prompt without an
+//                                             upload are flagged.
+import { parseTokens } from '../../core/compile'
+import type { Asset } from '../../core/types'
+import type { DevPanelTab } from '../../store/ui'
+import type { DevLogEntry } from '../../providers/dev/log'
+import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
+import {
+  DEV_FAULT_PRESETS,
+  type DevFault,
+  type DevFaultInput,
+  type DevFaultRule,
+  type DevJobView,
+  type DevServerSnapshot,
+  type DevUploadView,
+} from '../../providers/dev/server'
+
+// ---------------------------------------------------------------------------------------------
+// Tabs, counts
+// ---------------------------------------------------------------------------------------------
+
+export type { DevPanelTab }
+
+export const DEV_PANEL_TABS: { id: DevPanelTab; label: string }[] = [
+  { id: 'status', label: 'Trạng thái' },
+  { id: 'faults', label: 'Gây lỗi' },
+  { id: 'log', label: 'Nhật ký' },
+  { id: 'jobs', label: 'Job & đơn nạp' },
+]
+
+/** Faults armed on the simulated server: rules, job-level faults and an ended session. */
+export function activeFaultCount(s: Pick<DevServerSnapshot, 'faults' | 'jobFaults'> | null | undefined): number {
+  if (!s) return 0
+  const j = s.jobFaults
+  return s.faults.length + (j.failNext !== null ? 1 : 0) + (j.expireNext ? 1 : 0) + (j.streamFailures > 0 ? 1 : 0)
+}
+
+// ---------------------------------------------------------------------------------------------
+// One-click faults
+// ---------------------------------------------------------------------------------------------
+
+export type DevUiFaultAction =
+  /** A server rule (addFault): one-shot by default, "giữ" makes it sticky. */
+  | { type: 'rule'; rule: DevFaultInput }
+  /** The next job created fails (setJobFaults({ failNext })). */
+  | { type: 'fail-next' }
+  /** The next job created ends 'expired'. */
+  | { type: 'expire-next' }
+  /** The next N downloads fail with 503 (setJobFaults({ streamFailures })). */
+  | { type: 'stream-failures' }
+  /** The session ends on the server: every request answers 401 until the user logs in again. */
+  | { type: 'expire-session' }
+
+export interface DevUiFault {
+  id: string
+  label: string
+  hint: string
+  action: DevUiFaultAction
+  /** The "giữ" toggle applies (rules only). */
+  canStick: boolean
+  /** Sticky unless the user turns "giữ" off (faults that only make sense while they last). */
+  stickyByDefault: boolean
+}
+
+const preset = (id: string): DevFaultInput => {
+  const p = DEV_FAULT_PRESETS.find((x) => x.id === id)
+  if (!p) throw new Error(`unknown dev fault preset ${id}`)
+  return p.rule
+}
+const hintOf = (id: string) => DEV_FAULT_PRESETS.find((x) => x.id === id)?.hint ?? ''
+
+const rule = (id: string, label: string, opts: { hint?: string; input?: DevFaultInput; sticky?: boolean } = {}): DevUiFault => {
+  const input = opts.input ?? preset(id)
+  return {
+    id,
+    label,
+    hint: opts.hint ?? hintOf(id),
+    action: { type: 'rule', rule: input },
+    canStick: true,
+    stickyByDefault: opts.sticky ?? !!input.sticky,
+  }
+}
+
+/** The "Gây lỗi" tab, in the order of the panel. */
+export const DEV_UI_FAULTS: DevUiFault[] = [
+  rule('job-network', 'Mất mạng khi tạo job'),
+  rule('job-lost', 'Mất phản hồi sau khi tạo job (đã trừ tiền)'),
+  rule('job-502', '502 sau khi đã tạo job'),
+  rule('job-no-id', '200 nhưng không có mã job'),
+  rule('job-402', 'Không đủ credit (402)'),
+  rule('job-422', 'Dữ liệu sai (422)'),
+  rule('canvas-400', 'Invalid canvas payload (400)'),
+  {
+    id: 'session-401',
+    label: 'Hết phiên (401)',
+    hint: 'Máy chủ giả lập đăng xuất tài khoản: mọi yêu cầu trả 401 cho tới khi đăng nhập lại — SanoVids phải mời đăng nhập, không làm mất take đang chạy.',
+    action: { type: 'expire-session' },
+    canStick: false,
+    stickyByDefault: false,
+  },
+  rule('rate-429', 'Quá nhiều yêu cầu (429)'),
+  {
+    id: 'fail-next',
+    label: 'Job tiếp theo lỗi',
+    hint: 'Job tạo tiếp theo chạy một lúc rồi lỗi — máy chủ hoàn credit, take phải báo lỗi rõ ràng.',
+    action: { type: 'fail-next' },
+    canStick: false,
+    stickyByDefault: false,
+  },
+  {
+    id: 'expire-next',
+    label: 'Job tiếp theo hết hạn',
+    hint: 'Job tạo tiếp theo kết thúc ở trạng thái “expired” — không có video để tải.',
+    action: { type: 'expire-next' },
+    canStick: false,
+    stickyByDefault: false,
+  },
+  {
+    id: 'stream-failures',
+    label: 'Tải video lỗi N lần',
+    hint: 'N lần tải video kế tiếp bị trả 503 — video đã xong (đã trả tiền), SanoVids phải tự tải lại chứ không báo take lỗi.',
+    action: { type: 'stream-failures' },
+    canStick: false,
+    stickyByDefault: false,
+  },
+  rule('upload-500', 'Tải ảnh lên lỗi', {
+    hint: 'Lần tải ảnh tham chiếu kế tiếp bị máy chủ từ chối (500) — take không được gửi đi, không bị trừ credit.',
+    input: { endpoint: 'upload', fault: { kind: 'response', status: 500, json: { detail: 'Không lưu được ảnh (giả lập lỗi máy chủ).' } } },
+  }),
+  rule('slow-3s', 'Chậm 3 giây', {
+    hint: 'Yêu cầu kế tiếp (bật “giữ”: mọi yêu cầu) phải chờ thêm 3 giây.',
+    input: { endpoint: '*', fault: { kind: 'slow', ms: 3_000 } },
+    sticky: false,
+  }),
+  rule('profiles-500', 'Cấu hình model lỗi (500)'),
+  rule('list-network', 'Mất mạng khi đọc danh sách job'),
+  rule('stream-network', 'Mất mạng khi tải video (3 lần)'),
+  rule('offline', 'Mất mạng hoàn toàn'),
+]
+
+/** The server rule of a 'rule' item: one-shot (its own `times`, default 1) or sticky. */
+export function uiFaultRule(item: DevUiFault, sticky: boolean): DevFaultInput | null {
+  if (item.action.type !== 'rule') return null
+  const { rule: r } = item.action
+  return { endpoint: r.endpoint, fault: r.fault, sticky, ...(sticky ? {} : { times: r.times ?? 1 }), label: item.label }
+}
+
+export function faultKindText(f: DevFault): string {
+  switch (f.kind) {
+    case 'network':
+      return 'mất mạng (không tới máy chủ)'
+    case 'lost-response':
+      return 'mất câu trả lời (máy chủ đã xử lý)'
+    case 'processed-then':
+      return `xử lý xong rồi trả ${f.status}`
+    case 'response':
+      return `trả ${f.status} (không xử lý)`
+    case 'slow':
+      return `chậm ${formatSeconds(f.ms)}`
+  }
+}
+
+const formatSeconds = (ms: number) => `${Math.round((ms / 1000) * 10) / 10} giây`.replace('.', ',')
+
+export const endpointText = (e: DevEndpoint | '*'): string => (e === '*' ? 'Mọi yêu cầu' : DEV_ENDPOINT_LABEL[e] ?? e)
+
+/** "Tạo job video · mất mạng (không tới máy chủ) · còn 1 lần" */
+export function faultRuleText(r: Pick<DevFaultRule, 'endpoint' | 'fault' | 'sticky' | 'remaining' | 'hits'>): string {
+  const left = r.sticky ? 'giữ tới khi tắt' : `còn ${r.remaining} lần`
+  const hits = r.hits ? ` · đã xảy ra ${r.hits} lần` : ''
+  return `${endpointText(r.endpoint)} · ${faultKindText(r.fault)} · ${left}${hits}`
+}
+
+// ---------------------------------------------------------------------------------------------
+// Custom rule
+// ---------------------------------------------------------------------------------------------
+
+export type DevFaultKind = DevFault['kind']
+
+export const DEV_FAULT_KIND_LABEL: Record<DevFaultKind, string> = {
+  network: 'Mất mạng',
+  'lost-response': 'Mất câu trả lời (đã xử lý)',
+  'processed-then': 'Xử lý rồi trả mã khác',
+  response: 'Trả mã lỗi (không xử lý)',
+  slow: 'Chậm',
+}
+
+export interface CustomFaultForm {
+  endpoint: DevEndpoint | '*'
+  kind: DevFaultKind
+  /** HTTP status for 'response' / 'processed-then'. */
+  status: string
+  /** Optional JSON answer body for 'response' / 'processed-then' ("" = {}). */
+  json: string
+  /** Delay for 'slow'. */
+  ms: string
+  /** One-shot count. */
+  times: string
+  sticky: boolean
+}
+
+export const CUSTOM_FAULT_DEFAULT: CustomFaultForm = { endpoint: 'job-create', kind: 'response', status: '500', json: '', ms: '3000', times: '1', sticky: false }
+
+export const isDevEndpoint = (v: string): v is DevEndpoint | '*' => v === '*' || (DEV_ENDPOINTS as string[]).includes(v)
+
+/** The custom-rule form as a server rule, or why it cannot be one (Vietnamese). */
+export function customFaultInput(f: CustomFaultForm): { ok: true; input: DevFaultInput } | { ok: false; error: string } {
+  if (!isDevEndpoint(f.endpoint)) return { ok: false, error: 'Chọn một yêu cầu.' }
+  let fault: DevFault
+  if (f.kind === 'network' || f.kind === 'lost-response') fault = { kind: f.kind }
+  else if (f.kind === 'slow') {
+    const ms = Number(f.ms)
+    if (!Number.isInteger(ms) || ms < 0 || ms > 120_000) return { ok: false, error: 'Thời gian chậm phải là số nguyên 0–120000 ms.' }
+    fault = { kind: 'slow', ms }
+  } else {
+    const status = Number(f.status)
+    if (!Number.isInteger(status) || status < 100 || status > 599) return { ok: false, error: 'Mã HTTP phải từ 100 đến 599.' }
+    let json: unknown = {}
+    if (f.json.trim()) {
+      try {
+        json = JSON.parse(f.json)
+      } catch {
+        return { ok: false, error: 'Nội dung trả về không phải JSON hợp lệ.' }
+      }
+    }
+    fault = { kind: f.kind, status, json }
+  }
+  const times = Number(f.times)
+  if (!f.sticky && (!Number.isInteger(times) || times < 1 || times > 100)) return { ok: false, error: 'Số lần phải từ 1 đến 100.' }
+  return { ok: true, input: { endpoint: f.endpoint, fault, sticky: f.sticky, ...(f.sticky ? {} : { times }) } }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Request log
+// ---------------------------------------------------------------------------------------------
+
+export type LogTone = 'ok' | 'warn' | 'danger'
+
+export function statusTone(e: Pick<DevLogEntry, 'status'>): LogTone {
+  if (e.status === null || e.status >= 500) return 'danger'
+  if (e.status >= 400) return 'warn'
+  return 'ok'
+}
+
+/** "200" | "không trả lời" (network fault / refused by the gateway). */
+export const statusText = (e: Pick<DevLogEntry, 'status'>): string => (e.status === null ? 'không trả lời' : String(e.status))
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** "14:05:09" (local time). */
+export function logTime(at: number): string {
+  const d = new Date(at)
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/** Newest first; `query` matches method, path, status, fault, endpoint name and note (all words, any case). */
+export function filterLog(entries: readonly DevLogEntry[], query: string, onlyProblems = false): DevLogEntry[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const out: DevLogEntry[] = []
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (onlyProblems && statusTone(e) === 'ok' && !e.fault) continue
+    if (words.length) {
+      const hay = [e.method, e.path, statusText(e), e.fault ?? '', e.endpoint ? DEV_ENDPOINT_LABEL[e.endpoint] : '', e.note ?? ''].join(' ').toLowerCase()
+      if (!words.every((w) => hay.includes(w))) continue
+    }
+    out.push(e)
+  }
+  return out
+}
+
+/** "Copy nhật ký": the log + the simulated server's settings and faults, as JSON for a bug report. */
+export function logExport(entries: readonly DevLogEntry[], snapshot: DevServerSnapshot | null, now: number = Date.now()): string {
+  return JSON.stringify(
+    {
+      app: 'SanoVids',
+      mode: 'dev',
+      exportedAt: new Date(now).toISOString(),
+      server: snapshot
+        ? {
+            authenticated: snapshot.authenticated,
+            balance: snapshot.balance,
+            config: snapshot.config,
+            faults: snapshot.faults,
+            jobFaults: snapshot.jobFaults,
+            jobs: snapshot.jobs.slice(0, 20).map((j) => ({
+              job_id: j.job_id,
+              number: j.number,
+              status: j.status,
+              progress: j.progress,
+              cost: j.cost,
+              refunded: j.refunded,
+              client_request_id: j.client_request_id,
+              upload_ids: j.upload_ids,
+              error_message: j.error_message,
+            })),
+          }
+        : null,
+      entries: entries.map((e) => ({ ...e, at: new Date(e.at).toISOString() })),
+    },
+    null,
+    2,
+  )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Character check (POST /api/video-jobs)
+// ---------------------------------------------------------------------------------------------
+
+export interface CharacterSlot {
+  /** 1-based position in upload_ids (= N of @image_N); 0 for frames. */
+  n: number
+  /** "@image_1" | "khung đầu" | "khung cuối" */
+  label: string
+  uploadId: string
+  /** The upload exists on the simulated server. */
+  uploaded: boolean
+  /** SanoVids media-store image id (from the upload's filename), null when unknown. */
+  imageId: string | null
+  /** The project asset holding that image, when found. */
+  asset: { id: string; name: string; tag: string } | null
+  /** The prompt mentions this @image_N (frames: always true). */
+  mentioned: boolean
+}
+
+export interface CharacterCheck {
+  kind: 'images' | 'frames'
+  slots: CharacterSlot[]
+  /** @image_N of the prompt that have no picture in this request (the model would get no image for them). */
+  missing: { n: number; token: string }[]
+  /** The prompt checked: the job's full prompt when the server has it, else the (maybe cut) logged one. */
+  prompt: string
+  /** Only the first characters of the prompt are known (the log cuts long strings). */
+  promptTruncated: boolean
+  /** The prompt came from the simulated server's job (complete). */
+  promptFromJob: boolean
+}
+
+export interface CharacterCheckContext {
+  uploads: readonly Pick<DevUploadView, 'upload_id' | 'imageId'>[]
+  jobs: readonly Pick<DevJobView, 'client_request_id' | 'prompt'>[]
+  assets: readonly Pick<Asset, 'id' | 'name' | 'tag' | 'imageIds'>[]
+}
+
+const TRUNCATED = /… \(\+\d+ ký tự\)$/
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** Null when the body is not a job body (no upload_ids / frames). */
+export function characterCheck(body: unknown, ctx: CharacterCheckContext): CharacterCheck | null {
+  if (!isObj(body)) return null
+  const ids = Array.isArray(body.upload_ids) ? body.upload_ids.filter((x): x is string => typeof x === 'string') : null
+  const first = typeof body.first_frame_upload_id === 'string' ? body.first_frame_upload_id : null
+  const last = typeof body.last_frame_upload_id === 'string' ? body.last_frame_upload_id : null
+  if (!ids && !first && !last) return null
+
+  const key = typeof body.client_request_id === 'string' ? body.client_request_id : null
+  const job = key ? ctx.jobs.find((j) => j.client_request_id === key) : undefined
+  const logged = typeof body.prompt === 'string' ? body.prompt : ''
+  const prompt = job ? job.prompt : logged
+  const promptTruncated = !job && TRUNCATED.test(logged)
+
+  const uploads = new Map(ctx.uploads.map((u) => [u.upload_id, u]))
+  const assetOf = (imageId: string | null) => {
+    if (!imageId) return null
+    const a = ctx.assets.find((x) => x.imageIds.includes(imageId))
+    return a ? { id: a.id, name: a.name, tag: a.tag } : null
+  }
+  const slot = (uploadId: string, n: number, label: string, mentioned: boolean): CharacterSlot => {
+    const u = uploads.get(uploadId)
+    const imageId = u?.imageId ?? null
+    return { n, label, uploadId, uploaded: !!u, imageId, asset: assetOf(imageId), mentioned }
+  }
+
+  const tokens = parseTokens(prompt).filter((t) => t.kind === 'image')
+  const mentioned = new Set(tokens.map((t) => t.n))
+  const frames = !ids && (first || last)
+  const slots = frames
+    ? [
+        ...(first ? [slot(first, 0, 'khung đầu', true)] : []),
+        ...(last ? [slot(last, 0, 'khung cuối', true)] : []),
+      ]
+    : (ids ?? []).map((id, i) => slot(id, i + 1, `@image_${i + 1}`, mentioned.has(i + 1)))
+  const count = frames ? 0 : (ids ?? []).length
+  const missing: { n: number; token: string }[] = []
+  const seen = new Set<number>()
+  for (const t of tokens) {
+    if (t.n >= 1 && t.n <= count) continue
+    if (seen.has(t.n)) continue
+    seen.add(t.n)
+    missing.push({ n: t.n, token: prompt.slice(t.start, t.end) })
+  }
+  return { kind: frames ? 'frames' : 'images', slots, missing, prompt, promptTruncated, promptFromJob: !!job }
+}

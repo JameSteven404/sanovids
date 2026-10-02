@@ -7,7 +7,7 @@ import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, l
 import { compileScene, sceneCode } from '../../core/compile'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
-import { formatCredits } from '../../lib/credits'
+import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
@@ -15,7 +15,7 @@ import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, costTitle, creditTone, NO_VIDEO_REFS_REASON, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -192,7 +192,7 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
         <span className="in-meta">
           {preset && <span className="badge">{preset.name}</span>}
           <span className={`badge in-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
-            {creditKind === 'demo' && <FlaskConical size={11} />}
+            {isSimulatedCredit(creditKind) && <FlaskConical size={11} />}
             {formatCredits(cost, creditKind)}
           </span>
         </span>
@@ -653,8 +653,8 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
       ? 'Thiếu khung đầu/cuối'
       : unsent
         ? `Prompt nhắc ${unsent} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-        : hasVideoRefs && creditKind === 'canvasapp'
-          ? 'Cổng canvasapp chưa hỗ trợ video tham chiếu (@video) — bỏ @video hoặc chạy bằng Demo'
+        : hasVideoRefs && creditKind !== 'demo'
+          ? NO_VIDEO_REFS_REASON
           : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
   const shown = completed.slice(-6)
@@ -700,7 +700,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
               title={
                 !acceptsVideo
                   ? noVideoTitle
-                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${creditKind === 'canvasapp' ? ' · Lưu ý: cổng canvasapp chưa nhận video tham chiếu — cảnh này chỉ chạy được bằng Demo' : ''}`
+                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${creditKind !== 'demo' ? ' · Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này' : ''}`
               }
             >
               T{t.number}

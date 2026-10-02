@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
 import { costOf, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
-import { CREDIT_SOURCE_LABEL, DEMO_CREDIT_HINT, formatCreditNumber, formatCredits, formatVnd, type CreditKind } from '../../lib/credits'
+import { CREDIT_HINT, CREDIT_SOURCE_LABEL, formatCreditNumber, formatCredits, formatVnd, isSimulatedCredit, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
 import { assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
@@ -407,18 +407,25 @@ export function useFileDropGuard() {
   }, [])
 }
 
-// ---------------- costs: demo vs real credits (docs/SPEC-v2.md §9) ----------------
+// ---------------- costs: simulated vs real credits (docs/SPEC-v2.md §9, §11) ----------------
 // Every cost label of the workspace (scene card, inspector, presets, scene table) shows the wallet the NEXT run pays
 // with: `useCreditKind()` from store/credits (same value as useCreditInfo().kind, without subscribing to balances).
 // Amounts go through lib/credits formatCredits(n, kind, { short }). Look (each area's CSS, tokens only):
-//   is-demo  play money — neutral text, dashed outline / dashed underline, a small "demo" mark next to short amounts;
+//   is-sim   simulated credits — development mode ('dev', "credit dev") or the old demo ('demo'): neutral text,
+//            dashed outline / dashed underline, a small CREDIT_MARK ("dev" / "demo") next to short amounts;
 //   is-real  real canvasapp credits — solid --info tint (fill or text), the color of the top bar credit pill; the
 //            accent stays for Run. Inside a filled Run button both kinds are drawn in the button's text color.
 
 /** Modifier class of a cost label. */
-export function creditTone(kind: CreditKind): 'is-demo' | 'is-real' {
-  return kind === 'demo' ? 'is-demo' : 'is-real'
+export function creditTone(kind: CreditKind): 'is-sim' | 'is-real' {
+  return isSimulatedCredit(kind) ? 'is-sim' : 'is-real'
 }
+
+/**
+ * Why a scene with @video_N cannot run: the canvasapp gateway — and development mode, which runs the same gateway
+ * code against the simulation — takes no reference video yet (store/runs check() refuses it too).
+ */
+export const NO_VIDEO_REFS_REASON = 'Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ @video để chạy'
 
 /** Per-run cost of several scenes added up (what "Chạy tất cả" / a batch run costs). */
 export function totalCost(scenes: readonly { settings: VideoSettings }[]): number {
@@ -431,13 +438,15 @@ export const REAL_COST_HINT = 'Ước tính — trừ trên tài khoản canvasa
 /**
  * Tooltip of a cost, two lines: the amount with its wallet, then what that wallet means. `lead` goes first
  * ("Chạy S01 · ").
+ *   dev        "Chạy S01 · 20 credit dev\nCredit giả lập của chế độ phát triển — không phải tiền thật"
  *   demo       "Chạy S01 · 20 credit demo\nCredit giả lập — không phải tiền thật"
  *   canvasapp  "Chạy S01 · ≈ 20 credit canvasapp (≈ 20.000đ)\nƯớc tính — trừ trên tài khoản canvasapp khi job được nhận"
  * An unknown amount shows "—" (never a made-up number).
  */
 export function costTitle(n: number | null | undefined, kind: CreditKind, lead = ''): string {
   if (typeof n !== 'number' || !Number.isFinite(n)) return `${lead}${formatCredits(n, kind)}`
-  if (kind === 'demo') return `${lead}${formatCredits(n, 'demo')}\n${DEMO_CREDIT_HINT}`
+  const hint = CREDIT_HINT[kind]
+  if (hint) return `${lead}${formatCredits(n, kind)}\n${hint}`
   return `${lead}≈ ${formatCreditNumber(n)} ${CREDIT_SOURCE_LABEL.canvasapp} (≈ ${formatVnd(n)})\n${REAL_COST_HINT}`
 }
 

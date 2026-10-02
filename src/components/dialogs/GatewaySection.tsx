@@ -6,7 +6,7 @@
 import { Cable, Cloud, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, Sparkles, TriangleAlert, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { canvasappProvider, PROVIDER_LABEL, useProviderPrefs, type ProviderId } from '../../providers'
+import { activeGateway, PROVIDER_LABEL, SELECTABLE_PROVIDERS, useProviderPrefs, type ProviderId } from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE } from '../../providers/canvasapp/transport'
 import { openTopUp } from '../../actions'
 import { formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
@@ -51,15 +51,18 @@ export function GatewaySection() {
   }
 
   const doLogout = async () => {
-    if (!bridge || busy) return
+    // the account the balance shown belongs to: the simulated one in development mode, else the real canvasapp
+    const gw = activeGateway()
+    const gwBridge = gw.bridge()
+    if (!gwBridge || busy) return
     setBusy('logout')
     try {
-      await bridge.logout()
-      canvasappProvider().reset()
+      await gwBridge.logout()
+      gw.provider().reset()
       // Forget the balance of the account that just logged out, then confirm the logged-out state (→ 401).
       resetRealCredits()
-      setProvider('mock')
-      toast('Đã đăng xuất canvasapp và chuyển về Demo giả lập.', { tone: 'success' })
+      if (!gw.simulated) setProvider('dev')
+      toast(gw.simulated ? 'Đã đăng xuất tài khoản giả lập (chế độ phát triển).' : 'Đã đăng xuất canvasapp và chuyển về chế độ phát triển (giả lập).', { tone: 'success' })
       await refreshRealCredits({ force: true })
     } finally {
       setBusy(null)
@@ -73,7 +76,7 @@ export function GatewaySection() {
     toast(
       p === 'canvasapp'
         ? 'Take mới sẽ được tạo trên canvasapp.io.vn — trừ credit canvasapp (tiền thật).'
-        : 'Take mới dùng Demo giả lập — trả bằng credit demo (giả lập, không phải tiền thật).',
+        : 'Take mới dùng chế độ phát triển — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật).',
       { tone: p === 'canvasapp' ? 'warning' : 'success' },
     )
   }
@@ -108,11 +111,11 @@ export function GatewaySection() {
           size="lg"
           value={provider}
           onChange={choose}
-          options={(['mock', 'canvasapp'] as ProviderId[]).map((p) => ({
+          options={(SELECTABLE_PROVIDERS as readonly ProviderId[]).map((p) => ({
             id: p,
             label: PROVIDER_LABEL[p],
-            icon: p === 'mock' ? <Sparkles size={13} /> : <Cloud size={13} />,
-            hint: p === 'mock' ? 'Credit demo (giả lập), không tốn tiền' : desktop ? 'Video thật, trừ credit canvasapp' : 'Chỉ có trong bản desktop',
+            icon: p === 'dev' ? <Sparkles size={13} /> : <Cloud size={13} />,
+            hint: p === 'dev' ? 'canvasapp giả lập, credit dev — không tốn tiền' : desktop ? 'Video thật, trừ credit canvasapp' : 'Chỉ có trong bản desktop',
             disabled: p === 'canvasapp' && !desktop,
             title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
           }))}

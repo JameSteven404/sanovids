@@ -1,7 +1,10 @@
 // Takes (generation attempts) and the job queue. Not undoable.
 // The queue engine talks to video providers only through providers/types.ts (VideoProvider):
 //   queued → submit(request) → remoteId stored on the take → poll(remoteIds) → fetchResult → putBlob → completed.
-// The mock (demo) provider is the default; the canvasapp gateway is opt-in (desktop only, see docs/GATEWAY-CANVASAPP.md).
+// New takes run on 'dev' (development mode: the canvasapp gateway code against an in-app simulation, providers/dev)
+// or, when chosen in the desktop app, on the real canvasapp gateway (docs/GATEWAY-CANVASAPP.md). Both are remote
+// providers here (no resubmission, recovery, download retries); only their poll floor differs. The old demo ('mock')
+// only runs takes saved before development mode existed.
 //
 // One engine per project across tabs/windows: only the tab holding the Web Lock `sanovids-engine:<projectId>`
 // (store/engineLock.ts) submits and polls; other tabs just show the takes they reload from storage (store/persist.ts)
@@ -16,12 +19,13 @@
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
 // isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
 //
-// Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet (play money). Only takes run on the mock
-// provider are charged to it (take.charged); canvasapp takes bill the user's own canvasapp account and never touch
-// the demo balance — enqueue/check never block them on it. New runs data start at DEMO_CREDITS_DEFAULT (1000);
-// saved balances are kept as they are. The real canvasapp balance lives in store/credits (useCreditInfo()).
+// Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet of the old demo (play money). Only takes
+// run on the mock provider were charged to it (take.charged) — new takes never are: 'dev' takes bill the simulated
+// account and 'canvasapp' takes the user's own account, both read in store/credits (useCreditInfo()). New runs data
+// start at DEMO_CREDITS_DEFAULT (1000); saved balances are kept as they are.
 // Engine events for other stores (e.g. store/credits refreshes the real balance after a canvasapp job):
 //   onRunEvent(listener) → unsubscribe; events { type: 'submitted' | 'completed' | 'failed' | 'cancelled', takeId, provider }.
+// (store/credits re-reads the balance of the active gateway after its jobs.)
 import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { newId } from '../core/ids'
@@ -649,7 +653,9 @@ function concurrencyFor(pid: ProviderId): number {
 function pollIntervalFor(pid: ProviderId): number {
   if (pid === 'mock') return 0
   try {
-    return Math.max(MIN_REMOTE_POLL_MS, getProvider(pid).capabilities('seedance_2_5').pollIntervalMs)
+    const p = getProvider(pid)
+    // The floor protects the real site; the in-app dev simulator declares its own (3 s).
+    return Math.max(p.minPollIntervalMs ?? MIN_REMOTE_POLL_MS, p.capabilities('seedance_2_5').pollIntervalMs)
   } catch {
     return MIN_REMOTE_POLL_MS
   }
