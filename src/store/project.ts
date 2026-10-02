@@ -262,9 +262,14 @@ export interface PlaceHint {
   view?: Box | null
 }
 
-/** The spot right below a scene's row (first free one: nothing is pushed). */
+/**
+ * The spot right below a scene's row, or the nearest free spot around it (nothing is pushed). Sliding straight down
+ * is only the last resort: when the scene was moved so that its column overlaps another column, sliding down would
+ * walk past that whole column (thousands of px away from the scene the user is working on).
+ */
 function belowScene(s: Scene, taken: Box[]): XY {
-  return slideDown({ x: s.position.x, y: s.position.y + rowHeightOf(s) + LAYOUT.gapY }, taken)
+  const spot = { x: s.position.x, y: s.position.y + rowHeightOf(s) + LAYOUT.gapY }
+  return nearFreeSpot(spot, taken) ?? slideDown(spot, taken)
 }
 
 /**

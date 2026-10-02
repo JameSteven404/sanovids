@@ -119,6 +119,19 @@ describe('new scene without a selected scene ("+ Cảnh", N, "Cảnh mới")', (
     expect(pos(newScene())).toEqual({ x: 716, y: 804 + 248 }) // was (420, 2044): a 1040px gap
   })
 
+  it('a scene moved so its column half-overlaps the default column: the new card lands next to it, not past that whole column', () => {
+    // S01 dragged right by 252px (its column now overlaps x 420–700), the other scenes stay in the default column.
+    const scenes = [scene('s1', 1, { x: 672, y: 208 }), ...Array.from({ length: 7 }, (_, i) => scene('s' + (i + 2), i + 2, row(i + 1)))]
+    load(scenes)
+    noteRecentScene('s1')
+    const p = pos(newScene())
+    // Was (672, 2040+): slid down past the whole default column. Now within about a row of S01.
+    expect(Math.hypot(p.x - 672, p.y - (208 + 200 + 48))).toBeLessThanOrEqual(LAYOUT.sceneW + 48)
+    const box = (q: XY) => ({ x: q.x, y: q.y, w: LAYOUT.sceneW, h: 200 })
+    const hit = (a: ReturnType<typeof box>, b: ReturnType<typeof box>) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    for (const s of st().project.scenes) if (!(s.position.x === p.x && s.position.y === p.y)) expect(hit(box(p), box(s.position))).toBe(false)
+  })
+
   it('[P1e] after deleting S01–S04 the new scene goes below S05, not far above it', () => {
     load([scene('s5', 1, row(4))])
     expect(pos(newScene())).toEqual(row(5)) // was (420, 308)
@@ -141,8 +154,9 @@ describe('new scene without a selected scene ("+ Cảnh", N, "Cảnh mới")', (
     // s2 sits left of the column with 3 takes reaching into it (x -500 + 280 + 64 + 3 × 240 − 16 = 548)
     load([scene('s1', 1, row(0)), scene('s2', 2, { x: -500, y: 300 })], [], [take('t1', 's2', 1), take('t2', 's2', 2), take('t3', 's2', 3), take('t4', 's1', 1, { position: { x: 500, y: 600 } })])
     noteRecentScene('s1')
-    // below s1 (308) hits s2's take row (300..500) → 548, hits the dragged video t4 (600..800) → 848
-    expect(pos(newScene())).toEqual({ x: 420, y: 848 })
+    // below s1 (308) hits s2's take row (300..500); straight down would also hit the dragged video t4 (600..800) and
+    // end 540px below — the nearest free spot is just right of the take row, still next to s1
+    expect(pos(newScene())).toEqual({ x: 564, y: 308 })
   })
 
   it('with the canvas showing another area: below the lowest scene in sight', () => {
