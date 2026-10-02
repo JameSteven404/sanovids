@@ -212,6 +212,28 @@ export function wireHitPath(d: string, trim = WIRE_HIT_TRIM): string {
   return t ? cubicPath(t) : d
 }
 
+/** Color of a scene's reference dot when wires other than images are drawn into it (canvas.css .cv-h-ref.is-…). */
+export type RefDotTone = 'video' | 'mixed'
+
+/**
+ * The color of each scene's reference dot, from the wires actually drawn into it ('ref' handle): only @video wires →
+ * 'video' (purple), images and @video → 'mixed' (two-tone). Scenes with only image wires, or none, are left out (teal).
+ * A reference that has no wire (an image that is not on the canvas, a deleted video) does not color the dot.
+ */
+export function refDotTones(wires: Iterable<{ kind: EdgeKind; target: string; targetHandle?: string | null }>): Map<string, RefDotTone> {
+  const seen = new Map<string, { image: boolean; video: boolean }>()
+  for (const w of wires) {
+    if (w.targetHandle !== 'ref' || (w.kind !== 'ref' && w.kind !== 'vref')) continue
+    const s = seen.get(w.target) ?? { image: false, video: false }
+    if (w.kind === 'ref') s.image = true
+    else s.video = true
+    seen.set(w.target, s)
+  }
+  const out = new Map<string, RefDotTone>()
+  for (const [id, s] of seen) if (s.video) out.set(id, s.image ? 'mixed' : 'video')
+  return out
+}
+
 /**
  * Stacking of a wire among the others (edge zIndex). All ≤ 0: the cards come later in the same stacking context at
  * z 0, so every wire stays under the cards and their dots. Where many wires meet at one dot, the one in focus is drawn

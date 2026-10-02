@@ -194,12 +194,8 @@
   transform: scale(1.35);
   box-shadow: 0 0 0 4px var(--h-glow);
 }
-.cv-stage .cv-h-ref,
-.cv-stage .cv-h-takes,
-.cv-stage .cv-h-take-in,
-.cv-stage .cv-h-video {
-  top: 70px;
-}
+/* the scene's ref / take dots and the take's in / out dots get their `top` inline (canvasModel DOT_TOP / takeDotTop:
+   the middle of the take's poster, so the scene → take wire of an unresized row runs straight) */
 /* a scene's reference dot takes the color of what is wired into it: images teal, videos purple, both = two-tone */
 .cv-stage .cv-h-ref.is-video {
   --h-c: var(--video);
@@ -214,7 +210,6 @@
   --h: 8px;
   --h-c: var(--seq);
   cursor: default;
-  z-index: 2;
 }
 .cv-stage .cv-h-takes::after,
 .cv-stage .cv-h-take-in::after {
@@ -250,14 +245,21 @@
   --h-c: var(--last);
   --h-glow: color-mix(in srgb, var(--last) 18%, transparent);
 }
-/* ĐẦU / CUỐI beside their dot (inside the card) */
+/*
+ * ĐẦU / CUỐI: a small tag just left of its dot, outside the card (inside, it ran over the footer and take line). The
+ * frame wire runs in under it (the tag has the board's color), so it reads as the label of that wire's end.
+ */
 .cv-stage .cv-h-label {
   position: absolute;
-  left: 10px;
+  right: 9px;
   top: 0;
   transform: translateY(-50%);
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--canvas-bg, var(--bg));
   font-size: 9px;
   font-weight: 700;
+  line-height: 11px;
   letter-spacing: 0.06em;
   pointer-events: none;
   white-space: nowrap;
@@ -1801,6 +1803,13 @@ button.cv-asset-count:hover {
 .cv-stage .react-flow__resize-control.line.cv-rs-line.left,
 .cv-stage .react-flow__resize-control.line.cv-rs-line.right {
   width: 8px;
+}
+/* the side edges leave a gap around the node's dots (NodeSizer / canvasModel.resizeEdgeClip): a press there is the dot's */
+.cv-stage .react-flow__resize-control.line.cv-rs-line.left {
+  clip-path: var(--rs-clip-l, none);
+}
+.cv-stage .react-flow__resize-control.line.cv-rs-line.right {
+  clip-path: var(--rs-clip-r, none);
 }
 .cv-stage .react-flow__resize-control.line.cv-rs-line.top,
 .cv-stage .react-flow__resize-control.line.cv-rs-line.bottom {

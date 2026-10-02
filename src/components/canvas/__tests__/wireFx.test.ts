@@ -15,6 +15,7 @@ import {
   newWireIds,
   parseCubicPath,
   pickNodeAt,
+  refDotTones,
   setWireReconnecting,
   snapHandleFor,
   splitCubic,
@@ -327,5 +328,26 @@ describe('wires on the dots', () => {
     expect(z(false, false, true)).toBeLessThan(z(false, true, true))
     expect(z(false, false, false)).toBeLessThan(z(false, false, true))
     for (const a of [true, false]) for (const b of [true, false]) for (const c of [true, false]) expect(z(a, b, c)).toBeLessThanOrEqual(0)
+  })
+})
+
+describe("refDotTones: a scene's reference dot takes the color of the wires drawn into it", () => {
+  type Kind = 'ref' | 'vref' | 'first' | 'last' | 'out' | 'save' | 'autosave'
+  const w = (kind: Kind, target: string, targetHandle = kind === 'ref' || kind === 'vref' ? 'ref' : 'in') => ({ kind, target, targetHandle })
+  it('images only (or nothing) → no entry (teal); videos only → video; both → mixed', () => {
+    const tones = refDotTones([w('ref', 'img'), w('vref', 'vid'), w('vref', 'vid'), w('ref', 'mix'), w('vref', 'mix')])
+    expect(tones.has('img')).toBe(false)
+    expect(tones.get('vid')).toBe('video')
+    expect(tones.get('mix')).toBe('mixed')
+    expect(tones.has('none')).toBe(false)
+  })
+  it('only wires into the reference dot count (frames, take / folder wires do not)', () => {
+    const tones = refDotTones([w('vref', 's1'), w('first', 's1', 'first'), w('last', 's1', 'last'), w('ref', 's2', 'first'), w('save', 's3'), w('autosave', 's3')])
+    expect(tones.get('s1')).toBe('video')
+    expect(tones.size).toBe(1)
+  })
+  it('a reference with no wire on the canvas does not color the dot', () => {
+    // The scene references an image that is not on the canvas: buildRawEdges draws no wire for it, so only @video wires arrive.
+    expect(refDotTones([w('vref', 's8')]).get('s8')).toBe('video')
   })
 })

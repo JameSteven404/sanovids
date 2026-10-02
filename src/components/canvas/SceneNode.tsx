@@ -21,6 +21,7 @@ import {
   assetMapOf,
   avatarSlots,
   countScenes,
+  DOT_TOP,
   excerptChars,
   hasAssetDrag,
   hasFileDrag,
@@ -44,14 +45,20 @@ import {
 import { cutEdge } from './edges'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
+import type { RefDotTone } from './wireFx'
 import './canvas.css'
 
-export type SceneFlowNode = Node<Record<string, unknown>, 'scene'>
+/** `refDot`: what the wires drawn into the reference dot carry (CanvasView, wireFx.refDotTones); absent = images only / none. */
+export type SceneNodeData = { refDot?: RefDotTone }
+export type SceneFlowNode = Node<SceneNodeData, 'scene'>
 
 const MAX_VIDEO_THUMBS = 4
 const EMPTY_ASSETS: Asset[] = []
 
-function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
+/** The scene's two dots sit at the height of an unresized take's dots: the scene → take wire runs straight. */
+const DOT_STYLE = { top: DOT_TOP }
+
+function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const status = useRuns((s) => takeSummary(s.takes, id).status)
@@ -128,8 +135,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
 
   if (!scene) return null
   const running = status === 'processing'
-  // The reference dot takes the color of the wires that end in it: teal images, purple videos, two-tone for both.
-  const refDot = scene.videoRefs.length ? (scene.refs.length ? ' is-mixed' : ' is-video') : ''
+  // The reference dot takes the color of the wires drawn into it: teal images, purple videos, two-tone for both.
+  const refDot = data?.refDot ? ` is-${data.refDot}` : ''
   const cls = [
     'cv-scene',
     selected && 'is-selected',
@@ -172,6 +179,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           position={Position.Left}
           id="ref"
           className={`cv-h cv-h-ref${refDot}`}
+          style={DOT_STYLE}
           isConnectableStart={false}
           title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
         />
@@ -184,6 +192,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           position={Position.Right}
           id="take"
           className="cv-h cv-h-takes"
+          style={DOT_STYLE}
           isConnectableStart
           isConnectableEnd={false}
           title="Các video (take) tạo từ cảnh này · kéo chấm này vào một Thư mục để tự lưu mọi video mới của cảnh"

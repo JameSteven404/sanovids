@@ -361,6 +361,49 @@ export function fitMedia(w: number, h: number, chrome: number): { w: number; h: 
   return { w: Math.round((ph * 16) / 9), h: Math.round(ph) }
 }
 
+// ---------------- connection dots: where they sit, what the resize edges leave free ----------------
+/** Poster height of a take node at its default size (16:9 inside the 1px borders, CSS aspect-ratio). */
+export const TAKE_POSTER_H = ((LAYOUT.takeW - 2) * 9) / 16
+/**
+ * Height of the connection dots of an unresized take (the middle of its poster) — and of a scene card's two dots
+ * (left reference dot, right take dot), so the scene → take wire of an unresized row runs straight. A handle's `top`:
+ * px from the inside of the card's top border.
+ */
+export const DOT_TOP = TAKE_POSTER_H / 2
+/**
+ * `top` of a take's two dots: always the middle of its poster — default, resized (the poster grows with the node) or
+ * zoomed out (the far card is only the poster). One rule, so resizing a take never makes its dots jump.
+ */
+export function takeDotTop(box: Size | null, far: boolean): number {
+  return box ? fitMedia(box.w, box.h, far ? 0 : TAKE_CHROME).h / 2 : DOT_TOP
+}
+
+/** Half-height (flow px) of the gap a node's left / right resize edge leaves around each dot on that side. */
+export const RESIZE_DOT_GAP = 12
+/**
+ * clip-path of a node's invisible left or right resize edge (an 8px strip as tall as the node, NodeSizer) that cuts a
+ * gap around each dot on that side (`dotYs`: px from the node's top). The edge sits above the card, so without the gap
+ * a press on a hovered / selected card's dot would start a resize instead of a wire (the scene's right dot → folder) or
+ * the reconnect grip of a selected reference wire (which starts right of the scene's left dot). null = no dot.
+ */
+export function resizeEdgeClip(dotYs: readonly number[], gap: number = RESIZE_DOT_GAP): string | null {
+  const spans: [number, number][] = []
+  for (const y of [...dotYs].filter(Number.isFinite).sort((a, b) => a - b)) {
+    const a = Math.max(0, y - gap)
+    const b = y + gap
+    const last = spans[spans.length - 1]
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b)
+    else spans.push([a, b])
+  }
+  if (!spans.length) return null
+  const px = (v: number) => `${Math.round(v * 100) / 100}px`
+  // Down the strip's right side with an inward notch at each gap (a zero-width step along x = 0), back up the left side.
+  const pts = ['0 0', '100% 0']
+  for (const [a, b] of spans) pts.push(`100% ${px(a)}`, `0 ${px(a)}`, `0 ${px(b)}`, `100% ${px(b)}`)
+  pts.push('100% 100%', '0 100%')
+  return `polygon(${pts.join(', ')})`
+}
+
 // ---------------- asset node: the WHOLE reference image at its own aspect ratio ----------------
 /**
  * Default width of an asset node (no size set by the user). Kept at the asset column width: a square card is then

@@ -2,7 +2,7 @@
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, PencilLine, RotateCcw, Star, Trash2 } from 'lucide-react'
-import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
@@ -15,7 +15,7 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
+import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { TakePlayer } from './TakePlayer'
 import './canvas.css'
@@ -155,11 +155,12 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const box = useNodeBox(id, take?.size)
   // Resized node: the poster keeps 16:9 and grows with the node; footer + big button stay pinned at the bottom.
   const media = box ? fitMedia(box.w, box.h, far ? 0 : TAKE_CHROME) : null
-  // Wire anchors stay at the middle of the (grown) poster (`top` counts from inside the card's border, like the poster).
-  const handleTop = media ? Math.round(media.h / 2) : null
-  const handleStyle = handleTop !== null ? { top: handleTop } : undefined
-  // The anchors can move while the node box stays the same (zooming across the LOD level changes the poster height).
-  useRemeasureOn(id, handleTop)
+  // Both dots sit at the middle of the poster, default or resized (`top` counts from inside the card's border, like the
+  // poster), so a resize never makes them jump.
+  const dotTop = takeDotTop(box, far)
+  const handleStyle = useMemo(() => ({ top: dotTop }), [dotTop])
+  // The dots can move while the node box stays the same (zooming across the LOD level changes a resized poster's height).
+  useRemeasureOn(id, dotTop)
   if (!take) return null
 
   const code = takeCode(order, take.number)

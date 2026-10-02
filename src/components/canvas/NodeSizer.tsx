@@ -1,14 +1,16 @@
 // Resize handles of a canvas node (scene card, take, asset): React Flow's NodeResizer limited by NODE_SIZE.
 // Shown when the node is selected (subtle while hovered). The live box goes to useCanvasLocal.resizing and is
 // committed once on resize end by CanvasView.onNodesChange. Double-click a handle or press ↺ for the default size.
+// The invisible left / right resize edges leave a gap around the node's dots (resizeEdgeClip), so a press on a dot
+// starts a wire / grabs a wire end instead of a resize.
 // Also the node-geometry hooks shared by the node types: useNodeBox (drawn size) and useRemeasureOn (dots that move).
-import { NodeResizer, useUpdateNodeInternals } from '@xyflow/react'
+import { NodeResizer, useStore, useUpdateNodeInternals, type Handle as HandleBounds, type ReactFlowState } from '@xyflow/react'
 import { RotateCcw } from 'lucide-react'
-import { memo, useCallback, useEffect, useRef, type SyntheticEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, type CSSProperties, type SyntheticEvent } from 'react'
 import type { Size } from '../../core/types'
 import { NODE_SIZE } from '../../store/project'
 import { useUI } from '../../store/ui'
-import { resetNodeSize, useCanvasLocal, type SizedKind } from './canvasModel'
+import { resetNodeSize, resizeEdgeClip, useCanvasLocal, type SizedKind } from './canvasModel'
 
 const stop = (e: SyntheticEvent) => e.stopPropagation()
 
@@ -35,11 +37,28 @@ export function useRemeasureOn(id: string, key: unknown) {
   }, [id, key, updateInternals])
 }
 
+/** clip-path of the node's left or right resize edge: a gap around each of its dots on that side, as React Flow measured them. */
+function edgeClipOf(s: ReactFlowState, id: string, side: 'left' | 'right'): string | null {
+  const b = s.nodeLookup.get(id)?.internals.handleBounds
+  if (!b) return null
+  const ys: number[] = []
+  const add = (list: HandleBounds[] | null | undefined) => {
+    for (const h of list ?? []) if (h.position === side) ys.push(h.y + h.height / 2)
+  }
+  add(b.source)
+  add(b.target)
+  return resizeEdgeClip(ys)
+}
+
 function NodeSizerView({ id, kind, selected, sized }: { id: string; kind: SizedKind; selected: boolean; sized: boolean }) {
   const hovered = useUI((s) => s.hoveredId === id)
   const resizing = useCanvasLocal((s) => id in s.resizing)
   const l = NODE_SIZE[kind]
   const visible = selected || hovered || resizing
+  // Strings (stable selector results), only computed while the edges are shown.
+  const clipL = useStore((s) => (visible ? edgeClipOf(s, id, 'left') : null))
+  const clipR = useStore((s) => (visible ? edgeClipOf(s, id, 'right') : null))
+  const lineStyle = useMemo(() => ({ '--rs-clip-l': clipL ?? 'none', '--rs-clip-r': clipR ?? 'none' }) as CSSProperties, [clipL, clipR])
   const subtle = !selected && !resizing ? ' is-subtle' : ''
   // Stable: NodeResizeControl re-binds its d3 drag handlers whenever this callback changes, and this component
   // re-renders mid-gesture (selected / resizing flip on the first move), which would drop an in-progress touch drag.
@@ -58,6 +77,7 @@ function NodeSizerView({ id, kind, selected, sized }: { id: string; kind: SizedK
         maxHeight={l.maxH}
         handleClassName={`cv-rs-handle${subtle}`}
         lineClassName={`cv-rs-line${subtle}`}
+        lineStyle={lineStyle}
         onResizeStart={onResizeStart}
       />
       {selected && sized && (
