@@ -41,7 +41,8 @@ function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
   }, [id, aspect, updateInternals])
 
   if (!asset) return null
-  const Icon = KIND_ICON[asset.kind]
+  // Unknown kind (data from a newer version / a broken import): fall back to the character icon instead of crashing.
+  const Icon = KIND_ICON[asset.kind] ?? User
   const count = asset.imageIds.length
   const def = box ? null : assetDefaultLayout(aspect)
   const cls = ['cv-asset', selected && 'is-selected', box && 'is-sized', far && 'is-far', `kind-${asset.kind}`].filter(Boolean).join(' ')
@@ -73,7 +74,7 @@ function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
                 viewAssetImages(asset.id)
               }}
             >
-              <Maximize2 size={12} strokeWidth={2.4} />
+              <Maximize2 size={12} strokeWidth={2.2} />
             </button>
           )}
           {count > 1 &&
@@ -95,7 +96,7 @@ function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
             ))}
         </div>
         <div className="cv-asset-name">
-          <Icon size={12} className="cv-asset-kind" aria-label={KIND_LABEL[asset.kind]} />
+          <Icon size={12} strokeWidth={2} className="cv-asset-kind" aria-label={KIND_LABEL[asset.kind] ?? KIND_LABEL.character} />
           <span>{asset.name}</span>
         </div>
         <div className="cv-asset-meta">

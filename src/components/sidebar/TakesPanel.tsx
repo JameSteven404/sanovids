@@ -2,8 +2,8 @@ import { Download, FileArchive, Film, Link2, LoaderCircle, Star } from 'lucide-r
 import { memo, useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { downloadChosenTakesZip, downloadTake, focusNodes, linkTakes, selectedTakeIds, takeLabel } from '../../actions'
-import { takeCode } from '../../core/compile'
-import { MODE_LABEL } from '../../core/models'
+import { sceneCode, takeCode } from '../../core/compile'
+import { modeLabel } from '../../core/models'
 import type { Take } from '../../core/types'
 import { TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -18,6 +18,7 @@ import {
   EMPTY_IDS,
   finishedTakes,
   matchesQuery,
+  takeHiddenOnCanvas,
   takeSearchFields,
   usePrefState,
   useSceneCode,
@@ -47,7 +48,8 @@ const videoUsageSelector = (s: ProjectState) => {
   return m
 }
 
-const VIDEO_COLOR = '#9d86f0'
+/** Drag-ghost thumbnail fill for a take of a scene without its own color (the ghost lives in <body>: tokens apply). */
+const VIDEO_COLOR = 'var(--video)'
 
 // ---------------- actions ----------------
 /** Dragging a selected take carries every selected finished take; otherwise just that one. */
@@ -78,14 +80,26 @@ function endTakeDrag() {
   useUI.getState().setDraggingTakes(null)
 }
 
+/**
+ * Select a finished video (its node on the canvas). When the canvas shows only the chosen take of each scene
+ * ("Chỉ take chọn") and this one is hidden there, select its scene instead — same as the queue's "Đi tới" — so the
+ * selection never holds an invisible node (that Delete would then act on). "Chỉ take chọn" only filters the canvas:
+ * the other views show every take, so there the take itself is selected.
+ */
 function selectTake(e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) {
   const ui = useUI.getState()
+  const take = useRuns.getState().takes.find((t) => t.id === id)
+  const scenes = useProject.getState().project.scenes
+  const scene = take ? scenes.find((s) => s.id === take.sceneId) : undefined
+  const hidden = ui.view === 'canvas' && !!take && !!scene && takeHiddenOnCanvas(id, useRuns.getState().takes, scenes, ui.takeDisplay)
+  const target = hidden ? scene!.id : id
   if (e.ctrlKey || e.metaKey || e.shiftKey) {
-    ui.select(ui.selectedIds.includes(id) ? ui.selectedIds.filter((x) => x !== id) : [...ui.selectedIds, id])
+    ui.select(ui.selectedIds.includes(target) ? ui.selectedIds.filter((x) => x !== target) : [...ui.selectedIds, target])
   } else {
-    ui.select([id])
+    ui.select([target])
   }
-  if (ui.view === 'canvas') focusNodes([id])
+  if (hidden) toast(`${takeCode(scene!.order, take!.number)} đang ẩn (canvas chỉ hiện take chọn) — đã chọn cảnh ${sceneCode(scene!.order)}.`)
+  if (ui.view === 'canvas') focusNodes([target])
 }
 
 function openTake(id: string) {
@@ -182,7 +196,7 @@ const TakeRow = memo(function TakeRow({
         e.stopPropagation()
         if (e.detail > 1) return
         if (sendsVideos) linkTakes([singleId], [take.id])
-        else toast(`Không nối được: ${offNote}. Dùng Seedance 2.5, hoặc chế độ “${MODE_LABEL.i2v}” của MiniMax-H3.`, { tone: 'warning' })
+        else toast(`Không nối được: ${offNote}. Dùng Seedance 2.5, hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.`, { tone: 'warning' })
       }}
       onDoubleClick={stop}
     >
@@ -372,7 +386,7 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
           ) : (
             <div
               className="sb-explain warn"
-              title={`${media.model} ở chế độ hiện tại của ${singleCode} không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “${MODE_LABEL.i2v}” của MiniMax-H3.`}
+              title={`${media.model} ở chế độ hiện tại của ${singleCode} không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.`}
             >
               <b className="sb-accent">{singleCode}</b> ({media.model}) ở chế độ này không nhận video <span className="sb-tok video off">@video</span>.
             </div>

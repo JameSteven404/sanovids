@@ -1,45 +1,161 @@
 /* Design tokens + shared primitives. Component styles live next to their components. */
+/*
+ * Design tokens — inspired by Apple's Human Interface Guidelines: system colors, hairline separators,
+ * soft depth, generous radii, translucent "materials". Two appearances: dark (default) and light.
+ * The resolved theme is set on <html data-theme="…"> by src/lib/theme.ts (and early in index.html).
+ * Components must only use these tokens — never hard-coded colors — so both themes work.
+ */
+:root,
+:root[data-theme='dark'] {
+  /* surfaces */
+  --bg: #161618; /* window */
+  --bg-elev: #1c1c1e; /* fields, wells */
+  --panel: #1e1e20; /* sidebars, inspector, cards */
+  --panel-2: #2c2c2e; /* raised controls */
+  --panel-3: #3a3a3c; /* hover / pressed */
+  --canvas-bg: #121214;
+  --canvas-dot: rgba(255, 255, 255, 0.09);
+  --material: rgba(36, 36, 38, 0.72); /* translucent bars, popovers (with backdrop-filter) */
+  --material-strong: rgba(44, 44, 46, 0.88);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --hover: rgba(255, 255, 255, 0.06);
+  --pressed: rgba(255, 255, 255, 0.1);
+
+  /* lines */
+  --border: rgba(255, 255, 255, 0.08); /* hairline separators */
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* text */
+  --text: #f5f5f7;
+  --text-dim: rgba(235, 235, 245, 0.62);
+  --text-faint: rgba(235, 235, 245, 0.34);
+
+  /* tint + system colors (dark variants) */
+  --accent: #ff9f0a; /* system orange — primary actions, run */
+  --accent-strong: #ffb340;
+  --accent-soft: rgba(255, 159, 10, 0.16);
+  --on-accent: #1d1206;
+  --ref: #40c8e0; /* teal — reference images */
+  --ref-soft: rgba(64, 200, 224, 0.16);
+  --video: #bf5af2; /* purple — generated videos, @video_N */
+  --video-soft: rgba(191, 90, 242, 0.18);
+  --seq: #8e8e93;
+  --first: #30d158;
+  --last: #bf5af2;
+  --ok: #30d158;
+  --ok-soft: rgba(48, 209, 88, 0.16);
+  --warn: #ffd60a;
+  --warn-soft: rgba(255, 214, 10, 0.14);
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.14);
+  --danger-text: #ff6961;
+  --info: #0a84ff;
+  --info-soft: rgba(10, 132, 255, 0.16);
+
+  /* checkerboard behind letterboxed images */
+  --checker-a: #1c1c1e;
+  --checker-b: #232325;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 24px 64px rgba(0, 0, 0, 0.55);
+  --focus-ring: 0 0 0 3px rgba(255, 159, 10, 0.35);
+  --scrollbar: rgba(255, 255, 255, 0.18);
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f5f5f7;
+  --bg-elev: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f2f2f7;
+  --panel-3: #e5e5ea;
+  --canvas-bg: #eef0f3;
+  --canvas-dot: rgba(60, 60, 67, 0.16);
+  --material: rgba(255, 255, 255, 0.72);
+  --material-strong: rgba(255, 255, 255, 0.9);
+  --scrim: rgba(0, 0, 0, 0.28);
+  --hover: rgba(0, 0, 0, 0.04);
+  --pressed: rgba(0, 0, 0, 0.08);
+
+  --border: rgba(60, 60, 67, 0.13);
+  --border-strong: rgba(60, 60, 67, 0.24);
+
+  --text: #1d1d1f;
+  --text-dim: rgba(60, 60, 67, 0.78);
+  --text-faint: rgba(60, 60, 67, 0.46);
+
+  /* light variants are a touch deeper so text and thin lines stay readable on white */
+  --accent: #f07c00;
+  --accent-strong: #ff8f1a;
+  --accent-soft: rgba(255, 149, 0, 0.14);
+  --on-accent: #ffffff;
+  --ref: #0a9cb8;
+  --ref-soft: rgba(48, 176, 199, 0.14);
+  --video: #a347d1;
+  --video-soft: rgba(175, 82, 222, 0.13);
+  --seq: #8e8e93;
+  --first: #248a3d;
+  --last: #a347d1;
+  --ok: #248a3d;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --warn: #b25000;
+  --warn-soft: rgba(255, 204, 0, 0.18);
+  --danger: #d70015;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --danger-text: #d70015;
+  --info: #007aff;
+  --info-soft: rgba(0, 122, 255, 0.12);
+
+  --checker-a: #f2f2f7;
+  --checker-b: #e9e9ee;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.08), 0 24px 60px rgba(0, 0, 0, 0.16);
+  --focus-ring: 0 0 0 3px rgba(0, 122, 255, 0.3);
+  --scrollbar: rgba(0, 0, 0, 0.22);
+  --accent-ink: #c25e00;
+  --ref-ink: #087489;
+  --video-ink: #8a35b8;
+
+  color-scheme: light;
+}
+
 :root {
-  --bg: #0f1012;
-  --bg-elev: #15161a;
-  --panel: #1a1c20;
-  --panel-2: #212328;
-  --panel-3: #2a2d33;
-  --border: #2c2f35;
-  --border-strong: #3b3f47;
-  --text: #ecebe8;
-  --text-dim: #a7aab1;
-  --text-faint: #6d7179;
+  /* Over photos and videos the chrome is always light-on-dark, whatever the theme. */
+  --media-bg: #000;
+  --media-scrim: rgba(0, 0, 0, 0.58);
+  --on-media: #fff;
 
-  --accent: #e8894a; /* brand orange: primary actions, run */
-  --accent-strong: #f09a5c;
-  --accent-soft: rgba(232, 137, 74, 0.14);
-  --ref: #4fb6a8; /* teal: reference connections */
-  --ref-soft: rgba(79, 182, 168, 0.16);
-  --video: #b48cff; /* purple: generated videos, @video_N, video references */
-  --video-soft: rgba(180, 140, 255, 0.16);
-  --seq: #8d93a0; /* continuity / sequence edges */
-  --first: #4cc38a; /* first frame */
-  --last: #b48cff; /* last frame */
-  --ok: #4cc38a;
-  --warn: #e5b93c;
-  --danger: #ef5b5b;
-  --info: #7c9cff;
+  /* Text drawn in a tint color ("ink") — deeper in the light theme so it stays readable on white/soft fills. */
+  --accent-ink: var(--accent);
+  --ref-ink: var(--ref);
+  --video-ink: var(--video);
 
-  --radius-sm: 6px;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --blur: saturate(180%) blur(20px);
 
-  --font: 'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  /* Apple system font where available (macOS/iOS), Segoe UI Variable on Windows, Be Vietnam Pro as fallback */
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', 'Be Vietnam Pro', system-ui, Roboto, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', 'Be Vietnam Pro', system-ui, sans-serif;
+  --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
 
   --topbar-h: 52px;
   --left-w: 272px;
   --right-w: 392px;
+}
 
-  color-scheme: dark;
+/* Translucent material (Apple "vibrancy"): toolbars, popovers, floating panels. */
+.material {
+  background: var(--material);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
 }
 
 * {
@@ -68,14 +184,14 @@ textarea {
   color: inherit;
 }
 ::selection {
-  background: rgba(232, 137, 74, 0.35);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2f333a;
+  background: var(--scrollbar);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -111,7 +227,7 @@ textarea {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #1a1209;
+  color: var(--on-accent);
   font-weight: 600;
 }
 .btn-primary:hover {
@@ -128,11 +244,11 @@ textarea {
 }
 .btn-danger {
   background: transparent;
-  border-color: rgba(239, 91, 91, 0.45);
-  color: #ff8a8a;
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger-text);
 }
 .btn-danger:hover {
-  background: rgba(239, 91, 91, 0.12);
+  background: var(--danger-soft);
 }
 .btn-sm {
   height: 26px;
@@ -162,11 +278,21 @@ textarea {
 }
 .icon-btn.active {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.chip .x:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 /* ---------- form fields ---------- */
@@ -179,9 +305,8 @@ textarea {
 .label {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
 }
 .input,
 .select,
@@ -198,8 +323,8 @@ textarea {
 .input:focus,
 .select:focus,
 .textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--border-strong);
+  box-shadow: var(--focus-ring);
 }
 .textarea {
   resize: vertical;
@@ -256,22 +381,22 @@ textarea {
 }
 .badge.accent {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .badge.ref {
   background: var(--ref-soft);
-  color: var(--ref);
+  color: var(--ref-ink);
 }
 .badge.warn {
-  background: rgba(229, 185, 60, 0.14);
+  background: var(--warn-soft);
   color: var(--warn);
 }
 .badge.danger {
-  background: rgba(239, 91, 91, 0.14);
-  color: #ff8a8a;
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 .badge.ok {
-  background: rgba(76, 195, 138, 0.14);
+  background: var(--ok-soft);
   color: var(--ok);
 }
 .mono {
@@ -294,16 +419,15 @@ textarea {
   justify-content: space-between;
   gap: 8px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
 }
 .empty {
-  padding: 18px 12px;
-  border: 1px dashed var(--border-strong);
+  padding: 20px 14px;
   border-radius: var(--radius);
-  color: var(--text-faint);
+  background: var(--panel-2);
+  color: var(--text-dim);
   text-align: center;
   font-size: 12px;
 }
@@ -349,115 +473,6 @@ textarea {
   transition: width 0.2s linear;
 }
 
-/* ---------- modal ---------- */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  background: rgba(5, 6, 8, 0.6);
-  backdrop-filter: blur(2px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-.modal {
-  width: min(560px, 100%);
-  max-height: calc(100vh - 48px);
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-}
-.modal.wide {
-  width: min(880px, 100%);
-}
-.modal.xwide {
-  width: min(1120px, 100%);
-}
-.modal-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.modal-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  flex: 1;
-}
-.modal-body {
-  padding: 16px;
-  overflow: auto;
-}
-.modal-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-}
-
-/* ---------- toasts ---------- */
-.toasts {
-  position: fixed;
-  left: 50%;
-  bottom: 22px;
-  transform: translateX(-50%);
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: center;
-  pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 38px;
-  padding: 8px 10px 8px 14px;
-  border-radius: var(--radius);
-  background: #2a2c31;
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow);
-  font-weight: 500;
-  animation: toast-in 0.18s ease-out;
-}
-.toast.success {
-  border-color: rgba(76, 195, 138, 0.5);
-}
-.toast.warning {
-  border-color: rgba(229, 185, 60, 0.55);
-}
-.toast.error {
-  border-color: rgba(239, 91, 91, 0.6);
-}
-.toast button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font-weight: 600;
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
-}
-.toast button:hover {
-  background: var(--accent-soft);
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-}
-
 /* ---------- media ---------- */
 .media-img {
   display: block;
@@ -491,7 +506,7 @@ textarea {
   width: 100%;
   height: 100%;
   font-weight: 700;
-  color: #fff;
+  color: var(--on-media);
 }
 .chip {
   display: inline-flex;
@@ -522,15 +537,16 @@ textarea {
   color: var(--danger);
 }
 
-/* ---------- full image (whole picture, real aspect ratio) ---------- */
+
+/* ---------- full image (whole picture, real aspect ratio — never cropped) ----------
+   Structure lives here; components/common/common.css only adds the radius/checkerboard look. */
 .full-img {
   position: relative;
   width: 100%;
   overflow: hidden;
-  border-radius: 8px;
-  /* subtle checkerboard so transparent PNGs and letterboxing read as "the image ends here" */
+  border-radius: var(--radius-sm);
   background:
-    conic-gradient(#1d1f23 25%, #23262b 0 50%, #1d1f23 0 75%, #23262b 0) 0 0 / 16px 16px;
+    conic-gradient(var(--checker-a) 25%, var(--checker-b) 0 50%, var(--checker-a) 0 75%, var(--checker-b) 0) 0 0 / 16px 16px;
 }
 .full-img.fill {
   height: 100%;
@@ -545,74 +561,4 @@ textarea {
 }
 .full-img.zoomable {
   cursor: zoom-in;
-}
-
-/* ---------- image viewer ---------- */
-.lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  display: flex;
-  flex-direction: column;
-  background: rgba(6, 7, 9, 0.92);
-  backdrop-filter: blur(3px);
-}
-.lightbox-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  color: var(--text-dim);
-}
-.lightbox-title {
-  flex: 1;
-  color: var(--text);
-  font-weight: 600;
-  font-size: 14px;
-}
-.lightbox-count,
-.lightbox-size {
-  font-size: 12px;
-}
-.lightbox-stage {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 64px 28px;
-}
-.lightbox-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 6px;
-  box-shadow: var(--shadow-lg);
-}
-.lightbox-loading {
-  color: var(--text-faint);
-}
-.lightbox-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  background: rgba(26, 28, 32, 0.8);
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.lightbox-nav:hover {
-  background: var(--panel-3);
-}
-.lightbox-nav.prev {
-  left: 12px;
-}
-.lightbox-nav.next {
-  right: 12px;
 }

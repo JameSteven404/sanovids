@@ -1,5 +1,6 @@
 import {
   Clapperboard,
+  Cloud,
   Coins,
   Download,
   FileInput,
@@ -7,22 +8,29 @@ import {
   Keyboard,
   LayoutGrid,
   LoaderCircle,
+  Monitor,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Redo2,
+  RotateCw,
   Settings,
+  Sun,
   Table2,
+  TriangleAlert,
   Undo2,
   Workflow,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useStore } from 'zustand'
 import { downloadChosenTakesZip } from '../../actions'
 import type { ViewMode } from '../../core/types'
+import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { activeProviderId, PROVIDER_LABEL, useProviderPrefs, type ProviderId } from '../../providers'
 import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
 import { useActiveCount, useRuns } from '../../store/runs'
@@ -35,22 +43,26 @@ const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = 
   { id: 'storyboard', label: 'Storyboard', key: '3', icon: LayoutGrid },
 ]
 
+/**
+ * Unified toolbar (Apple style): app mark + project left, the view switch centred, quiet icon buttons right.
+ * Translucent material with a hairline bottom border.
+ */
 export function TopBar() {
   const openDialog = useUI((s) => s.openDialog)
   return (
-    <header className="tb">
+    <header className="tb material">
       <div className="tb-left">
         <div className="tb-brand" title="SanoVids — bản demo">
-          <span className="tb-logo">
-            <Clapperboard size={15} strokeWidth={2.2} />
+          <span className="tb-logo" aria-hidden="true">
+            <Clapperboard size={14} />
           </span>
           <span className="tb-brand-text">SanoVids</span>
         </div>
         <span className="tb-divider" />
         <ProjectName />
         <SaveStatus />
-        <button className="btn btn-ghost btn-sm tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
-          <FolderOpen size={14} />
+        <button type="button" className="tb-btn tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
+          <FolderOpen size={16} />
           <span className="tb-hide-sm">Dự án</span>
         </button>
       </div>
@@ -62,17 +74,19 @@ export function TopBar() {
       <div className="tb-right">
         <HistoryButtons />
         <RunningIndicator />
+        <ProviderBadge />
         <CreditPill />
-        <button className="btn btn-sm tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
-          <FileInput size={14} />
+        <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
+          <FileInput size={16} />
           <span className="tb-hide-md">Nhập prompt</span>
         </button>
         <DownloadAllButton />
         <span className="tb-divider" />
-        <button className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt dự án & demo" aria-label="Cài đặt">
+        <AppearanceButton />
+        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt dự án & demo" aria-label="Cài đặt">
           <Settings size={16} />
         </button>
-        <button className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
+        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
           <Keyboard size={16} />
         </button>
         <PanelToggles />
@@ -116,16 +130,27 @@ const ProjectName = memo(function ProjectName() {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            // Stopped: the global Escape would blur the input, and blur commits the draft being cancelled.
+            e.stopPropagation()
+            setEditing(false)
+            return
+          }
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl/Cmd combos must reach the global shortcuts (Ctrl+S saves — with the new name —, Ctrl+Enter
+            // runs): stopping them here let the browser open its own "Save page" dialog instead.
+            if (e.key === 'Enter' || e.key.toLowerCase() === 's') commit()
+            return
+          }
           e.stopPropagation()
           if (e.key === 'Enter') commit()
-          else if (e.key === 'Escape') setEditing(false)
         }}
         aria-label="Tên dự án"
       />
     )
   }
   return (
-    <button className="tb-name" onClick={start} title="Bấm để đổi tên dự án">
+    <button type="button" className="tb-name" onClick={start} title="Bấm để đổi tên dự án">
       <span className="tb-name-text">{name}</span>
     </button>
   )
@@ -135,7 +160,9 @@ const ProjectName = memo(function ProjectName() {
 function SaveStatus() {
   const status = useSave((s) => s.status)
   const savedAt = useSave((s) => s.savedAt)
+  const stale = useSave((s) => s.stale)
   const [busy, setBusy] = useState(false)
+  if (stale) return <StaleStatus />
   const shown = busy ? 'saving' : status
   const label = shown === 'saving' ? 'Đang lưu…' : shown === 'error' ? 'Lỗi lưu' : shown === 'saved' ? 'Đã lưu' : 'Chưa lưu'
   const title =
@@ -164,23 +191,66 @@ function SaveStatus() {
   )
 }
 
+/**
+ * Another tab/window saved (or deleted) this project after this tab opened it: this tab stopped autosaving so it
+ * never overwrites the newer copy (persist.markStale). Not a save error — the way on is to reload.
+ */
+function StaleStatus() {
+  const reload = () => {
+    if (window.confirm('Tải lại trang để làm tiếp với bản mới nhất của dự án?\nCác thay đổi trong tab này sau lần lưu cuối sẽ không được giữ.')) {
+      window.location.reload()
+    }
+  }
+  return (
+    <button
+      type="button"
+      className="tb-save stale"
+      onClick={reload}
+      title="Dự án này vừa được lưu (hoặc xoá) ở một tab/cửa sổ khác, nên tab này ngừng tự lưu để không ghi đè bản mới hơn. Bấm để tải lại trang và làm tiếp với bản mới nhất."
+      aria-label="Đang mở ở tab khác — bấm để tải lại trang"
+    >
+      <RotateCw size={12} className="tb-save-icon" />
+      <span className="tb-save-label">Đang mở ở tab khác</span>
+    </button>
+  )
+}
+
+/** Apple-style segmented control: equal segments, a raised thumb that slides to the selected one. */
 function ViewSwitch() {
   const view = useUI((s) => s.view)
   const setView = useUI((s) => s.setView)
+  const index = VIEWS.findIndex((v) => v.id === view)
+  // ←/→ move between the views (tablist keyboard pattern); kept away from the canvas shortcuts.
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    e.stopPropagation()
+    const next = (Math.max(0, index) + (e.key === 'ArrowRight' ? 1 : VIEWS.length - 1)) % VIEWS.length
+    setView(VIEWS[next].id)
+    e.currentTarget.querySelectorAll<HTMLButtonElement>('.tb-seg-btn')[next]?.focus()
+  }
   return (
-    <div className="tb-seg" role="tablist" aria-label="Chế độ xem">
+    <div
+      className="tb-seg"
+      role="tablist"
+      aria-label="Chế độ xem"
+      onKeyDown={onKeyDown}
+      style={{ ['--seg-i' as string]: Math.max(0, index), ['--seg-n' as string]: VIEWS.length }}
+    >
+      {index >= 0 && <span className="tb-seg-thumb" aria-hidden="true" />}
       {VIEWS.map(({ id, label, key, icon: Icon }) => (
         <button
           key={id}
+          type="button"
           role="tab"
           aria-selected={view === id}
+          tabIndex={view === id ? 0 : -1}
           className={`tb-seg-btn ${view === id ? 'active' : ''}`}
           onClick={() => setView(id)}
           title={`${label} (${key})`}
         >
-          <Icon size={14} />
+          <Icon size={15} />
           <span className="tb-seg-label">{label}</span>
-          <span className="tb-seg-key">{key}</span>
         </button>
       ))}
     </div>
@@ -192,10 +262,10 @@ function HistoryButtons() {
   const future = useStore(useProject.temporal, (s) => s.futureStates.length)
   return (
     <div className="tb-history">
-      <button className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (Ctrl+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
+      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (Ctrl+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
         <Undo2 size={16} />
       </button>
-      <button className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? 'Làm lại (Ctrl+Shift+Z)' : 'Không có gì để làm lại'} aria-label="Làm lại">
+      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? 'Làm lại (Ctrl+Shift+Z)' : 'Không có gì để làm lại'} aria-label="Làm lại">
         <Redo2 size={16} />
       </button>
     </div>
@@ -205,21 +275,50 @@ function HistoryButtons() {
 function RunningIndicator() {
   const active = useActiveCount()
   const processing = useRuns((s) => s.takes.reduce((n, t) => (t.status === 'processing' ? n + 1 : n), 0))
+  // Another tab/window of this project runs the queue: this one only shows the progress (store/runs engine lock).
+  const elsewhere = useRuns((s) => s.engineElsewhere)
   const setQueueOpen = useUI((s) => s.setQueueOpen)
   if (!active) return null
   const waiting = active - processing
+  const where = elsewhere ? ' — hàng đợi đang chạy ở một tab/cửa sổ khác của dự án này, tab này chỉ hiển thị tiến độ' : ''
   return (
     <button
-      className="tb-running"
+      type="button"
+      className={`tb-running${elsewhere ? ' elsewhere' : ''}`}
       onClick={() => setQueueOpen(true)}
-      title={`${processing} đang chạy · ${waiting} đang chờ — bấm để mở hàng đợi`}
+      title={`${processing} đang chạy · ${waiting} đang chờ${where}. Bấm để mở hàng đợi.`}
     >
       <Zap size={13} className="tb-running-icon" />
       <span>
         {/* `active` also counts queued jobs: only `processing` is really running. */}
         {processing ? `${processing} đang chạy` : `${waiting} đang chờ`}
-        {processing > 0 && waiting > 0 && ` · ${waiting} chờ`}
+        {processing > 0 && waiting > 0 && <span className="tb-hide-md"> · {waiting} chờ</span>}
+        {elsewhere && <span className="tb-hide-md"> · tab khác</span>}
       </span>
+    </button>
+  )
+}
+
+/**
+ * Shown only when new takes do NOT run on the demo provider: e.g. "canvasapp" (real gateway, desktop app). Turns
+ * to a warning while that provider reports a problem (useRuns.providerIssue). Opens Settings, where it is chosen.
+ */
+function ProviderBadge() {
+  // Subscribed so the badge follows the Settings choice; the bridge check inside activeProviderId() is static.
+  const chosen = useProviderPrefs((s) => s.provider)
+  const issue = useRuns((s) => s.providerIssue)
+  const openDialog = useUI((s) => s.openDialog)
+  const id: ProviderId = chosen === 'mock' ? 'mock' : activeProviderId()
+  if (id === 'mock') return null
+  const problem = issue && issue.provider === id ? issue.message.trim().replace(/[.\s]+$/, '') || issue.code : null
+  const title = problem
+    ? `Video mới chạy qua ${PROVIDER_LABEL[id]} — đang gặp sự cố: ${problem}. Bấm để mở Cài đặt.`
+    : `Video mới chạy qua ${PROVIDER_LABEL[id]} (không phải bản demo). Bấm để mở Cài đặt.`
+  return (
+    <button type="button" className={`tb-provider${problem ? ' issue' : ''}`} onClick={() => openDialog({ kind: 'settings' })} title={title} aria-label={title}>
+      {problem ? <TriangleAlert size={13} /> : <Cloud size={13} />}
+      {/* Icon only in narrower windows: the tooltip and aria-label carry the full text. */}
+      <span className="tb-hide-md">{id}</span>
     </button>
   )
 }
@@ -260,7 +359,7 @@ function DownloadAllButton() {
       ? `Tải tất cả video chọn (.zip) — take ★ (hoặc take mới nhất đã xong) của ${count} cảnh, kèm prompts.txt`
       : 'Tải tất cả video chọn (.zip) — chưa có video nào tạo xong'
   return (
-    <button className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">
+    <button type="button" className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">
       {busy ? <LoaderCircle size={16} className="tb-spin" /> : <Download size={16} />}
       {count > 0 && !busy && <span className="tb-download-n">{count > 99 ? '99+' : count}</span>}
     </button>
@@ -273,6 +372,7 @@ function CreditPill() {
   const openDialog = useUI((s) => s.openDialog)
   return (
     <button
+      type="button"
       className={`tb-credit ${credits < 20 ? 'low' : ''}`}
       onClick={() => openDialog({ kind: 'settings' })}
       title={`Credit demo — không tốn tiền thật. Đã dùng ${spent} credit. Bấm để nạp thêm.`}
@@ -285,6 +385,23 @@ function CreditPill() {
   )
 }
 
+const THEME_ICON: Record<ThemePref, LucideIcon> = { system: Monitor, light: Sun, dark: Moon }
+/** Same order as useTheme.cycle(): Theo hệ thống → Sáng → Tối. */
+const NEXT_THEME: Record<ThemePref, ThemePref> = { system: 'light', light: 'dark', dark: 'system' }
+
+/** Appearance: one button cycling Theo hệ thống → Sáng → Tối (the icon shows the current choice). */
+function AppearanceButton() {
+  const pref = useTheme((s) => s.pref)
+  const cycle = useTheme((s) => s.cycle)
+  const Icon = THEME_ICON[pref] ?? Monitor
+  const title = `Giao diện: ${THEME_LABEL[pref]} — bấm để chuyển sang ${THEME_LABEL[NEXT_THEME[pref]]}`
+  return (
+    <button type="button" className="icon-btn tb-theme" onClick={cycle} title={title} aria-label={title}>
+      <Icon size={16} />
+    </button>
+  )
+}
+
 function PanelToggles() {
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
@@ -293,6 +410,7 @@ function PanelToggles() {
   return (
     <div className="tb-panels">
       <button
+        type="button"
         className={`icon-btn ${leftOpen ? 'active' : ''}`}
         onClick={() => setLeftOpen(!leftOpen)}
         title={leftOpen ? 'Ẩn thư viện' : 'Hiện thư viện'}
@@ -301,6 +419,7 @@ function PanelToggles() {
         {leftOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
       </button>
       <button
+        type="button"
         className={`icon-btn ${rightOpen ? 'active' : ''}`}
         onClick={() => setRightOpen(!rightOpen)}
         title={rightOpen ? 'Ẩn bảng thuộc tính' : 'Hiện bảng thuộc tính'}

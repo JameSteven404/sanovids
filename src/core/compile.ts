@@ -105,6 +105,20 @@ export function imageSlots(project: Project, scene: Scene): ImageSlot[] {
 /** Stable identity of an image slot used by the renumbering (survives reorders). */
 export const imageKey = (s: { assetId: string; imageId: string }) => `${s.assetId}:${s.imageId}`
 
+/**
+ * Text an @image_N token becomes when its image is removed from a scene: the asset name, else its tag, else "ảnh"
+ * (a blank name must never leave an empty gap in the prompt).
+ */
+export function imageFallbackName(asset: Pick<Asset, 'name' | 'tag'> | null | undefined): string {
+  return asset?.name?.trim() || asset?.tag?.trim() || 'ảnh'
+}
+
+/** Fallback text per asset id (see imageFallbackName); unknown ids give "ảnh". */
+export function imageFallbackNames(assets: readonly Pick<Asset, 'id' | 'name' | 'tag'>[]): (assetId: string) => string {
+  const byId = new Map(assets.map((a) => [a.id, a]))
+  return (assetId) => imageFallbackName(byId.get(assetId))
+}
+
 /** "@image_N" for the primary image of an asset in this scene, or null when the asset is not linked / has no image. */
 export function tokenForAsset(project: Project, scene: Scene, assetId: string): string | null {
   const slot = imageSlots(project, scene).find((s) => s.assetId === assetId)

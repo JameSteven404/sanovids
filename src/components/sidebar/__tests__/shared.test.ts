@@ -12,6 +12,7 @@ import {
   nextAssetPosition,
   norm,
   renameAssetTag,
+  takeHiddenOnCanvas,
   takeSearchFields,
   undoToastAction,
 } from '../shared'
@@ -83,6 +84,29 @@ describe('finished takes', () => {
       take('t6', 's2', 2, 'completed', 200),
     ]
     expect(finishedTakes(takes, new Set(['s1', 's2'])).map((t) => t.id)).toEqual(['t3', 't6', 't1'])
+  })
+})
+
+describe('takes hidden by "Chỉ take chọn"', () => {
+  const scenes = [scene('s1', ''), { ...scene('s2', ''), videoRefs: ['t1'] }]
+  const takes = [
+    take('t1', 's1', 1, 'completed', 100),
+    take('t2', 's1', 2, 'completed', 200),
+    take('t3', 's1', 3, 'failed', 300),
+    { ...take('t4', 's2', 1, 'completed', 400), starred: true },
+    take('t5', 's2', 2, 'completed', 500),
+  ]
+  it('shows every take in the "all" display', () => {
+    for (const t of takes) expect(takeHiddenOnCanvas(t.id, takes, scenes, 'all')).toBe(false)
+  })
+  it('keeps the chosen take of each scene and the takes used as @video', () => {
+    // s1: newest completed (T2) is chosen; T1 stays because S2 uses it as @video; failed T3 is hidden.
+    expect(takeHiddenOnCanvas('t2', takes, scenes, 'chosen')).toBe(false)
+    expect(takeHiddenOnCanvas('t1', takes, scenes, 'chosen')).toBe(false)
+    expect(takeHiddenOnCanvas('t3', takes, scenes, 'chosen')).toBe(true)
+    // s2: the starred take wins over the newer one.
+    expect(takeHiddenOnCanvas('t4', takes, scenes, 'chosen')).toBe(false)
+    expect(takeHiddenOnCanvas('t5', takes, scenes, 'chosen')).toBe(true)
   })
 })
 

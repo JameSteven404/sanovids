@@ -5,6 +5,7 @@ import {
   fileTitle,
   hasMapping,
   itemsFromFiles,
+  MAX_SUMMARY_TOKEN,
   parsePromptText,
   previewItem,
   SAMPLE_IMPORT_TEXT,
@@ -98,6 +99,32 @@ describe('scanTokens / previewItem / summarizeImport', () => {
     ])
     expect(s).toMatchObject({ prompts: 3, maxImage: 3, maxVideo: 1, withImages: 2, withVideos: 1, imageUsage: [2, 0, 1] })
     expect(summarizeImport([]).maxImage).toBe(0)
+  })
+  it('counts only distinct mentioned numbers and ignores numbers above the cap (99)', () => {
+    const s = summarizeImport([
+      { title: '', text: '@image_2, @image_2 and @IMAGE_2 · @image_150' },
+      { title: '', text: '@image_2 @image_5 from @video_1 / @video_1 / @video_400' },
+      { title: '', text: 'Only @image_100000 here' },
+    ])
+    expect(MAX_SUMMARY_TOKEN).toBe(99)
+    expect(s.images).toEqual([2, 5])
+    expect(s.maxImage).toBe(5)
+    // A prompt counts once per number, however often it repeats it.
+    expect(s.imageUsage).toEqual([0, 2, 0, 0, 1])
+    expect(s.videos).toEqual([1])
+    expect(s.maxVideo).toBe(1)
+    // The third prompt only mentions an ignored number: it does not count as using images.
+    expect(s.withImages).toBe(2)
+    expect(s.withVideos).toBe(1)
+    expect(s.ignored).toEqual({ images: [150, 100000], videos: [400] })
+  })
+  it('never builds a huge usage array, and the cap is inclusive and configurable', () => {
+    const huge = summarizeImport([{ title: '', text: '@image_20241002 @image_99999999999999999999 @video_123456' }])
+    expect(huge).toMatchObject({ maxImage: 0, maxVideo: 0, withImages: 0, withVideos: 0, imageUsage: [], images: [], videos: [] })
+    expect(huge.ignored.images).toEqual([20241002, 1e20])
+    expect(summarizeImport([{ title: '', text: '@image_99' }]).imageUsage).toHaveLength(99)
+    const capped = summarizeImport([{ title: '', text: '@image_3 @image_4 @video_4' }], 3)
+    expect(capped).toMatchObject({ images: [3], maxImage: 3, maxVideo: 0, ignored: { images: [4], videos: [4] } })
   })
 })
 

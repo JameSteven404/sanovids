@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { providerOf } from '../../providers'
+import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
 import { formatRuntime } from './shared'
 
@@ -19,6 +21,12 @@ export interface PlayerItem {
 /** Length of a demo clip recorded by the mock provider when the webm has no duration metadata. */
 const MOCK_CLIP_S = 3
 const TICK = 100
+/**
+ * Safety net for a video whose 'ended' never fires (decode error, stalled blob): skip it once playback has made
+ * no progress for this long. A watchdog, not a total timer, so clips of any length (Seedance: up to 30 s) play
+ * to their end, and pausing does not count.
+ */
+const STALL_MS = 6000
 
 const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
 
@@ -32,6 +40,9 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   const [video, setVideo] = useState<VideoState>(null)
   const [saving, setSaving] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
+  // Focus the player while it is open (keys stay here) and give focus back to the storyboard on close.
+  const rootRef = useRef<HTMLDivElement>(null)
+  useOverlayFocus(rootRef)
 
   const item = items[index] as PlayerItem | undefined
   const videoId = item?.take?.videoId ?? null
@@ -93,10 +104,24 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     if (paused || ended) v.pause()
     else void v.play().catch(() => undefined)
   }, [paused, ended, mode, index])
+  // Watchdog (see STALL_MS): last time the video's currentTime moved.
+  const progressAt = useRef(0)
+  const lastTime = useRef(-1)
   useEffect(() => {
     if (mode !== 'video' || paused || ended) return
-    const id = window.setTimeout(next, 15000)
-    return () => window.clearTimeout(id)
+    // (Re)start the watchdog: a new clip, or playback resumed after a pause.
+    progressAt.current = Date.now()
+    lastTime.current = -1
+    const id = window.setInterval(() => {
+      const v = videoRef.current
+      // A hidden tab may pause the (muted) video: that is not a stall.
+      if (document.hidden) progressAt.current = Date.now()
+      else if (v && v.currentTime !== lastTime.current) {
+        lastTime.current = v.currentTime
+        progressAt.current = Date.now()
+      } else if (Date.now() - progressAt.current >= STALL_MS) next()
+    }, 1000)
+    return () => window.clearInterval(id)
   }, [mode, paused, ended, index, next])
 
   // Keyboard: Space pause, ←/→ prev/next, Esc close. Captured so global shortcuts don't fire: every
@@ -107,6 +132,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
       const handled = e.key === 'Escape' || e.key === ' ' || e.key === 'ArrowLeft' || e.key === 'ArrowRight'
       if (!handled) {
         if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')) e.stopPropagation()
+        // The event never reaches the player's own handlers (stopped here): keep Tab inside the player.
+        if (rootRef.current) trapTabWithin(rootRef.current, e)
         return
       }
       e.preventDefault()
@@ -128,6 +155,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   if (!item) return null
 
   const totalS = items.reduce((t, i) => t + i.duration, 0)
+  // Demo takes are ~3 s fake clips; takes from a real provider (canvasapp) play at their own length.
+  const hasDemo = items.some((i) => i.take && providerOf(i.take) === 'mock')
   const take = item.take
   const posterId = take?.posterId ?? null
   const canSave = take?.status === 'completed'
@@ -153,7 +182,15 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   }
 
   return (
-    <div className="vw-player" role="dialog" aria-modal="true" aria-label="Phát liền storyboard">
+    <div
+      ref={rootRef}
+      className="vw-player"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Phát liền storyboard"
+      tabIndex={-1}
+      style={{ outline: 'none' }}
+    >
       <div className="vw-player-top">
         <span className="vw-player-title">
           Phát liền · <b>{item.code}</b>
@@ -162,7 +199,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
             ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
           </span>
         </span>
-        <span className="vw-player-note">Demo: video giả ~3 giây · cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <span className="vw-player-note">{hasDemo ? 'Demo: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>

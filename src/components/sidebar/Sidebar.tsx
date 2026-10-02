@@ -53,7 +53,7 @@ export function Sidebar() {
     <div className="sb">
       <div className="sb-top">
         <label className="sb-search">
-          <Search size={14} className="sb-search-icon" />
+          <Search size={14} strokeWidth={2} className="sb-search-icon" aria-hidden="true" />
           <input
             ref={inputRef}
             className="input sb-search-input"
@@ -70,8 +70,18 @@ export function Sidebar() {
             }}
           />
           {query ? (
-            <button className="sb-search-clear" onClick={() => setQuery('')} title="Xoá tìm kiếm" aria-label="Xoá tìm kiếm">
-              <X size={13} />
+            <button
+              type="button"
+              className="sb-search-clear"
+              onClick={() => {
+                setQuery('')
+                // The button unmounts with the query: keep the focus in the field (Apple-style clear) instead of <body>.
+                inputRef.current?.focus()
+              }}
+              title="Xoá tìm kiếm"
+              aria-label="Xoá tìm kiếm"
+            >
+              <X size={10} strokeWidth={3} />
             </button>
           ) : (
             <span className="kbd sb-search-kbd">Ctrl K</span>

@@ -99,7 +99,7 @@ export function ConnectMenu({ menu, onClose }: { menu: ConnectMenuState; onClose
   return (
     <div
       ref={ref}
-      className="cv-menu"
+      className="cv-menu material"
       style={{ left: menu.x, top: menu.y }}
       role="menu"
       onContextMenu={(e) => e.preventDefault()}
@@ -115,7 +115,7 @@ export function ConnectMenu({ menu, onClose }: { menu: ConnectMenuState; onClose
             it.run()
           }}
         >
-          <it.icon size={14} />
+          <it.icon size={15} strokeWidth={1.75} />
           <span className="cv-menu-label">
             {it.label}
             {it.hint && <small>{it.hint}</small>}

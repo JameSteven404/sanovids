@@ -2,12 +2,12 @@
 import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
-import type { Asset, AssetKind, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
+import { imageSlotsFor, mediaKeys, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
+import { MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
+import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
-import { assetNodeHeight } from '../canvas/canvasModel'
-import { useUI } from '../../store/ui'
+import { assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
+import { useUI, type TakeDisplay } from '../../store/ui'
 
 /**
  * HTML5 drag payload types now live in `src/lib/dnd.ts` (ASSETS_MIME, TAKES_MIME, readIds); import them from there.
@@ -24,6 +24,40 @@ export const KIND_META: Record<AssetKind, { label: string; newName: string; Icon
   location: { label: 'Bối cảnh', newName: 'Bối cảnh mới', Icon: Mountain },
   prop: { label: 'Đạo cụ', newName: 'Đạo cụ mới', Icon: Package },
   style: { label: 'Phong cách', newName: 'Phong cách mới', Icon: Palette },
+}
+
+/** KIND_META of an asset; an unknown kind (file from a newer build, hand-edited import) shows as a character. */
+export function kindMeta(kind: string): (typeof KIND_META)[AssetKind] {
+  return KIND_META[kind as AssetKind] ?? KIND_META.character
+}
+
+// ---------------- models / presets ----------------
+/** Spec of a model; an unknown model id (imported preset from a newer build…) falls back to Seedance 2.5. */
+export function modelSpec(model: string): ModelSpec {
+  return MODELS[model as ModelId] ?? MODELS.seedance_2_5
+}
+
+/**
+ * Mode label for one model: "(+ảnh)" only where that model + mode really sends reference images
+ * (MiniMax-H3's Text → Video sends none). With several models (`model` omitted) the plain name.
+ * Lives in core/models now; re-exported so the panels' existing imports keep working.
+ */
+export { modeLabel } from '../../core/models'
+
+/** Do a scene's settings still equal the preset's (a preset edited after it was applied no longer matches)? */
+export function presetMatches(preset: Preset, settings: VideoSettings): boolean {
+  const p = normalizeSettings(preset)
+  return p.model === settings.model && p.mode === settings.mode && p.duration === settings.duration && p.resolution === settings.resolution && p.ratio === settings.ratio
+}
+
+/**
+ * The preset a scene really runs with: its `presetId` only while the scene's settings still equal that preset's.
+ * After the preset was edited the scene is "Tuỳ chỉnh" (null), so picking the preset again applies the new values.
+ */
+export function appliedPresetId(presetId: string | null, settings: VideoSettings, presets: Preset[]): string | null {
+  if (!presetId) return null
+  const preset = presets.find((p) => p.id === presetId)
+  return preset && presetMatches(preset, settings) ? presetId : null
 }
 
 // ---------------- search ----------------
@@ -81,6 +115,46 @@ export function scenesWithShiftedImageTokens(assets: Asset[], scenes: Scene[], a
     if (parseTokens(sc.prompt).some((t) => t.kind === 'image' && t.n >= lo && t.n <= hi)) out.push(sc.id)
   }
   return out
+}
+
+/**
+ * Does an @image_N / @video_N token of `prompt` point at another image / video after a media change? `before` /
+ * `after` are mediaKeys() of the scene. A token that pointed at nothing before (number too high) is not counted.
+ */
+export function tokensShifted(prompt: string, before: { images: string[]; videos: string[] }, after: { images: string[]; videos: string[] }): boolean {
+  return parseTokens(prompt).some((t) => {
+    const was = (t.kind === 'image' ? before.images : before.videos)[t.n - 1]
+    return was !== undefined && (t.kind === 'image' ? after.images : after.videos)[t.n - 1] !== was
+  })
+}
+
+/**
+ * Scenes whose prompt was left as written although its @image_N / @video_N tokens now point at another picture or
+ * video (automatic renumbering off, Settings), comparing the project before and after a refs / asset-image change.
+ * Rewritten prompts are the store's renumbering at work and are not listed.
+ */
+export function scenesWithStaleTokens(before: Project, after: Project): string[] {
+  const old = new Map(before.scenes.map((s) => [s.id, s]))
+  const out: string[] = []
+  for (const sc of after.scenes) {
+    const prev = old.get(sc.id)
+    if (!prev || prev.prompt !== sc.prompt || !/@(image|video)_\d/i.test(sc.prompt)) continue
+    if (prev.refs === sc.refs && prev.videoRefs === sc.videoRefs && before.assets === after.assets) continue
+    if (tokensShifted(sc.prompt, mediaKeys(before.assets, prev.refs, prev.videoRefs), mediaKeys(after.assets, sc.refs, sc.videoRefs))) out.push(sc.id)
+  }
+  return out
+}
+
+/** " · tự đánh lại số đang tắt — hãy sửa số @image trong S02, S05" (scene codes in order, at most 4 listed). */
+export function staleTokenNote(project: Project, sceneIds: string[], what = '@image'): string {
+  const orders = new Map(project.scenes.map((s) => [s.id, s.order]))
+  const codes = sceneIds
+    .map((id) => orders.get(id))
+    .filter((o): o is number => o !== undefined)
+    .sort((a, b) => a - b)
+    .map(sceneCode)
+  const list = codes.length > 4 ? `${codes.slice(0, 4).join(', ')}… (${codes.length} cảnh)` : codes.join(', ')
+  return ` · tự đánh lại số đang tắt — hãy sửa số ${what} trong ${list}`
 }
 
 /** Hint under an asset's images: what changing them does to the @image numbers of the scenes using it. */
@@ -143,6 +217,16 @@ export function finishedTakes(takes: Take[], sceneIds: ReadonlySet<string>): Tak
   return takes
     .filter((t) => t.status === 'completed' && sceneIds.has(t.sceneId))
     .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt) || b.number - a.number)
+}
+
+/**
+ * Is this take's video node hidden on the canvas? Only in the "Chỉ take chọn" display, which shows the chosen take of
+ * each scene plus takes used as @video (same rule as the canvas layout). Selecting a hidden take would select
+ * something invisible, so the takes list selects its scene instead (like the queue's "Đi tới").
+ */
+export function takeHiddenOnCanvas(takeId: string, takes: Take[], scenes: Scene[], display: TakeDisplay): boolean {
+  if (display !== 'chosen') return false
+  return !layoutTakes(takes, scenes, 'chosen').byId.has(takeId)
 }
 
 /** Search fields for a take: "S03·T2" plus the spellings people type ("S03-T2", "S03T2", "s3 t2"), scene title. */

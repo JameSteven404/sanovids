@@ -1,17 +1,18 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, CircleAlert, Clock, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
-import { downloadTake, requestRun, takeLabel } from '../../actions'
+import { deleteTakes, downloadTake, requestRun } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
+import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { toast, useUI } from '../../store/ui'
+import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fitMedia, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox } from './NodeSizer'
@@ -27,21 +28,50 @@ function openTake(takeId: string) {
   useUI.getState().openDialog({ kind: 'take', takeId })
 }
 
-/** Delete one take (not undoable). Asks first when scenes use it as @video. */
+/**
+ * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video — the
+ * node's trash button already needed a second click (TakeDeleteButton), like the viewer's. deleteTakes also removes
+ * its media blobs, drops it from the selection and says so in a toast.
+ */
 export function deleteTake(takeId: string) {
-  const project = useProject.getState().project
-  const label = takeLabel(takeId)
-  const usedBy = project.scenes.filter((s) => s.videoRefs.includes(takeId)).sort((a, b) => a.order - b.order)
-  if (
-    usedBy.length &&
-    !window.confirm(`${label} đang được dùng làm @video ở ${usedBy.length} cảnh (${usedBy.map((s) => sceneCode(s.order)).join(', ')}).\nXoá video và bỏ các tham chiếu đó?`)
-  ) {
-    return
-  }
-  useRuns.getState().removeTakes([takeId])
-  const ui = useUI.getState()
-  if (ui.selectedIds.includes(takeId)) ui.select(ui.selectedIds.filter((id) => id !== takeId))
-  toast(`Đã xoá ${label}. (Video đã xoá không hoàn tác được.)`)
+  deleteTakes([takeId], { confirm: 'usedOnly' })
+}
+
+/** How long the trash button stays armed after the first click. */
+const ARM_MS = 3500
+
+/**
+ * Trash button of a take node. Deleting a video cannot be undone and the button sits next to "Chạy lại", so the
+ * first click only arms it ("Xoá?", red) and the second one deletes; it disarms after a few seconds or when the
+ * pointer leaves. A take used as @video goes straight to deleteTake's confirm dialog instead.
+ */
+function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), ARM_MS)
+    return () => clearTimeout(t)
+  }, [armed])
+  return (
+    <button
+      className={`cv-take-btn danger${armed ? ' is-armed' : ''}`}
+      title={armed ? 'Bấm lần nữa để xoá (không hoàn tác được)' : 'Xoá take'}
+      aria-label={armed ? 'Bấm lần nữa để xoá take' : 'Xoá take'}
+      onMouseLeave={() => setArmed(false)}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (!armed && !used) {
+          setArmed(true)
+          return
+        }
+        setArmed(false)
+        deleteTake(takeId)
+      }}
+    >
+      <Trash2 size={14} strokeWidth={1.75} />
+      {armed && <span>Xoá?</span>}
+    </button>
+  )
 }
 
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
@@ -70,6 +100,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   if (!take) return null
 
   const code = takeCode(order, take.number)
+  const provider = providerOf(take)
   const canStar = done || take.starred
   const hidden = data?.hidden ?? 0
   const cls = ['cv-take', `st-${take.status}`, selected && 'is-selected', take.starred && 'is-starred', far && 'is-far', box && 'is-sized']
@@ -93,6 +124,12 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
 
           <span className="cv-take-code">{code}</span>
+          {provider !== 'mock' && !far && (
+            <span className="cv-take-provider" title={`Video tạo trên ${PROVIDER_LABEL[provider] ?? provider}`}>
+              <Cloud size={10} strokeWidth={2.2} aria-hidden />
+              {PROVIDER_LABEL[provider] ?? provider}
+            </span>
+          )}
           {!far && (
             <button
               className={`cv-take-star nodrag nopan ${take.starred ? 'on' : ''}`}
@@ -150,7 +187,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
             <span className="cv-spacer" />
             <span className="cv-take-actions nodrag nopan" onPointerDown={stop} onDoubleClick={stop}>
               <button className="cv-take-btn" title="Xem" aria-label="Xem take" onClick={(e) => (e.stopPropagation(), openTake(id))}>
-                <Eye size={13} />
+                <Eye size={14} strokeWidth={1.75} />
               </button>
               <button
                 className="cv-take-btn"
@@ -162,11 +199,9 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
                   requestRun([take.sceneId])
                 }}
               >
-                <RotateCcw size={13} />
+                <RotateCcw size={14} strokeWidth={1.75} />
               </button>
-              <button className="cv-take-btn danger" title="Xoá take" aria-label="Xoá take" onClick={(e) => (e.stopPropagation(), deleteTake(id))}>
-                <Trash2 size={13} />
-              </button>
+              <TakeDeleteButton takeId={id} used={usage > 0} />
             </span>
           </div>
         )}

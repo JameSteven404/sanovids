@@ -6,6 +6,7 @@ import { CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClic
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, focusNodes, newScene } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { MODELS, modeLabel, usesVideoRefs } from '../../core/models'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
@@ -87,6 +88,13 @@ function TakeSummary({ takeIds }: { takeIds: string[] }) {
     ),
   )
   const single = infos.length === 1 ? infos[0] : null
+  // The continuing scene copies the source scene's settings: a mode without reference videos cannot use @video_1.
+  // Primitive selection: '' when it accepts videos (or the scene is gone), else why not.
+  const noVideo = useProject((s) => {
+    const sc = single?.sceneId ? s.project.scenes.find((x) => x.id === single.sceneId) : undefined
+    if (!sc || usesVideoRefs(sc.settings)) return ''
+    return `${MODELS[sc.settings.model]?.name ?? sc.settings.model} ở chế độ “${modeLabel(sc.settings.mode, sc.settings.model)}” của ${sceneCode(sc.order)} không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” rồi thử lại`
+  })
   return (
     <div className="in-empty in-take-sum">
       {single?.posterId ? (
@@ -132,7 +140,13 @@ function TakeSummary({ takeIds }: { takeIds: string[] }) {
             <Eye size={14} /> Xem
           </button>
           {single.status === 'completed' && (
-            <button type="button" className="btn btn-primary" onClick={() => createSceneFromTake(single.id)}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => createSceneFromTake(single.id)}
+              disabled={!!noVideo}
+              title={noVideo || 'Cảnh mới bên dưới cảnh gốc, dùng video này làm @video_1, giữ ảnh tham chiếu và cấu hình'}
+            >
               <CornerDownRight size={14} /> Tạo cảnh tiếp nối
             </button>
           )}

@@ -4,7 +4,7 @@ import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type Nod
 import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, linkAssets, linkTakes, requestRun, takeLabel, videoLabel, viewImages } from '../../actions'
+import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
@@ -24,6 +24,7 @@ import {
   hasTakeDrag,
   imageFiles,
   inlineEditKeyBubbles,
+  inlineEditSavesDraft,
   LOD_ZOOM,
   promptLines,
   readAssetIds,
@@ -37,6 +38,7 @@ import {
   targetScenesFor,
   type TakeSummary,
 } from './canvasModel'
+import { cutEdge } from './edges'
 import { NodeSizer, useNodeBox } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import './canvas.css'
@@ -290,7 +292,7 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
       <div className="cv-scene-head">
         <span className="cv-code">{sceneCode(scene.order)}</span>
         <EditableTitle sceneId={scene.id} title={scene.title} />
-        <span className="cv-model" style={{ color: spec.color }} title={spec.name}>
+        <span className="cv-model" style={{ ['--model-c' as string]: spec.color }} title={spec.name}>
           {spec.short}
         </span>
         <span className={`status-dot ${status ?? ''}`} title={status ? `Take mới nhất: ${STATUS_LABEL[status]}` : 'Chưa chạy'} />
@@ -379,7 +381,10 @@ function TakeLine({ sceneId }: { sceneId: string }) {
   )
 }
 
-/** Small purple thumbs of the scene's @video refs: v1, v2… (× removes the reference; tokens are renumbered). */
+/**
+ * Small purple thumbs of the scene's @video refs: v1, v2… × removes the reference like cutting its wire (tokens are
+ * renumbered, toast with Undo).
+ */
 function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[] }) {
   const posters = useRuns(
     useShallow((s) => {
@@ -399,7 +404,7 @@ function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[
             aria-label={`Bỏ video tham chiếu ${i + 1}`}
             onClick={(e) => {
               e.stopPropagation()
-              useProject.getState().removeVideoRef(sceneId, takeId, videoLabel(takeId))
+              cutEdge(edgeId('vref', takeId, sceneId))
             }}
           >
             <X size={9} strokeWidth={3} />
@@ -409,6 +414,12 @@ function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[
       {videoRefs.length > MAX_VIDEO_THUMBS && <span className="cv-av-more">+{videoRefs.length - MAX_VIDEO_THUMBS}</span>}
     </span>
   )
+}
+
+/** Write a title being typed to the store (no-op when unchanged). */
+function saveTitleDraft(sceneId: string, text: string) {
+  const cur = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
+  if (cur && text.trim() !== cur.title) useProject.getState().updateScene(sceneId, { title: text.trim() })
 }
 
 function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
@@ -421,12 +432,27 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
     () => () => {
       const text = pending.current
       pending.current = null
-      if (text === null) return
-      const cur = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
-      if (cur && text.trim() !== cur.title) useProject.getState().updateScene(sceneId, { title: text.trim() })
+      if (text !== null) saveTitleDraft(sceneId, text)
     },
     [sceneId],
   )
+  // Closing the window / hiding the tab does not blur the field (and React does not unmount on pagehide): save the
+  // draft first. Capture phase, so it lands in the store before persist.ts writes the project on the same events.
+  useEffect(() => {
+    if (!editing) return
+    const save = () => {
+      if (pending.current !== null) saveTitleDraft(sceneId, pending.current)
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') save()
+    }
+    window.addEventListener('pagehide', save, true)
+    document.addEventListener('visibilitychange', onVisibility, true)
+    return () => {
+      window.removeEventListener('pagehide', save, true)
+      document.removeEventListener('visibilitychange', onVisibility, true)
+    }
+  }, [editing, sceneId])
   const commit = () => {
     pending.current = null
     setEditing(false)
@@ -450,6 +476,8 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
           // Ctrl/Cmd combos through: useShortcuts handles Ctrl+S (save) and Ctrl+Enter (run) even while typing and
           // ignores the other ones in a text field.
           if (!inlineEditKeyBubbles(e)) e.stopPropagation()
+          // Ctrl+S saves the project and says "Đã lưu": the title being typed must be in it (editing goes on).
+          else if (inlineEditSavesDraft(e) && pending.current !== null) saveTitleDraft(sceneId, pending.current)
           if (e.key === 'Enter') commit()
           else if (e.key === 'Escape') {
             pending.current = null
@@ -553,7 +581,8 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
         aria-label={`Bỏ nối ${asset.name}`}
         onClick={(e) => {
           e.stopPropagation()
-          useProject.getState().removeRef(sceneId, asset.id)
+          // Same as cutting the wire: renumbers the prompt's @image_N and says so, with Undo.
+          cutEdge(edgeId('ref', asset.id, sceneId))
         }}
       >
         <X size={9} strokeWidth={3} />

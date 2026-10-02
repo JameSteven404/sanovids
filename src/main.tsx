@@ -16,6 +16,13 @@ import './styles/base.css'
 import './styles/app.css'
 import { App } from './App'
 import { initPwa, registerServiceWorker } from './lib/pwa'
+import { initTheme } from './lib/theme'
+
+// Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
+// follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
+// flash before the CSS loaded: the stylesheets are in now, so drop it (it would stay on the old theme's color).
+initTheme()
+document.documentElement.style.removeProperty('background')
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()

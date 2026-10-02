@@ -17,6 +17,7 @@ import {
   imageTokenLabels,
   KIND_META,
   KIND_ORDER,
+  kindMeta,
   libraryCardKey,
   matchesQuery,
   newAssetKind,
@@ -213,7 +214,7 @@ const AssetCard = memo(function AssetCard({
   groupSize,
   onSelect,
 }: CardProps) {
-  const { Icon, label } = KIND_META[asset.kind]
+  const { Icon, label } = kindMeta(asset.kind)
   const many = selected && groupSize > 1
   const linkTitle = selScenes
     ? `Nối ${many ? `${groupSize} mục đã chọn` : `“${asset.name}”`} vào ${selScenes} cảnh đang chọn`

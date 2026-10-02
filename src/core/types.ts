@@ -126,7 +126,24 @@ export interface Take {
   position: XY | null
   /** Canvas node size (null/undefined = default). */
   size?: Size | null
+  // ---- provider fields (optional: takes saved before providers existed have none; migrateTake fills them) ----
+  /** Video provider that runs this take. Missing = 'mock'. */
+  provider?: TakeProvider
+  /** Job id at the provider once submitted — lets the engine resume polling after a reload. Null = not submitted. */
+  remoteId?: string | null
+  /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
+  charged?: boolean
+  /** H3 transform frames (asset ids) at enqueue time. Missing = read from the scene when submitting. */
+  framesSnapshot?: { first: string | null; last: string | null }
+  /**
+   * Image keys (`assetId:imageId`, see core/compile imageKey) of the scene's references at enqueue time, in
+   * @image_N order — the full list, before the model's image cap. Lets "restore prompt" renumber exactly.
+   */
+  imageKeysSnapshot?: string[]
 }
+
+/** Provider that runs a take (same ids as providers/types ProviderId). */
+export type TakeProvider = 'mock' | 'canvasapp'
 
 export interface CompiledImage {
   /** 1-based N in @image_N */

@@ -55,10 +55,24 @@ export const MODELS: Record<ModelId, ModelSpec> = {
   },
 }
 
+/**
+ * Mode names as shown for Seedance (its t2v sends reference images). Kept for compatibility: prefer
+ * `modeLabel(mode, model)`, which is right for every model.
+ */
 export const MODE_LABEL: Record<Mode, string> = {
   t2v: 'Text → Video (+ảnh)',
   i2v: 'Ảnh → Video',
   transform: 'Khung đầu → cuối',
+}
+
+/**
+ * Name of a mode for a model: "(+ảnh)" only where that model + mode really sends reference images (MiniMax-H3's
+ * Text → Video sends none). Without a model (several models at once) the plain name.
+ */
+export function modeLabel(mode: Mode, model?: ModelId): string {
+  const label = MODE_LABEL[mode] ?? String(mode)
+  const sendsImages = !!model && usesRefs({ model, mode, duration: 0, resolution: '', ratio: '' })
+  return sendsImages ? label : label.replace(/\s*\(\+ảnh\)$/, '')
 }
 
 export function costOf(s: VideoSettings): number {

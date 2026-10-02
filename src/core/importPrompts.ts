@@ -126,33 +126,83 @@ export function previewItem(item: ImportItem, maxLines = 3): ImportPreview {
   return { title: item.title, excerpt: lines.slice(0, maxLines).join('\n'), chars: [...item.text].length, ...scanTokens(item.text) }
 }
 
+/**
+ * Highest @image_N / @video_N number the summary counts. Models take far fewer references; a bigger number is a
+ * date or a typo ("@image_20241002") and would make the dialog build one mapping row per number up to it.
+ */
+export const MAX_SUMMARY_TOKEN = 99
+
 export interface ImportSummary {
   prompts: number
   chars: number
-  /** Highest N of @image_N over all prompts (0 = none). */
+  /** Distinct N of @image_N mentioned by at least one prompt (N ≤ the cap), ascending. */
+  images: number[]
+  /** Distinct N of @video_N mentioned by at least one prompt (N ≤ the cap), ascending. */
+  videos: number[]
+  /** Highest counted N of @image_N (0 = none). */
   maxImage: number
-  /** Highest N of @video_N over all prompts (0 = none). */
+  /** Highest counted N of @video_N (0 = none). */
   maxVideo: number
-  /** Prompts with at least one @image_N / @video_N token. */
+  /** Prompts with at least one counted @image_N / @video_N token. */
   withImages: number
   withVideos: number
-  /** imageUsage[N - 1] = number of prompts that mention @image_N. */
+  /** imageUsage[N - 1] = number of prompts that mention @image_N (a prompt counts once per number). */
   imageUsage: number[]
+  /** Distinct numbers above the cap, left out of everything above (kept as written in the prompts), ascending. */
+  ignored: TokenScan
 }
 
-export function summarizeImport(items: ImportItem[]): ImportSummary {
-  const scans = items.map((i) => scanTokens(i.text))
-  const maxImage = Math.max(0, ...scans.flatMap((s) => s.images))
-  const maxVideo = Math.max(0, ...scans.flatMap((s) => s.videos))
-  const imageUsage = Array.from({ length: maxImage }, (_, i) => scans.filter((s) => s.images.includes(i + 1)).length)
+/**
+ * What the import dialog shows about a batch of prompts. Only distinct numbers are counted (a prompt mentioning
+ * @image_2 three times counts once for 2), and numbers above `cap` are ignored — so the usage array never grows
+ * past `cap` entries, whatever was pasted.
+ */
+export function summarizeImport(items: ImportItem[], cap = MAX_SUMMARY_TOKEN): ImportSummary {
+  const usage = new Map<number, number>()
+  const videos = new Set<number>()
+  const ignoredImages = new Set<number>()
+  const ignoredVideos = new Set<number>()
+  let chars = 0
+  let withImages = 0
+  let withVideos = 0
+  for (const item of items) {
+    chars += [...item.text].length
+    // scanTokens: distinct numbers of this prompt.
+    const scan = scanTokens(item.text)
+    let image = false
+    let video = false
+    for (const n of scan.images) {
+      if (n > cap) ignoredImages.add(n)
+      else {
+        usage.set(n, (usage.get(n) ?? 0) + 1)
+        image = true
+      }
+    }
+    for (const n of scan.videos) {
+      if (n > cap) ignoredVideos.add(n)
+      else {
+        videos.add(n)
+        video = true
+      }
+    }
+    if (image) withImages++
+    if (video) withVideos++
+  }
+  const asc = (a: number, b: number) => a - b
+  const images = [...usage.keys()].sort(asc)
+  const videoList = [...videos].sort(asc)
+  const maxImage = images.length ? images[images.length - 1] : 0
   return {
     prompts: items.length,
-    chars: items.reduce((t, i) => t + [...i.text].length, 0),
+    chars,
+    images,
+    videos: videoList,
     maxImage,
-    maxVideo,
-    withImages: scans.filter((s) => s.images.length).length,
-    withVideos: scans.filter((s) => s.videos.length).length,
-    imageUsage,
+    maxVideo: videoList.length ? videoList[videoList.length - 1] : 0,
+    withImages,
+    withVideos,
+    imageUsage: Array.from({ length: maxImage }, (_, i) => usage.get(i + 1) ?? 0),
+    ignored: { images: [...ignoredImages].sort(asc), videos: [...ignoredVideos].sort(asc) },
   }
 }
 

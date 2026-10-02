@@ -1,9 +1,40 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
-import { Ban, CircleAlert, CircleCheck, Clock, LoaderCircle } from 'lucide-react'
+import { Ban, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { JobStatus, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
+import { activeProviderId, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
 import { useRuns } from '../../store/runs'
+
+// ---- providers (Demo giả lập | canvasapp.io.vn) ----
+
+/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings change it. */
+export function useActiveProvider(): ProviderId {
+  useProviderPrefs((s) => s.provider)
+  return activeProviderId()
+}
+
+/** The take's cost came out of the local demo credits (refunded when it fails or is cancelled). Old takes: yes. */
+export const chargedLocally = (t: Pick<Take, 'charged'>): boolean => t.charged !== false
+
+/** Unit of a cost, by provider: demo credits are play money, canvasapp credits are the user's real account. */
+export const CREDIT_UNIT: Record<ProviderId, string> = { mock: 'credit demo', canvasapp: 'credit canvasapp' }
+
+/** 1 canvasapp credit ≈ 1.000đ (docs/GATEWAY-CANVASAPP.md). */
+export const vndOf = (credits: number) => `${(credits * 1000).toLocaleString('vi-VN')}đ`
+
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo', canvasapp: 'canvasapp' }
+
+/** Small chip naming the provider a take ran on (queue rows, take viewer). */
+export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
+  const id = provider ?? (take ? providerOf(take) : 'mock')
+  return (
+    <span className={`rq-prov ${id}`} title={id === 'mock' ? 'Demo giả lập — video giả, không tốn tiền' : `${PROVIDER_LABEL[id]} — video thật, tốn credit của tài khoản`}>
+      {id === 'mock' ? <Sparkles size={10} /> : <Cloud size={10} />}
+      {PROVIDER_SHORT[id]}
+    </span>
+  )
+}
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: 'Đang chờ',

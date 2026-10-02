@@ -16,6 +16,39 @@ import { useProject } from '../store/project'
 import { flush } from '../store/persist'
 import { toast, useUI } from '../store/ui'
 
+/** Mac keyboards have no forward-delete key: there ⌫ (Backspace) is the delete key. */
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent)
+/** macOS ⌫: wait this long before deleting; any key arriving meanwhile means it was typed by an input tool. */
+export const BACKSPACE_GRACE_MS = 90
+
+/**
+ * What a key does to the selection: 'now' = delete it, 'deferred' = delete it unless another key follows within
+ * BACKSPACE_GRACE_MS, null = nothing. Only Delete deletes on Windows / Linux. Vietnamese typing tools (Unikey, EVKey,
+ * OpenKey…) rewrite letters by sending a real Backspace + the accented letter even when no text field has focus:
+ * pressing E twice (wire mode) turned into "ê" and its Backspace deleted the selected scene and videos. They do not use
+ * IME composition, so `isComposing` cannot tell. On macOS ⌫ stays, guarded by the grace period (the tool's letter
+ * arrives right after its Backspace).
+ */
+export function deleteKeyAction(key: string, mac: boolean): 'now' | 'deferred' | null {
+  if (key === 'Delete') return 'now'
+  if (key === 'Backspace' && mac) return 'deferred'
+  return null
+}
+
+/**
+ * Selection rule of the Delete key (takes selected together with their own scene are spared). It lives in
+ * core/deletePlan and actions.deleteSelection applies it itself; re-exported here for older imports and tests.
+ */
+export { keyboardDeletePlan } from '../core/deletePlan'
+
+/**
+ * Delete key → actions.deleteSelection, which spares videos selected together with their own scene (they are only
+ * hidden with it, Undo brings them back), asks before deleting finished videos for good and leaves the selection
+ * untouched when the question is cancelled.
+ */
+function deleteFromKeyboard() {
+  deleteSelection()
+}
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -31,7 +64,14 @@ function isTyping(target: EventTarget | null): boolean {
 
 export function useShortcuts(): void {
   useEffect(() => {
+    let pendingDelete: ReturnType<typeof setTimeout> | null = null
+    const cancelPendingDelete = () => {
+      if (pendingDelete) clearTimeout(pendingDelete)
+      pendingDelete = null
+    }
     const onKey = (e: KeyboardEvent) => {
+      // Any key right after a macOS ⌫ means an input tool is rewriting a letter: that ⌫ was not meant to delete.
+      cancelPendingDelete()
       if (e.defaultPrevented || e.isComposing) return
       const ui = useUI.getState()
       const mod = e.ctrlKey || e.metaKey
@@ -91,12 +131,19 @@ export function useShortcuts(): void {
       if (e.altKey) return
 
       // ---- single keys ----
+      const del = deleteKeyAction(key, IS_MAC)
+      if (del) {
+        e.preventDefault()
+        if (e.repeat) return
+        if (del === 'now') deleteFromKeyboard()
+        else
+          pendingDelete = setTimeout(() => {
+            pendingDelete = null
+            deleteFromKeyboard()
+          }, BACKSPACE_GRACE_MS)
+        return
+      }
       switch (key) {
-        case 'Delete':
-        case 'Backspace':
-          e.preventDefault()
-          deleteSelection()
-          return
         case '?':
           e.preventDefault()
           ui.openDialog({ kind: 'shortcuts' })
@@ -144,6 +191,9 @@ export function useShortcuts(): void {
       }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      cancelPendingDelete()
+      window.removeEventListener('keydown', onKey)
+    }
   }, [])
 }

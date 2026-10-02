@@ -1,6 +1,26 @@
-/* Views (vw-): Bảng cảnh + Storyboard. Both fill .app-center and stay clear of the QueueDrawer
-   (36px bar, 272px when open — `--rq-drawer-h` from runs.css). */
+/*
+ * Views (vw-): Bảng cảnh + Storyboard (+ the "Phát liền" player). Both fill .app-center and stay clear of the
+ * QueueDrawer (36px bar, 272px when open — `--rq-drawer-h` from runs.css).
+ * Colors come only from the theme tokens in styles/base.css (light + dark) — see docs/DESIGN.md.
+ */
 .vw-root {
+  /*
+   * Media (posters, video, the "Phát liền" player): dark letterbox and dark glass chips with light text in BOTH
+   * themes, like Photos / QuickTime and the canvas take nodes (canvas.css) — the picture decides the background,
+   * not the theme. Theme-independent tokens (--media-bg / --media-scrim / --on-media) when base.css has them; the
+   * keyword fallbacks are deliberate media scrims, the only literal colors in this file.
+   */
+  --vw-on-media: var(--on-media, white);
+  --vw-on-media-dim: color-mix(in srgb, var(--vw-on-media) 64%, transparent);
+  --vw-on-media-faint: color-mix(in srgb, var(--vw-on-media) 42%, transparent);
+  --vw-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
+  --vw-media-bg: var(--media-bg, black);
+  /* glass buttons drawn on media (player end screen) */
+  --vw-media-btn: color-mix(in srgb, var(--vw-on-media) 14%, transparent);
+  --vw-media-btn-hover: color-mix(in srgb, var(--vw-on-media) 22%, transparent);
+  /* user-picked scene color used as text: a share of --text keeps it readable on the row (more in light theme) */
+  --vw-tint-mix: 88%;
+
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -9,35 +29,43 @@
   overflow: auto;
   padding-bottom: calc(var(--rq-drawer-h, 36px) + 4px);
   background: var(--bg);
-  transition: padding-bottom 0.18s ease;
+  transition: padding-bottom 0.22s ease-out;
+}
+:root[data-theme='light'] .vw-root {
+  /* palette mid-tones (yellow, light blue…) are only ≈2–2.6:1 on the light rows: ≈4–4.6:1 with this much --text */
+  --vw-tint-mix: 62%;
 }
 .vw-table-root,
 .vw-sb-root {
   overflow: hidden;
 }
 
-/* ---------- header / bulk bar ---------- */
+/* ---------- header (toolbar) / bulk bar ---------- */
 .vw-head {
   flex: none;
   display: flex;
+  flex-wrap: wrap; /* narrow center (1100px window, both panels open): actions drop to a second row, never clipped */
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 8px 14px;
+  gap: 6px 12px;
+  min-height: 52px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
 }
 .vw-head-title {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 180px; /* basis, not content width: the long hint ellipsizes instead of pushing the actions down */
   min-width: 0;
 }
 .vw-head-title h2 {
   margin: 0;
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.25;
   white-space: nowrap;
 }
 .vw-head-hint {
@@ -49,25 +77,32 @@
 }
 .vw-head-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
 }
 .vw-bulk {
-  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--bg-elev);
-  border-bottom-color: rgba(232, 137, 74, 0.35);
+  background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--bg);
+  border-bottom-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .vw-bulk b {
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* ---------- dropdown menu ---------- */
+/* ---------- dropdown menu (popover material) ---------- */
 .vw-menu-wrap {
   position: relative;
 }
 .vw-menu-wrap > .btn.open {
   border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 .vw-menu {
   position: absolute;
@@ -75,11 +110,20 @@
   z-index: 30;
   max-height: 360px;
   overflow: auto;
-  padding: 4px;
+  padding: 6px;
   border-radius: var(--radius);
-  border: 1px solid var(--border-strong);
-  background: var(--panel);
+  border: 1px solid var(--border);
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
   box-shadow: var(--shadow-lg);
+  animation: vw-pop 0.14s ease-out;
+}
+@keyframes vw-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 .vw-menu.left {
   left: 0;
@@ -89,12 +133,13 @@
 }
 .vw-menu-item {
   width: 100%;
+  min-height: 30px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 8px;
+  padding: 6px 8px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -102,7 +147,11 @@
   flex-wrap: wrap;
 }
 .vw-menu-item:hover {
-  background: var(--panel-3);
+  background: var(--pressed);
+}
+.vw-menu-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-menu-main {
   flex: 1;
@@ -135,7 +184,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 2px 2px 6px;
+  margin: 0 0 6px;
   padding: 0 8px;
   height: 30px;
   border-radius: var(--radius-sm);
@@ -145,6 +194,7 @@
 }
 .vw-picker-search:focus-within {
   border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 .vw-picker-search input {
   flex: 1;
@@ -152,6 +202,9 @@
   border: 0;
   outline: none;
   background: transparent;
+}
+.vw-picker-search input::placeholder {
+  color: var(--text-faint);
 }
 .vw-picker-list {
   max-height: 280px;
@@ -169,7 +222,7 @@
   flex: none;
   height: 24px;
   padding: 0 8px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-faint);
@@ -177,11 +230,17 @@
   cursor: pointer;
 }
 .vw-picker-unlink:hover {
-  color: #ff8a8a;
-  border-color: rgba(239, 91, 91, 0.4);
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.vw-picker-unlink:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
-/* ---------- table ---------- */
+/* =====================================================================================================
+   Bảng cảnh — Apple table: sticky translucent header, hairline separators, rounded hover / selected rows
+   ===================================================================================================== */
 .vw-table-scroll {
   flex: 1;
   min-height: 0;
@@ -191,7 +250,8 @@
   /* Take column: TakeStrip sm with max 3 → "+NN" (≤30px) + 3×44px thumbs + gaps + 14px padding.
      Video column: 3 × 38px thumbs + "+N". */
   --vw-cols: 22px 30px 50px minmax(140px, 1.1fr) 168px 150px minmax(220px, 2fr) 172px 58px 186px 132px 40px;
-  min-width: 1380px;
+  min-width: 1396px; /* 1380px of columns + the 8px inset on both sides */
+  padding: 0 8px 8px;
 }
 .vw-tr {
   display: grid;
@@ -202,18 +262,27 @@
   min-width: 0;
   padding: 0 7px;
 }
+/* spans the full width (margin), columns stay aligned with the inset rows (padding) */
 .vw-thead {
   position: sticky;
   top: 0;
   z-index: 2;
-  height: 34px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border-strong);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  height: 32px;
+  margin: 0 -8px 4px;
+  padding: 0 8px;
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+.vw-thead > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .vw-c {
   text-align: center;
@@ -222,34 +291,81 @@
   text-align: right;
 }
 .vw-row {
+  /* opaque row color: the number badges on the avatars draw their ring in it */
+  --vw-row-bg: var(--bg);
   position: relative;
   min-height: 50px;
-  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--vw-row-bg);
   cursor: default;
-  scroll-margin-top: 36px;
+  scroll-margin-top: 40px;
   scroll-margin-bottom: 8px;
-  transition: background 0.1s;
+  transition: background 0.12s ease-out;
+}
+/* hairline between rows (inset past the grip + checkbox), hidden next to a highlighted row */
+.vw-row + .vw-row::before {
+  content: '';
+  position: absolute;
+  left: 52px;
+  right: 8px;
+  top: 0;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.vw-row:hover::before,
+.vw-row.selected::before,
+.vw-row.asset-over::before,
+.vw-row.take-over::before,
+.vw-row:hover + .vw-row::before,
+.vw-row.selected + .vw-row::before,
+.vw-row.asset-over + .vw-row::before,
+.vw-row.take-over + .vw-row::before {
+  opacity: 0;
 }
 .vw-row:hover {
-  background: rgba(255, 255, 255, 0.025);
+  --vw-row-bg: color-mix(in srgb, var(--text) 5%, var(--bg));
 }
 .vw-row.selected {
-  background: rgba(232, 137, 74, 0.08);
-  box-shadow: inset 3px 0 0 var(--accent);
+  --vw-row-bg: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+.vw-row.selected:hover {
+  --vw-row-bg: color-mix(in srgb, var(--accent) 19%, var(--bg));
+}
+/* consecutive selected rows read as one block (like a Finder list): no notches where their corners meet */
+.vw-row.selected:has(+ .vw-row.selected) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.vw-row.selected + .vw-row.selected {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 .vw-row.asset-over {
-  background: var(--ref-soft);
+  --vw-row-bg: color-mix(in srgb, var(--ref) 14%, var(--bg));
   box-shadow: inset 0 0 0 1px var(--ref);
 }
 .vw-row.take-over {
-  background: rgba(180, 140, 255, 0.1);
-  box-shadow: inset 0 0 0 1px var(--video, #b48cff);
+  --vw-row-bg: color-mix(in srgb, var(--video) 14%, var(--bg));
+  box-shadow: inset 0 0 0 1px var(--video);
 }
-.vw-row.drop-above {
-  box-shadow: inset 0 2px 0 var(--accent);
+/* reorder: a 2px accent line where the dragged row will land */
+.vw-row.drop-above::after,
+.vw-row.drop-below::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
 }
-.vw-row.drop-below {
-  box-shadow: inset 0 -2px 0 var(--accent);
+.vw-row.drop-above::after {
+  top: -1px;
+}
+.vw-row.drop-below::after {
+  bottom: -1px;
 }
 .vw-handle {
   display: flex;
@@ -259,6 +375,7 @@
   color: var(--text-faint);
   opacity: 0;
   cursor: grab;
+  transition: opacity 0.12s ease-out;
 }
 .vw-tr > .vw-handle {
   padding: 0;
@@ -283,8 +400,12 @@
 .vw-code {
   font-family: var(--mono);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
+}
+/* the scene's own color (inline --vw-scene-c), mixed with --text so light palette colors stay readable */
+.vw-code.tinted {
+  color: color-mix(in srgb, var(--vw-scene-c) var(--vw-tint-mix), var(--text));
 }
 .vw-cell-input {
   width: 100%;
@@ -298,6 +419,9 @@
   font-weight: 500;
   outline: none;
   text-overflow: ellipsis;
+  transition:
+    border-color 0.12s ease-out,
+    background 0.12s ease-out;
 }
 .vw-cell-input::placeholder {
   color: var(--text-faint);
@@ -309,7 +433,7 @@
 .vw-cell-input:focus {
   border-color: var(--accent);
   background: var(--bg-elev);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--focus-ring);
 }
 .vw-cell-refs {
   display: flex;
@@ -319,19 +443,19 @@
   border: 1px dashed transparent;
 }
 .vw-row.lib-drag .vw-cell-refs {
-  border-color: rgba(79, 182, 168, 0.5);
-  background: rgba(79, 182, 168, 0.05);
+  border-color: color-mix(in srgb, var(--ref) 50%, transparent);
+  background: color-mix(in srgb, var(--ref) 6%, transparent);
 }
 /* a take (video) is being dragged: rows that can use it as @video light up */
 .vw-row.take-drag:not(.take-over):not(.selected) {
-  background: rgba(180, 140, 255, 0.035);
+  --vw-row-bg: color-mix(in srgb, var(--video) 4%, var(--bg));
 }
 .vw-row.take-drag .vw-cell-videos {
-  border-color: rgba(180, 140, 255, 0.55);
-  background: var(--video-soft, rgba(180, 140, 255, 0.16));
+  border-color: color-mix(in srgb, var(--video) 55%, transparent);
+  background: var(--video-soft);
 }
 .vw-row.take-drag .vw-cell-videos .vw-faint-cell {
-  color: var(--video, #b48cff);
+  color: var(--video);
 }
 .vw-avatars {
   display: flex;
@@ -340,15 +464,11 @@
 .vw-avatar {
   position: relative;
   display: inline-flex;
-  /* square like AssetAvatar (the ring box-shadow follows this radius) */
+  /* square like AssetAvatar */
   border-radius: max(3px, 14%);
-  box-shadow: 0 0 0 2px var(--bg);
-}
-.vw-row.selected .vw-avatar {
-  box-shadow: 0 0 0 2px #1e1915;
 }
 .vw-avatar + .vw-avatar {
-  margin-left: 4px;
+  margin-left: 6px;
 }
 /* N of @image_N on each avatar */
 .vw-num {
@@ -360,17 +480,21 @@
   padding: 0 3px;
   border-radius: 999px;
   background: var(--ref);
-  color: #0d1714;
+  color: var(--on-accent);
   font-family: var(--mono);
   font-size: 9.5px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 14px;
   text-align: center;
-  box-shadow: 0 0 0 1.5px var(--bg);
+  box-shadow: 0 0 0 1.5px var(--vw-row-bg, var(--bg));
   pointer-events: none;
 }
 .vw-num.none {
   background: var(--warn);
+}
+/* light teal is too pale under white 9.5px text (≈3.2:1): deepen the fill, as the canvas does (≈4.5:1) */
+:root[data-theme='light'] .vw-num:not(.none) {
+  background: color-mix(in srgb, var(--ref) 80%, var(--text));
 }
 .vw-avatar-more {
   margin-left: 10px;
@@ -387,7 +511,7 @@
   text-overflow: ellipsis;
 }
 .vw-drop-hint.video {
-  color: var(--video, #b48cff);
+  color: var(--video);
 }
 /* reference videos (v1 = @video_1) */
 .vw-cell-videos {
@@ -415,12 +539,16 @@
   padding: 0;
   overflow: hidden;
   border-radius: 4px;
-  border: 1px solid rgba(180, 140, 255, 0.6);
+  border: 1px solid color-mix(in srgb, var(--video) 55%, transparent);
   background: var(--panel-3);
   cursor: pointer;
 }
 .vw-vref-open:hover {
-  border-color: var(--video, #b48cff);
+  border-color: var(--video);
+}
+.vw-vref-open:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-vref-open:disabled {
   cursor: default;
@@ -430,7 +558,7 @@
   opacity: 0.7;
 }
 .vw-vref.missing .vw-vref-open {
-  border-color: rgba(239, 91, 91, 0.6);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
 }
 .vw-vref-img {
   display: block;
@@ -449,37 +577,49 @@
   bottom: 1px;
   padding: 0 3px;
   border-radius: 3px;
-  background: rgba(20, 14, 34, 0.82);
-  color: var(--video, #b48cff);
+  background: var(--vw-media-chip);
+  color: color-mix(in srgb, var(--video) 70%, var(--vw-on-media));
   font-family: var(--mono);
   font-size: 9px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 12px;
 }
+/* Hidden with opacity (not display: none) so Tab can still reach it: it shows on hover and on keyboard focus. */
 .vw-vref-x {
   position: absolute;
   top: -5px;
   right: -5px;
-  display: none;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   padding: 0;
   border-radius: 50%;
   border: 0;
   background: var(--panel-3);
   color: var(--text-dim);
-  box-shadow: 0 0 0 1px var(--border-strong);
+  box-shadow:
+    0 0 0 1px var(--border-strong),
+    var(--shadow-sm);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease-out;
 }
 .vw-vref:hover .vw-vref-x,
-.vw-vref-x:focus-visible {
-  display: inline-flex;
+.vw-vref:focus-within .vw-vref-x {
+  opacity: 1;
+  pointer-events: auto;
 }
+/* opaque (it overlaps the thumbnail): a red tint mixed into the button color, not the translucent --danger-soft */
 .vw-vref-x:hover {
-  background: var(--danger);
-  color: #fff;
+  background: color-mix(in srgb, var(--danger) 22%, var(--panel-3));
+  color: var(--danger-text);
+}
+.vw-vref-x:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-faint-cell {
   color: var(--text-faint);
@@ -506,7 +646,7 @@
   font-weight: 600;
 }
 .vw-mention.video {
-  color: var(--video, #b48cff);
+  color: var(--video);
 }
 .vw-cell-settings {
   display: flex;
@@ -534,8 +674,8 @@
   align-self: flex-start;
   padding: 0 6px;
   border-radius: 4px;
-  background: var(--panel-3);
-  color: var(--text-faint);
+  background: var(--pressed);
+  color: var(--text-dim);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 16px;
@@ -563,8 +703,11 @@
   gap: 5px;
   color: var(--text-dim);
 }
+.vw-status.faint {
+  color: var(--text-faint);
+}
 .vw-status.failed {
-  color: #ff8a8a;
+  color: var(--danger-text);
 }
 .vw-status.processing {
   color: var(--accent);
@@ -588,15 +731,26 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  border: 1px solid rgba(232, 137, 74, 0.45);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: transparent;
   color: var(--accent);
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s ease-out,
+    color 0.12s ease-out,
+    transform 0.12s ease-out;
 }
 .vw-run:hover:not(:disabled) {
   background: var(--accent);
-  color: #1a1209;
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.vw-run:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.vw-run:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-run:disabled {
   border-color: var(--border-strong);
@@ -605,16 +759,16 @@
   opacity: 0.6;
 }
 
-/* footer */
+/* footer: a quiet status bar */
 .vw-foot {
   flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
   height: 34px;
-  padding: 0 14px;
+  padding: 0 16px;
   border-top: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg);
   color: var(--text-dim);
   font-size: 12px;
   white-space: nowrap;
@@ -622,6 +776,7 @@
 }
 .vw-foot b {
   color: var(--text);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .vw-foot-sep {
@@ -651,26 +806,29 @@
   color: var(--text-dim);
 }
 .vw-empty-state h3 {
-  margin: 12px 0 6px;
-  font-size: 16px;
+  margin: 14px 0 6px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
   color: var(--text);
 }
 .vw-empty-state p {
   margin: 0 0 18px;
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.55;
 }
 .vw-empty-icon {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   margin: 0 auto;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--panel-2);
-  border: 1px solid var(--border-strong);
-  color: var(--accent);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-dim);
 }
 .vw-empty-actions {
   display: flex;
@@ -678,7 +836,9 @@
   justify-content: center;
 }
 
-/* ---------- storyboard ---------- */
+/* =====================================================================================================
+   Storyboard
+   ===================================================================================================== */
 .vw-sb-stat {
   display: inline-flex;
   align-items: center;
@@ -689,6 +849,7 @@
 }
 .vw-sb-stat b {
   color: var(--text);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .vw-sb-missing {
@@ -696,9 +857,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 14px;
+  padding: 7px 16px;
   border-bottom: 1px solid var(--border);
-  background: rgba(229, 185, 60, 0.05);
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg));
   min-width: 0;
 }
 .vw-sb-missing-label {
@@ -721,19 +882,26 @@
 .vw-sb-chip {
   flex: none;
   height: 22px;
-  padding: 0 7px;
-  border-radius: 5px;
-  border: 1px solid var(--border-strong);
-  background: var(--panel-2);
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
   color: var(--text-dim);
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    border-color 0.12s ease-out,
+    color 0.12s ease-out;
 }
 .vw-sb-chip:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+.vw-sb-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-sb-scroll {
   flex: 1;
@@ -743,23 +911,33 @@
 .vw-sb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
-  gap: 14px;
-  padding: 16px 16px 20px;
+  gap: 16px;
+  padding: 16px 16px 24px;
 }
+/* cards: radius 12, hairline + soft depth, hover lifts, selected = accent ring */
 .vw-card {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--panel);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+  transition:
+    border-color 0.18s ease-out,
+    box-shadow 0.18s ease-out,
+    transform 0.18s ease-out;
 }
 .vw-card:hover {
   border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 .vw-card.selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 5px var(--accent-soft),
+    var(--shadow-sm);
 }
 .vw-card.flash {
   animation: vw-flash 1.2s ease-out;
@@ -767,16 +945,20 @@
 @keyframes vw-flash {
   0%,
   40% {
-    box-shadow: 0 0 0 4px rgba(232, 137, 74, 0.55);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      0 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 1px var(--accent);
+    box-shadow:
+      0 0 0 1px var(--accent),
+      0 0 0 5px var(--accent-soft);
   }
 }
 .vw-card-thumb {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #0b0c0e;
+  background: var(--vw-media-bg);
   overflow: hidden;
 }
 .vw-card-img {
@@ -794,20 +976,23 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  background: radial-gradient(120% 90% at 20% 10%, color-mix(in srgb, var(--ph) 24%, transparent), transparent 60%),
-    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0 10px, transparent 10px 20px), #121317;
+  background:
+    radial-gradient(120% 90% at 20% 10%, color-mix(in srgb, var(--ph) 22%, transparent), transparent 60%),
+    repeating-linear-gradient(135deg, var(--hover) 0 10px, transparent 10px 20px),
+    var(--canvas-bg);
 }
 .vw-card-placeholder span {
   font-family: var(--mono);
   font-size: 26px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.28);
+  font-weight: 600;
+  color: var(--text-faint);
   letter-spacing: 0.02em;
 }
 .vw-card-placeholder small {
   font-size: 11px;
   color: var(--text-faint);
 }
+/* labels over the picture: glass chips */
 .vw-card-code,
 .vw-card-take,
 .vw-card-dur,
@@ -817,12 +1002,14 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 0 6px;
-  border-radius: 5px;
-  background: rgba(10, 11, 13, 0.72);
-  backdrop-filter: blur(3px);
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: var(--vw-on-media);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .vw-card-code {
   top: 7px;
@@ -833,7 +1020,7 @@
 .vw-card-take {
   top: 7px;
   right: 7px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-card-take.starred {
   color: var(--accent);
@@ -842,21 +1029,20 @@
   bottom: 7px;
   right: 7px;
   font-family: var(--mono);
-  font-weight: 600;
-  color: var(--text);
+  font-weight: 500;
 }
 .vw-card-failed {
   bottom: 7px;
   left: 7px;
-  color: #ff8a8a;
+  color: color-mix(in srgb, var(--danger) 72%, var(--vw-on-media));
 }
 .vw-card-running {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 6px 8px 0;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  padding: 10px 8px 0;
+  background: linear-gradient(transparent, var(--vw-media-chip));
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
@@ -888,12 +1074,21 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: rgba(8, 9, 11, 0.55);
+  background: var(--scrim);
   opacity: 0;
-  transition: opacity 0.12s;
+  /* Hidden = not clickable either: a tap on a card (touch) selects it instead of hitting the invisible Play. */
+  pointer-events: none;
+  transition: opacity 0.15s ease-out;
 }
-.vw-card:hover .vw-card-hover {
+.vw-card:hover .vw-card-hover,
+.vw-card:focus-within .vw-card-hover {
   opacity: 1;
+  pointer-events: auto;
+}
+.vw-card-play:focus-visible,
+.vw-card-hover-actions .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .vw-card-play {
   width: 44px;
@@ -901,16 +1096,22 @@
   border-radius: 50%;
   border: 0;
   background: var(--accent);
-  color: #1a1209;
+  color: var(--on-accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding-left: 3px;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow);
+  transition:
+    background 0.12s ease-out,
+    transform 0.12s ease-out;
 }
 .vw-card-play:hover {
   background: var(--accent-strong);
+}
+.vw-card-play:active {
+  transform: scale(0.94);
 }
 .vw-card-hover-actions {
   display: flex;
@@ -919,10 +1120,16 @@
   gap: 6px;
 }
 .vw-card-hover-actions .btn {
-  background: rgba(26, 28, 32, 0.9);
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border-color: var(--border);
+}
+.vw-card-hover-actions .btn:hover:not(:disabled) {
+  background: var(--panel);
 }
 .vw-card-body {
-  padding: 8px 10px 9px;
+  padding: 9px 11px 10px;
 }
 .vw-card-title {
   display: flex;
@@ -949,28 +1156,55 @@
   color: var(--warn);
 }
 
-/* ---------- player overlay ---------- */
+/* =====================================================================================================
+   "Phát liền" player — full-window stage, glass caption, floating material controls
+   ===================================================================================================== */
 .vw-player {
   position: fixed;
   inset: 0;
   z-index: 90;
   display: flex;
   flex-direction: column;
-  background: rgba(4, 5, 6, 0.96);
-  animation: vw-fade 0.15s ease-out;
+  background: var(--vw-media-bg);
+  color: var(--vw-on-media);
+  animation: vw-fade 0.18s ease-out;
 }
 @keyframes vw-fade {
   from {
     opacity: 0;
   }
 }
+.vw-player .faint {
+  color: var(--vw-on-media-faint);
+}
+.vw-player .icon-btn {
+  color: var(--vw-on-media-dim);
+}
+.vw-player .icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vw-on-media) 12%, transparent);
+  color: var(--vw-on-media);
+}
+.vw-player .icon-btn:focus-visible,
+.vw-player .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* secondary buttons on the dark stage: glass, not the theme's panel fill (a light slab in the light theme) */
+.vw-player .btn:not(.btn-primary) {
+  background: var(--vw-media-btn);
+  border-color: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
+  color: var(--vw-on-media);
+}
+.vw-player .btn:not(.btn-primary):hover:not(:disabled) {
+  background: var(--vw-media-btn-hover);
+}
 .vw-player-top {
   flex: none;
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 48px;
-  padding: 0 12px 0 18px;
+  height: 52px;
+  padding: 0 12px 0 20px;
 }
 .vw-player-title {
   font-size: 13px;
@@ -984,7 +1218,7 @@
   flex: 1;
   text-align: right;
   font-size: 11px;
-  color: var(--text-faint);
+  color: var(--vw-on-media-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -999,19 +1233,19 @@
 }
 .vw-player-frame {
   position: relative;
-  width: min(100%, calc((100vh - 170px) * 16 / 9));
+  width: min(100%, calc((100vh - 190px) * 16 / 9));
   aspect-ratio: 16 / 9;
-  background: #000;
-  border-radius: 8px;
+  background: var(--vw-media-bg);
+  border-radius: var(--radius);
   overflow: hidden;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-lg);
 }
 .vw-player-media {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #000;
+  background: var(--vw-media-bg);
 }
 .vw-player-slate {
   position: absolute;
@@ -1021,24 +1255,24 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: radial-gradient(80% 80% at 50% 40%, #1b1d22, #070809);
+  background: radial-gradient(80% 80% at 50% 40%, color-mix(in srgb, var(--vw-on-media) 7%, var(--vw-media-bg)), var(--vw-media-bg));
 }
 .vw-player-slate span {
   font-family: var(--mono);
   font-size: 56px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+  color: color-mix(in srgb, var(--vw-on-media) 85%, transparent);
 }
 .vw-player-slate small {
   font-size: 16px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-player-slate em {
   margin-top: 10px;
   font-style: normal;
   font-size: 12px;
-  color: var(--text-faint);
-  border: 1px dashed var(--border-strong);
+  color: var(--vw-on-media-faint);
+  border: 1px dashed color-mix(in srgb, var(--vw-on-media) 25%, transparent);
   border-radius: 999px;
   padding: 3px 12px;
 }
@@ -1048,50 +1282,53 @@
   right: 12px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-player-caption {
   position: absolute;
-  left: 16px;
+  left: 14px;
   bottom: 14px;
-  right: 16px;
+  max-width: calc(100% - 28px);
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 2px 10px;
+  padding: 7px 12px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
   pointer-events: none;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
 }
 .vw-player-code {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 9px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
   font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--accent);
-  text-shadow: none;
 }
 .vw-player-take {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-player-scene-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
+  color: var(--vw-on-media);
 }
 .vw-player-sub {
   flex-basis: 100%;
   font-size: 11.5px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-player-end {
   position: absolute;
@@ -1101,26 +1338,41 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: rgba(0, 0, 0, 0.72);
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  animation: vw-fade 0.2s ease-out;
 }
 .vw-player-end h3 {
   margin: 0;
+  font-family: var(--font-display);
   font-size: 22px;
+  font-weight: 600;
 }
 .vw-player-end p {
   margin: 0 0 12px;
-  color: var(--text-dim);
+  color: var(--vw-on-media-dim);
 }
 .vw-player-end div {
   display: flex;
   gap: 8px;
 }
+/* floating material controls (like a QuickTime HUD) */
 .vw-player-controls {
   flex: none;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 10px 24px 18px;
+  width: min(100% - 48px, 1120px);
+  margin: 6px auto 18px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--vw-on-media) 12%, transparent);
+  /* a lighter glass than the stage behind it (a dark scrim would vanish on the dark stage) */
+  background: color-mix(in srgb, var(--vw-on-media) 9%, transparent);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
 }
 .vw-player-buttons {
   display: flex;
@@ -1133,53 +1385,107 @@
   height: 40px;
   border-radius: 50%;
   border: 0;
-  background: var(--text);
-  color: #111;
+  background: var(--vw-on-media);
+  color: var(--vw-media-bg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition:
+    opacity 0.12s ease-out,
+    transform 0.12s ease-out;
 }
 .vw-player-pp:hover {
-  background: #fff;
+  opacity: 0.88;
+}
+.vw-player-pp:active {
+  transform: scale(0.94);
+}
+.vw-player-pp:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 /* "Tải video này": big download button for the clip on screen */
 .vw-player-dl {
   flex: none;
   height: 40px;
   padding: 0 18px;
+  border-radius: var(--radius);
   font-size: 13.5px;
 }
 .vw-player-timeline {
   flex: 1;
   display: flex;
+  align-items: center;
   gap: 3px;
   min-width: 0;
+  height: 16px;
 }
 .vw-seg {
   position: relative;
   flex-basis: 0;
   min-width: 4px;
-  height: 8px;
+  height: 6px;
   padding: 0;
   border: 0;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.14);
+  background: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
   overflow: hidden;
   cursor: pointer;
-  transition: height 0.1s;
+  transition: height 0.12s ease-out;
 }
 .vw-seg:hover {
   height: 12px;
 }
+.vw-seg:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 .vw-seg.empty {
-  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0 3px, rgba(255, 255, 255, 0.04) 3px 6px);
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vw-on-media) 12%, transparent) 0 3px,
+    color-mix(in srgb, var(--vw-on-media) 4%, transparent) 3px 6px
+  );
 }
 .vw-seg.current {
-  outline: 1px solid rgba(232, 137, 74, 0.6);
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
 }
 .vw-seg i {
   position: absolute;
   inset: 0 auto 0 0;
   background: var(--accent);
+}
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .vw-root,
+  .vw-row,
+  .vw-handle,
+  .vw-cell-input,
+  .vw-vref-x,
+  .vw-run,
+  .vw-card,
+  .vw-card-hover,
+  .vw-card-play,
+  .vw-sb-chip,
+  .vw-player-pp,
+  .vw-seg {
+    transition: none;
+  }
+  .vw-card:hover,
+  .vw-run:active,
+  .vw-card-play:active,
+  .vw-player-pp:active {
+    transform: none;
+  }
+  .vw-menu,
+  .vw-card.flash,
+  .vw-player,
+  .vw-player-end {
+    animation: none;
+  }
+  .vw-spin {
+    animation-duration: 2.4s;
+  }
 }

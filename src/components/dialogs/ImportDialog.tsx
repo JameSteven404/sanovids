@@ -17,11 +17,13 @@ import {
 } from '../../core/importPrompts'
 import { MODELS, normalizeSettings, settingsLabel } from '../../core/models'
 import type { Asset } from '../../core/types'
+import { isDesktop } from '../../lib/pwa'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
+import { guardImportItems, MAX_IMPORT_IMAGE, unmaskTokens } from './importGuard'
 
 interface FileItem {
   name: string
@@ -92,7 +94,12 @@ export function ImportDialog() {
   const [onlyMentioned, setOnlyMentioned] = useState(true)
 
   const items: ImportItem[] = useMemo(() => [...parsePromptText(text), ...itemsFromFiles(files)], [text, files])
-  const summary = useMemo(() => summarizeImport(items), [items])
+  // @image_N above MAX_IMPORT_IMAGE (a date, a typo) are masked: one mapping row per number would freeze the tab.
+  // `safeItems` feed the summary / mapping / scene building; masked tokens come back unchanged (unmaskTokens).
+  const guarded = useMemo(() => guardImportItems(items), [items])
+  const safeItems = guarded.items
+  const outOfRange = guarded.outOfRange
+  const summary = useMemo(() => summarizeImport(safeItems), [safeItems])
   // New scenes get the project's first preset (same rule as project.applyImport).
   const settings = useMemo(() => normalizeSettings(draftPreset ?? {}), [draftPreset])
   const spec = MODELS[settings.model]
@@ -100,7 +107,12 @@ export function ImportDialog() {
 
   const effMapping: ImageMapping = useMemo(() => Array.from({ length: summary.maxImage }, (_, i) => mapping[i] ?? null), [mapping, summary.maxImage])
   const mapped = hasMapping(effMapping, assets)
-  const assigned = effMapping.filter((id) => id && assets.some((a) => a.id === id && a.imageIds.length)).length
+  // Progress counts the numbers the prompts actually mention (each once), not every row up to the highest one.
+  const usable = useMemo(() => new Set(assets.filter((a) => a.imageIds.length).map((a) => a.id)), [assets])
+  const assigned = summary.images.filter((n) => {
+    const id = effMapping[n - 1]
+    return !!id && usable.has(id)
+  }).length
 
   // Everything lives in local state: closing the dialog (Esc, backdrop, ×, Huỷ) throws it away, so ask first.
   const dirty = !!text.trim() || files.length > 0 || mapping.some(Boolean)
@@ -109,10 +121,24 @@ export function ImportDialog() {
     closeDialog()
   }
   useFieldEscape()
+  // Same protection when the page itself goes away (reload, tab closed, the app reloading for a new version):
+  // the browser asks before leaving. Not in the desktop app, where it would silently block closing the window.
+  useEffect(() => {
+    if (!dirty || isDesktop()) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
 
   const create = (withMapping: boolean) => {
     if (!items.length) return
-    const scenes = buildImportScenes(items, withMapping ? { mapping: effMapping, assets, onlyMentioned } : {})
+    const scenes = buildImportScenes(safeItems, withMapping ? { mapping: effMapping, assets, onlyMentioned } : {}).map((s) => ({
+      ...s,
+      prompt: unmaskTokens(s.prompt),
+    }))
     const ids = useProject.getState().applyImport({ scenes })
     const undo = undoToastAction()
     const linked = scenes.filter((s) => s.refs.length).length
@@ -174,6 +200,7 @@ export function ImportDialog() {
         presetLine={`${draftPreset?.name ? `“${draftPreset.name}” · ` : ''}${spec.short} · ${settingsLabel(settings)}`}
         modelName={spec.name}
         projectName={projectName}
+        outOfRange={outOfRange}
       />
     )
     footer = (
@@ -204,7 +231,7 @@ export function ImportDialog() {
   } else {
     body = (
       <StepMapping
-        items={items}
+        items={safeItems}
         summary={summary}
         assets={assets}
         mapping={effMapping}
@@ -214,12 +241,13 @@ export function ImportDialog() {
         startOrder={sceneCount + 1}
         imageLimit={spec.maxRefImages}
         modelName={spec.name}
+        outOfRange={outOfRange}
       />
     )
     footer = (
       <>
         <span className="dg-foot-info">
-          Đã gán <b>{assigned}</b>/{summary.maxImage} số
+          Đã gán <b>{assigned}</b>/{summary.images.length} số được dùng
         </span>
         <button className="btn" onClick={() => setStep(2)}>
           <ArrowLeft size={14} /> Quay lại
@@ -402,6 +430,7 @@ function StepPreview({
   presetLine,
   modelName,
   projectName,
+  outOfRange,
 }: {
   items: ImportItem[]
   summary: ImportSummary
@@ -410,6 +439,7 @@ function StepPreview({
   presetLine: string
   modelName: string
   projectName: string
+  outOfRange: number[]
 }) {
   const previews = useMemo(() => items.map((i) => previewItem(i, 3)), [items])
   const tooLong = previews.filter((p) => p.chars > charLimit).length
@@ -465,9 +495,9 @@ function StepPreview({
             <b>{fmt(avg)}</b>
             <span>ký tự TB</span>
           </div>
-          <div>
-            <b>{summary.maxImage ? `@${summary.maxImage}` : '—'}</b>
-            <span>ảnh cao nhất</span>
+          <div title={summary.images.length ? summary.images.map((n) => '@image_' + n).join(', ') : 'Không có token @image_N'}>
+            <b>{summary.images.length || '—'}</b>
+            <span>số @image</span>
           </div>
         </div>
 
@@ -479,8 +509,8 @@ function StepPreview({
           <div className="dg-callout ref">
             <Images size={14} />
             <span>
-              {summary.withImages} prompt dùng ảnh tham chiếu (tới <code>@image_{summary.maxImage}</code>). Bước tiếp theo: chọn ảnh trong thư viện cho từng số — hoặc nhập
-              ngay rồi nối ảnh sau.
+              {summary.withImages} prompt dùng {summary.images.length} số ảnh tham chiếu (tới <code>@image_{summary.maxImage}</code>). Bước tiếp theo: chọn ảnh trong
+              thư viện cho từng số — hoặc nhập ngay rồi nối ảnh sau.
             </span>
           </div>
         )}
@@ -500,6 +530,7 @@ function StepPreview({
             </span>
           </div>
         )}
+        <OutOfRangeNote numbers={outOfRange} />
         <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng Ctrl+Z.</p>
       </aside>
     </div>
@@ -520,7 +551,9 @@ function StepMapping({
   startOrder,
   imageLimit,
   modelName,
+  outOfRange,
 }: {
+  /** Prompts with out-of-range @image tokens masked (see importGuard). */
   items: ImportItem[]
   summary: ImportSummary
   assets: Asset[]
@@ -531,6 +564,7 @@ function StepMapping({
   startOrder: number
   imageLimit: number
   modelName: string
+  outOfRange: number[]
 }) {
   const usable = useMemo(() => assets.filter((a) => a.imageIds.length > 0), [assets])
   const byId = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets])
@@ -653,7 +687,7 @@ function StepMapping({
           </div>
           <div className="dg-preview-body">
             <div className="dg-pv-prompt">
-              <TokenText text={res.prompt} imageCount={active ? res.images : undefined} />
+              <TokenText text={unmaskTokens(res.prompt)} imageCount={active ? res.images : undefined} />
             </div>
           </div>
           <div className="dg-pv-foot faint">
@@ -688,8 +722,24 @@ function StepMapping({
             </span>
           </div>
         )}
+        <OutOfRangeNote numbers={outOfRange} />
         <p className="dg-note">Nhân vật có nhiều ảnh chiếm nhiều số liên tiếp. Gán cùng một nhân vật cho hai số → số thứ hai dùng ảnh thứ hai của nhân vật đó.</p>
       </aside>
+    </div>
+  )
+}
+
+/** Warning for @image numbers above MAX_IMPORT_IMAGE: kept as written, not offered for mapping. */
+function OutOfRangeNote({ numbers }: { numbers: number[] }) {
+  if (!numbers.length) return null
+  const shown = numbers.slice(0, 3).map((n) => `@image_${Number.isSafeInteger(n) ? n : '…'}`)
+  return (
+    <div className="dg-callout warn">
+      <TriangleAlert size={14} />
+      <span>
+        {numbers.length} số ảnh quá lớn ({shown.join(', ')}
+        {numbers.length > 3 ? ', …' : ''}) — có thể là số nhầm. Giữ nguyên trong prompt, không gán ảnh (tối đa @image_{MAX_IMPORT_IMAGE}).
+      </span>
     </div>
   )
 }

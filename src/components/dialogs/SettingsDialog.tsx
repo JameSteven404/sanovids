@@ -1,19 +1,46 @@
-import { AppWindow, Coins, Download, FileUp, FolderDown, FolderOpen, Globe, LoaderCircle, MonitorCheck, MonitorDown, Sparkles } from 'lucide-react'
-import { useRef, useState, type ReactNode } from 'react'
-import { canPickFolder, clearDownloadFolder, pickDownloadFolder, useDownloadPrefs } from '../../lib/downloads'
+import {
+  AppWindow,
+  Clock,
+  Coins,
+  Download,
+  FileUp,
+  FolderDown,
+  FolderOpen,
+  Globe,
+  LoaderCircle,
+  Monitor,
+  MonitorCheck,
+  MonitorDown,
+  Moon,
+  Sparkles,
+  Sun,
+} from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { canPickFolder, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
+import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { PROVIDER_LABEL } from '../../providers'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
 import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
+import { useActiveProvider } from '../runs/shared'
 import './dialogs.css'
+import { GatewaySection } from './GatewaySection'
+import { Segmented } from './Segmented'
 import { errorText } from './shared'
 
 const SPEEDS: { id: MockSpeed; label: string; hint: string }[] = [
   { id: 'fast', label: 'Nhanh', hint: '3–6 giây / video' },
   { id: 'normal', label: 'Vừa', hint: '9–16 giây / video' },
   { id: 'slow', label: 'Chậm', hint: '22–38 giây / video' },
+]
+
+const THEMES: { id: ThemePref; label: string; icon: ReactNode }[] = [
+  { id: 'system', label: 'Hệ thống', icon: <Monitor size={14} /> },
+  { id: 'light', label: 'Sáng', icon: <Sun size={14} /> },
+  { id: 'dark', label: 'Tối', icon: <Moon size={14} /> },
 ]
 
 export function SettingsDialog() {
@@ -31,12 +58,14 @@ export function SettingsDialog() {
     >
       <div className="dg-settings">
         <div className="dg-settings-col">
+          <AppearanceSettings />
           <PromptSettings />
           <AppSettings />
           <DataSettings onDone={closeDialog} />
         </div>
         <div className="dg-settings-col">
           <DownloadSettings />
+          <GatewaySection />
           <MockSettings />
           <CreditSettings />
         </div>
@@ -68,7 +97,7 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
         {hint && <small>{hint}</small>}
       </span>
       <span className={`dg-switch ${checked ? 'on' : ''}`}>
-        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <input type="checkbox" role="switch" checked={checked} onChange={(e) => onChange(e.target.checked)} />
         <i />
       </span>
     </label>
@@ -76,6 +105,22 @@ function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange
 }
 
 // ---------------------------------------------------------------------------------------------
+
+/** "Giao diện": Hệ thống / Sáng / Tối (lib/theme — applied at once, remembered on this device). */
+function AppearanceSettings() {
+  const pref = useTheme((s) => s.pref)
+  const theme = useTheme((s) => s.theme)
+  const setPref = useTheme((s) => s.setPref)
+  return (
+    <Section title="Giao diện" desc="Chế độ sáng hoặc tối cho toàn bộ ứng dụng. “Hệ thống” tự đổi theo cài đặt của máy.">
+      <Segmented label="Chế độ giao diện" size="lg" value={pref} onChange={setPref} options={THEMES.map((t) => ({ ...t, title: THEME_LABEL[t.id] }))} />
+      <div className="dg-field-hint">
+        {pref === 'system' ? `Đang theo hệ thống: ${theme === 'dark' ? 'Tối' : 'Sáng'}.` : `Luôn dùng chế độ ${THEME_LABEL[pref]}, kể cả khi máy đổi.`} Lựa chọn được nhớ trên máy
+        này.
+      </div>
+    </Section>
+  )
+}
 
 function PromptSettings() {
   const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
@@ -169,6 +214,8 @@ function DownloadSettings() {
   const { desktop } = usePwaInstall()
   const canPick = canPickFolder()
   const [busy, setBusy] = useState(false)
+  const pending = usePendingDownloads()
+  const [saving, setSaving] = useState(false)
 
   const pick = async () => {
     if (busy) return
@@ -188,6 +235,22 @@ function DownloadSettings() {
       toast('Video sẽ được lưu vào thư mục Downloads.', { tone: 'success' })
     } finally {
       setBusy(false)
+    }
+  }
+  // A click (this button) may ask the browser for the folder permission again; then every waiting file is written.
+  const savePending = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      const res = await savePendingDownloads()
+      if (!res) toast('Không còn video nào đang chờ lưu.')
+      else if (res.to === 'folder') toast(`Đã lưu ${res.names.length} file vào thư mục “${res.folder}”.`, { tone: 'success' })
+      else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về Downloads.`, { tone: 'warning' })
+    } catch (e) {
+      toast(`Không lưu được: ${(e as Error).message}`, { tone: 'error' })
+    } finally {
+      setSaving(false)
+      pending.refresh()
     }
   }
 
@@ -234,25 +297,56 @@ function DownloadSettings() {
         )}
       </div>
       <div className="dg-field-hint">{hint}</div>
+      {pending.count > 0 ? (
+        <div className="dg-callout warn dg-pending">
+          <Clock size={15} />
+          <div>
+            <b>{pending.count} file tự tải đang chờ lưu</b>
+            {folderName ? ` vào “${folderName}”` : ''} — trình duyệt cần bạn cho phép ghi vào thư mục lần nữa (sau khi mở lại app). File không bị tải nhầm về Downloads.
+          </div>
+          <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => void savePending()}>
+            {saving ? <LoaderCircle size={13} className="dg-spin" /> : <FolderOpen size={13} />} Cho phép & lưu
+          </button>
+        </div>
+      ) : (
+        folderName &&
+        autoDownload && (
+          <div className="dg-field-hint">
+            Khi chưa có quyền ghi vào thư mục, video tự tải được giữ lại chờ (không tải nhầm về Downloads): bấm “Cho phép & lưu” trên thông báo hoặc ở đây.
+          </div>
+        )
+      )}
     </Section>
   )
+}
+
+/** Auto-downloads waiting for the folder permission (lib/downloads keeps them in memory, not in a store): re-read while open. */
+function usePendingDownloads(): { count: number; refresh: () => void } {
+  const [count, setCount] = useState(() => pendingDownloadCount())
+  useEffect(() => {
+    const id = window.setInterval(() => setCount(pendingDownloadCount()), 1500)
+    return () => window.clearInterval(id)
+  }, [])
+  return { count, refresh: () => setCount(pendingDownloadCount()) }
 }
 
 function MockSettings() {
   const mock = useRuns((s) => s.mock)
   const setMock = useRuns((s) => s.setMock)
+  const provider = useActiveProvider()
   return (
     <Section title="Nhà cung cấp giả lập" badge={<span className="badge accent">demo</span>} desc="Không gọi mạng, không tốn tiền. Dùng để thử hàng đợi, lỗi và take.">
+      {provider !== 'mock' && (
+        <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.mock}.</div>
+      )}
       <div className="dg-field">
         <span className="label">Tốc độ tạo video</span>
-        <div className="dg-seg dg-seg-full">
-          {SPEEDS.map((s) => (
-            <button key={s.id} className={mock.speed === s.id ? 'active' : ''} onClick={() => setMock({ speed: s.id })} title={s.hint}>
-              {s.label}
-              <small>{s.hint}</small>
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Tốc độ tạo video"
+          value={mock.speed}
+          onChange={(speed) => setMock({ speed })}
+          options={SPEEDS.map((s) => ({ id: s.id, label: s.label, hint: s.hint, title: s.hint }))}
+        />
       </div>
       <div className="dg-field">
         <div className="dg-label-row">
@@ -275,13 +369,12 @@ function MockSettings() {
           <span className="label">Số job chạy cùng lúc</span>
           <span className="dg-value mono">{mock.concurrency}</span>
         </div>
-        <div className="dg-seg dg-seg-full">
-          {[1, 2, 3, 4, 5].map((n) => (
-            <button key={n} className={mock.concurrency === n ? 'active' : ''} onClick={() => setMock({ concurrency: n })}>
-              {n}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Số job chạy cùng lúc"
+          value={mock.concurrency}
+          onChange={(concurrency) => setMock({ concurrency })}
+          options={[1, 2, 3, 4, 5].map((n) => ({ id: n, label: String(n) }))}
+        />
       </div>
       <Toggle
         checked={mock.recordVideo}
@@ -298,7 +391,7 @@ function CreditSettings() {
   const spent = useRuns((s) => s.spent)
   const addCredits = useRuns((s) => s.addCredits)
   return (
-    <Section title="Credit demo">
+    <Section title="Credit demo" desc={`Chỉ dùng cho ${PROVIDER_LABEL.mock}. Take tạo trên ${PROVIDER_LABEL.canvasapp} trừ credit trong tài khoản canvasapp của bạn.`}>
       <div className="dg-credit">
         <div className="dg-credit-num">
           <Coins size={18} />
@@ -332,7 +425,8 @@ function DataSettings({ onDone }: { onDone: () => void }) {
     try {
       await fn()
       toast(ok, { tone: 'success' })
-      if (close) onDone()
+      // The dialog may have been closed during a long import and another one opened: never close that one.
+      if (close && useUI.getState().dialog.kind === 'settings') onDone()
     } catch (e) {
       toast(errorText(e), { tone: 'error' })
     } finally {

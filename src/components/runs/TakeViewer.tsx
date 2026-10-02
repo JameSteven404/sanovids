@@ -19,19 +19,22 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, downloadTake, focusNodes, linkTakes, runNow, takeFileBase } from '../../actions'
+import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, runNow, takeFileBase } from '../../actions'
 import { compileScene, sceneCode, takeCode } from '../../core/compile'
-import { MODE_LABEL, MODELS, settingsLabel, usesVideoRefs } from '../../core/models'
+import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
-import { deleteMedia, useMediaUrl } from '../../lib/imageStore'
+import { useMediaUrl } from '../../lib/imageStore'
+import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
-import { restoredFromTake, snapshotImageNumbers } from './restore'
+import { exactImageKeys, restoredFromTake, snapshotImageNumbers } from './restore'
 import { TakeStrip } from './TakeStrip'
 import {
+  chargedLocally,
+  CREDIT_UNIT,
   downloadMedia,
   formatClock,
   formatDuration,
@@ -39,6 +42,7 @@ import {
   isActive,
   isTypingTarget,
   paragraphDiff,
+  ProviderBadge,
   sameSettings,
   StatusBadge,
   toggleChosenTake,
@@ -83,9 +87,12 @@ function restoreTake(takeId: string) {
   const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber })
   store.restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
   const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video'].filter(Boolean)
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.`, {
-    tone: 'success',
+  // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
+  const check = r.uncertain ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.` : ''
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.${check}`, {
+    tone: r.uncertain ? 'warning' : 'success',
     action: undoToastAction(),
+    ms: r.uncertain ? 9000 : undefined,
   })
 }
 
@@ -101,7 +108,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
+      // defaultPrevented: something focused already used the key (a slider, a canvas node behind the dialog).
+      if (e.defaultPrevented || isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'ArrowLeft' && prev) {
         e.preventDefault()
         openTake(prev.id)
@@ -115,6 +123,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
   }, [prev, next])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Scenes using this take as @video (a number: stable selector).
+  const usedCount = useProject((s) => s.project.scenes.reduce((n, x) => n + (x.videoRefs.includes(take.id) ? 1 : 0), 0))
   useEffect(() => {
     setConfirmDelete(false)
   }, [take.id])
@@ -124,16 +134,20 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     return () => clearTimeout(id)
   }, [confirmDelete])
 
+  /**
+   * The shared delete (actions.deleteTakes — same as the canvas node menu, the queue and the Delete key). The
+   * two-click button is the confirmation that the video is lost, so deleteTakes only asks ('usedOnly') when other
+   * scenes use the take as @video: deleting it drops those references and rewrites their prompts, for good.
+   */
   const remove = () => {
-    if (!confirmDelete) {
+    if (!usedCount && !confirmDelete) {
       setConfirmDelete(true)
       return
     }
+    setConfirmDelete(false)
     const neighbour = next ?? prev
-    useRuns.getState().removeTake(take.id)
-    if (take.posterId) void deleteMedia(take.posterId)
-    if (take.videoId) void deleteMedia(take.videoId)
-    toast(`Đã xoá ${label}.`)
+    const deleted = deleteTakes([take.id], { confirm: 'usedOnly' })
+    if (deleted === null) return
     if (neighbour) openTake(neighbour.id)
     else onClose()
   }
@@ -194,7 +208,16 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
       }
       footer={
         <>
-          <button type="button" className={`btn btn-danger${confirmDelete ? ' rq-confirming' : ''}`} onClick={remove}>
+          <button
+            type="button"
+            className={`btn btn-danger${confirmDelete ? ' rq-confirming' : ''}`}
+            onClick={remove}
+            title={
+              usedCount
+                ? `Đang là @video ở ${usedCount} cảnh — xoá sẽ bỏ các tham chiếu đó. Video đã xoá không hoàn tác được.`
+                : 'Xoá take này. Video đã xoá không hoàn tác được.'
+            }
+          >
             <Trash size={14} />
             {confirmDelete ? 'Bấm lần nữa để xoá' : 'Xoá take'}
           </button>
@@ -298,6 +321,9 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const posterUrl = useMediaUrl(take.posterId)
   const active = isActive(take)
   const now = useNow(active)
+  const provider = providerOf(take)
+  // Demo credits are refunded on failure / cancel; a real provider bills the user's own account.
+  const refundNote = chargedLocally(take) ? <div className="rq-stage-faint">Đã hoàn {take.cost} credit demo.</div> : null
 
   let content: ReactNode
   if (take.status === 'completed' && videoUrl) {
@@ -316,14 +342,21 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
         <div className="rq-ring" style={{ ['--p' as string]: pct }}>
           <span className="mono">{take.status === 'processing' ? `${pct}%` : '…'}</span>
         </div>
-        <div className="rq-stage-msg">{take.status === 'processing' ? 'Đang tạo video (demo)…' : 'Đang chờ trong hàng đợi…'}</div>
-        <div className="faint mono">
+        <div className="rq-stage-msg">
+          {take.status === 'processing' ? (provider === 'mock' ? 'Đang tạo video (demo)…' : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`) : 'Đang chờ trong hàng đợi…'}
+        </div>
+        <div className="rq-stage-faint mono">
           {take.status === 'processing' ? 'đã chạy ' : 'đã chờ '}
           {formatDuration(take.status === 'processing' && take.startedAt ? now - take.startedAt : now - take.createdAt)}
         </div>
-        <button type="button" className="btn btn-sm" onClick={() => useRuns.getState().cancel(take.id)}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => useRuns.getState().cancel(take.id)}
+          title={chargedLocally(take) ? undefined : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`}
+        >
           <CircleStop size={13} />
-          Huỷ job · hoàn {take.cost} credit
+          {chargedLocally(take) ? `Huỷ job · hoàn ${take.cost} credit demo` : 'Huỷ job'}
         </button>
       </div>
     )
@@ -332,8 +365,8 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
       <div className="rq-stage-state danger">
         <CircleAlert size={34} />
         <div className="rq-stage-msg">Tạo video thất bại</div>
-        <div className="muted">{take.error ?? 'Lỗi không rõ.'}</div>
-        <div className="faint">Đã hoàn {take.cost} credit.</div>
+        <div className="rq-stage-dim">{take.error ?? 'Lỗi không rõ.'}</div>
+        {refundNote}
         {onRerun && (
           <button type="button" className="btn btn-sm" onClick={onRerun}>
             <RotateCcw size={13} />
@@ -347,7 +380,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
       <div className="rq-stage-state">
         <Ban size={30} />
         <div className="rq-stage-msg">Job đã huỷ</div>
-        <div className="faint">Đã hoàn {take.cost} credit.</div>
+        {refundNote}
         {onRerun && (
           <button type="button" className="btn btn-sm" onClick={onRerun}>
             <RotateCcw size={13} />
@@ -374,12 +407,13 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
   const current = useMemo(() => (scene ? compileScene(project, scene) : null), [project, scene])
   const [showDiff, setShowDiff] = useState(false)
   const spec = MODELS[take.settings.model]
-  const refunded = take.status === 'failed' || take.status === 'cancelled'
+  const provider = providerOf(take)
+  const refunded = (take.status === 'failed' || take.status === 'cancelled') && chargedLocally(take)
 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
     // Numbers as the take was sent: an asset deleted since keeps its slot so later numbers don't shift.
-    const numbers = snapshotImageNumbers(assets, take.refsSnapshot)
+    const numbers = snapshotImageNumbers(assets, take.refsSnapshot, exactImageKeys(take))
     const found: { asset: Asset; n: number | undefined }[] = []
     let missing = 0
     for (const id of take.refsSnapshot) {
@@ -388,7 +422,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
       else missing++
     }
     return { found, missing }
-  }, [assets, take.refsSnapshot])
+  }, [assets, take])
 
   const changes = useMemo(() => {
     if (!scene || !current) return null
@@ -441,13 +475,20 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
             <i style={{ background: spec?.color }} />
             {spec?.name ?? take.settings.model}
           </span>
-          <span className="faint"> · {MODE_LABEL[take.settings.mode]}</span>
+          <span className="faint"> · {modeLabel(take.settings.mode, take.settings.model)}</span>
         </dd>
         <dt>Cấu hình</dt>
         <dd className="mono">{settingsLabel(take.settings)}</dd>
+        <dt>Tạo bằng</dt>
+        <dd className="rq-info-provider">
+          <ProviderBadge provider={provider} />
+          <span className="faint">{PROVIDER_LABEL[provider]}</span>
+        </dd>
         <dt>Chi phí</dt>
         <dd>
-          <span className={`mono${refunded ? ' rq-struck' : ''}`}>{take.cost} credit</span>
+          <span className={`mono${refunded ? ' rq-struck' : ''}`}>
+            {take.cost} {CREDIT_UNIT[provider]}
+          </span>
           {refunded && <span className="faint"> · đã hoàn</span>}
         </dd>
         <dt>Tạo lúc</dt>
@@ -648,7 +689,7 @@ function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefine
     : !scene
       ? 'Cảnh gốc của video này đã bị xoá'
       : !acceptsVideo
-        ? `Chế độ ${MODE_LABEL[scene.settings.mode]} của ${MODELS[scene.settings.model]?.name ?? scene.settings.model} ở ${sceneCode(scene.order)} không nhận video tham chiếu — đổi sang chế độ nhận video (vd. Ảnh → Video) rồi thử lại`
+        ? `Chế độ ${modeLabel(scene.settings.mode, scene.settings.model)} của ${MODELS[scene.settings.model]?.name ?? scene.settings.model} ở ${sceneCode(scene.order)} không nhận video tham chiếu — đổi sang chế độ nhận video (vd. Ảnh → Video) rồi thử lại`
         : `Cảnh mới ngay bên dưới ${sceneCode(scene.order)}: video này thành @video_1, giữ ảnh tham chiếu và cấu hình`
   const linkTitle = !ready
     ? 'Video chưa tạo xong'

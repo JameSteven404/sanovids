@@ -1,27 +1,47 @@
-import { ChevronDown, ChevronUp, CircleStop, Coins, Download, Eye, ListVideo, LoaderCircle, LocateFixed, RotateCcw, Settings2, Sparkles, Trash, X } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronUp,
+  CircleStop,
+  Cloud,
+  Coins,
+  Download,
+  Eye,
+  ListVideo,
+  LoaderCircle,
+  LocateFixed,
+  MonitorSmartphone,
+  RotateCcw,
+  Settings2,
+  Sparkles,
+  Trash,
+  TriangleAlert,
+  X,
+} from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { downloadTake, focusNodes, runNow } from '../../actions'
+import { deleteTakes, downloadTake, focusNodes, runNow } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
-import { deleteMedia } from '../../lib/imageStore'
+import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { formatDuration, isActive, StatusBadge, takeElapsed, useNow } from './shared'
+import { chargedLocally, CREDIT_UNIT, formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
 const SPEED_LABEL: Record<MockSpeed, string> = { fast: 'nhanh', normal: 'vừa', slow: 'chậm' }
 const DONE_PAGE = 40
 
-/** Queue docked at the bottom of the center area: a 36px bar that expands into the job list. */
+const openSettings = () => useUI.getState().openDialog({ kind: 'settings' })
+
+/** Queue docked at the bottom of the center area: a 36px material bar that expands into the job list. */
 export function QueueDrawer() {
   const open = useUI((s) => s.queueOpen)
   useBatchDoneToast()
   return (
-    <section className={`rq-drawer${open ? ' open' : ''}`} aria-label="Hàng đợi">
+    <section className={`rq-drawer material${open ? ' open' : ''}`} aria-label="Hàng đợi">
       <QueueBar open={open} />
       {open && <QueuePanel />}
     </section>
@@ -51,6 +71,9 @@ function QueueBar({ open }: { open: boolean }) {
     }),
   )
   const credits = useRuns((s) => s.credits)
+  const issue = useRuns((s) => s.providerIssue)
+  const elsewhere = useRuns((s) => s.engineElsewhere)
+  const provider = useActiveProvider()
   const toggle = () => useUI.getState().setQueueOpen(!open)
 
   return (
@@ -85,10 +108,30 @@ function QueueBar({ open }: { open: boolean }) {
         </span>
       )}
       <span className="rq-spacer" />
-      <span className="rq-credit-pill" title="Credit demo — không phải tiền thật">
-        <Coins size={13} />
-        <b className="mono">{credits.toLocaleString('vi-VN')}</b> credit · demo
-      </span>
+      {issue && (
+        <span className="rq-chip warn" title={`${PROVIDER_LABEL[issue.provider]}: ${issue.message}`}>
+          <TriangleAlert size={12} />
+          <span className="rq-chip-text">{PROVIDER_LABEL[issue.provider]} đang gặp sự cố</span>
+        </span>
+      )}
+      {elsewhere && (
+        <span className="rq-chip info" title="Một tab/cửa sổ khác của dự án này đang chạy hàng đợi — tab này chỉ hiển thị tiến độ.">
+          <MonitorSmartphone size={12} />
+          <span className="rq-chip-text">Đang chạy ở tab khác</span>
+        </span>
+      )}
+      {provider === 'mock' ? (
+        <span className="rq-credit-pill" title={`${credits.toLocaleString('vi-VN')} credit demo — không phải tiền thật`}>
+          <Coins size={13} />
+          <b className="mono">{credits.toLocaleString('vi-VN')}</b>
+          <span className="rq-pill-label">credit demo</span>
+        </span>
+      ) : (
+        <span className="rq-credit-pill real" title="Take mới được tạo trên canvasapp.io.vn bằng credit thật của tài khoản bạn">
+          <Cloud size={13} />
+          <span className="rq-pill-label">{PROVIDER_LABEL.canvasapp}</span>
+        </span>
+      )}
       <span className="rq-chevron">{open ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</span>
     </div>
   )
@@ -96,9 +139,10 @@ function QueueBar({ open }: { open: boolean }) {
 
 function Count({ n, label, tone }: { n: number; label: string; tone: Take['status'] }) {
   return (
-    <span className={`rq-count${n ? '' : ' zero'}`}>
+    <span className={`rq-count${n ? '' : ' zero'}`} title={`${n} ${label}`}>
       <span className={`status-dot ${n ? tone : ''}`} />
-      <b className="mono">{n}</b> {label}
+      <b className="mono">{n}</b>
+      <span className="rq-count-label">{label}</span>
     </span>
   )
 }
@@ -116,6 +160,9 @@ function QueuePanel() {
   const credits = useRuns((s) => s.credits)
   const spent = useRuns((s) => s.spent)
   const mock = useRuns((s) => s.mock)
+  const issue = useRuns((s) => s.providerIssue)
+  const elsewhere = useRuns((s) => s.engineElsewhere)
+  const provider = useActiveProvider()
   const scenes = useProject((s) => s.project.scenes)
   const sceneMap = useMemo(() => new Map(scenes.map((s) => [s.id, s])), [scenes])
   const [doneLimit, setDoneLimit] = useState(DONE_PAGE)
@@ -134,39 +181,49 @@ function QueuePanel() {
 
   const clearable = useMemo(() => takes.filter((t) => t.status === 'failed' || t.status === 'cancelled'), [takes])
 
+  // The shared delete (actions.deleteTakes): also drops the takes from @video references and the selection and
+  // deletes their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming.
   const clearFailed = () => {
-    const { removeTake } = useRuns.getState()
-    for (const t of clearable) {
-      removeTake(t.id)
-      if (t.posterId) void deleteMedia(t.posterId)
-      if (t.videoId) void deleteMedia(t.videoId)
-    }
-    toast(`Đã xoá ${clearable.length} job lỗi/đã huỷ khỏi danh sách.`, { tone: 'success' })
+    const n = deleteTakes(
+      clearable.map((t) => t.id),
+      { toast: false },
+    )
+    if (n) toast(`Đã xoá ${n} job lỗi/đã huỷ khỏi danh sách.`, { tone: 'success' })
   }
 
   return (
     <div className="rq-panel">
       <div className="rq-panel-head">
-        <span className="rq-wallet">
-          Số dư <b className="mono">{credits.toLocaleString('vi-VN')}</b> credit
-          <span className="faint"> · đã dùng </span>
-          <b className="mono">{spent.toLocaleString('vi-VN')}</b>
-        </span>
-        <span className="rq-demo-note">
-          <Sparkles size={12} /> Chế độ demo: video giả, không tốn tiền
-        </span>
-        <span className="rq-spacer" />
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => useUI.getState().openDialog({ kind: 'settings' })}
-          title="Chỉnh tốc độ, tỉ lệ lỗi và số luồng của nhà cung cấp giả"
-        >
-          <Settings2 size={13} />
-          <span className="rq-btn-label">
-            Mock: {SPEED_LABEL[mock.speed]} · lỗi {Math.round(mock.failRate * 100)}% · {mock.concurrency} luồng
+        {provider === 'mock' ? (
+          <>
+            <span className="rq-wallet">
+              Số dư <b className="mono">{credits.toLocaleString('vi-VN')}</b> credit demo
+              <span className="faint"> · đã dùng </span>
+              <b className="mono">{spent.toLocaleString('vi-VN')}</b>
+            </span>
+            <span className="rq-demo-note">
+              <Sparkles size={12} /> Chế độ demo: video giả, không tốn tiền
+            </span>
+          </>
+        ) : (
+          <span className="rq-demo-note real">
+            <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — tốn credit thật của tài khoản bạn
           </span>
-        </button>
+        )}
+        <span className="rq-spacer" />
+        {provider === 'mock' ? (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Chỉnh tốc độ, tỉ lệ lỗi và số luồng của nhà cung cấp giả">
+            <Settings2 size={13} />
+            <span className="rq-btn-label">
+              Mock: {SPEED_LABEL[mock.speed]} · lỗi {Math.round(mock.failRate * 100)}% · {mock.concurrency} luồng
+            </span>
+          </button>
+        ) : (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
+            <Settings2 size={13} />
+            <span className="rq-btn-label">Cổng canvasapp</span>
+          </button>
+        )}
         <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách">
           <Trash size={13} />
           <span className="rq-btn-label">Dọn job lỗi/đã huỷ{clearable.length ? ` (${clearable.length})` : ''}</span>
@@ -174,6 +231,31 @@ function QueuePanel() {
       </div>
 
       <div className="rq-list">
+        {issue && (
+          <div className="rq-banner warn" role="status">
+            <TriangleAlert size={15} />
+            <div className="rq-banner-text">
+              <b>
+                {PROVIDER_LABEL[issue.provider]}: {issue.message}
+              </b>
+              <small>Các take đang chạy được giữ nguyên; SanoVids tự kiểm tra lại sau · lúc {formatClock(issue.at)}</small>
+            </div>
+            {issue.provider !== 'mock' && (
+              <button type="button" className="btn btn-sm" onClick={openSettings}>
+                Mở Cài đặt
+              </button>
+            )}
+          </div>
+        )}
+        {elsewhere && (
+          <div className="rq-banner info" role="status">
+            <MonitorSmartphone size={15} />
+            <div className="rq-banner-text">
+              <b>Hàng đợi đang chạy ở một tab/cửa sổ khác của dự án này</b>
+              <small>Tab này chỉ hiển thị tiến độ. Khi tab kia đóng hoặc chạy xong, tab này tự nhận việc.</small>
+            </div>
+          </div>
+        )}
         {!groups.length && (
           <div className="rq-empty">
             <ListVideo size={22} />
@@ -214,7 +296,10 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   const now = useNow(active)
   const code = scene ? sceneCode(scene.order) : 'S??'
   const elapsed = takeElapsed(take, now)
-  const refunded = take.status === 'failed' || take.status === 'cancelled'
+  const ended = take.status === 'failed' || take.status === 'cancelled'
+  // Only demo credits come back: a real provider bills (and refunds) on the user's own account.
+  const refunded = ended && chargedLocally(take)
+  const unit = CREDIT_UNIT[providerOf(take)]
   const open = () => useUI.getState().openDialog({ kind: 'take', takeId: take.id })
   const goto = () => gotoTake(take, scene)
   const [saving, setSaving] = useState(false)
@@ -226,6 +311,14 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
     } finally {
       setSaving(false)
     }
+  }
+  const cancel = () => {
+    const label = `${code} · T${take.number}`
+    const sentAway = !chargedLocally(take) && !!take.remoteId
+    useRuns.getState().cancel(take.id)
+    if (chargedLocally(take)) toast(`Đã huỷ ${label} · hoàn ${take.cost} credit demo.`)
+    else if (sentAway) toast(`Đã huỷ ${label} trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[providerOf(take)]} vẫn chạy ở đó.`, { tone: 'warning', ms: 7000 })
+    else toast(`Đã huỷ ${label}.`)
   }
 
   return (
@@ -248,9 +341,16 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
           <span className={`rq-row-title${scene?.title ? '' : ' faint'}`}>{scene ? scene.title || 'Chưa đặt tên' : 'Cảnh đã bị xoá'}</span>
         </div>
         <div className="rq-row-sub">
-          <span style={{ color: MODELS[take.settings.model]?.color }}>{MODELS[take.settings.model]?.short ?? take.settings.model}</span>
+          <ProviderBadge take={take} />
+          <span className="rq-row-model" style={{ ['--rq-model-c' as string]: MODELS[take.settings.model]?.color }}>
+            {MODELS[take.settings.model]?.short ?? take.settings.model}
+          </span>
           <span>{settingsLabel(take.settings)}</span>
-          {take.status === 'failed' && take.error && <span className="rq-row-err">{take.error}</span>}
+          {take.status === 'failed' && take.error && (
+            <span className="rq-row-err" title={take.error}>
+              {take.error}
+            </span>
+          )}
         </div>
       </div>
 
@@ -268,34 +368,27 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         {formatDuration(elapsed)}
       </span>
 
-      <span className={`rq-row-cost mono${refunded ? ' refunded' : ''}`} title={refunded ? 'Đã hoàn credit' : 'Chi phí'}>
+      <span className={`rq-row-cost mono${refunded ? ' refunded' : ''}`} title={`${take.cost} ${unit}${refunded ? ' · đã hoàn' : ''}`}>
         {take.cost} cr
       </span>
 
       <div className="rq-row-actions">
         {active && (
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => {
-              useRuns.getState().cancel(take.id)
-              toast(`Đã huỷ ${code} · T${take.number} · hoàn ${take.cost} credit.`)
-            }}
-          >
+          <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} title={`Huỷ ${code} · T${take.number}`}>
             <CircleStop size={13} />
-            Huỷ
+            <span className="rq-act-label">Huỷ</span>
           </button>
         )}
-        {refunded && (
+        {ended && (
           <button type="button" className="btn btn-ghost btn-sm" disabled={!scene} onClick={() => runNow([take.sceneId])} title="Chạy lại cảnh này">
             <RotateCcw size={13} />
-            Thử lại
+            <span className="rq-act-label">Thử lại</span>
           </button>
         )}
         {take.status === 'completed' && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={open}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={open} title="Xem take">
             <Eye size={13} />
-            Xem
+            <span className="rq-act-label">Xem</span>
           </button>
         )}
         {take.status === 'completed' && (
@@ -313,13 +406,13 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         <button type="button" className="icon-btn rq-icon-sm" disabled={!scene} onClick={goto} title="Đi tới video này trên canvas" aria-label="Đi tới video trên canvas">
           <LocateFixed size={14} />
         </button>
-        {refunded && (
+        {ended && (
           <button
             type="button"
-            className="icon-btn rq-icon-sm"
-            onClick={() => useRuns.getState().removeTake(take.id)}
+            className="icon-btn rq-icon-sm rq-x"
+            onClick={() => deleteTakes([take.id])}
             title="Bỏ khỏi danh sách"
-            aria-label="Bỏ khỏi danh sách"
+            aria-label={`Bỏ ${code} T${take.number} khỏi danh sách`}
           >
             <X size={14} />
           </button>

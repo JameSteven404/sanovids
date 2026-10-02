@@ -1,11 +1,32 @@
 // Video settings grid (preset, model, mode, duration, resolution, ratio) for one or many scenes.
-// With several scenes, a field whose values differ shows "—" until a value is picked for all.
+// Fields with long or many options are selects; duration, resolution and ratio (2–5 short options) are Apple-style
+// segmented controls. With several scenes, a field whose values differ shows "—" (select) or no selected segment
+// plus "· khác nhau" until a value is picked for all.
 // Scenes on different models: options only some of the models offer are marked "· chỉ SD 2.5", and the caller
 // applies such a value only to the scenes whose model supports it (see `patchFits`).
-import { MODE_LABEL, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
+import { useRef, type CSSProperties } from 'react'
+import { modeLabel, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 
 const MIXED = '__mixed'
+
+const fmtDuration = (d: number) => `${d}s`
+const fmtResolution = (r: string) => r.toUpperCase()
+
+/** Rough width (px) a segmented control needs: ~7px a character at 12px, 8px padding per segment, the 4px track. */
+function segWidth(labels: string[]): number {
+  return labels.reduce((w, l) => w + l.length * 7 + 8, 4)
+}
+/** Room in a half-row field at the default inspector width. */
+const HALF_ROW_W = 150
+
+/**
+ * Do the duration / resolution segmented controls need a full row each? Scenes on several models offer the union of
+ * their options (480P…2K = 5 resolutions): squeezed into half a row the labels would be cut ("10…").
+ */
+export function segmentsNeedFullRow(durations: number[], resolutions: string[]): boolean {
+  return Math.max(segWidth(durations.map(fmtDuration)), segWidth(resolutions.map(fmtResolution))) > HALF_ROW_W
+}
 
 function common<T>(list: T[]): T | null {
   if (!list.length) return null
@@ -34,7 +55,7 @@ export function patchFits(model: ModelId, patch: Partial<VideoSettings>): boolea
 export function patchLabel(patch: Partial<VideoSettings>): string {
   if (patch.resolution !== undefined) return patch.resolution.toUpperCase()
   if (patch.duration !== undefined) return `${patch.duration}s`
-  if (patch.mode !== undefined) return MODE_LABEL[patch.mode]
+  if (patch.mode !== undefined) return modeLabel(patch.mode)
   return patch.ratio ?? ''
 }
 
@@ -64,6 +85,8 @@ export function SettingsFields({
   const durations = union(specs.map((s) => s.durations)).sort((a, b) => a - b)
   const resolutions = union(specs.map((s) => s.resolutions))
   const ratios = union(specs.map((s) => s.ratios))
+  // Too many options for half a row: duration and resolution take a full row each (like the narrow-panel rule).
+  const segField = `in-field c3 in-seg-field${segmentsNeedFullRow(durations, resolutions) ? ' is-wide' : ''}`
   /** " · chỉ H3" when the selection mixes models and only some of them offer the option. */
   const onlyFor = (ok: (spec: ModelSpec) => boolean): string => {
     if (specs.length < 2) return ''
@@ -123,63 +146,114 @@ export function SettingsFields({
           )}
           {modes.map((m) => (
             <option key={m} value={m}>
-              {MODE_LABEL[m]}
+              {modeLabel(m, model ?? undefined)}
               {onlyFor((sp) => sp.modes.includes(m))}
             </option>
           ))}
         </select>
       </label>
-      <label className="in-field c2">
-        <span>Thời lượng</span>
-        <select
-          className="select in-sm"
-          value={duration === null ? MIXED : String(duration)}
-          onChange={(e) => e.target.value !== MIXED && onPatch({ duration: Number(e.target.value) })}
-        >
-          {duration === null && (
-            <option value={MIXED} disabled>
-              —
-            </option>
-          )}
-          {durations.map((d) => (
-            <option key={d} value={String(d)}>
-              {d}s{onlyFor((sp) => sp.durations.includes(d))}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="in-field c2">
-        <span>Độ phân giải</span>
-        <select className="select in-sm" value={resolution ?? MIXED} onChange={(e) => e.target.value !== MIXED && onPatch({ resolution: e.target.value })}>
-          {resolution === null && (
-            <option value={MIXED} disabled>
-              —
-            </option>
-          )}
-          {resolutions.map((r) => (
-            <option key={r} value={r}>
-              {r.toUpperCase()}
-              {onlyFor((sp) => sp.resolutions.includes(r))}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="in-field c2">
-        <span>Tỉ lệ</span>
-        <select className="select in-sm" value={ratio ?? MIXED} onChange={(e) => e.target.value !== MIXED && onPatch({ ratio: e.target.value })}>
-          {ratio === null && (
-            <option value={MIXED} disabled>
-              —
-            </option>
-          )}
-          {ratios.map((r) => (
-            <option key={r} value={r}>
-              {r}
-              {onlyFor((sp) => sp.ratios.includes(r))}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className={segField}>
+        <span>
+          Thời lượng{duration === null && <em className="in-mixed"> · khác nhau</em>}
+        </span>
+        <Segmented
+          label="Thời lượng"
+          value={duration}
+          options={durations}
+          format={fmtDuration}
+          note={(d) => onlyFor((sp) => sp.durations.includes(d))}
+          onPick={(d) => onPatch({ duration: d })}
+        />
+      </div>
+      <div className={segField}>
+        <span>
+          Độ phân giải{resolution === null && <em className="in-mixed"> · khác nhau</em>}
+        </span>
+        <Segmented
+          label="Độ phân giải"
+          value={resolution}
+          options={resolutions}
+          format={fmtResolution}
+          note={(r) => onlyFor((sp) => sp.resolutions.includes(r))}
+          onPick={(r) => onPatch({ resolution: r })}
+        />
+      </div>
+      <div className="in-field c6">
+        <span>
+          Tỉ lệ{ratio === null && <em className="in-mixed"> · khác nhau</em>}
+        </span>
+        <Segmented
+          label="Tỉ lệ"
+          value={ratio}
+          options={ratios}
+          format={(r) => r}
+          note={(r) => onlyFor((sp) => sp.ratios.includes(r))}
+          onPick={(r) => onPatch({ ratio: r })}
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Segmented control (Apple style): equal segments on a pill track, the selected one raised on a thumb that slides
+ * between them. `value` null = the selected scenes differ (no segment selected). Arrow keys move the focus; Space /
+ * Enter picks (each pick is an undo step, so arrows do not apply every option they pass).
+ */
+function Segmented<T extends string | number>({
+  label,
+  value,
+  options,
+  format,
+  note,
+  onPick,
+}: {
+  label: string
+  value: T | null
+  options: T[]
+  format: (v: T) => string
+  /** " · chỉ SD 2.5" when only some of the selected scenes' models offer the option ('' otherwise). */
+  note: (v: T) => string
+  onPick: (v: T) => void
+}) {
+  const buttons = useRef<(HTMLButtonElement | null)[]>([])
+  const idx = value === null ? -1 : options.indexOf(value)
+  const focusAt = (i: number) => buttons.current[(i + options.length) % options.length]?.focus()
+  return (
+    <div className="in-seg" role="radiogroup" aria-label={label} style={{ '--n': options.length, '--i': Math.max(0, idx) } as CSSProperties}>
+      {idx >= 0 && <span className="in-seg-thumb" aria-hidden="true" />}
+      {options.map((o, i) => {
+        const on = i === idx
+        const extra = note(o)
+        return (
+          <button
+            key={String(o)}
+            ref={(el) => {
+              buttons.current[i] = el
+            }}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            tabIndex={on || (idx < 0 && i === 0) ? 0 : -1}
+            className={`in-seg-btn${on ? ' on' : ''}${extra ? ' is-partial' : ''}`}
+            title={`${label}: ${format(o)}${extra}`}
+            onClick={() => {
+              if (!on) onPick(o)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                e.preventDefault()
+                focusAt(i + 1)
+              } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                e.preventDefault()
+                focusAt(i - 1)
+              }
+            }}
+          >
+            {format(o)}
+          </button>
+        )
+      })}
     </div>
   )
 }

@@ -234,7 +234,7 @@ export function assetPickItems(assets: Asset[], opts: { exclude?: Set<string>; c
   return assets
     .filter((a) => !opts.exclude?.has(a.id))
     .map((a) => {
-      const Icon = KIND_ICON[a.kind]
+      const Icon = KIND_ICON[a.kind] ?? KIND_ICON.character // unknown kind (imported from a newer build)
       return {
         id: a.id,
         label: a.name,

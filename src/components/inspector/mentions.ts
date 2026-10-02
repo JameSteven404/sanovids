@@ -15,14 +15,21 @@ export function fold(s: string): string {
 export interface MentionToken {
   /** Index of "@". */
   start: number
-  /** End of the token (the caret, or the end of the word under the caret). */
+  /** End of the token: the caret, or the end of the word under the caret when that whole word is a token. */
   end: number
   /** Letters typed between "@" and the caret ("ela", "2", "image_1"…). */
   query: string
 }
 
-/** The "@xxx" being typed at `caret`, if any. Ignores e-mails ("a@b"). */
-export function findMention(text: string, caret: number): MentionToken | null {
+const RAW_TOKEN = /^(image|video)_\d+$/i
+
+/**
+ * The "@xxx" being typed at `caret`, if any. Ignores e-mails ("a@b").
+ * Letters after the caret belong to the token only when the whole word is a token — "@image_N" / "@video_N", or a
+ * word `isToken` accepts (a legacy asset @Tag) — so picking a suggestion replaces all of it. Otherwise the token ends
+ * at the caret: an "@" typed right before a plain word ("the @|slope") must not swallow that word.
+ */
+export function findMention(text: string, caret: number, isToken?: (word: string) => boolean): MentionToken | null {
   let i = caret - 1
   let n = 0
   while (i >= 0 && WORD_CHAR.test(text[i]) && n < 48) {
@@ -32,8 +39,10 @@ export function findMention(text: string, caret: number): MentionToken | null {
   if (i < 0 || text[i] !== '@') return null
   if (i > 0 && WORD_CHAR.test(text[i - 1])) return null
   const query = text.slice(i + 1, caret)
-  let end = caret
-  while (end < text.length && WORD_CHAR.test(text[end])) end++
+  let wordEnd = caret
+  while (wordEnd < text.length && WORD_CHAR.test(text[wordEnd])) wordEnd++
+  const word = text.slice(i + 1, wordEnd)
+  const end = wordEnd > caret && (RAW_TOKEN.test(word) || !!isToken?.(word)) ? wordEnd : caret
   return { start: i, end, query }
 }
 

@@ -3,10 +3,11 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { memo } from 'react'
-import { parseEdgeId, takeLabel, type EdgeKind } from '../../actions'
+import { parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
+import { sceneCode } from '../../core/compile'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { keepHover, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
+import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
 
 export type LinkEdgeData = {
   kind: EdgeKind
@@ -20,15 +21,16 @@ export type LinkEdgeData = {
 }
 export type LinkEdge = Edge<LinkEdgeData>
 
-/** Purple of video wires / handles (same value as the canvas-local CSS var --video). */
-export const VIDEO_COLOR = '#b48cff'
+/** Purple of video wires / handles: the theme token (light and dark themes define their own value). */
+export const VIDEO_COLOR = 'var(--video)'
 
+/** Wire colors are theme tokens (styles/base.css), so they follow the light / dark theme. */
 const KIND_STROKE: Record<EdgeKind, string> = {
-  ref: '#4fb6a8',
-  first: '#4cc38a',
-  last: '#b48cff',
+  ref: 'var(--ref)',
+  first: 'var(--first)',
+  last: 'var(--last)',
   vref: VIDEO_COLOR,
-  out: '#6d7179',
+  out: 'var(--seq)',
 }
 
 const CUT_LABEL: Record<EdgeKind, string> = {
@@ -39,25 +41,40 @@ const CUT_LABEL: Record<EdgeKind, string> = {
   out: '',
 }
 
-/** Cut one link (one undo step) and say so. 'out' wires (scene → its take) cannot be cut. */
+/**
+ * Cut one link (one undo step) and say so — naming what was cut, with Undo. Every canvas way of removing a reference
+ * goes through here (the wire's ×, the × on a scene card avatar / @video thumb, a wire end dropped on empty canvas).
+ * The prompt's @image_N / @video_N tokens are renumbered in the same step (SPEC §2): the toast says so when it happened.
+ * 'out' wires (scene → its take) cannot be cut.
+ */
 export function cutEdge(id: string, silent = false) {
   const e = parseEdgeId(id)
   if (!e || e.kind === 'out') return
   const p = useProject.getState()
+  const before = sceneMapOf(p.project.scenes).get(e.to)
+  if (!before) return
+  const what = e.kind === 'vref' ? takeLabel(e.from) : assetMapOf(p.project.assets).get(e.from)?.name
   if (e.kind === 'ref') p.removeRef(e.to, e.from)
-  else if (e.kind === 'vref') p.removeVideoRef(e.to, e.from, 'video ' + takeLabel(e.from))
+  else if (e.kind === 'vref') p.removeVideoRef(e.to, e.from, videoLabel(e.from))
   else p.setFrame(e.to, e.kind, null)
+  const after = sceneMapOf(useProject.getState().project.scenes).get(e.to)
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
-  if (!silent) toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}.`, { action: undoToastAction() })
+  if (silent) return
+  const renumbered = !!after && after.prompt !== before.prompt
+  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}.`, {
+    action: undoToastAction(),
+  })
 }
 
 function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LinkEdge>) {
   const hovered = useCanvasLocal((s) => s.hoveredEdgeId === id)
   const kind = data?.kind ?? 'ref'
   let ty = targetY
-  if ((kind === 'ref' || kind === 'vref') && data && data.count > 1) {
+  // Wires arriving at the same handle are spread apart. A selected wire goes to the handle's center: that is where
+  // its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
+  if ((kind === 'ref' || kind === 'vref') && data && data.count > 1 && !selected) {
     const off = (data.index - (data.count - 1) / 2) * 6
     ty = targetY + Math.max(-48, Math.min(48, off))
   }
@@ -72,17 +89,21 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         id={id}
         path={path}
         interactionWidth={0}
-        style={{ stroke: hl ? '#8d93a0' : base, strokeWidth: hl ? 1.8 : 1.2, strokeDasharray: '3 4', opacity: hl ? 0.95 : 0.55 }}
+        style={{ stroke: hl ? 'var(--text-dim)' : base, strokeWidth: hl ? 1.5 : 1.25, strokeDasharray: '3 4', opacity: hl ? 0.9 : 0.5 }}
       />
     )
   }
 
-  const stroke = kind === 'ref' && hl && data?.color ? withAlpha(data.color, 0.7) : base
+  // Calm by default (DESIGN.md: thin 1.5px wires, theme-token colors); a wire touching the hovered / selected node
+  // lights up, a selected wire is a little thicker with a soft glow.
+  const stroke = kind === 'ref' && hl && data?.color ? withAlpha(data.color, 0.75) : base
   const style = {
     stroke,
-    strokeWidth: selected ? 3 : hl ? 2.2 : kind === 'vref' ? 1.8 : 1.5,
-    opacity: hl ? 1 : kind === 'vref' ? 0.75 : 0.45,
-    filter: selected ? `drop-shadow(0 0 4px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.7)})` : undefined,
+    strokeWidth: selected ? 2.5 : hl ? 2 : 1.5,
+    opacity: hl ? 1 : kind === 'vref' ? 0.65 : 0.45,
+    strokeLinecap: 'round' as const,
+    transition: 'opacity 0.15s ease-out, stroke-width 0.15s ease-out',
+    filter: selected ? `drop-shadow(0 0 3px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.6)})` : undefined,
   }
   return (
     <>
@@ -104,7 +125,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
               cutEdge(id)
             }}
           >
-            <X size={12} strokeWidth={2.6} />
+            <X size={12} strokeWidth={2.4} />
           </button>
         </EdgeLabelRenderer>
       )}

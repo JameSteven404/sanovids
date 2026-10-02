@@ -1,4 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { useUI } from '../../store/ui'
+import { fitPanelWidths } from './panelFit'
 
 export interface PanelSpec {
   /** CSS variable on the app root that holds the width, e.g. '--left-w'. */
@@ -33,13 +35,38 @@ function savePanelWidth(spec: PanelSpec, width: number) {
   }
 }
 
-/** Apply saved panel widths to the app root once on mount. */
+/**
+ * Apply the saved panel widths to the app root, fitted to the window: on mount, when a panel is shown or hidden,
+ * and on every window resize. Saved widths that leave the center narrower than MIN_CENTER (a smaller window, a
+ * snapped half-screen window, another screen) are shrunk for display only — the saved preference is kept, so the
+ * panels get their width back when the window grows again.
+ */
 export function usePanelWidths(root: RefObject<HTMLElement | null>) {
+  const leftOpen = useUI((s) => s.leftOpen)
+  const rightOpen = useUI((s) => s.rightOpen)
   useEffect(() => {
     const el = root.current
     if (!el) return
-    for (const spec of [LEFT_PANEL, RIGHT_PANEL]) el.style.setProperty(spec.cssVar, readPanelWidth(spec) + 'px')
-  }, [root])
+    const apply = () => {
+      const left = readPanelWidth(LEFT_PANEL)
+      const right = readPanelWidth(RIGHT_PANEL)
+      const total = el.clientWidth || window.innerWidth
+      const fit = fitPanelWidths(total, leftOpen ? left : null, rightOpen ? right : null, { left: LEFT_PANEL, right: RIGHT_PANEL }, MIN_CENTER)
+      el.style.setProperty(LEFT_PANEL.cssVar, (fit.left ?? left) + 'px')
+      el.style.setProperty(RIGHT_PANEL.cssVar, (fit.right ?? right) + 'px')
+    }
+    apply()
+    let frame = 0
+    const onResize = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(apply)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [root, leftOpen, rightOpen])
 }
 
 interface Props {

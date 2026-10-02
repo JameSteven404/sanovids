@@ -1,14 +1,22 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
+import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { usesVideoRefs } from './core/models'
 import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
-import { saveFiles, takeFiles, useDownloadPrefs, type FileToSave } from './lib/downloads'
-import { getBlob, putBlob } from './lib/imageStore'
-import { redo, undo, undoToastAction, useProject } from './store/project'
+import { prepareFolderAccess, saveFiles, savePendingDownloads, takeFiles, useDownloadPrefs, type FileToSave, type SaveResult } from './lib/downloads'
+import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
+import { redo, setTakeHeightSource, undo, undoToastAction, useProject } from './store/project'
 import { useRuns } from './store/runs'
 import { toast, useUI } from './store/ui'
+
+// Scene rows on the canvas grow with their tallest (resized) take: the project store's layout asks the runs store.
+setTakeHeightSource((sceneId) => {
+  let h = 0
+  for (const t of useRuns.getState().takes) if (t.sceneId === sceneId && t.size && t.size.h > h) h = t.size.h
+  return h
+})
 
 // ---------------- edge ids ----------------
 /**
@@ -211,9 +219,13 @@ export function duplicateSelection() {
   toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: undoToastAction() })
 }
 
+export { keyboardDeletePlan, checkTakeDelete, type TakeDeleteConfirm } from './core/deletePlan'
+
 /**
  * Delete what is selected: cut selected wires, delete scenes, hide asset nodes from the canvas (one undo step),
- * and delete selected takes (after confirmation when they are used as @video references; takes are not undoable).
+ * and delete selected takes for good (after confirmation when a finished video would be lost or is used as @video;
+ * takes are not undoable). Takes selected together with their own scene are spared (keyboardDeletePlan): deleting
+ * the scene hides them and Undo brings them back.
  */
 export function deleteSelection() {
   const { selectedIds, selectedEdgeIds } = useUI.getState()
@@ -221,11 +233,11 @@ export function deleteSelection() {
   const takes = useRuns.getState().takes
   const sceneById = new Map(project.scenes.map((s) => [s.id, s]))
   const assetSet = new Set(project.assets.map((a) => a.id))
-  const takeSet = new Set(takes.map((t) => t.id))
 
   const sceneIds = selectedIds.filter((id) => sceneById.has(id))
   const hideAssetIds = selectedIds.filter((id) => assetSet.has(id))
-  const takeIds = selectedIds.filter((id) => takeSet.has(id))
+  const plan = keyboardDeletePlan(selectedIds, new Set(sceneById.keys()), new Map(takes.map((t) => [t.id, t.sceneId])))
+  const takeIds = plan.takes
   const deadScenes = new Set(sceneIds)
 
   const refs: { sceneId: string; assetId: string }[] = []
@@ -246,34 +258,76 @@ export function deleteSelection() {
   const links = refs.length + videoRefs.length + frames.length
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
-    const usedBy = project.scenes.filter((s) => !deadScenes.has(s.id) && s.videoRefs.some((t) => takeIds.includes(t)))
-    if (
-      usedBy.length &&
-      !window.confirm(
-        `${takeIds.length} video đang được dùng làm @video ở ${usedBy.length} cảnh (${usedBy.map((s) => sceneCode(s.order)).join(', ')}).\nXoá video và bỏ các tham chiếu đó?`,
-      )
-    )
-      return
+    const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
+    if (check.question && !window.confirm(check.question)) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
-  let takesDeleted = 0
-  if (takeIds.length) {
-    useRuns.getState().removeTakes(takeIds)
-    takesDeleted = takeIds.length
-  }
+  const takesDeleted = takeIds.length ? (deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0) : 0
   if (sceneIds.length || hideAssetIds.length || links) {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
   }
   if (!sceneIds.length && !hideAssetIds.length && !links && !takesDeleted) return
   useUI.getState().clearSelection()
-  const parts = [
-    sceneIds.length && `${sceneIds.length} cảnh`,
-    takesDeleted && `${takesDeleted} video`,
-    hideAssetIds.length && `ẩn ${hideAssetIds.length} thẻ khỏi canvas`,
-    links && `${links} dây nối`,
-  ].filter(Boolean)
+  const deleted = [sceneIds.length && `${sceneIds.length} cảnh`, takesDeleted && `${takesDeleted} video`, links && `${links} dây nối`].filter(Boolean)
+  const said = [deleted.length && `Đã xoá ${deleted.join(', ')}`, hideAssetIds.length && `${deleted.length ? 'đã ẩn' : 'Đã ẩn'} ${hideAssetIds.length} thẻ khỏi canvas`]
   const undoable = sceneIds.length || hideAssetIds.length || links
-  toast(`Đã xoá ${parts.join(', ')}.${takesDeleted ? ' (Video đã xoá không hoàn tác được.)' : ''}`, undoable ? { action: undoToastAction() } : {})
+  toast(`${said.filter(Boolean).join('; ')}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, undoable ? { action: undoToastAction() } : {})
+}
+
+/** Appended to every toast about deleted takes. */
+export const TAKES_GONE_NOTE = '(Video đã xoá không hoàn tác được.)'
+
+export interface DeleteTakesOptions {
+  /**
+   * Ask first (window.confirm). true (default) = when a finished video would be lost or a scene uses one as @video;
+   * 'usedOnly' = only for @video users (the caller already confirmed, e.g. a two-click button); false = never.
+   */
+  confirm?: TakeDeleteConfirm
+  /** Show the result toast (default true). */
+  toast?: boolean
+  /** Scenes deleted in the same operation: their @video uses are not mentioned in the question. */
+  ignoreScenes?: ReadonlySet<string>
+}
+
+/**
+ * The one way to delete takes for good (canvas node, take viewer, queue, Delete key): asks when needed, cancels
+ * running jobs, removes the takes (and drops them from every scene's @video references, renumbering prompts),
+ * deletes their poster/video files (nothing can bring a deleted take back, so its media would only fill the
+ * browser's quota), drops them from the selection and says so in a toast.
+ * Returns how many takes were deleted, or null when the user cancelled the question.
+ */
+export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
+  const project = useProject.getState().project
+  const all = useRuns.getState().takes
+  const check = checkTakeDelete(takeIds, all, project.scenes, {
+    confirm: opts.confirm ?? true,
+    ignoreScenes: opts.ignoreScenes,
+    label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+  })
+  if (!check.ids.length) return 0
+  if (check.question && !window.confirm(check.question)) return null
+  // Labels before the takes are gone.
+  const label = check.ids.length === 1 ? takeLabel(check.ids[0]) : `${check.ids.length} video`
+  const usedCodes = check.usedBy.map((s) => sceneCode(s.order))
+  const ids = new Set(check.ids)
+  const dead = all.filter((t) => ids.has(t.id))
+  useRuns.getState().removeTakes(check.ids)
+  for (const t of dead) {
+    if (t.posterId) void deleteMedia(t.posterId).catch(() => undefined)
+    if (t.videoId) void deleteMedia(t.videoId).catch(() => undefined)
+  }
+  const ui = useUI.getState()
+  if (ui.selectedIds.some((id) => ids.has(id))) ui.select(ui.selectedIds.filter((id) => !ids.has(id)))
+  if (opts.toast ?? true) toast(`Đã xoá ${label}${usedCodes.length ? ` và bỏ @video ở ${usedCodes.join(', ')}` : ''}. ${TAKES_GONE_NOTE}`)
+  return dead.length
+}
+
+/**
+ * Delete takes for good without asking and without a toast.
+ * @deprecated use `deleteTakes(ids, { confirm, toast })`.
+ */
+export function deleteTakesForever(takeIds: string[]): number {
+  return deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0
 }
 
 // ---------------- assets from files ----------------
@@ -297,11 +351,18 @@ export async function createAssetsFromFiles(files: File[], opts: { kind?: AssetK
 }
 
 export async function addImagesToAsset(assetId: string, files: File[]) {
-  const asset = useProject.getState().project.assets.find((a) => a.id === assetId)
-  if (!asset) return
+  if (!useProject.getState().project.assets.some((a) => a.id === assetId)) return
   const ids: string[] = []
   for (const f of files.filter((f) => /^image\//.test(f.type))) ids.push(await putBlob(f, 'img'))
-  useProject.getState().updateAsset(assetId, { imageIds: [...asset.imageIds, ...ids] })
+  if (!ids.length) return
+  // Storing takes a while: append to the images the asset has NOW (the user may have removed, reordered or added
+  // images meanwhile), not to the list read before the writes.
+  const current = useProject.getState().project.assets.find((a) => a.id === assetId)
+  if (!current) {
+    for (const id of ids) void deleteMedia(id).catch(() => undefined)
+    return
+  }
+  useProject.getState().updateAsset(assetId, { imageIds: [...current.imageIds, ...ids] })
 }
 
 // ---------------- running ----------------
@@ -424,16 +485,44 @@ export async function downloadTake(takeId: string, opts: { auto?: boolean } = {}
   }
   try {
     const res = await saveFiles(files, !opts.auto)
-    toast(
-      res.to === 'folder'
-        ? `Đã lưu ${takeLabel(takeId)} vào thư mục “${res.folder}”.`
-        : `Đã tải ${takeLabel(takeId)}${files.length > 1 ? ' + prompt' : ''}.`,
-      { tone: 'success' },
-    )
-    return true
+    reportSaved(res, `${takeLabel(takeId)}${files.length > 1 ? ' + prompt' : ''}`, files[0].name)
+    return res.to !== 'pending'
   } catch (e) {
     toast(`Không lưu được video: ${(e as Error).message}`, { tone: 'error' })
     return false
+  }
+}
+
+/** Toast for a finished save: where the files went, and what to do when the chosen folder could not be used. */
+function reportSaved(res: SaveResult, what: string, firstName: string) {
+  const renamed = res.to === 'folder' && res.names[0] && res.names[0] !== firstName ? ` (tên “${res.names[0]}” vì đã có file trùng tên)` : ''
+  const extra = res.alsoSaved ? ` và ${res.alsoSaved} file đang chờ` : ''
+  if (res.to === 'folder') toast(`Đã lưu ${what}${extra} vào thư mục “${res.folder}”${renamed}.`, { tone: 'success' })
+  else if (res.to === 'pending')
+    toast(`${what} đang chờ lưu vào “${res.folder}”: trình duyệt cần bạn cho phép ghi vào thư mục này lần nữa.`, {
+      tone: 'warning',
+      ms: 20000,
+      action: { label: 'Cho phép & lưu', run: () => void savePendingNow() },
+    })
+  else if (res.reason === 'missing-folder')
+    toast(`Không tìm thấy thư mục “${res.folder}” (đã đổi tên hoặc xoá?) nên đã tải ${what} về thư mục Downloads. Chọn lại thư mục trong Cài đặt.`, {
+      tone: 'warning',
+      ms: 8000,
+    })
+  else if (res.reason === 'no-permission')
+    toast(`Chưa có quyền ghi vào “${res.folder}” nên đã tải ${what} về thư mục Downloads.`, { tone: 'warning', ms: 8000 })
+  else toast(`Đã tải ${what} về máy.`, { tone: 'success' })
+}
+
+/** Toast button (a click, so the browser may ask for the folder permission): save the auto-downloads that wait. */
+async function savePendingNow() {
+  try {
+    const res = await savePendingDownloads()
+    if (!res) return
+    if (res.to === 'folder') toast(`Đã lưu ${res.names.length} file vào thư mục “${res.folder}”.`, { tone: 'success' })
+    else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về Downloads.`, { tone: 'warning' })
+  } catch (e) {
+    toast(`Không lưu được: ${(e as Error).message}`, { tone: 'error' })
   }
 }
 
@@ -457,6 +546,8 @@ export async function downloadChosenTakesZip() {
     toast('Chưa có video nào tạo xong.', { tone: 'warning' })
     return
   }
+  // Ask for the folder permission now, while the click still counts as a user gesture (zipping takes a while).
+  await prepareFolderAccess()
   const { default: JSZip } = await import('jszip')
   const zip = new JSZip()
   const prompts: string[] = []
@@ -471,7 +562,7 @@ export async function downloadChosenTakesZip() {
   const name = `${useProject.getState().project.name.replace(/[<>:"/\\|?*]/g, '-')} - video chọn.zip`
   const file: FileToSave = { name, data: blob }
   const res = await saveFiles([file], true)
-  toast(res.to === 'folder' ? `Đã lưu ${ids.length} video vào “${res.folder}”.` : `Đã tải ${ids.length} video (.zip).`, { tone: 'success' })
+  reportSaved(res, `${ids.length} video (.zip)`, name)
 }
 
 /** Open the full-screen image viewer (whole picture, real aspect ratio). */

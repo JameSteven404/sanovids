@@ -24,11 +24,13 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { ensureAssetToken, linkTakes } from '../../actions'
-import { assetByTag, sceneCode, tokenForVideo } from '../../core/compile'
+import { takeLabel } from '../../actions'
+import { assetByTag, sceneCode } from '../../core/compile'
+import { MODELS, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { undoToastAction, useProject } from '../../store/project'
+import { useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from './caret'
@@ -42,7 +44,10 @@ import {
   legacyAssets,
   legacyFixMessage,
   mediaCountLabel,
+  planImageLinks,
+  planVideoLinks,
   remapOffset,
+  renumberImageTokens,
   replaceLegacyTags,
   segmentPrompt,
   snapToWordEnd,
@@ -62,6 +67,9 @@ const FIELD_SIZING = typeof CSS !== 'undefined' && typeof CSS.supports === 'func
 
 /** Flush functions of mounted editors, so other panels can commit pending text before changing refs. */
 const flushers = new Map<string, () => void>()
+
+/** A whole word after "@" that is a legacy asset @Tag: picking a suggestion there replaces all of it (findMention). */
+const isTagWord = (word: string) => !!assetByTag(useProject.getState().project.assets, word)
 
 /** Commit the text being typed in the prompt editor of `sceneId` (no-op when none is mounted). */
 export function flushPromptEditor(sceneId: string) {
@@ -90,8 +98,12 @@ function undoAutoLink(sceneId: string, linked: string[]) {
   if (!scene) return
   const assets = linked.map((id) => st.project.assets.find((a) => a.id === id)).filter((a): a is Asset => !!a)
   const byTag = new Map(assets.map((a) => [a.tag.toLowerCase(), a.name]))
-  const { text } = replaceLegacyTags(scene.prompt, byTag)
-  st.restoreScene(sceneId, { prompt: text, refs: scene.refs.filter((r) => !linked.includes(r)), videoRefs: scene.videoRefs, settings: scene.settings })
+  const refs = scene.refs.filter((r) => !linked.includes(r))
+  let { text } = replaceLegacyTags(scene.prompt, byTag)
+  // Dropping refs moves the numbers after them (a token inserted meanwhile, or "Đổi @Tên → @image_N"): renumber
+  // like every other refs change, in the same undo step.
+  if (st.project.settings.autoRenumber) text = renumberImageTokens(text, st.project.assets, scene.refs, refs, scene.videoRefs)
+  st.restoreScene(sceneId, { prompt: text, refs, videoRefs: scene.videoRefs, settings: scene.settings })
   toast(`Đã bỏ nối ${assets.map((a) => '@' + a.tag).join(', ')} — giữ tên trong prompt.`, { action: undoToastAction() })
 }
 
@@ -118,38 +130,50 @@ function allowedEffect(dt: DataTransfer): DataTransfer['dropEffect'] {
   return 'copy'
 }
 
-/** Link dropped library assets to the scene (when needed) and return their @image_N tokens, in drop order. */
-function tokensForAssets(sceneId: string, ids: string[]): string[] {
-  const { project } = useProject.getState()
-  const scene = project.scenes.find((s) => s.id === sceneId)
-  if (!scene) return []
-  const tokens: string[] = []
-  const linked: string[] = []
-  let noImage = 0
-  for (const id of new Set(ids)) {
-    const asset = project.assets.find((a) => a.id === id)
-    if (!asset) continue
-    if (!asset.imageIds.length) {
-      noImage++
-      continue
-    }
-    const token = ensureAssetToken(sceneId, id)
-    if (!token) break // over the model's image limit (already reported); the next ones would fail too
-    tokens.push(token)
-    if (!scene.refs.includes(id)) linked.push(asset.name)
-  }
-  if (linked.length) toast(`Đã nối ${linked.join(', ')} vào ${sceneCode(scene.order)} → ${tokens.join(' ')}.`, { tone: 'success' })
-  if (noImage) toast(`Bỏ qua ${noImage} mục chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.`, { tone: 'warning' })
-  return tokens
+/**
+ * Media to link to the scene together with the tokens inserted in the prompt: applied with the prompt in ONE store
+ * step (see commitWithMedia), so one undo — or the toast's "Hoàn tác" — removes both.
+ */
+interface MediaPlan {
+  /** Tokens to insert, in drop / pick order. */
+  tokens: string[]
+  /** New refs / videoRefs of the scene, or null when nothing new is linked. */
+  media: { refs?: string[]; videoRefs?: string[] } | null
+  /** Success message once applied (null: nothing was linked). */
+  done: string | null
 }
 
-/** Link dropped takes as reference videos (only finished ones, never the scene's own) and return their @video_N tokens. */
-function tokensForTakes(sceneId: string, ids: string[]): string[] {
-  const unique = [...new Set(ids)]
-  linkTakes([sceneId], unique)
+/** Link library assets (drop, "Nối & chèn"): their @image_N tokens; reports the ones that cannot be linked. */
+function planAssets(sceneId: string, ids: string[]): MediaPlan | null {
+  const { project } = useProject.getState()
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  if (!scene) return null
+  const plan = planImageLinks(project.assets, scene.refs, ids, MODELS[scene.settings.model].maxRefImages)
+  if (plan.noImage) toast(`Bỏ qua ${plan.noImage} mục chưa có ảnh nên chưa có số @image. Thêm ảnh cho chúng trước.`, { tone: 'warning' })
+  if (plan.overLimit) toast(`Không nối được${ids.length > 1 ? ` ${plan.overLimit} mục` : ''}: vượt giới hạn ảnh của model.`, { tone: 'warning' })
+  const tokens = [...plan.tokens.values()]
+  const names = plan.linked.map((id) => project.assets.find((a) => a.id === id)?.name ?? '')
+  return {
+    tokens,
+    media: plan.linked.length ? { refs: plan.refs } : null,
+    done: plan.linked.length ? `Đã nối ${names.join(', ')} vào ${sceneCode(scene.order)} → ${tokens.join(' ')}.` : null,
+  }
+}
+
+/** Link dropped takes as reference videos (only finished ones, never the scene's own): their @video_N tokens. */
+function planTakes(sceneId: string, ids: string[]): MediaPlan | null {
   const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
-  if (!scene) return []
-  return unique.map((id) => tokenForVideo(scene, id)).filter((t): t is string => !!t)
+  if (!scene) return null
+  const limit = usesVideoRefs(scene.settings) ? MODELS[scene.settings.model].maxRefVideos : 0
+  const plan = planVideoLinks(sceneId, scene.videoRefs, ids, useRuns.getState().takes, limit)
+  if (plan.notReady) toast('Video chưa tạo xong nên chưa dùng làm tham chiếu được.', { tone: 'warning' })
+  if (plan.own) toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó.', { tone: 'warning' })
+  if (plan.overLimit) toast('Không nối được: model/chế độ của cảnh không nhận thêm video tham chiếu.', { tone: 'warning' })
+  return {
+    tokens: plan.tokens,
+    media: plan.linked.length ? { videoRefs: plan.videoRefs } : null,
+    done: plan.linked.length ? `Đã nối ${plan.linked.map(takeLabel).join(', ')} làm video tham chiếu của ${sceneCode(scene.order)} → ${plan.tokens.join(' ')}.` : null,
+  }
 }
 
 export function PromptEditor({ sceneId }: { sceneId: string }) {
@@ -197,6 +221,27 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       const linked = useProject.getState().setScenePrompt(sceneId, next)
       if (linked.length && !opts.silent) announceLinked(sceneId, linked)
       return linked
+    },
+    [sceneId],
+  )
+  /** Commit the text together with newly linked media (MediaPlan.media): one store step, one undo. */
+  const commitWithMedia = useCallback(
+    (media: { refs?: string[]; videoRefs?: string[] }) => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      const st = useProject.getState()
+      const scene = st.project.scenes.find((s) => s.id === sceneId)
+      if (!scene) return
+      committedRef.current = textRef.current
+      // New refs / videoRefs are appended, so the existing @image_N / @video_N numbers do not move.
+      st.restoreScene(sceneId, {
+        prompt: textRef.current,
+        refs: media.refs ?? scene.refs,
+        videoRefs: media.videoRefs ?? scene.videoRefs,
+        settings: scene.settings,
+      })
     },
     [sceneId],
   )
@@ -315,7 +360,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   const updateMention = useCallback(
     (value: string, selStart: number, selEnd: number, typing: boolean) => {
       lastSel.current = { start: selStart, end: selEnd }
-      const raw = selStart === selEnd ? findMention(value, selStart) : null
+      const raw = selStart === selEnd ? findMention(value, selStart, isTagWord) : null
       if (!typing && raw && raw.start !== mentionRef.current?.start) {
         setToken(null)
         return
@@ -335,9 +380,12 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     [mention, imageOpts, videoOpts, libraryOpts],
   )
 
-  /** Replace text[start, end) with `token` (+ spacing) through the native undo stack, then commit. */
+  /**
+   * Replace text[start, end) with `token` (+ spacing) through the native undo stack, then commit — with `media`
+   * (refs / videoRefs linked for these tokens) in the same store step.
+   */
   const replaceRange = useCallback(
-    (start: number, end: number, token: string) => {
+    (start: number, end: number, token: string, media?: MediaPlan['media']) => {
       const ta = taRef.current
       const value = textRef.current
       if (!ta) return
@@ -359,25 +407,30 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
         textRef.current = next
         setText(next)
       }
-      commit()
+      if (media) commitWithMedia(media)
+      else commit()
     },
-    [commit],
+    [commit, commitWithMedia],
   )
 
   const pick = useCallback(
     (s: MediaSuggestion) => {
       const ta = taRef.current
-      const tok = (ta && findMention(textRef.current, ta.selectionStart)) || mentionRef.current
+      const tok = (ta && findMention(textRef.current, ta.selectionStart, isTagWord)) || mentionRef.current
       if (!tok) return
       setToken(null)
       // Stay closed on this token even when linking fails below (replaceRange moves this to the inserted token).
       dismissedAt.current = tok.start
-      let token = suggestionToken(s)
       if (s.type === 'link') {
-        token = ensureAssetToken(sceneId, s.assetId)
-        if (!token) return
-        toast(`Đã nối ${s.name} vào cảnh → ${token}.`, { tone: 'success' })
+        // Link + insert in one undo step; the toast's "Hoàn tác" undoes both.
+        const plan = planAssets(sceneId, [s.assetId])
+        const token = plan?.tokens[0]
+        if (!plan || !token) return
+        replaceRange(tok.start, tok.end, token, plan.media)
+        toast(`Đã nối ${s.name} vào cảnh → ${token}.`, { tone: 'success', action: undoToastAction() })
+        return
       }
+      const token = suggestionToken(s)
       if (token) replaceRange(tok.start, tok.end, token)
     },
     [replaceRange, sceneId, setToken],
@@ -460,11 +513,13 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     if (!ids.length) return
     commit()
     // Appending refs / videoRefs never renumbers existing tokens, so `at` stays valid.
-    const tokens = kind === 'assets' ? tokensForAssets(sceneId, ids) : tokensForTakes(sceneId, ids)
-    if (!tokens.length) return
+    const plan = kind === 'assets' ? planAssets(sceneId, ids) : planTakes(sceneId, ids)
+    if (!plan?.tokens.length) return
     const pos = Math.min(at, textRef.current.length)
-    // replaceRange keeps the "@" popup closed for the last token when the caret ends right after it.
-    replaceRange(pos, pos, tokens.join(' '))
+    // replaceRange keeps the "@" popup closed for the last token when the caret ends right after it. The new links
+    // and the tokens are one undo step, so the toast's "Hoàn tác" removes both.
+    replaceRange(pos, pos, plan.tokens.join(' '), plan.media)
+    if (plan.done) toast(plan.done, { tone: 'success', action: undoToastAction() })
   }
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -488,7 +543,8 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
         return
       }
     }
-    if (mention && e.key === 'Escape') {
+    // Only while the popup is shown: otherwise Esc leaves the textarea (global shortcut) as usual.
+    if (mention && suggestions.length > 0 && e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
       e.nativeEvent.stopImmediatePropagation()
@@ -511,24 +567,21 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
 
   const fixLegacy = useCallback(() => {
     commit({ silent: true })
-    const tokens = new Map<string, string>()
-    let noImage = 0
-    let overLimit = 0
-    for (const a of legacyAssets(textRef.current, useProject.getState().project.assets)) {
-      if (!a.imageIds.length) {
-        noImage++
-        continue
-      }
-      // null = could not be linked: over the model's image limit (ensureAssetToken already said so).
-      const tok = ensureAssetToken(sceneId, a.id)
-      if (tok) tokens.set(a.tag.toLowerCase(), tok)
-      else overLimit++
-    }
-    const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+    const st = useProject.getState()
+    const scene = st.project.scenes.find((s) => s.id === sceneId)
     if (!scene) return
+    const legacy = legacyAssets(scene.prompt, st.project.assets)
+    const plan = planImageLinks(st.project.assets, scene.refs, legacy.map((a) => a.id), MODELS[scene.settings.model].maxRefImages)
+    const tokens = new Map<string, string>()
+    for (const a of legacy) {
+      const tok = plan.tokens.get(a.id)
+      if (tok) tokens.set(a.tag.toLowerCase(), tok)
+    }
     const { text: next, replaced } = replaceLegacyTags(scene.prompt, tokens)
-    if (replaced) useProject.getState().updateScene(sceneId, { prompt: next })
-    const msg = legacyFixMessage(replaced, noImage, overLimit)
+    // Links + renamed mentions in one undo step (the toast's "Hoàn tác" undoes both).
+    if (replaced) st.restoreScene(sceneId, { prompt: next, refs: plan.refs, videoRefs: scene.videoRefs, settings: scene.settings })
+    else if (plan.overLimit) toast('Không nối được: vượt giới hạn ảnh của model.', { tone: 'warning' })
+    const msg = legacyFixMessage(replaced, plan.noImage, plan.overLimit)
     if (msg) toast(msg.text, { tone: msg.tone, ...(replaced ? { action: undoToastAction() } : {}) })
   }, [commit, sceneId])
 

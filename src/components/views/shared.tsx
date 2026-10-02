@@ -1,5 +1,5 @@
 // Helpers shared by the table and storyboard views (vw-).
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { MENTION_RE } from '../../core/compile'
 import type { JobStatus, Take } from '../../core/types'
 import { useRuns } from '../../store/runs'
@@ -8,6 +8,38 @@ import { useRuns } from '../../store/runs'
 // library, canvas and prompt editor. Only the table's own row-reorder payload is defined here.
 /** Scene id being reordered with the table's drag handle. */
 export const SCENE_MIME = 'application/x-bdp-scene'
+
+/**
+ * Window key handlers of a view must only act while the view is the area the user works in: focus inside `root`,
+ * or nothing focused (body) and the last click landed in it. With focus in the Inspector, library, queue or top
+ * bar the keys belong to those (scrolling, ↑/↓ on a reference grip…).
+ */
+export function useKeyboardArea(root: RefObject<HTMLElement | null>): (target: EventTarget | null) => boolean {
+  const pointerInside = useRef(true)
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      pointerInside.current = !!root.current && e.target instanceof Node && root.current.contains(e.target)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    return () => window.removeEventListener('pointerdown', onDown, true)
+  }, [root])
+  return useCallback(
+    (target: EventTarget | null) => {
+      if (!(target instanceof Node) || target === document.body || target === document.documentElement) return pointerInside.current
+      return !!root.current?.contains(target)
+    },
+    [root],
+  )
+}
+
+/** Ctrl/Cmd+A without other modifiers. */
+export const isSelectAllKey = (e: KeyboardEvent) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a'
+
+/** Focus is in a text field (or an open menu): keys belong to it. */
+export function isEditingTarget(target: EventTarget | null): boolean {
+  const t = target as HTMLElement | null
+  return !!t?.closest?.('input:not([type="checkbox"]), textarea, select, [contenteditable="true"], [role="menu"]')
+}
 
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: 'Đang chờ',

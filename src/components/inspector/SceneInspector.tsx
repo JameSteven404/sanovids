@@ -5,7 +5,7 @@ import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { costOf, MODE_LABEL, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -13,6 +13,7 @@ import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
+import { appliedPresetId, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -54,15 +55,27 @@ const promptOf = (sceneId: string) => useProject.getState().project.scenes.find(
 
 /**
  * Run a refs / videoRefs change (the store renumbers @image_N / @video_N tokens in the same undo step) and tell
- * the user when the prompt text changed. Pending typing is committed first so it is renumbered too.
+ * the user what it did to the prompt: renumbered it, or — automatic renumbering off (Settings) — left tokens that
+ * now point at another image / video (warning). Pending typing is committed first so it is renumbered too.
+ * `done`: what was changed ("Đã bỏ nối Elara"); announced on its own only when `plain`.
  */
-function changeMedia(sceneId: string, run: () => void, msg: { renumbered: string; plain?: string }) {
+function changeMedia(sceneId: string, run: () => void, msg: { done: string; renumbered: string; plain?: boolean; what?: string }) {
   flushPromptEditor(sceneId)
-  const before = promptOf(sceneId)
+  const before = useProject.getState().project
   run()
-  const after = promptOf(sceneId)
-  if (after !== before) toast(msg.renumbered, { tone: 'info', action: undoToastAction() })
-  else if (msg.plain) toast(msg.plain, { action: undoToastAction() })
+  const after = useProject.getState().project
+  const stale = scenesWithStaleTokens(before, after)
+  const promptBefore = before.scenes.find((s) => s.id === sceneId)?.prompt
+  if (stale.length) toast(`${msg.done}${staleTokenNote(after, stale, msg.what)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
+  else if (promptOf(sceneId) !== promptBefore) toast(msg.renumbered, { tone: 'info', action: undoToastAction() })
+  else if (msg.plain) toast(`${msg.done}.`, { action: undoToastAction() })
+}
+
+/** Tooltip of a reorder grip: the token numbers follow only while automatic renumbering is on. */
+function gripTitle(autoRenumber: boolean, what: '@image' | '@video'): string {
+  return autoRenumber
+    ? `Kéo để đổi thứ tự (↑/↓) — số ${what} trong prompt tự cập nhật`
+    : `Kéo để đổi thứ tự (↑/↓) — tự đánh lại số đang tắt (Cài đặt): số ${what} trong prompt sẽ trỏ sang ${what === '@image' ? 'ảnh' : 'video'} khác`
 }
 
 // ---------------- 1. header ----------------
@@ -159,9 +172,11 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
 // ---------------- 2. video settings ----------------
 const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: string }) {
   const settings = useSceneField(sceneId, (s) => s.settings)
-  const presetId = useSceneField(sceneId, (s) => s.presetId) ?? null
+  const storedPresetId = useSceneField(sceneId, (s) => s.presetId) ?? null
   const presets = useProject((s) => s.project.presets)
   const list = useMemo(() => (settings ? [settings] : []), [settings])
+  // A preset edited after it was applied no longer describes the scene: show "Tuỳ chỉnh" (picking it re-applies it).
+  const presetId = settings ? appliedPresetId(storedPresetId, settings, presets) : null
   const presetIds = useMemo(() => [presetId], [presetId])
   if (!settings) return null
   const preset = presets.find((p) => p.id === presetId)
@@ -197,8 +212,9 @@ function tokensLabel(ns: number[]): string {
 /** Remove a ref (tokens renumber); offer to turn a remaining legacy @Tag into the name (it would re-link). */
 function removeRef(sceneId: string, asset: Asset) {
   changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), {
+    done: `Đã bỏ nối ${asset.name}`,
     renumbered: `Đã bỏ nối ${asset.name} — đã đánh lại số trong prompt (ảnh của ${asset.name} đổi thành tên).`,
-    plain: `Đã bỏ nối ${asset.name}.`,
+    plain: true,
   })
   const prompt = promptOf(sceneId) ?? ''
   if (!legacyAssets(prompt, [asset]).length) return
@@ -221,6 +237,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   const refs = useSceneField(sceneId, (s) => s.refs) ?? EMPTY_IDS
   const settings = useSceneField(sceneId, (s) => s.settings)
   const assets = useProject((s) => s.project.assets)
+  const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
   const [picker, setPicker] = useState(false)
   const addBtn = useRef<HTMLButtonElement>(null)
   /** What is being dragged over the list from outside: library cards or image files. */
@@ -239,7 +256,10 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   )
   const moveRow = (from: number, to: number) => {
     if (from === to || !rows[from] || !rows[to]) return
-    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), { renumbered: 'Đã đánh lại số trong prompt.' })
+    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), {
+      done: 'Đã đổi thứ tự ảnh tham chiếu',
+      renumbered: 'Đã đánh lại số trong prompt.',
+    })
   }
   const reorder = useReorder(rows.length, REF_MIME, moveRow)
   const preview = useImagePreview()
@@ -301,7 +321,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
           const sentNs = ns.filter((n) => n <= spec.maxRefImages)
           return (
             <div key={a.id} className={`in-ref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
-              <button type="button" className="in-grip" title="Kéo để đổi thứ tự (↑/↓) — số @image trong prompt tự cập nhật" aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
+              <button type="button" className="in-grip" title={gripTitle(autoRenumber, '@image')} aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
                 <GripVertical size={13} />
               </button>
               <RefThumb asset={a} preview={preview} />
@@ -351,7 +371,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         <div className="in-note">
           <Info size={13} />
           <span>
-            Chế độ “{MODE_LABEL[settings.mode]}” của {spec.name} không gửi ảnh tham chiếu.
+            Chế độ “{modeLabel(settings.mode, settings.model)}” của {spec.name} không gửi ảnh tham chiếu.
           </span>
         </div>
       )}
@@ -442,8 +462,10 @@ function removeVideoRef(sceneId: string, take: TakeInfo) {
   const label = take.status ? takeLabel(take.id) : 'đã xoá'
   // A @video_N token of the removed video becomes plain text ("video S03·T2").
   changeMedia(sceneId, () => useProject.getState().removeVideoRef(sceneId, take.id, take.status ? 'video ' + label : 'video'), {
+    done: `Đã bỏ video ${label}`,
     renumbered: `Đã bỏ video ${label} — đã đánh lại số @video trong prompt.`,
-    plain: `Đã bỏ video ${label}.`,
+    plain: true,
+    what: '@video',
   })
 }
 
@@ -451,12 +473,17 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
   const videoRefs = useSceneField(sceneId, (s) => s.videoRefs) ?? EMPTY_IDS
   const settings = useSceneField(sceneId, (s) => s.settings)
   const infos = useTakeInfos(videoRefs)
+  const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
   const [picker, setPicker] = useState(false)
   const addBtn = useRef<HTMLButtonElement>(null)
   /** Generated videos (takes) dragged over the list from the canvas strip / sidebar. */
   const [takeOver, setTakeOver] = useState(false)
   const moveRow = (from: number, to: number) =>
-    changeMedia(sceneId, () => useProject.getState().moveVideoRef(sceneId, from, to), { renumbered: 'Đã đánh lại số trong prompt.' })
+    changeMedia(sceneId, () => useProject.getState().moveVideoRef(sceneId, from, to), {
+      done: 'Đã đổi thứ tự video tham chiếu',
+      renumbered: 'Đã đánh lại số trong prompt.',
+      what: '@video',
+    })
   const reorder = useReorder(infos.length, VREF_MIME, moveRow)
   if (!settings) return null
 
@@ -469,7 +496,7 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
         <div className="in-note">
           <Info size={13} />
           <span>
-            {spec.name} ở chế độ “{MODE_LABEL[settings.mode]}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{MODE_LABEL.i2v}” của MiniMax-H3.
+            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.
           </span>
         </div>
       </Section>
@@ -518,7 +545,7 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
           const off = !sends || n > spec.maxRefVideos
           return (
             <div key={t.id} className={`in-ref in-vref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
-              <button type="button" className="in-grip" title="Kéo để đổi thứ tự (↑/↓) — số @video trong prompt tự cập nhật" aria-label={`Đổi thứ tự ${t.label}`} onKeyDown={reorder.gripKeyDown(i)}>
+              <button type="button" className="in-grip" title={gripTitle(autoRenumber, '@video')} aria-label={`Đổi thứ tự ${t.label}`} onKeyDown={reorder.gripKeyDown(i)}>
                 <GripVertical size={13} />
               </button>
               <button
@@ -567,7 +594,7 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
         <div className="in-note danger">
           <TriangleAlert size={13} />
           <span>
-            {spec.name} ở chế độ “{MODE_LABEL[settings.mode]}” không nhận video tham chiếu — các video trên sẽ không được gửi.
+            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — các video trên sẽ không được gửi.
           </span>
         </div>
       )}
@@ -601,6 +628,9 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
   if (!settings) return null
+  // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
+  const acceptsVideo = usesVideoRefs(settings)
+  const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
   const reason = promptEmpty ? 'Prompt trống' : framesMissing ? 'Thiếu khung đầu/cuối' : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
@@ -643,7 +673,8 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
               key={t.id}
               className={`btn btn-sm ${t.id === chosen?.id ? 'in-continue-main' : 'btn-ghost'}`}
               onClick={() => createSceneFromTake(t.id)}
-              title={`Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình`}
+              disabled={!acceptsVideo}
+              title={acceptsVideo ? `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình` : noVideoTitle}
             >
               T{t.number}
               {t.starred && <Star size={11} fill="currentColor" className="in-star" />}

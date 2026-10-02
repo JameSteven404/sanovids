@@ -28,6 +28,9 @@ interface Job {
 
 const Spin = () => <LoaderCircle size={14} className="dg-spin" />
 
+/** A job keeps running after the dialog closes: a reopened dialog must not start a second one alongside it. */
+let jobRunning = false
+
 export function ProjectsDialog() {
   const closeDialog = useUI((s) => s.closeDialog)
   const projects = useSave((s) => s.projects)
@@ -50,17 +53,25 @@ export function ProjectsDialog() {
   /** Run one persistence job at a time; `done` returns the success toast (or null when nothing happened). */
   const run = async (job: Job, fn: () => Promise<void>, done: () => string | null, close: boolean) => {
     if (busy) return
+    if (jobRunning) {
+      toast('Đang xử lý thao tác dự án trước đó — đợi xong rồi thử lại.', { tone: 'info' })
+      return
+    }
     setBusy(job)
+    jobRunning = true
     try {
       await fn()
       const ok = done()
       if (ok) {
         toast(ok, { tone: 'success' })
-        if (close) closeDialog()
+        // A big import can take a while and the dialog may have been closed meanwhile (Esc, ×) and another one
+        // opened (e.g. "Nhập prompt" with pasted text): only close this dialog, never whatever is open now.
+        if (close && useUI.getState().dialog.kind === 'projects') closeDialog()
       }
     } catch (e) {
       toast(errorText(e), { tone: 'error' })
     } finally {
+      jobRunning = false
       setBusy(null)
     }
   }
@@ -181,7 +192,7 @@ export function ProjectsDialog() {
                     title="Nhân bản"
                     aria-label={`Nhân bản ${p.name}`}
                     disabled={!!busy}
-                    onClick={() => void run({ kind: 'duplicate', id: p.id }, () => duplicateProject(p.id), () => `Đã nhân bản “${p.name}”.`, false)}
+                    onClick={() => void run({ kind: 'duplicate', id: p.id }, () => duplicateProject(p.id), () => `Đã nhân bản “${p.name}” (không kèm video đã tạo).`, false)}
                   >
                     {is('duplicate', p.id) ? <Spin /> : <Copy size={14} />}
                   </button>
