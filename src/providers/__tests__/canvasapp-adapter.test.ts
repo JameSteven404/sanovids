@@ -398,11 +398,13 @@ describe('canvasapp adapter', () => {
     expect((await again.submit(req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_c', images: [], prompt: 'nắng' }))).remoteId).toBe('proj1:job2')
   })
 
-  it('an older scene canvasapp now refuses is dropped: the PUT is retried once with this scene alone', async () => {
+  it('an older scene whose job has ended and that canvasapp now refuses is dropped: the PUT is retried once without it', async () => {
     const server = fakeServer()
-    const { provider, storage } = setup(server)
+    const { provider, storage, clock } = setup(server)
     await provider.submit(req({ images: [{ n: 1, assetId: 'a', imageId: 'img_a' }], prompt: '@image_1' })) // scene A: up1
     expect(savedEntries(storage)).toEqual(['scene_a'])
+    server.state.jobs[0].status = 'completed' // A's job has ended: its node may leave the canvas
+    clock.t += 1_000
     // later canvasapp refuses up1 (e.g. expired): every canvas still holding scene A's node is refused
     server.state.extra = (r) => (isPut(r) && uploadsIn(r).includes('up1') ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
     const b = await provider.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [{ n: 1, assetId: 'b', imageId: 'img_b' }], prompt: '@image_1' }))
@@ -415,6 +417,46 @@ describe('canvasapp adapter', () => {
     await expect(provider.submit(req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_c', images: [], prompt: 'x' }))).rejects.toThrow(CANVAS_NOT_SAVED_TEXT)
     expect(savedEntries(storage)).toEqual(['scene_b'])
     expect(server.state.jobs).toHaveLength(2)
+  })
+
+  it('a refused PUT never takes a running job’s node off the canvas: retried without the ended scenes only, else refused', async () => {
+    const server = fakeServer()
+    const { provider, storage, clock } = setup(server)
+    const one = (scene: string, key: string) => req({ key, takeId: key, sceneId: scene, images: [], prompt: scene })
+    await provider.submit(one('scene_a', 'take_a')) // job1: still running (queued)
+    await provider.submit(one('scene_b', 'take_b')) // job2: ends below
+    server.state.jobs[1].status = 'completed'
+    clock.t += 1_000
+    // canvasapp refuses the first canvas (with every scene): once more without the ended scene B — A stays
+    let refusals = 1
+    server.state.extra = (r) => (isPut(r) && refusals-- > 0 ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
+    expect((await provider.submit(one('scene_c', 'take_c'))).remoteId).toBe('proj1:job3')
+    const nodesOf = (r: TransportRequest) => (r.json as CanvasPayload).nodes.map((n) => n.id)
+    const puts = server.calls.filter(isPut)
+    expect(nodesOf(puts.at(-2)!)).toEqual(['scene_c', 'scene_a', 'scene_b'].map(canvasNodeId))
+    expect(nodesOf(puts.at(-1)!)).toEqual(['scene_c', 'scene_a'].map(canvasNodeId))
+    expect(savedEntries(storage).sort()).toEqual(['scene_a', 'scene_c'])
+    // refused while only running scenes are there (A and C): nothing may go → no PUT without them, nothing billed
+    server.state.extra = (r) => (isPut(r) ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
+    const before = server.calls.filter(isPut).length
+    await expect(provider.submit(one('scene_c', 'take_c2'))).rejects.toThrow(CANVAS_NOT_SAVED_TEXT)
+    expect(server.calls.filter(isPut).length).toBe(before + 1)
+    expect(savedEntries(storage).sort()).toEqual(['scene_a', 'scene_c'])
+    expect(server.state.canvases.get('proj1')).toMatchObject({ nodes: [{ id: canvasNodeId('scene_c') }, { id: canvasNodeId('scene_a') }] })
+    expect(server.state.jobs).toHaveLength(3)
+  })
+
+  it('a refused POST forgets the uploads but keeps the scene’s entry while an earlier take of it still runs', async () => {
+    const server = fakeServer()
+    const { provider, storage } = setup(server)
+    await provider.submit(req()) // scene_a: job1 running, uploads up1 + up2
+    server.state.extra = (r) => (r.method === 'POST' && r.path === '/api/video-jobs' ? json({ detail: 'unknown upload_id' }, 400) : undefined)
+    await expect(provider.submit(req({ key: 'take_2', takeId: 'take_2' }))).rejects.toThrow()
+    expect(savedEntries(storage)).toEqual(['scene_a']) // its node stays: job1 still needs it
+    expect(provider.uploadCacheSize()).toBe(0) // uploaded again next time
+    // no earlier job of the scene: the entry goes with the uploads (as before)
+    await expect(provider.submit(req({ key: 'take_3', takeId: 'take_3', sceneId: 'scene_b' }))).rejects.toThrow()
+    expect(savedEntries(storage)).toEqual(['scene_a'])
   })
 
   it('a refused PUT while re-sending a take whose earlier POST lost its answer never claims "not billed"', async () => {

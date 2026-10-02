@@ -130,8 +130,10 @@ export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
 
 /** Area a scene's row takes in the card column (x, y, card width, row height). */
 const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
+/** Height of a new scene card's row (default size, no takes yet). */
+const NEW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH)
 /** A new scene card (default size, no takes yet). */
-const newBox = (pos: XY): Box => ({ x: pos.x, y: pos.y, w: LAYOUT.sceneW, h: Math.max(LAYOUT.sceneH, LAYOUT.takeH) })
+const newBox = (pos: XY): Box => ({ x: pos.x, y: pos.y, w: LAYOUT.sceneW, h: NEW_H })
 /** Vertical distance under half a gap counts as touching (rows keep LAYOUT.gapY between them). */
 const GAP_Y_HALF = LAYOUT.gapY / 2
 
@@ -170,6 +172,7 @@ export function canvasObstacles(p: Project): Box[] {
 /**
  * First spot from `start` straight down where a new scene card overlaps none of `taken`: each time it would hit
  * something it moves just below it (one gap), so it lands right after what is there, never rows further.
+ * Unbounded on purpose (below a scene: the end of its column) — a spot the user pointed at uses nearFreeSpot instead.
  */
 export function slideDown(start: XY, taken: Box[]): XY {
   let y = start.y
@@ -181,6 +184,74 @@ export function slideDown(start: XY, taken: Box[]): XY {
     y = next
   }
   return { x: start.x, y }
+}
+
+/** How far a spot the user pointed at may move to be free: about one row and a gap (ROW_H + gapY). */
+export const NEAR_SPOT_MAX = ROW_H + LAYOUT.gapY
+
+/**
+ * Free spot for a new scene card near `start`, at most `maxDist` px away; null = none. `start` itself when it is free,
+ * else the spots just below / above / left / right of what is in the way (and, a few steps deep, of what those hit).
+ * Moving up or down only (same x, staying in a column) wins over moving sideways; then the nearest. It never slides
+ * along a whole column: a double-click next to a long column of scenes or asset cards stays next to the click.
+ * `within`: candidates must lie inside this area (the visible canvas).
+ */
+export function nearFreeSpot(start: XY, taken: readonly Box[], maxDist: number = NEAR_SPOT_MAX, within?: Box): XY | null {
+  const reach: Box = { x: start.x - maxDist, y: start.y - maxDist, w: LAYOUT.sceneW + 2 * maxDist, h: NEW_H + 2 * maxDist }
+  const near = taken.filter((t) => boxesTouch(t, reach))
+  const inside = (q: XY) => !within || (q.x >= within.x && q.y >= within.y && q.x + LAYOUT.sceneW <= within.x + within.w && q.y + NEW_H <= within.y + within.h)
+  const dist = (q: XY) => Math.hypot(q.x - start.x, q.y - start.y)
+  let best: { at: XY; tier: number; d: number } | null = null
+  const seen = new Set<string>([`${start.x},${start.y}`])
+  const queue: XY[] = [start]
+  for (let i = 0; i < queue.length && i < 256; i++) {
+    const at = queue[i]
+    const hits = near.filter((t) => boxesTouch(t, newBox(at)))
+    if (!hits.length) {
+      const tier = at.x === start.x ? 0 : 1
+      const d = dist(at)
+      if (!best || tier < best.tier || (tier === best.tier && d < best.d)) best = { at, tier, d }
+      continue
+    }
+    for (const t of hits) {
+      const next: XY[] = [
+        { x: at.x, y: t.y + t.h + LAYOUT.gapY },
+        { x: at.x, y: t.y - NEW_H - LAYOUT.gapY },
+        { x: t.x - LAYOUT.sceneW - LAYOUT.takeGapX, y: at.y },
+        { x: t.x + t.w + LAYOUT.takeGapX, y: at.y },
+      ]
+      for (const q of next) {
+        const key = `${q.x},${q.y}`
+        if (seen.has(key) || dist(q) > maxDist || !inside(q)) continue
+        seen.add(key)
+        queue.push(q)
+      }
+    }
+  }
+  return best?.at ?? null
+}
+
+/**
+ * Free spot for a new scene card inside the visible canvas `view`, nearest to `centre` (the middle of the view): grid
+ * spots (16px, coarser when zoomed far out) scanned nearest first. null = the view has no free spot.
+ */
+export function freeSpotInView(centre: XY, taken: readonly Box[], view: Box): XY | null {
+  const shown = taken.filter((t) => boxesTouch(t, view))
+  const free = (q: XY) => !shown.some((t) => boxesTouch(t, newBox(q)))
+  if (free(centre)) return centre
+  const spanX = view.w - LAYOUT.sceneW
+  const spanY = view.h - NEW_H
+  if (spanX < 0 || spanY < 0) return null
+  let step = 16
+  while ((spanX / step + 1) * (spanY / step + 1) > 2500) step += 16
+  const spots: { at: XY; d: number }[] = []
+  for (let i = Math.ceil((view.x - centre.x) / step); centre.x + i * step <= view.x + spanX; i++) {
+    for (let j = Math.ceil((view.y - centre.y) / step); centre.y + j * step <= view.y + spanY; j++) {
+      spots.push({ at: { x: centre.x + i * step, y: centre.y + j * step }, d: Math.hypot(i, j) })
+    }
+  }
+  spots.sort((a, b) => a.d - b.d)
+  return spots.find((s) => free(s.at))?.at ?? null
 }
 
 /** Where the user is working, for placing a new scene (actions.placementHint). */
@@ -202,7 +273,8 @@ function belowScene(s: Scene, taken: Box[]): XY {
  * 1. below the most recently selected / created scene (else the last scene of the story), when it is in sight
  *    (or when the canvas is not shown);
  * 2. else below the lowest scene in sight;
- * 3. else in the middle of the visible area (nothing of the story in sight), or the first default slot.
+ * 3. else in the middle of the visible area (nothing of the story in sight) — the free spot nearest to it in the view
+ *    (never slid down past a whole column of cards out of sight) — or the first default slot.
  * Always on a free spot: scene rows, take rows, videos and asset nodes are stepped over, nothing is pushed.
  */
 export function newScenePosition(p: Project, hint: PlaceHint = {}): XY {
@@ -216,12 +288,16 @@ export function newScenePosition(p: Project, hint: PlaceHint = {}): XY {
   const lowest = p.scenes.filter(inView).reduce<Scene | undefined>((m, s) => (!m || s.position.y > m.position.y || (s.position.y === m.position.y && s.order > m.order) ? s : m), undefined)
   if (lowest) return belowScene(lowest, taken)
   const grid = (v: number) => Math.round(v / 16) * 16
-  return slideDown({ x: grid(view.x + view.w / 2 - LAYOUT.sceneW / 2), y: grid(view.y + view.h / 2 - LAYOUT.sceneH / 2) }, taken)
+  const centre = { x: grid(view.x + view.w / 2 - LAYOUT.sceneW / 2), y: grid(view.y + view.h / 2 - LAYOUT.sceneH / 2) }
+  return freeSpotInView(centre, taken, view) ?? nearFreeSpot(centre, taken) ?? centre
 }
 
-/** `pos` (where the user pointed, e.g. a double-click), moved down just enough to land on a free spot. */
+/**
+ * `pos` (where the user pointed, e.g. a double-click), moved just enough to land on a free spot nearby (nearFreeSpot);
+ * when nothing near is free it stays where the user pointed.
+ */
 export function freeSpotFrom(p: Project, pos: XY): XY {
-  return slideDown(pos, canvasObstacles(p))
+  return nearFreeSpot(pos, canvasObstacles(p)) ?? pos
 }
 
 /**

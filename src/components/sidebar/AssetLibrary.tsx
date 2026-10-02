@@ -139,7 +139,7 @@ function toggleOnCanvas(id: string) {
     if (ui.selectedIds.includes(id)) ui.select(ui.selectedIds.filter((x) => x !== id))
     toast(`Đã bỏ “${asset.name}” khỏi canvas — vẫn còn trong thư viện, các nối giữ nguyên.`, { action: undoToastAction() })
   } else {
-    st.setAssetOnCanvas(id, nextAssetPosition(st.project))
+    st.setAssetOnCanvas(id, nextAssetPosition(st.project, asset))
     toast(`Đã đặt “${asset.name}” lên canvas.`, { tone: 'success', action: undoToastAction() })
     if (ui.view === 'canvas') revealNodes([id])
   }

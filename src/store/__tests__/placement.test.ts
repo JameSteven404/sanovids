@@ -161,6 +161,35 @@ describe('new scene without a selected scene ("+ Cảnh", N, "Cảnh mới")', (
     expect(pos(newScene({ x: 3000, y: 64 }))).toEqual({ x: 3000, y: 64 })
   })
 
+  it('a double-click beside a long column stays next to the click (was slid 7116px down past every scene)', () => {
+    load(Array.from({ length: 30 }, (_, i) => scene('s' + (i + 1), i + 1, row(i))))
+    // click 100px left of the column: the requested card (176..456) overlaps the column (420..700) by 36px →
+    // moved left just enough (52px), not below the 30th scene at y 7500
+    expect(pos(newScene({ x: 176, y: 384 }))).toEqual({ x: 420 - 280 - 16, y: 384 })
+    // in the gap between two rows (10 scenes): was y 2540, 1884px down
+    load(Array.from({ length: 10 }, (_, i) => scene('s' + (i + 1), i + 1, row(i))))
+    expect(pos(newScene({ x: 192, y: 656 }))).toEqual({ x: 124, y: 656 })
+  })
+
+  it('a double-click where nothing near is free keeps the clicked spot (never slides along a column)', () => {
+    // a dense block of cards (16px apart sideways, 48px apart vertically): no free spot within one row + a gap
+    const block: Scene[] = []
+    for (let i = -4; i <= 4; i++) for (let j = -4; j <= 4; j++) block.push(scene(`b${i}_${j}`, block.length + 1, { x: i * 296, y: j * 248 }))
+    load(block)
+    expect(pos(newScene({ x: 150, y: 120 }))).toEqual({ x: 150, y: 120 })
+  })
+
+  it('nothing of the story in sight: a free spot inside the view, not 4228px below it past the asset column', () => {
+    const assets = Array.from({ length: 23 }, (_, i) => asset('a' + (i + 1), { x: 40, y: 60 + i * 255 }))
+    load([scene('s1', 1, { x: 980, y: 380 })], assets)
+    const view: Box = { x: -400, y: 1000, w: 1000, h: 700 }
+    const at = newScenePosition(st().project, { view })
+    expect(at).toEqual({ x: 40 - 280, y: 1248 }) // was (-32, 5928)
+    // inside the view, on no asset card
+    expect(at.x >= view.x && at.y >= view.y && at.x + 280 <= view.x + view.w && at.y + 200 <= view.y + view.h).toBe(true)
+    for (const a of assets) expect(at.x + 280 <= a.position!.x || at.x >= a.position!.x + 180 || at.y + 200 <= a.position!.y || at.y >= a.position!.y + 210).toBe(true)
+  })
+
   it('[P1h] import: one below the other under the scene worked on, not at x 420', () => {
     load([scene('s1', 1, { x: 900, y: 300 })])
     const ids = st().applyImport({ scenes: [{ prompt: 'a' }, { prompt: 'b' }, { prompt: 'c' }] }, { anchorId: 's1' })
@@ -242,6 +271,24 @@ describe('next scene below its source (N with a scene selected, "Tạo cảnh ti
     // a video still in its row: below the source as before
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1)])
     expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 })
+  })
+
+  it('continuation of a video only nudged or resized in its row: below the source, not in the lane of the next take', () => {
+    // t1's slot is (1244, 300); nudged 32px down it keeps the slot. Right of it (1532, 332) is where the scene's next
+    // take t2 goes (1484..1708 × 300..500): the new card would sit under it.
+    load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 332 } })])
+    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 }) // was (1532, 332)
+    // resized from its top-left handle (explicit position on its slot), 400px tall: below its row
+    load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 300 }, size: { w: 300, h: 400 } })])
+    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 300 + 400 + 48 })
+  })
+
+  it('continuation right of a moved video, with nothing free near it: stays right of it (no slide down)', () => {
+    // a column of 12 scenes right where the new card would go
+    const column = Array.from({ length: 12 }, (_, i) => scene('c' + i, i + 2, { x: 2888, y: 1000 + i * 248 }))
+    load([scene('s1', 1, { x: 900, y: 300 }), ...column], [], [take('t1', 's1', 1, { position: { x: 2600, y: 1800 } })])
+    const at = pos(createSceneFromTake('t1')!)
+    expect(Math.hypot(at.x - 2888, at.y - 1800)).toBeLessThanOrEqual(296)
   })
 })
 

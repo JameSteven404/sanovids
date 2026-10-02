@@ -44,6 +44,7 @@ export type CanvasappErrorCode =
   | 'unsupported'
   | 'bad-response'
   | 'busy'
+  | 'deferred'
   | 'cancelled'
 
 export class CanvasappError extends Error {
@@ -80,6 +81,7 @@ const CODE_TEXT: Record<CanvasappErrorCode, string> = {
   'bad-response': 'canvasapp.io.vn trả về dữ liệu không đúng định dạng mong đợi.',
   busy: 'Đang có một cửa sổ thanh toán mở — hoàn tất hoặc đóng nó trước.',
   cancelled: 'Đã huỷ trước khi gửi sang canvasapp — không bị trừ credit.',
+  deferred: 'Chưa gửi sang canvasapp (chờ lượt sau) — không bị trừ credit.',
 }
 
 /** Shown when canvasapp refuses a job for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance). */

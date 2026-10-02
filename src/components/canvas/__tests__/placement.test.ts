@@ -75,6 +75,16 @@ describe('"Đưa lên canvas": next slot of the asset column', () => {
     const p = project([asset('a1', -400, 60), asset('a2', -400, 60 + H + 28)])
     expect(nextAssetPosition(p)).toEqual({ x: -400, y: 60 + 2 * (H + 28) })
   })
+  it('a card a little to the side of the column (not counted in it) is stepped over, never covered', () => {
+    // a4 is 96px right of the column: not a member, but a new card at x 40 (40..220) overlaps it (136..316)
+    const p = project([asset('a1', 40, 60), asset('a2', 40, 315), asset('a3', 40, 570), asset('a4', 136, 825)])
+    expect(nextAssetPosition(p)).toEqual({ x: 40, y: 825 + H + 28 }) // was (40, 825), on top of a4
+    // the card being placed counts with its own size: a default card (825..1052) clears a4 at y 1150, a 480px tall
+    // one (825..1305) would cover it → below it
+    const q = project([asset('a1', 40, 60), asset('a2', 40, 315), asset('a3', 40, 570), asset('a4', 150, 1150)])
+    expect(nextAssetPosition(q)).toEqual({ x: 40, y: 825 })
+    expect(nextAssetPosition(q, { size: { w: 180, h: 480 }, imageIds: [] })).toEqual({ x: 40, y: 1150 + H + 28 })
+  })
 })
 
 describe('viewport moves', () => {

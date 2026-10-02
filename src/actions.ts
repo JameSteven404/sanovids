@@ -12,7 +12,7 @@ import { prepareFolderAccess, saveFiles, savePendingDownloads, takeFiles, useDow
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
-import { takeLayoutSource } from './store/takeRows'
+import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type TopUpTab } from './store/ui'
 
 // Scene rows on the canvas grow with their tallest (resized) take, and new nodes step over take rows and videos placed
@@ -242,8 +242,9 @@ export function nextScene(position?: XY) {
 
 /**
  * New scene that continues from a finished take: same references as the take's scene, the take as @video_1
- * and a prompt starter. Placed at `position`; else right of the take when the user placed it by hand (that is where
- * they look at it), else below the source scene.
+ * and a prompt starter. Placed at `position`; else right of the take when the user dragged it out of its scene's row
+ * (that is where they look at it); else below the source scene — also for a take only nudged on its slot or resized
+ * in place: it is still in the row, and the card right of it would sit where the scene's next take goes.
  */
 export function createSceneFromTake(takeId: string, position?: XY) {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
@@ -262,9 +263,12 @@ export function createSceneFromTake(takeId: string, position?: XY) {
     toast('Chế độ của cảnh gốc không nhận video tham chiếu. Đổi model/chế độ (ví dụ Seedance 2.5) rồi thử lại.', { tone: 'warning' })
     return null
   }
+  const leftRow = !!take.position && currentTakeRows().offRow.has(take.id)
   const at =
     position ??
-    (take.position ? freeSpotFrom(project, { x: take.position.x + (take.size?.w ?? LAYOUT.takeW) + LAYOUT.takeOffsetX, y: take.position.y }) : undefined)
+    (leftRow && take.position
+      ? freeSpotFrom(project, { x: take.position.x + (take.size?.w ?? LAYOUT.takeW) + LAYOUT.takeOffsetX, y: take.position.y })
+      : undefined)
   const id = useProject.getState().createNextScene(source.id, at, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   revealNodes([id])

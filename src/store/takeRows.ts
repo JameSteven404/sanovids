@@ -11,8 +11,10 @@ import { useUI, type TakeDisplay } from './ui'
 export interface TakeRows {
   /** Per scene: tallest take in its row and the row's width from the card's right edge (offset + takes + gaps). */
   rows: Map<string, { h: number; w: number }>
-  /** Shown takes placed by hand outside their row. */
+  /** Shown takes placed by hand (dragged away, or only nudged on their slot). */
   placed: Box[]
+  /** Ids of the shown takes dragged out of their row (not only nudged: core/takes keepsSlot false). */
+  offRow: Set<string>
 }
 
 const sizeOf = (t: Take) => ({ w: t.size?.w ?? LAYOUT.takeW, h: t.size?.h ?? LAYOUT.takeH })
@@ -28,6 +30,7 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
   const used = videoUsageOf(scenes)
   const rows = new Map<string, { h: number; w: number }>()
   const placed: Box[] = []
+  const offRow = new Set<string>()
   const alive = new Set<string>()
   for (const s of scenes) {
     alive.add(s.id)
@@ -43,7 +46,10 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
       const size = sizeOf(t)
       const slot = { x: s.position.x + cardW + LAYOUT.takeOffsetX + acc, y: s.position.y }
       if (t.position) placed.push({ x: t.position.x, y: t.position.y, ...size })
-      if (t.position && !keepsSlot(t.position, slot, size.w, size.h)) continue
+      if (t.position && !keepsSlot(t.position, slot, size.w, size.h)) {
+        offRow.add(t.id)
+        continue
+      }
       acc += size.w + LAYOUT.takeGapX
       h = Math.max(h, size.h)
     }
@@ -51,7 +57,7 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
   }
   // Takes of deleted scenes stay on the canvas while a scene uses them as @video: in the way when placed by hand.
   for (const t of takes) if (!alive.has(t.sceneId) && used.has(t.id) && t.position) placed.push({ x: t.position.x, y: t.position.y, ...sizeOf(t) })
-  return { rows, placed }
+  return { rows, placed, offRow }
 }
 
 let cache: { takes: Take[]; scenes: Scene[]; mode: TakeDisplay; rows: TakeRows } | null = null

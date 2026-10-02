@@ -52,7 +52,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       return
     }
     // Same slot as the library's "Đặt lên canvas" (below the lowest card of the asset column, resized heights included).
-    useProject.getState().setAssetOnCanvas(assetId, nextAssetPosition(useProject.getState().project))
+    useProject.getState().setAssetOnCanvas(assetId, nextAssetPosition(useProject.getState().project, asset))
     useUI.getState().select([assetId])
     revealNodes([assetId])
   }
