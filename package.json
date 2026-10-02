@@ -15,7 +15,8 @@
     "preview": "vite preview",
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",
-    "dist:win": "vite build && electron-builder --win nsis portable"
+    "dist:win": "vite build && electron-builder --win nsis portable",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",
@@ -38,7 +39,8 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "wrangler": "^4.146.0"
   },
   "build": {
     "appId": "com.sanovids.app",
