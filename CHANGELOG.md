@@ -6,7 +6,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
-## [Chưa phát hành] — Chế độ Phát triển thay cho Demo
+## [0.3.0] — 2026-10-02 — Chế độ Phát triển thay cho Demo
 
 ✨ **Chế độ Phát triển (mặc định)** — để tìm và sửa lỗi mà không tốn tiền
 - Thay cho "Demo giả lập": SanoVids chạy **đúng mã của cổng canvasapp thật** (đăng nhập, số dư, tải ảnh lên, canvas cầu nối, tạo job, theo dõi, tải video, nạp credit qua SePay, lịch sử credit) nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, credit dev không phải tiền thật. Chạy được cả trên web.
@@ -171,6 +171,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.3.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.3.0
 [0.2.5]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.5
 [0.2.4]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.4
 [0.2.3]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.3
