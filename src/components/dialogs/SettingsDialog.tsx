@@ -12,12 +12,7 @@ import { GatewaySection } from './GatewaySection'
 import { Segmented } from './Segmented'
 import {
   BackupSetting,
-  CreditBlock,
-  MockConcurrencySetting,
-  MockFailSetting,
-  MockIntro,
-  MockRecordSetting,
-  MockSpeedSetting,
+  DevBlock,
   MotionSetting,
   NameTemplateSetting,
   ResetAllSetting,
@@ -124,7 +119,7 @@ const GROUPS: Group[] = [
       },
     ],
   },
-  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Dùng ngay trên web, hoặc cài thành app trên máy.', keywords: 'cài app pwa desktop exe phiên bản offline windows', Block: AppBlock },
+  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Bản app desktop cho Windows: phiên bản đang chạy và cách cài bản mới.', keywords: 'cài app desktop exe phiên bản cập nhật windows', Block: AppBlock },
   {
     id: 'playback',
     level: 'basic',
@@ -180,8 +175,8 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Dữ liệu dự án',
-    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác; nhập file .sanovids.json; tạo lại dự án demo.',
-    keywords: 'xuất nhập dự án sao lưu json demo backup',
+    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác; nhập file .sanovids.json; tạo lại dự án mẫu.',
+    keywords: 'xuất nhập dự án sao lưu json mẫu demo backup',
     Block: DataBlock,
   },
 
@@ -272,28 +267,14 @@ const GROUPS: Group[] = [
     Block: GatewaySection,
   },
   {
-    id: 'mock',
-    level: 'advanced',
+    id: 'dev',
+    level: 'basic',
     col: 1,
-    title: 'Nhà cung cấp giả lập',
-    desc: 'Không gọi mạng, không tốn tiền. Dùng để thử hàng đợi, lỗi và take.',
-    keywords: 'mock demo giả lập',
-    badge: <span className="badge accent">demo</span>,
-    Intro: MockIntro,
-    rows: [
-      { id: 'mockSpeed', label: 'Tốc độ tạo video', keywords: 'nhanh chậm', C: MockSpeedSetting },
-      { id: 'mockFail', label: 'Tỉ lệ lỗi giả', hint: 'Job lỗi được hoàn credit demo.', keywords: 'lỗi fail', C: MockFailSetting },
-      { id: 'mockConcurrency', label: 'Số job chạy cùng lúc', keywords: 'song song concurrency', C: MockConcurrencySetting },
-      {
-        id: 'mockRecord',
-        label: 'Ghi video webm giả',
-        hint: 'Tạo đoạn video 3 giây cho mỗi take. Tắt nếu máy chậm — khi đó chỉ có poster.',
-        keywords: 'webm video giả',
-        C: MockRecordSetting,
-      },
-    ],
+    title: 'Chế độ Phát triển',
+    desc: 'canvasapp giả lập ngay trong app để tìm và sửa lỗi: đăng nhập, credit dev, gây lỗi, nhật ký yêu cầu.',
+    keywords: 'dev phát triển giả lập debug bug lỗi nhật ký log tốc độ credit dev',
+    Block: DevBlock,
   },
-  { id: 'credits', level: 'advanced', col: 1, title: 'Credit demo', desc: 'Credit giả lập của Demo giả lập.', keywords: 'credit demo giả lập số dư', Block: CreditBlock },
 ]
 
 const LEVEL_KEY = 'bdp:pref:settingsLevel'

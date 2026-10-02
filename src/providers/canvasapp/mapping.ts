@@ -242,7 +242,7 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   const limit = promptLimitOf(req.model, req.mode)
   // runVideoNode() / promptLength(): the trimmed prompt, counted in code points
   if ([...prompt].length > limit) out.push(`Prompt dài hơn giới hạn ${limit.toLocaleString('vi-VN')} ký tự của canvasapp.`)
-  if (req.videos.length) out.push('Cổng canvasapp chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu hoặc dùng Demo giả lập.')
+  if (req.videos.length) out.push('Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu khỏi cảnh.')
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')
@@ -354,8 +354,11 @@ export function imagesToUpload(req: JobRequest): string[] {
 // Status
 // ---------------------------------------------------------------------------------------------
 
-/** canvasapp job → provider status. "completed" only once the file can be downloaded. */
-export function mapJobStatus(remoteId: string, job: CanvasJob): RemoteStatus {
+/**
+ * canvasapp job → provider status. "completed" only once the file can be downloaded. `source` names the server in
+ * error texts ("canvasapp giả lập" for the development-mode simulator).
+ */
+export function mapJobStatus(remoteId: string, job: CanvasJob, source = 'canvasapp'): RemoteStatus {
   const raw = typeof job.progress === 'number' && Number.isFinite(job.progress) ? job.progress : undefined
   const progress = raw === undefined ? undefined : Math.max(0, Math.min(100, Math.round(raw)))
   switch (job.status) {
@@ -366,9 +369,9 @@ export function mapJobStatus(remoteId: string, job: CanvasJob): RemoteStatus {
     case 'completed':
       return job.download_available === false ? { remoteId, state: 'processing', progress: 99 } : { remoteId, state: 'completed', progress: 100 }
     case 'failed':
-      return { remoteId, state: 'failed', progress, error: job.error_message ? `canvasapp: ${job.error_message}` : 'canvasapp báo tạo video thất bại.' }
+      return { remoteId, state: 'failed', progress, error: job.error_message ? `${source}: ${job.error_message}` : `${source} báo tạo video thất bại.` }
     case 'expired':
-      return { remoteId, state: 'failed', progress, error: 'Job trên canvasapp đã hết hạn (không tải được nữa).' }
+      return { remoteId, state: 'failed', progress, error: `Job trên ${source} đã hết hạn (không tải được nữa).` }
     case 'cancelled':
       return { remoteId, state: 'cancelled', progress }
     default:

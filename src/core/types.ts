@@ -161,7 +161,7 @@ export interface Take {
    */
   fileName?: string
   // ---- provider fields (optional: takes saved before providers existed have none; migrateTake fills them) ----
-  /** Video provider that runs this take. Missing = 'mock'. */
+  /** Video provider that runs this take. Missing = 'mock' (the old demo). */
   provider?: TakeProvider
   /** Job id at the provider once submitted — lets the engine resume polling after a reload. Null = not submitted. */
   remoteId?: string | null
@@ -184,8 +184,13 @@ export interface Take {
   imageKeysSnapshot?: string[]
 }
 
-/** Provider that runs a take (same ids as providers/types ProviderId). */
-export type TakeProvider = 'mock' | 'canvasapp'
+/**
+ * Provider that runs a take (same ids as providers/types ProviderId):
+ *   'dev'        development mode — an in-app simulation of canvasapp.io.vn (no network, fake credits);
+ *   'canvasapp'  the real canvasapp.io.vn gateway (desktop only, real credits);
+ *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed.
+ */
+export type TakeProvider = 'mock' | 'canvasapp' | 'dev'
 
 export interface CompiledImage {
   /** 1-based N in @image_N */

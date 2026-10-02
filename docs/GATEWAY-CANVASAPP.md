@@ -1,6 +1,6 @@
 # Cổng canvasapp.io.vn → SanoVids (nền tảng, thử nghiệm)
 
-> **Trạng thái:** phần nền (foundation). Mặc định **TẮT** — SanoVids vẫn dùng *Demo giả lập* (không mạng, không tốn tiền).
+> **Trạng thái:** phần nền (foundation). Mặc định **TẮT** — SanoVids dùng *chế độ Phát triển* (canvasapp giả lập trong app, không mạng, không tốn tiền — §1b).
 > Cổng chỉ chạy trong **bản desktop (.exe)** và chỉ khi người dùng tự chọn trong Cài đặt.
 > Chưa được thử với máy chủ thật: mọi chỗ ghi **VERIFY** cần kiểm tra theo kế hoạch thử ở cuối tài liệu.
 
@@ -21,6 +21,11 @@ Nguyên tắc an toàn (bắt buộc):
   cái, tải ảnh lên tuần tự và chỉ một lần cho mỗi ảnh; tiến trình chính chỉ cho **2 request API + 2 lượt tải video**
   chạy song song (hai làn riêng: tải video lâu không làm chậm việc kiểm tra tiến độ hay gửi job).
 - Đây là **API nội bộ không chính thức** của canvasapp. Chỉ dùng khi đã được bên vận hành canvasapp.io.vn cho phép.
+
+## 1b. Chế độ Phát triển (giả lập canvasapp ngay trong app)
+Mặc định take mới chạy ở **chế độ Phát triển**: CHÍNH mã cổng canvasapp (api.ts, adapter.ts, mapping.ts, transport.ts) nói chuyện với một canvasapp.io.vn giả lập trong app (`src/providers/dev/`) — không gọi mạng, credit giả lập ("credit dev"), có đăng nhập / nạp credit qua SePay giả / lịch sử credit, và có thể gây lỗi có chủ đích (mất mạng, mất câu trả lời, 402, 422, 429, job lỗi…) để tìm bug. Xem docs/SPEC-v2.md §11.
+
+Dùng nó như bản tập dượt của mọi luồng trong tài liệu này: **Bảng phát triển** (nút 🐞 trên thanh trên cùng) bật lỗi giả theo từng endpoint (một lần hoặc “giữ”), xem **Nhật ký** từng yêu cầu (JSON, “Copy nhật ký” để báo lỗi), **Kiểm tra nhân vật** của mỗi `POST /api/video-jobs` (upload_ids theo thứ tự = `@image_N` → ảnh trong dự án), và điều khiển job / đơn nạp (hoàn tất, cho lỗi, cho hết hạn; đã thanh toán, đối soát, từ chối). Trang đăng nhập và trang SePay là hai bảng giả lập trong app — không mở trang thật nào. Cùng một bộ luật với máy chủ thật: allowlist của `electron/main.cjs`, giới hạn 2 MB / 20 MB, canvas và body job kiểm tra chặt (`providers/dev/validate.ts`).
 
 ## 2. Kiến trúc
 
@@ -148,7 +153,7 @@ sổ `https://canvasapp.io.vn/` (phân vùng `persist:canvasapp`, sandbox, khôn
 → đóng cửa sổ và trả `{ok:true, authenticated:true}`. Đóng cửa sổ giữa chừng → trả trạng thái hiện tại.
 
 **Đăng xuất** — `canvasapp:logout` xoá cookie/storage/cache của phân vùng; renderer gọi `canvasappProvider().reset()`
-(quên phiên cầu nối + cache upload) và chuyển về Demo giả lập.
+(quên phiên cầu nối + cache upload) và chuyển về chế độ Phát triển (giả lập).
 
 **Gửi (submit)** — runs engine chọn take `queued` (≤ 10 take canvasapp đang chạy; **mỗi lần một take**: take sau chỉ
 chuyển sang `processing` khi take trước đã có `remoteId`, nên các take phía sau vẫn `queued` thật — huỷ sạch, và nếu
@@ -292,7 +297,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 2. Lead mount `GatewaySection` (từ `src/components/dialogs/GatewaySection.tsx`) vào hộp Cài đặt.
 3. Cài đặt › **Cổng canvasapp.io.vn (thử nghiệm)** › **Đăng nhập canvasapp** → đăng nhập trên trang canvasapp → cửa sổ tự đóng, thấy số credit.
 4. Chọn **canvasapp.io.vn** ở "Nhà cung cấp video cho take mới". Từ giờ take **mới** đi qua canvasapp; take đang chạy giữ nơi đã gửi.
-5. Muốn quay lại: chọn **Demo giả lập** hoặc **Đăng xuất**.
+5. Muốn quay lại: chọn **Phát triển (giả lập)** hoặc **Đăng xuất**.
 
 ## 8. Còn phải làm (TODO)
 
@@ -316,18 +321,18 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 
 Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mới build, một dự án SanoVids có 2–3 cảnh ngắn (5 s, độ phân giải thấp nhất để rẻ).
 
-1. **Mặc định an toàn** — mở Cài đặt: "Demo giả lập" đang chọn. Chạy 1 cảnh → video demo như cũ, credit demo bị trừ.
+1. **Mặc định an toàn** — mở Cài đặt: "Phát triển (giả lập)" đang chọn. Chạy 1 cảnh → video giả (nhãn DEV) từ canvasapp giả lập, credit dev bị trừ, không gọi mạng.
 2. **Bản web** — mở bản web: nút "canvasapp.io.vn" bị khoá, có dòng giải thích chỉ dùng trong bản desktop.
 3. **Đăng nhập** — bấm "Đăng nhập canvasapp": cửa sổ trang thật canvasapp mở ra; đăng nhập; cửa sổ tự đóng; Cài đặt hiện "Đã đăng nhập" + số credit đúng như trên canvasapp.
 4. **Đóng giữa chừng** — Đăng xuất, bấm Đăng nhập rồi đóng cửa sổ khi chưa đăng nhập → trạng thái "Chưa đăng nhập", không lỗi.
-5. **Một video t2v** — chọn canvasapp.io.vn; cảnh Seedance 2.5, 5 s, 480p, không ảnh. Chạy → take "đang tạo", % cập nhật khoảng 20 s/lần. Trên canvasapp.io.vn thấy phiên "SanoVids bridge" và job mới. Khi xong: take có poster + video MP4 phát được, nút "Tải video" lưu file .mp4. Credit canvasapp giảm đúng giá; credit demo SanoVids **không** đổi.
+5. **Một video t2v** — chọn canvasapp.io.vn; cảnh Seedance 2.5, 5 s, 480p, không ảnh. Chạy → take "đang tạo", % cập nhật khoảng 20 s/lần. Trên canvasapp.io.vn thấy phiên "SanoVids bridge" và job mới. Khi xong: take có poster + video MP4 phát được, nút "Tải video" lưu file .mp4. Credit canvasapp giảm đúng giá; credit dev (giả lập) **không** đổi.
 6. **Ảnh tham chiếu** — cảnh có 2 nhân vật (`@image_1`, `@image_2`). Chạy → trên canvasapp, job có 2 ảnh đúng thứ tự. Chạy lại lần 2 → ảnh **không** bị tải lên lại (xem phiên bridge chỉ có 2 upload).
 7. **Nhiều job cùng lúc** — chạy 3 cảnh: cả 3 take cùng "đang tạo" (tối đa 10 job cùng lúc; từ job thứ 11 trở đi thì chờ trong hàng đợi). Tiến độ vẫn cập nhật khoảng 20 s/lần.
 8. **Tắt app khi đang tạo** — trong lúc job chạy, đóng SanoVids, mở lại → take vẫn "đang tạo" và hoàn thành; trên canvasapp **không** có job trùng.
 9. **Video tham chiếu** — cảnh có `@video_1`: bị bỏ qua với lý do "Cổng canvasapp chưa hỗ trợ video tham chiếu", không tốn credit.
 10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành.
 11. **Huỷ** — huỷ take đang chạy: SanoVids ghi "Đã huỷ"; ghi nhận job trên canvasapp vẫn chạy (đúng như cảnh báo).
-12. **Quay lại demo** — chọn Demo giả lập → take mới là demo, không gọi mạng.
+12. **Quay lại chế độ Phát triển** — chọn Phát triển (giả lập) → take mới chạy trên canvasapp giả lập, không gọi mạng.
 13. **Huỷ lúc đang gửi** — chạy 2 cảnh có ảnh, huỷ take thứ hai ngay (khi take đầu còn đang tải ảnh) → trên canvasapp chỉ có 1 job; take huỷ ghi "không bị trừ credit".
 14. **Rút mạng lúc bấm chạy** — tắt Wi-Fi ngay sau khi bấm chạy, bật lại sau ~20 s → take tự tìm lại/gửi lại; trên canvasapp chỉ có **1** job cho take đó.
 

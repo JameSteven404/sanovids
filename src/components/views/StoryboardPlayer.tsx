@@ -6,7 +6,7 @@ import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
-import { trapTabWithin, useOverlayFocus } from '../common/focus'
+import { keyForTopOverlay, trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
 import { formatRuntime } from './shared'
 
@@ -19,7 +19,7 @@ export interface PlayerItem {
   duration: number
 }
 
-/** Length of a demo clip recorded by the mock provider when the webm has no duration metadata. */
+/** Length of a fake clip (development mode / old demo, lib/mockProvider) when the webm has no duration metadata. */
 const MOCK_CLIP_S = 3
 const TICK = 100
 /**
@@ -165,6 +165,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   // the overlay) — only Ctrl/Cmd+S still reaches useShortcuts. Default actions (Tab, Enter) still work.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A sheet above every overlay (development mode's login / SePay) gets its own keys.
+      if (keyForTopOverlay(e)) return
       const handled = e.key === 'Escape' || e.key === ' ' || e.key === 'ArrowLeft' || e.key === 'ArrowRight'
       if (!handled) {
         if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')) e.stopPropagation()
@@ -191,8 +193,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   if (!item) return null
 
   const totalS = items.reduce((t, i) => t + i.duration, 0)
-  // Demo takes are ~3 s fake clips; takes from a real provider (canvasapp) play at their own length.
-  const hasDemo = items.some((i) => i.take && providerOf(i.take) === 'mock')
+  // Development-mode (and old demo) takes are ~3 s fake clips; takes from canvasapp play at their own length.
+  const hasFake = items.some((i) => i.take && (providerOf(i.take) === 'dev' || providerOf(i.take) === 'mock'))
   const take = item.take
   const posterId = take?.posterId ?? null
   const canSave = take?.status === 'completed'
@@ -235,7 +237,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
             ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
           </span>
         </span>
-        <span className="vw-player-note">{hasDemo ? 'Demo: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <span className="vw-player-note">{hasFake ? 'Phát triển: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
         <SoundButton videoRef={videoRef} />
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />

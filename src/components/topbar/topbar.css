@@ -384,6 +384,31 @@
 .tb-import {
   flex: none;
 }
+/* Development mode: "Bảng phát triển" (bug) + the number of faults armed on the simulated server */
+.tb-dev {
+  position: relative;
+  flex: none;
+}
+.tb-dev.armed {
+  color: var(--warn);
+}
+.tb-dev-n {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg);
+  box-shadow: 0 0 0 1.5px var(--bg);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
 /* "Tải tất cả video chọn (.zip)" + number of scenes with a finished take */
 .tb-download {
   position: relative;

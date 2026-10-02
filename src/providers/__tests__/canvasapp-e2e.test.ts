@@ -3,8 +3,9 @@
 //   → window.bdpDesktop.canvasapp → an in-memory FAKE canvasapp.io.vn that behaves like the server + electron/main.cjs
 //   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request.
 // The fake is strict where canvasapp is: the canvas must have exactly canvasPayload()'s keys ("Invalid canvas
-// payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — and every request must pass the
-// endpoint allowlist of electron/main.cjs itself (its <canvasapp-routes> block is run as-is).
+// payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — the SAME validators the in-app dev
+// server uses (providers/dev/validate.ts) — and every request must pass the endpoint allowlist of electron/main.cjs
+// itself (its <canvasapp-routes> block is run as-is).
 // The real-balance store (store/credits) reads /api/me through the same fake bridge.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,6 +42,7 @@ import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memory
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
+import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fake canvasapp.io.vn (server + what electron/main.cjs returns over IPC)
@@ -58,47 +60,6 @@ function loadMainRoutes(): { match: (method: string, path: string) => unknown; m
   return factory('https://canvasapp.io.vn')
 }
 const mainRoutes = loadMainRoutes()
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const isObj = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
-const sameKeys = (o: Json, keys: string[]) => Object.keys(o).length === keys.length && keys.every((k) => k in o)
-
-/**
- * canvasapp refuses a canvas that is not exactly what its client's canvasPayload() writes. Returns why (test
- * diagnostics) or null. Strict on purpose: the first real test failed on an extra `title` and a {x, y, zoom} viewport.
- */
-function canvasProblem(c: unknown): string | null {
-  if (!isObj(c) || !sameKeys(c, ['nodes', 'connections', 'viewport'])) return 'top-level keys'
-  if (!isObj(c.viewport) || !sameKeys(c.viewport, ['zoom', 'scrollLeft', 'scrollTop']) || !Object.values(c.viewport).every((v) => typeof v === 'number')) return 'viewport'
-  if (!Array.isArray(c.nodes) || !Array.isArray(c.connections) || c.nodes.length > 40) return 'nodes / connections'
-  const nodes = new Map<string, string>()
-  for (const n of c.nodes) {
-    if (!isObj(n) || typeof n.id !== 'string' || !UUID_RE.test(n.id) || nodes.has(n.id)) return 'node id'
-    if (typeof n.x !== 'number' || typeof n.y !== 'number' || !isObj(n.data)) return 'node x / y / data'
-    if (n.type === 'images') {
-      if (!sameKeys(n, ['id', 'type', 'x', 'y', 'data'])) return 'image node keys'
-      if (!sameKeys(n.data, ['upload_ids']) || !Array.isArray(n.data.upload_ids) || n.data.upload_ids.some((u) => typeof u !== 'string')) return 'image node data'
-    } else if (n.type === 'video') {
-      if (!sameKeys(n, ['id', 'type', 'x', 'y', 'w', 'h', 'data']) || typeof n.w !== 'number' || typeof n.h !== 'number') return 'video node keys'
-      const d = n.data
-      if (!sameKeys(d, ['model_profile', 'duration', 'resolution', 'aspect_ratio', 'mode', 'prompt'])) return 'video node data keys'
-      if (typeof d.model_profile !== 'string' || typeof d.duration !== 'number' || typeof d.mode !== 'string' || typeof d.prompt !== 'string') return 'video node data types'
-      if (typeof d.resolution !== 'string' || d.resolution !== d.resolution.toLowerCase()) return 'video node resolution'
-      if (!(typeof d.aspect_ratio === 'string' || (d.aspect_ratio === null && d.mode === 'transform'))) return 'video node aspect_ratio'
-    } else return 'node type'
-    nodes.set(n.id, n.type)
-  }
-  // the client's imageIds() / upload guard: never more than 30 image uploads on one canvas (duplicates counted)
-  if (c.nodes.reduce((sum, n) => sum + (n.type === 'images' ? (n.data as Json & { upload_ids: unknown[] }).upload_ids.length : 0), 0) > 30) return 'more than 30 images'
-  for (const e of c.connections) {
-    if (!isObj(e) || !sameKeys(e, ['from', 'to', 'target_handle', 'order'])) return 'connection keys'
-    if (nodes.get(String(e.from)) !== 'images' || nodes.get(String(e.to)) !== 'video') return 'connection ends'
-    if (!['reference', 'first_frame', 'last_frame'].includes(String(e.target_handle)) || !Number.isInteger(e.order) || (e.order as number) < 1) return 'connection handle / order'
-    if (e.target_handle === 'first_frame' && e.order !== 1) return 'first_frame order'
-    if (e.target_handle === 'last_frame' && e.order !== 2) return 'last_frame order'
-  }
-  return null
-}
 
 interface FakeJob {
   job_id: string
@@ -195,8 +156,9 @@ function fakeCanvasapp() {
 
   function createJob(b: Json): BridgeResponse {
     const path = '/api/video-jobs'
-    const key = b.client_request_id
-    if (typeof key !== 'string' || !UUID_RE.test(key)) return refuse(422, 'client_request_id must be a UUID', path)
+    const keyProblem = jobKeyProblem(b)
+    if (keyProblem) return refuse(keyProblem.status, keyProblem.detail, path)
+    const key = b.client_request_id as string
     if (state.dedupe) {
       const dup = state.jobs.find((j) => j.client_request_id === key)
       if (dup) return ok({ job_id: dup.job_id, status: dup.status })
@@ -205,29 +167,12 @@ function fakeCanvasapp() {
     if (!project) return refuse(404, 'Project not found', path)
     const canvas = state.canvases.get(project.project_id)
     if (!canvas?.nodes.some((n) => n.id === b.canvas_node_id && n.type === 'video')) return refuse(400, 'canvas_node_id is not a video node of the project canvas', path)
+    // every other rule (model, prompt, mode, duration, resolution, exact keys per input shape, uploads): shared
+    const problem = jobBodyProblem(b, { hasUpload: (id) => state.uploads.has(id) })
+    if (problem) return refuse(problem.status, problem.detail, path)
     const model = b.model_profile as ModelId
-    const spec = MODELS[model]
-    if (!spec) return refuse(400, 'unknown model_profile', path)
-    if (typeof b.prompt !== 'string' || !b.prompt.trim()) return refuse(400, 'prompt required', path)
-    if (!spec.modes.includes(b.mode as Mode)) return refuse(400, 'mode not available', path)
-    if (typeof b.duration !== 'number' || !spec.durations.includes(b.duration)) return refuse(400, 'duration not available', path)
-    if (typeof b.resolution !== 'string' || !spec.resolutions.includes(b.resolution)) return refuse(400, 'resolution not available', path)
-    if (typeof b.generate_audio !== 'boolean') return refuse(422, 'generate_audio must be a boolean', path)
-    // runVideoNode(): H3 transform sends the two frames only; everything else upload_ids + aspect_ratio
-    const frames = model === 'minimax_h3' && b.mode === 'transform'
-    const base = ['project_id', 'model_profile', 'canvas_node_id', 'prompt', 'mode', 'duration', 'resolution', 'generate_audio', 'client_request_id']
-    if (!sameKeys(b, [...base, ...(frames ? ['first_frame_upload_id', 'last_frame_upload_id'] : ['upload_ids', 'aspect_ratio'])])) return refuse(422, 'unexpected job fields', path)
-    if (frames) {
-      for (const k of ['first_frame_upload_id', 'last_frame_upload_id']) {
-        if (typeof b[k] !== 'string' || !state.uploads.has(b[k] as string)) return refuse(400, `${k} required`, path)
-      }
-    } else {
-      if (typeof b.aspect_ratio !== 'string' || !spec.ratios.includes(b.aspect_ratio)) return refuse(400, 'aspect_ratio not available', path)
-      if (!Array.isArray(b.upload_ids) || b.upload_ids.some((id) => typeof id !== 'string' || !state.uploads.has(id))) return refuse(400, 'unknown upload_id', path)
-      if (model === 'minimax_h3' && b.mode === 't2v' && b.upload_ids.length) return refuse(400, 't2v takes no image', path)
-    }
     const ratio = typeof b.aspect_ratio === 'string' ? b.aspect_ratio : null
-    const cost = costOf({ model, mode: b.mode as Mode, duration: b.duration, resolution: b.resolution, ratio: ratio ?? '16:9' })
+    const cost = costOf({ model, mode: b.mode as Mode, duration: b.duration as number, resolution: b.resolution as string, ratio: ratio ?? '16:9' })
     if (state.balance < cost) return refuse(state.insufficientStatus, `Số dư không đủ: cần ${cost} credit, còn ${state.balance}`, path)
     state.balance -= cost
     const job: FakeJob = {
@@ -236,7 +181,7 @@ function fakeCanvasapp() {
       canvas_node_id: String(b.canvas_node_id),
       client_request_id: key,
       model_profile: model,
-      duration: b.duration,
+      duration: b.duration as number,
       aspect_ratio: ratio,
       status: 'queued',
       submission_state: 'accepted',
@@ -454,6 +399,7 @@ function seedMedia() {
 // ---------------------------------------------------------------------------------------------------------------
 
 const realMock = getProvider('mock')
+const realDev = getProvider('dev')
 const g = globalThis as { window?: unknown }
 let fake: ReturnType<typeof fakeCanvasapp>
 let storage: KeyValueStorage
@@ -531,7 +477,8 @@ afterEach(async () => {
   await run(250)
   vi.useRealTimers()
   registerProvider(realMock)
-  useProviderPrefs.setState({ provider: 'mock' })
+  registerProvider(realDev)
+  useProviderPrefs.setState({ provider: 'dev' })
   resetRealCredits()
   delete g.window
   expect(refusedByMain).toEqual([]) // every request passes electron/main.cjs's allowlist

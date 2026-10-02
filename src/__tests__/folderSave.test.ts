@@ -68,8 +68,10 @@ const project = (): Project => ({
 function fakeProvider() {
   const statuses = new Map<string, RemoteStatus>()
   const p: VideoProvider = {
-    id: 'mock',
-    label: 'mock',
+    // New takes go to the active provider: development mode since v0.3.0 (the fake stands in for it).
+    id: 'dev',
+    label: 'dev',
+    minPollIntervalMs: 0,
     available: async () => ({ ok: true }),
     capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0, maxRefVideos: 10 }),
     submit: async (req) => {
@@ -126,7 +128,7 @@ function fakeDesktop() {
   }
 }
 
-const realMock = getProvider('mock')
+const realDev = getProvider('dev')
 const takeOf = (id: string) => useRuns.getState().takes.find((t) => t.id === id)!
 let desk: ReturnType<typeof fakeDesktop>
 let prov: ReturnType<typeof fakeProvider>
@@ -160,7 +162,7 @@ afterEach(() => {
   useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
   vi.advanceTimersByTime(250)
   vi.useRealTimers()
-  registerProvider(realMock)
+  registerProvider(realDev)
   delete (globalThis as { window?: unknown }).window
 })
 afterAll(() => {

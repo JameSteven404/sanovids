@@ -2,7 +2,7 @@
   "name": "sanovids",
   "productName": "SanoVids",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "SanoVids — dựng phim AI theo từng cảnh trên canvas",
   "author": "SanoVids",
   "type": "module",
@@ -16,8 +16,7 @@
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",
     "dist:win": "vite build && electron-builder --win nsis portable && node scripts/tidy-release.mjs",
-    "tidy:release": "node scripts/tidy-release.mjs",
-    "deploy": "npm run build && wrangler deploy"
+    "tidy:release": "node scripts/tidy-release.mjs"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",

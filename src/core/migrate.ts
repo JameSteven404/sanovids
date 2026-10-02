@@ -180,7 +180,7 @@ export function migrateTake(raw: unknown): Take {
     ...(t as Take),
     videoRefsSnapshot: Array.isArray(t.videoRefsSnapshot) ? t.videoRefsSnapshot : [],
     position: t.position ?? null,
-    provider: t.provider === 'canvasapp' ? 'canvasapp' : 'mock',
+    provider: t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock',
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
     charged: t.charged !== false,
   }

@@ -6,7 +6,7 @@ import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId } from './providers'
+import { activeProviderId, providerOf } from './providers'
 import { restoredFromTake } from './components/runs/restore'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
@@ -28,7 +28,7 @@ import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
-import { toast, useUI, type TopUpTab } from './store/ui'
+import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
 // Scene rows on the canvas grow with their tallest (resized) take, and new nodes step over take rows and videos placed
 // by hand: the project store's layout asks the runs store (only takes shown in a row count for that row).
@@ -305,8 +305,9 @@ export function createSceneFromTake(takeId: string, position?: XY) {
   const id = useProject.getState().createNextScene(source.id, at, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   revealNodes([id])
-  if (creditKindOf(activeProviderId()) === 'canvasapp')
-    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp chưa nhận video tham chiếu — cảnh này chỉ chạy được bằng Demo, hoặc bỏ @video_1.`, {
+  // canvasapp (and its simulation in development mode) takes no reference video yet
+  if (creditKindOf(activeProviderId()) !== 'demo')
+    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {
       tone: 'warning',
       action: undoToastAction(),
       ms: 9000,
@@ -529,9 +530,13 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     requestRun([take.sceneId], opts)
     return
   }
+  const dev = providerOf(take) === 'dev'
   const ok = window.confirm(
-    `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
-      'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
+    dev
+      ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +
+          'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
+      : `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
+          'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
   )
   if (!ok) return
   const res = useRuns.getState().retry(takeId)
@@ -547,9 +552,14 @@ export function runNow(sceneIds: string[]) {
     toast(res.error, { tone: 'error' })
     return res
   }
-  // Say which wallet: demo credits are taken now; canvasapp charges the real account when it accepts the job.
+  // Say which wallet: canvasapp (or, in development mode, its simulation) charges the account when it accepts the job.
   const kind = creditKindOf(activeProviderId())
-  const cost = kind === 'demo' ? `−${formatCredits(res.cost, kind)}` : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
+  const cost =
+    kind === 'demo'
+      ? `−${formatCredits(res.cost, kind)}`
+      : kind === 'dev'
+        ? `≈ ${formatCredits(res.cost, kind)} (giả lập, trừ khi máy chủ giả lập nhận job)`
+        : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
   toast(`Đã gửi ${res.queued} cảnh vào hàng đợi · ${cost}${res.skipped.length ? ` · bỏ qua ${res.skipped.length}` : ''}`, { tone: 'success' })
   return res
 }
@@ -841,6 +851,14 @@ export function viewAssetImages(assetId: string, index = 0) {
  */
 export function openTopUp(tab: TopUpTab = 'topup') {
   useUI.getState().openDialog({ kind: 'topup', tab })
+}
+
+/**
+ * Open "Bảng phát triển" (development mode: the simulated canvasapp's state, faults, request log, jobs and top-up
+ * orders — components/dev/DevPanel). From the top bar bug button, Settings and the queue drawer.
+ */
+export function openDevPanel(tab?: DevPanelTab) {
+  useUI.getState().openDialog({ kind: 'dev', tab })
 }
 
 export { undo, redo }

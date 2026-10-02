@@ -1,4 +1,5 @@
 import {
+  Bug,
   ChevronDown,
   ChevronUp,
   CircleStop,
@@ -11,29 +12,30 @@ import {
   MonitorSmartphone,
   RotateCcw,
   Settings2,
-  Sparkles,
   Trash,
   TriangleAlert,
   X,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { deleteTakes, downloadTake, focusNodes, rerunTake } from '../../actions'
+import { deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
-import { chargedDemo, DEMO_CREDIT_HINT, formatCredits } from '../../lib/credits'
+import { chargedDemo, CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { useRuns, type MockSpeed } from '../../store/runs'
+import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
 import { takeCostLine } from './creditText'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
-const SPEED_LABEL: Record<MockSpeed, string> = { fast: 'nhanh', normal: 'vừa', slow: 'chậm' }
+const DEV_SPEED_SHORT: Record<DevSpeed, string> = { fast: 'nhanh', realistic: 'thực tế' }
 const DONE_PAGE = 40
 
 const openSettings = () => useUI.getState().openDialog({ kind: 'settings' })
@@ -146,6 +148,26 @@ function Count({ n, label, tone }: { n: number; label: string; tone: Take['statu
   )
 }
 
+/** Development mode: opens "Bảng phát triển"; shows the simulated speed and how many faults are armed. */
+function DevPanelButton() {
+  const speed = useDevServer((s) => s.snapshot?.config.speed ?? 'fast')
+  const armed = useDevServer((s) => activeFaultCount(s.snapshot))
+  return (
+    <button
+      type="button"
+      className={`btn btn-ghost btn-sm${armed ? ' rq-dev-armed' : ''}`}
+      onClick={() => openDevPanel(armed ? 'faults' : undefined)}
+      title="Bảng phát triển: tốc độ, lỗi giả, nhật ký yêu cầu, job của canvasapp giả lập"
+    >
+      <Bug size={13} />
+      <span className="rq-btn-label">
+        Bảng phát triển · {DEV_SPEED_SHORT[speed]}
+        {armed ? ` · ${armed} lỗi giả` : ''}
+      </span>
+    </button>
+  )
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 
 interface Group {
@@ -156,9 +178,6 @@ interface Group {
 
 function QueuePanel() {
   const takes = useRuns((s) => s.takes)
-  const credits = useRuns((s) => s.credits)
-  const spent = useRuns((s) => s.spent)
-  const mock = useRuns((s) => s.mock)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
@@ -193,30 +212,18 @@ function QueuePanel() {
   return (
     <div className="rq-panel">
       <div className="rq-panel-head">
-        {provider === 'mock' ? (
-          <>
-            <span className="rq-wallet" title={DEMO_CREDIT_HINT}>
-              Số dư <b className="mono">{formatCredits(credits, 'demo')}</b>
-              <span className="faint"> · đã dùng </span>
-              <b className="mono">{formatCredits(spent, 'demo')}</b>
-            </span>
-            <span className="rq-demo-note">
-              <Sparkles size={12} /> Chế độ demo: video giả, credit giả lập — không tốn tiền thật
-            </span>
-          </>
+        {provider === 'dev' ? (
+          <span className="rq-demo-note dev">
+            <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy — credit dev, không gọi mạng, không tốn tiền thật
+          </span>
         ) : (
           <span className="rq-demo-note real">
             <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — trừ credit canvasapp (tiền thật) khi job được nhận
           </span>
         )}
         <span className="rq-spacer" />
-        {provider === 'mock' ? (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Chỉnh tốc độ, tỉ lệ lỗi và số luồng của nhà cung cấp giả">
-            <Settings2 size={13} />
-            <span className="rq-btn-label">
-              Mock: {SPEED_LABEL[mock.speed]} · lỗi {Math.round(mock.failRate * 100)}% · {mock.concurrency} luồng
-            </span>
-          </button>
+        {provider === 'dev' ? (
+          <DevPanelButton />
         ) : (
           <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
             <Settings2 size={13} />
@@ -239,6 +246,11 @@ function QueuePanel() {
               </b>
               <small>Các take đang chạy được giữ nguyên; SanoVids tự kiểm tra lại sau · lúc {formatClock(issue.at)}</small>
             </div>
+            {issue.provider === 'dev' && (
+              <button type="button" className="btn btn-sm" onClick={() => openDevPanel('log')} title="Xem nhật ký yêu cầu và lỗi giả đang bật">
+                <Bug size={13} /> Bảng phát triển
+              </button>
+            )}
             {issue.provider !== 'mock' && (
               <button type="button" className="btn btn-sm" onClick={openSettings}>
                 Mở Cài đặt
@@ -372,7 +384,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
 
       <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
         <span className="mono">{formatCredits(take.cost, cost.kind, { short: true })}</span>
-        {cost.kind === 'demo' && <span className="rq-demo-mark">demo</span>}
+        {CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
       </span>
 
       <div className="rq-row-actions">

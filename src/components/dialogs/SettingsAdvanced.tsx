@@ -1,10 +1,11 @@
 // Settings → "Nâng cao": motion & toasts, file names & .zip, side-panel layout, backup / restore of the settings,
-// the demo provider and the demo wallet (the canvasapp gateway is GatewaySection.tsx).
-import { Braces, FileDown, FileUp, FlaskConical, LayoutPanelLeft, Plus, RotateCcw, TriangleAlert } from 'lucide-react'
+// the development mode summary (the canvasapp gateway is GatewaySection.tsx).
+import { Braces, Bug, FileDown, FileUp, LayoutPanelLeft, RotateCcw, ScrollText, TriangleAlert, Zap } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FocusEvent } from 'react'
 import { DEFAULT_NAME_TEMPLATE, checkNameTemplate, nameDate, nameTime, NAME_TOKENS, renderNameTemplate, type NameValues } from '../../core/nameTemplate'
 import { MOTION_LABEL, MOTION_LEVELS, systemReducedMotion, useCanvasPrefs, useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
-import { DEMO_CREDIT_HINT, DEMO_CREDITS_DEFAULT, formatCreditNumber, formatCredits } from '../../lib/credits'
+import { openDevPanel } from '../../actions'
+import { formatCredits } from '../../lib/credits'
 import { browserDownload, canSaveAs, saveFilesAs, useDownloadPrefs } from '../../lib/downloads'
 import {
   applySettings,
@@ -16,13 +17,12 @@ import {
   SETTINGS_FILE_NAME,
 } from '../../lib/settings'
 import { PROVIDER_LABEL } from '../../providers'
-import { MAX_MOCK_FAIL_RATE, MAX_MOCK_CONCURRENCY } from '../../providers/mock'
+import { DEV_SPEED_LABEL, devServer, startDevSnapshotTicker, useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { useRuns, type MockSpeed } from '../../store/runs'
 import { TOAST_BASE_MS, TOAST_SCALE, TOAST_TIME_LABEL, TOAST_TIMES, toast, useUI } from '../../store/ui'
 import { resetPanelLayout, restorePanelLayout } from '../common/PanelResizer'
 import { useActiveProvider } from '../runs/shared'
-import { LOW_CREDITS } from '../topbar/creditPillModel'
+import { activeFaultCount } from '../dev/devModel'
 import './dialogs.css'
 import { Segmented } from './Segmented'
 import { Field, Section, Toggle, useSettingsCtx, type RowProps } from './settingsUi'
@@ -390,8 +390,8 @@ export function ResetAllSetting({ label, hint }: RowProps) {
         <div className="dg-callout warn dg-confirm" role="group" aria-label="Xác nhận khôi phục cài đặt mặc định">
           <TriangleAlert size={15} />
           <div>
-            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, nhà cung cấp giả lập; nhà cung cấp
-            video về {PROVIDER_LABEL.mock}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và đăng nhập canvasapp giữ nguyên.
+            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file; nhà cung cấp
+            video về {PROVIDER_LABEL.dev}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và đăng nhập canvasapp giữ nguyên.
           </div>
           <div className="dg-confirm-actions">
             <button ref={cancelRef} type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>
@@ -407,121 +407,65 @@ export function ResetAllSetting({ label, hint }: RowProps) {
   )
 }
 
-// ---------------- Nhà cung cấp giả lập ----------------
-const SPEEDS: { id: MockSpeed; label: string; hint: string }[] = [
-  { id: 'fast', label: 'Nhanh', hint: '3–6 giây / video' },
-  { id: 'normal', label: 'Vừa', hint: '9–16 giây / video' },
-  { id: 'slow', label: 'Chậm', hint: '22–38 giây / video' },
-]
-
-/** Shown on top of the demo provider group when new takes go to canvasapp. */
-export function MockIntro() {
+// ---------------- Chế độ Phát triển ----------------
+/**
+ * "Chế độ Phát triển": the simulated canvasapp of development mode at a glance (account, balance, armed faults) with
+ * the settings used most; everything else is in "Bảng phát triển" (components/dev/DevPanel).
+ */
+export function DevBlock() {
   const provider = useActiveProvider()
-  if (provider === 'mock') return null
-  return <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.mock}.</div>
-}
-
-export function MockSpeedSetting({ label, hint }: RowProps) {
-  const speed = useRuns((s) => s.mock.speed)
-  const setMock = useRuns((s) => s.setMock)
-  return (
-    <Field label={label} hint={hint}>
-      <Segmented label={label} value={speed} onChange={(v) => setMock({ speed: v })} options={SPEEDS.map((s) => ({ id: s.id, label: s.label, hint: s.hint, title: s.hint }))} />
-    </Field>
-  )
-}
-
-export function MockFailSetting({ label, hint }: RowProps) {
-  const failRate = useRuns((s) => s.mock.failRate)
-  const setMock = useRuns((s) => s.setMock)
-  const id = useId()
-  const pct = Math.round(failRate * 100)
-  return (
-    <Field label={label} labelId={id} hint={hint} value={<span className="dg-value mono">{pct}%</span>}>
-      <input
-        className="dg-range"
-        type="range"
-        min={0}
-        max={Math.round(MAX_MOCK_FAIL_RATE * 100)}
-        step={5}
-        value={pct}
-        aria-labelledby={id}
-        aria-valuetext={`${pct}%`}
-        onChange={(e) => setMock({ failRate: Number(e.target.value) / 100 })}
-      />
-    </Field>
-  )
-}
-
-export function MockConcurrencySetting({ label, hint }: RowProps) {
-  const concurrency = useRuns((s) => s.mock.concurrency)
-  const setMock = useRuns((s) => s.setMock)
-  return (
-    <Field label={label} hint={hint} value={<span className="dg-value mono">{concurrency}</span>}>
-      <Segmented
-        label={label}
-        value={concurrency}
-        onChange={(v) => setMock({ concurrency: v })}
-        options={Array.from({ length: MAX_MOCK_CONCURRENCY }, (_, i) => i + 1).map((n) => ({ id: n, label: String(n) }))}
-      />
-    </Field>
-  )
-}
-
-export function MockRecordSetting({ label, hint }: RowProps) {
-  const recordVideo = useRuns((s) => s.mock.recordVideo)
-  const setMock = useRuns((s) => s.setMock)
-  return <Toggle checked={recordVideo} onChange={(v) => setMock({ recordVideo: v })} label={label} hint={hint} />
-}
-
-// ---------------- Credit demo (block) ----------------
-/** "+100" demo credits (play money; the run dialog offers the same amount when the demo balance is short). */
-const DEMO_TOPUP = 100
-
-/** The local demo wallet (store/runs): play money spent only by the demo provider. Real credits: GatewaySection. */
-export function CreditBlock() {
-  const credits = useRuns((s) => s.credits)
-  const spent = useRuns((s) => s.spent)
-  const addCredits = useRuns((s) => s.addCredits)
-  const resetDemoCredits = useRuns((s) => s.resetDemoCredits)
-  const atDefault = credits === DEMO_CREDITS_DEFAULT && spent === 0
+  const snap = useDevServer((st) => st.snapshot)
+  // Creates the simulated server if needed and keeps the numbers fresh while this dialog is open.
+  useEffect(() => startDevSnapshotTicker(), [])
+  const armed = activeFaultCount(snap)
   return (
     <Section
-      title="Credit demo"
-      badge={<span className="badge dg-demo-badge">giả lập</span>}
-      desc={`${DEMO_CREDIT_HINT}. Chỉ ${PROVIDER_LABEL.mock} dùng credit này; take tạo trên ${PROVIDER_LABEL.canvasapp} trừ credit thật trong tài khoản canvasapp của bạn (xem mục Cổng canvasapp).`}
+      title="Chế độ Phát triển"
+      badge={<span className="badge dg-dev-badge">DEV</span>}
+      desc="canvasapp.io.vn giả lập ngay trong SanoVids để tìm và sửa lỗi: cùng mã với chế độ thật, không gọi mạng, credit dev không phải tiền thật."
     >
-      <div className="dg-credit demo" title={DEMO_CREDIT_HINT}>
-        <div className="dg-credit-num">
-          <FlaskConical size={18} />
-          <span>Credit demo:</span>
-          <b className={credits < LOW_CREDITS ? 'low' : undefined}>{formatCreditNumber(credits)}</b>
+      {provider !== 'dev' && (
+        <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.dev}.</div>
+      )}
+      {snap && (
+        <div className="dg-dev-summary">
+          <span className={`dg-dev-dot${snap.authenticated ? ' on' : ''}`} aria-hidden="true" />
+          <span>{snap.authenticated ? 'Đã đăng nhập tài khoản giả lập' : 'Chưa đăng nhập tài khoản giả lập'}</span>
+          <span className="faint">·</span>
+          <b className="mono">{formatCredits(snap.balance, 'dev')}</b>
+          {armed > 0 && (
+            <>
+              <span className="faint">·</span>
+              <button type="button" className="dg-dev-armed" onClick={() => openDevPanel('faults')}>
+                <Zap size={12} /> {armed} lỗi giả đang bật
+              </button>
+            </>
+          )}
         </div>
-        <div className="dg-credit-spent faint">Đã dùng {formatCredits(spent, 'demo')}</div>
-        <div className="dg-credit-actions">
-          <button
-            className="btn"
-            onClick={() => {
-              addCredits(DEMO_TOPUP)
-              toast(`Đã thêm ${formatCredits(DEMO_TOPUP, 'demo')} (giả lập, không phải tiền thật).`, { tone: 'success' })
-            }}
-            title={`Thêm ${formatCredits(DEMO_TOPUP, 'demo')} — giả lập, không phải tiền thật`}
-          >
-            <Plus size={14} /> {formatCreditNumber(DEMO_TOPUP)}
-          </button>
-          <button
-            className="btn"
-            disabled={atDefault}
-            onClick={() => {
-              resetDemoCredits()
-              toast(`Đã đặt lại credit demo về ${formatCredits(DEMO_CREDITS_DEFAULT, 'demo')}.`, { tone: 'success' })
-            }}
-            title={`Đặt số dư credit demo về ${formatCreditNumber(DEMO_CREDITS_DEFAULT)} và xoá số đã dùng`}
-          >
-            <RotateCcw size={14} /> Đặt lại ({formatCreditNumber(DEMO_CREDITS_DEFAULT)})
-          </button>
+      )}
+      {snap && (
+        <div className="dg-field">
+          <span className="label">Tốc độ tạo video giả lập</span>
+          <Segmented<DevSpeed>
+            label="Tốc độ tạo video giả lập"
+            value={snap.config.speed}
+            onChange={(speed) => devServer().setConfig({ speed })}
+            options={(['fast', 'realistic'] as DevSpeed[]).map((id) => ({ id, label: DEV_SPEED_LABEL[id] }))}
+          />
         </div>
+      )}
+      <div className="dg-data-actions">
+        <button className="btn btn-primary" onClick={() => openDevPanel()}>
+          <Bug size={14} /> Mở Bảng phát triển
+        </button>
+        <button className="btn" onClick={() => openDevPanel('faults')} title="Mất mạng, mất câu trả lời, hết credit, job lỗi…">
+          <Zap size={14} /> Gây lỗi
+        </button>
+        <button className="btn" onClick={() => openDevPanel('log')} title="Mọi yêu cầu SanoVids gửi tới canvasapp giả lập và câu trả lời">
+          <ScrollText size={14} /> Nhật ký yêu cầu
+        </button>
       </div>
+      <div className="dg-field-hint">Video giả dài 3 giây, ghi nhãn @image_N trên từng ảnh tham chiếu theo đúng thứ tự canvasapp nhận — nhìn là biết có đúng nhân vật không.</div>
     </Section>
   )
 }

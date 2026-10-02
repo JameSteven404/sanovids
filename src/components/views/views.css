@@ -689,7 +689,7 @@
 }
 /*
  * Cost labels (docs/SPEC-v2.md §9 — same language as the canvas card, inspector and presets panel):
- * demo play money = neutral + dashed (underline / outline / "demo" mark), real canvasapp credits = --info tint (the
+ * simulated credits (dev / old demo) = neutral + dashed (underline / outline / "demo" mark), real canvasapp credits = --info tint (the
  * top bar credit pill's color — the accent stays for the Run buttons).
  */
 .vw-cell-cost.is-real,
@@ -697,8 +697,8 @@
   color: color-mix(in srgb, var(--info) 80%, var(--text));
   font-weight: 600;
 }
-.vw-cell-cost.is-demo,
-.vw-cost-text.is-demo {
+.vw-cell-cost.is-sim,
+.vw-cost-text.is-sim {
   color: var(--text-dim);
 }
 .vw-th-demo {
@@ -735,7 +735,7 @@
 .vw-btn-cost.is-real {
   background: color-mix(in srgb, var(--on-accent) 16%, transparent);
 }
-.vw-btn-cost.is-demo {
+.vw-btn-cost.is-sim {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--on-accent) 62%, transparent);
 }
@@ -858,7 +858,7 @@
   background: var(--info-soft);
   color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
-.vw-foot .vw-cost-pill.is-demo {
+.vw-foot .vw-cost-pill.is-sim {
   border-style: dashed;
   border-color: var(--text-faint);
   color: var(--text-dim);

@@ -1036,6 +1036,85 @@
 .dg-gw-credits.stale > svg {
   color: var(--warn);
 }
+/* development mode: the account row is the simulated one — dashed and neutral like every simulated credit, tagged DEV */
+.dg-gw-login.dev {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+.dg-gw-credits.dev > svg {
+  color: var(--text-dim);
+}
+.dg-dev-badge {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.dg-dev-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.06em;
+  vertical-align: 1px;
+}
+.dg-callout.dg-dev-callout {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+}
+.dg-callout.dg-dev-callout > svg {
+  color: var(--accent);
+}
+/* Settings › Chế độ Phát triển: one-line summary of the simulated account */
+.dg-dev-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.dg-dev-summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+.dg-dev-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+}
+.dg-dev-dot.on {
+  background: var(--ok);
+}
+.dg-dev-armed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dg-dev-armed:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 /* "Tải video": download folder row + waiting auto-downloads */
 .dg-folder {
   display: flex;

@@ -7,7 +7,7 @@
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download
 // folder (a folder permission cannot be moved to another machine), the canvasapp login, demo credits, panel widths
-// (screen-specific; see components/common/PanelResizer resetPanelLayout). The video provider is reset to the demo
+// (screen-specific; see components/common/PanelResizer resetPanelLayout). The video provider is reset to development mode
 // but never imported: a file must not switch the app to a provider that spends real money.
 import { checkNameTemplate, DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
 import type { EdgeMode } from '../core/types'
@@ -176,13 +176,13 @@ export function restoreSettings(backup: SettingsBackup): void {
 const HINT_PREFIX = 'bdp:hint:'
 
 /**
- * "Khôi phục cài đặt mặc định": every setting above back to its default, the video provider back to the demo, the
+ * "Khôi phục cài đặt mặc định": every setting above back to its default, the video provider back to development mode, the
  * one-time tips shown again. Projects, videos, folders and the canvasapp login are not touched. Returns the backup.
  */
 export function resetAllSettings(): SettingsBackup {
   const before = backupSettings()
   applySettings(DEFAULT_SETTINGS)
-  if (useProviderPrefs.getState().provider !== 'mock') useProviderPrefs.getState().setProvider('mock')
+  if (useProviderPrefs.getState().provider !== 'dev') useProviderPrefs.getState().setProvider('dev')
   try {
     const keys: string[] = []
     for (let i = 0; i < localStorage.length; i++) {

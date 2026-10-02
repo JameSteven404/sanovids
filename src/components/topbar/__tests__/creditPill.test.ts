@@ -1,7 +1,7 @@
 // The credit pill's states (docs/SPEC-v2.md §9): demo is clearly play money, the real canvasapp balance is never
 // invented ("—" until known), login-required becomes an action.
 import { describe, expect, it } from 'vitest'
-import { DEMO_CREDIT_HINT } from '../../../lib/credits'
+import { DEMO_CREDIT_HINT, DEV_CREDIT_HINT } from '../../../lib/credits'
 import { clockText, creditPillView, LOW_CREDITS, type CreditPillInput } from '../creditPillModel'
 
 const real = (patch: Partial<CreditPillInput>): CreditPillInput => ({
@@ -101,6 +101,53 @@ describe('creditPillView — canvasapp', () => {
 
   it('flags a low real balance too', () => {
     expect(creditPillView(real({ status: 'ok', balance: 5, updatedAt: at })).low).toBe(true)
+  })
+})
+
+describe('creditPillView — development mode (dev)', () => {
+  const at = new Date(2026, 9, 2, 14, 5, 30).getTime()
+  const dev = (patch: Partial<CreditPillInput>): CreditPillInput => real({ kind: 'dev', ...patch })
+
+  it('shows the simulated balance dashed and tagged DEV, never as real money', () => {
+    const v = creditPillView(dev({ status: 'ok', balance: 1000, updatedAt: at }), { now: at })
+    expect(v.tone).toBe('dev')
+    expect(v.sim).toBe(true)
+    expect(v.source).toBe('DEV')
+    expect(v.value).toBe('1.000')
+    expect(v.unit).toBe('credit')
+    expect(v.action).toBe('refresh')
+    expect(v.topUp).toBe(true)
+    expect(v.title).toContain(DEV_CREDIT_HINT)
+    expect(v.title).toContain('1.000 credit dev')
+    expect(v.title).toContain('cập nhật lúc 14:05')
+    // no đồng value, no "Credit thật"
+    expect(v.title).not.toMatch(/đ\b|thật của/)
+    expect(v.ariaLabel).toContain('credit dev')
+  })
+
+  it('asks for the simulated login after a 401 ("DEV · Đăng nhập")', () => {
+    const v = creditPillView(dev({ status: 'login-required' }))
+    expect(v).toMatchObject({ tone: 'login', sim: true, source: 'DEV', value: 'Đăng nhập', action: 'login', topUp: false })
+    expect(v.title).toContain('giả lập')
+    expect(v.title).not.toContain('canvasapp.io.vn (hoặc')
+  })
+
+  it('loading / error states stay dashed and point at the dev panel', () => {
+    expect(creditPillView(dev({ status: 'loading', refreshing: true }))).toMatchObject({ tone: 'loading', sim: true, value: '—', busy: true })
+    const e = creditPillView(dev({ status: 'error', balance: 300, updatedAt: at, error: 'Mất mạng (giả lập).' }), { now: at })
+    expect(e).toMatchObject({ tone: 'problem', sim: true, value: '300', topUp: true })
+    expect(e.title).toContain('Số cuối cùng: 300 credit dev')
+    expect(e.title).toContain('Bảng phát triển')
+  })
+
+  it('flags a low simulated balance', () => {
+    expect(creditPillView(dev({ status: 'ok', balance: 5, updatedAt: at })).low).toBe(true)
+  })
+
+  it('the real canvasapp pill is never "sim" and the demo pill never offers top-up', () => {
+    expect(creditPillView(real({ status: 'ok', balance: 50, updatedAt: at })).sim).toBe(false)
+    expect(creditPillView(real({ status: 'login-required' })).sim).toBe(false)
+    expect(creditPillView(demo(10))).toMatchObject({ sim: true, tag: 'DEMO', topUp: false })
   })
 })
 

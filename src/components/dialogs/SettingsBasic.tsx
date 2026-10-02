@@ -422,11 +422,11 @@ export function DataBlock() {
             if (f) void run('import', () => importProjectFile(f), `Đã mở dự án từ “${f.name}”.`, true)
           }}
         />
-        <button className="btn" disabled={!!busy} onClick={() => void run('demo', createDemo, 'Đã tạo dự án demo mới.', true)}>
-          {icon('demo', <Sparkles size={14} />)} {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án demo'}
+        <button className="btn" disabled={!!busy} onClick={() => void run('demo', createDemo, 'Đã tạo dự án mẫu mới.', true)}>
+          {icon('demo', <Sparkles size={14} />)} {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án mẫu'}
         </button>
       </div>
-      <div className="dg-field-hint">“Tạo lại dự án demo” mở một dự án demo mới; dự án hiện tại vẫn nằm trong danh sách Dự án. File nhập vào mở thành dự án mới (không kèm video đã tạo).</div>
+      <div className="dg-field-hint">“Tạo lại dự án mẫu” mở một dự án mẫu mới; dự án hiện tại vẫn nằm trong danh sách Dự án. File nhập vào mở thành dự án mới (không kèm video đã tạo).</div>
     </Section>
   )
 }

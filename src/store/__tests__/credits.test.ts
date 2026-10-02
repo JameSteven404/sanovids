@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createCanvasappApi, type TransportRequest } from '../../providers/canvasapp/api'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../../providers/canvasapp/transport'
 import { useProviderPrefs } from '../../providers'
+import { createDevBridge, createDevCanvasapp, setDevServer } from '../../providers/dev'
 import { useRuns, type RunEvent } from '../runs'
 import {
   CREDITS_MIN_REFRESH_MS,
@@ -14,7 +15,10 @@ import {
   createRealCredits,
   creditInfoFrom,
   getCreditInfo,
+  refreshRealCredits,
+  resetRealCredits,
   useCreditInfo,
+  useRealCredits,
   type CreditInfo,
   type RealCreditsState,
 } from '../credits'
@@ -311,6 +315,42 @@ describe('real credits: background sync', () => {
     s.job({ type: 'completed', takeId: 't', provider: 'canvasapp' })
     expect(s.refresh).toHaveBeenCalledTimes(2)
   })
+
+  it('switching between gateways (dev ↔ canvasapp) forces a read; job events can be narrowed to the active gateway', () => {
+    const refresh = vi.fn(async (_opts?: { force?: boolean }) => undefined)
+    const e = env()
+    const listeners = new Set<() => void>()
+    const jobs = new Set<(ev: RunEvent) => void>()
+    let key = 'dev'
+    const sync = createCreditsSync({
+      refresh,
+      isActive: () => true,
+      activeKey: () => key,
+      subscribeActive: (l) => {
+        listeners.add(l)
+        return () => listeners.delete(l)
+      },
+      subscribeJobs: (l) => {
+        jobs.add(l)
+        return () => jobs.delete(l)
+      },
+      isGatewayJob: (ev) => ev.provider === key,
+      env: () => ({ window: e.win, document: e.doc }),
+    })
+    const stop = sync.start()
+    expect(refresh).toHaveBeenCalledTimes(1)
+    for (const l of listeners) l() // same gateway: nothing
+    expect(refresh).toHaveBeenCalledTimes(1)
+    key = 'canvasapp'
+    for (const l of listeners) l()
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(refresh).toHaveBeenLastCalledWith({ force: true })
+    for (const l of jobs) l({ type: 'completed', takeId: 't', provider: 'dev' }) // not the active gateway's job
+    expect(refresh).toHaveBeenCalledTimes(2)
+    for (const l of jobs) l({ type: 'completed', takeId: 't', provider: 'canvasapp' })
+    expect(refresh).toHaveBeenCalledTimes(3)
+    stop()
+  })
 })
 
 describe('credit info for the UI', () => {
@@ -334,30 +374,55 @@ describe('credit info for the UI', () => {
     expect(creditInfoFrom('canvasapp', 1000, real({ status: 'login-required', error: 'x' }))).toMatchObject({ balance: null, status: 'login-required', error: 'x' })
   })
 
-  it('kind follows the active provider (canvasapp only with the desktop bridge)', () => {
+  it('kind follows the active provider: canvasapp only with the desktop bridge, else development mode', () => {
     const g = globalThis as { window?: unknown }
     try {
       useRuns.setState({ credits: 1000 })
       useProviderPrefs.setState({ provider: 'canvasapp' })
-      expect(getCreditInfo()).toMatchObject({ kind: 'demo', balance: 1000 }) // web: canvasapp cannot run here
+      expect(getCreditInfo()).toMatchObject({ kind: 'dev' }) // web: canvasapp cannot run here → dev mode
       g.window = { bdpDesktop: { canvasapp: { request: async () => ok({}) } } }
       expect(getCreditInfo()).toMatchObject({ kind: 'canvasapp', balance: null, status: 'loading' })
+      // the old demo is never chosen again, whatever the saved choice says
       useProviderPrefs.setState({ provider: 'mock' })
-      expect(getCreditInfo().kind).toBe('demo')
+      expect(getCreditInfo().kind).toBe('dev')
     } finally {
-      useProviderPrefs.setState({ provider: 'mock' })
+      useProviderPrefs.setState({ provider: 'dev' })
       delete g.window
     }
   })
 
-  it('useCreditInfo renders the demo wallet by default', () => {
-    // Server rendering reads the stores' initial state: a fresh demo wallet holds DEMO_CREDITS_DEFAULT.
+  it('useCreditInfo renders the development-mode wallet by default (unknown until read, never the demo number)', () => {
     let seen: CreditInfo | null = null
     const Probe = () => {
       seen = useCreditInfo()
       return null
     }
     renderToString(createElement(Probe))
-    expect(seen).toMatchObject({ kind: 'demo', balance: 1000, status: 'ok' })
+    expect(seen).toMatchObject({ kind: 'dev', balance: null, status: 'loading' })
+  })
+
+  it('the balance is read from the simulated canvasapp in dev mode, and forgotten when the gateway changes', async () => {
+    const g = globalThis as { window?: unknown }
+    const server = createDevCanvasapp({ log: false })
+    server.setConfig({ latencyMs: 0 })
+    setDevServer(server)
+    try {
+      useProviderPrefs.setState({ provider: 'dev' })
+      resetRealCredits()
+      expect(await refreshRealCredits({ force: true })).toMatchObject({ status: 'login-required', balance: null }) // first run: logged out
+      server.login()
+      expect(await refreshRealCredits({ force: true })).toMatchObject({ status: 'ok', balance: 1000 })
+      server.setBalance(321)
+      expect(await refreshRealCredits({ force: true })).toMatchObject({ status: 'ok', balance: 321 })
+      // switching new takes to the real gateway forgets the simulated balance at once
+      g.window = { bdpDesktop: { canvasapp: createDevBridge(() => createDevCanvasapp({ log: false })) } }
+      useProviderPrefs.setState({ provider: 'canvasapp' })
+      expect(useRealCredits.getState()).toMatchObject({ status: 'idle', balance: null })
+    } finally {
+      useProviderPrefs.setState({ provider: 'dev' })
+      delete g.window
+      setDevServer(null)
+      resetRealCredits()
+    }
   })
 })

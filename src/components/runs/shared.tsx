@@ -1,12 +1,12 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
-import { Ban, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
+import { Ban, Bug, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { JobStatus, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
 import { activeProviderId, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
 import { useRuns } from '../../store/runs'
 
-// ---- providers (Demo giả lập | canvasapp.io.vn) ----
+// ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
 
 /** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings change it. */
 export function useActiveProvider(): ProviderId {
@@ -16,7 +16,13 @@ export function useActiveProvider(): ProviderId {
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
-const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo', canvasapp: 'canvasapp' }
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp' }
+
+const PROVIDER_TITLE: Record<ProviderId, string> = {
+  mock: 'Demo cũ — video giả, trả bằng credit demo (không phải tiền thật)',
+  dev: 'Phát triển (giả lập) — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật)',
+  canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
+}
 
 /** Small chip naming the provider a take ran on (queue rows, take viewer). */
 export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
@@ -24,9 +30,9 @@ export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'
   return (
     <span
       className={`rq-prov ${id}`}
-      title={id === 'mock' ? 'Demo giả lập — video giả, trả bằng credit demo (không phải tiền thật)' : `${PROVIDER_LABEL[id]} — video thật, trả bằng credit canvasapp của tài khoản bạn`}
+      title={PROVIDER_TITLE[id] ?? PROVIDER_LABEL[id]}
     >
-      {id === 'mock' ? <Sparkles size={10} /> : <Cloud size={10} />}
+      {id === 'mock' ? <Sparkles size={10} /> : id === 'dev' ? <Bug size={10} /> : <Cloud size={10} />}
       {PROVIDER_SHORT[id]}
     </span>
   )

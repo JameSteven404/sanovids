@@ -11,6 +11,7 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { useFileDropGuard } from './components/sidebar/shared'
 import { TopBar } from './components/topbar/TopBar'
 import { useShortcuts } from './hooks/useShortcuts'
+import { closeDevPrompts, useDevPrompts } from './providers/dev/prompts'
 import { bootstrap, useSave } from './store/persist'
 import { toast, useUI, type DialogState } from './store/ui'
 
@@ -27,6 +28,8 @@ const chunks = {
   takeViewer: () => import('./components/runs/TakeViewer'),
   assetDialog: () => import('./components/sidebar/AssetDialog'),
   topUpDialog: () => import('./components/topup/TopUpDialog'),
+  devPanel: () => import('./components/dev/DevPanel'),
+  devSheets: () => import('./components/dev/DevSheets'),
 }
 
 const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
@@ -39,6 +42,8 @@ const RunConfirmDialog = lazy(() => chunks.runConfirmDialog().then((m) => ({ def
 const TakeViewer = lazy(() => chunks.takeViewer().then((m) => ({ default: m.TakeViewer })))
 const AssetDialog = lazy(() => chunks.assetDialog().then((m) => ({ default: m.AssetDialog })))
 const TopUpDialog = lazy(() => chunks.topUpDialog().then((m) => ({ default: m.TopUpDialog })))
+const DevPanel = lazy(() => chunks.devPanel().then((m) => ({ default: m.DevPanel })))
+const DevSheets = lazy(() => chunks.devSheets().then((m) => ({ default: m.DevSheets })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -136,6 +141,7 @@ function Shell() {
         )}
       </div>
       <Dialogs />
+      <DevPrompts />
       <Toasts />
     </div>
   )
@@ -174,8 +180,42 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <AssetDialog assetId={dialog.assetId} />
     case 'topup':
       return <TopUpDialog tab={dialog.tab} />
+    case 'dev':
+      return <DevPanel tab={dialog.tab} />
     default:
       return null
+  }
+}
+
+/**
+ * Development mode's simulated login / SePay "windows" (providers/dev/prompts): sheets above every dialog, shown
+ * while the dev bridge waits for an answer. Their chunk loads only when one opens.
+ */
+function DevPrompts() {
+  const open = useDevPrompts((s) => s.login !== null || s.checkout !== null)
+  if (!open) return null
+  return (
+    <DevPromptsBoundary>
+      <Suspense fallback={null}>
+        <DevSheets />
+      </Suspense>
+    </DevPromptsBoundary>
+  )
+}
+
+// The bridge waits for the sheet's answer: if the sheet cannot be shown, answer "closed" so nothing hangs.
+class DevPromptsBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidCatch(error: unknown) {
+    console.error('[SanoVids] dev sheet failed', error)
+    toast('Không mở được cửa sổ giả lập (đăng nhập / thanh toán) — đã đóng lại. Hãy tải lại trang rồi thử lại.', { tone: 'error', ms: 8000 })
+    closeDevPrompts()
+  }
+  render() {
+    return this.state.failed ? null : this.props.children
   }
 }
 

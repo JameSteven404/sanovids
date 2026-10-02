@@ -51,8 +51,8 @@ const project = (): Project => ({
   scenes: [scene('s1', 1, { refs: ['a'], prompt: '@image_1 runs' }), scene('s2', 2)],
 })
 
-/** Fake provider: statuses are set by the test. */
-function fakeProvider(id: 'mock' | 'canvasapp', pollIntervalMs = 0) {
+/** Fake provider: statuses are set by the test. 'dev' declares no poll floor (polled every engine tick). */
+function fakeProvider(id: 'mock' | 'canvasapp' | 'dev', pollIntervalMs = 0) {
   const statuses = new Map<string, RemoteStatus>()
   const submitted: JobRequest[] = []
   const cancelled: string[] = []
@@ -60,6 +60,7 @@ function fakeProvider(id: 'mock' | 'canvasapp', pollIntervalMs = 0) {
   const p: VideoProvider = {
     id,
     label: id,
+    ...(id === 'dev' ? { minPollIntervalMs: 0 } : {}),
     available: async () => ({ ok: true }),
     capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs, maxRefVideos: id === 'mock' ? 10 : 0 }),
     submit: async (req) => {
@@ -79,7 +80,38 @@ function fakeProvider(id: 'mock' | 'canvasapp', pollIntervalMs = 0) {
 }
 
 const realMock = getProvider('mock')
+const realDev = getProvider('dev')
 const take = (id: string) => useRuns.getState().takes.find((t) => t.id === id) as RunTake
+
+/**
+ * A take of the old demo provider as an older version saved it (queued, paid with demo credits): new takes never run
+ * on 'mock' any more, but saved ones still run, refund and cancel as before.
+ */
+const legacyTake = (id: string, sceneId: string, over: Partial<Take> = {}): Take => ({
+  id,
+  sceneId,
+  number: 1,
+  status: 'queued',
+  progress: 0,
+  createdAt: 1,
+  startedAt: null,
+  finishedAt: null,
+  promptSnapshot: 'A hero walks',
+  rawPromptSnapshot: 'A hero walks',
+  refsSnapshot: [],
+  videoRefsSnapshot: [],
+  settings: project().scenes[1].settings,
+  cost: 4,
+  starred: false,
+  posterId: null,
+  videoId: null,
+  error: null,
+  position: null,
+  provider: 'mock',
+  remoteId: null,
+  charged: true,
+  ...over,
+})
 
 /** Web Locks stand-in shared by "tabs": `otherTab(name)` holds a lock until the returned function is called. */
 function fakeLocks() {
@@ -118,28 +150,31 @@ afterEach(() => {
   vi.advanceTimersByTime(250)
   vi.useRealTimers()
   registerProvider(realMock)
-  useProviderPrefs.setState({ provider: 'mock' })
+  registerProvider(realDev)
+  useProviderPrefs.setState({ provider: 'dev' })
   delete (globalThis as { window?: unknown }).window
 })
 afterAll(() => {
   registerProvider(realMock)
+  registerProvider(realDev)
   setEngineLockManager(undefined)
   setEngineHooks({})
 })
 
 describe('runs engine with a provider', () => {
-  it('submits, stores the remote id, follows progress and stores the result', async () => {
-    const f = fakeProvider('mock')
+  it('submits, stores the remote id, follows progress and stores the result (new takes run on dev mode)', async () => {
+    const f = fakeProvider('dev')
     registerProvider(f.p)
     const r = useRuns.getState().enqueue(['s1'])
     expect(r.queued).toBe(1)
-    expect(useRuns.getState().credits).toBe(100 - r.cost)
+    expect(useRuns.getState().credits).toBe(100) // the old demo wallet is never charged by new takes
     const id = useRuns.getState().takes[0].id
+    expect(take(id)).toMatchObject({ provider: 'dev', charged: false })
 
     await vi.advanceTimersByTimeAsync(250)
     expect(take(id).status).toBe('processing')
     expect(take(id).remoteId).toBe('r_' + id)
-    expect(take(id).provider).toBe('mock')
+    expect(take(id).provider).toBe('dev')
     // request built from the snapshot: @image order, compiled prompt, idempotency key
     expect(f.submitted[0]).toMatchObject({ key: id, prompt: '@image_1 runs', sceneCode: 'S01', images: [{ n: 1, imageId: 'i1' }, { n: 2, imageId: 'i2' }] })
 
@@ -156,24 +191,24 @@ describe('runs engine with a provider', () => {
     expect(done.videoId).toMatch(/^video_/)
   })
 
-  it('refunds demo credits when the provider reports a failure', async () => {
+  it('an old demo take still runs, and a failure reported by the provider refunds its demo credits', async () => {
     const f = fakeProvider('mock')
     registerProvider(f.p)
-    const r = useRuns.getState().enqueue(['s2'])
-    const id = useRuns.getState().takes[0].id
+    useRuns.getState().loadRuns({ takes: [legacyTake('old1', 's2')], credits: 96, spent: 4 })
+    const id = 'old1'
     await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_old1' })
     f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'failed', progress: 55, error: 'boom' })
     await vi.advanceTimersByTimeAsync(250)
     expect(take(id)).toMatchObject({ status: 'failed', error: 'boom', progress: 55 })
-    expect(useRuns.getState().credits).toBe(100)
-    expect(r.cost).toBeGreaterThan(0)
+    expect(useRuns.getState()).toMatchObject({ credits: 100, spent: 0 })
   })
 
-  it('cancel refunds and tells the provider', async () => {
+  it('cancelling an old demo take refunds and tells the provider', async () => {
     const f = fakeProvider('mock')
     registerProvider(f.p)
-    useRuns.getState().enqueue(['s2'])
-    const id = useRuns.getState().takes[0].id
+    useRuns.getState().loadRuns({ takes: [legacyTake('old1', 's2')], credits: 96, spent: 4 })
+    const id = 'old1'
     await vi.advanceTimersByTimeAsync(250)
     useRuns.getState().cancel(id)
     expect(take(id).status).toBe('cancelled')
@@ -181,23 +216,23 @@ describe('runs engine with a provider', () => {
     expect(useRuns.getState().credits).toBe(100)
   })
 
-  it('respects the mock concurrency setting', async () => {
+  it('respects the mock concurrency setting (old demo takes)', async () => {
     const f = fakeProvider('mock')
     registerProvider(f.p)
     useRuns.getState().setMock({ concurrency: 1 })
-    useRuns.getState().enqueue(['s1', 's2'])
+    useRuns.getState().loadRuns({ takes: [legacyTake('old1', 's1'), legacyTake('old2', 's2', { createdAt: 2 })], credits: 92, spent: 8 })
     await vi.advanceTimersByTimeAsync(450)
     expect(useRuns.getState().takes.map((t) => t.status).sort()).toEqual(['processing', 'queued'])
     useRuns.getState().setMock({ concurrency: 3 })
   })
 
-  it('a submit error fails the take and refunds', async () => {
+  it('a submit error fails an old demo take and refunds', async () => {
     const f = fakeProvider('mock')
     f.p.submit = async () => {
       throw new Error('Không gửi được')
     }
     registerProvider(f.p)
-    useRuns.getState().enqueue(['s2'])
+    useRuns.getState().loadRuns({ takes: [legacyTake('old1', 's2')], credits: 96, spent: 4 })
     await vi.advanceTimersByTimeAsync(250)
     expect(useRuns.getState().takes[0]).toMatchObject({ status: 'failed', error: 'Không gửi được' })
     expect(useRuns.getState().credits).toBe(100)
@@ -279,7 +314,7 @@ describe('runs engine with a provider', () => {
     const [a, b] = useRuns.getState().takes
     expect(a.imageKeysSnapshot).toEqual(['a:i1', 'a:i2'])
     expect(b.imageKeysSnapshot).toEqual([])
-    expect(a).toMatchObject({ provider: 'mock', remoteId: null, charged: true, framesSnapshot: { first: null, last: null } })
+    expect(a).toMatchObject({ provider: 'dev', remoteId: null, charged: false, framesSnapshot: { first: null, last: null } })
   })
 
   it('a remote take left running without a remote id fails and is never submitted again', async () => {
@@ -311,7 +346,7 @@ describe('runs engine with a provider', () => {
     const takeover = vi.fn(async () => true)
     setEngineHooks({ beforeTakeover: takeover })
     const releaseOther = locks.otherTab('sanovids-engine:p')
-    const f = fakeProvider('mock')
+    const f = fakeProvider('dev')
     registerProvider(f.p)
 
     useRuns.getState().enqueue(['s2'])
@@ -354,7 +389,7 @@ describe('runs engine with a provider', () => {
     const locks = fakeLocks()
     setEngineLockManager(locks)
     setEngineHooks({ beforeTakeover: async () => false })
-    const f = fakeProvider('mock')
+    const f = fakeProvider('dev')
     registerProvider(f.p)
     useRuns.getState().enqueue(['s2'])
     await vi.advanceTimersByTimeAsync(1000)

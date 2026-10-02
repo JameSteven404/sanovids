@@ -181,7 +181,7 @@ describe('apply / reset / restore', () => {
     storage = memoryStorage({ 'bdp:hint:storyboard-reorder': '1', 'bdp:pref:leftW': '300' })
     vi.stubGlobal('localStorage', storage)
     applySettings(DEFAULT_SETTINGS)
-    useProviderPrefs.getState().setProvider('mock')
+    useProviderPrefs.getState().setProvider('dev')
   })
   afterEach(() => {
     applySettings(DEFAULT_SETTINGS)
@@ -203,14 +203,14 @@ describe('apply / reset / restore', () => {
     expect(changedSettingsCount()).toBeGreaterThan(15)
   })
 
-  it('reset → defaults everywhere (provider back to the demo, tips shown again); Hoàn tác brings it all back', () => {
+  it('reset → defaults everywhere (provider back to development mode, tips shown again); Hoàn tác brings it all back', () => {
     applySettings(CUSTOM as never)
     useProviderPrefs.getState().setProvider('canvasapp')
     useDownloadPrefs.getState().set({ folderName: 'Phim' })
     const before = resetAllSettings()
     expect(currentSettings()).toEqual(DEFAULT_SETTINGS)
     expect(changedSettingsCount()).toBe(0)
-    expect(useProviderPrefs.getState().provider).toBe('mock')
+    expect(useProviderPrefs.getState().provider).toBe('dev')
     expect(storage.data.has('bdp:hint:storyboard-reorder')).toBe(false)
     // the chosen download folder is a place, not a setting: kept
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
@@ -220,7 +220,7 @@ describe('apply / reset / restore', () => {
     restoreSettings(before)
     expect(currentSettings()).toEqual(CUSTOM)
     expect(useProviderPrefs.getState().provider).toBe('canvasapp')
-    useProviderPrefs.getState().setProvider('mock')
+    useProviderPrefs.getState().setProvider('dev')
     useDownloadPrefs.getState().set({ folderName: null })
   })
 

@@ -1,7 +1,10 @@
 // Takes (generation attempts) and the job queue. Not undoable.
 // The queue engine talks to video providers only through providers/types.ts (VideoProvider):
 //   queued → submit(request) → remoteId stored on the take → poll(remoteIds) → fetchResult → putBlob → completed.
-// The mock (demo) provider is the default; the canvasapp gateway is opt-in (desktop only, see docs/GATEWAY-CANVASAPP.md).
+// New takes run on 'dev' (development mode: the canvasapp gateway code against an in-app simulation, providers/dev)
+// or, when chosen in the desktop app, on the real canvasapp gateway (docs/GATEWAY-CANVASAPP.md). Both are remote
+// providers here (no resubmission, recovery, download retries); only their poll floor differs. The old demo ('mock')
+// only runs takes saved before development mode existed.
 //
 // One engine per project across tabs/windows: only the tab holding the Web Lock `sanovids-engine:<projectId>`
 // (store/engineLock.ts) submits and polls; other tabs just show the takes they reload from storage (store/persist.ts)
@@ -16,12 +19,13 @@
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
 // isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
 //
-// Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet (play money). Only takes run on the mock
-// provider are charged to it (take.charged); canvasapp takes bill the user's own canvasapp account and never touch
-// the demo balance — enqueue/check never block them on it. New runs data start at DEMO_CREDITS_DEFAULT (1000);
-// saved balances are kept as they are. The real canvasapp balance lives in store/credits (useCreditInfo()).
+// Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet of the old demo (play money). Only takes
+// run on the mock provider were charged to it (take.charged) — new takes never are: 'dev' takes bill the simulated
+// account and 'canvasapp' takes the user's own account, both read in store/credits (useCreditInfo()). New runs data
+// start at DEMO_CREDITS_DEFAULT (1000); saved balances are kept as they are.
 // Engine events for other stores (e.g. store/credits refreshes the real balance after a canvasapp job):
 //   onRunEvent(listener) → unsubscribe; events { type: 'submitted' | 'completed' | 'failed' | 'cancelled', takeId, provider }.
+// (store/credits re-reads the balance of the active gateway after its jobs.)
 import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { cleanTakeFileName } from '../core/fileNames'
@@ -192,6 +196,13 @@ const fetchRetryAt = new Map<string, number>()
  */
 export const UNKNOWN_SUBMIT_ERROR =
   'Không rõ yêu cầu đã tới canvasapp hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Kiểm tra trên canvasapp.io.vn trước khi chạy lại để không trả credit hai lần.'
+/** The same for a development-mode take: the simulated site never sent anything to canvasapp.io.vn. */
+export const DEV_UNKNOWN_SUBMIT_ERROR =
+  'Không rõ yêu cầu đã tới canvasapp giả lập hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Xem tab “Job & đơn nạp” của Bảng phát triển trước khi chạy lại để không trả credit dev hai lần.'
+
+/** UNKNOWN_SUBMIT_ERROR in the words of the take's provider ('dev': the Bảng phát triển, not canvasapp.io.vn). */
+export const unknownSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR)
+const isUnknownSubmitError = (error: string) => error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR
 
 /**
  * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
@@ -208,8 +219,12 @@ export function hasUncertainSubmitText(error: string | null | undefined): boolea
 }
 
 /** A finished remote video could not be downloaded after several tries (it is paid: re-running pays again). */
-export const downloadFailedError = (detail: string) =>
-  `Video đã tạo xong trên canvasapp (đã trừ credit) nhưng SanoVids không tải về được: ${detail.trim().replace(/\.?$/, '.')} Tải video trực tiếp trên canvasapp.io.vn (phiên “SanoVids bridge”) — chạy lại cảnh sẽ trừ credit lần nữa.`
+export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp'): string => {
+  const why = detail.trim().replace(/\.?$/, '.')
+  return pid === 'dev'
+    ? `Video đã tạo xong trên canvasapp giả lập (đã trừ credit dev) nhưng SanoVids không tải về được: ${why} Xem job trong Bảng phát triển (tab “Job & đơn nạp”, “Nhật ký”) — chạy lại cảnh sẽ trừ credit dev lần nữa.`
+    : `Video đã tạo xong trên canvasapp (đã trừ credit) nhưng SanoVids không tải về được: ${why} Tải video trực tiếp trên canvasapp.io.vn (phiên “SanoVids bridge”) — chạy lại cảnh sẽ trừ credit lần nữa.`
+}
 
 /** Download tries of a finished remote video: retried after these delays, then the take fails. */
 const FETCH_RETRY_MS = [30_000, 60_000, 120_000, 300_000]
@@ -628,7 +643,7 @@ function adoptOrphans() {
     changed = true
     if (isCharged(t)) refund += t.cost
     failed.push(t)
-    return { ...t, status: 'failed', finishedAt: now, error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true }
+    return { ...t, status: 'failed', finishedAt: now, error: unknownSubmitError(providerOf(t)), submitUnknown: true }
   })
   if (changed) useRuns.setState((s) => ({ takes, credits: s.credits + refund, spent: s.spent - refund }))
   for (const t of failed) emitRun('failed', t)
@@ -650,7 +665,7 @@ function failTake(id: string, error: string, progress?: number) {
   useRuns.setState((s) => ({
     takes: s.takes.map((x) =>
       x.id === id
-        ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress, ...(error === UNKNOWN_SUBMIT_ERROR ? { submitUnknown: true } : {}) }
+        ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress, ...(isUnknownSubmitError(error) ? { submitUnknown: true } : {}) }
         : x,
     ),
     credits: s.credits + refund,
@@ -671,7 +686,9 @@ function concurrencyFor(pid: ProviderId): number {
 function pollIntervalFor(pid: ProviderId): number {
   if (pid === 'mock') return 0
   try {
-    return Math.max(MIN_REMOTE_POLL_MS, getProvider(pid).capabilities('seedance_2_5').pollIntervalMs)
+    const p = getProvider(pid)
+    // The floor protects the real site; the in-app dev simulator declares its own (3 s).
+    return Math.max(p.minPollIntervalMs ?? MIN_REMOTE_POLL_MS, p.capabilities('seedance_2_5').pollIntervalMs)
   } catch {
     return MIN_REMOTE_POLL_MS
   }
@@ -729,7 +746,7 @@ function tick() {
     if (remoteIdOf(t) || submitting.has(t.id) || fetching.has(t.id)) continue
     if (providerOf(t) === 'mock') void submitTake(t.id)
     else if (!ownedHere.has(t.id) && canRecover(providerOf(t))) void recoverTake(t.id)
-    else failTake(t.id, UNKNOWN_SUBMIT_ERROR)
+    else failTake(t.id, unknownSubmitError(providerOf(t)))
   }
 
   // Poll each provider that has submitted, unfinished takes.
@@ -868,7 +885,7 @@ async function submitTake(id: string) {
       }
       return
     }
-    if (isSubmitUncertain(e)) return failTake(id, UNKNOWN_SUBMIT_ERROR)
+    if (isSubmitUncertain(e)) return failTake(id, unknownSubmitError(pid))
     failTake(id, errorText(e))
     const code = (e as { code?: unknown })?.code
     if (pid !== 'mock' && code === 'login-required') {
@@ -896,13 +913,13 @@ async function recoverTake(id: string) {
     if (gen !== generation) return
     const cur = findTake(id)
     if (!found) {
-      failTake(id, UNKNOWN_SUBMIT_ERROR)
+      failTake(id, unknownSubmitError(providerOf(t)))
       return
     }
     if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
     if (cur?.status === 'processing') emitRun('submitted', t)
   } catch {
-    if (gen === generation) failTake(id, UNKNOWN_SUBMIT_ERROR)
+    if (gen === generation) failTake(id, unknownSubmitError(providerOf(t)))
   } finally {
     if (gen === generation) submitting.delete(id)
   }
@@ -1008,7 +1025,7 @@ async function finishTake(id: string, remoteId: string, gen: number) {
         fetchRetryAt.set(id, Date.now() + FETCH_RETRY_MS[n - 1])
         return
       }
-      failTake(id, downloadFailedError(errorText(e)))
+      failTake(id, downloadFailedError(errorText(e), providerOf(t)))
       return
     }
     failTake(id, errorText(e))
