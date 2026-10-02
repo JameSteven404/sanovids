@@ -8,7 +8,6 @@
 // Both read the canvas animation pref (lib/canvasPrefs.ts) and the OS "reduce motion" setting.
 import {
   EdgeLabelRenderer,
-  getBezierPath,
   Position,
   useReactFlow,
   useStoreApi,
@@ -20,7 +19,7 @@ import { canvasEvents, WIRES_CUT_EVENT, type WireCutDetail } from '../../actions
 import { motionLevel, useCanvasPrefs, useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
 import { useRuns } from '../../store/runs'
 import { takeIndexOf } from './canvasModel'
-import { isWireReconnecting, pickNodeAt, snapHandleFor, splitWirePath, wireDragColor, wireVerdict, type Pt, type WireSource, type WireSourceType } from './wireFx'
+import { isWireReconnecting, pickNodeAt, snapHandleFor, splitWirePath, wireDragColor, wirePath, wireVerdict, type Pt, type WireSource, type WireSourceType } from './wireFx'
 
 const SOURCE_TYPES: readonly string[] = ['asset', 'take', 'scene', 'folder']
 
@@ -55,7 +54,8 @@ export function WireConnectionLine({
       src.takeSceneId = take?.sceneId ?? null
     }
     state = wireVerdict(src, over)
-    // Valid: the end jumps to the handle the wire will be drawn to — a magnet that shows where it lands.
+    // Valid: the end jumps to the dot the wire will be drawn to — a magnet that shows where it lands (handles are 0×0
+    // anchors at the dot centers, so this is where the dropped wire ends too).
     const snap = over && state === 'valid' ? snapHandleFor(type, over.type) : null
     const bounds = snap ? over?.internals.handleBounds?.[snap.type]?.find((h) => h.id === snap.id) : undefined
     if (over && bounds) {
@@ -64,15 +64,7 @@ export function WireConnectionLine({
       endPos = bounds.position
     }
   }
-  const [path] = getBezierPath({
-    sourceX: fromX,
-    sourceY: fromY,
-    sourcePosition: fromPosition,
-    targetX: end.x,
-    targetY: end.y,
-    targetPosition: endPos,
-    curvature: 0.3,
-  })
+  const [path] = wirePath({ sourceX: fromX, sourceY: fromY, sourcePosition: fromPosition, targetX: end.x, targetY: end.y, targetPosition: endPos })
   const style = { '--cl': wireDragColor(fromNode.type, toHandle?.id) } as CSSProperties
   return (
     <g className={`cv-cl is-${state}${motion === 'full' ? ' is-moving' : ''}`} style={style}>

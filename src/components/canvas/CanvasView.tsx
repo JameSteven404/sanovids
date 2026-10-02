@@ -117,7 +117,7 @@ import {
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
-import { isWireClick, markFreshWires, newWireIds, setWireReconnecting, wireClickAction, type WirePress } from './wireFx'
+import { isWireClick, markFreshWires, newWireIds, setWireReconnecting, wireClickAction, wireZ, type WirePress } from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
 import './wires.css'
@@ -143,7 +143,7 @@ interface RawEdge {
   target: string
   sourceHandle: string
   targetHandle: string
-  index: number
+  /** How many wires arrive at the same target dot (only a wire alone at its dot can be dragged by its end unselected). */
   count: number
   color: string
 }
@@ -321,7 +321,7 @@ function CanvasInner() {
     const prevCache = edgeCache.current
     const next = new Map<string, LinkEdge>()
     const out: LinkEdge[] = []
-    // Selected reference wires are drawn last, so their reconnect grip is on top of the other wires at the handle.
+    // Selected reference wires also come last, so their reconnect grip is on top of the other wires at the dot.
     const grabbable: LinkEdge[] = []
     for (const r of rawEdges) {
       const touchesHover = !!hoveredId && (r.source === hoveredId || r.target === hoveredId)
@@ -332,11 +332,13 @@ function CanvasInner() {
       const visible = edgeMode === 'all' || touchesHover || isSel || isHover || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
       if (!visible) continue
       const highlight = touchesHover || touchesSel || isSel || isHover
-      // React Flow puts every wire's reconnect grip at the same spot (the handle's center, not the spread-out end the
-      // wire is drawn to), so with several wires at one handle the last-drawn one would always be the one moved.
-      // Only a wire that is alone at its handle, or selected (clicked first), can be dragged by its end.
+      // Every wire into one dot ends at its center, so React Flow puts their reconnect grips at the same spot (one
+      // reconnect radius out from the dot): with several wires at one dot the last-drawn one would always be the one
+      // moved. Only a wire that is alone at its dot, or selected (clicked first), can be dragged by its end.
       const isRef = r.kind === 'ref' || r.kind === 'vref'
       const reconnectable = isRef && (isSel || r.count <= 1)
+      // Where wires share a dot, the one in focus is drawn on top (and stays under the cards).
+      const zIndex = wireZ({ selected: isSel, hovered: isHover, highlight })
       const prev = prevCache.get(r.id)
       const d = prev?.data
       let edge: LinkEdge
@@ -345,14 +347,13 @@ function CanvasInner() {
         d &&
         prev.selected === isSel &&
         !!prev.reconnectable === reconnectable &&
+        prev.zIndex === zIndex &&
         d.highlight === highlight &&
-        d.index === r.index &&
-        d.count === r.count &&
         d.color === r.color
       ) {
         edge = prev
       } else {
-        const data: LinkEdgeData = { kind: r.kind, index: r.index, count: r.count, color: r.color, highlight }
+        const data: LinkEdgeData = { kind: r.kind, color: r.color, highlight }
         const isOut = r.kind === 'out'
         edge = {
           id: r.id,
@@ -366,6 +367,7 @@ function CanvasInner() {
           deletable: !isOut,
           focusable: !isOut,
           reconnectable: reconnectable ? 'target' : false,
+          zIndex,
           data,
         }
       }
@@ -1099,22 +1101,21 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
   for (const a of assets) if (a.position) onCanvas.set(a.id, a)
   const out: RawEdge[] = []
   for (const s of scenes) {
-    // Image refs and video refs both arrive at the left 'ref' handle: spread them together.
+    // Image refs and video refs both arrive at the left 'ref' dot.
     const incoming: RawEdge[] = []
     for (const r of s.refs) {
       const a = onCanvas.get(r)
       if (!a) continue
-      incoming.push({ id: edgeId('ref', r, s.id), kind: 'ref', source: r, target: s.id, sourceHandle: 'out', targetHandle: 'ref', index: 0, count: 0, color: a.color })
+      incoming.push({ id: edgeId('ref', r, s.id), kind: 'ref', source: r, target: s.id, sourceHandle: 'out', targetHandle: 'ref', count: 0, color: a.color })
     }
     for (const t of s.videoRefs) {
       if (!takes.byId.has(t)) continue
-      incoming.push({ id: edgeId('vref', t, s.id), kind: 'vref', source: t, target: s.id, sourceHandle: 'out', targetHandle: 'ref', index: 0, count: 0, color: VIDEO_COLOR })
+      incoming.push({ id: edgeId('vref', t, s.id), kind: 'vref', source: t, target: s.id, sourceHandle: 'out', targetHandle: 'ref', count: 0, color: VIDEO_COLOR })
     }
-    incoming.forEach((e, index) => {
-      e.index = index
+    for (const e of incoming) {
       e.count = incoming.length
       out.push(e)
-    })
+    }
     if (s.settings.mode === 'transform') {
       for (const which of ['first', 'last'] as const) {
         const aid = which === 'first' ? s.firstFrame : s.lastFrame
@@ -1126,7 +1127,6 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
           target: s.id,
           sourceHandle: 'out',
           targetHandle: which,
-          index: 0,
           count: 1,
           color: which === 'first' ? 'var(--first)' : 'var(--last)',
         })
@@ -1142,29 +1142,27 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
       target: item.id,
       sourceHandle: 'take',
       targetHandle: 'in',
-      index: 0,
       count: 1,
       color: 'var(--seq)',
     })
   }
-  // Wires into folder nodes arrive at the folder's left dot: spread them together like a scene's references.
+  // Wires into folder nodes arrive at the folder's left dot.
   if (folders.length) {
     const sm = sceneMapOf(scenes)
     for (const f of folders) {
       const incoming: RawEdge[] = []
       for (const sid of f.autoScenes ?? []) {
         if (!sm.has(sid)) continue
-        incoming.push({ id: edgeId('autosave', sid, f.id), kind: 'autosave', source: sid, target: f.id, sourceHandle: 'take', targetHandle: 'in', index: 0, count: 0, color: 'var(--save)' })
+        incoming.push({ id: edgeId('autosave', sid, f.id), kind: 'autosave', source: sid, target: f.id, sourceHandle: 'take', targetHandle: 'in', count: 0, color: 'var(--save)' })
       }
       for (const tid of f.takes ?? []) {
         if (!takes.byId.has(tid)) continue
-        incoming.push({ id: edgeId('save', tid, f.id), kind: 'save', source: tid, target: f.id, sourceHandle: 'out', targetHandle: 'in', index: 0, count: 0, color: 'var(--save)' })
+        incoming.push({ id: edgeId('save', tid, f.id), kind: 'save', source: tid, target: f.id, sourceHandle: 'out', targetHandle: 'in', count: 0, color: 'var(--save)' })
       }
-      incoming.forEach((e, index) => {
-        e.index = index
+      for (const e of incoming) {
         e.count = incoming.length
         out.push(e)
-      })
+      }
     }
   }
   return out

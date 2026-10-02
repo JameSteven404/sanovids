@@ -1,11 +1,14 @@
 // Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene),
 // video references (take -> scene, @video_N), take outputs (scene -> take, not deletable) and wires into folder
 // nodes: save (take -> folder) and autosave (scene -> folder, dashed).
-// Each cuttable wire = its visible path (.cv-wire) + a wide transparent hit band on top (click-to-cut / select / hover,
-// CanvasView.onWireClick). New wires draw themselves in once (wireFx.markFreshWires); cuts animate in Wires.tsx.
-import { EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
+// Every wire runs from the center of its source dot to the center of its target dot: the handles React Flow measures
+// are 0×0 anchors at the dot centers (canvas.css "handles"), and wires into the same dot all converge there (no fan-out),
+// the dot painting over their ends. Each cuttable wire = its visible path (.cv-wire) + a wide transparent hit band on
+// top that stops at the dots' rims (click-to-cut / select / hover, CanvasView.onWireClick). New wires draw themselves
+// in once (wireFx.markFreshWires); cuts animate in Wires.tsx.
+import { EdgeLabelRenderer, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
-import { memo, useCallback, useEffect, useState, type AnimationEvent, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState, type AnimationEvent, type CSSProperties } from 'react'
 import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { folderMapOf } from '../../core/folders'
@@ -14,13 +17,10 @@ import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
-import { isFreshWire } from './wireFx'
+import { isFreshWire, wireHitPath, wirePath } from './wireFx'
 
 export type LinkEdgeData = {
   kind: EdgeKind
-  /** Position of this wire among the wires arriving at the scene's left handle (spreads them at the target). */
-  index: number
-  count: number
   /** Asset color (ref / frame edges). */
   color: string
   /** Touches the hovered / selected node. */
@@ -138,16 +138,10 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
     const t = setTimeout(() => setIntro(null), INTRO_FALLBACK_MS)
     return () => clearTimeout(t)
   }, [intro])
-  let ty = targetY
-  // Wires arriving at the same scene handle are spread apart. A selected wire goes to the handle's center: that is
-  // where its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
-  // Wires into a folder node (save / autosave) always converge on its dot: a folder collects many videos and a fan of
-  // ends beside the dot reads as clutter.
-  if ((kind === 'ref' || kind === 'vref') && data && data.count > 1 && !selected) {
-    const off = (data.index - (data.count - 1) / 2) * 6
-    ty = targetY + Math.max(-48, Math.min(48, off))
-  }
-  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY: ty, targetPosition, curvature: 0.3 })
+  // Dot center to dot center, for every kind: wires into one dot (a scene's references, a folder's videos) all meet at
+  // its center, tangent to each other, and the dot covers the meeting point.
+  const [path, labelX, labelY] = wirePath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
+  const hitPath = useMemo(() => (kind === 'out' ? '' : wireHitPath(path)), [kind, path])
   const hl = !!data?.highlight || hovered || !!selected
   const base = KIND_STROKE[kind]
 
@@ -195,8 +189,9 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         pathLength={drawing ? 1 : undefined}
         onAnimationEnd={intro ? endIntro : undefined}
       />
-      {/* Hit band on top (transparent): the whole band is the wire for hover, click-to-cut and selection. */}
-      <path d={path} fill="none" className="react-flow__edge-interaction cv-wire-hit" strokeOpacity={0} strokeWidth={WIRE_HIT_WIDTH}>
+      {/* Hit band on top (transparent): the band is the wire for hover, click-to-cut and selection. It stops at the
+          dots' rims, where the drawn wire runs on under the dot (wires.css: the drawn path takes no pointer). */}
+      <path d={hitPath} fill="none" className="react-flow__edge-interaction cv-wire-hit" strokeOpacity={0} strokeWidth={WIRE_HIT_WIDTH}>
         <title>{clickToCut ? 'Bấm để bỏ nối · Ctrl/Shift + bấm: chọn dây' : 'Bấm để chọn dây · Delete: bỏ nối'}</title>
       </path>
       {/* With click-to-cut the wire itself is the button; otherwise the × on hover / selection cuts it. */}
