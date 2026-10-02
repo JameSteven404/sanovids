@@ -20,6 +20,7 @@ import {
   MAX_BRIDGE_NODES,
   MAX_BRIDGE_PROMPT_CHARS,
   ORDER_BASE,
+  planBridgeCanvas,
   PROFILE_FALLBACKS,
   profileSpecOf,
   promptLimitOf,
@@ -459,6 +460,38 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     const alone = bridgeCanvas([entry(1), full])
     expect(imageUploads(alone)).toHaveLength(30)
     expect(videoNodes(alone).map((n) => n.id)).toEqual([canvasNodeId('s99')])
+  })
+
+  it('the scene being submitted is always first and kept, even with an equal or older usedAt (clock moved back)', () => {
+    const entry = (i: number, usedAt: number): BridgeEntry => ({
+      ...entryFromRequest(req({ sceneId: 's' + i }), uploadIdFor, usedAt),
+      uploadIds: Array.from({ length: 4 }, (_, k) => `u${i}_${k}`),
+    })
+    // 8 newer scenes × 4 pictures fill the canvas; s0 (submitted now, saved with an older clock) used to be left out
+    const entries = [...Array.from({ length: 8 }, (_, i) => entry(i + 1, 100 + i)), entry(0, 5)]
+    expect(videoNodes(bridgeCanvas(entries)).map((n) => n.id)).not.toContain(canvasNodeId('s0'))
+    const plan = planBridgeCanvas(entries, { current: 's0' })
+    expect(videoNodes(plan.canvas)[0].id).toBe(canvasNodeId('s0'))
+    expect(plan.dropped).toEqual(['s2', 's1'])
+    expect(plan.missing).toEqual([])
+    expectClientCanvasShape(plan.canvas)
+  })
+
+  it('scenes still running (keep) come right after the current one and are never dropped; what does not fit is "missing"', () => {
+    const entry = (i: number, usedAt: number): BridgeEntry => ({
+      ...entryFromRequest(req({ sceneId: 's' + i }), uploadIdFor, usedAt),
+      uploadIds: Array.from({ length: 4 }, (_, k) => `u${i}_${k}`),
+    })
+    const entries = Array.from({ length: 8 }, (_, i) => entry(i + 1, 100 + i))
+    // s1 and s2 (the oldest) still run: s3, the oldest scene that does not run, is left out instead of s1
+    const plan = planBridgeCanvas(entries, { current: 's8', keep: new Set(['s1', 's2']) })
+    expect(videoNodes(plan.canvas).map((n) => n.id).slice(0, 3)).toEqual(['s8', 's2', 's1'].map(canvasNodeId))
+    expect(plan.dropped).toEqual(['s3'])
+    expect(plan.missing).toEqual([])
+    // every scene runs: the 8th does not fit next to them → reported, never silently left out
+    const full = planBridgeCanvas(entries, { current: 's8', keep: new Set(entries.map((e) => e.sceneId)) })
+    expect(full.missing).toEqual(['s1'])
+    expect(full.dropped).toEqual([])
   })
 
   it('a character image reused across scenes is ONE image node feeding every video node (counted once)', () => {

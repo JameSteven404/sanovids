@@ -242,8 +242,8 @@ export function GatewaySection() {
 
       <div className="dg-field-hint">
         {dev
-          ? 'Giống cổng thật: tối đa 2 job cùng lúc, chưa hỗ trợ video tham chiếu (@video_N), ảnh tham chiếu chỉ tải lên một lần (phiên “SanoVids bridge”). Khác: kiểm tra tiến độ mỗi 3 giây và video xong sau ≈ 8 giây (đổi được trong Bảng phát triển).'
-          : 'Giới hạn: tối đa 2 job cùng lúc, kiểm tra tiến độ mỗi 20 giây. Chưa hỗ trợ video tham chiếu (@video_N). Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids bridge”).'}
+          ? 'Giống cổng thật: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), chưa hỗ trợ video tham chiếu (@video_N), ảnh tham chiếu chỉ tải lên một lần (phiên “SanoVids bridge”). Khác: kiểm tra tiến độ mỗi 3 giây và video xong sau ≈ 8 giây (đổi được trong Bảng phát triển).'
+          : 'Giới hạn: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), kiểm tra tiến độ mỗi 20 giây. Chưa hỗ trợ video tham chiếu (@video_N). Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids bridge”).'}
       </div>
     </section>
   )

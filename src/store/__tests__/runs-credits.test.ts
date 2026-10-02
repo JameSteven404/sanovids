@@ -150,7 +150,7 @@ describe('canvasapp takes and the demo balance', () => {
     expect(useRuns.getState()).toMatchObject({ credits: 0, spent: 3 })
     expect(useRuns.getState().takes.every((t) => t.provider === 'canvasapp' && t.charged === false)).toBe(true)
 
-    await vi.advanceTimersByTimeAsync(250)
+    await vi.advanceTimersByTimeAsync(450) // one new remote submit per engine tick
     const [a, b] = useRuns.getState().takes
     expect(events.filter((e) => e.type === 'submitted').map((e) => [e.takeId, e.provider]).sort()).toEqual(
       [

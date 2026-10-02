@@ -1,7 +1,7 @@
 import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X, ZoomIn } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, ensureAssetToken, focusNodes, linkAssets, selectedSceneIds, viewAssetImages } from '../../actions'
+import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
@@ -139,9 +139,9 @@ function toggleOnCanvas(id: string) {
     if (ui.selectedIds.includes(id)) ui.select(ui.selectedIds.filter((x) => x !== id))
     toast(`Đã bỏ “${asset.name}” khỏi canvas — vẫn còn trong thư viện, các nối giữ nguyên.`, { action: undoToastAction() })
   } else {
-    st.setAssetOnCanvas(id, nextAssetPosition(st.project))
+    st.setAssetOnCanvas(id, nextAssetPosition(st.project, asset))
     toast(`Đã đặt “${asset.name}” lên canvas.`, { tone: 'success', action: undoToastAction() })
-    if (ui.view === 'canvas') setTimeout(() => focusNodes([id]), 80)
+    if (ui.view === 'canvas') revealNodes([id])
   }
 }
 

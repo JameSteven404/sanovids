@@ -401,7 +401,7 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
 
   const toggleCanvas = () => {
     const st = useProject.getState()
-    st.setAssetOnCanvas(asset.id, asset.position ? null : nextAssetPosition(st.project))
+    st.setAssetOnCanvas(asset.id, asset.position ? null : nextAssetPosition(st.project, asset))
   }
 
   return (

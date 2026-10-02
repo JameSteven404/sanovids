@@ -22,6 +22,7 @@
 - **Dây ẩn mặc định**, chỉ hiện dây của cảnh đang chọn hoặc đang trỏ chuột vào (đổi được: Ẩn / Đang chọn / Tất cả).
 - Cắt dây bằng nút × hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại.
 - **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ, sắp xếp tự động.
+- **Node mới hiện ngay cạnh chỗ bạn đang làm**: cảnh mới nằm ngay dưới cảnh bạn vừa chọn (hoặc trong vùng đang nhìn), không đè lên thẻ khác; khung nhìn chỉ trượt vừa đủ để thấy node mới, **giữ nguyên mức zoom**. Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, không che thanh công cụ canvas.
 - Chế độ "Chỉ take chọn" chỉ hiện video ★ của mỗi cảnh cho gọn.
 - Kéo đổi độ rộng hai thanh bên (bấm đúp để về mặc định).
 
@@ -98,7 +99,7 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 - Đóng app khi đang tạo: mở lại, app tiếp tục theo dõi job cũ, không gửi lại.
 
 **Giới hạn hiện tại**
-- Tối đa 2 job cùng lúc, cập nhật tiến độ khoảng 20 giây/lần.
+- Tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), cập nhật tiến độ khoảng 20 giây/lần.
 - **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy): bỏ `@video_N` để chạy cảnh tiếp nối.
 - App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Đừng sửa phiên này bằng tay.**
 - Huỷ trong SanoVids chỉ ngừng theo dõi: job đã gửi vẫn chạy và tính tiền trên canvasapp.

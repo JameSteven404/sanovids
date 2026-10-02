@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Images, Info, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { fitNodes } from '../../actions'
+import { fitNodes, placementHint } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import {
   applyImageMapping,
@@ -142,7 +142,8 @@ export function ImportDialog() {
       ...s,
       prompt: unmaskTokens(s.prompt),
     }))
-    const ids = useProject.getState().applyImport({ scenes })
+    // Below the scene worked on last / what the canvas shows, not at a row derived from the scene count.
+    const ids = useProject.getState().applyImport({ scenes }, placementHint())
     const undo = undoToastAction()
     const linked = scenes.filter((s) => s.refs.length).length
     const ui = useUI.getState()
