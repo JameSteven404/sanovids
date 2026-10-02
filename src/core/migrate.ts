@@ -3,7 +3,7 @@ import { scenePosition } from '../store/project'
 import { assetByTag, imageSlotsFor, mediaKeys, MENTION_RE, remapTokens, uniqueTag } from './compile'
 import { newId, pickColor } from './ids'
 import { normalizeSettings } from './models'
-import type { Asset, AssetKind, Project, Scene, Take, XY } from './types'
+import type { Asset, AssetKind, Preset, Project, Scene, Take, XY } from './types'
 
 interface V1Block {
   id: string
@@ -56,6 +56,19 @@ function normalizeAssets(raw: unknown): Asset[] {
   })
 }
 
+/** Presets with an id, a name and valid settings (files from other sources may miss some). */
+export function normalizePresets(raw: unknown): Preset[] {
+  const ids = new Set<string>()
+  return (Array.isArray(raw) ? raw : [])
+    .filter((r): r is Partial<Preset> => !!r && typeof r === 'object')
+    .map((r) => {
+      let id = typeof r.id === 'string' && r.id ? r.id : newId('pst')
+      if (ids.has(id)) id = newId('pst')
+      ids.add(id)
+      return { id, name: text(r.name).trim() || 'Preset', ...normalizeSettings(r) }
+    })
+}
+
 /**
  * Bring any saved project up to schema v2 (and repair what other sources may leave out).
  * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
@@ -65,6 +78,8 @@ function normalizeAssets(raw: unknown): Asset[] {
 export function migrateProject(raw: unknown): Project {
   const p = (raw ?? {}) as Record<string, unknown> & Partial<Project>
   const assets = normalizeAssets(p.assets)
+  const presets = normalizePresets(p.presets)
+  const presetIds = new Set(presets.map((x) => x.id))
   const blocks = ((p as { blocks?: V1Block[] }).blocks ?? []) as V1Block[]
   const v1 = p.schemaVersion !== 2
   const sceneIds = new Set<string>()
@@ -109,7 +124,7 @@ export function migrateProject(raw: unknown): Project {
       color: s.color ?? null,
       position: isXY(s.position) ? s.position : scenePosition(index),
       note: text(s.note),
-      presetId: s.presetId ?? null,
+      presetId: typeof s.presetId === 'string' && presetIds.has(s.presetId) ? s.presetId : null,
     }
   })
 
@@ -123,7 +138,7 @@ export function migrateProject(raw: unknown): Project {
     createdAt: Number.isFinite(p.createdAt) ? p.createdAt! : now,
     updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt! : now,
     assets,
-    presets: (Array.isArray(p.presets) ? p.presets : []) as Project['presets'],
+    presets,
     scenes,
     settings: { autoRenumber: (p.settings as { autoRenumber?: boolean } | undefined)?.autoRenumber ?? true },
   }
@@ -147,11 +162,26 @@ export function dropVideoRefs(p: Project, label: (takeId: string) => string = ()
   }
 }
 
+/**
+ * Bring a saved take up to date. Provider fields default to the demo provider: takes saved before providers
+ * existed ran on the mock, were never submitted anywhere (no remote id) and were paid with demo credits.
+ */
 export function migrateTake(raw: unknown): Take {
-  const t = raw as Partial<Take>
-  return {
+  const t = (raw ?? {}) as Partial<Take>
+  const frames = t.framesSnapshot
+  const out: Take = {
     ...(t as Take),
     videoRefsSnapshot: Array.isArray(t.videoRefsSnapshot) ? t.videoRefsSnapshot : [],
     position: t.position ?? null,
+    provider: t.provider === 'canvasapp' ? 'canvasapp' : 'mock',
+    remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
+    charged: t.charged !== false,
   }
+  if (frames && typeof frames === 'object') out.framesSnapshot = { first: frames.first ?? null, last: frames.last ?? null }
+  else delete out.framesSnapshot
+  if (t.imageKeysSnapshot !== undefined) {
+    if (Array.isArray(t.imageKeysSnapshot) && t.imageKeysSnapshot.every((k) => typeof k === 'string')) out.imageKeysSnapshot = [...t.imageKeysSnapshot]
+    else delete out.imageKeysSnapshot
+  }
+  return out
 }

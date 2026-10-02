@@ -6,7 +6,7 @@
 // tokens in the affected prompts are renumbered in the same undo step (project.settings.autoRenumber).
 import { temporal } from 'zundo'
 import { create } from 'zustand'
-import { assetByTag, extractMentions, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { assetByTag, extractMentions, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
 import { newId, pickColor } from '../core/ids'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
 import type { Asset, Preset, Project, ProjectSettings, Scene, Size, VideoSettings, XY } from '../core/types'
@@ -189,10 +189,20 @@ function withMedia(
   if (project.settings.autoRenumber && /@(image|video)_\d/i.test(prompt)) {
     const before = mediaKeys(project.assets, scene.refs, scene.videoRefs)
     const after = mediaKeys(assetsAfter, refs, videoRefs)
-    const names = new Map(project.assets.map((a) => [a.id, a.name]))
-    prompt = remapTokens(prompt, before, after, (kind, key) => (kind === 'image' ? names.get(key.split(':')[0]) ?? 'ảnh' : videoLabel(key))).text
+    const nameOf = imageFallbackNames(project.assets)
+    prompt = remapTokens(prompt, before, after, (kind, key) => (kind === 'image' ? nameOf(key.slice(0, key.indexOf(':'))) : videoLabel(key))).text
   }
   return { ...scene, refs, videoRefs, prompt }
+}
+
+/** The video settings of a preset (without id / name). */
+export function presetSettings(p: Preset): VideoSettings {
+  return { model: p.model, mode: p.mode, duration: p.duration, resolution: p.resolution, ratio: p.ratio }
+}
+
+/** Same model, mode, duration, resolution and ratio. */
+export function sameSettings(a: VideoSettings, b: VideoSettings): boolean {
+  return a.model === b.model && a.mode === b.mode && a.duration === b.duration && a.resolution === b.resolution && a.ratio === b.ratio
 }
 
 export interface AddRefsResult {
@@ -380,11 +390,23 @@ export const useProject = create<ProjectState>()(
           mutate((p) => ({ ...p, presets: [...p.presets, { id, name: partial.name, ...settings }] }))
           return id
         },
-        updatePreset: (id, patch) =>
-          mutate((p) => ({
-            ...p,
-            presets: p.presets.map((x) => (x.id === id ? { ...x, ...patch, ...normalizeSettings({ ...x, ...patch }) } : x)),
-          })),
+        /**
+         * Edit a preset. Scenes linked to it whose settings no longer equal the edited preset lose the link (same
+         * mutation = same undo step); a rename alone keeps every link.
+         */
+        updatePreset: (id, patch) => {
+          if (!get().project.presets.some((x) => x.id === id)) return
+          mutate((p) => {
+            const old = p.presets.find((x) => x.id === id)!
+            const next: Preset = { ...old, ...patch, id, ...normalizeSettings({ ...old, ...patch }) }
+            if (typeof next.name !== 'string' || !next.name.trim()) next.name = old.name
+            const settings = presetSettings(next)
+            const scenes = sameSettings(presetSettings(old), settings)
+              ? p.scenes
+              : p.scenes.map((s) => (s.presetId === id && !sameSettings(s.settings, settings) ? { ...s, presetId: null } : s))
+            return { ...p, presets: p.presets.map((x) => (x.id === id ? next : x)), scenes }
+          })
+        },
         removePreset: (id) =>
           mutate((p) => ({
             ...p,

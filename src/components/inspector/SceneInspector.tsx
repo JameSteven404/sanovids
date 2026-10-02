@@ -5,7 +5,7 @@ import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { costOf, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -13,7 +13,7 @@ import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, modeLabel, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -496,7 +496,7 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
         <div className="in-note">
           <Info size={13} />
           <span>
-            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{modeLabel('i2v')}” của MiniMax-H3.
+            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.
           </span>
         </div>
       </Section>
@@ -630,7 +630,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   if (!settings) return null
   // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
   const acceptsVideo = usesVideoRefs(settings)
-  const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v')}” để tạo cảnh tiếp nối`
+  const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
   const reason = promptEmpty ? 'Prompt trống' : framesMissing ? 'Thiếu khung đầu/cuối' : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]

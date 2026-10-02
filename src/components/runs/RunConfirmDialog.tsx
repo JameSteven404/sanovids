@@ -1,14 +1,16 @@
-import { Coins, Play, Plus, Sparkles, TriangleAlert } from 'lucide-react'
+import { Cloud, Coins, Play, Plus, Sparkles, TriangleAlert } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
 import { runNow } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
+import { PROVIDER_LABEL } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns, type SceneRunCheck } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetAvatar } from '../common/Media'
 import { Modal } from '../common/Modal'
+import { CREDIT_UNIT, ProviderBadge, useActiveProvider, vndOf } from './shared'
 import './runs.css'
 
 interface Row {
@@ -31,12 +33,19 @@ function hasTakeOrJob(stat: TakeStat | undefined): boolean {
   return !!stat && (stat.completed > 0 || stat.active > 0)
 }
 
-/** Cost summary + validation before sending scenes to the (mock) queue. */
+/**
+ * Cost summary + validation before sending scenes to the queue (a sheet). Costs are labelled by the provider new
+ * takes use: demo credits (play money; the run is blocked when the demo balance is short) or canvasapp credits
+ * (the user's real account: never blocked by the demo balance, no "+100 credit demo").
+ */
 export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
   const close = useUI((s) => s.closeDialog)
   const project = useProject((s) => s.project)
   const takes = useRuns((s) => s.takes)
   const credits = useRuns((s) => s.credits)
+  const provider = useActiveProvider()
+  const demo = provider === 'mock'
+  const unit = CREDIT_UNIT[provider]
   // Status of every reference video of these scenes, as one string: re-check only when one of them changes.
   const videoKey = useRuns((s) => {
     const ids = new Set(sceneIds)
@@ -66,8 +75,9 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
           videosReady: scene.videoRefs.filter((t) => status.get(t) === 'completed').length,
         }
       })
-    // videoKey: re-run the check when a reference video finishes (or is deleted).
-  }, [project, sceneIds, videoKey])
+    // videoKey: re-run the check when a reference video finishes (or is deleted). provider: the checks depend on
+    // what the provider accepts (canvasapp has no @video yet).
+  }, [project, sceneIds, videoKey, provider])
 
   const stats = useMemo(() => {
     const m = new Map<string, TakeStat>()
@@ -89,7 +99,8 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
   const withWarnings = shown.filter((r) => r.check.ok && r.check.warnings.length).length
   const total = runnable.reduce((t, r) => t + r.check.cost, 0)
   const after = credits - total
-  const short = after < 0
+  // Only the demo provider spends the local demo credits (store/runs enqueue): canvasapp is never blocked by them.
+  const short = demo && after < 0
   const canRun = runnable.length > 0 && !short
   const selectable = shown.filter((r) => r.check.ok)
   const allChecked = selectable.length > 0 && selectable.every((r) => !excluded.has(r.scene.id))
@@ -118,17 +129,26 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
       footer={
         <>
           <div className="rq-foot-info">
-            <span className={`rq-balance${short ? ' short' : ''}`}>
-              <Coins size={14} />
-              Số dư <b className="mono">{credits.toLocaleString('vi-VN')}</b> → <b className="mono">{after.toLocaleString('vi-VN')}</b> credit
-            </span>
-            {short && (
+            {demo ? (
               <>
-                <span className="rq-short">Thiếu {(-after).toLocaleString('vi-VN')} credit</span>
-                <button type="button" className="btn btn-sm" onClick={() => useRuns.getState().addCredits(100)} title="Credit demo, không phải tiền thật">
-                  <Plus size={13} /> 100 credit demo
-                </button>
+                <span className={`rq-balance${short ? ' short' : ''}`} title="Credit demo — không phải tiền thật">
+                  <Coins size={14} />
+                  Số dư demo <b className="mono">{credits.toLocaleString('vi-VN')}</b> → <b className="mono">{after.toLocaleString('vi-VN')}</b>
+                </span>
+                {short && (
+                  <>
+                    <span className="rq-short">Thiếu {(-after).toLocaleString('vi-VN')} credit demo</span>
+                    <button type="button" className="btn btn-sm" onClick={() => useRuns.getState().addCredits(100)} title="Credit demo, không phải tiền thật">
+                      <Plus size={13} /> 100 credit demo
+                    </button>
+                  </>
+                )}
               </>
+            ) : (
+              <span className="rq-balance real" title="Trừ vào tài khoản canvasapp.io.vn của bạn (1 credit ≈ 1.000đ)">
+                <Cloud size={14} />
+                Trừ vào tài khoản canvasapp · ≈ <b className="mono">{vndOf(total)}</b>
+              </span>
             )}
           </div>
           <button type="button" className="btn" onClick={close}>
@@ -140,14 +160,47 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
             disabled={!canRun}
             onClick={run}
             autoFocus
-            title={!runnable.length ? 'Không có cảnh nào chạy được' : short ? 'Không đủ credit' : 'Gửi vào hàng đợi'}
+            title={
+              !runnable.length ? 'Không có cảnh nào chạy được' : short ? 'Không đủ credit demo' : demo ? 'Gửi vào hàng đợi (demo)' : 'Gửi sang canvasapp.io.vn — tốn credit thật'
+            }
           >
             <Play size={14} fill="currentColor" />
-            Chạy {runnable.length} cảnh · {total.toLocaleString('vi-VN')} credit
+            Chạy {runnable.length} cảnh · {total.toLocaleString('vi-VN')} {unit}
           </button>
         </>
       }
     >
+      <div className="rq-sheet-summary">
+        <div className="rq-stat">
+          <span>Sẽ chạy</span>
+          <b className="mono">{runnable.length}</b>
+          <small>trên {shown.length} cảnh</small>
+        </div>
+        <div className="rq-stat">
+          <span>Chi phí</span>
+          <b className="mono">{total.toLocaleString('vi-VN')}</b>
+          <small>{unit}</small>
+        </div>
+        {demo ? (
+          <div className={`rq-stat${short ? ' short' : ''}`}>
+            <span>Số dư demo sau khi chạy</span>
+            <b className="mono">{after.toLocaleString('vi-VN')}</b>
+            <small>đang có {credits.toLocaleString('vi-VN')}</small>
+          </div>
+        ) : (
+          <div className="rq-stat real">
+            <span>Ước tính tiền thật</span>
+            <b className="mono">≈ {vndOf(total)}</b>
+            <small>1 credit ≈ 1.000đ</small>
+          </div>
+        )}
+        <div className="rq-stat rq-stat-provider">
+          <span>Nhà cung cấp</span>
+          <ProviderBadge provider={provider} />
+          <small>{PROVIDER_LABEL[provider]}</small>
+        </div>
+      </div>
+
       <div className="rq-confirm-top">
         <div className="rq-summary">
           <span className="badge">{shown.length} cảnh</span>
@@ -194,7 +247,9 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
                 <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
                 <th title="Video tham chiếu (@video_N)">Video</th>
                 <th>Cảnh báo</th>
-                <th className="num">Credit</th>
+                <th className="num" title={unit}>
+                  Credit
+                </th>
                 <th>Trạng thái</th>
               </tr>
             </thead>
@@ -213,9 +268,19 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
         </div>
       )}
 
-      <div className="rq-confirm-note">
-        <Sparkles size={12} /> Chế độ demo: video giả, không gửi đi đâu và không tốn tiền thật. Credit bị lỗi/huỷ sẽ được hoàn lại.
-      </div>
+      {demo ? (
+        <div className="rq-confirm-note">
+          <Sparkles size={13} />
+          <span>Chế độ demo: video giả, không gửi đi đâu và không tốn tiền thật. Credit demo của job lỗi/huỷ được hoàn lại.</span>
+        </div>
+      ) : (
+        <div className="rq-confirm-note real">
+          <TriangleAlert size={13} />
+          <span>
+            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — tốn credit thật. Huỷ take trong SanoVids không dừng job đã gửi sang canvasapp.
+          </span>
+        </div>
+      )}
     </ModalShell>
   )
 }

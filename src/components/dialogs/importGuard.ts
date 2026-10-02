@@ -6,10 +6,10 @@
 // and close the dialog with every pasted prompt lost. Numbers above MAX_IMPORT_IMAGE are hidden from the import
 // helpers (masked while summarizing / mapping, restored afterwards) and stay exactly as written in the prompt.
 import { TOKEN_RE } from '../../core/compile'
-import type { ImportItem } from '../../core/importPrompts'
+import { MAX_SUMMARY_TOKEN, type ImportItem } from '../../core/importPrompts'
 
-/** Highest @image_N the import offers to map (models take far fewer reference images). */
-export const MAX_IMPORT_IMAGE = 99
+/** Highest @image_N the import offers to map (models take far fewer reference images) — the summary's own cap. */
+export const MAX_IMPORT_IMAGE = MAX_SUMMARY_TOKEN
 
 /** Private-use character standing in for the "@" of a masked token: no longer matches TOKEN_RE, same length. */
 const MASK = ''

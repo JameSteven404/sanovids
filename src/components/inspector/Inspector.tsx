@@ -6,12 +6,12 @@ import { CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClic
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, focusNodes, newScene } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { MODELS, usesVideoRefs } from '../../core/models'
+import { MODELS, modeLabel, usesVideoRefs } from '../../core/models'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
-import { modeLabel, useFileDropGuard } from '../sidebar/shared'
+import { useFileDropGuard } from '../sidebar/shared'
 import { AssetInspector } from './AssetInspector'
 import './inspector.css'
 import { MultiSceneInspector } from './MultiSceneInspector'
@@ -93,7 +93,7 @@ function TakeSummary({ takeIds }: { takeIds: string[] }) {
   const noVideo = useProject((s) => {
     const sc = single?.sceneId ? s.project.scenes.find((x) => x.id === single.sceneId) : undefined
     if (!sc || usesVideoRefs(sc.settings)) return ''
-    return `${MODELS[sc.settings.model]?.name ?? sc.settings.model} ở chế độ “${modeLabel(sc.settings.mode, sc.settings.model)}” của ${sceneCode(sc.order)} không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v')}” rồi thử lại`
+    return `${MODELS[sc.settings.model]?.name ?? sc.settings.model} ở chế độ “${modeLabel(sc.settings.mode, sc.settings.model)}” của ${sceneCode(sc.order)} không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” rồi thử lại`
   })
   return (
     <div className="in-empty in-take-sum">

@@ -103,3 +103,46 @@ describe('dropVideoRefs (copy / import without the takes)', () => {
     expect(dropVideoRefs(p)).toBe(p)
   })
 })
+
+describe('migrateTake provider fields', () => {
+  it('defaults old takes to the demo provider (not submitted, paid with demo credits)', () => {
+    const t = migrateTake({ id: 't', sceneId: 's', number: 1, status: 'completed' })
+    expect(t).toMatchObject({ provider: 'mock', remoteId: null, charged: true })
+    expect('framesSnapshot' in t).toBe(false)
+    expect('imageKeysSnapshot' in t).toBe(false)
+  })
+  it('keeps the fields of newer takes', () => {
+    const t = migrateTake({
+      id: 't',
+      status: 'processing',
+      provider: 'canvasapp',
+      remoteId: 'prj:job',
+      charged: false,
+      framesSnapshot: { first: 'a' },
+      imageKeysSnapshot: ['a:i1', 'b:i2'],
+    })
+    expect(t).toMatchObject({ provider: 'canvasapp', remoteId: 'prj:job', charged: false, framesSnapshot: { first: 'a', last: null } })
+    expect(t.imageKeysSnapshot).toEqual(['a:i1', 'b:i2'])
+  })
+  it('drops a malformed image key list', () => {
+    expect('imageKeysSnapshot' in migrateTake({ id: 't', imageKeysSnapshot: [1, 2] })).toBe(false)
+  })
+})
+
+describe('migrateProject presets', () => {
+  it('gives presets an id, a name and valid settings; drops links to missing presets', () => {
+    const p = migrateProject({
+      schemaVersion: 2,
+      presets: [{ id: 'k', name: '  ', model: 'minimax_h3', duration: 99 }, null, { name: 'B' }],
+      scenes: [
+        { id: 's1', presetId: 'k' },
+        { id: 's2', presetId: 'gone' },
+      ],
+    })
+    expect(p.presets).toHaveLength(2)
+    expect(p.presets[0]).toMatchObject({ id: 'k', name: 'Preset', model: 'minimax_h3', mode: 't2v', duration: 15, resolution: '768p', ratio: '16:9' })
+    expect(p.presets[1].id).toBeTruthy()
+    expect(p.presets[1].name).toBe('B')
+    expect(p.scenes.map((s) => s.presetId)).toEqual(['k', null])
+  })
+})

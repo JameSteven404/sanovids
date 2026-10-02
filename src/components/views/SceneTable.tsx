@@ -520,7 +520,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
       <span className="vw-cell-check" onClick={(e) => e.stopPropagation()}>
         <input type="checkbox" checked={selected} onChange={() => onToggle(id)} aria-label={`Chọn ${code}`} />
       </span>
-      <span className="vw-code" style={scene.color ? { color: scene.color } : undefined}>
+      <span className={`vw-code${scene.color ? ' tinted' : ''}`} style={scene.color ? { ['--vw-scene-c' as string]: scene.color } : undefined}>
         {code}
       </span>
       <span className="vw-cell-title">

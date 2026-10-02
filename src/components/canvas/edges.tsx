@@ -89,17 +89,21 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         id={id}
         path={path}
         interactionWidth={0}
-        style={{ stroke: hl ? 'var(--text-dim)' : base, strokeWidth: hl ? 1.8 : 1.2, strokeDasharray: '3 4', opacity: hl ? 0.95 : 0.55 }}
+        style={{ stroke: hl ? 'var(--text-dim)' : base, strokeWidth: hl ? 1.5 : 1.25, strokeDasharray: '3 4', opacity: hl ? 0.9 : 0.5 }}
       />
     )
   }
 
-  const stroke = kind === 'ref' && hl && data?.color ? withAlpha(data.color, 0.7) : base
+  // Calm by default (DESIGN.md: thin 1.5px wires, theme-token colors); a wire touching the hovered / selected node
+  // lights up, a selected wire is a little thicker with a soft glow.
+  const stroke = kind === 'ref' && hl && data?.color ? withAlpha(data.color, 0.75) : base
   const style = {
     stroke,
-    strokeWidth: selected ? 3 : hl ? 2.2 : kind === 'vref' ? 1.8 : 1.5,
-    opacity: hl ? 1 : kind === 'vref' ? 0.75 : 0.45,
-    filter: selected ? `drop-shadow(0 0 4px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.7)})` : undefined,
+    strokeWidth: selected ? 2.5 : hl ? 2 : 1.5,
+    opacity: hl ? 1 : kind === 'vref' ? 0.65 : 0.45,
+    strokeLinecap: 'round' as const,
+    transition: 'opacity 0.15s ease-out, stroke-width 0.15s ease-out',
+    filter: selected ? `drop-shadow(0 0 3px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.6)})` : undefined,
   }
   return (
     <>
@@ -121,7 +125,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
               cutEdge(id)
             }}
           >
-            <X size={12} strokeWidth={2.6} />
+            <X size={12} strokeWidth={2.4} />
           </button>
         </EdgeLabelRenderer>
       )}

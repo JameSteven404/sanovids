@@ -292,7 +292,7 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
       <div className="cv-scene-head">
         <span className="cv-code">{sceneCode(scene.order)}</span>
         <EditableTitle sceneId={scene.id} title={scene.title} />
-        <span className="cv-model" style={{ color: spec.color }} title={spec.name}>
+        <span className="cv-model" style={{ ['--model-c' as string]: spec.color }} title={spec.name}>
           {spec.short}
         </span>
         <span className={`status-dot ${status ?? ''}`} title={status ? `Take mới nhất: ${STATUS_LABEL[status]}` : 'Chưa chạy'} />

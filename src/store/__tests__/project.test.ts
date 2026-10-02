@@ -236,3 +236,55 @@ describe('moveRefToScene', () => {
     expect(sc('s1').refs).toEqual(['a'])
   })
 })
+
+describe('updatePreset', () => {
+  const settings = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' } as const
+  beforeEach(() => {
+    const p = project(3)
+    st().loadProject({
+      ...p,
+      presets: [{ id: 'k', name: 'Phim', ...settings }],
+      scenes: p.scenes.map((s, i) => (i < 2 ? { ...s, presetId: 'k' } : s)),
+    })
+    history().clear()
+  })
+
+  it('a rename keeps every link', () => {
+    st().updatePreset('k', { name: 'Phim dài' })
+    expect(st().project.presets[0].name).toBe('Phim dài')
+    expect(st().project.scenes.map((s) => s.presetId)).toEqual(['k', 'k', null])
+  })
+
+  it('changed settings unlink the scenes that no longer match, in one undo step', () => {
+    // s2 already has the duration the preset is about to get
+    st().loadProject({ ...st().project, scenes: st().project.scenes.map((s) => (s.id === 's2' ? { ...s, settings: { ...s.settings, duration: 5 } } : s)) })
+    history().clear()
+    st().updatePreset('k', { duration: 5 })
+    expect(st().project.presets[0].duration).toBe(5)
+    // s1 still has 15 s → unlinked; s2 already has 5 s → stays linked
+    expect(st().project.scenes.map((s) => s.presetId)).toEqual([null, 'k', null])
+    undo()
+    expect(st().project.presets[0].duration).toBe(15)
+    expect(st().project.scenes.map((s) => s.presetId)).toEqual(['k', 'k', null])
+  })
+
+  it('a blank name keeps the old one; unknown ids change nothing', () => {
+    st().updatePreset('k', { name: '  ' })
+    expect(st().project.presets[0].name).toBe('Phim')
+    const before = st().project
+    st().updatePreset('nope', { name: 'x' })
+    expect(st().project).toBe(before)
+  })
+})
+
+describe('removed images fall back to a readable name', () => {
+  it('blank asset name → tag', () => {
+    st().loadProject({
+      ...project(1),
+      assets: [{ id: 'a', kind: 'character', name: '  ', tag: 'Elara', description: '', imageIds: ['i1'], color: '#fff', position: null }],
+      scenes: [scene(0, { refs: ['a'], prompt: '@image_1 walks' })],
+    })
+    st().removeRef('s1', 'a')
+    expect(sc('s1').prompt).toBe('Elara walks')
+  })
+})

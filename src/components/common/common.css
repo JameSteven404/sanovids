@@ -1,0 +1,462 @@
+/*
+ * Shared components (components/common): sheet dialogs, toasts, media, image viewer, crash fallback.
+ * Apple-inspired (docs/DESIGN.md). Tokens only (src/styles/base.css) so both appearances work.
+ * Loaded after base.css, so these rules take over the older versions of the same classes there.
+ */
+
+/* ---------- modal (sheet) ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: cm-fade-in 0.2s ease-out;
+}
+.modal {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: cm-sheet-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.modal:focus,
+.modal:focus-visible {
+  outline: none;
+}
+.modal.wide {
+  width: min(880px, 100%);
+}
+.modal.xwide {
+  width: min(1120px, 100%);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 12px 14px 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.modal-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.modal-head .modal-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--text-dim);
+}
+.modal-head .modal-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.modal-head .modal-close:active {
+  background: var(--pressed);
+}
+.modal-head .modal-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px 20px 20px;
+  overflow: auto;
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+
+@keyframes cm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes cm-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+/* ---------- toasts (material, bottom center) ---------- */
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  max-width: min(600px, calc(100vw - 32px));
+  padding: 6px 6px 6px 12px;
+  /* docs/DESIGN.md: popovers, menus, hover previews and toasts share radius 12 (multi-line toasts stay tidy). */
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  animation: cm-toast-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Tone shows in the icon only: the capsule itself stays calm. */
+.toast.success,
+.toast.warning,
+.toast.error {
+  border-color: var(--border);
+}
+.toast-icon {
+  flex: none;
+  color: var(--info);
+}
+.toast.success .toast-icon {
+  color: var(--ok);
+}
+.toast.warning .toast-icon {
+  color: var(--warn);
+}
+.toast.error .toast-icon {
+  color: var(--danger);
+}
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.toast .toast-action {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease-out;
+}
+.toast .toast-action:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+/* Light appearance: orange text on a pale orange fill is only ~2.5:1; a deeper orange keeps the label readable. */
+:root[data-theme='light'] .toast .toast-action {
+  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+}
+.toast .toast-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.12s ease-out, color 0.12s ease-out;
+}
+.toast .toast-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.toast .toast-action:focus-visible,
+.toast .toast-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+@keyframes cm-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+}
+
+/* ---------- media ---------- */
+/* Asset without an image: its initial on a soft tint of its color (readable in both appearances). */
+.asset-avatar .fallback {
+  background: color-mix(in srgb, var(--asset-color, var(--seq)) 26%, var(--panel-2));
+  color: color-mix(in srgb, var(--asset-color, var(--seq)) 72%, var(--text));
+  font-weight: 600;
+}
+/* Light appearance: the palette's mid-tone colors need more of the dark text color to stay readable (~3.8:1). */
+:root[data-theme='light'] .asset-avatar .fallback {
+  color: color-mix(in srgb, var(--asset-color, var(--seq)) 55%, var(--text));
+}
+.chip.asset-chip {
+  border-color: color-mix(in srgb, var(--asset-color, var(--border-strong)) 40%, transparent);
+}
+.chip .x:focus-visible {
+  outline: none;
+  border-radius: 50%;
+  box-shadow: var(--focus-ring);
+}
+
+/* Full image (whole picture, real aspect ratio) on a subtle checkerboard: transparent PNGs and letterboxing read
+   as "the image ends here". */
+.full-img {
+  border-radius: var(--radius-sm);
+  background:
+    conic-gradient(var(--checker-a) 25%, var(--checker-b) 0 50%, var(--checker-a) 0 75%, var(--checker-b) 0) 0 0 / 16px 16px;
+}
+
+/* ---------- image viewer ---------- */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 95%, transparent);
+  animation: cm-fade-in 0.2s ease-out;
+}
+.lightbox:focus,
+.lightbox:focus-visible {
+  outline: none;
+}
+.lightbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 10px 8px 20px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.lightbox-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+.lightbox-count,
+.lightbox-size {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.lightbox-count {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.lightbox .lightbox-close {
+  border-radius: 50%;
+}
+.lightbox .lightbox-close:hover {
+  background: var(--hover);
+}
+.lightbox .lightbox-close:active {
+  background: var(--pressed);
+}
+.lightbox .lightbox-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 72px 32px;
+}
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  background:
+    conic-gradient(var(--checker-a) 25%, var(--checker-b) 0 50%, var(--checker-a) 0 75%, var(--checker-b) 0) 0 0 / 16px 16px;
+}
+.lightbox-loading {
+  color: var(--text-faint);
+}
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--material-strong);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease-out, transform 0.12s ease-out;
+}
+.lightbox-nav:hover {
+  background: var(--panel-3);
+}
+.lightbox-nav:active {
+  transform: translateY(-50%) scale(0.96);
+}
+.lightbox-nav:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.lightbox-nav.prev {
+  left: 16px;
+}
+.lightbox-nav.next {
+  right: 16px;
+}
+
+/* ---------- crash fallback (SectionBoundary) ---------- */
+.app-crash {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 20px;
+  text-align: center;
+  color: var(--text-dim);
+  /* Same surface as the region it replaces: the sidebar's own tint (app.css --sidebar-bg), else --panel. */
+  background: var(--sidebar-bg, var(--panel));
+}
+/* The center view sits on the window background. */
+.app-center > .app-crash:not(.bar) {
+  background: var(--bg);
+}
+.app-crash .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.app-crash-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.app-crash-title {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+.app-crash-text {
+  max-width: 360px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.app-crash-detail {
+  max-width: 360px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.app-crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.app-crash.bar {
+  flex: none;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 10px 4px 14px;
+  text-align: left;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.app-crash-bar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-crash-bar-text b {
+  color: var(--text);
+  font-weight: 600;
+}
+.app-crash-icon {
+  flex: none;
+  color: var(--warn);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .modal,
+  .toast,
+  .lightbox {
+    animation: none;
+  }
+  .lightbox-nav,
+  .toast .toast-action,
+  .toast .toast-close {
+    transition: none;
+  }
+}

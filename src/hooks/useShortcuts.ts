@@ -14,7 +14,6 @@ import {
 } from '../actions'
 import { useProject } from '../store/project'
 import { flush } from '../store/persist'
-import { useRuns } from '../store/runs'
 import { toast, useUI } from '../store/ui'
 
 /** Mac keyboards have no forward-delete key: there ⌫ (Backspace) is the delete key. */
@@ -37,59 +36,18 @@ export function deleteKeyAction(key: string, mac: boolean): 'now' | 'deferred' |
 }
 
 /**
- * Selection for the Delete key: takes selected together with their own scene are left out — deleting the scene hides
- * them and Undo brings them back, while deleting a take is permanent (box-selecting a row picks up its takes).
- * `spared` = the takes left out; `takes` = the takes that will be deleted for good.
+ * Selection rule of the Delete key (takes selected together with their own scene are spared). It lives in
+ * core/deletePlan and actions.deleteSelection applies it itself; re-exported here for older imports and tests.
  */
-export function keyboardDeletePlan(
-  selectedIds: readonly string[],
-  sceneIds: ReadonlySet<string>,
-  takeSceneOf: ReadonlyMap<string, string>,
-): { ids: string[]; spared: string[]; takes: string[] } {
-  const deadScenes = new Set(selectedIds.filter((id) => sceneIds.has(id)))
-  const ids: string[] = []
-  const spared: string[] = []
-  const takes: string[] = []
-  for (const id of selectedIds) {
-    const sceneId = takeSceneOf.get(id)
-    if (sceneId !== undefined && deadScenes.has(sceneId)) spared.push(id)
-    else {
-      ids.push(id)
-      if (sceneId !== undefined) takes.push(id)
-    }
-  }
-  return { ids, spared, takes }
-}
+export { keyboardDeletePlan } from '../core/deletePlan'
 
 /**
- * Delete key → actions.deleteSelection (which asks before deleting finished videos for good), after
- * keyboardDeletePlan: videos selected together with their own scene are not deleted, only hidden with it.
+ * Delete key → actions.deleteSelection, which spares videos selected together with their own scene (they are only
+ * hidden with it, Undo brings them back), asks before deleting finished videos for good and leaves the selection
+ * untouched when the question is cancelled.
  */
 function deleteFromKeyboard() {
-  const ui = useUI.getState()
-  if (!ui.selectedIds.length) {
-    deleteSelection()
-    return
-  }
-  const project = useProject.getState().project
-  const allTakes = useRuns.getState().takes
-  const plan = keyboardDeletePlan(ui.selectedIds, new Set(project.scenes.map((s) => s.id)), new Map(allTakes.map((t) => [t.id, t.sceneId])))
-  if (!plan.spared.length) {
-    deleteSelection()
-    return
-  }
-  const before = ui.selectedIds
-  const edges = ui.selectedEdgeIds
-  ui.select(plan.ids)
-  // The canvas drops the wire selection when the node selection changes from outside: keep the selected wires.
-  if (edges.length) useUI.getState().setSelectedEdges(edges)
-  const narrowed = useUI.getState().selectedIds
   deleteSelection()
-  // Cancelled in deleteSelection's own confirm: leave the selection as it was.
-  if (useUI.getState().selectedIds === narrowed) {
-    useUI.getState().select(before)
-    if (edges.length) useUI.getState().setSelectedEdges(edges)
-  }
 }
 
 function isTyping(target: EventTarget | null): boolean {

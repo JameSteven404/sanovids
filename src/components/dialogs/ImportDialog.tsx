@@ -107,7 +107,12 @@ export function ImportDialog() {
 
   const effMapping: ImageMapping = useMemo(() => Array.from({ length: summary.maxImage }, (_, i) => mapping[i] ?? null), [mapping, summary.maxImage])
   const mapped = hasMapping(effMapping, assets)
-  const assigned = effMapping.filter((id) => id && assets.some((a) => a.id === id && a.imageIds.length)).length
+  // Progress counts the numbers the prompts actually mention (each once), not every row up to the highest one.
+  const usable = useMemo(() => new Set(assets.filter((a) => a.imageIds.length).map((a) => a.id)), [assets])
+  const assigned = summary.images.filter((n) => {
+    const id = effMapping[n - 1]
+    return !!id && usable.has(id)
+  }).length
 
   // Everything lives in local state: closing the dialog (Esc, backdrop, ×, Huỷ) throws it away, so ask first.
   const dirty = !!text.trim() || files.length > 0 || mapping.some(Boolean)
@@ -242,7 +247,7 @@ export function ImportDialog() {
     footer = (
       <>
         <span className="dg-foot-info">
-          Đã gán <b>{assigned}</b>/{summary.maxImage} số
+          Đã gán <b>{assigned}</b>/{summary.images.length} số được dùng
         </span>
         <button className="btn" onClick={() => setStep(2)}>
           <ArrowLeft size={14} /> Quay lại
@@ -490,9 +495,9 @@ function StepPreview({
             <b>{fmt(avg)}</b>
             <span>ký tự TB</span>
           </div>
-          <div>
-            <b>{summary.maxImage ? `@${summary.maxImage}` : '—'}</b>
-            <span>ảnh cao nhất</span>
+          <div title={summary.images.length ? summary.images.map((n) => '@image_' + n).join(', ') : 'Không có token @image_N'}>
+            <b>{summary.images.length || '—'}</b>
+            <span>số @image</span>
           </div>
         </div>
 
@@ -504,8 +509,8 @@ function StepPreview({
           <div className="dg-callout ref">
             <Images size={14} />
             <span>
-              {summary.withImages} prompt dùng ảnh tham chiếu (tới <code>@image_{summary.maxImage}</code>). Bước tiếp theo: chọn ảnh trong thư viện cho từng số — hoặc nhập
-              ngay rồi nối ảnh sau.
+              {summary.withImages} prompt dùng {summary.images.length} số ảnh tham chiếu (tới <code>@image_{summary.maxImage}</code>). Bước tiếp theo: chọn ảnh trong
+              thư viện cho từng số — hoặc nhập ngay rồi nối ảnh sau.
             </span>
           </div>
         )}

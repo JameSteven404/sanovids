@@ -14,6 +14,22 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+/** Input types that do not take typed text (Escape in them may close a dialog right away). */
+const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
+
+/**
+ * True when `el` is a field the user types into (text-like input, textarea, contenteditable). Escape there must
+ * leave the field first instead of closing the dialog and losing what was typed. Reads only tagName / type /
+ * isContentEditable, so it is testable without a DOM.
+ */
+export function isTextEntry(el: { tagName?: string; type?: string; isContentEditable?: boolean } | null | undefined): boolean {
+  if (!el || !el.tagName) return false
+  const tag = el.tagName.toUpperCase()
+  if (tag === 'TEXTAREA') return true
+  if (tag === 'INPUT') return !NON_TEXT_INPUTS.has((el.type || 'text').toLowerCase())
+  return !!el.isContentEditable
+}
+
 /** Visible, enabled elements of `root` that Tab can reach, in DOM order. */
 export function focusableIn(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0)

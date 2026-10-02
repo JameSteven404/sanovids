@@ -2,8 +2,15 @@
 // The queue engine talks to video providers only through providers/types.ts (VideoProvider):
 //   queued → submit(request) → remoteId stored on the take → poll(remoteIds) → fetchResult → putBlob → completed.
 // The mock (demo) provider is the default; the canvasapp gateway is opt-in (desktop only, see docs/GATEWAY-CANVASAPP.md).
+//
+// One engine per project across tabs/windows: only the tab holding the Web Lock `sanovids-engine:<projectId>`
+// (store/engineLock.ts) submits and polls; other tabs just show the takes they reload from storage (store/persist.ts)
+// and try again every few seconds, so one of them takes over when the running tab closes. Taking over first syncs
+// with storage (persist registers `beforeTakeover`), then adopts what the previous tab left running:
+//   demo jobs restart from the queue; remote jobs with a remote id resume polling; a remote job without one (the
+//   page closed while it was being submitted) is marked failed — it is NEVER submitted again (that could pay twice).
 import { create } from 'zustand'
-import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
+import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
 import { migrateTake } from '../core/migrate'
@@ -13,7 +20,8 @@ import { putBlob } from '../lib/imageStore'
 import { activeProviderId, getProvider, providerBlockedReason, registerProvider } from '../providers'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
-import { providerOf, type JobFrame, type JobRequest, type ProviderId, type RemoteStatus, type RunTake } from '../providers/types'
+import { providerOf, type JobFrame, type JobRequest, type ProviderId, type RemoteStatus } from '../providers/types'
+import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
 import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
@@ -48,6 +56,11 @@ export interface RunsState {
   mock: MockSettings
   /** Last provider problem while polling (null = all good). UI may show it; cleared by the next successful poll. */
   providerIssue: ProviderIssue | null
+  /**
+   * This tab has queued/running takes but another tab/window of the same project runs the queue (Web Lock held
+   * there): progress shown here comes from that tab's saves. UI may say "Đang chạy ở một tab/cửa sổ khác".
+   */
+  engineElsewhere: boolean
 
   loadRuns: (data: { takes: Take[]; credits: number; spent: number } | null) => void
   /** Validate scenes before running (used by the confirm dialog). */
@@ -90,6 +103,47 @@ const pollPausedUntil = new Map<ProviderId, number>()
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
+/** Takes whose submit this engine started (since the last loadRuns): never "adopted" as left over by another tab. */
+const ownedHere = new Set<string>()
+
+/** Error of a remote take found running without a remote id: whether the provider got it is unknown. */
+export const UNKNOWN_SUBMIT_ERROR =
+  'Không rõ yêu cầu đã tới canvasapp hay chưa (trang bị đóng hoặc tải lại đúng lúc đang gửi). Kiểm tra trên canvasapp.io.vn trước khi chạy lại để không trả credit hai lần.'
+
+// ---- engine ownership (one tab per project) ----
+let lockManagerOverride: LockManagerLike | null | undefined
+const engineLock = createEngineLock(() => (lockManagerOverride === undefined ? browserLocks() : lockManagerOverride))
+/** While another tab holds the engine lock, try again this often (it is released when that tab idles or closes). */
+const LOCK_RETRY_MS = 3000
+let lockRetry: ReturnType<typeof setTimeout> | null = null
+let acquiring = false
+
+export interface EngineHooks {
+  /** False = this tab must not run jobs (e.g. its copy of the project is stale). Checked before starting and every tick. */
+  mayRun?: () => boolean
+  /**
+   * Called after this tab got the engine lock and before it runs anything: bring the open project up to date with
+   * storage (another tab may have run jobs meanwhile). Resolve false to give the lock back without running.
+   */
+  beforeTakeover?: (projectId: string) => Promise<boolean>
+}
+let hooks: EngineHooks = {}
+
+/** Registered by store/persist.ts (kept as a hook: persist imports this store). */
+export function setEngineHooks(next: EngineHooks): void {
+  hooks = next
+}
+
+/** Tests / embedding: the lock manager to use (null = no Web Locks API → this tab owns the engine; undefined = the browser's). */
+export function setEngineLockManager(m: LockManagerLike | null | undefined): void {
+  stopEngine()
+  lockManagerOverride = m
+}
+
+/** Whether this tab currently runs the queue of the open project. */
+export function ownsEngine(): boolean {
+  return !!engine && engineLock.held() === engineLockName(useProject.getState().project.id)
+}
 
 function savedMock(): MockSettings {
   try {
@@ -104,8 +158,8 @@ function savedMock(): MockSettings {
 const mockProvider = createMockProvider(() => useRuns.getState().mock)
 registerProvider(mockProvider)
 
-const isCharged = (t: Take) => (t as RunTake).charged !== false
-const remoteIdOf = (t: Take) => (t as RunTake).remoteId ?? null
+const isCharged = (t: Take) => t.charged !== false
+const remoteIdOf = (t: Take) => t.remoteId ?? null
 
 export const useRuns = create<RunsState>()((set, get) => ({
   takes: [],
@@ -113,17 +167,14 @@ export const useRuns = create<RunsState>()((set, get) => ({
   spent: 0,
   mock: savedMock(),
   providerIssue: null,
+  engineElsewhere: false,
 
   loadRuns: (data) => {
     resetEngineState()
-    // Demo jobs that were running when the page closed restart from the queue. Jobs already accepted by a remote
-    // provider keep their remote id and resume polling (never submitted twice — that would cost twice).
-    const takes = (data?.takes ?? []).map(migrateTake).map((t): Take => {
-      if (t.status !== 'processing') return t
-      if (providerOf(t) !== 'mock' && remoteIdOf(t)) return t
-      return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null } as RunTake
-    })
-    set({ takes, credits: data?.credits ?? 377, spent: data?.spent ?? 0, providerIssue: null })
+    // Takes are shown as saved. Takes left running are adopted when this tab gets the engine (see adoptOrphans):
+    // another tab may still be running them right now.
+    const takes = (data?.takes ?? []).map(migrateTake)
+    set({ takes, credits: data?.credits ?? 377, spent: data?.spent ?? 0, providerIssue: null, engineElsewhere: false })
     ensureEngine()
   },
 
@@ -164,7 +215,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
     if (chargeLocal && cost > get().credits) return { queued: 0, cost, skipped, error: `Không đủ credit: cần ${cost}, còn ${get().credits}.` }
 
     const now = Date.now()
-    const created: RunTake[] = ok.map((c, i) => {
+    const created: Take[] = ok.map((c, i) => {
       const scene = project.scenes.find((s) => s.id === c.sceneId)!
       const compiled = compileScene(project, scene)
       const number = Math.max(0, ...get().takes.filter((t) => t.sceneId === scene.id).map((t) => t.number)) + 1
@@ -181,6 +232,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
         rawPromptSnapshot: scene.prompt,
         refsSnapshot: [...scene.refs],
         videoRefsSnapshot: [...scene.videoRefs],
+        // Every image of the refs in @image_N order (before the model's cap), so "restore prompt" renumbers exactly.
+        imageKeysSnapshot: imageSlotsFor(project.assets, scene.refs).map(imageKey),
         settings: { ...scene.settings },
         cost: c.cost,
         starred: false,
@@ -278,19 +331,127 @@ function resetEngineState() {
   lastPoll.clear()
   pollPausedUntil.clear()
   pollFailures.clear()
+  ownedHere.clear()
   mockProvider.reset?.()
+  // The engine restarts for the loaded data (and adopts what was left running). The lock is kept for the same
+  // project — persist reloads it right after this tab took over — and let go for another one.
+  if (engine) clearInterval(engine)
+  engine = null
+  clearLockRetry()
+  const held = engineLock.held()
+  if (held && held !== engineLockName(useProject.getState().project.id)) engineLock.release()
 }
 
+const hasWork = (takes: Take[]) => takes.some((t) => t.status === 'queued' || t.status === 'processing')
+
+function setElsewhere(v: boolean) {
+  if (useRuns.getState().engineElsewhere !== v) useRuns.setState({ engineElsewhere: v })
+}
+
+function clearLockRetry() {
+  if (lockRetry) clearTimeout(lockRetry)
+  lockRetry = null
+}
+
+/**
+ * Stop running jobs in this tab and let another tab take over (the lock is released). Takes keep their state.
+ * Called by persist when this tab's copy of the project became stale; ensureEngine() starts again when allowed.
+ */
+export function stopEngine(): void {
+  if (engine) clearInterval(engine)
+  engine = null
+  clearLockRetry()
+  engineLock.release()
+  setElsewhere(false)
+}
+
+/** Run the queue in this tab when there is work and this tab may own the engine of the open project. */
 function ensureEngine() {
-  if (engine) return
-  engine = setInterval(tick, TICK_MS)
+  if (engine || acquiring) return
+  if (!hasWork(useRuns.getState().takes)) {
+    // Nothing to run: never sit on the lock (another tab may need it).
+    stopEngine()
+    return
+  }
+  if (hooks.mayRun && !hooks.mayRun()) return
+  const projectId = useProject.getState().project.id
+  const got = engineLock.tryAcquire(engineLockName(projectId))
+  if (got === true) {
+    startEngine()
+    return
+  }
+  acquiring = true
+  void (async () => {
+    let started = false
+    try {
+      if (!(await got)) {
+        if (useProject.getState().project.id === projectId) {
+          setElsewhere(true)
+          clearLockRetry()
+          lockRetry = setTimeout(() => {
+            lockRetry = null
+            ensureEngine()
+          }, LOCK_RETRY_MS)
+        }
+        return
+      }
+      let may = useProject.getState().project.id === projectId
+      if (may && hooks.beforeTakeover) {
+        try {
+          may = await hooks.beforeTakeover(projectId)
+        } catch {
+          may = false
+        }
+      }
+      if (!may || useProject.getState().project.id !== projectId || (hooks.mayRun && !hooks.mayRun())) {
+        if (engineLock.held() === engineLockName(projectId)) engineLock.release()
+        return
+      }
+      startEngine()
+      started = true
+    } finally {
+      acquiring = false
+      // Another project was opened meanwhile: run its queue.
+      if (!started && useProject.getState().project.id !== projectId) ensureEngine()
+    }
+  })()
+}
+
+function startEngine() {
+  clearLockRetry()
+  setElsewhere(false)
+  adoptOrphans()
+  if (!engine) engine = setInterval(tick, TICK_MS)
+}
+
+/**
+ * Takes found "processing" that this engine did not start (left by a closed/reloaded tab, or by the tab that ran the
+ * queue before this one): demo jobs go back to the queue (the mock lives in the page that closed); remote jobs with
+ * a remote id are polled again; remote jobs without one fail with UNKNOWN_SUBMIT_ERROR (never submitted twice).
+ */
+function adoptOrphans() {
+  const now = Date.now()
+  let refund = 0
+  let changed = false
+  const takes = useRuns.getState().takes.map((t): Take => {
+    if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id)) return t
+    if (providerOf(t) === 'mock') {
+      changed = true
+      return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
+    }
+    if (remoteIdOf(t)) return t
+    changed = true
+    if (isCharged(t)) refund += t.cost
+    return { ...t, status: 'failed', finishedAt: now, error: UNKNOWN_SUBMIT_ERROR }
+  })
+  if (changed) useRuns.setState((s) => ({ takes, credits: s.credits + refund, spent: s.spent - refund }))
 }
 
 const findTake = (id: string) => useRuns.getState().takes.find((t) => t.id === id)
 const stillProcessing = (id: string, gen: number) => gen === generation && findTake(id)?.status === 'processing'
 
-function patchTake(id: string, patch: Partial<RunTake>) {
-  useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? ({ ...t, ...patch } as Take) : t)) }))
+function patchTake(id: string, patch: Partial<Take>) {
+  useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? { ...t, ...patch } : t)) }))
 }
 
 /** Mark a running take failed, refunding demo credits when they were charged. */
@@ -324,12 +485,18 @@ function pollIntervalFor(pid: ProviderId): number {
 }
 
 function tick() {
+  // This tab may no longer run jobs (stale copy), or the lock is not for the open project: stop / start over.
+  if ((hooks.mayRun && !hooks.mayRun()) || engineLock.held() !== engineLockName(useProject.getState().project.id)) {
+    stopEngine()
+    ensureEngine()
+    return
+  }
   const { takes } = useRuns.getState()
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
   if (!active.length && !queued.length) {
-    if (engine) clearInterval(engine)
-    engine = null
+    // Idle: let the lock go, so a tab that queued jobs meanwhile can run them.
+    stopEngine()
     return
   }
   const now = Date.now()
@@ -351,9 +518,13 @@ function tick() {
     for (const t of started) void submitTake(t.id)
   }
 
-  // Running takes without a remote id (submit lost, e.g. engine restarted) are submitted again with the same
-  // idempotency key (take id).
-  for (const t of active) if (!remoteIdOf(t) && !submitting.has(t.id) && !fetching.has(t.id)) void submitTake(t.id)
+  // Running takes without a remote id whose submit is not in flight: the demo submits again (free, same key);
+  // a remote one is never submitted twice — whether the provider got it is unknown, so it fails with a hint.
+  for (const t of active) {
+    if (remoteIdOf(t) || submitting.has(t.id) || fetching.has(t.id)) continue
+    if (providerOf(t) === 'mock') void submitTake(t.id)
+    else failTake(t.id, UNKNOWN_SUBMIT_ERROR)
+  }
 
   // Poll each provider that has submitted, unfinished takes.
   const due = new Map<ProviderId, string[]>()
@@ -393,7 +564,7 @@ function buildRequest(t: Take): JobRequest {
         return { n: i + 1, takeId, videoId: v?.videoId ?? null, posterId: v?.posterId ?? null }
       })
     : []
-  const frames = (t as RunTake).framesSnapshot ?? { first: scene?.firstFrame ?? null, last: scene?.lastFrame ?? null }
+  const frames = t.framesSnapshot ?? { first: scene?.firstFrame ?? null, last: scene?.lastFrame ?? null }
   const frame = (assetId: string | null): JobFrame | null => {
     if (!assetId || t.settings.mode !== 'transform') return null
     const imageId = project.assets.find((a) => a.id === assetId)?.imageIds[0]
@@ -426,7 +597,10 @@ async function submitTake(id: string) {
   const gen = generation
   const t = findTake(id)
   if (!t || submitting.has(id)) return
+  // A remote job is submitted once per take, ever (a second submit could be paid twice).
+  if (providerOf(t) !== 'mock' && (ownedHere.has(id) || remoteIdOf(t))) return
   submitting.add(id)
+  ownedHere.add(id)
   const pid = providerOf(t)
   try {
     const provider = getProvider(pid)

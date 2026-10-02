@@ -24,7 +24,7 @@ export function RefPreview({ asset, label, anchor }: { asset: Asset; label: stri
   const pos = placePopover(anchor, w, h, window.innerWidth, window.innerHeight)
   const more = asset.imageIds.length - 1
   return createPortal(
-    <div className="cv-ref-preview nodrag nopan" style={{ left: pos.left, top: pos.top, width: w }} role="tooltip">
+    <div className="cv-ref-preview material nodrag nopan" style={{ left: pos.left, top: pos.top, width: w }} role="tooltip">
       <div className="cv-ref-preview-img" style={{ width: img.w, height: img.h }}>
         <FullImage id={id} alt={asset.name} fill />
       </div>

@@ -1,12 +1,12 @@
 import { Check, ChevronDown, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { MODELS, costOf, settingsLabel } from '../../core/models'
+import { MODELS, costOf, modeLabel, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast } from '../../store/ui'
 import { ConfirmButton, Section } from './bits'
-import { appliedPresetId, modelSpec, modeLabel, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
+import { appliedPresetId, modelSpec, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
 
 /** Number of scenes running with each preset (applied, and not changed since — by the scene or by editing the preset). */
 const presetUsageSelector = (s: ProjectState) => {
@@ -156,7 +156,7 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
         <div className="sb-preset-main">
           <div className="sb-preset-top">
             <span className="sb-preset-name">{preset.name}</span>
-            <span className="sb-model" style={{ color: spec.color, borderColor: spec.color + '55' }} title={spec.name}>
+            <span className="sb-model" style={{ '--sb-m': spec.color } as CSSProperties} title={spec.name}>
               {spec.short}
             </span>
             {active && (

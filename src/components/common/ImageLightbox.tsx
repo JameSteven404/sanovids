@@ -4,6 +4,7 @@ import { useImageSize } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useUI } from '../../store/ui'
 import { trapTab, useOverlayFocus } from './focus'
+import './common.css'
 
 /**
  * Full-screen viewer for reference images: the whole picture at its real aspect ratio, as large as the window allows.
@@ -53,11 +54,10 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
       aria-modal="true"
       aria-label={title ?? 'Xem ảnh'}
       tabIndex={-1}
-      style={{ outline: 'none' }}
       onMouseDown={closeFromBackdrop}
       onKeyDown={trapTab}
     >
-      <div className="lightbox-bar">
+      <div className="lightbox-bar material">
         <span className="lightbox-title">{title ?? 'Ảnh tham chiếu'}</span>
         {many && (
           <span className="lightbox-count">
@@ -69,7 +69,7 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
             {size.w}×{size.h}
           </span>
         )}
-        <button className="icon-btn" onClick={close} title="Đóng (Esc)" aria-label="Đóng">
+        <button type="button" className="icon-btn lightbox-close" onClick={close} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>
       </div>
@@ -78,11 +78,11 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
       </div>
       {many && (
         <>
-          <button className="lightbox-nav prev" onClick={() => setI((n) => (n - 1 + imageIds.length) % imageIds.length)} aria-label="Ảnh trước">
-            <ChevronLeft size={26} />
+          <button type="button" className="lightbox-nav prev material" onClick={() => setI((n) => (n - 1 + imageIds.length) % imageIds.length)} aria-label="Ảnh trước">
+            <ChevronLeft size={22} />
           </button>
-          <button className="lightbox-nav next" onClick={() => setI((n) => (n + 1) % imageIds.length)} aria-label="Ảnh sau">
-            <ChevronRight size={26} />
+          <button type="button" className="lightbox-nav next material" onClick={() => setI((n) => (n + 1) % imageIds.length)} aria-label="Ảnh sau">
+            <ChevronRight size={22} />
           </button>
         </>
       )}

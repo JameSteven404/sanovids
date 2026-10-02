@@ -18,7 +18,8 @@ import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
 import type { JobRequest, RemoteStatus, RunTake, VideoProvider } from '../types'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
+import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
@@ -80,7 +81,33 @@ function fakeProvider(id: 'mock' | 'canvasapp', pollIntervalMs = 0) {
 const realMock = getProvider('mock')
 const take = (id: string) => useRuns.getState().takes.find((t) => t.id === id) as RunTake
 
+/** Web Locks stand-in shared by "tabs": `otherTab(name)` holds a lock until the returned function is called. */
+function fakeLocks() {
+  const held = new Set<string>()
+  const m: LockManagerLike & { held: Set<string>; otherTab: (name: string) => () => void } = {
+    held,
+    request: async (name, _opts, cb) => {
+      await Promise.resolve() // granted asynchronously, like the browser
+      if (held.has(name)) return cb(null)
+      held.add(name)
+      try {
+        return await cb({ name })
+      } finally {
+        held.delete(name)
+      }
+    },
+    otherTab: (name) => {
+      held.add(name)
+      return () => held.delete(name)
+    },
+  }
+  return m
+}
+
 beforeEach(() => {
+  // Default: no Web Locks API (this tab owns the engine). Tests of the lock install a fake one.
+  setEngineLockManager(null)
+  setEngineHooks({})
   vi.useFakeTimers()
   useProject.getState().loadProject(project())
   useRuns.getState().loadRuns({ takes: [], credits: 100, spent: 0 })
@@ -94,7 +121,11 @@ afterEach(() => {
   useProviderPrefs.setState({ provider: 'mock' })
   delete (globalThis as { window?: unknown }).window
 })
-afterAll(() => registerProvider(realMock))
+afterAll(() => {
+  registerProvider(realMock)
+  setEngineLockManager(undefined)
+  setEngineHooks({})
+})
 
 describe('runs engine with a provider', () => {
   it('submits, stores the remote id, follows progress and stores the result', async () => {
@@ -241,5 +272,93 @@ describe('runs engine with a provider', () => {
     const t = { ...(useRuns.getState().takes[0] ?? {}), id: 'old', sceneId: 's1', number: 1, status: 'processing', progress: 50, startedAt: 5, createdAt: 1 } as Take
     useRuns.getState().loadRuns({ takes: [t], credits: 10, spent: 0 })
     expect(take('old')).toMatchObject({ status: 'queued', progress: 0, startedAt: null })
+  })
+
+  it('enqueue keeps the full image key list of the refs (before the model cap)', () => {
+    useRuns.getState().enqueue(['s1', 's2'])
+    const [a, b] = useRuns.getState().takes
+    expect(a.imageKeysSnapshot).toEqual(['a:i1', 'a:i2'])
+    expect(b.imageKeysSnapshot).toEqual([])
+    expect(a).toMatchObject({ provider: 'mock', remoteId: null, charged: true, framesSnapshot: { first: null, last: null } })
+  })
+
+  it('a remote take left running without a remote id fails and is never submitted again', async () => {
+    ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
+    const f = fakeProvider('canvasapp', 20_000)
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return new Promise(() => undefined) // the page "closes" while submitting
+    }
+    registerProvider(f.p)
+    useProviderPrefs.setState({ provider: 'canvasapp' })
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    expect(f.submitted.length).toBe(1)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: null })
+
+    // reload with the data saved meanwhile
+    useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 })
+    expect(take(id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(f.submitted.length).toBe(1)
+    expect(useRuns.getState().credits).toBe(100)
+  })
+
+  it('only the tab holding the engine lock runs jobs; another tab takes over when it is released', async () => {
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    const takeover = vi.fn(async () => true)
+    setEngineHooks({ beforeTakeover: takeover })
+    const releaseOther = locks.otherTab('sanovids-engine:p')
+    const f = fakeProvider('mock')
+    registerProvider(f.p)
+
+    useRuns.getState().enqueue(['s2'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f.submitted.length).toBe(0)
+    expect(useRuns.getState().engineElsewhere).toBe(true)
+    expect(useRuns.getState().takes[0].status).toBe('queued')
+
+    releaseOther()
+    await vi.advanceTimersByTimeAsync(3500)
+    expect(takeover).toHaveBeenCalledWith('p')
+    expect(useRuns.getState().engineElsewhere).toBe(false)
+    expect(f.submitted.length).toBe(1)
+    expect(locks.held.has('sanovids-engine:p')).toBe(true)
+
+    // done → idle → the lock is let go
+    const id = useRuns.getState().takes[0].id
+    f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'completed', progress: 100 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take(id).status).toBe('completed')
+    expect(locks.held.has('sanovids-engine:p')).toBe(false)
+  })
+
+  it('a tab that only displays progress leaves running takes alone', async () => {
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    locks.otherTab('sanovids-engine:p')
+    const t = {
+      id: 'old', sceneId: 's1', number: 1, status: 'processing', progress: 50, createdAt: 1, startedAt: 5, finishedAt: null,
+      promptSnapshot: '', rawPromptSnapshot: '', refsSnapshot: [], videoRefsSnapshot: [], settings: project().scenes[0].settings,
+      cost: 4, starred: false, posterId: null, videoId: null, error: null, position: null, provider: 'mock', remoteId: 'old',
+    } as Take
+    useRuns.getState().loadRuns({ takes: [t], credits: 10, spent: 0 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take('old')).toMatchObject({ status: 'processing', progress: 50, startedAt: 5 })
+    expect(useRuns.getState().engineElsewhere).toBe(true)
+  })
+
+  it('beforeTakeover = false: nothing runs and the lock is given back', async () => {
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    setEngineHooks({ beforeTakeover: async () => false })
+    const f = fakeProvider('mock')
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f.submitted.length).toBe(0)
+    expect(locks.held.size).toBe(0)
   })
 })

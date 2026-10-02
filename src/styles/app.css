@@ -1,29 +1,98 @@
-/* App shell layout. Regions: top bar / left sidebar / center view / right inspector. */
+/* App shell layout. Regions: top bar / left sidebar / center view / right inspector. Tokens only (base.css). */
 .app-loading {
+  flex: 1;
   height: 100%;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: var(--text-dim);
+  background: var(--bg);
 }
+/* Quiet activity indicator before "Đang mở dự án…" / "Đang tải…". */
+.app-loading.busy::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--text-dim);
+  animation: app-spin 0.8s linear infinite;
+}
+@keyframes app-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Startup failed (storage blocked / unreadable data): see BootError in App.tsx. */
+.app-boot-error {
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.app-boot-error-title {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+}
+.app-boot-error-text {
+  max-width: 520px;
+  line-height: 1.5;
+}
+.app-boot-error-detail {
+  max-width: 520px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.app-boot-error .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .app {
   height: 100%;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
 }
 .app-main {
   flex: 1;
   min-height: 0;
   display: flex;
 }
+
+/* Side panels: --panel surfaces with hairline separators toward the center. */
 .app-left {
+  /* Sidebar surface; sidebar content (sticky headers, fades) can match it with var(--sidebar-bg, var(--panel)). */
+  --sidebar-bg: var(--panel);
   width: var(--left-w);
   flex: none;
-  border-right: 1px solid var(--border);
-  background: var(--panel);
   min-height: 0;
   display: flex;
   flex-direction: column;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+}
+/* Light appearance: a faint gray sidebar next to the white inspector, like macOS source lists. */
+:root[data-theme='light'] .app-left {
+  --sidebar-bg: color-mix(in srgb, var(--panel-2) 60%, var(--panel));
+}
+.app-right {
+  width: var(--right-w);
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
 }
 .app-center {
   position: relative;
@@ -34,6 +103,16 @@
   flex-direction: column;
   background: var(--bg);
 }
+/* A crashed queue bar (SectionBoundary variant "bar") sits where the drawer bar would be. */
+.app-center > .app-crash.bar.app-crash-queue {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  border-bottom: 0;
+}
+
 /* ---------- resizable side panels (see components/common/PanelResizer.tsx) ---------- */
 .panel-resizer {
   position: relative;
@@ -42,8 +121,9 @@
   z-index: 20;
   cursor: col-resize;
   outline: none;
+  touch-action: none;
 }
-/* Wide invisible hit area centered on the panel border. */
+/* Wide invisible hit area centered on the panel's hairline. */
 .panel-resizer::before {
   content: '';
   position: absolute;
@@ -52,7 +132,8 @@
   left: -4px;
   width: 8px;
 }
-/* Visible line on hover / drag / keyboard focus. */
+/* Accent line over the hairline on hover (after a short delay, so passing the mouse over it stays calm),
+   while dragging and on keyboard focus. */
 .panel-resizer::after {
   content: '';
   position: absolute;
@@ -60,13 +141,18 @@
   bottom: 0;
   left: -1px;
   width: 2px;
+  border-radius: 1px;
   background: transparent;
-  transition: background 0.12s;
+  transition: background 0.15s ease-out;
 }
-.panel-resizer:hover::after,
+.panel-resizer:hover::after {
+  background: var(--accent);
+  transition-delay: 0.12s;
+}
 .panel-resizer:focus-visible::after,
 .panel-resizer.active::after {
   background: var(--accent);
+  transition-delay: 0s;
 }
 .panel-resizer.will-collapse::after {
   background: var(--danger);
@@ -80,12 +166,16 @@ body.is-resizing-panels video {
   pointer-events: none;
 }
 
-.app-right {
-  width: var(--right-w);
-  flex: none;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+@media (prefers-reduced-motion: reduce) {
+  .panel-resizer::after {
+    transition: none;
+  }
+  .app-loading.busy::before {
+    animation-duration: 2.4s;
+  }
+}
+/* A crashed top bar keeps its height so the layout below does not jump. */
+.app > .app-crash.bar.app-crash-topbar {
+  min-height: var(--topbar-h);
+  border-top: 0;
 }

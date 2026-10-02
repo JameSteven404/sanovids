@@ -11,6 +11,8 @@ export interface Toast {
   text: string
   tone: 'info' | 'success' | 'warning' | 'error'
   action?: ToastAction
+  /** Stays until dismissed (its action runs, or dismissToast) — never times out, never pushed out by newer toasts. */
+  persistent?: boolean
 }
 
 export type DialogState =
@@ -100,7 +102,8 @@ export interface UIState {
   openDialog: (d: DialogState) => void
   closeDialog: () => void
 
-  toast: (text: string, opts?: { tone?: Toast['tone']; action?: ToastAction; ms?: number }) => number
+  /** Show a toast; returns its id. `persistent` = no timeout (dismiss it with dismissToast). */
+  toast: (text: string, opts?: { tone?: Toast['tone']; action?: ToastAction; ms?: number; persistent?: boolean }) => number
   dismissToast: (id: number) => void
 }
 
@@ -200,13 +203,28 @@ export const useUI = create<UIState>()((set, get) => ({
   toast: (text, opts = {}) => {
     const id = toastSeq++
     const t: Toast = { id, text, tone: opts.tone ?? 'info', action: opts.action }
-    set((s) => ({ toasts: [...s.toasts.slice(-3), t] }))
-    const ms = opts.ms ?? (opts.action ? 6000 : 2800)
-    setTimeout(() => get().dismissToast(id), ms)
+    if (opts.persistent) t.persistent = true
+    set((s) => ({ toasts: keepToasts([...s.toasts, t]) }))
+    if (!opts.persistent) {
+      const ms = opts.ms ?? (opts.action ? 6000 : 2800)
+      // Clamp: setTimeout fires at once for delays above 2^31-1 ms.
+      setTimeout(() => get().dismissToast(id), Math.min(Math.max(0, ms), 2 ** 31 - 1))
+    }
     return id
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }))
+
+/** At most 4 toasts on screen: the oldest non-persistent ones go first. */
+function keepToasts(list: Toast[]): Toast[] {
+  const out = [...list]
+  while (out.length > 4) {
+    const i = out.findIndex((t) => !t.persistent)
+    if (i < 0) break
+    out.splice(i, 1)
+  }
+  return out
+}
 
 function sameList(a: string[], b: string[]) {
   return a.length === b.length && a.every((x, i) => x === b[i])

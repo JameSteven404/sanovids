@@ -6,8 +6,9 @@
 //    as an installed app (display-mode standalone, iOS home screen, or the desktop build).
 // Call initPwa() once at startup (main.tsx) so the one-shot beforeinstallprompt event is never missed.
 import { useSyncExternalStore } from 'react'
+import type { CanvasappBridge } from '../providers/canvasapp/transport'
 import { flush, useSave } from '../store/persist'
-import { toast } from '../store/ui'
+import { toast, useUI } from '../store/ui'
 
 export interface PwaInstallState {
   /** The browser offered to install the app (beforeinstallprompt received). */
@@ -24,6 +25,8 @@ export interface DesktopInfo {
   version: string
   electron?: string
   platform?: string
+  /** canvasapp.io.vn gateway (IPC to the main process); missing in older desktop builds. See providers/canvasapp. */
+  canvasapp?: CanvasappBridge
 }
 
 declare global {
@@ -158,18 +161,55 @@ export function registerServiceWorker(): void {
     .catch(() => undefined)
 }
 
+/**
+ * Is the user in the middle of something a reload would interrupt: a dialog open, or typing in a text field
+ * (prompt editor, rename box…)? Exported for tests.
+ */
+export function isUserBusy(dialogOpen: boolean, active: Element | null): boolean {
+  if (dialogOpen) return true
+  const el = active as HTMLElement | null
+  if (!el || !el.tagName) return false
+  const tag = el.tagName.toUpperCase()
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (tag === 'INPUT') {
+    const type = ((el as HTMLInputElement).type || 'text').toLowerCase()
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'].includes(type)
+  }
+  return !!el.isContentEditable
+}
+
 let reloading = false
-async function reloadForUpdate() {
+let updateToast: number | null = null
+
+/** Save what is unsaved, then load the new version. */
+async function saveAndReload() {
   if (reloading) return
   reloading = true
   try {
     // Before bootstrap finished there is nothing of the user's in memory to save.
-    if (useSave.getState().ready) {
-      toast('Đã có phiên bản mới — đang lưu và tải lại…', { tone: 'info', ms: 4000 })
-      await flush()
-    }
+    if (useSave.getState().ready) await flush()
   } catch {
     /* reload anyway: the pagehide handler writes the emergency backup */
   }
   window.location.reload()
+}
+
+/**
+ * A new version took over. Reload now unless the user is busy (dialog open / typing): then a toast that stays
+ * ("Đã có phiên bản mới" · "Tải lại") lets them reload when they are ready.
+ */
+async function reloadForUpdate() {
+  if (reloading) return
+  const busy = isUserBusy(useUI.getState().dialog.kind !== 'none', typeof document !== 'undefined' ? document.activeElement : null)
+  if (!busy) {
+    if (useSave.getState().ready) toast('Đã có phiên bản mới — đang lưu và tải lại…', { tone: 'info', ms: 4000 })
+    await saveAndReload()
+    return
+  }
+  if (updateToast !== null && useUI.getState().toasts.some((t) => t.id === updateToast)) return
+  updateToast = toast('Đã có phiên bản mới', {
+    tone: 'info',
+    persistent: true,
+    action: { label: 'Tải lại', run: () => void saveAndReload() },
+  })
 }

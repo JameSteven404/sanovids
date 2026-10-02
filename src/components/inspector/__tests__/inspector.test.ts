@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { MODELS } from '../../../core/models'
 import type { Asset } from '../../../core/types'
 import { findMention, fold, popupPlacement, POPUP_MAX_H } from '../mentions'
 import { changedSource, existingIds, pickView, type SelectionParts } from '../selection'
-import { patchFits, patchLabel } from '../SettingsFields'
+import { patchFits, patchLabel, segmentsNeedFullRow } from '../SettingsFields'
 import {
   imageOptsFor,
   insertAt,
@@ -247,6 +248,19 @@ describe('patchFits (batch settings on scenes with different models)', () => {
   it('labels the value', () => {
     expect(patchLabel({ resolution: '2k' })).toBe('2K')
     expect(patchLabel({ duration: 30 })).toBe('30s')
+  })
+})
+
+describe('segmented settings controls', () => {
+  it('keep duration and resolution side by side for one model', () => {
+    const sd = MODELS.seedance_2_5
+    const h3 = MODELS.minimax_h3
+    expect(segmentsNeedFullRow(sd.durations, sd.resolutions)).toBe(false)
+    expect(segmentsNeedFullRow(h3.durations, h3.resolutions)).toBe(false)
+  })
+  it('give them a full row each when several models offer 5 resolutions', () => {
+    const resolutions = [...MODELS.seedance_2_5.resolutions, ...MODELS.minimax_h3.resolutions]
+    expect(segmentsNeedFullRow(MODELS.seedance_2_5.durations, resolutions)).toBe(true)
   })
 })
 

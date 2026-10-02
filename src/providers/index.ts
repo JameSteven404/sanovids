@@ -1,4 +1,19 @@
 // Provider registry + the "which provider runs new takes" setting.
+//
+// ---- For the UI (verified to exist) ----
+//   activeProviderId(): ProviderId          provider that NEW takes will use ('canvasapp' only when chosen in Settings
+//                                          AND the desktop bridge exists; otherwise 'mock').
+//   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
+//   PROVIDER_LABEL[id]                      "Demo giả lập" | "canvasapp.io.vn".
+//   useProviderPrefs                        { provider, setProvider } — the Settings choice (persisted).
+//   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null.
+//   useRuns(s => s.providerIssue)           (store/runs) last polling problem { provider, code, message, at } | null;
+//                                          cleared by the next successful poll. Running takes are kept meanwhile.
+//   useRuns(s => s.engineElsewhere)         (store/runs) true = this tab has queued/running takes but another
+//                                          tab/window of the project runs the queue (this one only shows progress).
+//   Take fields (core/types): provider, remoteId, charged (false = not paid with demo credits), framesSnapshot,
+//   imageKeysSnapshot. The take whose provider is 'canvasapp' and status 'failed' with UNKNOWN_SUBMIT_ERROR
+//   (store/runs) was never resubmitted: the user must check canvasapp.io.vn.
 // Default and fallback: the mock (demo) provider. The canvasapp gateway is only active when the user chose it in
 // Settings AND the desktop bridge exists (window.bdpDesktop.canvasapp).
 // NOTE: do not import lib/pwa or store/* here (runs.ts imports this module; avoid import cycles).
@@ -10,6 +25,7 @@ import { createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE } from './c
 import type { ProviderId, VideoProvider } from './types'
 
 export type { ProviderId, VideoProvider } from './types'
+export { providerOf } from './types'
 
 const PREF_KEY = 'bdp:pref:provider'
 

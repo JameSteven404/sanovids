@@ -43,6 +43,11 @@ export function AssetInspector({ assetId }: { assetId: string }) {
   const toggleCanvas = () => {
     if (asset.position) {
       useProject.getState().setAssetOnCanvas(assetId, null)
+      // Its canvas node is gone (and with it the canvas selection that showed this panel): keep showing the asset
+      // here as a library selection, like the library card the user would otherwise have to click.
+      const ui = useUI.getState()
+      if (ui.selectedIds.includes(assetId)) ui.select(ui.selectedIds.filter((x) => x !== assetId))
+      ui.setLibrarySelection([assetId])
       toast(`Đã bỏ @${asset.tag} khỏi canvas (vẫn còn trong thư viện).`, { action: undoToastAction() })
       return
     }

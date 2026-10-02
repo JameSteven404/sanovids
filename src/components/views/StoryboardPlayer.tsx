@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { providerOf } from '../../providers'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
 import { formatRuntime } from './shared'
@@ -154,6 +155,8 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   if (!item) return null
 
   const totalS = items.reduce((t, i) => t + i.duration, 0)
+  // Demo takes are ~3 s fake clips; takes from a real provider (canvasapp) play at their own length.
+  const hasDemo = items.some((i) => i.take && providerOf(i.take) === 'mock')
   const take = item.take
   const posterId = take?.posterId ?? null
   const canSave = take?.status === 'completed'
@@ -196,7 +199,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
             ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
           </span>
         </span>
-        <span className="vw-player-note">Demo: video giả ~3 giây · cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <span className="vw-player-note">{hasDemo ? 'Demo: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>

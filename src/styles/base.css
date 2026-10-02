@@ -116,11 +116,24 @@
   --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.08), 0 24px 60px rgba(0, 0, 0, 0.16);
   --focus-ring: 0 0 0 3px rgba(0, 122, 255, 0.3);
   --scrollbar: rgba(0, 0, 0, 0.22);
+  --accent-ink: #c25e00;
+  --ref-ink: #087489;
+  --video-ink: #8a35b8;
 
   color-scheme: light;
 }
 
 :root {
+  /* Over photos and videos the chrome is always light-on-dark, whatever the theme. */
+  --media-bg: #000;
+  --media-scrim: rgba(0, 0, 0, 0.58);
+  --on-media: #fff;
+
+  /* Text drawn in a tint color ("ink") — deeper in the light theme so it stays readable on white/soft fills. */
+  --accent-ink: var(--accent);
+  --ref-ink: var(--ref);
+  --video-ink: var(--video);
+
   --radius-xs: 6px;
   --radius-sm: 8px;
   --radius: 12px;
@@ -265,11 +278,21 @@ textarea {
 }
 .icon-btn.active {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.chip .x:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 /* ---------- form fields ---------- */
@@ -282,9 +305,8 @@ textarea {
 .label {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
 }
 .input,
 .select,
@@ -301,8 +323,8 @@ textarea {
 .input:focus,
 .select:focus,
 .textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--border-strong);
+  box-shadow: var(--focus-ring);
 }
 .textarea {
   resize: vertical;
@@ -359,11 +381,11 @@ textarea {
 }
 .badge.accent {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .badge.ref {
   background: var(--ref-soft);
-  color: var(--ref);
+  color: var(--ref-ink);
 }
 .badge.warn {
   background: var(--warn-soft);
@@ -397,16 +419,15 @@ textarea {
   justify-content: space-between;
   gap: 8px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
 }
 .empty {
-  padding: 18px 12px;
-  border: 1px dashed var(--border-strong);
+  padding: 20px 14px;
   border-radius: var(--radius);
-  color: var(--text-faint);
+  background: var(--panel-2);
+  color: var(--text-dim);
   text-align: center;
   font-size: 12px;
 }
@@ -452,117 +473,6 @@ textarea {
   transition: width 0.2s linear;
 }
 
-/* ---------- modal ---------- */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  background: var(--scrim);
-  backdrop-filter: blur(2px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-.modal {
-  width: min(560px, 100%);
-  max-height: calc(100vh - 48px);
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-}
-.modal.wide {
-  width: min(880px, 100%);
-}
-.modal.xwide {
-  width: min(1120px, 100%);
-}
-.modal-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.modal-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  flex: 1;
-}
-.modal-body {
-  padding: 16px;
-  overflow: auto;
-}
-.modal-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-}
-
-/* ---------- toasts ---------- */
-.toasts {
-  position: fixed;
-  left: 50%;
-  bottom: 22px;
-  transform: translateX(-50%);
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: center;
-  pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 38px;
-  padding: 8px 10px 8px 14px;
-  border-radius: var(--radius);
-  background: var(--material-strong);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow);
-  font-weight: 500;
-  animation: toast-in 0.18s ease-out;
-}
-.toast.success {
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
-}
-.toast.warning {
-  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
-}
-.toast.error {
-  border-color: color-mix(in srgb, var(--danger) 60%, transparent);
-}
-.toast button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font-weight: 600;
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
-}
-.toast button:hover {
-  background: var(--accent-soft);
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-}
-
 /* ---------- media ---------- */
 .media-img {
   display: block;
@@ -596,7 +506,7 @@ textarea {
   width: 100%;
   height: 100%;
   font-weight: 700;
-  color: #fff;
+  color: var(--on-media);
 }
 .chip {
   display: inline-flex;
@@ -627,13 +537,14 @@ textarea {
   color: var(--danger);
 }
 
-/* ---------- full image (whole picture, real aspect ratio) ---------- */
+
+/* ---------- full image (whole picture, real aspect ratio — never cropped) ----------
+   Structure lives here; components/common/common.css only adds the radius/checkerboard look. */
 .full-img {
   position: relative;
   width: 100%;
   overflow: hidden;
-  border-radius: 8px;
-  /* subtle checkerboard so transparent PNGs and letterboxing read as "the image ends here" */
+  border-radius: var(--radius-sm);
   background:
     conic-gradient(var(--checker-a) 25%, var(--checker-b) 0 50%, var(--checker-a) 0 75%, var(--checker-b) 0) 0 0 / 16px 16px;
 }
@@ -650,74 +561,4 @@ textarea {
 }
 .full-img.zoomable {
   cursor: zoom-in;
-}
-
-/* ---------- image viewer ---------- */
-.lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  display: flex;
-  flex-direction: column;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(3px);
-}
-.lightbox-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  color: var(--text-dim);
-}
-.lightbox-title {
-  flex: 1;
-  color: var(--text);
-  font-weight: 600;
-  font-size: 14px;
-}
-.lightbox-count,
-.lightbox-size {
-  font-size: 12px;
-}
-.lightbox-stage {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 64px 28px;
-}
-.lightbox-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 6px;
-  box-shadow: var(--shadow-lg);
-}
-.lightbox-loading {
-  color: var(--text-faint);
-}
-.lightbox-nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid var(--border-strong);
-  background: var(--material-strong);
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.lightbox-nav:hover {
-  background: var(--panel-3);
-}
-.lightbox-nav.prev {
-  left: 12px;
-}
-.lightbox-nav.next {
-  right: 12px;
 }

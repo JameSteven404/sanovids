@@ -3,11 +3,11 @@ import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-r
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { imageSlotsFor, mediaKeys, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import { MODE_LABEL, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
-import type { Asset, AssetKind, ModelId, Mode, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
+import { MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
+import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
-import { assetNodeHeight } from '../canvas/canvasModel'
-import { useUI } from '../../store/ui'
+import { assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
+import { useUI, type TakeDisplay } from '../../store/ui'
 
 /**
  * HTML5 drag payload types now live in `src/lib/dnd.ts` (ASSETS_MIME, TAKES_MIME, readIds); import them from there.
@@ -40,11 +40,9 @@ export function modelSpec(model: string): ModelSpec {
 /**
  * Mode label for one model: "(+ảnh)" only where that model + mode really sends reference images
  * (MiniMax-H3's Text → Video sends none). With several models (`model` omitted) the plain name.
+ * Lives in core/models now; re-exported so the panels' existing imports keep working.
  */
-export function modeLabel(mode: Mode, model?: ModelId): string {
-  const label = MODE_LABEL[mode] ?? mode
-  return model && usesRefs({ model, mode, duration: 0, resolution: '', ratio: '' }) ? label : label.replace(/\s*\(\+ảnh\)$/, '')
-}
+export { modeLabel } from '../../core/models'
 
 /** Do a scene's settings still equal the preset's (a preset edited after it was applied no longer matches)? */
 export function presetMatches(preset: Preset, settings: VideoSettings): boolean {
@@ -219,6 +217,16 @@ export function finishedTakes(takes: Take[], sceneIds: ReadonlySet<string>): Tak
   return takes
     .filter((t) => t.status === 'completed' && sceneIds.has(t.sceneId))
     .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt) || b.number - a.number)
+}
+
+/**
+ * Is this take's video node hidden on the canvas? Only in the "Chỉ take chọn" display, which shows the chosen take of
+ * each scene plus takes used as @video (same rule as the canvas layout). Selecting a hidden take would select
+ * something invisible, so the takes list selects its scene instead (like the queue's "Đi tới").
+ */
+export function takeHiddenOnCanvas(takeId: string, takes: Take[], scenes: Scene[], display: TakeDisplay): boolean {
+  if (display !== 'chosen') return false
+  return !layoutTakes(takes, scenes, 'chosen').byId.has(takeId)
 }
 
 /** Search fields for a take: "S03·T2" plus the spellings people type ("S03-T2", "S03T2", "s3 t2"), scene title. */

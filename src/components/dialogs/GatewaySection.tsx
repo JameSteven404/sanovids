@@ -1,7 +1,7 @@
-// Settings section: "Cổng canvasapp.io.vn (thử nghiệm)". Exported, not mounted here — the Settings dialog mounts it.
-// Lets the user pick the provider for new takes (Demo giả lập | canvasapp.io.vn), log in on canvasapp's own page
-// (desktop app only), see the login state and the canvasapp credit balance.
-import { Cable, Coins, LoaderCircle, LogIn, LogOut, RefreshCw, TriangleAlert } from 'lucide-react'
+// Settings section: "Cổng canvasapp.io.vn (thử nghiệm)", mounted by the Settings dialog (second column, above the
+// demo provider settings). Lets the user pick the provider for new takes (Demo giả lập | canvasapp.io.vn), log in on
+// canvasapp's own page (desktop app only), see the login state and the canvasapp credit balance.
+import { Cable, Cloud, Coins, LoaderCircle, LogIn, LogOut, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { canvasappProvider, PROVIDER_LABEL, useProviderPrefs, type ProviderId } from '../../providers'
 import { canvasappErrorText, createCanvasappApi } from '../../providers/canvasapp/api'
@@ -9,6 +9,7 @@ import { canvasappBridge, createDesktopTransport, WEB_UNAVAILABLE } from '../../
 import { activeCount, useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
 import './dialogs.css'
+import { Segmented } from './Segmented'
 
 type Login = { state: 'unknown' | 'checking' } | { state: 'in'; credits: number | null } | { state: 'out' } | { state: 'error'; message: string }
 
@@ -81,10 +82,10 @@ export function GatewaySection() {
   const loggedIn = login.state === 'in'
 
   return (
-    <section className="dg-section">
+    <section className="dg-section dg-gateway">
       <header>
         <h3>
-          Cổng canvasapp.io.vn <span className="badge accent">thử nghiệm</span>
+          Cổng canvasapp.io.vn <span className="badge warn">thử nghiệm</span>
         </h3>
         <p>
           Tạo video thật bằng tài khoản canvasapp.io.vn của chính bạn: SanoVids gửi prompt và ảnh tham chiếu (@image_N) sang canvasapp, chờ video xong rồi tải về thành take
@@ -102,28 +103,26 @@ export function GatewaySection() {
 
       <div className="dg-field">
         <span className="label">Nhà cung cấp video cho take mới</span>
-        <div className="dg-seg dg-seg-full" role="radiogroup">
-          {(['mock', 'canvasapp'] as ProviderId[]).map((p) => (
-            <button
-              key={p}
-              role="radio"
-              aria-checked={provider === p}
-              className={provider === p ? 'active' : ''}
-              disabled={p === 'canvasapp' && !desktop}
-              onClick={() => choose(p)}
-              title={p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined}
-            >
-              {PROVIDER_LABEL[p]}
-              <small>{p === 'mock' ? 'Không gọi mạng, không tốn tiền' : desktop ? 'Video thật, tốn credit canvasapp' : 'Chỉ có trong bản desktop'}</small>
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Nhà cung cấp video cho take mới"
+          size="lg"
+          value={provider}
+          onChange={choose}
+          options={(['mock', 'canvasapp'] as ProviderId[]).map((p) => ({
+            id: p,
+            label: PROVIDER_LABEL[p],
+            icon: p === 'mock' ? <Sparkles size={13} /> : <Cloud size={13} />,
+            hint: p === 'mock' ? 'Không gọi mạng, không tốn tiền' : desktop ? 'Video thật, tốn credit canvasapp' : 'Chỉ có trong bản desktop',
+            disabled: p === 'canvasapp' && !desktop,
+            title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
+          }))}
+        />
         {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
         {running > 0 && <div className="dg-field-hint">Đổi nhà cung cấp chỉ áp dụng cho take mới; {running} take đang chạy giữ nguyên nơi đã gửi.</div>}
       </div>
 
       {desktop && (
-        <div className="dg-app">
+        <div className="dg-app dg-gw-login">
           <div className="dg-app-status">
             <span className={`dg-app-icon${loggedIn ? ' on' : ''}`}>
               {login.state === 'checking' || login.state === 'unknown' ? <LoaderCircle size={17} className="dg-spin" /> : <Cable size={17} />}
@@ -140,9 +139,9 @@ export function GatewaySection() {
               </b>
               <small>
                 {login.state === 'in' ? (
-                  <>
+                  <span className="dg-gw-credits">
                     <Coins size={11} /> {login.credits === null ? 'Không đọc được số credit' : `${login.credits.toLocaleString('vi-VN')} credit (≈ ${(login.credits * 1000).toLocaleString('vi-VN')}đ)`}
-                  </>
+                  </span>
                 ) : login.state === 'error' ? (
                   login.message
                 ) : (
@@ -151,8 +150,8 @@ export function GatewaySection() {
               </small>
             </span>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={() => void refresh()} disabled={!!busy || login.state === 'checking'} title="Kiểm tra lại">
-            <RefreshCw size={13} />
+          <button className="icon-btn" onClick={() => void refresh()} disabled={!!busy || login.state === 'checking'} title="Kiểm tra lại" aria-label="Kiểm tra lại trạng thái đăng nhập">
+            <RefreshCw size={14} />
           </button>
           {loggedIn ? (
             <button className="btn btn-sm" onClick={() => void doLogout()} disabled={!!busy}>

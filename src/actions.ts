@@ -1,6 +1,7 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
+import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { usesVideoRefs } from './core/models'
 import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
@@ -218,10 +219,13 @@ export function duplicateSelection() {
   toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: undoToastAction() })
 }
 
+export { keyboardDeletePlan, checkTakeDelete, type TakeDeleteConfirm } from './core/deletePlan'
+
 /**
  * Delete what is selected: cut selected wires, delete scenes, hide asset nodes from the canvas (one undo step),
- * and delete selected takes (after confirmation when a finished video would be lost or is used as @video;
- * takes are not undoable).
+ * and delete selected takes for good (after confirmation when a finished video would be lost or is used as @video;
+ * takes are not undoable). Takes selected together with their own scene are spared (keyboardDeletePlan): deleting
+ * the scene hides them and Undo brings them back.
  */
 export function deleteSelection() {
   const { selectedIds, selectedEdgeIds } = useUI.getState()
@@ -229,11 +233,11 @@ export function deleteSelection() {
   const takes = useRuns.getState().takes
   const sceneById = new Map(project.scenes.map((s) => [s.id, s]))
   const assetSet = new Set(project.assets.map((a) => a.id))
-  const takeSet = new Set(takes.map((t) => t.id))
 
   const sceneIds = selectedIds.filter((id) => sceneById.has(id))
   const hideAssetIds = selectedIds.filter((id) => assetSet.has(id))
-  const takeIds = selectedIds.filter((id) => takeSet.has(id))
+  const plan = keyboardDeletePlan(selectedIds, new Set(sceneById.keys()), new Map(takes.map((t) => [t.id, t.sceneId])))
+  const takeIds = plan.takes
   const deadScenes = new Set(sceneIds)
 
   const refs: { sceneId: string; assetId: string }[] = []
@@ -254,16 +258,11 @@ export function deleteSelection() {
   const links = refs.length + videoRefs.length + frames.length
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
-    const finished = takes.filter((t) => takeIds.includes(t.id) && t.status === 'completed').length
-    const usedBy = project.scenes.filter((s) => !deadScenes.has(s.id) && s.videoRefs.some((t) => takeIds.includes(t)))
-    if (finished || usedBy.length) {
-      const lines = [`Xoá vĩnh viễn ${takeIds.length} video${finished && finished < takeIds.length ? ` (${finished} video đã tạo xong)` : ''}? Video đã xoá không hoàn tác được.`]
-      if (usedBy.length) lines.push(`Đang được dùng làm @video ở ${usedBy.length} cảnh (${usedBy.map((s) => sceneCode(s.order)).join(', ')}): các tham chiếu đó sẽ bị bỏ.`)
-      if (!window.confirm(lines.join('\n'))) return
-    }
+    const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
+    if (check.question && !window.confirm(check.question)) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
-  const takesDeleted = takeIds.length ? deleteTakesForever(takeIds) : 0
+  const takesDeleted = takeIds.length ? (deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0) : 0
   if (sceneIds.length || hideAssetIds.length || links) {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
   }
@@ -272,24 +271,63 @@ export function deleteSelection() {
   const deleted = [sceneIds.length && `${sceneIds.length} cảnh`, takesDeleted && `${takesDeleted} video`, links && `${links} dây nối`].filter(Boolean)
   const said = [deleted.length && `Đã xoá ${deleted.join(', ')}`, hideAssetIds.length && `${deleted.length ? 'đã ẩn' : 'Đã ẩn'} ${hideAssetIds.length} thẻ khỏi canvas`]
   const undoable = sceneIds.length || hideAssetIds.length || links
-  toast(`${said.filter(Boolean).join('; ')}.${takesDeleted ? ' (Video đã xoá không hoàn tác được.)' : ''}`, undoable ? { action: undoToastAction() } : {})
+  toast(`${said.filter(Boolean).join('; ')}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, undoable ? { action: undoToastAction() } : {})
+}
+
+/** Appended to every toast about deleted takes. */
+export const TAKES_GONE_NOTE = '(Video đã xoá không hoàn tác được.)'
+
+export interface DeleteTakesOptions {
+  /**
+   * Ask first (window.confirm). true (default) = when a finished video would be lost or a scene uses one as @video;
+   * 'usedOnly' = only for @video users (the caller already confirmed, e.g. a two-click button); false = never.
+   */
+  confirm?: TakeDeleteConfirm
+  /** Show the result toast (default true). */
+  toast?: boolean
+  /** Scenes deleted in the same operation: their @video uses are not mentioned in the question. */
+  ignoreScenes?: ReadonlySet<string>
 }
 
 /**
- * Delete takes for good: out of the runs store and every scene's @video references, and their poster/video files
- * out of storage (nothing can bring a deleted take back, so its media would only fill the browser's quota).
- * Returns how many takes were deleted.
+ * The one way to delete takes for good (canvas node, take viewer, queue, Delete key): asks when needed, cancels
+ * running jobs, removes the takes (and drops them from every scene's @video references, renumbering prompts),
+ * deletes their poster/video files (nothing can bring a deleted take back, so its media would only fill the
+ * browser's quota), drops them from the selection and says so in a toast.
+ * Returns how many takes were deleted, or null when the user cancelled the question.
  */
-export function deleteTakesForever(takeIds: string[]): number {
-  const ids = new Set(takeIds)
-  const dead = useRuns.getState().takes.filter((t) => ids.has(t.id))
-  if (!dead.length) return 0
-  useRuns.getState().removeTakes(dead.map((t) => t.id))
+export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
+  const project = useProject.getState().project
+  const all = useRuns.getState().takes
+  const check = checkTakeDelete(takeIds, all, project.scenes, {
+    confirm: opts.confirm ?? true,
+    ignoreScenes: opts.ignoreScenes,
+    label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+  })
+  if (!check.ids.length) return 0
+  if (check.question && !window.confirm(check.question)) return null
+  // Labels before the takes are gone.
+  const label = check.ids.length === 1 ? takeLabel(check.ids[0]) : `${check.ids.length} video`
+  const usedCodes = check.usedBy.map((s) => sceneCode(s.order))
+  const ids = new Set(check.ids)
+  const dead = all.filter((t) => ids.has(t.id))
+  useRuns.getState().removeTakes(check.ids)
   for (const t of dead) {
     if (t.posterId) void deleteMedia(t.posterId).catch(() => undefined)
     if (t.videoId) void deleteMedia(t.videoId).catch(() => undefined)
   }
+  const ui = useUI.getState()
+  if (ui.selectedIds.some((id) => ids.has(id))) ui.select(ui.selectedIds.filter((id) => !ids.has(id)))
+  if (opts.toast ?? true) toast(`Đã xoá ${label}${usedCodes.length ? ` và bỏ @video ở ${usedCodes.join(', ')}` : ''}. ${TAKES_GONE_NOTE}`)
   return dead.length
+}
+
+/**
+ * Delete takes for good without asking and without a toast.
+ * @deprecated use `deleteTakes(ids, { confirm, toast })`.
+ */
+export function deleteTakesForever(takeIds: string[]): number {
+  return deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0
 }
 
 // ---------------- assets from files ----------------

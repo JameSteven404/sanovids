@@ -2,9 +2,9 @@
 //   submit(request) → remote id (stored on the take) → poll(remote ids) → fetchResult(remote id) → blobs.
 // The mock provider (providers/mock.ts) is the default. The canvasapp.io.vn gateway (providers/canvasapp/) is an
 // opt-in, desktop-only experiment. See docs/GATEWAY-CANVASAPP.md.
-import type { Mode, ModelId, Take } from '../core/types'
+import type { Mode, ModelId, Take, TakeProvider } from '../core/types'
 
-export type ProviderId = 'mock' | 'canvasapp'
+export type ProviderId = TakeProvider
 
 export interface ProviderAvailability {
   ok: boolean
@@ -127,20 +127,11 @@ export class ProviderError extends Error {
 }
 
 /**
- * Optional fields the queue engine stores on a take (backward compatible: old takes have none of them).
- * TODO(lead): move these into `Take` in core/types.ts and default them in migrateTake.
+ * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`
+ * itself (core/types.ts) and are defaulted by migrateTake.
+ * @deprecated use `Take`.
  */
-export interface TakeProviderFields {
-  /** Provider that runs this take. Missing = 'mock' (takes created before providers existed). */
-  provider?: ProviderId
-  /** Job id at the provider once submitted — lets the engine resume polling after a reload. */
-  remoteId?: string | null
-  /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
-  charged?: boolean
-  /** H3 transform frames (asset ids) at enqueue time. Missing = read from the scene when submitting. */
-  framesSnapshot?: { first: string | null; last: string | null }
-}
+export type RunTake = Take
 
-export type RunTake = Take & TakeProviderFields
-
-export const providerOf = (t: Take): ProviderId => (t as RunTake).provider ?? 'mock'
+/** Provider that runs a take ('mock' for takes saved before providers existed). */
+export const providerOf = (t: Pick<Take, 'provider'>): ProviderId => t.provider ?? 'mock'

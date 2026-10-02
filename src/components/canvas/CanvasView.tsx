@@ -22,6 +22,7 @@ import {
   type NodeMouseHandler,
   type OnConnectStart,
 } from '@xyflow/react'
+import { Clapperboard, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   canvasEvents,
@@ -31,6 +32,7 @@ import {
   linkAssets,
   linkTakes,
   newScene,
+  nextScene,
   parseEdgeId,
   takeLabel,
   videoLabel,
@@ -704,9 +706,17 @@ function CanvasInner() {
   }, [rf])
 
   // ---------------- pane gestures: double-click to create, drop from library / OS ----------------
+  // The empty canvas' "Cảnh mới" button disappears on its first click: when it was double-clicked, the second click
+  // lands on the canvas below and must not create another scene there.
+  const emptyActionAt = useRef(-Infinity)
+  const onEmptyAction = () => {
+    emptyActionAt.current = performance.now()
+    nextScene()
+  }
   const onDoubleClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement
     if (!target.classList.contains('react-flow__pane')) return
+    if (performance.now() - emptyActionAt.current < 600) return
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
     newScene({ x: snap(p.x - 140), y: snap(p.y - 40) })
   }
@@ -836,9 +846,12 @@ function CanvasInner() {
             zoomable
             nodeColor={minimapColor}
             nodeStrokeWidth={0}
-            nodeBorderRadius={8}
-            // Theme tokens (React Flow passes both through CSS variables, so var() works).
-            maskColor="var(--scrim)"
+            nodeBorderRadius={10}
+            // Theme tokens (React Flow passes these through CSS variables, so var() / color-mix() work): a veil of the canvas color
+            // outside the viewport and a hairline around it, readable on the light and the dark panel.
+            maskColor="color-mix(in srgb, var(--canvas-bg) 70%, transparent)"
+            maskStrokeColor="color-mix(in srgb, var(--text) 28%, transparent)"
+            maskStrokeWidth={1}
             bgColor="var(--panel)"
             ariaLabel="Bản đồ thu nhỏ"
           />
@@ -849,10 +862,17 @@ function CanvasInner() {
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
       {scenes.length === 0 && assets.every((a) => !a.position) && (
         <div className="cv-empty">
+          <div className="cv-empty-glyph" aria-hidden>
+            <Clapperboard size={24} strokeWidth={1.5} />
+          </div>
           <div className="cv-empty-title">Canvas trống</div>
           <div className="cv-empty-text">
             Bấm đúp vào nền để tạo cảnh · kéo nhân vật từ Thư viện vào đây · hoặc bấm <span className="kbd">N</span>
           </div>
+          <button className="btn btn-primary cv-empty-action nodrag nopan" onClick={onEmptyAction}>
+            <Plus size={15} strokeWidth={2} />
+            Cảnh mới
+          </button>
         </div>
       )}
     </div>

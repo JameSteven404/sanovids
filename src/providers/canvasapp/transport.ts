@@ -24,8 +24,7 @@ export const WEB_UNAVAILABLE = 'Cổng canvasapp chỉ chạy trong bản deskto
 /** The desktop bridge, or null in a browser / older desktop build. */
 export function canvasappBridge(): CanvasappBridge | null {
   if (typeof window === 'undefined') return null
-  const desk = (window as unknown as { bdpDesktop?: { canvasapp?: CanvasappBridge } }).bdpDesktop
-  const b = desk?.canvasapp
+  const b = window.bdpDesktop?.canvasapp
   return b && typeof b.request === 'function' ? b : null
 }
 

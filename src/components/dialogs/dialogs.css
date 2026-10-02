@@ -1,4 +1,7 @@
-/* Dialogs (dg-): import, settings, projects, shortcuts */
+/*
+ * Dialogs (dg-): import, settings, projects, shortcuts — Apple-style sheets (docs/DESIGN.md).
+ * Colors come only from the theme tokens in styles/base.css (light + dark); tints use color-mix with transparent.
+ */
 .dg-ellipsis {
   min-width: 0;
   overflow: hidden;
@@ -19,10 +22,12 @@
 }
 .dg-foot-info b {
   color: var(--text);
+  font-weight: 600;
 }
 .dg-note {
   margin: 10px 0 0;
   font-size: 11.5px;
+  line-height: 1.5;
   color: var(--text-faint);
 }
 .dg-help {
@@ -37,72 +42,120 @@
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
+  padding: 3px;
+  border-radius: var(--radius-xs);
+  transition:
+    color 0.12s ease-out,
+    background 0.12s ease-out;
 }
 .dg-x:hover {
-  color: var(--danger);
-  background: rgba(239, 91, 91, 0.1);
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.dg-x:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 :is(.dg-import-input, .dg-review, .dg-settings) code {
   font-family: var(--mono);
   font-size: 0.92em;
   padding: 0 4px;
   border-radius: 4px;
-  background: var(--panel-3);
+  background: var(--pressed);
   color: var(--text);
 }
 
-/* segmented buttons */
+/* ---------- segmented control (Segmented.tsx): pill track, one raised segment that slides ---------- */
 .dg-seg {
-  display: inline-flex;
-  padding: 2px;
+  position: relative;
+  isolation: isolate;
+  display: flex;
   gap: 2px;
-  border-radius: 7px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border-strong);
-  flex: none;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--pressed);
+}
+/* the raised segment: equal widths (--seg-n segments), moved to the chosen one (--seg-i) */
+.dg-seg::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px - (var(--seg-n, 1) - 1) * 2px) / var(--seg-n, 1));
+  border-radius: var(--radius-xs);
+  background: var(--panel-3);
+  box-shadow: var(--shadow-sm);
+  transform: translateX(calc(var(--seg-i, 0) * (100% + 2px)));
+  transition: transform 0.15s ease-out;
+  opacity: 0;
+}
+:root[data-theme='light'] .dg-seg::before {
+  background: var(--panel);
+}
+.dg-seg.has-value::before {
+  opacity: 1;
 }
 .dg-seg button {
-  display: inline-flex;
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 28px;
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 26px;
-  padding: 0 10px;
+  gap: 1px;
+  padding: 4px 8px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-dim);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  white-space: nowrap;
+  transition: color 0.15s ease-out;
 }
-.dg-seg button:hover:not(:disabled) {
+.dg-seg.lg button {
+  min-height: 34px;
+}
+.dg-seg button:hover:not(:disabled):not(.active) {
   color: var(--text);
-  background: var(--panel-2);
 }
 .dg-seg button.active {
-  background: var(--panel-3);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  font-weight: 600;
+}
+.dg-seg button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .dg-seg button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
+.dg-seg-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dg-seg-label > svg {
+  flex: none;
+}
 .dg-seg small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10.5px;
   font-weight: 400;
   color: var(--text-faint);
-}
-.dg-seg-full {
-  display: flex;
-}
-.dg-seg-full button {
-  flex: 1;
-  padding: 5px 8px;
 }
 
 /* ---------- import: stepper ---------- */
@@ -122,6 +175,9 @@
   border-radius: 999px;
   font-size: 12px;
   color: var(--text-faint);
+  transition:
+    background 0.15s ease-out,
+    color 0.15s ease-out;
 }
 .dg-steps li + li::before {
   content: '';
@@ -139,7 +195,7 @@
   justify-content: center;
   border: 1px solid var(--border-strong);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .dg-steps li.active {
   color: var(--text);
@@ -148,15 +204,18 @@
 .dg-steps li.active > span {
   background: var(--accent);
   border-color: var(--accent);
-  color: #1a1209;
+  color: var(--on-accent);
 }
 .dg-steps li.done {
   color: var(--text-dim);
 }
 .dg-steps li.done > span {
-  background: rgba(76, 195, 138, 0.16);
-  border-color: rgba(76, 195, 138, 0.5);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
   color: var(--ok);
+}
+.dg-steps li.off {
+  opacity: 0.45;
 }
 
 /* ---------- import: step 1 ---------- */
@@ -168,7 +227,7 @@
   border-radius: var(--radius);
   outline: 2px dashed transparent;
   outline-offset: 4px;
-  transition: outline-color 0.12s;
+  transition: outline-color 0.15s ease-out;
 }
 .dg-import-input.over {
   outline-color: var(--ref);
@@ -205,13 +264,19 @@
   color: var(--text-dim);
   text-align: center;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition:
+    border-color 0.15s ease-out,
+    background 0.15s ease-out;
 }
 .dg-drop:hover,
 .dg-import-input.over .dg-drop {
   border-color: var(--ref);
   background: var(--ref-soft);
   color: var(--text);
+}
+.dg-drop:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .dg-drop svg {
   color: var(--ref);
@@ -264,14 +329,19 @@
   gap: 10px;
   padding: 10px 12px;
   border-radius: var(--radius);
-  border: 1px solid rgba(232, 137, 74, 0.4);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   background: var(--accent-soft);
   color: var(--accent);
   text-align: left;
   cursor: pointer;
+  transition: background 0.15s ease-out;
 }
 .dg-sample:hover {
-  background: rgba(232, 137, 74, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.dg-sample:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .dg-sample > span {
   display: flex;
@@ -289,7 +359,8 @@
 .dg-tips {
   padding: 10px 12px;
   border-radius: var(--radius);
-  background: var(--panel-2);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
 }
 .dg-tips ul {
   margin: 8px 0 0;
@@ -303,9 +374,6 @@
 }
 
 /* ---------- import: steps 2–3 ---------- */
-.dg-steps li.off {
-  opacity: 0.45;
-}
 .dg-review {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
@@ -352,15 +420,15 @@
   font-weight: 600;
 }
 .dg-tok.video {
-  background: rgba(180, 140, 255, 0.16);
-  color: var(--video, #b48cff);
+  background: var(--video-soft);
+  color: var(--video);
 }
 .dg-tok.bad {
-  background: rgba(239, 91, 91, 0.14);
-  color: #ff8a8a;
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 
-/* step 2: scene list */
+/* step 2: scene list (inset grouped list, hairline separators) */
 .dg-pv-list {
   max-height: 470px;
   overflow: auto;
@@ -382,6 +450,8 @@
 .dg-pv-row .dg-code {
   padding-top: 1px;
   font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 .dg-pv-main {
   min-width: 0;
@@ -414,7 +484,7 @@
   text-align: right;
 }
 .dg-over {
-  color: #ff8a8a;
+  color: var(--danger-text);
   font-weight: 600;
 }
 .dg-pv-tokens {
@@ -438,8 +508,8 @@
   color: var(--ref);
 }
 .dg-tok-count.video {
-  background: rgba(180, 140, 255, 0.16);
-  color: var(--video, #b48cff);
+  background: var(--video-soft);
+  color: var(--video);
 }
 
 /* side panel */
@@ -454,12 +524,13 @@
   min-width: 0;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: var(--panel-2);
+  background: var(--bg-elev);
   border: 1px solid var(--border);
 }
 .dg-stats b {
+  font-family: var(--font-display);
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .dg-stats span {
@@ -470,10 +541,10 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  padding: 9px 10px;
+  padding: 9px 11px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--panel-2);
+  background: var(--hover);
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-dim);
@@ -483,23 +554,27 @@
   margin-top: 2px;
   color: var(--text-faint);
 }
+.dg-callout b {
+  color: var(--text);
+  font-weight: 600;
+}
 .dg-callout.ref {
-  background: rgba(79, 182, 168, 0.07);
-  border-color: rgba(79, 182, 168, 0.35);
+  background: var(--ref-soft);
+  border-color: color-mix(in srgb, var(--ref) 30%, transparent);
 }
 .dg-callout.ref > svg {
   color: var(--ref);
 }
 .dg-callout.video {
-  background: rgba(180, 140, 255, 0.07);
-  border-color: rgba(180, 140, 255, 0.35);
+  background: var(--video-soft);
+  border-color: color-mix(in srgb, var(--video) 30%, transparent);
 }
 .dg-callout.video > svg {
-  color: var(--video, #b48cff);
+  color: var(--video);
 }
 .dg-callout.warn {
-  background: rgba(229, 185, 60, 0.08);
-  border-color: rgba(229, 185, 60, 0.35);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 32%, transparent);
 }
 .dg-callout.warn > svg {
   color: var(--warn);
@@ -519,12 +594,14 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
+  transition: border-color 0.15s ease-out;
 }
 .dg-map.set {
-  border-color: rgba(79, 182, 168, 0.45);
+  border-color: color-mix(in srgb, var(--ref) 45%, transparent);
 }
 .dg-map.open {
   border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
 }
 .dg-map-row {
   display: grid;
@@ -555,9 +632,14 @@
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+  transition: background 0.12s ease-out;
 }
 .dg-map-pick:hover {
   background: var(--panel-2);
+}
+.dg-map-pick:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .dg-map-pick > .faint:first-child {
   padding-left: 4px;
@@ -569,7 +651,7 @@
   flex: none;
   margin-left: auto;
   color: var(--text-faint);
-  transition: transform 0.12s;
+  transition: transform 0.15s ease-out;
 }
 .dg-map.open .dg-map-chev {
   transform: rotate(180deg);
@@ -601,10 +683,15 @@
   color: var(--text-dim);
   font-size: 11.5px;
   cursor: pointer;
+  transition: background 0.12s ease-out;
 }
 .dg-asset-tile:hover {
-  background: var(--panel-2);
+  background: var(--hover);
   color: var(--text);
+}
+.dg-asset-tile:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .dg-asset-tile.on {
   border-color: var(--ref);
@@ -617,7 +704,8 @@
   width: 56px;
   height: 56px;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
+  /* border color = the asset's own color (inline style) */
   border: 2px solid;
   background: var(--panel-3);
 }
@@ -638,10 +726,12 @@
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: var(--text);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .dg-asset-name {
   max-width: 100%;
@@ -688,10 +778,10 @@
 .dg-preview-body {
   max-height: 260px;
   overflow: auto;
-  padding: 8px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--bg-elev);
 }
 .dg-pv-prompt {
   font-family: var(--mono);
@@ -726,12 +816,17 @@
   color: var(--text-faint);
 }
 
-/* ---------- settings ---------- */
+/* ---------- settings: grouped inset sections ---------- */
 .dg-settings {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+@media (max-width: 760px) {
+  .dg-settings {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .dg-settings-col {
   display: flex;
@@ -740,10 +835,10 @@
   min-width: 0;
 }
 .dg-section {
-  padding: 14px;
+  padding: 14px 16px 16px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--bg-elev);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -753,13 +848,15 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  font-family: var(--font-display);
   font-size: 13.5px;
   font-weight: 600;
+  line-height: 1.25;
 }
 .dg-section header p {
   margin: 4px 0 0;
   font-size: 12px;
-  color: var(--text-faint);
+  color: var(--text-dim);
   line-height: 1.5;
 }
 .dg-toggle-row {
@@ -781,16 +878,16 @@
   color: var(--text-faint);
   line-height: 1.45;
 }
+/* Apple switch: gray track, accent when on, round knob with a soft shadow */
 .dg-switch {
   position: relative;
   flex: none;
-  width: 34px;
-  height: 20px;
+  width: 38px;
+  height: 22px;
   margin-top: 1px;
   border-radius: 999px;
   background: var(--panel-3);
-  border: 1px solid var(--border-strong);
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.18s ease-out;
 }
 .dg-switch input {
   position: absolute;
@@ -803,28 +900,40 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background: var(--text-dim);
-  transition: transform 0.15s, background 0.15s;
+  background: var(--text);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.18s ease-out;
   pointer-events: none;
+}
+/* light theme: a white knob on a pale track needs a hairline to stay visible (the light --shadow-sm is very soft) */
+:root[data-theme='light'] .dg-switch i {
+  background: var(--bg-elev);
+  box-shadow:
+    0 0 0 0.5px var(--border-strong),
+    var(--shadow-sm);
 }
 .dg-switch.on {
   background: var(--accent);
-  border-color: var(--accent);
 }
 .dg-switch.on i {
-  transform: translateX(14px);
-  background: #1a1209;
+  transform: translateX(16px);
 }
-.dg-switch:focus-within {
-  box-shadow: 0 0 0 3px var(--accent-soft);
+/* keyboard focus only: a click on the row (label) focuses the input too, without a ring */
+.dg-switch:has(input:focus-visible) {
+  box-shadow: var(--focus-ring);
 }
 .dg-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.dg-field > .label {
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-dim);
 }
 .dg-field-hint {
   display: flex;
@@ -843,11 +952,11 @@
     transform: rotate(360deg);
   }
 }
-/* settings: app (PWA / desktop) */
+/* settings: app (PWA / desktop), gateway login row */
 .dg-app {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .dg-app-status {
   flex: 1;
@@ -872,15 +981,31 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--panel-3);
   color: var(--text-dim);
 }
 .dg-app-icon.on {
-  background: rgba(76, 195, 138, 0.14);
+  background: var(--ok-soft);
   color: var(--ok);
 }
-/* "Tải video": download folder row */
+.dg-gw-login {
+  padding: 10px 10px 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.dg-gw-credits {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.dg-gw-credits > svg {
+  color: var(--warn);
+}
+/* "Tải video": download folder row + waiting auto-downloads */
 .dg-folder {
   display: flex;
   align-items: center;
@@ -889,7 +1014,7 @@
   padding: 9px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--panel-2);
+  background: var(--panel);
 }
 .dg-folder-icon {
   flex: none;
@@ -898,7 +1023,7 @@
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--panel-3);
   color: var(--text-dim);
 }
@@ -926,6 +1051,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dg-callout.dg-pending {
+  align-items: center;
+}
+.dg-pending > div {
+  flex: 1;
+  min-width: 0;
+}
+.dg-pending > .btn {
+  flex: none;
+}
 .dg-app-exe {
   display: flex;
   align-items: flex-start;
@@ -933,12 +1068,12 @@
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--panel-2);
+  background: var(--panel);
 }
 .dg-app-exe > svg {
   flex: none;
   margin-top: 2px;
-  color: var(--accent);
+  color: var(--text-dim);
 }
 .dg-app-exe b {
   font-weight: 600;
@@ -957,6 +1092,11 @@
   width: 100%;
   accent-color: var(--accent);
 }
+.dg-range:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 999px;
+}
 .dg-credit {
   display: flex;
   align-items: center;
@@ -973,8 +1113,9 @@
   color: var(--warn);
 }
 .dg-credit-num b {
+  font-family: var(--font-display);
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .dg-credit-num span {
@@ -991,7 +1132,7 @@
   gap: 8px;
 }
 
-/* ---------- projects ---------- */
+/* ---------- projects: inset list with rounded rows ---------- */
 .dg-projects {
   display: flex;
   flex-direction: column;
@@ -1024,9 +1165,11 @@
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text-faint);
+  transition: box-shadow 0.12s ease-out;
 }
 .dg-search:focus-within {
   border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 .dg-search input {
   flex: 1;
@@ -1036,29 +1179,53 @@
   background: transparent;
   font-size: 12.5px;
 }
+.dg-search input::placeholder {
+  color: var(--text-faint);
+}
 .dg-project-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   max-height: 52vh;
   overflow: auto;
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.dg-project-list > .empty {
+  border: 0;
 }
 .dg-project {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 10px 9px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--bg-elev);
-  transition: border-color 0.12s;
+  padding: 8px 8px 8px 10px;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease-out;
+}
+/* hairline between rows, hidden next to a highlighted row */
+.dg-project + .dg-project::before {
+  content: '';
+  position: absolute;
+  left: 56px;
+  right: 10px;
+  top: -1px;
+  height: 1px;
+  background: var(--border);
 }
 .dg-project:hover {
-  border-color: var(--border-strong);
+  background: var(--hover);
 }
 .dg-project.current {
-  border-color: rgba(232, 137, 74, 0.5);
-  background: linear-gradient(0deg, rgba(232, 137, 74, 0.05), rgba(232, 137, 74, 0.05)), var(--bg-elev);
+  background: var(--accent-soft);
+}
+.dg-project:hover::before,
+.dg-project.current::before,
+.dg-project:hover + .dg-project::before,
+.dg-project.current + .dg-project::before {
+  opacity: 0;
 }
 .dg-project-icon {
   width: 34px;
@@ -1067,13 +1234,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--panel-3);
   color: var(--text-dim);
 }
 .dg-project.current .dg-project-icon {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .dg-project-info {
   flex: 1;
@@ -1098,12 +1265,12 @@
 }
 .dg-project-actions.confirm span {
   font-size: 12px;
-  color: #ff8a8a;
+  color: var(--danger-text);
   margin-right: 4px;
 }
 .dg-danger-icon:hover {
-  color: var(--danger);
-  background: rgba(239, 91, 91, 0.1);
+  color: var(--danger-text);
+  background: var(--danger-soft);
 }
 
 /* ---------- shortcuts ---------- */
@@ -1112,6 +1279,11 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: 24px;
 }
+@media (max-width: 860px) {
+  .dg-shortcuts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .dg-sc-col {
   display: flex;
   flex-direction: column;
@@ -1119,19 +1291,24 @@
   min-width: 0;
 }
 .dg-sc-group h4 {
-  margin: 0 0 6px;
+  margin: 0 0 6px 4px;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+.dg-sc-list {
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
 }
 .dg-sc-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 0;
+  padding: 7px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
 }
@@ -1166,4 +1343,28 @@
 }
 .dg-keys-or {
   padding: 0 4px;
+}
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .dg-seg::before,
+  .dg-seg button,
+  .dg-switch,
+  .dg-switch i,
+  .dg-steps li,
+  .dg-drop,
+  .dg-sample,
+  .dg-map,
+  .dg-map-chev,
+  .dg-map-pick,
+  .dg-asset-tile,
+  .dg-project,
+  .dg-x,
+  .dg-search,
+  .dg-import-input {
+    transition: none;
+  }
+  .dg-spin {
+    animation-duration: 2.4s;
+  }
 }

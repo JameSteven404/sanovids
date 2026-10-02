@@ -20,7 +20,7 @@ import { backupWins, isForeignWrite, nextStamp, sortByUpdated, upsertById, type 
 import type { Project, Take } from '../core/types'
 import { dataUrlToBlob, deleteMedia, getBlob, putBlob } from '../lib/imageStore'
 import { clearHistory, emptyProject, useProject } from './project'
-import { useRuns } from './runs'
+import { setEngineHooks, stopEngine, useRuns } from './runs'
 import { useUI } from './ui'
 
 export interface ProjectMeta {
@@ -86,10 +86,21 @@ async function idbSet(key: string, value: unknown): Promise<boolean> {
     return false
   }
 }
-function lsGet<T>(key: string): T | null {
+// Every localStorage access goes through these helpers: storage can be blocked (privacy settings, sandboxed
+// frames, some embedded views), where even reading `localStorage` throws — that must never break startup.
+/** Raw string at `key`, or null (missing / storage unavailable). */
+function lsRaw(key: string): string | null {
   try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : null
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+function lsGet<T>(key: string): T | null {
+  const raw = lsRaw(key)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
   } catch {
     return null
   }
@@ -223,6 +234,8 @@ function markStale(projectId: string, why: 'saved' | 'deleted' = 'saved') {
   if (stale.has(projectId)) return
   stale.add(projectId)
   if (useProject.getState().project.id !== projectId) return
+  // Its jobs are run by the tab that owns the newer copy (results saved here would be lost anyway).
+  stopEngine()
   cancelPendingSaves()
   removeOwnBackup(projectId)
   useSave.setState({ status: 'error', stale: true })
@@ -479,7 +492,11 @@ async function restoreBackups() {
 export async function bootstrap(): Promise<void> {
   if (started) return
   started = true
-  void navigator.storage?.persist?.().catch(() => undefined)
+  try {
+    void navigator.storage?.persist?.().catch(() => undefined)
+  } catch {
+    /* not supported */
+  }
 
   let index = (await idbGet<ProjectMeta[]>(K.index)) ?? []
   if (!index.length) index = (await migrateFromLocalStorage()) ?? []
@@ -489,13 +506,16 @@ export async function bootstrap(): Promise<void> {
   await restoreBackups()
   index = useSave.getState().projects
 
-  const activeId = lsGet<string>(LS.active) ?? localStorage.getItem(LS.active)
-  let loaded = activeId ? await loadProjectData(activeId) : null
+  // Written as a plain string by lsSet (older versions may have stored it as JSON).
+  const activeRaw = lsRaw(LS.active)
+  const activeId = lsGet<string>(LS.active) ?? activeRaw
+  let loaded = typeof activeId === 'string' && activeId ? await loadProjectData(activeId) : null
   for (const m of index) if (!loaded) loaded = await loadProjectData(m.id)
   if (!loaded) {
-    const demo = await createDemoProject()
-    const written = await writeNewProject(demo)
-    loaded = { project: demo, runs: null, rev: baseRevs.get(demo.id) ?? null, unsaved: !written }
+    // The demo needs its sample images in IndexedDB; when that fails, start with an empty project instead.
+    const first = await createDemoProject().catch(() => emptyProject())
+    const written = await writeNewProject(first)
+    loaded = { project: first, runs: null, rev: baseRevs.get(first.id) ?? null, unsaved: !written }
   }
   openProject(loaded)
 
@@ -566,6 +586,43 @@ async function otherTabSaved(id: string) {
   openProject(loaded)
   useUI.getState().toast('Đã tải bản mới nhất của dự án (vừa được sửa ở tab/cửa sổ khác).', { tone: 'info' })
 }
+
+/**
+ * The job queue engine (store/runs.ts) just got the lock of the open project in this tab: another tab may have run
+ * (and saved) jobs since this one loaded it. Reload a newer stored copy first — even in a background tab — so jobs
+ * that tab finished or submitted are never run again here. False = this tab must not run jobs (stale / deleted).
+ */
+async function syncBeforeEngine(projectId: string): Promise<boolean> {
+  if (useProject.getState().project.id !== projectId || stale.has(projectId)) return false
+  const stamp = await readStamp(projectId)
+  if (useProject.getState().project.id !== projectId || stale.has(projectId)) return false
+  if (stamp?.deleted) {
+    markStale(projectId, 'deleted')
+    return false
+  }
+  if (!isForeignWrite(stamp, baseRevs.get(projectId) ?? null, TAB_ID)) return true
+  if (hasUnsaved()) {
+    markStale(projectId)
+    return false
+  }
+  const loaded = await loadProjectData(projectId)
+  if (useProject.getState().project.id !== projectId || stale.has(projectId)) return false
+  if (!loaded) {
+    markStale(projectId, 'deleted')
+    return false
+  }
+  if (hasUnsaved()) {
+    markStale(projectId)
+    return false
+  }
+  openProject(loaded)
+  return true
+}
+
+setEngineHooks({
+  mayRun: () => !stale.has(useProject.getState().project.id),
+  beforeTakeover: syncBeforeEngine,
+})
 
 /**
  * Save the unsaved changes of the current project and its runs right away. Resolves false when something could
