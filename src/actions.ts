@@ -43,11 +43,20 @@ export function selectedSceneIds(): string[] {
   return selectedIds.filter((id) => scenes.has(id))
 }
 
-/** Assets selected on the canvas plus those selected in the library. */
+/**
+ * Assets to connect: the ones selected ON THE CANVAS when there are any; otherwise the library selection.
+ * Never both — a library selection made earlier is easy to forget and would silently link extra images.
+ */
 export function selectedAssetIds(): string[] {
   const { selectedIds, librarySelection } = useUI.getState()
-  const assets = new Set(useProject.getState().project.assets.map((a) => a.id))
-  return [...new Set([...selectedIds.filter((id) => assets.has(id)), ...librarySelection.filter((id) => assets.has(id))])]
+  return pickAssetSelection(selectedIds, librarySelection, new Set(useProject.getState().project.assets.map((a) => a.id)))
+}
+
+/** Pure rule behind selectedAssetIds (unit-tested). */
+export function pickAssetSelection(canvasSelection: string[], librarySelection: string[], assetIds: Set<string>): string[] {
+  const onCanvas = canvasSelection.filter((id) => assetIds.has(id))
+  if (onCanvas.length) return [...new Set(onCanvas)]
+  return [...new Set(librarySelection.filter((id) => assetIds.has(id)))]
 }
 
 /** Take (video) nodes selected on the canvas. */
@@ -463,6 +472,19 @@ export async function downloadChosenTakesZip() {
   const file: FileToSave = { name, data: blob }
   const res = await saveFiles([file], true)
   toast(res.to === 'folder' ? `Đã lưu ${ids.length} video vào “${res.folder}”.` : `Đã tải ${ids.length} video (.zip).`, { tone: 'success' })
+}
+
+/** Open the full-screen image viewer (whole picture, real aspect ratio). */
+export function viewImages(imageIds: string[], index = 0, title?: string) {
+  const ids = imageIds.filter(Boolean)
+  if (!ids.length) return
+  useUI.getState().openDialog({ kind: 'image', imageIds: ids, index, title })
+}
+
+/** Viewer for all images of a library asset. */
+export function viewAssetImages(assetId: string, index = 0) {
+  const asset = useProject.getState().project.assets.find((a) => a.id === assetId)
+  if (asset) viewImages(asset.imageIds, index, asset.name)
 }
 
 export { undo, redo }

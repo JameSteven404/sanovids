@@ -3,7 +3,7 @@ import { useReactFlow, useStore } from '@xyflow/react'
 import { Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus } from 'lucide-react'
 import { useMemo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { canvasEvents, connectSelection, nextScene, requestRun, selectedSceneIds } from '../../actions'
+import { canvasEvents, connectSelection, nextScene, requestRun, selectedSceneIds, pickAssetSelection } from '../../actions'
 import type { EdgeMode } from '../../core/types'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -24,7 +24,15 @@ const TAKE_DISPLAYS: { id: TakeDisplay; label: string; title: string }[] = [
 
 /** Auto layout: scenes one per row in order, assets in a column, every take back to its auto slot next to its scene. */
 export function autoLayoutCanvas() {
-  useProject.getState().autoLayout()
+  // Asset cards follow their image's aspect ratio (a portrait card is much taller than LAYOUT.assetH): hand the
+  // measured heights over (keyed by asset id) so the asset column does not overlap.
+  const measured = useUI.getState().measured
+  const heights: Record<string, number> = {}
+  for (const a of useProject.getState().project.assets) {
+    const h = a.position ? measured[a.id]?.height : undefined
+    if (h) heights[a.id] = h
+  }
+  useProject.getState().autoLayout(heights)
   const runs = useRuns.getState()
   const reset: Record<string, null> = {}
   for (const t of runs.takes) if (t.position) reset[t.id] = null
@@ -143,7 +151,8 @@ export function SelectionHint() {
     const sm = sceneMapOf(scenes)
     const am = assetMapOf(assets)
     const sceneN = selectedIds.filter((id) => sm.has(id)).length
-    const assetIds = [...new Set([...selectedIds, ...librarySelection])].filter((id) => am.has(id))
+    // Same rule as actions.selectedAssetIds: canvas selection wins over the library selection.
+    const assetIds = pickAssetSelection(selectedIds, librarySelection, new Set(am.keys()))
     if (!sceneN || (!assetIds.length && !takeN)) return null
     const parts: string[] = []
     if (assetIds.length) {
