@@ -328,6 +328,71 @@
   margin-right: 1px;
   z-index: 2;
 }
+.cv-av.is-viewable {
+  cursor: zoom-in;
+}
+/* hover preview of an avatar: the whole picture at its own aspect ratio (RefPreview, portal on document.body) */
+.cv-ref-preview {
+  position: fixed;
+  z-index: 95;
+  padding: 6px 6px 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: cv-ref-preview-in 0.12s ease-out;
+}
+.cv-ref-preview-img {
+  margin: 0 auto;
+}
+.cv-ref-preview-img .full-img {
+  border-radius: 6px;
+}
+.cv-ref-preview-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  font-size: 11.5px;
+  min-width: 0;
+}
+.cv-ref-preview-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--text);
+}
+.cv-ref-preview-name::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 2px;
+  background: var(--av-c, var(--ref));
+  vertical-align: 1px;
+}
+.cv-ref-preview-more {
+  flex: none;
+  color: var(--text-dim);
+}
+.cv-ref-preview-tok {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ref);
+}
+@keyframes cv-ref-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
 .cv-av-x {
   position: absolute;
   top: -5px;
@@ -691,6 +756,7 @@
 /* ============================== asset card ============================== */
 .cv-asset {
   position: relative;
+  /* = ASSET_DEFAULT_W (canvasModel.ts); the default card also sets it inline */
   width: 180px;
   padding: 8px 8px 9px;
   background: var(--panel);
@@ -717,20 +783,45 @@
   border-color: var(--asset-c, var(--accent));
   box-shadow: 0 0 0 1px var(--asset-c, var(--accent)), 0 10px 26px rgba(0, 0, 0, 0.45);
 }
+/* the WHOLE picture (FullImage, object-fit contain): its height comes from the image's aspect (AssetNode) */
 .cv-asset-img {
   position: relative;
   width: 100%;
-  aspect-ratio: 1;
   border-radius: 8px;
   overflow: hidden;
   background: var(--panel-3);
 }
-.cv-asset-img img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: inherit;
+/* the image area always has a definite size (default: px height from AssetNode; resized: flex) — fill it */
+.cv-asset .cv-asset-img > .full-img {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+.cv-asset-zoom {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(10, 11, 13, 0.7);
+  color: #fff;
+  cursor: zoom-in;
+}
+.cv-asset:hover .cv-asset-zoom,
+.cv-asset.is-selected .cv-asset-zoom {
+  display: inline-flex;
+}
+.cv-asset-zoom:hover {
+  background: var(--ref);
+  border-color: var(--ref);
+  color: #0d1f1c;
 }
 .cv-asset-fallback {
   display: flex;
@@ -746,14 +837,24 @@
 }
 .cv-asset-count {
   position: absolute;
-  right: 4px;
-  bottom: 4px;
-  padding: 0 5px;
+  right: 5px;
+  bottom: 5px;
+  padding: 1px 6px;
+  border: 0;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.6);
-  font-size: 10px;
+  background: rgba(0, 0, 0, 0.66);
+  font: inherit;
+  font-size: 10.5px;
   font-weight: 600;
+  line-height: 15px;
   color: #fff;
+}
+button.cv-asset-count {
+  cursor: zoom-in;
+}
+button.cv-asset-count:hover {
+  background: var(--ref);
+  color: #0d1f1c;
 }
 .cv-asset-name {
   display: flex;
@@ -1147,14 +1248,14 @@
 .cv-take.is-sized .cv-take-main-wrap {
   flex: none;
 }
+/* resized asset card: the image area takes all the height the name/meta rows leave (picture letterboxed, whole) */
 .cv-asset.is-sized .cv-asset-img {
-  flex: none;
-  max-width: 100%;
-  margin: 0 auto;
+  flex: 1 1 auto;
+  min-height: 40px;
 }
-.cv-asset.is-sized .cv-asset-name {
-  margin-top: auto;
-  padding-top: 8px;
+.cv-asset.is-sized .cv-asset-name,
+.cv-asset.is-sized .cv-asset-meta {
+  flex: none;
 }
 
 /* resize handles: corners + edges (wider invisible grab area); subtle while only hovered */

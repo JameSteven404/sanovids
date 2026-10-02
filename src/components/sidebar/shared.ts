@@ -6,6 +6,7 @@ import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, u
 import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset, AssetKind, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
+import { assetNodeHeight } from '../canvas/canvasModel'
 import { useUI } from '../../store/ui'
 
 /**
@@ -212,7 +213,7 @@ export function nextAssetPosition(project: Project): XY {
   const placed = project.assets.filter((a) => a.position)
   if (!placed.length) return { x: LAYOUT.assetX, y: LAYOUT.scenesY }
   const x = Math.min(...placed.map((a) => a.position!.x))
-  const y = Math.max(...placed.map((a) => a.position!.y + (a.size?.h ?? LAYOUT.assetH))) + LAYOUT.assetGapY
+  const y = Math.max(...placed.map((a) => a.position!.y + assetNodeHeight(a, useUI.getState().measured[a.id]?.height))) + LAYOUT.assetGapY
   return { x, y }
 }
 
@@ -356,4 +357,22 @@ export function useFileDropGuard() {
       if (hasFiles(e.dataTransfer)) e.preventDefault()
     })
   }, [])
+}
+
+// ---------------- library masonry ----------------
+/**
+ * Greedy masonry: each item (height in column widths) goes to the currently shortest column (the left one on a tie),
+ * so tall and wide pictures both pack well. Returns item indexes per column, in list order within a column.
+ */
+export function packColumns(heights: number[], cols: number): number[][] {
+  const n = Math.max(1, Math.floor(cols))
+  const out: number[][] = Array.from({ length: n }, () => [])
+  const h = new Array<number>(n).fill(0)
+  heights.forEach((height, i) => {
+    let c = 0
+    for (let k = 1; k < n; k++) if (h[k] < h[c] - 1e-9) c = k
+    out[c].push(i)
+    h[c] += Number.isFinite(height) && height > 0 ? height : 1
+  })
+  return out
 }

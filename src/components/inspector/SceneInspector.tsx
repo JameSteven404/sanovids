@@ -15,6 +15,7 @@ import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
+import { RefThumb, useImagePreview } from './ImagePreview'
 import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
 import { flushPromptEditor, PromptEditor } from './PromptEditor'
 import { SettingsFields } from './SettingsFields'
@@ -241,6 +242,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
     changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), { renumbered: 'Đã đánh lại số trong prompt.' })
   }
   const reorder = useReorder(rows.length, REF_MIME, moveRow)
+  const preview = useImagePreview()
   if (!settings) return null
 
   const spec = MODELS[settings.model]
@@ -302,7 +304,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
               <button type="button" className="in-grip" title="Kéo để đổi thứ tự (↑/↓) — số @image trong prompt tự cập nhật" aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
                 <GripVertical size={13} />
               </button>
-              <AssetAvatar asset={a} size={28} />
+              <RefThumb asset={a} preview={preview} />
               <button type="button" className="in-ref-name" onClick={() => useUI.getState().openDialog({ kind: 'asset', assetId: a.id })} title="Sửa chi tiết">
                 <span className="in-ref-title">{a.name}</span>
                 <span className="in-ref-tag">
@@ -334,6 +336,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
           )
         })}
         {libOver && <div className="in-refs-drop">{libOver === 'files' ? 'Thả ảnh để thêm vào thư viện và nối vào cảnh này' : 'Thả để nối vào cảnh này'}</div>}
+        {preview.preview}
       </div>
 
       {over && (
@@ -382,10 +385,22 @@ function FrameSlot({ sceneId, which, label, assetId, assets }: { sceneId: string
   const [open, setOpen] = useState(false)
   const btn = useRef<HTMLButtonElement>(null)
   const asset = assetId ? assets.find((a) => a.id === assetId) : undefined
+  // The frame is sent as the whole picture: hovering shows it in full (the avatar is a square crop).
+  const preview = useImagePreview()
   return (
     <div className={`in-frame is-${which}`}>
       <span className="in-frame-label">{label}</span>
-      <button ref={btn} type="button" className={`in-frame-btn ${asset ? 'has' : ''}`} onClick={() => setOpen((o) => !o)}>
+      <button
+        ref={btn}
+        type="button"
+        className={`in-frame-btn ${asset ? 'has' : ''}`}
+        onClick={() => {
+          preview.hide()
+          setOpen((o) => !o)
+        }}
+        onMouseEnter={(e) => asset && !open && preview.show(e.currentTarget, asset.imageIds[0], `${label} · ${asset.name}`)}
+        onMouseLeave={preview.hide}
+      >
         {asset ? (
           <>
             <AssetAvatar asset={asset} size={30} />
@@ -405,6 +420,7 @@ function FrameSlot({ sceneId, which, label, assetId, assets }: { sceneId: string
           <X size={12} />
         </button>
       )}
+      {preview.preview}
       {open && (
         <AssetPicker
           ignoreRef={btn}

@@ -1,12 +1,16 @@
 // Asset card on the canvas (character / location / prop / style). Source of reference wires.
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { Box, MapPin, Palette, User } from 'lucide-react'
-import { memo } from 'react'
+// Shows the WHOLE primary image at its own aspect ratio (never cropped): by default the card follows the image
+// (width ASSET_DEFAULT_W, height = image + name/meta rows); once resized, the picture letterboxes inside the card.
+import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
+import { Box, MapPin, Maximize2, Palette, User } from 'lucide-react'
+import { memo, useEffect, useRef, type SyntheticEvent } from 'react'
+import { viewAssetImages } from '../../actions'
 import type { AssetKind } from '../../core/types'
-import { useMediaUrl } from '../../lib/imageStore'
+import { aspectOf, useImageSize } from '../../lib/imageMeta'
 import { useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
-import { assetImageSide, assetMapOf, KIND_LABEL, usageOf } from './canvasModel'
+import { FullImage } from '../common/Media'
+import { ASSET_MAX_ASPECT, ASSET_MIN_ASPECT, assetDefaultLayout, assetMapOf, KIND_LABEL, LOD_ZOOM, usageOf } from './canvasModel'
 import { NodeSizer, useNodeBox } from './NodeSizer'
 import './canvas.css'
 
@@ -14,28 +18,81 @@ export type AssetFlowNode = Node<Record<string, unknown>, 'asset'>
 
 const KIND_ICON: Record<AssetKind, typeof User> = { character: User, location: MapPin, prop: Box, style: Palette }
 
+/** Keep a press on the image buttons away from node drag / selection / the double-click dialog. */
+const stop = (e: SyntheticEvent) => e.stopPropagation()
+
 function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
   const asset = useProject((s) => assetMapOf(s.project.assets).get(id))
   const usage = useProject((s) => usageOf(s.project.scenes).get(id) ?? 0)
-  const url = useMediaUrl(asset?.imageIds[0])
+  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const primary = asset?.imageIds[0]
+  const imgSize = useImageSize(primary)
   const box = useNodeBox(id, asset?.size)
+  // Square until the image's natural size is known, then its own (clamped) aspect ratio.
+  const aspect = primary ? aspectOf(imgSize, 1, ASSET_MIN_ASPECT, ASSET_MAX_ASPECT) : 1
+
+  // The default card changes height once the aspect is known: re-measure the node (handle bounds) right away.
+  const updateInternals = useUpdateNodeInternals()
+  const lastAspect = useRef(aspect)
+  useEffect(() => {
+    if (lastAspect.current === aspect) return
+    lastAspect.current = aspect
+    updateInternals(id)
+  }, [id, aspect, updateInternals])
+
   if (!asset) return null
   const Icon = KIND_ICON[asset.kind]
-  // Square image: fills the card width by default, grows with a resized card (whichever side is tighter).
-  const side = box ? assetImageSide(box.w, box.h) : undefined
+  const count = asset.imageIds.length
+  const def = box ? null : assetDefaultLayout(aspect)
+  const cls = ['cv-asset', selected && 'is-selected', box && 'is-sized', far && 'is-far', `kind-${asset.kind}`].filter(Boolean).join(' ')
   return (
     <>
       <div
-        className={`cv-asset ${selected ? 'is-selected' : ''} ${box ? 'is-sized' : ''} kind-${asset.kind}`}
-        style={{ ['--asset-c' as string]: asset.color }}
+        className={cls}
+        style={{ ['--asset-c' as string]: asset.color, ...(def ? { width: def.w } : null) }}
         onDoubleClick={(e) => {
           e.stopPropagation()
           useUI.getState().openDialog({ kind: 'asset', assetId: asset.id })
         }}
       >
-        <div className="cv-asset-img" style={side ? { width: side, height: side } : undefined}>
-          {url ? <img src={url} alt={asset.name} draggable={false} /> : <span className="cv-asset-fallback">{asset.name.slice(0, 1).toUpperCase()}</span>}
-          {asset.imageIds.length > 1 && <span className="cv-asset-count">{asset.imageIds.length} ảnh</span>}
+        <div className="cv-asset-img" style={def ? { height: def.imgH } : undefined}>
+          {primary ? (
+            <FullImage id={primary} alt={asset.name} fill />
+          ) : (
+            <span className="cv-asset-fallback">{asset.name.slice(0, 1).toUpperCase()}</span>
+          )}
+          {primary && !far && (
+            <button
+              className="cv-asset-zoom nodrag nopan"
+              title="Xem ảnh đầy đủ"
+              aria-label={`Xem ảnh ${asset.name}`}
+              onPointerDown={stop}
+              onDoubleClick={stop}
+              onClick={(e) => {
+                e.stopPropagation()
+                viewAssetImages(asset.id)
+              }}
+            >
+              <Maximize2 size={12} strokeWidth={2.4} />
+            </button>
+          )}
+          {count > 1 &&
+            (far ? (
+              <span className="cv-asset-count">+{count - 1} ảnh</span>
+            ) : (
+              <button
+                className="cv-asset-count nodrag nopan"
+                title={`Xem cả ${count} ảnh`}
+                onPointerDown={stop}
+                onDoubleClick={stop}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  viewAssetImages(asset.id, 1)
+                }}
+              >
+                +{count - 1} ảnh
+              </button>
+            ))}
         </div>
         <div className="cv-asset-name">
           <Icon size={12} className="cv-asset-kind" aria-label={KIND_LABEL[asset.kind]} />

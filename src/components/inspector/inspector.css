@@ -1371,18 +1371,27 @@ button.in-code-chip:hover {
 .in-asset-hero {
   position: relative;
   margin: 14px 16px 0;
-  height: 200px;
+  display: flex;
+  justify-content: center;
+}
+/* no image yet: a short placeholder box */
+.in-asset-hero.is-empty {
+  height: 120px;
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--panel-3);
   box-shadow: inset 0 0 0 1px var(--border), 0 0 0 1px color-mix(in srgb, var(--asset) 30%, transparent);
 }
-.in-asset-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: var(--panel-3);
+/* the whole primary image at its own aspect ratio (width set inline: never taller than ~320px) */
+.in-asset-figure {
+  position: relative;
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--border), 0 0 0 1px color-mix(in srgb, var(--asset) 30%, transparent);
+}
+.in-asset-full.full-img {
+  border-radius: 0;
 }
 .in-asset-noimg {
   position: absolute;
@@ -1395,6 +1404,7 @@ button.in-code-chip:hover {
 }
 .in-asset-kind {
   position: absolute;
+  pointer-events: none;
   left: 8px;
   bottom: 8px;
   display: inline-flex;
@@ -1482,18 +1492,27 @@ button.in-code-chip:hover {
 .in-swatch.active {
   border-color: var(--text);
 }
+/* image tiles: uniform height, each as wide as its picture (whole image, contain) */
 .in-images {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .in-image {
   position: relative;
-  aspect-ratio: 1;
+  flex: none;
+  height: 76px;
+  max-width: 100%;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--panel-3);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+.in-image-full.full-img {
+  border-radius: inherit;
+}
+.in-image-badge {
+  pointer-events: none;
 }
 .in-image.is-primary {
   box-shadow: 0 0 0 2px var(--accent);
@@ -1549,7 +1568,9 @@ button.in-code-chip:hover {
   background: var(--danger);
 }
 .in-image-add {
-  aspect-ratio: 1;
+  flex: none;
+  width: 76px;
+  height: 76px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1767,4 +1788,71 @@ button.in-code-chip:hover {
 }
 .in-take-sum .status-dot {
   display: inline-block;
+}
+
+/* ---------- reference thumbnails: square, hover = whole picture, click = viewer ---------- */
+.in-ref-thumb {
+  flex: none;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: max(3px, 14%);
+  background: transparent;
+  cursor: zoom-in;
+}
+.in-ref-thumb:hover .asset-avatar {
+  box-shadow: 0 0 0 2px var(--ref);
+}
+.in-ref-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.in-hover-preview {
+  position: fixed;
+  z-index: 140;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: in-hover-in 0.12s ease-out;
+}
+.in-hover-preview .full-img {
+  border-radius: 7px;
+}
+.in-hover-cap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.in-hover-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.in-hover-size {
+  flex: none;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+@keyframes in-hover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .in-hover-preview {
+    animation: none;
+  }
 }

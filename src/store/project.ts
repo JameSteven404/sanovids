@@ -46,7 +46,7 @@ export const LAYOUT = {
 export const NODE_SIZE = {
   scene: { minW: 240, maxW: 720, minH: 150, maxH: 760 },
   take: { minW: 180, maxW: 640, minH: 150, maxH: 560 },
-  asset: { minW: 140, maxW: 420, minH: 150, maxH: 520 },
+  asset: { minW: 140, maxW: 520, minH: 150, maxH: 820 },
 }
 
 export function clampSize(kind: keyof typeof NODE_SIZE, size: Size): Size {
@@ -245,7 +245,7 @@ export interface ProjectState {
   setPositions: (positions: Record<string, XY>) => void
   /** Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too (resizing from the left/top edge). */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
-  /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes) when known. */
+  /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards). */
   autoLayout: (rowHeights?: Record<string, number>) => void
 
   // bulk
@@ -706,7 +706,7 @@ export const useProject = create<ProjectState>()(
             const assets = p.assets.map((a) => {
               if (!a.position) return a
               const next = { ...a, position: { x: LAYOUT.assetX, y } }
-              y += Math.max(LAYOUT.assetH, a.size?.h ?? 0) + LAYOUT.assetGapY
+              y += Math.max(LAYOUT.assetH, a.size?.h ?? 0, rowHeights[a.id] ?? 0) + LAYOUT.assetGapY
               return next
             })
             return { ...p, assets, scenes: p.scenes.map((s) => ({ ...s, position: pos.get(s.id)! })) }

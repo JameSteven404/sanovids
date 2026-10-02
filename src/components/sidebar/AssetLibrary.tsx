@@ -1,15 +1,16 @@
-import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X } from 'lucide-react'
+import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X, ZoomIn } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, ensureAssetToken, focusNodes, linkAssets, selectedSceneIds } from '../../actions'
+import { createAssetsFromFiles, ensureAssetToken, focusNodes, linkAssets, selectedSceneIds, viewAssetImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
 import { ASSETS_MIME } from '../../lib/dnd'
+import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { cachedUrl } from '../../lib/imageStore'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { MediaImg } from '../common/Media'
+import { FullImage } from '../common/Media'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
 import {
@@ -20,6 +21,7 @@ import {
   matchesQuery,
   newAssetKind,
   nextAssetPosition,
+  packColumns,
   undoToastAction,
   usePrefState,
   useSceneCode,
@@ -31,6 +33,46 @@ import {
 type KindFilter = 'all' | AssetKind
 const EMPTY_COUNTS: Record<string, number> = {}
 const EMPTY_LABELS: Record<string, string> = {}
+
+// ---------------- masonry ----------------
+/** Card images show the whole picture at its aspect ratio, clamped so a panorama / strip does not explode a card. */
+const CARD_MIN_AR = 0.6
+const CARD_MAX_AR = 1.8
+/** Box of a card without an image. */
+const NOIMG_AR = 4 / 3
+/** Name + usage rows under the image, in column widths (≈ 44px on a ~110px column). */
+const INFO_H = 0.4
+/** Below this grid width two columns get too narrow for the card buttons: one column. */
+const ONE_COL_BELOW = 210
+
+/** Card image aspect ratios of `list`, as soon as each primary image is measured (1 until then). */
+function useCardAspects(list: Asset[]): number[] {
+  return useImageMeta(
+    useShallow((s) => list.map((a) => (a.imageIds[0] ? aspectOf(s.sizes[a.imageIds[0]], 1, CARD_MIN_AR, CARD_MAX_AR) : NOIMG_AR))),
+  )
+}
+
+/** 1 or 2 columns from the grid's width (ResizeObserver; callback ref because the grid mounts / unmounts). */
+function useColumnCount(): [number, (el: HTMLElement | null) => void] {
+  const [cols, setCols] = useState(2)
+  const observer = useRef<ResizeObserver | null>(null)
+  const ref = useCallback((el: HTMLElement | null) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!el) return
+    const apply = (w: number) => {
+      if (w > 0) setCols(w < ONE_COL_BELOW ? 1 : 2)
+    }
+    // First value right away (ref callbacks run before paint): a narrow panel never flashes 2 columns then 1.
+    apply(el.getBoundingClientRect().width)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver((entries) => apply(entries[0]?.contentRect.width ?? 0))
+    ro.observe(el)
+    observer.current = ro
+  }, [])
+  useEffect(() => () => observer.current?.disconnect(), [])
+  return [cols, ref]
+}
 
 /** Number of scenes whose refs include each asset. */
 const usageSelector = (s: ProjectState) => {
@@ -219,9 +261,9 @@ const AssetCard = memo(function AssetCard({
       onDragStart={(e) => startAssetDrag(e, asset.id)}
       onDragEnd={endAssetDrag}
     >
-      <div className="sb-card-media">
+      <div className={`sb-card-media${asset.imageIds[0] ? '' : ' empty'}`}>
         {asset.imageIds[0] ? (
-          <MediaImg id={asset.imageIds[0]} alt={asset.name} className="media-img sb-card-img" />
+          <FullImage id={asset.imageIds[0]} alt={asset.name} className="sb-card-full" minAspect={CARD_MIN_AR} maxAspect={CARD_MAX_AR} />
         ) : (
           <div className="sb-card-fallback">
             <span>{(asset.name || asset.tag).slice(0, 1).toUpperCase()}</span>
@@ -287,6 +329,20 @@ const AssetCard = memo(function AssetCard({
           )
         )}
         <div className="sb-card-actions">
+          {asset.imageIds[0] && (
+            <button
+              className="sb-card-btn sb-card-zoom"
+              title={asset.imageIds.length > 1 ? `Xem ảnh đầy đủ (${asset.imageIds.length} ảnh, ←/→ để chuyển)` : 'Xem ảnh đầy đủ'}
+              aria-label={`Xem ảnh đầy đủ của ${asset.name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                viewAssetImages(asset.id)
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <ZoomIn size={12} />
+            </button>
+          )}
           <button
             className="sb-card-btn"
             title={asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}
@@ -382,6 +438,7 @@ export function AssetLibrary({
   const [fileOver, setFileOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const anchor = useRef<string | null>(null)
+  const [cols, gridRef] = useColumnCount()
 
   const matched = useMemo(() => assets.filter((a) => matchesQuery(query, a.name, a.tag, a.description)), [assets, query])
   const counts = useMemo(() => {
@@ -396,6 +453,11 @@ export function AssetLibrary({
   }, [assets, librarySelection])
   const selSet = useMemo(() => new Set(selection), [selection])
   const dragSet = useMemo(() => new Set(draggingIds ?? []), [draggingIds])
+  const aspects = useCardAspects(visible)
+  const columns = useMemo(
+    () => packColumns(aspects.map((ar) => 1 / ar + INFO_H), cols).map((col) => col.map((i) => visible[i])),
+    [visible, aspects, cols],
+  )
 
   // Safety net: if the dragged card unmounts mid-drag its `dragend` never reaches React.
   // No pointerdown can happen during an HTML5 drag, so the next press after it ends clears stale state.
@@ -589,24 +651,28 @@ export function AssetLibrary({
             : `Chưa có ${kind === 'all' ? 'mục' : KIND_META[kind].label.toLowerCase()} nào.`}
         </div>
       ) : (
-        <div className="sb-grid" role="listbox" aria-multiselectable="true" aria-label="Thư viện">
-          {visible.map((a) => (
-            <AssetCard
-              key={a.id}
-              asset={a}
-              usage={usage[a.id] ?? 0}
-              selected={selSet.has(a.id)}
-              dragging={dragSet.has(a.id)}
-              linked={linked[a.id] ?? 0}
-              selScenes={selectedScenes.length}
-              singleId={singleId}
-              singleCode={singleCode}
-              token={singleId ? tokens[a.id] : undefined}
-              sendsImages={media.images}
-              sceneModel={media.model}
-              groupSize={selection.length}
-              onSelect={onSelect}
-            />
+        <div ref={gridRef} className="sb-grid" role="listbox" aria-multiselectable="true" aria-label="Thư viện">
+          {columns.map((col, ci) => (
+            <div key={ci} className="sb-col" role="none">
+              {col.map((a) => (
+                <AssetCard
+                  key={a.id}
+                  asset={a}
+                  usage={usage[a.id] ?? 0}
+                  selected={selSet.has(a.id)}
+                  dragging={dragSet.has(a.id)}
+                  linked={linked[a.id] ?? 0}
+                  selScenes={selectedScenes.length}
+                  singleId={singleId}
+                  singleCode={singleCode}
+                  token={singleId ? tokens[a.id] : undefined}
+                  sendsImages={media.images}
+                  sceneModel={media.model}
+                  groupSize={selection.length}
+                  onSelect={onSelect}
+                />
+              ))}
+            </div>
           ))}
         </div>
       )}

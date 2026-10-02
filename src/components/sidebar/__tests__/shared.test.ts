@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { assetDefaultLayout } from '../../canvas/canvasModel'
 import type { Asset, Project, Scene, Take } from '../../../core/types'
 import { useProject } from '../../../store/project'
 import {
@@ -123,7 +124,8 @@ describe('tag validation + rename', () => {
   })
 
   it('places new canvas assets under the existing asset column', () => {
-    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + 210 + 28 })
+    // Default card height follows the image (square images here): name/meta rows + the image box.
+    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + assetDefaultLayout(1).h + 28 })
   })
 
   it('places new canvas assets below a resized (taller) asset node, not over it', () => {
@@ -132,7 +134,7 @@ describe('tag validation + rename', () => {
       { ...asset('a', 'A', 'A', [], { x: 40, y: 60 }), size: { w: 300, h: 480 } },
       asset('b', 'B', 'B', [], { x: 40, y: 300 }),
     ]
-    // a's bottom edge (60 + 480) is lower than b's (300 + default 210).
+    // a's bottom edge (60 + 480) is lower than b's (300 + default card height).
     expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 480 + 28 })
   })
 })

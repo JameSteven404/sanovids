@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from 'react'
 import { CanvasView } from './components/canvas/CanvasView'
 import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './components/common/PanelResizer'
+import { ImageLightbox } from './components/common/ImageLightbox'
 import { Toasts } from './components/common/Toasts'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
@@ -124,6 +125,8 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <RunConfirmDialog sceneIds={dialog.sceneIds} />
     case 'take':
       return <TakeViewer takeId={dialog.takeId} />
+    case 'image':
+      return <ImageLightbox key={dialog.imageIds.join('|') + dialog.index} imageIds={dialog.imageIds} index={dialog.index} title={dialog.title} />
     case 'asset':
       return <AssetDialog assetId={dialog.assetId} />
     default:

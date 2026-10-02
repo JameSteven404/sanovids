@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset, Scene, VideoSettings } from '../../../core/types'
-import { imageRenumberNote, libraryCardKey, newAssetKind, sceneMediaFlags, scenesWithShiftedImageTokens } from '../shared'
+import { imageRenumberNote, libraryCardKey, newAssetKind, packColumns, sceneMediaFlags, scenesWithShiftedImageTokens } from '../shared'
 
 const settings = (patch: Partial<VideoSettings> = {}): VideoSettings => ({
   model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9', ...patch,
@@ -99,5 +99,18 @@ describe('media sent by the selected scene', () => {
   })
   it('no scene → nothing to warn about', () => {
     expect(sceneMediaFlags(undefined)).toMatchObject({ images: true, videos: true })
+  })
+})
+
+describe('packColumns (library masonry)', () => {
+  it('puts each card in the shorter column, left on a tie, keeping list order', () => {
+    // a tall card first: the wide cards go right until that column is taller
+    expect(packColumns([2, 0.7, 0.7, 0.7, 1], 2)).toEqual([[0, 4], [1, 2, 3]])
+    expect(packColumns([1, 1, 1, 1], 2)).toEqual([[0, 2], [1, 3]])
+  })
+  it('one column keeps everything in order; bad heights count as 1', () => {
+    expect(packColumns([1, 2, 3], 1)).toEqual([[0, 1, 2]])
+    expect(packColumns([Number.NaN, 0, 1], 2)).toEqual([[0, 2], [1]])
+    expect(packColumns([], 2)).toEqual([[], []])
   })
 })

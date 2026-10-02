@@ -8,7 +8,7 @@ import type { EdgeMode } from '../../core/types'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
-import { assetMapOf, countScenes, FIT_EVENT, KIND_LABEL, sceneMapOf, takeIndexOf } from './canvasModel'
+import { assetMapOf, assetNodeHeight, countScenes, FIT_EVENT, KIND_LABEL, sceneMapOf, takeIndexOf } from './canvasModel'
 import './canvas.css'
 
 const EDGE_MODES: { id: EdgeMode; label: string; title: string }[] = [
@@ -24,13 +24,13 @@ const TAKE_DISPLAYS: { id: TakeDisplay; label: string; title: string }[] = [
 
 /** Auto layout: scenes one per row in order, assets in a column, every take back to its auto slot next to its scene. */
 export function autoLayoutCanvas() {
-  // Asset cards follow their image's aspect ratio (a portrait card is much taller than LAYOUT.assetH): hand the
-  // measured heights over (keyed by asset id) so the asset column does not overlap.
+  // Asset cards follow their image's aspect ratio (a portrait card is much taller than LAYOUT.assetH): hand their
+  // heights over (keyed by asset id) so the asset column does not overlap. Off-screen cards are not rendered
+  // (onlyRenderVisibleElements) and may never have been measured: assetNodeHeight falls back to the image's aspect.
   const measured = useUI.getState().measured
   const heights: Record<string, number> = {}
   for (const a of useProject.getState().project.assets) {
-    const h = a.position ? measured[a.id]?.height : undefined
-    if (h) heights[a.id] = h
+    if (a.position) heights[a.id] = assetNodeHeight(a, measured[a.id]?.height)
   }
   useProject.getState().autoLayout(heights)
   const runs = useRuns.getState()

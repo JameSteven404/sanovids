@@ -1,13 +1,14 @@
 import { ArrowLeft, ArrowRight, ImagePlus, Info, Link2, Pin, PinOff, RefreshCw, Star, Trash2, TriangleAlert, Unlink, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { addImagesToAsset, focusNodes } from '../../actions'
+import { addImagesToAsset, focusNodes, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
+import { aspectOf, useImageSize } from '../../lib/imageMeta'
 import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar, MediaImg } from '../common/Media'
+import { AssetAvatar, FullImage } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { ColorSwatches, ConfirmButton } from './bits'
 import {
@@ -301,6 +302,38 @@ async function addImageFiles(asset: Asset, files: File[]) {
   })
 }
 
+/**
+ * Full-screen viewer for this asset's images. The viewer takes the dialog slot, so the asset dialog comes back when
+ * the viewer is closed (unless something else was opened meanwhile).
+ */
+function viewFromDialog(asset: Asset, index: number) {
+  viewImages(asset.imageIds, index, asset.name)
+  if (useUI.getState().dialog.kind !== 'image') return
+  const unsub = useUI.subscribe((s, prev) => {
+    if (s.dialog === prev.dialog) return
+    unsub()
+    if (s.dialog.kind === 'none' && prev.dialog.kind === 'image' && useProject.getState().project.assets.some((a) => a.id === asset.id)) {
+      useUI.getState().openDialog({ kind: 'asset', assetId: asset.id })
+    }
+  })
+}
+
+/** Height of the image tiles (px): each tile is as wide as its picture, the whole image is shown (no crop). */
+const IMG_H = 112
+/** Narrowest tile: room for the ← ★ → × buttons (4 × 22 + 3 gaps + 2 × 4 inset + border; tall pictures letterbox). */
+const IMG_MIN_W = 108
+
+function ImageTile({ id, alt, primary, onOpen, children }: { id: string; alt: string; primary: boolean; onOpen: () => void; children: ReactNode }) {
+  const size = useImageSize(id)
+  const ar = aspectOf(size, 1, 0.5, 2.4)
+  return (
+    <div className={`sb-img${primary ? ' primary' : ''}`} style={{ width: Math.round(Math.max(IMG_MIN_W, IMG_H * ar)) }}>
+      <FullImage id={id} alt={alt} fill className="sb-img-full" onClick={onOpen} title={size ? `Bấm để xem ảnh đầy đủ (${size.w}×${size.h})` : 'Bấm để xem ảnh đầy đủ'} />
+      {children}
+    </div>
+  )
+}
+
 /** `over`: image files are being dragged over the dialog (the whole body is the drop zone). */
 function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
   const input = useRef<HTMLInputElement>(null)
@@ -326,8 +359,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
       </span>
       <div className={`sb-images${over ? ' over' : ''}`}>
         {ids.map((id, i) => (
-          <div key={id} className={`sb-img${i === 0 ? ' primary' : ''}`}>
-            <MediaImg id={id} alt={`${asset.name} ${i + 1}`} />
+          <ImageTile key={id} id={id} alt={`${asset.name} ${i + 1}`} primary={i === 0} onOpen={() => viewFromDialog(asset, i)}>
             {i === 0 ? <span className="sb-img-badge">Ảnh chính</span> : <span className="sb-img-n">{i + 1}</span>}
             <div className="sb-img-actions">
               <button className="sb-card-btn" title="Sang trái" disabled={i === 0} onClick={() => move(i, i - 1)}>
@@ -345,7 +377,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
                 <X size={12} />
               </button>
             </div>
-          </div>
+          </ImageTile>
         ))}
         <button className="sb-img-add" onClick={() => input.current?.click()} title="Thêm ảnh (hoặc thả file vào đây)">
           <ImagePlus size={18} />

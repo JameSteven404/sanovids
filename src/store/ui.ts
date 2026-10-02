@@ -21,6 +21,7 @@ export type DialogState =
   | { kind: 'runConfirm'; sceneIds: string[] }
   | { kind: 'take'; takeId: string }
   | { kind: 'asset'; assetId: string }
+  | { kind: 'image'; imageIds: string[]; index: number; title?: string }
   | { kind: 'projects' }
 
 export type InteractionMode = 'hand' | 'select'

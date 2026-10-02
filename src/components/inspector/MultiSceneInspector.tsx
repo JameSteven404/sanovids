@@ -8,8 +8,9 @@ import { costOf, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar, MediaImg } from '../common/Media'
+import { MediaImg } from '../common/Media'
 import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
+import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
 import { TakePicker } from './TakePicker'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
@@ -121,6 +122,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   }, [scenes, assets])
   const n = scenes.length
   const allIds = useMemo(() => union.filter((u) => u.count === n).map((u) => u.asset.id), [union, n])
+  const preview = useImagePreview()
 
   const removeFromAll = (a: Asset) => {
     flushAll(ids)
@@ -135,7 +137,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
       <div className="in-refs">
         {union.map(({ asset: a, count }) => (
           <div key={a.id} className="in-ref is-multi">
-            <AssetAvatar asset={a} size={28} />
+            <RefThumb asset={a} preview={preview} />
             <button type="button" className="in-ref-name" onClick={() => useUI.getState().openDialog({ kind: 'asset', assetId: a.id })} title="Sửa chi tiết">
               <span className="in-ref-title">{a.name}</span>
               <span className="in-ref-tag">{KIND_LABEL[a.kind]}</span>
@@ -153,6 +155,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
             </button>
           </div>
         ))}
+        {preview.preview}
       </div>
       <div className="in-pop-host">
         <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>

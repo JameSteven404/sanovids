@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
+import { useImageMeta } from '../../../lib/imageMeta'
 import { defaultTakePosition, LAYOUT, NODE_SIZE } from '../../../store/project'
 import {
-  assetImageSide,
+  ASSET_CHROME,
+  ASSET_DEFAULT_W,
+  ASSET_MAX_ASPECT,
+  ASSET_MIN_ASPECT,
+  ASSET_PAD_X,
+  assetDefaultLayout,
+  assetNodeHeight,
   autoTakePosition,
   avatarSlots,
   DEFAULT_AVATARS,
@@ -10,6 +17,10 @@ import {
   fitMedia,
   layoutTakes,
   orphanTakePosition,
+  placePopover,
+  PREVIEW_MAX_H,
+  PREVIEW_MAX_W,
+  previewSize,
   promptLines,
   PROMPT_LINE_H,
   SCENE_CHROME,
@@ -157,10 +168,91 @@ describe('take / asset media', () => {
     expect(fitMedia(10, 10, TAKE_CHROME)).toEqual({ w: 0, h: 0 })
   })
 
-  it('asset image stays square and grows with the node', () => {
-    expect(assetImageSide(300, 500)).toBe(282)
-    expect(assetImageSide(400, 200)).toBeLessThan(200)
-    expect(assetImageSide(400, 420)).toBeGreaterThan(assetImageSide(200, 420))
+})
+
+describe('asset node: whole image at its own aspect ratio', () => {
+  const inner = ASSET_DEFAULT_W - ASSET_PAD_X
+
+  it('default card: image fills the width at its aspect, card = image + name/meta rows', () => {
+    const square = assetDefaultLayout(1)
+    expect(square).toEqual({ w: ASSET_DEFAULT_W, h: inner + ASSET_CHROME, imgW: inner, imgH: inner })
+    const portrait = assetDefaultLayout(9 / 16)
+    expect(portrait.imgW).toBe(inner)
+    expect(portrait.imgH).toBe(Math.round((inner * 16) / 9))
+    expect(portrait.h).toBe(portrait.imgH + ASSET_CHROME)
+    const landscape = assetDefaultLayout(16 / 9)
+    expect(landscape.imgH).toBe(Math.round((inner * 9) / 16))
+    expect(landscape.h).toBeLessThan(square.h)
+    expect(portrait.h).toBeGreaterThan(square.h)
+  })
+
+  it('stays within NODE_SIZE.asset (very wide images get a letterboxed, minH-tall card)', () => {
+    const l = NODE_SIZE.asset
+    for (const a of [ASSET_MIN_ASPECT, 0.5, 1, 1.5, ASSET_MAX_ASPECT, 10, 0.05]) {
+      const box = assetDefaultLayout(a)
+      expect(box.h).toBeGreaterThanOrEqual(l.minH)
+      expect(box.h).toBeLessThanOrEqual(l.maxH)
+      expect(box.w).toBeGreaterThanOrEqual(l.minW)
+      expect(box.w).toBeLessThanOrEqual(l.maxW)
+    }
+    expect(assetDefaultLayout(ASSET_MAX_ASPECT).h).toBe(l.minH)
+    // A tall strip in a wide card hits maxH.
+    expect(assetDefaultLayout(ASSET_MIN_ASPECT, l.maxW).h).toBe(l.maxH)
+    // Width is clamped too.
+    expect(assetDefaultLayout(1, 40).w).toBe(l.minW)
+  })
+
+  it('falls back to a square for an unknown / broken aspect', () => {
+    expect(assetDefaultLayout(Number.NaN)).toEqual(assetDefaultLayout(1))
+    expect(assetDefaultLayout(0)).toEqual(assetDefaultLayout(1))
+  })
+
+  it('a default square card still fits the asset column slots (seed, saved projects, "add to canvas")', () => {
+    expect(assetDefaultLayout(1).h).toBeLessThan(LAYOUT.assetH + LAYOUT.assetGapY)
+  })
+
+  describe('assetNodeHeight (asset column layout)', () => {
+    afterEach(() => useImageMeta.setState({ sizes: {} }))
+
+    it('uses the stored size, else the default card for the known image aspect', () => {
+      expect(assetNodeHeight({ size: { w: 300, h: 400 }, imageIds: ['img_a'] }, 999)).toBe(400)
+      useImageMeta.setState({ sizes: { img_a: { w: 900, h: 1600 } } })
+      // Known aspect wins over a stale measurement (taken while the card was still square).
+      expect(assetNodeHeight({ size: null, imageIds: ['img_a'] }, 227)).toBe(assetDefaultLayout(9 / 16).h)
+    })
+
+    it('falls back to the measured card, then to a square card', () => {
+      expect(assetNodeHeight({ size: null, imageIds: ['img_b'] }, 333)).toBe(333)
+      expect(assetNodeHeight({ size: null, imageIds: ['img_b'] })).toBe(assetDefaultLayout(1).h)
+      expect(assetNodeHeight({ size: null, imageIds: [] }, 500)).toBe(assetDefaultLayout(1).h)
+    })
+  })
+})
+
+describe('reference image hover preview', () => {
+  it('keeps the image aspect inside the max box', () => {
+    expect(previewSize(1)).toEqual({ w: Math.min(PREVIEW_MAX_W, PREVIEW_MAX_H), h: Math.min(PREVIEW_MAX_W, PREVIEW_MAX_H) })
+    const wide = previewSize(16 / 9)
+    expect(wide.w).toBe(PREVIEW_MAX_W)
+    expect(wide.w / wide.h).toBeCloseTo(16 / 9, 1)
+    const tall = previewSize(9 / 16)
+    expect(tall.h).toBe(PREVIEW_MAX_H)
+    expect(tall.w / tall.h).toBeCloseTo(9 / 16, 1)
+    expect(previewSize(Number.NaN)).toEqual(previewSize(1))
+  })
+
+  it('sits centered above the anchor, flips below near the top and stays on screen', () => {
+    const anchor = { left: 500, top: 400, right: 524, bottom: 424 }
+    expect(placePopover(anchor, 200, 150, 1280, 800)).toEqual({ left: 412, top: 400 - 10 - 150 })
+    const nearTop = placePopover({ ...anchor, top: 60, bottom: 84 }, 200, 150, 1280, 800)
+    expect(nearTop.top).toBe(84 + 10)
+    const nearLeft = placePopover({ left: 2, top: 400, right: 26, bottom: 424 }, 200, 150, 1280, 800)
+    expect(nearLeft.left).toBe(8)
+    const nearRight = placePopover({ left: 1270, top: 400, right: 1280, bottom: 424 }, 200, 150, 1280, 800)
+    expect(nearRight.left).toBe(1280 - 200 - 8)
+    // Too tall for either side: pinned inside the viewport.
+    const cramped = placePopover({ left: 500, top: 100, right: 524, bottom: 124 }, 200, 300, 1280, 320)
+    expect(cramped.top).toBe(320 - 300 - 8)
   })
 })
 

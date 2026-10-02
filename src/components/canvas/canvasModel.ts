@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
@@ -325,11 +326,82 @@ export function fitMedia(w: number, h: number, chrome: number): { w: number; h: 
   return { w: Math.round((ph * 16) / 9), h: Math.round(ph) }
 }
 
-/** Asset node: borders + padding + name + meta rows around the image (2 + 17 + 8+19 + 3+16). */
+// ---------------- asset node: the WHOLE reference image at its own aspect ratio ----------------
+/**
+ * Default width of an asset node (no size set by the user). Kept at the asset column width: a square card is then
+ * 162 + 65 = 227px tall and still fits the LAYOUT.assetH + assetGapY (238px) slots that the seed, saved projects and
+ * the "add to canvas" placement use. 200px made every square card ~247px tall, overlapping the card below it.
+ */
+export const ASSET_DEFAULT_W = LAYOUT.assetW
+/** Asset node: left + right borders and padding beside the image (1 + 8 + 8 + 1). */
+export const ASSET_PAD_X = 18
+/** Asset node: borders + padding + name + meta rows around the image (2 + 8+9 + 8+19 + 3+16). */
 export const ASSET_CHROME = 65
-/** Side of the square asset image in a node `w` × `h`. */
-export function assetImageSide(w: number, h: number): number {
-  return Math.max(40, Math.floor(Math.min(w - 18, h - ASSET_CHROME)))
+/** Aspect ratio (w / h) clamp of the image in an asset node: extreme panoramas / strips stay usable. */
+export const ASSET_MIN_ASPECT = 0.4
+export const ASSET_MAX_ASPECT = 2.6
+
+/**
+ * Default asset node (the user has not resized it): the image takes the card's inner width at its own aspect ratio
+ * `aspect` (w / h, already clamped by aspectOf) and the card is image + name/meta rows tall, within NODE_SIZE.asset.
+ * A very wide image in a card that would be shorter than minH gets a slightly taller (letterboxed) image box.
+ */
+export function assetDefaultLayout(aspect: number, w: number = ASSET_DEFAULT_W): { w: number; h: number; imgW: number; imgH: number } {
+  const l = NODE_SIZE.asset
+  const cw = Math.max(l.minW, Math.min(l.maxW, Math.round(w)))
+  const imgW = cw - ASSET_PAD_X
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1
+  const imgH = Math.round(Math.max(l.minH - ASSET_CHROME, Math.min(l.maxH - ASSET_CHROME, imgW / a)))
+  return { w: cw, h: imgH + ASSET_CHROME, imgW, imgH }
+}
+
+/**
+ * Height an asset node is drawn at (layout of the asset column): its stored size, else the default card for its
+ * image's aspect ratio when that is known (measured once per session), else the size React Flow last measured
+ * (`measuredH`, possibly from before the image was measured), else a square card. Works for culled nodes too.
+ */
+export function assetNodeHeight(asset: Pick<Asset, 'size' | 'imageIds'>, measuredH?: number): number {
+  if (asset.size) return asset.size.h
+  const id = asset.imageIds[0]
+  const known = id ? useImageMeta.getState().sizes[id] : undefined
+  if (!id || known) return assetDefaultLayout(aspectOf(known, 1, ASSET_MIN_ASPECT, ASSET_MAX_ASPECT)).h
+  return measuredH && measuredH > 0 ? measuredH : assetDefaultLayout(1).h
+}
+
+// ---------------- hover preview of a reference image (scene card avatars) ----------------
+export const PREVIEW_MAX_W = 260
+export const PREVIEW_MAX_H = 300
+/** Card around the preview image: 6px padding (top and sides) + the caption row below (name · @image_N). */
+export const PREVIEW_PAD = 6
+export const PREVIEW_CAPTION_H = 24
+export const PREVIEW_MIN_W = 170
+
+/** Preview image box: the image's own aspect ratio, as large as fits `maxW` × `maxH`. */
+export function previewSize(aspect: number, maxW: number = PREVIEW_MAX_W, maxH: number = PREVIEW_MAX_H): { w: number; h: number } {
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1
+  const w = Math.min(maxW, maxH * a)
+  return { w: Math.round(w), h: Math.round(Math.min(maxH, w / a)) }
+}
+
+/**
+ * Screen position (position: fixed) of a popover `w` × `h` centered above `anchor`; below it when there is no room
+ * above. Always kept `margin` px inside the `vw` × `vh` viewport.
+ */
+export function placePopover(
+  anchor: { left: number; top: number; right: number; bottom: number },
+  w: number,
+  h: number,
+  vw: number,
+  vh: number,
+  gap = 10,
+  margin = 8,
+): { left: number; top: number } {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), v))
+  const left = clamp((anchor.left + anchor.right) / 2 - w / 2, margin, vw - w - margin)
+  let top = anchor.top - gap - h
+  if (top < margin) top = anchor.bottom + gap
+  top = clamp(top, margin, vh - h - margin)
+  return { left: Math.round(left), top: Math.round(top) }
 }
 
 /** Back to the default size (scene / asset: one undo step; take: runs store). */

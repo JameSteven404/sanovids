@@ -33,6 +33,7 @@ import { toast } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from './caret'
 import { useTakeInfos } from './hooks'
+import { useImagePreview } from './ImagePreview'
 import { findMention, popupPlacement, sameToken, type MentionToken } from './mentions'
 import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
 import {
@@ -670,6 +671,8 @@ const TokenLegend = memo(function TokenLegend({
   onInsert: (token: string) => void
   onHover: (h: TokenHighlight) => void
 }) {
+  // Hovering an @image chip shows the whole picture (the chip's thumbnail is a tiny square crop).
+  const preview = useImagePreview()
   if (!images.length && !videos.length) {
     return <div className="in-legend-empty faint">Chưa có ảnh / video tham chiếu — gõ @ để nối từ thư viện, hoặc kéo nhân vật / video vào cảnh.</div>
   }
@@ -682,9 +685,16 @@ const TokenLegend = memo(function TokenLegend({
           type="button"
           key={'i' + o.n}
           className="in-legend-chip is-image"
-          onMouseDown={keep}
+          onMouseDown={(e) => {
+            keep(e)
+            preview.hide()
+          }}
           onClick={() => onInsert(`@image_${o.n}`)}
-          onMouseEnter={() => onHover({ kind: 'image', n: o.n })}
+          onMouseEnter={(e) => {
+            onHover({ kind: 'image', n: o.n })
+            preview.show(e.currentTarget, o.imageId, `@image_${o.n} · ${o.name}${o.imageTotal > 1 ? ` (ảnh ${o.imageIndex + 1}/${o.imageTotal})` : ''}`)
+          }}
+          onMouseLeave={preview.hide}
           onFocus={() => onHover({ kind: 'image', n: o.n })}
           onBlur={() => onHover(null)}
           title={`Chèn @image_${o.n} (${o.name}${o.imageTotal > 1 ? `, ảnh ${o.imageIndex + 1}/${o.imageTotal}` : ''})`}
@@ -714,6 +724,7 @@ const TokenLegend = memo(function TokenLegend({
           <span className="in-legend-name">· {v.label}</span>
         </button>
       ))}
+      {preview.preview}
     </div>
   )
 })

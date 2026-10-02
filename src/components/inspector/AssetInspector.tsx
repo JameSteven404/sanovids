@@ -1,14 +1,15 @@
 // Inspector for one asset (selected on the canvas or in the library).
 import { ImagePlus, Link2, LocateFixed, MapPinned, Pencil, Unlink, X } from 'lucide-react'
-import { memo, useMemo, useRef, useState, type RefObject } from 'react'
+import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { addImagesToAsset, focusNodes, linkAssets } from '../../actions'
+import { addImagesToAsset, focusNodes, linkAssets, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
-import type { AssetKind } from '../../core/types'
+import type { Asset, AssetKind } from '../../core/types'
+import { aspectOf, useImageSize } from '../../lib/imageMeta'
 import { selectAsset, undoToastAction, useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { MediaImg } from '../common/Media'
+import { FullImage } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
 import { changedPrompts, nextAssetPosition, renameAssetTag } from '../sidebar/shared'
 
@@ -63,13 +64,11 @@ export function AssetInspector({ assetId }: { assetId: string }) {
 
   return (
     <div className="in-asset">
-      <div className="in-asset-hero" style={{ ['--asset' as string]: asset.color }}>
-        <MediaImg id={asset.imageIds[0]} alt={asset.name} className="in-asset-img" />
-        {!asset.imageIds.length && <div className="in-asset-noimg">Chưa có ảnh</div>}
+      <AssetHero asset={asset}>
         <span className="in-asset-kind">
           <Icon size={12} /> {KIND_LABEL[asset.kind]}
         </span>
-      </div>
+      </AssetHero>
 
       <div className="in-asset-fields">
         <input className="in-asset-name" value={asset.name} onChange={(e) => update({ name: e.target.value })} placeholder="Tên" aria-label="Tên" />
@@ -132,8 +131,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       <Section id="a-images" title="Ảnh" meta={<span className="badge">{asset.imageIds.length}</span>}>
         <div className="in-images">
           {asset.imageIds.map((id, i) => (
-            <div key={id} className={`in-image ${i === 0 ? 'is-primary' : ''}`}>
-              <MediaImg id={id} className="media-img" />
+            <ImageTile key={id} id={id} primary={i === 0} onOpen={() => viewImages(asset.imageIds, i, asset.name)}>
               {i === 0 ? (
                 <span className="in-image-badge">ảnh chính</span>
               ) : (
@@ -155,7 +153,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
               >
                 <X size={11} />
               </button>
-            </div>
+            </ImageTile>
           ))}
           <button type="button" className="in-image-add" onClick={() => fileRef.current?.click()} title="Thêm ảnh">
             <ImagePlus size={16} />
@@ -188,6 +186,54 @@ export function AssetInspector({ assetId }: { assetId: string }) {
           <Pencil size={13} /> Sửa chi tiết
         </button>
       </section>
+    </div>
+  )
+}
+
+/** Tallest the main image may get in the panel (px); wider images use the full panel width. */
+const HERO_MAX_H = 320
+
+/** The asset's primary image in full at its own aspect ratio (no crop); click opens the full-screen viewer. */
+function AssetHero({ asset, children }: { asset: Asset; children: ReactNode }) {
+  const id = asset.imageIds[0]
+  const size = useImageSize(id)
+  const ar = aspectOf(size, 1, 0.4, 2.6)
+  if (!id) {
+    return (
+      <div className="in-asset-hero is-empty" style={{ ['--asset' as string]: asset.color }}>
+        <div className="in-asset-noimg">Chưa có ảnh</div>
+        {children}
+      </div>
+    )
+  }
+  return (
+    <div className="in-asset-hero">
+      <div className="in-asset-figure" style={{ ['--asset' as string]: asset.color, width: `min(100%, ${Math.round(HERO_MAX_H * ar)}px)` } as CSSProperties}>
+        <FullImage
+          id={id}
+          alt={asset.name}
+          className="in-asset-full"
+          minAspect={0.4}
+          maxAspect={2.6}
+          onClick={() => viewImages(asset.imageIds, 0, asset.name)}
+          title={size ? `Bấm để xem ảnh đầy đủ (${size.w}×${size.h})` : 'Bấm để xem ảnh đầy đủ'}
+        />
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** Height of the image tiles under "Ảnh" (px): each tile is as wide as its picture (whole image, no crop). */
+const TILE_H = 76
+
+function ImageTile({ id, primary, onOpen, children }: { id: string; primary: boolean; onOpen: () => void; children: ReactNode }) {
+  const size = useImageSize(id)
+  const ar = aspectOf(size, 1, 0.75, 2)
+  return (
+    <div className={`in-image ${primary ? 'is-primary' : ''}`} style={{ width: Math.round(TILE_H * ar) }}>
+      <FullImage id={id} fill className="in-image-full" onClick={onOpen} title={size ? `Bấm để xem ảnh đầy đủ (${size.w}×${size.h})` : 'Bấm để xem ảnh đầy đủ'} />
+      {children}
     </div>
   )
 }

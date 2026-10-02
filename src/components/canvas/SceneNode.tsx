@@ -4,10 +4,11 @@ import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type Nod
 import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, linkAssets, linkTakes, requestRun, takeLabel, videoLabel } from '../../actions'
+import { createAssetsFromFiles, linkAssets, linkTakes, requestRun, takeLabel, videoLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
+import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -37,6 +38,7 @@ import {
   type TakeSummary,
 } from './canvasModel'
 import { NodeSizer, useNodeBox } from './NodeSizer'
+import { RefPreview, type PreviewAnchor } from './RefPreview'
 import './canvas.css'
 
 export type SceneFlowNode = Node<Record<string, unknown>, 'scene'>
@@ -473,13 +475,77 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   )
 }
 
-/** Avatar of a linked asset with its first @image number as a badge. */
+/** Hover this long before the preview opens (moving across a row of avatars does not flash previews). */
+const PREVIEW_DELAY = 140
+/** A press that moved further than this is a drag of the card, not a click on the avatar. */
+const CLICK_SLOP = 4
+
+/**
+ * Square avatar of a linked asset with its first @image number as a badge. Hovering it shows the whole picture
+ * (RefPreview, only for the hovered avatar); a click opens the full-screen viewer.
+ */
 function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined; sceneId: string }) {
   const url = useMediaUrl(asset.imageIds[0])
   const range = n !== undefined && asset.imageIds.length > 1 ? `@image_${n}…${n + asset.imageIds.length - 1}` : n !== undefined ? `@image_${n}` : 'chưa có ảnh'
+  const hasImage = asset.imageIds.length > 0
+  const [anchor, setAnchor] = useState<PreviewAnchor | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const down = useRef<{ x: number; y: number } | null>(null)
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+  }
+  const hide = () => {
+    cancel()
+    setAnchor(null)
+  }
+  useEffect(() => cancel, [])
+  // The canvas may move under a resting pointer (wheel zoom / pan): drop the preview instead of leaving it behind.
+  const showing = !!anchor
+  useEffect(() => {
+    if (!showing) return
+    const off = () => setAnchor(null)
+    window.addEventListener('wheel', off, { capture: true, passive: true })
+    window.addEventListener('pointerdown', off, true)
+    return () => {
+      window.removeEventListener('wheel', off, { capture: true })
+      window.removeEventListener('pointerdown', off, true)
+    }
+  }, [showing])
   return (
-    <span className="cv-av" style={{ ['--av-c' as string]: asset.color }} title={`${asset.name} · ${range}`}>
+    <span
+      className={`cv-av${hasImage ? ' is-viewable' : ''}`}
+      style={{ ['--av-c' as string]: asset.color }}
+      title={hasImage ? undefined : `${asset.name} · ${range}`}
+      onPointerEnter={(e) => {
+        // Not while a wire, a card or a selection box is being dragged across it.
+        if (!hasImage || e.buttons) return
+        const el = e.currentTarget
+        // Measure the picture during the delay, so the preview opens at its real aspect ratio (no square → resize jump).
+        void measureImage(asset.imageIds[0])
+        cancel()
+        timer.current = setTimeout(() => {
+          timer.current = null
+          const r = el.getBoundingClientRect()
+          setAnchor({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })
+        }, PREVIEW_DELAY)
+      }}
+      onPointerLeave={hide}
+      onPointerDown={(e) => {
+        down.current = { x: e.clientX, y: e.clientY }
+        hide()
+      }}
+      onClick={(e) => {
+        const d = down.current
+        down.current = null
+        if (!hasImage || e.shiftKey || e.ctrlKey || e.metaKey) return
+        if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > CLICK_SLOP) return
+        hide()
+        viewImages(asset.imageIds, 0, asset.name)
+      }}
+    >
       {url ? <img src={url} alt={asset.name} draggable={false} /> : <i style={{ background: asset.color }}>{asset.name.slice(0, 1).toUpperCase()}</i>}
+      {anchor && <RefPreview asset={asset} label={range} anchor={anchor} />}
       {n !== undefined && <b className="cv-av-n">{n}</b>}
       <button
         className="cv-av-x nodrag"
