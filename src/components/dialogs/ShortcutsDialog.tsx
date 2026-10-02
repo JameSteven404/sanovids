@@ -55,6 +55,9 @@ const KEY_GROUPS: Group[] = [
     title: 'Bảng cảnh & Storyboard',
     rows: [
       ['↑ / ↓', 'Bảng cảnh: chuyển cảnh (Shift để chọn thêm)'],
+      ['← / → / ↑ / ↓', 'Storyboard: sang thẻ bên cạnh (Enter để xem take)'],
+      ['Alt+← / Alt+→', 'Storyboard: dời cảnh đang chọn lên trước / ra sau một chỗ (mã cảnh đánh số lại)'],
+      ['Alt+↑ / Alt+↓', 'Storyboard: dời cảnh đang chọn lên / xuống một hàng'],
       ['Shift+Click / Ctrl+Click', 'Chọn một dải / chọn thêm từng cảnh'],
       ['Space', 'Phát liền: phát / tạm dừng'],
       ['← / →', 'Phát liền: cảnh trước / sau'],
@@ -70,6 +73,16 @@ const GESTURES: Group[] = [
       ['Chế độ Chọn', 'Kéo nền để chọn vùng · Space+kéo hoặc chuột giữa để di chuyển'],
       ['Lăn chuột', 'Thu phóng (cả Ctrl+lăn và chụm hai ngón)'],
       ['Nhấp đúp nền', 'Tạo cảnh mới tại đó'],
+    ],
+  },
+  {
+    title: 'Sắp xếp cảnh',
+    rows: [
+      [
+        'Kéo thẻ Storyboard',
+        `Thả vào chỗ mới để đổi thứ tự cảnh: các thẻ khác dạt ra nhường chỗ, gần mép trên / dưới thì tự cuộn. Mã cảnh S01, S02… đánh số lại theo thứ tự mới; Phát liền và file .zip đi theo thứ tự này. Esc để huỷ khi đang kéo, ${IS_MAC ? '⌘' : 'Ctrl'}+Z để hoàn tác. Màn hình cảm ứng: giữ thẻ một chút rồi kéo.`,
+      ],
+      ['Tay cầm ⋮⋮ trong Bảng cảnh', 'Kéo để đổi thứ tự cảnh ngay trong bảng.'],
     ],
   },
   {
