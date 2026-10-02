@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Project, Scene } from '../../core/types'
-import { LAYOUT, redo, ROW_H, scenePosition, undo, useProject } from '../project'
+import { LAYOUT, redo, ROW_H, rowHeightOf, scenePosition, setTakeHeightSource, undo, useProject } from '../project'
 
 const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
   id: 's' + (i + 1),
@@ -50,7 +50,21 @@ function overlapping(scenes: Scene[]): string[][] {
   return out
 }
 
+/** Overlap of whole rows (resized card or tall take included), like the store's layout. */
+function rowsOverlap(scenes: Scene[]): string[][] {
+  const out: string[][] = []
+  for (let i = 0; i < scenes.length; i++)
+    for (let j = i + 1; j < scenes.length; j++) {
+      const [a, b] = [scenes[i], scenes[j]]
+      const x = Math.abs(a.position.x - b.position.x) < LAYOUT.sceneW
+      const y = a.position.y < b.position.y + rowHeightOf(b) && b.position.y < a.position.y + rowHeightOf(a)
+      if (x && y) out.push([a.id, b.id])
+    }
+  return out
+}
+
 beforeEach(() => {
+  setTakeHeightSource(() => 0)
   st().loadProject(project())
   history().clear()
 })
@@ -77,6 +91,21 @@ describe('placing new scenes', () => {
     st().removeScenes(['s2'])
     st().addScene()
     expect(overlapping(st().project.scenes)).toEqual([])
+  })
+  it('next scene goes below a resized (taller) source card and pushes the rows below far enough', () => {
+    st().setNodeSizes({ s2: { w: 300, h: 600 } })
+    const id = st().createNextScene('s2')
+    expect(sc(id).position.y).toBe(scenePosition(1).y + 600 + LAYOUT.gapY)
+    expect(rowsOverlap(st().project.scenes).filter((pair) => pair.includes(id))).toEqual([])
+  })
+  it('a tall take makes its row taller (next scene, auto layout)', () => {
+    setTakeHeightSource((sceneId) => (sceneId === 's2' ? 560 : 0))
+    const id = st().createNextScene('s2')
+    expect(sc(id).position.y).toBe(scenePosition(1).y + 560 + LAYOUT.gapY)
+    expect(rowsOverlap(st().project.scenes).filter((pair) => pair.includes(id))).toEqual([])
+    st().autoLayout()
+    expect(sc(id).position.y - sc('s2').position.y).toBe(560 + LAYOUT.gapY)
+    expect(rowsOverlap(st().project.scenes)).toEqual([])
   })
 })
 
@@ -133,6 +162,41 @@ describe('video references', () => {
     expect(sc('s1').videoRefs).toEqual([])
     expect(sc('s2').prompt).toBe('from video S01·T1')
     expect(history().pastStates.length).toBe(steps)
+  })
+  it('no undo or redo brings back a reference to a deleted take', () => {
+    st().addVideoRefs(['s1', 's2'], ['t1'])
+    st().updateScene('s2', { prompt: 'from @video_1' })
+    st().updateScene('s3', { title: 'x' })
+    st().removeTakesEverywhere(['t1'], { t1: 'video S01·T1' })
+    undo() // the title edit
+    expect(sc('s3').title).toBe('')
+    expect(sc('s2').videoRefs).toEqual([])
+    expect(sc('s2').prompt).toBe('from video S01·T1')
+    undo() // the prompt edit
+    expect(sc('s2').prompt).toBe('')
+    undo() // the link itself: nothing left to link
+    expect(sc('s1').videoRefs).toEqual([])
+    expect(sc('s2').videoRefs).toEqual([])
+    redo()
+    redo()
+    expect(sc('s2').videoRefs).toEqual([])
+    expect(sc('s2').prompt).toBe('from video S01·T1')
+  })
+  it('undoing an unlink after the take was deleted does not bring it back', () => {
+    st().addVideoRefs(['s2'], ['t1', 't2'])
+    st().updateScene('s2', { prompt: '@video_1 and @video_2' })
+    st().removeVideoRef('s2', 't1', 'video S01·T1')
+    st().removeTakesEverywhere(['t1'], { t1: 'video S01·T1' })
+    undo()
+    expect(sc('s2').videoRefs).toEqual(['t2'])
+    expect(sc('s2').prompt).toBe('video S01·T1 and @video_1')
+  })
+  it('redo after deleting a take does not bring it back either', () => {
+    st().addVideoRefs(['s2'], ['t1'])
+    undo()
+    st().removeTakesEverywhere(['t1'], {})
+    redo()
+    expect(sc('s2').videoRefs).toEqual([])
   })
 })
 

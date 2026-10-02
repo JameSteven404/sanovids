@@ -224,7 +224,7 @@ function markStale(projectId: string, why: 'saved' | 'deleted' = 'saved') {
   stale.add(projectId)
   if (useProject.getState().project.id !== projectId) return
   cancelPendingSaves()
-  lsRemove(LS.backup(projectId))
+  removeOwnBackup(projectId)
   useSave.setState({ status: 'error', stale: true })
   useUI
     .getState()
@@ -264,13 +264,14 @@ function reportSave() {
 
 async function saveProjectNow(p: Project): Promise<WriteResult> {
   if (!useSave.getState().stale) useSave.setState({ status: 'saving' })
-  const res = await guardedWrite(p.id, [[K.project(p.id), p]], metaOf(p))
+  // Listed with the save time: after an undo the project carries the (older) time of the restored snapshot.
+  const res = await guardedWrite(p.id, [[K.project(p.id), p]], { ...metaOf(p), updatedAt: Math.max(p.updatedAt, Date.now()) })
   const open = useProject.getState().project.id === p.id
   if (res === 'ok' && open) {
     savedProject = p
     // The backup holds this version or an older one: storage has it now.
     if (backupSeq && (seqOf.get(p) ?? 0) >= backupSeq) {
-      lsRemove(LS.backup(p.id))
+      removeOwnBackup(p.id)
       backupSeq = 0
     }
   }
@@ -305,6 +306,15 @@ function writeBackup(p: Project): boolean {
 }
 type StoredBackup = BackupInfo & { project: unknown; savedAt?: number }
 
+/** Remove the backup slot of a project unless another tab (same project open there) wrote it. */
+function removeOwnBackup(id: string) {
+  const b = lsGet<StoredBackup>(LS.backup(id))
+  if (b && b.tab && b.tab !== TAB_ID && !backupLoadedFrom.has(b.tab)) return
+  lsRemove(LS.backup(id))
+}
+/** Tabs whose backups this tab opened a project from (it now owns those edits). */
+const backupLoadedFrom = new Set<string>()
+
 interface Loaded {
   project: Project
   runs: RunsData | null
@@ -320,7 +330,9 @@ async function loadProjectData(id: string): Promise<Loaded | null> {
   const backup = lsGet<StoredBackup>(LS.backup(id))
   if (backup?.project && backupWins(backup, stamp)) {
     try {
-      return { project: migrateProject(backup.project), runs, rev: stamp?.rev ?? null, unsaved: true }
+      const project = migrateProject(backup.project)
+      if (backup.tab) backupLoadedFrom.add(backup.tab)
+      return { project, runs, rev: stamp?.rev ?? null, unsaved: true }
     } catch {
       /* unreadable backup: use the stored copy */
     }
@@ -340,7 +352,8 @@ function openProject({ project: p, runs, rev, unsaved }: Loaded) {
   stale.delete(p.id)
   const loaded = useProject.getState().project
   seqOf.set(loaded, ++editSeq)
-  backupSeq = 0
+  // A project restored from its backup keeps that backup until it is written.
+  backupSeq = unsaved ? editSeq : 0
   savedProject = unsaved ? null : loaded
   const r = useRuns.getState()
   savedRuns = { takes: r.takes, credits: r.credits, spent: r.spent }
@@ -477,7 +490,8 @@ export async function bootstrap(): Promise<void> {
   index = useSave.getState().projects
 
   const activeId = lsGet<string>(LS.active) ?? localStorage.getItem(LS.active)
-  let loaded = (activeId && (await loadProjectData(activeId))) || (index[0] && (await loadProjectData(index[0].id))) || null
+  let loaded = activeId ? await loadProjectData(activeId) : null
+  for (const m of index) if (!loaded) loaded = await loadProjectData(m.id)
   if (!loaded) {
     const demo = await createDemoProject()
     const written = await writeNewProject(demo)

@@ -599,6 +599,14 @@ export function inlineEditKeyBubbles(e: { key: string; ctrlKey: boolean; metaKey
   return (e.ctrlKey || e.metaKey) && e.key !== 'Escape'
 }
 
+/**
+ * Ctrl/Cmd+S pressed in an inline text field: useShortcuts saves the project right after, so the field must put its
+ * draft in the store first (other combos — copy, paste, undo inside the field — must not create history steps).
+ */
+export function inlineEditSavesDraft(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey?: boolean }): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's'
+}
+
 // ---------------- hover store (edges + cut button need a little grace period) ----------------
 interface CanvasLocal {
   hoveredEdgeId: string | null

@@ -38,7 +38,7 @@ function normalizeAssets(raw: unknown): Asset[] {
     let id = typeof a.id === 'string' && a.id ? a.id : newId('ast')
     if (ids.has(id)) id = newId('ast')
     ids.add(id)
-    const name = text(a.name).trim() || 'Không tên'
+    const name = text(a.name).trim() ? text(a.name) : 'Không tên'
     const free = typeof a.tag === 'string' && !!a.tag && !tags.some((t) => t.toLowerCase() === a.tag!.toLowerCase())
     const tag = free ? a.tag! : uniqueTag(name, tags)
     tags.push(tag)
@@ -69,49 +69,56 @@ export function migrateProject(raw: unknown): Project {
   const v1 = p.schemaVersion !== 2
   const sceneIds = new Set<string>()
 
-  const rawScenes = (Array.isArray(p.scenes) ? p.scenes : []) as (Scene & { blockOverrides?: Record<string, boolean>; continueFrom?: unknown })[]
-  const scenes: Scene[] = rawScenes
-    .map((s, i) => ({ s: (s ?? {}) as (typeof rawScenes)[number], i }))
-    // Dense order 1..n, keeping the saved order (scenes without one go last, in file order).
-    .sort((a, b) => (Number.isFinite(a.s.order) ? a.s.order : Infinity) - (Number.isFinite(b.s.order) ? b.s.order : Infinity) || a.i - b.i)
-    .map(({ s }, index) => {
-      const { blockOverrides, continueFrom: _c, ...rest } = s
-      const refs = strings(s.refs)
-      let prompt = text(s.prompt)
-      if (v1) {
-        const on = (b: V1Block) => (blockOverrides ?? {})[b.id] ?? b.defaultOn
-        const before = blocks.filter((b) => b.placement === 'before' && on(b) && b.text.trim()).map((b) => b.text.trim())
-        const after = blocks.filter((b) => b.placement === 'after' && on(b) && b.text.trim()).map((b) => b.text.trim())
-        prompt = [...before, prompt.trim(), ...after].filter(Boolean).join('\n\n')
-        prompt = tagsToTokens(prompt, assets, refs)
-      }
-      let id = typeof s.id === 'string' && s.id ? s.id : newId('scn')
-      if (sceneIds.has(id)) id = newId('scn')
-      sceneIds.add(id)
-      return {
-        ...rest,
-        id,
-        order: index + 1,
-        title: text(s.title),
-        prompt,
-        refs,
-        videoRefs: strings(s.videoRefs),
-        settings: normalizeSettings(s.settings ?? {}),
-        firstFrame: s.firstFrame ?? null,
-        lastFrame: s.lastFrame ?? null,
-        color: s.color ?? null,
-        position: isXY(s.position) ? s.position : scenePosition(index),
-        note: text(s.note),
-        presetId: s.presetId ?? null,
-      }
-    })
+  const rawScenes = ((Array.isArray(p.scenes) ? p.scenes : []) as (Scene & { blockOverrides?: Record<string, boolean>; continueFrom?: unknown })[]).map(
+    (s) => s ?? ({} as Scene),
+  )
+  // Dense order 1..n following the saved order (scenes without one go last, in file order); the list keeps its order.
+  const orderKey = (s: Scene) => (Number.isFinite(s.order) ? s.order : Infinity)
+  const rank = new Map(
+    rawScenes
+      .map((s, i) => ({ s, i }))
+      .sort((a, b) => orderKey(a.s) - orderKey(b.s) || a.i - b.i)
+      .map(({ s }, r) => [s, r] as const),
+  )
+  const scenes: Scene[] = rawScenes.map((s) => {
+    const index = rank.get(s)!
+    const { blockOverrides, continueFrom: _c, ...rest } = s
+    const refs = strings(s.refs)
+    let prompt = text(s.prompt)
+    if (v1) {
+      const on = (b: V1Block) => (blockOverrides ?? {})[b.id] ?? b.defaultOn
+      const before = blocks.filter((b) => b.placement === 'before' && on(b) && b.text.trim()).map((b) => b.text.trim())
+      const after = blocks.filter((b) => b.placement === 'after' && on(b) && b.text.trim()).map((b) => b.text.trim())
+      prompt = [...before, prompt.trim(), ...after].filter(Boolean).join('\n\n')
+      prompt = tagsToTokens(prompt, assets, refs)
+    }
+    let id = typeof s.id === 'string' && s.id ? s.id : newId('scn')
+    if (sceneIds.has(id)) id = newId('scn')
+    sceneIds.add(id)
+    return {
+      ...rest,
+      id,
+      order: index + 1,
+      title: text(s.title),
+      prompt,
+      refs,
+      videoRefs: strings(s.videoRefs),
+      settings: normalizeSettings(s.settings ?? {}),
+      firstFrame: s.firstFrame ?? null,
+      lastFrame: s.lastFrame ?? null,
+      color: s.color ?? null,
+      position: isXY(s.position) ? s.position : scenePosition(index),
+      note: text(s.note),
+      presetId: s.presetId ?? null,
+    }
+  })
 
   const { blocks: _b, ...restProject } = p as Record<string, unknown>
   const now = Date.now()
   return {
     ...(restProject as unknown as Project),
     id: typeof p.id === 'string' && p.id ? p.id : newId('prj'),
-    name: text(p.name).trim() || 'Dự án',
+    name: text(p.name).trim() ? text(p.name) : 'Dự án',
     schemaVersion: 2,
     createdAt: Number.isFinite(p.createdAt) ? p.createdAt! : now,
     updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt! : now,

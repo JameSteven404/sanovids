@@ -11,27 +11,10 @@ import { selectAsset, undoToastAction, useProject, type ProjectState } from '../
 import { toast, useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
-import { addImageFiles, useAddingImages } from '../sidebar/assetImages'
-import { changedPrompts, nextAssetPosition, renameAssetTag, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { addImageFiles, useAddingImages, withRenumberToast } from '../sidebar/assetImages'
+import { nextAssetPosition, renameAssetTag } from '../sidebar/shared'
 
 const SEP = '\u0001'
-
-/**
- * Run a change to this asset's images or links. The store renumbers the @image_N tokens of the scenes using it in
- * the same undo step (the prompts are not visible from this panel): say so, with "Hoàn tác" (spec §2). With automatic
- * renumbering off (Settings) the prompts are left as written: warn about the scenes whose numbers now point elsewhere.
- * `done` is always announced when `always`, else only when prompts were rewritten (or left pointing elsewhere).
- */
-function withRenumberToast(run: () => void, done: string, always = false) {
-  const before = useProject.getState().project
-  run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  const rewritten = changedPrompts(before.scenes, after.scenes).length
-  if (stale.length) toast(`${done}${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-  else if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
-  else if (always) toast(`${done}.`, { action: undoToastAction() })
-}
 
 export function AssetInspector({ assetId }: { assetId: string }) {
   const asset = useProject(selectAsset(assetId))
@@ -78,11 +61,11 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       </AssetHero>
 
       <div className="in-asset-fields">
+        {/* Never left empty (like the asset dialog): renumbering turns removed @image_N tokens into the name. */}
         <input
           className="in-asset-name"
           value={asset.name}
           onChange={(e) => update({ name: e.target.value })}
-          // An empty name would turn this asset's @image_N tokens into nothing when they are renumbered away.
           onBlur={(e) => {
             if (!e.target.value.trim()) update({ name: asset.tag })
           }}

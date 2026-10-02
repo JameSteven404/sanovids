@@ -1,14 +1,25 @@
 // Floating toolbar (bottom-center of the canvas) + selection hint (top-left).
 import { useReactFlow, useStore } from '@xyflow/react'
-import { Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus } from 'lucide-react'
-import { useMemo } from 'react'
+import { Film, Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus, Spline } from 'lucide-react'
+import { useMemo, type WheelEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { canvasEvents, connectSelection, nextScene, requestRun, selectedSceneIds, pickAssetSelection } from '../../actions'
-import type { EdgeMode } from '../../core/types'
-import { useProject } from '../../store/project'
+import type { EdgeMode, Project, XY } from '../../core/types'
+import { undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { useUI, type TakeDisplay } from '../../store/ui'
-import { assetMapOf, assetNodeHeight, countScenes, FIT_EVENT, KIND_LABEL, sceneMapOf, takeIndexOf } from './canvasModel'
+import { toast, useUI, type TakeDisplay } from '../../store/ui'
+import {
+  assetMapOf,
+  assetNodeHeight,
+  countScenes,
+  FIT_EVENT,
+  KIND_LABEL,
+  layoutRowHeights,
+  layoutTakes,
+  sceneMapOf,
+  takeIndexOf,
+  type ToolbarDensity,
+} from './canvasModel'
 import './canvas.css'
 
 const EDGE_MODES: { id: EdgeMode; label: string; title: string }[] = [
@@ -17,27 +28,81 @@ const EDGE_MODES: { id: EdgeMode; label: string; title: string }[] = [
   { id: 'all', label: 'Tất cả', title: 'Hiện mọi dây nối' },
 ]
 
-const TAKE_DISPLAYS: { id: TakeDisplay; label: string; title: string }[] = [
-  { id: 'all', label: 'Tất cả', title: 'Hiện mọi take (video) của mỗi cảnh' },
-  { id: 'chosen', label: 'Chỉ take chọn', title: 'Mỗi cảnh chỉ hiện take được chọn (★, nếu không thì take xong mới nhất) và các video đang làm @video' },
+const TAKE_DISPLAYS: { id: TakeDisplay; label: string; short: string; title: string }[] = [
+  { id: 'all', label: 'Tất cả', short: 'Tất cả', title: 'Hiện mọi take (video) của mỗi cảnh' },
+  {
+    id: 'chosen',
+    label: 'Chỉ take chọn',
+    short: 'Take chọn',
+    title: 'Mỗi cảnh chỉ hiện take được chọn (★, nếu không thì take xong mới nhất) và các video đang làm @video',
+  },
 ]
 
-/** Auto layout: scenes one per row in order, assets in a column, every take back to its auto slot next to its scene. */
+/**
+ * Auto layout: scenes one per row in order, assets in a column, every take back to its auto slot next to its scene.
+ * One undo step for scenes / assets; the take positions (runs store, not undoable) follow that step (watchLayoutUndo).
+ */
 export function autoLayoutCanvas() {
+  const ui = useUI.getState()
+  const measured = ui.measured
+  const measuredH = (id: string) => measured[id]?.height
+  const before = useProject.getState().project
+  const runs = useRuns.getState()
+  // Rows grow with their tallest node: the scene card or a take shown next to it (a resized take must not cover the
+  // next scene's row once every take is back in its row).
+  const heights = layoutRowHeights(before.scenes, layoutTakes(runs.takes, before.scenes, ui.takeDisplay), measuredH)
   // Asset cards follow their image's aspect ratio (a portrait card is much taller than LAYOUT.assetH): hand their
   // heights over (keyed by asset id) so the asset column does not overlap. Off-screen cards are not rendered
   // (onlyRenderVisibleElements) and may never have been measured: assetNodeHeight falls back to the image's aspect.
-  const measured = useUI.getState().measured
-  const heights: Record<string, number> = {}
-  for (const a of useProject.getState().project.assets) {
-    if (a.position) heights[a.id] = assetNodeHeight(a, measured[a.id]?.height)
+  for (const a of before.assets) {
+    if (a.position) heights[a.id] = assetNodeHeight(a, measuredH(a.id))
   }
   useProject.getState().autoLayout(heights)
-  const runs = useRuns.getState()
-  const reset: Record<string, null> = {}
-  for (const t of runs.takes) if (t.position) reset[t.id] = null
-  if (Object.keys(reset).length) runs.setTakePositions(reset)
+  const after = useProject.getState().project
+  const placed: Record<string, XY> = {}
+  for (const t of runs.takes) if (t.position) placed[t.id] = t.position
+  const placedIds = Object.keys(placed)
+  if (placedIds.length) {
+    runs.setTakePositions(Object.fromEntries(placedIds.map((id) => [id, null])))
+    watchLayoutUndo(before, after, placed)
+  }
+  toast(placedIds.length ? `Đã sắp xếp lại canvas (${placedIds.length} video về cạnh cảnh của nó).` : 'Đã sắp xếp lại canvas.', {
+    action: undoToastAction(),
+  })
   setTimeout(() => fitCanvas(), 60)
+}
+
+const samePos = (a: XY, b: XY) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
+let stopLayoutWatch: (() => void) | null = null
+
+/**
+ * Take positions live in the runs store, outside the undo history. After "Sắp xếp", follow the project history:
+ * when it is back at the state before the layout (Ctrl+Z, the toast's Undo), the takes the user had placed by hand
+ * return to their spots; a redo sends them to their auto slots again. Takes moved since are left alone. Ends with
+ * the next layout or when another project is opened.
+ */
+function watchLayoutUndo(before: Project, after: Project, placed: Record<string, XY>) {
+  stopLayoutWatch?.()
+  const unsub = useProject.subscribe((s, prev) => {
+    if (s.project === prev.project) return
+    if (s.project.id !== before.id) {
+      stop()
+      return
+    }
+    const runs = useRuns.getState()
+    const patch: Record<string, XY | null> = {}
+    if (s.project === before) {
+      for (const t of runs.takes) if (placed[t.id] && !t.position) patch[t.id] = placed[t.id]
+    } else if (s.project === after) {
+      for (const t of runs.takes) if (placed[t.id] && t.position && samePos(t.position, placed[t.id])) patch[t.id] = null
+    }
+    if (Object.keys(patch).length) runs.setTakePositions(patch)
+  })
+  const stop = () => {
+    unsub()
+    if (stopLayoutWatch === stop) stopLayoutWatch = null
+  }
+  stopLayoutWatch = stop
 }
 
 /** Ask the canvas to fit these nodes (all when empty), regardless of whether they are already visible. */
@@ -45,7 +110,17 @@ export function fitCanvas(ids: string[] = []) {
   canvasEvents.dispatchEvent(new CustomEvent(FIT_EVENT, { detail: ids }))
 }
 
-export function CanvasToolbar() {
+/** A vertical wheel over the toolbar scrolls it sideways (it only overflows on a very narrow canvas). */
+function wheelScroll(e: WheelEvent<HTMLDivElement>) {
+  const el = e.currentTarget
+  if (el.scrollWidth > el.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) el.scrollLeft += e.deltaY
+}
+
+/**
+ * `density` follows the canvas width (CanvasView): 'full' shows every label; 'compact' keeps icons for Nối / Chạy and
+ * turns the wire / video switches into one-button toggles; 'tight' also drops the zoom −/+ (wheel zooms anyway).
+ */
+export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }) {
   const rf = useReactFlow()
   const zoom = useStore((s) => Math.round(s.transform[2] * 100))
   const interaction = useUI((s) => s.interaction)
@@ -54,21 +129,37 @@ export function CanvasToolbar() {
   const takeDisplay = useUI((s) => s.takeDisplay)
   const sceneCount = useUI((s) => countScenes(s.selectedIds))
   const ui = useUI.getState()
+  const full = density === 'full'
+  const tight = density === 'tight'
+  const edge = EDGE_MODES.find((m) => m.id === edgeMode) ?? EDGE_MODES[0]
+  const display = TAKE_DISPLAYS.find((m) => m.id === takeDisplay) ?? TAKE_DISPLAYS[0]
+  const otherDisplay = TAKE_DISPLAYS.find((m) => m.id !== takeDisplay) ?? TAKE_DISPLAYS[0]
 
   return (
-    <div className="cv-toolbar nodrag nopan" role="toolbar" aria-label="Công cụ canvas">
-      <button className="cv-tb-btn primary" onClick={() => nextScene()} title={sceneCount ? 'Tạo cảnh tiếp theo sau cảnh đang chọn (N)' : 'Cảnh mới (N)'}>
+    <div className={`cv-toolbar nodrag nopan is-${density}`} role="toolbar" aria-label="Công cụ canvas" onWheel={wheelScroll}>
+      <button
+        className="cv-tb-btn primary"
+        onClick={() => nextScene()}
+        title={sceneCount ? 'Tạo cảnh tiếp theo sau cảnh đang chọn (N)' : 'Cảnh mới (N)'}
+        aria-label="Cảnh mới"
+      >
         <Plus size={15} />
-        <span>Cảnh</span>
+        {!tight && <span>Cảnh</span>}
       </button>
-      <button className="cv-tb-btn" onClick={() => connectSelection()} title="Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn (C)">
+      <button className="cv-tb-btn" onClick={() => connectSelection()} title="Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn (C)" aria-label="Nối">
         <Link2 size={15} />
-        <span>Nối</span>
-        <span className="kbd">C</span>
+        {full && <span>Nối</span>}
+        {full && <span className="kbd">C</span>}
       </button>
-      <button className="cv-tb-btn run" onClick={() => requestRun(selectedSceneIds())} disabled={!sceneCount} title="Chạy các cảnh đang chọn (Ctrl+Enter)">
+      <button
+        className="cv-tb-btn run"
+        onClick={() => requestRun(selectedSceneIds())}
+        disabled={!sceneCount}
+        title="Chạy các cảnh đang chọn (Ctrl+Enter)"
+        aria-label="Chạy các cảnh đang chọn"
+      >
         <Play size={13} fill="currentColor" />
-        <span>Chạy</span>
+        {full && <span>Chạy</span>}
         {sceneCount > 0 && <span className="cv-tb-count">{sceneCount}</span>}
       </button>
 
@@ -97,22 +188,46 @@ export function CanvasToolbar() {
         </button>
       </div>
 
-      <div className="cv-seg text" role="group" aria-label="Hiển thị dây nối (E)">
-        {EDGE_MODES.map((m) => (
-          <button key={m.id} className={edgeMode === m.id ? 'on' : ''} onClick={() => ui.setEdgeMode(m.id)} title={`${m.title} (E để đổi)`}>
-            {m.label}
-          </button>
-        ))}
-      </div>
+      {full ? (
+        <div className="cv-seg text" role="group" aria-label="Hiển thị dây nối (E)">
+          {EDGE_MODES.map((m) => (
+            <button key={m.id} className={edgeMode === m.id ? 'on' : ''} onClick={() => ui.setEdgeMode(m.id)} title={`${m.title} (E để đổi)`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <button
+          className="cv-tb-btn cv-tb-toggle"
+          onClick={() => ui.cycleEdgeMode()}
+          title={`Dây nối: ${edge.label} — ${edge.title}. Bấm để đổi (E)`}
+          aria-label={`Hiển thị dây nối: ${edge.label}`}
+        >
+          <Spline size={14} />
+          <span>{edge.label}</span>
+        </button>
+      )}
 
-      <div className="cv-seg text" role="group" aria-label="Hiển thị video (take)">
-        <span className="cv-seg-label">Video</span>
-        {TAKE_DISPLAYS.map((m) => (
-          <button key={m.id} className={takeDisplay === m.id ? 'on' : ''} onClick={() => ui.setTakeDisplay(m.id)} title={m.title}>
-            {m.label}
-          </button>
-        ))}
-      </div>
+      {full ? (
+        <div className="cv-seg text" role="group" aria-label="Hiển thị video (take)">
+          <span className="cv-seg-label">Video</span>
+          {TAKE_DISPLAYS.map((m) => (
+            <button key={m.id} className={takeDisplay === m.id ? 'on' : ''} onClick={() => ui.setTakeDisplay(m.id)} title={m.title}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <button
+          className="cv-tb-btn cv-tb-toggle"
+          onClick={() => ui.setTakeDisplay(otherDisplay.id)}
+          title={`Video: ${display.label} — ${display.title}. Bấm để chuyển sang “${otherDisplay.label}”`}
+          aria-label={`Hiển thị video: ${display.label}`}
+        >
+          <Film size={14} />
+          <span>{display.short}</span>
+        </button>
+      )}
 
       <button className={`cv-tb-icon ${showMinimap ? 'on' : ''}`} onClick={() => ui.toggleMinimap()} title="Bản đồ thu nhỏ (M)" aria-label="Bản đồ thu nhỏ">
         <MapIcon size={15} />
@@ -121,15 +236,19 @@ export function CanvasToolbar() {
       <span className="cv-tb-sep" />
 
       <div className="cv-zoom">
-        <button className="cv-tb-icon" onClick={() => void rf.zoomOut({ duration: 150 })} title="Thu nhỏ" aria-label="Thu nhỏ">
-          <Minus size={14} />
-        </button>
-        <button className="cv-zoom-val" onClick={() => void rf.zoomTo(1, { duration: 200 })} title="Về 100%">
+        {!tight && (
+          <button className="cv-tb-icon" onClick={() => void rf.zoomOut({ duration: 150 })} title="Thu nhỏ" aria-label="Thu nhỏ">
+            <Minus size={14} />
+          </button>
+        )}
+        <button className="cv-zoom-val" onClick={() => void rf.zoomTo(1, { duration: 200 })} title="Về 100% (lăn chuột để thu phóng)">
           {zoom}%
         </button>
-        <button className="cv-tb-icon" onClick={() => void rf.zoomIn({ duration: 150 })} title="Phóng to" aria-label="Phóng to">
-          <Plus size={14} />
-        </button>
+        {!tight && (
+          <button className="cv-tb-icon" onClick={() => void rf.zoomIn({ duration: 150 })} title="Phóng to" aria-label="Phóng to">
+            <Plus size={14} />
+          </button>
+        )}
       </div>
     </div>
   )

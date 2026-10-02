@@ -192,7 +192,7 @@ export function ProjectsDialog() {
                     title="Nhân bản"
                     aria-label={`Nhân bản ${p.name}`}
                     disabled={!!busy}
-                    onClick={() => void run({ kind: 'duplicate', id: p.id }, () => duplicateProject(p.id), () => `Đã nhân bản “${p.name}”.`, false)}
+                    onClick={() => void run({ kind: 'duplicate', id: p.id }, () => duplicateProject(p.id), () => `Đã nhân bản “${p.name}” (không kèm video đã tạo).`, false)}
                   >
                     {is('duplicate', p.id) ? <Spin /> : <Copy size={14} />}
                   </button>

@@ -1,4 +1,4 @@
-// Adding image files to a library item, shared by the asset dialog and the asset inspector.
+// Changing a library item's images / links, shared by the asset dialog and the asset inspector.
 // Storing big photos in IndexedDB takes a moment: batches for one asset run one after the other (each appends to
 // the list the previous one left) and the panels disable the image controls meanwhile (`useAddingImages`), so a
 // remove / reorder made during the wait is not overwritten when the new images are appended.
@@ -6,7 +6,24 @@ import { create } from 'zustand'
 import { addImagesToAsset } from '../../actions'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast } from '../../store/ui'
-import { changedPrompts, scenesWithShiftedImageTokens, staleTokenNote } from './shared'
+import { changedPrompts, scenesWithShiftedImageTokens, scenesWithStaleTokens, staleTokenNote } from './shared'
+
+/**
+ * Run a change to an asset's images or links. The store renumbers the @image_N tokens of the scenes using it in the
+ * same undo step (their prompts are not visible from the asset panels): say so, with "Hoàn tác" (spec §2). With
+ * automatic renumbering off (Settings) the prompts are left as written: warn about the scenes whose numbers now point
+ * elsewhere. `done` is always announced when `always`, else only when prompts were rewritten (or left stale).
+ */
+export function withRenumberToast(run: () => void, done: string, always = false) {
+  const before = useProject.getState().project
+  run()
+  const after = useProject.getState().project
+  const stale = scenesWithStaleTokens(before, after)
+  const rewritten = changedPrompts(before.scenes, after.scenes).length
+  if (stale.length) toast(`${done}${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
+  else if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
+  else if (always) toast(`${done}.`, { action: undoToastAction() })
+}
 
 /** Number of image batches being stored, per asset id. */
 const useImageJobs = create<Record<string, number>>(() => ({}))

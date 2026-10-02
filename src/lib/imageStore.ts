@@ -11,7 +11,9 @@ const pending = new Map<string, Promise<string | null>>()
 export async function putBlob(blob: Blob, prefix = 'img'): Promise<string> {
   const id = newId(prefix)
   await set(id, blob, store)
-  urlCache.set(id, URL.createObjectURL(blob))
+  // Pictures are shown right away, so keep a URL ready. A video's URL is made on first use (getUrl): caching it
+  // here would keep the whole in-memory recording alive for the session.
+  if (blob.type.startsWith('image/')) urlCache.set(id, URL.createObjectURL(blob))
   return id
 }
 

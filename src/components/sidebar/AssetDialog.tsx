@@ -10,7 +10,7 @@ import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, FullImage } from '../common/Media'
 import { Modal } from '../common/Modal'
-import { addImageFiles, staleNote, staleTokenScenes, useAddingImages } from './assetImages'
+import { addImageFiles, staleNote, staleTokenScenes, useAddingImages, withRenumberToast } from './assetImages'
 import { ColorSwatches, ConfirmButton } from './bits'
 import {
   changedPrompts,
@@ -24,6 +24,8 @@ import {
   kindMeta,
   nextAssetPosition,
   renameAssetTag,
+  scenesWithStaleTokens,
+  staleTokenNote,
   undoToastAction,
   useDialogUndoKeys,
   useFileDropGuard,
@@ -52,15 +54,19 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
 
   const remove = () => {
     const name = asset.name || asset.tag
-    const before = useProject.getState().project.scenes
+    const before = useProject.getState().project
     useProject.getState().removeAssets([asset.id])
-    const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
+    const after = useProject.getState().project
+    const rewritten = changedPrompts(before.scenes, after.scenes).length
+    // Renumbering off (Settings): the numbers after this asset's images now point at other pictures.
+    const stale = scenesWithStaleTokens(before, after)
     const action = undoToastAction()
     const ui = useUI.getState()
     ui.setLibrarySelection(ui.librarySelection.filter((x) => x !== asset.id))
     if (ui.selectedIds.includes(asset.id)) ui.select(ui.selectedIds.filter((x) => x !== asset.id))
     onClose()
-    toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action })
+    if (stale.length) toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action })
+    else toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action })
   }
 
   const title = (
@@ -383,22 +389,15 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
     if (ui.view === 'canvas') setTimeout(() => focusNodes([sceneId]), 30)
   }
 
-  const removeAll = () => {
-    const before = useProject.getState().project.scenes
-    useProject.getState().removeRefs(refScenes.map((s) => ({ sceneId: s.id, assetId: asset.id })))
-    const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
-    toast(`Đã bỏ “${asset.name}” khỏi ${refScenes.length} cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, {
-      action: undoToastAction(),
-    })
-  }
+  const removeAll = () =>
+    withRenumberToast(
+      () => useProject.getState().removeRefs(refScenes.map((s) => ({ sceneId: s.id, assetId: asset.id }))),
+      `Đã bỏ “${asset.name}” khỏi ${refScenes.length} cảnh`,
+      true,
+    )
 
-  const unlinkOne = (sceneId: string, order: number) => {
-    const before = useProject.getState().project.scenes
-    useProject.getState().removeRef(sceneId, asset.id)
-    if (changedPrompts(before, useProject.getState().project.scenes).length) {
-      toast(`Đã bỏ “${asset.name}” khỏi ${sceneCode(order)} · đánh lại số @image trong prompt.`, { action: undoToastAction() })
-    }
-  }
+  const unlinkOne = (sceneId: string, order: number) =>
+    withRenumberToast(() => useProject.getState().removeRef(sceneId, asset.id), `Đã bỏ “${asset.name}” khỏi ${sceneCode(order)}`)
 
   const toggleCanvas = () => {
     const st = useProject.getState()

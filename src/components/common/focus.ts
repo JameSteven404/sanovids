@@ -1,7 +1,7 @@
 // Focus handling for dialogs and full-screen overlays (Modal, ImageLightbox, StoryboardPlayer).
 // While an overlay is open the keyboard must act on it, never on the page behind it: otherwise arrow keys still
 // move a focused (selected) canvas node, and typing still edits a focused prompt behind the dialog.
-import { useLayoutEffect, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
+import { useLayoutEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 
 const FOCUSABLE = [
   'a[href]',
@@ -26,11 +26,11 @@ export function focusableIn(root: HTMLElement): HTMLElement[] {
  * - On unmount: focus the element that had it before, if it is still in the page.
  */
 export function useOverlayFocus(ref: RefObject<HTMLElement | null>) {
-  // Layout effect: runs before passive effects of the page (and before the browser paints), so a key pressed
-  // right after opening already lands in the overlay.
+  // Read during the first render, i.e. before a child's autoFocus moves focus into the overlay.
+  const [before] = useState(() => (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null))
+  // Layout effect: runs before the browser paints, so a key pressed right after opening already lands in the overlay.
   useLayoutEffect(() => {
     const el = ref.current
-    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null
     if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true })
     return () => {
       if (!before || before === document.body || !before.isConnected) return
@@ -41,7 +41,7 @@ export function useOverlayFocus(ref: RefObject<HTMLElement | null>) {
     }
     // Mount / unmount only (the overlay element never changes). React applies `autoFocus` during commit, before
     // this runs; a disabled autoFocus button (e.g. nothing to run) is skipped — then the overlay takes focus here.
-  }, [ref])
+  }, [ref, before])
 }
 
 /** Keep Tab / Shift+Tab cycling inside `root` instead of walking out into the page behind it. */

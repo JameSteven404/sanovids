@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useRef, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { CanvasView } from './components/canvas/CanvasView'
 import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './components/common/PanelResizer'
 import { ImageLightbox } from './components/common/ImageLightbox'
@@ -52,11 +52,37 @@ function usePrefetchChunks() {
 
 export function App() {
   const ready = useSave((s) => s.ready)
+  const [bootError, setBootError] = useState<string | null>(null)
   useEffect(() => {
-    void bootstrap()
+    bootstrap().catch((e: unknown) => {
+      console.error('[SanoVids] startup failed', e)
+      setBootError(e instanceof Error ? `${e.name}: ${e.message}` : String(e))
+    })
   }, [])
+  if (bootError !== null && !ready) return <BootError detail={bootError} />
   if (!ready) return <div className="app-loading">Đang mở dự án…</div>
   return <Shell />
+}
+
+/**
+ * Startup failed (storage blocked by the browser — "block all site data", some private windows — or saved data
+ * that cannot be read). Explain instead of showing "Đang mở dự án…" forever.
+ */
+function BootError({ detail }: { detail: string }) {
+  return (
+    <div className="app-loading" role="alert" style={{ flexDirection: 'column', gap: 12, padding: 24, textAlign: 'center' }}>
+      <b style={{ color: 'var(--text)', fontSize: 15 }}>Không mở được dự án</b>
+      <span style={{ maxWidth: 520, lineHeight: 1.5 }}>
+        Trình duyệt không cho SanoVids đọc/ghi bộ nhớ trên máy (ví dụ đang chặn dữ liệu trang web, hoặc cửa sổ ẩn danh), hoặc dữ liệu đã lưu
+        không đọc được. Hãy cho phép trang này lưu dữ liệu (biểu tượng ổ khoá / khiên cạnh thanh địa chỉ → Cookie và dữ liệu trang web), rồi
+        tải lại trang.
+      </span>
+      <code style={{ fontSize: 11, color: 'var(--text-faint)', maxWidth: 520, overflowWrap: 'anywhere' }}>{detail}</code>
+      <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
+        Tải lại trang
+      </button>
+    </div>
+  )
 }
 
 function Shell() {

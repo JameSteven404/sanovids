@@ -794,37 +794,21 @@ export const useProject = create<ProjectState>()(
         ;(handleSet as unknown as (...a: unknown[]) => void)(pastState, replace, currentState, deltaState)
       },
       // Undo/redo/clear end the current typing burst: the next edit must get its own step (and drop the redo stack).
-      // Undo/redo put back a whole old snapshot, its old `updatedAt` included: stamp it again (see restamp).
+      // (Undo/redo put back the snapshot as it was, its old `updatedAt` included: persistence compares revisions,
+      // not this time, and stamps the project list with the save time.)
       wrapTemporal: (init) => (set, get, store) => {
         const t = init(set, get, store)
         const endBurst =
-          <A extends unknown[]>(fn: (...a: A) => void, stamp = false) =>
+          <A extends unknown[]>(fn: (...a: A) => void) =>
           (...a: A) => {
             lastKey = null
-            const before = stamp ? useProject.getState().project : null
             fn(...a)
-            if (stamp && useProject.getState().project !== before) restamp()
           }
-        return { ...t, undo: endBurst(t.undo, true), redo: endBurst(t.redo, true), clear: endBurst(t.clear) }
+        return { ...t, undo: endBurst(t.undo), redo: endBurst(t.redo), clear: endBurst(t.clear) }
       },
     },
   ),
 )
-
-/**
- * Mark the project as edited now without recording a history step. After undo/redo the restored snapshot carries the
- * time of that old edit; saves, the emergency backup and the project list must still see it as the newest change.
- */
-function restamp() {
-  const history = useProject.temporal.getState()
-  const tracking = history.isTracking
-  history.pause()
-  try {
-    useProject.setState((s) => ({ project: { ...s.project, updatedAt: Math.max(Date.now(), s.project.updatedAt + 1) } }))
-  } finally {
-    if (tracking) history.resume()
-  }
-}
 
 export const undo = () => useProject.temporal.getState().undo()
 export const redo = () => useProject.temporal.getState().redo()

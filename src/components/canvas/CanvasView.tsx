@@ -39,6 +39,7 @@ import {
 import { sceneCode } from '../../core/compile'
 import { MODELS, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Size, XY } from '../../core/types'
+import { useTheme } from '../../lib/theme'
 import { LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -61,23 +62,27 @@ import {
   isEmptyCanvasTarget,
   keepHover,
   layoutTakes,
+  MINIMAP_LIFT_W,
   orphanTakePosition,
   readAssetIds,
   readTakeIds,
   resetNodeSize,
   sceneMapOf,
   scheduleHoverEnd,
+  selectionSeed,
   snap,
   sourceAssetsFor,
   sourceTakesFor,
-  STATUS_HEX,
+  STATUS_COLOR,
   takeIndexOf,
   takeLayoutSig,
   takeSlots,
   targetScenesFor,
+  toolbarDensity,
   useCanvasLocal,
   type ResizeBox,
   type TakeLayout,
+  type ToolbarDensity,
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
@@ -148,6 +153,24 @@ function CanvasInner() {
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
   const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
+  const theme = useTheme((s) => s.theme)
+
+  // Canvas width → toolbar density (narrow center panel) and whether the minimap must sit above the toolbar.
+  // Only the derived levels are state, so resizing a side panel does not re-render the board on every pixel.
+  const [density, setDensity] = useState<ToolbarDensity>('full')
+  const [liftMinimap, setLiftMinimap] = useState(false)
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const apply = (w: number) => {
+      setDensity(toolbarDensity(w))
+      setLiftMinimap(w > 0 && w < MINIMAP_LIFT_W)
+    }
+    apply(el.clientWidth)
+    const ro = new ResizeObserver((entries) => apply(Math.round(entries[0]?.contentRect.width ?? el.clientWidth)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // ---------------- take nodes: which are shown, where ----------------
   // `takeSig` stands for the layout-relevant part of runs.takes (read fresh here).
@@ -239,6 +262,8 @@ function CanvasInner() {
     const prevCache = edgeCache.current
     const next = new Map<string, LinkEdge>()
     const out: LinkEdge[] = []
+    // Selected reference wires are drawn last, so their reconnect grip is on top of the other wires at the handle.
+    const grabbable: LinkEdge[] = []
     for (const r of rawEdges) {
       const touchesHover = !!hoveredId && (r.source === hoveredId || r.target === hoveredId)
       const touchesSel = sel.has(r.source) || sel.has(r.target)
@@ -248,10 +273,24 @@ function CanvasInner() {
       const visible = edgeMode === 'all' || touchesHover || isSel || isHover || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
       if (!visible) continue
       const highlight = touchesHover || touchesSel || isSel || isHover
+      // React Flow puts every wire's reconnect grip at the same spot (the handle's center, not the spread-out end the
+      // wire is drawn to), so with several wires at one handle the last-drawn one would always be the one moved.
+      // Only a wire that is alone at its handle, or selected (clicked first), can be dragged by its end.
+      const isRef = r.kind === 'ref' || r.kind === 'vref'
+      const reconnectable = isRef && (isSel || r.count <= 1)
       const prev = prevCache.get(r.id)
       const d = prev?.data
       let edge: LinkEdge
-      if (prev && d && prev.selected === isSel && d.highlight === highlight && d.index === r.index && d.count === r.count && d.color === r.color) {
+      if (
+        prev &&
+        d &&
+        prev.selected === isSel &&
+        !!prev.reconnectable === reconnectable &&
+        d.highlight === highlight &&
+        d.index === r.index &&
+        d.count === r.count &&
+        d.color === r.color
+      ) {
         edge = prev
       } else {
         const data: LinkEdgeData = { kind: r.kind, index: r.index, count: r.count, color: r.color, highlight }
@@ -267,15 +306,16 @@ function CanvasInner() {
           selectable: !isOut,
           deletable: !isOut,
           focusable: !isOut,
-          reconnectable: r.kind === 'ref' || r.kind === 'vref' ? 'target' : false,
+          reconnectable: reconnectable ? 'target' : false,
           data,
         }
       }
       next.set(r.id, edge)
-      out.push(edge)
+      if (isRef && isSel) grabbable.push(edge)
+      else out.push(edge)
     }
     edgeCache.current = next
-    return out
+    return grabbable.length ? out.concat(grabbable) : out
   }, [rawEdges, selectedIds, selectedEdgeIds, hoveredId, hoveredEdgeId, edgeMode])
 
   // Wire selection must only hold wires that exist on the canvas. React Flow can only deselect wires it renders, so a
@@ -297,9 +337,42 @@ function CanvasInner() {
     if (kept.length !== ui.selectedIds.length) ui.select(kept)
   }, [takeLayout])
 
+  // And for asset cards that left the canvas (undo of a drop, "Bỏ khỏi canvas" in the inspector): selected but
+  // invisible, they would be linked by C or counted by Delete. The library has its own selection (librarySelection).
+  useEffect(() => {
+    const ui = useUI.getState()
+    if (!ui.selectedIds.length) return
+    const am = assetMapOf(assets)
+    const kept = ui.selectedIds.filter((id) => {
+      const a = am.get(id)
+      return !a || !!a.position
+    })
+    if (kept.length !== ui.selectedIds.length) ui.select(kept)
+  }, [assets])
+
   // Node selection changed outside React Flow (N, Ctrl+A, Inspector / queue "Đi tới cảnh", drops…): drop the wire
   // selection too, like a plain click on a node does. Wires are canvas-only, so leaving the canvas clears them as well.
   const rfSelecting = useRef(false)
+
+  /** Is a gesture in progress that replaces the node selection (plain click, box) rather than adding to it? */
+  const replacingSelection = useCallback(() => {
+    const st = rfStore.getState()
+    return !st.multiSelectionActive || st.userSelectionActive || !!st.userSelectionRect
+  }, [rfStore])
+  /** Drop selected ids that have no node on the canvas (see selectionSeed); keeps the wire selection. */
+  const dropOffCanvasSelection = useCallback(() => {
+    const ui = useUI.getState()
+    if (!ui.selectedIds.length) return
+    const lookup = rfStore.getState().nodeLookup
+    const kept = selectionSeed(ui.selectedIds, true, (id) => lookup.has(id))
+    if (kept.length === ui.selectedIds.length) return
+    rfSelecting.current = true
+    try {
+      ui.select(kept)
+    } finally {
+      rfSelecting.current = false
+    }
+  }, [rfStore])
   useEffect(() => {
     const unsub = useUI.subscribe((s, prev) => {
       if (s.selectedIds === prev.selectedIds || rfSelecting.current || !s.selectedEdgeIds.length) return
@@ -337,6 +410,7 @@ function CanvasInner() {
   // ---------------- React Flow change handlers ----------------
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const ui = useUI.getState()
+    const lookup = rfStore.getState().nodeLookup
     const dims: Record<string, { width: number; height: number }> = {}
     const drag: Record<string, XY> = {}
     const commit: Record<string, XY> = {}
@@ -362,7 +436,8 @@ function CanvasInner() {
         else if (c.dragging) drag[c.id] = c.position
         else commit[c.id] = c.position
       } else if (c.type === 'select') {
-        sel ??= new Set(ui.selectedIds)
+        // React Flow only sends deselects for nodes it has: a plain click / box starts from the on-canvas selection.
+        sel ??= new Set(selectionSeed(ui.selectedIds, replacingSelection(), (id) => lookup.has(id)))
         if (c.selected) sel.add(c.id)
         else sel.delete(c.id)
       }
@@ -422,9 +497,12 @@ function CanvasInner() {
           takeCommit[id] = next
           if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
         } else {
-          projectCommit[id] = pos
+          // The node can vanish mid-drag (Delete or Ctrl+Z pressed while the mouse is held): React Flow still sends
+          // its final position. Nothing to move then — and no empty undo step that would break the toast's Undo.
           const cur = sm.get(id)?.position ?? am.get(id)?.position
-          if (!samePos(cur ?? undefined, pos)) projectMoved = true
+          if (!cur) continue
+          projectCommit[id] = pos
+          if (!samePos(cur, pos)) projectMoved = true
         }
       }
       if (projectMoved) useProject.getState().setPositions(projectCommit)
@@ -441,26 +519,31 @@ function CanvasInner() {
         rfSelecting.current = false
       }
     }
-  }, [])
+  }, [rfStore, replacingSelection])
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange<LinkEdge>[]) => {
       const ui = useUI.getState()
       // Box selection also selects every wire touching a boxed node (even ones leaving the box): accept wire
       // selection only from explicit clicks, otherwise Delete would cut references outside the box.
-      const { userSelectionActive, userSelectionRect } = rfStore.getState()
+      const { userSelectionActive, userSelectionRect, multiSelectionActive } = rfStore.getState()
       const boxing = userSelectionActive || !!userSelectionRect
       let sel: Set<string> | null = null
+      let clicked = false
       for (const c of changes) {
         if (c.type !== 'select' || (c.selected && boxing)) continue
         if (c.selected && parseEdgeId(c.id)?.kind === 'out') continue
         sel ??= new Set(ui.selectedEdgeIds)
-        if (c.selected) sel.add(c.id)
-        else sel.delete(c.id)
+        if (c.selected) {
+          sel.add(c.id)
+          clicked = true
+        } else sel.delete(c.id)
       }
       if (sel) ui.setSelectedEdges([...sel])
+      // A plain click on a wire replaces the selection: React Flow deselected the nodes it has, drop the others too.
+      if (clicked && !multiSelectionActive) dropOffCanvasSelection()
     },
-    [rfStore],
+    [rfStore, dropOffCanvasSelection],
   )
 
   // ---------------- connecting ----------------
@@ -672,8 +755,12 @@ function CanvasInner() {
     if (files.length) void createAssetsFromFiles(files, { position: base })
   }
 
-  const onPaneClick = useCallback(() => setMenu(null), [])
   const closeMenu = useCallback(() => setMenu(null), [])
+  // A click on empty canvas clears the whole selection: React Flow deselects its nodes, drop the off-canvas ids too.
+  const onPaneClick = useCallback(() => {
+    setMenu(null)
+    dropOffCanvasSelection()
+  }, [dropOffCanvasSelection])
 
   const handMode = interaction === 'hand'
   const stageCls = [
@@ -682,6 +769,7 @@ function CanvasInner() {
     connKind && `cv-connecting cv-connecting-${connKind}`,
     libraryDrag && 'cv-library-drag',
     takeDrag && 'cv-take-drag',
+    liftMinimap && 'cv-lift-minimap',
   ]
     .filter(Boolean)
     .join(' ')
@@ -711,8 +799,11 @@ function CanvasInner() {
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
-        onMoveStart={onPaneClick}
+        onMoveStart={closeMenu}
         deleteKeyCode={null}
+        // The app has its own keyboard layer (useShortcuts). React Flow's would move the focused (= last clicked)
+        // node with the arrow keys even while a dialog is open over the canvas (TakeViewer / image viewer ←/→).
+        disableKeyboardA11y
         selectionKeyCode="Shift"
         multiSelectionKeyCode={MULTI_KEYS}
         panActivationKeyCode="Space"
@@ -734,10 +825,10 @@ function CanvasInner() {
         elevateEdgesOnSelect={false}
         fitView
         fitViewOptions={FIT_OPTIONS}
-        colorMode="dark"
+        colorMode={theme}
         attributionPosition="top-right"
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--border-strong)" />
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
         {showMinimap && (
           <MiniMap<CanvasNode>
             position="bottom-right"
@@ -746,14 +837,15 @@ function CanvasInner() {
             nodeColor={minimapColor}
             nodeStrokeWidth={0}
             nodeBorderRadius={8}
-            maskColor="rgba(8, 9, 11, 0.62)"
-            bgColor="#15161a"
+            // Theme tokens (React Flow passes both through CSS variables, so var() works).
+            maskColor="var(--scrim)"
+            bgColor="var(--panel)"
             ariaLabel="Bản đồ thu nhỏ"
           />
         )}
       </ReactFlow>
       <SelectionHint />
-      <CanvasToolbar />
+      <CanvasToolbar density={density} />
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
       {scenes.length === 0 && assets.every((a) => !a.position) && (
         <div className="cv-empty">
@@ -805,7 +897,7 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout): Raw
           targetHandle: which,
           index: 0,
           count: 1,
-          color: which === 'first' ? '#4cc38a' : '#b48cff',
+          color: which === 'first' ? 'var(--first)' : 'var(--last)',
         })
       }
     }
@@ -821,7 +913,7 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout): Raw
       targetHandle: 'in',
       index: 0,
       count: 1,
-      color: '#6d7179',
+      color: 'var(--seq)',
     })
   }
   return out
@@ -942,11 +1034,12 @@ function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
   })
 }
 
+/** Minimap fill (React Flow sets it as an inline style, so theme tokens work). */
 function minimapColor(node: CanvasNode): string {
-  if (node.type === 'asset') return assetMapOf(useProject.getState().project.assets).get(node.id)?.color ?? '#6d7179'
+  if (node.type === 'asset') return assetMapOf(useProject.getState().project.assets).get(node.id)?.color ?? 'var(--seq)'
   if (node.type === 'take') {
     const st = takeIndexOf(useRuns.getState().takes).byId.get(node.id)?.status
-    return st ? STATUS_HEX[st] : '#3b3f47'
+    return st ? STATUS_COLOR[st] : 'var(--panel-3)'
   }
-  return sceneMapOf(useProject.getState().project.scenes).get(node.id)?.color ?? '#5b606b'
+  return sceneMapOf(useProject.getState().project.scenes).get(node.id)?.color ?? 'var(--text-faint)'
 }

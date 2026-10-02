@@ -113,7 +113,9 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     lastTime.current = -1
     const id = window.setInterval(() => {
       const v = videoRef.current
-      if (v && v.currentTime !== lastTime.current) {
+      // A hidden tab may pause the (muted) video: that is not a stall.
+      if (document.hidden) progressAt.current = Date.now()
+      else if (v && v.currentTime !== lastTime.current) {
         lastTime.current = v.currentTime
         progressAt.current = Date.now()
       } else if (Date.now() - progressAt.current >= STALL_MS) next()

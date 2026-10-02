@@ -3,7 +3,7 @@
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, CircleAlert, Clock, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
-import { downloadTake, requestRun, takeLabel } from '../../actions'
+import { deleteTakesForever, downloadTake, requestRun, takeLabel } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
@@ -27,7 +27,10 @@ function openTake(takeId: string) {
   useUI.getState().openDialog({ kind: 'take', takeId })
 }
 
-/** Delete one take (not undoable). Asks first when scenes use it as @video. */
+/**
+ * Delete one take (not undoable). Asks first when scenes use it as @video; the node's trash button itself needs a
+ * second click (TakeDeleteButton), like the viewer's. Its media blobs go too (nothing can reach them any more).
+ */
 export function deleteTake(takeId: string) {
   const project = useProject.getState().project
   const label = takeLabel(takeId)
@@ -38,10 +41,47 @@ export function deleteTake(takeId: string) {
   ) {
     return
   }
-  useRuns.getState().removeTakes([takeId])
+  deleteTakesForever([takeId])
   const ui = useUI.getState()
   if (ui.selectedIds.includes(takeId)) ui.select(ui.selectedIds.filter((id) => id !== takeId))
   toast(`Đã xoá ${label}. (Video đã xoá không hoàn tác được.)`)
+}
+
+/** How long the trash button stays armed after the first click. */
+const ARM_MS = 3500
+
+/**
+ * Trash button of a take node. Deleting a video cannot be undone and the button sits next to "Chạy lại", so the
+ * first click only arms it ("Xoá?", red) and the second one deletes; it disarms after a few seconds or when the
+ * pointer leaves. A take used as @video goes straight to deleteTake's confirm dialog instead.
+ */
+function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), ARM_MS)
+    return () => clearTimeout(t)
+  }, [armed])
+  return (
+    <button
+      className={`cv-take-btn danger${armed ? ' is-armed' : ''}`}
+      title={armed ? 'Bấm lần nữa để xoá (không hoàn tác được)' : 'Xoá take'}
+      aria-label={armed ? 'Bấm lần nữa để xoá take' : 'Xoá take'}
+      onMouseLeave={() => setArmed(false)}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (!armed && !used) {
+          setArmed(true)
+          return
+        }
+        setArmed(false)
+        deleteTake(takeId)
+      }}
+    >
+      <Trash2 size={13} />
+      {armed && <span>Xoá?</span>}
+    </button>
+  )
 }
 
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
@@ -164,9 +204,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
               >
                 <RotateCcw size={13} />
               </button>
-              <button className="cv-take-btn danger" title="Xoá take" aria-label="Xoá take" onClick={(e) => (e.stopPropagation(), deleteTake(id))}>
-                <Trash2 size={13} />
-              </button>
+              <TakeDeleteButton takeId={id} used={usage > 0} />
             </span>
           </div>
         )}
