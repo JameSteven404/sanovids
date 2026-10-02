@@ -9,7 +9,7 @@
 //   text / .txt files ──parsePromptText / itemsFromFiles──▶ items (title + prompt)
 //   items ──previewItem / summarizeImport──▶ what the dialog shows
 //   items + mapping ──buildImportScenes──▶ { title, prompt, refs }[] for project.applyImport()
-import { imageSlotsFor, TOKEN_RE, unboundToken } from './compile'
+import { imageSlotsFor, TOKEN_RE, unboundToken, withTokenNumber } from './compile'
 import type { Asset } from './types'
 
 export interface ImportItem {
@@ -280,7 +280,7 @@ export function applyImageMapping(
   const text = prompt.replace(TOKEN_RE, (whole, kind: string, raw: string) => {
     if (kind.toLowerCase() !== 'image') return whole
     const next = renumber.get(Number(raw))
-    return next === undefined ? unboundToken('image', raw) : `@image_${next}`
+    return next === undefined ? unboundToken('image', raw) : withTokenNumber(whole, next)
   })
   return { prompt: text, refs, images: slots.length, pending }
 }

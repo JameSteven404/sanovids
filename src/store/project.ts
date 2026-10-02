@@ -6,7 +6,7 @@
 // tokens in the affected prompts are renumbered in the same undo step (project.settings.autoRenumber).
 import { temporal } from 'zundo'
 import { create } from 'zustand'
-import { assetByTag, extractMentions, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
 import { newId, pickColor } from '../core/ids'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
 import type { Asset, Preset, Project, ProjectSettings, Scene, Size, VideoSettings, XY } from '../core/types'
@@ -186,7 +186,7 @@ function withMedia(
   const videoRefs = next.videoRefs ?? scene.videoRefs
   if (refs === scene.refs && videoRefs === scene.videoRefs && assetsAfter === project.assets) return scene
   let prompt = scene.prompt
-  if (project.settings.autoRenumber && /@(image|video)_\d/i.test(prompt)) {
+  if (project.settings.autoRenumber && HAS_TOKEN_RE.test(prompt)) {
     const before = mediaKeys(project.assets, scene.refs, scene.videoRefs)
     const after = mediaKeys(assetsAfter, refs, videoRefs)
     const nameOf = imageFallbackNames(project.assets)

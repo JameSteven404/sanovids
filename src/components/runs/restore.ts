@@ -6,7 +6,7 @@
 // take was deleted since) must renumber the tokens like a live deletion does.
 // The exact image list of the run is only known when the take carries `imageKeysSnapshot` (the image keys it was
 // sent with, in order). Older takes do not: the image slots are then rebuilt from the assets as they are now.
-import { imageKey, mediaKeys, remapTokens, TOKEN_RE } from '../../core/compile'
+import { HAS_TOKEN_RE, imageKey, mediaKeys, remapTokens, TOKEN_RE } from '../../core/compile'
 import { tokensShifted } from '../../core/staleTokens'
 import type { Asset, Take } from '../../core/types'
 
@@ -92,7 +92,7 @@ export function restoredFromTake(
   let prompt = take.rawPromptSnapshot
   let renumbered = false
   let uncertain = 0
-  if (!/@(image|video)_\d/i.test(prompt)) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
+  if (!HAS_TOKEN_RE.test(prompt)) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
 
   const exact = exactImageKeys(take)
   const beforeImages = snapshotImageKeys(assets, take.refsSnapshot, exact)

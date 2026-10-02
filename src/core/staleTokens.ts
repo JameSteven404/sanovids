@@ -1,7 +1,7 @@
 // Prompts left as written while their @image_N / @video_N tokens now point at another picture or video: what
 // happens with automatic renumbering off (Settings) after a refs / asset-image change. Pure (no stores, no React):
 // shared by the sidebar, the inspector, canvas wire edits and the action layer, so every such change can warn.
-import { mediaKeys, parseTokens, sceneCode } from './compile'
+import { HAS_TOKEN_RE, mediaKeys, parseTokens, sceneCode } from './compile'
 import type { Project } from './types'
 
 /**
@@ -25,7 +25,7 @@ export function scenesWithStaleTokens(before: Project, after: Project): string[]
   const out: string[] = []
   for (const sc of after.scenes) {
     const prev = old.get(sc.id)
-    if (!prev || prev.prompt !== sc.prompt || !/@(image|video)_\d/i.test(sc.prompt)) continue
+    if (!prev || prev.prompt !== sc.prompt || !HAS_TOKEN_RE.test(sc.prompt)) continue
     if (prev.refs === sc.refs && prev.videoRefs === sc.videoRefs && before.assets === after.assets) continue
     if (tokensShifted(sc.prompt, mediaKeys(before.assets, prev.refs, prev.videoRefs), mediaKeys(after.assets, sc.refs, sc.videoRefs))) out.push(sc.id)
   }

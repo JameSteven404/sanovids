@@ -13,7 +13,7 @@ export const MAX_IMPORT_IMAGE = MAX_SUMMARY_TOKEN
 
 /** Private-use character standing in for the "@" of a masked token: no longer matches TOKEN_RE, same length. */
 const MASK = ''
-const MASKED_RE = /(image_\d+)/gi
+const MASKED_RE = /((?:image|video)[ _]?\d+)/gi
 
 export interface GuardedItems {
   /** Items with out-of-range @image tokens masked (feed these to summarizeImport / applyImageMapping). */

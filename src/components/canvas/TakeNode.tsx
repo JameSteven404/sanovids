@@ -141,7 +141,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
         }}
       >
         <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
-          {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster empty" />}
+          {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster is-empty" />}
           {videoUrl && <TakePlayer takeId={id} url={videoUrl} />}
           <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
 

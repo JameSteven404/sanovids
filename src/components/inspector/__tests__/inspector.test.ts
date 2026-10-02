@@ -102,6 +102,17 @@ describe('segmentPrompt', () => {
     // a mode that sends no images: every image token is unsent
     expect(segmentPrompt('@image_1', 3, 0, undefined, { images: 0, videos: 0 })[0].reason).toBe('unsent')
   })
+  it('highlights tokens written as "@Image 1", "@image2", "@IMAGE_3" like "@image_1"', () => {
+    const text = 'References: @Image 1 = Elara, @image2 = Lumi, @IMAGE_3 = Village, @Image 9.'
+    const segs = segmentPrompt(text, 3, 0, new Set(['image']))
+    expect(segs.map((s) => s.text).join('')).toBe(text)
+    expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.kind, s.text, s.n, !!s.invalid])).toEqual([
+      ['image', '@Image 1', 1, false],
+      ['image', '@image2', 2, false],
+      ['image', '@IMAGE_3', 3, false],
+      ['image', '@Image 9', 9, true],
+    ])
+  })
   it('does not treat longer words as tokens and handles empty text', () => {
     expect(segmentPrompt('@image_12abc', 20, 0).map((s) => s.kind)).toEqual(['text'])
     expect(segmentPrompt('', 1, 1)).toEqual([])

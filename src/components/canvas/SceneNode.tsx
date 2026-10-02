@@ -500,15 +500,15 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   }
   return (
     <span
-      className={`cv-title ${title ? '' : 'empty'}`}
-      title="Bấm đúp để đổi tên"
+      className={`cv-title${title ? '' : ' is-empty'}`}
+      title={title ? 'Bấm đúp để đổi tên' : 'Bấm đúp để đặt tên cảnh (không bắt buộc)'}
       onDoubleClick={(e) => {
         e.stopPropagation()
         setDraft(title)
         setEditing(true)
       }}
     >
-      {title || 'Chưa đặt tên'}
+      {title || 'Bấm đúp để đặt tên'}
     </span>
   )
 }
@@ -601,8 +601,8 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
   )
 }
 
-const SPLIT_RE = /(@[\p{L}\p{N}_]+)/u
-const TOKEN_ONLY = /^@(image|video)_(\d+)$/i
+const SPLIT_RE = /(@(?:image|video)[ _]?\d+(?![\p{L}\p{N}_])|@[\p{L}\p{N}_]+)/iu
+const TOKEN_ONLY = /^@(image|video)[ _]?(\d+)$/i
 /** Prompt excerpt: @image_N teal, @video_N purple, numbers without media red, legacy @Tag of a library asset teal. */
 function Excerpt({ text, assets, images, videos, maxChars }: { text: string; assets: Asset[]; images: number; videos: number; maxChars: number }) {
   const parts = useMemo(() => {

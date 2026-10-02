@@ -1,11 +1,21 @@
 import { MODELS, usesRefs, usesVideoRefs } from './models'
 import type { Asset, CompiledImage, CompiledPrompt, CompiledVideo, Project, Scene } from './types'
 
-/** Legacy @Tag mention: letters (incl. Vietnamese), digits, underscore. Also matches @image_N/@video_N. */
-export const MENTION_RE = /@([\p{L}\p{N}_]+)/gu
-/** Numbered media token. Group 1 = kind, group 2 = number. */
-export const TOKEN_RE = /@(image|video)_(\d+)\b/gi
-const RAW_TOKEN = /^(image|video)_\d+$/i
+/**
+ * Legacy @Tag mention: letters (incl. Vietnamese), digits, underscore. Never a numbered token: "@image_1", "@Image 1",
+ * "@image1" are media tokens, not tags.
+ */
+export const MENTION_RE = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])[ _]?\d)([\p{L}\p{N}_]+)/gu
+/**
+ * Numbered media token. Group 1 = kind, group 2 = number. Any case, and "_", a space or nothing before the number:
+ * "@image_1", "@Image 1", "@IMAGE1" all name image 1 (prompts written elsewhere use all of these).
+ */
+export const TOKEN_RE = /@(image|video)[ _]?(\d+)\b/gi
+/** Quick test: does a text contain any numbered media token? */
+export const HAS_TOKEN_RE = /@(image|video)[ _]?\d/i
+const RAW_TOKEN = /^(image|video)_?\d+$/i
+/** The same token with another number, keeping how the user wrote it ("@Image 1" → "@Image 3"). */
+export const withTokenNumber = (token: string, n: number) => token.replace(/\d+$/, String(n))
 /** Placeholder for a number that has no image/video yet (e.g. left over by an edit or an import): "@image_?3". */
 export const UNBOUND_RE = /@(image|video)_\?(\d+)/gi
 export const unboundToken = (kind: 'image' | 'video', n: number | string) => `@${kind}_?${n}`
@@ -166,7 +176,7 @@ export function remapTokens(
       return unboundToken(kind, rawN)
     }
     const idx = newKeys.indexOf(key)
-    const next = idx >= 0 ? `@${kind}_${idx + 1}` : fallback(kind, key)
+    const next = idx >= 0 ? withTokenNumber(whole, idx + 1) : fallback(kind, key)
     if (idx < 0) dropped++
     if (next !== whole) changed = true
     return next
