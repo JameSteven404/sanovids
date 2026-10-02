@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useImageSize } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useUI } from '../../store/ui'
+import { trapTab, useOverlayFocus } from './focus'
 
 /**
  * Full-screen viewer for reference images: the whole picture at its real aspect ratio, as large as the window allows.
@@ -17,6 +18,9 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
   const many = imageIds.length > 1
   // The viewer is often opened by a double-click: ignore the second press so it does not close the viewer at once.
   const openedAt = useRef(performance.now())
+  // Take the keyboard focus (and give it back on close) so keys never reach the canvas behind the viewer.
+  const rootRef = useRef<HTMLDivElement>(null)
+  useOverlayFocus(rootRef)
   const closeFromBackdrop = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget && performance.now() - openedAt.current > 400) close()
   }
@@ -42,7 +46,17 @@ export function ImageLightbox({ imageIds, index, title }: { imageIds: string[]; 
   }, [close, many, imageIds.length])
 
   return (
-    <div className="lightbox" role="dialog" aria-modal="true" aria-label={title ?? 'Xem ảnh'} onMouseDown={closeFromBackdrop}>
+    <div
+      ref={rootRef}
+      className="lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title ?? 'Xem ảnh'}
+      tabIndex={-1}
+      style={{ outline: 'none' }}
+      onMouseDown={closeFromBackdrop}
+      onKeyDown={trapTab}
+    >
       <div className="lightbox-bar">
         <span className="lightbox-title">{title ?? 'Ảnh tham chiếu'}</span>
         {many && (

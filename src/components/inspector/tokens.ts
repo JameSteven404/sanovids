@@ -3,7 +3,7 @@
 // - suggestMedia: what the "@" popup lists for a typed query (linked images, linked videos, library assets).
 // - insertAt: insert a token at a selection with sensible spacing.
 // - legacy @Tag helpers for the "Đổi @Tên → @image_N" quick fix.
-import { imageSlotsFor } from '../../core/compile'
+import { imageSlotsFor, mediaKeys, remapTokens } from '../../core/compile'
 import type { Asset, AssetKind } from '../../core/types'
 import { fold } from './mentions'
 
@@ -170,8 +170,9 @@ export function suggestMedia(
     add({ type: 'video', ...v }, s, 1, v.n)
   }
   for (const [i, a] of library.entries()) {
-    // Not linked yet: rank just below an equally good linked image.
-    const s = textScore(q, a.tag, a.name)
+    // Not linked yet: rank just below an equally good linked image. A number never offers them ("@5" + Enter must
+    // not link "Lính 5").
+    const s = numeric ? -1 : textScore(q, a.tag, a.name)
     add({ type: 'link', ...a }, s >= 0 ? s + 0.5 : -1, 2, i)
   }
   scored.sort((a, b) => a.s - b.s || a.group - b.group || a.order - b.order)
@@ -183,6 +184,122 @@ export function suggestionToken(s: MediaSuggestion): string | null {
   if (s.type === 'image') return `@image_${s.n}`
   if (s.type === 'video') return `@video_${s.n}`
   return null
+}
+
+// ---------------------------------------------------------------------------------------------
+// Linking media from the editor (drop, "Nối & chèn", legacy fix) — planned first, applied in one store step
+// ---------------------------------------------------------------------------------------------
+
+export interface ImageLinkPlan {
+  /** scene.refs after linking (new ones appended, so existing @image numbers do not move). */
+  refs: string[]
+  /** "@image_N" (first image) of each requested asset that has one, in request order. */
+  tokens: Map<string, string>
+  /** Asset ids newly linked. */
+  linked: string[]
+  /** Requested assets without any image (no number to insert). */
+  noImage: number
+  /** Not linked: the model's image limit would be exceeded. */
+  overLimit: number
+}
+
+/** Link `ids` to a scene whose refs are `refs`, like the store's addRefs (appended, within `maxImages` images). */
+export function planImageLinks(assets: Asset[], refs: string[], ids: string[], maxImages: number): ImageLinkPlan {
+  const byId = new Map(assets.map((a) => [a.id, a]))
+  // Same count as the store's refImageCount: an asset without image (or a deleted one) still takes one slot.
+  const weight = (id: string) => Math.max(1, byId.get(id)?.imageIds.length ?? 0)
+  let used = refs.reduce((t, id) => t + weight(id), 0)
+  let next = refs
+  const linked: string[] = []
+  const wanted: string[] = []
+  let noImage = 0
+  let overLimit = 0
+  for (const id of new Set(ids)) {
+    const a = byId.get(id)
+    if (!a) continue
+    if (!a.imageIds.length) {
+      noImage++
+      continue
+    }
+    if (!next.includes(id)) {
+      if (used + weight(id) > maxImages) {
+        overLimit++
+        continue
+      }
+      next = [...next, id]
+      used += weight(id)
+      linked.push(id)
+    }
+    wanted.push(id)
+  }
+  const slots = imageSlotsFor(assets, next)
+  const tokens = new Map<string, string>()
+  for (const id of wanted) {
+    const slot = slots.find((s) => s.assetId === id)
+    if (slot) tokens.set(id, `@image_${slot.n}`)
+  }
+  return { refs: next, tokens, linked, noImage, overLimit }
+}
+
+export interface VideoLinkPlan {
+  videoRefs: string[]
+  /** "@video_N" of each requested take that is (or gets) linked, in request order. */
+  tokens: string[]
+  linked: string[]
+  /** Not finished yet (only completed takes can be used). */
+  notReady: number
+  /** Takes of this very scene (a scene cannot reference its own video). */
+  own: number
+  /** Not linked: over the model / mode's video limit (0 when the mode takes no video). */
+  overLimit: number
+}
+
+/** Link takes to a scene as reference videos, like the store's addVideoRefs + actions.linkTakes' rules. */
+export function planVideoLinks(
+  sceneId: string,
+  videoRefs: string[],
+  ids: string[],
+  takes: { id: string; sceneId: string; status: string }[],
+  maxVideos: number,
+): VideoLinkPlan {
+  let next = videoRefs
+  const linked: string[] = []
+  const wanted: string[] = []
+  let notReady = 0
+  let own = 0
+  let overLimit = 0
+  for (const id of new Set(ids)) {
+    if (!next.includes(id)) {
+      const t = takes.find((x) => x.id === id)
+      if (!t || t.status !== 'completed') {
+        notReady++
+        continue
+      }
+      if (t.sceneId === sceneId) {
+        own++
+        continue
+      }
+      if (next.length >= maxVideos) {
+        overLimit++
+        continue
+      }
+      next = [...next, id]
+      linked.push(id)
+    }
+    wanted.push(id)
+  }
+  return { videoRefs: next, tokens: wanted.map((id) => `@video_${next.indexOf(id) + 1}`), linked, notReady, own, overLimit }
+}
+
+/**
+ * `prompt` after a scene's image refs changed from `before` to `after` (same video refs): each @image_N keeps its
+ * picture; tokens of images no longer referenced become the asset's name (its tag when the name is empty).
+ */
+export function renumberImageTokens(prompt: string, assets: Asset[], before: string[], after: string[], videoRefs: string[]): string {
+  if (!/@image_\d/i.test(prompt)) return prompt
+  const names = new Map(assets.map((a) => [a.id, a.name.trim() || a.tag]))
+  const fallback = (kind: 'image' | 'video', key: string) => (kind === 'image' ? names.get(key.split(':')[0]) || 'ảnh' : 'video')
+  return remapTokens(prompt, mediaKeys(assets, before, videoRefs), mediaKeys(assets, after, videoRefs), fallback).text
 }
 
 // ---------------------------------------------------------------------------------------------

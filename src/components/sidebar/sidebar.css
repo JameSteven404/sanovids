@@ -1346,10 +1346,14 @@
   font-size: 11px;
   cursor: pointer;
 }
-.sb-img-add:hover {
+.sb-img-add:hover:not(:disabled) {
   color: var(--ref);
   border-color: var(--ref);
   background: var(--ref-soft);
+}
+.sb-img-add:disabled {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 /* usage list (asset dialog right column) */

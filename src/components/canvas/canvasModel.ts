@@ -21,7 +21,7 @@ export const snap = (v: number) => Math.round(v / GRID) * GRID
  * Was a take node dropped on its auto slot `auto` (so it stays auto-placed and keeps following its scene)?
  * Auto slots are off the snap grid, and React Flow snaps every single-node drag to the grid point nearest the node's
  * start (even a click with 2–3px of mouse jitter becomes such a "drag"), so that grid point counts as the slot too.
- * Arrow-key moves land a whole grid step further and are real moves.
+ * A real move lands at least a whole grid step further.
  */
 export function isAutoSlot(auto: XY, pos: XY): boolean {
   const on = (slot: number, v: number) => Math.abs(v - slot) < 0.5 || Math.abs(v - snap(slot)) < 0.5
@@ -280,6 +280,51 @@ export function autoTakePosition(scenePos: XY, sceneW: number, slotX: number): X
   return defaultTakePosition(scenePos, 0, sceneW + slotX)
 }
 
+/**
+ * Row heights for project.autoLayout ("Sắp xếp"): per scene, its tallest node — the card (stored size, else the
+ * height React Flow measured) and the take nodes shown in its row (same). Every take goes back to its auto slot next
+ * to its scene, so a take resized to 420px makes its row 420px tall instead of covering the next scene. Takes hidden
+ * by "Chỉ take chọn" and orphans (placed next to a scene that uses them, outside any row) do not count; unknown
+ * heights are left out (autoLayout keeps its default row height).
+ */
+export function layoutRowHeights(
+  scenes: readonly Pick<Scene, 'id' | 'size'>[],
+  layout: { items: readonly Pick<TakeLayoutItem, 'id' | 'sceneId' | 'orphan' | 'size'>[] },
+  measuredH: (id: string) => number | undefined,
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  const bump = (sceneId: string, h: number | undefined) => {
+    if (h && h > (out[sceneId] ?? 0)) out[sceneId] = Math.ceil(h)
+  }
+  for (const s of scenes) bump(s.id, s.size?.h ?? measuredH(s.id))
+  for (const item of layout.items) if (!item.orphan) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
+  return out
+}
+
+/**
+ * Selection that React Flow's select / deselect changes are applied to. React Flow only deselects nodes it knows, so
+ * ids without a canvas node (a take hidden by "Chỉ take chọn" picked in the library, an asset taken off the canvas by
+ * an undo…) would survive every click and still be hit by Delete or C. A replacing selection (plain click, box)
+ * therefore starts from the ids that are on the canvas; an additive one (Ctrl / Shift+click) keeps the rest.
+ */
+export function selectionSeed(selectedIds: readonly string[], replacing: boolean, onCanvas: (id: string) => boolean): string[] {
+  return replacing ? selectedIds.filter(onCanvas) : [...selectedIds]
+}
+
+// ---------------- toolbar density ----------------
+export type ToolbarDensity = 'full' | 'compact' | 'tight'
+/**
+ * Toolbar layout for a canvas `width` px wide. full: every label (~940px); compact: icons for Nối / Chạy, the two text
+ * switches become one-button toggles (~680px); tight: also no zoom −/+ (~580px; it scrolls sideways below that).
+ * 0 = not measured yet.
+ */
+export function toolbarDensity(width: number): ToolbarDensity {
+  if (!width || width >= 1000) return 'full'
+  return width >= 720 ? 'compact' : 'tight'
+}
+/** Below this canvas width the centered toolbar reaches the bottom-right minimap: the minimap moves up above it. */
+export const MINIMAP_LIFT_W = 1400
+
 // ---------------- node sizes (resize handles) ----------------
 export type SizedKind = keyof typeof NODE_SIZE
 /** Live box of a node while its resize handle is dragged (committed once on resize end). */
@@ -423,13 +468,6 @@ export const STATUS_COLOR: Record<JobStatus, string> = {
   failed: 'var(--danger)',
   cancelled: 'var(--text-faint)',
 }
-export const STATUS_HEX: Record<JobStatus, string> = {
-  queued: '#7c9cff',
-  processing: '#e8894a',
-  completed: '#4cc38a',
-  failed: '#ef5b5b',
-  cancelled: '#6d7179',
-}
 export const STATUS_LABEL: Record<JobStatus, string> = {
   queued: 'Đang chờ',
   processing: 'Đang chạy',
@@ -500,18 +538,22 @@ export function clientPoint(e: MouseEvent | TouchEvent): { x: number; y: number 
   return { x: m.clientX, y: m.clientY }
 }
 
+/** Overlays on the stage that block a wire drop (it must not fall through to the canvas or a card underneath). */
+export const DROP_BLOCKERS = '.cv-toolbar, .cv-sel-hint, .cv-menu, .react-flow__minimap, .react-flow__panel'
+
 /**
  * The React Flow node under a screen point (ignores the connection line), or null. 'pane' when over empty canvas.
- * Anything on top of the canvas but outside `root` (queue drawer, toasts, panels) blocks the drop: null.
+ * Anything on top of the canvas but outside `root` (queue drawer, toasts, panels) blocks the drop: null. So do the
+ * stage's own overlays (DROP_BLOCKERS: toolbar, selection hint, menu, minimap).
  */
 export function hitTest(x: number, y: number, root: HTMLElement | null): { kind: 'node'; id: string } | { kind: 'pane' } | null {
   const els = document.elementsFromPoint(x, y)
   for (const el of els) {
     if (root && !root.contains(el)) return null
+    if (el.closest(DROP_BLOCKERS)) return null
     const node = el.closest<HTMLElement>('.react-flow__node')
     if (node?.dataset.id) return { kind: 'node', id: node.dataset.id }
     if (el.classList.contains('react-flow__pane')) return { kind: 'pane' }
-    if (el.closest('.cv-toolbar, .cv-menu, .react-flow__minimap, .react-flow__panel')) return null
   }
   return null
 }
@@ -596,15 +638,19 @@ export function scheduleHoverEnd(clearNode: () => void, ms = 140) {
   }, ms)
 }
 
-/** Hex color with alpha (e.g. '#4fb6a8', 0.7 -> '#4fb6a8b3'). Falls back to the input for non-hex colors. */
+/**
+ * Color with alpha: hex ('#4fb6a8', 0.7 -> '#4fb6a8b3'), anything else (a theme token such as 'var(--ref)') through
+ * color-mix, so wire colors can follow the light / dark theme.
+ */
 export function withAlpha(color: string, alpha: number): string {
+  const a = Math.max(0, Math.min(1, alpha))
   if (/^#[0-9a-f]{6}$/i.test(color)) {
     return (
       color +
-      Math.round(Math.max(0, Math.min(1, alpha)) * 255)
+      Math.round(a * 255)
         .toString(16)
         .padStart(2, '0')
     )
   }
-  return color
+  return `color-mix(in srgb, ${color} ${Math.round(a * 100)}%, transparent)`
 }

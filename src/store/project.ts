@@ -94,38 +94,64 @@ export function scenePosition(index: number): XY {
   return { x: LAYOUT.scenesX, y: LAYOUT.scenesY + index * ROW_H }
 }
 
-/** Would scene cards at `a` and `b` overlap (closer than half a gap counts as overlapping)? */
-function cardsOverlap(a: XY, b: XY): boolean {
-  return Math.abs(a.x - b.x) < LAYOUT.sceneW + 24 && Math.abs(a.y - b.y) < LAYOUT.sceneH + LAYOUT.gapY / 2
+/**
+ * Height of the tallest take (video node) of a scene. Takes live in the runs store, which imports this module,
+ * so the runs side registers the lookup (see actions.ts) instead of this store importing it.
+ */
+let takeHeightOf: (sceneId: string) => number = () => 0
+export function setTakeHeightSource(fn: (sceneId: string) => number) {
+  takeHeightOf = fn
 }
 
-/** First row slot from `start` on whose card would not overlap any card at `taken`. */
-function freeScenePosition(taken: XY[], start: number): XY {
+/** Height of a scene's row without the gap: its card or its tallest take, whichever is taller (resized ones included). */
+export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
+  return Math.max(scene.size?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeHeightOf(scene.id))
+}
+
+/** Area a scene's row takes in the card column (x, y, card width, row height). */
+interface Box extends XY {
+  w: number
+  h: number
+}
+const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
+/** A new scene card (default size, no takes yet). */
+const newBox = (pos: XY): Box => ({ x: pos.x, y: pos.y, w: LAYOUT.sceneW, h: Math.max(LAYOUT.sceneH, LAYOUT.takeH) })
+
+/** Would these rows overlap (closer than half a gap counts as overlapping)? */
+function cardsOverlap(a: Box, b: Box): boolean {
+  const gx = 24
+  const gy = LAYOUT.gapY / 2
+  return a.x < b.x + b.w + gx && b.x < a.x + a.w + gx && a.y < b.y + b.h + gy && b.y < a.y + a.h + gy
+}
+
+/** First row slot from `start` on whose card would not overlap any of the `taken` rows. */
+function freeScenePosition(taken: Box[], start: number): XY {
   for (let i = start; i < start + 10000; i++) {
     const pos = scenePosition(i)
-    if (!taken.some((t) => cardsOverlap(t, pos))) return pos
+    const box = newBox(pos)
+    if (!taken.some((t) => cardsOverlap(t, box))) return pos
   }
   return scenePosition(start)
 }
 
 /**
- * Positions that push scenes DOWN so none overlaps a new card at `pos`. Only cards hit by the new card
+ * Positions that push scenes DOWN so none overlaps the new card `box`. Only cards hit by the new card
  * (or by a card pushed before them) move; unrelated cards stay where the user put them.
  */
-function makeRoomAt(scenes: Scene[], pos: XY): Map<string, XY> {
-  const pushers: XY[] = [pos]
-  const placed: XY[] = [pos]
+function makeRoomAt(scenes: Scene[], box: Box): Map<string, XY> {
+  const pushers: Box[] = [box]
+  const placed: Box[] = [box]
   const moved = new Map<string, XY>()
   const byY = [...scenes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
   for (const s of byY) {
-    let next = s.position
+    let next = sceneBox(s)
     if (pushers.some((q) => cardsOverlap(q, next))) {
       for (let g = 0; g < 10000; g++) {
         const hit = placed.find((q) => cardsOverlap(q, next))
         if (!hit) break
-        next = { x: next.x, y: hit.y + ROW_H }
+        next = { ...next, y: hit.y + hit.h + LAYOUT.gapY }
       }
-      moved.set(s.id, next)
+      moved.set(s.id, { x: next.x, y: next.y })
       pushers.push(next)
     }
     placed.push(next)
@@ -378,7 +404,7 @@ export const useProject = create<ProjectState>()(
           const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
           const after = opts.afterId ? sorted.find((s) => s.id === opts.afterId) : undefined
           const order = after ? after.order + 0.5 : sorted.length + 1
-          const position = opts.position ?? partial.position ?? freeScenePosition(p.scenes.map((s) => s.position), p.scenes.length)
+          const position = opts.position ?? partial.position ?? freeScenePosition(p.scenes.map(sceneBox), p.scenes.length)
           const scene = buildScene(p, partial, position, order)
           mutate((pp) => ({ ...pp, scenes: renumber([...pp.scenes, scene]) }))
           return scene.id
@@ -457,7 +483,8 @@ export const useProject = create<ProjectState>()(
           const p = get().project
           const from = p.scenes.find((s) => s.id === fromId)
           if (!from) return get().addScene()
-          const pos = position ?? { x: from.position.x, y: from.position.y + ROW_H }
+          // Below the source row: a resized (taller) card or a tall take of it pushes the new card further down.
+          const pos = position ?? { x: from.position.x, y: from.position.y + rowHeightOf(from) + LAYOUT.gapY }
           const next = buildScene(
             p,
             { refs: from.refs, videoRefs: from.videoRefs, settings: from.settings, presetId: from.presetId, firstFrame: from.firstFrame, lastFrame: from.lastFrame, ...overrides },
@@ -465,7 +492,7 @@ export const useProject = create<ProjectState>()(
             from.order + 0.5,
           )
           // Default spot (below `from`) is usually the next row: push those cards down to make room.
-          const moved = position ? new Map<string, XY>() : makeRoomAt(p.scenes, pos)
+          const moved = position ? new Map<string, XY>() : makeRoomAt(p.scenes, newBox(pos))
           mutate((pp) => ({
             ...pp,
             scenes: renumber([...pp.scenes.map((s) => (moved.has(s.id) ? { ...s, position: moved.get(s.id)! } : s)), next]),
@@ -603,24 +630,44 @@ export const useProject = create<ProjectState>()(
         },
         removeTakesEverywhere: (takeIds, labels) => {
           const dead = new Set(takeIds)
-          const p = get().project
-          if (!p.scenes.some((s) => s.videoRefs.some((t) => dead.has(t)))) return
-          // Deleting a take is not undoable, so dropping its references must not become an undo step either
-          // (undo would otherwise bring back a @video that points at nothing).
+          if (!dead.size) return
+          const uses = (s: Scene) => s.videoRefs.some((t) => dead.has(t))
+          const clean = (pp: Project): Project =>
+            pp.scenes.some(uses)
+              ? {
+                  ...pp,
+                  scenes: pp.scenes.map((s) =>
+                    uses(s) ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video') : s,
+                  ),
+                }
+              : pp
+          // Deleting a take is not undoable, so dropping its references must not become an undo step either, and no
+          // undo/redo may bring them back (a @video pointing at nothing blocks the scene): every snapshot in the
+          // history is cleaned the same way, not only the current project.
           const history = useProject.temporal.getState()
-          history.pause()
-          try {
-            mutate((pp) => ({
-            ...pp,
-            scenes: pp.scenes.map((s) =>
-              s.videoRefs.some((t) => dead.has(t))
-                  ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video')
-                  : s,
-              ),
-            }))
-          } finally {
-            history.resume()
+          const cleanSnap = (snap: Partial<ProjectState>): Partial<ProjectState> => {
+            if (!snap.project) return snap
+            const next = clean(snap.project)
+            return next === snap.project ? snap : { ...snap, project: next }
           }
+          const pastStates = history.pastStates.map(cleanSnap)
+          const futureStates = history.futureStates.map(cleanSnap)
+          const changed = (a: Partial<ProjectState>[], b: Partial<ProjectState>[]) => a.some((x, i) => x !== b[i])
+          if (changed(pastStates, history.pastStates) || changed(futureStates, history.futureStates)) {
+            useProject.temporal.setState({ pastStates, futureStates })
+          }
+          const p = get().project
+          const next = clean(p)
+          if (next !== p) {
+            history.pause()
+            try {
+              set({ project: touch(next) })
+            } finally {
+              history.resume()
+            }
+          }
+          // A typing burst must not continue across the deletion.
+          lastKey = null
         },
 
         deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [] }, videoLabel) =>
@@ -699,7 +746,7 @@ export const useProject = create<ProjectState>()(
             let rowY = LAYOUT.scenesY
             for (const s of sorted) {
               pos.set(s.id, { x: LAYOUT.scenesX, y: rowY })
-              const h = Math.max(LAYOUT.sceneH, LAYOUT.takeH, s.size?.h ?? 0, rowHeights[s.id] ?? 0)
+              const h = Math.max(rowHeightOf(s), rowHeights[s.id] ?? 0)
               rowY += h + LAYOUT.gapY
             }
             let y = LAYOUT.scenesY
@@ -716,10 +763,10 @@ export const useProject = create<ProjectState>()(
           const created: string[] = []
           mutate((p) => {
             const start = p.scenes.length
-            const taken = p.scenes.map((s) => s.position)
+            const taken = p.scenes.map(sceneBox)
             const list: Scene[] = scenes.map((partial, i) => {
               const position = freeScenePosition(taken, start + i)
-              taken.push(position)
+              taken.push(newBox(position))
               const s = buildScene(p, partial, position, start + i + 1)
               created.push(s.id)
               return s
@@ -747,19 +794,37 @@ export const useProject = create<ProjectState>()(
         ;(handleSet as unknown as (...a: unknown[]) => void)(pastState, replace, currentState, deltaState)
       },
       // Undo/redo/clear end the current typing burst: the next edit must get its own step (and drop the redo stack).
+      // Undo/redo put back a whole old snapshot, its old `updatedAt` included: stamp it again (see restamp).
       wrapTemporal: (init) => (set, get, store) => {
         const t = init(set, get, store)
         const endBurst =
-          <A extends unknown[]>(fn: (...a: A) => void) =>
+          <A extends unknown[]>(fn: (...a: A) => void, stamp = false) =>
           (...a: A) => {
             lastKey = null
+            const before = stamp ? useProject.getState().project : null
             fn(...a)
+            if (stamp && useProject.getState().project !== before) restamp()
           }
-        return { ...t, undo: endBurst(t.undo), redo: endBurst(t.redo), clear: endBurst(t.clear) }
+        return { ...t, undo: endBurst(t.undo, true), redo: endBurst(t.redo, true), clear: endBurst(t.clear) }
       },
     },
   ),
 )
+
+/**
+ * Mark the project as edited now without recording a history step. After undo/redo the restored snapshot carries the
+ * time of that old edit; saves, the emergency backup and the project list must still see it as the newest change.
+ */
+function restamp() {
+  const history = useProject.temporal.getState()
+  const tracking = history.isTracking
+  history.pause()
+  try {
+    useProject.setState((s) => ({ project: { ...s.project, updatedAt: Math.max(Date.now(), s.project.updatedAt + 1) } }))
+  } finally {
+    if (tracking) history.resume()
+  }
+}
 
 export const undo = () => useProject.temporal.getState().undo()
 export const redo = () => useProject.temporal.getState().redo()

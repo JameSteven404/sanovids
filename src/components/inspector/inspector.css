@@ -1358,12 +1358,15 @@ button.in-code-chip:hover {
   padding: 14px 16px 18px;
   border-bottom: 0;
 }
+/* wraps instead of clipping "Xoá" when the right panel is near its minimum width */
 .in-action-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .in-action-row .btn {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0 6px;
 }
 
@@ -1539,7 +1542,8 @@ button.in-code-chip:hover {
   cursor: pointer;
   opacity: 0;
 }
-.in-image:hover .in-image-make {
+.in-image:hover .in-image-make,
+.in-image:focus-within .in-image-make {
   opacity: 1;
 }
 .in-image-make:hover {
@@ -1561,11 +1565,23 @@ button.in-code-chip:hover {
   cursor: pointer;
   opacity: 0;
 }
-.in-image:hover .in-image-x {
+.in-image:hover .in-image-x,
+.in-image:focus-within .in-image-x {
   opacity: 1;
 }
-.in-image-x:hover {
+.in-image-x:hover:not(:disabled) {
   background: var(--danger);
+}
+.in-image-make:disabled,
+.in-image-x:disabled {
+  cursor: progress;
+}
+/* touch / pen screens have no hover: keep the tile buttons visible (a tap must not hit an invisible X) */
+@media (hover: none) {
+  .in-image-make,
+  .in-image-x {
+    opacity: 1;
+  }
 }
 .in-image-add {
   flex: none;
@@ -1583,9 +1599,13 @@ button.in-code-chip:hover {
   font-size: 11px;
   cursor: pointer;
 }
-.in-image-add:hover {
+.in-image-add:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
+}
+.in-image-add:disabled {
+  cursor: progress;
+  opacity: 0.7;
 }
 .in-usedin {
   display: flex;

@@ -1,7 +1,9 @@
 // Schema migrations for saved projects and takes. Pure functions (unit-tested).
-import { assetByTag, imageSlotsFor, MENTION_RE } from './compile'
+import { scenePosition } from '../store/project'
+import { assetByTag, imageSlotsFor, mediaKeys, MENTION_RE, remapTokens, uniqueTag } from './compile'
+import { newId, pickColor } from './ids'
 import { normalizeSettings } from './models'
-import type { Asset, Project, Scene, Take } from './types'
+import type { Asset, AssetKind, Project, Scene, Take, XY } from './types'
 
 interface V1Block {
   id: string
@@ -9,6 +11,11 @@ interface V1Block {
   placement: 'before' | 'after'
   defaultOn: boolean
 }
+
+const ASSET_KINDS: AssetKind[] = ['character', 'location', 'prop', 'style']
+const isXY = (v: unknown): v is XY => !!v && typeof v === 'object' && Number.isFinite((v as XY).x) && Number.isFinite((v as XY).y)
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : [])
+const text = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : v == null ? fallback : String(v))
 
 /** Replace legacy @Tag mentions with @image_N of the scene's refs (unlinked tags become the asset name). */
 export function tagsToTokens(prompt: string, assets: Asset[], refs: string[]): string {
@@ -22,49 +29,114 @@ export function tagsToTokens(prompt: string, assets: Asset[], refs: string[]): s
   })
 }
 
-/**
- * Bring any saved project up to schema v2.
- * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
- * @Tag mentions become @image_N, continuity links and block data are dropped, scenes get videoRefs.
- */
-export function migrateProject(raw: unknown): Project {
-  const p = raw as Record<string, unknown> & Partial<Project>
-  const assets = (p.assets ?? []) as Asset[]
-  const blocks = ((p as { blocks?: V1Block[] }).blocks ?? []) as V1Block[]
-  const v1 = p.schemaVersion !== 2
-
-  const scenes: Scene[] = ((p.scenes ?? []) as (Scene & { blockOverrides?: Record<string, boolean>; continueFrom?: unknown })[]).map((s) => {
-    const { blockOverrides, continueFrom: _c, ...rest } = s
-    let prompt = String(s.prompt ?? '')
-    if (v1) {
-      const on = (b: V1Block) => (blockOverrides ?? {})[b.id] ?? b.defaultOn
-      const before = blocks.filter((b) => b.placement === 'before' && on(b) && b.text.trim()).map((b) => b.text.trim())
-      const after = blocks.filter((b) => b.placement === 'after' && on(b) && b.text.trim()).map((b) => b.text.trim())
-      prompt = [...before, prompt.trim(), ...after].filter(Boolean).join('\n\n')
-      prompt = tagsToTokens(prompt, assets, s.refs ?? [])
-    }
+/** Assets with every field present and unique ids/tags (files from other sources may miss some). */
+function normalizeAssets(raw: unknown): Asset[] {
+  const ids = new Set<string>()
+  const tags: string[] = []
+  return (Array.isArray(raw) ? raw : []).map((r, i) => {
+    const a = (r ?? {}) as Partial<Asset>
+    let id = typeof a.id === 'string' && a.id ? a.id : newId('ast')
+    if (ids.has(id)) id = newId('ast')
+    ids.add(id)
+    const name = text(a.name).trim() || 'Không tên'
+    const free = typeof a.tag === 'string' && !!a.tag && !tags.some((t) => t.toLowerCase() === a.tag!.toLowerCase())
+    const tag = free ? a.tag! : uniqueTag(name, tags)
+    tags.push(tag)
     return {
-      ...rest,
-      prompt,
-      refs: Array.isArray(s.refs) ? s.refs : [],
-      videoRefs: Array.isArray(s.videoRefs) ? s.videoRefs : [],
-      settings: normalizeSettings(s.settings ?? {}),
-      firstFrame: s.firstFrame ?? null,
-      lastFrame: s.lastFrame ?? null,
-      color: s.color ?? null,
-      note: s.note ?? '',
-      presetId: s.presetId ?? null,
+      ...a,
+      id,
+      kind: ASSET_KINDS.includes(a.kind as AssetKind) ? (a.kind as AssetKind) : 'character',
+      name,
+      tag,
+      description: text(a.description),
+      imageIds: strings(a.imageIds),
+      color: typeof a.color === 'string' && a.color ? a.color : pickColor(i),
+      position: isXY(a.position) ? a.position : null,
     }
   })
+}
+
+/**
+ * Bring any saved project up to schema v2 (and repair what other sources may leave out).
+ * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
+ * @Tag mentions become @image_N, continuity links and block data are dropped, scenes get videoRefs.
+ * Always: unique ids, dense scene order (S01, S02… never "Sundefined"), a position and a title for every scene.
+ */
+export function migrateProject(raw: unknown): Project {
+  const p = (raw ?? {}) as Record<string, unknown> & Partial<Project>
+  const assets = normalizeAssets(p.assets)
+  const blocks = ((p as { blocks?: V1Block[] }).blocks ?? []) as V1Block[]
+  const v1 = p.schemaVersion !== 2
+  const sceneIds = new Set<string>()
+
+  const rawScenes = (Array.isArray(p.scenes) ? p.scenes : []) as (Scene & { blockOverrides?: Record<string, boolean>; continueFrom?: unknown })[]
+  const scenes: Scene[] = rawScenes
+    .map((s, i) => ({ s: (s ?? {}) as (typeof rawScenes)[number], i }))
+    // Dense order 1..n, keeping the saved order (scenes without one go last, in file order).
+    .sort((a, b) => (Number.isFinite(a.s.order) ? a.s.order : Infinity) - (Number.isFinite(b.s.order) ? b.s.order : Infinity) || a.i - b.i)
+    .map(({ s }, index) => {
+      const { blockOverrides, continueFrom: _c, ...rest } = s
+      const refs = strings(s.refs)
+      let prompt = text(s.prompt)
+      if (v1) {
+        const on = (b: V1Block) => (blockOverrides ?? {})[b.id] ?? b.defaultOn
+        const before = blocks.filter((b) => b.placement === 'before' && on(b) && b.text.trim()).map((b) => b.text.trim())
+        const after = blocks.filter((b) => b.placement === 'after' && on(b) && b.text.trim()).map((b) => b.text.trim())
+        prompt = [...before, prompt.trim(), ...after].filter(Boolean).join('\n\n')
+        prompt = tagsToTokens(prompt, assets, refs)
+      }
+      let id = typeof s.id === 'string' && s.id ? s.id : newId('scn')
+      if (sceneIds.has(id)) id = newId('scn')
+      sceneIds.add(id)
+      return {
+        ...rest,
+        id,
+        order: index + 1,
+        title: text(s.title),
+        prompt,
+        refs,
+        videoRefs: strings(s.videoRefs),
+        settings: normalizeSettings(s.settings ?? {}),
+        firstFrame: s.firstFrame ?? null,
+        lastFrame: s.lastFrame ?? null,
+        color: s.color ?? null,
+        position: isXY(s.position) ? s.position : scenePosition(index),
+        note: text(s.note),
+        presetId: s.presetId ?? null,
+      }
+    })
 
   const { blocks: _b, ...restProject } = p as Record<string, unknown>
+  const now = Date.now()
   return {
     ...(restProject as unknown as Project),
+    id: typeof p.id === 'string' && p.id ? p.id : newId('prj'),
+    name: text(p.name).trim() || 'Dự án',
     schemaVersion: 2,
+    createdAt: Number.isFinite(p.createdAt) ? p.createdAt! : now,
+    updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt! : now,
     assets,
-    presets: (p.presets ?? []) as Project['presets'],
+    presets: (Array.isArray(p.presets) ? p.presets : []) as Project['presets'],
     scenes,
     settings: { autoRenumber: (p.settings as { autoRenumber?: boolean } | undefined)?.autoRenumber ?? true },
+  }
+}
+
+/**
+ * The project without any video reference (a copy or an imported file has none of the takes): every @video_N
+ * becomes the plain text `label(takeId)` (e.g. "video S03·T2"), like removing the reference by hand.
+ * @image_N tokens are unchanged.
+ */
+export function dropVideoRefs(p: Project, label: (takeId: string) => string = () => 'video'): Project {
+  if (!p.scenes.some((s) => s.videoRefs.length)) return p
+  return {
+    ...p,
+    scenes: p.scenes.map((s) => {
+      if (!s.videoRefs.length) return s
+      const before = mediaKeys(p.assets, s.refs, s.videoRefs)
+      const prompt = remapTokens(s.prompt, before, { ...before, videos: [] }, (_kind, key) => label(key)).text
+      return { ...s, videoRefs: [], prompt }
+    }),
   }
 }
 

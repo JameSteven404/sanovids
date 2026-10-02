@@ -2,7 +2,7 @@
 import { ImagePlus, Link2, LocateFixed, MapPinned, Pencil, Unlink, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { addImagesToAsset, focusNodes, linkAssets, viewImages } from '../../actions'
+import { focusNodes, linkAssets, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
 import type { Asset, AssetKind } from '../../core/types'
@@ -11,20 +11,25 @@ import { selectAsset, undoToastAction, useProject, type ProjectState } from '../
 import { toast, useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
 import { fold, KIND_ICON, KIND_LABEL, KINDS, PickerPopover, Section, type PickItem } from './shared'
-import { changedPrompts, nextAssetPosition, renameAssetTag } from '../sidebar/shared'
+import { addImageFiles, useAddingImages } from '../sidebar/assetImages'
+import { changedPrompts, nextAssetPosition, renameAssetTag, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 
 const SEP = '\u0001'
 
 /**
  * Run a change to this asset's images or links. The store renumbers the @image_N tokens of the scenes using it in
- * the same undo step (the prompts are not visible from this panel): say so, with "Hoàn tác" (spec §2).
- * `done` is always announced when `always`, else only when prompts were rewritten.
+ * the same undo step (the prompts are not visible from this panel): say so, with "Hoàn tác" (spec §2). With automatic
+ * renumbering off (Settings) the prompts are left as written: warn about the scenes whose numbers now point elsewhere.
+ * `done` is always announced when `always`, else only when prompts were rewritten (or left pointing elsewhere).
  */
 function withRenumberToast(run: () => void, done: string, always = false) {
-  const before = useProject.getState().project.scenes
+  const before = useProject.getState().project
   run()
-  const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
-  if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
+  const after = useProject.getState().project
+  const stale = scenesWithStaleTokens(before, after)
+  const rewritten = changedPrompts(before.scenes, after.scenes).length
+  if (stale.length) toast(`${done}${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
+  else if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
   else if (always) toast(`${done}.`, { action: undoToastAction() })
 }
 
@@ -32,8 +37,10 @@ export function AssetInspector({ assetId }: { assetId: string }) {
   const asset = useProject(selectAsset(assetId))
   const [tagDraft, setTagDraft] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  // Images are being stored: keep the list as is until they are appended (a change made now would be lost).
+  const busy = useAddingImages(assetId)
   if (!asset) return null
-  const Icon = KIND_ICON[asset.kind]
+  const Icon = KIND_ICON[asset.kind] ?? KIND_ICON.character
   const update = (patch: Parameters<ProjectState['updateAsset']>[1]) => useProject.getState().updateAsset(assetId, patch)
 
   const commitTag = () => {
@@ -71,7 +78,17 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       </AssetHero>
 
       <div className="in-asset-fields">
-        <input className="in-asset-name" value={asset.name} onChange={(e) => update({ name: e.target.value })} placeholder="Tên" aria-label="Tên" />
+        <input
+          className="in-asset-name"
+          value={asset.name}
+          onChange={(e) => update({ name: e.target.value })}
+          // An empty name would turn this asset's @image_N tokens into nothing when they are renumbered away.
+          onBlur={(e) => {
+            if (!e.target.value.trim()) update({ name: asset.tag })
+          }}
+          placeholder="Tên"
+          aria-label="Tên"
+        />
         <div className="in-grid">
           <label className="in-field c3">
             <span>Tag</span>
@@ -138,6 +155,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
                 <button
                   type="button"
                   className="in-image-make"
+                  disabled={busy}
                   onClick={() => withRenumberToast(() => update({ imageIds: [id, ...asset.imageIds.filter((x) => x !== id)] }), 'Đã đổi ảnh chính')}
                   title="Đặt làm ảnh chính"
                 >
@@ -147,6 +165,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
               <button
                 type="button"
                 className="in-image-x"
+                disabled={busy}
                 onClick={() => withRenumberToast(() => update({ imageIds: asset.imageIds.filter((x) => x !== id) }), `Đã bỏ 1 ảnh của “${asset.name}”`, true)}
                 title="Bỏ ảnh này"
                 aria-label="Bỏ ảnh"
@@ -155,9 +174,16 @@ export function AssetInspector({ assetId }: { assetId: string }) {
               </button>
             </ImageTile>
           ))}
-          <button type="button" className="in-image-add" onClick={() => fileRef.current?.click()} title="Thêm ảnh">
+          <button
+            type="button"
+            className="in-image-add"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            aria-busy={busy}
+            title={busy ? 'Đang lưu ảnh…' : 'Thêm ảnh'}
+          >
             <ImagePlus size={16} />
-            <span>Thêm</span>
+            <span>{busy ? 'Đang lưu…' : 'Thêm'}</span>
           </button>
           <input
             ref={fileRef}
@@ -168,7 +194,7 @@ export function AssetInspector({ assetId }: { assetId: string }) {
             onChange={(e) => {
               const files = [...(e.target.files ?? [])]
               e.target.value = ''
-              if (files.length) void addImagesToAsset(assetId, files)
+              if (files.length) void addImageFiles(assetId, files)
             }}
           />
         </div>

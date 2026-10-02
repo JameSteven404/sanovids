@@ -29,7 +29,7 @@ const KEY_GROUPS: Group[] = [
       ['N', 'Cảnh tiếp theo, đặt ngay bên dưới cảnh đang chọn (giữ ảnh/video tham chiếu và cấu hình) · cảnh mới khi chưa chọn gì'],
       ['Ctrl+D', 'Nhân bản cảnh đang chọn'],
       ['Delete / Backspace', 'Xoá cảnh và video (take) đang chọn · ẩn thẻ khỏi canvas · cắt dây đang chọn'],
-      ['Ctrl+A', 'Chọn tất cả cảnh'],
+      ['Ctrl+A', 'Chọn tất cả cảnh (Canvas, Bảng cảnh, Storyboard)'],
       ['C', 'Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn'],
       ['Ctrl+Enter', 'Chạy các cảnh đang chọn'],
     ],
@@ -46,8 +46,8 @@ const KEY_GROUPS: Group[] = [
   {
     title: 'Bảng cảnh & Storyboard',
     rows: [
-      ['↑ / ↓', 'Chuyển cảnh (Shift để chọn thêm)'],
-      ['Shift+Click / Ctrl+Click', 'Chọn một dải / chọn thêm từng dòng'],
+      ['↑ / ↓', 'Bảng cảnh: chuyển cảnh (Shift để chọn thêm)'],
+      ['Shift+Click / Ctrl+Click', 'Chọn một dải / chọn thêm từng cảnh'],
       ['Space', 'Phát liền: phát / tạm dừng'],
       ['← / →', 'Phát liền: cảnh trước / sau'],
     ],

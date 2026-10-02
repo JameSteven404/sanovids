@@ -11,7 +11,7 @@ import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
-import { latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
+import { isEditingTarget, isSelectAllKey, latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import './views.css'
 
 /** Scene id being reordered via the drag handle (dataTransfer is unreadable during dragover). */
@@ -63,18 +63,30 @@ export function SceneTable() {
     [selectRange, toggle],
   )
 
-  // ↑ / ↓ move the selection (Shift extends it).
+  // Keys act on the table only while it is the active area (focus inside it, or nothing focused after a click in
+  // it): with focus in the Inspector, library, queue or top bar, ↑/↓ stay theirs (scrolling, reordering
+  // references with the grip) and the selected scene does not change under the user.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inArea = useKeyboardArea(rootRef)
+
+  // ↑ / ↓ move the selection (Shift extends it). Ctrl/Cmd+A selects every scene.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      const t = e.target as HTMLElement | null
-      if (t?.closest?.('input:not([type="checkbox"]), textarea, select, [contenteditable="true"], [role="menu"]')) return
+      const selectAll = isSelectAllKey(e)
+      if (!selectAll && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      if (!selectAll && (e.ctrlKey || e.metaKey || e.altKey)) return
+      // Already handled by the focused control (e.g. ↑/↓ on a reference grip).
+      if (e.defaultPrevented || e.isComposing) return
+      if (isEditingTarget(e.target) || !inArea(e.target)) return
       const ui = useUI.getState()
       if (ui.dialog.kind !== 'none') return
       const list = scenesRef.current
       if (!list.length) return
       e.preventDefault()
+      if (selectAll) {
+        ui.select(list.map((s) => s.id))
+        return
+      }
       const sel = ui.selectedIds.filter((id) => list.some((s) => s.id === id))
       const cursor = cursorRef.current && sel.includes(cursorRef.current) ? cursorRef.current : sel[sel.length - 1]
       const idx = cursor ? list.findIndex((s) => s.id === cursor) : -1
@@ -90,7 +102,7 @@ export function SceneTable() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectRange])
+  }, [selectRange, inArea])
 
   const allSelected = scenes.length > 0 && selectedScenes.length === scenes.length
   const someSelected = selectedScenes.length > 0 && !allSelected
@@ -122,7 +134,7 @@ export function SceneTable() {
   }
 
   return (
-    <div className="vw-root vw-table-root">
+    <div className="vw-root vw-table-root" ref={rootRef}>
       <TableHeader scenes={scenes} selected={selectedScenes} />
       <div className="vw-table-scroll" ref={scrollRef}>
         <div className="vw-table" role="table" aria-label="Bảng cảnh">
@@ -140,7 +152,7 @@ export function SceneTable() {
             </span>
             <span>Cảnh</span>
             <span>Tên</span>
-            <span title="Ảnh tham chiếu — số trên ảnh là N trong @image_N">Nhân vật</span>
+            <span title="Ảnh tham chiếu (nhân vật, bối cảnh, đạo cụ…) — số trên ảnh là N trong @image_N">Ảnh tham chiếu</span>
             <span title="Video tham chiếu — v1 là @video_1">Video tham chiếu</span>
             <span>Prompt</span>
             <span>Cấu hình</span>
@@ -241,6 +253,7 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
             </>
           }
           width={300}
+          align="right"
         >
           {(close) => <AssetPicker sceneIds={ids} onDone={close} />}
         </MenuButton>
@@ -352,7 +365,8 @@ function TableFooter({ scenes }: { scenes: Scene[] }) {
       </span>
       <span className="vw-foot-hint">
         <span className="kbd">↑</span>
-        <span className="kbd">↓</span> chuyển cảnh · <span className="kbd">Shift</span> chọn nhiều
+        <span className="kbd">↓</span> chuyển cảnh · <span className="kbd">Shift</span> chọn nhiều · <span className="kbd">Ctrl</span>
+        <span className="kbd">A</span> chọn tất cả
       </span>
     </div>
   )
@@ -551,7 +565,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
             {refAssets.length > 4 && <span className="vw-avatar-more">+{refAssets.length - 4}</span>}
           </span>
         ) : (
-          <span className="vw-faint-cell">Kéo nhân vật vào</span>
+          <span className="vw-faint-cell">Kéo ảnh vào</span>
         )}
       </span>
       <span className="vw-cell-videos">

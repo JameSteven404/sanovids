@@ -332,7 +332,8 @@ function DataSettings({ onDone }: { onDone: () => void }) {
     try {
       await fn()
       toast(ok, { tone: 'success' })
-      if (close) onDone()
+      // The dialog may have been closed during a long import and another one opened: never close that one.
+      if (close && useUI.getState().dialog.kind === 'settings') onDone()
     } catch (e) {
       toast(errorText(e), { tone: 'error' })
     } finally {

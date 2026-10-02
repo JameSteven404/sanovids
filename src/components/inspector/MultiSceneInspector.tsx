@@ -9,6 +9,7 @@ import type { Asset, Scene } from '../../core/types'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { appliedPresetId, changedPrompts, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
 import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
@@ -18,6 +19,23 @@ import { AssetPicker, EMPTY_IDS, fmt, KIND_LABEL, Section } from './shared'
 
 /** Commit any prompt being typed before a batch change renumbers tokens. */
 const flushAll = (ids: string[]) => ids.forEach(flushPromptEditor)
+
+/**
+ * Run a batch media removal and report it: prompts renumbered by the store, or — automatic renumbering off —
+ * prompts left with @image / @video numbers that now point elsewhere (warning naming the scenes).
+ */
+function removeAndReport(run: () => void, done: string, what: '@image' | '@video') {
+  const before = useProject.getState().project
+  run()
+  const after = useProject.getState().project
+  const stale = scenesWithStaleTokens(before, after)
+  if (stale.length) {
+    toast(`${done}${staleTokenNote(after, stale, what)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
+    return
+  }
+  const rewritten = changedPrompts(before.scenes, after.scenes).length
+  toast(`${done}${rewritten ? ` · đánh lại số ${what} trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
+}
 
 export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
   const scenes = useProject(
@@ -79,7 +97,8 @@ const MultiHeader = memo(function MultiHeader({ scenes }: { scenes: Scene[] }) {
 const MultiSettings = memo(function MultiSettings({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
   const presets = useProject((s) => s.project.presets)
   const settings = useMemo(() => scenes.map((s) => s.settings), [scenes])
-  const presetIds = useMemo(() => scenes.map((s) => s.presetId), [scenes])
+  // A preset edited after it was applied no longer describes the scene ("Tuỳ chỉnh"; picking it re-applies it).
+  const presetIds = useMemo(() => scenes.map((s) => appliedPresetId(s.presetId, s.settings, presets)), [scenes, presets])
   return (
     <Section id="m-settings" title="Cấu hình video (áp dụng cho tất cả)">
       <SettingsFields
@@ -127,8 +146,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   const removeFromAll = (a: Asset) => {
     flushAll(ids)
     const pairs = scenes.filter((s) => s.refs.includes(a.id)).map((s) => ({ sceneId: s.id, assetId: a.id }))
-    useProject.getState().removeRefs(pairs)
-    toast(`Đã bỏ ${a.name} khỏi ${pairs.length} cảnh (số @image trong prompt được đánh lại).`, { action: undoToastAction() })
+    removeAndReport(() => useProject.getState().removeRefs(pairs), `Đã bỏ ${a.name} khỏi ${pairs.length} cảnh`, '@image')
   }
 
   return (
@@ -195,8 +213,11 @@ const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: S
     // A deleted take has no "S03·T2" label (takeLabel falls back to "video"): its tokens become plain "video".
     const label = take.status ? takeLabel(take.id) : 'đã xoá'
     // One undo step; @video_N tokens of the removed video become "video S03·T2" and the others are renumbered.
-    useProject.getState().deleteItems({ videoRefs: pairs }, () => (take.status ? 'video ' + label : 'video'))
-    toast(`Đã bỏ video ${label} khỏi ${pairs.length} cảnh (số @video trong prompt được đánh lại).`, { action: undoToastAction() })
+    removeAndReport(
+      () => useProject.getState().deleteItems({ videoRefs: pairs }, () => (take.status ? 'video ' + label : 'video')),
+      `Đã bỏ video ${label} khỏi ${pairs.length} cảnh`,
+      '@video',
+    )
   }
 
   return (

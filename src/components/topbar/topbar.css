@@ -3,7 +3,9 @@
   height: var(--topbar-h);
   flex: none;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  /* The right column never gets narrower than its buttons (running jobs widen it): the view switch then moves
+     left instead of the right cluster spilling over it. Wide windows keep the switch centred. */
+  grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   gap: 12px;
   padding: 0 10px 0 12px;
@@ -21,6 +23,7 @@
 }
 .tb-right {
   justify-content: flex-end;
+  justify-content: safe flex-end;
 }
 .tb-center {
   display: flex;

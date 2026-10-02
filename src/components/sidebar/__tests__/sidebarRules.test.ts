@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import type { Asset, Scene, VideoSettings } from '../../../core/types'
-import { imageRenumberNote, libraryCardKey, newAssetKind, packColumns, sceneMediaFlags, scenesWithShiftedImageTokens } from '../shared'
+import type { Asset, Preset, Project, Scene, VideoSettings } from '../../../core/types'
+import {
+  appliedPresetId,
+  imageRenumberNote,
+  kindMeta,
+  KIND_META,
+  libraryCardKey,
+  modelSpec,
+  modeLabel,
+  newAssetKind,
+  packColumns,
+  presetMatches,
+  sceneMediaFlags,
+  scenesWithShiftedImageTokens,
+  scenesWithStaleTokens,
+  staleTokenNote,
+} from '../shared'
 
 const settings = (patch: Partial<VideoSettings> = {}): VideoSettings => ({
   model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9', ...patch,
@@ -112,5 +127,67 @@ describe('packColumns (library masonry)', () => {
     expect(packColumns([1, 2, 3], 1)).toEqual([[0, 1, 2]])
     expect(packColumns([Number.NaN, 0, 1], 2)).toEqual([[0, 2], [1]])
     expect(packColumns([], 2)).toEqual([[], []])
+  })
+})
+
+describe('@image / @video tokens left pointing elsewhere (renumbering off)', () => {
+  const assets = [asset('elara', ['e1', 'e2']), asset('kai', ['k1'])]
+  const proj = (scenes: Scene[], list: Asset[] = assets): Project => ({
+    id: 'p', name: 'P', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], settings: { autoRenumber: false }, assets: list, scenes,
+  })
+  const withRefs = (s: Scene, refs: string[], videoRefs = s.videoRefs): Scene => ({ ...s, refs, videoRefs })
+
+  it('a reorder or removal of refs with the prompt left as written', () => {
+    const s1 = scene('s1', '@image_1 hugs @image_3', ['elara', 'kai'])
+    const before = proj([s1])
+    expect(scenesWithStaleTokens(before, proj([withRefs(s1, ['kai', 'elara'])]))).toEqual(['s1'])
+    expect(scenesWithStaleTokens(before, proj([withRefs(s1, ['elara'])]))).toEqual(['s1']) // @image_3 now points at nothing
+    // only tokens before the change point stay valid
+    const s2 = scene('s2', '@image_1 waves', ['elara', 'kai'])
+    expect(scenesWithStaleTokens(proj([s2]), proj([withRefs(s2, ['elara'])]))).toEqual([])
+  })
+  it('asset image changes, video refs; renumbered prompts and untouched scenes are not listed', () => {
+    const s1 = scene('s1', '@image_2 then @video_1', ['elara'])
+    const swapped = [asset('elara', ['e2', 'e1']), assets[1]]
+    expect(scenesWithStaleTokens(proj([s1]), proj([s1], swapped))).toEqual(['s1'])
+    const v = { ...s1, prompt: '@video_1 then @video_2', videoRefs: ['t1', 't2'] }
+    expect(scenesWithStaleTokens(proj([v]), proj([withRefs(v, v.refs, ['t2'])]))).toEqual(['s1'])
+    expect(scenesWithStaleTokens(proj([v]), proj([{ ...withRefs(v, v.refs, ['t2']), prompt: 'video S01·T1 then @video_1' }]))).toEqual([])
+    expect(scenesWithStaleTokens(proj([v]), proj([v]))).toEqual([])
+  })
+  it('names the scenes in order, at most four', () => {
+    const scenes = ['a', 'b', 'c', 'd', 'e'].map((id, i) => ({ ...scene(id, '', []), order: 5 - i }))
+    expect(staleTokenNote(proj(scenes), ['a', 'e'])).toBe(' · tự đánh lại số đang tắt — hãy sửa số @image trong S01, S05')
+    expect(staleTokenNote(proj(scenes), ['a', 'b', 'c', 'd', 'e'], '@video')).toContain('@video trong S01, S02, S03, S04… (5 cảnh)')
+  })
+})
+
+describe('presets applied to scenes', () => {
+  const preset = (patch: Partial<Preset> = {}): Preset => ({ id: 'final', name: 'Final', ...settings(), ...patch })
+  it('a scene keeps its preset only while its settings still equal it', () => {
+    const s = settings({ duration: 15, resolution: '1080p' })
+    expect(presetMatches(preset(), s)).toBe(true)
+    expect(appliedPresetId('final', s, [preset()])).toBe('final')
+    // the preset was edited to 720p afterwards: the scene is "Tuỳ chỉnh"
+    expect(appliedPresetId('final', s, [preset({ resolution: '720p' })])).toBeNull()
+    // a rename keeps the link; a deleted preset or none → null
+    expect(appliedPresetId('final', s, [preset({ name: 'Bản cuối' })])).toBe('final')
+    expect(appliedPresetId('final', s, [])).toBeNull()
+    expect(appliedPresetId(null, s, [preset()])).toBeNull()
+  })
+})
+
+describe('labels for imported / older data', () => {
+  it('mode label promises images only where they are sent', () => {
+    expect(modeLabel('t2v', 'seedance_2_5')).toBe('Text → Video (+ảnh)')
+    expect(modeLabel('t2v', 'minimax_h3')).toBe('Text → Video')
+    expect(modeLabel('t2v')).toBe('Text → Video')
+    expect(modeLabel('i2v', 'minimax_h3')).toBe('Ảnh → Video')
+  })
+  it('unknown models and asset kinds fall back instead of crashing the panels', () => {
+    expect(modelSpec('veo_3').id).toBe('seedance_2_5')
+    expect(modelSpec('minimax_h3').id).toBe('minimax_h3')
+    expect(kindMeta('video')).toBe(KIND_META.character)
+    expect(kindMeta('prop')).toBe(KIND_META.prop)
   })
 })

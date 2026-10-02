@@ -8,7 +8,7 @@ import type { Scene, Take } from '../../core/types'
 import { sortedScenes, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { formatRuntime, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useTakesByScene } from './shared'
+import { formatRuntime, isEditingTarget, isSelectAllKey, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
 import './views.css'
 
@@ -68,11 +68,40 @@ export function Storyboard() {
     [cards],
   )
 
-  const onSelect = useCallback((id: string, additive: boolean) => {
+  const scenesRef = useRef(scenes)
+  scenesRef.current = scenes
+  const anchorRef = useRef<string | null>(null)
+  /** Click: select the card. Ctrl/Cmd+Click: add/remove it. Shift+Click: select the range from the last clicked card. */
+  const onSelect = useCallback((id: string, mode: 'one' | 'toggle' | 'range') => {
     const ui = useUI.getState()
-    if (additive) ui.select(ui.selectedIds.includes(id) ? ui.selectedIds.filter((x) => x !== id) : [...ui.selectedIds, id])
+    const order = scenesRef.current.map((s) => s.id)
+    const anchor = anchorRef.current
+    if (mode === 'range' && anchor && order.includes(anchor)) {
+      const a = order.indexOf(anchor)
+      const b = order.indexOf(id)
+      ui.select(order.slice(Math.min(a, b), Math.max(a, b) + 1))
+      return
+    }
+    anchorRef.current = id
+    if (mode === 'toggle') ui.select(ui.selectedIds.includes(id) ? ui.selectedIds.filter((x) => x !== id) : [...ui.selectedIds, id])
     else ui.select([id])
   }, [])
+
+  // Ctrl/Cmd+A selects every scene while the storyboard is the active area (not while typing in another panel).
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inArea = useKeyboardArea(rootRef)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isSelectAllKey(e) || e.defaultPrevented || e.isComposing) return
+      if (isEditingTarget(e.target) || !inArea(e.target)) return
+      const ui = useUI.getState()
+      if (ui.dialog.kind !== 'none' || !scenesRef.current.length) return
+      e.preventDefault()
+      ui.select(scenesRef.current.map((s) => s.id))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inArea])
 
   const jumpTo = (id: string) => {
     useUI.getState().select([id])
@@ -103,7 +132,7 @@ export function Storyboard() {
   }
 
   return (
-    <div className="vw-root vw-sb-root">
+    <div className="vw-root vw-sb-root" ref={rootRef}>
       <div className="vw-head">
         <div className="vw-head-title">
           <h2>Storyboard</h2>
@@ -189,7 +218,7 @@ const StoryCard = memo(function StoryCard({
   index: number
   selected: boolean
   flash: boolean
-  onSelect: (id: string, additive: boolean) => void
+  onSelect: (id: string, mode: 'one' | 'toggle' | 'range') => void
   onPlay: (index: number) => void
 }) {
   const code = sceneCode(scene.order)
@@ -201,7 +230,7 @@ const StoryCard = memo(function StoryCard({
     <div
       data-card={scene.id}
       className={`vw-card ${selected ? 'selected' : ''} ${flash ? 'flash' : ''}`}
-      onClick={(e) => onSelect(scene.id, e.ctrlKey || e.metaKey || e.shiftKey)}
+      onClick={(e) => onSelect(scene.id, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'one')}
       onDoubleClick={() => show && useUI.getState().openDialog({ kind: 'take', takeId: show.id })}
     >
       <div className="vw-card-thumb">

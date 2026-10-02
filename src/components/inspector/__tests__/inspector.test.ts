@@ -9,7 +9,10 @@ import {
   legacyAssets,
   legacyFixMessage,
   mediaCountLabel,
+  planImageLinks,
+  planVideoLinks,
   remapOffset,
+  renumberImageTokens,
   replaceLegacyTags,
   segmentPrompt,
   snapToWordEnd,
@@ -35,9 +38,20 @@ describe('findMention', () => {
   it('finds the "@xxx" being typed at the caret', () => {
     const t = 'At dusk @Ela climbs'
     expect(findMention(t, 12)).toEqual({ start: 8, end: 12, query: 'Ela' })
-    // caret in the middle of the word: token extends to the end of the word
-    expect(findMention(t, 10)).toEqual({ start: 8, end: 12, query: 'E' })
+    // caret in the middle of a plain word: the token ends at the caret (picking must not swallow the rest)
+    expect(findMention(t, 10)).toEqual({ start: 8, end: 10, query: 'E' })
     expect(findMention('@', 1)).toEqual({ start: 0, end: 1, query: '' })
+  })
+  it('extends over the rest of the word only when the whole word is a token', () => {
+    // "@" typed right before a plain word: the word is not part of the token
+    expect(findMention('climbs the @slope', 12)).toEqual({ start: 11, end: 12, query: '' })
+    expect(findMention('the @imslope.', 7)).toEqual({ start: 4, end: 7, query: 'im' })
+    // a raw token or a known legacy @Tag is replaced as a whole
+    expect(findMention('see @image_12 now', 8)).toEqual({ start: 4, end: 13, query: 'ima' })
+    expect(findMention('@video_2', 1)).toEqual({ start: 0, end: 8, query: '' })
+    const isTag = (w: string) => w.toLowerCase() === 'elara'
+    expect(findMention('At dusk @Ela climbs', 10, isTag)).toEqual({ start: 8, end: 10, query: 'E' })
+    expect(findMention('hi @Elara!', 6, isTag)).toEqual({ start: 3, end: 9, query: 'El' })
   })
   it('handles numbers, raw tokens and vietnamese letters', () => {
     expect(findMention('see @2', 6)?.query).toBe('2')
@@ -129,6 +143,58 @@ describe('suggestMedia', () => {
   it('matches video labels loosely', () => {
     expect(suggestMedia('s03', images, videos, library).map(key)).toEqual(['@video_1'])
     expect(suggestMedia('s04t1', images, videos, library).map(key)).toEqual(['@video_2'])
+  })
+  it('never offers library assets for a number ("@5" + Enter must not link "Lính 5")', () => {
+    const lib: LibraryOpt[] = [...library, { assetId: 'l5', name: 'Lính 5', tag: 'Linh5', kind: 'character' }]
+    expect(suggestMedia('5', images, videos, lib)).toEqual([])
+    expect(suggestMedia('2', images, videos, lib).map(key)).toEqual(['@image_2', '@video_2'])
+    expect(suggestMedia('linh', images, videos, lib).map(key)).toEqual(['link:Linh5'])
+  })
+})
+
+describe('linking from the prompt editor (one store step)', () => {
+  it('appends new assets within the image limit and returns their first-image tokens', () => {
+    // Elara (2 images) linked → 1,2; dropping Bé An, Làng núi and Elara again
+    const plan = planImageLinks(ASSETS, ['a'], ['b', 'c', 'a', 'b'], 30)
+    expect(plan.refs).toEqual(['a', 'b', 'c'])
+    expect(plan.linked).toEqual(['b', 'c'])
+    expect([...plan.tokens.values()]).toEqual(['@image_3', '@image_4', '@image_1'])
+  })
+  it('skips assets without image and those over the limit (like addRefs)', () => {
+    const assets = [...ASSETS, asset('z', 'Trống', 'Trong', { imageIds: [] })]
+    const plan = planImageLinks(assets, ['a'], ['z', 'b', 'c', 'd'], 4) // 2 used → b, c fit, d does not
+    expect(plan.noImage).toBe(1)
+    expect(plan.overLimit).toBe(1)
+    expect(plan.refs).toEqual(['a', 'b', 'c'])
+    expect([...plan.tokens.keys()]).toEqual(['b', 'c'])
+  })
+  it('links only finished takes of other scenes, within the video limit', () => {
+    const takes = [
+      { id: 't1', sceneId: 's2', status: 'completed' },
+      { id: 't2', sceneId: 's1', status: 'completed' },
+      { id: 't3', sceneId: 's2', status: 'processing' },
+      { id: 't4', sceneId: 's3', status: 'completed' },
+      { id: 't5', sceneId: 's3', status: 'completed' },
+    ]
+    const plan = planVideoLinks('s1', ['t9'], ['t1', 't2', 't3', 't9', 't4', 't5'], takes, 3)
+    expect(plan).toEqual({
+      videoRefs: ['t9', 't1', 't4'],
+      tokens: ['@video_2', '@video_1', '@video_3'],
+      linked: ['t1', 't4'],
+      notReady: 1,
+      own: 1,
+      overLimit: 1,
+    })
+    expect(planVideoLinks('s1', [], ['t1'], takes, 0).overLimit).toBe(1) // mode without reference videos
+  })
+  it('renumbers image tokens when refs are dropped (auto-link undo)', () => {
+    // refs [Bé An, Elara(2), Aurelian]: @image_4 = Aurelian; unlinking Elara → Aurelian becomes @image_2
+    const before = ['b', 'a', 'd']
+    expect(renumberImageTokens('@image_1 and @image_4 meet @image_2', ASSETS, before, ['b', 'd'], [])).toBe('@image_1 and @image_2 meet Elara')
+    // an empty name never deletes the token: the tag is used
+    const unnamed = ASSETS.map((x) => (x.id === 'a' ? { ...x, name: '  ' } : x))
+    expect(renumberImageTokens('@image_2 waves', unnamed, before, ['b', 'd'], [])).toBe('Elara waves')
+    expect(renumberImageTokens('no tokens', ASSETS, before, [], [])).toBe('no tokens')
   })
 })
 

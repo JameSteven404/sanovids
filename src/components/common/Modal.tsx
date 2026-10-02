@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { trapTab, useOverlayFocus } from './focus'
 
 interface ModalProps {
   title: ReactNode
@@ -11,8 +12,14 @@ interface ModalProps {
   headerExtra?: ReactNode
 }
 
-/** Shared dialog shell. Closes on Escape and on backdrop click. */
+/**
+ * Shared dialog shell. Closes on Escape and on backdrop click.
+ * Takes the keyboard focus while open (Tab stays inside) and gives it back on close, so keys never reach the page
+ * behind it (arrow keys moving a selected canvas node, typing into a focused prompt).
+ */
 export function Modal({ title, onClose, children, footer, size = 'normal', headerExtra }: ModalProps) {
+  const ref = useRef<HTMLDivElement>(null)
+  useOverlayFocus(ref)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -25,7 +32,15 @@ export function Modal({ title, onClose, children, footer, size = 'normal', heade
   }, [onClose])
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${size === 'normal' ? '' : size}`} role="dialog" aria-modal="true">
+      <div
+        ref={ref}
+        className={`modal ${size === 'normal' ? '' : size}`}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        style={{ outline: 'none' }}
+        onKeyDown={trapTab}
+      >
         <div className="modal-head">
           <h2>{title}</h2>
           {headerExtra}

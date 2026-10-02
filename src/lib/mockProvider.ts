@@ -1,4 +1,4 @@
-// Fake video provider for the demo: no network, no cost.
+// Fake video renderer for the demo provider (providers/mock.ts): no network, no cost.
 // Produces a poster image (and, when the browser supports it, a short animated webm) for each finished take.
 // The picture is deterministic per take (seeded by take id) so re-opening a project shows the same frames.
 import { getUrl, putBlob } from './imageStore'
@@ -266,7 +266,13 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
   }
 }
 
-export async function renderMockTake(input: MockRenderInput): Promise<MockRenderOutput> {
+export interface MockRenderBlobs {
+  poster: Blob
+  video: Blob | null
+}
+
+/** Render the demo poster (and webm clip when enabled and supported) as Blobs, without storing them. */
+export async function renderMockBlobs(input: MockRenderInput): Promise<MockRenderBlobs> {
   const [w, h] = RATIO[input.ratio] ?? RATIO['16:9']
   const canvas = document.createElement('canvas')
   canvas.width = w
@@ -277,23 +283,30 @@ export async function renderMockTake(input: MockRenderInput): Promise<MockRender
 
   // Poster frame.
   paint(1.2)
-  const posterBlob: Blob = await new Promise((resolve, reject) =>
+  const poster: Blob = await new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Không tạo được ảnh poster'))), 'image/jpeg', 0.86),
   )
-  const posterId = await putBlob(posterBlob, 'poster')
 
-  let videoId: string | null = null
+  let video: Blob | null = null
   if (input.recordVideo && typeof MediaRecorder !== 'undefined' && 'captureStream' in canvas) {
     try {
-      videoId = await recordClip(canvas, paint, CLIP_MS)
+      video = await recordClip(canvas, paint, CLIP_MS)
     } catch {
-      videoId = null
+      video = null
     }
   }
+  return { poster, video }
+}
+
+/** Render and store the demo media (media-store keys). Kept for callers that want ids directly. */
+export async function renderMockTake(input: MockRenderInput): Promise<MockRenderOutput> {
+  const { poster, video } = await renderMockBlobs(input)
+  const posterId = await putBlob(poster, 'poster')
+  const videoId = video ? await putBlob(video, 'video') : null
   return { posterId, videoId }
 }
 
-async function recordClip(canvas: HTMLCanvasElement, paint: Painter, ms: number): Promise<string | null> {
+async function recordClip(canvas: HTMLCanvasElement, paint: Painter, ms: number): Promise<Blob | null> {
   const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m))
   if (!mime) return null
   const stream = canvas.captureStream(FPS)
@@ -337,5 +350,5 @@ async function recordClip(canvas: HTMLCanvasElement, paint: Painter, ms: number)
   stream.getTracks().forEach((t) => t.stop())
   await done
   if (!chunks.length) return null
-  return putBlob(new Blob(chunks, { type: 'video/webm' }), 'video')
+  return new Blob(chunks, { type: 'video/webm' })
 }

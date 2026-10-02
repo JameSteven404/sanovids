@@ -20,9 +20,10 @@
 .vw-head {
   flex: none;
   display: flex;
+  flex-wrap: wrap; /* narrow center (1100px window, both panels open): actions drop to a second row, never clipped */
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 6px 12px;
   min-height: 48px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
@@ -32,6 +33,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 180px; /* basis, not content width: the long hint ellipsizes instead of pushing the actions down */
   min-width: 0;
 }
 .vw-head-title h2 {
@@ -49,9 +51,13 @@
 }
 .vw-head-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
 }
 .vw-bulk {
   background: linear-gradient(0deg, var(--accent-soft), var(--accent-soft)), var(--bg-elev);
@@ -60,6 +66,8 @@
 .vw-bulk b {
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- dropdown menu ---------- */
@@ -890,10 +898,19 @@
   gap: 10px;
   background: rgba(8, 9, 11, 0.55);
   opacity: 0;
+  /* Hidden = not clickable either: a tap on a card (touch) selects it instead of hitting the invisible Play. */
+  pointer-events: none;
   transition: opacity 0.12s;
 }
-.vw-card:hover .vw-card-hover {
+.vw-card:hover .vw-card-hover,
+.vw-card:focus-within .vw-card-hover {
   opacity: 1;
+  pointer-events: auto;
+}
+.vw-card-play:focus-visible,
+.vw-card-hover-actions .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .vw-card-play {
   width: 44px;

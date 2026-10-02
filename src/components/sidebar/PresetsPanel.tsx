@@ -1,17 +1,21 @@
 import { Check, ChevronDown, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { MODE_LABEL, MODELS, costOf, settingsLabel } from '../../core/models'
+import { MODELS, costOf, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast } from '../../store/ui'
 import { ConfirmButton, Section } from './bits'
-import { undoToastAction, useSelectedSceneIds } from './shared'
+import { appliedPresetId, modelSpec, modeLabel, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
 
-/** Number of scenes whose settings came from each preset. */
+/** Number of scenes running with each preset (applied, and not changed since — by the scene or by editing the preset). */
 const presetUsageSelector = (s: ProjectState) => {
+  const byId = new Map(s.project.presets.map((p) => [p.id, p]))
   const m: Record<string, number> = {}
-  for (const sc of s.project.scenes) if (sc.presetId) m[sc.presetId] = (m[sc.presetId] ?? 0) + 1
+  for (const sc of s.project.scenes) {
+    const preset = sc.presetId ? byId.get(sc.presetId) : undefined
+    if (preset && presetMatches(preset, sc.settings)) m[preset.id] = (m[preset.id] ?? 0) + 1
+  }
   return m
 }
 
@@ -25,7 +29,7 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
     nameRef.current?.focus()
     nameRef.current?.select()
   }, [focusName])
-  const spec = MODELS[preset.model]
+  const spec = modelSpec(preset.model)
   const update = (patch: Partial<Omit<Preset, 'id'>>) => useProject.getState().updatePreset(preset.id, patch)
   const commitName = () => {
     const next = name.trim()
@@ -62,7 +66,7 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
         <select className="select sb-input-sm" value={preset.mode} onChange={(e) => update({ mode: e.target.value as Mode })} disabled={spec.modes.length < 2}>
           {spec.modes.map((m) => (
             <option key={m} value={m}>
-              {MODE_LABEL[m]}
+              {modeLabel(m, spec.id)}
             </option>
           ))}
         </select>
@@ -104,7 +108,7 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
         </div>
       </div>
       <div className="sb-preset-edit-foot sb-span2">
-        <span className="faint">Sửa preset không đổi các cảnh đã áp dụng trước đó.</span>
+        <span className="faint">Sửa preset không đổi các cảnh đã áp dụng trước đó (chúng thành “Tuỳ chỉnh”) — bấm Áp dụng để cập nhật.</span>
         <ConfirmButton
           icon={<Trash2 size={12} />}
           label="Xoá"
@@ -132,7 +136,7 @@ interface RowProps {
 }
 
 const PresetRow = memo(function PresetRow({ preset, usage, selected, active, editing, fresh, onEdit }: RowProps) {
-  const spec = MODELS[preset.model]
+  const spec = modelSpec(preset.model)
   const n = selected.length
   const apply = () => {
     if (!n) return
@@ -163,7 +167,7 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
           </div>
           <div className="sb-preset-sub">
             <span>{settingsLabel(preset)}</span>
-            {spec.modes.length > 1 && <span className="faint"> · {MODE_LABEL[preset.mode]}</span>}
+            {spec.modes.length > 1 && <span className="faint"> · {modeLabel(preset.mode, spec.id)}</span>}
           </div>
           <div className="sb-preset-sub faint">
             <b className="sb-cost">{costOf(preset)} cr</b>
@@ -202,14 +206,15 @@ export function PresetsPanel({
   const presets = useProject((s) => s.project.presets)
   const usage = useProject(useShallow(presetUsageSelector))
   const selected = useSelectedSceneIds()
-  /** Preset id shared by every selected scene (null when mixed / none). */
+  /** Preset every selected scene runs with (null when mixed / none / changed since it was applied). */
   const activeId = useProject((s) => {
     if (!selected.length) return null
     let id: string | null | undefined
     for (const sc of s.project.scenes) {
       if (!selected.includes(sc.id)) continue
-      if (id === undefined) id = sc.presetId
-      else if (id !== sc.presetId) return null
+      const live = appliedPresetId(sc.presetId, sc.settings, s.project.presets)
+      if (id === undefined) id = live
+      else if (id !== live) return null
     }
     return id ?? null
   })

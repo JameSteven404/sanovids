@@ -26,6 +26,11 @@ interface TakeStat {
   active: number
 }
 
+/** The scene already has a finished take or a job that is queued / processing. */
+function hasTakeOrJob(stat: TakeStat | undefined): boolean {
+  return !!stat && (stat.completed > 0 || stat.active > 0)
+}
+
 /** Cost summary + validation before sending scenes to the (mock) queue. */
 export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
   const close = useUI((s) => s.closeDialog)
@@ -75,7 +80,9 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
     return m
   }, [takes])
 
-  const shown = onlyNew ? rows.filter((r) => !stats.get(r.scene.id)?.completed) : rows
+  // "Only scenes without a take": a scene whose job is still queued/processing already has its take coming —
+  // queueing it again would spend the credits twice.
+  const shown = onlyNew ? rows.filter((r) => !hasTakeOrJob(stats.get(r.scene.id))) : rows
   const hiddenCount = rows.length - shown.length
   const runnable = shown.filter((r) => r.check.ok && !excluded.has(r.scene.id))
   const skipped = shown.filter((r) => !r.check.ok).length
@@ -155,13 +162,13 @@ export function RunConfirmDialog({ sceneIds }: { sceneIds: string[] }) {
         <span className="rq-spacer" />
         <label className="checkbox">
           <input type="checkbox" checked={onlyNew} onChange={(e) => setOnlyNew(e.target.checked)} />
-          Chỉ chạy cảnh chưa có take
-          {onlyNew && hiddenCount > 0 && <span className="faint">(ẩn {hiddenCount} cảnh đã có take)</span>}
+          Chỉ chạy cảnh chưa có take (bỏ qua cảnh đang chạy)
+          {onlyNew && hiddenCount > 0 && <span className="faint">(ẩn {hiddenCount} cảnh đã có take hoặc đang chạy)</span>}
         </label>
       </div>
 
       {shown.length === 0 ? (
-        <div className="empty">{rows.length ? 'Mọi cảnh đã chọn đều đã có take hoàn thành.' : 'Không có cảnh nào để chạy.'}</div>
+        <div className="empty">{rows.length ? 'Mọi cảnh đã chọn đều đã có take hoàn thành hoặc đang chạy.' : 'Không có cảnh nào để chạy.'}</div>
       ) : (
         <div className="rq-table-wrap">
           <table className="rq-table">
@@ -282,7 +289,14 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
         ) : (
           <span className="rq-ok">
             OK
-            {stat?.active ? <span className="faint"> · đang có {stat.active} job</span> : stat?.completed ? <span className="faint"> · đã có {stat.completed} take</span> : null}
+            {stat?.active ? (
+              <span className="rq-active-note" title="Cảnh này đang có job chờ/đang tạo — chạy thêm sẽ tạo thêm take và tốn thêm credit">
+                {' '}
+                · đang có {stat.active} job
+              </span>
+            ) : stat?.completed ? (
+              <span className="faint"> · đã có {stat.completed} take</span>
+            ) : null}
           </span>
         )}
       </td>

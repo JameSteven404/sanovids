@@ -884,6 +884,10 @@
 .rq-ok .faint {
   font-weight: 400;
 }
+.rq-ok .rq-active-note {
+  color: var(--warn);
+  font-weight: 500;
+}
 .rq-confirm-note {
   display: flex;
   align-items: center;

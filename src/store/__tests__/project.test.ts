@@ -125,14 +125,14 @@ describe('video references', () => {
     st().updateSettings(['s3'], { model: 'minimax_h3', mode: 't2v' })
     expect(st().addVideoRefs(['s3'], ['t1']).added).toBe(0)
   })
-  it('removing a take everywhere is one undo step', () => {
+  it('removing a deleted take everywhere is not an undo step (undo must not bring back a dangling @video)', () => {
     st().addVideoRefs(['s1', 's2'], ['t1'])
     st().updateScene('s2', { prompt: 'from @video_1' })
+    const steps = history().pastStates.length
     st().removeTakesEverywhere(['t1'], { t1: 'video S01·T1' })
     expect(sc('s1').videoRefs).toEqual([])
     expect(sc('s2').prompt).toBe('from video S01·T1')
-    undo()
-    expect(sc('s2').videoRefs).toEqual(['t1'])
+    expect(history().pastStates.length).toBe(steps)
   })
 })
 

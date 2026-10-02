@@ -116,9 +116,20 @@ const ProjectName = memo(function ProjectName() {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            // Stopped: the global Escape would blur the input, and blur commits the draft being cancelled.
+            e.stopPropagation()
+            setEditing(false)
+            return
+          }
+          if (e.ctrlKey || e.metaKey) {
+            // Ctrl/Cmd combos must reach the global shortcuts (Ctrl+S saves — with the new name —, Ctrl+Enter
+            // runs): stopping them here let the browser open its own "Save page" dialog instead.
+            if (e.key === 'Enter' || e.key.toLowerCase() === 's') commit()
+            return
+          }
           e.stopPropagation()
           if (e.key === 'Enter') commit()
-          else if (e.key === 'Escape') setEditing(false)
         }}
         aria-label="Tên dự án"
       />
@@ -218,7 +229,7 @@ function RunningIndicator() {
       <span>
         {/* `active` also counts queued jobs: only `processing` is really running. */}
         {processing ? `${processing} đang chạy` : `${waiting} đang chờ`}
-        {processing > 0 && waiting > 0 && ` · ${waiting} chờ`}
+        {processing > 0 && waiting > 0 && <span className="tb-hide-md"> · {waiting} chờ</span>}
       </span>
     </button>
   )

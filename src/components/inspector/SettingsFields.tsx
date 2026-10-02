@@ -2,8 +2,9 @@
 // With several scenes, a field whose values differ shows "—" until a value is picked for all.
 // Scenes on different models: options only some of the models offer are marked "· chỉ SD 2.5", and the caller
 // applies such a value only to the scenes whose model supports it (see `patchFits`).
-import { MODE_LABEL, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
+import { MODELS, settingsLabel, type ModelSpec } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
+import { modeLabel } from '../sidebar/shared'
 
 const MIXED = '__mixed'
 
@@ -34,7 +35,7 @@ export function patchFits(model: ModelId, patch: Partial<VideoSettings>): boolea
 export function patchLabel(patch: Partial<VideoSettings>): string {
   if (patch.resolution !== undefined) return patch.resolution.toUpperCase()
   if (patch.duration !== undefined) return `${patch.duration}s`
-  if (patch.mode !== undefined) return MODE_LABEL[patch.mode]
+  if (patch.mode !== undefined) return modeLabel(patch.mode)
   return patch.ratio ?? ''
 }
 
@@ -123,7 +124,7 @@ export function SettingsFields({
           )}
           {modes.map((m) => (
             <option key={m} value={m}>
-              {MODE_LABEL[m]}
+              {modeLabel(m, model ?? undefined)}
               {onlyFor((sp) => sp.modes.includes(m))}
             </option>
           ))}

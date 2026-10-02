@@ -29,7 +29,7 @@ import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
-import { restoredFromTake, snapshotImageNumbers } from './restore'
+import { exactImageKeys, restoredFromTake, snapshotImageNumbers } from './restore'
 import { TakeStrip } from './TakeStrip'
 import {
   downloadMedia,
@@ -83,9 +83,12 @@ function restoreTake(takeId: string) {
   const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber })
   store.restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
   const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video'].filter(Boolean)
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.`, {
-    tone: 'success',
+  // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
+  const check = r.uncertain ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.` : ''
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.${check}`, {
+    tone: r.uncertain ? 'warning' : 'success',
     action: undoToastAction(),
+    ms: r.uncertain ? 9000 : undefined,
   })
 }
 
@@ -101,7 +104,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
+      // defaultPrevented: something focused already used the key (a slider, a canvas node behind the dialog).
+      if (e.defaultPrevented || isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'ArrowLeft' && prev) {
         e.preventDefault()
         openTake(prev.id)
@@ -115,6 +119,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
   }, [prev, next])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Scenes using this take as @video (a number: stable selector).
+  const usedCount = useProject((s) => s.project.scenes.reduce((n, x) => n + (x.videoRefs.includes(take.id) ? 1 : 0), 0))
   useEffect(() => {
     setConfirmDelete(false)
   }, [take.id])
@@ -124,8 +130,21 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     return () => clearTimeout(id)
   }, [confirmDelete])
 
+  /**
+   * Same rule as the canvas node menu and Delete (TakeNode.deleteTake / actions.deleteSelection): a take used as
+   * @video by other scenes is only deleted after a confirm naming them — deleting it drops those references and
+   * rewrites their prompts, and none of it can be undone. Otherwise a two-click confirm on the button.
+   */
   const remove = () => {
-    if (!confirmDelete) {
+    const usedBy = useProject
+      .getState()
+      .project.scenes.filter((s) => s.videoRefs.includes(take.id))
+      .sort((a, b) => a.order - b.order)
+      .map((s) => sceneCode(s.order))
+    if (usedBy.length) {
+      setConfirmDelete(false)
+      if (!window.confirm(`${label} đang được dùng làm @video ở ${usedBy.length} cảnh (${usedBy.join(', ')}).\nXoá video và bỏ các tham chiếu đó?`)) return
+    } else if (!confirmDelete) {
       setConfirmDelete(true)
       return
     }
@@ -133,7 +152,9 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     useRuns.getState().removeTake(take.id)
     if (take.posterId) void deleteMedia(take.posterId)
     if (take.videoId) void deleteMedia(take.videoId)
-    toast(`Đã xoá ${label}.`)
+    const ui = useUI.getState()
+    if (ui.selectedIds.includes(take.id)) ui.select(ui.selectedIds.filter((id) => id !== take.id))
+    toast(`Đã xoá ${label}${usedBy.length ? ` và bỏ @video ở ${usedBy.join(', ')}` : ''}. (Video đã xoá không hoàn tác được.)`)
     if (neighbour) openTake(neighbour.id)
     else onClose()
   }
@@ -194,7 +215,16 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
       }
       footer={
         <>
-          <button type="button" className={`btn btn-danger${confirmDelete ? ' rq-confirming' : ''}`} onClick={remove}>
+          <button
+            type="button"
+            className={`btn btn-danger${confirmDelete ? ' rq-confirming' : ''}`}
+            onClick={remove}
+            title={
+              usedCount
+                ? `Đang là @video ở ${usedCount} cảnh — xoá sẽ bỏ các tham chiếu đó. Video đã xoá không hoàn tác được.`
+                : 'Xoá take này. Video đã xoá không hoàn tác được.'
+            }
+          >
             <Trash size={14} />
             {confirmDelete ? 'Bấm lần nữa để xoá' : 'Xoá take'}
           </button>
@@ -379,7 +409,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
     // Numbers as the take was sent: an asset deleted since keeps its slot so later numbers don't shift.
-    const numbers = snapshotImageNumbers(assets, take.refsSnapshot)
+    const numbers = snapshotImageNumbers(assets, take.refsSnapshot, exactImageKeys(take))
     const found: { asset: Asset; n: number | undefined }[] = []
     let missing = 0
     for (const id of take.refsSnapshot) {
@@ -388,7 +418,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
       else missing++
     }
     return { found, missing }
-  }, [assets, take.refsSnapshot])
+  }, [assets, take])
 
   const changes = useMemo(() => {
     if (!scene || !current) return null
