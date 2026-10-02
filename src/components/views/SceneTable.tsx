@@ -5,12 +5,15 @@ import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../ac
 import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
+import { DEMO_CREDIT_HINT, formatCredits, type CreditKind } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { useCreditKind } from '../../store/credits'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
+import { costTitle, creditTone, REAL_COST_HINT, totalCost } from '../sidebar/shared'
 import { isEditingTarget, isSelectAllKey, latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import './views.css'
 
@@ -26,6 +29,8 @@ export function SceneTable() {
   const anchorRef = useRef<string | null>(null)
   const cursorRef = useRef<string | null>(null)
 
+  // Wallet of the next run (docs/SPEC-v2.md §9): read once here and handed to the memoized rows.
+  const creditKind = useCreditKind()
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const selectedScenes = useMemo(() => scenes.filter((s) => selectedSet.has(s.id)), [scenes, selectedSet])
 
@@ -135,7 +140,7 @@ export function SceneTable() {
 
   return (
     <div className="vw-root vw-table-root" ref={rootRef}>
-      <TableHeader scenes={scenes} selected={selectedScenes} />
+      <TableHeader scenes={scenes} selected={selectedScenes} creditKind={creditKind} />
       <div className="vw-table-scroll" ref={scrollRef}>
         <div className="vw-table" role="table" aria-label="Bảng cảnh">
           <div className="vw-tr vw-thead" role="row">
@@ -156,7 +161,12 @@ export function SceneTable() {
             <span title="Video tham chiếu — v1 là @video_1">Video tham chiếu</span>
             <span>Prompt</span>
             <span>Cấu hình</span>
-            <span className="vw-r">Credit</span>
+            <span
+              className="vw-r"
+              title={creditKind === 'demo' ? `Chi phí mỗi lần chạy, bằng credit demo\n${DEMO_CREDIT_HINT}` : `Chi phí ước tính mỗi lần chạy, bằng credit canvasapp\n${REAL_COST_HINT}`}
+            >
+              {creditKind === 'demo' ? <span className="vw-th-demo">Credit demo</span> : 'Credit'}
+            </span>
             <span>Take</span>
             <span>Trạng thái</span>
             <span />
@@ -167,23 +177,24 @@ export function SceneTable() {
               scene={s}
               selected={selectedSet.has(s.id)}
               selectionCount={selectedSet.has(s.id) ? selectedScenes.length : 0}
+              creditKind={creditKind}
               onRowClick={onRowClick}
               onToggle={toggle}
             />
           ))}
         </div>
       </div>
-      <TableFooter scenes={scenes} />
+      <TableFooter scenes={scenes} creditKind={creditKind} />
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------------------------
 
-function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] }) {
+function TableHeader({ scenes, selected, creditKind }: { scenes: Scene[]; selected: Scene[]; creditKind: CreditKind }) {
   const presets = useProject((s) => s.project.presets)
   const ids = selected.map((s) => s.id)
-  const cost = selected.reduce((t, s) => t + costOf(s.settings), 0)
+  const cost = totalCost(selected)
 
   if (!selected.length) {
     return (
@@ -236,8 +247,10 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
                   }}
                 >
                   <span className="vw-menu-main">{p.name}</span>
-                  <span className="vw-menu-sub">
-                    {MODELS[p.model].short} · {settingsLabel(p)} · {costOf(p)} cr
+                  <span className="vw-menu-sub" title={costTitle(costOf(p), creditKind, 'Mỗi lần chạy · ')}>
+                    {MODELS[p.model].short} · {settingsLabel(p)} ·{' '}
+                    <span className={`vw-cost-text ${creditTone(creditKind)}`}>{formatCredits(costOf(p), creditKind, { short: true })}</span>
+                    {creditKind === 'demo' && <span className="vw-demo-mark">demo</span>}
                   </span>
                 </button>
               ))
@@ -257,8 +270,12 @@ function TableHeader({ scenes, selected }: { scenes: Scene[]; selected: Scene[] 
         >
           {(close) => <AssetPicker sceneIds={ids} onDone={close} />}
         </MenuButton>
-        <button className="btn btn-sm btn-primary" onClick={() => requestRun(ids)} title="Mở bảng xác nhận chạy">
-          <Play size={13} /> Chạy {selected.length} · {cost} cr
+        <button className="btn btn-sm btn-primary" onClick={() => requestRun(ids)} title={costTitle(cost, creditKind, 'Mở bảng xác nhận chạy · ')}>
+          <Play size={13} /> Chạy {selected.length} ·
+          <span className={`vw-btn-cost ${creditTone(creditKind)}`}>
+            {formatCredits(cost, creditKind, { short: true })}
+            {creditKind === 'demo' && <span className="vw-btn-cost-mark">demo</span>}
+          </span>
         </button>
         <button
           className="btn btn-sm"
@@ -341,9 +358,9 @@ function AssetPicker({ sceneIds, onDone }: { sceneIds: string[]; onDone: () => v
   )
 }
 
-function TableFooter({ scenes }: { scenes: Scene[] }) {
+function TableFooter({ scenes, creditKind }: { scenes: Scene[]; creditKind: CreditKind }) {
   const byScene = useTakesByScene()
-  const total = scenes.reduce((t, s) => t + costOf(s.settings), 0)
+  const total = totalCost(scenes)
   const starred = scenes.filter((s) => starredTake(byScene.get(s.id) ?? [])).length
   const withTakes = scenes.filter((s) => (byScene.get(s.id) ?? []).some((t) => t.status === 'completed')).length
   return (
@@ -352,8 +369,11 @@ function TableFooter({ scenes }: { scenes: Scene[] }) {
         <b>{scenes.length}</b> cảnh
       </span>
       <span className="vw-foot-sep" />
-      <span>
-        Chạy tất cả ≈ <b>{total.toLocaleString('vi-VN')}</b> credit
+      <span className="vw-foot-cost">
+        Chạy tất cả ≈
+        <b className={`vw-cost-pill ${creditTone(creditKind)}`} title={costTitle(total, creditKind, `Chạy tất cả ${scenes.length} cảnh · `)}>
+          {formatCredits(total, creditKind)}
+        </b>
       </span>
       <span className="vw-foot-sep" />
       <span>
@@ -379,13 +399,15 @@ interface RowProps {
   selected: boolean
   /** Number of selected scenes when this row is selected, else 0 (keeps unselected rows from re-rendering). */
   selectionCount: number
+  /** Wallet of the next run: how the cost cell is labelled and drawn. */
+  creditKind: CreditKind
   onRowClick: (id: string, e: MouseEvent) => void
   onToggle: (id: string) => void
 }
 
 type MediaOver = 'assets' | 'takes' | null
 
-const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRowClick, onToggle }: RowProps) {
+const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, creditKind, onRowClick, onToggle }: RowProps) {
   const id = scene.id
   const assets = useProject((s) => s.project.assets)
   const preset = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId) : undefined))
@@ -592,9 +614,8 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         </span>
         {preset && <span className="vw-preset">{preset.name}</span>}
       </span>
-      <span className="vw-r vw-cell-cost">
-        {cost}
-        <span className="faint"> cr</span>
+      <span className={`vw-r vw-cell-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
+        {formatCredits(cost, creditKind, { short: true })}
       </span>
       <span className="vw-cell-takes">
         {/* 3 thumbs + "+N" fit the 186px column; more would clip the newest takes. */}
@@ -612,7 +633,7 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, onRow
         <button
           className="vw-run"
           disabled={!scene.prompt.trim()}
-          title={scene.prompt.trim() ? `Chạy ${code} · ${settingsLabel(scene.settings)} · ${cost} credit` : 'Prompt trống — chưa chạy được'}
+          title={scene.prompt.trim() ? costTitle(cost, creditKind, `Chạy ${code} · ${settingsLabel(scene.settings)} · `) : 'Prompt trống — chưa chạy được'}
           onClick={(e) => {
             e.stopPropagation()
             requestRun([id])

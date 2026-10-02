@@ -990,19 +990,50 @@
   color: var(--ok);
 }
 .dg-gw-login {
+  flex-wrap: wrap;
+  row-gap: 10px;
   padding: 10px 10px 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--panel);
 }
-.dg-gw-credits {
-  display: inline-flex;
+/* status keeps a readable width; when the buttons do not fit beside it they move to their own line */
+.dg-gw-login > .dg-app-status {
+  flex: 1 1 240px;
+}
+.dg-gw-login > .dg-app-status > span {
+  min-width: 0;
+}
+.dg-gw-actions {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+/* "Credit canvasapp: 696 credit (≈ 696.000đ) · lúc 13:29" wraps between its parts, never inside a number */
+.dg-gw-credits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
+.dg-gw-credits > span,
+.dg-gw-credits > b {
+  white-space: nowrap;
+}
+.dg-gw-num {
+  color: var(--text);
+  font-weight: 600;
+}
 .dg-gw-credits > svg {
+  color: var(--info);
+}
+/* the last refresh failed: the number shown is the last confirmed one */
+.dg-gw-credits.stale > svg {
   color: var(--warn);
 }
 /* "Tải video": download folder row + waiting auto-downloads */
@@ -1110,13 +1141,16 @@
 }
 .dg-credit-num svg {
   align-self: center;
-  color: var(--warn);
+  color: var(--text-dim);
 }
 .dg-credit-num b {
   font-family: var(--font-display);
   font-size: 22px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+.dg-credit-num b.low {
+  color: var(--danger-text);
 }
 .dg-credit-num span {
   color: var(--text-dim);
@@ -1125,6 +1159,22 @@
 .dg-credit-spent {
   font-size: 12px;
   flex: 1;
+}
+/* Demo wallet: dashed, neutral — the same visual language as the top bar's "DEMO" pill (play money). */
+.dg-credit.demo {
+  padding: 10px 10px 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+}
+.dg-credit-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dg-demo-badge {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
 }
 .dg-data-actions {
   display: flex;

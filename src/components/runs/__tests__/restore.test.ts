@@ -66,12 +66,15 @@ describe('restoredFromTake', () => {
       gone: 0,
       renumbered: false,
       uncertain: 0,
+      stale: false,
     })
     const off = restoredFromTake(take(text, ['a', 'b'], ['t1']), [elara], new Set(), { renumber: false })
     expect(off.prompt).toBe(text)
     expect(off.refs).toEqual(['a'])
     expect(off.videoRefs).toEqual([])
     expect(off.gone).toBe(2)
+    // @image_2 (the dog) and @video_1 now point at nothing: the user is told to check the numbers
+    expect(off.stale).toBe(true)
   })
   it('flags the tokens after a deleted multi-image asset of an older take as uncertain', () => {
     // A had 2 images when the take ran: @image_2 was A's second picture, @image_3 was B. Without an image
@@ -106,8 +109,8 @@ describe('restoredFromTake', () => {
       ]),
     )
   })
-  it('leaves tokens that were already out of range untouched', () => {
+  it('turns tokens that were already out of range into placeholders', () => {
     const r = restoredFromTake(take('@image_9 and @image_2', ['a', 'b']), [dog], new Set(), { renumber: true })
-    expect(r.prompt).toBe('@image_9 and @image_1')
+    expect(r.prompt).toBe('@image_?9 and @image_1')
   })
 })

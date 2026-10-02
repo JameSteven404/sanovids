@@ -350,11 +350,8 @@
 :root[data-theme='light'] .tb-running:not(.elsewhere) {
   color: color-mix(in srgb, var(--accent) 72%, var(--text));
 }
-:root[data-theme='light'] .tb-provider:not(.issue) {
-  color: color-mix(in srgb, var(--info) 80%, var(--text));
-}
 
-/* active video provider when it is not the demo (e.g. canvasapp) */
+/* problem of the provider new takes use (e.g. canvasapp session expired); only rendered with .issue */
 .tb-provider {
   display: inline-flex;
   align-items: center;
@@ -384,49 +381,6 @@
   background: color-mix(in srgb, var(--warn) 24%, transparent);
 }
 
-.tb-credit {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-  height: 26px;
-  margin: 0 2px;
-  padding: 0 4px 0 9px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
-}
-.tb-credit:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.tb-credit svg {
-  color: var(--warn);
-}
-.tb-credit b {
-  color: var(--text);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.tb-credit.low b {
-  color: var(--danger-text);
-}
-.tb-credit-demo {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  /* --text-dim, not --text-faint: "demo" (no real money) must stay readable on the fill in both appearances. */
-  color: var(--text-dim);
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
 .tb-import {
   flex: none;
 }
@@ -483,10 +437,10 @@
     padding: 0 10px;
   }
 }
-/* Jobs running or a real provider widen the right cluster: the wordmark gives way first (the app mark stays), so
-   the project name keeps some room. */
+/* Jobs running, a provider problem or the real-credit pill widen the right cluster: the wordmark gives way first
+   (the app mark stays), so the project name keeps some room. */
 @media (max-width: 1240px) {
-  .tb:has(.tb-running, .tb-provider) .tb-brand-text {
+  .tb:has(.tb-running, .tb-provider, .tb-cp:not(.demo)) .tb-brand-text {
     display: none;
   }
 }
@@ -505,8 +459,7 @@
 }
 /* Half-screen windows: drop the decorations before anything useful. */
 @media (max-width: 960px) {
-  .tb-divider,
-  .tb-credit-demo {
+  .tb-divider {
     display: none;
   }
   .tb-name {
@@ -526,8 +479,7 @@
   .tb-name,
   .tb-save,
   .tb-running,
-  .tb-provider,
-  .tb-credit {
+  .tb-provider {
     transition: none;
   }
   .tb-running-icon,

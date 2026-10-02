@@ -15,4 +15,8 @@ describe('pickAssetSelection (which images "Nối (C)" connects)', () => {
     expect(pickAssetSelection(['a1', 'a1', 'take9'], [], assets)).toEqual(['a1'])
     expect(pickAssetSelection([], ['zz'], assets)).toEqual([])
   })
+  it('never adds library cards when a video node is selected on the canvas', () => {
+    expect(pickAssetSelection(['take9', 'scene2'], ['a1', 'a2'], assets, new Set(['take9']))).toEqual([])
+    expect(pickAssetSelection(['scene2'], ['a1'], assets, new Set(['take9']))).toEqual(['a1'])
+  })
 })

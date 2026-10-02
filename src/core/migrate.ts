@@ -177,6 +177,8 @@ export function migrateTake(raw: unknown): Take {
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
     charged: t.charged !== false,
   }
+  if (t.submitUnknown === true) out.submitUnknown = true
+  else delete out.submitUnknown
   if (frames && typeof frames === 'object') out.framesSnapshot = { first: frames.first ?? null, last: frames.last ?? null }
   else delete out.framesSnapshot
   if (t.imageKeysSnapshot !== undefined) {

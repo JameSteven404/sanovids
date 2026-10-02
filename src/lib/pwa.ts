@@ -25,7 +25,10 @@ export interface DesktopInfo {
   version: string
   electron?: string
   platform?: string
-  /** canvasapp.io.vn gateway (IPC to the main process); missing in older desktop builds. See providers/canvasapp. */
+  /**
+   * canvasapp.io.vn gateway (IPC to the main process); missing in older desktop builds. See providers/canvasapp.
+   * Includes `checkout()` (top-up: opens the real SePay page in a modal window) in builds that support it.
+   */
   canvasapp?: CanvasappBridge
 }
 

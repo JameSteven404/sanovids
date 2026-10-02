@@ -39,6 +39,9 @@
   --cv-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
   --cv-media-chip-line: color-mix(in srgb, var(--cv-on-media) 16%, transparent);
   --cv-on-media-video: color-mix(in srgb, var(--video) 40%, var(--cv-on-media));
+  /* bottom fade behind the take player's controls and the hairline glyph shadow on it (dark in both themes) */
+  --cv-media-fade: color-mix(in srgb, var(--media-bg, black) 72%, transparent);
+  --cv-media-shade: color-mix(in srgb, var(--media-bg, black) 45%, transparent);
   /* text / glyphs on a solid --danger fill or a user-picked asset color: white in both themes */
   --cv-on-solid: var(--cv-on-media);
   /* solid teal fill behind small text (@image number, hovered media chips) and the text on a solid teal / purple fill */
@@ -635,10 +638,46 @@
   font-weight: 600;
   cursor: help;
 }
+/*
+ * Cost chip (docs/SPEC-v2.md §9 — same language as the inspector, presets panel and scene table):
+ * demo play money = neutral text in a dashed outline + a small "demo" mark; real canvasapp credits = solid --info
+ * tint (the top bar credit pill's color — the accent stays for the Run button).
+ */
 .cv-cost {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   white-space: nowrap;
   font-weight: 600;
-  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.cv-cost.is-real {
+  border-color: color-mix(in srgb, var(--info) 26%, transparent);
+  background: var(--info-soft);
+  color: color-mix(in srgb, var(--info) 80%, var(--text));
+}
+.cv-cost.is-demo {
+  padding-right: 4px;
+  border-style: dashed;
+  border-color: var(--text-faint);
+  background: transparent;
+  color: var(--text-dim);
+}
+.cv-cost-mark {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 12px;
 }
 .cv-run-wrap {
   display: inline-flex;
@@ -1220,6 +1259,256 @@ button.cv-asset-count:hover {
   height: 100%;
   background: var(--accent);
   transition: width 0.25s linear;
+}
+/* ---- take player (TakePlayer.tsx): timeline + controls on a fade at the bottom of the poster ---- */
+/*
+ * The provider pill and the "+N" button would sit where the controls are. The pill (not a control) hides while the
+ * player is shown. "+N" lives up next to the star on every finished take, at rest too: the player opens as soon as the
+ * pointer reaches the node, so a button that moved then could never be clicked where it was shown.
+ */
+.cv-take.is-playing .cv-take-provider {
+  display: none;
+}
+.cv-take.st-completed:not(.is-far) .cv-take-more {
+  top: 8px;
+  right: 36px;
+  bottom: auto;
+}
+.cv-tp {
+  container: cv-tp / inline-size;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 5px 3px;
+  background: linear-gradient(to top, var(--cv-media-fade), color-mix(in srgb, var(--cv-media-fade) 55%, transparent) 55%, transparent);
+  color: var(--cv-on-media);
+  /*
+   * the fade lets presses through to the node (drag / select); only the controls take them (track, buttons, volume)
+   * — the time text, the spacer and the gaps of the row do not
+   */
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  animation: cv-tp-in 0.18s var(--cv-ease) both;
+}
+@keyframes cv-tp-in {
+  from {
+    opacity: 0;
+  }
+}
+.cv-tp-track {
+  position: relative;
+  height: 12px;
+  margin: 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+  pointer-events: auto;
+  outline: none;
+}
+.cv-tp:not(.has-length) .cv-tp-track {
+  cursor: default;
+}
+.cv-tp-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--cv-on-media) 24%, transparent);
+  transition:
+    height 0.12s var(--cv-ease),
+    margin-top 0.12s var(--cv-ease);
+}
+.cv-tp-track:hover .cv-tp-rail,
+.cv-tp-track:focus-visible .cv-tp-rail,
+.cv-tp.is-scrub .cv-tp-rail {
+  height: 5px;
+  margin-top: -2.5px;
+}
+.cv-tp-buf,
+.cv-tp-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+}
+.cv-tp-buf {
+  transform: scaleX(var(--tp-buf, 0));
+  background: color-mix(in srgb, var(--cv-on-media) 22%, transparent);
+}
+/* painted every frame from requestAnimationFrame (--tp-played on the track): transform only, no layout */
+.cv-tp-fill {
+  transform: scaleX(var(--tp-played, 0));
+  background: var(--cv-on-media);
+}
+.cv-tp-knob {
+  position: absolute;
+  inset: 0;
+  transform: translateX(calc(var(--tp-played, 0) * 100%));
+  pointer-events: none;
+}
+.cv-tp-knob > i {
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--cv-on-media);
+  box-shadow: 0 1px 3px var(--cv-media-shade);
+  transform: scale(0);
+  transition: transform 0.12s var(--cv-ease);
+}
+.cv-tp.has-length .cv-tp-track:hover .cv-tp-knob > i,
+.cv-tp.has-length .cv-tp-track:focus-visible .cv-tp-knob > i,
+.cv-tp.is-scrub .cv-tp-knob > i {
+  transform: scale(1);
+}
+/* time under the pointer (hover / drag); kept inside the poster near the edges */
+.cv-tp-tip {
+  position: absolute;
+  bottom: 100%;
+  left: clamp(18px, calc(var(--tp-at, 0) * 100%), calc(100% - 18px));
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--cv-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  color: var(--cv-on-media);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s var(--cv-ease);
+}
+.cv-tp.has-length .cv-tp-track:hover .cv-tp-tip,
+.cv-tp.is-scrub .cv-tp-tip {
+  opacity: 1;
+}
+.cv-tp-row {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 22px;
+  pointer-events: none;
+}
+.cv-tp-btn {
+  pointer-events: auto;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cv-on-media);
+  cursor: pointer;
+  filter: drop-shadow(0 1px 1px var(--cv-media-shade));
+  transition: background-color 0.12s var(--cv-ease);
+}
+.cv-tp-btn:hover {
+  background: color-mix(in srgb, var(--cv-on-media) 16%, transparent);
+}
+.cv-tp-btn:active {
+  background: color-mix(in srgb, var(--cv-on-media) 26%, transparent);
+}
+.cv-tp-time {
+  flex: none;
+  padding: 0 3px;
+  color: var(--cv-on-media);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px var(--cv-media-shade);
+}
+.cv-tp-dur {
+  color: color-mix(in srgb, var(--cv-on-media) 68%, transparent);
+}
+.cv-tp-sp {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cv-tp-rate {
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* the whole volume group takes the wheel (button, slider and the space between them) */
+.cv-tp-vol {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  pointer-events: auto;
+}
+.cv-tp-vslider {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 16px;
+  margin: 0 5px 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+.cv-tp-vslider::before,
+.cv-tp-vfill {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 999px;
+}
+.cv-tp-vslider::before {
+  right: 0;
+  background: color-mix(in srgb, var(--cv-on-media) 28%, transparent);
+}
+.cv-tp-vfill {
+  width: calc(var(--tp-vol, 1) * 100%);
+  background: var(--cv-on-media);
+}
+.cv-tp-vknob {
+  position: absolute;
+  left: calc(var(--tp-vol, 1) * 100%);
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--cv-on-media);
+  box-shadow: 0 1px 3px var(--cv-media-shade);
+}
+/* narrow poster (default node ≈ 222 px): the slider goes (mute button + wheel still set the volume); narrower: no length */
+@container cv-tp (max-width: 249px) {
+  .cv-tp-vslider {
+    display: none;
+  }
+}
+@container cv-tp (max-width: 199px) {
+  .cv-tp-dur {
+    display: none;
+  }
 }
 .cv-take-foot {
   display: flex;
@@ -1934,6 +2223,18 @@ button.cv-asset-count:hover {
 .cv-menu-item:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
+}
+/*
+ * The take player's controls sit on the dark fade over the video, where the translucent --focus-ring barely shows
+ * (≈2:1 dark theme, ≈1.4:1 light): a solid on-media ring with a dark halo reads on any frame, in both themes.
+ */
+.cv-tp-btn:focus-visible,
+.cv-tp-track:focus-visible,
+.cv-tp-vslider:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--cv-on-media),
+    0 0 0 4px var(--cv-media-shade);
 }
 
 /* ============================== reduced motion ============================== */

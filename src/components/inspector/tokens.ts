@@ -18,18 +18,38 @@ export interface Seg {
   text: string
   /** N of @image_N / @video_N. */
   n?: number
-  /** Token number outside the scene's media count. */
+  /** No picture/video behind this token in the request (see `reason`). */
   invalid?: boolean
+  /**
+   * Why it is invalid: 'missing' = number outside the scene's media, 'unsent' = linked but not sent (over the model's
+   * limit, or a mode that sends no images), 'unbound' = an "@image_?N" placeholder waiting for the right number.
+   */
+  reason?: 'missing' | 'unsent' | 'unbound'
 }
 
-/** One pass: numbered tokens first, otherwise any @Word (legacy asset tag when it is in `legacyTags`). */
-const SEG_RE = /@(?:(image|video)_(\d+)\b|([\p{L}\p{N}_]+))/giu
+/** Tooltip for an invalid token. */
+export function invalidTokenTitle(seg: Seg): string {
+  if (seg.reason === 'unbound') return `${seg.text}: chưa gắn ảnh/video nào — nối vào cảnh rồi sửa thành số đúng`
+  if (seg.reason === 'unsent') return `${seg.text}: sẽ không được gửi (vượt giới hạn của model, hoặc chế độ này không gửi tham chiếu)`
+  return `${seg.text} không tồn tại`
+}
+
+/** One pass: numbered tokens (or "@image_?N" placeholders) first, otherwise any @Word (legacy tag in `legacyTags`). */
+const SEG_RE = /@(?:(image|video)_(\?)?(\d+)\b|([\p{L}\p{N}_]+))/giu
 
 /**
  * Split `text` into segments for the backdrop highlighter. Concatenating every `seg.text` gives back `text`.
  * `legacyTags` holds lower-cased asset tags; other @words stay plain text.
+ * `sent`: how many images / videos the request really carries (model limit, mode) — tokens past it are invalid too,
+ * because the model would never see that picture (wrong character in the video).
  */
-export function segmentPrompt(text: string, imageCount: number, videoCount: number, legacyTags?: ReadonlySet<string>): Seg[] {
+export function segmentPrompt(
+  text: string,
+  imageCount: number,
+  videoCount: number,
+  legacyTags?: ReadonlySet<string>,
+  sent?: { images: number; videos: number },
+): Seg[] {
   const out: Seg[] = []
   let last = 0
   const push = (seg: Seg) => {
@@ -43,10 +63,12 @@ export function segmentPrompt(text: string, imageCount: number, videoCount: numb
     let seg: Seg | null = null
     if (m[1]) {
       const kind = m[1].toLowerCase() as 'image' | 'video'
-      const n = Number(m[2])
+      const n = Number(m[3])
       const max = kind === 'image' ? imageCount : videoCount
-      seg = { kind, text: whole, n, invalid: n < 1 || n > max }
-    } else if (legacyTags && m[3] && legacyTags.has(m[3].toLowerCase())) {
+      const sentMax = sent ? (kind === 'image' ? sent.images : sent.videos) : max
+      const reason = m[2] ? 'unbound' : n < 1 || n > max ? 'missing' : n > sentMax ? 'unsent' : undefined
+      seg = reason ? { kind, text: whole, n, invalid: true, reason } : { kind, text: whole, n, invalid: false }
+    } else if (legacyTags && m[4] && legacyTags.has(m[4].toLowerCase())) {
       seg = { kind: 'legacy', text: whole }
     }
     if (!seg) continue

@@ -12,7 +12,11 @@ export interface ModelSpec {
   /** Reference videos (@video_N) accepted per request. */
   maxRefVideos: number
   promptLimit: (mode: Mode) => number
-  /** credits[resolution][duration] — demo credits, 1 credit ≈ 1.000đ (same table as canvasapp). */
+  /**
+   * credits[resolution][duration] per video, 1 credit ≈ 1.000đ — the same table as canvasapp. The demo provider
+   * charges it to the local demo wallet (useRuns.credits); on canvasapp it is the estimate of what the user's real
+   * account will be billed. Display amounts with lib/credits formatCredits(n, kind), never as a bare number.
+   */
   pricing: Record<string, Record<number, number>>
   color: string
 }

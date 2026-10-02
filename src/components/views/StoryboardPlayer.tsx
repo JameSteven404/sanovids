@@ -1,9 +1,10 @@
 // "Phát liền": plays every scene's chosen take in order (webm when the mock recorded one, else poster).
-import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, Volume2, VolumeX, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
@@ -31,6 +32,36 @@ const STALL_MS = 6000
 const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
 
 type VideoState = { id: string; url: string | null; failed: boolean } | null
+
+/**
+ * Speaker switch of the player (shared with the canvas player and the take viewer). A click may always unmute. The
+ * shared volume counts: at 0 (set on the canvas or in the viewer) the player is silent, so the switch shows off and
+ * turning it on also brings the volume back (toggleSound). The play effect reads the volume only when a clip starts:
+ * the element is updated here directly.
+ */
+function SoundButton({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null> }) {
+  const sound = usePlayback((s) => s.sound)
+  const volume = usePlayback((s) => s.volume)
+  const on = sound && volume > 0
+  const toggle = () => {
+    const p = usePlayback.getState()
+    const next = toggleSound(p.sound, p.volume)
+    p.setSound(next.sound)
+    p.setVolume(next.volume)
+    const v = videoRef.current
+    if (v) {
+      v.volume = next.volume
+      v.muted = !next.sound
+    }
+  }
+  // The name says the action and changes with the state: no aria-pressed ("Bật tiếng, đã nhấn" would mislead).
+  const label = on ? 'Tắt tiếng' : 'Bật tiếng'
+  return (
+    <button className="icon-btn" onClick={toggle} title={label} aria-label={label}>
+      {on ? <Volume2 size={18} /> : <VolumeX size={18} />}
+    </button>
+  )
+}
 
 export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[]; start: number; onClose: () => void }) {
   const [index, setIndex] = useState(() => Math.min(Math.max(0, start), Math.max(0, items.length - 1)))
@@ -102,8 +133,13 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     const v = videoRef.current
     if (!v || mode !== 'video') return
     if (paused || ended) v.pause()
-    else void v.play().catch(() => undefined)
-  }, [paused, ended, mode, index])
+    else {
+      // The shared volume (not the speed: "Phát liền" always plays at normal speed).
+      const { sound, volume } = usePlayback.getState()
+      v.volume = volume
+      void playWithSound(v, sound)
+    }
+  }, [paused, ended, mode, index, video?.id])
   // Watchdog (see STALL_MS): last time the video's currentTime moved.
   const progressAt = useRef(0)
   const lastTime = useRef(-1)
@@ -114,7 +150,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     lastTime.current = -1
     const id = window.setInterval(() => {
       const v = videoRef.current
-      // A hidden tab may pause the (muted) video: that is not a stall.
+      // A hidden tab may pause the video: that is not a stall.
       if (document.hidden) progressAt.current = Date.now()
       else if (v && v.currentTime !== lastTime.current) {
         lastTime.current = v.currentTime
@@ -200,6 +236,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
           </span>
         </span>
         <span className="vw-player-note">{hasDemo ? 'Demo: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        <SoundButton videoRef={videoRef} />
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>

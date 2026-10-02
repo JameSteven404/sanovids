@@ -3,11 +3,11 @@ import { memo, useMemo, type SyntheticEvent } from 'react'
 import { settingsLabel } from '../../core/models'
 import type { Take } from '../../core/types'
 import { TAKES_MIME } from '../../lib/dnd'
-import { providerOf } from '../../providers'
 import { useSceneTakes } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { CREDIT_UNIT, STATUS_LABEL, toggleChosenTake } from './shared'
+import { takeCostLabel } from './creditText'
+import { STATUS_LABEL, toggleChosenTake } from './shared'
 import './runs.css'
 
 const SM_MAX = 5
@@ -82,7 +82,7 @@ const TakeThumb = memo(function TakeThumb({ take, size, active }: { take: Take; 
   const canStar = take.status === 'completed' || take.starred
   const title =
     `T${take.number} · ${STATUS_LABEL[take.status]}${take.status === 'processing' ? ` ${take.progress}%` : ''}` +
-    ` · ${settingsLabel(take.settings)} · ${take.cost} ${CREDIT_UNIT[providerOf(take)]}${take.starred ? ' · ★ đã chọn' : ''}` +
+    ` · ${settingsLabel(take.settings)} · ${takeCostLabel(take)}${take.starred ? ' · ★ đã chọn' : ''}` +
     (take.error && take.status === 'failed' ? `\n${take.error}` : '')
 
   // Finished takes can be dragged onto a scene (canvas card / table row) to become its @video reference.

@@ -131,9 +131,17 @@ export interface Take {
   provider?: TakeProvider
   /** Job id at the provider once submitted — lets the engine resume polling after a reload. Null = not submitted. */
   remoteId?: string | null
+  /**
+   * A remote submit whose outcome is unknown (answer lost: maybe created and billed at the provider). Kept through
+   * retries and cancel until a job id is stored; such a take is only re-sent as itself (same key), never as a new take.
+   */
+  submitUnknown?: boolean
   /** Cost was taken from the local (demo) credit counter → refunded on failure/cancel. Missing = true. */
   charged?: boolean
-  /** H3 transform frames (asset ids) at enqueue time. Missing = read from the scene when submitting. */
+  /**
+   * H3 transform frames at enqueue time: "assetId:imageId" (the exact picture sent), or a bare asset id for takes of
+   * older versions. Missing = read from the scene when submitting.
+   */
   framesSnapshot?: { first: string | null; last: string | null }
   /**
    * Image keys (`assetId:imageId`, see core/compile imageKey) of the scene's references at enqueue time, in
@@ -170,4 +178,9 @@ export interface CompiledPrompt {
   warnings: string[]
   /** Low-priority hints (e.g. a connected image never mentioned in the prompt). */
   notes: string[]
+  /**
+   * Tokens of the compiled prompt that have NO media behind them in this request (beyond the images/videos actually
+   * sent, in a mode that sends none, or unbound "@image_?N" placeholders). A take with any of these must not run.
+   */
+  unsentTokens: string[]
 }

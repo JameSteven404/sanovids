@@ -8,23 +8,47 @@
 // and try again every few seconds, so one of them takes over when the running tab closes. Taking over first syncs
 // with storage (persist registers `beforeTakeover`), then adopts what the previous tab left running:
 //   demo jobs restart from the queue; remote jobs with a remote id resume polling; a remote job without one (the
-//   page closed while it was being submitted) is marked failed — it is NEVER submitted again (that could pay twice).
+//   page closed while it was being submitted, or before its id was saved) is looked up at the provider
+//   (provider.recover: finds the job without ever creating one) and resumes when found; otherwise it is marked failed
+//   with UNKNOWN_SUBMIT_ERROR — it is NEVER submitted again by itself (that could pay twice).
+// Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
+// "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
+// provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
+// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
+//
+// Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet (play money). Only takes run on the mock
+// provider are charged to it (take.charged); canvasapp takes bill the user's own canvasapp account and never touch
+// the demo balance — enqueue/check never block them on it. New runs data start at DEMO_CREDITS_DEFAULT (1000);
+// saved balances are kept as they are. The real canvasapp balance lives in store/credits (useCreditInfo()).
+// Engine events for other stores (e.g. store/credits refreshes the real balance after a canvasapp job):
+//   onRunEvent(listener) → unsubscribe; events { type: 'submitted' | 'completed' | 'failed' | 'cancelled', takeId, provider }.
 import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
 import { migrateTake } from '../core/migrate'
-import type { Scene, Size, Take, XY } from '../core/types'
+import type { Asset, Scene, Size, Take, XY } from '../core/types'
+import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
 import { activeProviderId, getProvider, providerBlockedReason, registerProvider } from '../providers'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
-import { providerOf, type JobFrame, type JobRequest, type ProviderId, type RemoteStatus } from '../providers/types'
+import {
+  isSubmitCancelled,
+  isSubmitUncertain,
+  providerOf,
+  type JobFrame,
+  type JobImage,
+  type JobRequest,
+  type ProviderId,
+  type RemoteStatus,
+} from '../providers/types'
 import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
 import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
+export { DEMO_CREDITS_DEFAULT } from '../lib/credits'
 
 export interface EnqueueResult {
   queued: number
@@ -51,7 +75,9 @@ export interface ProviderIssue {
 
 export interface RunsState {
   takes: Take[]
+  /** DEMO credits (play money, local). Never the user's real canvasapp balance — see store/credits. */
   credits: number
+  /** Demo credits spent (net of refunds). */
   spent: number
   mock: MockSettings
   /** Last provider problem while polling (null = all good). UI may show it; cleared by the next successful poll. */
@@ -67,6 +93,11 @@ export interface RunsState {
   check: (sceneIds: string[]) => SceneRunCheck[]
   enqueue: (sceneIds: string[]) => EnqueueResult
   cancel: (takeId: string) => void
+  /**
+   * Run a take again. A remote take that failed with UNKNOWN_SUBMIT_ERROR is re-queued AS IS (same take id = same
+   * idempotency key: the provider first looks for the job it may already have created, so it is never paid twice);
+   * any other take → a new take of its scene (enqueue).
+   */
   retry: (takeId: string) => EnqueueResult | null
   toggleStar: (takeId: string) => void
   removeTake: (takeId: string) => void
@@ -77,7 +108,47 @@ export interface RunsState {
   /** Canvas sizes of take nodes (null = default size). */
   setTakeSizes: (sizes: Record<string, Size | null>) => void
   setMock: (patch: Partial<MockSettings>) => void
+  /** Add demo credits (Settings "+100"). */
   addCredits: (n: number) => void
+  /** Settings "Đặt lại credit demo": demo balance back to DEMO_CREDITS_DEFAULT (1000), spent 0. */
+  resetDemoCredits: () => void
+}
+
+// ---------------------------------------------------------------------------------------------
+// Engine events (for other stores; kept here as a listener list so nothing has to import them back)
+// ---------------------------------------------------------------------------------------------
+
+export type RunEventType = 'submitted' | 'completed' | 'failed' | 'cancelled'
+
+export interface RunEvent {
+  type: RunEventType
+  takeId: string
+  provider: ProviderId
+}
+
+const runListeners = new Set<(e: RunEvent) => void>()
+
+/**
+ * Listen to take lifecycle events: 'submitted' (the provider accepted the job: a remote id exists — for canvasapp
+ * the account may have been charged), 'completed', 'failed', 'cancelled'. Returns the unsubscribe function.
+ * Listeners run synchronously after the store was updated; their errors are swallowed (never break the engine).
+ */
+export function onRunEvent(listener: (e: RunEvent) => void): () => void {
+  runListeners.add(listener)
+  return () => {
+    runListeners.delete(listener)
+  }
+}
+
+function emitRun(type: RunEventType, take: Pick<Take, 'id' | 'provider'>) {
+  const e: RunEvent = { type, takeId: take.id, provider: providerOf(take) }
+  for (const l of [...runListeners]) {
+    try {
+      l(e)
+    } catch {
+      /* a listener's problem is not the queue's */
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -103,12 +174,39 @@ const pollPausedUntil = new Map<ProviderId, number>()
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
-/** Takes whose submit this engine started (since the last loadRuns): never "adopted" as left over by another tab. */
+/** Takes whose submit (or recovery) this engine started since the last loadRuns: never "adopted" as left over. */
 const ownedHere = new Set<string>()
+/** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
+const fetchFailures = new Map<string, number>()
+const fetchRetryAt = new Map<string, number>()
 
-/** Error of a remote take found running without a remote id: whether the provider got it is unknown. */
+/**
+ * Error of a remote take whose submit ended without a job id although the request may have reached the provider
+ * (connection lost while sending, or the page closed / reloaded meanwhile): whether it was billed is unknown.
+ */
 export const UNKNOWN_SUBMIT_ERROR =
-  'Không rõ yêu cầu đã tới canvasapp hay chưa (trang bị đóng hoặc tải lại đúng lúc đang gửi). Kiểm tra trên canvasapp.io.vn trước khi chạy lại để không trả credit hai lần.'
+  'Không rõ yêu cầu đã tới canvasapp hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Kiểm tra trên canvasapp.io.vn trước khi chạy lại để không trả credit hai lần.'
+
+/**
+ * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
+ * only ever re-sent as THE SAME take (retry: same key, the job is looked up first) — never as a new take.
+ */
+export function isUncertainSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'status' | 'error' | 'submitUnknown'>): boolean {
+  if (providerOf(t) === 'mock' || (t.remoteId ?? null) || (t.status !== 'failed' && t.status !== 'cancelled')) return false
+  return !!t.submitUnknown || hasUncertainSubmitText(t.error)
+}
+
+/** Takes saved before `submitUnknown` existed: recognised by their error text (current and earlier wordings). */
+export function hasUncertainSubmitText(error: string | null | undefined): boolean {
+  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error.includes('không trả mã job'))
+}
+
+/** A finished remote video could not be downloaded after several tries (it is paid: re-running pays again). */
+export const downloadFailedError = (detail: string) =>
+  `Video đã tạo xong trên canvasapp (đã trừ credit) nhưng SanoVids không tải về được: ${detail.trim().replace(/\.?$/, '.')} Tải video trực tiếp trên canvasapp.io.vn (phiên “SanoVids bridge”) — chạy lại cảnh sẽ trừ credit lần nữa.`
+
+/** Download tries of a finished remote video: retried after these delays, then the take fails. */
+const FETCH_RETRY_MS = [30_000, 60_000, 120_000, 300_000]
 
 // ---- engine ownership (one tab per project) ----
 let lockManagerOverride: LockManagerLike | null | undefined
@@ -158,12 +256,13 @@ function savedMock(): MockSettings {
 const mockProvider = createMockProvider(() => useRuns.getState().mock)
 registerProvider(mockProvider)
 
-const isCharged = (t: Take) => t.charged !== false
+/** Paid with demo credits (so refunded on failure / cancel). canvasapp takes never are, whatever the flag says. */
+const isCharged = (t: Take) => chargedDemo(t)
 const remoteIdOf = (t: Take) => t.remoteId ?? null
 
 export const useRuns = create<RunsState>()((set, get) => ({
   takes: [],
-  credits: 377,
+  credits: DEMO_CREDITS_DEFAULT,
   spent: 0,
   mock: savedMock(),
   providerIssue: null,
@@ -174,7 +273,10 @@ export const useRuns = create<RunsState>()((set, get) => ({
     // Takes are shown as saved. Takes left running are adopted when this tab gets the engine (see adoptOrphans):
     // another tab may still be running them right now.
     const takes = (data?.takes ?? []).map(migrateTake)
-    set({ takes, credits: data?.credits ?? 377, spent: data?.spent ?? 0, providerIssue: null, engineElsewhere: false })
+    // New runs data start with DEMO_CREDITS_DEFAULT; a saved demo balance is kept as it is.
+    const credits = finite(data?.credits) ?? DEMO_CREDITS_DEFAULT
+    const spent = finite(data?.spent) ?? 0
+    set({ takes, credits, spent, providerIssue: null, engineElsewhere: false })
     ensureEngine()
   },
 
@@ -192,6 +294,10 @@ export const useRuns = create<RunsState>()((set, get) => ({
         else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
         else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
         else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
+        else if (scene.settings.mode === 'transform' && [scene.firstFrame, scene.lastFrame].some((id) => !project.assets.find((a) => a.id === id)?.imageIds[0]))
+          reason = 'Khung đầu/cuối chưa có ảnh'
+        else if (compiled.unsentTokens.length)
+          reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 3).join(', ')}${compiled.unsentTokens.length > 3 ? '…' : ''} nhưng không có ảnh/video đó trong lần gửi — sửa số hoặc nối thêm`
         else if (scene.videoRefs.some((id) => takes.find((t) => t.id === id)?.status !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
         else if (providerId !== 'mock' && compiled.videos.length > getProvider(providerId).capabilities(scene.settings.model).maxRefVideos) {
           reason = 'Cổng canvasapp chưa hỗ trợ video tham chiếu'
@@ -210,9 +316,17 @@ export const useRuns = create<RunsState>()((set, get) => ({
     if (!ok.length) return { queued: 0, cost: 0, skipped, error: skipped.length ? 'Không có cảnh nào chạy được.' : 'Chưa chọn cảnh nào.' }
     const blocked = providerBlockedReason(providerId)
     if (blocked) return { queued: 0, cost, skipped, error: blocked }
-    // Only the demo provider spends the local demo credits; a real provider charges the user's own account.
+    // Only the demo provider spends the local demo credits; a real provider charges the user's own account (and is
+    // never blocked by the demo balance — canvasapp itself refuses a job the account cannot pay).
     const chargeLocal = providerId === 'mock'
-    if (chargeLocal && cost > get().credits) return { queued: 0, cost, skipped, error: `Không đủ credit: cần ${cost}, còn ${get().credits}.` }
+    if (chargeLocal && cost > get().credits) {
+      return {
+        queued: 0,
+        cost,
+        skipped,
+        error: `Không đủ credit demo: cần ${formatCreditNumber(cost)}, còn ${formatCreditNumber(get().credits)} (credit giả lập — đặt lại hoặc thêm trong Cài đặt).`,
+      }
+    }
 
     const now = Date.now()
     const created: Take[] = ok.map((c, i) => {
@@ -244,7 +358,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         provider: providerId,
         remoteId: null,
         charged: chargeLocal,
-        framesSnapshot: { first: scene.firstFrame, last: scene.lastFrame },
+        framesSnapshot: { first: frameSnapshotKey(project.assets, scene.firstFrame), last: frameSnapshotKey(project.assets, scene.lastFrame) },
       }
     })
     const charge = chargeLocal ? cost : 0
@@ -270,11 +384,23 @@ export const useRuns = create<RunsState>()((set, get) => ({
       credits: s.credits + refund,
       spent: s.spent - refund,
     }))
+    emitRun('cancelled', take)
   },
 
   retry: (takeId) => {
     const take = get().takes.find((t) => t.id === takeId)
     if (!take) return null
+    if (isUncertainSubmit(take)) {
+      // Never a new take (new key) here: the first request may have been billed. The same take goes again.
+      const blocked = providerBlockedReason(providerOf(take))
+      if (blocked) return { queued: 0, cost: 0, skipped: [], error: blocked }
+      ownedHere.delete(takeId)
+      set((s) => ({
+        takes: s.takes.map((t) => (t.id === takeId ? { ...t, status: 'queued', progress: 0, startedAt: null, finishedAt: null, error: null, submitUnknown: true } : t)),
+      }))
+      ensureEngine()
+      return { queued: 1, cost: take.cost, skipped: [] }
+    }
     return get().enqueue([take.sceneId])
   },
 
@@ -316,8 +442,27 @@ export const useRuns = create<RunsState>()((set, get) => ({
     }
     set({ mock })
   },
-  addCredits: (n) => set((s) => ({ credits: s.credits + n })),
+  addCredits: (n) => {
+    if (!Number.isFinite(n)) return
+    set((s) => ({ credits: s.credits + n }))
+  },
+  resetDemoCredits: () => set({ credits: DEMO_CREDITS_DEFAULT, spent: 0 }),
 }))
+
+function finite(n: unknown): number | null {
+  return typeof n === 'number' && Number.isFinite(n) ? n : null
+}
+
+/**
+ * take.framesSnapshot value for a frame asset: "assetId:imageId" (its primary image NOW, like core/compile imageKey),
+ * so changing the asset's pictures while the take waits never changes the frame that is sent. The asset id alone
+ * when it has no image (check() blocks that for transform); null without a frame.
+ */
+export function frameSnapshotKey(assets: Asset[], assetId: string | null): string | null {
+  if (!assetId) return null
+  const imageId = assets.find((a) => a.id === assetId)?.imageIds[0]
+  return imageId ? imageKey({ assetId, imageId }) : assetId
+}
 
 // ---------------------------------------------------------------------------------------------
 // Queue engine
@@ -332,6 +477,8 @@ function resetEngineState() {
   pollPausedUntil.clear()
   pollFailures.clear()
   ownedHere.clear()
+  fetchFailures.clear()
+  fetchRetryAt.clear()
   mockProvider.reset?.()
   // The engine restarts for the loaded data (and adopts what was left running). The lock is kept for the same
   // project — persist reloads it right after this tab took over — and let go for another one.
@@ -424,15 +571,27 @@ function startEngine() {
   if (!engine) engine = setInterval(tick, TICK_MS)
 }
 
+/** The provider can look up a job it may have created for a take (VideoProvider.recover). */
+function canRecover(pid: ProviderId): boolean {
+  try {
+    return typeof getProvider(pid).recover === 'function'
+  } catch {
+    return false
+  }
+}
+
 /**
  * Takes found "processing" that this engine did not start (left by a closed/reloaded tab, or by the tab that ran the
  * queue before this one): demo jobs go back to the queue (the mock lives in the page that closed); remote jobs with
- * a remote id are polled again; remote jobs without one fail with UNKNOWN_SUBMIT_ERROR (never submitted twice).
+ * a remote id are polled again; remote jobs without one are looked up at the provider (recoverTake), or fail with
+ * UNKNOWN_SUBMIT_ERROR when it cannot look — never submitted twice.
  */
 function adoptOrphans() {
   const now = Date.now()
   let refund = 0
   let changed = false
+  const failed: Take[] = []
+  const lookUp: string[] = []
   const takes = useRuns.getState().takes.map((t): Take => {
     if (t.status !== 'processing' || ownedHere.has(t.id) || submitting.has(t.id) || fetching.has(t.id)) return t
     if (providerOf(t) === 'mock') {
@@ -440,11 +599,18 @@ function adoptOrphans() {
       return { ...t, status: 'queued', progress: 0, startedAt: null, remoteId: null }
     }
     if (remoteIdOf(t)) return t
+    if (canRecover(providerOf(t))) {
+      lookUp.push(t.id)
+      return t
+    }
     changed = true
     if (isCharged(t)) refund += t.cost
-    return { ...t, status: 'failed', finishedAt: now, error: UNKNOWN_SUBMIT_ERROR }
+    failed.push(t)
+    return { ...t, status: 'failed', finishedAt: now, error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true }
   })
   if (changed) useRuns.setState((s) => ({ takes, credits: s.credits + refund, spent: s.spent - refund }))
+  for (const t of failed) emitRun('failed', t)
+  for (const id of lookUp) void recoverTake(id)
 }
 
 const findTake = (id: string) => useRuns.getState().takes.find((t) => t.id === id)
@@ -460,10 +626,15 @@ function failTake(id: string, error: string, progress?: number) {
   if (!t || t.status !== 'processing') return
   const refund = isCharged(t) ? t.cost : 0
   useRuns.setState((s) => ({
-    takes: s.takes.map((x) => (x.id === id ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress } : x)),
+    takes: s.takes.map((x) =>
+      x.id === id
+        ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress, ...(error === UNKNOWN_SUBMIT_ERROR ? { submitUnknown: true } : {}) }
+        : x,
+    ),
     credits: s.credits + refund,
     spent: s.spent - refund,
   }))
+  emitRun('failed', t)
 }
 
 function concurrencyFor(pid: ProviderId): number {
@@ -500,12 +671,15 @@ function tick() {
     return
   }
   const now = Date.now()
+  const scenes = new Set(useProject.getState().project.scenes.map((s) => s.id))
 
-  // Start queued jobs up to each provider's concurrency cap.
+  // Start queued jobs up to each provider's concurrency cap. A take whose scene was deleted waits (never sent while
+  // the scene is gone; Undo of the delete brings the scene back and the take runs).
   const running = new Map<ProviderId, number>()
   for (const t of active) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
   const started: Take[] = []
   for (const t of queued) {
+    if (!scenes.has(t.sceneId)) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
@@ -519,10 +693,11 @@ function tick() {
   }
 
   // Running takes without a remote id whose submit is not in flight: the demo submits again (free, same key);
-  // a remote one is never submitted twice — whether the provider got it is unknown, so it fails with a hint.
+  // a remote one is never submitted twice — it is looked up at the provider once (not found → fails with a hint).
   for (const t of active) {
     if (remoteIdOf(t) || submitting.has(t.id) || fetching.has(t.id)) continue
     if (providerOf(t) === 'mock') void submitTake(t.id)
+    else if (!ownedHere.has(t.id) && canRecover(providerOf(t))) void recoverTake(t.id)
     else failTake(t.id, UNKNOWN_SUBMIT_ERROR)
   }
 
@@ -547,17 +722,31 @@ function tick() {
   }
 }
 
-/** Request for a take, built from its snapshot (refs, video refs, frames) and the current media of those assets. */
+/**
+ * Reference images of a take, numbered EXACTLY like the prompt it was compiled with (@image_1 = first, …).
+ * The prompt and imageKeysSnapshot are captured together when the take is queued, so editing a character's
+ * images while the take waits in the queue can never shift the numbers (wrong character on @image_N).
+ * Older takes without the snapshot fall back to the refs snapshot + current asset images.
+ */
+export function requestImages(t: Pick<Take, 'refsSnapshot' | 'imageKeysSnapshot'>, assets: Asset[], maxRefImages: number): JobImage[] {
+  if (t.imageKeysSnapshot) {
+    return t.imageKeysSnapshot.slice(0, maxRefImages).map((key, i) => {
+      const cut = key.indexOf(':')
+      return { n: i + 1, assetId: key.slice(0, cut), imageId: key.slice(cut + 1) }
+    })
+  }
+  return imageSlotsFor(assets, t.refsSnapshot)
+    .slice(0, maxRefImages)
+    .map(({ n, assetId, imageId }) => ({ n, assetId, imageId }))
+}
+
+/** Request for a take, built from its snapshot (prompt, image keys, refs, video refs, frames). */
 function buildRequest(t: Take): JobRequest {
   const project = useProject.getState().project
   const scene = project.scenes.find((s) => s.id === t.sceneId)
   const spec = MODELS[t.settings.model] ?? MODELS.seedance_2_5
   const takes = useRuns.getState().takes
-  const images = usesRefs(t.settings)
-    ? imageSlotsFor(project.assets, t.refsSnapshot)
-        .slice(0, spec.maxRefImages)
-        .map(({ n, assetId, imageId }) => ({ n, assetId, imageId }))
-    : []
+  const images = usesRefs(t.settings) ? requestImages(t, project.assets, spec.maxRefImages) : []
   const videos = usesVideoRefs(t.settings)
     ? t.videoRefsSnapshot.slice(0, spec.maxRefVideos).map((takeId, i) => {
         const v = takes.find((x) => x.id === takeId)
@@ -565,10 +754,14 @@ function buildRequest(t: Take): JobRequest {
       })
     : []
   const frames = t.framesSnapshot ?? { first: scene?.firstFrame ?? null, last: scene?.lastFrame ?? null }
-  const frame = (assetId: string | null): JobFrame | null => {
-    if (!assetId || t.settings.mode !== 'transform') return null
-    const imageId = project.assets.find((a) => a.id === assetId)?.imageIds[0]
-    return imageId ? { assetId, imageId } : null
+  const frame = (snap: string | null): JobFrame | null => {
+    if (!snap || t.settings.mode !== 'transform') return null
+    // "assetId:imageId" = the exact picture at enqueue (frameSnapshotKey); a bare asset id (older takes) = its
+    // primary image now.
+    const cut = snap.indexOf(':')
+    if (cut > 0) return { assetId: snap.slice(0, cut), imageId: snap.slice(cut + 1) }
+    const imageId = project.assets.find((a) => a.id === snap)?.imageIds[0]
+    return imageId ? { assetId: snap, imageId } : null
   }
   return {
     key: t.id,
@@ -597,25 +790,97 @@ async function submitTake(id: string) {
   const gen = generation
   const t = findTake(id)
   if (!t || submitting.has(id)) return
-  // A remote job is submitted once per take, ever (a second submit could be paid twice).
+  // A remote job is submitted once per take (a second submit could be paid twice) — except an explicit retry().
   if (providerOf(t) !== 'mock' && (ownedHere.has(id) || remoteIdOf(t))) return
   submitting.add(id)
   ownedHere.add(id)
   const pid = providerOf(t)
+  const projectId = useProject.getState().project.id
+  // Cancelled or deleted in SanoVids (the take, or its scene) → the provider stops before creating (billing) the
+  // job. Another project opened meanwhile is no reason to stop: the job is found again when this project is
+  // reopened (recoverTake).
+  const isCancelled = () => {
+    const p = useProject.getState().project
+    return p.id === projectId && (findTake(id)?.status !== 'processing' || !p.scenes.some((s) => s.id === t.sceneId))
+  }
   try {
     const provider = getProvider(pid)
-    const { remoteId } = await provider.submit(buildRequest(t))
-    if (!stillProcessing(id, gen)) {
-      // Cancelled / removed while submitting: stop it at the provider when possible.
+    const { remoteId } = await provider.submit(buildRequest(t), { isCancelled })
+    // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
+    if (gen !== generation) return void emitRun('submitted', t)
+    const cur = findTake(id)
+    if (cur?.status === 'processing') patchTake(id, { remoteId })
+    else {
+      // Cancelled / removed while submitting: stop it at the provider when possible. A remote provider has the job
+      // anyway (canvasapp may have charged the account): the cancelled take keeps its id so the UI can say so.
+      if (cur && pid !== 'mock') patchTake(id, { remoteId })
       void provider.cancel?.(remoteId)
+    }
+    emitRun('submitted', t)
+  } catch (e) {
+    if (gen !== generation) return
+    if (isSubmitCancelled(e)) {
+      // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").
+      const cur = findTake(id)
+      // (A take re-sent after a lost answer keeps its "maybe billed" state: the first request may have been charged.)
+      if (cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
+      else if (cur?.status === 'processing' && !remoteIdOf(cur)) {
+        // Its scene was deleted: back to the queue (it waits there until an Undo brings the scene back).
+        ownedHere.delete(id)
+        patchTake(id, { status: 'queued', progress: 0, startedAt: null })
+      }
       return
     }
-    patchTake(id, { remoteId })
-  } catch (e) {
-    if (gen === generation) failTake(id, errorText(e))
+    if (isSubmitUncertain(e)) return failTake(id, UNKNOWN_SUBMIT_ERROR)
+    failTake(id, errorText(e))
+    const code = (e as { code?: unknown })?.code
+    if (pid !== 'mock' && code === 'login-required') {
+      useRuns.setState({ providerIssue: { provider: pid, code, message: errorText(e), at: Date.now() } })
+    }
   } finally {
     if (gen === generation) submitting.delete(id)
   }
+}
+
+/**
+ * A remote take running without a remote id that this engine did not submit (the page closed / reloaded while it
+ * was being submitted, or before its id was saved): ask the provider for the job that submit may have created —
+ * never submit it again. Found → polled like any other; not found → failed with UNKNOWN_SUBMIT_ERROR.
+ */
+async function recoverTake(id: string) {
+  const gen = generation
+  const t = findTake(id)
+  if (!t || submitting.has(id) || ownedHere.has(id)) return
+  submitting.add(id)
+  ownedHere.add(id)
+  try {
+    const provider = getProvider(providerOf(t))
+    const found = provider.recover ? await provider.recover(buildRequest(t)) : null
+    if (gen !== generation) return
+    const cur = findTake(id)
+    if (!found) {
+      failTake(id, UNKNOWN_SUBMIT_ERROR)
+      return
+    }
+    if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
+    if (cur?.status === 'processing') emitRun('submitted', t)
+  } catch {
+    if (gen === generation) failTake(id, UNKNOWN_SUBMIT_ERROR)
+  } finally {
+    if (gen === generation) submitting.delete(id)
+  }
+}
+
+/**
+ * The provider's session works again (e.g. the user logged in to canvasapp after a 401): poll at the next interval
+ * instead of waiting out the back-off. Only when the last problem was the login (other back-offs stay).
+ */
+export function resumeProviderPolling(pid: ProviderId): void {
+  const issue = useRuns.getState().providerIssue
+  if (!issue || issue.provider !== pid || issue.code !== 'login-required') return
+  pollPausedUntil.delete(pid)
+  pollFailures.delete(pid)
+  useRuns.setState({ providerIssue: null })
 }
 
 async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
@@ -663,11 +928,13 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
           credits: s.credits + refund,
           spent: s.spent - refund,
         }))
+        emitRun('cancelled', t)
         break
       }
       case 'completed':
-        fetching.add(t.id)
         if (t.progress !== 99) progress.set(t.id, 99)
+        if (Date.now() < (fetchRetryAt.get(t.id) ?? 0)) break // last download failed: wait a little
+        fetching.add(t.id)
         void finishTake(t.id, st.remoteId, gen)
         break
     }
@@ -686,12 +953,28 @@ async function finishTake(id: string, remoteId: string, gen: number) {
     const videoId = result.video ? await putBlob(result.video, 'video') : null
     if (!stillProcessing(id, gen)) return
     patchTake(id, { status: 'completed', progress: 100, finishedAt: Date.now(), posterId, videoId })
+    fetchFailures.delete(id)
+    fetchRetryAt.delete(id)
+    emitRun('completed', t)
     if (useDownloadPrefs.getState().autoDownload) {
       // Lazy import avoids a static cycle (actions imports this store).
       void import('../actions').then(({ downloadTake }) => downloadTake(id, { auto: true }))
     }
   } catch (e) {
-    if (gen === generation) failTake(id, errorText(e))
+    if (gen !== generation) return
+    if (t && providerOf(t) !== 'mock') {
+      // The remote video is finished and paid: a failed download (network, session…) must not end the take — a
+      // "failed" take invites a re-run that pays again. Keep it at 99 % and try again later; give up after a while.
+      const n = (fetchFailures.get(id) ?? 0) + 1
+      fetchFailures.set(id, n)
+      if (n <= FETCH_RETRY_MS.length) {
+        fetchRetryAt.set(id, Date.now() + FETCH_RETRY_MS[n - 1])
+        return
+      }
+      failTake(id, downloadFailedError(errorText(e)))
+      return
+    }
+    failTake(id, errorText(e))
   } finally {
     if (gen === generation) fetching.delete(id)
   }

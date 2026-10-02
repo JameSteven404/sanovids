@@ -1,9 +1,9 @@
 import {
   AppWindow,
   Clock,
-  Coins,
   Download,
   FileUp,
+  FlaskConical,
   FolderDown,
   FolderOpen,
   Globe,
@@ -12,10 +12,13 @@ import {
   MonitorCheck,
   MonitorDown,
   Moon,
+  Plus,
+  RotateCcw,
   Sparkles,
   Sun,
 } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { DEMO_CREDIT_HINT, DEMO_CREDITS_DEFAULT, formatCreditNumber, formatCredits } from '../../lib/credits'
 import { canPickFolder, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
@@ -25,6 +28,7 @@ import { useProject } from '../../store/project'
 import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
+import { LOW_CREDITS } from '../topbar/creditPillModel'
 import { useActiveProvider } from '../runs/shared'
 import './dialogs.css'
 import { GatewaySection } from './GatewaySection'
@@ -362,7 +366,7 @@ function MockSettings() {
           value={Math.round(mock.failRate * 100)}
           onChange={(e) => setMock({ failRate: Number(e.target.value) / 100 })}
         />
-        <div className="dg-field-hint">Job lỗi được hoàn credit, giống nhà cung cấp thật.</div>
+        <div className="dg-field-hint">Job lỗi được hoàn credit demo.</div>
       </div>
       <div className="dg-field">
         <div className="dg-label-row">
@@ -386,28 +390,52 @@ function MockSettings() {
   )
 }
 
+/** "+100" demo credits (play money; the run dialog offers the same amount when the demo balance is short). */
+const DEMO_TOPUP = 100
+
+/** The local demo wallet (store/runs): play money spent only by the demo provider. Real credits: GatewaySection. */
 function CreditSettings() {
   const credits = useRuns((s) => s.credits)
   const spent = useRuns((s) => s.spent)
   const addCredits = useRuns((s) => s.addCredits)
+  const resetDemoCredits = useRuns((s) => s.resetDemoCredits)
+  const atDefault = credits === DEMO_CREDITS_DEFAULT && spent === 0
   return (
-    <Section title="Credit demo" desc={`Chỉ dùng cho ${PROVIDER_LABEL.mock}. Take tạo trên ${PROVIDER_LABEL.canvasapp} trừ credit trong tài khoản canvasapp của bạn.`}>
-      <div className="dg-credit">
+    <Section
+      title="Credit demo"
+      badge={<span className="badge dg-demo-badge">giả lập</span>}
+      desc={`${DEMO_CREDIT_HINT}. Chỉ ${PROVIDER_LABEL.mock} dùng credit này; take tạo trên ${PROVIDER_LABEL.canvasapp} trừ credit thật trong tài khoản canvasapp của bạn (xem mục Cổng canvasapp).`}
+    >
+      <div className="dg-credit demo" title={DEMO_CREDIT_HINT}>
         <div className="dg-credit-num">
-          <Coins size={18} />
-          <b>{credits.toLocaleString('vi-VN')}</b>
-          <span>credit còn lại</span>
+          <FlaskConical size={18} />
+          <span>Credit demo:</span>
+          <b className={credits < LOW_CREDITS ? 'low' : undefined}>{formatCreditNumber(credits)}</b>
         </div>
-        <div className="dg-credit-spent faint">Đã dùng {spent.toLocaleString('vi-VN')} credit</div>
-        <button
-          className="btn"
-          onClick={() => {
-            addCredits(100)
-            toast('Đã nạp +100 credit demo.', { tone: 'success' })
-          }}
-        >
-          +100 credit demo
-        </button>
+        <div className="dg-credit-spent faint">Đã dùng {formatCredits(spent, 'demo')}</div>
+        <div className="dg-credit-actions">
+          <button
+            className="btn"
+            onClick={() => {
+              addCredits(DEMO_TOPUP)
+              toast(`Đã thêm ${formatCredits(DEMO_TOPUP, 'demo')} (giả lập, không phải tiền thật).`, { tone: 'success' })
+            }}
+            title={`Thêm ${formatCredits(DEMO_TOPUP, 'demo')} — giả lập, không phải tiền thật`}
+          >
+            <Plus size={14} /> {formatCreditNumber(DEMO_TOPUP)}
+          </button>
+          <button
+            className="btn"
+            disabled={atDefault}
+            onClick={() => {
+              resetDemoCredits()
+              toast(`Đã đặt lại credit demo về ${formatCredits(DEMO_CREDITS_DEFAULT, 'demo')}.`, { tone: 'success' })
+            }}
+            title={`Đặt số dư credit demo về ${formatCreditNumber(DEMO_CREDITS_DEFAULT)} và xoá số đã dùng`}
+          >
+            <RotateCcw size={14} /> Đặt lại ({formatCreditNumber(DEMO_CREDITS_DEFAULT)})
+          </button>
+        </div>
       </div>
     </Section>
   )

@@ -294,12 +294,14 @@ export function SelectionHint() {
     for (const id of selectedIds) if (byId.get(id)?.status === 'completed') n++
     return n
   })
+  // Any video node selected: the library selection is not used (same rule as actions.selectedAssetIds).
+  const anyTake = useRuns((s) => selectedIds.length > 0 && selectedIds.some((id) => takeIndexOf(s.takes).byId.has(id)))
   const text = useMemo(() => {
     const sm = sceneMapOf(scenes)
     const am = assetMapOf(assets)
     const sceneN = selectedIds.filter((id) => sm.has(id)).length
     // Same rule as actions.selectedAssetIds: canvas selection wins over the library selection.
-    const assetIds = pickAssetSelection(selectedIds, librarySelection, new Set(am.keys()))
+    const assetIds = pickAssetSelection(selectedIds, anyTake ? [] : librarySelection, new Set(am.keys()))
     if (!sceneN || (!assetIds.length && !takeN)) return null
     const parts: string[] = []
     if (assetIds.length) {
@@ -309,7 +311,7 @@ export function SelectionHint() {
     if (takeN) parts.push(`${takeN} video`)
     parts.push(`${sceneN} cảnh đang chọn`)
     return parts.join(' · ')
-  }, [selectedIds, librarySelection, scenes, assets, takeN])
+  }, [selectedIds, librarySelection, scenes, assets, takeN, anyTake])
   if (!text) return null
   return (
     <div className="cv-sel-hint material" role="status">

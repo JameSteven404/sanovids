@@ -90,7 +90,8 @@ describe('tokens', () => {
     // a has 2 images: a=1,2  b=3  c=4. Remove a, move c first: c=1 b=2
     const after = mediaKeys(p.assets, ['c', 'b'], ['t2'])
     const out = remapTokens('@image_1 @image_3 @image_4 @image_9 @video_2 @video_1', before, after, (k, key) => `[${k}:${key}]`)
-    expect(out.text).toBe('[image:a:i1] @image_2 @image_1 @image_9 @video_1 [video:t1]')
+    // @image_9 pointed at nothing before: it becomes a placeholder instead of silently binding to a new image
+    expect(out.text).toBe('[image:a:i1] @image_2 @image_1 @image_?9 @video_1 [video:t1]')
     expect(out.dropped).toBe(2)
   })
   it('token for an asset is its primary image number', () => {

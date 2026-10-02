@@ -3,12 +3,13 @@
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
-import { deleteTakes, downloadTake, requestRun } from '../../actions'
+import { deleteTakes, downloadTake, rerunTake } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
+import { usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -16,6 +17,7 @@ import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fitMedia, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox } from './NodeSizer'
+import { TakePlayer } from './TakePlayer'
 import './canvas.css'
 
 /** `status` is only carried so the node object changes with it (minimap color); the node reads its take itself. */
@@ -81,7 +83,19 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const [hover, setHover] = useState(false)
   const done = take?.status === 'completed'
-  const videoUrl = useMediaUrl(hover && done && !far ? take?.videoId : null)
+  // The player stays open after the mouse leaves once one of its controls was used (pinned, see TakePlayer).
+  const pinned = usePlayback((s) => s.pinned === id)
+  const previewing = hover && done && !far
+  const videoUrl = useMediaUrl((previewing || pinned) && done && !far ? take?.videoId : null)
+  // This node is the hover preview: a pinned player elsewhere pauses (never two videos with sound at once). Only when
+  // it really plays something: a poster-only take (no video recorded) or a missing video blob mounts no player, so it
+  // must not pause the pinned one. The pause then lands in the same commit as this node's player.
+  const claimsHover = previewing && !!videoUrl
+  useEffect(() => {
+    if (!claimsHover) return
+    usePlayback.getState().setHoverId(id)
+    return () => usePlayback.getState().clearHoverId(id)
+  }, [claimsHover, id])
   const box = useNodeBox(id, take?.size)
   // Resized node: the poster keeps 16:9 and grows with the node; footer + big button stay pinned at the bottom.
   const media = box ? fitMedia(box.w, box.h, far ? 0 : TAKE_CHROME) : null
@@ -103,7 +117,15 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const provider = providerOf(take)
   const canStar = done || take.starred
   const hidden = data?.hidden ?? 0
-  const cls = ['cv-take', `st-${take.status}`, selected && 'is-selected', take.starred && 'is-starred', far && 'is-far', box && 'is-sized']
+  const cls = [
+    'cv-take',
+    `st-${take.status}`,
+    selected && 'is-selected',
+    take.starred && 'is-starred',
+    far && 'is-far',
+    box && 'is-sized',
+    videoUrl && 'is-playing',
+  ]
     .filter(Boolean)
     .join(' ')
 
@@ -120,7 +142,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
       >
         <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
           {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster empty" />}
-          {videoUrl && <video className="cv-take-video" src={videoUrl} muted loop autoPlay playsInline />}
+          {videoUrl && <TakePlayer takeId={id} url={videoUrl} />}
           <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
 
           <span className="cv-take-code">{code}</span>
@@ -196,7 +218,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
                 disabled={order === undefined}
                 onClick={(e) => {
                   e.stopPropagation()
-                  requestRun([take.sceneId])
+                  rerunTake(take.id)
                 }}
               >
                 <RotateCcw size={14} strokeWidth={1.75} />
@@ -273,7 +295,7 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
         aria-label="Chạy lại"
         onClick={(e) => {
           e.stopPropagation()
-          requestRun([take.sceneId])
+          rerunTake(take.id)
         }}
       >
         <RotateCcw size={14} strokeWidth={2.4} />

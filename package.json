@@ -2,7 +2,7 @@
   "name": "sanovids",
   "productName": "SanoVids",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.3",
   "description": "SanoVids — dựng phim AI theo từng cảnh trên canvas",
   "author": "SanoVids",
   "type": "module",

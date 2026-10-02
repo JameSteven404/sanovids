@@ -32,9 +32,12 @@ interface FileItem {
 type Step = 1 | 2 | 3
 
 const fmt = (n: number) => n.toLocaleString('vi-VN')
-const TOKEN_SPLIT = /(@(?:image|video)_\d+)\b/gi
+const TOKEN_SPLIT = /(@(?:image|video)_\??\d+)\b/gi
 
-/** Prompt text with @image_N (teal) / @video_N (purple) highlighted. `imageCount` marks numbers past it as unresolved. */
+/**
+ * Prompt text with @image_N (teal) / @video_N (purple) highlighted. `imageCount` marks numbers past it as unresolved;
+ * "@image_?N" placeholders (a number left without a picture) are always unresolved.
+ */
 function TokenText({ text, imageCount }: { text: string; imageCount?: number }) {
   const parts = text.split(TOKEN_SPLIT)
   return (
@@ -43,7 +46,7 @@ function TokenText({ text, imageCount }: { text: string; imageCount?: number }) 
         if (i % 2 === 0) return <Fragment key={i}>{p}</Fragment>
         const video = /^@video/i.test(p)
         const n = Number(p.slice(p.indexOf('_') + 1))
-        const bad = !video && imageCount !== undefined && n > imageCount
+        const bad = p.includes('?') || (!video && imageCount !== undefined && n > imageCount)
         return (
           <mark key={i} className={`dg-tok ${video ? 'video' : 'image'}${bad ? ' bad' : ''}`}>
             {p}
@@ -710,7 +713,7 @@ function StepMapping({
           <div className="dg-callout warn">
             <TriangleAlert size={14} />
             <span>
-              {withPending} cảnh còn số chưa gán: các số đó được đánh lại ngay sau ảnh đã nối. Nối thêm ảnh vào cảnh sau (theo đúng thứ tự) là khớp lại.
+              {withPending} cảnh còn số chưa gán: các số đó thành dấu chờ <code>@image_?N</code> (đỏ) để không bao giờ trỏ nhầm sang ảnh khác. Cảnh đó chưa chạy được cho tới khi bạn nối ảnh và sửa dấu chờ thành số đúng.
             </span>
           </div>
         )}

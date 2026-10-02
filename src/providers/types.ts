@@ -101,12 +101,29 @@ export interface JobResult {
   poster?: Blob | null
 }
 
+export interface SubmitOptions {
+  /**
+   * True once the take was cancelled / deleted in SanoVids. A paying provider checks it before every step and right
+   * before the request that creates (and bills) the job; it then gives up with a ProviderError code 'cancelled'.
+   */
+  isCancelled?: () => boolean
+}
+
 export interface VideoProvider {
   id: ProviderId
   label: string
   available(): Promise<ProviderAvailability>
   capabilities(model: ModelId): ProviderCapabilities
-  submit(req: JobRequest): Promise<{ remoteId: string }>
+  /**
+   * Create the job (req.key = idempotency key). Errors: code 'cancelled' (see SubmitOptions, nothing was created);
+   * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back.
+   */
+  submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
+  /**
+   * Find the job an earlier submit of `req.key` created (the page closed / reloaded before its id was saved)
+   * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown".
+   */
+  recover?(req: JobRequest): Promise<{ remoteId: string } | null>
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
   fetchResult(remoteId: string): Promise<JobResult>
@@ -125,6 +142,15 @@ export class ProviderError extends Error {
     this.code = code
   }
 }
+
+/** submit() gave up because the take was cancelled before the job was created (nothing was billed). */
+export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'cancelled'
+
+/**
+ * submit() failed in a way that leaves it UNKNOWN whether the provider created (and billed) the job — e.g. the
+ * connection broke after the request was sent. Such a take must never be submitted again under a new key.
+ */
+export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { uncertain?: unknown }).uncertain === true
 
 /**
  * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`

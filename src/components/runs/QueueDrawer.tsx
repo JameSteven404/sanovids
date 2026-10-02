@@ -3,7 +3,6 @@ import {
   ChevronUp,
   CircleStop,
   Cloud,
-  Coins,
   Download,
   Eye,
   ListVideo,
@@ -19,16 +18,19 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { deleteTakes, downloadTake, focusNodes, runNow } from '../../actions'
+import { deleteTakes, downloadTake, focusNodes, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
+import { chargedDemo, DEMO_CREDIT_HINT, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { chargedLocally, CREDIT_UNIT, formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
+import { CreditPill } from '../topbar/CreditPill'
+import { takeCostLine } from './creditText'
+import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
 const SPEED_LABEL: Record<MockSpeed, string> = { fast: 'nhanh', normal: 'vừa', slow: 'chậm' }
@@ -70,10 +72,8 @@ function QueueBar({ open }: { open: boolean }) {
       return { processing, queued, completed, failed, active, progress: active ? Math.round(progress / active) : 0 }
     }),
   )
-  const credits = useRuns((s) => s.credits)
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
-  const provider = useActiveProvider()
   const toggle = () => useUI.getState().setQueueOpen(!open)
 
   return (
@@ -120,18 +120,17 @@ function QueueBar({ open }: { open: boolean }) {
           <span className="rq-chip-text">Đang chạy ở tab khác</span>
         </span>
       )}
-      {provider === 'mock' ? (
-        <span className="rq-credit-pill" title={`${credits.toLocaleString('vi-VN')} credit demo — không phải tiền thật`}>
-          <Coins size={13} />
-          <b className="mono">{credits.toLocaleString('vi-VN')}</b>
-          <span className="rq-pill-label">credit demo</span>
-        </span>
-      ) : (
-        <span className="rq-credit-pill real" title="Take mới được tạo trên canvasapp.io.vn bằng credit thật của tài khoản bạn">
-          <Cloud size={13} />
-          <span className="rq-pill-label">{PROVIDER_LABEL.canvasapp}</span>
-        </span>
-      )}
+      {/* The same pill as the top bar (demo vs real credits). Its clicks / Enter / Space must not toggle the drawer;
+          other keys keep bubbling so the global shortcuts (window keydown, Ctrl+Z…) still work while it has focus. */}
+      <span
+        className="rq-bar-credit"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+        }}
+      >
+        <CreditPill size="sm" />
+      </span>
       <span className="rq-chevron">{open ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</span>
     </div>
   )
@@ -196,18 +195,18 @@ function QueuePanel() {
       <div className="rq-panel-head">
         {provider === 'mock' ? (
           <>
-            <span className="rq-wallet">
-              Số dư <b className="mono">{credits.toLocaleString('vi-VN')}</b> credit demo
+            <span className="rq-wallet" title={DEMO_CREDIT_HINT}>
+              Số dư <b className="mono">{formatCredits(credits, 'demo')}</b>
               <span className="faint"> · đã dùng </span>
-              <b className="mono">{spent.toLocaleString('vi-VN')}</b>
+              <b className="mono">{formatCredits(spent, 'demo')}</b>
             </span>
             <span className="rq-demo-note">
-              <Sparkles size={12} /> Chế độ demo: video giả, không tốn tiền
+              <Sparkles size={12} /> Chế độ demo: video giả, credit giả lập — không tốn tiền thật
             </span>
           </>
         ) : (
           <span className="rq-demo-note real">
-            <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — tốn credit thật của tài khoản bạn
+            <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — trừ credit canvasapp (tiền thật) khi job được nhận
           </span>
         )}
         <span className="rq-spacer" />
@@ -297,9 +296,8 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   const code = scene ? sceneCode(scene.order) : 'S??'
   const elapsed = takeElapsed(take, now)
   const ended = take.status === 'failed' || take.status === 'cancelled'
-  // Only demo credits come back: a real provider bills (and refunds) on the user's own account.
-  const refunded = ended && chargedLocally(take)
-  const unit = CREDIT_UNIT[providerOf(take)]
+  // Which credits paid it; struck = not (or no longer) paid: demo refunds, a job canvasapp never accepted.
+  const cost = takeCostLine(take)
   const open = () => useUI.getState().openDialog({ kind: 'take', takeId: take.id })
   const goto = () => gotoTake(take, scene)
   const [saving, setSaving] = useState(false)
@@ -314,11 +312,15 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   }
   const cancel = () => {
     const label = `${code} · T${take.number}`
-    const sentAway = !chargedLocally(take) && !!take.remoteId
+    const demoPaid = chargedDemo(take)
+    const sentAway = !demoPaid && !!take.remoteId
     useRuns.getState().cancel(take.id)
-    if (chargedLocally(take)) toast(`Đã huỷ ${label} · hoàn ${take.cost} credit demo.`)
+    if (demoPaid) toast(`Đã huỷ ${label} · hoàn ${formatCredits(take.cost, 'demo')}.`)
     else if (sentAway) toast(`Đã huỷ ${label} trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[providerOf(take)]} vẫn chạy ở đó.`, { tone: 'warning', ms: 7000 })
-    else toast(`Đã huỷ ${label}.`)
+    else if (!demoPaid && take.status === 'processing') {
+      // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
+      toast(`Đã huỷ ${label} lúc đang gửi sang ${PROVIDER_LABEL[providerOf(take)]} — nếu job đã được nhận thì có thể đã trừ credit.`, { tone: 'warning', ms: 7000 })
+    } else toast(`Đã huỷ ${label}.`)
   }
 
   return (
@@ -368,8 +370,9 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         {formatDuration(elapsed)}
       </span>
 
-      <span className={`rq-row-cost mono${refunded ? ' refunded' : ''}`} title={`${take.cost} ${unit}${refunded ? ' · đã hoàn' : ''}`}>
-        {take.cost} cr
+      <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
+        <span className="mono">{formatCredits(take.cost, cost.kind, { short: true })}</span>
+        {cost.kind === 'demo' && <span className="rq-demo-mark">demo</span>}
       </span>
 
       <div className="rq-row-actions">
@@ -380,7 +383,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
           </button>
         )}
         {ended && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={!scene} onClick={() => runNow([take.sceneId])} title="Chạy lại cảnh này">
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!scene} onClick={() => rerunTake(take.id)} title="Chạy lại cảnh này (xem chi phí trước khi gửi)">
             <RotateCcw size={13} />
             <span className="rq-act-label">Thử lại</span>
           </button>

@@ -42,12 +42,16 @@ export interface MockProviderOptions {
 }
 
 const defaultRender: MockRenderer = async (req, settings) => {
-  // Reference videos show up in the demo clip through their poster frames, then the images in @image order.
-  const imageIds = [
-    ...req.videos.map((v) => v.posterId).filter((x): x is string => !!x),
-    ...req.images.map((i) => i.imageId),
-    ...[req.firstFrame?.imageId, req.lastFrame?.imageId].filter((x): x is string => !!x),
+  // Each thumbnail carries the token it really is in the sent request, so the demo clip shows which picture
+  // @image_N / @video_N are (images first: they matter most for character consistency).
+  const items = [
+    ...[...req.images].sort((a, b) => a.n - b.n).map((i) => ({ id: i.imageId, label: `@image_${i.n}` })),
+    ...req.videos.filter((v) => !!v.posterId).map((v) => ({ id: v.posterId as string, label: `@video_${v.n}` })),
+    ...(req.firstFrame ? [{ id: req.firstFrame.imageId, label: 'khung đầu' }] : []),
+    ...(req.lastFrame ? [{ id: req.lastFrame.imageId, label: 'khung cuối' }] : []),
   ]
+  const imageIds = items.map((i) => i.id)
+  const labels = items.map((i) => i.label)
   const out = await renderMockBlobs({
     takeId: req.takeId,
     code: req.sceneCode,
@@ -58,6 +62,7 @@ const defaultRender: MockRenderer = async (req, settings) => {
     durationLabel: settingsLabel(req),
     color: req.color,
     imageIds,
+    labels,
     recordVideo: settings.recordVideo,
   })
   return { poster: out.poster, video: out.video }

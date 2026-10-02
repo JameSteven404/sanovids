@@ -5,6 +5,7 @@ import { X } from 'lucide-react'
 import { memo } from 'react'
 import { parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { staleNoteSince } from '../../core/staleTokens'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
@@ -51,6 +52,7 @@ export function cutEdge(id: string, silent = false) {
   const e = parseEdgeId(id)
   if (!e || e.kind === 'out') return
   const p = useProject.getState()
+  const projectBefore = p.project
   const before = sceneMapOf(p.project.scenes).get(e.to)
   if (!before) return
   const what = e.kind === 'vref' ? takeLabel(e.from) : assetMapOf(p.project.assets).get(e.from)?.name
@@ -63,8 +65,11 @@ export function cutEdge(id: string, silent = false) {
   useCanvasLocal.getState().setHoveredEdge(null)
   if (silent) return
   const renumbered = !!after && after.prompt !== before.prompt
-  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}.`, {
+  // Renumbering off: the prompt kept its numbers, which may now name another picture — say where to fix them.
+  const stale = staleNoteSince(projectBefore, useProject.getState().project)
+  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}${stale}.`, {
     action: undoToastAction(),
+    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
   })
 }
 

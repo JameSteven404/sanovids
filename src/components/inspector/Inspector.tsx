@@ -2,11 +2,12 @@
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
 // Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
-import { CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
+import { Cloud, CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { createSceneFromTake, focusNodes, newScene } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, modeLabel, usesVideoRefs } from '../../core/models'
+import { useCreditKind } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
@@ -173,6 +174,8 @@ function EmptyInspector() {
   const counts = useProject(useShallow((s) => [s.project.scenes.length, s.project.assets.length]))
   const takeCount = useRuns((s) => s.takes.length)
   const openDialog = useUI((s) => s.openDialog)
+  // Which provider the next run uses (docs/SPEC-v2.md §9): "no cost" is only true for the demo provider.
+  const creditKind = useCreditKind()
   return (
     <div className="in-empty">
       <div className="in-empty-icon">
@@ -234,9 +237,15 @@ function EmptyInspector() {
           <FileText size={14} /> Nhập prompt cũ
         </button>
       </div>
-      <p className="in-empty-foot faint">
-        <Sparkles size={12} /> Chế độ demo: video giả, không tốn tiền.
-      </p>
+      {creditKind === 'demo' ? (
+        <p className="in-empty-foot faint">
+          <Sparkles size={12} /> Chế độ demo: video giả, credit giả lập — không tốn tiền thật.
+        </p>
+      ) : (
+        <p className="in-empty-foot faint">
+          <Cloud size={12} /> Đang dùng canvasapp: video thật, mỗi lần chạy trừ credit canvasapp.
+        </p>
+      )}
     </div>
   )
 }

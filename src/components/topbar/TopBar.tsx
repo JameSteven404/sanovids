@@ -1,7 +1,5 @@
 import {
   Clapperboard,
-  Cloud,
-  Coins,
   Download,
   FileInput,
   FolderOpen,
@@ -31,10 +29,12 @@ import { downloadChosenTakesZip } from '../../actions'
 import type { ViewMode } from '../../core/types'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { activeProviderId, PROVIDER_LABEL, useProviderPrefs, type ProviderId } from '../../providers'
+import { startRealCreditsSync } from '../../store/credits'
 import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
 import { useActiveCount, useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { CreditPill } from './CreditPill'
 import './topbar.css'
 
 const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = [
@@ -49,6 +49,9 @@ const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = 
  */
 export function TopBar() {
   const openDialog = useUI((s) => s.openDialog)
+  // Real canvasapp balance: refreshed on focus / visibility / every 60 s while canvasapp runs new takes, and after
+  // every canvasapp job (store/credits). Ref-counted, so the pills' own useCreditInfo() share this one sync.
+  useEffect(() => startRealCreditsSync(), [])
   return (
     <header className="tb material">
       <div className="tb-left">
@@ -300,8 +303,9 @@ function RunningIndicator() {
 }
 
 /**
- * Shown only when new takes do NOT run on the demo provider: e.g. "canvasapp" (real gateway, desktop app). Turns
- * to a warning while that provider reports a problem (useRuns.providerIssue). Opens Settings, where it is chosen.
+ * Warning shown only while the provider new takes use is not the demo AND reports a problem
+ * (useRuns.providerIssue), e.g. the canvasapp session expired. Opens Settings. Without a problem the credit pill
+ * ("canvasapp · 1.234 credit") already names the provider, so nothing extra is shown.
  */
 function ProviderBadge() {
   // Subscribed so the badge follows the Settings choice; the bridge check inside activeProviderId() is static.
@@ -311,14 +315,13 @@ function ProviderBadge() {
   const id: ProviderId = chosen === 'mock' ? 'mock' : activeProviderId()
   if (id === 'mock') return null
   const problem = issue && issue.provider === id ? issue.message.trim().replace(/[.\s]+$/, '') || issue.code : null
-  const title = problem
-    ? `Video mới chạy qua ${PROVIDER_LABEL[id]} — đang gặp sự cố: ${problem}. Bấm để mở Cài đặt.`
-    : `Video mới chạy qua ${PROVIDER_LABEL[id]} (không phải bản demo). Bấm để mở Cài đặt.`
+  if (!problem) return null
+  const title = `Video mới chạy qua ${PROVIDER_LABEL[id]} — đang gặp sự cố: ${problem}. Bấm để mở Cài đặt.`
   return (
-    <button type="button" className={`tb-provider${problem ? ' issue' : ''}`} onClick={() => openDialog({ kind: 'settings' })} title={title} aria-label={title}>
-      {problem ? <TriangleAlert size={13} /> : <Cloud size={13} />}
+    <button type="button" className="tb-provider issue" onClick={() => openDialog({ kind: 'settings' })} title={title} aria-label={title}>
+      <TriangleAlert size={13} />
       {/* Icon only in narrower windows: the tooltip and aria-label carry the full text. */}
-      <span className="tb-hide-md">{id}</span>
+      <span className="tb-hide-md">Sự cố</span>
     </button>
   )
 }
@@ -362,25 +365,6 @@ function DownloadAllButton() {
     <button type="button" className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">
       {busy ? <LoaderCircle size={16} className="tb-spin" /> : <Download size={16} />}
       {count > 0 && !busy && <span className="tb-download-n">{count > 99 ? '99+' : count}</span>}
-    </button>
-  )
-}
-
-function CreditPill() {
-  const credits = useRuns((s) => s.credits)
-  const spent = useRuns((s) => s.spent)
-  const openDialog = useUI((s) => s.openDialog)
-  return (
-    <button
-      type="button"
-      className={`tb-credit ${credits < 20 ? 'low' : ''}`}
-      onClick={() => openDialog({ kind: 'settings' })}
-      title={`Credit demo — không tốn tiền thật. Đã dùng ${spent} credit. Bấm để nạp thêm.`}
-    >
-      <Coins size={13} />
-      <b>{credits.toLocaleString('vi-VN')}</b>
-      <span className="tb-hide-md">credit</span>
-      <span className="tb-credit-demo">demo</span>
     </button>
   )
 }

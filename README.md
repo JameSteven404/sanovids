@@ -2,9 +2,13 @@
 
 **SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@video_1`, chạy tạo video hàng loạt, rồi lấy video vừa tạo để nối tiếp sang cảnh sau.
 
+📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)**
+
 Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. Chạy được **trên web**, **cài như app** (PWA) hoặc bằng **file `.exe` trên Windows**.
 
-> ⚠️ **Đây là bản demo.** Phần tạo video đang dùng **nhà cung cấp giả lập**: không gọi mạng, không tốn tiền. Video trả về là clip minh hoạ được tạo ngay trên máy. Mục đích là thử giao diện, cách nối node và quy trình làm việc trước khi kết nối API thật.
+> ℹ️ **Hai cách tạo video:**
+> - **Demo giả lập** (mặc định, cả web lẫn desktop): không gọi mạng, không tốn tiền, video là clip minh hoạ tạo ngay trên máy. Dùng để làm quen giao diện và quy trình.
+> - **Cổng canvasapp.io.vn** (thử nghiệm, **chỉ bản desktop `.exe`**): tạo video thật bằng **tài khoản canvasapp của chính bạn**, trừ **credit thật**. Xem mục [Tạo video thật qua canvasapp.io.vn](#-tạo-video-thật-qua-canvasappiovn-bản-desktop).
 
 ---
 
@@ -25,27 +29,66 @@
 - Prompt gửi đi **đúng như bạn viết**. Ảnh nối vào cảnh được đánh số `@image_1`, `@image_2`… theo thứ tự nối; video tham chiếu là `@video_1`, `@video_2`….
 - Gõ `@` để chọn nhanh: ảnh đã nối, video đã nối, hoặc nhân vật chưa nối (ứng dụng tự nối rồi chèn số).
 - **Tự đánh lại số**: khi đổi thứ tự hoặc bỏ một ảnh/video, mọi `@image_N` / `@video_N` trong prompt được sửa theo, để không bị lệch nhân vật.
-- Token được tô màu ngay trong ô prompt (số không tồn tại tô đỏ). Dưới ô có bảng chú giải ảnh ↔ số.
+- Token được tô màu ngay trong ô prompt. Số không có ảnh thật trong lần gửi (vượt số ảnh, vượt giới hạn của model, hoặc dấu chờ `@image_?N`) tô đỏ và **chặn nút Chạy**, để không bao giờ gửi nhầm nhân vật. Dưới ô có bảng chú giải ảnh ↔ số.
+- Viết prompt trước rồi nối ảnh sau cũng được: `@image_1`, `@image_2` sẽ khớp với các nhân vật nối vào theo thứ tự.
+- Take đã bấm Chạy luôn gửi đúng bộ ảnh lúc bấm, dù bạn sửa thư viện trong lúc chờ.
 - Cảnh báo khi thiếu tham chiếu, vượt giới hạn ảnh/video của model, prompt quá dài.
 - **Copy prompt** và **Tải ảnh + video + prompt (.zip)** đã đánh số đúng thứ tự.
 - **Nhập prompt cũ**: dán nhiều prompt hoặc thả các file `.txt` để tạo cảnh hàng loạt. Có thể gán ảnh thư viện cho từng số `@image_N`.
 
 ### Chạy video & tải về
 - **Preset** (ví dụ *Nháp 30s · 480p*, *Final 15s · 1080p*), áp dụng cho nhiều cảnh một lần.
-- **Chạy hàng loạt** với bảng xác nhận chi phí, hàng đợi chạy song song, cập nhật tiến độ trực tiếp. Lỗi được hoàn credit.
+- **Chạy hàng loạt** với bảng xác nhận chi phí (ghi rõ trừ **credit demo** hay **credit canvasapp**), hàng đợi chạy song song, cập nhật tiến độ trực tiếp. Mọi nút Chạy / Chạy lại / Thử lại đều qua bảng chi phí, bấm đúp không bị chạy hai lần.
+- Nút Chạy bị khoá kèm lý do khi cảnh chưa chạy được (prompt trống, thiếu ảnh, `@image_N` không có ảnh thật…).
 - Đánh dấu ★ take chọn, khôi phục prompt của take cũ.
 - **Tải video**: một nút cho từng video (kèm file `.txt` chứa prompt), **"Tải tất cả video chọn (.zip)"**, hoặc bật **Tự tải video khi tạo xong** vào thư mục bạn chọn.
+
+### Xem video
+- **Rê chuột lên node Video** để xem ngay trên canvas, **có tiếng**. Thanh điều khiển ở đáy video: **thanh thời gian** (bấm hoặc kéo để tua), **phát/dừng**, **tốc độ** (0,5× → 2×), **âm lượng** (bấm loa để tắt/bật, kéo thanh hoặc lăn chuột để chỉnh).
+- Đã bấm vào điều khiển thì video **giữ mở** kể cả khi chuột rời node; bấm ra chỗ trống trên canvas để đóng. Rê sang node khác thì video đang mở tự dừng (không bao giờ hai video cùng kêu).
+- Âm lượng, tốc độ và bật/tắt tiếng được **nhớ trên máy**, dùng chung cho node, cửa sổ xem take và **Phát liền** ở Storyboard.
 
 ### Các màn hình khác
 - **Bảng cảnh**: xem dạng bảng, sắp xếp thứ tự, sửa hàng loạt.
 - **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, nút **Phát liền**.
 - Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh) để sao lưu hoặc chuyển máy.
+- Giao diện kiểu Apple, chế độ **Sáng / Tối / Theo hệ thống**.
+
+---
+
+## 🔌 Tạo video thật qua canvasapp.io.vn (bản desktop)
+
+> 🧪 **Thử nghiệm.** Cổng dùng API nội bộ của trang canvasapp.io.vn (không phải API công khai), có thể thay đổi bất cứ lúc nào. Nên hỏi ý bên vận hành canvasapp trước khi dùng lâu dài.
+
+**Bật cổng**
+1. Mở bản **desktop** (`.exe`) → **Cài đặt** → **Cổng canvasapp.io.vn**.
+2. Bấm **Đăng nhập canvasapp**: trang đăng nhập **thật** của canvasapp mở trong cửa sổ riêng, bạn tự đăng nhập ở đó. **SanoVids không bao giờ thấy mật khẩu.**
+3. Chọn **canvasapp.io.vn** ở "Nhà cung cấp video cho take mới". Ô credit trên thanh trên cùng đổi từ **DEMO** sang **canvasapp · số credit thật**.
+
+**Credit & nạp credit**
+- Số dư đọc trực tiếp từ tài khoản canvasapp (1 credit ≈ 1.000đ). Bảng chi phí trước khi chạy dùng đúng bảng giá của canvasapp.
+- Nút **+** cạnh ô credit (hoặc **Cài đặt → Nạp credit**): nhập số tiền → **Mở thanh toán QR** → trang **SePay** mở trong cửa sổ riêng → **bạn tự quét QR** bằng app ngân hàng. SanoVids chỉ cho mở trang của sepay.vn, không nhập hay thấy thông tin ngân hàng, và chỉ báo **"Đã nhận tiền"** khi chính canvasapp xác nhận.
+- **Lịch sử credit** xem ngay trong app.
+
+**An toàn tiền & đúng nhân vật**
+- `@image_N` luôn là đúng tấm ảnh thứ N gửi đi (thứ tự tải lên = thứ tự `@image`). Mỗi ảnh chỉ tải lên canvasapp một lần.
+- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. Take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng **cùng mã yêu cầu**.
+- Video đã tạo xong (đã trả tiền) mà tải về lỗi thì app tự thử tải lại, không đánh "thất bại".
+- Đóng app khi đang tạo: mở lại, app tiếp tục theo dõi job cũ, không gửi lại.
+
+**Giới hạn hiện tại**
+- Tối đa 2 job cùng lúc, cập nhật tiến độ khoảng 20 giây/lần.
+- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cảnh tiếp nối chỉ chạy bằng Demo).
+- App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Đừng sửa phiên này bằng tay.**
+- Huỷ trong SanoVids chỉ ngừng theo dõi: job đã gửi vẫn chạy và tính tiền trên canvasapp.
+
+👉 Lần đầu dùng credit thật, làm theo danh sách tự kiểm tra (tốn khoảng 8 credit): [docs/TEST-REAL-CREDITS.md](docs/TEST-REAL-CREDITS.md).
 
 ---
 
 ## 💻 Cài trên Windows (file .exe)
 
-Trong mục [Releases](../../releases) (hoặc thư mục `release/` sau khi tự build) có 2 file:
+Vào mục **[Releases](https://github.com/JameSteven404/sanovids/releases)** (hoặc thư mục `release/` sau khi tự build), chọn phiên bản mới nhất. Mỗi phiên bản có 2 file:
 
 | File | Dùng khi |
 |---|---|
@@ -122,20 +165,23 @@ npm run dev
 src/
 ├── core/          # Mô hình dữ liệu, xử lý prompt & đánh số @image/@video, model & giá, di trú dữ liệu (+ test)
 ├── store/         # Trạng thái: dự án (có hoàn tác), hàng đợi/take, giao diện, lưu trữ IndexedDB
-├── lib/           # Lưu ảnh/video, tải về, kéo-thả, PWA, nhà cung cấp video giả lập
+├── lib/           # Lưu ảnh/video, tải về, kéo-thả, PWA, giao diện sáng/tối, phát video, credit
+├── providers/     # Nhà cung cấp video: giả lập (mock) và cổng canvasapp.io.vn (api, ánh xạ, cầu nối desktop)
 ├── components/
 │   ├── canvas/    # Canvas: thẻ cảnh, node Video, thẻ nhân vật, dây nối, thanh công cụ
 │   ├── sidebar/   # Thư viện, Video đã tạo, Preset
 │   ├── inspector/ # Bảng chỉnh sửa, ô prompt có gợi ý @ và tô màu token
 │   ├── runs/      # Hàng đợi, xác nhận chạy, xem take
 │   ├── views/     # Bảng cảnh, Storyboard
-│   ├── dialogs/   # Nhập prompt, cài đặt, dự án, phím tắt
+│   ├── dialogs/   # Nhập prompt, cài đặt (cổng canvasapp), dự án, phím tắt
+│   ├── topbar/    # Thanh trên cùng, ô credit (demo / canvasapp)
+│   ├── topup/     # Nạp credit canvasapp (QR SePay), lịch sử credit
 │   └── common/    # Modal, thông báo, ảnh, kéo đổi độ rộng
 ├── actions.ts     # Lệnh dùng chung (nối, xoá, chạy, tải, copy…)
 └── App.tsx        # Khung ứng dụng
-electron/          # Vỏ ứng dụng desktop (Electron)
+electron/          # Vỏ ứng dụng desktop (Electron), cửa sổ đăng nhập / thanh toán canvasapp
 public/            # Icon, manifest PWA
-docs/              # Đặc tả (SPEC.md, SPEC-v2.md)
+docs/              # Đặc tả (SPEC.md, SPEC-v2.md), cổng canvasapp, tự kiểm tra credit thật
 ```
 
 ## 🛠️ Công nghệ
@@ -144,8 +190,12 @@ docs/              # Đặc tả (SPEC.md, SPEC-v2.md)
 ---
 
 ## 🧭 Lộ trình
+Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
+
 - [x] v1: canvas, thư viện, nối hàng loạt, hàng đợi giả lập, bảng cảnh, storyboard
 - [x] v2: node Video, `@image_N` / `@video_N` tự đánh số, bỏ khối prompt, IndexedDB, PWA, file `.exe`, nút tải video
+- [x] v0.2 (thử nghiệm): cổng canvasapp.io.vn trong bản desktop (đăng nhập trên trang thật, credit thật, nạp credit bằng QR SePay), khoá chặt đồng bộ nhân vật, xem video có tiếng + thanh điều khiển ngay trên node. Tự kiểm tra trước khi dùng: [docs/TEST-REAL-CREDITS.md](docs/TEST-REAL-CREDITS.md)
+- [ ] Video tham chiếu `@video_N` qua cổng canvasapp
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
 - [ ] Ký số file `.exe`, tự cập nhật phiên bản

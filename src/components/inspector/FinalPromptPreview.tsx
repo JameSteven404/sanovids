@@ -10,7 +10,7 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useTakeInfos } from './hooks'
 import { EMPTY_IDS, fmt, usePref } from './shared'
-import { imageOptsFor, segmentPrompt } from './tokens'
+import { imageOptsFor, invalidTokenTitle, segmentPrompt } from './tokens'
 
 /** compileScene only reads the assets and the scene: avoid subscribing to the whole project. */
 function compileFor(assets: Asset[], scene: Scene, takeStatus: (id: string) => string | undefined) {
@@ -96,7 +96,14 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
               ))}
             </ul>
           )}
-          <FinalText text={compiled.text} imageCount={names.images.size} videoCount={videoRefs.length} names={names} />
+          <FinalText
+            text={compiled.text}
+            imageCount={names.images.size}
+            videoCount={videoRefs.length}
+            sentImages={compiled.images.length}
+            sentVideos={compiled.videos.length}
+            names={names}
+          />
         </div>
       )}
     </section>
@@ -107,14 +114,22 @@ const FinalText = memo(function FinalText({
   text,
   imageCount,
   videoCount,
+  sentImages,
+  sentVideos,
   names,
 }: {
   text: string
   imageCount: number
   videoCount: number
+  /** What the request really carries (compileScene's images / videos): tokens past it reach no picture. */
+  sentImages: number
+  sentVideos: number
   names: { images: Map<number, string>; videos: Map<number, string> }
 }) {
-  const segs = useMemo(() => segmentPrompt(text, imageCount, videoCount), [text, imageCount, videoCount])
+  const segs = useMemo(
+    () => segmentPrompt(text, imageCount, videoCount, undefined, { images: sentImages, videos: sentVideos }),
+    [text, imageCount, videoCount, sentImages, sentVideos],
+  )
   if (!text) return <div className="empty">Chưa có nội dung — viết prompt cho cảnh.</div>
   return (
     <div className="in-final-text">
@@ -122,7 +137,7 @@ const FinalText = memo(function FinalText({
         if (s.kind === 'text') return s.text
         const name = s.n !== undefined ? (s.kind === 'image' ? names.images : names.videos).get(s.n) : undefined
         return (
-          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''}`} title={s.invalid ? `${s.text} không tồn tại` : name ? `${s.text} = ${name}` : s.text}>
+          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''}`} title={s.invalid ? invalidTokenTitle(s) : name ? `${s.text} = ${name}` : s.text}>
             {s.text}
           </mark>
         )

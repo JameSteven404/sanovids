@@ -2,14 +2,17 @@
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
+import { staleNoteSince } from './core/staleTokens'
 import { usesVideoRefs } from './core/models'
+import { creditKindOf, formatCredits } from './lib/credits'
+import { activeProviderId } from './providers'
 import { restoredFromTake } from './components/runs/restore'
 import type { AssetKind, XY } from './core/types'
 import { prepareFolderAccess, saveFiles, savePendingDownloads, takeFiles, useDownloadPrefs, type FileToSave, type SaveResult } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { redo, setTakeHeightSource, undo, undoToastAction, useProject } from './store/project'
-import { useRuns } from './store/runs'
-import { toast, useUI } from './store/ui'
+import { isUncertainSubmit, useRuns } from './store/runs'
+import { toast, useUI, type TopUpTab } from './store/ui'
 
 // Scene rows on the canvas grow with their tallest (resized) take: the project store's layout asks the runs store.
 setTakeHeightSource((sceneId) => {
@@ -57,13 +60,18 @@ export function selectedSceneIds(): string[] {
  */
 export function selectedAssetIds(): string[] {
   const { selectedIds, librarySelection } = useUI.getState()
-  return pickAssetSelection(selectedIds, librarySelection, new Set(useProject.getState().project.assets.map((a) => a.id)))
+  const takeIds = new Set(useRuns.getState().takes.map((t) => t.id))
+  return pickAssetSelection(selectedIds, librarySelection, new Set(useProject.getState().project.assets.map((a) => a.id)), takeIds)
 }
 
-/** Pure rule behind selectedAssetIds (unit-tested). */
-export function pickAssetSelection(canvasSelection: string[], librarySelection: string[], assetIds: Set<string>): string[] {
+/**
+ * Pure rule behind selectedAssetIds (unit-tested). The library selection is used only when the canvas selection
+ * holds nothing but scenes: with a video (take) node selected the user is connecting that video, not old cards.
+ */
+export function pickAssetSelection(canvasSelection: string[], librarySelection: string[], assetIds: Set<string>, takeIds?: ReadonlySet<string>): string[] {
   const onCanvas = canvasSelection.filter((id) => assetIds.has(id))
   if (onCanvas.length) return [...new Set(onCanvas)]
+  if (takeIds && canvasSelection.some((id) => takeIds.has(id))) return []
   return [...new Set(librarySelection.filter((id) => assetIds.has(id)))]
 }
 
@@ -141,6 +149,9 @@ export function connectSelection() {
   }
   if (assets.length) linkAssets(scenes, assets)
   if (takes.length) linkTakes(scenes, takes)
+  // Cards picked in the library (not on the canvas) have been used: clear them so they are not linked again later.
+  const ui = useUI.getState()
+  if (assets.length && ui.librarySelection.length && !ui.selectedIds.some((id) => assets.includes(id))) ui.setLibrarySelection([])
 }
 
 /**
@@ -207,7 +218,13 @@ export function createSceneFromTake(takeId: string, position?: XY) {
   const id = useProject.getState().createNextScene(source.id, position, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   focusNodes([id])
-  toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1).`, { tone: 'success', action: undoToastAction() })
+  if (creditKindOf(activeProviderId()) === 'canvasapp')
+    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp chưa nhận video tham chiếu — cảnh này chỉ chạy được bằng Demo, hoặc bỏ @video_1.`, {
+      tone: 'warning',
+      action: undoToastAction(),
+      ms: 9000,
+    })
+  else toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1).`, { tone: 'success', action: undoToastAction() })
   return id
 }
 
@@ -262,6 +279,7 @@ export function deleteSelection() {
     if (check.question && !window.confirm(check.question)) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
+  const projectBefore = useProject.getState().project
   const takesDeleted = takeIds.length ? (deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0) : 0
   if (sceneIds.length || hideAssetIds.length || links) {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames }, videoLabel)
@@ -271,7 +289,12 @@ export function deleteSelection() {
   const deleted = [sceneIds.length && `${sceneIds.length} cảnh`, takesDeleted && `${takesDeleted} video`, links && `${links} dây nối`].filter(Boolean)
   const said = [deleted.length && `Đã xoá ${deleted.join(', ')}`, hideAssetIds.length && `${deleted.length ? 'đã ẩn' : 'Đã ẩn'} ${hideAssetIds.length} thẻ khỏi canvas`]
   const undoable = sceneIds.length || hideAssetIds.length || links
-  toast(`${said.filter(Boolean).join('; ')}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, undoable ? { action: undoToastAction() } : {})
+  // Renumbering off: prompts that kept numbers now naming another picture / video.
+  const stale = staleNoteSince(projectBefore, useProject.getState().project)
+  toast(`${said.filter(Boolean).join('; ')}${stale}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, {
+    ...(undoable ? { action: undoToastAction() } : {}),
+    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
+  })
 }
 
 /** Appended to every toast about deleted takes. */
@@ -311,6 +334,7 @@ export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions
   const usedCodes = check.usedBy.map((s) => sceneCode(s.order))
   const ids = new Set(check.ids)
   const dead = all.filter((t) => ids.has(t.id))
+  const projectBefore = useProject.getState().project
   useRuns.getState().removeTakes(check.ids)
   for (const t of dead) {
     if (t.posterId) void deleteMedia(t.posterId).catch(() => undefined)
@@ -318,7 +342,10 @@ export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions
   }
   const ui = useUI.getState()
   if (ui.selectedIds.some((id) => ids.has(id))) ui.select(ui.selectedIds.filter((id) => !ids.has(id)))
-  if (opts.toast ?? true) toast(`Đã xoá ${label}${usedCodes.length ? ` và bỏ @video ở ${usedCodes.join(', ')}` : ''}. ${TAKES_GONE_NOTE}`)
+  const stale = staleNoteSince(projectBefore, useProject.getState().project, '@video')
+  // toast: false → the caller's own toast reports it (deleteSelection compares the same before / after projects).
+  if (opts.toast ?? true)
+    toast(`Đã xoá ${label}${usedCodes.length ? ` và bỏ @video ở ${usedCodes.join(', ')}` : ''}${stale}. ${TAKES_GONE_NOTE}`, stale ? { tone: 'warning', ms: 8000 } : {})
   return dead.length
 }
 
@@ -366,13 +393,39 @@ export async function addImagesToAsset(assetId: string, files: File[]) {
 }
 
 // ---------------- running ----------------
-/** Open the run confirmation dialog (cost summary) for scenes. Defaults to the selection. */
-export function requestRun(sceneIds: string[] = selectedSceneIds()) {
+/**
+ * Open the run confirmation dialog (cost summary) for scenes. Defaults to the selection. Every way to start a paid
+ * run goes through it (cost + wallet shown, a double click cannot queue twice). `follow`: open the new take after.
+ */
+export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { follow?: boolean } = {}) {
   if (!sceneIds.length) {
     toast('Chọn cảnh cần chạy trước.', { tone: 'warning' })
     return
   }
-  useUI.getState().openDialog({ kind: 'runConfirm', sceneIds })
+  useUI.getState().openDialog({ kind: 'runConfirm', sceneIds, follow: opts.follow })
+}
+
+/**
+ * "Chạy lại" on a take. A canvasapp take whose submit outcome is unknown is re-sent as the SAME take (same key: the
+ * job it may already have created is looked up first, so it is never paid twice). Anything else → the cost dialog
+ * for a new take of its scene.
+ */
+export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take) return
+  if (!isUncertainSubmit(take)) {
+    requestRun([take.sceneId], opts)
+    return
+  }
+  const ok = window.confirm(
+    `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
+      'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
+  )
+  if (!ok) return
+  const res = useRuns.getState().retry(takeId)
+  if (!res) return
+  if (res.error) toast(res.error, { tone: 'error' })
+  else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
 }
 
 /** Enqueue immediately (used by the confirm dialog). */
@@ -382,7 +435,10 @@ export function runNow(sceneIds: string[]) {
     toast(res.error, { tone: 'error' })
     return res
   }
-  toast(`Đã gửi ${res.queued} cảnh vào hàng đợi · −${res.cost} credit${res.skipped.length ? ` · bỏ qua ${res.skipped.length}` : ''}`, { tone: 'success' })
+  // Say which wallet: demo credits are taken now; canvasapp charges the real account when it accepts the job.
+  const kind = creditKindOf(activeProviderId())
+  const cost = kind === 'demo' ? `−${formatCredits(res.cost, kind)}` : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
+  toast(`Đã gửi ${res.queued} cảnh vào hàng đợi · ${cost}${res.skipped.length ? ` · bỏ qua ${res.skipped.length}` : ''}`, { tone: 'success' })
   return res
 }
 
@@ -401,9 +457,11 @@ export function restoreFromTake(takeId: string) {
   // One store mutation = one undo step, so the toast's "Hoàn tác" reverts everything together.
   useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
   const extra = r.gone ? ` (bỏ ${r.gone} tham chiếu không còn tồn tại${r.renumbered ? ', đã đánh lại số @image/@video' : ''})` : ''
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${extra}.`, {
-    tone: 'success',
+  const stale = r.stale ? ' Tự đánh lại số đang tắt — số @image/@video trong prompt có thể không còn đúng ảnh/video, hãy kiểm tra.' : ''
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${extra}.${stale}`, {
+    tone: stale ? 'warning' : 'success',
     action: undoToastAction(),
+    ms: stale ? 9000 : undefined,
   })
 }
 
@@ -576,6 +634,16 @@ export function viewImages(imageIds: string[], index = 0, title?: string) {
 export function viewAssetImages(assetId: string, index = 0) {
   const asset = useProject.getState().project.assets.find((a) => a.id === assetId)
   if (asset) viewImages(asset.imageIds, index, asset.name)
+}
+
+// ---------------- canvasapp top-up (docs/SPEC-v2.md §10) ----------------
+/**
+ * Open the "Nạp credit canvasapp" sheet on a tab ('topup' = buy credits with SePay QR, 'history' = credit history).
+ * The sheet explains by itself when top-up cannot be used here (web build, not logged in, topup_enabled false…).
+ * Meant to be opened from the real-credit pill and Settings › Cổng canvasapp (wired by those components).
+ */
+export function openTopUp(tab: TopUpTab = 'topup') {
+  useUI.getState().openDialog({ kind: 'topup', tab })
 }
 
 export { undo, redo }

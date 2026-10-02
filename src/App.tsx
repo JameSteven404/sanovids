@@ -26,6 +26,7 @@ const chunks = {
   runConfirmDialog: () => import('./components/runs/RunConfirmDialog'),
   takeViewer: () => import('./components/runs/TakeViewer'),
   assetDialog: () => import('./components/sidebar/AssetDialog'),
+  topUpDialog: () => import('./components/topup/TopUpDialog'),
 }
 
 const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
@@ -37,6 +38,7 @@ const ProjectsDialog = lazy(() => chunks.projectsDialog().then((m) => ({ default
 const RunConfirmDialog = lazy(() => chunks.runConfirmDialog().then((m) => ({ default: m.RunConfirmDialog })))
 const TakeViewer = lazy(() => chunks.takeViewer().then((m) => ({ default: m.TakeViewer })))
 const AssetDialog = lazy(() => chunks.assetDialog().then((m) => ({ default: m.AssetDialog })))
+const TopUpDialog = lazy(() => chunks.topUpDialog().then((m) => ({ default: m.TopUpDialog })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -163,13 +165,15 @@ function renderDialog(dialog: DialogState): ReactNode {
     case 'projects':
       return <ProjectsDialog />
     case 'runConfirm':
-      return <RunConfirmDialog sceneIds={dialog.sceneIds} />
+      return <RunConfirmDialog sceneIds={dialog.sceneIds} follow={dialog.follow} />
     case 'take':
       return <TakeViewer takeId={dialog.takeId} />
     case 'image':
       return <ImageLightbox key={dialog.imageIds.join('|') + dialog.index} imageIds={dialog.imageIds} index={dialog.index} title={dialog.title} />
     case 'asset':
       return <AssetDialog assetId={dialog.assetId} />
+    case 'topup':
+      return <TopUpDialog tab={dialog.tab} />
     default:
       return null
   }

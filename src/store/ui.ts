@@ -20,11 +20,17 @@ export type DialogState =
   | { kind: 'import' }
   | { kind: 'settings' }
   | { kind: 'shortcuts' }
-  | { kind: 'runConfirm'; sceneIds: string[] }
+  /** `follow`: after the run starts, open the take viewer on the new take (re-run from the viewer). */
+  | { kind: 'runConfirm'; sceneIds: string[]; follow?: boolean }
   | { kind: 'take'; takeId: string }
   | { kind: 'asset'; assetId: string }
   | { kind: 'image'; imageIds: string[]; index: number; title?: string }
   | { kind: 'projects' }
+  /** "Nạp credit canvasapp" sheet (components/topup, docs/SPEC-v2.md §10). Open it with actions.openTopUp(tab). */
+  | { kind: 'topup'; tab?: TopUpTab }
+
+/** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
+export type TopUpTab = 'topup' | 'history'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'

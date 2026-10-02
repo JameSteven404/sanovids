@@ -21,5 +21,15 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     logout: () => ipcRenderer.invoke('canvasapp:logout'),
     /** { method, path, json?, form?, binary? } → { ok: true, status, contentType, json?, text?, bytes? } | { ok: false, code, message } */
     request: (req) => ipcRenderer.invoke('canvasapp:request', req),
+    /**
+     * Top-up: { checkoutUrl, fields } (from POST /api/payments/topups) → opens the REAL checkout page (SePay) in a
+     * modal window; main re-validates the URL. → { ok: true, result: 'success'|'cancel'|'error'|'closed'|'timeout',
+     * orderId, blockedHost } | { ok: false, code, message }. Only plain data crosses: no payment data, no cookies.
+     */
+    checkout: (args) =>
+      ipcRenderer.invoke('canvasapp:checkout', {
+        checkoutUrl: args && typeof args.checkoutUrl === 'string' ? args.checkoutUrl : '',
+        fields: args && args.fields && typeof args.fields === 'object' ? { ...args.fields } : {},
+      }),
   },
 })
