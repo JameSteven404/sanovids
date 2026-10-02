@@ -1,10 +1,12 @@
 // Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene),
-// video references (take -> scene, @video_N) and take outputs (scene -> take, not deletable).
+// video references (take -> scene, @video_N), take outputs (scene -> take, not deletable) and wires into folder
+// nodes: save (take -> folder) and autosave (scene -> folder, dashed).
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { memo } from 'react'
-import { parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
+import { isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { folderMapOf } from '../../core/folders'
 import { staleNoteSince } from '../../core/staleTokens'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
@@ -32,6 +34,8 @@ const KIND_STROKE: Record<EdgeKind, string> = {
   last: 'var(--last)',
   vref: VIDEO_COLOR,
   out: 'var(--seq)',
+  save: 'var(--save)',
+  autosave: 'var(--save)',
 }
 
 const CUT_LABEL: Record<EdgeKind, string> = {
@@ -40,6 +44,8 @@ const CUT_LABEL: Record<EdgeKind, string> = {
   last: 'khung cuối',
   vref: 'video tham chiếu',
   out: '',
+  save: 'lưu',
+  autosave: 'tự lưu',
 }
 
 /**
@@ -51,6 +57,10 @@ const CUT_LABEL: Record<EdgeKind, string> = {
 export function cutEdge(id: string, silent = false) {
   const e = parseEdgeId(id)
   if (!e || e.kind === 'out') return
+  if (isFolderEdge(e.kind)) {
+    cutFolderEdge(id, e.kind, e.from, e.to, silent)
+    return
+  }
   const p = useProject.getState()
   const projectBefore = p.project
   const before = sceneMapOf(p.project.scenes).get(e.to)
@@ -73,13 +83,33 @@ export function cutEdge(id: string, silent = false) {
   })
 }
 
+/** Cut a wire into a folder node (one undo step). The files already saved there stay. */
+function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, folderId: string, silent: boolean) {
+  const p = useProject.getState()
+  const folder = folderMapOf(p.project.folders).get(folderId)
+  if (!folder) return
+  p.unlinkFolder(folderId, kind, from)
+  const ui = useUI.getState()
+  if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
+  useCanvasLocal.getState().setHoveredEdge(null)
+  if (silent) return
+  const scene = kind === 'autosave' ? sceneMapOf(p.project.scenes).get(from) : undefined
+  const what = kind === 'autosave' ? (scene ? sceneCode(scene.order) : 'cảnh') : takeLabel(from)
+  toast(
+    kind === 'autosave'
+      ? `Đã bỏ tự lưu ${what} vào “${folder.name}” (video đã lưu vẫn còn trong thư mục).`
+      : `Đã bỏ nối ${what} khỏi thư mục “${folder.name}” (file đã lưu vẫn còn).`,
+    { action: undoToastAction() },
+  )
+}
+
 function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LinkEdge>) {
   const hovered = useCanvasLocal((s) => s.hoveredEdgeId === id)
   const kind = data?.kind ?? 'ref'
   let ty = targetY
   // Wires arriving at the same handle are spread apart. A selected wire goes to the handle's center: that is where
   // its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
-  if ((kind === 'ref' || kind === 'vref') && data && data.count > 1 && !selected) {
+  if ((kind === 'ref' || kind === 'vref' || kind === 'save' || kind === 'autosave') && data && data.count > 1 && !selected) {
     const off = (data.index - (data.count - 1) / 2) * 6
     ty = targetY + Math.max(-48, Math.min(48, off))
   }
@@ -105,7 +135,9 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   const style = {
     stroke,
     strokeWidth: selected ? 2.5 : hl ? 2 : 1.5,
-    opacity: hl ? 1 : kind === 'vref' ? 0.65 : 0.45,
+    opacity: hl ? 1 : kind === 'vref' || kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
+    // A scene's "tự lưu" wire stands for every future video: dashed, unlike a one-video "lưu" wire.
+    strokeDasharray: kind === 'autosave' ? '6 5' : undefined,
     strokeLinecap: 'round' as const,
     transition: 'opacity 0.15s ease-out, stroke-width 0.15s ease-out',
     filter: selected ? `drop-shadow(0 0 3px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.6)})` : undefined,
@@ -146,4 +178,6 @@ export const edgeTypes = {
   last: LinkEdgeView,
   vref: LinkEdgeView,
   out: LinkEdgeView,
+  save: LinkEdgeView,
+  autosave: LinkEdgeView,
 }

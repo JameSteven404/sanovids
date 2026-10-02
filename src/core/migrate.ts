@@ -1,6 +1,8 @@
 // Schema migrations for saved projects and takes. Pure functions (unit-tested).
 import { scenePosition } from '../store/project'
 import { assetByTag, imageSlotsFor, mediaKeys, MENTION_RE, remapTokens, uniqueTag } from './compile'
+import { cleanTakeFileName } from './fileNames'
+import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
 import { normalizeSettings } from './models'
 import type { Asset, AssetKind, Preset, Project, Scene, Take, XY } from './types'
@@ -128,9 +130,9 @@ export function migrateProject(raw: unknown): Project {
     }
   })
 
-  const { blocks: _b, ...restProject } = p as Record<string, unknown>
+  const { blocks: _b, folders: rawFolders, ...restProject } = p as Record<string, unknown>
   const now = Date.now()
-  return {
+  const out: Project = {
     ...(restProject as unknown as Project),
     id: typeof p.id === 'string' && p.id ? p.id : newId('prj'),
     name: text(p.name).trim() ? text(p.name) : 'Dự án',
@@ -142,6 +144,11 @@ export function migrateProject(raw: unknown): Project {
     scenes,
     settings: { autoRenumber: (p.settings as { autoRenumber?: boolean } | undefined)?.autoRenumber ?? true },
   }
+  // "Thư mục" nodes: ids that collide with no scene / asset node, links to scenes that still exist. Projects without
+  // folders keep no `folders` key (older files stay byte-for-byte the same after a load).
+  const folders = normalizeFolders(rawFolders, new Set([...assets.map((a) => a.id), ...scenes.map((s) => s.id)]), sceneIds)
+  if (folders.length) out.folders = folders
+  return out
 }
 
 /**
@@ -179,6 +186,10 @@ export function migrateTake(raw: unknown): Take {
   }
   if (t.submitUnknown === true) out.submitUnknown = true
   else delete out.submitUnknown
+  // Custom file name: sanitized again (a file from elsewhere may hold separators, "..", reserved names…).
+  const fileName = cleanTakeFileName(t.fileName)
+  if (fileName) out.fileName = fileName
+  else delete out.fileName
   if (frames && typeof frames === 'object') out.framesSnapshot = { first: frames.first ?? null, last: frames.last ?? null }
   else delete out.framesSnapshot
   if (t.imageKeysSnapshot !== undefined) {

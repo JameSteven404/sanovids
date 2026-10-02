@@ -3,6 +3,7 @@
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
 import { selectedSceneIds } from '../../actions'
+import { FOLDER_H, FOLDER_W } from '../../core/folders'
 import { chooseTake, videoUsageOf } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
@@ -605,6 +606,7 @@ export function focusViewport(box: Box, vp: Viewport, stage: StageSize, readable
 /** Size a node is drawn at before React Flow measured it (new or never rendered): the default card sizes. */
 export function fallbackNodeSize(type: string | undefined): { w: number; h: number } {
   if (type === 'take') return { w: LAYOUT.takeW, h: LAYOUT.takeH }
+  if (type === 'folder') return { w: FOLDER_W, h: FOLDER_H }
   if (type === 'asset') return { w: ASSET_DEFAULT_W, h: assetDefaultLayout(1).h }
   return { w: LAYOUT.sceneW, h: NODE_SIZE.scene.minH }
 }

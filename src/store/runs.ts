@@ -24,6 +24,7 @@
 //   onRunEvent(listener) → unsubscribe; events { type: 'submitted' | 'completed' | 'failed' | 'cancelled', takeId, provider }.
 import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
+import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
 import { migrateTake } from '../core/migrate'
@@ -108,6 +109,8 @@ export interface RunsState {
   setTakePositions: (positions: Record<string, XY | null>) => void
   /** Canvas sizes of take nodes (null = default size). */
   setTakeSizes: (sizes: Record<string, Size | null>) => void
+  /** File name of a take's video (sanitized; null / empty = back to the default "S01_T1 - title"). */
+  setTakeFileName: (takeId: string, name: string | null) => void
   setMock: (patch: Partial<MockSettings>) => void
   /** Add demo credits (Settings "+100"). */
   addCredits: (n: number) => void
@@ -436,6 +439,21 @@ export const useRuns = create<RunsState>()((set, get) => ({
     set((s) => ({ takes: s.takes.map((t) => (t.id in sizes ? { ...t, size: sizes[t.id] ? clampSize('take', sizes[t.id]!) : null } : t)) })),
   setTakePositions: (positions) =>
     set((s) => ({ takes: s.takes.map((t) => (t.id in positions ? { ...t, position: positions[t.id] } : t)) })),
+  setTakeFileName: (takeId, name) =>
+    set((s) => {
+      const clean = cleanTakeFileName(name)
+      const cur = s.takes.find((t) => t.id === takeId)
+      if (!cur || (cur.fileName ?? null) === clean) return s
+      return {
+        takes: s.takes.map((t) => {
+          if (t.id !== takeId) return t
+          const next = { ...t }
+          if (clean) next.fileName = clean
+          else delete next.fileName
+          return next
+        }),
+      }
+    }),
   setMock: (patch) => {
     const mock = { ...get().mock, ...patch }
     try {

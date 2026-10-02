@@ -83,6 +83,33 @@ export interface ProjectSettings {
   autoRenumber: boolean
 }
 
+/**
+ * A folder on the user's computer shown as a "Thư mục" node on the canvas. Wires into it copy finished videos there:
+ *   take  → folder ('save')     that video (+ its prompt .txt) is copied when wired, or as soon as it finishes;
+ *   scene → folder ('autosave') every take of that scene that finishes from then on is copied there.
+ * Files are never overwritten (" (2)" is added). The wires are project data (undoable); the files are not.
+ */
+export interface SaveFolder {
+  id: string
+  /** Shown on the node: the folder's own name. */
+  name: string
+  /**
+   * Desktop app: absolute path of the folder. The main process only writes to folders the user picked on this
+   * computer, so a path from another machine (imported project) asks to "Chọn lại thư mục". Web: null — the browser
+   * keeps a folder handle per folder id (lib/saveFolders.ts), never a path.
+   */
+  path: string | null
+  position: XY
+  /** Canvas node size (null/undefined = default). */
+  size?: Size | null
+  /** What a wire into the folder does. Only 'copy' for now (the video stays in SanoVids too). */
+  mode: 'copy'
+  /** Scenes wired in ('autosave'): each of their takes that completes from then on is saved here. */
+  autoScenes?: string[]
+  /** Takes wired in ('save'): copied when wired, or when they finish. */
+  takes?: string[]
+}
+
 export interface Project {
   id: string
   name: string
@@ -93,6 +120,8 @@ export interface Project {
   presets: Preset[]
   scenes: Scene[]
   settings: ProjectSettings
+  /** "Thư mục" nodes (missing in projects made before folders existed = none). */
+  folders?: SaveFolder[]
 }
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -126,6 +155,11 @@ export interface Take {
   position: XY | null
   /** Canvas node size (null/undefined = default). */
   size?: Size | null
+  /**
+   * File name the user gave the video, without extension (sanitized, see core/fileNames cleanTakeFileName). Every save
+   * uses it (download, zip, auto-download, folder nodes). Missing = the default "S01_T1 - <scene title>".
+   */
+  fileName?: string
   // ---- provider fields (optional: takes saved before providers existed have none; migrateTake fills them) ----
   /** Video provider that runs this take. Missing = 'mock'. */
   provider?: TakeProvider

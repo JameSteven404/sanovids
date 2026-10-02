@@ -305,7 +305,8 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
   const dragSet = useMemo(() => new Set(dragging ?? EMPTY_IDS), [dragging])
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
   const folderName = useDownloadPrefs((s) => s.folderName)
-  const folderHint = folderName ? ` → thư mục “${folderName}”` : ''
+  const askWhere = useDownloadPrefs((s) => s.askWhere)
+  const folderHint = askWhere ? ' — chọn nơi lưu và tên file' : folderName ? ` → thư mục “${folderName}”` : ''
   const saveHint = `${withPrompt ? 'video + prompt .txt' : 'video'}${folderHint}`
   /** One chosen take per scene that has a finished video (= what the .zip contains). */
   const chosenCount = useMemo(() => new Set(takes.map((t) => t.sceneId)).size, [takes])

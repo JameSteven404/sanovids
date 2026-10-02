@@ -13,7 +13,7 @@ Goal: calm, content-first, precise. The user's images and videos are the stars; 
 - Materials (vibrancy): `.material` (translucent + `backdrop-filter: var(--blur)`) for floating things: top bar, canvas toolbar, popovers, menus, toasts, hover previews, the queue drawer bar.
 - Lines: hairlines `--border` (1px); `--border-strong` only for inputs/controls.
 - Text: `--text` (primary), `--text-dim` (secondary), `--text-faint` (tertiary/placeholder).
-- Tint: `--accent` (system orange) for the ONE primary action per area (Run, Download, Create). Semantics: `--ref` teal (images), `--video` purple (videos), `--ok`, `--warn`, `--danger`, `--info`, each with a `-soft` fill. Text on accent fills uses `--on-accent`.
+- Tint: `--accent` (system orange) for the ONE primary action per area (Run, Download, Create). Semantics: `--ref` teal (images), `--video` purple (videos), `--save` indigo (folder nodes and the wires that save videos into them), `--ok`, `--warn`, `--danger`, `--info`, each with a `-soft` fill. Text on accent fills uses `--on-accent`.
 - Radii: `--radius-xs 6` (chips, small thumbs), `--radius-sm 8` (buttons, inputs), `--radius 12` (cards, menus), `--radius-lg 16` (dialogs, large cards), `--radius-xl 20`.
 - Depth: `--shadow-sm` (cards at rest), `--shadow` (hover, popovers), `--shadow-lg` (dialogs). Prefer hairline + soft shadow over heavy borders.
 - Focus: `box-shadow: var(--focus-ring)` on `:focus-visible` for every interactive element.

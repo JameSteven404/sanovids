@@ -7,9 +7,10 @@
 import { temporal } from 'zundo'
 import { create } from 'zustand'
 import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
-import type { Asset, Preset, Project, ProjectSettings, Scene, Size, VideoSettings, XY } from '../core/types'
+import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
 
 // ---------- undo coalescing (typing in a textarea should not create one history step per key) ----------
@@ -155,12 +156,13 @@ function takeRowBoxes(p: Project): Box[] {
   return out
 }
 
-/** Nodes on the canvas that are not scene cards: asset nodes, take rows, takes placed by hand. */
+/** Nodes on the canvas that are not scene cards: asset nodes, folder nodes, take rows, takes placed by hand. */
 function otherBoxes(p: Project): Box[] {
   const out = takeRowBoxes(p)
   for (const a of p.assets) {
     if (a.position) out.push({ x: a.position.x, y: a.position.y, w: a.size?.w ?? LAYOUT.assetW, h: a.size?.h ?? LAYOUT.assetH })
   }
+  for (const f of p.folders ?? []) out.push({ x: f.position.x, y: f.position.y, w: f.size?.w ?? FOLDER_W, h: f.size?.h ?? FOLDER_H })
   return out.concat(takeSource.placed?.() ?? [])
 }
 
@@ -388,7 +390,14 @@ export interface DeleteItems {
   refs?: { sceneId: string; assetId: string }[]
   videoRefs?: { sceneId: string; takeId: string }[]
   frames?: { sceneId: string; which: 'first' | 'last' }[]
+  /** Folder nodes to remove (the files already saved in the folder stay on disk). */
+  folderIds?: string[]
+  /** Wires into folder nodes to cut ('save': take -> folder, 'autosave': scene -> folder). */
+  folderLinks?: { folderId: string; kind: FolderLinkKind; from: string }[]
 }
+
+/** A new folder node (addFolder): the id may be given (its browser folder handle is stored under it first). */
+export type NewFolder = Pick<SaveFolder, 'name' | 'path' | 'position'> & Partial<Pick<SaveFolder, 'id' | 'autoScenes' | 'takes'>>
 
 export interface ProjectState {
   project: Project
@@ -445,6 +454,17 @@ export interface ProjectState {
   moveVideoRefToScene: (takeId: string, fromSceneId: string, toSceneId: string, label?: string) => boolean
   /** A take was deleted: drop it from every scene (tokens become `labels[takeId]`). */
   removeTakesEverywhere: (takeIds: string[], labels: Record<string, string>) => void
+
+  // folder nodes
+  /** Add a folder node (with its first wires, in the same undo step). Returns its id. */
+  addFolder: (folder: NewFolder) => string
+  /** Point a folder node at another folder (pick it again) or rename it. */
+  updateFolder: (id: string, patch: Partial<Pick<SaveFolder, 'name' | 'path'>>) => void
+  /** Wire takes ('save') or scenes ('autosave') into a folder (one undo step). Returns the ids that were not wired yet. */
+  linkFolder: (folderId: string, kind: FolderLinkKind, fromIds: string[]) => string[]
+  /** Cut one wire into a folder. */
+  unlinkFolder: (folderId: string, kind: FolderLinkKind, fromId: string) => void
+  removeFolders: (ids: string[]) => void
 
   /** One undo step: delete scenes, hide assets from canvas, cut image / video / frame links. */
   deleteItems: (items: DeleteItems, videoLabel?: VideoLabel) => void
@@ -866,7 +886,51 @@ export const useProject = create<ProjectState>()(
           lastKey = null
         },
 
-        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [] }, videoLabel) =>
+        // ---------------- folder nodes ----------------
+        addFolder: (folder) => {
+          const p = get().project
+          const taken = new Set([...p.assets.map((a) => a.id), ...p.scenes.map((s) => s.id), ...(p.folders ?? []).map((f) => f.id)])
+          let id = folder.id ?? newId('fld')
+          while (taken.has(id)) id = newId('fld')
+          const next: SaveFolder = { id, name: folder.name, path: folder.path, position: folder.position, mode: 'copy' }
+          if (folder.autoScenes?.length) next.autoScenes = [...new Set(folder.autoScenes)]
+          if (folder.takes?.length) next.takes = [...new Set(folder.takes)]
+          mutate((pp) => ({ ...pp, folders: [...(pp.folders ?? []), next] }))
+          return id
+        },
+        updateFolder: (id, patch) => {
+          const cur = get().project.folders?.find((f) => f.id === id)
+          if (!cur) return
+          const next = { ...cur, ...patch }
+          if (next.name === cur.name && next.path === cur.path) return
+          mutate((p) => ({ ...p, folders: (p.folders ?? []).map((f) => (f.id === id ? { ...f, ...patch } : f)) }))
+        },
+        linkFolder: (folderId, kind, fromIds) => {
+          const cur = get().project.folders?.find((f) => f.id === folderId)
+          if (!cur) return []
+          let next = cur
+          const added: string[] = []
+          for (const from of fromIds) {
+            const after = withLink(next, kind, from, true)
+            if (after !== next) added.push(from)
+            next = after
+          }
+          if (next !== cur) mutate((p) => ({ ...p, folders: (p.folders ?? []).map((f) => (f.id === folderId ? next : f)) }))
+          return added
+        },
+        unlinkFolder: (folderId, kind, fromId) => {
+          const cur = get().project.folders?.find((f) => f.id === folderId)
+          if (!cur) return
+          const next = withLink(cur, kind, fromId, false)
+          if (next !== cur) mutate((p) => ({ ...p, folders: (p.folders ?? []).map((f) => (f.id === folderId ? next : f)) }))
+        },
+        removeFolders: (ids) => {
+          const dead = new Set(ids)
+          if (!get().project.folders?.some((f) => dead.has(f.id))) return
+          mutate((p) => ({ ...p, folders: (p.folders ?? []).filter((f) => !dead.has(f.id)) }))
+        },
+
+        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [], folderIds = [], folderLinks = [] }, videoLabel) =>
           mutate((p) => {
             const dead = new Set(sceneIds)
             const hide = new Set(hideAssetIds)
@@ -902,10 +966,18 @@ export const useProject = create<ProjectState>()(
                 }
                 return next
               })
+            const deadFolders = new Set(folderIds)
+            let folders = p.folders
+            if (folders && (deadFolders.size || folderLinks.length)) {
+              folders = folders
+                .filter((f) => !deadFolders.has(f.id))
+                .map((f) => folderLinks.reduce((acc, l) => (l.folderId === f.id ? withLink(acc, l.kind, l.from, false) : acc), f))
+            }
             return {
               ...p,
               assets: hide.size ? p.assets.map((a) => (hide.has(a.id) ? { ...a, position: null } : a)) : p.assets,
               scenes: renumber(scenes),
+              ...(folders !== p.folders ? { folders } : {}),
             }
           }),
 
@@ -915,6 +987,7 @@ export const useProject = create<ProjectState>()(
             ...p,
             scenes: p.scenes.map((s) => (positions[s.id] ? { ...s, position: positions[s.id] } : s)),
             assets: p.assets.map((a) => (positions[a.id] && a.position ? { ...a, position: positions[a.id] } : a)),
+            ...(p.folders?.some((f) => positions[f.id]) ? { folders: p.folders.map((f) => (positions[f.id] ? { ...f, position: positions[f.id] } : f)) } : {}),
           })),
         setNodeSizes: (sizes, positions = {}) =>
           mutate((p) => ({

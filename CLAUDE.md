@@ -19,7 +19,8 @@ Vite 8 + React 19 + TypeScript 7 (`tsc` is the native compiler) + `@xyflow/react
 - `src/store/ui.ts` — selection (scene, asset and take ids), view, dialogs, drag overlay, toasts, `takeDisplay`.
 - `src/store/persist.ts` — IndexedDB autosave (+ localStorage emergency backup), project list, export/import `.sanovids.json`. All functions are async. Media blobs: `src/lib/imageStore.ts`.
 - `src/actions.ts` — shared commands (linkAssets, linkTakes, ensureAssetToken, createSceneFromTake, deleteSelection, run, copy, zip). UI calls these. Use `undoToastAction()` from the project store for toast undo buttons.
-- Edge ids: `ref:<assetId>-><sceneId>`, `first:`/`last:` (H3 frames), `out:<sceneId>-><takeId>`, `vref:<takeId>-><sceneId>` (see `edgeId`/`parseEdgeId`).
+- Edge ids: `ref:<assetId>-><sceneId>`, `first:`/`last:` (H3 frames), `out:<sceneId>-><takeId>`, `vref:<takeId>-><sceneId>`, and into folder nodes `save:<takeId>-><folderId>` / `autosave:<sceneId>-><folderId>` (see `edgeId`/`parseEdgeId`).
+- Saving videos: `Take.fileName` ("Tên file", `core/fileNames.ts` sanitizes; `actions.takeFileBase` / `renameTake`) is used by every save. `lib/downloads.ts` pref `askWhere` ("Hỏi nơi lưu & tên file": desktop native dialog via `lib/desktopFiles.ts`, Chromium save picker, else download + toast). Folder nodes ("Thư mục"): data `Project.folders` (`core/folders.ts`, undoable wires), commands + auto-save of finished takes in `src/folderActions.ts`, writing in `lib/saveFolders.ts` (desktop IPC `files:*` / web directory handle per folder id). `electron/main.cjs` only writes into folders the user picked (allowlist in userData; pure `<save-rules>` block tested by `src/lib/__tests__/saveRules.test.ts`).
 
 ## Conventions
 - UI text in Vietnamese; model names stay English (Seedance 2.5, MiniMax-H3).
