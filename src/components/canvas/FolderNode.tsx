@@ -198,7 +198,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
                 <KeyRound size={13} strokeWidth={2} />
                 <span>Cấp lại quyền</span>
               </button>
-            ) : (
+            ) : needsPick || !desktop ? (
               <button
                 className={`cv-folder-btn${needsPick ? ' primary' : ''}`}
                 disabled={busyAction || rt.access === 'unsupported'}
@@ -209,14 +209,13 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
                 }}
               >
                 <FolderSearch size={13} strokeWidth={2} />
-                <span>{needsPick ? 'Chọn lại thư mục' : 'Chọn thư mục'}</span>
+                <span>{needsPick ? 'Chọn lại thư mục' : 'Đổi thư mục'}</span>
               </button>
-            )}
-            {desktop && (
+            ) : (
               <button
                 className="cv-folder-btn"
                 disabled={rt.access !== 'ok'}
-                title={path ? `Mở ${path}` : 'Chưa chọn thư mục'}
+                title={path ? `Mở ${path} trong File Explorer` : 'Chưa chọn thư mục'}
                 onClick={(e) => {
                   e.stopPropagation()
                   void openFolderNode(id)
@@ -224,6 +223,20 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
               >
                 <FolderOpen size={13} strokeWidth={2} />
                 <span>Mở thư mục</span>
+              </button>
+            )}
+            {desktop && !needsPick && (
+              <button
+                className="cv-folder-btn is-icon"
+                disabled={busyAction || rt.access === 'unsupported'}
+                title="Đổi sang thư mục khác (video đã lưu vẫn ở thư mục cũ)"
+                aria-label="Đổi thư mục"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  run(() => chooseFolderPlace(id))
+                }}
+              >
+                <FolderSearch size={14} strokeWidth={2} />
               </button>
             )}
           </div>
