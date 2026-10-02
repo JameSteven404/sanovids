@@ -61,10 +61,6 @@
   border-color: var(--save);
   box-shadow: 0 0 0 1px var(--save), 0 0 0 5px var(--save-soft), var(--cv-lift-shadow);
 }
-.cv-stage.cv-connecting-scene .react-flow,
-.cv-stage.cv-connecting-folder .react-flow {
-  --xy-connectionline-stroke: var(--save);
-}
 
 .cv-folder-head {
   display: flex;

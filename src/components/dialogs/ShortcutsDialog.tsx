@@ -90,7 +90,10 @@ const GESTURES: Group[] = [
       ['Thư viện → cảnh', 'Kéo thẻ nhân vật hoặc video (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas hoặc dòng trong Bảng cảnh.'],
       ['Thư viện → nền', 'Đặt nhân vật lên canvas tại điểm thả. Thả file ảnh → tạo nhân vật mới.'],
       ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
-      ['Bấm dây', `Chọn dây; ${IS_MAC ? 'Delete / ⌫' : 'Delete'} hoặc nút × ở giữa dây để cắt. Số @image/@video trong prompt tự đánh lại (hoàn tác được).`],
+      [
+        'Bấm dây',
+        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${IS_MAC ? '⌘' : 'Ctrl'}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image/@video trong prompt tự đánh lại (hoàn tác được).`,
+      ],
       ['Gõ @', 'Trong prompt: chọn ảnh/video để chèn @image_N / @video_N (ảnh chưa nối sẽ được nối luôn).'],
       ['ĐẦU / CUỐI', 'MiniMax-H3 chế độ Khung đầu → cuối: thả nhân vật vào chấm ĐẦU hoặc CUỐI.'],
     ],

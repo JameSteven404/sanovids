@@ -1,16 +1,20 @@
 // Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene),
 // video references (take -> scene, @video_N), take outputs (scene -> take, not deletable) and wires into folder
 // nodes: save (take -> folder) and autosave (scene -> folder, dashed).
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
+// Each cuttable wire = its visible path (.cv-wire) + a wide transparent hit band on top (click-to-cut / select / hover,
+// CanvasView.onWireClick). New wires draw themselves in once (wireFx.markFreshWires); cuts animate in Wires.tsx.
+import { EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
-import { memo } from 'react'
-import { isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
+import { memo, useCallback, useEffect, useState, type AnimationEvent, type CSSProperties } from 'react'
+import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { folderMapOf } from '../../core/folders'
 import { staleNoteSince } from '../../core/staleTokens'
+import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
+import { isFreshWire } from './wireFx'
 
 export type LinkEdgeData = {
   kind: EdgeKind
@@ -50,13 +54,15 @@ const CUT_LABEL: Record<EdgeKind, string> = {
 
 /**
  * Cut one link (one undo step) and say so — naming what was cut, with Undo. Every canvas way of removing a reference
- * goes through here (the wire's ×, the × on a scene card avatar / @video thumb, a wire end dropped on empty canvas).
- * The prompt's @image_N / @video_N tokens are renumbered in the same step (SPEC §2): the toast says so when it happened.
- * 'out' wires (scene → its take) cannot be cut.
+ * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar / @video thumb, a wire end dropped
+ * on empty canvas). The prompt's @image_N / @video_N tokens are renumbered in the same step (SPEC §2): the toast says so
+ * when it happened. 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation
+ * splits the wire (default: its middle).
  */
-export function cutEdge(id: string, silent = false) {
+export function cutEdge(id: string, silent = false, at?: { x: number; y: number }) {
   const e = parseEdgeId(id)
   if (!e || e.kind === 'out') return
+  if (!silent) announceWireCuts([id], at)
   if (isFolderEdge(e.kind)) {
     cutFolderEdge(id, e.kind, e.from, e.to, silent)
     return
@@ -103,9 +109,35 @@ function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, fold
   )
 }
 
+/** Invisible hit band around every cuttable wire (px, flow units): thin wires stay easy to hit. */
+export const WIRE_HIT_WIDTH = 16
+
+/** The draw-in / fade-in lasts 0.34 s (wires.css); its class is dropped by then even if animationend never comes. */
+const INTRO_FALLBACK_MS = 900
+
+/** How a wire that just appeared comes in: drawn from its source (solid wires) or faded in; null = no effect. */
+function wireIntro(id: string, kind: EdgeKind): 'draw' | 'fade' | null {
+  if (!isFreshWire(id)) return null
+  const level = motionLevel(useCanvasPrefs.getState().animations)
+  if (level === 'off') return null
+  return level === 'full' && kind !== 'out' && kind !== 'autosave' ? 'draw' : 'fade'
+}
+
 function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LinkEdge>) {
   const hovered = useCanvasLocal((s) => s.hoveredEdgeId === id)
+  const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const kind = data?.kind ?? 'ref'
+  // A wire that just appeared (new link, undo of a cut) animates in once — not one scrolled into view.
+  const [intro, setIntro] = useState(() => wireIntro(id, kind))
+  const endIntro = useCallback((e: AnimationEvent<SVGPathElement>) => {
+    if (e.target === e.currentTarget) setIntro(null)
+  }, [])
+  // Safety net: a background tab does not run CSS animations, and a wire must never stay half drawn.
+  useEffect(() => {
+    if (!intro) return
+    const t = setTimeout(() => setIntro(null), INTRO_FALLBACK_MS)
+    return () => clearTimeout(t)
+  }, [intro])
   let ty = targetY
   // Wires arriving at the same handle are spread apart. A selected wire goes to the handle's center: that is where
   // its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
@@ -118,34 +150,55 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   const base = KIND_STROKE[kind]
 
   if (kind === 'out') {
-    // Subtle: the take was generated by this scene. Not selectable, not deletable.
+    // Subtle: the take was generated by this scene. Not selectable, not deletable, not cuttable.
     return (
-      <BaseEdge
+      <path
         id={id}
-        path={path}
-        interactionWidth={0}
+        d={path}
+        fill="none"
+        className={`react-flow__edge-path cv-wire cv-wire-out${intro ? ' is-fading-in' : ''}`}
         style={{ stroke: hl ? 'var(--text-dim)' : base, strokeWidth: hl ? 1.5 : 1.25, strokeDasharray: '3 4', opacity: hl ? 0.9 : 0.5 }}
+        onAnimationEnd={intro ? endIntro : undefined}
       />
     )
   }
 
   // Calm by default (DESIGN.md: thin 1.5px wires, theme-token colors); a wire touching the hovered / selected node
-  // lights up, a selected wire is a little thicker with a soft glow.
+  // lights up, the hovered wire itself gets a soft glow, a selected wire is a little thicker with a stronger glow.
+  const tint = kind === 'ref' ? (data?.color ?? base) : base
   const stroke = kind === 'ref' && hl && data?.color ? withAlpha(data.color, 0.75) : base
-  const style = {
+  const drawing = intro === 'draw'
+  const style: CSSProperties = {
     stroke,
-    strokeWidth: selected ? 2.5 : hl ? 2 : 1.5,
+    strokeWidth: selected ? 2.5 : hovered ? 2.25 : hl ? 2 : 1.5,
     opacity: hl ? 1 : kind === 'vref' || kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
     // A scene's "tự lưu" wire stands for every future video: dashed, unlike a one-video "lưu" wire.
-    strokeDasharray: kind === 'autosave' ? '6 5' : undefined,
-    strokeLinecap: 'round' as const,
-    transition: 'opacity 0.15s ease-out, stroke-width 0.15s ease-out',
-    filter: selected ? `drop-shadow(0 0 3px ${withAlpha(kind === 'ref' ? (data?.color ?? base) : base, 0.6)})` : undefined,
+    strokeDasharray: kind === 'autosave' && !drawing ? '6 5' : undefined,
+    filter: selected
+      ? `drop-shadow(0 0 3px ${withAlpha(tint, 0.6)})`
+      : hovered
+        ? `drop-shadow(0 0 2.5px ${withAlpha(tint, 0.45)})`
+        : undefined,
   }
+  const cls = `react-flow__edge-path cv-wire${drawing ? ' is-drawing' : intro === 'fade' ? ' is-fading-in' : ''}`
   return (
     <>
-      <BaseEdge id={id} path={path} style={style} interactionWidth={18} />
-      {(hovered || selected) && (
+      <path
+        id={id}
+        d={path}
+        fill="none"
+        className={cls}
+        style={style}
+        // Normalized length while drawing in: the dash animation then needs no measuring.
+        pathLength={drawing ? 1 : undefined}
+        onAnimationEnd={intro ? endIntro : undefined}
+      />
+      {/* Hit band on top (transparent): the whole band is the wire for hover, click-to-cut and selection. */}
+      <path d={path} fill="none" className="react-flow__edge-interaction cv-wire-hit" strokeOpacity={0} strokeWidth={WIRE_HIT_WIDTH}>
+        <title>{clickToCut ? 'Bấm để bỏ nối · Ctrl/Shift + bấm: chọn dây' : 'Bấm để chọn dây · Delete: bỏ nối'}</title>
+      </path>
+      {/* With click-to-cut the wire itself is the button; otherwise the × on hover / selection cuts it. */}
+      {!clickToCut && (hovered || selected) && (
         <EdgeLabelRenderer>
           <button
             className="cv-edge-cut nodrag nopan"

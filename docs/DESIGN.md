@@ -46,4 +46,5 @@ Goal: calm, content-first, precise. The user's images and videos are the stars; 
 ## Do / Don't
 - Do keep one accent per view; let images/videos carry color.
 - Do keep wires thin (1.5px) and calm; highlight on hover/selection only.
+- Wire motion (`components/canvas/wires.css`): a click on a wire cuts it (scissors cursor) — the wire splits at the click and both halves retract to their cards with a fading ring (~280 ms ease-out); a new wire draws itself from its source (~340 ms); a dragged wire marches dashes in its source color, turns solid with a ring when it snaps to a card that accepts it, grey when it cannot land. 'Giảm bớt' = fades only, 'Tắt' = none; OS reduce-motion = 'Giảm bớt'.
 - Don't use pure black/white text on colored fills except `--on-accent`; don't stack borders; don't use ALL CAPS paragraphs.

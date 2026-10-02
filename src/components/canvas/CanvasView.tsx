@@ -3,6 +3,8 @@
 // (scenes/assets: one undo step in the project; takes: runs.setTakePositions, not undoable), selection is mirrored
 // into ui.selectedIds / ui.selectedEdgeIds. Resize handles (NodeSizer): the live box lives in useCanvasLocal.resizing
 // until resize end, then one commit (scenes/assets: project.setNodeSizes, one undo step; takes: runs.setTakeSizes).
+// Wires: a plain click on one cuts it (pref clickToCut, onWireClick below); the line drawn while dragging a wire and the
+// cut animation live in Wires.tsx.
 import {
   Background,
   BackgroundVariant,
@@ -24,7 +26,16 @@ import {
   type OnConnectStart,
 } from '@xyflow/react'
 import { Clapperboard, Plus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import {
   canvasEvents,
   createAssetsFromFiles,
@@ -47,6 +58,7 @@ import { MODELS, usesVideoRefs } from '../../core/models'
 import { keepsSlot } from '../../core/takes'
 import type { Asset, SaveFolder, Scene, Size, XY } from '../../core/types'
 import { linkScenesToFolder, linkTakesToFolder } from '../../folderActions'
+import { useCanvasPrefs, useMotionLevel } from '../../lib/canvasPrefs'
 import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
 import { LAYOUT, refImageCount, undoToastAction, useProject, type Box } from '../../store/project'
@@ -105,7 +117,10 @@ import {
 } from './canvasModel'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
+import { isWireClick, markFreshWires, newWireIds, wireClickAction, type WirePress } from './wireFx'
+import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
+import './wires.css'
 
 type CanvasNode = SceneFlowNode | AssetFlowNode | TakeFlowNode | FolderFlowNode
 type NodeType = CanvasNode['type'] & string
@@ -175,6 +190,8 @@ function CanvasInner() {
   const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
   const theme = useTheme((s) => s.theme)
+  const clickToCut = useCanvasPrefs((s) => s.clickToCut)
+  const motion = useMotionLevel()
 
   // Canvas width → toolbar density (narrow center panel) and whether the minimap must sit above the toolbar.
   // Only the derived levels are state, so resizing a side panel does not re-render the board on every pixel.
@@ -286,7 +303,17 @@ function CanvasInner() {
   }, [scenes, assets, folders, takeLayout, dragPos, measured, selectedIds, resizing])
 
   // ---------------- derived edges ----------------
-  const rawEdges = useMemo(() => buildRawEdges(scenes, assets, takeLayout, folders), [scenes, assets, takeLayout, folders])
+  // Wires that just appeared (a new link, the undo of a cut, a new take) draw themselves in once (wireFx). The first
+  // build of a canvas (project opened) and big batches do not animate.
+  const wireIds = useRef<Set<string> | null>(null)
+  const rawEdges = useMemo(() => {
+    const list = buildRawEdges(scenes, assets, takeLayout, folders)
+    const ids = list.map((r) => r.id)
+    const fresh = newWireIds(wireIds.current, ids)
+    if (fresh.length) markFreshWires(fresh)
+    wireIds.current = new Set(ids)
+    return list
+  }, [scenes, assets, takeLayout, folders])
   const edgeCache = useRef(new Map<string, LinkEdge>())
   const edges = useMemo(() => {
     const sel = new Set(selectedIds)
@@ -786,6 +813,63 @@ function CanvasInner() {
     return () => offs.forEach((off) => off())
   }, [rf, stageSize])
 
+  // ---------------- wires: click to cut ----------------
+  // A plain click on a wire cuts it (pref clickToCut). Decided in the capture phase, before React Flow's own click
+  // handler would select the wire: a cut leaves the node selection alone. Never at the end of a pan / drag / pinch
+  // (the press must start on the same wire and barely move), never with Ctrl / Shift / Cmd (they select, as before).
+  const press = useRef<WirePress | null>(null)
+  const pointers = useRef(new Set<number>())
+  /** Last cut by click: a double-click on a wire must not create a scene on the canvas under it. */
+  const wireCutAt = useRef(-Infinity)
+  useEffect(() => {
+    const up = (e: PointerEvent) => pointers.current.delete(e.pointerId)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', up, true)
+    return () => {
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', up, true)
+    }
+  }, [])
+  const onWirePress = (e: ReactPointerEvent) => {
+    // The primary pointer starts a new gesture (also clears ids whose pointerup never reached us).
+    if (e.isPrimary) pointers.current.clear()
+    pointers.current.add(e.pointerId)
+    if (pointers.current.size > 1) {
+      if (press.current) press.current.multi = true
+      return
+    }
+    const edgeEl = (e.target as Element | null)?.closest?.('.react-flow__edge')
+    press.current = {
+      x: e.clientX,
+      y: e.clientY,
+      t: performance.now(),
+      pointerType: e.pointerType || 'mouse',
+      edgeId: edgeEl?.getAttribute('data-id') ?? null,
+      multi: false,
+    }
+  }
+  const onWireClick = (e: ReactMouseEvent) => {
+    const target = e.target as Element | null
+    const edgeEl = target?.closest?.('.react-flow__edge')
+    if (!edgeEl || !target) return
+    const id = edgeEl.getAttribute('data-id')
+    const p = press.current
+    press.current = null
+    const action = wireClickAction({
+      clickToCut: useCanvasPrefs.getState().clickToCut,
+      kind: id ? parseEdgeId(id)?.kind : null,
+      modifier: e.ctrlKey || e.metaKey || e.shiftKey,
+      onGrip: !!target.closest('.react-flow__edgeupdater'),
+      click: isWireClick(p, { x: e.clientX, y: e.clientY, t: performance.now(), edgeId: id }),
+    })
+    if (action !== 'cut' || !id) return
+    e.stopPropagation()
+    e.preventDefault()
+    setMenu(null)
+    wireCutAt.current = performance.now()
+    cutEdge(id, false, { x: e.clientX, y: e.clientY })
+  }
+
   // ---------------- pane gestures: double-click to create, drop from library / OS ----------------
   // The empty canvas' "Cảnh mới" button disappears on its first click: when it was double-clicked, the second click
   // lands on the canvas below and must not create another scene there.
@@ -798,6 +882,7 @@ function CanvasInner() {
     const target = e.target as HTMLElement
     if (!target.classList.contains('react-flow__pane')) return
     if (performance.now() - emptyActionAt.current < 600) return
+    if (performance.now() - wireCutAt.current < 500) return
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
     newScene({ x: snap(p.x - 140), y: snap(p.y - 40) })
   }
@@ -879,12 +964,22 @@ function CanvasInner() {
     libraryDrag && 'cv-library-drag',
     takeDrag && 'cv-take-drag',
     liftMinimap && 'cv-lift-minimap',
+    clickToCut && 'cv-click-cut',
   ]
     .filter(Boolean)
     .join(' ')
 
   return (
-    <div ref={stageRef} className={stageCls} onDoubleClick={onDoubleClick} onDragOver={onDragOver} onDrop={onDrop}>
+    <div
+      ref={stageRef}
+      className={stageCls}
+      data-motion={motion}
+      onPointerDownCapture={onWirePress}
+      onClickCapture={onWireClick}
+      onDoubleClick={onDoubleClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       {(dimCss || ownSceneCss) && <style>{dimCss + ownSceneCss}</style>}
       <ReactFlow<CanvasNode, LinkEdge>
         nodes={nodes}
@@ -930,6 +1025,7 @@ function CanvasInner() {
         onlyRenderVisibleElements
         connectOnClick={false}
         connectionRadius={28}
+        connectionLineComponent={WireConnectionLine}
         nodeDragThreshold={2}
         elevateEdgesOnSelect={false}
         fitView
@@ -938,6 +1034,7 @@ function CanvasInner() {
         attributionPosition="top-right"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
+        <WireCutLayer />
         {showMinimap && (
           <MiniMap<CanvasNode>
             position="bottom-right"

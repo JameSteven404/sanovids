@@ -105,6 +105,20 @@ export const REVEAL_EVENT = 'reveal'
 export function revealNodes(ids: string[]) {
   if (ids.length) canvasEvents.dispatchEvent(new CustomEvent(REVEAL_EVENT, { detail: ids }))
 }
+/** Canvas event of announceWireCuts (detail: WireCutDetail). */
+export const WIRES_CUT_EVENT = 'wires-cut'
+export interface WireCutDetail {
+  ids: string[]
+  /** Where the wire was cut (screen point of the click); none = its middle. */
+  at?: { x: number; y: number }
+}
+/**
+ * These wires are about to be cut: the canvas plays the cut animation from what it still shows. Must be called
+ * BEFORE the store change (the canvas reads the wires' drawn paths synchronously).
+ */
+export function announceWireCuts(ids: string[], at?: { x: number; y: number }) {
+  if (ids.length) canvasEvents.dispatchEvent(new CustomEvent<WireCutDetail>(WIRES_CUT_EVENT, { detail: { ids, at } }))
+}
 
 // ---------------- selection helpers ----------------
 export function selectedSceneIds(): string[] {
@@ -360,6 +374,18 @@ export function deleteSelection() {
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
   const projectBefore = useProject.getState().project
+  // The canvas animates the wires being cut (before they vanish from the store).
+  if (links) {
+    announceWireCuts([
+      ...refs.map((r) => edgeId('ref', r.assetId, r.sceneId)),
+      ...videoRefs.map((r) => edgeId('vref', r.takeId, r.sceneId)),
+      ...frames.map((f) => {
+        const s = sceneById.get(f.sceneId)
+        return edgeId(f.which, (f.which === 'first' ? s?.firstFrame : s?.lastFrame) ?? '', f.sceneId)
+      }),
+      ...folderLinks.map((l) => edgeId(l.kind, l.from, l.folderId)),
+    ])
+  }
   const takesDeleted = takeIds.length ? (deleteTakes(takeIds, { confirm: false, toast: false }) ?? 0) : 0
   if (sceneIds.length || hideAssetIds.length || folderIds.length || links) {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames, folderIds, folderLinks }, videoLabel)
