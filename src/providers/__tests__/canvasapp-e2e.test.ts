@@ -34,10 +34,10 @@ import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCred
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { takeCostLine } from '../../components/runs/creditText'
-import { isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
+import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
@@ -649,10 +649,13 @@ describe('gateway e2e: happy path + character sync', () => {
   })
 
   it('edits while the take waits (new image, reordered refs, rename) never change what it sends', async () => {
-    // two long jobs occupy both slots, so s1 really waits in the queue
+    // long jobs occupy every slot (MAX_CONCURRENCY), so s1 really waits in the queue
     fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 10 }, { status: 'processing', progress: 50 }, { status: 'completed', progress: 100, download_available: true }]
-    enqueue('s2', 's3')
-    await run(300)
+    const fillers = Array.from({ length: MAX_CONCURRENCY - 2 }, (_, i) => `f${i + 1}`)
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, ...fillers.map((id, i) => scene(id, 5 + i))] })
+    enqueue('s2', 's3', ...fillers)
+    await run(3000) // one new submit per engine tick (each waits for the previous one's job id)
+    expect(takes().filter((x) => x.status === 'processing')).toHaveLength(MAX_CONCURRENCY)
     const [t] = enqueue('s1')
     await run(1000)
     expect(take(t.id).status).toBe('queued')
@@ -665,7 +668,7 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(now.refs).toEqual(['village', 'elara', 'lumi'])
     expect(now.prompt).not.toBe(PROMPT) // the scene prompt was renumbered for the NEXT run
 
-    await run(70_000) // s2/s3 complete → s1 is submitted
+    await run(70_000) // the running jobs complete → s1 is submitted
     const body = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(t.id))!
     expect(body.prompt).toBe(PROMPT)
     expect(uploadedContents(body)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
@@ -674,7 +677,7 @@ describe('gateway e2e: happy path + character sync', () => {
 
     // a NEW take compiles the edited scene: its own numbering, still in sync
     const [t2] = enqueue('s1')
-    await run(300)
+    await run(25_000) // (the jobs were sent one per tick: the last ones end a poll later, then t2 goes)
     const b2 = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(t2.id))!
     expect(b2.prompt).toBe(now.prompt)
     expect(sentCharacters(b2)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
@@ -1025,7 +1028,9 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
 })
 
 describe('gateway e2e: gentleness and engine ownership', () => {
-  it('at most 2 jobs in flight; polls never closer than 15 s', async () => {
+  it('at most 10 jobs in flight; one job-list read per poll for all of them, never closer than 15 s', async () => {
+    expect(MAX_CONCURRENCY).toBe(10)
+    expect(MAX_REMOTE_CONCURRENCY).toBe(10)
     fake.state.script = [
       { status: 'queued' },
       { status: 'processing', progress: 20 },
@@ -1033,14 +1038,24 @@ describe('gateway e2e: gentleness and engine ownership', () => {
       { status: 'processing', progress: 80 },
       { status: 'completed', progress: 100, download_available: true },
     ]
-    const [a, b, c] = enqueue('s2', 's3', 's1')
+    // 12 scenes (more than the cap): Seedance 2.5 · 5 s · 480p each
+    const ids = Array.from({ length: 12 }, (_, i) => `m${i + 1}`)
+    useProject.getState().loadProject({ ...project(), scenes: ids.map((id, i) => scene(id, i + 1)) })
+    const all = enqueue(...ids)
+    const keys = (list: Take[]) => list.map((t) => clientRequestIdFor(t.id))
     await run(60_000)
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id].map(clientRequestIdFor))
-    expect(take(c.id).status).toBe('queued')
-    await run(60_000) // a and b complete → c goes
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id, c.id].map(clientRequestIdFor))
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all.slice(0, 10)))
+    expect(takes().filter((x) => x.status === 'processing')).toHaveLength(10)
+    expect(all.slice(10).map((t) => take(t.id).status)).toEqual(['queued', 'queued'])
+    // ten running jobs, still one read of the job list per poll cycle (not one per job)
+    const reads = fake.listReads().length
+    expect(reads).toBeGreaterThan(0)
+    expect(reads).toBeLessThanOrEqual(4)
+    await run(60_000) // the first ten complete → the last two go
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all))
     await run(120_000)
     expect(takes().every((x) => x.status === 'completed')).toBe(true)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(12)
     const at = fake.listReads().map((x) => x.at)
     for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(15_000)
   })
@@ -1059,6 +1074,119 @@ describe('gateway e2e: gentleness and engine ownership', () => {
   })
 })
 
+describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
+  /** `n` scenes, each with `k` characters of its own (one picture each, all different): Seedance 2.5 · 5 s · 480p. */
+  function crowd(n: number, k: number): string[] {
+    const assets: Asset[] = []
+    const scenes: Scene[] = []
+    for (let i = 1; i <= n; i++) {
+      const refs: string[] = []
+      for (let c = 1; c <= k; c++) {
+        const id = `c${i}_${c}`
+        media.set(`img_${id}`, new Blob([`IMG:${id}`], { type: 'image/png' }))
+        assets.push(asset(id, `Nhân vật ${i}.${c}`, [`img_${id}`]))
+        refs.push(id)
+      }
+      scenes.push(scene(`m${i}`, i, { refs, prompt: `${refs.map((_, c) => `@image_${c + 1}`).join(' ')} đi dạo` }))
+    }
+    useProject.getState().loadProject({ ...project(), assets, scenes })
+    return scenes.map((s) => s.id)
+  }
+  const ENDED = ['completed', 'failed', 'cancelled', 'expired']
+  const videosOf = (c: CanvasPayload) => c.nodes.filter((n) => n.type === 'video').map((n) => n.id)
+  /**
+   * Checks every canvas PUT against the jobs canvasapp runs at that moment: none may lose its node (whether canvasapp
+   * cancels or loses such a job is not known). `refuse`: answers some requests instead of the fake (Fault).
+   */
+  function watchRunningNodes(refuse?: (req: TransportRequest) => Fault | undefined) {
+    const lost: string[] = []
+    const puts: CanvasPayload[] = []
+    fake.state.fault = (req) => {
+      if (req.method === 'PUT' && /\/canvas$/.test(req.path)) {
+        const canvas = req.json as CanvasPayload
+        puts.push(canvas)
+        const videos = new Set(videosOf(canvas))
+        for (const j of fake.state.jobs) if (!ENDED.includes(j.status) && !videos.has(j.canvas_node_id)) lost.push(`${j.job_id} (${j.status})`)
+      }
+      return refuse?.(req)
+    }
+    return { lost, puts }
+  }
+
+  it('10 scenes × 4 different characters: a running job never loses its node; the 8th waits in the queue for room', async () => {
+    fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 30 }, { status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    const watch = watchRunningNodes()
+    const all = enqueue(...crowd(10, 4))
+    await run(5_000)
+    // 7 scenes fill the canvas (7 × 4 = 28 of the 30 pictures it may hold): the 8th would push a running scene off
+    expect(fake.count('POST', '/api/video-jobs')).toBe(7)
+    expect(all.slice(0, 7).every((t) => take(t.id).status === 'processing' && !!take(t.id).remoteId)).toBe(true)
+    expect(all.slice(7).map((t) => take(t.id).status)).toEqual(['queued', 'queued', 'queued']) // honestly waiting
+    expect(fake.count('POST', '/api/uploads/images')).toBe(28) // the waiting scenes uploaded nothing yet
+    await run(300_000) // running jobs end → room → the others go, three more PUTs
+    expect(takes().every((t) => t.status === 'completed')).toBe(true)
+    expect(new Set(fake.jobPosts().map((b) => b.client_request_id)).size).toBe(10)
+    expect(fake.jobPosts()).toHaveLength(10)
+    expect(watch.puts.length).toBeGreaterThanOrEqual(10)
+    expect(watch.lost).toEqual([])
+    expect(fake.state.rejected).toEqual([]) // never "canvas_node_id is not a video node", never past 40 nodes / 30 pictures
+    expect(fake.state.balance).toBe(100 - 10 * costOf({ model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' }))
+  })
+
+  it.each([
+    ['once', 1, true],
+    ['twice', 2, false],
+  ])('canvas refused %s while 9 jobs run: only the ended scene may go — every running node stays', async (_label, refusals, sent) => {
+    const ids = crowd(11, 1)
+    const [first] = enqueue(ids[0]) // default script: done after three job-list reads
+    await run(90_000)
+    expect(take(first.id).status).toBe('completed')
+    fake.state.script = Array.from({ length: 50 }, () => ({ status: 'processing', progress: 10 }))
+    enqueue(...ids.slice(1, 10))
+    await run(5_000)
+    expect(takes().filter((t) => t.status === 'processing' && !!t.remoteId)).toHaveLength(9)
+
+    let left = refusals
+    const watch = watchRunningNodes((req) => (req.method === 'PUT' && left-- > 0 ? { kind: 'response', status: 400, json: { detail: 'Invalid canvas payload' } } : undefined))
+    const [last] = enqueue(ids[10])
+    await run(1_000)
+    expect(watch.puts).toHaveLength(2)
+    expect(videosOf(watch.puts[0]).sort()).toEqual(ids.map(canvasNodeId).sort()) // refused: every scene
+    expect(videosOf(watch.puts[1]).sort()).toEqual(ids.slice(1).map(canvasNodeId).sort()) // without m1 only
+    expect(watch.lost).toEqual([])
+    const onCanvasapp = videosOf(fake.state.canvases.get('proj1')!)
+    for (const id of ids.slice(1, 10)) expect(onCanvasapp).toContain(canvasNodeId(id)) // the 9 running nodes
+    if (sent) {
+      expect(take(last.id).remoteId).toBe('proj1:job11')
+    } else {
+      // refused again: nothing billed, nothing taken off the canvas on canvasapp
+      expect(take(last.id).status).toBe('failed')
+      expect(take(last.id).error!.startsWith(CANVAS_NOT_SAVED_TEXT)).toBe(true)
+      expect(fake.jobPosts()).toHaveLength(10)
+      expect(onCanvasapp.sort()).toEqual(ids.slice(0, 10).map(canvasNodeId).sort())
+    }
+  })
+
+  it('10 takes queued while the first upload hangs: only that take is "running"; after a restart only it is unsure', async () => {
+    let hang = true
+    fake.state.fault = (req) => {
+      if (req.path !== '/api/uploads/images' || !hang) return undefined
+      hang = false
+      return { kind: 'hang', process: false }
+    }
+    const all = enqueue(...crowd(10, 1))
+    await run(3_000)
+    // the others stay honestly "queued" behind it (they cancel cleanly, nothing of them is on the way)
+    expect(all.map((t) => take(t.id).status)).toEqual(['processing', ...Array<string>(9).fill('queued')])
+    restart(saved()) // the app closes while that upload hangs
+    await run(60_000)
+    // the first take cannot be proven unsent (no POST record): flagged as before — the 9 others run normally
+    expect(take(all[0].id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+    expect(all.slice(1).every((t) => !!take(t.id).remoteId && !isUncertainSubmit(take(t.id)))).toBe(true)
+    expect(fake.jobPosts()).toHaveLength(9)
+  })
+})
+
 describe('gateway e2e: cancel', () => {
   it('cancelling a queued take never posts it', async () => {
     const [t] = enqueue('s1')
@@ -1072,9 +1200,10 @@ describe('gateway e2e: cancel', () => {
     const g1 = gate()
     fake.state.fault = (req) => (req.path === '/api/uploads/images' ? { kind: 'wait', until: g1.until } : undefined)
     const [a, b] = enqueue('s1', 's2')
-    await run(300)
+    await run(1000)
     expect(take(a.id).status).toBe('processing')
-    expect(take(b.id).status).toBe('processing') // waiting behind a's uploads in the adapter
+    // one submit at a time: b honestly waits in the queue while a uploads (not "running" while nothing was sent)
+    expect(take(b.id).status).toBe('queued')
     useRuns.getState().cancel(a.id)
     useRuns.getState().cancel(b.id)
     g1.open()
@@ -1227,7 +1356,7 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
   it('MiniMax-H3 that cannot create (video profiles) is refused before anything is uploaded or paid; Seedance still runs', async () => {
     fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
     const [h3, sd] = enqueue('s4', 's2')
-    await run(300)
+    await run(600) // s4 is refused, then s2 is sent (one submit at a time)
     expect(take(h3.id).status).toBe('failed')
     expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
     expect(takeCostLine(take(h3.id)).note).toMatch(/không bị trừ credit/)
@@ -1240,7 +1369,7 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
   it('video profiles unreadable → canvasapp’s fallbacks, like its page: Seedance runs, MiniMax-H3 locked (and why)', async () => {
     fake.state.fault = (req) => (req.path === '/api/video-profiles' ? { kind: 'response', status: 500, json: { detail: 'boom' } } : undefined)
     const [h3, sd] = enqueue('s4', 's2')
-    await run(300)
+    await run(600)
     expect(take(h3.id).status).toBe('failed')
     expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
     expect(take(h3.id).error).toContain('Không đọc được cấu hình model')

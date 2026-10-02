@@ -88,7 +88,7 @@ Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10
 
 ## Nếu có gì sai — gửi cho mình
 
-1. **Ảnh chụp màn hình** lúc lỗi, kèm dòng thông báo (toast) hiện ở góc màn hình.
+1. **Ảnh chụp màn hình** lúc lỗi, kèm dòng thông báo (toast) hiện ở giữa phía trên màn hình, ngay dưới thanh trên cùng.
 2. Bước nào trong danh sách này, và bạn đã bấm gì ngay trước đó.
 3. Nếu sai nhân vật, gửi thêm:
    - ảnh chụp **Prompt cuối** (rê chuột lên số bị sai)

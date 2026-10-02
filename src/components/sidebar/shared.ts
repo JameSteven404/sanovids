@@ -7,7 +7,7 @@ import { costOf, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelS
 import { CREDIT_SOURCE_LABEL, DEMO_CREDIT_HINT, formatCreditNumber, formatCredits, formatVnd, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
-import { assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
+import { ASSET_DEFAULT_W, assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
 /**
@@ -254,14 +254,41 @@ export function useSceneCode(sceneId: string | null): string {
 
 // ---------------- canvas placement ----------------
 /**
- * Next free slot in the asset column on the left of the canvas: below the lowest bottom edge, so an asset node
- * the user made taller (resize handle, `asset.size`) is not overlapped.
+ * Next free slot in the asset column of the canvas: below the lowest bottom edge of the cards IN that column, so an
+ * asset node the user made taller (resize handle, `asset.size`) is not overlapped. The column is where most cards are
+ * (ties: nearest the default column on the left): a card dragged next to a scene far below, or far to the left, no
+ * longer sends every new card there. A card a little to the side of the column (not counted in it) that the new card
+ * `card` (the asset being placed: its size; default card otherwise) would still overlap is stepped over too, as is
+ * any card the new one would then hit — the new card never covers another one.
  */
-export function nextAssetPosition(project: Project): XY {
+export function nextAssetPosition(project: Project, card?: Pick<Asset, 'size' | 'imageIds'>): XY {
   const placed = project.assets.filter((a) => a.position)
   if (!placed.length) return { x: LAYOUT.assetX, y: LAYOUT.scenesY }
-  const x = Math.min(...placed.map((a) => a.position!.x))
-  const y = Math.max(...placed.map((a) => a.position!.y + assetNodeHeight(a, useUI.getState().measured[a.id]?.height))) + LAYOUT.assetGapY
+  const near = (a: Asset, b: Asset) => Math.abs(a.position!.x - b.position!.x) < LAYOUT.assetW / 2
+  let column: Asset[] = []
+  let key = Infinity
+  for (const a of placed) {
+    const members = placed.filter((b) => near(a, b))
+    const dist = Math.abs(a.position!.x - LAYOUT.assetX)
+    if (members.length > column.length || (members.length === column.length && dist < key)) {
+      column = members
+      key = dist
+    }
+  }
+  const measured = useUI.getState().measured
+  const heightOf = (a: Asset) => assetNodeHeight(a, measured[a.id]?.height)
+  const x = Math.min(...column.map((a) => a.position!.x))
+  let y = Math.max(...column.map((a) => a.position!.y + heightOf(a))) + LAYOUT.assetGapY
+  const w = card?.size?.w ?? ASSET_DEFAULT_W
+  const h = assetNodeHeight(card ?? { imageIds: [] })
+  const gap = LAYOUT.assetGapY
+  const boxes = placed.map((a) => ({ x: a.position!.x, y: a.position!.y, w: a.size?.w ?? ASSET_DEFAULT_W, h: heightOf(a) }))
+  for (let i = 0; i < boxes.length + 1; i++) {
+    // overlapping horizontally and closer than one gap vertically: go one gap below it
+    const hits = boxes.filter((b) => b.x < x + w && x < b.x + b.w && b.y < y + h + gap && y < b.y + b.h + gap)
+    if (!hits.length) break
+    y = Math.max(...hits.map((b) => b.y + b.h)) + gap
+  }
   return { x, y }
 }
 

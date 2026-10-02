@@ -48,9 +48,10 @@ export function autoLayoutCanvas() {
   const measuredH = (id: string) => measured[id]?.height
   const before = useProject.getState().project
   const runs = useRuns.getState()
-  // Rows grow with their tallest node: the scene card or a take shown next to it (a resized take must not cover the
-  // next scene's row once every take is back in its row).
-  const heights = layoutRowHeights(before.scenes, layoutTakes(runs.takes, before.scenes, ui.takeDisplay), measuredH)
+  // Rows grow with their tallest node: the scene card or any of its takes (a resized take must not cover the next
+  // scene's row once every take is back in its row). Every take counts, also the ones "Chỉ take chọn" hides now:
+  // switched back to "Tất cả", they return to their row (only NEW nodes ignore hidden takes, see store/takeRows).
+  const heights = layoutRowHeights(before.scenes, layoutTakes(runs.takes, before.scenes, 'all'), measuredH)
   // Asset cards follow their image's aspect ratio (a portrait card is much taller than LAYOUT.assetH): hand their
   // heights over (keyed by asset id) so the asset column does not overlap. Off-screen cards are not rendered
   // (onlyRenderVisibleElements) and may never have been measured: assetNodeHeight falls back to the image's aspect.

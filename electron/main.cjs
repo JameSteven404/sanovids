@@ -196,13 +196,13 @@ function isExternal(url) {
 // The user logs in on canvasapp's OWN page, in a separate window that uses its own persistent session partition.
 // SanoVids never sees the password or the cookies: the renderer can only ask the main process to call a short
 // allowlist of canvasapp endpoints through that session. The main process adds the X-CSRF-Token header from the
-// partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low and caches the job
-// list so it is never fetched more than once every 15 s. No Origin/Referer spoofing, no Cloudflare workarounds.
+// partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low (2 API calls + 2 video
+// downloads at a time, whatever the number of running jobs) and caches the job list so it is never fetched more than
+// once every 15 s. No Origin/Referer spoofing, no Cloudflare workarounds.
 // ---------------------------------------------------------------------------------------------------------------
 
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
-const CANVASAPP_MAX_PARALLEL = 2
 const CANVASAPP_JOBS_MIN_MS = 15_000
 
 // <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it)
@@ -262,8 +262,6 @@ function matchCanvasappRoute(method, rawPath) {
 
 let canvasappLoginWin = null
 let canvasappLoginPromise = null
-let canvasappActive = 0
-const canvasappWaiters = []
 const canvasappJobListCache = new Map() // query string -> { at, result }
 /** Bumped by every POST /api/video-jobs: a job list read that started before it is never cached. */
 let canvasappJobsEpoch = 0
@@ -282,17 +280,29 @@ function gatewayError(code, message) {
   return { ok: false, code, message }
 }
 
-async function withCanvasappSlot(fn) {
-  while (canvasappActive >= CANVASAPP_MAX_PARALLEL) await new Promise((resolve) => canvasappWaiters.push(resolve))
-  canvasappActive++
+// <canvasapp-lanes> (pure; src/providers/__tests__/gatewayLanes.test.ts runs this block as-is)
+/**
+ * Requests in flight at once, per lane. Up to 10 jobs may run (src/providers/canvasapp/adapter.ts MAX_CONCURRENCY):
+ * their finished videos download in their own lane, so a few long downloads never make the job-list poll, a submit
+ * or /api/me wait behind them (one shared lane of 2 did), and the total stays small for canvasapp / Cloudflare.
+ */
+const CANVASAPP_LANE_SIZE = { api: 2, download: 2 }
+const canvasappLanes = { api: { active: 0, waiters: [] }, download: { active: 0, waiters: [] } }
+
+/** Runs `fn` when its lane ('api' or 'download') has a free slot (first come, first served). */
+async function withCanvasappSlot(laneName, fn) {
+  const lane = canvasappLanes[laneName]
+  while (lane.active >= CANVASAPP_LANE_SIZE[laneName]) await new Promise((resolve) => lane.waiters.push(resolve))
+  lane.active++
   try {
     return await fn()
   } finally {
-    canvasappActive--
-    const next = canvasappWaiters.shift()
+    lane.active--
+    const next = lane.waiters.shift()
     if (next) next()
   }
 }
+// </canvasapp-lanes>
 
 async function canvasappCsrf() {
   const cookies = await canvasappSession().cookies.get({ url: CANVASAPP_ORIGIN, name: 'canvas_csrf' })
@@ -357,8 +367,8 @@ async function canvasappRequest(req) {
   const controller = new AbortController()
   let timer = null
   try {
-    const result = await withCanvasappSlot(async () => {
-      // The clock starts when the request is really sent, not while it waits for a slot (e.g. behind two video
+    const result = await withCanvasappSlot(route.binary ? 'download' : 'api', async () => {
+      // The clock starts when the request is really sent, not while it waits for a slot (e.g. behind other video
       // downloads): a timeout then means canvasapp did not answer, never "not sent yet".
       timer = setTimeout(() => controller.abort(), route.binary ? 10 * 60_000 : 60_000)
       const res = await canvasappSession().fetch(url.toString(), {

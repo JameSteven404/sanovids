@@ -128,6 +128,18 @@ describe('autoLayoutCanvas', () => {
     expect(tk('t1').position).toBeNull() // back to its auto slot next to S01
   })
 
+  it('"Chỉ take chọn": a tall hidden take still gets room (it returns to its row with "Tất cả")', () => {
+    // t3 (560px, not chosen: t4 is the latest completed) is hidden; s2 must still go below t3's height
+    useRuns.setState({ takes: [take('t3', 's1', 1, { size: { w: 224, h: 560 } }), take('t4', 's1', 2)] })
+    useUI.setState({ takeDisplay: 'chosen', measured: {} })
+    try {
+      autoLayoutCanvas()
+      expect(sc('s2').position).toEqual({ x: LAYOUT.scenesX, y: LAYOUT.scenesY + 560 + LAYOUT.gapY }) // was y 308, under t3
+    } finally {
+      useUI.setState({ takeDisplay: 'all' })
+    }
+  })
+
   it('undo puts hand-placed takes back (redo snaps them again); takes moved since are left alone', () => {
     autoLayoutCanvas()
     undo()

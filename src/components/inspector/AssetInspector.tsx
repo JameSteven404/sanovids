@@ -2,7 +2,7 @@
 import { ImagePlus, Link2, LocateFixed, MapPinned, Pencil, Unlink, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { focusNodes, linkAssets, viewImages } from '../../actions'
+import { focusNodes, linkAssets, revealNodes, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
 import type { Asset, AssetKind } from '../../core/types'
@@ -51,10 +51,10 @@ export function AssetInspector({ assetId }: { assetId: string }) {
       toast(`Đã bỏ @${asset.tag} khỏi canvas (vẫn còn trong thư viện).`, { action: undoToastAction() })
       return
     }
-    // Same slot as the library's "Đặt lên canvas" (below the lowest asset node, resized heights included).
-    useProject.getState().setAssetOnCanvas(assetId, nextAssetPosition(useProject.getState().project))
+    // Same slot as the library's "Đặt lên canvas" (below the lowest card of the asset column, resized heights included).
+    useProject.getState().setAssetOnCanvas(assetId, nextAssetPosition(useProject.getState().project, asset))
     useUI.getState().select([assetId])
-    focusNodes([assetId])
+    revealNodes([assetId])
   }
 
   return (

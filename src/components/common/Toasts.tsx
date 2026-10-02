@@ -9,7 +9,7 @@ const TONE_ICON: Record<Toast['tone'], LucideIcon> = {
   error: CircleAlert,
 }
 
-/** Notifications: translucent capsules at the bottom center, newest last. */
+/** Notifications: translucent capsules at the top center, just below the top bar, newest closest to it (common.css). */
 export function Toasts() {
   const toasts = useUI((s) => s.toasts)
   const dismiss = useUI((s) => s.dismissToast)

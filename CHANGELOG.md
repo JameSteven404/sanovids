@@ -6,6 +6,29 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.2.5] — 2026-10-02
+
+🐞 **Node mới không còn "bay" ra xa**
+- Bấm **+ Cảnh** / `N` / **Cảnh mới** khi không chọn cảnh nào: cảnh mới nằm **ngay dưới cảnh bạn vừa chọn hoặc vừa tạo** (chọn một nhân vật cũng không làm mất mốc này). Nếu cảnh đó không nằm trong vùng đang nhìn thì đặt dưới cảnh thấp nhất trong vùng nhìn, còn không có cảnh nào trong vùng nhìn thì đặt giữa màn hình. Trước đây cảnh mới luôn về cột bên trái (x 420) ở hàng tính theo số cảnh, có khi cách chỗ bạn làm hàng nghìn px.
+- Cảnh mới **không đè** lên thẻ nhân vật, video đã kéo ra chỗ khác hay hàng video của cảnh khác: nó vào chỗ trống gần nhất ngay cạnh (dưới, trên hoặc bên cạnh), không trượt xuống hết một cột dài.
+- **Bấm đúp** lên nền canvas: cảnh mới nằm đúng chỗ bấm, chỉ xê dịch vừa đủ (lên/xuống trước, sang ngang sau, tối đa khoảng một hàng) nếu chạm thẻ khác — không còn trượt xuống tận cuối một cột dài cảnh hay thẻ nhân vật. Không có chỗ trống gần đó thì giữ đúng chỗ bấm. Khi vùng đang nhìn không có cảnh nào, cảnh mới vào chỗ trống gần giữa màn hình nhất **trong vùng nhìn**.
+- Khung nhìn **chỉ trượt vừa đủ** để thấy node mới và **giữ nguyên mức zoom**. Trước đây canvas tự phóng to lên 80% và nhảy tới node mới nên mọi thứ khác như bị dời đi xa.
+- `N` khi đang chọn cảnh: cảnh mới nằm ngay dưới cảnh đó. Chỉ những thẻ **thật sự bị đè** mới được đẩy xuống, và chỉ vừa đủ. Cột bên cạnh (cách 16 px) không còn bị đẩy theo.
+- Video đã kéo ra chỗ khác hoặc đang ẩn (chế độ "Chỉ take chọn") không còn làm cảnh tiếp theo bị đẩy xuống thấp. **Sắp xếp** vẫn chừa chỗ cho video đang ẩn, nên bật lại "Tất cả" thì không video nào đè hàng dưới.
+- Video mới của một cảnh nằm ngay cạnh cảnh, không xếp sau các video đã kéo đi chỗ khác (trước đây video thứ 10 có thể nằm cách thẻ cảnh hơn 2.000 px). Video chỉ hơi xê dịch thì vẫn giữ chỗ của nó trong hàng.
+- **Tạo cảnh tiếp nối** từ một video đã kéo ra chỗ khác: cảnh mới nằm ngay bên phải video đó. Video chỉ hơi xê dịch hoặc đổi cỡ tại chỗ (vẫn trong hàng của cảnh): cảnh mới nằm dưới cảnh gốc như trước, không chắn chỗ của video tiếp theo.
+- **Đưa lên canvas** từ thư viện: thẻ mới vào đúng cột nhân vật, không chạy theo một thẻ lẻ đã kéo ra xa, và không đè thẻ nằm lệch cạnh cột. Thả nhiều thẻ cùng lúc: xếp thành hàng 4 thẻ, thẻ nào đã có trên canvas thì giữ nguyên chỗ.
+- Nhập prompt hàng loạt: các cảnh mới xếp ngay dưới cảnh bạn vừa làm.
+
+🛠️ **Thông báo chuyển lên trên**
+- Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, thông báo mới nhất ở trên cùng. Không còn che thanh công cụ canvas (+ Cảnh, Chạy, Sắp xếp, zoom…) và hàng đợi ở dưới.
+
+🛠️ **Chạy tối đa 10 video cùng lúc qua canvasapp** (trước đây 2)
+- Từ video thứ 11 trở đi thì chờ trong hàng đợi.
+- Vẫn nhẹ nhàng với máy chủ: tiến độ của mọi video được kiểm tra chung **một lần** (≥ 15 giây/lần), gửi từng video một, tối đa 2 yêu cầu + 2 lượt tải video cùng lúc. Tải video về không còn làm chậm việc kiểm tra tiến độ hay gửi video mới.
+- Video đang tạo **không bao giờ bị gỡ** khỏi canvas cầu nối trên canvasapp để lấy chỗ cho video mới. Khi canvas đã kín (40 node / 30 ảnh — vd. nhiều cảnh, mỗi cảnh 4 nhân vật khác nhau), video mới **chờ trong hàng đợi** tới khi một video xong rồi tự gửi; chưa gửi thì không bị trừ credit.
+- Video chờ gửi hiện đúng là "đang chờ" (gửi lần lượt từng cái): huỷ lúc này thì chắc chắn không bị trừ credit, và nếu app bị đóng giữa chừng thì nhiều nhất một video bị đánh dấu "không rõ đã trừ credit chưa".
+
 ## [0.2.4] — 2026-10-02
 
 🐞 **Tag ảnh viết kiểu `@Image 1` giờ được nhận đúng** (sửa gấp)
@@ -118,6 +141,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.2.5]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.5
 [0.2.4]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.4
 [0.2.3]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.3
 [0.2.2]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.2

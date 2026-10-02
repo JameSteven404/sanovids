@@ -19,7 +19,7 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `input`) and appends which request was refused and its status, ids and query left out:
   `… [PUT /api/projects/{id}/canvas · HTTP 422]` (`errorFromResponse` / `requestLabel` in `api.ts`).
 - `GET /api/auth/state` → `{ authenticated: boolean, topup_enabled, google_login_enabled, simple_mode: {...} }`.
-- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency, polling ≥ 15 s.
+- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency (SanoVids: up to 10 jobs, but one job-list read per poll for all of them, submits one at a time, at most 2 API requests + 2 video downloads in flight), polling ≥ 15 s.
 
 ## Account
 - `GET /api/me` → `{ credits_balance: number, ... }` (1 credit ≈ 1.000đ).
