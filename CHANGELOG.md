@@ -10,7 +10,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 🐞 **Node mới không còn "bay" ra xa**
 - Bấm **+ Cảnh** / `N` / **Cảnh mới** khi không chọn cảnh nào: cảnh mới nằm **ngay dưới cảnh bạn vừa chọn hoặc vừa tạo** (chọn một nhân vật cũng không làm mất mốc này). Nếu cảnh đó không nằm trong vùng đang nhìn thì đặt dưới cảnh thấp nhất trong vùng nhìn, còn không có cảnh nào trong vùng nhìn thì đặt giữa màn hình. Trước đây cảnh mới luôn về cột bên trái (x 420) ở hàng tính theo số cảnh, có khi cách chỗ bạn làm hàng nghìn px.
-- Cảnh mới **không đè** lên thẻ nhân vật, video đã kéo ra chỗ khác hay hàng video của cảnh khác: nó trượt xuống chỗ trống gần nhất.
+- Cảnh mới **không đè** lên thẻ nhân vật, video đã kéo ra chỗ khác hay hàng video của cảnh khác: nó vào chỗ trống gần nhất ngay cạnh (dưới, trên hoặc bên cạnh), không trượt xuống hết một cột dài.
 - **Bấm đúp** lên nền canvas: cảnh mới nằm đúng chỗ bấm, chỉ xê dịch vừa đủ (lên/xuống trước, sang ngang sau, tối đa khoảng một hàng) nếu chạm thẻ khác — không còn trượt xuống tận cuối một cột dài cảnh hay thẻ nhân vật. Không có chỗ trống gần đó thì giữ đúng chỗ bấm. Khi vùng đang nhìn không có cảnh nào, cảnh mới vào chỗ trống gần giữa màn hình nhất **trong vùng nhìn**.
 - Khung nhìn **chỉ trượt vừa đủ** để thấy node mới và **giữ nguyên mức zoom**. Trước đây canvas tự phóng to lên 80% và nhảy tới node mới nên mọi thứ khác như bị dời đi xa.
 - `N` khi đang chọn cảnh: cảnh mới nằm ngay dưới cảnh đó. Chỉ những thẻ **thật sự bị đè** mới được đẩy xuống, và chỉ vừa đủ. Cột bên cạnh (cách 16 px) không còn bị đẩy theo.
