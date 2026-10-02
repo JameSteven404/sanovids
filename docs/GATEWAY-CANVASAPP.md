@@ -76,29 +76,40 @@ Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ k
 
 | SanoVids (`JobRequest`, dựng từ snapshot của take) | canvasapp | Ghi chú |
 |---|---|---|
-| `take.id` | `client_request_id` | khoá idempotency: gửi lại cùng take không được tạo job thứ hai (**VERIFY** server tôn trọng) |
+| `take.id` | `client_request_id = clientRequestIdFor(take.id)` (UUID, cố định theo take) | khoá idempotency: gửi lại cùng take luôn cùng khoá, không được tạo job thứ hai (**VERIFY** server tôn trọng). Sổ `jobs`/`sent` vẫn theo `take.id` |
 | `settings.model` `seedance_2_5` / `minimax_h3` | `model_profile` | trùng tên |
 | `settings.mode` `t2v` / `i2v` / `transform` | `mode` | trùng tên |
 | `settings.duration` | `duration` (số) | |
-| `settings.resolution` | `resolution` | `480p/720p/1080p`, `768p/2k` |
-| `settings.ratio` | `aspect_ratio` | |
-| `promptSnapshot` (prompt đã biên dịch) | `prompt` | gửi nguyên văn, giữ `@image_N` |
-| ảnh `@image_1…N` (thứ tự `scene.refs`, mỗi ảnh của nhân vật một số) | `upload_ids[]` **đúng thứ tự N** | ảnh tải lên `/api/uploads/images` một lần, cache theo `imageId` |
-| khung đầu / cuối (H3 transform, ảnh chính của asset) | `first_frame_upload_id` / `last_frame_upload_id` | transform: `upload_ids = []` |
-| cảnh (`sceneId`) | `canvas_node_id = "sv_<sceneId>"` | node video tồn tại trong canvas "SanoVids bridge" |
-| — | `project_id` | phiên "SanoVids bridge" (tạo một lần, nhớ id) |
+| `settings.resolution` | `resolution` (chữ thường) | `480p/720p/1080p`, `768p/2k` |
+| `settings.ratio` | `aspect_ratio` | không gửi với H3 transform (như trang canvasapp) |
+| `promptSnapshot` (prompt đã biên dịch) | `prompt` | giữ nguyên `@image_N`, chỉ bỏ khoảng trắng hai đầu (như `runVideoNode()`); `promptSnapshot` không đổi |
+| ảnh `@image_1…N` (thứ tự `scene.refs`, mỗi ảnh của nhân vật một số) | `upload_ids[]` **đúng thứ tự N** | Seedance và H3 i2v; H3 t2v gửi `upload_ids: []`. Ảnh tải lên `/api/uploads/images` một lần, cache theo `imageId` |
+| khung đầu / cuối (H3 transform, ảnh chính của asset) | `first_frame_upload_id` / `last_frame_upload_id` | transform: **không** có `upload_ids`, **không** có `aspect_ratio` |
+| cảnh (`sceneId`) | `canvas_node_id = canvasNodeId(sceneId)` (UUID, cố định theo cảnh) | node video tồn tại trong canvas "SanoVids bridge" |
+| — | `project_id` | phiên "SanoVids bridge" (tạo một lần bằng `POST` không body rồi `PATCH {name}`, như trang canvasapp; nhớ id) |
 | — | `generate_audio: true` | mặc định như trang canvasapp |
 | `@video_N` (video tham chiếu) | *không có* | **chưa hỗ trợ** → cảnh bị bỏ qua với lý do rõ ràng, không tốn credit |
 
 ### 3.2 Canvas cầu nối (`PUT /api/projects/{id}/canvas`)
 
-Trang canvasapp lưu canvas trước khi tạo job, nên máy chủ có thể yêu cầu `canvas_node_id` có thật. SanoVids dựng canvas tối thiểu:
+Trang canvasapp lưu canvas trước khi tạo job, nên máy chủ yêu cầu `canvas_node_id` có thật — và **kiểm tra chặt
+dạng canvas**: bản v0.2.0 bị từ chối "Invalid canvas payload" vì thừa khoá `title`, viewport `{x, y, zoom}` và id
+không phải UUID. Canvas tối thiểu giờ dựng **đúng từng khoá** như `canvasPayload()` của trang canvasapp
+(chi tiết: `docs/canvasapp-api-notes.md`):
 
-- 1 node `video` / cảnh: `{ id: "sv_<sceneId>", type: "video", data: { model_profile, duration, resolution, aspect_ratio, mode, prompt } }`.
-- 1 node `images` / ảnh: `{ id: "sv_<sceneId>_r<N>", type: "images", data: { upload_ids: [uploadId] } }` (+ `_ff`, `_lf` cho khung).
-- connection: `{ from: imageNode, to: videoNode, target_handle: "reference" | "first_frame" | "last_frame", order }`,
-  `order = N` (`ORDER_BASE = 1`, **VERIFY** 0 hay 1).
-- Giới hạn 40 node: giữ các cảnh gửi gần nhất, bỏ cảnh cũ.
+- 1 node `video` / cảnh: `{ id: canvasNodeId(sceneId), type: "video", x, y, w: 390, h: 600, data: { model_profile, duration, resolution, aspect_ratio, mode, prompt } }` — đúng 6 khoá trong `data`.
+- 1 node `images` / ảnh đã tải lên: `{ id: imageNodeId(uploadId, occurrence), type: "images", x, y, data: { upload_ids: [uploadId] } }` (không có `w`/`h`). Ảnh nhân vật dùng ở nhiều cảnh = **một** node ảnh nối tới mọi node video dùng nó (trang canvasapp cho phép); chỉ tách node thứ hai khi một cảnh dùng cùng một ảnh hai lần (hoặc khung đầu = khung cuối).
+- connection: `{ from: imageNode, to: videoNode, target_handle: "reference" | "first_frame" | "last_frame", order }`:
+  tham chiếu `order = N` (1..N, đúng `@image_N`), `first_frame` 1, `last_frame` 2; H3 chỉ có cạnh tham chiếu khi ở i2v.
+- `viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 }`. Mọi id là UUID (`uuidFromKey`, tất định), toạ độ là số nguyên.
+- H3 transform: `aspect_ratio` của node = tỷ lệ chung của hai ảnh khung (như `setTransformFrame()`); hai khung khác tỷ lệ
+  hoặc tỷ lệ ngoài danh sách (16:9, 9:16, 1:1, 4:3, 3:4, sai lệch ≤ 2 %) → từ chối trước khi tải ảnh, như trang canvasapp.
+- Giới hạn như trang canvasapp: 40 node, **30 ảnh trên cả canvas** (`imageIds()` của trang đếm mọi `upload_ids`, kể cả
+  trùng) — thêm 400.000 ký tự prompt: giữ các cảnh gửi gần nhất, bỏ cảnh cũ không còn vừa (cảnh mới nhất luôn giữ).
+- Danh sách cảnh của canvas chỉ được nhớ **sau khi** canvasapp nhận `PUT`. Bị từ chối → thử lại một lần với riêng cảnh
+  đang gửi (một cảnh cũ có thể là thứ bị từ chối, vd. ảnh đã hết hạn); vẫn bị từ chối → báo lỗi, không nhớ gì.
+- Test: `canvasapp-mapping.test.ts` so khớp `Object.keys` từng phần; máy chủ giả trong `canvasapp-e2e.test.ts` từ chối
+  mọi canvas / body lệch dạng và chạy nguyên khối `<canvasapp-routes>` của `electron/main.cjs`.
 
 ### 3.3 Trạng thái job → take
 
@@ -124,15 +135,22 @@ sổ `https://canvasapp.io.vn/` (phân vùng `persist:canvasapp`, sandbox, khôn
 (quên phiên cầu nối + cache upload) và chuyển về Demo giả lập.
 
 **Gửi (submit)** — runs engine chọn take `queued` (≤ 2 take canvasapp đang chạy) → `processing` → `submit(req)`:
-1. kiểm tra (`validateRequest`): prompt, giới hạn ký tự (H3 t2v/i2v 7.000), video tham chiếu, i2v cần ảnh, transform cần 2 khung, tuỳ chọn của `/api/video-profiles` nếu đã tải;
+1. đọc `/api/video-profiles` (như trang canvasapp lúc mở; nhớ 10 phút; đọc hỏng → dùng cấu hình mặc định của trang:
+   Seedance chạy, MiniMax-H3 tạm khoá, đọc lại sau 1 phút; 401 → báo đăng nhập) rồi kiểm tra (`validateRequest`): prompt,
+   giới hạn ký tự (H3 t2v/i2v 7.000), video tham chiếu, i2v cần ảnh, transform cần 2 khung, `can_create`, chế độ đang
+   tạm ngừng (`disabled_modes`), thời lượng / độ phân giải / tỷ lệ có trong cấu hình; H3 transform: hai khung cùng tỷ lệ;
 2. phiên "SanoVids bridge": dùng id đã nhớ → nếu chưa có thì tìm theo tên → nếu chưa có thì tạo;
 3. kiểm tra **mọi** ảnh có trong máy trước (thiếu ảnh → lỗi rõ ràng "Không tìm thấy ảnh tham chiếu @image_N…", chưa tải lên gì, chưa trả gì), rồi tải lên các ảnh chưa có trong cache (tuần tự; chỉ JPG/PNG/WEBP);
-4. `PUT …/canvas` (404 → tạo lại phiên một lần);
+4. `PUT …/canvas` (404 → tạo lại phiên một lần; bị từ chối → thử lại một lần với riêng cảnh này). Lỗi ở bước này luôn
+   ghi "Lưu canvas cầu nối … không thành công — chưa gửi yêu cầu tạo video, không bị trừ credit.";
 5. ghi trước "đã gửi" (`sent[take.id]`, localStorage `bdp:canvasapp:jobs`) → `POST /api/video-jobs` → `job_id` →
    `remoteId = "<project_id>:<job_id>"` lưu vào take **và** vào sổ `jobs[take.id]` (đồng bộ, ngay khi có câu trả lời).
 Các lần submit được xếp hàng nối tiếp (không chen nhau). Take bị huỷ (hoặc cảnh bị xoá) trong lúc chờ/đang tải ảnh →
 dừng **trước** `POST`, không bị trừ credit (cảnh bị xoá: take quay lại hàng đợi, chạy tiếp nếu Hoàn tác). Lỗi chắc chắn
-(401, 402/400 thiếu credit, 403, 404, 429, sai dữ liệu) → take `failed` với lý do tiếng Việt, không tự gửi lại.
+(401, 402/400 thiếu credit, 403, 404, 429, sai dữ liệu) → take `failed` với lý do tiếng Việt, không tự gửi lại. Lời báo
+kèm `detail` của canvasapp (lỗi kiểm tra dữ liệu ghi cả trường, vd. `nodes.0.data.title: Extra inputs are not permitted`)
+và yêu cầu nào bị từ chối, mã HTTP — không có id, query, cookie hay nội dung gửi đi, vd.
+`[PUT /api/projects/{id}/canvas · HTTP 422]`. Thiếu credit (402, hoặc 400 mà `detail` nói về số dư) giữ cache ảnh.
 `POST` không có câu trả lời rõ (mất mạng, quá giờ, 5xx, 200 mà không có `job_id`) → canvasapp **có thể đã tạo job**:
 đợi 15 s, đọc danh sách job tìm đúng job đó (cùng `client_request_id` nếu danh sách có trường này, nếu không thì job
 **duy nhất** mới xuất hiện trên node của cảnh, không thuộc take nào khác); đọc lần 2 sau 15 s nữa; không có → gửi lại
@@ -242,7 +260,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request song song, ≤ 2 job, poll ≥ 15 s, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie; **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
-| Trả tiền hai lần | `client_request_id = take.id`; sổ `jobs`/`sent` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job không bao giờ `POST` lại; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi. Test: `providers/__tests__/canvasapp-e2e.test.ts` |
+| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job không bao giờ `POST` lại; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi. Test: `providers/__tests__/canvasapp-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
@@ -262,8 +280,10 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 - [ ] Lead: mount `GatewaySection` trong `SettingsDialog`; thêm `canvasapp?: CanvasappBridge` vào `DesktopInfo` (`lib/pwa.ts`).
 - [ ] Lead: chuyển `provider`, `remoteId`, `charged`, `framesSnapshot` vào `Take` (`core/types.ts`) + giá trị mặc định trong `migrateTake`.
 - [ ] UI: nhãn nhà cung cấp trên take node / hàng đợi; hộp xác nhận chạy (RunConfirmDialog) ghi "credit canvasapp" thay vì credit demo khi đang dùng cổng, và không chặn vì thiếu credit demo; hiển thị `useRuns.providerIssue` (toast/banner "Đăng nhập lại canvasapp").
-- [ ] Nạp `/api/video-profiles` khi đăng nhập (`canvasappProvider().refreshProfiles()`) và dùng `capabilities()` để giới hạn lựa chọn model/mode trong inspector.
-- [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; `order` 0 hay 1; máy chủ có dedupe `client_request_id` không; `GET /api/projects` trả mảng hay `{projects}`; canvas tối thiểu có đủ trường không; `/stream` có chuyển hướng không.
+- [x] Đọc `/api/video-profiles` trước khi gửi (adapter, nhớ 10 phút) và từ chối điều trang canvasapp không chạy.
+- [ ] Dùng `capabilities()` (đã theo `/api/video-profiles` sau lần đọc đầu) để giới hạn lựa chọn model/mode trong inspector.
+- [ ] Node video của cảnh lấy id từ riêng `sceneId`: hai dự án SanoVids có cùng id cảnh (nhân bản / nhập cùng tệp hai lần) dùng chung một node trên canvas cầu nối. Chưa ảnh hưởng tiền (mỗi take có `client_request_id` riêng); khi cần, đưa id dự án vào `JobRequest` và vào `canvasNodeId`.
+- [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
 - [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không; danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
 - [ ] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` nên gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá) thay vì tạo take mới.
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.

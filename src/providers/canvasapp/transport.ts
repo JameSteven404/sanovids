@@ -6,7 +6,7 @@
 // Top-up checkout: openCheckout() → canvasapp:checkout → a modal window showing the REAL SePay page (main.cjs).
 import { checkoutUrlAllowed } from '../../core/topup'
 import type { ProviderAvailability } from '../types'
-import { CanvasappError, type Transport, type TransportRequest, type TransportResponse } from './api'
+import { CanvasappError, requestLabel, type Transport, type TransportRequest, type TransportResponse } from './api'
 
 /** Result of canvasapp:status / canvasapp:login. */
 export type BridgeStatus = { ok: true; authenticated: boolean } | { ok: false; code: string; message: string }
@@ -69,7 +69,9 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
       const res = await b.request(req)
       if (!res.ok) {
         const code = res.code === 'not-allowed' ? 'forbidden' : res.code === 'too-large' ? 'bad-request' : 'network'
-        throw new CanvasappError(code, res.message || 'Không kết nối được tới canvasapp.io.vn.')
+        const message = res.message || 'Không kết nối được tới canvasapp.io.vn.'
+        // refused by SanoVids desktop itself (allowlist / size cap): say which request, like errorFromResponse does
+        throw new CanvasappError(code, code === 'network' ? message : `${message} [${requestLabel(req)} · SanoVids desktop]`)
       }
       const { ok: _ok, ...rest } = res
       return rest

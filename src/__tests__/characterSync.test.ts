@@ -57,7 +57,8 @@ function charactersSent(prompt: string, images: JobRequest['images'], assets: As
   const ownerOfUpload = new Map(assets.flatMap((a) => a.imageIds.map((id) => ['up_' + id, a.name] as const)))
   // also resolve uploads of images that were removed from the library meanwhile
   for (const img of images) if (!ownerOfUpload.has(uploadOf(img.imageId))) ownerOfUpload.set(uploadOf(img.imageId), img.assetId)
-  return [...prompt.matchAll(/@image_(\d+)/g)].map((m) => ownerOfUpload.get(body.upload_ids[Number(m[1]) - 1]) ?? '(none)')
+  const sent = body.upload_ids ?? [] // Seedance always sends upload_ids (missing → every token reads '(none)')
+  return [...prompt.matchAll(/@image_(\d+)/g)].map((m) => ownerOfUpload.get(sent[Number(m[1]) - 1]) ?? '(none)')
 }
 
 describe('character sync: @image_N ↔ image sent', () => {

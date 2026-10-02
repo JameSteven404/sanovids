@@ -202,8 +202,11 @@ const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
 const CANVASAPP_MAX_PARALLEL = 2
 const CANVASAPP_JOBS_MIN_MS = 15_000
+
+// <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it)
 const CANVASAPP_MAX_JSON_BYTES = 2 * 1024 * 1024
 const CANVASAPP_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+/** Ids in paths (project / job / order ids; canvasapp's are UUIDs). */
 const CANVASAPP_ID = '[A-Za-z0-9_-]{1,80}'
 const CANVASAPP_ID_RE = new RegExp(`^${CANVASAPP_ID}$`)
 
@@ -212,8 +215,9 @@ const CANVASAPP_ROUTES = [
   { methods: ['GET'], path: /^\/api\/me$/ },
   { methods: ['GET'], path: /^\/api\/auth\/state$/ },
   { methods: ['GET'], path: /^\/api\/video-profiles$/ },
+  // POST without a body creates a project ("Phiên mới"); PATCH {name} names it — exactly what canvasapp's page does.
   { methods: ['GET', 'POST'], path: /^\/api\/projects$/ },
-  { methods: ['GET'], path: new RegExp(`^/api/projects/${CANVASAPP_ID}$`) },
+  { methods: ['GET', 'PATCH'], path: new RegExp(`^/api/projects/${CANVASAPP_ID}$`) },
   { methods: ['PUT'], path: new RegExp(`^/api/projects/${CANVASAPP_ID}/canvas$`) },
   { methods: ['POST'], path: /^\/api\/uploads\/images$/, multipart: true },
   { methods: ['GET'], path: /^\/api\/video-jobs$/, query: ['project_id'] },
@@ -231,6 +235,28 @@ const CANVASAPP_ROUTES = [
     queryValues: { kind: /^(all|topup|video|refund|adjustment)$/, offset: /^\d{1,6}$/, limit: /^\d{1,3}$/ },
   },
 ]
+
+function matchCanvasappRoute(method, rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath.startsWith('/api/') || rawPath.length > 300) return null
+  let url
+  try {
+    url = new URL(rawPath, CANVASAPP_ORIGIN)
+  } catch {
+    return null
+  }
+  if (url.origin !== CANVASAPP_ORIGIN || url.hash) return null
+  const route = CANVASAPP_ROUTES.find((r) => r.methods.includes(method) && r.path.test(url.pathname))
+  if (!route) return null
+  const seen = new Set()
+  for (const [key, value] of url.searchParams) {
+    if (!(route.query || []).includes(key) || seen.has(key)) return null
+    seen.add(key)
+    const re = (route.queryValues && route.queryValues[key]) || CANVASAPP_ID_RE
+    if (!re.test(value)) return null
+  }
+  return { route, url }
+}
+// </canvasapp-routes>
 
 let canvasappLoginWin = null
 let canvasappLoginPromise = null
@@ -252,27 +278,6 @@ function fromApp(event) {
 
 function gatewayError(code, message) {
   return { ok: false, code, message }
-}
-
-function matchCanvasappRoute(method, rawPath) {
-  if (typeof rawPath !== 'string' || !rawPath.startsWith('/api/') || rawPath.length > 300) return null
-  let url
-  try {
-    url = new URL(rawPath, CANVASAPP_ORIGIN)
-  } catch {
-    return null
-  }
-  if (url.origin !== CANVASAPP_ORIGIN || url.hash) return null
-  const route = CANVASAPP_ROUTES.find((r) => r.methods.includes(method) && r.path.test(url.pathname))
-  if (!route) return null
-  const seen = new Set()
-  for (const [key, value] of url.searchParams) {
-    if (!(route.query || []).includes(key) || seen.has(key)) return null
-    seen.add(key)
-    const re = (route.queryValues && route.queryValues[key]) || CANVASAPP_ID_RE
-    if (!re.test(value)) return null
-  }
-  return { route, url }
 }
 
 async function withCanvasappSlot(fn) {

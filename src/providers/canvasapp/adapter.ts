@@ -1,13 +1,19 @@
 // VideoProvider for canvasapp.io.vn (experimental, desktop only, OFF by default).
 // Uses the user's own canvasapp account and credits through the Electron session (no password ever reaches SanoVids).
 //
-// submit:  ensure the "SanoVids bridge" project (created once, id remembered) → check every reference image is on
-//          this computer → upload the missing ones (cache: SanoVids imageId → upload_id) → PUT a minimal bridge canvas
-//          (so canvas_node_id exists) → POST /api/video-jobs with client_request_id = take id (idempotency).
+// submit:  read /api/video-profiles (cached; unreadable → canvasapp's fallbacks) and refuse what canvasapp's page
+//          would not run (H3 transform: also frames of different / unsupported ratios) → ensure the "SanoVids bridge"
+//          project (created once — POST without body, then PATCH its name, like canvasapp's own page — id
+//          remembered) → check every reference image is on this computer → upload the missing ones (cache:
+//          SanoVids imageId → upload_id) → PUT a minimal bridge canvas (so canvas_node_id exists; its entries are
+//          remembered only once accepted; refused → once more with this scene alone) → POST /api/video-jobs with
+//          client_request_id = clientRequestIdFor(take id), a UUID stable per take.
+//          Every body has exactly the client's shape (see mapping.ts and docs/canvasapp-api-notes.md).
 // poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
 // result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame).
 //
-// Paying at most once per take (key = req.key = client_request_id). Persisted under JOBS_KEY, written synchronously:
+// Paying at most once per take (key = req.key = the take id; sent as clientRequestIdFor(key)). Persisted under
+// JOBS_KEY (keyed by the take id), written synchronously:
 //   - `jobs[key]`: the job canvasapp created for the key. A key with a known job is never posted again.
 //   - `sent[key]`: written right BEFORE the POST, removed once its answer is known. If the answer never arrives
 //     (connection broke, page closed / reloaded), the job may exist and be billed: it is looked for in the bridge
@@ -20,19 +26,25 @@
 import type { ModelId } from '../../core/types'
 import { capabilitiesFromModels } from '../capabilities'
 import type { JobRequest, ProviderAvailability, ProviderCapabilities, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
-import { CanvasappError, canvasappErrorText, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
+import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
   ALLOWED_IMAGE_TYPES,
   BRIDGE_PROJECT_NAME,
   bridgeCanvas,
+  bridgeEntriesFrom,
+  clientRequestIdFor,
   decodeRemoteId,
   encodeRemoteId,
   entryFromRequest,
   imagesToUpload,
+  inputShapeOf,
   jobIdFromCreateResponse,
   mapJobStatus,
   modelProfileOf,
+  profileSpecOf,
+  ratioFromDimensions,
   toVideoJobBody,
+  transformFrameRatio,
   uploadFilename,
   validateRequest,
   type BridgeEntry,
@@ -54,10 +66,21 @@ export const RECONCILE_DELAYS_MS = [15_000, 15_000]
 const CREATED_SKEW_MS = 14 * 3600_000
 const MAX_JOB_RECORDS = 500
 const MAX_SENT_RECORDS = 100
+/** /api/video-profiles is read again after this long (canvasapp's page reads it once per page load). */
+export const PROFILES_TTL_MS = 10 * 60_000
+/** ...and after a failed read, on the next submit once this long has passed (meanwhile the client's fallbacks apply). */
+const PROFILES_RETRY_MS = 60_000
 
 export const UNCERTAIN_SUBMIT_TEXT =
   'Mất kết nối đúng lúc gửi yêu cầu tạo video: không rõ canvasapp đã nhận (và trừ credit) hay chưa — kiểm tra trên canvasapp.io.vn trước khi chạy lại.'
 const CANCELLED_TEXT = 'Đã huỷ trước khi gửi sang canvasapp — không bị trừ credit.'
+/** Prefixed to a failed canvas PUT: the job POST is only ever sent after the canvas was accepted. */
+export const CANVAS_NOT_SAVED_TEXT = 'Lưu canvas cầu nối trên canvasapp không thành công — chưa gửi yêu cầu tạo video, không bị trừ credit.'
+/** ...for a take whose earlier POST lost its answer (that one may still have been billed). */
+const CANVAS_NOT_SAVED_AFTER_LOST_TEXT =
+  'Lưu canvas cầu nối trên canvasapp không thành công — lần này chưa gửi lại yêu cầu tạo video (lần gửi trước vẫn chưa rõ đã bị trừ credit chưa).'
+/** Appended to a refusal decided with canvasapp's fallback profiles (/api/video-profiles could not be read). */
+export const PROFILES_FALLBACK_TEXT = '(Không đọc được cấu hình model từ canvasapp nên dùng cấu hình mặc định như trang canvasapp: MiniMax-H3 tạm khoá — thử lại sau.)'
 
 export interface KeyValueStorage {
   get(key: string): string | null
@@ -105,6 +128,8 @@ export interface CanvasappProviderDeps {
   /** ≥ MIN_POLL_MS. */
   pollIntervalMs?: number
   generateAudio?: () => boolean
+  /** Pixel size of a picture (H3 transform frames' ratio); null = unreadable. Default createImageBitmap. */
+  imageSize?: (blob: Blob) => Promise<{ width: number; height: number } | null>
 }
 
 interface GatewayState {
@@ -149,9 +174,28 @@ function ambiguous(e: unknown): boolean {
   return e.code === 'network' || e.code === 'server' || e.code === 'bad-response' || e.status === 409
 }
 
+/** Pixel size of a picture through createImageBitmap (Electron renderer); null when it cannot be decoded here. */
+async function bitmapSize(blob: Blob): Promise<{ width: number; height: number } | null> {
+  if (typeof createImageBitmap !== 'function') return null
+  try {
+    const bitmap = await createImageBitmap(blob)
+    const size = { width: bitmap.width, height: bitmap.height }
+    bitmap.close()
+    return size
+  } catch {
+    return null
+  }
+}
+
 function createdTime(v: unknown): number {
   if (typeof v === 'number') return v
   return typeof v === 'string' ? Date.parse(v) : NaN
+}
+
+/** Persisted upload cache (imageId → upload_id), keeping only string → non-empty string pairs. */
+function uploadsFrom(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1].length > 0))
 }
 
 export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappProvider {
@@ -163,7 +207,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
   let state: GatewayState = load()
   let ledger: JobLedger = loadLedger()
+  /** /api/video-profiles as last read ([] = unreadable → canvasapp's fallbacks); null = not read yet. */
   let profiles: VideoProfile[] | null = null
+  let profilesRead: { at: number; ok: boolean } | null = null
   let ensuring: Promise<string> | null = null
   /** Serialises submits: uploads + canvas PUT + job POST of one take never interleave with another's. */
   let chain: Promise<unknown> = Promise.resolve()
@@ -176,8 +222,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     try {
       const raw = storage.get(STATE_KEY)
       if (raw) {
-        const p = JSON.parse(raw) as Partial<GatewayState>
-        return { projectId: p.projectId ?? null, uploads: p.uploads ?? {}, entries: p.entries ?? {} }
+        const p = JSON.parse(raw) as Record<string, unknown>
+        // Entries of older builds (v0.2.0) or malformed ones: kept when well-formed, else dropped and rebuilt on the
+        // next submit of that scene. Canvas node ids are never stored — they are derived when the canvas is built.
+        return { projectId: typeof p.projectId === 'string' && p.projectId ? p.projectId : null, uploads: uploadsFrom(p.uploads), entries: bridgeEntriesFrom(p.entries) }
       }
     } catch {
       /* ignore */
@@ -227,9 +275,17 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     if (!ensuring) {
       ensuring = (async () => {
         const existing = (await api.listProjects()).find((p) => p.name === BRIDGE_PROJECT_NAME)
-        const id = existing?.project_id ?? (await api.createProject(BRIDGE_PROJECT_NAME))
+        // canvasapp's page creates a project with an empty POST and names it with PATCH {name} ("Đổi tên phiên").
+        const id = existing?.project_id ?? (await api.createProject())
         state = { ...state, projectId: id, entries: existing ? state.entries : {} }
         save()
+        if (!existing) {
+          try {
+            await api.renameProject(id, BRIDGE_PROJECT_NAME)
+          } catch {
+            // Only the name is missing (the id is remembered): the project still works as the bridge.
+          }
+        }
         return id
       })().finally(() => {
         ensuring = null
@@ -267,12 +323,55 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     }
   }
 
-  /** canvasapp refused the job: its uploads may be the reason (expired on the server) → upload them again next time. */
+  /**
+   * canvasapp refused the job: its uploads may be the reason (expired on the server) → upload them again next time,
+   * and drop the scene's bridge entry that names them (rebuilt by the next submit of that scene).
+   */
   function forgetUploads(req: JobRequest) {
     const uploads = { ...state.uploads }
     for (const id of imagesToUpload(req)) delete uploads[id]
-    state = { ...state, uploads }
+    const { [req.sceneId]: _gone, ...entries } = state.entries
+    state = { ...state, uploads, entries }
     save()
+  }
+
+  /**
+   * /api/video-profiles, read like canvasapp's page does at boot (loadVideoProfiles()): 401 → login error; any other
+   * failure → [] (= its fallbacks: Seedance on, MiniMax-H3 locked), tried again later. `ok` false = fallbacks.
+   */
+  async function currentProfiles(): Promise<{ list: VideoProfile[]; ok: boolean }> {
+    const fresh = profiles && profilesRead && now() - profilesRead.at < (profilesRead.ok ? PROFILES_TTL_MS : PROFILES_RETRY_MS)
+    if (!fresh) {
+      try {
+        profiles = await api.videoProfiles()
+        profilesRead = { at: now(), ok: true }
+      } catch (e) {
+        if (isLoginRequired(e)) throw e
+        profiles = []
+        profilesRead = { at: now(), ok: false }
+      }
+    }
+    return { list: profiles ?? [], ok: profilesRead?.ok ?? false }
+  }
+
+  /**
+   * H3 transform: the ratio both frames share, read from the pictures like canvasapp's page (transformInputState():
+   * it never runs a transform whose frames differ in ratio or have an unsupported one). Null for any other request.
+   * Throws (nothing uploaded or sent yet) when a frame is missing, unreadable, or the ratios do not fit.
+   */
+  async function transformRatio(req: JobRequest): Promise<string | null> {
+    if (inputShapeOf(req.model, req.mode) !== 'frames' || !req.firstFrame || !req.lastFrame) return null
+    const ratios: (string | null)[] = []
+    for (const [label, frame] of [['khung đầu', req.firstFrame], ['khung cuối', req.lastFrame]] as const) {
+      const blob = await deps.getBlob(frame.imageId)
+      if (!blob) throw new CanvasappError('bad-request', `Không tìm thấy ảnh ${label} trong máy (đã bị xoá?) — chưa gửi gì, không bị trừ credit.`)
+      const size = await (deps.imageSize ?? bitmapSize)(blob)
+      if (!size) throw new CanvasappError('unsupported', `Không đọc được kích thước ảnh ${label} — chưa gửi gì, không bị trừ credit.`)
+      ratios.push(ratioFromDimensions(size.width, size.height))
+    }
+    const r = transformFrameRatio(ratios[0], ratios[1])
+    if ('problem' in r) throw new CanvasappError('unsupported', `${r.problem} Chưa gửi gì, không bị trừ credit.`)
+    return r.ratio
   }
 
   const uploadIdFor = (imageId: string) => {
@@ -291,16 +390,21 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     lists.set(rec.projectId, { at: now(), jobs })
     const remote = (j: CanvasJob) => ({ remoteId: encodeRemoteId(rec.projectId, j.job_id) })
     if (jobs.some((j) => typeof j.client_request_id === 'string')) {
-      const same = jobs.filter((j) => j.client_request_id === req.key)
+      // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
+      const keys = new Set([clientRequestIdFor(req.key), req.key])
+      const same = jobs.filter((j) => typeof j.client_request_id === 'string' && keys.has(j.client_request_id))
       return same.length === 1 ? remote(same[0]) : same.length ? 'ambiguous' : 'none'
     }
-    // The list does not carry client_request_id: the job is the ONE job on the scene's canvas node that is not
-    // another take's (known ids), was not there before the POST and was created after it.
+    // The list does not carry client_request_id: the job is the ONE canvas job on the canvas node the POST named
+    // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
+    // and was created after it.
     const taken = new Set(Object.values(ledger.jobs).map((j) => decodeRemoteId(j.remoteId)?.jobId))
     const before = new Set(rec.before ?? [])
     const model = modelProfileOf(req.model)
     const candidates = jobs.filter((j) => {
       if (j.canvas_node_id !== rec.nodeId || taken.has(j.job_id) || before.has(j.job_id)) return false
+      // loadJobs(): the canvas page only shows jobs without creation_mode or with 'canvas'
+      if (j.creation_mode !== undefined && j.creation_mode !== null && j.creation_mode !== 'canvas') return false
       if (j.model_profile !== undefined && j.model_profile !== model) return false
       if (j.duration !== undefined && Number(j.duration) !== req.duration) return false
       const t = createdTime(j.created_at)
@@ -352,8 +456,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         if (!reposted && !afterLost && !ambiguous(e)) {
           // canvasapp refused it (401, 402/400, 403, 404, 429…): nothing was created, nothing billed.
           clearSent(req.key)
-          // Not enough credits (402) says nothing about the uploads: keep them for the next try.
-          if (e instanceof CanvasappError && (e.code === 'bad-request' || e.code === 'not-found') && e.status !== 402) forgetUploads(req)
+          // Not enough credits (402, or a 4xx whose detail says so) says nothing about the uploads: keep them.
+          if (e instanceof CanvasappError && (e.code === 'bad-request' || e.code === 'not-found') && !e.noCredit && e.status !== 402) forgetUploads(req)
           throw e
         }
         // after a lost answer even a refusal of the second POST proves nothing (e.g. "duplicate request")
@@ -379,9 +483,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const done = ledger.jobs[req.key]
     if (done) return { remoteId: done.remoteId }
     checkCancelled()
-    const problems = validateRequest(req, profiles)
-    if (problems.length) throw new CanvasappError('unsupported', problems.join(' '))
-    // This key was posted before without a known answer (an explicit retry of an "unknown" take): look first.
+    // This key was posted before without a known answer (an explicit retry of an "unknown" take): look first —
+    // a job found there is this take's, whatever the checks below would say today.
     const earlier = ledger.sent[req.key]
     if (earlier) {
       let found: Awaited<ReturnType<typeof findJob>>
@@ -393,24 +496,42 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       if (typeof found === 'object') return settle(req.key, found.remoteId)
       if (found === 'ambiguous') throw uncertainError()
     }
+    // canvasapp's page never posts for a model that cannot create or a disabled mode: neither do we
+    const known = await currentProfiles()
+    const problems = validateRequest(req, known.list)
+    if (problems.length) throw new CanvasappError('unsupported', [...problems, ...(known.ok ? [] : [PROFILES_FALLBACK_TEXT])].join(' '))
+    const frameRatio = await transformRatio(req)
     let projectId = await ensureProject()
     checkCancelled()
     await uploadMissing(req, checkCancelled)
-    const entry = entryFromRequest(req, uploadIdFor, now())
-    const putCanvas = async () => {
-      state = { ...state, entries: { ...state.entries, [req.sceneId]: entry } }
+    const entry = entryFromRequest(req, uploadIdFor, now(), frameRatio)
+    /** PUT the canvas made of `entries`; they become the remembered entries only once canvasapp accepted it. */
+    const putCanvas = async (entries: Record<string, BridgeEntry>) => {
+      await api.putCanvas(projectId, bridgeCanvas(Object.values(entries)))
+      state = { ...state, entries }
       save()
-      await api.putCanvas(projectId, bridgeCanvas(Object.values(state.entries)))
     }
     try {
-      await putCanvas()
+      try {
+        await putCanvas({ ...state.entries, [req.sceneId]: entry })
+      } catch (e) {
+        if (e instanceof CanvasappError && e.code === 'not-found') {
+          // The remembered bridge project was deleted on canvasapp → create/find it again once.
+          state = { ...state, projectId: null, entries: {} }
+          save()
+          projectId = await ensureProject()
+          await putCanvas({ ...state.entries, [req.sceneId]: entry })
+        } else if (e instanceof CanvasappError && e.code === 'bad-request' && Object.keys(state.entries).some((k) => k !== req.sceneId)) {
+          // Refused: an older scene's node may be what canvasapp does not accept now (expired upload, changed
+          // rules…). A PUT is free → once more with this scene alone; accepted → the older entries are dropped.
+          await putCanvas({ [req.sceneId]: entry })
+        } else throw e
+      }
     } catch (e) {
-      // The remembered bridge project was deleted on canvasapp → create/find it again once.
-      if (!(e instanceof CanvasappError && e.code === 'not-found')) throw e
-      state = { ...state, projectId: null, entries: {} }
-      save()
-      projectId = await ensureProject()
-      await putCanvas()
+      // Nothing billable was sent this time: say so, and which step failed (the login message stays as it is).
+      if (!(e instanceof CanvasappError) || isLoginRequired(e) || e.code === 'cancelled') throw e
+      const text = earlier ? CANVAS_NOT_SAVED_AFTER_LOST_TEXT : CANVAS_NOT_SAVED_TEXT
+      throw new CanvasappError(e.code, `${text} ${e.message}`, { status: e.status, detail: e.detail, noCredit: e.noCredit })
     }
     // Last chance to stop: the POST below is what canvasapp bills.
     checkCancelled()
@@ -443,14 +564,20 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
     capabilities: (model: ModelId): ProviderCapabilities => {
       const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: 0 })
-      const o = profiles?.find((p) => p.model_profile === model)?.options
-      if (!o) return base
+      const o = profiles ? profileSpecOf(model, profiles).options : undefined
+      if (!o || typeof o !== 'object') return base
+      // Seedance's profile is used as canvasapp sends it: never trust a list to be one (the engine calls this)
+      const list = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
+      const strings = (v: unknown) => list(v)?.filter((x): x is string => typeof x === 'string') ?? null
+      const modes = strings(o.modes)
+      const disabled = strings(o.disabled_modes) ?? []
+      const durations = list(o.durations)
       return {
         ...base,
-        modes: o.modes ? base.modes.filter((m) => o.modes!.includes(m) && !o.disabled_modes?.includes(m)) : base.modes,
-        durations: o.durations?.map(Number).filter(Number.isFinite) ?? base.durations,
-        resolutions: o.resolutions ?? base.resolutions,
-        ratios: o.aspect_ratios ?? base.ratios,
+        modes: base.modes.filter((m) => (!modes || modes.includes(m)) && !disabled.includes(m)),
+        durations: durations ? durations.map(Number).filter(Number.isFinite) : base.durations,
+        resolutions: strings(o.resolutions) ?? base.resolutions,
+        ratios: strings(o.aspect_ratios) ?? base.ratios,
       }
     },
 
@@ -541,10 +668,12 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       lists.clear()
       misses.clear()
       profiles = null
+      profilesRead = null
     },
 
     refreshProfiles: async () => {
       profiles = await api.videoProfiles()
+      profilesRead = { at: now(), ok: true }
       return profiles
     },
     bridgeProjectId: () => state.projectId,

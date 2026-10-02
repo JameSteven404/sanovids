@@ -2,6 +2,9 @@
 //   the real queue engine (store/runs) → the real canvasapp adapter / api / desktop transport (providers/canvasapp)
 //   → window.bdpDesktop.canvasapp → an in-memory FAKE canvasapp.io.vn that behaves like the server + electron/main.cjs
 //   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request.
+// The fake is strict where canvasapp is: the canvas must have exactly canvasPayload()'s keys ("Invalid canvas
+// payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — and every request must pass the
+// endpoint allowlist of electron/main.cjs itself (its <canvasapp-routes> block is run as-is).
 // The real-balance store (store/credits) reads /api/me through the same fake bridge.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -32,9 +35,10 @@ import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { takeCostLine } from '../../components/runs/creditText'
 import { isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { createCanvasappProvider, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
-import { canvasNodeId } from '../canvasapp/mapping'
+import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
+import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
 
@@ -44,6 +48,58 @@ import { getProvider, registerProvider, useProviderPrefs } from '../index'
 
 type Json = Record<string, unknown>
 
+/** electron/main.cjs's own endpoint allowlist (the <canvasapp-routes> block, run as-is). */
+function loadMainRoutes(): { match: (method: string, path: string) => unknown; maxJsonBytes: number } {
+  const m = /\/\/ <canvasapp-routes>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-routes>/.exec(mainSource)
+  if (!m) throw new Error('canvasapp-routes block not found in electron/main.cjs')
+  const factory = new Function('CANVASAPP_ORIGIN', `${m[1]}\nreturn { match: matchCanvasappRoute, maxJsonBytes: CANVASAPP_MAX_JSON_BYTES }`) as (
+    origin: string,
+  ) => { match: (method: string, path: string) => unknown; maxJsonBytes: number }
+  return factory('https://canvasapp.io.vn')
+}
+const mainRoutes = loadMainRoutes()
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const isObj = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
+const sameKeys = (o: Json, keys: string[]) => Object.keys(o).length === keys.length && keys.every((k) => k in o)
+
+/**
+ * canvasapp refuses a canvas that is not exactly what its client's canvasPayload() writes. Returns why (test
+ * diagnostics) or null. Strict on purpose: the first real test failed on an extra `title` and a {x, y, zoom} viewport.
+ */
+function canvasProblem(c: unknown): string | null {
+  if (!isObj(c) || !sameKeys(c, ['nodes', 'connections', 'viewport'])) return 'top-level keys'
+  if (!isObj(c.viewport) || !sameKeys(c.viewport, ['zoom', 'scrollLeft', 'scrollTop']) || !Object.values(c.viewport).every((v) => typeof v === 'number')) return 'viewport'
+  if (!Array.isArray(c.nodes) || !Array.isArray(c.connections) || c.nodes.length > 40) return 'nodes / connections'
+  const nodes = new Map<string, string>()
+  for (const n of c.nodes) {
+    if (!isObj(n) || typeof n.id !== 'string' || !UUID_RE.test(n.id) || nodes.has(n.id)) return 'node id'
+    if (typeof n.x !== 'number' || typeof n.y !== 'number' || !isObj(n.data)) return 'node x / y / data'
+    if (n.type === 'images') {
+      if (!sameKeys(n, ['id', 'type', 'x', 'y', 'data'])) return 'image node keys'
+      if (!sameKeys(n.data, ['upload_ids']) || !Array.isArray(n.data.upload_ids) || n.data.upload_ids.some((u) => typeof u !== 'string')) return 'image node data'
+    } else if (n.type === 'video') {
+      if (!sameKeys(n, ['id', 'type', 'x', 'y', 'w', 'h', 'data']) || typeof n.w !== 'number' || typeof n.h !== 'number') return 'video node keys'
+      const d = n.data
+      if (!sameKeys(d, ['model_profile', 'duration', 'resolution', 'aspect_ratio', 'mode', 'prompt'])) return 'video node data keys'
+      if (typeof d.model_profile !== 'string' || typeof d.duration !== 'number' || typeof d.mode !== 'string' || typeof d.prompt !== 'string') return 'video node data types'
+      if (typeof d.resolution !== 'string' || d.resolution !== d.resolution.toLowerCase()) return 'video node resolution'
+      if (!(typeof d.aspect_ratio === 'string' || (d.aspect_ratio === null && d.mode === 'transform'))) return 'video node aspect_ratio'
+    } else return 'node type'
+    nodes.set(n.id, n.type)
+  }
+  // the client's imageIds() / upload guard: never more than 30 image uploads on one canvas (duplicates counted)
+  if (c.nodes.reduce((sum, n) => sum + (n.type === 'images' ? (n.data as Json & { upload_ids: unknown[] }).upload_ids.length : 0), 0) > 30) return 'more than 30 images'
+  for (const e of c.connections) {
+    if (!isObj(e) || !sameKeys(e, ['from', 'to', 'target_handle', 'order'])) return 'connection keys'
+    if (nodes.get(String(e.from)) !== 'images' || nodes.get(String(e.to)) !== 'video') return 'connection ends'
+    if (!['reference', 'first_frame', 'last_frame'].includes(String(e.target_handle)) || !Number.isInteger(e.order) || (e.order as number) < 1) return 'connection handle / order'
+    if (e.target_handle === 'first_frame' && e.order !== 1) return 'first_frame order'
+    if (e.target_handle === 'last_frame' && e.order !== 2) return 'last_frame order'
+  }
+  return null
+}
+
 interface FakeJob {
   job_id: string
   project_id: string
@@ -51,7 +107,7 @@ interface FakeJob {
   client_request_id: string
   model_profile: string
   duration: number
-  aspect_ratio: string
+  aspect_ratio: string | null
   status: string
   submission_state: string
   progress: number
@@ -100,11 +156,24 @@ function fakeCanvasapp() {
     dedupe: true,
     /** Job list items carry client_request_id. VERIFY on the live site. */
     exposeKey: false,
+    /** GET /api/video-profiles answer (`profiles` key, as canvasapp's page reads it). */
+    profiles: Object.values(MODELS).map((m) => ({
+      model_profile: m.id as string,
+      display_name: m.name,
+      visible: true,
+      enabled: true,
+      can_create: true,
+      options: { modes: [...m.modes] as string[], disabled_modes: [] as string[], durations: [...m.durations], resolutions: [...m.resolutions], aspect_ratios: [...m.ratios] },
+    })),
+    /** Pixel size the adapter reads for a picture, by its content (H3 transform frames' ratio); default 1920 × 1080. */
+    imageSizes: new Map<string, { width: number; height: number } | null>(),
     projects: [] as { project_id: string; name: string }[],
     canvases: new Map<string, CanvasPayload>(),
     uploads: new Map<string, { content: string; type: string; filename: string }>(),
     jobs: [] as FakeJob[],
     script: DEFAULT_SCRIPT,
+    /** Requests electron/main.cjs would have refused (not allowlisted / too large): must stay empty. */
+    refusedByMain: [] as string[],
     rejected: [] as { path: string; status: number; detail: string }[],
     fault: null as null | ((req: TransportRequest) => Fault | undefined),
   }
@@ -127,7 +196,7 @@ function fakeCanvasapp() {
   function createJob(b: Json): BridgeResponse {
     const path = '/api/video-jobs'
     const key = b.client_request_id
-    if (typeof key !== 'string' || !key) return refuse(422, 'client_request_id required', path)
+    if (typeof key !== 'string' || !UUID_RE.test(key)) return refuse(422, 'client_request_id must be a UUID', path)
     if (state.dedupe) {
       const dup = state.jobs.find((j) => j.client_request_id === key)
       if (dup) return ok({ job_id: dup.job_id, status: dup.status })
@@ -143,15 +212,22 @@ function fakeCanvasapp() {
     if (!spec.modes.includes(b.mode as Mode)) return refuse(400, 'mode not available', path)
     if (typeof b.duration !== 'number' || !spec.durations.includes(b.duration)) return refuse(400, 'duration not available', path)
     if (typeof b.resolution !== 'string' || !spec.resolutions.includes(b.resolution)) return refuse(400, 'resolution not available', path)
-    if (typeof b.aspect_ratio !== 'string' || !spec.ratios.includes(b.aspect_ratio)) return refuse(400, 'aspect_ratio not available', path)
     if (typeof b.generate_audio !== 'boolean') return refuse(422, 'generate_audio must be a boolean', path)
-    if (!Array.isArray(b.upload_ids) || b.upload_ids.some((id) => typeof id !== 'string' || !state.uploads.has(id))) return refuse(400, 'unknown upload_id', path)
-    if (b.mode === 'transform') {
+    // runVideoNode(): H3 transform sends the two frames only; everything else upload_ids + aspect_ratio
+    const frames = model === 'minimax_h3' && b.mode === 'transform'
+    const base = ['project_id', 'model_profile', 'canvas_node_id', 'prompt', 'mode', 'duration', 'resolution', 'generate_audio', 'client_request_id']
+    if (!sameKeys(b, [...base, ...(frames ? ['first_frame_upload_id', 'last_frame_upload_id'] : ['upload_ids', 'aspect_ratio'])])) return refuse(422, 'unexpected job fields', path)
+    if (frames) {
       for (const k of ['first_frame_upload_id', 'last_frame_upload_id']) {
         if (typeof b[k] !== 'string' || !state.uploads.has(b[k] as string)) return refuse(400, `${k} required`, path)
       }
+    } else {
+      if (typeof b.aspect_ratio !== 'string' || !spec.ratios.includes(b.aspect_ratio)) return refuse(400, 'aspect_ratio not available', path)
+      if (!Array.isArray(b.upload_ids) || b.upload_ids.some((id) => typeof id !== 'string' || !state.uploads.has(id))) return refuse(400, 'unknown upload_id', path)
+      if (model === 'minimax_h3' && b.mode === 't2v' && b.upload_ids.length) return refuse(400, 't2v takes no image', path)
     }
-    const cost = costOf({ model, mode: b.mode as Mode, duration: b.duration, resolution: b.resolution, ratio: b.aspect_ratio })
+    const ratio = typeof b.aspect_ratio === 'string' ? b.aspect_ratio : null
+    const cost = costOf({ model, mode: b.mode as Mode, duration: b.duration, resolution: b.resolution, ratio: ratio ?? '16:9' })
     if (state.balance < cost) return refuse(state.insufficientStatus, `Số dư không đủ: cần ${cost} credit, còn ${state.balance}`, path)
     state.balance -= cost
     const job: FakeJob = {
@@ -161,7 +237,7 @@ function fakeCanvasapp() {
       client_request_id: key,
       model_profile: model,
       duration: b.duration,
-      aspect_ratio: b.aspect_ratio,
+      aspect_ratio: ratio,
       status: 'queued',
       submission_state: 'accepted',
       progress: 0,
@@ -181,15 +257,29 @@ function fakeCanvasapp() {
     if (path === '/api/auth/state') return ok({ authenticated: state.authenticated, topup_enabled: true })
     if (!state.authenticated) return refuse(401, 'Not authenticated', path)
     if (path === '/api/me' && req.method === 'GET') return ok({ credits_balance: state.balance })
+    if (path === '/api/video-profiles' && req.method === 'GET') return ok({ profiles: state.profiles })
     if (path === '/api/projects' && req.method === 'GET') return ok(state.projects)
     if (path === '/api/projects' && req.method === 'POST') {
-      const p = { project_id: 'proj' + (state.projects.length + 1), name: String((req.json as Json).name) }
+      // canvasapp's page posts no body; the project gets a default name until PATCH {name}
+      if (req.json !== undefined) return refuse(422, 'no body expected', path)
+      const p = { project_id: 'proj' + (state.projects.length + 1), name: 'Phiên mới' }
       state.projects.push(p)
       return ok({ project_id: p.project_id })
+    }
+    const named = /^\/api\/projects\/([^/]+)$/.exec(path)
+    if (named && req.method === 'PATCH') {
+      const p = state.projects.find((x) => x.project_id === named[1])
+      if (!p) return refuse(404, 'Project not found', path)
+      const body = req.json as Json
+      if (!isObj(body) || !sameKeys(body, ['name']) || typeof body.name !== 'string' || !body.name.trim()) return refuse(422, 'name required', path)
+      p.name = body.name
+      return ok({ ok: true })
     }
     const canvas = /^\/api\/projects\/([^/]+)\/canvas$/.exec(path)
     if (canvas && req.method === 'PUT') {
       if (!state.projects.some((p) => p.project_id === canvas[1])) return refuse(404, 'Project not found', path)
+      const problem = canvasProblem(req.json)
+      if (problem) return refuse(422, `Invalid canvas payload (${problem})`, path)
       state.canvases.set(canvas[1], req.json as CanvasPayload)
       return ok({ ok: true })
     }
@@ -232,6 +322,15 @@ function fakeCanvasapp() {
     },
     request: async (req) => {
       log.push({ ...req, at: Date.now() })
+      // what electron/main.cjs checks before anything leaves the computer
+      if (!mainRoutes.match(req.method, req.path)) {
+        state.refusedByMain.push(`${req.method} ${req.path}`)
+        return { ok: false, code: 'not-allowed', message: `SanoVids không được phép gọi ${req.method} ${req.path}.` }
+      }
+      if (req.json !== undefined && new TextEncoder().encode(JSON.stringify(req.json)).byteLength > mainRoutes.maxJsonBytes) {
+        state.refusedByMain.push(`${req.method} ${req.path} (too large)`)
+        return { ok: false, code: 'too-large', message: 'Dữ liệu gửi đi quá lớn.' }
+      }
       const fault = state.fault?.(req)
       if (fault?.kind === 'network') return { ok: false, code: 'network', message: 'Không kết nối được tới canvasapp.io.vn (offline).' }
       if (fault?.kind === 'response') return ok(fault.json ?? {}, fault.status)
@@ -364,7 +463,15 @@ let offEvents: () => void = () => undefined
 
 /** A fresh adapter instance (as after an app restart): only its persisted state (localStorage) survives. */
 function installProvider() {
-  const p = createCanvasappProvider({ api: createCanvasappApi(createDesktopTransport()), getBlob: async (id) => media.get(id) ?? null, storage })
+  const p = createCanvasappProvider({
+    api: createCanvasappApi(createDesktopTransport()),
+    getBlob: async (id) => media.get(id) ?? null,
+    storage,
+    imageSize: async (blob) => {
+      const content = await blob.text()
+      return fake.state.imageSizes.has(content) ? fake.state.imageSizes.get(content)! : { width: 1920, height: 1080 }
+    },
+  })
   registerProvider(p)
   return p
 }
@@ -415,6 +522,9 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  // checked after the clean-up below, so one failing test never leaves timers / providers behind
+  const refusedByMain = [...fake.state.refusedByMain]
+  const malformed = fake.state.rejected.filter((r) => r.status === 422)
   offEvents()
   stopSync()
   useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
@@ -424,6 +534,8 @@ afterEach(async () => {
   useProviderPrefs.setState({ provider: 'mock' })
   resetRealCredits()
   delete g.window
+  expect(refusedByMain).toEqual([]) // every request passes electron/main.cjs's allowlist
+  expect(malformed).toEqual([]) // never an invalid canvas / job body
 })
 
 afterAll(() => {
@@ -440,10 +552,13 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(useRuns.getState()).toMatchObject({ credits: 1000, spent: 0 }) // demo wallet untouched
 
     await run(300)
-    // order of the submit: bridge project → uploads (sequential) → canvas → job
-    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 8)).toEqual([
+    // order of the submit: video profiles (like canvasapp's page at boot) → bridge project → uploads (sequential) →
+    // canvas → job
+    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 10)).toEqual([
+      'GET /api/video-profiles',
       'GET /api/projects',
       'POST /api/projects',
+      'PATCH /api/projects/proj1',
       'POST /api/uploads/images',
       'POST /api/uploads/images',
       'POST /api/uploads/images',
@@ -465,15 +580,34 @@ describe('gateway e2e: happy path + character sync', () => {
       resolution: '1080p',
       aspect_ratio: '16:9',
       generate_audio: true,
-      client_request_id: t.id,
+      client_request_id: clientRequestIdFor(t.id),
     })
+    expect(Object.keys(body)).toEqual([
+      'project_id',
+      'model_profile',
+      'canvas_node_id',
+      'prompt',
+      'mode',
+      'duration',
+      'resolution',
+      'generate_audio',
+      'upload_ids',
+      'aspect_ratio',
+      'client_request_id',
+    ])
+    expect(fake.state.projects).toEqual([{ project_id: 'proj1', name: 'SanoVids bridge' }])
     expect(take(t.id).promptSnapshot).toBe(PROMPT)
     expect(uploadedContents(body)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
     expect(sentCharacters(body)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
     // the bridge canvas wires the same uploads in the same order onto that node
     const canvas = fake.state.canvases.get('proj1')!
     const refs = canvas.connections.filter((c) => c.to === canvasNodeId('s1') && c.target_handle === 'reference').sort((a, b) => a.order - b.order)
-    expect(refs.map((c) => (canvas.nodes.find((n) => n.id === c.from)!.data.upload_ids as string[])[0])).toEqual(body.upload_ids)
+    const uploadOfNode = (id: string) => {
+      const n = canvas.nodes.find((x) => x.id === id)
+      return n?.type === 'images' ? n.data.upload_ids[0] : undefined
+    }
+    expect(refs.map((c) => c.order)).toEqual([1, 2, 3, 4])
+    expect(refs.map((c) => uploadOfNode(c.from))).toEqual(body.upload_ids)
     expect(fake.state.rejected).toEqual([])
     expect(fake.state.balance).toBe(100 - S1_COST)
     expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: 'proj1:job1' })
@@ -504,10 +638,10 @@ describe('gateway e2e: happy path + character sync', () => {
     const [t2] = enqueue('s1')
     await run(300)
     expect(fake.state.uploads.size).toBe(4)
-    expect(fake.count('GET', '/api/projects') + fake.count('POST', '/api/projects')).toBe(2)
+    expect(fake.count('GET', '/api/projects') + fake.count('POST', '/api/projects') + fake.count('PATCH', /^\/api\/projects\/[^/]+$/)).toBe(3)
     const second = fake.jobPosts()[1]
     expect(second.upload_ids).toEqual(body.upload_ids)
-    expect(second.client_request_id).toBe(t2.id)
+    expect(second.client_request_id).toBe(clientRequestIdFor(t2.id))
     expect(second.client_request_id).not.toBe(body.client_request_id)
     expect(fake.state.balance).toBe(100 - 2 * S1_COST)
     expect(useRealCredits.getState().balance).toBe(60)
@@ -532,7 +666,7 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(now.prompt).not.toBe(PROMPT) // the scene prompt was renumbered for the NEXT run
 
     await run(70_000) // s2/s3 complete → s1 is submitted
-    const body = fake.jobPosts().find((b) => b.client_request_id === t.id)!
+    const body = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(t.id))!
     expect(body.prompt).toBe(PROMPT)
     expect(uploadedContents(body)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
     expect(sentCharacters(body)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
@@ -541,7 +675,7 @@ describe('gateway e2e: happy path + character sync', () => {
     // a NEW take compiles the edited scene: its own numbering, still in sync
     const [t2] = enqueue('s1')
     await run(300)
-    const b2 = fake.jobPosts().find((b) => b.client_request_id === t2.id)!
+    const b2 = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(t2.id))!
     expect(b2.prompt).toBe(now.prompt)
     expect(sentCharacters(b2)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
   })
@@ -638,7 +772,7 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
     await run(2 * 60_000)
     expect(fake.state.jobs).toHaveLength(1)
     expect(fake.state.balance).toBe(100 - S1_COST)
-    expect(new Set(fake.jobPosts().map((b) => b.client_request_id))).toEqual(new Set([t.id]))
+    expect(new Set(fake.jobPosts().map((b) => b.client_request_id))).toEqual(new Set([clientRequestIdFor(t.id)]))
     expect(take(t.id).remoteId).toBe('proj1:job1')
     expect(['processing', 'completed']).toContain(take(t.id).status)
   })
@@ -657,7 +791,7 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
     await run(2 * 60_000)
     const [b] = enqueue('s2')
     await run(2 * 60_000)
-    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([a.id, b.id])
+    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([a.id, b.id].map(clientRequestIdFor))
     expect(take(a.id).remoteId).toBe('proj1:job1')
     expect(take(b.id).remoteId).toBe('proj1:job2')
     expect(fake.state.balance).toBe(100 - S1_COST - costOf(project().scenes[1].settings))
@@ -675,7 +809,7 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
     await run(2 * 60_000)
     const posts = fake.jobPosts()
     expect(posts.length).toBe(2)
-    expect(posts.every((b) => b.client_request_id === t.id)).toBe(true)
+    expect(posts.every((b) => b.client_request_id === clientRequestIdFor(t.id))).toBe(true)
     expect(posts[1]).toEqual(posts[0]) // the same request, byte for byte
     expect(fake.state.jobs).toHaveLength(1)
     expect(take(t.id).remoteId).toBe('proj1:job1')
@@ -699,7 +833,7 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
     expect(r).toMatchObject({ queued: 1 })
     expect(takes()).toHaveLength(1)
     await run(2 * 60_000)
-    expect(new Set(fake.jobPosts().map((b) => b.client_request_id))).toEqual(new Set([t.id]))
+    expect(new Set(fake.jobPosts().map((b) => b.client_request_id))).toEqual(new Set([clientRequestIdFor(t.id)]))
     expect(fake.state.jobs).toHaveLength(1)
     expect(take(t.id).remoteId).toBe('proj1:job1')
   })
@@ -790,7 +924,7 @@ describe('gateway e2e: app restart', () => {
       // explicit retry of that take: same key, one job
       useRuns.getState().retry(t.id)
       await run(60_000)
-      expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([t.id])
+      expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(t.id)])
       expect(take(t.id).remoteId).toBe('proj1:job1')
     }
   })
@@ -844,7 +978,7 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     undo()
     expect(useProject.getState().project.scenes.some((s) => s.id === 's1')).toBe(true)
     await run(45_000)
-    expect(fake.jobPosts().map((b) => b.client_request_id)).toEqual([t.id])
+    expect(fake.jobPosts().map((b) => b.client_request_id)).toEqual([clientRequestIdFor(t.id)])
     expect(take(t.id).status).toBe('completed')
   })
 
@@ -862,7 +996,7 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     fake.state.fault = null
     undo()
     await run(45_000)
-    expect(fake.jobPosts().map((b) => b.client_request_id)).toEqual([t.id])
+    expect(fake.jobPosts().map((b) => b.client_request_id)).toEqual([clientRequestIdFor(t.id)])
     expect(take(t.id).status).toBe('completed')
   })
 
@@ -872,7 +1006,14 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     useProject.getState().updateAsset('elara', { imageIds: ['img_e0', 'img_e1'] }) // a new primary picture meanwhile
     await run(300)
     const [body] = fake.jobPosts()
-    expect(body).toMatchObject({ model_profile: 'minimax_h3', mode: 'transform', upload_ids: [] })
+    expect(body).toMatchObject({ model_profile: 'minimax_h3', mode: 'transform', client_request_id: clientRequestIdFor(t.id) })
+    expect(body).not.toHaveProperty('upload_ids')
+    expect(body).not.toHaveProperty('aspect_ratio')
+    const canvas = fake.state.canvases.get('proj1')!
+    expect(canvas.connections.filter((c) => c.to === canvasNodeId('s4')).map((c) => [c.target_handle, c.order])).toEqual([
+      ['first_frame', 1],
+      ['last_frame', 2],
+    ])
     expect(fake.state.uploads.get(body.first_frame_upload_id as string)?.content).toBe('IMG:img_e1')
     expect(fake.state.uploads.get(body.last_frame_upload_id as string)?.content).toBe('IMG:img_v1')
     expect(fake.state.balance).toBe(100 - costOf(project().scenes[3].settings))
@@ -894,10 +1035,10 @@ describe('gateway e2e: gentleness and engine ownership', () => {
     ]
     const [a, b, c] = enqueue('s2', 's3', 's1')
     await run(60_000)
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id])
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id].map(clientRequestIdFor))
     expect(take(c.id).status).toBe('queued')
     await run(60_000) // a and b complete → c goes
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id, c.id])
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id, c.id].map(clientRequestIdFor))
     await run(120_000)
     expect(takes().every((x) => x.status === 'completed')).toBe(true)
     const at = fake.listReads().map((x) => x.at)
@@ -1002,5 +1143,151 @@ describe('gateway e2e: download', () => {
     await run(10 * 60_000)
     expect(take(t.id).status).toBe('completed')
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+})
+
+describe('gateway e2e: request shapes canvasapp accepts', () => {
+  it('the strict fake refuses what v0.2.0 sent (extra title, {x, y, zoom} viewport, non-UUID ids) — as canvasapp did', () => {
+    const v020 = {
+      nodes: [
+        { id: 'sv_s1', type: 'video', x: 570, y: 0, w: 360, h: 300, data: { model_profile: 'seedance_2_5', duration: 30, resolution: '480p', aspect_ratio: '16:9', mode: 't2v', prompt: 'x', title: 'S01 · T1' } },
+        { id: 'sv_s1_r1', type: 'images', x: 0, y: 0, data: { upload_ids: ['up1'] } },
+      ],
+      connections: [{ from: 'sv_s1_r1', to: 'sv_s1', target_handle: 'reference', order: 1 }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+    expect(canvasProblem(v020)).toBe('viewport')
+    const viewportFixed = { ...v020, viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 } }
+    expect(canvasProblem(viewportFixed)).toBe('node id')
+    const ids = { sv_s1: canvasNodeId('s1'), sv_s1_r1: canvasNodeId('s1-r1') }
+    const uuidOnly = {
+      ...viewportFixed,
+      nodes: viewportFixed.nodes.map((n) => ({ ...n, id: ids[n.id as keyof typeof ids] })),
+      connections: [{ from: ids.sv_s1_r1, to: ids.sv_s1, target_handle: 'reference', order: 1 }],
+    }
+    expect(canvasProblem(uuidOnly)).toBe('video node data keys') // the extra `title`
+    const { title: _t, ...data } = uuidOnly.nodes[0].data as Json
+    expect(canvasProblem({ ...uuidOnly, nodes: [{ ...uuidOnly.nodes[0], data }, uuidOnly.nodes[1]] })).toBeNull()
+  })
+
+  it('electron/main.cjs allows every endpoint the gateway uses, and nothing next to them', () => {
+    const allowed = (method: string, path: string) => !!mainRoutes.match(method, path)
+    const id = canvasNodeId('x')
+    expect(allowed('GET', '/api/projects')).toBe(true)
+    expect(allowed('POST', '/api/projects')).toBe(true)
+    expect(allowed('PATCH', `/api/projects/${id}`)).toBe(true)
+    expect(allowed('PUT', `/api/projects/${id}/canvas`)).toBe(true)
+    expect(allowed('POST', '/api/uploads/images')).toBe(true)
+    expect(allowed('POST', '/api/video-jobs')).toBe(true)
+    expect(allowed('GET', `/api/video-jobs?project_id=${id}`)).toBe(true)
+    expect(allowed('GET', `/api/video-jobs/${id}/stream`)).toBe(true)
+    expect(allowed('DELETE', `/api/projects/${id}`)).toBe(false)
+    expect(allowed('PATCH', `/api/projects/${id}/canvas`)).toBe(false)
+    expect(allowed('PATCH', '/api/projects')).toBe(false)
+    expect(allowed('PATCH', '/api/me')).toBe(false)
+    expect(mainRoutes.maxJsonBytes).toBe(2 * 1024 * 1024)
+  })
+
+  it('the first real test — Seedance 2.5 · t2v · 30 s · 480p · 16:9 · one reference image — is accepted end to end', async () => {
+    const ps = useProject.getState()
+    ps.loadProject({
+      ...project(),
+      scenes: [
+        scene('r1', 1, { title: 'Thử thật', prompt: '  @image_1 đi dạo trong mưa  ', refs: ['elara'], settings: { model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' } }),
+      ],
+    })
+    const [t] = enqueue('r1')
+    await run(300)
+    expect(fake.state.rejected).toEqual([])
+    const canvas = fake.state.canvases.get('proj1')!
+    expect(canvasProblem(canvas)).toBeNull()
+    const video = canvas.nodes.find((n) => n.type === 'video')!
+    expect(video).toMatchObject({ id: canvasNodeId('r1'), w: 390, h: 600 })
+    expect(video.data).toEqual({ model_profile: 'seedance_2_5', duration: 30, resolution: '480p', aspect_ratio: '16:9', mode: 't2v', prompt: take(t.id).promptSnapshot })
+    const [body] = fake.jobPosts()
+    expect(body).toEqual({
+      project_id: 'proj1',
+      model_profile: 'seedance_2_5',
+      canvas_node_id: canvasNodeId('r1'),
+      prompt: take(t.id).promptSnapshot.trim(),
+      mode: 't2v',
+      duration: 30,
+      resolution: '480p',
+      generate_audio: true,
+      upload_ids: ['up1'],
+      aspect_ratio: '16:9',
+      client_request_id: clientRequestIdFor(t.id),
+    })
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: 'proj1:job1' })
+    expect(fake.state.balance).toBe(100 - costOf({ model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' }))
+  })
+})
+
+describe('gateway e2e: what canvasapp’s own page would refuse, and which request a refusal came from', () => {
+  it('MiniMax-H3 that cannot create (video profiles) is refused before anything is uploaded or paid; Seedance still runs', async () => {
+    fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
+    const [h3, sd] = enqueue('s4', 's2')
+    await run(300)
+    expect(take(h3.id).status).toBe('failed')
+    expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
+    expect(takeCostLine(take(h3.id)).note).toMatch(/không bị trừ credit/)
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0) // s4's frames never uploaded; s2 has no picture
+    expect(fake.jobPosts().map((b) => b.model_profile)).toEqual(['seedance_2_5'])
+    expect(take(sd.id).remoteId).toBe('proj1:job1')
+    expect(fake.count('GET', '/api/video-profiles')).toBe(1) // read once, then cached
+  })
+
+  it('video profiles unreadable → canvasapp’s fallbacks, like its page: Seedance runs, MiniMax-H3 locked (and why)', async () => {
+    fake.state.fault = (req) => (req.path === '/api/video-profiles' ? { kind: 'response', status: 500, json: { detail: 'boom' } } : undefined)
+    const [h3, sd] = enqueue('s4', 's2')
+    await run(300)
+    expect(take(h3.id).status).toBe('failed')
+    expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
+    expect(take(h3.id).error).toContain('Không đọc được cấu hình model')
+    expect(take(sd.id).remoteId).toBe('proj1:job1')
+    expect(fake.jobPosts()).toHaveLength(1)
+  })
+
+  it('H3 transform with frames of different ratios is refused before uploading; matching frames give the node their ratio', async () => {
+    fake.state.imageSizes.set('IMG:img_v1', { width: 1080, height: 1920 })
+    const [bad] = enqueue('s4')
+    await run(300)
+    expect(take(bad.id).status).toBe('failed')
+    expect(take(bad.id).error).toMatch(/khác tỷ lệ \(16:9 \/ 9:16\)/)
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(0)
+
+    // both frames portrait: canvasapp's page runs it, the transform node's aspect_ratio is the frames' (not the scene's 16:9)
+    fake.state.imageSizes.set('IMG:img_e1', { width: 1080, height: 1920 })
+    const [good] = enqueue('s4')
+    await run(300)
+    expect(take(good.id).remoteId).toBe('proj1:job1')
+    const node = fake.state.canvases.get('proj1')!.nodes.find((n) => n.id === canvasNodeId('s4'))!
+    expect(node.type === 'video' && node.data.aspect_ratio).toBe('9:16')
+    expect(fake.jobPosts()[0]).not.toHaveProperty('aspect_ratio')
+  })
+
+  it('canvas refused at PUT: the take names the request and the field, says nothing was billed, and posts no job', async () => {
+    const detail = [{ type: 'extra_forbidden', loc: ['body', 'nodes', 0, 'data', 'title'], msg: 'Extra inputs are not permitted', input: 'PROMPT-ECHO' }]
+    fake.state.fault = (req) => (req.method === 'PUT' ? { kind: 'response', status: 422, json: { detail } } : undefined)
+    const [t] = enqueue('s2')
+    await run(300)
+    const error = take(t.id).error!
+    expect(take(t.id).status).toBe('failed')
+    expect(error.startsWith(CANVAS_NOT_SAVED_TEXT)).toBe(true)
+    expect(error).toContain('nodes.0.data.title: Extra inputs are not permitted')
+    expect(error).toContain('[PUT /api/projects/{id}/canvas · HTTP 422]')
+    expect(error).not.toContain('PROMPT-ECHO') // never what was sent
+    expect(error).not.toContain('proj1') // nor ids
+    expect(takeCostLine(take(t.id)).note).toMatch(/không bị trừ credit/)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(0)
+    expect(fake.state.balance).toBe(100)
+
+    // canvasapp accepts the next canvas: the next take runs (the refused scene was never remembered)
+    fake.state.fault = null
+    const [next] = enqueue('s3')
+    await run(300)
+    expect(take(next.id).remoteId).toBe('proj1:job1')
+    expect(fake.state.canvases.get('proj1')!.nodes.map((n) => n.id)).toEqual([canvasNodeId('s3')])
   })
 })
