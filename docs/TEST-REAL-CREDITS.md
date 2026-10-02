@@ -4,7 +4,7 @@ Mục tiêu: chắc chắn 3 điều trước khi làm phim thật, tốn **ít 
 
 1. **Đồng bộ nhân vật**: `@image_N` trong prompt luôn là đúng tấm ảnh thứ N gửi đi.
 2. **Video về đúng chỗ**: theo dõi tiến độ, tải video về máy, mở lại app vẫn không mất và không bị tính tiền hai lần.
-3. **Credit đúng**: số dư canvasapp giảm đúng giá. Nạp credit cộng đúng số. Credit demo không bị lẫn vào.
+3. **Credit đúng**: số dư canvasapp giảm đúng giá. Nạp credit cộng đúng số. Credit dev (giả lập) không bị lẫn vào.
 
 **Chi phí dự kiến: 8 credit** (2 video Seedance 2.5 · 5 giây · 480p, mỗi video 4 credit). Cần số dư **≥ 10 credit**.
 Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10 credit.
@@ -13,6 +13,24 @@ Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10
 > Làm trong **một dự án mới** tên "Thử credit thật", đừng thử trên dự án phim đang làm.
 
 ---
+
+## Bước −1 — Tập dượt miễn phí bằng chế độ Phát triển (0 credit, chạy được cả trên web)
+
+Chế độ Phát triển chạy **đúng mã của cổng canvasapp** với một canvasapp giả lập trong app: làm hết các bước dưới đây ở đây trước, khi mọi thứ đúng mới dùng credit thật.
+
+- [ ] **Cài đặt › Nhà cung cấp video** đang chọn **Phát triển (giả lập)**. Ô credit trên thanh trên cùng có viền đứt và chữ **DEV**.
+- [ ] Bấm **DEV · Đăng nhập** → trang đăng nhập **giả lập** hiện ra → **Đăng nhập**. Ô credit hiện **DEV 1.000 credit**.
+- [ ] Làm **Bước 0 → Bước 3** bên dưới y hệt (dự án mới, 3 ảnh JPG/PNG rất khác nhau, nối, viết prompt, chạy, đổi thứ tự). Khác biệt: video giả dài 3 giây và xong sau ≈ 8 giây; trên video ghi **`@image_1`, `@image_2`…** cạnh từng ảnh theo đúng thứ tự canvasapp nhận — nhìn là biết đúng nhân vật chưa.
+- [ ] Mở **Bảng phát triển (🐞) › Nhật ký**, bấm dòng **POST /api/video-jobs** → ô **Kiểm tra nhân vật** phải ghi **Khớp**, `@image_1` = ảnh A, `@image_2` = ảnh B…
+- [ ] Ô credit giảm đúng giá (4 credit dev cho 5 giây · 480p).
+- [ ] **Gây lỗi › Mất phản hồi sau khi tạo job (đã trừ tiền)** → chạy một cảnh: take vẫn xong, ô credit **chỉ giảm một lần** (SanoVids tìm lại job, không gửi lần hai).
+- [ ] **Gây lỗi › Mất mạng khi tạo job** → chạy: take báo lỗi rõ ràng, credit **không** giảm; bấm Chạy lại thì chạy được.
+- [ ] **Gây lỗi › Tải video lỗi N lần** (N = 3) → chạy: video vẫn về (SanoVids tự tải lại), take không bị đánh lỗi.
+- [ ] **Gây lỗi › Hết phiên (401)** khi một take đang chạy: ô credit đổi thành **DEV · Đăng nhập**; đăng nhập lại → take chạy tiếp và xong.
+- [ ] Nút **+** cạnh ô credit → **Mở thanh toán QR** → trang **SePay giả lập** → **Thanh toán thành công** → sau ≈ 2 giây báo “Đã nhận tiền”, số dư +50. Thử thêm **Huỷ**, **Lỗi thanh toán**, **Đóng cửa sổ**.
+- [ ] Nếu có gì sai: **Nhật ký › Copy nhật ký** rồi gửi kèm khi báo lỗi.
+
+Xong bước này mới chuyển sang **canvasapp.io.vn** (bản desktop) và làm tiếp từ Bước 0.
 
 ## Bước 0 — Chuẩn bị (không tốn credit)
 
@@ -29,7 +47,7 @@ Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10
   2. Cửa sổ tự đóng.
   3. Thấy "Đã đăng nhập" và **số credit giống hệt trên canvasapp.io.vn**. Ghi số dư lại: **S0 = ____ credit**.
 - [ ] Chọn **canvasapp.io.vn** ở "Nhà cung cấp video cho take mới".
-- [ ] Ô credit trên thanh trên cùng đổi từ "DEMO" (viền đứt) sang **"canvasapp · S0 credit"** (màu xanh, có nút **+**).
+- [ ] Ô credit trên thanh trên cùng đổi từ "DEV" (viền đứt, giả lập) sang **"canvasapp · S0 credit"** (màu xanh, có nút **+**).
 
 ## Bước 1 — Kiểm tra chặn lỗi (không tốn credit)
 
@@ -46,7 +64,7 @@ Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10
    - [ ] `@image_1` = Áo đỏ
    - [ ] `@image_2` = Chó
    - [ ] `@image_3` = Bãi biển
-2. Bấm **Chạy**. Hộp xác nhận phải ghi **"4 credit"** và trừ vào **credit canvasapp**, không phải credit demo. Bấm xác nhận.
+2. Bấm **Chạy**. Hộp xác nhận phải ghi **"4 credit"** và trừ vào **credit canvasapp**, không phải credit dev (giả lập). Bấm xác nhận.
 3. Trong lúc chờ (thường vài phút, tiến độ cập nhật khoảng 20 giây/lần):
    - [ ] Trên canvasapp.io.vn (trình duyệt), mở phiên **"SanoVids bridge"**: có đúng 1 job mới, ảnh tham chiếu theo thứ tự Áo đỏ → Chó → Bãi biển.
    - [ ] **Đóng hẳn SanoVids rồi mở lại**: take vẫn "đang tạo" rồi xong. Trên canvasapp **không** có job thứ hai.
@@ -81,7 +99,7 @@ Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10
 
 ## Bước 5 — Dọn dẹp
 
-- [ ] Muốn quay về chế độ miễn phí: chọn **Demo giả lập** (hoặc **Đăng xuất**).
+- [ ] Muốn quay về chế độ miễn phí: chọn **Phát triển (giả lập)** (hoặc **Đăng xuất**).
 - [ ] Xoá dự án "Thử credit thật" nếu không cần.
 
 ---

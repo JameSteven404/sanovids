@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } fr
 import { useShallow } from 'zustand/react/shallow'
 import { MODELS, costOf, modeLabel, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
-import { formatCredits } from '../../lib/credits'
+import { CREDIT_MARK, formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { useCreditKind } from '../../store/credits'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast } from '../../store/ui'
@@ -109,7 +109,7 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
         <span>Chi phí</span>
         <div className="sb-cost-box">
           <span className={`sb-cost-pill ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
-            {creditKind === 'demo' && <FlaskConical size={11} />}
+            {isSimulatedCredit(creditKind) && <FlaskConical size={11} />}
             {formatCredits(cost, creditKind)}
           </span>
           <span className="faint">/ lần chạy</span>
@@ -183,7 +183,7 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
             <b className={`sb-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
               {formatCredits(cost, creditKind, { short: true })}
             </b>
-            {creditKind === 'demo' && <span className="sb-demo-mark">demo</span>}
+            {CREDIT_MARK[creditKind] && <span className="sb-demo-mark">{CREDIT_MARK[creditKind]}</span>}
             {usage > 0 ? ` · dùng ở ${usage} cảnh` : ' · chưa dùng'}
           </div>
         </div>

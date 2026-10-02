@@ -1,11 +1,21 @@
-import { FlaskConical, LoaderCircle, LogIn, Play, Plus, RefreshCw, Sparkles, TriangleAlert, Wallet } from 'lucide-react'
+import { Bug, FlaskConical, LoaderCircle, LogIn, Play, RefreshCw, Sparkles, TriangleAlert, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { runNow } from '../../actions'
+import { openDevPanel, runNow } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
 import { PROVIDER_LABEL } from '../../providers'
-import { creditUnitLabel, DEMO_CREDIT_HINT, formatCreditNumber, formatCredits, formatVnd, refreshRealCredits, useCreditInfo, type CreditInfo } from '../../store/credits'
+import {
+  CREDIT_HINT,
+  creditUnitLabel,
+  formatCreditNumber,
+  formatCredits,
+  formatVnd,
+  isSimulatedCredit,
+  refreshRealCredits,
+  useCreditInfo,
+  type CreditInfo,
+} from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns, type SceneRunCheck } from '../../store/runs'
 import { useUI } from '../../store/ui'
@@ -15,9 +25,6 @@ import { loginToCanvasapp } from '../topbar/CreditPill'
 import { runCostPreview, type RunCostPreview } from './creditText'
 import { ProviderBadge, useActiveProvider } from './shared'
 import './runs.css'
-
-/** "+100 credit demo" when the demo balance is short (same amount as the Settings button). */
-const DEMO_TOPUP = 100
 
 interface Row {
   scene: Scene
@@ -42,9 +49,12 @@ function hasTakeOrJob(stat: TakeStat | undefined): boolean {
 /**
  * Cost summary + validation before sending scenes to the queue (a sheet). The header names the credits the run
  * spends (useCreditInfo(): the provider new takes use):
- *   demo       play money — balance before → after; the run is blocked when the demo balance is short.
+ *   dev        development mode — the simulated canvasapp account ("credit dev", not real money): current simulated
+ *              balance → estimated after ("trừ khi máy chủ giả lập nhận job"); never blocked here (a low balance
+ *              only warns — the simulated server answers 402 like canvasapp).
  *   canvasapp  the user's real account — current real balance → estimated after ("trừ trên canvasapp khi job được
- *              nhận"); never blocked by the demo balance (a low real balance only warns: canvasapp decides).
+ *              nhận"); never blocked here (a low real balance only warns: canvasapp decides).
+ *   demo       (legacy) the old demo's play money — blocked when short.
  * Every amount goes through formatCredits / formatCreditNumber.
  */
 export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; follow?: boolean }) {
@@ -55,8 +65,11 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   const info = useCreditInfo()
   const kind = info.kind
   const demo = kind === 'demo'
+  const dev = kind === 'dev'
+  /** Not real money (development mode / old demo): the dashed, neutral look. */
+  const sim = isSimulatedCredit(kind)
   const unit = creditUnitLabel(kind)
-  // canvasapp: make sure the real balance shown is recent (throttled — no request when read < 15 s ago).
+  // dev / canvasapp: make sure the gateway balance shown is recent (throttled — no request when read < 15 s ago).
   useEffect(() => {
     if (!demo) void refreshRealCredits()
   }, [demo])
@@ -112,7 +125,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   const skipped = shown.filter((r) => !r.check.ok).length
   const withWarnings = shown.filter((r) => r.check.ok && r.check.warnings.length).length
   const total = runnable.reduce((t, r) => t + r.check.cost, 0)
-  // Only the demo provider spends the local demo credits (store/runs enqueue): canvasapp is never blocked by them.
+  // Only the old demo spent the local demo credits (store/runs enqueue): dev / canvasapp are never blocked here.
   const preview = runCostPreview(kind, total, info.balance)
   const short = preview.short
   const canRun = runnable.length > 0 && !short
@@ -165,9 +178,11 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                 ? 'Không có cảnh nào chạy được'
                 : short
                   ? 'Không đủ credit demo'
-                  : demo
-                    ? 'Gửi vào hàng đợi (demo — credit giả lập)'
-                    : 'Gửi sang canvasapp.io.vn — trừ credit canvasapp (tiền thật) khi job được nhận'
+                  : dev
+                    ? 'Gửi sang canvasapp giả lập (chế độ Phát triển) — trừ credit dev khi máy chủ giả lập nhận job (không phải tiền thật)'
+                    : demo
+                      ? 'Gửi vào hàng đợi (demo cũ — credit giả lập)'
+                      : 'Gửi sang canvasapp.io.vn — trừ credit canvasapp (tiền thật) khi job được nhận'
             }
           >
             <Play size={14} fill="currentColor" />
@@ -182,22 +197,25 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           <b className="mono">{runnable.length}</b>
           <small>trên {shown.length} cảnh</small>
         </div>
-        <div className={`rq-stat${demo ? '' : ' real'}`}>
+        <div className={`rq-stat${sim ? '' : ' real'}`} title={CREDIT_HINT[kind] ?? undefined}>
           <span>Chi phí</span>
-          <b className="mono">{demo ? formatCreditNumber(total) : `≈ ${formatCreditNumber(total)}`}</b>
-          <small>{demo ? `${unit} · giả lập` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
+          <b className="mono">{sim ? formatCreditNumber(total) : `≈ ${formatCreditNumber(total)}`}</b>
+          <small>{sim ? `${unit} · giả lập` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
         </div>
         {demo ? (
-          <div className={`rq-stat${short ? ' short' : ''}`} title={DEMO_CREDIT_HINT}>
+          <div className={`rq-stat${short ? ' short' : ''}`} title={CREDIT_HINT.demo ?? undefined}>
             <span>Số dư demo sau khi chạy</span>
             <b className="mono">{formatCreditNumber(preview.after)}</b>
             <small>đang có {formatCredits(preview.before, 'demo')}</small>
           </div>
         ) : (
-          <div className={`rq-stat real${preview.mayBeShort ? ' short' : ''}`} title="Ước tính: canvasapp trừ credit khi nhận từng job">
-            <span>Số dư canvasapp sau khi chạy (ước tính)</span>
+          <div
+            className={`rq-stat real${preview.mayBeShort ? ' short' : ''}`}
+            title={dev ? 'Ước tính: máy chủ giả lập trừ credit dev khi nhận từng job' : 'Ước tính: canvasapp trừ credit khi nhận từng job'}
+          >
+            <span>{dev ? 'Số dư DEV sau khi chạy (ước tính)' : 'Số dư canvasapp sau khi chạy (ước tính)'}</span>
             <b className="mono">{preview.after === null ? '—' : `≈ ${formatCreditNumber(preview.after)}`}</b>
-            <small>{realBalanceHint(info)}</small>
+            <small>{gatewayBalanceHint(info)}</small>
           </div>
         )}
         <div className="rq-stat rq-stat-provider">
@@ -253,7 +271,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                 <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
                 <th title="Video tham chiếu (@video_N)">Video</th>
                 <th>Cảnh báo</th>
-                <th className="num" title={demo ? 'Credit demo (giả lập, không phải tiền thật)' : 'Credit canvasapp (ước tính, tiền thật)'}>
+                <th className="num" title={sim ? `${unit} (giả lập, không phải tiền thật)` : 'Credit canvasapp (ước tính, tiền thật)'}>
                   Credit
                 </th>
                 <th>Trạng thái</th>
@@ -274,16 +292,28 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
         </div>
       )}
 
-      {demo ? (
+      {dev ? (
+        <div className="rq-confirm-note sim">
+          <Bug size={13} />
+          <span>
+            Chế độ Phát triển: SanoVids chạy đúng các bước của cổng canvasapp (tải ảnh, lưu canvas, tạo job, theo dõi, tải video) nhưng tới canvasapp giả lập trong máy —
+            không gọi mạng, credit dev không phải tiền thật. Video giả ghi nhãn @image_N để kiểm tra đúng nhân vật; muốn thử lỗi thì mở{' '}
+            <button type="button" className="rq-link" onClick={() => openDevPanel('faults')}>
+              Bảng phát triển
+            </button>
+            .
+          </span>
+        </div>
+      ) : demo ? (
         <div className="rq-confirm-note">
           <Sparkles size={13} />
-          <span>Chế độ demo: video giả, không gửi đi đâu. {DEMO_CREDIT_HINT}. Credit demo của job lỗi/huỷ được hoàn lại.</span>
+          <span>Demo cũ: video giả, không gửi đi đâu. {CREDIT_HINT.demo}. Credit demo của job lỗi/huỷ được hoàn lại.</span>
         </div>
       ) : (
         <div className="rq-confirm-note real">
           <TriangleAlert size={13} />
           <span>
-            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận (số dư demo không liên quan). Huỷ
+            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận (số dư DEV không liên quan). Huỷ
             take trong SanoVids không dừng job đã gửi sang canvasapp.
           </span>
         </div>
@@ -399,9 +429,17 @@ function ModalShell({
 
 /** Header: which credits this run spends. */
 function CreditSourceBadge({ kind }: { kind: CreditInfo['kind'] }) {
+  if (kind === 'dev') {
+    return (
+      <span className="rq-src demo" title={CREDIT_HINT.dev ?? undefined}>
+        <FlaskConical size={12} />
+        Trả bằng credit dev · giả lập
+      </span>
+    )
+  }
   if (kind === 'demo') {
     return (
-      <span className="rq-src demo" title={DEMO_CREDIT_HINT}>
+      <span className="rq-src demo" title={CREDIT_HINT.demo ?? undefined}>
         <FlaskConical size={12} />
         Trả bằng credit demo · giả lập
       </span>
@@ -415,68 +453,69 @@ function CreditSourceBadge({ kind }: { kind: CreditInfo['kind'] }) {
   )
 }
 
-/** Small line under the estimated real balance: where the number comes from, or why it is unknown. */
-function realBalanceHint(info: CreditInfo): string {
+/** Small line under the estimated gateway balance: where the number comes from, or why it is unknown. */
+function gatewayBalanceHint(info: CreditInfo): string {
+  const dev = info.kind === 'dev'
   if (info.balance !== null && info.status !== 'login-required') {
-    return `đang có ${formatCredits(info.balance, 'canvasapp')}${info.status === 'error' ? ' (chưa cập nhật được)' : ''} · trừ khi job được nhận`
+    return `đang có ${formatCredits(info.balance, info.kind)}${info.status === 'error' ? ' (chưa cập nhật được)' : ''} · trừ khi job được nhận`
   }
   switch (info.status) {
     case 'login-required':
-      return 'chưa đăng nhập canvasapp — chưa biết số dư'
+      return dev ? 'chưa đăng nhập tài khoản giả lập — chưa biết số dư' : 'chưa đăng nhập canvasapp — chưa biết số dư'
     case 'loading':
-      return 'đang đọc số dư canvasapp…'
+      return dev ? 'đang đọc số dư giả lập…' : 'đang đọc số dư canvasapp…'
     case 'unavailable':
       return 'không đọc được số dư (chỉ có trong bản desktop)'
     default:
-      return 'chưa đọc được số dư canvasapp'
+      return dev ? 'chưa đọc được số dư giả lập' : 'chưa đọc được số dư canvasapp'
   }
 }
 
-/** Footer: demo balance before → after (+100 when short), or the real balance → estimated after. */
+/** Footer: the gateway balance → estimated after (dev: simulated, canvasapp: real), or the old demo wallet. */
 function FooterBalance({ preview, info }: { preview: RunCostPreview; info: CreditInfo }) {
   const [busy, setBusy] = useState(false)
   if (preview.kind === 'demo') {
     return (
-      <>
-        <span className={`rq-balance${preview.short ? ' short' : ''}`} title={DEMO_CREDIT_HINT}>
-          <FlaskConical size={14} />
-          Số dư demo <b className="mono">{formatCreditNumber(preview.before)}</b> → <b className="mono">{formatCredits(preview.after, 'demo')}</b>
-        </span>
-        {preview.short && preview.after !== null && (
-          <>
-            <span className="rq-short">Thiếu {formatCredits(-preview.after, 'demo')}</span>
-            <button type="button" className="btn btn-sm" onClick={() => useRuns.getState().addCredits(DEMO_TOPUP)} title={DEMO_CREDIT_HINT}>
-              <Plus size={13} /> {formatCredits(DEMO_TOPUP, 'demo')}
-            </button>
-          </>
-        )}
-      </>
+      <span className={`rq-balance${preview.short ? ' short' : ''}`} title={CREDIT_HINT.demo ?? undefined}>
+        <FlaskConical size={14} />
+        Số dư demo <b className="mono">{formatCreditNumber(preview.before)}</b> → <b className="mono">{formatCredits(preview.after, 'demo')}</b>
+        {preview.short && preview.after !== null && <span className="rq-short">Thiếu {formatCredits(-preview.after, 'demo')}</span>}
+      </span>
     )
   }
+  const dev = preview.kind === 'dev'
   const act = (fn: () => Promise<unknown>) => {
     if (busy) return
     setBusy(true)
     void fn().finally(() => setBusy(false))
   }
   const loading = busy || info.refreshing
+  const stale = info.status === 'error' && preview.before !== null ? `\nSố dư này là số cuối cùng đọc được — chưa cập nhật được: ${info.error ?? 'lỗi không rõ'}` : ''
   return (
     <>
       <span
-        className={`rq-balance real${preview.mayBeShort ? ' short' : ''}`}
+        className={`rq-balance real${dev ? ' sim' : ''}${preview.mayBeShort ? ' short' : ''}`}
         title={
-          `Credit thật của tài khoản canvasapp.io.vn (1 credit ≈ 1.000đ). Ước tính lần chạy này ≈ ${formatVnd(preview.total)}.` +
-          (info.status === 'error' && preview.before !== null ? `\nSố dư này là số cuối cùng đọc được — chưa cập nhật được: ${info.error ?? 'lỗi không rõ'}` : '')
+          (dev
+            ? `${CREDIT_HINT.dev}. Ước tính lần chạy này ${formatCredits(preview.total, 'dev')}.`
+            : `Credit thật của tài khoản canvasapp.io.vn (1 credit ≈ 1.000đ). Ước tính lần chạy này ≈ ${formatVnd(preview.total)}.`) + stale
         }
       >
-        <Wallet size={14} />
-        canvasapp <b className="mono">{formatCreditNumber(preview.before)}</b> →{' '}
-        <b className="mono">{preview.after === null ? '—' : `≈ ${formatCredits(preview.after, 'canvasapp')}`}</b>
-        <span className="rq-balance-note">· trừ trên canvasapp khi job được nhận</span>
+        {dev ? <FlaskConical size={14} /> : <Wallet size={14} />}
+        {dev ? 'DEV' : 'canvasapp'} <b className="mono">{formatCreditNumber(preview.before)}</b> →{' '}
+        <b className="mono">{preview.after === null ? '—' : `≈ ${formatCredits(preview.after, preview.kind)}`}</b>
+        <span className="rq-balance-note">{dev ? '· trừ khi máy chủ giả lập nhận job' : '· trừ trên canvasapp khi job được nhận'}</span>
       </span>
-      {preview.mayBeShort && <span className="rq-short warn">Có thể không đủ credit canvasapp</span>}
+      {preview.mayBeShort && <span className="rq-short warn">{dev ? 'Có thể không đủ credit dev' : 'Có thể không đủ credit canvasapp'}</span>}
       {info.status === 'login-required' ? (
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => act(loginToCanvasapp)} title="Mở trang đăng nhập của canvasapp.io.vn">
-          {busy ? <LoaderCircle size={13} className="rq-spin" /> : <LogIn size={13} />} Đăng nhập canvasapp
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy}
+          onClick={() => act(loginToCanvasapp)}
+          title={dev ? 'Mở trang đăng nhập giả lập (không cần mật khẩu)' : 'Mở trang đăng nhập của canvasapp.io.vn'}
+        >
+          {busy ? <LoaderCircle size={13} className="rq-spin" /> : <LogIn size={13} />} {dev ? 'Đăng nhập (giả lập)' : 'Đăng nhập canvasapp'}
         </button>
       ) : (
         info.status !== 'unavailable' && (
@@ -485,8 +524,8 @@ function FooterBalance({ preview, info }: { preview: RunCostPreview; info: Credi
             className="icon-btn rq-icon-sm"
             disabled={loading}
             onClick={() => act(info.refresh)}
-            title="Đọc lại số credit canvasapp"
-            aria-label="Đọc lại số credit canvasapp"
+            title={dev ? 'Đọc lại số credit dev' : 'Đọc lại số credit canvasapp'}
+            aria-label={dev ? 'Đọc lại số credit dev' : 'Đọc lại số credit canvasapp'}
           >
             {loading ? <LoaderCircle size={14} className="rq-spin" /> : <RefreshCw size={14} />}
           </button>

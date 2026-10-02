@@ -69,7 +69,7 @@ export class CanvasappError extends Error {
 export const isLoginRequired = (e: unknown) => e instanceof CanvasappError && e.code === 'login-required'
 
 const CODE_TEXT: Record<CanvasappErrorCode, string> = {
-  'login-required': 'Chưa đăng nhập canvasapp.io.vn hoặc phiên đã hết hạn — vào Cài đặt → Cổng canvasapp để đăng nhập lại.',
+  'login-required': 'Chưa đăng nhập canvasapp.io.vn hoặc phiên đã hết hạn — đăng nhập lại ở ô credit trên thanh trên cùng (hoặc Cài đặt → Nhà cung cấp video).',
   forbidden: 'canvasapp.io.vn từ chối yêu cầu (403).',
   'not-found': 'canvasapp.io.vn không tìm thấy dữ liệu (404).',
   'rate-limited': 'canvasapp.io.vn đang giới hạn tần suất (429) — thử lại sau ít phút.',

@@ -1,5 +1,6 @@
 /* Credit pill (tb-cp): the top bar and the queue drawer bar (CreditPill.tsx). Tokens only, both appearances.
-   demo = neutral + dashed outline + "DEMO" tag (play money); real = solid tint (the user's canvasapp account). */
+   sim (development mode "DEV", old demo "DEMO") = neutral + dashed outline + tag (not real money);
+   real = solid tint (the user's canvasapp account). */
 .tb-cp {
   display: inline-flex;
   align-items: center;
@@ -134,6 +135,36 @@
   color: color-mix(in srgb, var(--warn) 85%, var(--text));
 }
 
+/* development mode (sim): the dashed, neutral language of simulated credits in EVERY state (login, loading, problem
+   included) — never the tint of real money — with the "DEV" tag in front. A problem keeps a warning-colored icon. */
+.tb-cp.sim {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+}
+.tb-cp.sim:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tb-cp.sim .tb-cp-icon {
+  color: var(--text-dim);
+}
+.tb-cp.sim.problem .tb-cp-icon {
+  color: var(--warn);
+}
+.tb-cp.sim.login .tb-cp-num {
+  color: var(--text);
+}
+.tb-cp-tag.lead {
+  margin-right: 1px;
+}
+:root[data-theme='light'] .tb-cp.sim {
+  color: var(--text-dim);
+}
+:root[data-theme='light'] .tb-cp.sim.login .tb-cp-num {
+  color: var(--text);
+}
+
 /* "+" (Nạp credit) right next to the real balance */
 .tb-cp-group {
   display: inline-flex;
@@ -186,7 +217,26 @@
   color: color-mix(in srgb, var(--info) 80%, var(--text));
 }
 
-/* Top bar: narrower windows drop the words first (tooltip + aria-label keep them); "DEMO" always stays. */
+/* development mode: the "+" is dashed and neutral too (simulated top-up) */
+.tb-cp-add.sim {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+}
+.tb-cp-add.sim:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tb-cp-add.sim.low {
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+:root[data-theme='light'] .tb-cp-add.sim:not(.low) {
+  color: var(--text-dim);
+}
+
+/* Top bar: narrower windows drop the words first (tooltip + aria-label keep them); "DEV" / "DEMO" always stay. */
 @media (max-width: 1360px) {
   .tb .tb-cp-unit {
     display: none;

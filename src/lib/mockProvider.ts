@@ -16,6 +16,15 @@ export interface MockRenderInput {
   imageIds: string[]
   /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "@video_1"); defaults to @image_<index>. */
   labels?: string[]
+  /**
+   * The pictures themselves, parallel to imageIds (dev mode: the files the simulated canvasapp received). A blob here
+   * is drawn instead of looking imageIds[i] up in the media store.
+   */
+  imageBlobs?: (Blob | null)[]
+  /** Thumbnails drawn at most (default 4). */
+  maxImages?: number
+  /** Tag in the top bar (default "● DEMO"). */
+  badge?: string
   recordVideo: boolean
 }
 
@@ -114,9 +123,21 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
   const hue = seed % 360
   const u = Math.min(w, h) / 360 // type scale
   // Keep each label with its picture: a missing or broken image is skipped WITHOUT renumbering the others.
-  const picked = input.imageIds.slice(0, 4).map((id, i) => ({ id, label: input.labels?.[i] ?? `@image_${i + 1}` }))
-  const withUrls = await Promise.all(picked.map(async (p) => ({ ...p, url: (await getUrl(p.id)) ?? '' })))
-  const withImgs = await Promise.all(withUrls.filter((p) => p.url).map(async (p) => ({ label: p.label, img: await loadImage(p.url) })))
+  const max = Math.max(1, input.maxImages ?? 4)
+  const picked = input.imageIds.slice(0, max).map((id, i) => ({ id, label: input.labels?.[i] ?? `@image_${i + 1}`, blob: input.imageBlobs?.[i] ?? null }))
+  const withUrls = await Promise.all(
+    picked.map(async (p) => (p.blob ? { ...p, url: URL.createObjectURL(p.blob), own: true } : { ...p, url: (await getUrl(p.id)) ?? '', own: false })),
+  )
+  const withImgs = await Promise.all(
+    withUrls
+      .filter((p) => p.url)
+      .map(async (p) => {
+        const img = await loadImage(p.url)
+        // a decoded image keeps its pixels: the temporary URL of a passed blob can go
+        if (p.own) URL.revokeObjectURL(p.url)
+        return { label: p.label, img }
+      }),
+  )
   const loadedItems = withImgs.filter((p): p is { label: string; img: HTMLImageElement } => !!p.img)
   const loaded = loadedItems.map((p) => p.img)
   const words = input.prompt.replace(/@(\p{L}[\p{L}\p{N}_]*)/gu, '$1').replace(/\s+/g, ' ').trim()
@@ -182,7 +203,8 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
     // Reference images as framed "subjects" with a slow Ken Burns push-in.
     const n = loaded.length
     loaded.forEach((img, i) => {
-      const size = Math.min(w * (n > 2 ? 0.26 : n > 1 ? 0.34 : 0.42), h * 0.5)
+      // more than 4 (dev mode shows up to 8): each fits its own slot
+      const size = Math.min(n > 4 ? (w * 0.85) / (n + 1) : w * (n > 2 ? 0.26 : n > 1 ? 0.34 : 0.42), h * 0.5)
       const slot = w / (n + 1)
       const x = slot * (i + 1) - size / 2 + Math.sin(t * 0.9 + i * 1.7) * 8 * u
       const y = h * 0.47 - size / 2 + Math.cos(t * 0.8 + i) * 6 * u
@@ -242,7 +264,7 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
     // Top bar: DEMO tag + timecode.
     ctx.font = `600 ${10 * u}px "JetBrains Mono", monospace`
     ctx.fillStyle = input.color
-    ctx.fillText('● DEMO', pad, bar * 0.68)
+    ctx.fillText(input.badge ?? '● DEMO', pad, bar * 0.68)
     ctx.fillStyle = 'rgba(255,255,255,0.7)'
     const tc = timecode(t)
     ctx.fillText(tc, w - pad - ctx.measureText(tc).width, bar * 0.68)

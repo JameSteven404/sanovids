@@ -127,6 +127,10 @@ describe('migrateTake provider fields', () => {
   it('drops a malformed image key list', () => {
     expect('imageKeysSnapshot' in migrateTake({ id: 't', imageKeysSnapshot: [1, 2] })).toBe(false)
   })
+  it('keeps development-mode takes as dev; an unknown provider is the old demo', () => {
+    expect(migrateTake({ id: 't', provider: 'dev', remoteId: 'p:j', charged: false })).toMatchObject({ provider: 'dev', remoteId: 'p:j', charged: false })
+    expect(migrateTake({ id: 't', provider: 'other' })).toMatchObject({ provider: 'mock' })
+  })
 })
 
 describe('migrateProject presets', () => {

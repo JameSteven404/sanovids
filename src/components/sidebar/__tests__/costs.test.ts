@@ -1,12 +1,13 @@
 // Cost labels of the workspace (scene card, inspector, presets, table): docs/SPEC-v2.md §9.
 import { describe, expect, it } from 'vitest'
 import { costOf, normalizeSettings } from '../../../core/models'
-import { DEMO_CREDIT_HINT } from '../../../lib/credits'
+import { DEMO_CREDIT_HINT, DEV_CREDIT_HINT } from '../../../lib/credits'
 import { costTitle, creditTone, REAL_COST_HINT, totalCost } from '../shared'
 
 describe('creditTone', () => {
-  it('demo play money and real canvasapp credits get different classes', () => {
-    expect(creditTone('demo')).toBe('is-demo')
+  it('simulated credits (dev, old demo) and real canvasapp credits get different classes', () => {
+    expect(creditTone('dev')).toBe('is-sim')
+    expect(creditTone('demo')).toBe('is-sim')
     expect(creditTone('canvasapp')).toBe('is-real')
   })
 })
@@ -15,6 +16,12 @@ describe('costTitle', () => {
   it('demo: the amount says "credit demo" and the second line says it is not real money', () => {
     expect(costTitle(20, 'demo')).toBe(`20 credit demo\n${DEMO_CREDIT_HINT}`)
     expect(costTitle(1234, 'demo', 'Chạy S01 · ')).toBe(`Chạy S01 · 1.234 credit demo\n${DEMO_CREDIT_HINT}`)
+  })
+
+  it('dev: the amount says "credit dev" and the second line says it is simulated', () => {
+    expect(costTitle(20, 'dev')).toBe(`20 credit dev\n${DEV_CREDIT_HINT}`)
+    expect(costTitle(1234, 'dev', 'Chạy S01 · ')).toBe(`Chạy S01 · 1.234 credit dev\n${DEV_CREDIT_HINT}`)
+    expect(costTitle(20, 'dev')).not.toMatch(/canvasapp|đ\)/)
   })
 
   it('canvasapp: an estimate in canvasapp credits with its value in đồng', () => {

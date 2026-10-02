@@ -1,9 +1,9 @@
 import {
   AppWindow,
+  Bug,
   Clock,
   Download,
   FileUp,
-  FlaskConical,
   FolderDown,
   FolderOpen,
   Globe,
@@ -12,34 +12,29 @@ import {
   MonitorCheck,
   MonitorDown,
   Moon,
-  Plus,
-  RotateCcw,
+  ScrollText,
   Sparkles,
   Sun,
+  Zap,
 } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { DEMO_CREDIT_HINT, DEMO_CREDITS_DEFAULT, formatCreditNumber, formatCredits } from '../../lib/credits'
+import { openDevPanel } from '../../actions'
+import { formatCredits } from '../../lib/credits'
 import { canPickFolder, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { PROVIDER_LABEL } from '../../providers'
+import { DEV_SPEED_LABEL, devServer, startDevSnapshotTicker, useDevServer, type DevSpeed } from '../../providers/dev'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
-import { useRuns, type MockSpeed } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
-import { LOW_CREDITS } from '../topbar/creditPillModel'
+import { activeFaultCount } from '../dev/devModel'
 import { useActiveProvider } from '../runs/shared'
 import './dialogs.css'
 import { GatewaySection } from './GatewaySection'
 import { Segmented } from './Segmented'
 import { errorText } from './shared'
-
-const SPEEDS: { id: MockSpeed; label: string; hint: string }[] = [
-  { id: 'fast', label: 'Nhanh', hint: '3–6 giây / video' },
-  { id: 'normal', label: 'Vừa', hint: '9–16 giây / video' },
-  { id: 'slow', label: 'Chậm', hint: '22–38 giây / video' },
-]
 
 const THEMES: { id: ThemePref; label: string; icon: ReactNode }[] = [
   { id: 'system', label: 'Hệ thống', icon: <Monitor size={14} /> },
@@ -70,8 +65,7 @@ export function SettingsDialog() {
         <div className="dg-settings-col">
           <DownloadSettings />
           <GatewaySection />
-          <MockSettings />
-          <CreditSettings />
+          <DevSettings />
         </div>
       </div>
     </Modal>
@@ -334,109 +328,64 @@ function usePendingDownloads(): { count: number; refresh: () => void } {
   return { count, refresh: () => setCount(pendingDownloadCount()) }
 }
 
-function MockSettings() {
-  const mock = useRuns((s) => s.mock)
-  const setMock = useRuns((s) => s.setMock)
+/**
+ * "Chế độ Phát triển": the simulated canvasapp of development mode at a glance (account, balance, armed faults) with
+ * the settings used most; everything else is in "Bảng phát triển" (components/dev/DevPanel).
+ */
+function DevSettings() {
   const provider = useActiveProvider()
-  return (
-    <Section title="Nhà cung cấp giả lập" badge={<span className="badge accent">demo</span>} desc="Không gọi mạng, không tốn tiền. Dùng để thử hàng đợi, lỗi và take.">
-      {provider !== 'mock' && (
-        <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.mock}.</div>
-      )}
-      <div className="dg-field">
-        <span className="label">Tốc độ tạo video</span>
-        <Segmented
-          label="Tốc độ tạo video"
-          value={mock.speed}
-          onChange={(speed) => setMock({ speed })}
-          options={SPEEDS.map((s) => ({ id: s.id, label: s.label, hint: s.hint, title: s.hint }))}
-        />
-      </div>
-      <div className="dg-field">
-        <div className="dg-label-row">
-          <span className="label">Tỉ lệ lỗi giả</span>
-          <span className="dg-value mono">{Math.round(mock.failRate * 100)}%</span>
-        </div>
-        <input
-          className="dg-range"
-          type="range"
-          min={0}
-          max={50}
-          step={5}
-          value={Math.round(mock.failRate * 100)}
-          onChange={(e) => setMock({ failRate: Number(e.target.value) / 100 })}
-        />
-        <div className="dg-field-hint">Job lỗi được hoàn credit demo.</div>
-      </div>
-      <div className="dg-field">
-        <div className="dg-label-row">
-          <span className="label">Số job chạy cùng lúc</span>
-          <span className="dg-value mono">{mock.concurrency}</span>
-        </div>
-        <Segmented
-          label="Số job chạy cùng lúc"
-          value={mock.concurrency}
-          onChange={(concurrency) => setMock({ concurrency })}
-          options={[1, 2, 3, 4, 5].map((n) => ({ id: n, label: String(n) }))}
-        />
-      </div>
-      <Toggle
-        checked={mock.recordVideo}
-        onChange={(v) => setMock({ recordVideo: v })}
-        label="Ghi video webm giả"
-        hint="Tạo đoạn video 3 giây cho mỗi take. Tắt nếu máy chậm — khi đó chỉ có poster."
-      />
-    </Section>
-  )
-}
-
-/** "+100" demo credits (play money; the run dialog offers the same amount when the demo balance is short). */
-const DEMO_TOPUP = 100
-
-/** The local demo wallet (store/runs): play money spent only by the demo provider. Real credits: GatewaySection. */
-function CreditSettings() {
-  const credits = useRuns((s) => s.credits)
-  const spent = useRuns((s) => s.spent)
-  const addCredits = useRuns((s) => s.addCredits)
-  const resetDemoCredits = useRuns((s) => s.resetDemoCredits)
-  const atDefault = credits === DEMO_CREDITS_DEFAULT && spent === 0
+  const snap = useDevServer((s) => s.snapshot)
+  // Creates the simulated server if needed and keeps the numbers fresh while this dialog is open.
+  useEffect(() => startDevSnapshotTicker(), [])
+  const armed = activeFaultCount(snap)
   return (
     <Section
-      title="Credit demo"
-      badge={<span className="badge dg-demo-badge">giả lập</span>}
-      desc={`${DEMO_CREDIT_HINT}. Chỉ ${PROVIDER_LABEL.mock} dùng credit này; take tạo trên ${PROVIDER_LABEL.canvasapp} trừ credit thật trong tài khoản canvasapp của bạn (xem mục Cổng canvasapp).`}
+      title="Chế độ Phát triển"
+      badge={<span className="badge dg-dev-badge">DEV</span>}
+      desc="canvasapp.io.vn giả lập ngay trong SanoVids để tìm và sửa lỗi: cùng mã với chế độ thật, không gọi mạng, credit dev không phải tiền thật."
     >
-      <div className="dg-credit demo" title={DEMO_CREDIT_HINT}>
-        <div className="dg-credit-num">
-          <FlaskConical size={18} />
-          <span>Credit demo:</span>
-          <b className={credits < LOW_CREDITS ? 'low' : undefined}>{formatCreditNumber(credits)}</b>
+      {provider !== 'dev' && (
+        <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.dev}.</div>
+      )}
+      {snap && (
+        <div className="dg-dev-summary">
+          <span className={`dg-dev-dot${snap.authenticated ? ' on' : ''}`} aria-hidden="true" />
+          <span>{snap.authenticated ? 'Đã đăng nhập tài khoản giả lập' : 'Chưa đăng nhập tài khoản giả lập'}</span>
+          <span className="faint">·</span>
+          <b className="mono">{formatCredits(snap.balance, 'dev')}</b>
+          {armed > 0 && (
+            <>
+              <span className="faint">·</span>
+              <button type="button" className="dg-dev-armed" onClick={() => openDevPanel('faults')}>
+                <Zap size={12} /> {armed} lỗi giả đang bật
+              </button>
+            </>
+          )}
         </div>
-        <div className="dg-credit-spent faint">Đã dùng {formatCredits(spent, 'demo')}</div>
-        <div className="dg-credit-actions">
-          <button
-            className="btn"
-            onClick={() => {
-              addCredits(DEMO_TOPUP)
-              toast(`Đã thêm ${formatCredits(DEMO_TOPUP, 'demo')} (giả lập, không phải tiền thật).`, { tone: 'success' })
-            }}
-            title={`Thêm ${formatCredits(DEMO_TOPUP, 'demo')} — giả lập, không phải tiền thật`}
-          >
-            <Plus size={14} /> {formatCreditNumber(DEMO_TOPUP)}
-          </button>
-          <button
-            className="btn"
-            disabled={atDefault}
-            onClick={() => {
-              resetDemoCredits()
-              toast(`Đã đặt lại credit demo về ${formatCredits(DEMO_CREDITS_DEFAULT, 'demo')}.`, { tone: 'success' })
-            }}
-            title={`Đặt số dư credit demo về ${formatCreditNumber(DEMO_CREDITS_DEFAULT)} và xoá số đã dùng`}
-          >
-            <RotateCcw size={14} /> Đặt lại ({formatCreditNumber(DEMO_CREDITS_DEFAULT)})
-          </button>
+      )}
+      {snap && (
+        <div className="dg-field">
+          <span className="label">Tốc độ tạo video giả lập</span>
+          <Segmented<DevSpeed>
+            label="Tốc độ tạo video giả lập"
+            value={snap.config.speed}
+            onChange={(speed) => devServer().setConfig({ speed })}
+            options={(['fast', 'realistic'] as DevSpeed[]).map((id) => ({ id, label: DEV_SPEED_LABEL[id] }))}
+          />
         </div>
+      )}
+      <div className="dg-data-actions">
+        <button className="btn btn-primary" onClick={() => openDevPanel()}>
+          <Bug size={14} /> Mở Bảng phát triển
+        </button>
+        <button className="btn" onClick={() => openDevPanel('faults')} title="Mất mạng, mất câu trả lời, hết credit, job lỗi…">
+          <Zap size={14} /> Gây lỗi
+        </button>
+        <button className="btn" onClick={() => openDevPanel('log')} title="Mọi yêu cầu SanoVids gửi tới canvasapp giả lập và câu trả lời">
+          <ScrollText size={14} /> Nhật ký yêu cầu
+        </button>
       </div>
+      <div className="dg-field-hint">Video giả dài 3 giây, ghi nhãn @image_N trên từng ảnh tham chiếu theo đúng thứ tự canvasapp nhận — nhìn là biết có đúng nhân vật không.</div>
     </Section>
   )
 }
@@ -484,11 +433,11 @@ function DataSettings({ onDone }: { onDone: () => void }) {
             if (f) void run('import', () => importProjectFile(f), `Đã mở dự án từ “${f.name}”.`, true)
           }}
         />
-        <button className="btn" disabled={!!busy} onClick={() => void run('demo', createDemo, 'Đã tạo dự án demo mới.', true)}>
-          {icon('demo', <Sparkles size={14} />)} {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án demo'}
+        <button className="btn" disabled={!!busy} onClick={() => void run('demo', createDemo, 'Đã tạo dự án mẫu mới.', true)}>
+          {icon('demo', <Sparkles size={14} />)} {busy === 'demo' ? 'Đang tạo…' : 'Tạo lại dự án mẫu'}
         </button>
       </div>
-      <div className="dg-field-hint">“Tạo lại dự án demo” mở một dự án demo mới; dự án hiện tại vẫn nằm trong danh sách Dự án. File nhập vào mở thành dự án mới (không kèm video đã tạo).</div>
+      <div className="dg-field-hint">“Tạo lại dự án mẫu” mở một dự án mẫu mới; dự án hiện tại vẫn nằm trong danh sách Dự án. File nhập vào mở thành dự án mới (không kèm video đã tạo).</div>
     </Section>
   )
 }

@@ -50,7 +50,7 @@ const project = (): Project => ({
   scenes: [scene('s1', 1), scene('s2', 2)],
 })
 
-function fakeProvider(id: 'mock' | 'canvasapp') {
+function fakeProvider(id: 'mock' | 'canvasapp' | 'dev') {
   const statuses = new Map<string, RemoteStatus>()
   const p: VideoProvider = {
     id,
@@ -69,6 +69,7 @@ function fakeProvider(id: 'mock' | 'canvasapp') {
 }
 
 const realMock = getProvider('mock')
+const realDev = getProvider('dev')
 const g = globalThis as { window?: unknown }
 const useCanvasapp = () => {
   g.window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
@@ -96,7 +97,8 @@ afterEach(() => {
   vi.advanceTimersByTime(250)
   vi.useRealTimers()
   registerProvider(realMock)
-  useProviderPrefs.setState({ provider: 'mock' })
+  registerProvider(realDev)
+  useProviderPrefs.setState({ provider: 'dev' })
   delete g.window
 })
 afterAll(() => {
@@ -126,13 +128,14 @@ describe('demo wallet', () => {
     expect(useRuns.getState()).toMatchObject({ credits: 1000, spent: 0 })
   })
 
-  it('a demo run is blocked by a short demo balance, with a message naming demo credits', () => {
-    registerProvider(fakeProvider('mock').p)
+  it('new takes run in development mode and never touch (or wait for) the demo balance', () => {
+    registerProvider(fakeProvider('dev').p)
     useRuns.getState().loadRuns({ takes: [], credits: 1, spent: 0 })
     const r = useRuns.getState().enqueue(['s1'])
-    expect(r.queued).toBe(0)
-    expect(r.error).toMatch(/credit demo/)
-    expect(useRuns.getState().credits).toBe(1)
+    expect(r.error).toBeUndefined()
+    expect(r.queued).toBe(1)
+    expect(useRuns.getState().takes[0]).toMatchObject({ provider: 'dev', charged: false })
+    expect(useRuns.getState()).toMatchObject({ credits: 1, spent: 0 })
   })
 })
 
@@ -199,13 +202,36 @@ describe('canvasapp takes and the demo balance', () => {
     expect(events).toContainEqual({ type: 'cancelled', takeId: 'tk', provider: 'canvasapp' })
   })
 
-  it('demo takes still pay and get refunded as before', async () => {
+  it('old demo takes (saved before development mode) still get refunded as before', async () => {
     const f = fakeProvider('mock')
     registerProvider(f.p)
-    const r = useRuns.getState().enqueue(['s1'])
-    expect(useRuns.getState()).toMatchObject({ credits: 1000 - r.cost, spent: r.cost })
+    const old: Take = {
+      id: 'old',
+      sceneId: 's1',
+      number: 1,
+      status: 'queued',
+      progress: 0,
+      createdAt: 0,
+      startedAt: null,
+      finishedAt: null,
+      promptSnapshot: 'x',
+      rawPromptSnapshot: 'x',
+      refsSnapshot: [],
+      videoRefsSnapshot: [],
+      settings: project().scenes[0].settings,
+      cost: 4,
+      starred: false,
+      posterId: null,
+      videoId: null,
+      error: null,
+      position: null,
+      provider: 'mock',
+      remoteId: null,
+      charged: true,
+    }
+    useRuns.getState().loadRuns({ takes: [old], credits: 996, spent: 4 })
     await vi.advanceTimersByTimeAsync(250)
-    const id = useRuns.getState().takes[0].id
+    const id = 'old'
     expect(events).toContainEqual({ type: 'submitted', takeId: id, provider: 'mock' })
     f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'failed', error: 'boom' })
     await vi.advanceTimersByTimeAsync(250)

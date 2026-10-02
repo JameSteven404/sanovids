@@ -14,6 +14,28 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+/**
+ * Marks an overlay drawn ABOVE the dialogs (development mode's simulated login / SePay sheets, components/dev): the
+ * dialogs and full-screen overlays below leave keys pressed inside it alone (Escape there closes the sheet, not the
+ * dialog under it).
+ */
+export const TOP_OVERLAY_ATTR = 'data-top-overlay'
+
+/** The event target is inside a top overlay (see TOP_OVERLAY_ATTR). */
+export function inTopOverlay(target: EventTarget | null): boolean {
+  return typeof Element !== 'undefined' && target instanceof Element && !!target.closest(`[${TOP_OVERLAY_ATTR}]`)
+}
+
+/** A top overlay is on screen: the keys belong to it wherever focus is (even on <body>). */
+export function topOverlayOpen(): boolean {
+  return typeof document !== 'undefined' && !!document.querySelector(`[${TOP_OVERLAY_ATTR}]`)
+}
+
+/** Keys the dialogs / overlays below must leave alone: pressed inside a top overlay, or while one is open. */
+export function keyForTopOverlay(e: Pick<Event, 'target'>): boolean {
+  return inTopOverlay(e.target) || topOverlayOpen()
+}
+
 /** Input types that do not take typed text (Escape in them may close a dialog right away). */
 const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 
