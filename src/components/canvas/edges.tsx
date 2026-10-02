@@ -139,9 +139,11 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
     return () => clearTimeout(t)
   }, [intro])
   let ty = targetY
-  // Wires arriving at the same handle are spread apart. A selected wire goes to the handle's center: that is where
-  // its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
-  if ((kind === 'ref' || kind === 'vref' || kind === 'save' || kind === 'autosave') && data && data.count > 1 && !selected) {
+  // Wires arriving at the same scene handle are spread apart. A selected wire goes to the handle's center: that is
+  // where its reconnect grip is (React Flow puts it at the unshifted end), and it is the only one that can be dragged.
+  // Wires into a folder node (save / autosave) always converge on its dot: a folder collects many videos and a fan of
+  // ends beside the dot reads as clutter.
+  if ((kind === 'ref' || kind === 'vref') && data && data.count > 1 && !selected) {
     const off = (data.index - (data.count - 1) / 2) * 6
     ty = targetY + Math.max(-48, Math.min(48, off))
   }

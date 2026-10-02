@@ -6,6 +6,13 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.4.1] — 2026-10-02
+
+🛠️ **Node Thư mục gọn gàng hơn**
+- Mọi dây nối vào node Thư mục giờ **chụm vào đúng chấm tròn** của node, không còn toả rộng ở mép thẻ.
+- Nút chính là **Mở thư mục**; đổi sang thư mục khác bằng nút biểu tượng nhỏ bên cạnh. Chữ trên nút không còn bị cắt ("Chọn thư m…").
+- Hàng nút tách khỏi phần thông tin bằng một đường mảnh, chấm nối có viền sáng nhẹ.
+
 ## [0.4.0] — 2026-10-02 — Lưu video, node Thư mục, cắt dây, Storyboard kéo-thả, Cài đặt mới
 
 ✨ **Hỏi nơi lưu & đổi tên khi tải video** (bật sẵn)
@@ -208,6 +215,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.4.1]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.1
 [0.4.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.3.0
 [0.2.5]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.5

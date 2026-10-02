@@ -183,6 +183,8 @@
   display: flex;
   gap: 6px;
   margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 .cv-folder-btn {
   display: inline-flex;
@@ -209,6 +211,12 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* compact square button next to the wide one ("Đổi thư mục") */
+.cv-folder-btn.is-icon {
+  flex: none;
+  width: 30px;
+  padding: 0;
 }
 .cv-folder-btn > svg {
   flex: none;
@@ -253,12 +261,13 @@
   font-size: 22px;
 }
 
-/* its dot: indigo, at the middle of the head row */
+/* its dot: indigo, at the middle of the head row — every wire into the folder ends here */
 .cv-stage .cv-h.cv-h-folder {
   top: 25px;
   width: 14px;
   height: 14px;
   background: var(--save);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--save) 22%, transparent);
 }
 .cv-stage .cv-h.cv-h-folder:hover,
 .cv-stage .cv-h.cv-h-folder.connectingto,
