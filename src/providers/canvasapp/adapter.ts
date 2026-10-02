@@ -53,8 +53,12 @@ import {
 /** Never poll canvasapp more often than this (the site itself polls every 60 s). */
 export const MIN_POLL_MS = 15_000
 export const DEFAULT_POLL_MS = 20_000
-/** Jobs running at the same time through the gateway. */
-export const MAX_CONCURRENCY = 2
+/**
+ * Jobs running at the same time through the gateway. Only the job list is polled (one read per cycle for all of them,
+ * ≥ MIN_POLL_MS apart), submits are serialised (`chain`), and electron/main.cjs keeps API calls and video downloads
+ * in separate small lanes — so 10 running jobs do not mean 10 parallel requests.
+ */
+export const MAX_CONCURRENCY = 10
 /** A job missing from the list this many polls in a row is reported as failed. */
 const MAX_MISSES = 3
 /** After a POST /api/video-jobs without a clear answer: wait this long before each look at the job list. */

@@ -254,14 +254,28 @@ export function useSceneCode(sceneId: string | null): string {
 
 // ---------------- canvas placement ----------------
 /**
- * Next free slot in the asset column on the left of the canvas: below the lowest bottom edge, so an asset node
- * the user made taller (resize handle, `asset.size`) is not overlapped.
+ * Next free slot in the asset column of the canvas: below the lowest bottom edge of the cards IN that column, so an
+ * asset node the user made taller (resize handle, `asset.size`) is not overlapped. The column is where most cards are
+ * (ties: nearest the default column on the left): a card dragged next to a scene far below, or far to the left, no
+ * longer sends every new card there.
  */
 export function nextAssetPosition(project: Project): XY {
   const placed = project.assets.filter((a) => a.position)
   if (!placed.length) return { x: LAYOUT.assetX, y: LAYOUT.scenesY }
-  const x = Math.min(...placed.map((a) => a.position!.x))
-  const y = Math.max(...placed.map((a) => a.position!.y + assetNodeHeight(a, useUI.getState().measured[a.id]?.height))) + LAYOUT.assetGapY
+  const near = (a: Asset, b: Asset) => Math.abs(a.position!.x - b.position!.x) < LAYOUT.assetW / 2
+  let column: Asset[] = []
+  let key = Infinity
+  for (const a of placed) {
+    const members = placed.filter((b) => near(a, b))
+    const dist = Math.abs(a.position!.x - LAYOUT.assetX)
+    if (members.length > column.length || (members.length === column.length && dist < key)) {
+      column = members
+      key = dist
+    }
+  }
+  const measured = useUI.getState().measured
+  const x = Math.min(...column.map((a) => a.position!.x))
+  const y = Math.max(...column.map((a) => a.position!.y + assetNodeHeight(a, measured[a.id]?.height))) + LAYOUT.assetGapY
   return { x, y }
 }
 

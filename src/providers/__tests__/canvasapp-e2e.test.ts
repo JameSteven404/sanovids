@@ -34,10 +34,10 @@ import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCred
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { takeCostLine } from '../../components/runs/creditText'
-import { isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
+import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
@@ -649,10 +649,13 @@ describe('gateway e2e: happy path + character sync', () => {
   })
 
   it('edits while the take waits (new image, reordered refs, rename) never change what it sends', async () => {
-    // two long jobs occupy both slots, so s1 really waits in the queue
+    // long jobs occupy every slot (MAX_CONCURRENCY), so s1 really waits in the queue
     fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 10 }, { status: 'processing', progress: 50 }, { status: 'completed', progress: 100, download_available: true }]
-    enqueue('s2', 's3')
+    const fillers = Array.from({ length: MAX_CONCURRENCY - 2 }, (_, i) => `f${i + 1}`)
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, ...fillers.map((id, i) => scene(id, 5 + i))] })
+    enqueue('s2', 's3', ...fillers)
     await run(300)
+    expect(takes().filter((x) => x.status === 'processing')).toHaveLength(MAX_CONCURRENCY)
     const [t] = enqueue('s1')
     await run(1000)
     expect(take(t.id).status).toBe('queued')
@@ -665,7 +668,7 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(now.refs).toEqual(['village', 'elara', 'lumi'])
     expect(now.prompt).not.toBe(PROMPT) // the scene prompt was renumbered for the NEXT run
 
-    await run(70_000) // s2/s3 complete → s1 is submitted
+    await run(70_000) // the running jobs complete → s1 is submitted
     const body = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(t.id))!
     expect(body.prompt).toBe(PROMPT)
     expect(uploadedContents(body)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
@@ -1025,7 +1028,9 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
 })
 
 describe('gateway e2e: gentleness and engine ownership', () => {
-  it('at most 2 jobs in flight; polls never closer than 15 s', async () => {
+  it('at most 10 jobs in flight; one job-list read per poll for all of them, never closer than 15 s', async () => {
+    expect(MAX_CONCURRENCY).toBe(10)
+    expect(MAX_REMOTE_CONCURRENCY).toBe(10)
     fake.state.script = [
       { status: 'queued' },
       { status: 'processing', progress: 20 },
@@ -1033,14 +1038,24 @@ describe('gateway e2e: gentleness and engine ownership', () => {
       { status: 'processing', progress: 80 },
       { status: 'completed', progress: 100, download_available: true },
     ]
-    const [a, b, c] = enqueue('s2', 's3', 's1')
+    // 12 scenes (more than the cap): Seedance 2.5 · 5 s · 480p each
+    const ids = Array.from({ length: 12 }, (_, i) => `m${i + 1}`)
+    useProject.getState().loadProject({ ...project(), scenes: ids.map((id, i) => scene(id, i + 1)) })
+    const all = enqueue(...ids)
+    const keys = (list: Take[]) => list.map((t) => clientRequestIdFor(t.id))
     await run(60_000)
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id].map(clientRequestIdFor))
-    expect(take(c.id).status).toBe('queued')
-    await run(60_000) // a and b complete → c goes
-    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual([a.id, b.id, c.id].map(clientRequestIdFor))
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all.slice(0, 10)))
+    expect(takes().filter((x) => x.status === 'processing')).toHaveLength(10)
+    expect(all.slice(10).map((t) => take(t.id).status)).toEqual(['queued', 'queued'])
+    // ten running jobs, still one read of the job list per poll cycle (not one per job)
+    const reads = fake.listReads().length
+    expect(reads).toBeGreaterThan(0)
+    expect(reads).toBeLessThanOrEqual(4)
+    await run(60_000) // the first ten complete → the last two go
+    expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all))
     await run(120_000)
     expect(takes().every((x) => x.status === 'completed')).toBe(true)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(12)
     const at = fake.listReads().map((x) => x.at)
     for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(15_000)
   })

@@ -107,15 +107,17 @@
   }
 }
 
-/* ---------- toasts (material, bottom center) ---------- */
+/* ---------- toasts (material, top center, just below the top bar) ----------
+   At the top they never cover the canvas toolbar or the queue drawer at the bottom, and staying below the top bar
+   (--topbar-h) keeps its controls (view switcher, credits, run queue) clickable. Newest closest to the top bar. */
 .toasts {
   position: fixed;
   left: 50%;
-  bottom: 52px;
+  top: calc(var(--topbar-h) + 10px);
   transform: translateX(-50%);
   z-index: 200;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: center;
   gap: 8px;
   width: max-content;
@@ -212,10 +214,11 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
+/* Slides down from under the top bar. */
 @keyframes cm-toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.96);
+    transform: translateY(-8px) scale(0.96);
   }
 }
 

@@ -35,6 +35,7 @@ Goal: calm, content-first, precise. The user's images and videos are the stars; 
 - **Lists/rows** (library, takes, queue, projects): rounded hover background (`--hover`), selected = `--accent-soft` fill + tint text/indicator; no zebra.
 - **Cards on the canvas**: radius 14, `--panel` fill, hairline border, `--shadow-sm`; hover lifts to `--shadow`; selected = 2px `--accent` ring (+ soft glow). Headers with quiet secondary text; one tinted primary action (Run / Tải video).
 - **Popovers, menus, hover previews, toasts**: `.material`, radius 12, `--shadow-lg`, 1px hairline, 8px padding, items 28px tall with rounded hover.
+- **Toasts** stack at the top center, just below the top bar (`--topbar-h` + 10px), newest closest to it, sliding down as they appear — never over the canvas toolbar or the queue drawer at the bottom.
 - **Dialogs (sheets)**: radius 16, `--panel`, `--shadow-lg`, title 17/600 left aligned, footer buttons right aligned (Cancel secondary, primary tinted), backdrop `--scrim` with slight blur.
 - **Top bar**: unified toolbar, `.material`, hairline bottom border, centered segmented view switch, quiet icon buttons; app mark + project name on the left.
 - **Sidebar & inspector**: `--panel` with hairline separators; section headers collapsible with chevrons; inspector fields in grouped "inset" style (label above control, 12px gaps).

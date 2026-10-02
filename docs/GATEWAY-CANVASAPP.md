@@ -16,8 +16,10 @@ Nguyên tắc an toàn (bắt buộc):
   một cửa sổ riêng; cookie nằm trong một phân vùng phiên riêng (`persist:canvasapp`) mà trang SanoVids không đọc được.
 - **Không** né Cloudflare, CSRF hay giới hạn tần suất. Không giả mạo `Origin`/`Referer`/User-Agent. Header
   `X-CSRF-Token` được lấy từ cookie `canvas_csrf` của chính phiên đó — đúng như trang canvasapp tự làm.
-- Nhẹ nhàng với máy chủ: tối đa **2 job** cùng lúc, kiểm tra tiến độ **≥ 15 giây/lần** (mặc định 20 s; trang canvasapp
-  tự kiểm tra 60 s/lần), tải ảnh lên tuần tự và chỉ một lần cho mỗi ảnh.
+- Nhẹ nhàng với máy chủ: tối đa **10 job** cùng lúc nhưng tiến độ của mọi job được đọc chung **một** lần gọi danh sách
+  job, kiểm tra tiến độ **≥ 15 giây/lần** (mặc định 20 s; trang canvasapp tự kiểm tra 60 s/lần), gửi job lần lượt từng
+  cái, tải ảnh lên tuần tự và chỉ một lần cho mỗi ảnh; tiến trình chính chỉ cho **2 request API + 2 lượt tải video**
+  chạy song song (hai làn riêng: tải video lâu không làm chậm việc kiểm tra tiến độ hay gửi job).
 - Đây là **API nội bộ không chính thức** của canvasapp. Chỉ dùng khi đã được bên vận hành canvasapp.io.vn cho phép.
 
 ## 2. Kiến trúc
@@ -45,7 +47,7 @@ Nguyên tắc an toàn (bắt buộc):
  │   • chỉ nhận lời gọi từ app://bdp/…                                                             │
  │   • allowlist method + path (+ query project_id), id chỉ gồm [A-Za-z0-9_-]                     │
  │   • thêm X-CSRF-Token từ cookie canvas_csrf; JSON ≤ 2 MB, ảnh ≤ 20 MB (multipart tự dựng)       │
- │   • tối đa 2 request song song; GET /api/video-jobs được cache 15 s                             │
+ │   • 2 request API + 2 lượt tải video song song (hai làn riêng); /api/video-jobs cache 15 s      │
  │   • session.fromPartition('persist:canvasapp').fetch(…)  (Electron 44: Session.fetch)           │
  │   • cửa sổ đăng nhập = trang thật https://canvasapp.io.vn/ trong cùng phân vùng                 │
  └───────────────────────────────────────────────│──────────────────────────────────────────────┘
@@ -258,7 +260,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 |---|---|
 | API nội bộ, có thể đổi bất cứ lúc nào | mọi giả định gom ở `mapping.ts`/`api.ts`, có test; lỗi định dạng → `bad-response` rõ ràng |
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
-| Giới hạn tần suất, Cloudflare | ≤ 2 request song song, ≤ 2 job, poll ≥ 15 s, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
+| Giới hạn tần suất, Cloudflare | ≤ 2 request API + ≤ 2 lượt tải video song song, ≤ 10 job, một lần đọc danh sách job mỗi chu kỳ poll (≥ 15 s) cho mọi job, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie; **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
 | Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job không bao giờ `POST` lại; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi. Test: `providers/__tests__/canvasapp-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
@@ -284,7 +286,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 - [ ] Dùng `capabilities()` (đã theo `/api/video-profiles` sau lần đọc đầu) để giới hạn lựa chọn model/mode trong inspector.
 - [ ] Node video của cảnh lấy id từ riêng `sceneId`: hai dự án SanoVids có cùng id cảnh (nhân bản / nhập cùng tệp hai lần) dùng chung một node trên canvas cầu nối. Chưa ảnh hưởng tiền (mỗi take có `client_request_id` riêng); khi cần, đưa id dự án vào `JobRequest` và vào `canvasNodeId`.
 - [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
-- [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không; danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
+- [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — quan trọng hơn từ v0.2.5 vì có thể chạy tới 10 job cùng lúc (mỗi cảnh 1 node video + các node ảnh); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
 - [ ] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` nên gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá) thay vì tạo take mới.
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
 - [ ] Tải video lớn: stream thẳng ra file trong main thay vì bytes qua IPC; dùng `download-token` nếu cần.
@@ -303,7 +305,7 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 4. **Đóng giữa chừng** — Đăng xuất, bấm Đăng nhập rồi đóng cửa sổ khi chưa đăng nhập → trạng thái "Chưa đăng nhập", không lỗi.
 5. **Một video t2v** — chọn canvasapp.io.vn; cảnh Seedance 2.5, 5 s, 480p, không ảnh. Chạy → take "đang tạo", % cập nhật khoảng 20 s/lần. Trên canvasapp.io.vn thấy phiên "SanoVids bridge" và job mới. Khi xong: take có poster + video MP4 phát được, nút "Tải video" lưu file .mp4. Credit canvasapp giảm đúng giá; credit demo SanoVids **không** đổi.
 6. **Ảnh tham chiếu** — cảnh có 2 nhân vật (`@image_1`, `@image_2`). Chạy → trên canvasapp, job có 2 ảnh đúng thứ tự. Chạy lại lần 2 → ảnh **không** bị tải lên lại (xem phiên bridge chỉ có 2 upload).
-7. **Hai job cùng lúc** — chạy 3 cảnh: chỉ 2 take "đang tạo", take thứ 3 chờ.
+7. **Nhiều job cùng lúc** — chạy 3 cảnh: cả 3 take cùng "đang tạo" (tối đa 10 job cùng lúc; từ job thứ 11 trở đi thì chờ trong hàng đợi). Tiến độ vẫn cập nhật khoảng 20 s/lần.
 8. **Tắt app khi đang tạo** — trong lúc job chạy, đóng SanoVids, mở lại → take vẫn "đang tạo" và hoàn thành; trên canvasapp **không** có job trùng.
 9. **Video tham chiếu** — cảnh có `@video_1`: bị bỏ qua với lý do "Cổng canvasapp chưa hỗ trợ video tham chiếu", không tốn credit.
 10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành.

@@ -94,67 +94,157 @@ export function scenePosition(index: number): XY {
   return { x: LAYOUT.scenesX, y: LAYOUT.scenesY + index * ROW_H }
 }
 
-/**
- * Height of the tallest take (video node) of a scene. Takes live in the runs store, which imports this module,
- * so the runs side registers the lookup (see actions.ts) instead of this store importing it.
- */
-let takeHeightOf: (sceneId: string) => number = () => 0
-export function setTakeHeightSource(fn: (sceneId: string) => number) {
-  takeHeightOf = fn
-}
-
-/** Height of a scene's row without the gap: its card or its tallest take, whichever is taller (resized ones included). */
-export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
-  return Math.max(scene.size?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeHeightOf(scene.id))
-}
-
-/** Area a scene's row takes in the card column (x, y, card width, row height). */
-interface Box extends XY {
+/** Axis-aligned area on the canvas (flow coordinates). */
+export interface Box extends XY {
   w: number
   h: number
 }
+
+/**
+ * Where the take (video) nodes are. Takes live in the runs store, which imports this module, so the runs side
+ * registers the lookup (store/takeRows.ts, wired in actions.ts) instead of this store importing it.
+ * Only takes drawn IN a scene's row count for that row (auto-placed and shown under the "Video" display): one the
+ * user dragged elsewhere or hid with "Chỉ take chọn" must not push the next scene down.
+ */
+export interface TakeLayoutSource {
+  /** Height of the tallest take in the scene's row (0 = none). */
+  rowHeight: (sceneId: string) => number
+  /** Width of the scene's take row measured from the card's right edge (offset + takes + gaps; 0 = no takes). */
+  rowWidth?: (sceneId: string) => number
+  /** Takes placed by hand outside the rows (they are in the way of new nodes too). */
+  placed?: () => Box[]
+}
+let takeSource: TakeLayoutSource = { rowHeight: () => 0 }
+export function setTakeLayoutSource(src: TakeLayoutSource) {
+  takeSource = src
+}
+/** Only the row heights (tests). */
+export function setTakeHeightSource(fn: (sceneId: string) => number) {
+  takeSource = { rowHeight: fn }
+}
+
+/** Height of a scene's row without the gap: its card or its tallest take in the row, whichever is taller (resized ones included). */
+export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
+  return Math.max(scene.size?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeSource.rowHeight(scene.id))
+}
+
+/** Area a scene's row takes in the card column (x, y, card width, row height). */
 const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
 /** A new scene card (default size, no takes yet). */
 const newBox = (pos: XY): Box => ({ x: pos.x, y: pos.y, w: LAYOUT.sceneW, h: Math.max(LAYOUT.sceneH, LAYOUT.takeH) })
+/** Vertical distance under half a gap counts as touching (rows keep LAYOUT.gapY between them). */
+const GAP_Y_HALF = LAYOUT.gapY / 2
 
-/** Would these rows overlap (closer than half a gap counts as overlapping)? */
-function cardsOverlap(a: Box, b: Box): boolean {
-  const gx = 24
-  const gy = LAYOUT.gapY / 2
-  return a.x < b.x + b.w + gx && b.x < a.x + a.w + gx && a.y < b.y + b.h + gy && b.y < a.y + a.h + gy
+/**
+ * Do these areas overlap? Horizontally only a real overlap counts: a neighbouring column placed on the 16px snap grid
+ * (16px away) is beside the card, not in its way. Vertically closer than half a gap counts.
+ */
+export function boxesTouch(a: Box, b: Box, gy: number = GAP_Y_HALF): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h + gy && b.y < a.y + a.h + gy
 }
 
-/** First row slot from `start` on whose card would not overlap any of the `taken` rows. */
-function freeScenePosition(taken: Box[], start: number): XY {
-  for (let i = start; i < start + 10000; i++) {
-    const pos = scenePosition(i)
-    const box = newBox(pos)
-    if (!taken.some((t) => cardsOverlap(t, box))) return pos
+/** Every take row (right of its scene card) that has takes in it. */
+function takeRowBoxes(p: Project): Box[] {
+  const out: Box[] = []
+  for (const s of p.scenes) {
+    const w = takeSource.rowWidth?.(s.id) ?? 0
+    if (w > 0) out.push({ x: s.position.x + (s.size?.w ?? LAYOUT.sceneW), y: s.position.y, w, h: rowHeightOf(s) })
   }
-  return scenePosition(start)
+  return out
+}
+
+/** Nodes on the canvas that are not scene cards: asset nodes, take rows, takes placed by hand. */
+function otherBoxes(p: Project): Box[] {
+  const out = takeRowBoxes(p)
+  for (const a of p.assets) {
+    if (a.position) out.push({ x: a.position.x, y: a.position.y, w: a.size?.w ?? LAYOUT.assetW, h: a.size?.h ?? LAYOUT.assetH })
+  }
+  return out.concat(takeSource.placed?.() ?? [])
+}
+
+/** Everything a new card must not land on. */
+export function canvasObstacles(p: Project): Box[] {
+  return p.scenes.map(sceneBox).concat(otherBoxes(p))
 }
 
 /**
- * Positions that push scenes DOWN so none overlaps the new card `box`. Only cards hit by the new card
- * (or by a card pushed before them) move; unrelated cards stay where the user put them.
+ * First spot from `start` straight down where a new scene card overlaps none of `taken`: each time it would hit
+ * something it moves just below it (one gap), so it lands right after what is there, never rows further.
  */
-function makeRoomAt(scenes: Scene[], box: Box): Map<string, XY> {
+export function slideDown(start: XY, taken: Box[]): XY {
+  let y = start.y
+  for (let i = 0; i < 10000; i++) {
+    const box = newBox({ x: start.x, y })
+    let next = -Infinity
+    for (const t of taken) if (boxesTouch(t, box)) next = Math.max(next, t.y + t.h + LAYOUT.gapY)
+    if (next === -Infinity) break
+    y = next
+  }
+  return { x: start.x, y }
+}
+
+/** Where the user is working, for placing a new scene (actions.placementHint). */
+export interface PlaceHint {
+  /** Scene selected / created most recently: the new card goes below it. */
+  anchorId?: string | null
+  /** Visible canvas area (flow coordinates, without what the toolbar / queue drawer cover); null = not on the canvas. */
+  view?: Box | null
+}
+
+/** The spot right below a scene's row (first free one: nothing is pushed). */
+function belowScene(s: Scene, taken: Box[]): XY {
+  return slideDown({ x: s.position.x, y: s.position.y + rowHeightOf(s) + LAYOUT.gapY }, taken)
+}
+
+/**
+ * Default spot of a new scene, next to where the user works — never a row derived from the scene count (that sent a
+ * card to x 420, hundreds or thousands of px away from a scene the user had moved, and the view jumped there):
+ * 1. below the most recently selected / created scene (else the last scene of the story), when it is in sight
+ *    (or when the canvas is not shown);
+ * 2. else below the lowest scene in sight;
+ * 3. else in the middle of the visible area (nothing of the story in sight), or the first default slot.
+ * Always on a free spot: scene rows, take rows, videos and asset nodes are stepped over, nothing is pushed.
+ */
+export function newScenePosition(p: Project, hint: PlaceHint = {}): XY {
+  const taken = canvasObstacles(p)
+  const last = p.scenes.reduce<Scene | undefined>((m, s) => (!m || s.order > m.order ? s : m), undefined)
+  const anchor = (hint.anchorId ? p.scenes.find((s) => s.id === hint.anchorId) : undefined) ?? last
+  const view = hint.view
+  if (!view) return anchor ? belowScene(anchor, taken) : slideDown(scenePosition(0), taken)
+  const inView = (s: Scene) => boxesTouch({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: s.size?.h ?? LAYOUT.sceneH }, view, 0)
+  if (anchor && inView(anchor)) return belowScene(anchor, taken)
+  const lowest = p.scenes.filter(inView).reduce<Scene | undefined>((m, s) => (!m || s.position.y > m.position.y || (s.position.y === m.position.y && s.order > m.order) ? s : m), undefined)
+  if (lowest) return belowScene(lowest, taken)
+  const grid = (v: number) => Math.round(v / 16) * 16
+  return slideDown({ x: grid(view.x + view.w / 2 - LAYOUT.sceneW / 2), y: grid(view.y + view.h / 2 - LAYOUT.sceneH / 2) }, taken)
+}
+
+/** `pos` (where the user pointed, e.g. a double-click), moved down just enough to land on a free spot. */
+export function freeSpotFrom(p: Project, pos: XY): XY {
+  return slideDown(pos, canvasObstacles(p))
+}
+
+/**
+ * Positions that push scene cards DOWN so none overlaps the new card `box` (next scene inserted below its source).
+ * Only cards really in the way move — the ones the new card overlaps, then the ones a pushed card overlaps — and each
+ * only as far as needed (one gap below the card pushing it). Cards beside the column (16px away on the snap grid)
+ * and cards that do not overlap a moved one stay where the user put them.
+ */
+export function makeRoomAt(scenes: Scene[], box: Box): Map<string, XY> {
   const pushers: Box[] = [box]
-  const placed: Box[] = [box]
   const moved = new Map<string, XY>()
   const byY = [...scenes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
   for (const s of byY) {
     let next = sceneBox(s)
-    if (pushers.some((q) => cardsOverlap(q, next))) {
-      for (let g = 0; g < 10000; g++) {
-        const hit = placed.find((q) => cardsOverlap(q, next))
-        if (!hit) break
-        next = { ...next, y: hit.y + hit.h + LAYOUT.gapY }
-      }
+    for (let g = 0; g < 10000; g++) {
+      const hit = pushers.find((q) => boxesTouch(q, next))
+      if (!hit) break
+      next = { ...next, y: hit.y + hit.h + LAYOUT.gapY }
+    }
+    if (next.y !== s.position.y) {
       moved.set(s.id, { x: next.x, y: next.y })
       pushers.push(next)
     }
-    placed.push(next)
   }
   return moved
 }
@@ -243,7 +333,8 @@ export interface ProjectState {
   applyPreset: (presetId: string, sceneIds: string[]) => void
 
   // scenes
-  addScene: (partial?: Partial<Scene>, opts?: { afterId?: string; position?: XY }) => string
+  /** Without a position the card goes next to where the user works (`opts.hint`, see newScenePosition). */
+  addScene: (partial?: Partial<Scene>, opts?: { afterId?: string; position?: XY; hint?: PlaceHint }) => string
   updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs'>>) => void
   /** Prompt edits are coalesced in the undo history; legacy @Tag mentions auto-link their asset. Returns newly linked asset ids. */
   setScenePrompt: (id: string, prompt: string) => string[]
@@ -285,7 +376,8 @@ export interface ProjectState {
   autoLayout: (rowHeights?: Record<string, number>) => void
 
   // bulk
-  applyImport: (data: { scenes: Partial<Scene>[] }) => string[]
+  /** New scenes one below the other, starting where a new scene would go (`hint`, see newScenePosition). */
+  applyImport: (data: { scenes: Partial<Scene>[] }, hint?: PlaceHint) => string[]
 }
 
 const touch = (p: Project): Project => ({ ...p, updatedAt: Date.now() })
@@ -426,7 +518,7 @@ export const useProject = create<ProjectState>()(
           const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
           const after = opts.afterId ? sorted.find((s) => s.id === opts.afterId) : undefined
           const order = after ? after.order + 0.5 : sorted.length + 1
-          const position = opts.position ?? partial.position ?? freeScenePosition(p.scenes.map(sceneBox), p.scenes.length)
+          const position = opts.position ?? partial.position ?? newScenePosition(p, opts.hint)
           const scene = buildScene(p, partial, position, order)
           mutate((pp) => ({ ...pp, scenes: renumber([...pp.scenes, scene]) }))
           return scene.id
@@ -505,15 +597,16 @@ export const useProject = create<ProjectState>()(
           const p = get().project
           const from = p.scenes.find((s) => s.id === fromId)
           if (!from) return get().addScene()
-          // Below the source row: a resized (taller) card or a tall take of it pushes the new card further down.
-          const pos = position ?? { x: from.position.x, y: from.position.y + rowHeightOf(from) + LAYOUT.gapY }
+          // Below the source row: a resized (taller) card or a tall take in its row puts the new card further down.
+          // Asset nodes, other scenes' take rows and videos placed by hand right there are stepped over (not pushed).
+          const pos = position ?? slideDown({ x: from.position.x, y: from.position.y + rowHeightOf(from) + LAYOUT.gapY }, otherBoxes(p))
           const next = buildScene(
             p,
             { refs: from.refs, videoRefs: from.videoRefs, settings: from.settings, presetId: from.presetId, firstFrame: from.firstFrame, lastFrame: from.lastFrame, ...overrides },
             pos,
             from.order + 0.5,
           )
-          // Default spot (below `from`) is usually the next row: push those cards down to make room.
+          // Default spot (below `from`) is usually the next row: push the cards in the way down, just enough.
           const moved = position ? new Map<string, XY>() : makeRoomAt(p.scenes, newBox(pos))
           mutate((pp) => ({
             ...pp,
@@ -781,16 +874,18 @@ export const useProject = create<ProjectState>()(
             return { ...p, assets, scenes: p.scenes.map((s) => ({ ...s, position: pos.get(s.id)! })) }
           }),
 
-        applyImport: ({ scenes }) => {
+        applyImport: ({ scenes }, hint) => {
           const created: string[] = []
           mutate((p) => {
             const start = p.scenes.length
-            const taken = p.scenes.map(sceneBox)
+            const taken = canvasObstacles(p)
+            let position = newScenePosition(p, hint)
             const list: Scene[] = scenes.map((partial, i) => {
-              const position = freeScenePosition(taken, start + i)
-              taken.push(newBox(position))
               const s = buildScene(p, partial, position, start + i + 1)
               created.push(s.id)
+              const box = newBox(position)
+              taken.push(box)
+              position = slideDown({ x: position.x, y: box.y + box.h + LAYOUT.gapY }, taken)
               return s
             })
             return { ...p, scenes: renumber([...p.scenes, ...list]) }

@@ -158,8 +158,8 @@ function emitRun(type: RunEventType, take: Pick<Take, 'id' | 'provider'>) {
 const TICK_MS = 200
 /** Floor for remote providers, whatever they declare (canvasapp's own site polls every 60 s). */
 const MIN_REMOTE_POLL_MS = 15_000
-/** Hard cap for remote providers. */
-const MAX_REMOTE_CONCURRENCY = 2
+/** Hard cap of jobs running at once for remote providers (canvasapp: MAX_CONCURRENCY). */
+export const MAX_REMOTE_CONCURRENCY = 10
 
 let engine: ReturnType<typeof setInterval> | null = null
 /** Takes whose submit() is in flight. */
