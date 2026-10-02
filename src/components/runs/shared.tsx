@@ -163,7 +163,7 @@ export function StatusBadge({ take, showProgress = true }: { take: Pick<Take, 's
 
 /** Prompt text with @image_N (teal) and @video_N (purple) tokens highlighted. */
 export function HighlightedPrompt({ text }: { text: string }) {
-  const parts = text.split(/(@(?:image|video)_\d+)\b/gi)
+  const parts = text.split(/(@(?:image|video)[ _]?\d+)\b/gi)
   return (
     <>
       {parts.map((p, i) =>

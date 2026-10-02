@@ -1525,7 +1525,7 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
-.vw-seg.empty {
+.vw-seg.is-empty {
   background: repeating-linear-gradient(
     135deg,
     color-mix(in srgb, var(--vw-on-media) 12%, transparent) 0 3px,

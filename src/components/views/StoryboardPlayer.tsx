@@ -316,7 +316,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
           {items.map((it, i) => (
             <button
               key={it.sceneId}
-              className={`vw-seg ${i === index ? 'current' : ''} ${it.take ? '' : 'empty'}`}
+              className={`vw-seg ${i === index ? 'current' : ''} ${it.take ? '' : 'is-empty'}`}
               style={{ flexGrow: Math.max(1, it.duration) }}
               onClick={() => jump(i)}
               title={`${it.code}${it.title ? ' · ' + it.title : ''} · ${it.duration}s${it.take ? ` · T${it.take.number}` : ' · chưa có take'}`}

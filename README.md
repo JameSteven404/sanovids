@@ -26,7 +26,7 @@
 - Kéo đổi độ rộng hai thanh bên (bấm đúp để về mặc định).
 
 ### Viết prompt với `@image_N` / `@video_N`
-- Prompt gửi đi **đúng như bạn viết**. Ảnh nối vào cảnh được đánh số `@image_1`, `@image_2`… theo thứ tự nối; video tham chiếu là `@video_1`, `@video_2`….
+- Prompt gửi đi **đúng như bạn viết**. Ảnh nối vào cảnh được đánh số `@image_1`, `@image_2`… theo thứ tự nối; video tham chiếu là `@video_1`, `@video_2`…. Viết `@Image 1`, `@image1` hay `@IMAGE_1` cũng được hiểu y như `@image_1`.
 - Gõ `@` để chọn nhanh: ảnh đã nối, video đã nối, hoặc nhân vật chưa nối (ứng dụng tự nối rồi chèn số).
 - **Tự đánh lại số**: khi đổi thứ tự hoặc bỏ một ảnh/video, mọi `@image_N` / `@video_N` trong prompt được sửa theo, để không bị lệch nhân vật.
 - Token được tô màu ngay trong ô prompt. Số không có ảnh thật trong lần gửi (vượt số ảnh, vượt giới hạn của model, hoặc dấu chờ `@image_?N`) tô đỏ và **chặn nút Chạy**, để không bao giờ gửi nhầm nhân vật. Dưới ô có bảng chú giải ảnh ↔ số.
@@ -129,7 +129,7 @@ npm run dev
 | `npm run build` | Kiểm tra kiểu và build bản chạy thật vào `dist/` (đưa lên host web tĩnh nào cũng chạy) |
 | `npm run preview` | Chạy thử bản đã build |
 | `npm run desktop` | Build rồi mở bản desktop (Electron) trên máy |
-| `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/` |
+| `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/`; bản cũ tự chuyển vào `release/ban-cu/` |
 | `npm run icons` | Tạo lại icon ứng dụng |
 | `npm run typecheck` / `npm test` | Kiểm tra TypeScript / chạy unit test |
 

@@ -35,7 +35,7 @@ export function invalidTokenTitle(seg: Seg): string {
 }
 
 /** One pass: numbered tokens (or "@image_?N" placeholders) first, otherwise any @Word (legacy tag in `legacyTags`). */
-const SEG_RE = /@(?:(image|video)_(\?)?(\d+)\b|([\p{L}\p{N}_]+))/giu
+const SEG_RE = /@(?:(image|video)(?:_(\?)|[ _])?(\d+)\b|([\p{L}\p{N}_]+))/giu
 
 /**
  * Split `text` into segments for the backdrop highlighter. Concatenating every `seg.text` gives back `text`.
@@ -372,8 +372,8 @@ export function remapOffset(prev: string, next: string, pos: number): number {
 // Legacy @Tag mentions
 // ---------------------------------------------------------------------------------------------
 
-const MENTION = /@([\p{L}\p{N}_]+)/gu
-const RAW_TOKEN = /^(image|video)_\d+$/i
+const MENTION = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])[ _]?\d)([\p{L}\p{N}_]+)/gu
+const RAW_TOKEN = /^(image|video)_?\d+$/i
 
 /** Library assets mentioned with a legacy @Tag in `text`, in order of first appearance. */
 export function legacyAssets(text: string, assets: Asset[]): Asset[] {

@@ -32,7 +32,7 @@ interface FileItem {
 type Step = 1 | 2 | 3
 
 const fmt = (n: number) => n.toLocaleString('vi-VN')
-const TOKEN_SPLIT = /(@(?:image|video)_\??\d+)\b/gi
+const TOKEN_SPLIT = /(@(?:image|video)(?:_\?|[ _])?\d+)\b/gi
 
 /**
  * Prompt text with @image_N (teal) / @video_N (purple) highlighted. `imageCount` marks numbers past it as unresolved;
@@ -45,7 +45,7 @@ function TokenText({ text, imageCount }: { text: string; imageCount?: number }) 
       {parts.map((p, i) => {
         if (i % 2 === 0) return <Fragment key={i}>{p}</Fragment>
         const video = /^@video/i.test(p)
-        const n = Number(p.slice(p.indexOf('_') + 1))
+        const n = Number(/(\d+)$/.exec(p)?.[1] ?? NaN)
         const bad = p.includes('?') || (!video && imageCount !== undefined && n > imageCount)
         return (
           <mark key={i} className={`dg-tok ${video ? 'video' : 'image'}${bad ? ' bad' : ''}`}>

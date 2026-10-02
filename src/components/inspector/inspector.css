@@ -455,13 +455,16 @@
   background: transparent;
   color: inherit;
 }
+/* Tokens must stand out in a long prompt: a stronger tint + a thin ring of the same hue (box-shadow: no metric change). */
 .in-tk.is-image {
   color: var(--in-ref-ink);
-  background: var(--ref-soft);
+  background: color-mix(in srgb, var(--ref) 26%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ref) 55%, transparent);
 }
 .in-tk.is-video {
   color: var(--in-video-ink);
-  background: var(--video-soft);
+  background: color-mix(in srgb, var(--video) 26%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--video) 55%, transparent);
 }
 .in-tk.is-legacy {
   color: var(--in-ref-ink);
@@ -471,6 +474,7 @@
 .in-tk.is-invalid {
   color: var(--danger-text);
   background: var(--danger-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 50%, transparent);
   text-decoration: underline wavy var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;

@@ -6,6 +6,19 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.2.4] — 2026-10-02
+
+🐞 **Tag ảnh viết kiểu `@Image 1` giờ được nhận đúng** (sửa gấp)
+- Prompt viết `@Image 1`, `@image 2`, `@image3`, `@IMAGE_4` (chữ hoa / thường, có dấu cách, gạch dưới hoặc viết liền) được hiểu **giống hệt** `@image_1`.
+- Các tag này được **tô màu**, được kiểm tra có ảnh thật đi kèm hay không, và **tự đánh lại số** khi đổi thứ tự ảnh. App giữ nguyên cách bạn viết: `@Image 1` → `@Image 3`.
+- Trước đây các tag này bị bỏ qua: không tô màu, và khi đổi thứ tự ảnh thì số không được sửa theo, nên có thể **trỏ nhầm nhân vật**.
+- Tag trong ô prompt nổi bật hơn: nền màu đậm hơn và có viền mảnh cùng màu.
+
+🛠️ **Ô tên cảnh gọn lại**
+- Thẻ cảnh chưa đặt tên không còn hiện khối "Chưa đặt tên" to. Rê chuột lên thẻ mới hiện dòng chữ nhỏ "Bấm đúp để đặt tên". Tên đã đặt hiện gọn trên một dòng.
+
+🛠️ Thư mục `release/` tự gọn sau mỗi lần build: ngoài cùng chỉ còn bản mới nhất, bản cũ nằm trong `release/ban-cu/<phiên bản>/`.
+
 ## [0.2.3] — 2026-10-02
 
 ✨ **Trình phát mini ngay trên node Video**
@@ -105,6 +118,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.2.4]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.4
 [0.2.3]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.3
 [0.2.2]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.2
 [0.2.1]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.1

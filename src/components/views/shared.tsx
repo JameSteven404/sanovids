@@ -1,6 +1,9 @@
 // Helpers shared by the table and storyboard views (vw-).
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { MENTION_RE } from '../../core/compile'
+
+/** A numbered token in any spelling ("@image_1", "@Image 1") or a legacy @Tag mention. */
+const MENTION_OR_TOKEN_RE = new RegExp(`@(?:image|video)[ _]?\\d+(?![\\p{L}\\p{N}_])|${MENTION_RE.source}`, 'giu')
 import type { JobStatus, Take } from '../../core/types'
 import { useRuns } from '../../store/runs'
 
@@ -102,10 +105,10 @@ export function MentionText({ text, max }: { text: string; max?: number }) {
   const parts: ReactNode[] = []
   let last = 0
   let k = 0
-  for (const m of clipped.matchAll(MENTION_RE)) {
+  for (const m of clipped.matchAll(MENTION_OR_TOKEN_RE)) {
     const i = m.index ?? 0
     if (i > last) parts.push(clipped.slice(last, i))
-    const kind = /^@image_\d+$/i.test(m[0]) ? ' image' : /^@video_\d+$/i.test(m[0]) ? ' video' : ''
+    const kind = /^@image[ _]?\d+$/i.test(m[0]) ? ' image' : /^@video[ _]?\d+$/i.test(m[0]) ? ' video' : ''
     parts.push(
       <span key={k++} className={`vw-mention${kind}`}>
         {m[0]}

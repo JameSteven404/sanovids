@@ -1,7 +1,7 @@
 // "Đồng bộ nhân vật": the image each @image_N in the sent prompt refers to must be exactly the image sent as the
 // N-th reference — from compiling the prompt, through the queue, to the canvasapp request. These tests pin that chain.
 import { describe, expect, it } from 'vitest'
-import { compileScene, imageKey, imageSlotsFor, remapTokens } from '../core/compile'
+import { compileScene, extractMentions, imageKey, imageSlotsFor, remapTokens } from '../core/compile'
 import type { Asset, Project, Scene } from '../core/types'
 import { toVideoJobBody } from '../providers/canvasapp/mapping'
 import type { JobRequest } from '../providers/types'
@@ -184,3 +184,31 @@ describe('character sync: tokens without an image never run', () => {
 function mediaKeysFor(assets: Asset[], refs: string[]) {
   return { images: imageSlotsFor(assets, refs).map(imageKey), videos: [] as string[] }
 }
+
+describe('character sync: tokens written as "@Image 1" / "@image1" (prompts written elsewhere)', () => {
+  const base = [asset('elara', 'Elara', ['e1']), asset('lumi', 'Lumi', ['l1']), asset('village', 'Village', ['v1'])]
+
+  it('are numbered tokens: validated, highlighted as tokens, never legacy @Tags', () => {
+    const s = scene({ prompt: '@Image 1 hugs @image2 near @IMAGE_3, then @Image 5' })
+    const out = compileScene(project(base, [s]), s)
+    expect(out.text).toBe('@Image 1 hugs @image2 near @IMAGE_3, then @Image 5')
+    expect(out.unsentTokens).toEqual(['@image_5'])
+    expect(extractMentions(s.prompt)).toEqual([])
+  })
+
+  it('are renumbered with the references, keeping how they were written', () => {
+    const before = mediaKeysFor(base, ['elara', 'lumi', 'village'])
+    const after = mediaKeysFor(base, ['village', 'elara', 'lumi'])
+    const out = remapTokens('@Image 1 = Elara, @image 2 = Lumi, @IMAGE3 = Village', before, after, () => 'x')
+    expect(out.text).toBe('@Image 2 = Elara, @image 3 = Lumi, @IMAGE1 = Village')
+  })
+
+  it('send the right picture for each number', () => {
+    const p = project(base, [scene({ prompt: '@Image 3 then @image 1', refs: ['elara', 'lumi', 'village'] })])
+    const snap = enqueueSnapshot(p, p.scenes[0])
+    const images = requestImages(snap, p.assets, 30)
+    const body = toVideoJobBody(request(snap.promptSnapshot, images), { projectId: 'bridge', uploadIdFor: (id) => 'up_' + id })
+    const nth = (n: number) => body.upload_ids![n - 1]
+    expect([nth(3), nth(1)]).toEqual(['up_v1', 'up_e1'])
+  })
+})
