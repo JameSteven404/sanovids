@@ -3,7 +3,7 @@
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
 
-const { app, BrowserWindow, Menu, ipcMain, protocol, session, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -65,6 +65,7 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(null)
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
+    registerFileBridge()
     createWindow()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -169,8 +170,9 @@ function createWindow() {
     if (isExternal(url)) void shell.openExternal(url)
   })
 
-  // Downloads (Tải video, .zip, export) go straight to the Downloads folder without a save dialog,
-  // with " (2)", " (3)"… appended instead of overwriting an existing file. The renderer is told (bdp:downloaded) when a file is saved.
+  // Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder
+  // without a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file"
+  // uses files:saveAs (native save dialog) instead. The renderer is told (bdp:downloaded) when a file is saved.
   webContents.session.on('will-download', (_event, item) => {
     const dir = app.getPath('downloads')
     const parsed = path.parse(item.getFilename())
@@ -782,4 +784,471 @@ function registerCanvasappGateway() {
   ipcMain.handle('canvasapp:logout', guard(() => canvasappLogout()))
   ipcMain.handle('canvasapp:request', guard((_event, req) => canvasappRequest(req)))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Files: "Lưu video" save dialog and the canvas "Thư mục" nodes (src/lib/desktopFiles.ts, src/lib/saveFolders.ts).
+//
+// The renderer never chooses a path on its own:
+//   files:saveAs        the user picks the place and name in the native dialog; the prompt .txt goes next to it;
+//   files:pickFolder    the user picks a folder; it joins the ALLOWLIST (userData/save-locations.json);
+//   files:writeToFolder only into an allowlisted folder (exact path, not a sub-folder), plain file names only;
+//   files:openFolder    shows an allowlisted folder in Explorer / Finder;  files:folderStatus  allowed / exists.
+// Nothing is ever overwritten except the file the user confirmed in the save dialog: other names get " (2)".
+// ---------------------------------------------------------------------------------------------------------------
+
+// <save-rules> (rules, and writing with an injected fs; src/lib/__tests__/saveRules.test.ts runs this block as-is with
+// node:path's win32 and posix, and a temp folder)
+const SAVE_MAX_FILES = 4
+const SAVE_MAX_FILE_BYTES = 1024 * 1024 * 1024 // 1 GB per file
+const SAVE_MAX_TEXT_CHARS = 2_000_000
+const SAVE_MAX_NAME = 180
+const SAVE_MAX_PATH = 1024
+const SAVE_MAX_FOLDERS = 200
+// Windows device names, also as "nul .txt" / "Con ...x" (spaces before the first dot are ignored there too).
+const SAVE_RESERVED_RE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)\s*(\..*)?$/i
+const SAVE_BAD_CHARS_RE = /[<>:"/\\|?*\u0000-\u001f\u007f]/g
+// Invisible format characters (bidi overrides / isolates, zero-width, BOM, soft hyphen): a name never shows another
+// extension than the one it has (an RLO character shows "a<RLO>gpj.exe" as "aexe.jpg"). Lone surrogates would
+// become U+FFFD on disk.
+const SAVE_FORMAT_CHARS_RE = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g
+const SAVE_LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+// The only types SanoVids writes: videos, posters, the prompt .txt, the .zip of videos, the settings .json.
+const SAVE_ALLOWED_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'txt', 'zip', 'json'])
+// What the save dialog may write next to the chosen file (the prompt .txt).
+const SAVE_COMPANION_EXT = new Set(['txt'])
+const SAVE_FILTER_LABELS = {
+  mp4: 'Video MP4',
+  webm: 'Video WebM',
+  mov: 'Video MOV',
+  zip: 'Tệp nén ZIP',
+  jpg: 'Ảnh JPEG',
+  jpeg: 'Ảnh JPEG',
+  png: 'Ảnh PNG',
+  txt: 'Văn bản',
+}
+
+/** "clip.MP4" → "mp4" ('' without one; a leading dot is not an extension). */
+function saveNameExt(name) {
+  const dot = String(name).lastIndexOf('.')
+  return dot > 0 ? String(name).slice(dot + 1).toLowerCase() : ''
+}
+
+/**
+ * A plain file name to write, or null. Separators and forbidden characters become "-" (so no path can be named),
+ * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", long names are cut
+ * keeping their extension.
+ */
+function sanitizeSaveName(raw) {
+  if (typeof raw !== 'string') return null
+  let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
+  s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
+  s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+  if (!s) return null
+  if (s.length > SAVE_MAX_NAME) {
+    const ext = saveNameExt(s)
+    const tail = ext && ext.length <= 8 ? '.' + ext : ''
+    s = cutSaveText(s, SAVE_MAX_NAME - tail.length).replace(/[.\s]+$/, '') + tail
+  }
+  if (SAVE_RESERVED_RE.test(s)) s = '_' + s
+  return s
+}
+
+/** The first `max` UTF-16 units of `s`, never ending on half of an emoji (a surrogate pair). */
+function cutSaveText(s, max) {
+  if (s.length <= max) return s
+  const out = s.slice(0, max)
+  return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out
+}
+
+/** "clip.mp4", 2 → "clip (2).mp4" (same rule as the web app). */
+function numberedSaveName(name, n) {
+  if (n < 2) return name
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`
+}
+
+/**
+ * Comparable key of an absolute folder path (resolved, no trailing separator; case-insensitive on Windows), or null
+ * when it is not an acceptable absolute path.
+ */
+function folderKey(p, pathMod) {
+  if (typeof p !== 'string' || !p || p.length > SAVE_MAX_PATH || p.includes('\u0000') || !pathMod.isAbsolute(p)) return null
+  let r = pathMod.resolve(p)
+  const root = pathMod.parse(r).root
+  if (r.length > root.length) r = r.replace(/[\\/]+$/, '')
+  return pathMod.sep === '\\' ? r.toLowerCase() : r
+}
+
+/** Was exactly this folder picked by the user (not a parent, not a sub-folder)? */
+function isAllowedFolder(allowed, p, pathMod) {
+  const key = folderKey(p, pathMod)
+  return !!key && Array.isArray(allowed) && allowed.includes(key)
+}
+
+/** The allowlist with `p` added (most recent last, at most SAVE_MAX_FOLDERS). Unchanged when `p` is not acceptable. */
+function addAllowedFolder(allowed, p, pathMod) {
+  const key = folderKey(p, pathMod)
+  const list = Array.isArray(allowed) ? allowed.filter((x) => typeof x === 'string') : []
+  if (!key) return list
+  return [...list.filter((x) => x !== key), key].slice(-SAVE_MAX_FOLDERS)
+}
+
+/** userData/save-locations.json, validated: { lastSaveDir, folders }. */
+function parseSaveLocations(raw, pathMod) {
+  const o = raw && typeof raw === 'object' ? raw : {}
+  const lastSaveDir = folderKey(o.lastSaveDir, pathMod) ? o.lastSaveDir : null
+  let folders = []
+  for (const f of Array.isArray(o.folders) ? o.folders : []) folders = addAllowedFolder(folders, f, pathMod)
+  return { lastSaveDir, folders }
+}
+
+/**
+ * Files from the renderer → [{ name, bytes | text }] with safe names, or { error }. 1–SAVE_MAX_FILES files, binary
+ * (Uint8Array, ≤ 1 GB) or text (≤ 2 M characters), no two with the same name.
+ */
+function checkSaveFiles(files) {
+  if (!Array.isArray(files) || files.length < 1 || files.length > SAVE_MAX_FILES) return { error: 'Danh sách file không hợp lệ.' }
+  const out = []
+  const seen = new Set()
+  for (const f of files) {
+    if (!f || typeof f !== 'object') return { error: 'File không hợp lệ.' }
+    const name = sanitizeSaveName(f.name)
+    if (!name) return { error: 'Tên file không hợp lệ.' }
+    // Never a program, a shortcut or a settings file of Windows (.exe, .lnk, .url, desktop.ini…), whatever the page says.
+    if (!SAVE_ALLOWED_EXT.has(saveNameExt(name))) return { error: 'Loại file này không được phép lưu.' }
+    if (seen.has(name.toLowerCase())) return { error: 'Hai file trùng tên.' }
+    seen.add(name.toLowerCase())
+    if (f.bytes instanceof Uint8Array) {
+      if (f.bytes.byteLength > SAVE_MAX_FILE_BYTES) return { error: 'File lớn hơn 1 GB.' }
+      out.push({ name, bytes: f.bytes })
+    } else if (typeof f.text === 'string') {
+      if (f.text.length > SAVE_MAX_TEXT_CHARS) return { error: 'File văn bản quá lớn.' }
+      out.push({ name, text: f.text })
+    } else return { error: 'File không có nội dung.' }
+  }
+  return { files: out }
+}
+
+/** files:saveAs arguments → { suggestedName, title, files } or { error }. */
+function checkSaveAsArgs(args) {
+  if (!args || typeof args !== 'object') return { error: 'Yêu cầu không hợp lệ.' }
+  const checked = checkSaveFiles(args.files)
+  if (checked.error) return checked
+  // Files written next to the chosen one are never shown in the dialog: only the prompt .txt.
+  if (checked.files.slice(1).some((f) => !SAVE_COMPANION_EXT.has(saveNameExt(f.name)))) return { error: 'Chỉ lưu kèm được file .txt.' }
+  const suggestedName = sanitizeSaveName(typeof args.suggestedName === 'string' && args.suggestedName ? args.suggestedName : checked.files[0].name)
+  if (!suggestedName) return { error: 'Tên file không hợp lệ.' }
+  const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim().slice(0, 80) : saveDialogTitle(checked.files[0].name)
+  return { suggestedName, title, files: checked.files }
+}
+
+/** Filter of the save dialog for this file's type (keeps the extension the data really has). */
+function saveDialogFilters(name) {
+  const ext = saveNameExt(name)
+  if (!ext || !/^[a-z0-9]{1,8}$/.test(ext)) return []
+  return [{ name: SAVE_FILTER_LABELS[ext] || ext.toUpperCase(), extensions: [ext] }]
+}
+
+function saveDialogTitle(name) {
+  const ext = saveNameExt(name)
+  if (ext === 'zip') return 'Lưu file .zip'
+  if (ext === 'mp4' || ext === 'webm' || ext === 'mov') return 'Lưu video'
+  return 'Lưu file'
+}
+
+/** The path chosen in the dialog, with the data's own extension when the user typed none / another one. */
+function withSaveExtension(filePath, ext, pathMod) {
+  if (!ext) return filePath
+  return pathMod.extname(filePath).toLowerCase() === '.' + ext ? filePath : `${filePath}.${ext}`
+}
+
+/** Name of a companion (the prompt .txt) of a video saved as `chosenPath`: same base name, its own extension. */
+function companionSaveName(chosenPath, companionName, pathMod) {
+  const ext = saveNameExt(companionName)
+  return sanitizeSaveName(pathMod.parse(chosenPath).name + (ext ? '.' + ext : ''))
+}
+
+/** Is `target` a file directly inside `dir` (no traversal, no sub-folder)? */
+function isDirectChild(dir, target, pathMod) {
+  const d = folderKey(dir, pathMod)
+  const parent = folderKey(pathMod.dirname(target), pathMod)
+  return !!d && d === parent && pathMod.basename(target) !== '' && pathMod.basename(target) !== '..'
+}
+
+// ---- writing (fs injected: node's fs.promises here, a fake or a temp folder in the tests) ----
+const saveFileData = (f) => (f.bytes ? Buffer.from(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength) : f.text)
+const saveError = (code, message = code) => Object.assign(new Error(message), { code })
+const saveSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Is nothing at `p`? (Unreadable = taken: never risk a name that may exist.) */
+async function savePathFree(fsp, p) {
+  try {
+    await fsp.lstat(p)
+    return false
+  } catch (e) {
+    return !!e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')
+  }
+}
+
+/** Write `data` to a new temp file "<target>.<random>.part" next to `target` (never an existing file). Returns its path. */
+async function writeSavePart(fsp, target, data) {
+  for (let k = 0; k < 5; k++) {
+    const part = `${target}.${Math.random().toString(36).slice(2, 8)}.part`
+    try {
+      await fsp.writeFile(part, data, { flag: 'wx' })
+      return part
+    } catch (e) {
+      // 'wx' created it: a write cut short (disk full…) leaves nothing behind.
+      if (!e || e.code !== 'EEXIST') {
+        await fsp.unlink(part).catch(() => undefined)
+        throw e
+      }
+    }
+  }
+  throw saveError('EEXIST')
+}
+
+/** Rename, retrying a moment while Windows (an antivirus, the indexer) still holds the new file. */
+async function renameSaveFile(fsp, from, to) {
+  for (let k = 0; ; k++) {
+    try {
+      return await fsp.rename(from, to)
+    } catch (e) {
+      if (k >= 8 || !e || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e
+      await saveSleep(40 * (k + 1))
+    }
+  }
+}
+
+/**
+ * Give a finished temp file its real name without ever replacing a file: a hard link fails when the name exists
+ * (EEXIST); drives without hard links (FAT / exFAT sticks, some shares) rename after checking the name is free.
+ */
+async function claimSaveName(fsp, part, target) {
+  try {
+    await fsp.link(part, target)
+    await fsp.unlink(part).catch(() => undefined)
+    return
+  } catch (e) {
+    if (e && e.code === 'EEXIST') throw e
+  }
+  if (!(await savePathFree(fsp, target))) throw saveError('EEXIST')
+  await renameSaveFile(fsp, part, target)
+}
+
+/**
+ * Write files into `dir` without overwriting anything: the same " (n)" for the whole group (video + .txt stay
+ * matched). Each file is written to a ".part" file first and only then given its name, so an app closed in the middle
+ * never leaves a cut video under the real name. On any failure the files of this attempt are removed again.
+ */
+async function writeGroupExclusive(dir, files, fsp, pathMod) {
+  for (let n = 1; n < 1000; n++) {
+    const names = files.map((f) => numberedSaveName(f.name, n))
+    let free = true
+    for (const x of names) if (!(await savePathFree(fsp, pathMod.join(dir, x)))) free = false
+    if (!free) continue
+    const written = []
+    let part = null
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const target = pathMod.join(dir, names[i])
+        if (!isDirectChild(dir, target, pathMod)) throw saveError('EINVAL', 'bad name')
+        part = await writeSavePart(fsp, target, saveFileData(files[i]))
+        await claimSaveName(fsp, part, target)
+        part = null
+        written.push(target)
+      }
+      return names
+    } catch (e) {
+      // Only what this attempt created goes (its names did not exist before it).
+      if (part) await fsp.unlink(part).catch(() => undefined)
+      for (const w of written) await fsp.unlink(w).catch(() => undefined)
+      if (e && e.code === 'EEXIST') continue
+      throw e
+    }
+  }
+  throw saveError('ENAMETOOLONG', 'no free name')
+}
+
+/** Replace `target` (the user confirmed it in the save dialog) all at once: never left half old, half new. */
+async function writeSaveReplacing(fsp, target, data) {
+  const part = await writeSavePart(fsp, target, data)
+  try {
+    await renameSaveFile(fsp, part, target)
+  } catch (e) {
+    await fsp.unlink(part).catch(() => undefined)
+    throw e
+  }
+}
+// </save-rules>
+
+const SAVE_STATE_FILE = 'save-locations.json'
+let saveState = null
+
+function saveStatePath() {
+  return path.join(app.getPath('userData'), SAVE_STATE_FILE)
+}
+
+function loadSaveState() {
+  if (saveState) return saveState
+  try {
+    saveState = parseSaveLocations(JSON.parse(fs.readFileSync(saveStatePath(), 'utf8')), path)
+  } catch {
+    saveState = { lastSaveDir: null, folders: [] }
+  }
+  return saveState
+}
+
+async function storeSaveState(next) {
+  saveState = next
+  const file = saveStatePath()
+  const tmp = file + '.tmp'
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(next, null, 2), 'utf8')
+    await fs.promises.rename(tmp, file)
+  } catch {
+    /* the allowlist still works for this session */
+  }
+}
+
+function fileError(code, message) {
+  return { ok: false, code, message }
+}
+
+/** Vietnamese text for a file-system error. */
+function fsErrorText(e) {
+  switch (e && e.code) {
+    case 'ENOSPC':
+      return 'Ổ đĩa đã đầy.'
+    case 'EACCES':
+    case 'EPERM':
+      return 'Không có quyền ghi vào thư mục này.'
+    case 'EBUSY':
+      return 'File đang bị chương trình khác mở hoặc khoá.'
+    case 'ENOENT':
+    case 'ENOTDIR':
+      return 'Không tìm thấy thư mục.'
+    case 'EROFS':
+      return 'Ổ đĩa chỉ cho đọc.'
+    default:
+      return `Không ghi được file (${(e && (e.code || e.message)) || e}).`
+  }
+}
+
+async function isDirectory(p) {
+  try {
+    return (await fs.promises.stat(p)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function filesPickFolder(win) {
+  const st = loadSaveState()
+  const opts = {
+    title: 'Chọn thư mục lưu video',
+    buttonLabel: 'Chọn thư mục này',
+    properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+    ...(st.lastSaveDir ? { defaultPath: st.lastSaveDir } : {}),
+  }
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+  const chosen = !res.canceled && res.filePaths && res.filePaths[0]
+  if (!chosen) return { ok: false, code: 'canceled', message: 'Đã huỷ.', canceled: true }
+  const folder = path.resolve(chosen)
+  if (!folderKey(folder, path) || !(await isDirectory(folder))) return fileError('bad-folder', 'Không dùng được thư mục này.')
+  await storeSaveState({ lastSaveDir: folder, folders: addAllowedFolder(st.folders, folder, path) })
+  return { ok: true, path: folder, name: path.basename(folder) || folder }
+}
+
+async function filesFolderStatus(args) {
+  const folderPath = args && args.folderPath
+  if (!folderKey(folderPath, path)) return { ok: true, allowed: false, exists: false }
+  const allowed = isAllowedFolder(loadSaveState().folders, folderPath, path)
+  return { ok: true, allowed, exists: allowed ? await isDirectory(path.resolve(folderPath)) : false }
+}
+
+async function filesWriteToFolder(args) {
+  const folderPath = args && args.folderPath
+  if (!isAllowedFolder(loadSaveState().folders, folderPath, path)) {
+    return fileError('not-allowed', 'Thư mục này chưa được chọn trên máy này — bấm “Chọn thư mục”.')
+  }
+  const dir = path.resolve(folderPath)
+  if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục (đã đổi tên, chuyển hoặc xoá?).')
+  const checked = checkSaveFiles(args.files)
+  if (checked.error) return fileError('bad-request', checked.error)
+  try {
+    return { ok: true, names: await writeGroupExclusive(dir, checked.files, fs.promises, path) }
+  } catch (e) {
+    return fileError(e && e.code === 'ENOENT' ? 'missing' : 'write-failed', fsErrorText(e))
+  }
+}
+
+async function filesOpenFolder(args) {
+  const folderPath = args && args.folderPath
+  if (!isAllowedFolder(loadSaveState().folders, folderPath, path)) return fileError('not-allowed', 'Thư mục này chưa được chọn trên máy này.')
+  const dir = path.resolve(folderPath)
+  if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục.')
+  const err = await shell.openPath(dir)
+  return err ? fileError('open-failed', err) : { ok: true }
+}
+
+async function filesSaveAs(win, args) {
+  const checked = checkSaveAsArgs(args)
+  if (checked.error) return fileError('bad-request', checked.error)
+  const st = loadSaveState()
+  const primary = checked.files[0]
+  const ext = saveNameExt(primary.name)
+  const dir = st.lastSaveDir && (await isDirectory(st.lastSaveDir)) ? st.lastSaveDir : app.getPath('downloads')
+  const opts = {
+    title: checked.title,
+    defaultPath: path.join(dir, checked.suggestedName),
+    buttonLabel: 'Lưu',
+    filters: saveDialogFilters(primary.name),
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  }
+  const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+  if (res.canceled || !res.filePath) return { ok: false, code: 'canceled', message: 'Đã huỷ.', canceled: true }
+  const chosen = path.resolve(res.filePath)
+  let target = withSaveExtension(chosen, ext, path)
+  const targetDir = path.dirname(target)
+  try {
+    if (target === chosen) {
+      // The user confirmed this exact file in the dialog (it asks before replacing one): replaced all at once.
+      await writeSaveReplacing(fs.promises, target, saveFileData(primary))
+    } else {
+      // The extension was added here, after the dialog: that file was never confirmed, so it is not overwritten.
+      const [written] = await writeGroupExclusive(targetDir, [{ ...primary, name: path.basename(target) }], fs.promises, path)
+      target = path.join(targetDir, written)
+    }
+    const names = [path.basename(target)]
+    for (const f of checked.files.slice(1)) {
+      const name = companionSaveName(target, f.name, path)
+      if (!name) continue
+      // Companions never overwrite: "<chosen name>.txt", else "<chosen name> (2).txt"…
+      const [written] = await writeGroupExclusive(targetDir, [{ ...f, name }], fs.promises, path)
+      names.push(written)
+    }
+    await storeSaveState({ ...loadSaveState(), lastSaveDir: targetDir })
+    return { ok: true, path: target, names }
+  } catch (e) {
+    return fileError('write-failed', fsErrorText(e))
+  }
+}
+
+function registerFileBridge() {
+  const guard = (fn) => async (event, ...args) => {
+    if (!fromApp(event)) return fileError('not-allowed', 'Nguồn gọi không hợp lệ.')
+    try {
+      return await fn(event, ...args)
+    } catch (e) {
+      return fileError('error', String((e && e.message) || e))
+    }
+  }
+  const winOf = (event) => BrowserWindow.fromWebContents(event.sender)
+  ipcMain.handle('files:pickFolder', guard((event) => filesPickFolder(winOf(event))))
+  ipcMain.handle('files:folderStatus', guard((_event, args) => filesFolderStatus(args)))
+  ipcMain.handle('files:writeToFolder', guard((_event, args) => filesWriteToFolder(args)))
+  ipcMain.handle('files:openFolder', guard((_event, args) => filesOpenFolder(args)))
+  ipcMain.handle('files:saveAs', guard((event, args) => filesSaveAs(winOf(event), args)))
 }

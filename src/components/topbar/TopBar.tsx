@@ -28,6 +28,7 @@ import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardE
 import { useStore } from 'zustand'
 import { downloadChosenTakesZip, openDevPanel } from '../../actions'
 import type { ViewMode } from '../../core/types'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { activeProviderId, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
 import { useDevServer } from '../../providers/dev'
@@ -367,6 +368,7 @@ function useChosenTakeCount(): number {
 /** "Tải tất cả video chọn (.zip)": the chosen take of every scene in one zip (actions.downloadChosenTakesZip). */
 function DownloadAllButton() {
   const count = useChosenTakeCount()
+  const zipPrompts = useDownloadPrefs((s) => s.zipPrompts)
   const [busy, setBusy] = useState(false)
   const run = async () => {
     if (busy) return
@@ -382,7 +384,7 @@ function DownloadAllButton() {
   const title = busy
     ? 'Đang nén video…'
     : count
-      ? `Tải tất cả video chọn (.zip) — take ★ (hoặc take mới nhất đã xong) của ${count} cảnh, kèm prompts.txt`
+      ? `Tải tất cả video chọn (.zip) — take ★ (hoặc take mới nhất đã xong) của ${count} cảnh${zipPrompts ? ', kèm prompts.txt' : ''}`
       : 'Tải tất cả video chọn (.zip) — chưa có video nào tạo xong'
   return (
     <button type="button" className="icon-btn tb-download" onClick={() => void run()} disabled={!count || busy} title={title} aria-label="Tải tất cả video chọn (.zip)">

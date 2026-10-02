@@ -13,12 +13,14 @@
 import { createStore, get, set, update } from 'idb-keyval'
 import { create } from 'zustand'
 import { takeCode } from '../core/compile'
+import { foldersForCopy } from '../core/folders'
 import { newId } from '../core/ids'
 import { dropVideoRefs, migrateProject } from '../core/migrate'
 import { createDemoProject } from '../core/seed'
 import { backupWins, isForeignWrite, nextStamp, sortByUpdated, upsertById, type BackupInfo, type RevStamp } from '../core/storageRules'
 import type { Project, Take } from '../core/types'
 import { dataUrlToBlob, deleteMedia, getBlob, putBlob } from '../lib/imageStore'
+import { copyFolderHandle } from '../lib/saveFolders'
 import { clearHistory, emptyProject, useProject } from './project'
 import { setEngineHooks, stopEngine, useRuns } from './runs'
 import { useUI } from './ui'
@@ -704,8 +706,25 @@ export async function duplicateProject(id: string): Promise<void> {
   const takes = isCurrent ? useRuns.getState().takes : ((await readRuns(id))?.takes ?? [])
   const labels = videoLabels(src, takes)
   const now = Date.now()
-  const p: Project = { ...dropVideoRefs(src, (t) => labels[t] ?? 'video'), id: newId('prj'), name: src.name + ' (bản sao)', createdAt: now, updatedAt: now }
+  const copy = dropVideoRefs(src, (t) => labels[t] ?? 'video')
+  // Folder nodes get new ids (the copy must not share the original's folder access, waiting saves and counters) and
+  // keep their folder on this computer (web: the same folder handle, copied below).
+  const { folders, ids: folderIds } = foldersForCopy(copy.folders, { keepPath: true, taken: nodeIdsOf(copy) })
+  const p: Project = { ...copy, ...(folders ? { folders } : {}), id: newId('prj'), name: src.name + ' (bản sao)', createdAt: now, updatedAt: now }
+  for (const [from, to] of folderIds) await copyFolderHandle(from, to)
   if (!(await writeNewProject(p))) throw new Error('Không lưu được bản sao: bộ nhớ trình duyệt có thể đã đầy.')
+}
+
+/** Ids of the scene and asset nodes (a new folder node id must not be one of them). */
+const nodeIdsOf = (p: Project) => new Set([...p.scenes.map((s) => s.id), ...p.assets.map((a) => a.id)])
+
+/**
+ * The project as written into a .sanovids.json: folder nodes without their place on this computer (a path such as
+ * "C:\Users\<name>\Videos\…" must not travel with a file that is shared) nor their links to takes (not exported).
+ */
+export function projectForExport(project: Project): Project {
+  if (!project.folders?.length) return project
+  return { ...project, folders: project.folders.map(({ takes: _takes, ...f }) => ({ ...f, path: null })) }
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -783,7 +802,7 @@ export async function exportProjectFile(): Promise<void> {
       if (blob) media[id] = await blobToDataUrl(blob)
     }
   }
-  const file: ExportFile = { format: 'sanovids', version: 2, project, media, videoLabels: videoLabels(project, useRuns.getState().takes) }
+  const file: ExportFile = { format: 'sanovids', version: 2, project: projectForExport(project), media, videoLabels: videoLabels(project, useRuns.getState().takes) }
   const blob = new Blob([JSON.stringify(file)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -801,15 +820,23 @@ export async function importProjectFile(file: File): Promise<void> {
   for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
     idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
   }
-  const imported = migrateProject(data.project)
-  const labels = data.videoLabels ?? {}
-  // Takes are not exported, so video references cannot survive the trip: their tokens become plain text.
-  const withoutVideos = dropVideoRefs(imported, (t) => labels[t] ?? 'video')
-  const p: Project = {
+  await openNewProject(importedProject(data.project, data.videoLabels ?? {}, idMap))
+}
+
+/**
+ * A project read from a .sanovids.json, ready to open as a new project: new id, images under their new ids, no video
+ * references (takes are not exported: their tokens become plain text), and folder nodes with new ids and no place on
+ * this computer — a file from elsewhere never chooses where this computer writes (not even a folder picked here before
+ * for another project): each node asks "Chọn lại thư mục".
+ */
+export function importedProject(raw: unknown, labels: Record<string, string>, imageIds: ReadonlyMap<string, string> = new Map()): Project {
+  const withoutVideos = dropVideoRefs(migrateProject(raw), (t) => labels[t] ?? 'video')
+  const { folders } = foldersForCopy(withoutVideos.folders, { keepPath: false, taken: nodeIdsOf(withoutVideos) })
+  return {
     ...withoutVideos,
+    ...(folders ? { folders } : {}),
     id: newId('prj'),
     updatedAt: Date.now(),
-    assets: withoutVideos.assets.map((a) => ({ ...a, imageIds: a.imageIds.map((id) => idMap.get(id) ?? id) })),
+    assets: withoutVideos.assets.map((a) => ({ ...a, imageIds: a.imageIds.map((id) => imageIds.get(id) ?? id) })),
   }
-  await openNewProject(p)
 }

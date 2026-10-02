@@ -1,10 +1,11 @@
 // Floating toolbar (bottom-center of the canvas) + selection hint (top-left).
 import { useReactFlow, useStore } from '@xyflow/react'
-import { Film, Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus, Spline } from 'lucide-react'
+import { Film, FolderPlus, Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus, Spline } from 'lucide-react'
 import { useMemo, type WheelEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { canvasEvents, connectSelection, nextScene, requestRun, selectedSceneIds, pickAssetSelection } from '../../actions'
 import type { EdgeMode, Project, XY } from '../../core/types'
+import { createFolderNode } from '../../folderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI, type TakeDisplay } from '../../store/ui'
@@ -150,6 +151,15 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
       >
         <Plus {...ICON} />
         {!tight && <span>Cảnh</span>}
+      </button>
+      <button
+        className="cv-tb-btn"
+        onClick={() => void createFolderNode()}
+        title="Thư mục: chọn một thư mục trên máy, rồi kéo dây từ video (hoặc từ cảnh) vào đó để lưu video vào thư mục"
+        aria-label="Thêm thư mục lưu video"
+      >
+        <FolderPlus {...ICON} />
+        {full && <span>Thư mục</span>}
       </button>
       <button className="cv-tb-btn" onClick={() => connectSelection()} title="Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn (C)" aria-label="Nối">
         <Link2 {...ICON} />

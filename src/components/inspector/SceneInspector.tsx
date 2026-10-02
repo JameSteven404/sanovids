@@ -728,6 +728,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
 function DownloadRow({ takes, chosenId }: { takes: { id: string; number: number; starred: boolean }[]; chosenId: string | undefined }) {
   const folderName = useDownloadPrefs((s) => s.folderName)
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
+  const askWhere = useDownloadPrefs((s) => s.askWhere)
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
   const save = async (takeId: string) => {
     setBusy((b) => new Set(b).add(takeId))
@@ -741,7 +742,7 @@ function DownloadRow({ takes, chosenId }: { takes: { id: string; number: number;
       })
     }
   }
-  const where = folderName ? ` vào thư mục “${folderName}”` : ' (thư mục Downloads)'
+  const where = askWhere ? ' — chọn nơi lưu và tên file' : folderName ? ` vào thư mục “${folderName}”` : ' (thư mục Downloads)'
   return (
     <div className="in-download-row">
       {takes.map((t) => {

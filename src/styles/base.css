@@ -39,6 +39,8 @@
   --ref-soft: rgba(64, 200, 224, 0.16);
   --video: #bf5af2; /* purple — generated videos, @video_N */
   --video-soft: rgba(191, 90, 242, 0.18);
+  --save: #7d7aff; /* indigo — folder nodes ("Thư mục") and the wires that save videos into them */
+  --save-soft: rgba(125, 122, 255, 0.16);
   --seq: #8e8e93;
   --first: #30d158;
   --last: #bf5af2;
@@ -95,6 +97,8 @@
   --ref-soft: rgba(48, 176, 199, 0.14);
   --video: #a347d1;
   --video-soft: rgba(175, 82, 222, 0.13);
+  --save: #5856d6;
+  --save-soft: rgba(88, 86, 214, 0.12);
   --seq: #8e8e93;
   --first: #248a3d;
   --last: #a347d1;

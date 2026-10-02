@@ -1,0 +1,247 @@
+/* Canvas wires (edges.tsx, Wires.tsx): hit band + click-to-cut cursor, hover / draw-in transitions, the line drawn while
+   dragging a wire (.cv-cl-*) and the cut animation (.cv-cut-*). Only stroke / opacity / transform change: no layout. */
+
+/* ============================== wires ============================== */
+.cv-stage .cv-wire {
+  stroke-linecap: round;
+  transition:
+    opacity 0.16s var(--cv-ease),
+    stroke-width 0.16s var(--cv-ease),
+    filter 0.16s var(--cv-ease);
+}
+.cv-stage .react-flow__edge.selectable .cv-wire-hit {
+  cursor: pointer;
+}
+/*
+ * Click-to-cut: the wire's hit band shows scissors (hotspot = the blades' pivot). A cursor image is its own document,
+ * so theme tokens cannot reach it: dark blades on a white halo read on the light and the dark canvas alike.
+ */
+.cv-stage.cv-click-cut .react-flow__edge.selectable .cv-wire-hit {
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='white' stroke-width='4.4'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Cpath d='M8.12 8.12 12 12'/%3E%3Cpath d='M20 4 8.12 15.88'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M14.8 14.8 20 20'/%3E%3C/g%3E%3Cg stroke='%231c1c1e' stroke-width='1.9'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Cpath d='M8.12 8.12 12 12'/%3E%3Cpath d='M20 4 8.12 15.88'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M14.8 14.8 20 20'/%3E%3C/g%3E%3C/svg%3E")
+      12 12,
+    pointer;
+}
+/* a wire that just appeared draws itself from its source (pathLength = 1 while drawing) or fades in */
+.cv-stage .cv-wire.is-drawing {
+  stroke-dasharray: 1 1;
+  animation: cv-wire-draw 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cv-stage .cv-wire.is-fading-in {
+  animation: cv-wire-fade-in 0.2s var(--cv-ease) both;
+}
+@keyframes cv-wire-draw {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes cv-wire-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+/* the × on a hovered / selected wire (click-to-cut off) pops in; `scale` composes with its inline translate */
+.cv-stage .cv-edge-cut {
+  animation: cv-edge-cut-in 0.14s var(--cv-ease) both;
+}
+@keyframes cv-edge-cut-in {
+  from {
+    opacity: 0;
+    scale: 0.6;
+  }
+}
+
+/* ============================== dragging a wire ============================== */
+/* idle: dashes march toward the pointer · valid (snapped to a card that takes it): solid, brighter, ring at the end ·
+   invalid: grey, no glow. --cl = the source's color (set inline by WireConnectionLine). */
+.cv-stage .cv-cl {
+  --cl: var(--ref);
+  pointer-events: none;
+}
+.cv-stage .cv-cl path {
+  fill: none;
+  stroke-linecap: round;
+}
+.cv-stage .cv-cl-glow {
+  stroke: var(--cl);
+  stroke-opacity: 0.14;
+  stroke-width: 7;
+  transition:
+    stroke-opacity 0.16s var(--cv-ease),
+    stroke-width 0.16s var(--cv-ease);
+}
+.cv-stage .cv-cl-line {
+  stroke: var(--cl);
+  stroke-width: 1.75;
+  stroke-dasharray: 7 6;
+  transition:
+    stroke 0.16s var(--cv-ease),
+    stroke-width 0.16s var(--cv-ease);
+}
+.cv-stage .cv-cl.is-moving.is-idle .cv-cl-line {
+  animation: cv-cl-march 0.6s linear infinite;
+}
+@keyframes cv-cl-march {
+  from {
+    stroke-dashoffset: 13;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.cv-stage .cv-cl.is-valid .cv-cl-line {
+  stroke-dasharray: none;
+  stroke-width: 2.25;
+}
+.cv-stage .cv-cl.is-valid .cv-cl-glow {
+  stroke-opacity: 0.26;
+  stroke-width: 10;
+}
+.cv-stage .cv-cl.is-invalid .cv-cl-line {
+  stroke: var(--text-faint);
+  stroke-dasharray: 3 5;
+}
+.cv-stage .cv-cl.is-invalid .cv-cl-glow {
+  stroke-opacity: 0;
+}
+.cv-stage .cv-cl-dot {
+  fill: var(--cl);
+  stroke: var(--panel);
+  stroke-width: 1.5;
+  transition:
+    fill 0.16s var(--cv-ease),
+    stroke 0.16s var(--cv-ease);
+}
+.cv-stage .cv-cl.is-invalid .cv-cl-dot {
+  fill: var(--panel);
+  stroke: var(--text-faint);
+}
+.cv-stage .cv-cl-ring {
+  fill: color-mix(in srgb, var(--cl) 16%, transparent);
+  stroke: var(--cl);
+  stroke-width: 1.5;
+  opacity: 0;
+  transform: scale(0.4);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 0.14s var(--cv-ease),
+    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.cv-stage .cv-cl.is-valid .cv-cl-ring {
+  opacity: 1;
+  transform: scale(1);
+}
+.cv-stage[data-motion='reduced'] .cv-cl-ring {
+  transform: none;
+}
+
+/* ============================== cut animation ============================== */
+/* Ghost copies of the cut wires in the edge-label layer (flow coordinates, above the wires, below the cards). Each half
+   retracts to its own card (pathLength = 1: dash offset 0 → ±1) while fading; a small ring marks the cut. */
+.cv-cut-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+.cv-cut-ghost path {
+  fill: none;
+  stroke: var(--g);
+  stroke-linecap: round;
+}
+.cv-cut-half {
+  stroke-dasharray: 1 1;
+  /* ease-out cubic: a quick release that settles softly (a quint start looked like a snap) */
+  animation-duration: 0.28s;
+  animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
+  animation-fill-mode: both;
+}
+.cv-cut-half.to-source {
+  animation-name: cv-cut-to-source;
+}
+.cv-cut-half.to-target {
+  animation-name: cv-cut-to-target;
+}
+@keyframes cv-cut-to-source {
+  from {
+    stroke-dashoffset: 0;
+    opacity: 0.95;
+  }
+  45% {
+    opacity: 0.85;
+  }
+  to {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+}
+@keyframes cv-cut-to-target {
+  from {
+    stroke-dashoffset: 0;
+    opacity: 0.95;
+  }
+  45% {
+    opacity: 0.85;
+  }
+  to {
+    stroke-dashoffset: -1;
+    opacity: 0;
+  }
+}
+.cv-cut-spark {
+  fill: none;
+  stroke: var(--g);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cv-cut-spark 0.3s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+@keyframes cv-cut-spark {
+  from {
+    transform: scale(0.25);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+.cv-cut-fade {
+  animation: cv-cut-fade 0.16s var(--cv-ease) both;
+}
+@keyframes cv-cut-fade {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ============================== "Hoạt ảnh: Tắt" ============================== */
+/* Same as the OS "reduce motion" block in canvas.css, for the in-app setting (lib/canvasPrefs.ts). */
+.cv-stage[data-motion='off'] *,
+.cv-stage[data-motion='off'] *::before,
+.cv-stage[data-motion='off'] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+.cv-stage[data-motion='off'] .cv-spin {
+  animation: none !important;
+}
+.cv-stage[data-motion='off'] .cv-run-bar > i {
+  animation: none !important;
+  background: var(--accent);
+}

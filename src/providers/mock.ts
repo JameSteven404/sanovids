@@ -17,6 +17,25 @@ export interface MockSettings {
 }
 
 export const DEFAULT_MOCK_SETTINGS: MockSettings = { speed: 'fast', failRate: 0.1, concurrency: 3, recordVideo: true }
+export const MOCK_SPEEDS: readonly MockSpeed[] = ['fast', 'normal', 'slow']
+/** Settings offer 0–50 % fake failures and 1–5 jobs at once. */
+export const MAX_MOCK_FAIL_RATE = 0.5
+export const MAX_MOCK_CONCURRENCY = 5
+
+/**
+ * Untrusted (stored / imported) demo settings → valid ones: each field is kept when valid (numbers clamped to what
+ * Settings offers), else taken from `base`.
+ */
+export function parseMockSettings(raw: unknown, base: MockSettings = DEFAULT_MOCK_SETTINGS): MockSettings {
+  const out = { ...base }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  const r = raw as Partial<Record<keyof MockSettings, unknown>>
+  if (typeof r.speed === 'string' && (MOCK_SPEEDS as readonly string[]).includes(r.speed)) out.speed = r.speed as MockSpeed
+  if (typeof r.failRate === 'number' && Number.isFinite(r.failRate)) out.failRate = Math.min(MAX_MOCK_FAIL_RATE, Math.max(0, r.failRate))
+  if (typeof r.concurrency === 'number' && Number.isFinite(r.concurrency)) out.concurrency = Math.min(MAX_MOCK_CONCURRENCY, Math.max(1, Math.round(r.concurrency)))
+  if (typeof r.recordVideo === 'boolean') out.recordVideo = r.recordVideo
+  return out
+}
 
 export const SPEED_MS: Record<MockSpeed, [number, number]> = { fast: [3000, 6000], normal: [9000, 16000], slow: [22000, 38000] }
 export const FAIL_MESSAGES = [

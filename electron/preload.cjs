@@ -8,6 +8,18 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 const arg = process.argv.find((a) => a.startsWith('--bdp-version='))
 
+/** Plain data only: a string (or '') — the main process validates everything again. */
+const str = (v) => (typeof v === 'string' ? v : '')
+/** [{ name, bytes | text }] for the files:* calls (at most 8; main allows fewer). */
+const fileList = (files) =>
+  Array.isArray(files)
+    ? files.slice(0, 8).map((f) => ({
+        name: str(f && f.name),
+        bytes: f && ArrayBuffer.isView(f.bytes) ? new Uint8Array(f.bytes.buffer, f.bytes.byteOffset, f.bytes.byteLength) : undefined,
+        text: f && typeof f.text === 'string' ? f.text : undefined,
+      }))
+    : []
+
 contextBridge.exposeInMainWorld('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
   electron: process.versions.electron,
@@ -31,5 +43,22 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
         checkoutUrl: args && typeof args.checkoutUrl === 'string' ? args.checkoutUrl : '',
         fields: args && args.fields && typeof args.fields === 'object' ? { ...args.fields } : {},
       }),
+  },
+  /**
+   * Saving videos (src/lib/desktopFiles.ts). The page never names a path to write to: the save dialog or the folder
+   * picker does, and main only writes into folders the user picked (its allowlist). Every call → { ok, … } | { ok: false, code, message }.
+   */
+  files: {
+    /** Native folder picker → { ok: true, path, name } (the folder joins the allowlist). */
+    pickFolder: () => ipcRenderer.invoke('files:pickFolder'),
+    /** { folderPath } → { ok: true, allowed, exists } */
+    folderStatus: (args) => ipcRenderer.invoke('files:folderStatus', { folderPath: str(args && args.folderPath) }),
+    /** { folderPath, files: [{ name, bytes | text }] } → { ok: true, names } — never overwrites (" (2)"). */
+    writeToFolder: (args) => ipcRenderer.invoke('files:writeToFolder', { folderPath: str(args && args.folderPath), files: fileList(args && args.files) }),
+    /** { folderPath } → shows the (allowlisted) folder in Explorer / Finder. */
+    openFolder: (args) => ipcRenderer.invoke('files:openFolder', { folderPath: str(args && args.folderPath) }),
+    /** { suggestedName, title?, files } → native "Save as" for files[0], companions next to it → { ok: true, path, names } | { ok: false, canceled } */
+    saveAs: (args) =>
+      ipcRenderer.invoke('files:saveAs', { suggestedName: str(args && args.suggestedName), title: str(args && args.title), files: fileList(args && args.files) }),
   },
 })

@@ -6,6 +6,43 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.4.0] — 2026-10-02 — Lưu video, node Thư mục, cắt dây, Storyboard kéo-thả, Cài đặt mới
+
+✨ **Hỏi nơi lưu & đổi tên khi tải video** (bật sẵn)
+- Bấm **Tải video…** mở hộp **Save As** của Windows, có sẵn tên file để sửa, nhớ thư mục lần trước. File `.txt` prompt được lưu **cạnh video, cùng tên bạn chọn**. Tải `.zip` cũng hỏi.
+- Tự tải và node Thư mục không hỏi. Tắt trong **Cài đặt → Tải video** để quay lại kiểu cũ.
+
+✨ **Đổi tên video đầu ra**
+- Bấm đúp vào tên trên node video (hoặc nút bút chì), hoặc sửa ô **Tên file** trong cửa sổ xem take. Tên này dùng cho mọi cách lưu: tải, .zip, tự tải, node Thư mục. Để trống là quay về tên mặc định.
+- **Mẫu đặt tên** trong Cài đặt → Nâng cao: `{scene}` `{take}` `{title}` `{project}` `{date}` `{time}` `{model}`, xem trước tên ngay khi gõ. Mặc định vẫn là `S01_T1 - tên cảnh`.
+
+✨ **Node Thư mục trên canvas**
+- Nút **Thư mục** trên thanh công cụ: chọn một thư mục trên máy. Node hiện tên, đường dẫn, **số video đã lưu**, lần lưu gần nhất và nút **Mở thư mục**.
+- **Nối video → Thư mục**: chép video vào ngay. Video đang tạo thì chép khi xong.
+- **Nối cảnh → Thư mục** (dây nét đứt): mọi video mới của cảnh đó **tự lưu** vào thư mục khi tạo xong.
+- Không bao giờ ghi đè: trùng tên thì thêm " (2)". App chỉ ghi vào những thư mục chính bạn đã chọn. Đường dẫn thư mục **không bị ghi** vào file xuất dự án.
+- Dây màu chàm, cắt dây và hoàn tác như dây khác. Video chưa lưu được (thư mục bị đổi chỗ hoặc mất quyền) được giữ lại và lưu khi bạn bấm **Chọn lại thư mục**.
+
+✨ **Bấm vào dây là cắt** (bật sẵn)
+- Vùng bấm quanh dây rộng 16 px, con trỏ hình kéo, có **Hoàn tác** ngay trong thông báo. App phân biệt bấm với kéo, nên kéo canvas không cắt nhầm. Dây cảnh → video của chính nó không bao giờ bị cắt. Ctrl/Shift + bấm thì chỉ chọn dây.
+- Tắt trong **Cài đặt → Dây nối & canvas** để quay lại kiểu cũ: bấm để chọn, rồi Delete.
+
+✨ **Hoạt ảnh dây mượt hơn**
+- **Cắt dây**: dây tách ra từ đúng điểm bấm, hai nửa co lại và mờ dần (cả khi xoá bằng phím Delete).
+- **Kéo dây**: dây cong mềm theo con trỏ, mang màu loại nguồn (ảnh xanh, video tím, thư mục chàm), có vệt sáng chạy về phía con trỏ. Rê tới thẻ nhận được thì đầu dây hít vào điểm nối, rê tới chỗ không nhận thì hiện kiểu báo không hợp lệ.
+- Hiệu ứng chuyển động: **Đầy đủ / Giảm / Tắt** (Cài đặt → Nâng cao). Tự giảm khi Windows bật chế độ giảm chuyển động.
+
+✨ **Storyboard: kéo-thả để sắp xếp**
+- Nắm thẻ video kéo sang vị trí mới. Các thẻ khác dịch chỗ mượt theo, có vạch báo chỗ thả. Thả xong thì thứ tự cảnh đổi, mã cảnh tự đánh lại, **một lần Hoàn tác**.
+- Không cần kéo: chọn thẻ rồi **Alt + ←/→** hoặc **Alt + ↑/↓**. Phát liền và tải .zip đi theo thứ tự mới.
+
+✨ **Cài đặt mới: Cơ bản / Nâng cao + tìm kiếm**
+- **Cơ bản**: giao diện, tải video (hỏi nơi lưu, **kèm file .txt hay không**, tự tải, thư mục mặc định), âm thanh video (tiếng, âm lượng, tốc độ), dây nối & canvas, tự đánh lại số @image, dữ liệu dự án, **Chế độ Phát triển**.
+- **Nâng cao**: hiệu ứng chuyển động, thời gian hiện thông báo (có nút Xem thử), mẫu tên file, .zip kèm prompt, cổng canvasapp, bố cục khung bên, **sao lưu / khôi phục cài đặt**, **khôi phục mặc định**.
+- Ô tìm kiếm gõ không dấu cũng tìm ra. **Ctrl+F** để nhảy vào ô tìm kiếm.
+
+🛠️ Từ bản này SanoVids **chỉ còn bản app desktop**: bản web đã tắt.
+
 ## [0.3.0] — 2026-10-02 — Chế độ Phát triển thay cho Demo
 
 ✨ **Chế độ Phát triển (mặc định)** — để tìm và sửa lỗi mà không tốn tiền
@@ -171,6 +208,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.4.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.3.0
 [0.2.5]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.5
 [0.2.4]: https://github.com/JameSteven404/sanovids/releases/tag/v0.2.4

@@ -12,6 +12,7 @@ import {
   Link2,
   LoaderCircle,
   LocateFixed,
+  PencilLine,
   RotateCcw,
   Star,
   Trash,
@@ -19,11 +20,12 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, deleteTakes, downloadTake, focusNodes, linkTakes, openDevPanel, rerunTake, takeFileBase } from '../../actions'
+import { createSceneFromTake, defaultTakeFileBase, deleteTakes, downloadTake, focusNodes, linkTakes, openDevPanel, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
 import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
@@ -158,6 +160,78 @@ function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
   )
 }
 
+/**
+ * "Tên file" in the viewer's header: the name the video gets when it is downloaded or saved into a folder (custom, or
+ * the default "S01_T1 - title"). A click edits it in place: Enter / click away saves, Escape cancels (the dialog stays
+ * open), empty = default name.
+ */
+function TakeFileNameField({ take }: { take: Take }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const done = useRef(false)
+  const button = useRef<HTMLButtonElement>(null)
+  /** Enter / Escape: the keyboard focus goes back to the field's button (it stays inside the dialog). */
+  const refocus = useRef(false)
+  useEffect(() => {
+    if (editing || !refocus.current) return
+    refocus.current = false
+    button.current?.focus()
+  }, [editing])
+  // The default name follows the scene's code / title (subscribed by the viewer, which re-renders this field).
+  const current = take.fileName ?? defaultTakeFileBase(take.id)
+  const finish = (save: boolean, fromKey = false) => {
+    if (done.current) return
+    done.current = true
+    refocus.current = fromKey
+    if (save) renameTake(take.id, draft)
+    setEditing(false)
+  }
+  if (editing) {
+    return (
+      <input
+        className="input rq-fname-input"
+        autoFocus
+        value={draft}
+        maxLength={140}
+        spellCheck={false}
+        placeholder={defaultTakeFileBase(take.id)}
+        aria-label="Tên file video"
+        title="Không cần đuôi .mp4. Để trống = tên mặc định. Enter để lưu, Esc để huỷ."
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={() => finish(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            finish(true, true)
+          } else if (e.key === 'Escape') {
+            // Used here: the dialog must not close (Modal skips keys a field already handled).
+            e.preventDefault()
+            finish(false, true)
+          }
+        }}
+      />
+    )
+  }
+  return (
+    <button
+      ref={button}
+      type="button"
+      className={`rq-fname${take.fileName ? ' is-custom' : ''}`}
+      title={`Tên file khi tải hoặc lưu video: “${current}” — bấm để đổi`}
+      onClick={() => {
+        done.current = false
+        setDraft(current)
+        setEditing(true)
+      }}
+    >
+      <span className="rq-fname-label">Tên file</span>
+      <span className="rq-fname-value">{current}</span>
+      <PencilLine size={13} aria-hidden />
+    </button>
+  )
+}
+
 function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void }) {
   const scene = useProject((s) => s.project.scenes.find((x) => x.id === take.sceneId))
   const siblings = useSceneTakes(take.sceneId)
@@ -249,17 +323,20 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
         </span>
       }
       headerExtra={
-        <span className="rq-tv-nav">
-          <button type="button" className="icon-btn" disabled={!prev} onClick={() => prev && openTake(prev.id)} title="Take trước (←)" aria-label="Take trước">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="mono faint">
-            {idx + 1}/{sorted.length}
+        <>
+          <TakeFileNameField key={take.id} take={take} />
+          <span className="rq-tv-nav">
+            <button type="button" className="icon-btn" disabled={!prev} onClick={() => prev && openTake(prev.id)} title="Take trước (←)" aria-label="Take trước">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="mono faint">
+              {idx + 1}/{sorted.length}
+            </span>
+            <button type="button" className="icon-btn" disabled={!next} onClick={() => next && openTake(next.id)} title="Take sau (→)" aria-label="Take sau">
+              <ChevronRight size={16} />
+            </button>
           </span>
-          <button type="button" className="icon-btn" disabled={!next} onClick={() => next && openTake(next.id)} title="Take sau (→)" aria-label="Take sau">
-            <ChevronRight size={16} />
-          </button>
-        </span>
+        </>
       }
       footer={
         <>
@@ -330,6 +407,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
  */
 function BigActionButton({ take, label, onRerun }: { take: Take; label: string; onRerun?: () => void }) {
   const [saving, setSaving] = useState(false)
+  // "Hỏi nơi lưu & tên file" on: the button opens a save dialog (an ellipsis says so).
+  const askWhere = useDownloadPrefs((s) => s.askWhere)
   if (take.status === 'completed') {
     const hasVideo = !!take.videoId
     const save = async () => {
@@ -350,7 +429,7 @@ function BigActionButton({ take, label, onRerun }: { take: Take; label: string; 
         title={hasVideo ? `Tải video ${label} (kèm file .txt chứa prompt nếu bật trong Cài đặt)` : 'Take này không có video (trình duyệt không ghi được) — tải ảnh poster'}
       >
         {saving ? <LoaderCircle size={17} className="rq-spin" /> : <Download size={17} />}
-        {saving ? 'Đang lưu…' : hasVideo ? 'Tải video' : 'Tải poster'}
+        {saving ? 'Đang lưu…' : hasVideo ? (askWhere ? 'Tải video…' : 'Tải video') : 'Tải poster'}
       </button>
     )
   }

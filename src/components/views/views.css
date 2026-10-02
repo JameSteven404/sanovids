@@ -1164,8 +1164,10 @@
   pointer-events: none;
   transition: opacity 0.15s ease-out;
 }
+/* Keyboard focus on a button inside shows the overlay too. Not plain :focus-within: a clicked card takes the focus
+   (it is focusable for the arrow keys) and must not keep its poster covered after the pointer leaves. */
 .vw-card:hover .vw-card-hover,
-.vw-card:focus-within .vw-card-hover {
+.vw-card-hover:has(:focus-visible) {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1238,6 +1240,218 @@
 }
 .vw-card-nostar {
   color: var(--warn);
+}
+
+/* ---------- reorder: drag a card to a new place (useCardReorder.ts, math in storyboardOrder.ts) ----------
+   The gesture writes inline transforms + data-* flags on the cards (never rendered by React):
+   grid [data-reordering] = a card is in the air · card [data-dragging] = that card · [data-slide] = sliding to its new
+   slot (FLIP, 'lead' = the moved card) · [data-landed] = soft ring where it landed. Motion follows .vw-sb-root[data-motion]. */
+.vw-sb-root {
+  --vw-move-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* a touch of overshoot when the moved card settles */
+  --vw-settle-ease: cubic-bezier(0.25, 1.12, 0.4, 1);
+}
+.vw-sb-grid {
+  position: relative; /* frame of the slot math (offsetLeft / offsetTop) and of the drop marker */
+}
+.vw-card {
+  position: relative;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.vw-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.vw-card-grip {
+  flex: none;
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--text-faint);
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.15s ease-out;
+}
+.vw-card:hover .vw-card-grip,
+.vw-card:focus-visible .vw-card-grip {
+  opacity: 1;
+}
+.vw-card-grip:hover {
+  color: var(--text-dim);
+}
+
+/* a card is in the air */
+.vw-sb-grid[data-reordering],
+.vw-sb-grid[data-reordering] * {
+  cursor: grabbing !important;
+}
+.vw-sb-grid[data-reordering] .vw-card {
+  transition:
+    transform 0.22s var(--vw-move-ease),
+    border-color 0.18s ease-out,
+    box-shadow 0.18s ease-out;
+}
+.vw-sb-grid[data-reordering] .vw-card .vw-card-hover {
+  opacity: 0;
+  pointer-events: none;
+}
+.vw-sb-grid[data-reordering] .vw-card[data-dragging] {
+  z-index: 3;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--shadow-lg);
+  will-change: transform;
+  /* no transform transition: it follows the pointer */
+  transition:
+    border-color 0.18s ease-out,
+    box-shadow 0.2s ease-out;
+}
+.vw-sb-grid[data-reordering='reduced'] .vw-card[data-dragging],
+.vw-sb-grid[data-reordering='off'] .vw-card[data-dragging] {
+  opacity: 0.92;
+}
+/* sliding to its new slot after a drop / Alt + arrow / undo (FLIP) */
+.vw-card[data-slide] {
+  transition:
+    transform 0.26s var(--vw-move-ease),
+    border-color 0.18s ease-out,
+    box-shadow 0.18s ease-out;
+}
+.vw-card[data-slide='lead'] {
+  z-index: 2;
+  transition:
+    transform 0.3s var(--vw-settle-ease),
+    border-color 0.18s ease-out,
+    box-shadow 0.3s ease-out;
+}
+.vw-card[data-landed]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+  animation: vw-landed 0.9s ease-out forwards;
+}
+@keyframes vw-landed {
+  0%,
+  35% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* drop marker: dashed slot ('full', the cards opened a gap) or insertion bar (cards stay put) */
+.vw-sb-slot,
+.vw-sb-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  animation: vw-marker-in 0.14s ease-out;
+}
+.vw-sb-slot {
+  box-sizing: border-box;
+  border: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  transition: transform 0.22s var(--vw-move-ease);
+}
+.vw-sb-bar {
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.vw-sb-dropcode {
+  position: absolute;
+  z-index: 4;
+  height: 22px;
+  margin-top: -11px;
+  padding: 0 9px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: vw-marker-in 0.14s ease-out;
+  transition:
+    left 0.22s var(--vw-move-ease),
+    top 0.22s var(--vw-move-ease);
+}
+@keyframes vw-marker-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 'Giảm bớt': no gliding, fades only */
+.vw-sb-root[data-motion='reduced'] .vw-sb-slot,
+.vw-sb-root[data-motion='reduced'] .vw-sb-dropcode {
+  transition: none;
+}
+.vw-sb-root[data-motion='reduced'] .vw-card:hover {
+  transform: none;
+}
+
+/* one-time tip above the cards */
+.vw-sb-tip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.vw-sb-tip b {
+  color: var(--text);
+  font-weight: 600;
+}
+.vw-sb-tip > span {
+  flex: 1;
+  min-width: 0;
+}
+.vw-sb-tip .kbd {
+  font-size: 10.5px;
+}
+.vw-sb-tip-ico {
+  flex: none;
+  color: var(--accent);
+}
+.vw-sb-tip .btn {
+  flex: none;
+}
+
+/* screen-reader only (live region, help text) */
+.vw-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* =====================================================================================================
@@ -1572,4 +1786,19 @@
   .vw-spin {
     animation-duration: 2.4s;
   }
+}
+
+/* "Hoạt ảnh: Tắt" (lib/canvasPrefs.ts): the storyboard drops every transition and animation, like the canvas. */
+.vw-sb-root[data-motion='off'] *,
+.vw-sb-root[data-motion='off'] *::before,
+.vw-sb-root[data-motion='off'] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+.vw-sb-root[data-motion='off'] .vw-spin {
+  animation: none !important;
+}
+.vw-sb-root[data-motion='off'] .vw-card:hover {
+  transform: none;
 }

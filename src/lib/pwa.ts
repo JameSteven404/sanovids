@@ -7,6 +7,7 @@
 // Call initPwa() once at startup (main.tsx) so the one-shot beforeinstallprompt event is never missed.
 import { useSyncExternalStore } from 'react'
 import type { CanvasappBridge } from '../providers/canvasapp/transport'
+import type { DesktopFilesBridge } from './desktopFiles'
 import { flush, useSave } from '../store/persist'
 import { toast, useUI } from '../store/ui'
 
@@ -30,6 +31,8 @@ export interface DesktopInfo {
    * Includes `checkout()` (top-up: opens the real SePay page in a modal window) in builds that support it.
    */
   canvasapp?: CanvasappBridge
+  /** Save dialog, folder picker and writes into picked folders (lib/desktopFiles.ts); missing in older desktop builds. */
+  files?: DesktopFilesBridge
 }
 
 declare global {

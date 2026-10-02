@@ -1,9 +1,9 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
 import { Handle, Position, useStore, useUpdateNodeInternals, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, PencilLine, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type SyntheticEvent } from 'react'
-import { deleteTakes, downloadTake, rerunTake } from '../../actions'
+import { defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
@@ -15,10 +15,11 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { fitMedia, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
+import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox } from './NodeSizer'
 import { TakePlayer } from './TakePlayer'
 import './canvas.css'
+import './saving.css'
 
 /** `status` is only carried so the node object changes with it (minimap color); the node reads its take itself. */
 export type TakeNodeData = { hidden: number; status: JobStatus }
@@ -76,12 +77,67 @@ function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
   )
 }
 
+/**
+ * "Tên file" editor in the take node's footer (double-click the label, or the pencil): Enter or a click elsewhere
+ * saves, Escape cancels, an empty field goes back to the default name. Saved too when the node unmounts mid-edit
+ * (zoomed out to the small card, scrolled off-screen).
+ */
+function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void }) {
+  const [draft, setDraft] = useState(() => takeFileBase(takeId))
+  const latest = useRef(draft)
+  latest.current = draft
+  const done = useRef(false)
+  const finish = (save: boolean) => {
+    if (done.current) return
+    done.current = true
+    if (save) renameTake(takeId, latest.current)
+    onDone()
+  }
+  useEffect(() => {
+    done.current = false
+    return () => {
+      if (done.current) return
+      done.current = true
+      renameTake(takeId, latest.current)
+    }
+  }, [takeId])
+  return (
+    <input
+      className="cv-take-name-input nodrag nopan"
+      autoFocus
+      value={draft}
+      maxLength={140}
+      spellCheck={false}
+      placeholder={defaultTakeFileBase(takeId)}
+      aria-label="Tên file video"
+      title="Tên file khi tải hoặc lưu video (không cần đuôi .mp4). Để trống = tên mặc định. Enter để lưu, Esc để huỷ."
+      onChange={(e) => setDraft(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => finish(true)}
+      onPointerDown={stop}
+      onDoubleClick={stop}
+      onKeyDown={(e) => {
+        // Typing keys (Delete, Backspace, Enter, Escape…) never reach the canvas / global shortcuts.
+        if (!inlineEditKeyBubbles(e)) e.stopPropagation()
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          finish(true)
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          finish(false)
+        }
+      }}
+    />
+  )
+}
+
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
   const order = useProject((s) => (take ? sceneMapOf(s.project.scenes).get(take.sceneId)?.order : undefined))
   const usage = useProject((s) => videoUsageOf(s.project.scenes).get(id) ?? 0)
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const [hover, setHover] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const done = take?.status === 'completed'
   // The player stays open after the mouse leaves once one of its controls was used (pinned, see TakePlayer).
   const pinned = usePlayback((s) => s.pinned === id)
@@ -194,10 +250,22 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
         </div>
 
         {box && <div className="cv-take-fill" />}
-        {!far && (
+        {!far && renaming && (
+          <div className="cv-take-foot is-renaming">
+            <TakeNameInput takeId={id} onDone={() => setRenaming(false)} />
+          </div>
+        )}
+        {!far && !renaming && (
           <div className="cv-take-foot">
-            <span className="cv-take-settings" title={settingsLabel(take.settings)}>
-              {settingsLabel(take.settings)}
+            <span
+              className={`cv-take-settings${take.fileName ? ' is-name' : ''}`}
+              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${settingsLabel(take.settings)}` : settingsLabel(take.settings)}\nBấm đúp để đổi tên file video`}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                setRenaming(true)
+              }}
+            >
+              {take.fileName ?? settingsLabel(take.settings)}
             </span>
             {order === undefined && (
               <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
@@ -213,6 +281,17 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
             <span className="cv-take-actions nodrag nopan" onPointerDown={stop} onDoubleClick={stop}>
               <button className="cv-take-btn" title="Xem" aria-label="Xem take" onClick={(e) => (e.stopPropagation(), openTake(id))}>
                 <Eye size={14} strokeWidth={1.75} />
+              </button>
+              <button
+                className="cv-take-btn"
+                title={`Đổi tên file video (hiện là “${takeFileBase(id)}”)`}
+                aria-label="Đổi tên file video"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setRenaming(true)
+                }}
+              >
+                <PencilLine size={14} strokeWidth={1.75} />
               </button>
               <button
                 className="cv-take-btn"
@@ -241,7 +320,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           style={handleStyle}
           isConnectableStart={done}
           isConnectableEnd={false}
-          title={done ? 'Kéo vào cảnh để dùng làm @video · thả ra nền để tạo cảnh tiếp nối' : 'Video chưa tạo xong'}
+          title={done ? 'Kéo vào cảnh để dùng làm @video · vào Thư mục để lưu · thả ra nền để tạo cảnh tiếp nối' : 'Video chưa tạo xong'}
         />
       </div>
       <NodeSizer id={id} kind="take" selected={!!selected} sized={!!box} />
@@ -260,6 +339,7 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
   const [saving, setSaving] = useState(false)
   const folder = useDownloadPrefs((s) => s.folderName)
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
+  const askWhere = useDownloadPrefs((s) => s.askWhere)
   let button
   if (take.status === 'completed') {
     const what = withPrompt ? 'video + prompt (.txt)' : 'video'
@@ -267,7 +347,13 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
       <button
         className="cv-take-main"
         disabled={saving}
-        title={folder ? `Lưu ${what} của ${code} vào thư mục “${folder}”` : `Tải ${what} của ${code} về máy`}
+        title={
+          askWhere
+            ? `Tải ${what} của ${code} — chọn nơi lưu và tên file`
+            : folder
+              ? `Lưu ${what} của ${code} vào thư mục “${folder}”`
+              : `Tải ${what} của ${code} về máy`
+        }
         aria-label={`Tải video ${code}`}
         onClick={(e) => {
           e.stopPropagation()
@@ -277,7 +363,7 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
         }}
       >
         {saving ? <LoaderCircle size={15} className="cv-spin" /> : <Download size={15} strokeWidth={2.4} />}
-        <span>{saving ? 'Đang lưu…' : 'Tải video'}</span>
+        <span>{saving ? 'Đang lưu…' : askWhere ? 'Tải video…' : 'Tải video'}</span>
       </button>
     )
   } else if (take.status === 'processing' || take.status === 'queued') {

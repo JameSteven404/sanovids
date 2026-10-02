@@ -6,12 +6,25 @@ import { create } from 'zustand'
 export type ThemePref = 'system' | 'light' | 'dark'
 export type Theme = 'light' | 'dark'
 
-const KEY = 'bdp:pref:theme'
+export const THEME_KEY = 'bdp:pref:theme'
+const KEY = THEME_KEY
+export const THEME_PREFS: readonly ThemePref[] = ['system', 'light', 'dark']
+
+export const isThemePref = (v: unknown): v is ThemePref => v === 'light' || v === 'dark' || v === 'system'
+
+/** Stored JSON → theme choice ('system' when missing or not valid). */
+export function parseThemePref(raw: string | null | undefined): ThemePref {
+  try {
+    const v: unknown = JSON.parse(raw ?? '"system"')
+    return isThemePref(v) ? v : 'system'
+  } catch {
+    return 'system'
+  }
+}
 
 function readPref(): ThemePref {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? '"system"')
-    return v === 'light' || v === 'dark' || v === 'system' ? v : 'system'
+    return parseThemePref(localStorage.getItem(KEY))
   } catch {
     return 'system'
   }
@@ -25,6 +38,7 @@ function resolve(pref: ThemePref): Theme {
 }
 
 function apply(theme: Theme) {
+  if (typeof document === 'undefined') return
   const root = document.documentElement
   root.dataset.theme = theme
   root.style.colorScheme = theme
@@ -45,6 +59,7 @@ export const useTheme = create<ThemeState>()((set, get) => {
     pref,
     theme: resolve(pref),
     setPref: (next) => {
+      if (!isThemePref(next)) return
       try {
         localStorage.setItem(KEY, JSON.stringify(next))
       } catch {

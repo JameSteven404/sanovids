@@ -35,6 +35,53 @@ function savePanelWidth(spec: PanelSpec, width: number) {
   }
 }
 
+/** The side panels as they are now (shown / hidden, saved widths): what "Hoàn tác" after a layout reset puts back. */
+export interface PanelLayout {
+  leftOpen: boolean
+  rightOpen: boolean
+  leftW: string | null
+  rightW: string | null
+}
+
+function readRaw(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+function writeRaw(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key)
+    else localStorage.setItem(key, value)
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+export function panelLayout(): PanelLayout {
+  const { leftOpen, rightOpen } = useUI.getState()
+  return { leftOpen, rightOpen, leftW: readRaw(LEFT_PANEL.storageKey), rightW: readRaw(RIGHT_PANEL.storageKey) }
+}
+
+/** Put a layout back (or the default one: both panels shown at their default widths). Applied at once. */
+export function restorePanelLayout(layout: PanelLayout = { leftOpen: true, rightOpen: true, leftW: null, rightW: null }) {
+  writeRaw(LEFT_PANEL.storageKey, layout.leftW)
+  writeRaw(RIGHT_PANEL.storageKey, layout.rightW)
+  const ui = useUI.getState()
+  ui.setLeftOpen(layout.leftOpen)
+  ui.setRightOpen(layout.rightOpen)
+  // usePanelWidths re-reads the saved widths on the next resize (also when no panel was shown / hidden).
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('resize'))
+}
+
+/** "Đặt lại bố cục khung bên" (Settings): both side panels shown, default widths. Returns the layout before. */
+export function resetPanelLayout(): PanelLayout {
+  const before = panelLayout()
+  restorePanelLayout()
+  return before
+}
+
 /**
  * Apply the saved panel widths to the app root, fitted to the window: on mount, when a panel is shown or hidden,
  * and on every window resize. Saved widths that leave the center narrower than MIN_CENTER (a smaller window, a

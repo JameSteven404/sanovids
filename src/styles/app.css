@@ -179,3 +179,28 @@ body.is-resizing-panels video {
   min-height: var(--topbar-h);
   border-top: 0;
 }
+
+/* ---------- "Hiệu ứng chuyển động" (Cài đặt → Nâng cao) ----------
+   lib/canvasPrefs initMotion() sets <html data-motion> from the pref and the OS setting ('full' becomes 'reduced'
+   when the OS asks for less motion). The canvas and the storyboard add their own rules on top (wires.css, views.css). */
+/* Giảm bớt: fades and color changes stay, nothing glides, slides or scales; sheets and toasts just fade in. */
+:root[data-motion='reduced'] *,
+:root[data-motion='reduced'] *::before,
+:root[data-motion='reduced'] *::after {
+  transition-property: opacity, color, background-color, border-color, outline-color, box-shadow, fill, stroke !important;
+  scroll-behavior: auto !important;
+}
+:root[data-motion='reduced'] :is(.modal, .toast, .lightbox) {
+  animation-name: cm-fade-in !important;
+}
+/* Tắt: no transition or animation anywhere (a spinner shows as a still icon, which still reads as "busy"). */
+:root[data-motion='off'] *,
+:root[data-motion='off'] *::before,
+:root[data-motion='off'] *::after {
+  transition-duration: 0.01ms !important;
+  transition-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}

@@ -115,19 +115,11 @@
   border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: 8px;
 }
-.cv-stage.cv-connecting-take .react-flow {
-  --xy-connectionline-stroke: var(--video);
-}
 /* group-drag works by dragging any selected card; the selection overlay would block card buttons */
 .cv-stage .react-flow__nodesselection {
   display: none;
 }
-.cv-stage .react-flow__connection-path {
-  stroke-linecap: round;
-}
-.cv-stage .react-flow__edge.selectable:not(.selected) .react-flow__edge-interaction {
-  cursor: pointer;
-}
+/* wires (hit band, click-to-cut cursor), the line drawn while dragging a wire and the cut animation: wires.css */
 .cv-stage .react-flow__edgeupdater {
   cursor: grab;
 }

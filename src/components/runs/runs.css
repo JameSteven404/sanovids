@@ -1394,6 +1394,63 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* "Tên file" in the take viewer's header: the video's file name, edited in place (TakeFileNameField) */
+.rq-fname {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: min(360px, 38vw);
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: text;
+  transition:
+    background 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+.rq-fname:hover {
+  background: var(--panel-3);
+  border-color: var(--border-strong);
+}
+.rq-fname:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.rq-fname-label {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+.rq-fname-value {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.rq-fname.is-custom .rq-fname-value {
+  color: var(--text);
+}
+.rq-fname > svg {
+  flex: none;
+  color: var(--text-faint);
+}
+.rq-fname:hover > svg {
+  color: var(--text-dim);
+}
+.rq-fname-input {
+  width: min(360px, 38vw);
+  height: 30px;
+  font-size: 12px;
+}
 .rq-tv-nav {
   display: inline-flex;
   align-items: center;

@@ -15,6 +15,7 @@ import '@xyflow/react/dist/style.css'
 import './styles/base.css'
 import './styles/app.css'
 import { App } from './App'
+import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
 
@@ -23,6 +24,8 @@ import { initTheme } from './lib/theme'
 // flash before the CSS loaded: the stylesheets are in now, so drop it (it would stay on the old theme's color).
 initTheme()
 document.documentElement.style.removeProperty('background')
+// "Hiệu ứng chuyển động" (Settings): <html data-motion>, followed by styles/app.css everywhere.
+initMotion()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()
