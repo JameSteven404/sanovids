@@ -41,6 +41,7 @@ import {
 import { sceneCode } from '../../core/compile'
 import { MODELS, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Size, XY } from '../../core/types'
+import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
 import { LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -767,9 +768,11 @@ function CanvasInner() {
 
   const closeMenu = useCallback(() => setMenu(null), [])
   // A click on empty canvas clears the whole selection: React Flow deselects its nodes, drop the off-canvas ids too.
+  // It also closes a take player left open (pinned) after its controls were used.
   const onPaneClick = useCallback(() => {
     setMenu(null)
     dropOffCanvasSelection()
+    usePlayback.getState().unpin()
   }, [dropOffCanvasSelection])
 
   const handMode = interaction === 'hand'

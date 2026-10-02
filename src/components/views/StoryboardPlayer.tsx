@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
 import type { Take } from '../../core/types'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
-import { playWithSound, usePlayback } from '../../lib/playback'
+import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
@@ -33,18 +33,32 @@ const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
 
 type VideoState = { id: string; url: string | null; failed: boolean } | null
 
-/** Speaker switch of the player (shared with the canvas preview and the take viewer). A click may always unmute. */
+/**
+ * Speaker switch of the player (shared with the canvas player and the take viewer). A click may always unmute. The
+ * shared volume counts: at 0 (set on the canvas or in the viewer) the player is silent, so the switch shows off and
+ * turning it on also brings the volume back (toggleSound). The play effect reads the volume only when a clip starts:
+ * the element is updated here directly.
+ */
 function SoundButton({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null> }) {
   const sound = usePlayback((s) => s.sound)
+  const volume = usePlayback((s) => s.volume)
+  const on = sound && volume > 0
   const toggle = () => {
-    const next = !sound
-    usePlayback.getState().setSound(next)
+    const p = usePlayback.getState()
+    const next = toggleSound(p.sound, p.volume)
+    p.setSound(next.sound)
+    p.setVolume(next.volume)
     const v = videoRef.current
-    if (v) v.muted = !next
+    if (v) {
+      v.volume = next.volume
+      v.muted = !next.sound
+    }
   }
+  // The name says the action and changes with the state: no aria-pressed ("Bật tiếng, đã nhấn" would mislead).
+  const label = on ? 'Tắt tiếng' : 'Bật tiếng'
   return (
-    <button className="icon-btn" onClick={toggle} title={sound ? 'Tắt tiếng' : 'Bật tiếng'} aria-label={sound ? 'Tắt tiếng' : 'Bật tiếng'} aria-pressed={sound}>
-      {sound ? <Volume2 size={18} /> : <VolumeX size={18} />}
+    <button className="icon-btn" onClick={toggle} title={label} aria-label={label}>
+      {on ? <Volume2 size={18} /> : <VolumeX size={18} />}
     </button>
   )
 }
@@ -119,7 +133,12 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
     const v = videoRef.current
     if (!v || mode !== 'video') return
     if (paused || ended) v.pause()
-    else void playWithSound(v, usePlayback.getState().sound)
+    else {
+      // The shared volume (not the speed: "Phát liền" always plays at normal speed).
+      const { sound, volume } = usePlayback.getState()
+      v.volume = volume
+      void playWithSound(v, sound)
+    }
   }, [paused, ended, mode, index, video?.id])
   // Watchdog (see STALL_MS): last time the video's currentTime moved.
   const progressAt = useRef(0)

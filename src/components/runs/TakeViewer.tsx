@@ -25,7 +25,7 @@ import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/mode
 import type { Asset, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useMediaUrl } from '../../lib/imageStore'
-import { playWithSound, usePlayback } from '../../lib/playback'
+import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
@@ -101,12 +101,34 @@ function restoreTake(takeId: string) {
   })
 }
 
-/** The viewer's player: starts with sound when the speaker switch is on; its own mute button updates the switch. */
+/**
+ * The viewer's player: starts with the shared sound, volume and speed (lib/playback.ts); what the user changes with
+ * its own controls (mute, volume, speed menu) updates them for every player. The changes it makes itself while
+ * starting (and the muted fallback when autoplay with sound is refused) are not the user's: ignored.
+ */
 function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
   const ref = useRef<HTMLVideoElement>(null)
+  /** Until the start settles, volume / rate events come from the code above, not from the user. */
+  const starting = useRef(true)
   useEffect(() => {
     const v = ref.current
-    if (v) void playWithSound(v, usePlayback.getState().sound)
+    if (!v) return
+    let live = true
+    starting.current = true
+    const { sound, volume, rate } = usePlayback.getState()
+    v.volume = volume
+    // The media load resets playbackRate to defaultPlaybackRate: set both.
+    v.defaultPlaybackRate = rate
+    v.playbackRate = rate
+    void playWithSound(v, sound).then(() => {
+      // The volumechange / ratechange events queued by the start are dispatched before this timer.
+      setTimeout(() => {
+        if (live) starting.current = false
+      }, 0)
+    })
+    return () => {
+      live = false
+    }
   }, [url])
   return (
     <video
@@ -119,9 +141,17 @@ function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
       playsInline
       muted
       onVolumeChange={(e) => {
-        // Only a change the user made (not the muted start while autoplay with sound is refused).
+        if (starting.current) return
         const v = e.currentTarget
-        if (!v.paused) usePlayback.getState().setSound(!v.muted)
+        const p = usePlayback.getState()
+        if (p.sound !== !v.muted) p.setSound(!v.muted)
+        if (p.volume !== v.volume) p.setVolume(v.volume)
+      }}
+      onRateChange={(e) => {
+        if (starting.current) return
+        // The native menu also offers 0.25× / 1.75×: stored as the nearest speed of the canvas player.
+        const p = usePlayback.getState()
+        if (p.rate !== snapRate(e.currentTarget.playbackRate)) p.setRate(e.currentTarget.playbackRate)
       }}
     />
   )

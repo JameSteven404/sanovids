@@ -990,17 +990,44 @@
   color: var(--ok);
 }
 .dg-gw-login {
+  flex-wrap: wrap;
+  row-gap: 10px;
   padding: 10px 10px 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--panel);
 }
-.dg-gw-credits {
-  display: inline-flex;
+/* status keeps a readable width; when the buttons do not fit beside it they move to their own line */
+.dg-gw-login > .dg-app-status {
+  flex: 1 1 240px;
+}
+.dg-gw-login > .dg-app-status > span {
+  min-width: 0;
+}
+.dg-gw-actions {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+/* "Credit canvasapp: 696 credit (≈ 696.000đ) · lúc 13:29" wraps between its parts, never inside a number */
+.dg-gw-credits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+.dg-gw-credits > span,
+.dg-gw-credits > b {
+  white-space: nowrap;
+}
+.dg-gw-num {
+  color: var(--text);
+  font-weight: 600;
 }
 .dg-gw-credits > svg {
   color: var(--info);

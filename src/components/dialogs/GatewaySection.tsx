@@ -141,8 +141,11 @@ export function GatewaySection() {
                     className={`dg-gw-credits${login.stale ? ' stale' : ''}`}
                     title={login.stale ? `Chưa cập nhật được: ${login.stale}` : 'Credit thật của tài khoản canvasapp (1 credit ≈ 1.000đ)'}
                   >
-                    {login.stale ? <TriangleAlert size={11} /> : <Wallet size={11} />} Credit canvasapp: {formatCredits(login.credits, 'canvasapp')} (≈ {formatVnd(login.credits)})
-                    {real.updatedAt ? <span className="faint"> · lúc {clockText(real.updatedAt)}</span> : null}
+                    {login.stale ? <TriangleAlert size={11} /> : <Wallet size={11} />}
+                    <span>Credit canvasapp:</span>
+                    <b className="dg-gw-num">{formatCredits(login.credits, 'canvasapp')}</b>
+                    <span>(≈ {formatVnd(login.credits)})</span>
+                    {real.updatedAt ? <span className="faint">· lúc {clockText(real.updatedAt)}</span> : null}
                   </span>
                 ) : login.state === 'error' ? (
                   login.message
@@ -154,28 +157,31 @@ export function GatewaySection() {
               </small>
             </span>
           </div>
-          <button className="icon-btn" onClick={refresh} disabled={!!busy || checking} title="Kiểm tra lại (đọc lại số credit)" aria-label="Kiểm tra lại trạng thái đăng nhập và số credit">
-            {real.refreshing ? <LoaderCircle size={14} className="dg-spin" /> : <RefreshCw size={14} />}
-          </button>
-          {loggedIn && (
-            <>
-              <button className="btn btn-sm btn-primary" onClick={() => openTopUp('topup')} disabled={!!busy} title="Nạp credit vào tài khoản canvasapp (quét QR SePay)">
-                <Plus size={13} /> Nạp credit
-              </button>
-              <button className="icon-btn" onClick={() => openTopUp('history')} disabled={!!busy} title="Lịch sử credit canvasapp" aria-label="Lịch sử credit canvasapp">
-                <History size={14} />
-              </button>
-            </>
-          )}
-          {loggedIn ? (
-            <button className="btn btn-sm" onClick={() => void doLogout()} disabled={!!busy}>
-              {busy === 'logout' ? <LoaderCircle size={13} className="dg-spin" /> : <LogOut size={13} />} Đăng xuất
+          {/* Actions wrap under the status when the column is narrow (they never squeeze the text). */}
+          <div className="dg-gw-actions">
+            <button className="icon-btn" onClick={refresh} disabled={!!busy || checking} title="Kiểm tra lại (đọc lại số credit)" aria-label="Kiểm tra lại trạng thái đăng nhập và số credit">
+              {real.refreshing ? <LoaderCircle size={14} className="dg-spin" /> : <RefreshCw size={14} />}
             </button>
-          ) : (
-            <button className="btn btn-sm btn-primary" onClick={() => void doLogin()} disabled={!!busy}>
-              {busy === 'login' ? <LoaderCircle size={13} className="dg-spin" /> : <LogIn size={13} />} Đăng nhập canvasapp
-            </button>
-          )}
+            {loggedIn && (
+              <>
+                <button className="btn btn-sm btn-primary" onClick={() => openTopUp('topup')} disabled={!!busy} title="Nạp credit vào tài khoản canvasapp (quét QR SePay)">
+                  <Plus size={13} /> Nạp credit
+                </button>
+                <button className="icon-btn" onClick={() => openTopUp('history')} disabled={!!busy} title="Lịch sử credit canvasapp" aria-label="Lịch sử credit canvasapp">
+                  <History size={14} />
+                </button>
+              </>
+            )}
+            {loggedIn ? (
+              <button className="btn btn-sm" onClick={() => void doLogout()} disabled={!!busy}>
+                {busy === 'logout' ? <LoaderCircle size={13} className="dg-spin" /> : <LogOut size={13} />} Đăng xuất
+              </button>
+            ) : (
+              <button className="btn btn-sm btn-primary" onClick={() => void doLogin()} disabled={!!busy}>
+                {busy === 'login' ? <LoaderCircle size={13} className="dg-spin" /> : <LogIn size={13} />} Đăng nhập canvasapp
+              </button>
+            )}
+          </div>
         </div>
       )}
 
