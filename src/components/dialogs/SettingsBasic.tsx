@@ -396,7 +396,8 @@ export function UpdateAutoDownloadSetting({ label, hint }: RowProps) {
   const note = autoDownloadNote(kind)
   return (
     <Toggle
-      checked={autoDownload}
+      // Shown off where it does not apply (portable / dev / web); the saved pref is untouched.
+      checked={note ? false : autoDownload}
       onChange={(v) => set({ autoDownload: v })}
       label={label}
       disabled={!!note}
@@ -419,10 +420,21 @@ export function UpdateCheckSetting({ label, hint }: RowProps) {
   const kind = useUpdates((s) => s.state.kind)
   const manual = useInstallUi((s) => s.manualCheck)
   const checking = manual || status === 'checking'
-  const disabled = checking || kind === 'dev' || status === 'unsupported' || status === 'downloading'
+  // Builds that never update: really disabled. While checking / downloading: aria-disabled, so the button keeps the
+  // keyboard focus it had when clicked.
+  const unavailable = kind === 'dev' || status === 'unsupported'
+  const busy = checking || status === 'downloading'
   return (
     <Field label={label} hint={hint}>
-      <button type="button" className="btn btn-sm dg-upd-check" disabled={disabled} onClick={() => void checkNow()}>
+      <button
+        type="button"
+        className="btn btn-sm dg-upd-check"
+        disabled={unavailable}
+        aria-disabled={!unavailable && busy ? true : undefined}
+        onClick={() => {
+          if (!busy) void checkNow()
+        }}
+      >
         {checking ? <LoaderCircle size={13} className="dg-spin" /> : <RefreshCw size={13} />} Kiểm tra ngay
       </button>
     </Field>

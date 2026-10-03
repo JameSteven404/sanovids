@@ -1730,6 +1730,16 @@
 .dg-upd-callout-list li + li {
   margin-top: 3px;
 }
+/* The paragraph under the list (reassurance / what to do if stuck): not one of the unfinished jobs. */
+.dg-upd-callout-note {
+  margin: 6px 0 0;
+}
+/* A work button while another action runs: still focusable (aria-disabled), looks disabled. */
+.btn.dg-upd-btn[aria-disabled='true'],
+.btn.dg-upd-check[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .dg-upd-notes-wrap {
   display: flex;
   flex-direction: column;

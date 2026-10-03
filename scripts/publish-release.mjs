@@ -20,6 +20,7 @@ import {
   PUBLIC_REPO,
   PUBLISH_ENTRY,
   asarDataOffset,
+  asarDependencyProblems,
   asarEntry,
   asarHas,
   asarHeaderBytes,
@@ -237,16 +238,29 @@ if (asarPath && exists(asarPath)) {
     const headBuf = Buffer.alloc(asarHeaderBytes(prefix))
     fs.readSync(fd, headBuf, 0, headBuf.length, 0)
     const header = readAsarHeader(headBuf)
-    for (const p of ['electron/updater.cjs', 'node_modules/electron-updater/package.json']) {
+    for (const p of ['electron/updater.cjs', 'electron/updater-rules.cjs', 'node_modules/electron-updater/package.json']) {
       if (asarHas(header, p)) ok('app.asar', `Có ${p}`)
       else fail('app.asar', `Thiếu ${p}: bản build này không tự cập nhật được.`)
+    }
+    /** A JSON file inside the archive (or its .unpacked folder), or null. */
+    const readAsarJson = (p) => {
+      const e = asarEntry(header, p)
+      if (!e || typeof e.size !== 'number') return null
+      if (e.unpacked) return JSON.parse(fs.readFileSync(path.join(resourcesDir, 'app.asar.unpacked', ...p.split('/')), 'utf8'))
+      const b = Buffer.alloc(e.size)
+      fs.readSync(fd, b, 0, e.size, asarDataOffset(headBuf) + Number(e.offset))
+      return JSON.parse(b.toString('utf8'))
+    }
+    // Every package electron-updater requires at runtime (a missing one = "unsupported" forever on users' machines).
+    if (asarHas(header, 'node_modules/electron-updater/package.json')) {
+      const depProblems = asarDependencyProblems(header, readAsarJson, 'electron-updater')
+      for (const p of depProblems) fail('app.asar', `${p} Bản build này sẽ không tự cập nhật được.`)
+      if (!depProblems.length) ok('app.asar', 'Đủ các gói electron-updater cần khi chạy')
     }
     const entry = asarEntry(header, 'package.json')
     if (!entry || entry.unpacked || typeof entry.size !== 'number') fail('app.asar', 'Không đọc được package.json trong app.asar.')
     else {
-      const buf = Buffer.alloc(entry.size)
-      fs.readSync(fd, buf, 0, entry.size, asarDataOffset(headBuf) + Number(entry.offset))
-      const inner = JSON.parse(buf.toString('utf8'))
+      const inner = readAsarJson('package.json')
       const bad = []
       if (inner.name !== 'sanovids') bad.push(`name "${inner.name}"`)
       if (inner.productName !== 'SanoVids') bad.push(`productName "${inner.productName}"`)

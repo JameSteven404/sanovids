@@ -11,10 +11,12 @@ import {
   PUBLIC_REPO,
   PUBLISH_ENTRY,
   asarDataOffset,
+  asarDependencyProblems,
   asarEntry,
   asarHas,
   asarHeaderBytes,
   assetsFor,
+  boldTitlesToHeadings,
   buildReleaseNotes,
   capText,
   checkAppUpdateYml,
@@ -136,11 +138,27 @@ describe('notes text', () => {
   it('builds build/release-notes.md from the section (LF, one trailing newline)', () => {
     const { found, text } = updateNotesText(CHANGELOG, '0.4.2')
     expect(found).toBe(true)
-    expect(text.startsWith('🐞 **Dây nối')).toBe(true)
+    expect(text.startsWith('### 🐞 Dây nối không còn toả rộng cạnh chấm\n- ')).toBe(true)
     expect(text.endsWith('\n')).toBe(true)
     expect(text.endsWith('\n\n')).toBe(false)
     expect(text).not.toContain('\r')
     expect(text.length).toBeLessThanOrEqual(NOTES_CAP + 1)
+  })
+  it('section titles become headings (the in-app notes show "### …" as headings)', () => {
+    const { text } = updateNotesText(CHANGELOG, '0.5.0')
+    const headings = text.split('\n').filter((l) => l.startsWith('### '))
+    expect(headings).toEqual([
+      '### ✨ SanoVids tự cập nhật (bản cài Setup)',
+      '### ⚠️ Lần này phải cài tay 0.5.0 một lần',
+      '### 🛠️ Trang tải về chuyển sang',
+    ])
+    // a longer text after the bold part becomes the paragraph under the heading
+    const after = text.split('\n')[text.split('\n').indexOf('### 🛠️ Trang tải về chuyển sang') + 1]
+    expect(after.startsWith('[github.com/JameSteven404/sanovids-releases](')).toBe(true)
+    // list items keep their bold phrases
+    expect(text).toContain('- Bản 0.4.2 trở về trước chưa biết tự cập nhật')
+    expect(boldTitlesToHeadings('- ✨ **không** phải tiêu đề\n**Không emoji**\nGiữa dòng ✨ **x**')).toBe('- ✨ **không** phải tiêu đề\n**Không emoji**\nGiữa dòng ✨ **x**')
+    expect(boldTitlesToHeadings('🐞 **Sửa lỗi**: chi tiết ở đây')).toBe('### 🐞 Sửa lỗi\nchi tiết ở đây')
   })
   it('falls back to "SanoVids <v>" when the section is missing', () => {
     expect(updateNotesText(CHANGELOG, '9.9.9')).toEqual({ found: false, text: 'SanoVids 9.9.9\n' })
@@ -302,6 +320,35 @@ describe('asar header', () => {
     const start = asarDataOffset(buf) + Number(e.offset)
     expect(JSON.parse(buf.toString('utf8', start, start + e.size))).toMatchObject({ name: 'sanovids', version: '0.5.0' })
   })
+  it('finds every runtime dependency of electron-updater (Node resolution, nested first)', () => {
+    const dir = (pkgJson, extra = {}) => ({ files: { 'package.json': { size: 1, offset: '0', pkgJson }, ...extra } })
+    const tree = {
+      'electron-updater': dir(
+        { dependencies: { 'builder-util-runtime': '9', semver: '~7.7.3', 'lazy-val': '1' }, optionalDependencies: { 'opt-only': '1' } },
+        { node_modules: { files: { semver: dir({}) } } },
+      ),
+      'builder-util-runtime': dir({ dependencies: { debug: '4', sax: '1' } }),
+      debug: dir({ dependencies: { ms: '2' } }),
+      ms: dir({}),
+      sax: dir({}),
+      'lazy-val': dir({}),
+    }
+    const header = { files: { node_modules: { files: tree } } }
+    const readJson = (p) => asarEntry(header, p)?.pkgJson ?? null
+    expect(asarDependencyProblems(header, readJson)).toEqual([])
+    // semver at the top level is fine too (electron-builder may hoist it)
+    const hoisted = structuredClone(header)
+    delete hoisted.files.node_modules.files['electron-updater'].files.node_modules
+    hoisted.files.node_modules.files.semver = dir({})
+    expect(asarDependencyProblems(hoisted, (p) => asarEntry(hoisted, p)?.pkgJson ?? null)).toEqual([])
+    // missing packages (direct and transitive) are named
+    const broken = structuredClone(header)
+    delete broken.files.node_modules.files.ms
+    delete broken.files.node_modules.files['electron-updater'].files.node_modules
+    expect(asarDependencyProblems(broken, (p) => asarEntry(broken, p)?.pkgJson ?? null).sort()).toEqual(['Thiếu ms (debug cần).', 'Thiếu semver (electron-updater cần).'])
+    expect(asarDependencyProblems({ files: {} }, () => null)).toEqual(['Thiếu node_modules/electron-updater/package.json.'])
+    expect(asarDependencyProblems(header, () => null)).toEqual(['Không đọc được node_modules/electron-updater/package.json.'])
+  })
   it('throws on truncated or foreign data', () => {
     expect(() => readAsarHeader(Buffer.alloc(4))).toThrow()
     expect(() => readAsarHeader(buf.subarray(0, 20))).toThrow(/truncated/)
@@ -380,7 +427,8 @@ describe('gh argv', () => {
     expect(ghEditNotesArgs({ repo, tag: 'v0.5.0', title: 'T', notesFile: 'n.md' })).toEqual(['release', 'edit', 'v0.5.0', '-R', repo, '--title', 'T', '--notes-file', 'n.md'])
     expect(ghUploadArgs({ repo, tag: 'v0.5.0', files: ['a.exe', 'latest.yml'] })).toEqual(['release', 'upload', 'v0.5.0', 'a.exe', 'latest.yml', '-R', repo])
     expect(ghUploadArgs({ repo, tag: 'v0.5.0', files: ['a.exe'], clobber: true }).at(-1)).toBe('--clobber')
-    expect(ghPublishArgs({ repo, tag: 'v0.5.0' })).toEqual(['release', 'edit', 'v0.5.0', '-R', repo, '--draft=false', '--latest'])
+    // --prerelease=false: a draft marked pre-release would stay invisible to the app
+    expect(ghPublishArgs({ repo, tag: 'v0.5.0' })).toEqual(['release', 'edit', 'v0.5.0', '-R', repo, '--draft=false', '--prerelease=false', '--latest'])
   })
   it('formats argv for display', () => {
     expect(formatArgv('gh', ['release', 'edit', 'v0.5.0', '--title', 'SanoVids 0.5.0 — x', 'release\\a.exe'])).toBe(

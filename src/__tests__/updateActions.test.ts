@@ -383,6 +383,68 @@ describe('Cập nhật khi xong', () => {
     expect(h.deps.client.install).not.toHaveBeenCalled()
   })
 
+  it('never restarts over an open “Nhập prompt”: the wait goes on until it is closed', async () => {
+    const h = harness(ready())
+    h.c.start()
+    h.toasts.length = 0
+    h.setCounts(0, 1)
+    h.c.setInstallWhenIdle(true)
+    h.setDialog('import') // the user pastes a batch while the last video finishes
+    h.setCounts(0, 0)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + 20_000)
+    expect(h.texts()).not.toContain(UPDATE_TOAST.countdown)
+    expect(h.deps.client.install).not.toHaveBeenCalled()
+    expect(h.c.installUi.getState().installWhenIdle).toBe(true)
+
+    // Opened during a countdown: the countdown is dropped at its end, nothing installs.
+    h.setDialog('none')
+    await vi.advanceTimersByTimeAsync(5000)
+    const countdown = h.toasts.find((t) => t.text === UPDATE_TOAST.countdown)
+    expect(countdown).toBeTruthy()
+    h.setDialog('import')
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + 10)
+    expect(h.dismissed).toContain(countdown!.id)
+    expect(h.deps.client.install).not.toHaveBeenCalled()
+    expect(h.c.installUi.getState().installWhenIdle).toBe(true)
+
+    // Closed: the next evaluation counts down again and installs.
+    h.setDialog('none')
+    await vi.advanceTimersByTimeAsync(5000 + COUNTDOWN_MS + 10)
+    expect(h.deps.client.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('installNow / "Vẫn cập nhật" refuse while “Nhập prompt” is open', async () => {
+    const h = harness(ready())
+    h.setDialog('import')
+    await h.c.installNow()
+    expect(h.order).toEqual([])
+    expect(h.texts()).toEqual([UPDATE_TOAST.importOpen])
+
+    h.setDialog('none')
+    h.results.flush = false
+    const done = h.c.installNow()
+    await vi.advanceTimersByTimeAsync(10)
+    await done
+    h.setDialog('import')
+    h.runToastAction(UPDATE_TOAST.saveFailed) // "Vẫn cập nhật"
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.deps.client.install).not.toHaveBeenCalled()
+    expect(h.hold()).toBe(false)
+    expect(h.c.installUi.getState().busy).toBeNull()
+    expect(h.texts().at(-1)).toBe(UPDATE_TOAST.importOpen)
+  })
+
+  it('says what it waits for when no video is running', () => {
+    expect(UPDATE_TOAST.waitSet(3)).toBe('Sẽ cập nhật khi xong 3 video.')
+    expect(UPDATE_TOAST.waitSet(0)).toBe('Sẽ cập nhật khi xong các việc đang dở.')
+    const h = harness(ready())
+    h.c.start()
+    h.toasts.length = 0
+    h.setPending(2)
+    h.c.setInstallWhenIdle(true)
+    expect(h.texts()).toEqual(['Sẽ cập nhật khi xong các việc đang dở.'])
+  })
+
   it('is cleared when the update goes away', () => {
     const h = harness(ready())
     h.c.start()

@@ -20,7 +20,7 @@ import { capabilitiesFromModels } from '../../providers/capabilities'
 import { getProvider, registerProvider, useProviderPrefs } from '../../providers'
 import type { JobRequest, RemoteStatus, VideoProvider } from '../../providers/types'
 import { useProject } from '../project'
-import { holdNewSubmits, sendingCount, setEngineHooks, setEngineLockManager, useRuns } from '../runs'
+import { currentRestartWork, holdNewSubmits, restartWork, sendingCount, setEngineHooks, setEngineLockManager, useRuns } from '../runs'
 
 const scene = (id: string, order: number): Scene => ({
   id,
@@ -164,5 +164,26 @@ describe('sendingCount', () => {
     expect(sendingCount()).toBe(2)
     useRuns.setState({ takes: [] })
     expect(sendingCount()).toBe(0)
+  })
+})
+
+describe('restartWork', () => {
+  it('counts running takes and the queued takes the queue will start (not those of deleted scenes)', () => {
+    const t = (id: string, sceneId: string, status: Take['status'], patch: Partial<Take> = {}): Take =>
+      ({ ...useRuns.getState().takes[0], id, sceneId, status, provider: 'dev', remoteId: null, ...patch }) as Take
+    const takes = [
+      t('a', 's1', 'processing'), // being sent (no remote id yet)
+      t('b', 's1', 'processing', { remoteId: 'r_b' }),
+      t('c', 's2', 'queued'),
+      t('d', 'gone', 'queued'), // its scene was deleted: waits for an Undo, survives a restart
+      t('e', 'gone', 'processing', { remoteId: 'r_e' }), // already running: still counted
+      t('f', 's1', 'completed'),
+      t('g', 's1', 'failed'),
+    ]
+    expect(restartWork(takes, new Set(['s1', 's2']))).toEqual({ queued: 1, processing: 3, sending: 1 })
+    useRuns.setState({ takes })
+    expect(currentRestartWork()).toEqual({ queued: 1, processing: 3, sending: 1 })
+    useRuns.setState({ takes: [] })
+    expect(currentRestartWork()).toEqual({ queued: 0, processing: 0, sending: 0 })
   })
 })

@@ -86,15 +86,39 @@ export function capText(text, max = NOTES_CAP) {
   return `${cut.trimEnd()}\n…`
 }
 
+/** An emoji (with its variation selector / ZWJ sequence) + a bold phrase at the start of a line: a CHANGELOG section title. */
+const EMOJI_BOLD_TITLE = /^((?:\p{Extended_Pictographic}|\p{Emoji_Presentation})(?:[️‍]|\p{Extended_Pictographic}|\p{Emoji_Presentation})*\s+)\*\*([^*\n]+?)\*\*(.*)$/u
+
+/**
+ * CHANGELOG section titles ("✨ **SanoVids tự cập nhật** (bản cài Setup)") → markdown headings, which is what the in-app
+ * notes (lib/updateModel noteBlocks) show as headings. A short "(…)" after the bold part stays in the heading; a longer
+ * text after it becomes the paragraph below. List items and other lines are untouched.
+ */
+export function boldTitlesToHeadings(text) {
+  return String(text ?? '')
+    .split('\n')
+    .flatMap((line) => {
+      const m = EMOJI_BOLD_TITLE.exec(line)
+      if (!m) return [line]
+      const title = `### ${m[1]}${m[2].trim()}`
+      const rest = m[3].trim()
+      if (!rest) return [title]
+      if (/^\([^()\n]{1,60}\)$/.test(rest)) return [`${title} ${rest}`]
+      return [title, rest.replace(/^[:—–-]\s*/, '')]
+    })
+    .join('\n')
+}
+
 /**
  * Text of build/release-notes.md (electron-builder copies it into latest.yml releaseNotes = the in-app "Có gì mới").
- * → { found, text } — LF line endings, ends with one newline. Missing section → "SanoVids <v>".
+ * → { found, text } — LF line endings, ends with one newline. Missing section → "SanoVids <v>". Section titles become
+ * headings (boldTitlesToHeadings).
  */
 export function updateNotesText(changelogText, version) {
   const section = extractChangelogSection(changelogText, version)
   const body = section ? stripLinkRefs(section.body).trim() : ''
   if (!body) return { found: false, text: `SanoVids ${version}\n` }
-  return { found: true, text: `${capText(body, NOTES_CAP)}\n` }
+  return { found: true, text: `${capText(boldTitlesToHeadings(body), NOTES_CAP)}\n` }
 }
 
 /** GitHub release title. */
@@ -260,6 +284,54 @@ export function asarHas(header, p) {
   return asarEntry(header, p) != null
 }
 
+/**
+ * Runtime dependency closure of a package inside app.asar, resolved like Node does (nested node_modules first, then
+ * every parent node_modules up to the root). readJson(path) → the parsed file inside the archive, or null (the caller
+ * does the I/O). optionalDependencies may be missing. → list of problems ([] = every package `require` needs is there).
+ * Guards against a build whose electron-updater loads `builder-util-runtime`, `js-yaml`, `semver`… that are not packed:
+ * the app would then report "unsupported" and never update again.
+ */
+export function asarDependencyProblems(header, readJson, pkgName = 'electron-updater') {
+  const problems = []
+  const seen = new Set()
+  const pkgDir = (dir) => `${dir}/package.json`
+  const resolve = (fromDir, name) => {
+    // <fromDir>/node_modules/<name>, then every ancestor node_modules folder: node_modules/a/node_modules/b →
+    // …/b/node_modules/<name>, node_modules/a/node_modules/<name>, node_modules/<name>.
+    const candidates = [`${fromDir}/node_modules/${name}`]
+    const parts = fromDir.split('/')
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i] === 'node_modules') candidates.push([...parts.slice(0, i + 1), name].join('/'))
+    }
+    return candidates.find((dir) => asarHas(header, pkgDir(dir))) ?? null
+  }
+  const visit = (dir, name, by) => {
+    if (seen.has(dir)) return
+    seen.add(dir)
+    let pkg = null
+    try {
+      pkg = readJson(pkgDir(dir))
+    } catch {
+      pkg = null
+    }
+    if (!pkg || typeof pkg !== 'object') {
+      problems.push(`Không đọc được ${pkgDir(dir)}${by ? ` (${by} cần)` : ''}.`)
+      return
+    }
+    const deps = pkg.dependencies && typeof pkg.dependencies === 'object' ? Object.keys(pkg.dependencies) : []
+    const optional = new Set(pkg.optionalDependencies && typeof pkg.optionalDependencies === 'object' ? Object.keys(pkg.optionalDependencies) : [])
+    for (const dep of deps) {
+      const found = resolve(dir, dep)
+      if (found) visit(found, dep, name)
+      else if (!optional.has(dep)) problems.push(`Thiếu ${dep} (${name} cần).`)
+    }
+  }
+  const root = `node_modules/${pkgName}`
+  if (!asarHas(header, pkgDir(root))) return [`Thiếu ${pkgDir(root)}.`]
+  visit(root, pkgName, null)
+  return problems
+}
+
 // ───────────────────────────── GitHub release state ─────────────────────────────
 
 /**
@@ -352,8 +424,9 @@ export function ghUploadArgs({ repo, tag, files, clobber = false }) {
   return ['release', 'upload', tag, ...files, '-R', repo, ...(clobber ? ['--clobber'] : [])]
 }
 
+/** --prerelease=false: a draft someone marked pre-release would otherwise stay invisible to the app (allowPrerelease off). */
 export function ghPublishArgs({ repo, tag }) {
-  return ['release', 'edit', tag, '-R', repo, '--draft=false', '--latest']
+  return ['release', 'edit', tag, '-R', repo, '--draft=false', '--prerelease=false', '--latest']
 }
 
 /** For printing only: `gh release create v0.5.0 -R … --title "SanoVids 0.5.0 — …"`. */

@@ -143,9 +143,11 @@ Bản web và bản cài từ trình duyệt (PWA) **không còn được cập 
 Từ bản **0.5.0**, bản cài (Setup) tự cập nhật — không phải tải và cài lại bằng tay mỗi lần có bản mới.
 
 - **Tự tìm và tải trong nền**: SanoVids kiểm tra bản mới khi mở app (sau khoảng 15 giây) và **4 giờ một lần**. Có bản mới thì tải về trong nền, bạn cứ làm việc bình thường. Thường chỉ tải phần thay đổi; bản nào đổi phiên bản Electron (lõi của app) thì phải tải gần như cả bộ cài.
-- **Cài lúc nào bạn muốn**: tải xong, thanh trên cùng hiện nút **Cập nhật x.y.z**. Bấm vào để xem **Có gì mới** rồi chọn **Khởi động lại để cập nhật** (SanoVids lưu dự án, cài bản mới, tự mở lại). Chọn **Để sau** thì bản mới **tự cài khi bạn tắt SanoVids**.
+- **Cài lúc nào bạn muốn**: tải xong, thanh trên cùng hiện nút xanh lá **Cập nhật x.y.z** (cửa sổ hẹp hoặc đang có video chạy: chỉ còn mũi tên và số phiên bản). Bấm vào để xem **Có gì mới** rồi chọn **Khởi động lại để cập nhật** (SanoVids lưu dự án, cài bản mới, tự mở lại). Chọn **Để sau** thì bản mới **tự cài khi bạn tắt SanoVids**.
 - **Cập nhật khi xong**: đang có video tạo dở thì chọn nút này — SanoVids đợi hết video đang tạo / đang chờ (và lượt nạp credit), báo trước 5 giây (huỷ được) rồi mới khởi động lại. Cập nhật ngay cũng an toàn: video đang tạo vẫn chạy trên máy chủ và được theo dõi lại sau khi mở lên, không bị trừ credit hai lần.
 - **Cài đặt → Cập nhật**: phiên bản đang dùng, trạng thái, lần kiểm tra gần nhất, nút **Kiểm tra ngay**, công tắc **Tự động tải bản cập nhật** (tắt thì app chỉ báo có bản mới, bạn bấm để tải).
+- **Cài cho mọi người dùng** (lúc cài chọn "Anyone who uses this computer", thư mục `Program Files`): mỗi lần cập nhật Windows sẽ hỏi quyền quản trị (UAC) — kể cả khi bản mới tự cài lúc bạn tắt SanoVids. Bấm **Có** để cài; từ chối thì vẫn dùng bản cũ và lần sau app sẽ thử lại. Cài "Only for me" (mặc định) thì không bị hỏi.
+- **Vừa tắt app để cài bản mới**: đợi khoảng 15 giây rồi hãy mở lại SanoVids.
 - **Bản Portable chỉ báo có bản mới** (nút **Tải bản mới** mở trang tải về), không tự cài. Muốn tự cập nhật, hãy dùng bản Setup.
 - **Bản 0.4.2 trở về trước** chưa biết tự cập nhật: cài tay `SanoVids-Setup-0.5.0.exe` (hoặc mới hơn) **một lần**, cài đè lên bản cũ; dự án và cài đặt giữ nguyên.
 - **An toàn**: file `.exe` chưa có chữ ký số; bản cập nhật chỉ tải qua HTTPS từ [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest) và được kiểm tra bằng mã **SHA-512** ghi trong `latest.yml` — sai mã là bỏ, không cài.

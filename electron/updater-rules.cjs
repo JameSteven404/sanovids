@@ -20,6 +20,11 @@ const RELEASE_DATE_MAX = 40
 const LOG_LINE_MAX = 4000
 const PROFILE_DIR_MAX = 240
 const INSTALL_NOTICE_MS = 7 * 24 * 60 * 60_000
+/**
+ * An install on quit runs for ~15 s after the window closed. A launch inside this window is still the old version while
+ * the installer works: it says nothing and keeps the attempt for the next launch (never a false "install failed").
+ */
+const INSTALL_GRACE_MS = 2 * 60_000
 const CHECK_EVERY_MS = 4 * 60 * 60_000
 const CHECK_RETRY_MS = 30 * 60_000
 
@@ -99,29 +104,79 @@ function profileKey(p, pathMod) {
   return pathMod.sep === '\\' ? r.toLowerCase() : r
 }
 
+/**
+ * `p` with every existing part resolved by the file system (junctions, symlinks, 8.3 short names → long names); the part
+ * that does not exist yet is appended as written. fsMod = { existsSync, realpathSync } (main passes node:fs with
+ * realpathSync.native). Anything failing → the lexical path (the lexical checks still apply).
+ */
+function canonicalPath(p, pathMod, fsMod) {
+  let cur = pathMod.resolve(p)
+  const tail = []
+  for (let i = 0; i < 128; i++) {
+    let real = null
+    try {
+      if (fsMod.existsSync(cur)) real = fsMod.realpathSync(cur)
+    } catch {
+      real = null
+    }
+    if (typeof real === 'string' && real) return tail.length ? pathMod.join(real, ...tail.reverse()) : real
+    const parent = pathMod.dirname(cur)
+    if (parent === cur) break
+    tail.push(pathMod.basename(cur))
+    cur = parent
+  }
+  return pathMod.resolve(p)
+}
+
+/** '' when `key` is neither the real folder, inside it, nor one of its parents; else why not. */
+function overlapProblem(key, realKey, sep) {
+  if (key === realKey) return 'it is the real SanoVids data folder'
+  if (key.startsWith(realKey + sep)) return 'it is inside the real SanoVids data folder'
+  if (realKey.startsWith(key.endsWith(sep) ? key : key + sep)) return 'it contains the real SanoVids data folder'
+  return ''
+}
+
 /** Why `candidate` may not be used as the data folder ('' when it may). */
-function profileDirProblem(candidate, real, pathMod) {
+function profileDirProblem(candidate, real, pathMod, fsMod) {
   if (candidate.length > PROFILE_DIR_MAX) return `longer than ${PROFILE_DIR_MAX} characters`
   if (candidate.includes('\u0000')) return 'contains a NUL character'
   if (!pathMod.isAbsolute(candidate)) return 'not an absolute path'
+  const win = pathMod.sep === '\\'
+  // Windows aliases of a folder that a string comparison cannot see through: refused outright.
+  if (win && /^[\\/]{2}/.test(candidate)) return 'a UNC or device path (\\\\server\\…, \\\\?\\…, \\\\.\\…)'
+  if (win && candidate.indexOf(':', 2) !== -1) return 'contains ":" after the drive letter (alternate data stream)'
   const resolved = pathMod.resolve(candidate)
   const root = pathMod.parse(resolved).root
   if (resolved.replace(/[\\/]+$/, '') === root.replace(/[\\/]+$/, '')) return 'a filesystem root'
-  const key = profileKey(resolved, pathMod)
-  const realKey = profileKey(real, pathMod)
-  if (key === realKey) return 'it is the real SanoVids data folder'
-  if (key.startsWith(realKey + pathMod.sep)) return 'it is inside the real SanoVids data folder'
+  if (win) {
+    const parts = resolved.slice(root.length).split(/[\\/]+/).filter(Boolean)
+    // Win32 drops trailing dots / spaces ("SanoVids." is SanoVids); "~" is how 8.3 short names look ("SANOVI~1").
+    if (parts.some((s) => /[. ]$/.test(s))) return 'a folder name ends with a dot or a space'
+    if (parts.some((s) => s.includes('~'))) return 'contains "~" (8.3 short names are refused)'
+  }
+  const lexical = overlapProblem(profileKey(resolved, pathMod), profileKey(real, pathMod), pathMod.sep)
+  if (lexical) return lexical
+  if (fsMod && typeof fsMod.existsSync === 'function' && typeof fsMod.realpathSync === 'function') {
+    const canonical = overlapProblem(
+      profileKey(canonicalPath(resolved, pathMod, fsMod), pathMod),
+      profileKey(canonicalPath(real, pathMod, fsMod), pathMod),
+      pathMod.sep,
+    )
+    if (canonical) return `${canonical} (after resolving links)`
+  }
   return ''
 }
 
 /**
  * The userData folder. Real users: %APPDATA%\SanoVids (or <appData>\<appName> for another product name).
  * Agent / E2E tests only: SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the packaged
- * package.json by test builds. Such a folder must be absolute, not a root, and never the real folder or inside it:
- * otherwise { ok: false } and the app refuses to start (fail closed).
+ * package.json by test builds. Such a folder must be absolute, not a root, never the real folder, inside it or one of
+ * its parents — also through Windows aliases (UNC / \\?\ paths, trailing dots or spaces, 8.3 names, streams) and, with
+ * `fsMod` ({ existsSync, realpathSync }), through junctions / symlinks: otherwise { ok: false } and the app refuses to
+ * start (fail closed).
  * → { ok: true, dir, source: 'env' | 'baked' | 'default' } | { ok: false, error }
  */
-function resolveProfileDir({ env, baked, appData, appName, pathMod }) {
+function resolveProfileDir({ env, baked, appData, appName, pathMod, fsMod }) {
   const real = pathMod.join(appData, 'SanoVids')
   const fromEnv = typeof env === 'string' && env !== ''
   const candidate = fromEnv ? env : typeof baked === 'string' && baked !== '' ? baked : null
@@ -131,7 +186,7 @@ function resolveProfileDir({ env, baked, appData, appName, pathMod }) {
     if (/^\.*$/.test(leaf)) leaf = 'SanoVids-other' // never '', '.' or '..'
     return { ok: true, dir: pathMod.join(appData, leaf), source: 'default' }
   }
-  const problem = profileDirProblem(candidate, real, pathMod)
+  const problem = profileDirProblem(candidate, real, pathMod, fsMod)
   if (problem) return { ok: false, error: `SANOVIDS_PROFILE_DIR / sanovidsTestProfileDir is invalid: ${problem}` }
   return { ok: true, dir: pathMod.resolve(candidate), source: fromEnv ? 'env' : 'baked' }
 }
@@ -172,9 +227,15 @@ function mapUpdaterError(err, phase) {
   const code = err && typeof err.code === 'string' ? err.code : ''
   const text = err && typeof err.message === 'string' ? err.message : typeof err === 'string' ? err : ''
   const all = `${code} ${text}`
+  // GitHubProvider wraps ANY failure of releases/latest (429, 403, 5xx…) in ERR_UPDATER_LATEST_VERSION_NOT_FOUND, with
+  // the HttpError stack in the message ("…: HttpError: 429 Too Many Requests"): the real status decides first.
+  const wrapped = /HttpError: (\d{3})\b/.exec(text)
+  const status = wrapped ? Number(wrapped[1]) : 0
   let out = 'failed'
   // Offline first: electron-updater wraps some network failures in "not found" codes (e.g. the latest.yml fetch).
   if (OFFLINE_RE.test(all)) out = 'offline'
+  else if (status === 429 || status === 403) out = 'rate-limited'
+  else if (status >= 500 && status <= 599) out = 'failed'
   else if (NO_RELEASE_CODES.has(code) || /No published versions/i.test(text)) out = 'no-release'
   else if (code === 'HTTP_ERROR_429' || code === 'HTTP_ERROR_403') out = 'rate-limited'
   else if (code === 'ERR_CHECKSUM_MISMATCH' || /sha512 checksum mismatch/i.test(text)) out = 'checksum'
@@ -185,7 +246,19 @@ function mapUpdaterError(err, phase) {
 
 // ---- release notes ----
 
-const HTML_TAG_RE = /<\/?[a-z][^>]*>/i
+/**
+ * Real HTML element names (what GitHub renders release notes with, plus the dangerous ones). Only these make notes
+ * "HTML" and only these are stripped: "<phiên bản>", "<version>" or "a < 5 và > 3" are text and stay text.
+ */
+const HTML_TAGS =
+  'a|abbr|article|aside|b|blockquote|body|br|button|caption|center|code|col|colgroup|dd|del|details|dfn|div|dl|dt|em|embed|' +
+  'figcaption|figure|font|footer|form|g-emoji|h[1-6]|head|header|hr|html|i|iframe|img|input|ins|kbd|li|link|main|mark|meta|' +
+  'nav|object|ol|p|picture|pre|q|s|samp|script|section|small|source|span|strike|strong|style|sub|summary|sup|svg|table|' +
+  'tbody|td|template|tfoot|th|thead|time|title|tr|tt|u|ul|var|video'
+const HTML_TAG_RE = new RegExp(`</?(?:${HTML_TAGS})(?=[\\s/>])[^>]*>`, 'i')
+const HTML_TAG_RE_G = new RegExp(HTML_TAG_RE.source, 'gi')
+/** Whitespace between two real tags (meaningless in HTML). */
+const BETWEEN_TAGS_RE = new RegExp(`(${HTML_TAG_RE.source})\\s+(?=${HTML_TAG_RE.source})`, 'gi')
 const ENTITY_RE = /&(#x[0-9a-f]{1,6}|#\d{1,7}|amp|lt|gt|quot|apos|nbsp);/gi
 const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 
@@ -207,13 +280,13 @@ function htmlToText(s) {
       .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '')
       // Whitespace between two tags means nothing in HTML (only the tags below break lines there). Newlines inside text
       // are kept: markdown notes with one inline tag ("- <b>x</b>") also land here and must keep their lines.
-      .replace(/>\s+</g, '><')
+      .replace(BETWEEN_TAGS_RE, '$1')
       .replace(/[ \t\f\v]+/g, ' ')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|li|ul|ol|h[1-6])\s*>/gi, '\n')
       .replace(/<li\b[^>]*>/gi, '- ')
       .replace(/<h[1-6]\b[^>]*>/gi, '## ')
-      .replace(/<[^>]*>/g, '')
+      .replace(HTML_TAG_RE_G, '')
       .replace(/^ +| +$/gm, ''),
   )
 }
@@ -331,7 +404,9 @@ function reduceUpdateState(state, event, now) {
   const busy = state.status === 'downloading' || state.status === 'ready'
   switch (event.type) {
     case 'checking':
-      if (busy) return state
+      // A known update stays announced while it is checked again: no pill flicker, and a failed re-check (electron-updater
+      // always emits checking-for-update first) keeps it instead of turning it into an error.
+      if (busy || state.status === 'available') return state
       return { ...without(state, ['error']), status: 'checking' }
     case 'not-available':
       if (busy) return { ...state, lastCheck: now }
@@ -405,15 +480,25 @@ function parseUpdaterFile(raw) {
 }
 
 /**
- * News of this launch from the install attempt recorded before the last quit (the caller then clears it):
- * { kind: 'updated', from, version } | { kind: 'install-failed', version } | null.
+ * What this launch makes of the install attempt recorded before the last quit:
+ *   notice  { kind: 'updated', from, version } | { kind: 'install-failed', version } | null
+ *   keep    true = leave the attempt in updater.json for the next launch (this one started while the installer may still
+ *           be running: still the old version, less than INSTALL_GRACE_MS after the quit); else the caller clears it.
  */
-function startupNotice(file, current, now) {
+function startupAttempt(file, current, now) {
   const a = file && file.attempt
-  if (!a || !isVersion(a.version) || !isVersion(current)) return null
-  if (compareVersions(current, a.version) >= 0) return { kind: 'updated', from: a.from, version: current }
-  if (current === a.from && now - a.at < INSTALL_NOTICE_MS) return { kind: 'install-failed', version: a.version }
-  return null
+  if (!a || !isVersion(a.version) || !isVersion(current)) return { notice: null, keep: false }
+  if (compareVersions(current, a.version) >= 0) return { notice: { kind: 'updated', from: a.from, version: current }, keep: false }
+  if (current !== a.from) return { notice: null, keep: false }
+  const age = now - a.at
+  if (age >= 0 && age < INSTALL_GRACE_MS) return { notice: null, keep: true }
+  if (age >= 0 && age < INSTALL_NOTICE_MS) return { notice: { kind: 'install-failed', version: a.version }, keep: false }
+  return { notice: null, keep: false }
+}
+
+/** startupAttempt(...).notice */
+function startupNotice(file, current, now) {
+  return startupAttempt(file, current, now).notice
 }
 
 /** One line of userData/logs/updater.log. */
@@ -428,6 +513,7 @@ module.exports = {
   RELEASES_URL,
   FEED,
   NOTES_MAX,
+  INSTALL_GRACE_MS,
   ERROR_TEXT,
   isVersion,
   compareVersions,
@@ -442,6 +528,7 @@ module.exports = {
   checkDue,
   parsePrefsArg,
   parseUpdaterFile,
+  startupAttempt,
   startupNotice,
   logLine,
 }

@@ -45,7 +45,11 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 
 **Loại bản** (`updater-rules.detectKind`): chưa đóng gói → `dev`; có biến `PORTABLE_EXECUTABLE_FILE` → `portable`; cạnh file exe có `Uninstall SanoVids.exe` → `installer`; còn lại → `portable` (chỉ kiểm tra).
 
-**Trước khi khởi động lại** (renderer, `updateActions.installNow`): giữ không gửi video mới → đợi video đang gửi gửi xong (tối đa 15 s) → lưu chữ đang gõ trong ô prompt → lưu dự án (autosave) → `updates:install`. Main ghi `attempt` vào `updater.json`; lần mở sau so phiên bản để báo **"Đã cập nhật SanoVids lên …"** hoặc **"Chưa cài được bản …"**. "Cập nhật khi xong" đợi hàng đợi, video chờ lưu vào thư mục và lượt nạp credit rảnh hết, đếm ngược 5 giây (huỷ được) rồi mới cài.
+**Trước khi khởi động lại** (renderer, `updateActions.installNow`): giữ không gửi video mới → đợi video đang gửi gửi xong (tối đa 15 s) → lưu chữ đang gõ trong ô prompt → lưu dự án (autosave) → `updates:install`. Không bao giờ khởi động lại khi hộp **Nhập prompt** đang mở (chữ dán vào chỉ nằm trong hộp đó). Main ghi `attempt` vào `updater.json` (khi tắt app: trong sự kiện `quit`, cùng lúc và cùng điều kiện mã thoát 0 với electron-updater, nên một lần tắt bị cửa sổ khác chặn không để lại `attempt`); lần mở sau so phiên bản để báo **"Đã cập nhật SanoVids lên …"** hoặc **"Chưa cài được bản …"**. Mở lại trong vòng 2 phút sau khi tắt (bộ cài có thể vẫn đang chạy, ~15 s) thì không báo gì và giữ `attempt` cho lần mở sau. Nếu 18 giây sau `quitAndInstall` app vẫn còn chạy, main báo cài thất bại và trả trình cập nhật về trạng thái dùng được (cài lại / cài khi tắt). "Cập nhật khi xong" đợi hàng đợi (trừ video của cảnh đã xoá — chúng không bao giờ chạy và vẫn còn sau khi khởi động lại), video chờ lưu vào thư mục, lượt nạp credit và hộp **Nhập prompt** rảnh hết, đếm ngược 5 giây (huỷ được) rồi mới cài.
+
+**Kiểm tra lại khi đã biết có bản mới** không làm mất bản đó: trạng thái `available` giữ nguyên trong lúc kiểm tra (nút trên thanh không nháy) và một lần kiểm tra lỗi (mất mạng…) không xoá nó. GitHub giới hạn lượt / lỗi 5xx ở bước `releases/latest` (electron-updater gói chung thành "không tìm thấy bản") được nhận ra từ mã HTTP thật: 403 / 429 → **Máy chủ cập nhật đang bận** (thử lại sau 30 phút).
+
+**Cài cho mọi người dùng** (trang chọn kiểu cài của bộ cài: "Anyone who uses this computer" → `Program Files`): electron-builder không đánh dấu `isAdminRightsRequired` với cấu hình `oneClick: false, perMachine: false`, nên bộ cài cập nhật tự xin quyền quản trị → Windows hiện **UAC** mỗi lần cập nhật, kể cả lúc cài khi tắt app (cửa sổ đã đóng). Từ chối → vẫn bản cũ, lần mở sau báo "Chưa cài được bản …". Bài E2E chỉ thử kiểu cài "Only for me" (cài cho mọi người dùng cần bấm UAC, không tự động được). Đổi kiểu cài mặc định (vd. chỉ cho phép per-user) phải tính tới người đang cài per-machine.
 
 ### Các file
 
@@ -53,7 +57,7 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 |---|---|
 | `electron/updater.cjs` | Nối electron-updater: IPC `updates:getState / check / download / install / setPrefs / openReleasePage`, đẩy `updates:state` (chỉ tới cửa sổ chính), lịch kiểm tra, log, `updater.json` |
 | `electron/updater-rules.cjs` | Thuần, không `require` gói npm nào: so phiên bản, loại bản, reducer trạng thái, đổi lỗi thành câu tiếng Việt cố định, ghi chú → chữ thường, thư mục profile. Test: `src/lib/__tests__/updaterRules.test.ts` |
-| `electron/main.cjs` | Gọi `setupUpdater` trước khi tạo cửa sổ; `will-prevent-unload` + `before-quit` để cài khi tắt; override profile chỉ dùng khi thử |
+| `electron/main.cjs` | Gọi `setupUpdater` trước khi tạo cửa sổ; `will-prevent-unload` + sự kiện `quit` để ghi lần cài khi tắt; override profile chỉ dùng khi thử |
 | `electron/preload.cjs` | `window.bdpDesktop.updates` (7 hàm) |
 | `src/lib/updateTypes.ts` | Hợp đồng dữ liệu main ⇄ renderer |
 | `src/lib/updateModel.ts` | Thuần: kiểm tra state nhận được, chữ hiển thị, nút trên thanh trên cùng, nút trong hộp thoại, thông báo |
@@ -62,7 +66,7 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
 | `src/updateActions.ts` | Thông báo, luồng cài, "Cập nhật khi xong" |
 | `UpdatePill.tsx`, `UpdateDialog.tsx`, nhóm Cài đặt "Cập nhật" | Giao diện |
 | `src/providers/dev/updates.ts`, tab Bảng phát triển "Cập nhật" | Giả lập trình cập nhật khi chạy `npm run dev` (không bao giờ chạy trong Electron) |
-| `scripts/update-notes.mjs` | Mục CHANGELOG của phiên bản → `build/release-notes.md` (gitignore) → `releaseNotes` trong latest.yml = phần **Có gì mới** trong app |
+| `scripts/update-notes.mjs` | Mục CHANGELOG của phiên bản → `build/release-notes.md` (gitignore) → `releaseNotes` trong latest.yml = phần **Có gì mới** trong app. Dòng tiêu đề kiểu `✨ **…**` thành `### ✨ …` để app hiện là tiêu đề |
 | `scripts/tidy-release.mjs` | Dọn `release/`; giữ `latest.yml` + blockmap hiện tại trong `release/_build`; **cảnh báo to** nếu app-update.yml không trỏ đúng nguồn |
 | `scripts/publish-release.mjs` + `scripts/releaseLib.mjs` | Kiểm tra rồi đăng lên hai repo. Logic thuần trong releaseLib, test: `scripts/__tests__/releaseLib.test.mjs` |
 
@@ -93,11 +97,11 @@ renderer: lib/updates.ts ⇄ src/updateActions.ts ⇄ UpdatePill · UpdateDialog
    1. repo riêng `sanovids`: tạo **bản nháp** (`--verify-tag`), tải Setup + Portable lên;
    2. repo công khai `sanovids-releases`: tạo **bản nháp** (`--target main`), tải Setup, `.blockmap`, `latest.yml`, Portable lên;
    3. đọc lại từ GitHub: đủ file, đúng kích thước, đúng **SHA-256** (không có mã thì tải về tính lại);
-   4. đăng bản riêng, rồi **cuối cùng** mới đăng bản công khai (`--draft=false --latest`) — từ giây này máy người dùng thấy bản mới;
+   4. đăng bản riêng, rồi **cuối cùng** mới đăng bản công khai (`--draft=false --prerelease=false --latest`) — từ giây này máy người dùng thấy bản mới;
    5. kiểm tra như một máy lạ (không đăng nhập): `/releases/latest` = tag mới, `latest.yml` tải về giống hệt file trên máy, `releases.atom` có tag mới (5 lần, cách 10 giây).
 7. Mở trang tải về xem lại bằng mắt. Máy đã cài bản Setup sẽ nhận bản mới trong vòng vài giờ.
 
-**`release:check` kiểm tra gì**: (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠); (b) git sạch, tag `vX.Y.Z` = HEAD = tag trên GitHub, HEAD nằm trong `origin/main` (bản xem trước không `git fetch` nên báo ⚠ thông tin có thể cũ; không ở `main` cũng ⚠); (c) đủ 4 file trong `release/` và `release/_build/`; (d) `latest.yml` khớp file Setup (phiên bản, đường dẫn, SHA-512, kích thước, ngày build ≥ ngày commit; thiếu ghi chú chỉ ⚠); (e) blockmap giải nén được; (f) **`app-update.yml` trỏ đúng `github / JameSteven404 / sanovids-releases`, không token / private / publisherName / channel — lỗi này luôn chặn**; (g) `app.asar` có `electron/updater.cjs`, `electron-updater`, và `package.json` bên trong là `sanovids / SanoVids / X.Y.Z`, không có `sanovidsTestProfileDir`; (h) `package.json` `build.publish` đúng, không có script tên `release`; (i) `gh` đã đăng nhập, repo công khai tồn tại, công khai, có nhánh, và chưa có bản nào mới hơn.
+**`release:check` kiểm tra gì**: (a) mục CHANGELOG (thiếu dòng liên kết chỉ ⚠); (b) git sạch, tag `vX.Y.Z` = HEAD = tag trên GitHub, HEAD nằm trong `origin/main` (bản xem trước không `git fetch` nên báo ⚠ thông tin có thể cũ; không ở `main` cũng ⚠); (c) đủ 4 file trong `release/` và `release/_build/`; (d) `latest.yml` khớp file Setup (phiên bản, đường dẫn, SHA-512, kích thước, ngày build ≥ ngày commit; thiếu ghi chú chỉ ⚠); (e) blockmap giải nén được; (f) **`app-update.yml` trỏ đúng `github / JameSteven404 / sanovids-releases`, không token / private / publisherName / channel — lỗi này luôn chặn**; (g) `app.asar` có `electron/updater.cjs`, `electron/updater-rules.cjs`, `electron-updater` **và mọi gói nó cần khi chạy** (đọc `dependencies` lần lượt theo cách Node tìm gói: `builder-util-runtime`, `js-yaml`, `semver`, `fs-extra`…), và `package.json` bên trong là `sanovids / SanoVids / X.Y.Z`, không có `sanovidsTestProfileDir`; (h) `package.json` `build.publish` đúng, không có script tên `release`; (i) `gh` đã đăng nhập, repo công khai tồn tại, công khai, có nhánh, và chưa có bản nào mới hơn.
 
 **Chạy lại an toàn**: bị ngắt giữa chừng (mất mạng, tắt máy…) thì chạy lại `npm run release:publish`. Kế hoạch tự tính theo trạng thái trên GitHub:
 
@@ -135,7 +139,7 @@ Ghi chú GitHub được lưu ở `release/_build/publish/notes-private.md` và 
 
 **Cách ly khi thử bản đóng gói** (bắt buộc với mọi lần chạy thử, nhất là khi agent chạy):
 - Biến môi trường `SANOVIDS_PROFILE_DIR=<thư mục tạm>` chuyển dữ liệu app (userData) ra khỏi `%APPDATA%\SanoVids`. Bản build thử có thể "nướng" sẵn đường dẫn bằng `extraMetadata.sanovidsTestProfileDir` (vì bộ cài NSIS khởi động lại app **không** giữ biến môi trường). Khoá này **không bao giờ** có trong `package.json` thật.
-- Đường dẫn phải tuyệt đối, ≤ 240 ký tự, không phải gốc ổ đĩa, không trùng / không nằm trong `%APPDATA%\SanoVids`. Sai → app thoát với mã 2, không mở cửa sổ.
+- Đường dẫn phải tuyệt đối, ≤ 240 ký tự, không phải gốc ổ đĩa, không trùng / không nằm trong / không chứa `%APPDATA%\SanoVids`. Các bí danh Windows của thư mục đó cũng bị chặn: đường dẫn UNC / `\\?\` / `\\.\`, tên thư mục kết thúc bằng dấu chấm hay dấu cách, tên ngắn 8.3 (có `~`), luồng dữ liệu (`:` sau ký tự ổ đĩa), và (qua `realpath`) junction / symlink trỏ vào đó. Sai → app thoát với mã 2, không mở cửa sổ.
 - **Không bao giờ chạy `electron .` hay bản đóng gói mà thiếu biến này** khi thử (dữ liệu thật của người dùng nằm ở `%APPDATA%\SanoVids`). Bộ cài thử phải có `appId` / `productName` / `executableName` riêng (vd. `com.sanovids.updtest` / `SanoVidsUpdTest`), cài vào thư mục tạm (`/S /D=…`), build với `--publish never` vào thư mục ra tạm, không bao giờ vào `release/`. Không đụng tới tiến trình SanoVids đang chạy của người dùng.
 
 **Thử đầu-cuối (E2E)** — chạy bằng script trong thư mục tạm, không nằm trong repo:

@@ -112,6 +112,14 @@ describe('noteBlocks', () => {
     expect(JSON.stringify(blocks)).not.toMatch(/[<>]/)
   })
 
+  it('comparisons and placeholders are text, not tags', () => {
+    expect(noteBlocks('- Giá < 5 và > 3\n- dùng <phiên bản> mới\n- `release/ban-cu/<version>/`')).toEqual([
+      { kind: 'li', text: 'Giá < 5 và > 3' },
+      { kind: 'li', text: 'dùng <phiên bản> mới' },
+      { kind: 'li', text: 'release/ban-cu/<version>/' },
+    ])
+  })
+
   it('caps: 80 blocks of 500 chars', () => {
     expect(noteBlocks(Array.from({ length: 200 }, (_, i) => `dòng ${i}`).join('\n'))).toHaveLength(80)
     expect(noteBlocks('a'.repeat(2000))[0].text).toHaveLength(500)
@@ -189,7 +197,7 @@ describe('pillView', () => {
   it('installer: available, downloading, ready, waiting', () => {
     expect(pillView(st({ status: 'available', version: '0.5.1' }), ctx)).toEqual({
       tone: 'available',
-      long: 'Cập nhật ',
+      long: 'Có bản ',
       short: '0.5.1',
       title: 'Có bản SanoVids 0.5.1 — bấm để xem',
       version: '0.5.1',
@@ -214,6 +222,10 @@ describe('pillView', () => {
       title: 'SanoVids sẽ khởi động lại để cập nhật lên 0.5.1 khi xong 3 video. Bấm để xem.',
       version: '0.5.1',
     })
+    // waiting for something other than videos (a top-up, downloads waiting for a folder): never "0 video"
+    expect(pillView(st({ status: 'ready', version: '0.5.1' }), { installWhenIdle: true, activeJobs: 0 })?.title).toBe(
+      'SanoVids sẽ khởi động lại để cập nhật lên 0.5.1 khi xong các việc đang dở. Bấm để xem.',
+    )
     // waiting only applies to a downloaded update
     expect(pillView(st({ status: 'available', version: '0.5.1' }), { installWhenIdle: true, activeJobs: 3 })?.tone).toBe('available')
   })
@@ -290,9 +302,11 @@ describe('dialogView', () => {
     expect(free.callout).toBeUndefined()
 
     const busyWork = dialogView(ready, { ...ctx, blockers: ['2 video đang tạo'] })
+    expect(busyWork.statusText).toBe('Đã tải xong. Có thể cập nhật khi xong việc đang dở, hoặc cập nhật ngay — dự án, video và cài đặt giữ nguyên.')
     expect(busyWork.callout?.title).toBe('Đang có việc chưa xong:')
-    expect(busyWork.callout?.lines[0]).toBe('2 video đang tạo')
-    expect(busyWork.callout?.lines.at(-1)).toMatch(/^Cập nhật ngay vẫn an toàn: .*Không bị trừ credit hai lần\.$/)
+    // only real work in the list; the reassurance is a paragraph under it
+    expect(busyWork.callout?.lines).toEqual(['2 video đang tạo'])
+    expect(busyWork.callout?.note).toMatch(/^Cập nhật ngay vẫn an toàn: .*Không bị trừ credit hai lần\.$/)
     expect(busyWork.actions).toEqual([
       { id: 'installWhenIdle', label: 'Cập nhật khi xong', primary: true },
       { id: 'installNow', label: 'Cập nhật ngay' },
@@ -302,9 +316,14 @@ describe('dialogView', () => {
     const waiting = dialogView(ready, { ...ctx, blockers: ['2 video đang tạo'], installWhenIdle: true, activeJobs: 2 })
     expect(waiting.callout).toEqual({
       title: 'Sẽ tự khởi động lại để cập nhật khi xong 2 video.',
-      lines: ['Nếu video bị kẹt (hết credit, cần đăng nhập…), bấm “Cập nhật ngay” hoặc “Huỷ chờ”.'],
+      lines: ['2 video đang tạo'],
+      note: 'Nếu video bị kẹt (hết credit, cần đăng nhập…), bấm “Cập nhật ngay” hoặc “Huỷ chờ”.',
     })
     expect(ids(waiting)).toEqual(['installNow*', 'cancelWait', 'close'])
+    // waiting for downloads that need a folder: says so, never "0 video"
+    const folder = '1 video đang chờ lưu vào thư mục — sẽ mất nếu khởi động lại.'
+    const waitingFolder = dialogView(ready, { ...ctx, blockers: [folder], installWhenIdle: true, activeJobs: 0 })
+    expect(waitingFolder.callout).toMatchObject({ title: 'Sẽ tự khởi động lại để cập nhật khi xong các việc đang dở.', lines: [folder] })
 
     expect(dialogView(ready, { ...ctx, busy: 'waiting-send' }).busyText).toBe('Đang đợi gửi xong video…')
     expect(dialogView(ready, { ...ctx, busy: 'saving' }).busyText).toBe('Đang lưu dự án…')

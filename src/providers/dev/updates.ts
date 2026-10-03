@@ -10,13 +10,15 @@
 // ---- API ----
 //   useDevUpdates                     zustand store { state, nextCheck, draft } (select fields).
 //   devUpdatesBridge()                the app's simulated bridge (created on first use) — DesktopUpdatesBridge + controls.
-//   devUpdates.simulate(patch)        set state fields directly (kind 'dev' ⇒ 'unsupported'; leaving 'dev' ⇒ 'idle').
+//   devUpdates.simulate(patch)        set state fields directly. Another kind is another launch: status 'idle' ('dev' ⇒
+//                                     'unsupported'), release / progress / error / last check / notice dropped.
 //   devUpdates.setNextCheck(o)        what the next check finds: 'none' | 'available' | 'offline' | 'no-release'.
 //   devUpdates.setDraft(d)            running version / new version / release notes used by the next "available".
 //   devUpdates.announce() / runDownload() / markReady() / failNetwork() / markNone()   one-click states.
-//   devUpdates.reset()                back to the initial state (timers stopped).
+//   devUpdates.reset()                back to the initial state (timers stopped; the auto-download pref is kept).
 //   createDevUpdatesBridge(opts)      a separate instance (tests).
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
+import { version as APP_VERSION } from '../../../package.json'
 import { isUpdateVersion, UPDATE_ERROR_TEXT, UPDATE_UNSUPPORTED_TEXT } from '../../lib/updateModel'
 import { UPDATE_NOTES_MAX, type DesktopUpdatesBridge, type UpdateError, type UpdateResult, type UpdateState } from '../../lib/updateTypes'
 import { toast } from '../../store/ui'
@@ -45,10 +47,17 @@ export const DEV_NEXT_CHECK_LABEL: Record<DevNextCheck, string> = {
   'no-release': 'Chưa có bản phát hành',
 }
 
+/** "0.5.1" → "0.5.2" (last number + 1; a suffix is dropped). */
+export function nextPatchVersion(v: string): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v)
+  return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : '0.0.1'
+}
+
+/** The simulation starts from the real app version (package.json) and offers the next patch. */
 export const DEV_UPDATES_DRAFT_DEFAULT: DevUpdatesDraft = {
-  current: '0.5.0',
-  version: '0.5.1',
-  notes: '## Có gì mới\n- ✨ **Tự cập nhật** trong nền\n- 🐞 Sửa lỗi nhỏ\n- <b>thẻ HTML phải hiện như chữ</b>',
+  current: APP_VERSION,
+  version: nextPatchVersion(APP_VERSION),
+  notes: '## Bản thử\n- ✨ **Tự cập nhật** trong nền\n- 🐞 Sửa lỗi nhỏ\n- <b>thẻ HTML bị bỏ, chỉ còn chữ</b>',
 }
 
 const MB = 1024 * 1024
@@ -115,7 +124,8 @@ export function reduceDevUpdateState(s: UpdateState, e: SimEvent, now: number): 
   const busy = s.status === 'downloading' || s.status === 'ready'
   switch (e.type) {
     case 'checking':
-      return busy ? s : { ...without(s, ['error']), status: 'checking' }
+      // A known update stays announced while it is checked again (a failed re-check keeps it).
+      return busy || s.status === 'available' ? s : { ...without(s, ['error']), status: 'checking' }
     case 'not-available':
       if (busy) return { ...s, lastCheck: now }
       return { ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'none', lastCheck: now }
@@ -179,12 +189,6 @@ const OK: UpdateResult = { ok: true }
 const fail = (code: Exclude<UpdateResult, { ok: true }>['code'], message: string): UpdateResult => ({ ok: false, code, message })
 const clone = (s: UpdateState): UpdateState => JSON.parse(JSON.stringify(s)) as UpdateState
 const today = (now: number) => new Date(now).toISOString()
-
-/** "0.5.1" → "0.5.2" (last number + 1; a suffix is dropped). */
-export function nextPatchVersion(v: string): string {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v)
-  return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : DEV_UPDATES_DRAFT_DEFAULT.version
-}
 
 export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdatesSim {
   const store = opts.store ?? useDevUpdates
@@ -337,11 +341,13 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
     simulate: (patch) => {
       stopTimers()
       const cur = get().state
-      let next: UpdateState = { ...cur, ...patch }
-      // Another kind of build is another launch: its one-shot notice does not carry over.
-      if (next.kind !== cur.kind) delete next.notice
-      if (next.kind === 'dev') next = { ...without(next, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'unsupported' }
-      else if (cur.kind === 'dev' && next.status === 'unsupported') next = { ...next, status: 'idle' }
+      const kind = patch.kind ?? cur.kind
+      // Another kind of build is another launch: nothing of the previous one carries over (status, release, progress,
+      // error, last check, notice), only the running version and the pref. Explicit fields of the patch still apply.
+      const base: UpdateState =
+        kind !== cur.kind ? { kind, current: cur.current, status: kind === 'dev' ? 'unsupported' : 'idle', autoDownload: cur.autoDownload } : cur
+      let next: UpdateState = { ...base, ...patch, kind }
+      if (kind === 'dev') next = { ...without(next, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'unsupported' }
       setState(next)
     },
 
@@ -401,7 +407,10 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
 
     reset: () => {
       stopTimers()
-      store.setState(initialStore())
+      // The auto-download pref belongs to Settings (lib/updatePrefs pushes it only when it changes): keep it.
+      const autoDownload = get().state.autoDownload
+      const fresh = initialStore()
+      store.setState({ ...fresh, state: { ...fresh.state, autoDownload } })
     },
   }
   return sim

@@ -129,9 +129,17 @@ export interface NoteBlock {
 const MAX_BLOCKS = 80
 const MAX_BLOCK_CHARS = 500
 
+/** Real HTML element names (same list as electron/updater-rules.cjs): only these are stripped, "<phiên bản>" stays text. */
+const HTML_TAGS =
+  'a|abbr|article|aside|b|blockquote|body|br|button|caption|center|code|col|colgroup|dd|del|details|dfn|div|dl|dt|em|embed|' +
+  'figcaption|figure|font|footer|form|g-emoji|h[1-6]|head|header|hr|html|i|iframe|img|input|ins|kbd|li|link|main|mark|meta|' +
+  'nav|object|ol|p|picture|pre|q|s|samp|script|section|small|source|span|strike|strong|style|sub|summary|sup|svg|table|' +
+  'tbody|td|template|tfoot|th|thead|time|title|tr|tt|u|ul|var|video'
+const HTML_TAG_RE = new RegExp(`</?(?:${HTML_TAGS})(?=[\\s/>])[^>]*>`, 'gi')
+
 function cleanInline(s: string): string {
   return s
-    .replace(/<[^>]*>/g, '') // tags never render: "<b>x</b>" shows "x"
+    .replace(HTML_TAG_RE, '') // real tags never render: "<b>x</b>" shows "x" (anything else is plain text for React)
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // ![alt](url) → alt
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // [text](url) → text
     .replace(/\*\*|__|`/g, '')
@@ -140,7 +148,7 @@ function cleanInline(s: string): string {
 
 /**
  * Release notes (plain text, markdown-ish) → one block per non-empty line: "## …" heading, "- / * / •" list item,
- * else a paragraph. Markdown marks, links and any <tag> are stripped; at most 80 blocks of 500 chars.
+ * else a paragraph. Markdown marks, links and real HTML tags are stripped; at most 80 blocks of 500 chars.
  */
 export function noteBlocks(notes: string | null | undefined): NoteBlock[] {
   if (typeof notes !== 'string' || !notes) return []
@@ -260,6 +268,9 @@ export interface PillView {
   version: string
 }
 
+/** "3 video", or "các việc đang dở" when the wait is for something else (a top-up, downloads waiting for a folder). */
+const waitWhat = (activeJobs: number | undefined) => (activeJobs && activeJobs > 0 ? `${activeJobs} video` : 'các việc đang dở')
+
 /** The pill of the top bar, or null (nothing to say: idle, checking, up to date, errors, unsupported, dev builds). */
 export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; activeJobs: number }): PillView | null {
   const v = state.version
@@ -269,7 +280,7 @@ export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; ac
   }
   switch (state.status) {
     case 'available':
-      return { tone: 'available', long: 'Cập nhật ', short: v, title: `Có bản SanoVids ${v} — bấm để xem`, version: v }
+      return { tone: 'available', long: 'Có bản ', short: v, title: `Có bản SanoVids ${v} — bấm để xem`, version: v }
     case 'downloading': {
       const p = formatPercent(state.percent)
       return { tone: 'downloading', long: 'Đang tải ', short: p, title: `Đang tải bản SanoVids ${v} (${p}). Bạn cứ làm việc bình thường.`, version: v }
@@ -280,7 +291,7 @@ export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; ac
           tone: 'waiting',
           long: '',
           short: 'Chờ cập nhật',
-          title: `SanoVids sẽ khởi động lại để cập nhật lên ${v} khi xong ${ctx.activeJobs} video. Bấm để xem.`,
+          title: `SanoVids sẽ khởi động lại để cập nhật lên ${v} khi xong ${waitWhat(ctx.activeJobs)}. Bấm để xem.`,
           version: v,
         }
       }
@@ -318,7 +329,8 @@ export interface UpdateDialogCtx {
 export interface UpdateDialogView {
   statusText: string
   hint?: string
-  callout?: { title: string; lines: string[] }
+  /** lines: a list (what is not finished); note: a paragraph under it. */
+  callout?: { title: string; lines: string[]; note?: string }
   actions: UpdateDialogAction[]
   /** Replaces the primary button's label (with a spinner) while installing; every button is then disabled. */
   busyText?: string
@@ -337,6 +349,8 @@ export const BUSY_TEXT: Record<Exclude<InstallBusy, null>, string> = {
 const CLOSE: UpdateDialogAction = { id: 'close', label: 'Đóng' }
 const LATER: UpdateDialogAction = { id: 'later', label: 'Để sau' }
 const READY_TEXT = 'Đã tải xong. Khởi động lại để cập nhật ngay — dự án, video và cài đặt giữ nguyên.'
+const READY_BUSY_TEXT = 'Đã tải xong. Có thể cập nhật khi xong việc đang dở, hoặc cập nhật ngay — dự án, video và cài đặt giữ nguyên.'
+const STUCK_NOTE = 'Nếu video bị kẹt (hết credit, cần đăng nhập…), bấm “Cập nhật ngay” hoặc “Huỷ chờ”.'
 const LATER_HINT = 'Chọn “Để sau” thì bản mới tự cài khi bạn tắt SanoVids.'
 const SAFE_NOW =
   'Cập nhật ngay vẫn an toàn: video đang tạo vẫn chạy tiếp trên máy chủ và SanoVids theo dõi lại sau khi mở lại; video đang chờ sẽ được gửi sau đó. Không bị trừ credit hai lần.'
@@ -402,10 +416,7 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
           ...base,
           showNotes: true,
           statusText: 'Đã tải xong.',
-          callout: {
-            title: `Sẽ tự khởi động lại để cập nhật khi xong ${ctx.activeJobs ?? 0} video.`,
-            lines: ['Nếu video bị kẹt (hết credit, cần đăng nhập…), bấm “Cập nhật ngay” hoặc “Huỷ chờ”.'],
-          },
+          callout: { title: `Sẽ tự khởi động lại để cập nhật khi xong ${waitWhat(ctx.activeJobs)}.`, lines: ctx.blockers, note: STUCK_NOTE },
           actions: [{ id: 'installNow', label: 'Cập nhật ngay', primary: true }, { id: 'cancelWait', label: 'Huỷ chờ' }, CLOSE],
           busyText,
         }
@@ -414,9 +425,9 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
         return {
           ...base,
           showNotes: true,
-          statusText: READY_TEXT,
+          statusText: READY_BUSY_TEXT,
           hint,
-          callout: { title: 'Đang có việc chưa xong:', lines: [...ctx.blockers, SAFE_NOW] },
+          callout: { title: 'Đang có việc chưa xong:', lines: ctx.blockers, note: SAFE_NOW },
           actions: [{ id: 'installWhenIdle', label: 'Cập nhật khi xong', primary: true }, { id: 'installNow', label: 'Cập nhật ngay' }, LATER],
           busyText,
         }

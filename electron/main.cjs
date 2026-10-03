@@ -44,7 +44,8 @@ const MIME = {
 const updaterRules = require('./updater-rules.cjs')
 // Test-only isolation (never set by real users): SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the
 // packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
-const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: readBakedProfileDir(), appData: app.getPath('appData'), appName: app.getName(), pathMod: path })
+// fsMod lets the check see through junctions / symlinks / short names to the real %APPDATA%\SanoVids.
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: readBakedProfileDir(), appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
 if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
@@ -100,8 +101,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
-  // A downloaded update installs silently when the app quits: the updater records the attempt (notice on next launch).
-  app.on('before-quit', () => updater && updater.onBeforeQuit())
+  // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
+  // the updater records the attempt there (notice on the next launch). 'quit' never fires for a quit a window vetoed.
+  app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
 }
 
 /** app://bdp/<path> → dist/<path>. Unknown paths without an extension fall back to index.html (SPA). */

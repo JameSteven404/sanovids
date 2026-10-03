@@ -523,6 +523,35 @@
     display: none;
   }
 }
+/* The update pill gives way before the project name / "Dự án" ever get clipped: below 1500px, or whenever jobs run
+   too, it shows only its icon + version / percent (the title and aria-label keep the full text), and the wordmark goes
+   earlier. */
+@media (max-width: 1500px) {
+  .tb-update .tb-hide-md,
+  .tb:has(.tb-update) .tb-running .tb-hide-md {
+    display: none;
+  }
+}
+.tb:has(.tb-running) .tb-update .tb-hide-md {
+  display: none;
+}
+@media (max-width: 1440px) {
+  .tb:has(.tb-update) .tb-brand-text {
+    display: none;
+  }
+}
+/* Jobs running AND an app update in a narrow window: the toolbar takes its compact form earlier (save status and "Dự án"
+   as icons, then the view switch as icons, like below 1120px) so the project name keeps room. */
+@media (max-width: 1400px) {
+  .tb:has(.tb-running):has(.tb-update) .tb-left .tb-hide-sm {
+    display: none;
+  }
+}
+@media (max-width: 1180px) {
+  .tb:has(.tb-running):has(.tb-update) .tb-seg-label {
+    display: none;
+  }
+}
 @media (max-width: 1120px) {
   .tb-hide-sm,
   .tb-brand-text,

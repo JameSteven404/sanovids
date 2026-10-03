@@ -22,6 +22,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 - **Portable chỉ báo có bản mới**: bản Portable không tự cài được. Khi có bản mới, app hiện **Bản mới …** trên thanh trên cùng và nút **Tải bản mới** mở trang tải về. Muốn tự cập nhật, hãy dùng bản Setup.
 - File `.exe` vẫn chưa có chữ ký số. Bản cập nhật chỉ tải qua HTTPS từ GitHub và được kiểm tra bằng mã SHA-512 ghi trong `latest.yml`; file sai mã bị bỏ, không bao giờ được cài.
 - Bản mới nào đổi phiên bản Electron (lõi của app) thì phải tải gần như cả bộ cài (khoảng 100 MB).
+- Đã cài **cho mọi người dùng** (thư mục `Program Files`)? Mỗi lần cập nhật Windows sẽ hỏi quyền quản trị (UAC), kể cả khi bản mới tự cài lúc tắt app: bấm **Có**. Cài kiểu "Only for me" (mặc định) thì không bị hỏi.
 
 🛠️ **Trang tải về chuyển sang** [github.com/JameSteven404/sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases/latest): trang công khai, chỉ chứa file cài đặt và file dùng cho việc tự cập nhật. Mỗi lần kiểm tra, app chỉ gửi cho GitHub một mã cài đặt ngẫu nhiên, không gửi gì từ dự án của bạn.
 

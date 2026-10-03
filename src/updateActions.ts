@@ -10,9 +10,11 @@
 //   requestInstall('pill'|'toast')  the pill opens the dialog; the toast's "Khởi động lại" installs at once when nothing
 //                                   is in progress, else opens the dialog (it lists what is not finished).
 //   installNow()                    hold new submits → wait for sends in flight (≤ 15 s) → commit typed prompts → save
-//                                   the project → ask main to quit and install. Every failure gives the hold back.
-//   setInstallWhenIdle(on)          "Cập nhật khi xong": once the queue, pending downloads and a top-up are all idle, a
-//                                   cancellable 5 s countdown, then installNow(). Not saved (quitting installs anyway).
+//                                   the project → ask main to quit and install. Every failure gives the hold back. Never
+//                                   while “Nhập prompt” is open (its pasted text lives only in the dialog).
+//   setInstallWhenIdle(on)          "Cập nhật khi xong": once the queue (takes of deleted scenes aside), pending downloads
+//                                   and a top-up are all idle and “Nhập prompt” is closed, a cancellable 5 s countdown,
+//                                   then installNow(). Not saved (quitting installs anyway).
 //   useInstallUi                    { installWhenIdle, busy, manualCheck } for the dialog / pill / Settings.
 //   createUpdateController(deps)    the same with injected dependencies (tests: src/__tests__/updateActions.test.ts).
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
@@ -22,7 +24,7 @@ import { installBlockers, manualCheckToast, noticeToast, type InstallBusy } from
 import { updatesClient, type UpdatesClient } from './lib/updates'
 import type { UpdateState } from './lib/updateTypes'
 import { flush, useSave } from './store/persist'
-import { activeCount, holdNewSubmits, sendingCount, useRuns } from './store/runs'
+import { activeCount, currentRestartWork, holdNewSubmits, sendingCount, useRuns } from './store/runs'
 import { toast, useUI, type ToastAction, type Toast } from './store/ui'
 
 export const SEND_POLL_MS = 250
@@ -106,7 +108,8 @@ export const UPDATE_TOAST = {
   installFailed: 'Không khởi động được bản cập nhật. Bản mới sẽ tự cài khi bạn tắt SanoVids.',
   countdown: 'Video đã xong — SanoVids sẽ khởi động lại để cập nhật sau 5 giây.',
   ready: (v: string) => `Đã tải xong SanoVids ${v}.`,
-  waitSet: (n: number) => `Sẽ cập nhật khi xong ${n} video.`,
+  /** n = videos still running / queued; 0 when the wait is for something else (a top-up, downloads waiting for a folder). */
+  waitSet: (n: number) => (n > 0 ? `Sẽ cập nhật khi xong ${n} video.` : 'Sẽ cập nhật khi xong các việc đang dở.'),
 } as const
 
 export function createUpdateController(deps: UpdateControllerDeps): UpdateController {
@@ -201,8 +204,11 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
   }
 
   // ---------------- dialog / check ----------------
+  /** “Nhập prompt” keeps its pasted prompts / files only in the dialog (no beforeunload on desktop): never restart over it. */
+  const importOpen = () => deps.ui.dialogKind() === 'import'
+
   function openUpdateDialog() {
-    if (deps.ui.dialogKind() === 'import') {
+    if (importOpen()) {
       deps.toast(UPDATE_TOAST.importOpen, { tone: 'info' })
       return
     }
@@ -245,7 +251,7 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 
   async function requestInstall(source: InstallSource): Promise<void> {
     if (source === 'pill' || !isInstallReady(current())) return openUpdateDialog()
-    if ((await blockers()).length || deps.ui.dialogKind() === 'import') return openUpdateDialog()
+    if ((await blockers()).length || importOpen()) return openUpdateDialog()
     await installNow()
   }
 
@@ -292,6 +298,10 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 
   async function installNow(): Promise<void> {
     if (!isInstallReady(current()) || ui().busy) return
+    if (importOpen()) {
+      deps.toast(UPDATE_TOAST.importOpen, { tone: 'info' })
+      return
+    }
     setBusy('waiting-send')
     runs.holdNewSubmits(true)
     if (!(await waitForSends())) {
@@ -326,6 +336,15 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
   /** The last step: main quits, installs silently and relaunches. */
   async function restart(): Promise<void> {
     if (!isInstallReady(current()) || ui().busy === 'restarting') return
+    if (importOpen()) {
+      // Opened while installNow() was saving: give everything back.
+      if (ui().busy) {
+        runs.holdNewSubmits(false)
+        setBusy(null)
+      }
+      deps.toast(UPDATE_TOAST.importOpen, { tone: 'info' })
+      return
+    }
     setBusy('restarting')
     runs.holdNewSubmits(true)
     hadInstallError = current().error?.code === 'install-failed'
@@ -368,10 +387,11 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     countdownToast = null
   }
 
+  /** Nothing a restart would interrupt. An open “Nhập prompt” counts as busy: the wait goes on until it is closed. */
   async function isIdle(): Promise<boolean> {
     const { queued, processing } = runs.counts()
-    if (queued + processing > 0 || deps.pendingDownloads() > 0) return false
-    return !(await topupBusy())
+    if (queued + processing > 0 || deps.pendingDownloads() > 0 || importOpen()) return false
+    return !(await topupBusy()) && !importOpen()
   }
 
   async function evaluateIdle(): Promise<void> {
@@ -426,13 +446,9 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 // The app's controller
 // ---------------------------------------------------------------------------------------------
 
+/** Running / queued takes a restart would interrupt (queued takes of deleted scenes never start: not counted). */
 function runCounts(): { queued: number; processing: number } {
-  let queued = 0
-  let processing = 0
-  for (const t of useRuns.getState().takes) {
-    if (t.status === 'queued') queued++
-    else if (t.status === 'processing') processing++
-  }
+  const { queued, processing } = currentRestartWork()
   return { queued, processing }
 }
 

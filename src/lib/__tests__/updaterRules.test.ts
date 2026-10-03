@@ -38,6 +38,10 @@ interface State {
   autoDownload: boolean
   notice?: unknown
 }
+interface FsMod {
+  existsSync(p: string): boolean
+  realpathSync(p: string): string
+}
 type ProfileResult = { ok: true; dir: string; source: 'env' | 'baked' | 'default' } | { ok: false; error: string }
 interface UpdaterFile {
   autoDownload: boolean
@@ -47,9 +51,10 @@ interface Rules {
   RELEASES_URL: string
   FEED: { provider: string; owner: string; repo: string }
   ERROR_TEXT: Record<string, string>
+  INSTALL_GRACE_MS: number
   isVersion(v: unknown): boolean
   compareVersions(a: string, b: string): -1 | 0 | 1
-  resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; pathMod: PathMod }): ProfileResult
+  resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
   detectKind(o: {
     platform: string
@@ -69,6 +74,7 @@ interface Rules {
   parsePrefsArg(arg: unknown): { autoDownload: boolean } | null
   parseUpdaterFile(raw: unknown): UpdaterFile
   startupNotice(file: UpdaterFile, current: string, now: number): unknown
+  startupAttempt(file: UpdaterFile, current: string, now: number): { notice: unknown; keep: boolean }
   logLine(level: string, message: unknown, date: Date | number): string
 }
 
@@ -170,6 +176,65 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(resolvePosix({ env: '/home/me/.config/sanovids' }).ok).toBe(true)
   })
 
+  it('refuses Windows aliases of the real folder and its parents', () => {
+    const aliases = [
+      `${realWin}.`, // Win32 strips trailing dots and spaces: this IS the real folder
+      `${realWin} `,
+      `${realWin}...\\x`,
+      `${winAppData}\\SANOVI~1`, // 8.3 short name
+      'C:\\Users\\me\\AppData\\Roaming\\SANOVI~1\\profile',
+      `\\\\?\\${realWin}`,
+      `\\\\?\\${realWin}\\x`,
+      `\\\\.\\${realWin}`,
+      '\\\\localhost\\c$\\Users\\me\\AppData\\Roaming\\SanoVids',
+      '//localhost/c$/Users/me/AppData/Roaming/SanoVids',
+      `${realWin}::$INDEX_ALLOCATION`, // the folder's own stream
+      `${realWin}:stream`,
+      winAppData, // contains the real folder
+      `${winAppData}\\`,
+      'C:\\Users\\me',
+      'c:\\users',
+    ]
+    for (const env of aliases) {
+      const r = resolveWin({ env })
+      expect(r.ok, env).toBe(false)
+    }
+    expect(resolvePosix({ env: '/home/me/.config' }).ok).toBe(false)
+    expect(resolvePosix({ env: '/home/me' }).ok).toBe(false)
+    // POSIX names may end with a dot / space or contain "~".
+    expect(resolvePosix({ env: '/tmp/a~b/profile.' }).ok).toBe(true)
+    // Ordinary scratch folders stay fine.
+    expect(resolveWin({ env: 'C:\\Users\\me\\AppData\\Local\\Temp\\claude\\scratchpad\\e2e-update\\profile' }).ok).toBe(true)
+    expect(resolveWin({ env: `${winAppData}\\SanoVidsUpdTest` }).ok).toBe(true)
+  })
+
+  it('with fsMod, sees through junctions / symlinks to the real folder', () => {
+    // D:\link is a junction to C:\Users\me\AppData\Roaming; D:\scratch is a plain folder.
+    const links: Record<string, string> = { 'd:\\link': winAppData }
+    const existing = new Set(['c:\\', 'c:\\users', 'c:\\users\\me', 'c:\\users\\me\\appdata', winAppData.toLowerCase(), realWin.toLowerCase(), 'd:\\', 'd:\\link', 'd:\\scratch'])
+    const fsMod: FsMod = {
+      existsSync: (p) => existing.has(p.toLowerCase()),
+      realpathSync: (p) => {
+        const key = p.toLowerCase()
+        for (const [from, to] of Object.entries(links)) {
+          if (key === from || key.startsWith(`${from}\\`)) return to + p.slice(from.length)
+        }
+        return p
+      },
+    }
+    const withFs = (env: string) => rules.resolveProfileDir({ env, appData: winAppData, appName: 'SanoVids', pathMod: win, fsMod })
+    for (const env of ['D:\\link\\SanoVids', 'D:\\link\\SanoVids\\sub', 'D:\\link', 'D:\\LINK\\sanovids\\new\\deeper']) {
+      const r = withFs(env)
+      expect(r.ok, env).toBe(false)
+      if (!r.ok) expect(r.error).toContain('after resolving links')
+    }
+    expect(withFs('D:\\scratch\\profile')).toEqual({ ok: true, dir: 'D:\\scratch\\profile', source: 'env' })
+    expect(withFs('D:\\link\\SanoVidsUpdTest')).toEqual({ ok: true, dir: 'D:\\link\\SanoVidsUpdTest', source: 'env' })
+    // A throwing file system falls back to the lexical checks.
+    const broken: FsMod = { existsSync: () => true, realpathSync: () => { throw new Error('EPERM') } }
+    expect(rules.resolveProfileDir({ env: 'D:\\scratch\\p', appData: winAppData, appName: 'SanoVids', pathMod: win, fsMod: broken }).ok).toBe(true)
+  })
+
   it('another product name gets its own folder', () => {
     expect(resolveWin({ appName: 'SanoVidsUpdTest' })).toEqual({ ok: true, dir: `${winAppData}\\SanoVidsUpdTest`, source: 'default' })
     expect(resolveWin({ appName: 'Sano Vids/Test' })).toEqual({ ok: true, dir: `${winAppData}\\Sano_Vids_Test`, source: 'default' })
@@ -231,6 +296,12 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     [{ code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND', message: 'Cannot find latest.yml: Error: net::ERR_NETWORK_CHANGED' }, 'check', 'offline'],
     [{ code: 'HTTP_ERROR_429', message: RAW }, 'check', 'rate-limited'],
     [{ code: 'HTTP_ERROR_403', message: RAW }, 'check', 'rate-limited'],
+    // GitHubProvider wraps every failure of releases/latest in ERR_UPDATER_LATEST_VERSION_NOT_FOUND (HttpError stack inside).
+    [{ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: `Unable to find latest version on GitHub (${RAW}), please ensure a production release exists: HttpError: 429 Too Many Requests\nHeaders: {}\n    at x` }, 'check', 'rate-limited'],
+    [{ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: 'Unable to find latest version on GitHub: HttpError: 403 Forbidden\nHeaders: {}' }, 'check', 'rate-limited'],
+    [{ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: 'Unable to find latest version on GitHub: HttpError: 503 Service Unavailable\nHeaders: {}' }, 'check', 'failed'],
+    [{ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: 'Unable to find latest version on GitHub: HttpError: 404 Not Found\nHeaders: {}' }, 'check', 'no-release'],
+    [{ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: 'Unable to find latest version on GitHub: Error: net::ERR_CONNECTION_RESET' }, 'check', 'offline'],
     [{ code: 'ERR_CHECKSUM_MISMATCH', message: RAW }, 'download', 'checksum'],
     [new Error('sha512 checksum mismatch, expected abc, got def'), 'download', 'checksum'],
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: RAW }, 'download', 'signature'],
@@ -289,7 +360,14 @@ describe('updater rules: release notes are plain text', () => {
 
   it('markdown with an inline tag keeps its lines (the tag is dropped, the text stays)', () => {
     expect(rules.notesToText('## Bản thử 0.5.91\n- Dòng **đậm**\n- <b>không phải HTML</b>')).toBe('## Bản thử 0.5.91\n- Dòng **đậm**\n- không phải HTML')
-    expect(rules.notesToText('Thư mục `release/ban-cu/<phiên bản>/`\nDòng hai')).toBe('Thư mục `release/ban-cu//`\nDòng hai')
+    expect(rules.notesToText('Thư mục `release/ban-cu/<phiên bản>/`\nDòng hai')).toBe('Thư mục `release/ban-cu/<phiên bản>/`\nDòng hai')
+  })
+
+  it('only real HTML tags count: comparisons and placeholders stay text', () => {
+    expect(rules.notesToText('- Giá < 5 và > 3\n- dùng <phiên bản> mới')).toBe('- Giá < 5 và > 3\n- dùng <phiên bản> mới')
+    expect(rules.notesToText('- Giá < 5 và > 3\n- <b>đậm</b> và <version>')).toBe('- Giá < 5 và > 3\n- đậm và <version>')
+    expect(rules.notesToText('<p>a <x-y> b</p><img src=x onerror=alert(1)><iframe src="u"></iframe>')).toBe('a <x-y> b')
+    expect(rules.notesToText('- dòng <phiên bản>\n<b>x</b>')).toBe('- dòng <phiên bản>\nx')
   })
 
   it('joins the full-changelog list', () => {
@@ -432,6 +510,16 @@ describe('updater rules: state machine', () => {
       const e = rules.reduceUpdateState(s, { type: 'check-error', error: err('no-release') }, NOW + 1)
       expect(e).toMatchObject({ status: 'error', error: err('no-release'), lastCheck: NOW + 1 })
     }
+    // Real event order: electron-updater emits checking-for-update before every result, error included.
+    expect(rules.reduceUpdateState(avail, { type: 'checking' }, NOW)).toBe(avail)
+    const kept = run(avail, { type: 'checking' }, { type: 'check-error', error: err('offline') })
+    expect(kept).toEqual({ ...avail, lastCheck: NOW })
+    expect(kept.error).toBeUndefined()
+    const portable = run(start('portable'), { type: 'checking' }, { type: 'available', info: info('0.5.92') })
+    expect(run(portable, { type: 'checking' }, { type: 'check-error', error: err('offline') })).toMatchObject({ status: 'available', version: '0.5.92' })
+    // A re-check that finds a newer version replaces it; a withdrawn release (not-available) clears it.
+    expect(run(avail, { type: 'checking' }, { type: 'available', info: info('0.5.3') })).toMatchObject({ status: 'available', version: '0.5.3' })
+    expect(run(avail, { type: 'checking' }, { type: 'not-available' })).toMatchObject({ status: 'none' })
     // A malformed error never leaks: it becomes a generic one.
     const odd = rules.reduceUpdateState(start(), { type: 'check-error', error: { code: 'weird', message: 'raw' } }, NOW)
     expect(odd.error).toEqual({ code: 'failed', message: 'Không kiểm tra được bản cập nhật.' })
@@ -502,6 +590,21 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
     expect(rules.startupNotice({ autoDownload: true, attempt }, '0.4.2', NOW)).toEqual({ kind: 'install-failed', version: '0.5.0' })
     expect(rules.startupNotice({ autoDownload: true, attempt: { ...attempt, at: NOW - 8 * DAY } }, '0.4.2', NOW)).toBeNull()
     expect(rules.startupNotice({ autoDownload: true, attempt }, '0.4.1', NOW)).toBeNull()
+  })
+
+  it('startupAttempt: a launch while the install on quit may still run says nothing and keeps the attempt', () => {
+    expect(rules.INSTALL_GRACE_MS).toBe(2 * MIN)
+    const at = (ms: number) => ({ autoDownload: true, attempt: { version: '0.5.0', from: '0.4.2', at: NOW - ms } })
+    expect(rules.startupAttempt(at(10_000), '0.4.2', NOW)).toEqual({ notice: null, keep: true })
+    expect(rules.startupNotice(at(10_000), '0.4.2', NOW)).toBeNull()
+    expect(rules.startupAttempt(at(3 * MIN), '0.4.2', NOW)).toEqual({ notice: { kind: 'install-failed', version: '0.5.0' }, keep: false })
+    // The install finished in time: updated, whatever the age.
+    expect(rules.startupAttempt(at(10_000), '0.5.0', NOW)).toEqual({ notice: { kind: 'updated', from: '0.4.2', version: '0.5.0' }, keep: false })
+    // Expired, from another version, or a clock that went back: nothing, cleared.
+    expect(rules.startupAttempt(at(8 * DAY), '0.4.2', NOW)).toEqual({ notice: null, keep: false })
+    expect(rules.startupAttempt(at(10_000), '0.4.1', NOW)).toEqual({ notice: null, keep: false })
+    expect(rules.startupAttempt(at(-HOUR), '0.4.2', NOW)).toEqual({ notice: null, keep: false })
+    expect(rules.startupAttempt({ autoDownload: true }, '0.4.2', NOW)).toEqual({ notice: null, keep: false })
   })
 
   it('logLine: one line, capped', () => {
@@ -581,5 +684,12 @@ describe('packaging guarantees (package.json, preload, main)', () => {
     expect(mainSource.indexOf("app.setPath('userData', profile.dir)")).toBeLessThan(lock)
     expect(mainSource).toContain('process.exit(2)')
     expect(mainSource).not.toMatch(/forceDevUpdateConfig\s*=\s*true|setFeedURL\(/)
+    // The guard sees through links (realpath) to the real folder.
+    expect(mainSource).toContain('fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native }')
+  })
+
+  it('main.cjs records the install-on-quit attempt in the app quit event (never for a vetoed quit)', () => {
+    expect(mainSource).toContain("app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))")
+    expect(mainSource).not.toContain('onBeforeQuit')
   })
 })

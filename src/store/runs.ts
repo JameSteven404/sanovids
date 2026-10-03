@@ -281,6 +281,39 @@ export function sendingCount(): number {
   return useRuns.getState().takes.reduce((n, t) => (isSendingTake(t) ? n + 1 : n), 0)
 }
 
+export interface RestartWork {
+  /** Queued takes the queue will start (their scene exists). */
+  queued: number
+  processing: number
+  /** Of `processing`: being sent right now (isSendingTake). */
+  sending: number
+}
+
+/**
+ * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
+ * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
+ * across a restart, so waiting for it would wait forever.
+ */
+export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
+  let queued = 0
+  let processing = 0
+  let sending = 0
+  for (const t of takes) {
+    if (t.status === 'queued') {
+      if (sceneIds.has(t.sceneId)) queued++
+    } else if (t.status === 'processing') {
+      processing++
+      if (isSendingTake(t)) sending++
+    }
+  }
+  return { queued, processing, sending }
+}
+
+/** restartWork() of the open project, right now. */
+export function currentRestartWork(): RestartWork {
+  return restartWork(useRuns.getState().takes, new Set(useProject.getState().project.scenes.map((s) => s.id)))
+}
+
 function savedMock(): MockSettings {
   try {
     const raw = localStorage.getItem('bdp:pref:mock')
@@ -1071,4 +1104,9 @@ export function useSceneTakes(sceneId: string): Take[] {
 }
 export function useActiveCount(): number {
   return useRuns(activeCount)
+}
+/** restartWork() as a hook (stable object while the counts do not change). */
+export function useRestartWork(): RestartWork {
+  const sceneKey = useProject((s) => s.project.scenes.map((x) => x.id).join('|'))
+  return useRuns(useShallow((s) => restartWork(s.takes, new Set(sceneKey ? sceneKey.split('|') : []))))
 }

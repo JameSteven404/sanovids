@@ -27,6 +27,12 @@ const SCHEDULE_TICK_MS = 10 * 60_000
 const PROGRESS_PUSH_MS = 500
 const OPEN_PAGE_THROTTLE_MS = 3000
 const LOG_MAX_BYTES = 256 * 1024
+/**
+ * Still alive this long after quitAndInstall (a quit vetoed by another window AND an installer that did not start or
+ * could not close the app): the install is reported failed and the updater is usable again. A bit shorter than the
+ * page's own watchdog (updateActions INSTALL_WATCHDOG_MS = 20 s), so the page hears it from main first.
+ */
+const INSTALL_WATCHDOG_MS = 18_000
 
 const MSG = {
   notAllowed: 'Nguồn gọi không hợp lệ.',
@@ -91,7 +97,7 @@ function rawError(e) {
 
 /**
  * Called once, in the primary instance, inside app.whenReady(), BEFORE the main window exists.
- * → { onWindowReady(), onBeforeQuit(), isQuittingForUpdate() }
+ * → { onWindowReady(), onQuit(exitCode), isQuittingForUpdate() }
  */
 function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
   const userData = app.getPath('userData')
@@ -109,11 +115,13 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
     pathMod: path,
   })
 
-  // 2. Prefs + the install attempt recorded before the last quit → this launch's notice (the attempt is then cleared).
+  // 2. Prefs + the install attempt recorded before the last quit → this launch's notice. The attempt is then cleared,
+  // unless this launch came while the install on quit may still be running (the next launch decides).
   const filePath = path.join(userData, 'updater.json')
   let file = readUpdaterFile()
-  const notice = rules.startupNotice(file, current, Date.now())
-  if (file.attempt) {
+  const startup = rules.startupAttempt(file, current, Date.now())
+  const notice = startup.notice
+  if (file.attempt && !startup.keep) {
     file = { autoDownload: file.autoDownload }
     writeUpdaterFile()
   }
@@ -121,6 +129,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
   // 3. E2E tests look for this exact prefix: "start <version> kind=".
   log.info(`start ${current} kind=${kind} profile=${profileSource} packaged=${app.isPackaged}`)
   if (notice) log.info(`notice ${notice.kind} ${notice.kind === 'updated' ? `${notice.from} -> ${notice.version}` : notice.version}`)
+  if (startup.keep) log.info(`attempt kept ${file.attempt.version}: started while the install on quit may still be running`)
 
   let state = rules.initialState({ kind, current, autoDownload: file.autoDownload, notice })
   /** electron-updater's autoUpdater, or null ('dev' kind, or it could not be loaded). */
@@ -137,6 +146,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
   let trailingPush = null
   let firstCheckTimer = null
   let scheduleTimer = null
+  let installWatchdog = null
 
   function readUpdaterFile() {
     try {
@@ -146,7 +156,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
     }
   }
 
-  /** Atomic write (tmp + rename), synchronous: also used from before-quit. */
+  /** Atomic write (tmp + rename), synchronous: also used from the app 'quit' event. */
   function writeUpdaterFile() {
     const data = { v: 1, autoDownload: file.autoDownload, ...(file.attempt ? { attempt: file.attempt } : {}) }
     const tmp = `${filePath}.tmp`
@@ -288,9 +298,30 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
 
   function installFailed(e) {
     log.error(`install failed: ${rawError(e)}`)
+    clearInstallWatchdog()
     quittingForUpdate = false
     clearAttempt()
     dispatch({ type: 'install-error', error: rules.mapUpdaterError(e, 'install') })
+  }
+
+  function clearInstallWatchdog() {
+    if (installWatchdog) clearTimeout(installWatchdog)
+    installWatchdog = null
+  }
+
+  /** After quitAndInstall: the app should be gone within a second or two (see INSTALL_WATCHDOG_MS). */
+  function armInstallWatchdog() {
+    clearInstallWatchdog()
+    installWatchdog = setTimeout(() => {
+      installWatchdog = null
+      if (!quittingForUpdate) return
+      // electron-updater (6.8.x, pinned) keeps `quitAndInstallCalled` set after a quitAndInstall whose app never quit:
+      // every later install — "Khởi động lại để cập nhật" again, or the silent install on quit — would then be skipped.
+      // A second installer started by mistake would only stop at the NSIS single-instance check.
+      if (au && au.quitAndInstallCalled === true) au.quitAndInstallCalled = false
+      installFailed(new Error(`the app was still running ${INSTALL_WATCHDOG_MS / 1000} s after quitAndInstall`))
+    }, INSTALL_WATCHDOG_MS)
+    if (typeof installWatchdog.unref === 'function') installWatchdog.unref()
   }
 
   // ---- schedule ----
@@ -308,6 +339,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
     if (scheduleTimer) clearInterval(scheduleTimer)
     if (trailingPush) clearTimeout(trailingPush)
     firstCheckTimer = scheduleTimer = trailingPush = null
+    clearInstallWatchdog()
     powerMonitor.removeListener('resume', maybeAutoCheck)
   }
 
@@ -359,6 +391,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
       } finally {
         installingNow = false
       }
+      if (quittingForUpdate) armInstallWatchdog()
     })
     return OK
   })
@@ -400,9 +433,12 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
       scheduleTimer = setInterval(maybeAutoCheck, SCHEDULE_TICK_MS)
       powerMonitor.on('resume', maybeAutoCheck)
     },
-    /** app 'before-quit': a downloaded update installs on quit (electron-updater, exit code 0 only) → remember it. */
-    onBeforeQuit() {
-      if (kind === 'installer' && au && state.status === 'ready' && !quittingForUpdate) {
+    /**
+     * app 'quit' (after every window agreed to close, so never for a quit that was vetoed): electron-updater installs a
+     * downloaded update in this same event, and only with exit code 0 → remember the attempt under the same condition.
+     */
+    onQuit(exitCode) {
+      if (kind === 'installer' && au && state.status === 'ready' && !quittingForUpdate && exitCode === 0) {
         recordAttempt()
         log.info(`install on quit ${state.version}`)
       }

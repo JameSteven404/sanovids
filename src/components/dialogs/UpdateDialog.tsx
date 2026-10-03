@@ -3,9 +3,8 @@
 // portable build only offers the download page. Every text / button decision is in lib/updateModel dialogView (pure,
 // tested); the commands are in updateActions. Lazy chunk (App.tsx 'updateDialog'). Styles: dialogs.css (dg-upd-).
 import { CircleArrowUp, CircleCheck, CloudDownload, ExternalLink, LoaderCircle, TriangleAlert } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useStore } from 'zustand'
-import { useShallow } from 'zustand/react/shallow'
 import { pendingDownloadCount } from '../../lib/downloads'
 import {
   dialogView,
@@ -21,7 +20,7 @@ import {
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { checkUpdates, downloadUpdate, openReleasePage, useUpdates } from '../../lib/updates'
 import { UPDATE_RELEASES_PAGE_LABEL } from '../../lib/updateTypes'
-import { isSendingTake, useRuns } from '../../store/runs'
+import { useRestartWork } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { installNow, setInstallWhenIdle, useInstallUi } from '../../updateActions'
 import { Modal } from '../common/Modal'
@@ -39,27 +38,36 @@ function usePendingDownloadCount(): number {
   return n
 }
 
-/** Work a restart would interrupt (E.3 lines). */
+/** Work a restart would interrupt (E.3 lines). Queued takes of deleted scenes never start: not counted (store/runs). */
 function useBlockers(): { lines: string[]; activeJobs: number } {
-  const counts = useRuns(
-    useShallow((s) => {
-      let queued = 0
-      let processing = 0
-      let sending = 0
-      for (const t of s.takes) {
-        if (t.status === 'queued') queued++
-        else if (t.status === 'processing') {
-          processing++
-          if (isSendingTake(t)) sending++
-        }
-      }
-      return { queued, processing, sending }
-    }),
-  )
+  const counts = useRestartWork()
   const pendingDownloads = usePendingDownloadCount()
   const topupInFlight = useStore(topupFlow.store, (s) => isOrderInFlight(s.phase))
   return { lines: installBlockers({ ...counts, pendingDownloads, topupInFlight }), activeJobs: counts.queued + counts.processing }
 }
+
+/** Whether the element scrolls (re-measured when `dep` changes or the element resizes). */
+function useOverflows<T extends HTMLElement>(dep: unknown): [RefObject<T | null>, boolean] {
+  const ref = useRef<T>(null)
+  const [over, setOver] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) {
+      setOver(false)
+      return
+    }
+    const measure = () => setOver(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [dep])
+  return [ref, over]
+}
+
+/** Buttons that start work: disabled while one of them runs. "Đóng" / "Để sau" stay usable. */
+const WORK_ACTIONS = new Set<UpdateActionId>(['restart', 'installNow', 'installWhenIdle', 'cancelWait', 'download', 'openPage', 'retry'])
 
 /** Release notes as text blocks: headings, list items (grouped in lists) and paragraphs. Never HTML. */
 function Notes({ blocks }: { blocks: NoteBlock[] }) {
@@ -96,9 +104,14 @@ export function UpdateDialog() {
   const busy = useInstallUi((s) => s.busy)
   const blockers = useBlockers()
   const [acting, setActing] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
   const view = dialogView(state, { blockers: blockers.lines, installWhenIdle, autoDownload, busy, activeJobs: blockers.activeJobs })
   const blocks = view.showNotes ? noteBlocks(state.notes) : []
   const date = formatReleaseDate(state.releaseDate)
+  const [notesRef, notesScroll] = useOverflows<HTMLDivElement>(view.showNotes ? state.notes : null)
+  // The primary button already opens the download page (portable): no second link to the same page.
+  const pageInFooter = view.actions.some((a) => a.id === 'openPage')
+  const actionKey = view.actions.map((a) => a.id).join(' ')
 
   const run = async (id: UpdateActionId) => {
     switch (id) {
@@ -135,12 +148,30 @@ export function UpdateDialog() {
   }
 
   const act = (id: UpdateActionId) => {
+    if (!WORK_ACTIONS.has(id)) {
+      void run(id)
+      return
+    }
     if (acting) return
     setActing(true)
     void run(id).finally(() => setActing(false))
   }
 
-  const disabled = !!busy || acting
+  // Installing (busy): every button is disabled (spec). A running action only blocks the other work buttons, with
+  // aria-disabled so the focused button keeps the focus.
+  const disabled = !!busy
+
+  // A footer that changed (download started, retry done, wait cancelled) or got disabled drops the focus to <body>:
+  // give it back to the dialog's first usable button, so keyboard / screen-reader users keep their place.
+  useEffect(() => {
+    const active = document.activeElement
+    if (active && active !== document.body && active.isConnected) return
+    const dialog = rootRef.current?.closest<HTMLElement>('[role="dialog"]')
+    if (!dialog) return
+    const target =
+      dialog.querySelector<HTMLElement>('.modal-foot .btn-primary:not(:disabled)') ?? dialog.querySelector<HTMLElement>('.modal-foot button:not(:disabled)') ?? dialog
+    target.focus({ preventScroll: true })
+  }, [actionKey, disabled])
   const good = state.status === 'ready' || state.status === 'none'
   const icon =
     state.status === 'downloading' ? (
@@ -163,10 +194,14 @@ export function UpdateDialog() {
         <button
           key={a.id}
           type="button"
-          className={`btn${a.primary ? ' btn-primary' : ''}`}
+          className={`btn dg-upd-btn${a.primary ? ' btn-primary' : ''}`}
           disabled={disabled}
+          aria-disabled={!disabled && acting && WORK_ACTIONS.has(a.id) ? true : undefined}
           title={a.title}
-          onClick={() => act(a.id)}
+          onClick={() => {
+            if (acting && WORK_ACTIONS.has(a.id)) return
+            act(a.id)
+          }}
         >
           {a.primary && view.busyText ? (
             <>
@@ -178,7 +213,7 @@ export function UpdateDialog() {
         </button>
       ))}
     >
-      <div className="dg-upd" aria-busy={!!busy}>
+      <div className="dg-upd" aria-busy={!!busy} ref={rootRef}>
         <div className="dg-upd-head">
           <span className={`dg-app-icon${good ? ' on' : ''}`} aria-hidden="true">
             {icon}
@@ -196,7 +231,8 @@ export function UpdateDialog() {
           </div>
         </div>
 
-        <p className="dg-upd-status" role="status">
+        {/* Announced on status changes only: the download line changes every 500 ms (the progress bar carries it). */}
+        <p className="dg-upd-status" role={view.showProgress ? undefined : 'status'}>
           {view.statusText}
         </p>
         {view.showProgress && (
@@ -212,11 +248,14 @@ export function UpdateDialog() {
             <TriangleAlert size={15} />
             <div>
               <b>{view.callout.title}</b>
-              <ul className="dg-upd-callout-list">
-                {view.callout.lines.map((line, i) => (
-                  <li key={i}>{line}</li>
-                ))}
-              </ul>
+              {view.callout.lines.length > 0 && (
+                <ul className="dg-upd-callout-list">
+                  {view.callout.lines.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              )}
+              {view.callout.note && <p className="dg-upd-callout-note">{view.callout.note}</p>}
             </div>
           </div>
         )}
@@ -224,12 +263,13 @@ export function UpdateDialog() {
         {view.showNotes && (
           <section className="dg-upd-notes-wrap" aria-label="Có gì mới">
             <h3 className="section-title">Có gì mới</h3>
-            <div className="dg-upd-notes" tabIndex={0}>
+            {/* A tab stop only when it scrolls (keyboard scrolling). */}
+            <div className="dg-upd-notes" ref={notesRef} tabIndex={notesScroll ? 0 : undefined}>
               {blocks.length ? <Notes blocks={blocks} /> : <p className="dg-upd-empty">Chưa có ghi chú cho bản này.</p>}
             </div>
           </section>
         )}
-        {state.kind !== 'dev' && (
+        {state.kind !== 'dev' && !pageInFooter && (
           <button type="button" className="btn btn-sm btn-ghost dg-upd-link" onClick={() => act('openPage')} disabled={acting} title={`Mở trang tải về (${UPDATE_RELEASES_PAGE_LABEL}) trong trình duyệt`}>
             <ExternalLink size={13} /> Xem trang tải về
           </button>
