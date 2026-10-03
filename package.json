@@ -2,7 +2,7 @@
   "name": "sanovids",
   "productName": "SanoVids",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "SanoVids — dựng phim AI theo từng cảnh trên canvas",
   "author": {
     "name": "Nguyễn Giang Minh (Jame Steven)"
