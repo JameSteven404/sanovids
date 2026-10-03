@@ -1244,6 +1244,52 @@
   white-space: nowrap;
 }
 
+/* Cập nhật: the simulated app updater (DevUpdatesTab.tsx) */
+.dv-upd {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dv-upd-intro {
+  max-width: 720px;
+}
+/* Two cards that share the width (no empty third column). */
+.dv-upd .dv-grid {
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.dv-upd-versions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.dv-upd-versions .input {
+  min-height: 28px;
+  padding: 3px 9px;
+  font-size: 12.5px;
+}
+.dv-upd-bad,
+.dv-upd-bad:focus {
+  border-color: var(--warn);
+}
+.dv-upd-warn {
+  color: var(--warn);
+}
+.dv-upd-notes {
+  min-height: 96px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.dv-upd-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.dv-upd-state {
+  max-height: 320px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dv-sheet-backdrop,
   .dv-sheet {

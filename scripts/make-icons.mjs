@@ -1,231 +1,250 @@
-// Generates the app icons without native dependencies: shapes are signed-distance functions rasterised with
-// analytic anti-aliasing into an RGBA buffer, then encoded as PNG with node:zlib + CRC32.
+// Builds every SanoVids icon file from the hand-written SVGs in build/icon-source/.
 //
-//   node scripts/make-icons.mjs
+//   npm run icons                          (= node scripts/make-icons.mjs)
+//   node scripts/make-icons.mjs --out tmp  (write the same tree under ./tmp instead of the repo)
+//   node scripts/make-icons.mjs --src dir  (read the SVG sources from another folder)
 //
-// Outputs (commit them, they are small):
-//   public/icons/icon-192.png, icon-512.png       rounded square, transparent corners (purpose "any")
-//   public/icons/maskable-512.png                  full-bleed square, glyph inside the 80% safe zone (purpose "maskable")
-//   public/icons/apple-touch-icon-180.png          full-bleed square (iOS rounds it itself)
-//   public/favicon.svg                             hand-written SVG of the same logo
-//   build/icon.png                                 512×512 for electron-builder (.exe / installer icon)
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+// One devDependency: @resvg/resvg-js (SVG rasteriser). PNG comes from resvg; ICO and BMP are encoded here with
+// node built-ins only.
+//
+// Sources (build/icon-source/):
+//   icon-master.svg       512 master: 96 px and up, web icons, installer art. Plate inset 16, play cut-out in the disc.
+//   icon-small.svg        32-unit pixel-hinted cut: 16, 32, 40, 48, 64 px (and the 64 px icon in the installer).
+//   icon-24.svg           24 px cut (taskbar at 100 %, in-app top-bar logo).
+//   icon-20.svg           20 px cut (title bar / small icons at 125 %).
+//   favicon.svg           browser tab icon, copied as is.
+//   logo-mark.svg         glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
+//   installer-sidebar.svg NSIS welcome / finish sidebar 164x314 (href="icon:N" = the N px app icon).
+//   installer-header.svg  NSIS header 150x57.
+//   uninstaller-sidebar.svg (optional) else the installer sidebar is reused.
+//
+// Outputs (paths relative to the repo, or to --out):
+//   build/icon.ico                16 20 24 32 40 48 64 96 128 (32-bit BMP entries) + 256 (PNG entry)
+//   build/icon.png                512, rounded plate with transparent corners (electron-builder fallback)
+//   build/icon-1024.png           1024, same (store / docs)
+//   build/installerSidebar.bmp    164x314, 24-bit
+//   build/uninstallerSidebar.bmp  164x314, 24-bit
+//   build/installerHeader.bmp     150x57, 24-bit
+//   public/favicon.svg
+//   public/icons/icon.ico         same as build/icon.ico (BrowserWindow icon on Windows, ships inside dist/)
+//   public/icons/icon-192.png, icon-512.png      rounded plate, transparent corners (PWA purpose "any")
+//   public/icons/maskable-512.png                full-bleed plate, glyph inside the 80 % safe circle
+//   public/icons/apple-touch-icon-180.png        full-bleed plate (iOS rounds it)
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { deflateSync } from 'node:zlib'
+import resvg from '@resvg/resvg-js'
 
+const { Resvg } = resvg
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const ACCENT = [0xe8, 0x89, 0x4a]
-const WHITE = [0xff, 0xff, 0xff]
 
-// ---------------- SDF helpers (unit square coordinates, y down; negative = inside) ----------------
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v))
+function arg(name, fallback) {
+  const i = process.argv.indexOf(name)
+  return i > 0 && process.argv[i + 1] ? resolve(process.argv[i + 1]) : fallback
+}
+const OUT = arg('--out', ROOT)
+const SRC = arg('--src', join(ROOT, 'build', 'icon-source'))
 
-function box(px, py, x0, y0, x1, y1, r) {
-  const cx = (x0 + x1) / 2
-  const cy = (y0 + y1) / 2
-  const qx = Math.abs(px - cx) - ((x1 - x0) / 2 - r)
-  const qy = Math.abs(py - cy) - ((y1 - y0) / 2 - r)
-  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r
+const ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
+
+// ---------------------------------------------------------------- sources
+const source = (name) => readFileSync(join(SRC, name), 'utf8')
+const SVG = {
+  master: source('icon-master.svg'),
+  small: source('icon-small.svg'),
+  s24: source('icon-24.svg'),
+  s20: source('icon-20.svg'),
 }
 
-/** Diagonal stripes: u = x + y (45°), stripe width = period / 2. */
-function stripes(px, py, period, phase) {
-  const u = px + py - phase
-  const t = (((u - period / 4) % period) + period) % period - period / 2
-  return (Math.abs(t) - period / 4) / Math.SQRT2
+/** Which drawing a pixel size is rendered from. */
+function svgFor(size) {
+  if (size === 20) return SVG.s20
+  if (size === 24) return SVG.s24
+  if (size < 96) return SVG.small
+  return SVG.master
 }
 
-/** Convex polygon (clockwise in y-down space), approximate SDF: max of edge half-plane distances. */
-function convex(px, py, pts) {
-  let d = -Infinity
-  for (let i = 0; i < pts.length; i++) {
-    const [ax, ay] = pts[i]
-    const [bx, by] = pts[(i + 1) % pts.length]
-    const ex = bx - ax
-    const ey = by - ay
-    const len = Math.hypot(ex, ey)
-    // outward normal for clockwise winding in y-down coords
-    const nx = ey / len
-    const ny = -ex / len
-    d = Math.max(d, (px - ax) * nx + (py - ay) * ny)
+// Installer text: Segoe UI from the Windows font folder when present (it has the Vietnamese diacritics);
+// elsewhere fall back to the system fonts.
+const WIN_FONTS = ['segoeui.ttf', 'seguisb.ttf', 'segoeuib.ttf'].map((f) => join(process.env.WINDIR || 'C:/Windows', 'Fonts', f))
+const HAVE_SEGOE = WIN_FONTS.every((f) => existsSync(f))
+const FONT = HAVE_SEGOE
+  ? { loadSystemFonts: false, fontFiles: WIN_FONTS, defaultFontFamily: 'Segoe UI' }
+  : { loadSystemFonts: true, defaultFontFamily: 'Segoe UI' }
+
+/** Renders an SVG to straight (not premultiplied) RGBA at `size` px wide. */
+function rasterize(svg, size) {
+  const img = new Resvg(svg, { fitTo: { mode: 'width', value: size }, font: FONT }).render()
+  const rgba = Buffer.from(img.pixels) // resvg gives premultiplied RGBA
+  for (let i = 0; i < rgba.length; i += 4) {
+    const a = rgba[i + 3]
+    if (a === 0) rgba[i] = rgba[i + 1] = rgba[i + 2] = 0
+    else if (a < 255) for (let k = 0; k < 3; k++) rgba[i + k] = Math.min(255, Math.round((rgba[i + k] * 255) / a))
   }
-  return d
+  return { width: img.width, height: img.height, rgba, png: img.asPng() }
 }
 
-const intersect = (a, b) => Math.max(a, b)
+const iconPng = (size) => rasterize(svgFor(size), size).png
 
-// ---------------- the logo: clapperboard with a play mark ----------------
-const ARM_ANGLE = (-14 * Math.PI) / 180
-const HINGE = [0.235, 0.395]
-const COS = Math.cos(-ARM_ANGLE)
-const SIN = Math.sin(-ARM_ANGLE)
-const PLAY = [
-  [0.455, 0.585],
-  [0.575, 0.655],
-  [0.455, 0.725],
-]
-
-/** Glyph layers in glyph space (unit square). Each returns an SDF; painted in order over the background. */
-const LAYERS = [
-  // board band (top of the body) and the body below it
-  { color: WHITE, sdf: (x, y) => box(x, y, 0.22, 0.42, 0.78, 0.51, 0.025) },
-  { color: ACCENT, sdf: (x, y) => intersect(box(x, y, 0.245, 0.437, 0.755, 0.493, 0.008), stripes(x, y, 0.12, 0.0)) },
-  { color: WHITE, sdf: (x, y) => box(x, y, 0.22, 0.53, 0.78, 0.79, 0.04) },
-  { color: ACCENT, sdf: (x, y) => convex(x, y, PLAY) },
-  // clapper arm, rotated around its hinge
-  {
-    color: WHITE,
-    sdf: (x, y) => {
-      const [lx, ly] = armLocal(x, y)
-      return box(lx, ly, 0.22, 0.3, 0.78, 0.39, 0.025)
-    },
-  },
-  {
-    color: ACCENT,
-    sdf: (x, y) => {
-      const [lx, ly] = armLocal(x, y)
-      return intersect(box(lx, ly, 0.245, 0.317, 0.755, 0.373, 0.008), stripes(lx, ly, 0.12, 0.06))
-    },
-  },
-]
-
-function armLocal(x, y) {
-  const dx = x - HINGE[0]
-  const dy = y - HINGE[1]
-  return [HINGE[0] + dx * COS - dy * SIN, HINGE[1] + dx * SIN + dy * COS]
+// ---------------------------------------------------------------- composed SVGs
+/** The master's <defs> and its glyph group (between the glyph markers). */
+function masterParts() {
+  const defs = SVG.master.match(/<defs>[\s\S]*?<\/defs>/)?.[0]
+  const glyph = SVG.master.match(/<!-- glyph:start -->([\s\S]*?)<!-- glyph:end -->/)?.[1]
+  if (!defs || !glyph) throw new Error('icon-master.svg: <defs> or the glyph:start / glyph:end markers are missing')
+  return { defs, glyph }
 }
 
-/**
- * @param size      output pixels
- * @param variant   'any' (rounded square, transparent corners) | 'full' (full-bleed square)
- * @param scale     glyph scale around the centre (1 = as designed)
- */
-function render(size, variant, scale) {
-  const rgba = new Float64Array(size * size * 4) // premultiplied, 0..1
-  const px = 1 / size
-  const paint = (i, color, a) => {
-    if (a <= 0) return
-    const k = 1 - a
-    rgba[i] = (color[0] / 255) * a + rgba[i] * k
-    rgba[i + 1] = (color[1] / 255) * a + rgba[i + 1] * k
-    rgba[i + 2] = (color[2] / 255) * a + rgba[i + 2] * k
-    rgba[i + 3] = a + rgba[i + 3] * k
-  }
-  for (let j = 0; j < size; j++) {
-    for (let i = 0; i < size; i++) {
-      const x = (i + 0.5) / size
-      const y = (j + 0.5) / size
-      const o = (j * size + i) * 4
-      const bg = variant === 'any' ? box(x, y, 0, 0, 1, 1, 0.21) : -1
-      paint(o, ACCENT, clamp(0.5 - bg / px, 0, 1))
-      // glyph space: scaled around the centre, nudged down a little for optical balance
-      const gx = (x - 0.5) / scale + 0.5
-      const gy = (y - 0.5) / scale + 0.5 - 0.02
-      for (const layer of LAYERS) {
-        const d = layer.sdf(gx, gy) * scale
-        paint(o, layer.color, clamp(0.5 - d / px, 0, 1))
-      }
+/** Full-bleed plate (no rounded corners) with the master glyph scaled by k around the centre. */
+function fullBleed(k) {
+  const { defs, glyph } = masterParts()
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">${defs}
+<rect width="512" height="512" fill="url(#sv-plate)"/>
+<g transform="translate(256 256) scale(${k}) translate(-256 -256)">${glyph}</g></svg>`
+}
+
+/** Installer art: replaces href="icon:N" with the N px icon (rendered from its own cut). */
+function withIcons(svg) {
+  return svg.replace(/href="icon:(\d+)"/g, (_, n) => `href="data:image/png;base64,${iconPng(+n).toString('base64')}"`)
+}
+
+// ---------------------------------------------------------------- encoders
+/** .ico: BMP (32-bit BGRA + AND mask) entries below 256, PNG entry at 256. */
+function encodeIco(sizes) {
+  const images = sizes.map((size) => {
+    const r = rasterize(svgFor(size), size)
+    return { size, data: size >= 256 ? r.png : dib(r) }
+  })
+  const header = Buffer.alloc(6 + 16 * images.length)
+  header.writeUInt16LE(0, 0)
+  header.writeUInt16LE(1, 2) // type: icon
+  header.writeUInt16LE(images.length, 4)
+  let offset = header.length
+  images.forEach(({ size, data }, i) => {
+    const e = 6 + 16 * i
+    header.writeUInt8(size >= 256 ? 0 : size, e)
+    header.writeUInt8(size >= 256 ? 0 : size, e + 1)
+    header.writeUInt8(0, e + 2) // palette
+    header.writeUInt8(0, e + 3)
+    header.writeUInt16LE(1, e + 4) // planes
+    header.writeUInt16LE(32, e + 6) // bits per pixel
+    header.writeUInt32LE(data.length, e + 8)
+    header.writeUInt32LE(offset, e + 12)
+    offset += data.length
+  })
+  return Buffer.concat([header, ...images.map((i) => i.data)])
+}
+
+/** Icon DIB: BITMAPINFOHEADER (height doubled), bottom-up BGRA rows, then the 1-bit AND mask. */
+function dib({ width: w, height: h, rgba }) {
+  const maskRow = Math.ceil(w / 32) * 4
+  const head = Buffer.alloc(40)
+  head.writeUInt32LE(40, 0)
+  head.writeInt32LE(w, 4)
+  head.writeInt32LE(h * 2, 8)
+  head.writeUInt16LE(1, 12)
+  head.writeUInt16LE(32, 14)
+  head.writeUInt32LE(0, 16) // BI_RGB
+  head.writeUInt32LE(w * h * 4 + maskRow * h, 20)
+  const xor = Buffer.alloc(w * h * 4)
+  const and = Buffer.alloc(maskRow * h)
+  for (let y = 0; y < h; y++) {
+    const row = h - 1 - y
+    for (let x = 0; x < w; x++) {
+      const s = (y * w + x) * 4
+      const d = (row * w + x) * 4
+      xor[d] = rgba[s + 2]
+      xor[d + 1] = rgba[s + 1]
+      xor[d + 2] = rgba[s]
+      xor[d + 3] = rgba[s + 3]
+      if (rgba[s + 3] === 0) and[row * maskRow + (x >> 3)] |= 0x80 >> (x & 7)
     }
   }
-  // un-premultiply to 8-bit RGBA
-  const out = Buffer.alloc(size * size * 4)
-  for (let o = 0; o < rgba.length; o += 4) {
-    const a = rgba[o + 3]
-    out[o + 3] = Math.round(a * 255)
-    if (a > 0) {
-      out[o] = Math.round(clamp(rgba[o] / a, 0, 1) * 255)
-      out[o + 1] = Math.round(clamp(rgba[o + 1] / a, 0, 1) * 255)
-      out[o + 2] = Math.round(clamp(rgba[o + 2] / a, 0, 1) * 255)
+  return Buffer.concat([head, xor, and])
+}
+
+/** 24-bit BMP (no alpha) for NSIS. The SVG must paint an opaque background. */
+function encodeBmp24({ width: w, height: h, rgba }) {
+  const stride = Math.ceil((w * 3) / 4) * 4
+  const file = Buffer.alloc(54 + stride * h)
+  file.write('BM', 0, 'latin1')
+  file.writeUInt32LE(file.length, 2)
+  file.writeUInt32LE(54, 10)
+  file.writeUInt32LE(40, 14)
+  file.writeInt32LE(w, 18)
+  file.writeInt32LE(h, 22) // positive = bottom-up
+  file.writeUInt16LE(1, 26)
+  file.writeUInt16LE(24, 28)
+  file.writeUInt32LE(0, 30)
+  file.writeUInt32LE(stride * h, 34)
+  file.writeInt32LE(2835, 38) // 72 dpi
+  file.writeInt32LE(2835, 42)
+  for (let y = 0; y < h; y++) {
+    const o = 54 + (h - 1 - y) * stride
+    for (let x = 0; x < w; x++) {
+      const s = (y * w + x) * 4
+      if (rgba[s + 3] !== 255) throw new Error('installer art must be fully opaque (paint a background rect)')
+      file[o + x * 3] = rgba[s + 2]
+      file[o + x * 3 + 1] = rgba[s + 1]
+      file[o + x * 3 + 2] = rgba[s]
     }
   }
-  return out
+  return file
 }
 
-// ---------------- PNG encoding ----------------
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256)
-  for (let n = 0; n < 256; n++) {
-    let c = n
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    t[n] = c >>> 0
-  }
-  return t
-})()
-
-function crc32(buf) {
-  let c = 0xffffffff
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
-  return (c ^ 0xffffffff) >>> 0
+/** Reads an .ico directory back (used as a self-check after writing). */
+function readIcoDirectory(buf) {
+  if (buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) throw new Error('not an .ico')
+  const n = buf.readUInt16LE(4)
+  return Array.from({ length: n }, (_, i) => {
+    const e = 6 + 16 * i
+    const size = buf.readUInt8(e) || 256
+    const bytes = buf.readUInt32LE(e + 8)
+    const offset = buf.readUInt32LE(e + 12)
+    const isPng = buf.readUInt32BE(offset) === 0x89504e47
+    const dims = isPng
+      ? [buf.readUInt32BE(offset + 16), buf.readUInt32BE(offset + 20)]
+      : [buf.readInt32LE(offset + 4), buf.readInt32LE(offset + 8) / 2]
+    return { size, format: isPng ? 'png' : 'bmp', bits: buf.readUInt16LE(e + 6), bytes, offset, width: dims[0], height: dims[1] }
+  })
 }
 
-function chunk(type, data) {
-  const len = Buffer.alloc(4)
-  len.writeUInt32BE(data.length)
-  const td = Buffer.concat([Buffer.from(type, 'ascii'), data])
-  const crc = Buffer.alloc(4)
-  crc.writeUInt32BE(crc32(td))
-  return Buffer.concat([len, td, crc])
-}
-
-function encodePng(size, rgba) {
-  const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(size, 0)
-  ihdr.writeUInt32BE(size, 4)
-  ihdr[8] = 8 // bit depth
-  ihdr[9] = 6 // colour type RGBA
-  ihdr[10] = 0
-  ihdr[11] = 0
-  ihdr[12] = 0
-  const stride = size * 4
-  const raw = Buffer.alloc((stride + 1) * size)
-  for (let y = 0; y < size; y++) {
-    raw[y * (stride + 1)] = 0 // filter: none
-    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
-  }
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
-  ])
-}
-
-// ---------------- favicon.svg (hand-written, same geometry) ----------------
-const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <pattern id="s" width="43.44" height="43.44" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-      <rect width="21.72" height="43.44" fill="#e8894a"/>
-    </pattern>
-  </defs>
-  <rect width="512" height="512" rx="108" fill="#e8894a"/>
-  <g transform="translate(0 10)">
-    <rect x="113" y="215" width="286" height="46" rx="13" fill="#fff"/>
-    <rect x="125" y="224" width="262" height="28" rx="4" fill="url(#s)"/>
-    <rect x="113" y="271" width="286" height="133" rx="20" fill="#fff"/>
-    <path d="M233 300 L294 335 L233 371 Z" fill="#e8894a"/>
-    <g transform="rotate(-14 120 202)">
-      <rect x="113" y="154" width="286" height="46" rx="13" fill="#fff"/>
-      <rect x="125" y="162" width="262" height="29" rx="4" fill="url(#s)"/>
-    </g>
-  </g>
-</svg>
-`
-
-// ---------------- write ----------------
+// ---------------------------------------------------------------- write
+const written = []
 function write(rel, data) {
-  const file = join(ROOT, rel)
+  const file = join(OUT, rel)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, data)
-  console.log(`${rel.padEnd(36)} ${(data.length / 1024).toFixed(1)} kB`)
+  written.push([rel, data.length])
 }
 
-const png = (size, variant, scale) => encodePng(size, render(size, variant, scale))
+const ico = encodeIco(ICO_SIZES)
+const dir = readIcoDirectory(ico)
+for (const [i, e] of dir.entries()) {
+  const want = ICO_SIZES[i]
+  if (e.width !== want || e.height !== want || e.format !== (want >= 256 ? 'png' : 'bmp')) {
+    throw new Error(`icon.ico entry ${i} is ${e.format} ${e.width}x${e.height}, expected ${want}`)
+  }
+}
+write('build/icon.ico', ico)
+write('public/icons/icon.ico', ico)
+write('build/icon.png', iconPng(512))
+write('build/icon-1024.png', iconPng(1024))
 
-write('public/icons/icon-192.png', png(192, 'any', 1))
-write('public/icons/icon-512.png', png(512, 'any', 1))
-// maskable: glyph must stay inside the central circle of radius 0.4 → scale it down
-write('public/icons/maskable-512.png', png(512, 'full', 0.74))
-write('public/icons/apple-touch-icon-180.png', png(180, 'full', 0.86))
-write('build/icon.png', png(512, 'any', 1))
-write('public/favicon.svg', Buffer.from(FAVICON, 'utf8'))
+const sidebar = source('installer-sidebar.svg')
+const unSidebar = existsSync(join(SRC, 'uninstaller-sidebar.svg')) ? source('uninstaller-sidebar.svg') : sidebar
+write('build/installerSidebar.bmp', encodeBmp24(rasterize(withIcons(sidebar), 164)))
+write('build/uninstallerSidebar.bmp', encodeBmp24(rasterize(withIcons(unSidebar), 164)))
+write('build/installerHeader.bmp', encodeBmp24(rasterize(withIcons(source('installer-header.svg')), 150)))
+
+write('public/favicon.svg', source('favicon.svg'))
+write('public/icons/icon-192.png', iconPng(192))
+write('public/icons/icon-512.png', iconPng(512))
+// maskable: the farthest ink point of the master glyph is 243 from the centre; x0.8 = 194 < 204.8 (the 80 % circle)
+write('public/icons/maskable-512.png', rasterize(fullBleed(0.8), 512).png)
+write('public/icons/apple-touch-icon-180.png', rasterize(fullBleed(0.92), 180).png)
+
+console.log(`make-icons: ${written.length} files -> ${OUT}`)
+for (const [rel, n] of written) console.log(`  ${rel.padEnd(34)} ${String(n).padStart(7)} B`)
+console.log('  icon.ico entries: ' + dir.map((e) => `${e.size}${e.format === 'png' ? ' (png)' : ''}`).join(', '))
+if (!HAVE_SEGOE) console.warn('  note: Segoe UI not found; installer text used a fallback system font')

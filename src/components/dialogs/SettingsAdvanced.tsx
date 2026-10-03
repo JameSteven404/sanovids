@@ -390,7 +390,7 @@ export function ResetAllSetting({ label, hint }: RowProps) {
         <div className="dg-callout warn dg-confirm" role="group" aria-label="Xác nhận khôi phục cài đặt mặc định">
           <TriangleAlert size={15} />
           <div>
-            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file; nhà cung cấp
+            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật; nhà cung cấp
             video về {PROVIDER_LABEL.dev}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và đăng nhập canvasapp giữ nguyên.
           </div>
           <div className="dg-confirm-actions">

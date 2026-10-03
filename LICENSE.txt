@@ -1,0 +1,10 @@
+﻿SANOVIDS — GIẤY PHÉP SỬ DỤNG
+Bản quyền © 2026 Nguyễn Giang Minh (Jame Steven). Mọi quyền được bảo lưu.
+Đồng hành: Sano Group.
+
+1. SanoVids là phần mềm thuộc quyền sở hữu của tác giả Nguyễn Giang Minh (Jame Steven).
+2. Bạn được cài đặt và sử dụng SanoVids khi được tác giả cho phép (ví dụ: trong nội bộ nhóm làm việc).
+3. Không được sao chép, chỉnh sửa, dịch ngược, tháo rời, phân phối lại, cho thuê hoặc bán lại SanoVids (toàn bộ hay một phần) khi chưa có sự đồng ý bằng văn bản của tác giả.
+4. Bản cài chính thức luôn được ký số bởi "Nguyễn Giang Minh (Jame Steven)", dấu vân tay chứng chỉ 7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED. Bản không mang chữ ký này không phải bản gốc.
+5. SanoVids được cung cấp "nguyên trạng", không kèm bất kỳ bảo đảm nào. Tác giả không chịu trách nhiệm về thiệt hại phát sinh từ việc sử dụng phần mềm.
+6. SanoVids có dùng các thành phần mã nguồn mở (như Electron, Chromium, React); các thành phần đó tuân theo giấy phép riêng của chúng, được kèm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).

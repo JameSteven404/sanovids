@@ -2,7 +2,9 @@
 // __tests__/devModel.test.ts. docs/SPEC-v2.md §11.
 //
 // ---- API ----
-//   DEV_PANEL_TABS / DevPanelTab              the panel's tabs (Trạng thái · Gây lỗi · Nhật ký · Job & đơn nạp).
+//   DEV_PANEL_TABS / DevPanelTab              the panel's tabs (Trạng thái · Gây lỗi · Nhật ký · Job & đơn nạp · Cập nhật —
+//                                             the simulated updater and the simulated signature of Cài đặt → Giới thiệu).
+//   devPanelTabs({ simulatedUpdates })        the tabs to show ('Cập nhật' only where the updater is simulated).
 //   activeFaultCount(snapshot)                faults armed on the simulated server (rules + job faults + session ended).
 //   DEV_UI_FAULTS                             one-click faults of the "Gây lỗi" tab (Vietnamese label / hint / action).
 //   uiFaultRule(item, sticky)                 the server rule (DevFaultInput) of a 'rule' item, sticky or one-shot.
@@ -41,7 +43,16 @@ export const DEV_PANEL_TABS: { id: DevPanelTab; label: string }[] = [
   { id: 'faults', label: 'Gây lỗi' },
   { id: 'log', label: 'Nhật ký' },
   { id: 'jobs', label: 'Job & đơn nạp' },
+  { id: 'updates', label: 'Cập nhật' },
 ]
+
+/**
+ * Tabs of the panel: "Cập nhật" drives the simulated updater (providers/dev/updates), which exists only outside Electron
+ * (lib/updates updatesSource() === 'sim'); the desktop app always uses the real updater, so the tab is left out there.
+ */
+export function devPanelTabs({ simulatedUpdates }: { simulatedUpdates: boolean }): { id: DevPanelTab; label: string }[] {
+  return simulatedUpdates ? DEV_PANEL_TABS : DEV_PANEL_TABS.filter((t) => t.id !== 'updates')
+}
 
 /** Faults armed on the simulated server: rules, job-level faults and a session ended by "Hết phiên (401)". */
 export function activeFaultCount(s: Pick<DevServerSnapshot, 'faults' | 'jobFaults' | 'sessionExpired'> | null | undefined): number {

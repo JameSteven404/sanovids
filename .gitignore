@@ -4,6 +4,8 @@ dist/
 dist-ssr/
 *.local
 coverage/
+# Ghi chú cập nhật tạo lại mỗi lần build (scripts/update-notes.mjs → latest.yml)
+build/release-notes.md
 
 # Log
 npm-debug.log*
@@ -33,3 +35,13 @@ release/
 
 # Cloudflare
 .wrangler/
+
+# Khoá ký số (chứng chỉ có khoá riêng) — KHÔNG bao giờ đưa vào repo (docs/SIGNING.md)
+*.pfx
+*.p12
+*.pvk
+# …và các file khoá / mật khẩu do openssl tạo khi thử ký (chứng chỉ thử)
+*.key
+*.pem
+pw.txt
+*.pfx.txt

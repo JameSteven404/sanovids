@@ -1,19 +1,66 @@
-// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, the app, project data.
-// Each row subscribes to its own pref only (the dialog never re-renders as a whole) and applies at once; the stores
-// save and validate the values (lib/theme, lib/downloads, lib/playback, lib/canvasPrefs, store/ui, store/project).
-import { AppWindow, Clock, Download, FileUp, FolderDown, FolderOpen, Globe, LoaderCircle, Monitor, MonitorCheck, MonitorDown, Moon, Sparkles, Sun } from 'lucide-react'
+// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data,
+// about (version, author, code signature). Each row subscribes to its own pref only (the dialog never re-renders as a
+// whole) and applies at once; the stores save and validate the values (lib/theme, lib/downloads, lib/playback,
+// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature.
+import {
+  AppWindow,
+  CircleArrowUp,
+  CircleCheck,
+  Clock,
+  CloudDownload,
+  Download,
+  ExternalLink,
+  FileUp,
+  FolderDown,
+  FolderOpen,
+  Globe,
+  LoaderCircle,
+  Monitor,
+  MonitorCheck,
+  MonitorDown,
+  Moon,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestionMark,
+  Sparkles,
+  Sun,
+  TriangleAlert,
+} from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { version as APP_VERSION } from '../../../package.json'
 import type { EdgeMode } from '../../core/types'
+import {
+  ABOUT_AUTHOR_LINE,
+  ABOUT_COPYRIGHT,
+  ABOUT_DESC,
+  ABOUT_DOWNLOAD_LINE,
+  ABOUT_LICENSE_NOTE,
+  ABOUT_OPEN_PAGE,
+  ABOUT_OPEN_PAGE_TITLE,
+  ABOUT_OPEN_SOURCE,
+  ABOUT_PARTNER_LINE,
+  ABOUT_TITLE,
+  signatureView,
+  thumbprintRows,
+  versionLine,
+} from '../../lib/aboutModel'
+import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
 import { useCanvasPrefs } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
+import { useUpdatePrefs } from '../../lib/updatePrefs'
+import { openReleasePage, useUpdates } from '../../lib/updates'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
 import { toast, useUI, type InteractionMode, type TakeDisplay } from '../../store/ui'
+import { checkNow, openUpdateDialog, useInstallUi } from '../../updateActions'
 import { rateLabel } from '../canvas/playerModel'
+import { Logo } from '../common/Logo'
 import './dialogs.css'
 import { Segmented } from './Segmented'
 import { Field, Section, Toggle, useSettingsCtx, type RowProps } from './settingsUi'
@@ -307,6 +354,115 @@ export function AutoRenumberSetting({ label, hint }: RowProps) {
   return <Toggle checked={autoRenumber} onChange={(v) => update({ autoRenumber: v })} label={label} hint={hint} />
 }
 
+// ---------------- Cập nhật ----------------
+/** Re-render every `ms` (relative times such as "5 phút trước"). */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), ms)
+    return () => window.clearInterval(id)
+  }, [ms])
+  return now
+}
+
+/** Version, kind and what the updater is doing (top of the "Cập nhật" group). */
+export function UpdateStatusIntro() {
+  const state = useUpdates((s) => s.state)
+  const autoDownload = useUpdatePrefs((s) => s.autoDownload)
+  const { desktop } = usePwaInstall()
+  const now = useNow(30_000)
+  const web = !desktop
+  const s = state.status
+  const icon =
+    s === 'checking' ? (
+      <LoaderCircle size={17} className="dg-spin" />
+    ) : s === 'downloading' ? (
+      <CloudDownload size={17} />
+    ) : s === 'available' || s === 'ready' ? (
+      <CircleArrowUp size={17} />
+    ) : s === 'none' ? (
+      <CircleCheck size={17} />
+    ) : s === 'error' ? (
+      <TriangleAlert size={17} />
+    ) : web && state.kind === 'dev' ? (
+      <Globe size={17} />
+    ) : (
+      <RefreshCw size={17} />
+    )
+  return (
+    <div className="dg-app">
+      <div className="dg-app-status">
+        <span className={`dg-app-icon${s === 'none' || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
+          {icon}
+        </span>
+        <span role="status">
+          <b>{settingsIntroTitle(state, web)}</b>
+          <small>{settingsStatusLine(state, { web, autoDownload })}</small>
+          {state.lastCheck ? <small>Kiểm tra lần cuối: {lastCheckText(state.lastCheck, Math.max(now, state.lastCheck))}</small> : null}
+        </span>
+      </div>
+      {hasUpdateDetails(state) && (
+        <button type="button" className="btn btn-sm" onClick={openUpdateDialog}>
+          Xem chi tiết
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** "Tự động tải bản cập nhật" (installer builds only). */
+export function UpdateAutoDownloadSetting({ label, hint }: RowProps) {
+  const autoDownload = useUpdatePrefs((s) => s.autoDownload)
+  const set = useUpdatePrefs((s) => s.set)
+  const kind = useUpdates((s) => s.state.kind)
+  const note = autoDownloadNote(kind)
+  return (
+    <Toggle
+      // Shown off where it does not apply (portable / dev / web); the saved pref is untouched.
+      checked={note ? false : autoDownload}
+      onChange={(v) => set({ autoDownload: v })}
+      label={label}
+      disabled={!!note}
+      hint={
+        note ? (
+          <>
+            {hint} {note}
+          </>
+        ) : (
+          hint
+        )
+      }
+    />
+  )
+}
+
+/** "Kiểm tra cập nhật" → "Kiểm tra ngay" (a toast gives the result). */
+export function UpdateCheckSetting({ label, hint }: RowProps) {
+  const status = useUpdates((s) => s.state.status)
+  const kind = useUpdates((s) => s.state.kind)
+  const manual = useInstallUi((s) => s.manualCheck)
+  const checking = manual || status === 'checking'
+  // Builds that never update: really disabled. While checking / downloading: aria-disabled, so the button keeps the
+  // keyboard focus it had when clicked.
+  const unavailable = kind === 'dev' || status === 'unsupported'
+  const busy = checking || status === 'downloading'
+  return (
+    <Field label={label} hint={hint}>
+      <button
+        type="button"
+        className="btn btn-sm dg-upd-check"
+        disabled={unavailable}
+        aria-disabled={!unavailable && busy ? true : undefined}
+        onClick={() => {
+          if (!busy) void checkNow()
+        }}
+      >
+        {checking ? <LoaderCircle size={13} className="dg-spin" /> : <RefreshCw size={13} />} Kiểm tra ngay
+      </button>
+    </Field>
+  )
+}
+
 // ---------------- Ứng dụng (block) ----------------
 export function AppBlock() {
   const { canInstall, installed, desktop, promptInstall } = usePwaInstall()
@@ -373,6 +529,86 @@ export function AppBlock() {
         </div>
       )}
       <div className="dg-field-hint">Mỗi trình duyệt / bản app giữ dữ liệu riêng. Chuyển máy: Xuất dự án ở mục Dữ liệu dự án rồi Nhập file .sanovids.json ở máy kia (file .bdp.json cũ vẫn nhập được).</div>
+    </Section>
+  )
+}
+
+// ---------------- Giới thiệu (block) ----------------
+/** Version, author (Sano Group only as a partner), copyright, licence and the app's own code-signature self-check. */
+export function AboutBlock() {
+  const sig = useAppSignature((s) => s.sig)
+  const kind = useUpdates((s) => s.state.kind)
+  const { desktop } = usePwaInstall()
+  const [opening, setOpening] = useState(false)
+
+  useEffect(() => {
+    void loadAppSignature()
+  }, [])
+
+  const version = desktopInfo()?.version || APP_VERSION
+  const view = signatureView(sig)
+
+  const openPage = async () => {
+    if (opening) return
+    setOpening(true)
+    try {
+      const res = await openReleasePage()
+      if (!res.ok) toast(res.message, { tone: 'error' })
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  return (
+    <Section title={ABOUT_TITLE} desc={ABOUT_DESC}>
+      <div className="dg-about-head">
+        <span className="dg-about-logo" aria-hidden="true">
+          <Logo size={40} />
+        </span>
+        <span className="dg-about-name">
+          <b>SanoVids</b>
+          <small>{versionLine(version, kind, desktop)}</small>
+        </span>
+      </div>
+      <div className="dg-about-lines">
+        <p className="dg-about-author">{ABOUT_AUTHOR_LINE}</p>
+        <p>{ABOUT_PARTNER_LINE}</p>
+        <p>{ABOUT_COPYRIGHT}</p>
+        <p className="dg-about-license">{ABOUT_LICENSE_NOTE}</p>
+      </div>
+      <div className="dg-about-sig" role="status">
+        {view.tone === 'warn' ? (
+          <div className="dg-callout warn">
+            <ShieldAlert size={15} />
+            <div>
+              <b>{view.title}</b>
+              <div>{view.detail}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="dg-app-status">
+            <span className={`dg-app-icon${view.tone === 'ok' ? ' on' : ''}`} aria-hidden="true">
+              {view.tone === 'ok' ? <ShieldCheck size={17} /> : <ShieldQuestionMark size={17} />}
+            </span>
+            <span>
+              <b>{view.title}</b>
+              {view.detail ? <small>{view.detail}</small> : null}
+            </span>
+          </div>
+        )}
+        {thumbprintRows(sig).map((row) => (
+          <p key={row.label} className="dg-about-thumb">
+            {row.label}: <span className="mono">{row.value}</span>
+          </p>
+        ))}
+      </div>
+      <div className="dg-about-download">
+        <span>{ABOUT_DOWNLOAD_LINE}</span>
+        <button type="button" className="btn btn-sm" disabled={opening} onClick={() => void openPage()} title={ABOUT_OPEN_PAGE_TITLE}>
+          {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {ABOUT_OPEN_PAGE}
+        </button>
+      </div>
+      <div className="dg-field-hint">{ABOUT_OPEN_SOURCE}</div>
     </Section>
   )
 }

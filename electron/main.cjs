@@ -7,6 +7,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = 
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { setupUpdater } = require('./updater.cjs')
 
 const SCHEME = 'app'
 const HOST = 'bdp'
@@ -40,8 +41,55 @@ const MIME = {
 
 // Same data folder for `npm run desktop`, the installer and the portable .exe (ASCII, independent of the
 // product name), so projects survive updates and switching between the two builds.
-app.setPath('userData', path.join(app.getPath('appData'), 'SanoVids'))
-app.setAppUserModelId('com.sanovids.app')
+const updaterRules = require('./updater-rules.cjs')
+const hardening = require('./hardening-rules.cjs')
+/**
+ * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
+ * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
+ * a packaged binary always runs resources\app.asar (hardening-rules.isPackagedApp). Every hardening decision uses this.
+ */
+const PACKAGED = hardening.isPackagedApp({ isPackaged: app.isPackaged, appPath: app.getAppPath() })
+// Test-only isolation (never set by real users): SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the
+// packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
+// fsMod lets the check see through junctions / symlinks / short names to the real %APPDATA%\SanoVids.
+const bakedProfileDir = readBakedProfileDir()
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
+if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
+/** A test-identity build (its package.json, inside the integrity-checked app.asar, has a baked test profile). Never the official build. */
+const TEST_BUILD = typeof bakedProfileDir === 'string' && bakedProfileDir !== ''
+// Hardening (docs/SIGNING.md): a packaged SanoVids never starts with debugger / security-off / helper-launcher switches.
+// hasSwitch is Chromium's own parser (it also reads "-switch" and "/switch" on Windows). Remote debugging is allowed only
+// in a test build on its isolated test profile, so the E2E harness can drive test builds. Nothing has been written yet.
+const refused = hardening.refusedSwitches({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD, hasSwitch: (n) => app.commandLine.hasSwitch(n) })
+if (refused.length > 0) {
+  console.error(`[SanoVids] refused command-line switches: ${refused.join(', ')}`)
+  dialog.showErrorBox('SanoVids', hardening.REFUSED_DIALOG_TEXT)
+  process.exit(3)
+}
+// SSLKEYLOGFILE would make Chromium write every TLS key to disk (like the refused --ssl-key-log-file): removed from this
+// process before the network service reads it (checked on Electron 44: deleting it here stops the key log file).
+for (const name of hardening.envToStrip({ isPackaged: PACKAGED, env: process.env })) delete process.env[name]
+// Every renderer runs sandboxed (the windows below ask for it too; this also covers anything created later).
+app.enableSandbox()
+/** DevTools only from source or in a test build on its isolated test profile — never in the official packaged app. */
+const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })
+if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
+app.setPath('userData', profile.dir)
+app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
+
+/** `sanovidsTestProfileDir` of the app's own package.json (only test builds have it), else undefined. */
+function readBakedProfileDir() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && typeof pkg.sanovidsTestProfileDir === 'string' ? pkg.sanovidsTestProfileDir : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The main SanoVids window (set in createWindow, cleared when it closes) and the auto-updater (electron/updater.cjs). */
+let mainWindow = null
+let updater = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -61,11 +109,27 @@ if (!app.requestSingleInstanceLock()) {
     win.show()
     win.focus()
   })
+  // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
+  // Web Bluetooth never picks a device (Electron would otherwise select the first one). Exactly one handler each.
+  app.on('web-contents-created', (_event, wc) => {
+    wc.on('will-attach-webview', (event) => event.preventDefault())
+    wc.on('select-bluetooth-device', (event, _devices, callback) => {
+      event.preventDefault()
+      callback('')
+    })
+  })
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
+    restrictDefaultSessionPermissions()
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
     registerFileBridge()
+    registerAppBridge()
+    try {
+      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source })
+    } catch (e) {
+      console.error('[SanoVids] auto-updater disabled:', e)
+    }
     createWindow()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -74,6 +138,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+  // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
+  // the updater records the attempt there (notice on the next launch). 'quit' never fires for a quit a window vetoed.
+  app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
 }
 
 /** app://bdp/<path> → dist/<path>. Unknown paths without an extension fall back to index.html (SPA). */
@@ -99,21 +166,51 @@ async function serveDist(request) {
   const ext = path.extname(file).toLowerCase()
   try {
     const body = await fs.promises.readFile(file)
-    return new Response(body, {
-      status: 200,
-      headers: {
-        'content-type': MIME[ext] || 'application/octet-stream',
-        // hashed assets never change; index.html must always be fresh after an app update
-        'cache-control': rel.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
-      },
-    })
+    const headers = {
+      'content-type': MIME[ext] || 'application/octet-stream',
+      // hashed assets never change; index.html must always be fresh after an app update
+      'cache-control': rel.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+    }
+    if (ext === '.html') headers['content-security-policy'] = await htmlCsp()
+    return new Response(body, { status: 200, headers })
   } catch {
     if (!ext) {
       const index = await fs.promises.readFile(path.join(DIST, 'index.html')).catch(() => null)
-      if (index) return new Response(index, { status: 200, headers: { 'content-type': MIME['.html'] } })
+      if (index) return new Response(index, { status: 200, headers: { 'content-type': MIME['.html'], 'content-security-policy': await htmlCsp() } })
     }
     return new Response('Not found', { status: 404 })
   }
+}
+
+/**
+ * Content-Security-Policy of every HTML page served from dist/ (hardening-rules.contentSecurityPolicy): only the app's
+ * own files, plus the inline theme script of index.html by its sha256. Computed once from the dist/index.html bytes;
+ * never throws (an unreadable index.html gets the policy without any inline script, and is retried next time).
+ */
+let htmlCspPromise = null
+function htmlCsp() {
+  if (!htmlCspPromise) {
+    htmlCspPromise = fs.promises.readFile(path.join(DIST, 'index.html')).then(
+      (bytes) => hardening.contentSecurityPolicy(bytes),
+      () => {
+        htmlCspPromise = null
+        return hardening.contentSecurityPolicy('')
+      },
+    )
+  }
+  return htmlCspPromise
+}
+
+/**
+ * Web permissions of the default session (the SanoVids window): Electron grants every permission by default; the page
+ * only needs clipboard writes (copy buttons), the web folder picker API and full-screen video. No device is ever handed out.
+ * The canvasapp partition has its own rules (restrictCanvasappPermissions).
+ */
+function restrictDefaultSessionPermissions() {
+  const ses = session.defaultSession
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(hardening.permissionAllowed(permission)))
+  ses.setPermissionCheckHandler((_wc, permission) => hardening.permissionAllowed(permission))
+  ses.setDevicePermissionHandler(() => false)
 }
 
 function createWindow() {
@@ -126,12 +223,14 @@ function createWindow() {
     title: TITLE,
     backgroundColor: '#0f1012',
     autoHideMenuBar: true,
-    icon: path.join(DIST, 'icons', 'icon-512.png'),
+    // Windows: the multi-size .ico (sharp taskbar / Alt+Tab icon at every scale); elsewhere the 512 px PNG.
+    icon: path.join(DIST, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon-512.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      devTools: DEVTOOLS,
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
@@ -139,25 +238,40 @@ function createWindow() {
     },
   })
 
+  mainWindow = win
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
+
   win.once('ready-to-show', () => {
     win.maximize()
     win.show()
+    if (updater) updater.onWindowReady()
+    // Self-check of the app's own code signature, once, a moment after the window shows (cached for 'app:signature').
+    setTimeout(() => void appSignature(), 3000)
   })
 
   const { webContents } = win
 
-  // No application menu → re-add the developer shortcuts we still want.
-  webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return
-    const key = input.key.toLowerCase()
-    if ((input.control || input.meta) && input.shift && key === 'i') {
-      webContents.toggleDevTools()
-      event.preventDefault()
-    } else if (key === 'f12') {
-      webContents.toggleDevTools()
-      event.preventDefault()
-    }
+  // "Khởi động lại để cập nhật": the page saved everything first; a beforeunload veto must not cancel quitAndInstall.
+  webContents.on('will-prevent-unload', (event) => {
+    if (updater && updater.isQuittingForUpdate()) event.preventDefault()
   })
+
+  // No application menu → re-add the developer shortcuts, only where DevTools are allowed (from source / test profile).
+  if (DEVTOOLS) {
+    webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const key = input.key.toLowerCase()
+      if ((input.control || input.meta) && input.shift && key === 'i') {
+        webContents.toggleDevTools()
+        event.preventDefault()
+      } else if (key === 'f12') {
+        webContents.toggleDevTools()
+        event.preventDefault()
+      }
+    })
+  }
 
   // External links open in the default browser; the window itself never leaves the app origin.
   webContents.setWindowOpenHandler(({ url }) => {
@@ -173,7 +287,13 @@ function createWindow() {
   // Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder
   // without a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file"
   // uses files:saveAs (native save dialog) instead. The renderer is told (bdp:downloaded) when a file is saved.
+  // Only blobs made by the page itself (blob:app://bdp/…) with the types SanoVids produces: never a program or a script.
   webContents.session.on('will-download', (_event, item) => {
+    if (!hardening.downloadAllowed(item.getURL(), item.getFilename())) {
+      item.cancel()
+      console.warn(`[SanoVids] download refused: ${hardening.downloadLogLabel(item.getURL(), item.getFilename())}`)
+      return
+    }
     const dir = app.getPath('downloads')
     const parsed = path.parse(item.getFilename())
     let target = path.join(dir, parsed.base)
@@ -190,6 +310,41 @@ function createWindow() {
 
 function isExternal(url) {
   return /^(https?:|mailto:)/i.test(url)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Self-check of the app's own code signature (Cài đặt → Giới thiệu; docs/SIGNING.md). The running .exe AND the DLLs
+// next to it that SanoVids processes load (hardening-rules.SELF_CHECK_FILES: Electron's four author-signed DLLs and
+// Microsoft's two) are checked once, with one PowerShell (electron/signature.cjs: Authenticode + the pinned author
+// certificate of package.json sanovids.signers), and the result is cached. The install folder is writable by the user:
+// a swapped or modified DLL shows 'tampered'. The page only reads it ('app:signature', no argument).
+// ---------------------------------------------------------------------------------------------------------------
+
+let selfCheck = null
+
+/** → { status, packaged, signer?, thumbprint? } (hardening-rules.appSignaturePayload). Never rejects. */
+function appSignature() {
+  if (!selfCheck) selfCheck = computeAppSignature().catch(() => ({ status: 'unknown', packaged: PACKAGED }))
+  return selfCheck
+}
+
+async function computeAppSignature() {
+  if (!PACKAGED) return { status: 'unsigned', packaged: false } // from source: nothing to check (no PowerShell)
+  if (process.platform !== 'win32') return { status: 'unknown', packaged: true }
+  const signature = require('./signature.cjs')
+  const log = (l) => console.log(`[SanoVids] ${l}`)
+  const pins = signature.readSignerPins()
+  const dir = path.dirname(process.execPath)
+  const companions = hardening.SELF_CHECK_FILES
+  const results = await signature.checkFilesSignature([process.execPath, ...companions.map((f) => path.join(dir, f.name))], { pins, log })
+  const states = companions.map((f, i) => ({ name: f.name, state: hardening.selfCheckFileState(f.kind, results[i + 1], pins) }))
+  const verdict = hardening.combineSelfCheck(results[0] && results[0].verdict, states)
+  if (verdict.files && verdict.files.length) log(`self-check ${verdict.status}: ${verdict.files.join(', ')}`)
+  return hardening.appSignaturePayload(verdict, { packaged: true })
+}
+
+function registerAppBridge() {
+  ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -434,7 +589,7 @@ function canvasappLogin(parent) {
     const before = await canvasappStatus()
     if (before.ok && before.authenticated) return before
 
-    const webPreferences = { partition: CANVASAPP_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false }
+    const webPreferences = { partition: CANVASAPP_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: DEVTOOLS, spellcheck: false }
     const win = new BrowserWindow({
       width: 1120,
       height: 840,
@@ -445,11 +600,16 @@ function canvasappLogin(parent) {
       webPreferences,
     })
     canvasappLoginWin = win
-    // Sign-in popups (e.g. Google) stay in the same partition so the session ends up there.
-    win.webContents.setWindowOpenHandler(({ url }) => {
-      if (/^https:\/\//i.test(url)) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true, webPreferences } }
-      return { action: 'deny' }
-    })
+    // Sign-in popups (e.g. Google) stay in the same partition so the session ends up there. Every popup, and every
+    // popup of a popup, gets the same rule: https only, same webPreferences (sandbox, no DevTools in a real app).
+    const guardPopups = (w) => {
+      w.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https:\/\//i.test(url)) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true, webPreferences } }
+        return { action: 'deny' }
+      })
+      w.webContents.on('did-create-window', (child) => guardPopups(child))
+    }
+    guardPopups(win)
 
     return await new Promise((resolve) => {
       let done = false
@@ -683,6 +843,7 @@ function canvasappCheckout(parent, args) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      devTools: DEVTOOLS,
       spellcheck: false,
       webviewTag: false,
       navigateOnDragDrop: false,
@@ -740,11 +901,7 @@ function canvasappCheckout(parent, args) {
       return { action: 'deny' }
     })
     wc.on('will-attach-webview', (event) => event.preventDefault())
-    // Web Bluetooth: never pick a device (Electron would otherwise select the first one).
-    wc.on('select-bluetooth-device', (event, _devices, callback) => {
-      event.preventDefault()
-      callback('')
-    })
+    // Web Bluetooth: the app-wide 'web-contents-created' handler already refuses every device (one handler only).
     // Keep our title (the payment page would replace it).
     win.on('page-title-updated', (event) => event.preventDefault())
     win.on('closed', () => {

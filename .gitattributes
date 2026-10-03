@@ -5,3 +5,5 @@
 *.jpg binary
 *.webp binary
 *.ico binary
+*.bmp binary
+*.cer binary

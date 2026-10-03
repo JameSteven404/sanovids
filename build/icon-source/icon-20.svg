@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+  <title>SanoVids</title>
+  <!-- 20 px cut (1 unit = 1 px): 125 % title bars and small icons.
+       Stroke 2; strokes y 3-5 / 15-17 and bowl sides x 5-7 / 13-15 sit on whole pixels; disc and dot sides on
+       whole pixels (x 13-18 / 2-7). Plug gap = the clean pixel column x 12. -->
+  <defs>
+    <linearGradient id="sv-plate-20" x1="0" y1="0" x2="0" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffb340"/>
+      <stop offset="1" stop-color="#ff9f0a"/>
+    </linearGradient>
+  </defs>
+  <rect width="20" height="20" rx="4.4" fill="url(#sv-plate-20)"/>
+  <g fill="#1d1206">
+    <path d="M12 4H10A4 2.5 0 0 0 7.2 8.29L12.8 11.71A4 2.5 0 0 1 10 16H4.5" fill="none" stroke="#1d1206" stroke-width="2"/>
+    <circle cx="15.5" cy="4" r="2.5"/>
+    <circle cx="4.5" cy="16" r="2.5"/>
+  </g>
+</svg>

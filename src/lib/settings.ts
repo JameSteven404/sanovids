@@ -4,7 +4,8 @@
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
 //   theme (lib/theme) · downloads (lib/downloads) · playback (lib/playback) · canvas (lib/canvasPrefs) ·
-//   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider).
+//   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
+//   updates (lib/updatePrefs: auto-download of app updates).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download
 // folder (a folder permission cannot be moved to another machine), the canvasapp login, demo credits, panel widths
 // (screen-specific; see components/common/PanelResizer resetPanelLayout). The video provider is reset to development mode
@@ -19,6 +20,7 @@ import { DEFAULT_CANVAS_PREFS, MOTION_LEVELS, useCanvasPrefs, type MotionLevel }
 import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
 import { isThemePref, useTheme, type ThemePref } from './theme'
+import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
 
 export interface PortableSettings {
   theme: ThemePref
@@ -27,6 +29,7 @@ export interface PortableSettings {
   canvas: { clickToCut: boolean; animations: MotionLevel }
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
   mock: MockSettings
+  updates: { autoDownload: boolean }
 }
 
 /** Some settings (what a file or a reset changes). */
@@ -45,6 +48,7 @@ export const DEFAULT_SETTINGS: PortableSettings = {
   canvas: { ...DEFAULT_CANVAS_PREFS },
   ui: { edgeMode: 'selected', takeDisplay: 'all', showMinimap: true, interaction: 'hand', toastTime: 'normal' },
   mock: { ...DEFAULT_MOCK_SETTINGS },
+  updates: { autoDownload: DEFAULT_UPDATE_PREFS.autoDownload },
 }
 
 /** Every setting as it is now. */
@@ -60,6 +64,7 @@ export function currentSettings(): PortableSettings {
     canvas: { clickToCut: c.clickToCut, animations: c.animations },
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
+    updates: { autoDownload: useUpdatePrefs.getState().autoDownload },
   }
 }
 
@@ -79,6 +84,7 @@ const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock'>]: Record<
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
   canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS) },
   ui: { edgeMode: inList(EDGE_MODES), takeDisplay: inList(TAKE_DISPLAYS), showMinimap: isBool, interaction: inList(INTERACTION_MODES), toastTime: inList(TOAST_TIMES) },
+  updates: { autoDownload: isBool },
 }
 const MOCK_RULES: Record<keyof MockSettings, Check> = {
   speed: (v) => parseMockSettings({ speed: v }).speed === v,
@@ -155,6 +161,7 @@ export function applySettings(patch: SettingsPatch): void {
     if (patch.ui.toastTime !== undefined) u.setToastTime(patch.ui.toastTime)
   }
   if (patch.mock) useRuns.getState().setMock(patch.mock)
+  if (patch.updates) useUpdatePrefs.getState().set(patch.updates)
 }
 
 /** What a reset / import changed, to put it back with "Hoàn tác". */
@@ -199,7 +206,7 @@ export function resetAllSettings(): SettingsBackup {
 /** Number of settings that differ from the defaults (shown next to "Khôi phục cài đặt mặc định"). */
 export function changedSettingsCount(s: PortableSettings = currentSettings()): number {
   let n = s.theme === DEFAULT_SETTINGS.theme ? 0 : 1
-  for (const group of ['downloads', 'playback', 'canvas', 'ui', 'mock'] as const) {
+  for (const group of ['downloads', 'playback', 'canvas', 'ui', 'mock', 'updates'] as const) {
     const cur = s[group] as Record<string, unknown>
     const def = DEFAULT_SETTINGS[group] as Record<string, unknown>
     for (const k of Object.keys(def)) if (cur[k] !== def[k]) n++

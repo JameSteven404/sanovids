@@ -7,7 +7,9 @@ import {
   characterCheck,
   CUSTOM_FAULT_DEFAULT,
   customFaultInput,
+  DEV_PANEL_TABS,
   DEV_UI_FAULTS,
+  devPanelTabs,
   faultArmedText,
   faultKindText,
   faultRuleText,
@@ -260,5 +262,14 @@ describe('characterCheck', () => {
   it('is null for bodies that are not jobs', () => {
     expect(characterCheck(null, { uploads, jobs: [], assets })).toBeNull()
     expect(characterCheck({ amount_vnd: 10000 }, { uploads, jobs: [], assets })).toBeNull()
+  })
+})
+
+describe('devPanelTabs', () => {
+  it('"Cập nhật" only where the updater is simulated (outside Electron)', () => {
+    expect(DEV_PANEL_TABS.map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
+    expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')
+    expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
+    expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs'])
   })
 })

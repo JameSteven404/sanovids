@@ -58,6 +58,11 @@
   --checker-a: #1c1c1e;
   --checker-b: #232325;
 
+  /* brand mark (the app icon's orange plate + ink): fixed in BOTH themes, so never redefined in the light block */
+  --brand-plate-top: #ffb340;
+  --brand-plate-bottom: #ff9f0a;
+  --brand-ink: #1d1206;
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
   --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 24px 64px rgba(0, 0, 0, 0.55);

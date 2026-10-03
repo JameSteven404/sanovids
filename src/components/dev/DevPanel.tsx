@@ -9,6 +9,8 @@
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
 //   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take they belong to), top-up orders
 //                  (decide what canvasapp says), uploaded pictures.
+//   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
+//                  only outside Electron — the desktop app uses the real ones).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
 // Every texts/rule decision lives in devModel.ts (pure, tested).
 import {
@@ -22,6 +24,7 @@ import {
   ClipboardCopy,
   Clock,
   Cloud,
+  CloudDownload,
   Eraser,
   FlaskConical,
   Hourglass,
@@ -46,6 +49,7 @@ import { MODELS, modeLabel } from '../../core/models'
 import { formatVnd } from '../../core/topup'
 import type { Mode, ModelId } from '../../core/types'
 import { formatCreditNumber, formatCredits } from '../../lib/credits'
+import { updatesSource } from '../../lib/updates'
 import { activeProviderId, PROVIDER_LABEL, providerOf, resetDevMode, useProviderPrefs } from '../../providers'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import {
@@ -81,8 +85,8 @@ import {
   CUSTOM_FAULT_DEFAULT,
   customFaultInput,
   DEV_FAULT_KIND_LABEL,
-  DEV_PANEL_TABS,
   DEV_UI_FAULTS,
+  devPanelTabs,
   endpointText,
   faultArmedText,
   faultRuleText,
@@ -98,6 +102,7 @@ import {
   type DevUiFault,
 } from './devModel'
 import './dev.css'
+import { DevUpdatesTab } from './DevUpdatesTab'
 
 /** After a change of the simulated account: the pill / dialogs read the balance again (only while dev is active). */
 function syncBalance() {
@@ -106,9 +111,12 @@ function syncBalance() {
 
 export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
   const close = () => useUI.getState().closeDialog()
-  const [tab, setTab] = useState<DevPanelTab>(requested ?? 'status')
+  const tabs = useMemo(() => devPanelTabs({ simulatedUpdates: updatesSource() === 'sim' }), [])
+  // A requested tab that is not offered here (Cập nhật inside Electron) falls back to the first one.
+  const pick = (t: DevPanelTab | undefined): DevPanelTab => (t && tabs.some((x) => x.id === t) ? t : 'status')
+  const [tab, setTab] = useState<DevPanelTab>(() => pick(requested))
   useEffect(() => {
-    if (requested) setTab(requested)
+    if (requested) setTab(pick(requested))
   }, [requested])
   // Creates the dev server if needed and keeps the snapshot moving with the clock while jobs run.
   useEffect(() => startDevSnapshotTicker(), [])
@@ -158,13 +166,13 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
             // ←/→ move between the tabs (tablist keyboard pattern)
             if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
             e.preventDefault()
-            const i = DEV_PANEL_TABS.findIndex((t) => t.id === tab)
-            const next = DEV_PANEL_TABS[(i + (e.key === 'ArrowRight' ? 1 : DEV_PANEL_TABS.length - 1)) % DEV_PANEL_TABS.length]
+            const i = tabs.findIndex((t) => t.id === tab)
+            const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]
             setTab(next.id)
             e.currentTarget.querySelector<HTMLButtonElement>(`#dv-tab-${next.id}`)?.focus()
           }}
         >
-          {DEV_PANEL_TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -183,7 +191,9 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
           ))}
         </div>
         <div role="tabpanel" id={`dv-panel-${tab}`} aria-labelledby={`dv-tab-${tab}`} className="dv-tabpanel">
-          {!snap ? (
+          {tab === 'updates' ? (
+            <DevUpdatesTab />
+          ) : !snap ? (
             <NoSnapshot />
           ) : tab === 'status' ? (
             <StatusTab snap={snap} />
@@ -205,6 +215,7 @@ const TAB_ICON: Record<DevPanelTab, ReactNode> = {
   faults: <Zap size={14} />,
   log: <ScrollText size={14} />,
   jobs: <ListChecks size={14} />,
+  updates: <CloudDownload size={14} />,
 }
 
 /** The real gateway runs new takes: this panel only drives the simulation. */

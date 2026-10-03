@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+  <!-- NSIS header image, 150 x 57, drawn at the right of the white installer header (electron-builder sets
+       MUI_HEADERIMAGE_RIGHT). make-icons.mjs renders it to build/installerHeader.bmp; href="icon:40" becomes the
+       40 px app icon from its pixel-hinted cut. -->
+  <rect width="150" height="57" fill="#ffffff"/>
+  <text x="96" y="34" text-anchor="end" font-family="Segoe UI" font-weight="600" font-size="15" fill="#1d1d1f">SanoVids</text>
+  <image x="102" y="8" width="40" height="40" href="icon:40"/>
+</svg>
