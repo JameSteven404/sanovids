@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from 'react'
 import type { CanvasappBridge } from '../providers/canvasapp/transport'
 import type { DesktopFilesBridge } from './desktopFiles'
+import type { DesktopUpdatesBridge } from './updateTypes'
 import { flush, useSave } from '../store/persist'
 import { toast, useUI } from '../store/ui'
 
@@ -33,6 +34,8 @@ export interface DesktopInfo {
   canvasapp?: CanvasappBridge
   /** Save dialog, folder picker and writes into picked folders (lib/desktopFiles.ts); missing in older desktop builds. */
   files?: DesktopFilesBridge
+  /** Auto-update (electron/updater.cjs, lib/updates.ts); missing in builds before 0.5.0. */
+  updates?: DesktopUpdatesBridge
 }
 
 declare global {

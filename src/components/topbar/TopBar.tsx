@@ -40,6 +40,7 @@ import { toast, useUI } from '../../store/ui'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from './CreditPill'
 import './topbar.css'
+import { UpdatePill } from './UpdatePill'
 
 const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = [
   { id: 'canvas', label: 'Canvas', key: '1', icon: Workflow },
@@ -82,6 +83,7 @@ export function TopBar() {
       <div className="tb-right">
         <HistoryButtons />
         <RunningIndicator />
+        <UpdatePill />
         <ProviderBadge />
         <CreditPill />
         <DevButton />

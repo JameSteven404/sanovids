@@ -30,12 +30,14 @@ export type DialogState =
   | { kind: 'topup'; tab?: TopUpTab }
   /** "Bảng phát triển" of development mode (components/dev/DevPanel). Open it with actions.openDevPanel(tab). */
   | { kind: 'dev'; tab?: DevPanelTab }
+  /** "Cập nhật SanoVids" (components/dialogs/UpdateDialog). Open with updateActions.openUpdateDialog(). */
+  | { kind: 'update' }
 
 /** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
 export type TopUpTab = 'topup' | 'history'
 
-/** Tabs of the development panel: server state · faults · request log · jobs & top-up orders. */
-export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs'
+/** Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater. */
+export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'

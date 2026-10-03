@@ -1,7 +1,28 @@
-// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, the app, project data.
+// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data.
 // Each row subscribes to its own pref only (the dialog never re-renders as a whole) and applies at once; the stores
-// save and validate the values (lib/theme, lib/downloads, lib/playback, lib/canvasPrefs, store/ui, store/project).
-import { AppWindow, Clock, Download, FileUp, FolderDown, FolderOpen, Globe, LoaderCircle, Monitor, MonitorCheck, MonitorDown, Moon, Sparkles, Sun } from 'lucide-react'
+// save and validate the values (lib/theme, lib/downloads, lib/playback, lib/canvasPrefs, store/ui, store/project,
+// lib/updatePrefs).
+import {
+  AppWindow,
+  CircleArrowUp,
+  CircleCheck,
+  Clock,
+  CloudDownload,
+  Download,
+  FileUp,
+  FolderDown,
+  FolderOpen,
+  Globe,
+  LoaderCircle,
+  Monitor,
+  MonitorCheck,
+  MonitorDown,
+  Moon,
+  RefreshCw,
+  Sparkles,
+  Sun,
+  TriangleAlert,
+} from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { EdgeMode } from '../../core/types'
 import { useCanvasPrefs } from '../../lib/canvasPrefs'
@@ -10,9 +31,13 @@ import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pi
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
+import { useUpdatePrefs } from '../../lib/updatePrefs'
+import { useUpdates } from '../../lib/updates'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
 import { toast, useUI, type InteractionMode, type TakeDisplay } from '../../store/ui'
+import { checkNow, openUpdateDialog, useInstallUi } from '../../updateActions'
 import { rateLabel } from '../canvas/playerModel'
 import './dialogs.css'
 import { Segmented } from './Segmented'
@@ -305,6 +330,103 @@ export function AutoRenumberSetting({ label, hint }: RowProps) {
   const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
   const update = useProject((s) => s.updateProjectSettings)
   return <Toggle checked={autoRenumber} onChange={(v) => update({ autoRenumber: v })} label={label} hint={hint} />
+}
+
+// ---------------- Cập nhật ----------------
+/** Re-render every `ms` (relative times such as "5 phút trước"). */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), ms)
+    return () => window.clearInterval(id)
+  }, [ms])
+  return now
+}
+
+/** Version, kind and what the updater is doing (top of the "Cập nhật" group). */
+export function UpdateStatusIntro() {
+  const state = useUpdates((s) => s.state)
+  const autoDownload = useUpdatePrefs((s) => s.autoDownload)
+  const { desktop } = usePwaInstall()
+  const now = useNow(30_000)
+  const web = !desktop
+  const s = state.status
+  const icon =
+    s === 'checking' ? (
+      <LoaderCircle size={17} className="dg-spin" />
+    ) : s === 'downloading' ? (
+      <CloudDownload size={17} />
+    ) : s === 'available' || s === 'ready' ? (
+      <CircleArrowUp size={17} />
+    ) : s === 'none' ? (
+      <CircleCheck size={17} />
+    ) : s === 'error' ? (
+      <TriangleAlert size={17} />
+    ) : web && state.kind === 'dev' ? (
+      <Globe size={17} />
+    ) : (
+      <RefreshCw size={17} />
+    )
+  return (
+    <div className="dg-app">
+      <div className="dg-app-status">
+        <span className={`dg-app-icon${s === 'none' || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
+          {icon}
+        </span>
+        <span role="status">
+          <b>{settingsIntroTitle(state, web)}</b>
+          <small>{settingsStatusLine(state, { web, autoDownload })}</small>
+          {state.lastCheck ? <small>Kiểm tra lần cuối: {lastCheckText(state.lastCheck, Math.max(now, state.lastCheck))}</small> : null}
+        </span>
+      </div>
+      {hasUpdateDetails(state) && (
+        <button type="button" className="btn btn-sm" onClick={openUpdateDialog}>
+          Xem chi tiết
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** "Tự động tải bản cập nhật" (installer builds only). */
+export function UpdateAutoDownloadSetting({ label, hint }: RowProps) {
+  const autoDownload = useUpdatePrefs((s) => s.autoDownload)
+  const set = useUpdatePrefs((s) => s.set)
+  const kind = useUpdates((s) => s.state.kind)
+  const note = autoDownloadNote(kind)
+  return (
+    <Toggle
+      checked={autoDownload}
+      onChange={(v) => set({ autoDownload: v })}
+      label={label}
+      disabled={!!note}
+      hint={
+        note ? (
+          <>
+            {hint} {note}
+          </>
+        ) : (
+          hint
+        )
+      }
+    />
+  )
+}
+
+/** "Kiểm tra cập nhật" → "Kiểm tra ngay" (a toast gives the result). */
+export function UpdateCheckSetting({ label, hint }: RowProps) {
+  const status = useUpdates((s) => s.state.status)
+  const kind = useUpdates((s) => s.state.kind)
+  const manual = useInstallUi((s) => s.manualCheck)
+  const checking = manual || status === 'checking'
+  const disabled = checking || kind === 'dev' || status === 'unsupported' || status === 'downloading'
+  return (
+    <Field label={label} hint={hint}>
+      <button type="button" className="btn btn-sm dg-upd-check" disabled={disabled} onClick={() => void checkNow()}>
+        {checking ? <LoaderCircle size={13} className="dg-spin" /> : <RefreshCw size={13} />} Kiểm tra ngay
+      </button>
+    </Field>
+  )
 }
 
 // ---------------- Ứng dụng (block) ----------------

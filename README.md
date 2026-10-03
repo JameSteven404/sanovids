@@ -2,11 +2,11 @@
 
 **SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@video_1`, chạy tạo video hàng loạt, rồi lấy video vừa tạo để nối tiếp sang cảnh sau.
 
-📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)**
+📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids-releases/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)** · 🔄 Bản cài **tự cập nhật** từ 0.5.0
 
 Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. SanoVids là **ứng dụng desktop cho Windows** (file `.exe`).
 
-> 🖥️ **Chỉ còn bản app.** Từ 2026-10-02 bản web (sanovids.sanovids.workers.dev) đã **ngừng và tắt hẳn**. Mọi tính năng mới và bản sửa lỗi chỉ phát hành cho bản desktop — tải ở mục [Releases](https://github.com/JameSteven404/sanovids/releases/latest).
+> 🖥️ **Chỉ còn bản app.** Từ 2026-10-02 bản web (sanovids.sanovids.workers.dev) đã **ngừng và tắt hẳn**. Mọi tính năng mới và bản sửa lỗi chỉ phát hành cho bản desktop — tải ở [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest).
 
 > ℹ️ **Hai cách tạo video:**
 > - **Chế độ Phát triển** (mặc định): chạy **đúng mã của cổng canvasapp thật** nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, không tốn tiền (credit dev giả lập). Có đủ đăng nhập, credit, nạp credit qua SePay giả, lịch sử credit, và **Bảng phát triển** để gây lỗi có chủ đích, xem nhật ký từng yêu cầu — dùng để làm quen và **tìm, sửa lỗi** trước khi dùng tiền thật. Xem mục [Chế độ Phát triển](#-chế-độ-phát-triển-tìm-và-sửa-lỗi).
@@ -119,20 +119,39 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 ## 💻 Cài trên Windows (file .exe)
 
-Vào mục **[Releases](https://github.com/JameSteven404/sanovids/releases)** (hoặc thư mục `release/` sau khi tự build), chọn phiên bản mới nhất. Mỗi phiên bản có 2 file:
+Vào **[trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest)** (hoặc thư mục `release/` sau khi tự build), chọn phiên bản mới nhất. Mỗi phiên bản có 2 file:
 
 | File | Dùng khi |
 |---|---|
-| `SanoVids-Setup-<phiên bản>.exe` | **Khuyên dùng.** Bộ cài đặt: chọn thư mục, tạo icon ở Desktop và Start Menu. |
-| `SanoVids-Portable-<phiên bản>.exe` | Bấm là chạy, không cần cài (mở chậm hơn vì phải tự giải nén mỗi lần). Hợp để chép USB. |
+| `SanoVids-Setup-<phiên bản>.exe` | **Khuyên dùng.** Bộ cài đặt: chọn thư mục, tạo icon ở Desktop và Start Menu, **tự cập nhật** các bản sau. |
+| `SanoVids-Portable-<phiên bản>.exe` | Bấm là chạy, không cần cài (mở chậm hơn vì phải tự giải nén mỗi lần). Hợp để chép USB. Không tự cập nhật (app chỉ báo có bản mới). |
 
 > 🛡️ File chưa có chữ ký số nên lần đầu mở Windows có thể báo **"Windows protected your PC"**. Bấm **More info → Run anyway**.
+
+Trang tải về còn có `latest.yml` và `SanoVids-Setup-<phiên bản>.exe.blockmap`: đó là file app dùng để tự cập nhật, bạn không cần tải.
 
 - Dữ liệu của bản desktop nằm ở `%APPDATA%\SanoVids` trên từng máy. Muốn mang dự án sang máy khác, dùng **Cài đặt → Xuất dự án** rồi **Nhập** ở máy kia.
 - Video tải về được lưu vào thư mục **Downloads**, hoặc thư mục bạn chọn trong Cài đặt.
 
 ### Bản web / PWA (đã ngừng)
 Bản web và bản cài từ trình duyệt (PWA) **không còn được cập nhật** và địa chỉ web đã tắt. Nếu máy bạn còn biểu tượng SanoVids cài từ trình duyệt, hãy gỡ nó và dùng bản `.exe`. `npm run dev` vẫn chạy được trên máy để phát triển.
+
+---
+
+## 🔄 Cập nhật tự động
+
+Từ bản **0.5.0**, bản cài (Setup) tự cập nhật — không phải tải và cài lại bằng tay mỗi lần có bản mới.
+
+- **Tự tìm và tải trong nền**: SanoVids kiểm tra bản mới khi mở app (sau khoảng 15 giây) và **4 giờ một lần**. Có bản mới thì tải về trong nền, bạn cứ làm việc bình thường. Thường chỉ tải phần thay đổi; bản nào đổi phiên bản Electron (lõi của app) thì phải tải gần như cả bộ cài.
+- **Cài lúc nào bạn muốn**: tải xong, thanh trên cùng hiện nút **Cập nhật x.y.z**. Bấm vào để xem **Có gì mới** rồi chọn **Khởi động lại để cập nhật** (SanoVids lưu dự án, cài bản mới, tự mở lại). Chọn **Để sau** thì bản mới **tự cài khi bạn tắt SanoVids**.
+- **Cập nhật khi xong**: đang có video tạo dở thì chọn nút này — SanoVids đợi hết video đang tạo / đang chờ (và lượt nạp credit), báo trước 5 giây (huỷ được) rồi mới khởi động lại. Cập nhật ngay cũng an toàn: video đang tạo vẫn chạy trên máy chủ và được theo dõi lại sau khi mở lên, không bị trừ credit hai lần.
+- **Cài đặt → Cập nhật**: phiên bản đang dùng, trạng thái, lần kiểm tra gần nhất, nút **Kiểm tra ngay**, công tắc **Tự động tải bản cập nhật** (tắt thì app chỉ báo có bản mới, bạn bấm để tải).
+- **Bản Portable chỉ báo có bản mới** (nút **Tải bản mới** mở trang tải về), không tự cài. Muốn tự cập nhật, hãy dùng bản Setup.
+- **Bản 0.4.2 trở về trước** chưa biết tự cập nhật: cài tay `SanoVids-Setup-0.5.0.exe` (hoặc mới hơn) **một lần**, cài đè lên bản cũ; dự án và cài đặt giữ nguyên.
+- **An toàn**: file `.exe` chưa có chữ ký số; bản cập nhật chỉ tải qua HTTPS từ [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest) và được kiểm tra bằng mã **SHA-512** ghi trong `latest.yml` — sai mã là bỏ, không cài.
+- **Riêng tư**: mỗi lần kiểm tra, app gửi cho GitHub một **mã cài đặt ngẫu nhiên** (`x-user-staging-id`, tạo một lần trên máy), không gửi gì từ dự án của bạn. Không cần tài khoản GitHub.
+
+Chi tiết kỹ thuật và cách phát hành: [docs/UPDATES.md](docs/UPDATES.md).
 
 ---
 
@@ -160,11 +179,23 @@ npm run dev
 | `npm run build` | Kiểm tra kiểu và build giao diện vào `dist/` (bản desktop đóng gói thư mục này) |
 | `npm run preview` | Chạy thử bản đã build |
 | `npm run desktop` | Build rồi mở bản desktop (Electron) trên máy |
-| `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/`; bản cũ tự chuyển vào `release/ban-cu/` |
+| `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/_build/`; bản cũ tự chuyển vào `release/ban-cu/` |
+| `npm run release:check` | Xem trước việc đăng bản: kiểm tra tag, file, nguồn cập nhật, GitHub và in đúng các lệnh sẽ chạy (không đăng gì) |
+| `npm run release:publish` | Đăng bản lên GitHub: repo riêng `sanovids` trước, trang tải về công khai `sanovids-releases` sau cùng (chỉ chủ dự án) |
 | `npm run icons` | Tạo lại icon ứng dụng |
 | `npm run typecheck` / `npm test` | Kiểm tra TypeScript / chạy unit test |
 
 > 💾 Dữ liệu được lưu **ngay trên máy** (trong app desktop, thư mục `%APPDATA%\SanoVids`), không gửi đi đâu.
+
+### Phát hành bản mới (chỉ chủ dự án)
+1. Viết mục `## [x.y.z] — ngày — tiêu đề` ở đầu `CHANGELOG.md` (đây cũng là phần **Có gì mới** người dùng thấy trong app) và đổi `version` trong `package.json`.
+2. Merge vào `main`.
+3. Trên `main`: `git tag -a vX.Y.Z -m "SanoVids X.Y.Z"` rồi `git push origin vX.Y.Z`.
+4. `npm run dist:win` (build sau khi tag, để ngày build mới hơn commit).
+5. `npm run release:check`: mọi dòng phải là ✓ (⚠ chỉ để lưu ý).
+6. `npm run release:publish`: tạo bản nháp → tải file lên → kiểm tra SHA-256 → đăng repo riêng rồi mới đăng trang tải về công khai. Bị ngắt giữa chừng thì chạy lại, an toàn.
+
+Chi tiết: [docs/UPDATES.md](docs/UPDATES.md).
 
 ---
 
@@ -212,13 +243,14 @@ src/
 │   └── common/    # Modal, thông báo, ảnh, kéo đổi độ rộng
 ├── actions.ts     # Lệnh dùng chung (nối, xoá, chạy, tải, copy…)
 └── App.tsx        # Khung ứng dụng
-electron/          # Vỏ ứng dụng desktop (Electron), cửa sổ đăng nhập / thanh toán canvasapp
+electron/          # Vỏ ứng dụng desktop (Electron), cửa sổ đăng nhập / thanh toán canvasapp, tự cập nhật (updater)
+scripts/           # Build & phát hành: dọn release/, ghi chú cập nhật, đăng bản lên GitHub
 public/            # Icon, manifest PWA
-docs/              # Đặc tả (SPEC.md, SPEC-v2.md), cổng canvasapp, tự kiểm tra credit thật
+docs/              # Đặc tả (SPEC.md, SPEC-v2.md), cổng canvasapp, tự kiểm tra credit thật, tự cập nhật (UPDATES.md)
 ```
 
 ## 🛠️ Công nghệ
-[Vite](https://vite.dev) · [React 19](https://react.dev) · TypeScript · [React Flow](https://reactflow.dev) · [Zustand](https://zustand.docs.pmnd.rs) + zundo · lucide-react · idb-keyval · JSZip · vite-plugin-pwa · [Electron](https://www.electronjs.org/) + electron-builder · Vitest
+[Vite](https://vite.dev) · [React 19](https://react.dev) · TypeScript · [React Flow](https://reactflow.dev) · [Zustand](https://zustand.docs.pmnd.rs) + zundo · lucide-react · idb-keyval · JSZip · vite-plugin-pwa · [Electron](https://www.electronjs.org/) + electron-builder + electron-updater · Vitest
 
 ---
 
@@ -229,10 +261,11 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] v2: node Video, `@image_N` / `@video_N` tự đánh số, bỏ khối prompt, IndexedDB, PWA, file `.exe`, nút tải video
 - [x] v0.2 (thử nghiệm): cổng canvasapp.io.vn trong bản desktop (đăng nhập trên trang thật, credit thật, nạp credit bằng QR SePay), khoá chặt đồng bộ nhân vật, xem video có tiếng + thanh điều khiển ngay trên node. Tự kiểm tra trước khi dùng: [docs/TEST-REAL-CREDITS.md](docs/TEST-REAL-CREDITS.md)
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
+- [x] Tự cập nhật phiên bản (0.5.0)
 - [ ] Video tham chiếu `@video_N` qua cổng canvasapp
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
-- [ ] Ký số file `.exe`, tự cập nhật phiên bản
+- [ ] Ký số file .exe
 
 ## 📄 Giấy phép
 Dự án cá nhân, chưa chọn giấy phép mã nguồn mở. Mọi quyền được bảo lưu.

@@ -264,6 +264,23 @@ export function ownsEngine(): boolean {
   return !!engine && engineLock.held() === engineLockName(useProject.getState().project.id)
 }
 
+// Before restarting to install an app update, updateActions.installNow holds new submits (queued takes stay queued;
+// polling, recovery and downloads go on) and waits until sendingCount() is 0, so no submit is cut half-way.
+let submitHold = false
+
+/** Stop (true) / allow again (false) starting queued takes. Not saved: a restart starts with submits allowed. */
+export function holdNewSubmits(on: boolean): void {
+  submitHold = on === true
+}
+
+/** A running remote take whose submit has no remote id yet: it is being sent right now. */
+export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t)
+
+/** Takes being sent to their provider right now (see isSendingTake). */
+export function sendingCount(): number {
+  return useRuns.getState().takes.reduce((n, t) => (isSendingTake(t) ? n + 1 : n), 0)
+}
+
 function savedMock(): MockSettings {
   try {
     const raw = localStorage.getItem('bdp:pref:mock')
@@ -722,7 +739,8 @@ function tick() {
   const sending = new Set<ProviderId>()
   for (const t of active) if (providerOf(t) !== 'mock' && !remoteIdOf(t)) sending.add(providerOf(t))
   const started: Take[] = []
-  for (const t of queued) {
+  // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
+  for (const t of submitHold ? [] : queued) {
     if (!scenes.has(t.sceneId)) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0

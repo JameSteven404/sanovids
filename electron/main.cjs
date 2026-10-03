@@ -7,6 +7,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = 
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { setupUpdater } = require('./updater.cjs')
 
 const SCHEME = 'app'
 const HOST = 'bdp'
@@ -40,8 +41,28 @@ const MIME = {
 
 // Same data folder for `npm run desktop`, the installer and the portable .exe (ASCII, independent of the
 // product name), so projects survive updates and switching between the two builds.
-app.setPath('userData', path.join(app.getPath('appData'), 'SanoVids'))
-app.setAppUserModelId('com.sanovids.app')
+const updaterRules = require('./updater-rules.cjs')
+// Test-only isolation (never set by real users): SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the
+// packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: readBakedProfileDir(), appData: app.getPath('appData'), appName: app.getName(), pathMod: path })
+if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
+if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
+app.setPath('userData', profile.dir)
+app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
+
+/** `sanovidsTestProfileDir` of the app's own package.json (only test builds have it), else undefined. */
+function readBakedProfileDir() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg && typeof pkg.sanovidsTestProfileDir === 'string' ? pkg.sanovidsTestProfileDir : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The main SanoVids window (set in createWindow, cleared when it closes) and the auto-updater (electron/updater.cjs). */
+let mainWindow = null
+let updater = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -66,6 +87,11 @@ if (!app.requestSingleInstanceLock()) {
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
     registerFileBridge()
+    try {
+      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source })
+    } catch (e) {
+      console.error('[SanoVids] auto-updater disabled:', e)
+    }
     createWindow()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -74,6 +100,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+  // A downloaded update installs silently when the app quits: the updater records the attempt (notice on next launch).
+  app.on('before-quit', () => updater && updater.onBeforeQuit())
 }
 
 /** app://bdp/<path> → dist/<path>. Unknown paths without an extension fall back to index.html (SPA). */
@@ -139,12 +167,23 @@ function createWindow() {
     },
   })
 
+  mainWindow = win
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
+
   win.once('ready-to-show', () => {
     win.maximize()
     win.show()
+    if (updater) updater.onWindowReady()
   })
 
   const { webContents } = win
+
+  // "Khởi động lại để cập nhật": the page saved everything first; a beforeunload veto must not cancel quitAndInstall.
+  webContents.on('will-prevent-unload', (event) => {
+    if (updater && updater.isQuittingForUpdate()) event.preventDefault()
+  })
 
   // No application menu → re-add the developer shortcuts we still want.
   webContents.on('before-input-event', (event, input) => {

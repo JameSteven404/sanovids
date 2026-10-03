@@ -351,6 +351,60 @@
   color: color-mix(in srgb, var(--accent) 72%, var(--text));
 }
 
+/* App update (UpdatePill.tsx): a new version, its download, ready to install, or waiting for running videos.
+   Same capsule as .tb-running; no animation (the percent moves on its own). */
+.tb-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 26px;
+  margin: 0 2px;
+  padding: 0 10px 0 8px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.12s ease-out, color 0.12s ease-out;
+}
+.tb-update-icon {
+  flex: none;
+}
+.tb-update.available {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.tb-update.available:hover {
+  background: color-mix(in srgb, var(--info) 22%, transparent);
+}
+.tb-update.downloading .tb-update-icon {
+  color: var(--info);
+}
+.tb-update.downloading:hover,
+.tb-update.waiting:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.tb-update.ready {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.tb-update.ready:hover {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+}
+/* Light appearance: same contrast fix as .tb-running (tinted text on a pale fill of the same tint). */
+:root[data-theme='light'] .tb-update.available {
+  color: color-mix(in srgb, var(--info) 72%, var(--text));
+}
+:root[data-theme='light'] .tb-update.ready {
+  color: color-mix(in srgb, var(--ok) 72%, var(--text));
+}
+
 /* problem of the provider new takes use (e.g. canvasapp session expired); only rendered with .issue */
 .tb-provider {
   display: inline-flex;
@@ -462,10 +516,10 @@
     padding: 0 10px;
   }
 }
-/* Jobs running, a provider problem or the real-credit pill widen the right cluster: the wordmark gives way first
+/* Jobs running, an app update, a provider problem or the real-credit pill widen the right cluster: the wordmark gives way first
    (the app mark stays), so the project name keeps some room. */
 @media (max-width: 1240px) {
-  .tb:has(.tb-running, .tb-provider, .tb-cp:not(.demo)) .tb-brand-text {
+  .tb:has(.tb-running, .tb-update, .tb-provider, .tb-cp:not(.demo)) .tb-brand-text {
     display: none;
   }
 }
@@ -504,6 +558,7 @@
   .tb-name,
   .tb-save,
   .tb-running,
+  .tb-update,
   .tb-provider {
     transition: none;
   }

@@ -1,10 +1,29 @@
 # 📜 Lịch sử phiên bản
 
-Mọi thay đổi đáng chú ý của SanoVids. Bản cài `.exe` của từng phiên bản có ở mục [Releases](https://github.com/JameSteven404/sanovids/releases).
+Mọi thay đổi đáng chú ý của SanoVids. Bản cài `.exe` của từng phiên bản có ở trang tải về [sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases).
 
 Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️ lưu ý
 
 ---
+
+## [0.5.0] — 2026-10-03 — Tự động cập nhật
+
+✨ **SanoVids tự cập nhật** (bản cài Setup)
+- Không phải tải và cài lại bằng tay mỗi lần có bản mới nữa. SanoVids tự tìm bản mới khi mở app và 4 giờ một lần, rồi **tải về trong nền**: bạn cứ làm việc bình thường. Thường chỉ tải phần thay đổi nên nhẹ hơn cả bộ cài.
+- Tải xong, thanh trên cùng hiện nút **Cập nhật 0.5.x**. Bấm vào → **Khởi động lại để cập nhật**: SanoVids lưu dự án, cài bản mới rồi tự mở lại. Chọn **Để sau** thì bản mới **tự cài khi bạn tắt SanoVids**.
+- Đang có video tạo dở? Chọn **Cập nhật khi xong**: SanoVids đợi hết video đang tạo, đang chờ và lượt nạp credit, rồi báo trước 5 giây (bấm **Huỷ** được) mới khởi động lại. Bấm **Cập nhật ngay** cũng an toàn: video đang tạo vẫn chạy tiếp trên máy chủ, SanoVids theo dõi lại sau khi mở lên, không bị trừ credit hai lần.
+- Trước khi khởi động lại, SanoVids đợi video đang được gửi đi gửi xong, giữ lại chữ đang gõ dở trong ô prompt và lưu dự án.
+- Mở lại sau khi cập nhật sẽ thấy thông báo **"Đã cập nhật SanoVids lên …"**. Dự án, video và cài đặt giữ nguyên.
+- Hộp **Cập nhật SanoVids** cho xem trước **Có gì mới**, dung lượng và tiến độ tải.
+- **Cài đặt → Cập nhật**: xem phiên bản đang dùng, lần kiểm tra gần nhất, nút **Kiểm tra ngay** và công tắc **Tự động tải bản cập nhật** (bật sẵn; tắt thì app chỉ báo có bản mới, bạn bấm để tải). Công tắc này khác với "Tự tải khi video xong" (tải video về máy).
+
+⚠️ **Lần này phải cài tay 0.5.0 một lần**
+- Bản 0.4.2 trở về trước chưa biết tự cập nhật: tải `SanoVids-Setup-0.5.0.exe` và **cài tay 0.5.0 một lần**, cài đè lên bản cũ (đóng SanoVids trước; dự án và cài đặt giữ nguyên). Từ 0.5.0 trở đi các bản sau tự về.
+- **Portable chỉ báo có bản mới**: bản Portable không tự cài được. Khi có bản mới, app hiện **Bản mới …** trên thanh trên cùng và nút **Tải bản mới** mở trang tải về. Muốn tự cập nhật, hãy dùng bản Setup.
+- File `.exe` vẫn chưa có chữ ký số. Bản cập nhật chỉ tải qua HTTPS từ GitHub và được kiểm tra bằng mã SHA-512 ghi trong `latest.yml`; file sai mã bị bỏ, không bao giờ được cài.
+- Bản mới nào đổi phiên bản Electron (lõi của app) thì phải tải gần như cả bộ cài (khoảng 100 MB).
+
+🛠️ **Trang tải về chuyển sang** [github.com/JameSteven404/sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases/latest): trang công khai, chỉ chứa file cài đặt và file dùng cho việc tự cập nhật. Mỗi lần kiểm tra, app chỉ gửi cho GitHub một mã cài đặt ngẫu nhiên, không gửi gì từ dự án của bạn.
 
 ## [0.4.2] — 2026-10-02 — Dây nối chạm đúng tâm chấm tròn
 
@@ -231,6 +250,7 @@ Bản `.exe` đầu tiên. Gồm toàn bộ quá trình làm từ bản demo đ�
 - 🐞 Rà soát lỗi toàn app, kiểm chứng từng lỗi.
 - 🛠️ Nền tảng cổng canvasapp (tắt mặc định).
 
+[0.5.0]: https://github.com/JameSteven404/sanovids-releases/releases/tag/v0.5.0
 [0.4.2]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.2
 [0.4.1]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.1
 [0.4.0]: https://github.com/JameSteven404/sanovids/releases/tag/v0.4.0

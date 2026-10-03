@@ -1674,6 +1674,122 @@
   padding: 0 4px;
 }
 
+/* ---------- Cập nhật SanoVids (UpdateDialog.tsx) ---------- */
+.dg-upd {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.dg-upd-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dg-upd-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dg-upd-lines b {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dg-upd-lines span {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.dg-upd-lines small {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.dg-upd-status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.dg-upd-status + .dg-field-hint {
+  margin-top: -6px;
+}
+.dg-upd-progress .progress {
+  display: block;
+  height: 6px;
+}
+.dg-upd-progress .progress > i {
+  background: var(--info);
+}
+.dg-upd-callout-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.dg-upd-callout-list li + li {
+  margin-top: 3px;
+}
+.dg-upd-notes-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dg-upd-notes-wrap .section-title {
+  margin: 0;
+}
+.dg-upd-notes {
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.dg-upd-notes:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.dg-upd-notes h4 {
+  margin: 10px 0 4px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dg-upd-notes h4:first-child {
+  margin-top: 0;
+}
+.dg-upd-notes p {
+  margin: 0 0 6px;
+}
+.dg-upd-notes ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+.dg-upd-notes li + li {
+  margin-top: 2px;
+}
+.dg-upd-notes > :last-child {
+  margin-bottom: 0;
+}
+.dg-upd-empty {
+  color: var(--text-faint);
+}
+.dg-upd-link {
+  align-self: flex-start;
+  gap: 6px;
+}
+/* Settings → Cập nhật: "Kiểm tra ngay" keeps its own width in the field column. */
+.dg-upd-check {
+  align-self: flex-start;
+}
+
 /* ---------- motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .dg-seg::before,

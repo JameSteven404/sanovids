@@ -2,6 +2,9 @@
 // The web app uses it to know it runs as the desktop build (no service worker, "installed" state), and — only when
 // the user enables it in Settings — to reach the experimental canvasapp.io.vn gateway (see docs/GATEWAY-CANVASAPP.md).
 // The gateway functions only forward to allowlisted handlers in main.cjs; no cookies or credentials cross this bridge.
+// files: the "Lưu video" dialog and the folder nodes (main writes only into folders the user picked).
+// updates: the auto-updater (electron/updater.cjs) — check / download / install / open the fixed release page; the page
+// never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -60,5 +63,30 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     /** { suggestedName, title?, files } → native "Save as" for files[0], companions next to it → { ok: true, path, names } | { ok: false, canceled } */
     saveAs: (args) =>
       ipcRenderer.invoke('files:saveAs', { suggestedName: str(args && args.suggestedName), title: str(args && args.title), files: fileList(args && args.files) }),
+  },
+  /**
+   * Auto-update (electron/updater.cjs). The feed is fixed in the app (resources/app-update.yml): the page can only ask
+   * main to check / download / install / open the fixed release page. Every call → UpdateResult, except getState.
+   */
+  updates: {
+    /** → UpdateState */
+    getState: () => ipcRenderer.invoke('updates:getState'),
+    /** Check now; resolves when the check is over → { ok } | { ok: false, code, message } */
+    check: () => ipcRenderer.invoke('updates:check'),
+    /** Installer only, status 'available': start the download (progress comes through onState). */
+    download: () => ipcRenderer.invoke('updates:download'),
+    /** Installer only, status 'ready': quit, install silently, relaunch. Save the project BEFORE calling this. */
+    install: () => ipcRenderer.invoke('updates:install'),
+    /** { autoDownload: boolean } (anything else is refused by main). */
+    setPrefs: (p) => ipcRenderer.invoke('updates:setPrefs', { autoDownload: p && typeof p.autoDownload === 'boolean' ? p.autoDownload : undefined }),
+    /** Opens the public download page (a constant in main) in the default browser. */
+    openReleasePage: () => ipcRenderer.invoke('updates:openReleasePage'),
+    /** cb(state) on every change; returns an unsubscribe function. */
+    onState: (cb) => {
+      if (typeof cb !== 'function') return () => undefined
+      const listener = (_event, state) => cb(state)
+      ipcRenderer.on('updates:state', listener)
+      return () => ipcRenderer.removeListener('updates:state', listener)
+    },
   },
 })

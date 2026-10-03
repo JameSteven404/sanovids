@@ -20,6 +20,8 @@
 //   useDevLog / clearDevLog              request log (log.ts).   useDevPrompts / answerDevLogin / answerDevCheckout
 //                                        the login + SePay sheets (prompts.ts).
 //   devWording / withDevWording          development-mode words for the real gateway's messages (wording.ts).
+//   useDevUpdates / devUpdates / devUpdatesBridge   the simulated app updater (updates.ts; lib/updates uses it only
+//                                        outside Electron, "Bảng phát triển → Cập nhật" drives it).
 // ---- For tests / embedding ----
 //   setDevServer(server | null)          replace the app's dev server (null = the default one again, on next use).
 import { clear, createStore, del, get, set } from 'idb-keyval'
@@ -47,6 +49,7 @@ export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type D
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
 export { devError, devResult, devWording, withDevWording } from './wording'
+export * from './updates'
 
 /** Blobs of the dev server in their own IndexedDB database (wiped by reset); in memory where IndexedDB is missing. */
 function idbBlobStore(): DevBlobStore {

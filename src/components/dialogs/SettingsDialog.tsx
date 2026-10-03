@@ -35,6 +35,9 @@ import {
   SoundSetting,
   TakeDisplaySetting,
   ThemeSetting,
+  UpdateAutoDownloadSetting,
+  UpdateCheckSetting,
+  UpdateStatusIntro,
   VolumeSetting,
   WithPromptSetting,
 } from './SettingsBasic'
@@ -119,7 +122,26 @@ const GROUPS: Group[] = [
       },
     ],
   },
-  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Bản app desktop cho Windows: phiên bản đang chạy và cách cài bản mới.', keywords: 'cài app desktop exe phiên bản cập nhật windows', Block: AppBlock },
+  {
+    id: 'updates',
+    level: 'basic',
+    col: 0,
+    title: 'Cập nhật',
+    desc: 'Bản cài (Setup) tự tìm và tải bản mới, rồi cài khi bạn khởi động lại hoặc tắt app. Dự án và cài đặt giữ nguyên.',
+    keywords: 'update cập nhật nâng cấp phiên bản version bản mới tự động tải về khởi động lại github',
+    Intro: UpdateStatusIntro,
+    rows: [
+      {
+        id: 'updateAutoDownload',
+        label: 'Tự động tải bản cập nhật',
+        hint: 'Bản mới được tải ngầm khi có mạng và tự cài khi bạn tắt SanoVids. Tắt: chỉ báo có bản mới, bạn bấm để tải.',
+        keywords: 'tự động tải update download nền ngầm',
+        C: UpdateAutoDownloadSetting,
+      },
+      { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: 'SanoVids tự kiểm tra khi mở và 4 giờ một lần.', keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
+    ],
+  },
+  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.', keywords: 'cài app desktop exe windows pwa', Block: AppBlock },
   {
     id: 'playback',
     level: 'basic',

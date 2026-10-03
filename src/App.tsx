@@ -14,6 +14,7 @@ import { useShortcuts } from './hooks/useShortcuts'
 import { closeDevPrompts, useDevPrompts } from './providers/dev/prompts'
 import { bootstrap, useSave } from './store/persist'
 import { toast, useUI, type DialogState } from './store/ui'
+import { startUpdates } from './updateActions'
 
 // Code splitting: the canvas (default view) ships in the main bundle; the other views and every dialog are
 // separate chunks, loaded on first use and prefetched once the browser is idle so opening them stays instant.
@@ -30,6 +31,7 @@ const chunks = {
   topUpDialog: () => import('./components/topup/TopUpDialog'),
   devPanel: () => import('./components/dev/DevPanel'),
   devSheets: () => import('./components/dev/DevSheets'),
+  updateDialog: () => import('./components/dialogs/UpdateDialog'),
 }
 
 const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
@@ -44,6 +46,7 @@ const AssetDialog = lazy(() => chunks.assetDialog().then((m) => ({ default: m.As
 const TopUpDialog = lazy(() => chunks.topUpDialog().then((m) => ({ default: m.TopUpDialog })))
 const DevPanel = lazy(() => chunks.devPanel().then((m) => ({ default: m.DevPanel })))
 const DevSheets = lazy(() => chunks.devSheets().then((m) => ({ default: m.DevSheets })))
+const UpdateDialog = lazy(() => chunks.updateDialog().then((m) => ({ default: m.UpdateDialog })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -98,6 +101,9 @@ function Shell() {
   useShortcuts()
   useFileDropGuard()
   usePrefetchChunks()
+  // App updates (desktop: the main process updater; development mode in a browser: its simulation): state mirror,
+  // "download ready" / "updated" toasts. Ref-counted.
+  useEffect(() => startUpdates(), [])
   const view = useUI((s) => s.view)
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
@@ -182,6 +188,8 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <TopUpDialog tab={dialog.tab} />
     case 'dev':
       return <DevPanel tab={dialog.tab} />
+    case 'update':
+      return <UpdateDialog />
     default:
       return null
   }

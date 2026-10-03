@@ -4,6 +4,8 @@ dist/
 dist-ssr/
 *.local
 coverage/
+# Ghi chú cập nhật tạo lại mỗi lần build (scripts/update-notes.mjs → latest.yml)
+build/release-notes.md
 
 # Log
 npm-debug.log*

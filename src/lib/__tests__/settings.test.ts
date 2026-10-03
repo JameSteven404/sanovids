@@ -23,6 +23,7 @@ import {
   settingsFileText,
 } from '../settings'
 import { parseThemePref, useTheme } from '../theme'
+import { useUpdatePrefs } from '../updatePrefs'
 
 /** In-memory localStorage (the tests run in Node, where there is none). */
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -48,6 +49,7 @@ const CUSTOM = {
   canvas: { clickToCut: false, animations: 'off' },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
+  updates: { autoDownload: false },
 } as const
 
 describe('stored prefs are validated on read', () => {
@@ -108,6 +110,7 @@ describe('stored prefs are validated on read', () => {
           'bdp:pref:downloads': '{"withPrompt":"nope","askWhere":false,"nameTemplate":"{x}"}',
           'bdp:pref:mock': '{"concurrency":50,"speed":"normal"}',
           'bdp:pref:canvas': '{"animations":"wild"}',
+          'bdp:pref:updates': '{"autoDownload":"no"}',
         }),
       )
       vi.resetModules()
@@ -118,6 +121,7 @@ describe('stored prefs are validated on read', () => {
       const runs = (await import('../../store/runs')).useRuns.getState()
       expect(runs.mock).toEqual({ ...DEFAULT_MOCK_SETTINGS, concurrency: 5, speed: 'normal' })
       expect((await import('../canvasPrefs')).useCanvasPrefs.getState().animations).toBe('full')
+      expect((await import('../updatePrefs')).useUpdatePrefs.getState().autoDownload).toBe(true)
     })
   })
 })
@@ -144,6 +148,9 @@ describe('settings file (export / import)', () => {
     expect(res.accepted).toBe(9)
     expect(res.rejected.sort()).toEqual(['canvas.clickToCut', 'downloads.askWhere', 'mock.concurrency', 'playback.volume', 'ui.toastTime'])
     expect(sanitizeSettings(null)).toEqual({ patch: {}, accepted: 0, rejected: [] })
+    // app updates: "Tự động tải bản cập nhật" (not the video auto-download)
+    expect(sanitizeSettings({ updates: { autoDownload: 'no' } })).toEqual({ patch: {}, accepted: 0, rejected: ['updates.autoDownload'] })
+    expect(sanitizeSettings({ updates: { autoDownload: false, channel: 'beta' } })).toEqual({ patch: { updates: { autoDownload: false } }, accepted: 1, rejected: [] })
     expect(sanitizeSettings({ theme: 'pink', ui: 'all' }).rejected).toEqual(['theme', 'ui'])
   })
 
@@ -200,6 +207,8 @@ describe('apply / reset / restore', () => {
     expect(storage.data.get('bdp:pref:toastTime')).toBe('"long"')
     expect(storage.data.get('bdp:pref:minimap')).toBe('false')
     expect(storage.data.get('bdp:pref:theme')).toBe('"light"')
+    expect(useUpdatePrefs.getState().autoDownload).toBe(false)
+    expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":false}')
     expect(changedSettingsCount()).toBeGreaterThan(15)
   })
 
@@ -216,12 +225,23 @@ describe('apply / reset / restore', () => {
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
     expect(storage.data.get('bdp:pref:leftW')).toBe('300') // panel widths: resetPanelLayout, not this
     expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full' })
+    expect(useUpdatePrefs.getState().autoDownload).toBe(true)
+    expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":true}')
 
     restoreSettings(before)
     expect(currentSettings()).toEqual(CUSTOM)
     expect(useProviderPrefs.getState().provider).toBe('canvasapp')
     useProviderPrefs.getState().setProvider('dev')
     useDownloadPrefs.getState().set({ folderName: null })
+  })
+
+  it('changedSettingsCount counts the app-update pref', () => {
+    expect(changedSettingsCount()).toBe(0)
+    applySettings({ updates: { autoDownload: false } })
+    expect(changedSettingsCount()).toBe(1)
+    expect(currentSettings().updates).toEqual({ autoDownload: false })
+    // distinct from "Tự tải khi video xong"
+    expect(currentSettings().downloads.autoDownload).toBe(DEFAULT_SETTINGS.downloads.autoDownload)
   })
 
   it('an imported file is applied value by value', () => {

@@ -76,6 +76,11 @@ export function flushPromptEditor(sceneId: string) {
   flushers.get(sceneId)?.()
 }
 
+/** Commit the text being typed in every mounted prompt editor (before restarting to install an app update). */
+export function flushAllPromptEditors(): void {
+  for (const f of [...flushers.values()]) f()
+}
+
 export type TokenHighlight = { kind: 'image' | 'video'; n: number } | null
 
 /** Toast for assets auto-linked by legacy @Tag mentions (pasted text). "Hoàn tác" unlinks them and turns
