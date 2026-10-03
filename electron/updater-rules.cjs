@@ -30,7 +30,13 @@ const CHECK_RETRY_MS = 30 * 60_000
 
 const VERSION_RE = /^\d+\.\d+\.\d+([-+.][0-9A-Za-z.-]+)?$/
 
-const ERROR_CODES = ['offline', 'no-release', 'rate-limited', 'checksum', 'signature', 'disk', 'install-failed', 'failed']
+/**
+ * 'signature': the downloaded file is NOT the author's signed update (another signer, no signature, modified, or a
+ * genuine but other / older build) — refused. 'signature-unverified': the check itself could not decide (PowerShell
+ * blocked, restricted or too slow, unexpected chain, no pin) — nothing installed, "Thử lại" checks again.
+ * Same list as src/lib/updateTypes.ts UpdateErrorCode.
+ */
+const ERROR_CODES = ['offline', 'no-release', 'rate-limited', 'checksum', 'signature', 'signature-unverified', 'disk', 'install-failed', 'failed']
 
 /** Fixed Vietnamese texts: raw error text, stacks, XML or headers never reach the renderer. */
 const ERROR_TEXT = {
@@ -38,8 +44,11 @@ const ERROR_TEXT = {
   'no-release': 'Chưa tìm thấy bản cập nhật nào trên trang tải về.',
   'rate-limited': 'Máy chủ cập nhật đang bận.',
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
+  // Never "download it from the release page": that page may be the very place that served the refused file.
   signature:
-    'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
+    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+  'signature-unverified':
+    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
 }
@@ -226,10 +235,14 @@ function mapUpdaterError(err, phase) {
   // An install that did not start is always 'install-failed' (the state goes back to 'ready' with it).
   if (phase === 'install') return { code: 'install-failed', message: message('install-failed') }
   const code = err && typeof err.code === 'string' ? err.code : ''
-  // A rejected signature (our pinned verifier, through electron-updater) decides before anything its message may
-  // contain: the file was refused, whatever else went wrong around it.
-  if (code === 'ERR_UPDATER_INVALID_SIGNATURE') return { code: 'signature', message: message('signature') }
   const text = err && typeof err.message === 'string' ? err.message : typeof err === 'string' ? err : ''
+  // A rejected signature (our pinned verifier, through electron-updater) decides before anything its message may
+  // contain: the file was refused, whatever else went wrong around it. Our verifier's reason ("sanovids-signature:<r>")
+  // tells a refused file from a check that could not decide.
+  if (code === 'ERR_UPDATER_INVALID_SIGNATURE') {
+    const sig = signatureErrorCode(signatureReasonOf(text))
+    return { code: sig, message: message(sig) }
+  }
   const all = `${code} ${text}`
   // GitHubProvider wraps ANY failure of releases/latest (429, 403, 5xx…) in ERR_UPDATER_LATEST_VERSION_NOT_FOUND, with
   // the HttpError stack in the message ("…: HttpError: 429 Too Many Requests"): the real status decides first.
@@ -462,7 +475,10 @@ function parsePrefsArg(arg) {
   return { autoDownload: arg.autoDownload }
 }
 
-/** userData/updater.json (text or parsed) → { autoDownload, attempt? }. Anything odd falls back to the defaults. */
+/**
+ * userData/updater.json (text or parsed) → { autoDownload, attempt?, rejected? }. Anything odd falls back to the
+ * defaults; `rejected` (see rememberRejected) is present only when it holds a valid entry.
+ */
 function parseUpdaterFile(raw) {
   let o = raw
   if (typeof raw === 'string') {
@@ -479,7 +495,108 @@ function parseUpdaterFile(raw) {
   if (a && typeof a === 'object' && isVersion(a.version) && isVersion(a.from) && typeof a.at === 'number' && Number.isFinite(a.at) && a.at >= 0) {
     out.attempt = { version: a.version, from: a.from, at: a.at }
   }
+  const rejected = parseRejected(o.rejected)
+  if (rejected.length) out.rejected = rejected
   return out
+}
+
+/** The updater.json object to write: { v: 1, autoDownload, attempt?, rejected? } (empty / invalid parts left out). */
+function updaterFileData(file) {
+  const f = file && typeof file === 'object' ? file : {}
+  const rejected = parseRejected(f.rejected)
+  return {
+    v: 1,
+    autoDownload: f.autoDownload !== false,
+    ...(f.attempt ? { attempt: f.attempt } : {}),
+    ...(rejected.length ? { rejected } : {}),
+  }
+}
+
+// ---- refused update files (persisted: the same file is never downloaded automatically again) ----
+
+/** Our verifier's refusal reasons for a file that is NOT the author's update → error 'signature'. */
+const SIGNATURE_REFUSED_REASONS = ['not-signed', 'hash-mismatch', 'other-signer', 'wrong-version', 'not-newer', 'wrong-product', 'not-installer', 'changed']
+/** Reasons where the check could not decide → error 'signature-unverified' (retried; never presented as a forgery). */
+const SIGNATURE_UNVERIFIED_REASONS = ['bad-chain', 'verify-failed', 'no-pins', 'policy', 'no-file', 'inactive']
+const SIGNATURE_REASONS = [...SIGNATURE_REFUSED_REASONS, ...SIGNATURE_UNVERIFIED_REASONS]
+const REJECTED_MAX = 5
+/** A file the check could not decide on is downloaded automatically again only after this long (one try a day). */
+const UNVERIFIED_RETRY_MS = 24 * 60 * 60_000
+/** latest.yml sha512: base64 of 64 bytes. */
+const SHA512_RE = /^[A-Za-z0-9+/]{86}==$/
+
+function isSha512(v) {
+  return typeof v === 'string' && SHA512_RE.test(v)
+}
+
+/** 'signature' (refused file) | 'signature-unverified' (the check could not decide). An unknown reason counts as refused. */
+function signatureErrorCode(reason) {
+  return SIGNATURE_UNVERIFIED_REASONS.includes(reason) ? 'signature-unverified' : 'signature'
+}
+
+/** The reason in our verifier's "sanovids-signature:<reason>" (electron-updater puts it in its error message), or ''. */
+function signatureReasonOf(text) {
+  const m = typeof text === 'string' ? /sanovids-signature:([a-z-]{1,40})/.exec(text) : null
+  return m && SIGNATURE_REASONS.includes(m[1]) ? m[1] : ''
+}
+
+/** updater.json `rejected` → [{ version, sha512, reason, at }] (valid entries only, at most 5, the latest kept). */
+function parseRejected(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const e of raw) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+    if (!isVersion(e.version) || !isSha512(e.sha512) || !SIGNATURE_REASONS.includes(e.reason)) continue
+    if (typeof e.at !== 'number' || !Number.isFinite(e.at) || e.at < 0) continue
+    out.push({ version: e.version, sha512: e.sha512, reason: e.reason, at: e.at })
+  }
+  return out.slice(-REJECTED_MAX)
+}
+
+/** The sha512 checksums an UpdateInfo (latest.yml) announces: every file's, plus the legacy top-level one (valid only, ≤ 8). */
+function offerHashes(info) {
+  const out = []
+  const add = (h) => {
+    if (isSha512(h) && !out.includes(h) && out.length < 8) out.push(h)
+  }
+  if (info && typeof info === 'object') {
+    if (Array.isArray(info.files)) for (const f of info.files) if (f && typeof f === 'object') add(f.sha512)
+    add(info.sha512)
+  }
+  return out
+}
+
+/** `list` + the refused file { version, sha512, reason } (an entry for the same file is replaced). Invalid → `list` unchanged. */
+function rememberRejected(list, entry, now) {
+  const kept = parseRejected(list)
+  const e = entry && typeof entry === 'object' ? entry : {}
+  const next = parseRejected([{ version: e.version, sha512: e.sha512, reason: e.reason, at: now }])
+  if (!next.length) return kept
+  return [...kept.filter((k) => k.sha512 !== next[0].sha512), next[0]].slice(-REJECTED_MAX)
+}
+
+/** `list` without the entries for these files (a manual "Thử lại" retries them). */
+function forgetRejected(list, hashes) {
+  const hs = Array.isArray(hashes) ? hashes.filter(isSha512) : []
+  return parseRejected(list).filter((e) => !hs.includes(e.sha512))
+}
+
+/**
+ * The entry that keeps an offered file from downloading automatically, or null. Matched by checksum only: a re-uploaded,
+ * correctly signed file under the same version downloads normally. A refused file stays refused; a file the check could
+ * not decide on is tried again UNVERIFIED_RETRY_MS later.
+ */
+function findRejected(list, hashes, now) {
+  const hs = Array.isArray(hashes) ? hashes.filter(isSha512) : []
+  if (!hs.length) return null
+  const entries = parseRejected(list).reverse()
+  for (const e of entries) {
+    if (!hs.includes(e.sha512)) continue
+    if (signatureErrorCode(e.reason) === 'signature') return e
+    const age = now - e.at
+    if (age >= 0 && age < UNVERIFIED_RETRY_MS) return e
+  }
+  return null
 }
 
 /**
@@ -524,15 +641,25 @@ const THUMBPRINT_RE = /^[0-9A-F]{40}$/
  * from the command line) and writes one JSON object between two SVSIG markers, every non-ASCII char \u-escaped (so the
  * console code page cannot garble a name). Never a double quote, a newline or a backtick in it (tested): nothing a
  * command line could re-split. Its fields feed judgeSignature; StatusMessage / Subject are localized and never read.
+ *  - First a check that works in ConstrainedLanguage (AppLocker / WDAC script enforcement): there every method call
+ *    below would fail with no output at all, so it says so ({ error: 'clm' } → reason 'policy') and stops.
+ *  - ProductName / ProductVersion of the file's VersionInfo (inside the signed PE, so authenticated by the signature):
+ *    the updater requires the installer to be the offered, newer version of this very app (installerIdentityProblem).
+ *  - A timestamped signature: our extra chain build ignores NotTimeValid (WinVerifyTrust already judged the certificate's
+ *    validity at the RFC 3161 signing time; a PC clock that is wrong, or a certificate that expired later, must not
+ *    refuse a genuine file). judgeSignature accepts NotTimeValid only next to a timestamp.
  */
 const SIGNATURE_SCRIPT = [
   "$ErrorActionPreference='Stop'",
   "$ProgressPreference='SilentlyContinue'",
-  '$r=[ordered]@{v=1;status=-1;sigType=$null;thumbprint=$null;signer=$null;tsThumbprint=$null;chainOk=$false;chainStatus=@();chainLen=0;hresult=$null;error=$null}',
+  `if($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage'){ Write-Output ('${SIGNATURE_MARK}'+(@{v=1;status=-1;error='clm'}|ConvertTo-Json -Compress)+'${SIGNATURE_MARK}'); exit }`,
+  '$r=[ordered]@{v=1;status=-1;sigType=$null;thumbprint=$null;signer=$null;tsThumbprint=$null;chainOk=$false;chainStatus=@();chainLen=0;hresult=$null;productVersion=$null;productName=$null;error=$null}',
   "try { $p=$env:SANOVIDS_SIG_PATH; if([string]::IsNullOrEmpty($p)){throw 'no-path'}",
   '$s=Get-AuthenticodeSignature -LiteralPath $p',
   '$r.status=[int]$s.Status',
   '$r.sigType=[string]$s.SignatureType',
+  // `try {…} catch {…}` is ONE statement: no "; " may separate them. A VersionInfo problem only leaves both fields null.
+  'try { $vi=(Get-Item -LiteralPath $p).VersionInfo; $r.productVersion=[string]$vi.ProductVersion; $r.productName=[string]$vi.ProductName } catch { $r.productVersion=$null }',
   "$f=$s.GetType().GetField('win32Error',[System.Reflection.BindingFlags]'NonPublic,Instance')",
   "if($null -ne $f){$r.hresult='0x{0:X8}' -f [uint32]$f.GetValue($s)}",
   'if($null -ne $s.TimeStamperCertificate){$r.tsThumbprint=$s.TimeStamperCertificate.Thumbprint}',
@@ -540,7 +667,9 @@ const SIGNATURE_SCRIPT = [
   'if($null -ne $c){ $r.thumbprint=$c.Thumbprint; $r.signer=$c.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false)',
   '$ch=New-Object System.Security.Cryptography.X509Certificates.X509Chain',
   '$ch.ChainPolicy.RevocationMode=[System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck',
-  '$ch.ChainPolicy.VerificationFlags=[System.Security.Cryptography.X509Certificates.X509VerificationFlags]::AllowUnknownCertificateAuthority',
+  "$fl='AllowUnknownCertificateAuthority'",
+  "if($null -ne $r.tsThumbprint){$fl+=',IgnoreNotTimeValid'}",
+  '$ch.ChainPolicy.VerificationFlags=[System.Security.Cryptography.X509Certificates.X509VerificationFlags]$fl',
   "[void]$ch.ChainPolicy.ApplicationPolicy.Add((New-Object System.Security.Cryptography.Oid '1.3.6.1.5.5.7.3.3'))",
   '$r.chainOk=$ch.Build($c)',
   '$r.chainStatus=@($ch.ChainStatus|ForEach-Object{[string]$_.Status})',
@@ -561,8 +690,16 @@ function powershellArgs() {
 }
 
 /**
+ * Variables that change which code runs inside powershell.exe: a CLR profiler DLL (COR_ENABLE_PROFILING /
+ * COR_PROFILER / COR_PROFILER_PATH…) or CLR / .NET runtime knobs (COMPlus_* / DOTNET_* / CORECLR_*) could make the
+ * verifier print whatever an injected DLL wants. Dropped by prefix (case-insensitive). Policy markers are kept.
+ */
+const POWERSHELL_ENV_DROPPED_PREFIXES = ['cor_', 'complus_', 'dotnet_', 'coreclr_']
+
+/**
  * The child's environment: a copy of `baseEnv` without PSModulePath (a PowerShell 7 value breaks module loading in
- * Windows PowerShell 5.1), plus SANOVIDS_SIG_PATH = the file. Names are matched case-insensitively (Windows env).
+ * Windows PowerShell 5.1) and without the code-injection variables above, plus SANOVIDS_SIG_PATH = the file. Names are
+ * matched case-insensitively (Windows env).
  */
 function powershellEnv(baseEnv, file) {
   const out = {}
@@ -570,6 +707,7 @@ function powershellEnv(baseEnv, file) {
   for (const key of Object.keys(src)) {
     const lower = key.toLowerCase()
     if (lower === 'psmodulepath' || lower === 'sanovids_sig_path') continue
+    if (POWERSHELL_ENV_DROPPED_PREFIXES.some((p) => lower.startsWith(p))) continue
     if (typeof src[key] === 'string') out[key] = src[key]
   }
   out.SANOVIDS_SIG_PATH = String(file)
@@ -620,6 +758,8 @@ function parseSignatureOutput(stdout) {
     return null
   }
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  const productVersion = cleanText(o.productVersion, VERSION_MAX)
+  const productName = cleanText(o.productName, SIGNER_MAX)
   return {
     v: typeof o.v === 'number' ? o.v : null,
     status: typeof o.status === 'number' ? o.status : null,
@@ -632,19 +772,31 @@ function parseSignatureOutput(stdout) {
     chainLen: typeof o.chainLen === 'number' ? o.chainLen : null,
     hresult: strOrNull(o.hresult),
     error: o.error == null ? null : String(o.error),
+    // Only when the script read them (an older script, a non-PE file or no VersionInfo: absent).
+    ...(productVersion ? { productVersion } : {}),
+    ...(productName ? { productName } : {}),
   }
+}
+
+/** A VersionInfo string: trimmed, control characters removed, at most `max` chars; '' / not a string → ''. */
+function cleanText(v, max) {
+  return typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, max) : ''
 }
 
 /**
  * The verdict on a parsed signature (parseSignatureOutput) against the pinned thumbprints. Rows IN ORDER; the status is
  * looked at before the thumbprint because a HashMismatch file still reports its (pinned) signer:
- *   1 no pins → unknown/no-pins · 2 no usable output → unknown/verify-failed · 3 NotSigned → unsigned/not-signed ·
+ *   1 no pins → unknown/no-pins · 2a PowerShell in ConstrainedLanguage ({ error: 'clm' }) → unknown/policy ·
+ *   2 no usable output → unknown/verify-failed · 3 NotSigned → unsigned/not-signed ·
  *   4 HashMismatch → tampered/hash-mismatch · 5 not Authenticode or no thumbprint → unknown/verify-failed ·
  *   6 thumbprint not pinned → other-signer · 7a Valid (machine trusts the cert) / 7b the genuine self-signed case
  *   (UnknownError 0x800B0109 CERT_E_UNTRUSTEDROOT, chain = the one self-signed cert) → signed/ok ·
  *   8 anything else → unknown/bad-chain.
+ * In 7a / 7b the extra chain may also report NotTimeValid when the signature is timestamped (WinVerifyTrust judged the
+ * certificate's validity at the signing time; only the PC clock / a later expiry makes the chain say so).
  * The common name is never trusted: an impostor with the author's exact CN differs by thumbprint (row 6).
- * → { ok, status, reason, thumbprint?, signer?, timestamped }
+ * → { ok, status, reason, thumbprint?, signer?, timestamped, productVersion?, productName? } (the last two only when
+ * signed and read by the script: the updater checks them, nobody else).
  */
 function judgeSignature(parsed, pins) {
   const pinList = parseSignerPins(pins)
@@ -652,6 +804,7 @@ function judgeSignature(parsed, pins) {
   const timestamped = !!p && p.tsThumbprint != null
   const verdict = (ok, status, reason, extra) => ({ ok, status, reason, ...(extra || {}), timestamped })
   if (!pinList.length) return verdict(false, 'unknown', 'no-pins')
+  if (p && p.v === 1 && p.error === 'clm') return { ...verdict(false, 'unknown', 'policy'), timestamped: false }
   if (!p || p.v !== 1 || p.error != null || !Number.isInteger(p.status)) return { ...verdict(false, 'unknown', 'verify-failed'), timestamped: false }
   const thumb = typeof p.thumbprint === 'string' ? p.thumbprint.toUpperCase() : ''
   const who = THUMBPRINT_RE.test(thumb) ? { thumbprint: thumb, ...(cleanSigner(p.signer) ? { signer: cleanSigner(p.signer) } : {}) } : {}
@@ -660,21 +813,84 @@ function judgeSignature(parsed, pins) {
   if (p.sigType !== 'Authenticode' || !THUMBPRINT_RE.test(thumb)) return verdict(false, 'unknown', 'verify-failed')
   if (!pinList.includes(thumb)) return verdict(false, 'other-signer', 'other-signer', who)
   const chain = chainList(p.chainStatus)
-  const trusted = p.status === 0 && (p.hresult == null || p.hresult === '0x00000000') && p.chainOk === true && chain.every((s) => s === 'UntrustedRoot')
+  const allowed = timestamped ? ['UntrustedRoot', 'NotTimeValid'] : ['UntrustedRoot']
+  const chainFine = chain.every((s) => allowed.includes(s))
+  const trusted = p.status === 0 && (p.hresult == null || p.hresult === '0x00000000') && p.chainOk === true && chainFine
+  // 7b: exactly ['UntrustedRoot'] (+ 'NotTimeValid' when timestamped), each once, from a one-certificate chain.
   const selfSigned =
-    p.status === 1 && p.hresult === '0x800B0109' && p.chainOk === true && chain.length === 1 && chain[0] === 'UntrustedRoot' && p.chainLen === 1
-  if (trusted || selfSigned) return verdict(true, 'signed', 'ok', who)
+    p.status === 1 &&
+    p.hresult === '0x800B0109' &&
+    p.chainOk === true &&
+    chainFine &&
+    chain.includes('UntrustedRoot') &&
+    new Set(chain).size === chain.length &&
+    p.chainLen === 1
+  if (trusted || selfSigned) {
+    const product = {
+      ...(typeof p.productVersion === 'string' && p.productVersion ? { productVersion: p.productVersion } : {}),
+      ...(typeof p.productName === 'string' && p.productName ? { productName: p.productName } : {}),
+    }
+    return verdict(true, 'signed', 'ok', { ...who, ...product })
+  }
   return verdict(false, 'unknown', 'bad-chain', who)
 }
 
 /**
- * Is the file on disk still the one that was verified? Same path, size and mtime (`stat` from fs.statSync; anything
- * missing → false). Used synchronously in the app 'quit' event, before electron-updater installs on quit.
+ * Below this size a pinned-signed file is not an NSIS installer of the app (Electron alone compresses to ~80 MB): the
+ * uninstaller and elevate.exe — also signed by the author, and harmful when run as "the update" — are far smaller.
  */
-function sameVerifiedFile(verified, stat, file) {
+const INSTALLER_MIN_BYTES = 20 * 1024 * 1024
+
+/**
+ * A pinned-signed file must also BE the update that was offered (anti-rollback / anti-swap): its signed VersionInfo
+ * ProductVersion equals the offered version, which is newer than the running one; its ProductName is this app's; and
+ * it is installer-sized. `verdict` = judgeSignature's (ok) verdict; expected = { version, current, appName, size }.
+ * → '' when it is, else 'wrong-version' | 'not-newer' | 'wrong-product' | 'not-installer'.
+ */
+function installerIdentityProblem(verdict, expected) {
+  const v = verdict && typeof verdict === 'object' ? verdict : {}
+  const e = expected && typeof expected === 'object' ? expected : {}
+  const pv = typeof v.productVersion === 'string' ? v.productVersion : ''
+  if (!isVersion(pv) || !isVersion(e.version) || pv !== e.version) return 'wrong-version'
+  if (!isVersion(e.current) || compareVersions(pv, e.current) <= 0) return 'not-newer'
+  if (typeof e.appName !== 'string' || e.appName === '' || v.productName !== e.appName) return 'wrong-product'
+  if (typeof e.size !== 'number' || !Number.isFinite(e.size) || e.size < INSTALLER_MIN_BYTES) return 'not-installer'
+  return ''
+}
+
+/**
+ * Same path, size and mtime as the verified installer (`stat` from fs.statSync; anything missing → false). The cheap
+ * first look in the app 'quit' event; sameVerifiedFile decides.
+ */
+function sameVerifiedMeta(verified, stat, file) {
   if (!verified || typeof verified !== 'object' || !stat || typeof stat !== 'object') return false
   if (typeof file !== 'string' || file === '' || verified.file !== file) return false
   return typeof stat.size === 'number' && verified.size === stat.size && typeof stat.mtimeMs === 'number' && verified.mtimeMs === stat.mtimeMs
+}
+
+/**
+ * Is the file on disk still the very one that was verified? Same path, size and mtime AND the same content: `sha512`
+ * (base64, hashed again right now) equals the hash taken when it passed. Size + mtime alone can be faked (same size,
+ * LastWriteTime put back). Used synchronously in the app 'quit' event and right before quitAndInstall.
+ */
+function sameVerifiedFile(verified, stat, file, sha512) {
+  if (!sameVerifiedMeta(verified, stat, file)) return false
+  return isSha512(verified.sha512) && sha512 === verified.sha512
+}
+
+/**
+ * electron-updater's cached blockmap (<cache>/current.blockmap) for an installer at <cache>/pending/<name>, or null when
+ * the installer is not in a "pending" folder. It describes the NEXT version once a download completes: when that
+ * installer is refused or not installed, it no longer matches the cached installer.exe and must go (else the next
+ * differential download builds a wrong file and falls back to a full one).
+ */
+function cachedBlockmapFile(installerPath, pathMod) {
+  if (typeof installerPath !== 'string' || installerPath === '' || !pathMod) return null
+  const pending = pathMod.dirname(installerPath)
+  if (pathMod.basename(pending).toLowerCase() !== 'pending') return null
+  const cache = pathMod.dirname(pending)
+  if (cache === pending) return null
+  return pathMod.join(cache, 'current.blockmap')
 }
 
 module.exports = {
@@ -696,14 +912,30 @@ module.exports = {
   checkDue,
   parsePrefsArg,
   parseUpdaterFile,
+  updaterFileData,
   startupAttempt,
   startupNotice,
   logLine,
+  SIGNATURE_REFUSED_REASONS,
+  SIGNATURE_UNVERIFIED_REASONS,
+  REJECTED_MAX,
+  UNVERIFIED_RETRY_MS,
+  isSha512,
+  signatureErrorCode,
+  signatureReasonOf,
+  offerHashes,
+  rememberRejected,
+  forgetRejected,
+  findRejected,
   SIGNATURE_SCRIPT,
   powershellArgs,
   powershellEnv,
   parseSignerPins,
   parseSignatureOutput,
   judgeSignature,
+  INSTALLER_MIN_BYTES,
+  installerIdentityProblem,
+  sameVerifiedMeta,
   sameVerifiedFile,
+  cachedBlockmapFile,
 }

@@ -171,28 +171,90 @@ describe('effects', () => {
     expect(failed.deps.client.openReleasePage).toHaveBeenCalled()
   })
 
-  it('a download refused for its signature: one toast per version with "Trang tải về" (none while the dialog shows it)', () => {
-    const sigError = (version: string): UpdateState => ({
-      kind: 'installer',
-      current: '0.5.0',
-      status: 'error',
-      version,
-      autoDownload: true,
-      error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature },
-    })
+  const sigError = (version: string, code: 'signature' | 'signature-unverified' = 'signature'): UpdateState => ({
+    kind: 'installer',
+    current: '0.5.0',
+    status: 'error',
+    version,
+    autoDownload: true,
+    error: { code, message: UPDATE_ERROR_TEXT[code] },
+  })
+
+  it('a download refused for its signature: one toast per version with "Xem" → the dialog (none while the dialog shows it)', () => {
     const h = harness()
     h.c.start()
     h.setState({ kind: 'installer', current: '0.5.0', status: 'downloading', version: '0.5.1', percent: 40, autoDownload: true })
     h.setState(sigError('0.5.1'))
-    h.setState({ kind: 'installer', current: '0.5.0', status: 'available', version: '0.5.1', autoDownload: true })
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'checking', version: '0.5.1', autoDownload: true })
     h.setState(sigError('0.5.1')) // the same version found again by a later check: no second toast
     expect(h.texts()).toEqual([UPDATE_ERROR_TEXT.signature])
-    expect(h.toasts[0].opts).toMatchObject({ tone: 'error', action: { label: 'Trang tải về' } })
+    expect(h.toasts[0].opts).toMatchObject({ tone: 'error', ms: 15_000, action: { label: 'Xem' } })
+    // "Xem" opens the dialog (its certificate check), never the download page directly: that page may be the one that
+    // served the refused file.
     h.runToastAction(UPDATE_ERROR_TEXT.signature)
-    expect(h.deps.client.openReleasePage).toHaveBeenCalledTimes(1)
+    expect(h.deps.ui.openDialog).toHaveBeenCalledTimes(1)
+    expect(h.deps.client.openReleasePage).not.toHaveBeenCalled()
     h.setDialog('update')
     h.setState(sigError('0.5.2'))
     expect(h.texts()).toHaveLength(1)
+  })
+
+  it('a signature check that could not decide: its own warning toast, once', () => {
+    const h = harness()
+    h.c.start()
+    h.setState(sigError('0.5.1', 'signature-unverified'))
+    h.setState(sigError('0.5.1', 'signature-unverified'))
+    expect(h.texts()).toEqual([UPDATE_ERROR_TEXT['signature-unverified']])
+    expect(h.toasts[0].opts).toMatchObject({ tone: 'warning', action: { label: 'Xem' } })
+    // the same version then refused for real: a new toast (another code), the old one goes away
+    h.setState(sigError('0.5.1'))
+    expect(h.texts()).toEqual([UPDATE_ERROR_TEXT['signature-unverified'], UPDATE_ERROR_TEXT.signature])
+    expect(h.dismissed).toEqual([h.toasts[0].id])
+  })
+
+  it('the signature toast goes away once the state moves on (never next to a genuine update)', () => {
+    const h = harness()
+    h.c.start()
+    h.setState(sigError('0.5.95'))
+    const sigToast = h.toasts[0].id
+    // a check is transient: the toast stays
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'checking', version: '0.5.95', autoDownload: true })
+    expect(h.dismissed).toEqual([])
+    // a genuine newer version is found: the refusal toast is dismissed before anything else is said
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'available', version: '0.5.91', autoDownload: true })
+    expect(h.dismissed).toEqual([sigToast])
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'downloading', version: '0.5.91', percent: 10, autoDownload: true })
+    h.setState(ready('0.5.91'))
+    expect(h.texts()).toEqual([UPDATE_ERROR_TEXT.signature, 'Đã tải xong SanoVids 0.5.91.'])
+    expect(h.dismissed).toEqual([sigToast]) // dismissed once
+
+    // "Thử lại" of the same version: downloading again dismisses it too
+    const r = harness()
+    r.c.start()
+    r.setState(sigError('0.5.92'))
+    r.setState({ kind: 'installer', current: '0.5.0', status: 'downloading', version: '0.5.92', percent: 1, autoDownload: true })
+    expect(r.dismissed).toEqual([r.toasts[0].id])
+
+    // another error, or up to date: the refusal is old news
+    for (const next of [
+      { kind: 'installer', current: '0.5.0', status: 'none', autoDownload: true },
+      { kind: 'installer', current: '0.5.0', status: 'error', autoDownload: true, error: { code: 'offline', message: UPDATE_ERROR_TEXT.offline } },
+    ] as UpdateState[]) {
+      const o = harness()
+      o.c.start()
+      o.setState(sigError('0.5.92'))
+      o.setState(next)
+      expect(o.dismissed).toEqual([o.toasts[0].id])
+    }
+
+    // no toast shown (the dialog was open): nothing to dismiss
+    const d = harness()
+    d.setDialog('update')
+    d.c.start()
+    d.setState(sigError('0.5.92'))
+    d.setState({ kind: 'installer', current: '0.5.0', status: 'available', version: '0.5.93', autoDownload: true })
+    expect(d.toasts).toEqual([])
+    expect(d.dismissed).toEqual([])
   })
 
   it('automatic checks stay silent', () => {
@@ -338,6 +400,16 @@ describe('installNow', () => {
     expect(h2.hold()).toBe(false)
     expect(h2.c.installUi.getState().busy).toBeNull()
     expect(h2.texts()).not.toContain(UPDATE_TOAST.installFailed)
+
+    // Not verifiable right before it runs: the same (no "install failed")
+    const h3 = harness(ready())
+    h3.results.install = { ok: false, code: 'signature-unverified', message: UPDATE_ERROR_TEXT['signature-unverified'] }
+    const done3 = h3.c.installNow()
+    await vi.advanceTimersByTimeAsync(10)
+    await done3
+    expect(h3.hold()).toBe(false)
+    expect(h3.c.installUi.getState().busy).toBeNull()
+    expect(h3.texts()).not.toContain(UPDATE_TOAST.installFailed)
   })
 
   it('does nothing unless an installer update is ready', async () => {

@@ -1,5 +1,6 @@
 // Consistency checks of the signing / license files: the public certificate, the copy embedded in the trust script,
 // the public download repo template (scripts/releases-repo) and the installer license page (build/license_vi.txt).
+import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -59,6 +60,32 @@ describe('signing scripts', () => {
   it('the download repo ships the same trust script', () => {
     expect(read('scripts/releases-repo/tin-cay-chung-chi.ps1').equals(read('scripts/signing/tin-cay-chung-chi.ps1'))).toBe(true)
   })
+
+  it('the trust script adds the certificate to Root only (TrustedPublisher would let signed scripts / macros run silently)', () => {
+    const src = text('scripts/signing/tin-cay-chung-chi.ps1')
+    expect(src).toContain("$AddStores = @('Root')")
+    expect(src).not.toMatch(/Add-ToStore \$location 'TrustedPublisher'/)
+    // -Go still cleans up a TrustedPublisher copy left by an earlier version
+    expect(src).toContain("foreach ($name in @('TrustedPublisher', 'Root')) { if (-not (Remove-FromStore $location $name))")
+    // the thumbprint must be checked against a source that is not the download page
+    expect(src).toContain('KHÔNG nằm trên trang tải về')
+    expect(src).not.toContain('khớp với trang tải về chính thức')
+  })
+
+  it('the restore script imports the key non-exportable unless -ChoPhepSaoLuuLai is given', () => {
+    const src = text('scripts/signing/khoi-phuc-khoa-ky.ps1')
+    expect(src).toContain('[switch]$ChoPhepSaoLuuLai')
+    expect(src).toContain("if ($ChoPhepSaoLuuLai) { $importArgs['Exportable'] = $true }")
+    expect(src).toContain('Import-PfxCertificate @importArgs')
+    expect(src).not.toMatch(/Import-PfxCertificate[^\n]*-Exportable/)
+  })
+
+  it('the backup script deletes a backup it just wrote when reading it back fails', () => {
+    const src = text('scripts/signing/sao-luu-khoa-ky.ps1')
+    expect(src).toContain('$created = $true')
+    expect(src).toContain('Remove-Item -LiteralPath $target -Force')
+    expect(src).not.toContain('Xoá file đó và chạy lại script')
+  })
 })
 
 describe('license files', () => {
@@ -82,6 +109,13 @@ describe('license files', () => {
     for (let i = 1; i <= 6; i++) expect(body).toMatch(new RegExp(`^${i}\\. `, 'm'))
   })
 
+  it('clause 6 names the licence files that really ship in the install folder', () => {
+    const body = text('LICENSE.txt')
+    expect(body).toMatch(/^6\. .*\(LICENSE\.electron\.txt, LICENSES\.chromium\.html, THIRD-PARTY-NOTICES\.txt\)\.$/m)
+    // THIRD-PARTY-NOTICES.txt is generated from node_modules (scripts/third-party-notices.mjs)
+    expect(fs.existsSync(path.join(ROOT, 'build', 'license-third-party.txt'))).toBe(true)
+  })
+
   it('no non-localized license file in build/ overrides the localized installer page', () => {
     // electron-builder picks build/license.{txt,rtf,html} / eula.* before license_<lang>.txt.
     const names = fs.readdirSync(path.join(ROOT, 'build')).map((n) => n.toLowerCase())
@@ -90,18 +124,41 @@ describe('license files', () => {
   })
 })
 
+const KEY_FILE = /\.(pfx|p12|pvk|key|pem)$|(^|[\\/])pw\.txt$|\.pfx\.txt$/i
+
 describe('no private key material next to the signing files', () => {
-  it('build/ and scripts/ contain no .pfx / .p12 / .pvk / .key / .pem files', () => {
+  it('build/ and scripts/ contain no .pfx / .p12 / .pvk / .key / .pem files (ignored ones included)', () => {
     const found = []
     const walk = (dir) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name)
         if (e.isDirectory()) walk(p)
-        else if (/\.(pfx|p12|pvk|key|pem)$/i.test(e.name)) found.push(path.relative(ROOT, p))
+        else if (KEY_FILE.test(e.name)) found.push(path.relative(ROOT, p))
       }
     }
     walk(path.join(ROOT, 'build'))
     walk(path.join(ROOT, 'scripts'))
     expect(found).toEqual([])
+  })
+
+  it('no tracked or about-to-be-committed file anywhere in the repo is key material', () => {
+    // tracked + untracked files that .gitignore does not hide: everything `git add -A` would pick up
+    const r = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: ROOT, encoding: 'utf8', windowsHide: true })
+    if (r.error || r.status !== 0) return // not a git checkout (e.g. a source archive): the walk above still runs
+    const files = r.stdout.split('\0').filter(Boolean)
+    expect(files.length).toBeGreaterThan(50)
+    expect(files.filter((f) => KEY_FILE.test(f))).toEqual([])
+    const pem = []
+    for (const f of files) {
+      if (!/\.(txt|md|json|cer|crt|mjs|cjs|js|ts|tsx|ps1|yml|yaml)$/i.test(f) || f.startsWith('scripts/__tests__/')) continue
+      let buf = null
+      try {
+        buf = fs.readFileSync(path.join(ROOT, f))
+      } catch {
+        continue // listed but deleted in the working tree
+      }
+      if (/-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/.test(buf.toString('latin1'))) pem.push(f)
+    }
+    expect(pem).toEqual([])
   })
 })

@@ -2,7 +2,21 @@
 // Plain data only. Main validates every call; the renderer validates every state it receives (updateModel.parseUpdateState).
 export type UpdateKind = 'installer' | 'portable' | 'dev'
 export type UpdateStatus = 'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'ready' | 'error' | 'unsupported'
-export type UpdateErrorCode = 'offline' | 'no-release' | 'rate-limited' | 'checksum' | 'signature' | 'disk' | 'install-failed' | 'failed'
+/**
+ * 'signature': the update is NOT signed by a pinned certificate (another signer, a modified file, no signature) — it was
+ * refused. 'signature-unverified': the check itself could not decide (PowerShell blocked or too slow, unexpected chain,
+ * no pin) — nothing was installed, "Thử lại" checks again. Builds before the split send 'signature' for both.
+ */
+export type UpdateErrorCode =
+  | 'offline'
+  | 'no-release'
+  | 'rate-limited'
+  | 'checksum'
+  | 'signature'
+  | 'signature-unverified'
+  | 'disk'
+  | 'install-failed'
+  | 'failed'
 export type UpdateResultCode = UpdateErrorCode | 'not-allowed' | 'bad-request' | 'unsupported' | 'busy' | 'not-ready'
 export interface UpdateError { code: UpdateErrorCode; message: string }
 /** One-shot news of this launch, computed by main at startup from userData/updater.json. */

@@ -170,13 +170,17 @@ describe('icons, installer pages and license', () => {
       'build/installerHeader.bmp',
       'build/license_vi.txt',
       'LICENSE.txt',
+      'build/license-third-party.txt',
       'public/icons/icon.ico',
     ]
     for (const rel of files) expect(fs.existsSync(path.join(ROOT, rel)), rel).toBe(true)
   })
 
-  it('LICENSE.txt is shipped next to the app', () => {
-    expect(pkg.build.extraFiles).toEqual([{ from: 'LICENSE.txt', to: 'LICENSE.txt' }])
+  it('LICENSE.txt and THIRD-PARTY-NOTICES.txt are shipped next to the app', () => {
+    expect(pkg.build.extraFiles).toEqual([
+      { from: 'LICENSE.txt', to: 'LICENSE.txt' },
+      { from: 'build/license-third-party.txt', to: 'THIRD-PARTY-NOTICES.txt' },
+    ])
   })
 })
 
@@ -198,7 +202,7 @@ describe('signer pins and metadata', () => {
 describe('scripts', () => {
   it('dist:win goes through scripts/electron-build.mjs and never publishes', () => {
     expect(pkg.scripts['dist:win']).toBe(
-      'node scripts/update-notes.mjs && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs',
+      'node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs',
     )
     expect(pkg.scripts.release).toBeUndefined()
     expect(pkg.scripts.icons).toBe('node scripts/make-icons.mjs')

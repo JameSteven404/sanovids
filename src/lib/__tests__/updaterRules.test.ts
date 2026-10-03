@@ -2,6 +2,7 @@
 // build kind, error mapping, release notes as text, the state machine, schedule, persistence) — plus the packaging
 // guarantees in package.json / preload / main.cjs that keep real users on the public feed and their real data folder,
 // and the electron-updater internals our pinned signature verifier relies on (decision table: signature.test.ts).
+import { createHash } from 'node:crypto'
 import nodeFs from 'node:fs'
 import { createRequire } from 'node:module'
 import nodePath from 'node:path'
@@ -13,7 +14,7 @@ import pkgSource from '../../../package.json?raw'
 
 type PathMod = typeof nodePath.win32
 type Kind = 'installer' | 'portable' | 'dev'
-type ErrorCode = 'offline' | 'no-release' | 'rate-limited' | 'checksum' | 'signature' | 'disk' | 'install-failed' | 'failed'
+type ErrorCode = 'offline' | 'no-release' | 'rate-limited' | 'checksum' | 'signature' | 'signature-unverified' | 'disk' | 'install-failed' | 'failed'
 interface UpdErr {
   code: ErrorCode
   message: string
@@ -46,9 +47,31 @@ interface FsMod {
   realpathSync(p: string): string
 }
 type ProfileResult = { ok: true; dir: string; source: 'env' | 'baked' | 'default' } | { ok: false; error: string }
+interface Rejected {
+  version: string
+  sha512: string
+  reason: string
+  at: number
+}
 interface UpdaterFile {
   autoDownload: boolean
   attempt?: { version: string; from: string; at: number }
+  rejected?: Rejected[]
+}
+interface SigVerdict {
+  ok: boolean
+  status: string
+  reason: string
+  thumbprint?: string
+  signer?: string
+  timestamped: boolean
+  productVersion?: string
+  productName?: string
+}
+interface PathLike {
+  dirname(p: string): string
+  basename(p: string): string
+  join(...p: string[]): string
 }
 interface Rules {
   RELEASES_URL: string
@@ -79,7 +102,27 @@ interface Rules {
   startupNotice(file: UpdaterFile, current: string, now: number): unknown
   startupAttempt(file: UpdaterFile, current: string, now: number): { notice: unknown; keep: boolean }
   logLine(level: string, message: unknown, date: Date | number): string
-  sameVerifiedFile(verified: unknown, stat: unknown, file: unknown): boolean
+  updaterFileData(file: unknown): Record<string, unknown>
+  SIGNATURE_REFUSED_REASONS: string[]
+  SIGNATURE_UNVERIFIED_REASONS: string[]
+  REJECTED_MAX: number
+  UNVERIFIED_RETRY_MS: number
+  isSha512(v: unknown): boolean
+  signatureErrorCode(reason: unknown): 'signature' | 'signature-unverified'
+  signatureReasonOf(text: unknown): string
+  offerHashes(info: unknown): string[]
+  rememberRejected(list: unknown, entry: unknown, now: number): Rejected[]
+  forgetRejected(list: unknown, hashes: unknown): Rejected[]
+  findRejected(list: unknown, hashes: unknown, now: number): Rejected | null
+  SIGNATURE_SCRIPT: string
+  powershellEnv(base: Record<string, string | undefined>, file: string): Record<string, string>
+  parseSignatureOutput(stdout: unknown): Record<string, unknown> | null
+  judgeSignature(parsed: unknown, pins: unknown): SigVerdict
+  INSTALLER_MIN_BYTES: number
+  installerIdentityProblem(verdict: unknown, expected: unknown): string
+  sameVerifiedMeta(verified: unknown, stat: unknown, file: unknown): boolean
+  sameVerifiedFile(verified: unknown, stat: unknown, file: unknown, sha512?: unknown): boolean
+  cachedBlockmapFile(installerPath: unknown, pathMod: PathLike | null): string | null
 }
 
 const rules = createRequire(import.meta.url)('../../../electron/updater-rules.cjs') as Rules
@@ -311,10 +354,20 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: RAW }, 'download', 'signature'],
     // A refused signature decides before whatever its message contains (offline, HTTP status, checksum, disk).
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'New version 0.5.92 is not signed by the application owner: net::ERR_FAILED' }, 'download', 'signature'],
-    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:verify-failed HttpError: 403 Forbidden' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:other-signer HttpError: 403 Forbidden' }, 'download', 'signature'],
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sha512 checksum mismatch, expected a, got b' }, 'download', 'signature'],
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'ENOSPC: no space left on device' }, 'download', 'signature'],
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:other-signer' }, 'check', 'signature'],
+    // Our verifier's reason picks refused ('signature') vs not decided ('signature-unverified'), still before the rest.
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'New version 0.5.92 is not signed by the application owner: sanovids-signature:not-signed' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'x: sanovids-signature:hash-mismatch' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'x: sanovids-signature:wrong-version' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'x: sanovids-signature:not-newer' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:verify-failed HttpError: 403 Forbidden' }, 'download', 'signature-unverified'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:policy net::ERR_FAILED' }, 'download', 'signature-unverified'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:bad-chain ENOSPC' }, 'download', 'signature-unverified'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:no-pins sha512 checksum mismatch' }, 'download', 'signature-unverified'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:made-up' }, 'download', 'signature'], // unknown reason: refused
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: RAW }, 'install', 'install-failed'],
     [{ code: 'ENOSPC', message: RAW }, 'download', 'disk'],
     [new Error('No update filepath provided, can\'t quit and install'), 'install', 'install-failed'],
@@ -345,9 +398,18 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     expect(rules.mapUpdaterError({ code: 'HTTP_ERROR_429' }, 'check').message).toBe('Máy chủ cập nhật đang bận.')
     expect(rules.mapUpdaterError({ code: 'ERR_CHECKSUM_MISMATCH' }, 'download').message).toBe('File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.')
     expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE' }, 'download').message).toBe(
-      'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
+      'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
     )
-    expect(rules.ERROR_TEXT.signature.length).toBeLessThanOrEqual(300)
+    expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:policy' }, 'download').message).toBe(
+      'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
+    )
+    for (const code of ['signature', 'signature-unverified']) {
+      const text = rules.ERROR_TEXT[code]
+      expect(text.length, code).toBeLessThanOrEqual(300)
+      expect(text, code).toBe(text.normalize('NFC'))
+      // Never sends the user to the download page: it may be the very place that served the refused file.
+      expect(text, code).not.toMatch(/trang tải về|cài đè/)
+    }
     expect(rules.mapUpdaterError({ code: 'ENOSPC' }, 'download').message).toBe('Ổ đĩa không đủ chỗ để tải bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'install').message).toBe('Không khởi động được trình cài bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'check').message).toBe('Không kiểm tra được bản cập nhật.')
@@ -636,27 +698,283 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
   })
 })
 
-describe('updater rules: the verified installer (install on quit)', () => {
+/** A latest.yml-style sha512 (base64 of 64 bytes). */
+const sha = (seed: string) => createHash('sha512').update(seed).digest('base64')
+
+describe('updater rules: the verified installer (install now / on quit)', () => {
   const FILE = 'C:\\Users\\me\\AppData\\Local\\sanovids-updater\\pending\\SanoVids-Setup-0.5.1.exe'
-  const verified = { file: FILE, size: 98_000_000, mtimeMs: 1_759_000_000_123.5, version: '0.5.1' }
+  const HASH = sha('genuine 0.5.1')
+  const verified = { file: FILE, size: 98_000_000, mtimeMs: 1_759_000_000_123.5, sha512: HASH, version: '0.5.1' }
   const stat = { size: 98_000_000, mtimeMs: 1_759_000_000_123.5 }
 
-  it('same path, size and mtime → still the verified file', () => {
-    expect(rules.sameVerifiedFile(verified, stat, FILE)).toBe(true)
+  it('same path, size, mtime AND content → still the verified file', () => {
+    expect(rules.sameVerifiedMeta(verified, stat, FILE)).toBe(true)
+    expect(rules.sameVerifiedFile(verified, stat, FILE, HASH)).toBe(true)
   })
 
-  it('anything else → not verified (no install on quit)', () => {
-    expect(rules.sameVerifiedFile(null, stat, FILE)).toBe(false) // never verified / refused
-    expect(rules.sameVerifiedFile(verified, null, FILE)).toBe(false) // stat failed: the file is gone
-    expect(rules.sameVerifiedFile(verified, stat, FILE.replace('0.5.1', '0.5.2'))).toBe(false) // another installer
-    expect(rules.sameVerifiedFile(verified, stat, FILE.toLowerCase())).toBe(false)
-    expect(rules.sameVerifiedFile(verified, stat, null)).toBe(false)
-    expect(rules.sameVerifiedFile(verified, stat, '')).toBe(false)
-    expect(rules.sameVerifiedFile(verified, { ...stat, size: stat.size + 1 }, FILE)).toBe(false) // replaced after the check
-    expect(rules.sameVerifiedFile(verified, { ...stat, mtimeMs: stat.mtimeMs + 1 }, FILE)).toBe(false)
-    expect(rules.sameVerifiedFile(verified, { size: stat.size }, FILE)).toBe(false)
-    expect(rules.sameVerifiedFile({ ...verified, file: '' }, stat, '')).toBe(false)
-    expect(rules.sameVerifiedFile('x', stat, FILE)).toBe(false)
+  it('same path, size and mtime but other bytes (LastWriteTime put back) → not verified', () => {
+    expect(rules.sameVerifiedMeta(verified, stat, FILE)).toBe(true) // the cheap look cannot tell…
+    expect(rules.sameVerifiedFile(verified, stat, FILE, sha('swapped, same size'))).toBe(false) // …the hash does
+    expect(rules.sameVerifiedFile(verified, stat, FILE)).toBe(false) // no hash taken
+    expect(rules.sameVerifiedFile(verified, stat, FILE, null)).toBe(false) // hashing failed
+    expect(rules.sameVerifiedFile({ ...verified, sha512: undefined }, stat, FILE, undefined)).toBe(false) // never hashed
+    expect(rules.sameVerifiedFile({ ...verified, sha512: 'x' }, stat, FILE, 'x')).toBe(false) // not a sha512
+  })
+
+  it('anything else → not verified (no install)', () => {
+    for (const fn of [(v: unknown, s: unknown, f: unknown) => rules.sameVerifiedMeta(v, s, f), (v: unknown, s: unknown, f: unknown) => rules.sameVerifiedFile(v, s, f, HASH)]) {
+      expect(fn(null, stat, FILE)).toBe(false) // never verified / refused
+      expect(fn(verified, null, FILE)).toBe(false) // stat failed: the file is gone
+      expect(fn(verified, stat, FILE.replace('0.5.1', '0.5.2'))).toBe(false) // another installer
+      expect(fn(verified, stat, FILE.toLowerCase())).toBe(false)
+      expect(fn(verified, stat, null)).toBe(false)
+      expect(fn(verified, stat, '')).toBe(false)
+      expect(fn(verified, { ...stat, size: stat.size + 1 }, FILE)).toBe(false) // replaced after the check
+      expect(fn(verified, { ...stat, mtimeMs: stat.mtimeMs + 1 }, FILE)).toBe(false)
+      expect(fn(verified, { size: stat.size }, FILE)).toBe(false)
+      expect(fn({ ...verified, file: '' }, stat, '')).toBe(false)
+      expect(fn('x', stat, FILE)).toBe(false)
+    }
+  })
+
+  it('the cached blockmap next to a pending installer (dropped when that installer is refused / not installed)', () => {
+    expect(rules.cachedBlockmapFile(FILE, win)).toBe('C:\\Users\\me\\AppData\\Local\\sanovids-updater\\current.blockmap')
+    expect(rules.cachedBlockmapFile('C:\\x\\sanovids-updater\\PENDING\\temp-a.exe', win)).toBe('C:\\x\\sanovids-updater\\current.blockmap')
+    expect(rules.cachedBlockmapFile('/home/me/.cache/sanovids-updater/pending/a.exe', posix)).toBe('/home/me/.cache/sanovids-updater/current.blockmap')
+    // Not in a "pending" folder: never guess another folder to delete in.
+    for (const bad of ['C:\\x\\sanovids-updater\\a.exe', 'C:\\Users\\me\\Downloads\\SanoVids-Setup.exe', 'C:\\pending', '', null, 42]) {
+      expect(rules.cachedBlockmapFile(bad, win), String(bad)).toBeNull()
+    }
+    expect(rules.cachedBlockmapFile(FILE, null)).toBeNull()
+  })
+})
+
+describe('updater rules: the file must BE the offered update (anti-rollback, anti-swap)', () => {
+  const signed: SigVerdict = { ok: true, status: 'signed', reason: 'ok', timestamped: true, productVersion: '0.5.1', productName: 'SanoVids' }
+  const expected = { version: '0.5.1', current: '0.5.0', appName: 'SanoVids', size: 98_000_000 }
+  const problem = (v: Partial<SigVerdict>, e: Partial<typeof expected> = {}) => rules.installerIdentityProblem({ ...signed, ...v }, { ...expected, ...e })
+
+  it('the offered, newer installer of this app → accepted', () => {
+    expect(problem({})).toBe('')
+    expect(problem({ productVersion: '0.6.0-beta.2' }, { version: '0.6.0-beta.2' })).toBe('')
+    expect(problem({ productName: 'SanoVidsUpdTest' }, { appName: 'SanoVidsUpdTest' })).toBe('') // test identities
+    expect(rules.INSTALLER_MIN_BYTES).toBe(20 * 1024 * 1024)
+    expect(problem({}, { size: rules.INSTALLER_MIN_BYTES })).toBe('')
+  })
+
+  it('an older genuine release offered as a new version → wrong-version (the feed labels it, the signed file does not lie)', () => {
+    expect(problem({ productVersion: '0.4.2' }, { version: '9.9.9' })).toBe('wrong-version')
+    expect(problem({ productVersion: '0.5.2' })).toBe('wrong-version') // another newer build than the one offered
+    expect(problem({ productVersion: '0.5.1.0' })).toBe('wrong-version') // the app exe's own "x.y.z.0"
+    expect(problem({ productVersion: '1, 0, 0, 2894' })).toBe('wrong-version') // elevate.exe
+    expect(problem({ productVersion: undefined })).toBe('wrong-version') // no VersionInfo / an older script
+    expect(problem({}, { version: '' })).toBe('wrong-version')
+    expect(problem({}, { version: 'garbage' })).toBe('wrong-version')
+  })
+
+  it('offered and signed as the running version or older → not-newer', () => {
+    expect(problem({ productVersion: '0.5.0' }, { version: '0.5.0' })).toBe('not-newer')
+    expect(problem({ productVersion: '0.4.2' }, { version: '0.4.2' })).toBe('not-newer')
+    expect(problem({ productVersion: '0.5.0-beta.1' }, { version: '0.5.0-beta.1' })).toBe('not-newer')
+    expect(problem({}, { current: 'nope' })).toBe('not-newer')
+  })
+
+  it('another product, or a signed file that is not an installer (uninstaller, elevate.exe) → refused', () => {
+    expect(problem({ productName: 'Elevate Application' })).toBe('wrong-product')
+    expect(problem({ productName: undefined })).toBe('wrong-product')
+    expect(problem({ productName: 'sanovids' })).toBe('wrong-product')
+    expect(problem({}, { appName: '' })).toBe('wrong-product')
+    expect(problem({}, { size: 380_000 })).toBe('not-installer') // "Uninstall SanoVids.exe"
+    expect(problem({}, { size: -1 })).toBe('not-installer') // stat failed
+    expect(problem({}, { size: Number.NaN })).toBe('not-installer')
+    expect(rules.installerIdentityProblem(null, expected)).toBe('wrong-version')
+    expect(rules.installerIdentityProblem(signed, null)).toBe('wrong-version')
+  })
+
+  it('every identity problem is a refusal (error "signature"), never "unverified"', () => {
+    for (const r of ['wrong-version', 'not-newer', 'wrong-product', 'not-installer', 'changed']) {
+      expect(rules.SIGNATURE_REFUSED_REASONS).toContain(r)
+      expect(rules.signatureErrorCode(r)).toBe('signature')
+    }
+    for (const r of ['not-signed', 'hash-mismatch', 'other-signer']) expect(rules.signatureErrorCode(r)).toBe('signature')
+    for (const r of ['bad-chain', 'verify-failed', 'no-pins', 'policy', 'no-file', 'inactive']) expect(rules.signatureErrorCode(r)).toBe('signature-unverified')
+    for (const r of ['', 'x', null, undefined]) expect(rules.signatureErrorCode(r)).toBe('signature')
+    expect(rules.signatureReasonOf('New version 0.5.2 is not signed by the application owner: sanovids-signature:other-signer')).toBe('other-signer')
+    expect(rules.signatureReasonOf('sanovids-signature:policy')).toBe('policy')
+    expect(rules.signatureReasonOf('sanovids-signature:invented')).toBe('')
+    expect(rules.signatureReasonOf(42)).toBe('')
+  })
+})
+
+describe('updater rules: refused files are remembered by checksum (updater.json)', () => {
+  const A = sha('file A')
+  const B = sha('file B')
+  const C = sha('file C')
+  const entry = (sha512: string, reason = 'other-signer', at = NOW, version = '0.5.92'): Rejected => ({ version, sha512, reason, at })
+
+  it('isSha512 / offerHashes read latest.yml checksums only', () => {
+    expect(rules.isSha512(A)).toBe(true)
+    for (const bad of ['', 'abc', `${A}x`, A.slice(1), null, 42]) expect(rules.isSha512(bad)).toBe(false)
+    expect(rules.offerHashes({ version: '0.5.92', files: [{ url: 'SanoVids-Setup-0.5.92.exe', sha512: A, size: 1 }, { url: 'x.zip', sha512: B }], sha512: A })).toEqual([A, B])
+    expect(rules.offerHashes({ files: [{ sha512: 'nope' }, null, 'x'], sha512: C })).toEqual([C])
+    for (const bad of [null, undefined, 'x', {}, { files: 'x' }]) expect(rules.offerHashes(bad)).toEqual([])
+    const many = Array.from({ length: 12 }, (_, i) => ({ sha512: sha(`f${i}`) }))
+    expect(rules.offerHashes({ files: many })).toHaveLength(8)
+  })
+
+  it('parseUpdaterFile keeps valid entries only (the last 5); updaterFileData writes them back', () => {
+    const file = rules.parseUpdaterFile({ v: 1, autoDownload: false, rejected: [entry(A), { ...entry(B), reason: 'nope' }, { ...entry(C), sha512: 'short' }, { ...entry(C), version: 'x' }, { ...entry(C), at: -1 }, 'junk', null] })
+    expect(file).toEqual({ autoDownload: false, rejected: [entry(A)] })
+    expect(rules.parseUpdaterFile({ rejected: [] })).toEqual({ autoDownload: true })
+    expect(rules.parseUpdaterFile({ rejected: 'x' })).toEqual({ autoDownload: true })
+    const seven = Array.from({ length: 7 }, (_, i) => entry(sha(`r${i}`), 'not-signed', NOW + i))
+    expect(rules.parseUpdaterFile({ rejected: seven }).rejected).toEqual(seven.slice(-rules.REJECTED_MAX))
+    expect(rules.REJECTED_MAX).toBe(5)
+    const attempt = { version: '0.5.0', from: '0.4.2', at: NOW }
+    expect(rules.updaterFileData({ autoDownload: true, attempt, rejected: [entry(A), { bad: 1 }] })).toEqual({ v: 1, autoDownload: true, attempt, rejected: [entry(A)] })
+    expect(rules.updaterFileData({ autoDownload: false })).toEqual({ v: 1, autoDownload: false })
+    expect(rules.updaterFileData(null)).toEqual({ v: 1, autoDownload: true })
+    // Round trip.
+    expect(rules.parseUpdaterFile(JSON.stringify(rules.updaterFileData({ autoDownload: true, rejected: [entry(A)] })))).toEqual({ autoDownload: true, rejected: [entry(A)] })
+  })
+
+  it('rememberRejected replaces the same file, caps the list, ignores invalid entries', () => {
+    let list = rules.rememberRejected(undefined, { version: '0.5.92', sha512: A, reason: 'other-signer' }, NOW)
+    expect(list).toEqual([entry(A)])
+    list = rules.rememberRejected(list, { version: '0.5.92', sha512: A, reason: 'hash-mismatch' }, NOW + 5)
+    expect(list).toEqual([entry(A, 'hash-mismatch', NOW + 5)])
+    expect(rules.rememberRejected(list, { version: '0.5.92', sha512: null, reason: 'other-signer' }, NOW)).toEqual(list) // no checksum
+    expect(rules.rememberRejected(list, { version: '0.5.92', sha512: B, reason: '' }, NOW)).toEqual(list)
+    for (let i = 0; i < 8; i++) list = rules.rememberRejected(list, { version: '0.5.93', sha512: sha(`n${i}`), reason: 'not-signed' }, NOW + i)
+    expect(list).toHaveLength(5)
+    expect(list.some((e) => e.sha512 === A)).toBe(false) // the oldest went first
+  })
+
+  it('findRejected: matched by checksum only; refused files stay refused, undecided ones retry a day later', () => {
+    const list = [entry(A, 'other-signer', NOW - 30 * DAY), entry(B, 'policy', NOW - HOUR)]
+    expect(rules.findRejected(list, [A], NOW)).toEqual(list[0]) // refused long ago: still refused
+    expect(rules.findRejected(list, [C, A], NOW)?.sha512).toBe(A)
+    expect(rules.findRejected(list, [C], NOW)).toBeNull() // a re-uploaded, other file under the same version downloads
+    expect(rules.findRejected(list, [B], NOW)).toEqual(list[1]) // undecided an hour ago: not again yet
+    expect(rules.UNVERIFIED_RETRY_MS).toBe(DAY)
+    expect(rules.findRejected(list, [B], NOW - HOUR + DAY)).toBeNull() // a day later: tried again
+    expect(rules.findRejected([entry(B, 'verify-failed', NOW + HOUR)], [B], NOW)).toBeNull() // clock went back: retried
+    expect(rules.findRejected(list, [], NOW)).toBeNull() // no checksum announced: nothing to match
+    expect(rules.findRejected(list, null, NOW)).toBeNull()
+    expect(rules.findRejected('junk', [A], NOW)).toBeNull()
+  })
+
+  it('forgetRejected ("Thử lại") drops the entries of the offered files only', () => {
+    const list = [entry(A), entry(B, 'policy'), entry(C)]
+    expect(rules.forgetRejected(list, [B, C])).toEqual([entry(A)])
+    expect(rules.forgetRejected(list, [])).toEqual(list)
+    expect(rules.forgetRejected(list, null)).toEqual(list)
+    expect(rules.forgetRejected(null, [A])).toEqual([])
+  })
+})
+
+describe('signature rules: ConstrainedLanguage, clock skew / expiry, VersionInfo, the child environment', () => {
+  const PIN = '7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED'
+  const GENUINE = {
+    v: 1,
+    status: 1,
+    sigType: 'Authenticode',
+    thumbprint: PIN,
+    signer: 'Nguyễn Giang Minh (Jame Steven)',
+    tsThumbprint: '51D9ABDA034973D84F4266ACA48248E6B369C439',
+    chainOk: true,
+    chainStatus: ['UntrustedRoot'],
+    chainLen: 1,
+    hresult: '0x800B0109',
+    error: null as string | null,
+  }
+  const judge = (patch: Record<string, unknown>) => rules.judgeSignature({ ...GENUINE, ...patch }, [PIN])
+
+  it('the script says when PowerShell runs in ConstrainedLanguage (before anything that would fail there)', () => {
+    const s = rules.SIGNATURE_SCRIPT
+    const guard = "if($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage'){ Write-Output ('SVSIG'+(@{v=1;status=-1;error='clm'}|ConvertTo-Json -Compress)+'SVSIG'); exit }"
+    expect(s).toContain(guard)
+    expect(s.indexOf(guard)).toBeLessThan(s.indexOf('$r=[ordered]'))
+    expect(s.indexOf(guard)).toBeLessThan(s.indexOf('GetType()'))
+    expect(s.startsWith("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; if($ExecutionContext")).toBe(true)
+    // Real output of that branch (PowerShell 5.1, session switched to ConstrainedLanguage).
+    const parsed = rules.parseSignatureOutput('SVSIG{"status":-1,"error":"clm","v":1}SVSIG\r\n')
+    expect(rules.judgeSignature(parsed, [PIN])).toEqual({ ok: false, status: 'unknown', reason: 'policy', timestamped: false })
+    expect(rules.judgeSignature(parsed, [])).toMatchObject({ reason: 'no-pins' }) // row 1 first
+    expect(rules.judgeSignature({ ...parsed, v: 2 }, [PIN])).toMatchObject({ reason: 'verify-failed' })
+    expect(rules.signatureErrorCode('policy')).toBe('signature-unverified')
+  })
+
+  it('reads the signed VersionInfo; the chain ignores NotTimeValid only when timestamped', () => {
+    const s = rules.SIGNATURE_SCRIPT
+    expect(s).toContain('try { $vi=(Get-Item -LiteralPath $p).VersionInfo; $r.productVersion=[string]$vi.ProductVersion; $r.productName=[string]$vi.ProductName } catch { $r.productVersion=$null }')
+    expect(s).toContain("$fl='AllowUnknownCertificateAuthority'; if($null -ne $r.tsThumbprint){$fl+=',IgnoreNotTimeValid'}")
+    expect(s.indexOf('$r.tsThumbprint=$s.TimeStamperCertificate.Thumbprint')).toBeLessThan(s.indexOf('IgnoreNotTimeValid'))
+    expect(s).toContain('X509VerificationFlags]$fl')
+    expect(s).not.toMatch(/\}\s*;\s*catch/)
+    expect(s.includes('"') || s.includes('\n') || s.includes('`')).toBe(false)
+  })
+
+  it('timestamped: a chain that also says NotTimeValid (PC clock behind, certificate expired since) → still signed', () => {
+    expect(judge({ chainStatus: ['UntrustedRoot', 'NotTimeValid'] })).toMatchObject({ ok: true, status: 'signed', timestamped: true })
+    expect(judge({ chainStatus: ['NotTimeValid', 'UntrustedRoot'] })).toMatchObject({ ok: true })
+    expect(judge({ status: 0, hresult: '0x00000000', chainStatus: ['NotTimeValid'], chainLen: 2 })).toMatchObject({ ok: true }) // 7a
+    // Not timestamped: the clock is all there is → bad-chain.
+    expect(judge({ chainStatus: ['UntrustedRoot', 'NotTimeValid'], tsThumbprint: null })).toMatchObject({ ok: false, reason: 'bad-chain' })
+    expect(judge({ status: 0, hresult: '0x00000000', chainStatus: ['NotTimeValid'], tsThumbprint: null })).toMatchObject({ reason: 'bad-chain' })
+    // WinVerifyTrust itself refusing the time (CERT_E_EXPIRED at the signing time) stays refused.
+    expect(judge({ hresult: '0x800B0101', chainStatus: ['UntrustedRoot', 'NotTimeValid'] })).toMatchObject({ reason: 'bad-chain' })
+    // Other flags, a NotTimeValid without the untrusted root in 7b, duplicates or a longer chain stay bad-chain.
+    expect(judge({ chainStatus: ['NotTimeValid'] })).toMatchObject({ reason: 'bad-chain' })
+    expect(judge({ chainStatus: ['UntrustedRoot', 'NotTimeValid', 'Revoked'] })).toMatchObject({ reason: 'bad-chain' })
+    expect(judge({ chainStatus: ['UntrustedRoot', 'UntrustedRoot'] })).toMatchObject({ reason: 'bad-chain' })
+    expect(judge({ chainStatus: ['UntrustedRoot', 'NotTimeValid'], chainLen: 2 })).toMatchObject({ reason: 'bad-chain' })
+    expect(judge({ chainStatus: ['UntrustedRoot', 'NotTimeValid'], chainOk: false })).toMatchObject({ reason: 'bad-chain' })
+  })
+
+  it('product fields: parsed when present, passed on only with a signed verdict', () => {
+    const wrap = (o: unknown) => `SVSIG${JSON.stringify(o)}SVSIG`
+    const p = rules.parseSignatureOutput(wrap({ ...GENUINE, productVersion: ' 0.5.1 ', productName: 'Sano\u0007Vids' }))
+    expect(p).toMatchObject({ productVersion: '0.5.1', productName: 'SanoVids' })
+    expect(rules.judgeSignature(p, [PIN])).toEqual({
+      ok: true,
+      status: 'signed',
+      reason: 'ok',
+      thumbprint: PIN,
+      signer: 'Nguyễn Giang Minh (Jame Steven)',
+      productVersion: '0.5.1',
+      productName: 'SanoVids',
+      timestamped: true,
+    })
+    // Empty / missing / not strings → absent (an older script, a non-PE file).
+    const empty = rules.parseSignatureOutput(wrap({ ...GENUINE, productVersion: '', productName: null }))
+    expect(empty).not.toHaveProperty('productVersion')
+    expect(empty).not.toHaveProperty('productName')
+    expect(rules.parseSignatureOutput(wrap({ ...GENUINE, productVersion: 7 }))).not.toHaveProperty('productVersion')
+    expect((rules.parseSignatureOutput(wrap({ ...GENUINE, productVersion: '1'.repeat(100) }))?.productVersion as string).length).toBe(64)
+    // Not on a refusal (nobody may act on a product name of an unverified file).
+    expect(rules.judgeSignature({ ...p, thumbprint: '5B768D22' + '0123456789ABCDEF0123456789ABCDEF' }, [PIN])).not.toHaveProperty('productVersion')
+    expect(rules.judgeSignature({ ...p, status: 3 }, [PIN])).not.toHaveProperty('productName')
+  })
+
+  it('powershellEnv drops CLR profiler / runtime injection variables (any case), keeps the rest', () => {
+    const env = rules.powershellEnv(
+      {
+        Path: 'C:\\Windows',
+        SystemRoot: 'C:\\Windows',
+        COR_ENABLE_PROFILING: '1',
+        cor_profiler: '{guid}',
+        COR_PROFILER_PATH_64: 'D:\\evil.dll',
+        COMPlus_Version: 'v2',
+        complus_etwenabled: '0',
+        DOTNET_gcServer: '1',
+        CORECLR_ENABLE_PROFILING: '1',
+        PSModulePath: 'x',
+        __PSLockdownPolicy: '4', // a policy marker is never removed
+      },
+      'D:\\a.exe',
+    )
+    expect(env).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', __PSLockdownPolicy: '4', SANOVIDS_SIG_PATH: 'D:\\a.exe' })
   })
 })
 
@@ -672,23 +990,69 @@ describe('electron-updater internals the pinned verifier relies on (6.8.10)', ()
     expect(nsis).toMatch(/publisherName == null\) \{\s*return null;/)
   })
 
-  it('BaseUpdater reads autoInstallOnAppQuit again at quit time', () => {
+  it('BaseUpdater reads autoInstallOnAppQuit again at quit time and installs this.installerPath', () => {
     const base = read('BaseUpdater.js')
     expect(base).toContain('this.autoInstallOnAppQuit')
     expect(base).toMatch(/this\.app\.onQuit\(exitCode => \{[\s\S]*?if \(!this\.autoInstallOnAppQuit\)/)
+    expect(base).toContain('return this.downloadedUpdateHelper == null ? null : this.downloadedUpdateHelper.file;')
+    // The download helper's done(): 'update-downloaded' is emitted from here (our async check runs after it).
+    expect(base).toMatch(/done: event => \{\s*this\.dispatchUpdateDownloaded\(event\);\s*this\.addQuitHandler\(\);/)
   })
 
-  it('updater.cjs installs our verifier on both hooks and re-verifies before installing', () => {
+  it('AppUpdater / DownloadedUpdateHelper: the cache housekeeping updater.cjs relies on', () => {
+    const appUpdater = read('AppUpdater.js')
+    const helper = read('DownloadedUpdateHelper.js')
+    // Cleared after an update: pending\ is only emptied when a new download starts.
+    expect(appUpdater).toContain('async getOrCreateDownloadHelper()')
+    expect(helper).toContain('async clear()')
+    expect(helper).toMatch(/async clear\(\) \{[\s\S]*?await this\.cleanCacheDirForPendingUpdate\(\);/)
+    expect(helper).toContain('return path.join(this.cacheDir, "pending");')
+    // …and swallows any error (a file still locked by the installer that just ran): updater.cjs lists and retries.
+    expect(helper).toMatch(/async cleanCacheDirForPendingUpdate\(\) \{\s*try \{[\s\S]*?emptyDir\)\(this\.cacheDirForPendingUpdate\);\s*\}\s*catch \(_ignore\)/)
+    // done() copies the NEW version's blockmap next to the cached installer.exe: stale once that version is refused.
+    expect(appUpdater).toContain('const cachedBlockMapFile = path.join(downloadedUpdateHelper.cacheDir, "current.blockmap");')
+    expect(appUpdater).toContain('await (0, fs_extra_1.copyFile)(pendingBlockMapFile, cachedBlockMapFile);')
+    expect(appUpdater).toContain('let oldBlockMapData = await getBlockMapFromCacheDir(this.downloadedUpdateHelper.cacheDir);')
+    // The download is sha512-checked against latest.yml (so a refused file's checksum is the announced one).
+    expect(appUpdater).toContain('sha512: fileInfo.info.sha512,')
+  })
+
+  it('updater.cjs installs our verifier on both hooks and re-verifies (signature, identity, content) before installing', () => {
     expect(updaterSource).toContain('updater.verifySignature =')
     expect(updaterSource).toContain('updater.verifyUpdateCodeSignature =')
     expect(updaterSource).toContain("require('./signature.cjs')")
     expect(updaterSource).toContain('signature.readSignerPins()')
     expect(updaterSource).toContain("updater.on('update-downloaded', (info) => void onDownloaded(info))")
-    expect(updaterSource).toContain('verifyDownloaded(au.installerPath, state.version)')
-    expect(updaterSource).toContain('rules.sameVerifiedFile(verified, stat, au.installerPath)')
+    expect(updaterSource).toContain('rules.installerIdentityProblem(v, { version, current, appName, size })')
+    expect(updaterSource).toContain('verifyDownloaded(au.installerPath, state.version, readyHashes)')
+    expect(updaterSource).toContain('rules.sameVerifiedMeta(verified, stat, au.installerPath)')
+    expect(updaterSource).toContain('rules.sameVerifiedFile(verified, st, target, sha512)')
     expect(updaterSource).toContain("log.warn('install on quit skipped: installer not verified')")
+    // The synchronous re-hash runs right before quitAndInstall (inside the same setImmediate).
+    expect(updaterSource).toMatch(/setImmediate\(\(\) => \{\s*\/\/[^\n]*\n\s*const still = installerStillVerified\(\)[\s\S]*?au\.quitAndInstall\(true, true\)/)
+    // …and in the quit event when electron-updater would install now.
+    expect(updaterSource).toContain('if (intact && wouldInstall) intact = installerStillVerified().ok')
+    // Refused files: remembered by checksum, matched on 'available', forgotten by a manual retry.
+    expect(updaterSource).toContain('rules.findRejected(file.rejected, offerHashes, Date.now())')
+    expect(updaterSource).toContain('rules.forgetRejected(file.rejected, offerHashes)')
+    expect(updaterSource).toContain('rules.updaterFileData(file)')
+    expect(updaterSource).not.toContain('new Set()') // no per-launch, per-version memory any more
+    // Cache housekeeping.
+    expect(updaterSource).toContain('.then(() => au.getOrCreateDownloadHelper())')
+    expect(updaterSource).toContain('await helper.clear()')
+    // clear() swallows errors (the just-run installer may still hold its file): the folder is listed and retried.
+    expect(updaterSource).toContain('fs.readdirSync(helper.cacheDirForPendingUpdate)')
+    expect(updaterSource).toContain('const PENDING_CLEAR_RETRY_MS = [5_000, 20_000, 60_000]')
+    expect(updaterSource).toContain("downloadInFlight || quittingForUpdate || state.status === 'downloading' || state.status === 'ready'")
+    expect(updaterSource).toContain('cacheTidy = clearPendingAfterUpdate(0)')
+    expect(updaterSource).toContain("notice && notice.kind === 'updated'")
+    expect(updaterSource).toContain('cacheTidy\n      .then(() => au.downloadUpdate())')
+    expect(updaterSource).toContain('rules.cachedBlockmapFile(installer, path)')
+    expect(updaterSource).toContain('if (stat) dropCachedBlockmap(au.installerPath)')
     // No direct 'downloaded' dispatch from the electron-updater event any more.
     expect(updaterSource).not.toMatch(/on\('update-downloaded', \(info\) => dispatch\(/)
+    // updater.json is never rewritten without the refused files (only the attempt is dropped).
+    expect(updaterSource).not.toContain('file = { autoDownload: file.autoDownload }')
   })
 })
 

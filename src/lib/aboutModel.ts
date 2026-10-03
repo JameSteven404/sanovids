@@ -12,6 +12,7 @@
 //   thumbprintRows(sig)             the thumbprint line(s) under the signature row, as { label, value }.
 //   versionLine(version, kind, desktop)   'Phiên bản 0.5.0 · Bản cài'.
 //   signatureView(sig)              tone, title and detail of the signature row.
+//   borrowsAuthorName(signer)       a certificate name that copies the author's (an impostor when not pinned).
 // Only `sanovids` is imported from package.json (a named import keeps `build` and the rest out of the bundle).
 import { sanovids } from '../../package.json'
 import type { AppSignature } from './appSignature'
@@ -29,7 +30,7 @@ export const ABOUT_COPYRIGHT = '© 2026 Nguyễn Giang Minh (Jame Steven). Mọi
 export const ABOUT_LICENSE_NOTE =
   'Chỉ dùng khi được tác giả cho phép (ví dụ: trong nội bộ nhóm). Không sao chép, chỉnh sửa, dịch ngược hay phân phối lại khi chưa có đồng ý bằng văn bản của tác giả.'
 export const ABOUT_OPEN_SOURCE =
-  'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html).'
+  'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).'
 export const ABOUT_DOWNLOAD_LINE = 'Trang tải về chính thức: ' + UPDATE_RELEASES_PAGE_LABEL
 export const ABOUT_OPEN_PAGE = 'Mở trang tải về'
 export const ABOUT_OPEN_PAGE_TITLE = `Mở ${UPDATE_RELEASES_PAGE_LABEL} trong trình duyệt`
@@ -92,13 +93,44 @@ export interface SignatureView {
   detail: string
 }
 
+/** Accent-free, lower case, single spaces (the same for NFC and NFD input; đ → d). */
+function foldName(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+const AUTHOR_NAME_PARTS = ['nguyen giang minh', 'jame steven']
+
+/**
+ * The certificate's name borrows the author's name (any case, accents or spacing) — the certificate is still not the
+ * author's when its thumbprint is not pinned: only the thumbprint is trusted, never the name.
+ */
+export function borrowsAuthorName(signer: string | undefined): boolean {
+  if (!signer) return false
+  const name = foldName(signer)
+  return AUTHOR_NAME_PARTS.some((part) => name.includes(part))
+}
+
 /** The signature row: null = still checking. */
 export function signatureView(sig: AppSignature | null): SignatureView {
   if (!sig) return { tone: 'neutral', title: 'Đang kiểm tra chữ ký số…', detail: '' }
   switch (sig.status) {
     case 'signed':
-      return { tone: 'ok', title: `Đã ký số bởi ${sig.signer || ABOUT_AUTHOR} ✓`, detail: 'Bản gốc — chữ ký số còn nguyên vẹn.' }
+      return { tone: 'ok', title: `Đã ký số bởi ${sig.signer || ABOUT_AUTHOR} ✓`, detail: 'Bản gốc — file chương trình và các thư viện DLL chính còn nguyên chữ ký số của tác giả.' }
     case 'other-signer':
+      // An impostor certificate carrying the author's own name: "signed by X, not the author X" would read like a glitch.
+      if (borrowsAuthorName(sig.signer)) {
+        return {
+          tone: 'warn',
+          title: 'Không phải bản gốc — có thể là bản giả mạo',
+          detail: `Bản này được ký bằng một chứng chỉ mang tên “${sig.signer}” nhưng KHÔNG phải chứng chỉ của tác giả (dấu vân tay khác với bản chính thức bên dưới). Hãy tải lại bản chính thức ở trang tải về và so dấu vân tay trước khi cài.`,
+        }
+      }
       return {
         tone: 'warn',
         title: 'Không phải bản gốc',

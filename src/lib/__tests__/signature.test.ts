@@ -154,7 +154,8 @@ describe('judgeSignature: the decision table, in order', () => {
     const bad = (patch: Partial<Parsed>) => expect(judge(patch), JSON.stringify(patch)).toMatchObject({ ok: false, status: 'unknown', reason: 'bad-chain', thumbprint: PIN })
     bad({ hresult: null }) // status 1 with no hresult
     bad({ hresult: '0x800B0101' }) // CERT_E_EXPIRED
-    bad({ chainStatus: ['UntrustedRoot', 'NotTimeValid'] })
+    // NotTimeValid only passes next to a timestamp (updaterRules.test.ts: "clock skew / expiry").
+    bad({ chainStatus: ['UntrustedRoot', 'NotTimeValid'], tsThumbprint: null })
     bad({ chainStatus: ['NotTimeValid'] })
     bad({ chainStatus: [] })
     bad({ chainLen: 2 })

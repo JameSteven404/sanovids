@@ -517,16 +517,32 @@
     padding: 0 10px;
   }
 }
-/* Jobs running, an app update, a provider problem or the real-credit pill widen the right cluster: the wordmark gives way first
-   (the app mark stays), so the project name keeps some room. */
-@media (max-width: 1240px) {
-  .tb:has(.tb-running, .tb-update, .tb-provider, .tb-cp:not(.demo)) .tb-brand-text {
+/* The left cluster gives way by its OWN width (container query on .tb-left), whatever widens the right cluster (running
+   jobs, the update pill, the credit / provider pills, a longer label): first the wordmark (the app mark stays), then
+   the labels of the save status and "Dự án", then the divider — so the project name keeps about 112px or more. The
+   thresholds are the cluster's widths plus that room: brand 85px (24 without the wordmark), divider 13, save status 61
+   (20 as a dot), "Dự án" 73 (32 as an icon), 4 gaps of 4px. Breakpoints on the window width alone left the name with
+   no room at all for some combinations (e.g. jobs + update at 1441px). */
+.tb-left {
+  container: tb-left / inline-size;
+}
+@container tb-left (max-width: 384px) {
+  .tb-brand-text {
     display: none;
   }
 }
-/* The update pill gives way before the project name / "Dự án" ever get clipped: below 1500px, or whenever jobs run
-   too, it shows only its icon + version / percent (the title and aria-label keep the full text), and the wordmark goes
-   earlier. */
+@container tb-left (max-width: 299px) {
+  .tb-left .tb-hide-sm {
+    display: none;
+  }
+}
+@container tb-left (max-width: 216px) {
+  .tb-left .tb-divider {
+    display: none;
+  }
+}
+/* The update pill gives way early: below 1500px, or whenever jobs run too, it shows only its icon + version / percent
+   (the title and aria-label keep the full text). */
 @media (max-width: 1500px) {
   .tb-update .tb-hide-md,
   .tb:has(.tb-update) .tb-running .tb-hide-md {
@@ -536,19 +552,22 @@
 .tb:has(.tb-running) .tb-update .tb-hide-md {
   display: none;
 }
+/* Jobs running, an app update or a provider problem in a narrow window: the view switch shows icons only (like below
+   1120px; each button keeps its title) — the left cluster has nothing left to give way there, so the project name
+   would be cut to a few letters (or nothing) next to the labels. */
+@media (max-width: 1240px) {
+  .tb:has(.tb-running, .tb-update, .tb-provider) .tb-seg-label {
+    display: none;
+  }
+}
+/* Jobs running AND an app update (the busiest right cluster): its labels ("Nhập prompt"…) go before 1360px and the view
+   switch labels before 1240px, so a wider credit pill does not squeeze the name right where they come back. */
 @media (max-width: 1440px) {
-  .tb:has(.tb-update) .tb-brand-text {
+  .tb:has(.tb-running):has(.tb-update) .tb-right .tb-hide-md {
     display: none;
   }
 }
-/* Jobs running AND an app update in a narrow window: the toolbar takes its compact form earlier (save status and "Dự án"
-   as icons, then the view switch as icons, like below 1120px) so the project name keeps room. */
-@media (max-width: 1400px) {
-  .tb:has(.tb-running):has(.tb-update) .tb-left .tb-hide-sm {
-    display: none;
-  }
-}
-@media (max-width: 1180px) {
+@media (max-width: 1320px) {
   .tb:has(.tb-running):has(.tb-update) .tb-seg-label {
     display: none;
   }

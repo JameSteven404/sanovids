@@ -43,24 +43,36 @@ const MIME = {
 // product name), so projects survive updates and switching between the two builds.
 const updaterRules = require('./updater-rules.cjs')
 const hardening = require('./hardening-rules.cjs')
+/**
+ * Packaged app? Not app.isPackaged alone: Electron decides that from the exe NAME, so a copy of SanoVids.exe renamed
+ * electron.exe would run the real app.asar with every packaged-only protection off. With the OnlyLoadAppFromAsar fuse
+ * a packaged binary always runs resources\app.asar (hardening-rules.isPackagedApp). Every hardening decision uses this.
+ */
+const PACKAGED = hardening.isPackagedApp({ isPackaged: app.isPackaged, appPath: app.getAppPath() })
 // Test-only isolation (never set by real users): SANOVIDS_PROFILE_DIR (env), else `sanovidsTestProfileDir` baked into the
 // packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
 // fsMod lets the check see through junctions / symlinks / short names to the real %APPDATA%\SanoVids.
-const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: readBakedProfileDir(), appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
+const bakedProfileDir = readBakedProfileDir()
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
 if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
-// Hardening (docs/SIGNING.md): a packaged SanoVids never starts with debugger / security-off switches. hasSwitch is
-// Chromium's own parser (it also reads "-switch" and "/switch" on Windows). Remote debugging is allowed only with an
-// isolated test profile (env / baked) so the E2E harness can drive test builds. Nothing has been written yet.
-const refused = hardening.refusedSwitches({ isPackaged: app.isPackaged, profileSource: profile.source, hasSwitch: (n) => app.commandLine.hasSwitch(n) })
+/** A test-identity build (its package.json, inside the integrity-checked app.asar, has a baked test profile). Never the official build. */
+const TEST_BUILD = typeof bakedProfileDir === 'string' && bakedProfileDir !== ''
+// Hardening (docs/SIGNING.md): a packaged SanoVids never starts with debugger / security-off / helper-launcher switches.
+// hasSwitch is Chromium's own parser (it also reads "-switch" and "/switch" on Windows). Remote debugging is allowed only
+// in a test build on its isolated test profile, so the E2E harness can drive test builds. Nothing has been written yet.
+const refused = hardening.refusedSwitches({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD, hasSwitch: (n) => app.commandLine.hasSwitch(n) })
 if (refused.length > 0) {
   console.error(`[SanoVids] refused command-line switches: ${refused.join(', ')}`)
   dialog.showErrorBox('SanoVids', hardening.REFUSED_DIALOG_TEXT)
   process.exit(3)
 }
+// SSLKEYLOGFILE would make Chromium write every TLS key to disk (like the refused --ssl-key-log-file): removed from this
+// process before the network service reads it (checked on Electron 44: deleting it here stops the key log file).
+for (const name of hardening.envToStrip({ isPackaged: PACKAGED, env: process.env })) delete process.env[name]
 // Every renderer runs sandboxed (the windows below ask for it too; this also covers anything created later).
 app.enableSandbox()
-/** DevTools only from source or with an isolated test profile — never in a real user's packaged app. */
-const DEVTOOLS = hardening.allowDevTools({ isPackaged: app.isPackaged, profileSource: profile.source })
+/** DevTools only from source or in a test build on its isolated test profile — never in the official packaged app. */
+const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
 app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
@@ -301,27 +313,33 @@ function isExternal(url) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Self-check of the app's own code signature (Cài đặt → Giới thiệu; docs/SIGNING.md). The running .exe is checked
-// once (electron/signature.cjs: Authenticode + the pinned author certificate of package.json sanovids.signers) and the
-// result is cached. The page only reads it ('app:signature', no argument); it never decides anything here.
+// Self-check of the app's own code signature (Cài đặt → Giới thiệu; docs/SIGNING.md). The running .exe AND the DLLs
+// next to it that SanoVids processes load (hardening-rules.SELF_CHECK_FILES: Electron's four author-signed DLLs and
+// Microsoft's two) are checked once, with one PowerShell (electron/signature.cjs: Authenticode + the pinned author
+// certificate of package.json sanovids.signers), and the result is cached. The install folder is writable by the user:
+// a swapped or modified DLL shows 'tampered'. The page only reads it ('app:signature', no argument).
 // ---------------------------------------------------------------------------------------------------------------
 
 let selfCheck = null
 
 /** → { status, packaged, signer?, thumbprint? } (hardening-rules.appSignaturePayload). Never rejects. */
 function appSignature() {
-  if (!selfCheck) selfCheck = computeAppSignature().catch(() => ({ status: 'unknown', packaged: app.isPackaged }))
+  if (!selfCheck) selfCheck = computeAppSignature().catch(() => ({ status: 'unknown', packaged: PACKAGED }))
   return selfCheck
 }
 
 async function computeAppSignature() {
-  if (!app.isPackaged) return { status: 'unsigned', packaged: false } // from source: nothing to check (no PowerShell)
+  if (!PACKAGED) return { status: 'unsigned', packaged: false } // from source: nothing to check (no PowerShell)
   if (process.platform !== 'win32') return { status: 'unknown', packaged: true }
   const signature = require('./signature.cjs')
-  const verdict = await signature.checkFileSignature(process.execPath, {
-    pins: signature.readSignerPins(),
-    log: (l) => console.log(`[SanoVids] ${l}`),
-  })
+  const log = (l) => console.log(`[SanoVids] ${l}`)
+  const pins = signature.readSignerPins()
+  const dir = path.dirname(process.execPath)
+  const companions = hardening.SELF_CHECK_FILES
+  const results = await signature.checkFilesSignature([process.execPath, ...companions.map((f) => path.join(dir, f.name))], { pins, log })
+  const states = companions.map((f, i) => ({ name: f.name, state: hardening.selfCheckFileState(f.kind, results[i + 1], pins) }))
+  const verdict = hardening.combineSelfCheck(results[0] && results[0].verdict, states)
+  if (verdict.files && verdict.files.length) log(`self-check ${verdict.status}: ${verdict.files.join(', ')}`)
   return hardening.appSignaturePayload(verdict, { packaged: true })
 }
 

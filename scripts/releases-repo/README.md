@@ -24,7 +24,7 @@ Cần **Windows 10 hoặc 11, 64-bit**. Dự án được lưu trên máy của 
 ### Cài đặt
 
 1. Tải `SanoVids-Setup-x.y.z.exe` và [kiểm tra chữ ký số](#kiểm-tra-chữ-ký-số) của file.
-2. Chạy file. Windows SmartScreen có thể hiện **"Windows đã bảo vệ PC của bạn"** (*Windows protected your PC*) vì bản cài mới còn ít người tải: bấm **Thông tin khác** (*More info*), xem dòng **Nhà phát hành** rồi bấm **Vẫn chạy** (*Run anyway*).
+2. Chạy file. Windows SmartScreen hiện **"Windows đã bảo vệ PC của bạn"** (*Windows protected your PC*) với file tải bằng trình duyệt, vì chứng chỉ tự ký không có uy tín với Microsoft: bản nào cũng vậy, cảnh báo không tự mất theo thời gian, và tin cậy chứng chỉ (bên dưới) cũng không làm mất nó. Bấm **Thông tin khác** (*More info*), xem dòng **Nhà phát hành** rồi bấm **Vẫn chạy** (*Run anyway*). Bản tự cập nhật thì không bị SmartScreen hỏi.
    - Máy đã [tin cậy chứng chỉ](#tin-cậy-chứng-chỉ-trên-máy-nội-bộ-tuỳ-chọn): Nhà phát hành là **Nguyễn Giang Minh (Jame Steven)**.
    - Máy chưa tin cậy: Windows ghi *Không xác định* (*Unknown publisher*). Khi đó chỉ chạy sau khi đã kiểm tra chữ ký số như hướng dẫn bên dưới.
 3. Bộ cài hỏi ngôn ngữ, hiện **Giấy phép sử dụng** (bấm **Tôi đồng ý** để tiếp tục), cho chọn cài **chỉ cho bạn** hay **cho mọi người dùng** (cần quyền quản trị) và thư mục cài.
@@ -34,7 +34,7 @@ Cần **Windows 10 hoặc 11, 64-bit**. Dự án được lưu trên máy của 
 ## Tự cập nhật
 
 - Bản **Setup** tự kiểm tra bản mới (lần đầu khoảng 15 giây sau khi mở, sau đó khoảng 4 giờ một lần), tải trong nền, rồi hiện nút **Khởi động lại để cập nhật** trên thanh trên cùng. Không bấm thì bản mới được cài lúc bạn tắt app. Kiểm tra tay: **Cài đặt → Cập nhật → Kiểm tra ngay**.
-- **Mỗi bản cập nhật được kiểm tra chữ ký số trước khi cài**: app chỉ nhận file được ký bằng chứng chỉ của tác giả (dấu vân tay ghim sẵn trong app). File sai chữ ký hoặc đã bị sửa bị từ chối, app báo lỗi và mời bạn tải bản mới bằng tay ở trang này.
+- **Mỗi bản cập nhật được kiểm tra chữ ký số trước khi cài**: app chỉ nhận file được ký bằng chứng chỉ của tác giả (dấu vân tay ghim sẵn trong app) và đúng là phiên bản mới được báo. File sai chữ ký, sai phiên bản hoặc đã bị sửa bị xoá, không cài; app báo lỗi. Khi đó đừng tự tải lại đúng bản đó về cài: chỉ cài bộ cài có dấu vân tay trùng với **Cài đặt → Giới thiệu** của SanoVids đang dùng, hoặc hỏi tác giả.
 - Bản **0.4.2 trở về trước** chưa có tự cập nhật: tải và cài bản Setup mới **một lần** (cài đè lên bản cũ, dự án vẫn còn). Từ đó về sau app tự cập nhật.
 - Bản **Portable** chỉ báo có bản mới; tải bản mới ở đây rồi thay file cũ.
 - Cập nhật bị lỗi: gửi cho tác giả file `%APPDATA%\SanoVids\logs\updater.log`.
@@ -52,6 +52,8 @@ Bản cài chính thức (cả Setup lẫn Portable) **luôn** được ký số
 | Hiệu lực | 03/10/2026 → 03/10/2036 |
 
 File không mang đúng chữ ký này **không phải bản gốc**: đừng chạy, hãy xoá và báo tác giả.
+
+> **So dấu vân tay với một nguồn khác trang này.** Trang tải về, file cài và chứng chỉ cùng nằm trên một tài khoản GitHub: ai chiếm được tài khoản đó thay được cả file lẫn dấu vân tay in ở đây. Hãy đối chiếu với dấu vân tay tác giả gửi trực tiếp (chat nội bộ, gặp mặt), hoặc dòng dấu vân tay trong **Cài đặt → Giới thiệu** của một SanoVids đã cài từ trước (trên máy bạn hay máy đồng nghiệp).
 
 **Cách 1: chuột phải** vào file `.exe` → **Properties** (*Thuộc tính*) → tab **Digital Signatures** (*Chữ ký số*) → chọn dòng **Nguyễn Giang Minh (Jame Steven)** → **Details** → **View Certificate** → tab **Details** → dòng **Thumbprint** phải đúng `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`.
 - Không có tab Chữ ký số: file chưa được ký → không phải bản chính thức.
@@ -82,10 +84,11 @@ Kiểm tra file chứng chỉ `SanoVids-NguyenGiangMinh.cer`: bấm đúp → ta
 
 ## Tin cậy chứng chỉ trên máy nội bộ (tuỳ chọn)
 
-SanoVids được ký bằng **chứng chỉ tự ký** của tác giả (không mua từ một tổ chức cấp chứng chỉ công cộng), nên Windows chưa biết chứng chỉ này: bộ cài hiện *Nhà phát hành không xác định*, trạng thái chữ ký là `UnknownError`. Máy trong nhóm nội bộ có thể **tin cậy chứng chỉ một lần** để Windows hiện đúng tên tác giả và chữ ký ở trạng thái `Valid`.
+SanoVids được ký bằng **chứng chỉ tự ký** của tác giả (không mua từ một tổ chức cấp chứng chỉ công cộng), nên Windows chưa biết chứng chỉ này: bộ cài hiện *Nhà phát hành không xác định*, trạng thái chữ ký là `UnknownError`. Máy trong nhóm nội bộ có thể **tin cậy chứng chỉ một lần** để Windows (UAC, Properties) hiện đúng tên tác giả và chữ ký ở trạng thái `Valid`. Cảnh báo SmartScreen khi mở file tải về thì vẫn còn.
 
 - **Không bắt buộc**: SanoVids vẫn chạy và tự cập nhật bình thường khi chưa tin cậy.
-- **Chỉ làm khi** bạn ở trong nhóm được tác giả cho phép, và dấu vân tay khớp **đúng** `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`. Tin cậy một chứng chỉ gốc nghĩa là Windows tin mọi thứ được ký bằng chứng chỉ đó, nên chỉ tin cậy đúng chứng chỉ này, không tin cậy chứng chỉ nào khác gửi qua chat hay email.
+- **Chỉ làm khi** bạn ở trong nhóm được tác giả cho phép, và dấu vân tay khớp **đúng** `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED` **theo một nguồn khác trang này** (tác giả gửi trực tiếp, hoặc **Cài đặt → Giới thiệu** của một SanoVids đã cài từ trước). Đừng chỉ tin dấu vân tay in trên trang này hay trong script: ai chiếm được trang này thay được cả hai. Tin cậy một chứng chỉ gốc nghĩa là Windows tin mọi thứ được ký bằng chứng chỉ đó, nên chỉ tin cậy đúng chứng chỉ này, không tin cậy chứng chỉ nào khác gửi qua chat hay email.
+- Chỉ thêm vào kho **Trusted Root Certification Authorities**. **Không** thêm vào *Trusted Publishers*: SanoVids không cần, và kho đó còn cho script PowerShell / macro Office ký bằng chứng chỉ này chạy mà không hỏi.
 
 ### Cách 1: dùng script (khuyên dùng)
 
@@ -97,25 +100,24 @@ SanoVids được ký bằng **chứng chỉ tự ký** của tác giả (không
    ```
 
    (hoặc chuột phải vào file → **Run with PowerShell**). `-ExecutionPolicy Bypass` chỉ áp dụng cho lần chạy này, không đổi cài đặt của máy.
-3. Script hiện dấu vân tay và hỏi lại: gõ `C` rồi Enter.
+3. Script hiện dấu vân tay và hỏi lại: so dấu vân tay đó với nguồn độc lập ở trên, khớp thì gõ `C` rồi Enter.
 4. Windows hiện hộp **Security Warning**: so dòng **Thumbprint** với `7489ABFA C1A7CD23 D5FFB078 5CA7CAB4 14AE49ED`. Khớp thì bấm **Yes**.
 
 | Muốn | Lệnh (thêm vào sau `.\tin-cay-chung-chi.ps1`) |
 |---|---|
 | Tin cậy cho **mọi tài khoản** trên máy | `-TatCaNguoiDung` (mở PowerShell bằng **Run as administrator**) |
 | Xem chứng chỉ đang được tin cậy ở đâu | `-KiemTra` |
-| Bỏ tin cậy | `-Go` (thêm `-TatCaNguoiDung` nếu đã cài cho mọi tài khoản) |
+| Bỏ tin cậy (gỡ khỏi Root, và khỏi Trusted Publishers nếu bản script cũ đã thêm vào) | `-Go` (thêm `-TatCaNguoiDung` nếu đã cài cho mọi tài khoản) |
 | Cài hàng loạt, không hỏi lại | `-TatCaNguoiDung -KhongHoi` (quyền quản trị) |
 
 Chạy lại nhiều lần vẫn an toàn: phần nào đã có thì bỏ qua. Script chỉ thêm / gỡ đúng chứng chỉ có dấu vân tay trên.
 
 ### Cách 2: bằng tay (không cần script)
 
-1. Tải `SanoVids-NguyenGiangMinh.cer` (trong repo này hoặc mục Assets của bản phát hành), bấm đúp, kiểm tra **Thumbprint** ở tab **Details**.
+1. Tải `SanoVids-NguyenGiangMinh.cer` (trong repo này hoặc mục Assets của bản phát hành), bấm đúp, kiểm tra **Thumbprint** ở tab **Details** (so với nguồn độc lập ở trên).
 2. Tab **General** → **Install Certificate…** → **Current User** → **Place all certificates in the following store** → **Browse…** → **Trusted Root Certification Authorities** → **Next** → **Finish** → Windows hỏi lại → kiểm tra Thumbprint → **Yes**.
-3. Làm lại bước 2, lần này chọn kho **Trusted Publishers**.
 
-Bỏ tin cậy bằng tay: `Win + R` → `certmgr.msc` → **Trusted Root Certification Authorities → Certificates** → chuột phải **Nguyễn Giang Minh (Jame Steven)** → **Delete**; làm tương tự trong **Trusted Publishers → Certificates**.
+Bỏ tin cậy bằng tay: `Win + R` → `certmgr.msc` → **Trusted Root Certification Authorities → Certificates** → chuột phải **Nguyễn Giang Minh (Jame Steven)** → **Delete** (nếu trước đây đã thêm vào **Trusted Publishers → Certificates** thì xoá ở đó luôn).
 
 ---
 
@@ -127,7 +129,7 @@ SanoVids là phần mềm **thuộc quyền sở hữu của tác giả Nguyễn
 - **Không** được sao chép, chỉnh sửa, dịch ngược, tháo rời, phân phối lại, cho thuê hoặc bán lại SanoVids khi chưa có sự đồng ý bằng văn bản của tác giả.
 - Bản cài chính thức luôn được ký số bởi "Nguyễn Giang Minh (Jame Steven)" (dấu vân tay ở trên).
 - SanoVids được cung cấp "nguyên trạng", không kèm bảo đảm nào.
-- Các thành phần mã nguồn mở (Electron, Chromium, React…) theo giấy phép riêng của chúng, được kèm trong thư mục cài đặt.
+- Các thành phần mã nguồn mở (Electron, Chromium, React…) theo giấy phép riêng của chúng, được kèm trong thư mục cài đặt (`LICENSE.electron.txt`, `LICENSES.chromium.html`, `THIRD-PARTY-NOTICES.txt`).
 
 Toàn văn: [LICENSE.txt](LICENSE.txt). Bộ cài cũng hiện toàn văn giấy phép trước khi cài.
 

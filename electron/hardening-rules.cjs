@@ -9,7 +9,13 @@
 // Command-line switches
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Never accepted by a packaged SanoVids: debuggers, V8 flags, and switches that turn Chromium's security off. */
+/**
+ * Never accepted by a packaged SanoVids: debuggers, V8 flags, switches that turn Chromium's security off, switches that
+ * make the signed SanoVids.exe start ANOTHER program as one of its helper processes (gpu-launcher, *-cmd-prefix,
+ * browser-subprocess-path: a known way to abuse signed Chromium apps), and switches that write TLS secrets or full
+ * network logs to disk. `disable-features` is the catch-all for turning sandbox / site-isolation features off; the app
+ * never passes it (checked on Electron 44: none of these is present on a normal launch, before or after ready).
+ */
 const ALWAYS_REFUSED = Object.freeze([
   'inspect',
   'inspect-brk',
@@ -28,9 +34,23 @@ const ALWAYS_REFUSED = Object.freeze([
   'disable-site-isolation-trials',
   'allow-running-insecure-content',
   'unsafely-treat-insecure-origin-as-secure',
+  'gpu-launcher',
+  'renderer-cmd-prefix',
+  'utility-cmd-prefix',
+  'browser-subprocess-path',
+  'disable-gpu-sandbox',
+  'single-process',
+  'in-process-gpu',
+  'disable-features',
+  'ssl-key-log-file',
+  'log-net-log',
 ])
 
-/** Remote debugging (DevTools protocol): only with an isolated test profile (env / baked), for the E2E harness. */
+/**
+ * Remote debugging (DevTools protocol): only in a TEST build (a `sanovidsTestProfileDir` baked into its package.json,
+ * which the release gate refuses) running on an isolated test profile, for the E2E harness. Never in the official
+ * build, whatever the environment says (SANOVIDS_PROFILE_DIR alone only isolates the data).
+ */
 const REMOTE_DEBUG = Object.freeze(['remote-debugging-port', 'remote-debugging-pipe', 'remote-debugging-address', 'remote-allow-origins'])
 
 const REFUSED_DIALOG_TEXT =
@@ -39,15 +59,30 @@ const REFUSED_DIALOG_TEXT =
 /** An isolated test profile (SANOVIDS_PROFILE_DIR or a baked test build) — never a real user's data folder. */
 const isTestProfile = (source) => source === 'env' || source === 'baked'
 
+/** Debugging aids (remote debugging, DevTools) in a packaged app: a test build on an isolated test profile only. */
+const debugAllowed = (testBuild, profileSource) => testBuild === true && isTestProfile(profileSource)
+
+/**
+ * Is this the packaged app? Electron's app.isPackaged only looks at the exe FILE NAME ("electron.exe" → false), so a
+ * copy of SanoVids.exe renamed electron.exe would switch every packaged-only protection off while still running the
+ * real app.asar on the real profile. With the OnlyLoadAppFromAsar fuse a packaged binary always runs
+ * resources\app.asar; `electron .` from source runs the project folder. Either signal → packaged (fail closed).
+ */
+function isPackagedApp(o) {
+  const { isPackaged, appPath } = o && typeof o === 'object' ? o : {}
+  return isPackaged === true || (typeof appPath === 'string' && /\.asar[\\/]?$/i.test(appPath))
+}
+
 /**
  * Switches a packaged app refuses to start with (lower-case names, [] = start normally). Queried only through
  * `hasSwitch` (app.commandLine.hasSwitch: Chromium's own parser, which also reads "-switch" / "/switch" on Windows and
  * lower-cases names) — never by scanning argv. A `hasSwitch` that throws counts the name as present (fail closed).
+ * `testBuild`: the app's package.json has a baked `sanovidsTestProfileDir` (test-identity builds only).
  */
 function refusedSwitches(o) {
-  const { isPackaged, profileSource, hasSwitch } = o && typeof o === 'object' ? o : {}
+  const { isPackaged, profileSource, testBuild, hasSwitch } = o && typeof o === 'object' ? o : {}
   if (isPackaged === false) return []
-  const names = isTestProfile(profileSource) ? ALWAYS_REFUSED : [...ALWAYS_REFUSED, ...REMOTE_DEBUG]
+  const names = debugAllowed(testBuild, profileSource) ? ALWAYS_REFUSED : [...ALWAYS_REFUSED, ...REMOTE_DEBUG]
   const out = []
   for (const name of names) {
     let present = true
@@ -61,10 +96,28 @@ function refusedSwitches(o) {
   return out
 }
 
-/** DevTools (webPreferences.devTools, F12 / Ctrl+Shift+I): from source, or with an isolated test profile. */
+/** DevTools (webPreferences.devTools, F12 / Ctrl+Shift+I): from source, or in a test build on an isolated test profile. */
 function allowDevTools(o) {
-  const { isPackaged, profileSource } = o && typeof o === 'object' ? o : {}
-  return isPackaged === false || isTestProfile(profileSource)
+  const { isPackaged, profileSource, testBuild } = o && typeof o === 'object' ? o : {}
+  return isPackaged === false || debugAllowed(testBuild, profileSource)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Environment
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * Environment variables a packaged SanoVids removes from its own process before Chromium reads them. SSLKEYLOGFILE
+ * makes Chromium write every TLS session key to that file (same effect as the refused --ssl-key-log-file switch);
+ * Wireshark users often set it machine-wide, so it is dropped silently instead of refusing to start.
+ */
+const STRIPPED_ENV = Object.freeze(['SSLKEYLOGFILE'])
+
+/** The names (as spelled in `env`) a packaged app deletes from process.env. From source: none. */
+function envToStrip(o) {
+  const { isPackaged, env } = o && typeof o === 'object' ? o : {}
+  if (isPackaged === false || !env || typeof env !== 'object') return []
+  return Object.keys(env).filter((k) => STRIPPED_ENV.includes(k.toUpperCase()))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -99,8 +152,12 @@ function downloadLogLabel(url, filename) {
 // Web permissions of the default session (the SanoVids window)
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Copy buttons, the web folder picker API, full-screen video. Everything else (camera, location, notifications…) is denied. */
-const DEFAULT_SESSION_PERMISSIONS = Object.freeze(['clipboard-sanitized-write', 'fileSystem', 'fullscreen'])
+/**
+ * Copy buttons, the web folder picker API, full-screen video, and navigator.storage.persist() (store/persist.ts asks at
+ * every start so the IndexedDB projects are never evicted; it grants no device or data access). Everything else
+ * (camera, location, notifications…) is denied.
+ */
+const DEFAULT_SESSION_PERMISSIONS = Object.freeze(['clipboard-sanitized-write', 'fileSystem', 'fullscreen', 'persistent-storage'])
 
 function permissionAllowed(permission) {
   return typeof permission === 'string' && DEFAULT_SESSION_PERMISSIONS.includes(permission)
@@ -263,12 +320,78 @@ function appSignaturePayload(verdict, opts) {
   return out
 }
 
+// The DLLs next to the running exe that SanoVids processes load: the four Electron ships unsigned, which the build signs
+// by name (package.json build.win.signExts: must be signed by a pinned author certificate), and the two Microsoft signs
+// (must keep a valid Microsoft signature, never ours). The install folder is writable by the user, so the self-check
+// covers them too, not only the exe. scripts/buildInspect.mjs checks the same lists at release time.
+const SIGNED_DLLS = Object.freeze(['ffmpeg.dll', 'vk_swiftshader.dll', 'vulkan-1.dll', 'dxcompiler.dll'])
+const MICROSOFT_DLLS = Object.freeze(['d3dcompiler_47.dll', 'dxil.dll'])
+/** Simple name (CN) of Microsoft's code-signing certificates: not localized, unlike Get-AuthenticodeSignature's texts. */
+const MICROSOFT_SIGNER = 'Microsoft Corporation'
+/** Self-check companions of process.execPath, in check order: { name, kind: 'author' | 'microsoft' }. */
+const SELF_CHECK_FILES = Object.freeze([
+  ...SIGNED_DLLS.map((name) => Object.freeze({ name, kind: 'author' })),
+  ...MICROSOFT_DLLS.map((name) => Object.freeze({ name, kind: 'microsoft' })),
+])
+const THUMBPRINT_RE = /^[0-9A-F]{40}$/
+
+/**
+ * One self-check companion → 'ok' | 'bad' | 'unknown'. `result` = { parsed, verdict } (electron/signature.cjs
+ * checkFilesSignature: the normalized PowerShell output and its judgeSignature verdict against `pins`).
+ *   author     the verdict decides: signed by a pin → ok; tampered / unsigned / another signer → bad; else unknown.
+ *   microsoft  the raw output decides, in order: unreadable (missing file, error) → unknown; signed by one of OUR pins
+ *              → bad; NotSigned (2) / HashMismatch (3) / NotTrusted (4) → bad; not Authenticode (catalog) or no
+ *              signer certificate → unknown; Valid (0) by "Microsoft Corporation" → ok; Valid by anyone else → bad;
+ *              UnknownError (1) with CERT_E_UNTRUSTEDROOT (a self-signed impostor: Microsoft's chain is always
+ *              trusted) → bad; anything else (revocation offline, …) → unknown.
+ */
+function selfCheckFileState(kind, result, pins) {
+  const r = result && typeof result === 'object' ? result : {}
+  if (kind === 'author') {
+    const v = r.verdict && typeof r.verdict === 'object' ? r.verdict : {}
+    if (v.ok === true && v.status === 'signed') return 'ok'
+    return v.status === 'tampered' || v.status === 'unsigned' || v.status === 'other-signer' ? 'bad' : 'unknown'
+  }
+  if (kind !== 'microsoft') return 'unknown'
+  const p = r.parsed && typeof r.parsed === 'object' ? r.parsed : null
+  if (!p || p.v !== 1 || p.error != null || !Number.isInteger(p.status)) return 'unknown'
+  const ours = (Array.isArray(pins) ? pins : []).map((x) => String(x).replace(/\s+/g, '').toUpperCase())
+  const thumb = typeof p.thumbprint === 'string' ? p.thumbprint.replace(/\s+/g, '').toUpperCase() : ''
+  if (thumb && ours.includes(thumb)) return 'bad'
+  if (p.status === 2 || p.status === 3 || p.status === 4) return 'bad'
+  if (p.sigType !== 'Authenticode' || !THUMBPRINT_RE.test(thumb)) return 'unknown'
+  if (p.status === 0) return p.signer === MICROSOFT_SIGNER ? 'ok' : 'bad'
+  if (p.status === 1 && p.hresult === '0x800B0109') return 'bad'
+  return 'unknown'
+}
+
+/**
+ * The self-check verdict from the exe's verdict and its companions' states ([{ name, state }]). The exe decides unless
+ * it is 'signed'; then any 'bad' companion → tampered (signer / thumbprint dropped by appSignaturePayload), any other
+ * non-'ok' one (missing, unreadable) → unknown. `files` names the companions that changed the verdict (log only).
+ */
+function combineSelfCheck(exeVerdict, fileStates) {
+  const exe = exeVerdict && typeof exeVerdict === 'object' ? exeVerdict : null
+  if (!exe) return { ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false }
+  if (exe.status !== 'signed' || exe.ok !== true) return exe
+  if (!Array.isArray(fileStates)) return { ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false, files: [] }
+  const label = (f) => (f && typeof f.name === 'string' && f.name ? f.name : '?')
+  const bad = fileStates.filter((f) => f && f.state === 'bad').map(label)
+  if (bad.length) return { ok: false, status: 'tampered', reason: 'hash-mismatch', timestamped: false, files: bad }
+  const unsure = fileStates.filter((f) => !f || f.state !== 'ok').map(label)
+  if (unsure.length) return { ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false, files: unsure }
+  return exe
+}
+
 module.exports = {
   ALWAYS_REFUSED,
   REMOTE_DEBUG,
   REFUSED_DIALOG_TEXT,
+  isPackagedApp,
   refusedSwitches,
   allowDevTools,
+  STRIPPED_ENV,
+  envToStrip,
   DOWNLOAD_ALLOWED_EXT,
   DOWNLOAD_URL_PREFIX,
   downloadExtension,
@@ -281,4 +404,10 @@ module.exports = {
   contentSecurityPolicy,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,
+  SIGNED_DLLS,
+  MICROSOFT_DLLS,
+  MICROSOFT_SIGNER,
+  SELF_CHECK_FILES,
+  selfCheckFileState,
+  combineSelfCheck,
 }

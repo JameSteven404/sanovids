@@ -1,8 +1,10 @@
 // "Cập nhật SanoVids": the new version (date, size, release notes as TEXT), the download progress, and the way to
 // install it — restart now, "Cập nhật khi xong" while videos are still running, or later (installed on quit). A
-// portable build only offers the download page. Every text / button decision is in lib/updateModel dialogView (pure,
+// portable build only offers the download page. A version refused for its code signature is named in the head line
+// (never "Bản mới"), without its notes, with how to check an installer's certificate before installing one by hand.
+// Every text / button decision is in lib/updateModel dialogView (pure,
 // tested); the commands are in updateActions. Lazy chunk (App.tsx 'updateDialog'). Styles: dialogs.css (dg-upd-).
-import { CircleArrowUp, CircleCheck, CloudDownload, ExternalLink, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { CircleArrowUp, CircleCheck, CloudDownload, ExternalLink, LoaderCircle, ShieldAlert, TriangleAlert } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useStore } from 'zustand'
 import { pendingDownloadCount } from '../../lib/downloads'
@@ -12,6 +14,7 @@ import {
   formatPercent,
   formatReleaseDate,
   installBlockers,
+  isSignatureError,
   KIND_LABEL,
   noteBlocks,
   type NoteBlock,
@@ -178,6 +181,8 @@ export function UpdateDialog() {
       <CloudDownload size={18} />
     ) : good ? (
       <CircleCheck size={18} />
+    ) : state.status === 'error' && isSignatureError(state.error) ? (
+      <ShieldAlert size={18} />
     ) : state.status === 'error' ? (
       <TriangleAlert size={18} />
     ) : (
@@ -219,11 +224,16 @@ export function UpdateDialog() {
             {icon}
           </span>
           <div className="dg-upd-lines">
-            {view.showNotes && state.version && (
-              <b>
-                Bản mới: {state.version}
-                {date && ` · phát hành ${date}`}
-              </b>
+            {view.headline ? (
+              <b>{view.headline}</b>
+            ) : (
+              view.showNotes &&
+              state.version && (
+                <b>
+                  Bản mới: {state.version}
+                  {date && ` · phát hành ${date}`}
+                </b>
+              )
             )}
             <span>Đang dùng: {state.current || '—'}</span>
             {/* The portable exe is downloaded whole from the release page: no installer size / partial download there. */}
@@ -255,6 +265,7 @@ export function UpdateDialog() {
                   ))}
                 </ul>
               )}
+              {view.callout.code && <p className="mono dg-upd-callout-code">{view.callout.code}</p>}
               {view.callout.note && <p className="dg-upd-callout-note">{view.callout.note}</p>}
             </div>
           </div>

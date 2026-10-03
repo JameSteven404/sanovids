@@ -23,7 +23,7 @@
     "preview": "vite preview",
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",
-    "dist:win": "node scripts/update-notes.mjs && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs",
+    "dist:win": "node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs",
     "tidy:release": "node scripts/tidy-release.mjs",
     "release:check": "node scripts/publish-release.mjs --dry-run",
     "release:publish": "node scripts/publish-release.mjs"
@@ -76,6 +76,10 @@
       {
         "from": "LICENSE.txt",
         "to": "LICENSE.txt"
+      },
+      {
+        "from": "build/license-third-party.txt",
+        "to": "THIRD-PARTY-NOTICES.txt"
       }
     ],
     "extraMetadata": {

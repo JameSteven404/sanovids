@@ -20,12 +20,12 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 ✨ **Chữ ký số của tác giả**
 - Mọi file `.exe` chính thức (Setup, Portable, app bên trong, trình gỡ cài đặt) được ký số bởi **Nguyễn Giang Minh (Jame Steven)**, kèm dấu thời gian. Dấu vân tay chứng chỉ: `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`.
 - Kiểm tra: chuột phải file → **Properties** → **Digital Signatures**. File không mang chữ ký này không phải bản gốc.
-- **Bản cập nhật chỉ được nhận khi mang đúng chữ ký đó.** File không có chữ ký, ký bởi người khác (kể cả trùng tên) hay đã bị sửa đều bị xoá, không cài; app báo lỗi và mời bạn tải bộ cài ở trang tải về.
+- **Bản cập nhật chỉ được nhận khi mang đúng chữ ký đó** và đúng là phiên bản mới được báo. File không có chữ ký, ký bởi người khác (kể cả trùng tên), sai phiên bản hay đã bị sửa đều bị xoá, không cài; app báo lỗi và dặn bạn đừng tự cài bản đó (chỉ cài bộ cài có dấu vân tay trùng với **Cài đặt → Giới thiệu**).
 - Trang tải về có thêm file `SanoVids-NguyenGiangMinh.cer`: chứng chỉ công khai của tác giả (không chứa khoá), để kiểm tra chữ ký.
 
 ✨ **Cài đặt → Giới thiệu**
 - Phiên bản và kiểu bản (bản cài / portable), tác giả **Nguyễn Giang Minh (Jame Steven)**, đồng hành **Sano Group**, bản quyền, giấy phép.
-- **Trạng thái chữ ký số** của chính app: "Đã ký số bởi Nguyễn Giang Minh (Jame Steven) ✓" khi là bản gốc, cảnh báo khi file bị sửa, ký bởi người khác hay không có chữ ký. Kèm dấu vân tay chứng chỉ và nút **Mở trang tải về**.
+- **Trạng thái chữ ký số** của file chương trình (`SanoVids.exe` và các DLL chính): "Đã ký số bởi Nguyễn Giang Minh (Jame Steven) ✓" khi còn chữ ký gốc, cảnh báo khi file bị sửa, ký bởi người khác hay không có chữ ký. Kèm dấu vân tay chứng chỉ và nút **Mở trang tải về**.
 - Tìm nhanh trong ô tìm kiếm của Cài đặt: "giới thiệu", "tác giả", "chữ ký số"…
 
 ✨ **Icon mới**
@@ -33,11 +33,11 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 🛠️ **Tác giả & giấy phép**
 - Tác giả: **Nguyễn Giang Minh (Jame Steven)** · Đồng hành: Sano Group. Windows ghi tên tác giả ở mục nhà phát hành (Cài đặt → Ứng dụng) và trong bản quyền của file (Properties → Details).
-- Bộ cài hiện trang **Giấy phép sử dụng** (bấm đồng ý để cài tiếp); file `LICENSE.txt` nằm trong thư mục cài đặt.
+- Bộ cài hiện trang **Giấy phép sử dụng** (bấm đồng ý để cài tiếp); file `LICENSE.txt` nằm trong thư mục cài đặt, cùng `THIRD-PARTY-NOTICES.txt` (giấy phép của các thư viện và phông chữ mã nguồn mở mà SanoVids dùng).
 
 🛠️ **Bảo mật**
 - SanoVids từ chối mở khi bị chạy kèm tham số gỡ lỗi hoặc tắt bảo mật (ví dụ `--remote-debugging-port`, `--inspect`, `--no-sandbox`) và báo lý do.
-- File của app bị sửa thì SanoVids không chạy (xem lưu ý bên dưới). Công cụ nhà phát triển (DevTools, F12) tắt trong bản cài.
+- Mã của app bị sửa thì SanoVids không mở; file chương trình bị sửa thì **Cài đặt → Giới thiệu** báo (xem lưu ý bên dưới). Công cụ nhà phát triển (DevTools, F12) tắt trong bản cài.
 - Trang trong app chỉ chạy mã của chính SanoVids, chỉ tải về loại file app tạo ra (video, ảnh, `.txt`, `.zip`, `.json`) và không xin quyền vị trí, thông báo hay thiết bị.
 
 🛠️ **Trang tải về chuyển sang** [github.com/JameSteven404/sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases/latest): trang công khai, chỉ chứa file cài đặt và file dùng cho việc tự cập nhật. Mỗi lần kiểm tra, app chỉ gửi cho GitHub một mã cài đặt ngẫu nhiên, không gửi gì từ dự án của bạn.
@@ -50,11 +50,11 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 - Đã cài **cho mọi người dùng** (thư mục `Program Files`)? Mỗi lần cập nhật Windows sẽ hỏi quyền quản trị (UAC), kể cả khi bản mới tự cài lúc tắt app: bấm **Có**. Cài kiểu "Only for me" (mặc định) thì không bị hỏi.
 
 ⚠️ **"Windows protected your PC" / "Unknown publisher"**
-- Chứng chỉ ký là chứng chỉ tự ký của tác giả, nên SmartScreen có thể vẫn hiện **Windows protected your PC**: bấm **More info**, xem nhà phát hành rồi **Run anyway**. Máy chưa tin cậy chứng chỉ thì Windows ghi nhà phát hành là **Unknown publisher**: bình thường, miễn chữ ký đúng dấu vân tay.
-- Máy trong nhóm nội bộ có thể chạy script `tin-cay-chung-chi.ps1` (ở trang tải về) một lần để Windows hiện đúng tên **Nguyễn Giang Minh (Jame Steven)**. Không bắt buộc: SanoVids vẫn chạy và tự cập nhật bình thường.
+- Chứng chỉ ký là chứng chỉ tự ký của tác giả, nên SmartScreen hiện **Windows protected your PC** với file tải bằng trình duyệt (bản nào cũng vậy, không tự mất theo thời gian): bấm **More info**, xem nhà phát hành rồi **Run anyway**. Bản tự cập nhật thì không bị hỏi. Máy chưa tin cậy chứng chỉ thì Windows ghi nhà phát hành là **Unknown publisher**: bình thường, miễn chữ ký đúng dấu vân tay.
+- Máy trong nhóm nội bộ có thể chạy script `tin-cay-chung-chi.ps1` (ở trang tải về) một lần để UAC hiện đúng tên **Nguyễn Giang Minh (Jame Steven)** (SmartScreen vẫn cảnh báo như cũ). Trước đó, so dấu vân tay với nguồn khác trang tải về: tác giả gửi trực tiếp, hoặc Cài đặt → Giới thiệu của SanoVids đã cài. Không bắt buộc: SanoVids vẫn chạy và tự cập nhật bình thường.
 
-⚠️ **SanoVids không mở sau khi file bị sửa**
-- Phần mềm diệt virus "sửa" file, hay ai đó thay file trong thư mục cài, thì SanoVids không mở nữa. Khi đó tải bộ cài ở trang tải về rồi **cài lại** (cài đè; dự án và cài đặt giữ nguyên).
+⚠️ **SanoVids không mở, hoặc tự tắt, sau khi file bị sửa**
+- Phần mềm diệt virus "sửa" file, ổ đĩa lỗi, hay ai đó thay file trong thư mục cài: SanoVids có thể không mở nữa, hoặc tự tắt mỗi lần mở tới một màn hình (Cài đặt, xem take…). Nếu chính file chương trình bị sửa, **Cài đặt → Giới thiệu** báo "File của SanoVids đã bị thay đổi". Khi đó tải bộ cài ở trang tải về rồi **cài lại** (cài đè; dự án và cài đặt giữ nguyên).
 
 ## [0.4.2] — 2026-10-02 — Dây nối chạm đúng tâm chấm tròn
 

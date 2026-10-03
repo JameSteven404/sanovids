@@ -81,6 +81,7 @@ const RESULT_CODES: readonly UpdateResultCode[] = [
   'rate-limited',
   'checksum',
   'signature',
+  'signature-unverified',
   'disk',
   'install-failed',
   'failed',

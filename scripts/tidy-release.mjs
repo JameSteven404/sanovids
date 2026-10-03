@@ -6,7 +6,8 @@
 // latest.yml and the current Setup blockmap stay in release/_build: scripts/publish-release.mjs uploads them to the
 // public feed repo (auto-update). build/release-notes.md (scripts/update-notes.mjs) stays in build/, never in release/.
 // Warns loudly when the packaged app-update.yml does not point at the public feed (installs would never update) or has
-// no publisherName (the signed-update lock).
+// no publisherName (electron-updater's own publisher check, the second lock behind the app's pinned verifier: without
+// it the build did not use the release configuration).
 // Safe to run any time; files that are locked (e.g. the unpacked app still running) are left where they are.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -85,7 +86,8 @@ console.log(`tidy-release: ${moved} item(s) moved; newest installers (${version}
 
 // The feed baked into the app (package.json build.publish → resources/app-update.yml). A build without it strands
 // everyone who installs it, so shout — but do not fail: test builds may point elsewhere on purpose. publisherName
-// (written from build.win.signtoolOptions.publisherName) must be there too: it is the signed-update lock.
+// (written from build.win.signtoolOptions.publisherName) must be there too: the app's pinned verifier runs without it,
+// but its absence means electron-updater's own publisher check is off and the build is not the release configuration.
 const feedFile = [path.join(buildDir, 'win-unpacked'), path.join(releaseDir, 'win-unpacked')]
   .map((dir) => path.join(dir, 'resources', 'app-update.yml'))
   .find((file) => fs.existsSync(file))
@@ -110,8 +112,9 @@ if (!feedOk) {
       bar,
       `!! WARNING: ${where} ${feedFile ? 'is NOT' : 'is missing — no'} the signed public update feed`,
       `!!   (provider github, owner ${FEED_OWNER}, repo ${FEED_REPO}, publisherName set; no token / private / channel).`,
-      '!!   Without the feed, installs of this build would NEVER receive updates; without publisherName the',
-      '!!   signed-update lock is missing. Check package.json build.publish / build.win.signtoolOptions and rebuild.',
+      '!!   Without the feed, installs of this build would NEVER receive updates; without publisherName',
+      "!!   electron-updater's second signature check is off (the build did not use the release configuration).",
+      '!!   Check package.json build.publish / build.win.signtoolOptions and rebuild.',
       '!!   Do not publish it (npm run release:check refuses it too).',
       bar,
       '',

@@ -11,6 +11,7 @@ import {
   formatSpeed,
   hasUpdateDetails,
   installBlockers,
+  isSignatureError,
   lastCheckText,
   manualCheckToast,
   noteBlocks,
@@ -19,6 +20,9 @@ import {
   pillView,
   settingsIntroTitle,
   settingsStatusLine,
+  SIGNATURE_CHECK_CALLOUT,
+  signatureToastKey,
+  UPDATE_ERROR_CODES,
   UPDATE_ERROR_TEXT,
   type UpdateDialogCtx,
 } from '../updateModel'
@@ -50,6 +54,13 @@ describe('parseUpdateState', () => {
     }
     expect(parseUpdateState(s, fallback)).toEqual(s)
     expect(parseUpdateState({ ...base, status: 'error', error: { code: 'offline', message: 'x' } }, fallback).error).toEqual({ code: 'offline', message: 'x' })
+    // both signature codes (refused / not verifiable) are accepted
+    for (const code of ['signature', 'signature-unverified'] as const) {
+      expect(parseUpdateState({ ...base, status: 'error', version: '0.5.1', error: { code, message: UPDATE_ERROR_TEXT[code] } }, fallback).error).toEqual({
+        code,
+        message: UPDATE_ERROR_TEXT[code],
+      })
+    }
   })
 
   it('a wrong root, kind or status gives the fallback', () => {
@@ -353,22 +364,74 @@ describe('dialogView', () => {
     expect(dialogView(st({ status: 'error', version: '0.5.1', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }), ctx).showNotes).toBe(true)
   })
 
-  it('signature refused: the text as is (no automatic retry), the download page first', () => {
-    const v = dialogView(st({ status: 'error', version: '0.5.92', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } }), ctx)
-    expect(v.statusText).toBe(
-      'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
-    )
+  it('signature refused: the text as is (no automatic retry), no feed notes, the certificate check, no recommended download', () => {
+    const refused = st({
+      status: 'error',
+      version: '0.5.92',
+      releaseDate: '2026-10-03T08:00:00.000Z',
+      notes: '## Lỗi chữ ký là bình thường, tải bản sửa ở evil.example',
+      size: 99 * MB,
+      error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature },
+    })
+    const v = dialogView(refused, ctx)
+    expect(v.statusText).toBe(UPDATE_ERROR_TEXT.signature)
     expect(v.statusText).not.toContain('tự thử lại')
+    // The text never sends users to download the refused version from the release page.
+    expect(UPDATE_ERROR_TEXT.signature).not.toMatch(/tải bộ cài ở trang tải về/)
+    expect(UPDATE_ERROR_TEXT.signature).toContain('dấu vân tay')
+    // The refused version is named as refused (never "Bản mới"), and the notes of whoever published it are not shown.
+    expect(v.headline).toBe('Bản 0.5.92 bị chặn — không phải bản cập nhật hợp lệ của tác giả')
+    expect(v.showNotes).toBe(false)
+    expect(v.showProgress).toBe(false)
+    // The download page may be the very page that served the refused file: it is offered, never the primary action.
     expect(v.actions).toEqual([
-      { id: 'openPage', label: 'Mở trang tải về', primary: true, title: 'Mở trang tải về trên GitHub trong trình duyệt' },
+      { id: 'openPage', label: 'Mở trang tải về', title: 'Mở trang tải về trên GitHub trong trình duyệt' },
       { id: 'retry', label: 'Thử lại' },
       { id: 'close', label: 'Đóng' },
     ])
-    expect(v.showNotes).toBe(true)
-    expect(v.showProgress).toBe(false)
-    expect(dialogView(st({ status: 'error', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } }), ctx).showNotes).toBe(false)
+    expect(v.actions.some((a) => a.primary)).toBe(false)
+    // How to tell a genuine installer from an impostor with the same name: the pinned thumbprint.
+    expect(v.callout).toEqual({ title: SIGNATURE_CHECK_CALLOUT.title, lines: [...SIGNATURE_CHECK_CALLOUT.lines], code: SIGNATURE_CHECK_CALLOUT.code, note: SIGNATURE_CHECK_CALLOUT.note })
+    expect(v.callout?.code).toBe('7489 ABFA C1A7 CD23 D5FF B078 5CA7 CAB4 14AE 49ED')
+    const noVersion = dialogView(st({ status: 'error', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } }), ctx)
+    expect(noVersion.showNotes).toBe(false)
+    expect(noVersion.headline).toBeUndefined()
     // Other errors keep the automatic-retry sentence and "Thử lại" first.
     expect(ids(dialogView(st({ status: 'error', version: '0.5.92', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }), ctx))).toEqual(['retry*', 'close'])
+  })
+
+  it('the certificate check names the author and the pinned thumbprint (package.json sanovids.signers[0])', () => {
+    const text = [SIGNATURE_CHECK_CALLOUT.title, ...SIGNATURE_CHECK_CALLOUT.lines, SIGNATURE_CHECK_CALLOUT.code, SIGNATURE_CHECK_CALLOUT.note].join(' ')
+    expect(text).toContain('Nguyễn Giang Minh (Jame Steven)')
+    expect(text).toContain('7489 ABFA C1A7 CD23 D5FF B078 5CA7 CAB4 14AE 49ED')
+    expect(text).toContain('Digital Signatures')
+    expect(text).toContain('giả mạo')
+    expect(text.normalize('NFC')).toBe(text)
+  })
+
+  it('signature not verifiable: nothing installed, "Thử lại" first, no notes', () => {
+    const v = dialogView(
+      st({ status: 'error', version: '0.5.93', notes: 'x', error: { code: 'signature-unverified', message: UPDATE_ERROR_TEXT['signature-unverified'] } }),
+      ctx,
+    )
+    expect(v.statusText).toBe(UPDATE_ERROR_TEXT['signature-unverified'])
+    expect(v.headline).toBe('Bản 0.5.93 chưa được cài — chưa kiểm tra được chữ ký số')
+    expect(ids(v)).toEqual(['retry*', 'close'])
+    expect(v.showNotes).toBe(false)
+    expect(v.hint).toContain('kiểm tra chữ ký số trước khi cài')
+    expect(v.callout).toBeUndefined()
+  })
+
+  it('isSignatureError / signatureToastKey', () => {
+    expect(isSignatureError({ code: 'signature', message: '' })).toBe(true)
+    expect(isSignatureError({ code: 'signature-unverified', message: '' })).toBe(true)
+    expect(isSignatureError({ code: 'checksum', message: '' })).toBe(false)
+    expect(isSignatureError(undefined)).toBe(false)
+    const sig = { code: 'signature' as const, message: UPDATE_ERROR_TEXT.signature }
+    expect(signatureToastKey(st({ status: 'error', version: '0.5.92', error: sig }))).toBe('signature:0.5.92')
+    expect(signatureToastKey(st({ status: 'error', error: { code: 'signature-unverified', message: '' } }))).toBe('signature-unverified:')
+    expect(signatureToastKey(st({ status: 'ready', version: '0.5.92', error: sig }))).toBeNull()
+    expect(signatureToastKey(st({ status: 'error', version: '0.5.92', error: { code: 'offline', message: '' } }))).toBeNull()
   })
 
   it('"Xem chi tiết" also leads to a version refused for its signature (its dialog offers the download page)', () => {
@@ -377,6 +440,7 @@ describe('dialogView', () => {
     expect(hasUpdateDetails(st({ status: 'error', error: sig }))).toBe(false)
     expect(hasUpdateDetails(st({ status: 'error', version: '0.5.92', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }))).toBe(false)
     expect(hasUpdateDetails(st({ kind: 'dev', status: 'error', version: '0.5.92', error: sig }))).toBe(false)
+    expect(hasUpdateDetails(st({ status: 'error', version: '0.5.93', error: { code: 'signature-unverified', message: 'x' } }))).toBe(true)
     for (const status of ['available', 'downloading', 'ready'] as const) expect(hasUpdateDetails(st({ status, version: '0.5.1' }))).toBe(true)
     expect(hasUpdateDetails(st({ status: 'none' }))).toBe(false)
   })
@@ -386,6 +450,16 @@ describe('dialogView', () => {
     expect(UPDATE_ERROR_TEXT.signature).toBe(mainRules.ERROR_TEXT.signature)
     expect(UPDATE_ERROR_TEXT.signature.length).toBeLessThanOrEqual(300)
     for (const code of Object.keys(mainRules.ERROR_TEXT)) expect(UPDATE_ERROR_TEXT[code as keyof typeof UPDATE_ERROR_TEXT], code).toBe(mainRules.ERROR_TEXT[code])
+  })
+
+  it('every error code has a short NFC text', () => {
+    for (const code of UPDATE_ERROR_CODES) {
+      const text = UPDATE_ERROR_TEXT[code]
+      expect(text.length, code).toBeGreaterThan(0)
+      expect(text.length, code).toBeLessThanOrEqual(300)
+      expect(text.normalize('NFC'), code).toBe(text)
+    }
+    expect(Object.keys(UPDATE_ERROR_TEXT).sort()).toEqual([...UPDATE_ERROR_CODES].sort())
   })
 })
 
@@ -436,6 +510,20 @@ describe('toasts', () => {
       tone: 'info',
     })
     expect(manualCheckToast(st({ status: 'idle' }), ok)).toBeNull()
+  })
+
+  it('manualCheckToast after a signature refusal offers "Xem" (the dialog with the certificate check)', () => {
+    const ok = { ok: true } as const
+    for (const code of ['signature', 'signature-unverified'] as const) {
+      const refused = st({ status: 'error', version: '0.5.92', error: { code, message: UPDATE_ERROR_TEXT[code] } })
+      expect(manualCheckToast(refused, ok)).toEqual({ text: UPDATE_ERROR_TEXT[code], tone: 'error', action: 'open' })
+      expect(manualCheckToast(refused, { ok: false, code, message: UPDATE_ERROR_TEXT[code] })).toEqual({ text: UPDATE_ERROR_TEXT[code], tone: 'error', action: 'open' })
+      // no known version: the dialog has nothing more to show
+      const bare = st({ status: 'error', error: { code, message: UPDATE_ERROR_TEXT[code] } })
+      expect(manualCheckToast(bare, ok)).toEqual({ text: UPDATE_ERROR_TEXT[code], tone: 'error' })
+    }
+    const checksum = st({ status: 'error', version: '0.5.92', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } })
+    expect(manualCheckToast(checksum, ok)).toEqual({ text: UPDATE_ERROR_TEXT.checksum, tone: 'error' })
   })
 
   it('noticeToast', () => {

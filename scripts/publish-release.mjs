@@ -3,8 +3,10 @@
 //                                               vX.Y.Z must already be pushed)
 //   2. public  JameSteven404/sanovids-releases  the auto-update feed: Setup, Setup blockmap, latest.yml, Portable,
 //                                               SanoVids-NguyenGiangMinh.cer (build/signing/, public part only)
-// Every installer must be signed by a pinned certificate (package.json sanovids.signers) with a timestamp: check (j)
-// runs scripts/buildInspect.mjs (signatures, VersionInfo, fuses, app-update.yml publisherName) and blocks on any ✗.
+// Every installer must be signed by the release's certificate (SIGNER_THUMBPRINT, one of package.json sanovids.signers)
+// with a timestamp: check (j) runs scripts/buildInspect.mjs (signatures of every code file, VersionInfo, fuses, the
+// exe's asar integrity hash, licences shipped next to the exe) and the "ghim trước, ký sau" rotation check (the
+// certificate must already be pinned by the newest public release), and blocks on any ✗.
 // Usage:
 //   npm run release:check    (= --dry-run)  read-only: every check, both release notes, the exact plan (gh argv)
 //   npm run release:publish                 checks, then draft → upload → verify → publish (private first, public LAST)
@@ -20,6 +22,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
 import { inspectAppUpdateYml, inspectWindowsBuild } from './buildInspect.mjs'
+import { NOTICES_SHIPPED, NOTICES_SOURCE } from './third-party-notices.mjs'
 import {
   AUTHOR,
   COPYRIGHT_BUILD,
@@ -38,6 +41,7 @@ import {
   checkCertFile,
   checkLatestYml,
   checkPackagedIdentity,
+  checkRotation,
   compareAssets,
   compareVersions,
   extractChangelogSection,
@@ -84,6 +88,16 @@ const EXPECT = {
   author: typeof pkg.author === 'string' ? pkg.author : pkg.author?.name,
   copyright: pkg.build?.copyright,
   publisherName: pkg.build?.win?.signtoolOptions?.publisherName,
+  // every file of this build is signed by exactly this pinned certificate (checkRotation relies on it)
+  signer: SIGNER_THUMBPRINT,
+  // LICENSE.txt clause 6 promises these next to the exe (package.json build.extraFiles)
+  shippedFiles: [
+    { name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') },
+    { name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split('/')) },
+  ],
+  // installed apps accept the Setup as their update only when its VersionInfo names this app and this version
+  productName: pkg.build?.productName ?? pkg.productName,
+  version: String(pkg.version),
 }
 const EXE_NAME = `${pkg.build?.executableName ?? pkg.productName ?? 'SanoVids'}.exe`
 
@@ -394,6 +408,24 @@ if (!paths[FILES.setup] || !paths[FILES.portable] || !unpackedDir) {
     feed: false, // app-update.yml: group (f)
   })
   for (const r of inspected) results.push({ ...r, group: r.group === 'Chữ ký số' ? r.group : `Chữ ký số · ${r.group}` })
+}
+// "Ghim trước, ký sau": every installed app only accepts an update signed by a certificate IT pins, so the newest
+// public release before this one must already pin SIGNER_THUMBPRINT (docs/SIGNING.md §7).
+if (!publicReleases) {
+  fail('Chữ ký số', `Không đọc được Releases của ${PUBLIC_REPO}: không kiểm tra được quy tắc "ghim trước, ký sau".`)
+} else {
+  const prevVersion = newestPublishedVersion(publicReleases, V)
+  let prevPkg = null
+  if (prevVersion) {
+    const shown = git(['show', `refs/tags/v${prevVersion}:package.json`])
+    try {
+      prevPkg = shown.code === 0 ? JSON.parse(shown.out) : null
+    } catch {
+      prevPkg = null
+    }
+  }
+  const rotation = checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })
+  results.push({ level: rotation.level, group: 'Chữ ký số', text: rotation.text })
 }
 
 // ───────────────────────────── public repo files (pushed by hand, warn only) ─────────────────────────────

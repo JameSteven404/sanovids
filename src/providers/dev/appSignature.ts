@@ -7,27 +7,30 @@
 //   useDevSignature                    zustand store: the simulated AppSignature (default: unsigned, not packaged).
 //   devSignatureBridge()               the app's simulated DesktopAppBridge (created on first use): signature() resolves a
 //                                      copy of the store after DEV_SIGNATURE_DELAY_MS.
-//   devSignature.simulate(preset)      'signed' | 'dev' | 'unsigned-packaged' | 'other' | 'tampered' | 'unknown'.
+//   devSignature.simulate(preset)      'signed' | 'dev' | 'unsigned-packaged' | 'other' | 'impostor' | 'tampered' | 'unknown'.
 //   devSignature.reset()               back to the default.
 //   devSignaturePresetOf(sig)          the preset a state corresponds to (the Segmented control's value).
 //   createDevSignatureBridge(store, delayMs)   a separate instance (tests).
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
-import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT } from '../../lib/aboutModel'
+import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, borrowsAuthorName } from '../../lib/aboutModel'
 import type { AppSignature, DesktopAppBridge } from '../../lib/appSignature'
 
-export type DevSignaturePreset = 'signed' | 'dev' | 'unsigned-packaged' | 'other' | 'tampered' | 'unknown'
+export type DevSignaturePreset = 'signed' | 'dev' | 'unsigned-packaged' | 'other' | 'impostor' | 'tampered' | 'unknown'
 
-export const DEV_SIGNATURE_PRESET_IDS: readonly DevSignaturePreset[] = ['signed', 'dev', 'unsigned-packaged', 'other', 'tampered', 'unknown']
+export const DEV_SIGNATURE_PRESET_IDS: readonly DevSignaturePreset[] = ['signed', 'dev', 'unsigned-packaged', 'other', 'impostor', 'tampered', 'unknown']
 
-/** Simulated impostor certificate (a made-up thumbprint, never a real one). */
+/** Simulated foreign certificate (a made-up thumbprint, never a real one). */
 export const DEV_OTHER_SIGNER = 'Người lạ (giả lập)'
 export const DEV_OTHER_THUMBPRINT = '0123456789ABCDEF0123456789ABCDEF01234567'
+/** Simulated impostor certificate carrying the author's exact name (made-up thumbprint): only the thumbprint differs. */
+export const DEV_IMPOSTOR_THUMBPRINT = 'FEDCBA9876543210FEDCBA9876543210FEDCBA98'
 
 export const DEV_SIGNATURE_PRESETS: Readonly<Record<DevSignaturePreset, Readonly<AppSignature>>> = {
   signed: { status: 'signed', packaged: true, signer: ABOUT_AUTHOR, thumbprint: ABOUT_OFFICIAL_THUMBPRINT },
   dev: { status: 'unsigned', packaged: false },
   'unsigned-packaged': { status: 'unsigned', packaged: true },
   other: { status: 'other-signer', packaged: true, signer: DEV_OTHER_SIGNER, thumbprint: DEV_OTHER_THUMBPRINT },
+  impostor: { status: 'other-signer', packaged: true, signer: ABOUT_AUTHOR, thumbprint: DEV_IMPOSTOR_THUMBPRINT },
   tampered: { status: 'tampered', packaged: true },
   unknown: { status: 'unknown', packaged: true },
 }
@@ -38,6 +41,7 @@ export const DEV_SIGNATURE_OPTIONS: { id: DevSignaturePreset; label: string; tit
   { id: 'dev', label: 'Chưa ký – bản phát triển', title: 'Chạy từ mã nguồn: không có chữ ký số (bình thường)' },
   { id: 'unsigned-packaged', label: 'Chưa ký – bản cài', title: 'Bản cài / portable không có chữ ký số' },
   { id: 'other', label: 'Người ký khác', title: 'Ký bởi một chứng chỉ khác chứng chỉ của tác giả' },
+  { id: 'impostor', label: 'Giả tên tác giả', title: 'Chứng chỉ mang đúng tên tác giả nhưng khác dấu vân tay (bản giả mạo)' },
   { id: 'tampered', label: 'Bị sửa', title: 'File đã bị thay đổi sau khi ký' },
   { id: 'unknown', label: 'Không rõ', title: 'Windows không cho đọc chữ ký số (PowerShell bị chặn hoặc quá lâu)' },
 ]
@@ -55,12 +59,12 @@ const cloneSig = (s: Readonly<AppSignature>): AppSignature => {
 export const useDevSignature: UseBoundStore<StoreApi<AppSignature>> = create<AppSignature>()(() => cloneSig(DEV_SIGNATURE_PRESETS.dev))
 
 /** The preset a state corresponds to. */
-export function devSignaturePresetOf(sig: Pick<AppSignature, 'status' | 'packaged'>): DevSignaturePreset {
+export function devSignaturePresetOf(sig: Pick<AppSignature, 'status' | 'packaged' | 'signer'>): DevSignaturePreset {
   switch (sig.status) {
     case 'signed':
       return 'signed'
     case 'other-signer':
-      return 'other'
+      return borrowsAuthorName(sig.signer) ? 'impostor' : 'other'
     case 'tampered':
       return 'tampered'
     case 'unsigned':

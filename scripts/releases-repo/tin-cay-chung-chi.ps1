@@ -9,21 +9,25 @@
     Chủ sở hữu : CN=Nguyễn Giang Minh (Jame Steven), C=VN
     Dấu vân tay: 7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED (SHA-1)
 
-  Script thêm chứng chỉ đó (chỉ phần CÔNG KHAI, đã gắn sẵn trong script) vào hai kho của Windows:
+  Script thêm chứng chỉ đó (chỉ phần CÔNG KHAI, đã gắn sẵn trong script) vào MỘT kho của Windows:
     - Trusted Root Certification Authorities (Root)
-    - Trusted Publishers (TrustedPublisher)
   Sau đó Windows hiện "Nhà phát hành đã xác minh: Nguyễn Giang Minh (Jame Steven)" và chữ ký trên bản cài
   ở trạng thái hợp lệ (Valid).
+  Script KHÔNG thêm vào kho Trusted Publishers: SanoVids không cần kho đó, và nó còn cho script PowerShell /
+  macro Office ký bằng chứng chỉ này chạy mà không hỏi.
 
   - Mặc định chỉ cho tài khoản Windows đang dùng (CurrentUser). Khi thêm vào kho Root, chính Windows hiện hộp
     "Security Warning" để bạn xác nhận: so dấu vân tay (Thumbprint) với dấu vân tay ở trên rồi mới bấm Yes.
   - -TatCaNguoiDung: cho mọi tài khoản trên máy (LocalMachine). Cần mở PowerShell bằng "Run as administrator".
-  - -Go: gỡ chứng chỉ này khỏi các kho trên (chỉ đúng chứng chỉ có dấu vân tay ở trên, không đụng gì khác).
+  - -Go: gỡ chứng chỉ này khỏi kho Root, và khỏi Trusted Publishers nếu bản script cũ đã thêm vào (chỉ đúng
+    chứng chỉ có dấu vân tay ở trên, không đụng gì khác).
   - -KiemTra: chỉ xem trạng thái, không thay đổi gì.
   Chạy lại nhiều lần vẫn an toàn: kho nào đã có thì bỏ qua.
 
   KHÔNG cần tin cậy chứng chỉ để dùng hay tự cập nhật SanoVids. Chỉ tin cậy khi bạn ở trong nhóm được tác giả
-  cho phép và dấu vân tay khớp với trang tải về chính thức.
+  cho phép và dấu vân tay khớp với một nguồn KHÔNG nằm trên trang tải về: tác giả gửi trực tiếp (chat nội bộ,
+  gặp mặt), hoặc dòng dấu vân tay trong Cài đặt -> Giới thiệu của một SanoVids đã cài từ trước. Đừng chỉ tin
+  dấu vân tay in trên trang tải về: ai chiếm được trang đó thay được cả script lẫn dấu vân tay.
 
   Mã thoát: 0 = xong (hoặc không cần làm gì), 1 = lỗi, 2 = bạn đã huỷ / chọn No trong hộp xác nhận.
 
@@ -31,7 +35,7 @@
   Thêm / gỡ cho mọi tài khoản trên máy (LocalMachine). Cần quyền quản trị.
 
 .PARAMETER Go
-  Gỡ chứng chỉ thay vì thêm.
+  Gỡ chứng chỉ thay vì thêm (khỏi kho Root, và khỏi Trusted Publishers nếu có).
 
 .PARAMETER KiemTra
   Chỉ xem chứng chỉ đang được tin cậy ở đâu. Không thay đổi gì.
@@ -100,8 +104,11 @@ RqJLuFya/9oRKf+Yp4k5zw3kkGy5QQGYub5rvpLn5pMYsNpnGUOQDsXr+e7tvkbeJwT3QlzwfPNy
 RpACgf6U9xj/ykM=
 '@
 
-# Root first: TrustedPublisher alone does not make the self-signed chain trusted, so it is only added after Root.
-$StoreOrder = @('Root', 'TrustedPublisher')
+# Trust needs the Root store only (UAC "Verified publisher", Authenticode status Valid). TrustedPublisher is never
+# added: it would also let PowerShell scripts (AllSigned / RemoteSigned) and Office macros signed with this key run
+# without a prompt. Earlier versions of this script added it, so -Go and -KiemTra still look at it.
+$AddStores = @('Root')
+$KnownStores = @('Root', 'TrustedPublisher')
 $StoreLabels = @{
   Root             = 'Trusted Root Certification Authorities (Root)'
   TrustedPublisher = 'Trusted Publishers (TrustedPublisher)'
@@ -195,12 +202,17 @@ function Show-Certificate($Cert, [string]$Source) {
 
 function Show-Status($Cert) {
   Write-Host 'Trạng thái trên máy này:'
-  foreach ($name in $StoreOrder) {
+  foreach ($name in $KnownStores) {
     $label = $StoreLabels[$name]
     $where = @()
     if (Test-InStore 'CurrentUser' $name) { $where += 'tài khoản đang dùng (CurrentUser)' }
     if (Test-InStore 'LocalMachine' $name) { $where += 'mọi người dùng (LocalMachine)' }
     if (Test-InManagedStore $name) { $where += 'Group Policy / doanh nghiệp' }
+    if ($AddStores -notcontains $name) {
+      if ($where.Count -gt 0) { Write-Warn ("{0}: có - {1}. SanoVids không cần kho này: gỡ bằng -Go rồi chạy lại script (chỉ thêm vào Root)." -f $label, ($where -join ', ')) }
+      else { Write-Skip ("{0}: không có (đúng: SanoVids không cần kho này)" -f $label) }
+      continue
+    }
     if ($where.Count -gt 0) { Write-Ok ("{0}: có - {1}" -f $label, ($where -join ', ')) }
     else { Write-Skip ("{0}: chưa có" -f $label) }
   }
@@ -300,11 +312,11 @@ function Invoke-Main {
   }
 
   if ($Go) {
-    if (-not (Confirm-Continue ("Sắp GỠ chứng chỉ trên khỏi kho Root và TrustedPublisher của {0}." -f $scopeText))) {
+    if (-not (Confirm-Continue ("Sắp GỠ chứng chỉ trên khỏi kho Root (và TrustedPublisher nếu có) của {0}." -f $scopeText))) {
       Write-Host 'Đã huỷ, không thay đổi gì.'; return 2
     }
     $ok = $true
-    # Reverse order: TrustedPublisher first, Root last.
+    # TrustedPublisher first (added only by earlier versions of this script), Root last.
     foreach ($name in @('TrustedPublisher', 'Root')) { if (-not (Remove-FromStore $location $name)) { $ok = $false } }
     Write-Host ''
     if ($ok) { Write-Host 'Xong: Windows không còn tin cậy chứng chỉ SanoVids ở phạm vi này.' -ForegroundColor Green; return 0 }
@@ -312,19 +324,22 @@ function Invoke-Main {
     return 2
   }
 
-  Write-Host ("Sắp THÊM chứng chỉ trên vào kho Root và TrustedPublisher của {0}." -f $scopeText)
-  Write-Host 'Chỉ làm việc này nếu bạn ở trong nhóm được tác giả cho phép và dấu vân tay khớp với trang tải về chính thức.'
+  Write-Host ("Sắp THÊM chứng chỉ trên vào kho Root của {0}." -f $scopeText)
+  Write-Host 'Chỉ làm việc này nếu bạn ở trong nhóm được tác giả cho phép và "Dấu vân tay" ở trên khớp với một nguồn'
+  Write-Host 'KHÔNG nằm trên trang tải về: tác giả gửi trực tiếp (chat nội bộ, gặp mặt), hoặc dòng dấu vân tay trong'
+  Write-Host 'Cài đặt -> Giới thiệu của một SanoVids đã cài từ trước. Đừng chỉ tin dấu vân tay in trên trang tải về.'
   if (-not (Confirm-Continue 'Tiếp tục?')) { Write-Host 'Đã huỷ, không thay đổi gì.'; return 2 }
 
-  if (-not (Add-ToStore $location 'Root' $cert)) {
-    Write-Host ''
-    Write-Host 'Chưa tin cậy: không thêm được vào kho Root nên cũng không thêm vào TrustedPublisher. Chạy lại khi sẵn sàng.' -ForegroundColor Yellow
-    return 2
+  foreach ($name in $AddStores) {
+    if (-not (Add-ToStore $location $name $cert)) {
+      Write-Host ''
+      Write-Host 'Chưa tin cậy: không thêm được vào kho Root. Chạy lại khi sẵn sàng.' -ForegroundColor Yellow
+      return 2
+    }
   }
-  if (-not (Add-ToStore $location 'TrustedPublisher' $cert)) {
-    Write-Host ''
-    Write-Host 'Đã tin cậy ở kho Root nhưng chưa thêm được vào TrustedPublisher. Chạy lại script để thử tiếp.' -ForegroundColor Yellow
-    return 2
+  if (Test-InStore $location 'TrustedPublisher') {
+    Write-Warn 'Kho Trusted Publishers vẫn còn chứng chỉ này (bản script cũ đã thêm vào). SanoVids không cần nó:'
+    Write-Hint 'chạy script với -Go rồi chạy lại không có -Go để chỉ giữ kho Root.'
   }
   Write-Host ''
   Write-Host 'Xong: Windows đã tin cậy chứng chỉ ký số SanoVids. Bỏ tin cậy: chạy lại script với -Go.' -ForegroundColor Green

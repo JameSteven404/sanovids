@@ -41,7 +41,8 @@ export function DevUpdatesTab() {
   const versionOk = isUpdateVersion(draft.version)
   const sigStatus = useDevSignature((s) => s.status)
   const sigPackaged = useDevSignature((s) => s.packaged)
-  const sigPreset = devSignaturePresetOf({ status: sigStatus, packaged: sigPackaged })
+  const sigSigner = useDevSignature((s) => s.signer)
+  const sigPreset = devSignaturePresetOf({ status: sigStatus, packaged: sigPackaged, signer: sigSigner })
 
   return (
     <div className="dv-upd">
@@ -117,6 +118,14 @@ export function DevUpdatesTab() {
               onClick={() => devUpdates.failSignature()}
             >
               Lỗi chữ ký số
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="Không kiểm tra được chữ ký số của bản cập nhật (máy chặn hoặc quá lâu): chưa cài, “Thử lại” kiểm tra lại"
+              onClick={() => devUpdates.failSignature('signature-unverified')}
+            >
+              Chưa kiểm tra được chữ ký
             </button>
             <button type="button" className="btn btn-sm" onClick={() => devUpdates.markNone()}>
               Không có bản mới

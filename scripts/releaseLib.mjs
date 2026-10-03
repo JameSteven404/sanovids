@@ -55,13 +55,17 @@ export function compareVersions(a, b) {
   return 0
 }
 
-/** Newest published (not draft, not pre-release) vX.Y.Z of a `gh api repos/<r>/releases` list, or null. */
-export function newestPublishedVersion(releases) {
+/**
+ * Newest published (not draft, not pre-release) vX.Y.Z of a `gh api repos/<r>/releases` list, or null. With `below`,
+ * only versions strictly older than it count (the release users run before this one).
+ */
+export function newestPublishedVersion(releases, below = null) {
   let best = null
   for (const r of Array.isArray(releases) ? releases : []) {
     if (!r || r.draft || r.prerelease) continue
     const m = /^v(\d+\.\d+\.\d+)$/.exec(String(r.tag_name ?? ''))
-    if (m && (best == null || compareVersions(m[1], best) > 0)) best = m[1]
+    if (!m || (below != null && compareVersions(m[1], below) >= 0)) continue
+    if (best == null || compareVersions(m[1], best) > 0) best = m[1]
   }
   return best
 }
@@ -245,11 +249,16 @@ export function checkLatestYml(obj, { version, setupName, sha512, size, notBefor
   return p
 }
 
+/** Problem text of an app-update.yml without publisherName (it does NOT switch the pinned verifier off). */
+export const PUBLISHER_NAME_MISSING =
+  'app-update.yml thiếu publisherName — lớp kiểm tra thứ hai của electron-updater bị mất: bản build không đúng cấu hình phát hành (build.win.signtoolOptions.publisherName).'
+
 /**
  * resources/app-update.yml (parsed) of the packaged app: must point at the public feed, anonymously, and carry the
- * publisherName of the signed build (electron-builder writes it from build.win.signtoolOptions.publisherName; the
- * updater's pinned signature check is installed either way, the field is the second lock).
- * expected.publisherName = AUTHOR (package.json build.win.signtoolOptions.publisherName). Compared after NFC.
+ * publisherName of the signed build (electron-builder writes it from build.win.signtoolOptions.publisherName). The
+ * app's pinned verifier (electron/updater.cjs) runs whether the field is there or not; publisherName only turns on
+ * electron-updater's own publisher check as a second lock, and its absence means the build did not use the release
+ * configuration. expected.publisherName = AUTHOR. Compared after NFC.
  */
 export function checkAppUpdateYml(obj, { publisherName } = {}) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return ['app-update.yml không đọc được.']
@@ -264,7 +273,7 @@ export function checkAppUpdateYml(obj, { publisherName } = {}) {
   const raw = obj.publisherName
   const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : null
   if (raw == null || (Array.isArray(raw) && raw.length === 0)) {
-    p.push('app-update.yml thiếu publisherName — app sẽ không kiểm tra chữ ký số của bản cập nhật.')
+    p.push(PUBLISHER_NAME_MISSING)
   } else if (!want) {
     p.push('Không biết publisherName cần có (package.json build.win.signtoolOptions.publisherName trống).')
   } else if (!list || list.length !== 1 || typeof list[0] !== 'string' || list[0].normalize('NFC') !== want) {
@@ -314,15 +323,24 @@ export function buildArgsProblem(env, argv) {
 /**
  * Release gate on one signature verdict (electron/signature.cjs checkFileSignature): the file must be signed by a
  * pinned certificate AND carry an RFC 3161 timestamp (without one the signature dies when the certificate expires).
- * → problem strings ([] = fine).
+ * With `signer` (SIGNER_THUMBPRINT), it must be signed by exactly that pinned certificate: during a rotation the pins
+ * hold two thumbprints, and the gate still knows which one signs this release (checkRotation needs that).
+ * `timestamp: false` skips the timestamp requirement (the caller warns instead). → problem strings ([] = fine).
  */
-export function checkSignatureVerdict(label, verdict) {
+export function checkSignatureVerdict(label, verdict, { signer = null, timestamp = true } = {}) {
   if (!verdict || typeof verdict !== 'object') return [`${label}: không có kết quả kiểm tra chữ ký số.`]
   const thumb = typeof verdict.thumbprint === 'string' ? verdict.thumbprint : ''
   const who = verdict.signer ? `"${verdict.signer}"` : 'người khác'
   if (verdict.ok === true && verdict.status === 'signed') {
-    if (verdict.timestamped === true) return []
-    return [`${label} đã ký số nhưng thiếu dấu thời gian (timestamp): chữ ký sẽ hết hiệu lực khi chứng chỉ hết hạn. Build lại khi máy chủ timestamp chạy được.`]
+    const p = []
+    const want = typeof signer === 'string' ? signer.replace(/\s+/g, '').toUpperCase() : ''
+    if (want && thumb.toUpperCase() !== want) {
+      p.push(`${label} được ký bằng chứng chỉ ${thumb || '—'}, không phải chứng chỉ ký của bản này (${want} = SIGNER_THUMBPRINT trong scripts/releaseLib.mjs).`)
+    }
+    if (timestamp && verdict.timestamped !== true) {
+      p.push(`${label} đã ký số nhưng thiếu dấu thời gian (timestamp): chữ ký sẽ hết hiệu lực khi chứng chỉ hết hạn. Build lại khi máy chủ timestamp chạy được.`)
+    }
+    return p
   }
   switch (verdict.status) {
     case 'unsigned':
@@ -341,6 +359,93 @@ export function checkSignatureVerdict(label, verdict) {
       return [`${label}: ${why}.`]
     }
   }
+}
+
+const pinList = (raw) =>
+  [...new Set((Array.isArray(raw) ? raw : []).map((x) => String(x).replace(/\s+/g, '').toUpperCase()).filter((x) => THUMBPRINT.test(x)))]
+
+/**
+ * "Ghim trước, ký sau" (docs/SIGNING.md §7): an installed app only accepts an update signed by a thumbprint IT pins,
+ * so the certificate that signs this release must already be in sanovids.signers of the newest PUBLIC release before
+ * it. prevVersion = that version (newestPublishedVersion(public releases, V); null = nothing published yet);
+ * prevPkg = its package.json (`git show v<prev>:package.json`), null when unreadable; signer = SIGNER_THUMBPRINT.
+ * → { level: 'ok' | 'fail', text }.
+ */
+export function checkRotation({ prevVersion, prevPkg, signer }) {
+  const want = String(signer ?? '').replace(/\s+/g, '').toUpperCase()
+  if (!THUMBPRINT.test(want)) return { level: 'fail', text: 'Không biết chứng chỉ ký của bản này (SIGNER_THUMBPRINT trong scripts/releaseLib.mjs).' }
+  if (!prevVersion) return { level: 'ok', text: 'Chưa có bản công khai nào trước bản này: không máy nào cần nhận chữ ký mới.' }
+  if (!prevPkg || typeof prevPkg !== 'object' || Array.isArray(prevPkg)) {
+    return {
+      level: 'fail',
+      text: `Không đọc được package.json của v${prevVersion} (git show v${prevVersion}:package.json; chạy git fetch origin --tags): không kiểm tra được quy tắc "ghim trước, ký sau".`,
+    }
+  }
+  const raw = prevPkg.sanovids && typeof prevPkg.sanovids === 'object' ? prevPkg.sanovids.signers : undefined
+  if (raw == null && compareVersions(prevVersion, '0.5.0') < 0) {
+    return { level: 'ok', text: `v${prevVersion} có trước 0.5.0 (chưa tự cập nhật, chưa ghim chữ ký): người dùng cài tay bản này.` }
+  }
+  const prev = pinList(raw)
+  if (prev.includes(want)) {
+    return { level: 'ok', text: `Chứng chỉ ký ${want.slice(0, 8)}… đã được ghim trong v${prevVersion} (bản công khai mới nhất): máy đang dùng bản đó nhận được bản này.` }
+  }
+  return {
+    level: 'fail',
+    text:
+      `Bản này ký bằng chứng chỉ ${want}, nhưng v${prevVersion} (bản công khai mới nhất) chỉ ghim ${prev.length ? prev.join(', ') : 'không chứng chỉ nào'}: ` +
+      `mọi máy đang dùng v${prevVersion} sẽ TỪ CHỐI bản cập nhật này. Quy tắc "ghim trước, ký sau" (docs/SIGNING.md mục 7): ` +
+      'phát hành trước một bản vẫn ký bằng chứng chỉ cũ, có thêm chứng chỉ mới trong sanovids.signers, rồi mới đổi chứng chỉ ký.',
+  }
+}
+
+/**
+ * Electron's embedded asar integrity on Windows (fuse EnableEmbeddedAsarIntegrityValidation): the exe's resource
+ * INTEGRITY / ELECTRONASAR (JSON written by electron-builder) must list exactly resources\app.asar, SHA256, and the
+ * sha256 of the archive's raw JSON header. Missing or stale → the app exits at EVERY start on every machine, and an
+ * auto-update cannot repair it. resourceTexts = every such resource as text; headerSha256 = hex. → problem strings.
+ */
+export function checkAsarIntegrity(resourceTexts, headerSha256) {
+  const texts = Array.isArray(resourceTexts) ? resourceTexts : []
+  const never = 'app sẽ không mở trên mọi máy'
+  if (!texts.length) return [`File exe không có tài nguyên INTEGRITY/ELECTRONASAR: với fuse kiểm tra toàn vẹn asar đang bật, ${never}.`]
+  if (texts.length > 1) return [`File exe có ${texts.length} tài nguyên INTEGRITY/ELECTRONASAR (cần đúng 1).`]
+  let list = null
+  try {
+    list = JSON.parse(String(texts[0]))
+  } catch {
+    list = null
+  }
+  if (!Array.isArray(list) || list.length !== 1 || !list[0] || typeof list[0] !== 'object') {
+    return [`Tài nguyên INTEGRITY/ELECTRONASAR không đúng dạng (cần đúng một mục cho resources\\app.asar): ${never}.`]
+  }
+  const item = list[0]
+  const p = []
+  if (String(item.file ?? '').toLowerCase() !== 'resources\\app.asar') p.push(`Tài nguyên INTEGRITY trỏ vào "${item.file}", cần "resources\\app.asar".`)
+  if (item.alg !== 'SHA256') p.push(`Tài nguyên INTEGRITY dùng thuật toán "${item.alg}", cần "SHA256".`)
+  const want = String(headerSha256 ?? '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(want)) p.push('Không tính được SHA-256 của header app.asar.')
+  else if (String(item.value ?? '').toLowerCase() !== want) {
+    p.push(`Mã SHA-256 trong file exe (${String(item.value ?? '—').slice(0, 12)}…) khác header app.asar (${want.slice(0, 12)}…): ${never}.`)
+  }
+  return p
+}
+
+/**
+ * win-unpacked must be what the installers carry: electron-builder writes win-unpacked first and the Setup / Portable
+ * after it, so a file of win-unpacked newer than an installer means a later rebuild (e.g. `--dir` with another config)
+ * replaced what the gate is about to check. unpacked / installers = [{ label, mtimeMs }]. → problem strings.
+ */
+export function checkBuildFreshness({ unpacked, installers }) {
+  const p = []
+  for (const u of Array.isArray(unpacked) ? unpacked : []) {
+    for (const i of Array.isArray(installers) ? installers : []) {
+      if (!Number.isFinite(u?.mtimeMs) || !Number.isFinite(i?.mtimeMs)) continue
+      if (u.mtimeMs > i.mtimeMs) {
+        p.push(`${u.label} trong win-unpacked mới hơn ${i.label}: thư mục win-unpacked không phải nội dung của bộ cài sẽ đăng. Build lại bằng npm run dist:win.`)
+      }
+    }
+  }
+  return p
 }
 
 /** Fuse wire index → @electron/fuses FuseV1Options name. */
@@ -409,6 +514,23 @@ export function checkVersionInfo(label, info, { company, copyright } = {}) {
   const p = []
   if (info.companyName !== company) p.push(`${label}: CompanyName là ${JSON.stringify(info.companyName ?? null)}, cần "${company}".`)
   if (info.legalCopyright !== copyright) p.push(`${label}: LegalCopyright là ${JSON.stringify(info.legalCopyright ?? null)}, cần "${copyright}".`)
+  return p
+}
+
+/**
+ * The Setup as installed apps judge an update (electron/updater-rules.cjs installerIdentityProblem): its VersionInfo
+ * ProductName is the app's productName, ProductVersion is exactly this release's version, and it is at least `minBytes`.
+ * Otherwise every installed app downloads it and refuses it. → problem strings.
+ */
+export function checkInstallerIdentity(label, info, { productName, version, size, minBytes } = {}) {
+  if (!info || typeof info !== 'object') return [`${label}: không đọc được thông tin file (VersionInfo).`]
+  const p = []
+  const refused = 'mọi app đã cài sẽ từ chối bản cập nhật này'
+  if (info.productName !== productName) p.push(`${label}: ProductName là ${JSON.stringify(info.productName ?? null)}, cần "${productName}" (${refused}).`)
+  if (info.productVersion !== version) p.push(`${label}: ProductVersion là ${JSON.stringify(info.productVersion ?? null)}, cần "${version}" (${refused}).`)
+  if (!(typeof size === 'number' && Number.isFinite(size) && size >= minBytes)) {
+    p.push(`${label}: chỉ ${typeof size === 'number' && size >= 0 ? size : '?'} byte, nhỏ hơn ${minBytes} byte của một bộ cài (${refused}).`)
+  }
   return p
 }
 

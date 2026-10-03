@@ -1,6 +1,6 @@
 // Development mode's simulated signature self-check (providers/dev/appSignature): the presets of "Bảng phát triển →
-// Cập nhật → Chữ ký số (Giới thiệu)", answers that are copies (never the store itself), and the "Lỗi chữ ký số" state
-// of the simulated updater (providers/dev/updates failSignature).
+// Cập nhật → Chữ ký số (Giới thiệu)", answers that are copies (never the store itself), and the "Lỗi chữ ký số" /
+// "Chưa kiểm tra được chữ ký" states of the simulated updater (providers/dev/updates failSignature).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { create } from 'zustand'
 import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, signatureView } from '../../lib/aboutModel'
@@ -41,16 +41,18 @@ describe('presets', () => {
       dev: { status: 'unsigned', packaged: false },
       'unsigned-packaged': { status: 'unsigned', packaged: true },
       other: { status: 'other-signer', packaged: true, signer: 'Người lạ (giả lập)', thumbprint: '0123456789ABCDEF0123456789ABCDEF01234567' },
+      impostor: { status: 'other-signer', packaged: true, signer: 'Nguyễn Giang Minh (Jame Steven)', thumbprint: 'FEDCBA9876543210FEDCBA9876543210FEDCBA98' },
       tampered: { status: 'tampered', packaged: true },
       unknown: { status: 'unknown', packaged: true },
     })
     expect(DEV_SIGNATURE_PRESETS.signed.thumbprint).toBe(ABOUT_OFFICIAL_THUMBPRINT)
     expect(DEV_OTHER_THUMBPRINT).not.toBe(PIN)
+    expect(DEV_SIGNATURE_PRESETS.impostor.thumbprint).not.toBe(PIN)
   })
 
   it('every preset is a valid payload, maps back to itself and has an option', () => {
     expect(DEV_SIGNATURE_OPTIONS.map((o) => o.id)).toEqual([...DEV_SIGNATURE_PRESET_IDS])
-    expect(DEV_SIGNATURE_OPTIONS.map((o) => o.label)).toEqual(['Đã ký', 'Chưa ký – bản phát triển', 'Chưa ký – bản cài', 'Người ký khác', 'Bị sửa', 'Không rõ'])
+    expect(DEV_SIGNATURE_OPTIONS.map((o) => o.label)).toEqual(['Đã ký', 'Chưa ký – bản phát triển', 'Chưa ký – bản cài', 'Người ký khác', 'Giả tên tác giả', 'Bị sửa', 'Không rõ'])
     for (const id of DEV_SIGNATURE_PRESET_IDS) {
       const p = DEV_SIGNATURE_PRESETS[id]
       expect(parseAppSignature(p)).toEqual(p)
@@ -163,5 +165,27 @@ describe('simulated updater: failSignature ("Lỗi chữ ký số")', () => {
     expect(state().status).toBe('error') // the stopped download does not come back
     expect(await sim.download()).toEqual({ ok: true })
     expect(state().status).toBe('downloading')
+  })
+
+  it('"Chưa kiểm tra được chữ ký": code signature-unverified with its own text', () => {
+    const { sim, state } = setupUpdates()
+    sim.failSignature('signature-unverified')
+    expect(state()).toMatchObject({
+      kind: 'installer',
+      status: 'error',
+      version: DEV_UPDATES_DRAFT_DEFAULT.version,
+      error: { code: 'signature-unverified', message: UPDATE_ERROR_TEXT['signature-unverified'] },
+    })
+  })
+})
+
+describe('impostor preset ("Giả tên tác giả")', () => {
+  it('carries the author name with another thumbprint, and the About block calls it a possible impostor', () => {
+    const p = DEV_SIGNATURE_PRESETS.impostor
+    expect(p).toMatchObject({ status: 'other-signer', signer: ABOUT_AUTHOR })
+    expect(p.thumbprint).not.toBe(ABOUT_OFFICIAL_THUMBPRINT)
+    expect(signatureView(p).title).toBe('Không phải bản gốc — có thể là bản giả mạo')
+    expect(devSignaturePresetOf(p)).toBe('impostor')
+    expect(devSignaturePresetOf(DEV_SIGNATURE_PRESETS.other)).toBe('other')
   })
 })

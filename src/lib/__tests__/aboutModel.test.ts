@@ -1,5 +1,6 @@
 // "Cài đặt → Giới thiệu" texts (lib/aboutModel): every signature row, thumbprint formatting, the version line, and the
 // author / partner / copyright / pinned-thumbprint constants matching package.json (NFC, Sano Group only as a partner).
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import pkg from '../../../package.json'
 import aboutSource from '../aboutModel.ts?raw'
@@ -11,7 +12,9 @@ import {
   ABOUT_DOWNLOAD_LINE,
   ABOUT_KEYWORDS,
   ABOUT_OFFICIAL_THUMBPRINT,
+  ABOUT_OPEN_SOURCE,
   ABOUT_PARTNER_LINE,
+  borrowsAuthorName,
   buildLabel,
   formatThumbprint,
   officialThumbprintLine,
@@ -67,6 +70,14 @@ describe('constants', () => {
     }
   })
 
+  it('the open-source note names the same licence files as LICENSE.txt clause 6', () => {
+    const license = readFileSync(new URL('../../../LICENSE.txt', import.meta.url), 'utf8')
+    const clause = license.split('\n').find((l) => l.startsWith('6. '))
+    const files = clause?.match(/[A-Za-z.-]+\.(?:txt|html)/g) ?? []
+    expect(files.length).toBeGreaterThanOrEqual(2)
+    for (const f of files) expect(ABOUT_OPEN_SOURCE, f).toContain(f)
+  })
+
   it('imports only `sanovids` from package.json (never `build` or the whole file)', () => {
     const pkgImports = aboutSource.split('\n').filter((l) => /from\s+'[./]+package\.json'/.test(l))
     expect(pkgImports).toEqual(["import { sanovids } from '../../package.json'"])
@@ -79,6 +90,7 @@ const SIGS: (AppSignature | null)[] = [
   { status: 'signed', packaged: true },
   { status: 'other-signer', packaged: true, signer: 'Người lạ', thumbprint: OTHER },
   { status: 'other-signer', packaged: true },
+  { status: 'other-signer', packaged: true, signer: AUTHOR, thumbprint: OTHER },
   { status: 'tampered', packaged: true },
   { status: 'unsigned', packaged: true },
   { status: 'unsigned', packaged: false },
@@ -95,20 +107,38 @@ describe('signatureView', () => {
     expect(signatureView({ status: 'signed', packaged: true, signer: AUTHOR, thumbprint: PIN })).toEqual({
       tone: 'ok',
       title: 'Đã ký số bởi Nguyễn Giang Minh (Jame Steven) ✓',
-      detail: 'Bản gốc — chữ ký số còn nguyên vẹn.',
+      detail: 'Bản gốc — file chương trình và các thư viện DLL chính còn nguyên chữ ký số của tác giả.',
     })
     expect(signatureView({ status: 'signed', packaged: true, signer: 'SanoVids Thử Nghiệm A' }).title).toBe('Đã ký số bởi SanoVids Thử Nghiệm A ✓')
     expect(signatureView({ status: 'signed', packaged: true }).title).toBe(`Đã ký số bởi ${AUTHOR} ✓`)
   })
 
-  it('other-signer: warn, quotes the signer (even one with the author name)', () => {
+  it('other-signer: warn, quotes the signer', () => {
     expect(signatureView({ status: 'other-signer', packaged: true, signer: 'Người lạ', thumbprint: OTHER })).toEqual({
       tone: 'warn',
       title: 'Không phải bản gốc',
       detail: 'Bản này được ký bởi “Người lạ”, không phải tác giả Nguyễn Giang Minh (Jame Steven). Hãy tải lại bản chính thức ở trang tải về.',
     })
     expect(signatureView({ status: 'other-signer', packaged: true }).detail).toContain('“người khác”')
-    expect(signatureView({ status: 'other-signer', packaged: true, signer: AUTHOR, thumbprint: OTHER }).title).toBe('Không phải bản gốc')
+  })
+
+  it('other-signer with a certificate carrying the author name: a possible impostor (never "signed by X, not X")', () => {
+    const want = {
+      tone: 'warn',
+      title: 'Không phải bản gốc — có thể là bản giả mạo',
+      detail:
+        'Bản này được ký bằng một chứng chỉ mang tên “Nguyễn Giang Minh (Jame Steven)” nhưng KHÔNG phải chứng chỉ của tác giả (dấu vân tay khác với bản chính thức bên dưới). Hãy tải lại bản chính thức ở trang tải về và so dấu vân tay trước khi cài.',
+    }
+    expect(signatureView({ status: 'other-signer', packaged: true, signer: AUTHOR, thumbprint: OTHER })).toEqual(want)
+    expect(want.detail).not.toContain('không phải tác giả Nguyễn Giang Minh')
+    // NFD, other case, extra spaces, no accents, part of the name: still the impostor text
+    for (const signer of [AUTHOR.normalize('NFD'), AUTHOR.toUpperCase(), '  Nguyễn   Giang  Minh  (Jame  Steven) ', 'Nguyen Giang Minh', 'JAME STEVEN', 'Nguyễn Giang Minh Studio']) {
+      expect(borrowsAuthorName(signer), signer).toBe(true)
+      expect(signatureView({ status: 'other-signer', packaged: true, signer, thumbprint: OTHER }).title, signer).toBe('Không phải bản gốc — có thể là bản giả mạo')
+    }
+    for (const signer of [undefined, '', 'Người lạ', 'SanoVids Thử Nghiệm A', 'Sano Group', 'Minh Giang']) {
+      expect(borrowsAuthorName(signer), String(signer)).toBe(false)
+    }
   })
 
   it('tampered: warn', () => {

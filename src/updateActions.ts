@@ -5,7 +5,8 @@
 //                                   effects — a toast when a download is ready ("Đã tải xong SanoVids X.", once per
 //                                   version per page load) and the one-shot notice of this launch ("Đã cập nhật
 //                                   SanoVids lên X.", once per page load). Automatic checks never toast. A download
-//                                   refused for its signature toasts once per version (with "Trang tải về").
+//                                   refused (or not verifiable) for its signature toasts once per code + version, with
+//                                   "Xem" (the dialog), and that toast is dismissed as soon as the state moves on.
 //   openUpdateDialog()              "Cập nhật SanoVids" (never replaces an open “Nhập prompt”: a toast asks to close it).
 //   checkNow()                      "Kiểm tra ngay": check, then a toast with the result.
 //   requestInstall('pill'|'toast')  the pill opens the dialog; the toast's "Khởi động lại" installs at once when nothing
@@ -21,7 +22,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { flushAllPromptEditors } from './components/inspector/PromptEditor'
 import { pendingDownloadCount } from './lib/downloads'
-import { installBlockers, manualCheckToast, noticeToast, UPDATE_ERROR_TEXT, type InstallBusy } from './lib/updateModel'
+import { installBlockers, manualCheckToast, noticeToast, signatureToastKey, UPDATE_ERROR_TEXT, type InstallBusy } from './lib/updateModel'
 import { updatesClient, type UpdatesClient } from './lib/updates'
 import type { UpdateState } from './lib/updateTypes'
 import { flush, useSave } from './store/persist'
@@ -134,12 +135,22 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 
   // ---------------- effects ----------------
   const readyToasted = new Set<string>()
+  /** signatureToastKey()s already toasted (once each per page load). */
   const signatureToasted = new Set<string>()
+  /** The signature toast on screen (dismissed when the state moves on). */
+  let signatureToast: { id: number; key: string } | null = null
   const noticesShown = new Set<string>()
   let refs = 0
   let stopEffects: (() => void) | null = null
 
   function onState(state: UpdateState) {
+    // A signature toast on screen is old news as soon as the state moves on (a retry, a newer version found and
+    // downloaded, up to date…; a check in progress is not news yet): it never sits next to a genuine update's toasts.
+    const sigKey = signatureToastKey(state)
+    if (signatureToast && sigKey !== signatureToast.key && state.status !== 'checking') {
+      deps.dismissToast(signatureToast.id)
+      signatureToast = null
+    }
     // Download finished: say so once per version (not while the dialog already shows it).
     if (isInstallReady(state) && state.version && !readyToasted.has(state.version)) {
       readyToasted.add(state.version)
@@ -147,19 +158,20 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
         deps.toast(UPDATE_TOAST.ready(state.version), { tone: 'success', ms: 10_000, action: { label: 'Khởi động lại', run: () => void requestInstall('toast') } })
       }
     }
-    // A download (or the installer about to run) failed the signature check: main deleted it and installs nothing. Say
-    // so once per version, also when it ends a restart (not while the dialog already shows it).
-    if (state.status === 'error' && state.error?.code === 'signature') {
-      const key = state.version ?? ''
-      if (!signatureToasted.has(key)) {
-        signatureToasted.add(key)
-        if (deps.ui.dialogKind() !== 'update') {
-          deps.toast(state.error.message || UPDATE_ERROR_TEXT.signature, {
-            tone: 'error',
-            ms: 15_000,
-            action: { label: 'Trang tải về', run: () => void client.openReleasePage() },
-          })
-        }
+    // A download (or the installer about to run) failed the signature check, or could not be checked: nothing installs.
+    // Say so once per code + version, also when it ends a restart (not while the dialog already shows it). "Xem" opens
+    // the dialog (how to check an installer's certificate) rather than the download page itself, which may be the very
+    // page that served the refused file.
+    if (sigKey && state.error && !signatureToasted.has(sigKey)) {
+      signatureToasted.add(sigKey)
+      if (deps.ui.dialogKind() !== 'update') {
+        const code = state.error.code === 'signature-unverified' ? 'signature-unverified' : 'signature'
+        const id = deps.toast(state.error.message || UPDATE_ERROR_TEXT[code], {
+          tone: code === 'signature' ? 'error' : 'warning',
+          ms: 15_000,
+          action: { label: 'Xem', run: openUpdateDialog },
+        })
+        signatureToast = { id, key: sigKey }
       }
     }
     // News of this launch (updated / install failed): once per page load and per tab session.
@@ -373,8 +385,9 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     }
     if (ui().busy !== 'restarting') return // ended meanwhile by a pushed state
     if (!res.ok) {
-      // Refused for its signature: the pushed error state says why (toast above), "install on quit" is off too.
-      if (res.code === 'signature') endInstall()
+      // Refused (or not verifiable) for its signature: the pushed error state says why (toast above), "install on quit"
+      // is off too.
+      if (res.code === 'signature' || res.code === 'signature-unverified') endInstall()
       else failInstall()
       return
     }

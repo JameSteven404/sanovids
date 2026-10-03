@@ -13,6 +13,8 @@
 //   settingsStatusLine / settingsIntroTitle / autoDownloadNote   Settings → Cập nhật texts.
 //   manualCheckToast(state, result)           the toast after "Kiểm tra ngay" (automatic checks never toast).
 //   noticeToast(notice)                       the toast after a restart that installed (or failed to install) an update.
+//   isSignatureError(error) / signatureToastKey(state)   an update refused / not verifiable for its code signature.
+import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, formatThumbprint } from './aboutModel'
 import {
   UPDATE_NOTES_MAX,
   type UpdateError,
@@ -26,7 +28,17 @@ import {
 
 export const UPDATE_KINDS: readonly UpdateKind[] = ['installer', 'portable', 'dev']
 export const UPDATE_STATUSES: readonly UpdateStatus[] = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'error', 'unsupported']
-export const UPDATE_ERROR_CODES: readonly UpdateErrorCode[] = ['offline', 'no-release', 'rate-limited', 'checksum', 'signature', 'disk', 'install-failed', 'failed']
+export const UPDATE_ERROR_CODES: readonly UpdateErrorCode[] = [
+  'offline',
+  'no-release',
+  'rate-limited',
+  'checksum',
+  'signature',
+  'signature-unverified',
+  'disk',
+  'install-failed',
+  'failed',
+]
 
 export const KIND_LABEL: Record<UpdateKind, string> = { installer: 'Bản cài', portable: 'Bản portable', dev: 'Bản phát triển' }
 
@@ -47,8 +59,11 @@ export const UPDATE_ERROR_TEXT: Record<UpdateErrorCode, string> = {
   'no-release': 'Chưa tìm thấy bản cập nhật nào trên trang tải về.',
   'rate-limited': 'Máy chủ cập nhật đang bận.',
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
+  // Never "download it from the release page": that page may be the very place that served the refused file.
   signature:
-    'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
+    'Bản cập nhật này không mang chữ ký số đúng của tác giả hoặc không đúng phiên bản được báo (có thể là file giả mạo) nên SanoVids đã xoá nó, không cài gì. Đừng tự tải bản này về cài. Chỉ cài bộ cài có dấu vân tay chứng chỉ trùng với Cài đặt → Giới thiệu, hoặc hỏi tác giả.',
+  'signature-unverified':
+    'Chưa kiểm tra được chữ ký số của bản cập nhật (máy đang chặn việc kiểm tra hoặc kiểm tra quá lâu) nên SanoVids chưa cài bản này. Bấm “Thử lại” để kiểm tra lại.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
   failed: 'Không kiểm tra được bản cập nhật.',
@@ -56,6 +71,16 @@ export const UPDATE_ERROR_TEXT: Record<UpdateErrorCode, string> = {
 
 /** Texts every surface shares. */
 export const UPDATE_UNSUPPORTED_TEXT = 'Bản này không tự cập nhật.'
+
+/** The update was refused ('signature') or could not be verified ('signature-unverified') for its code signature. */
+export function isSignatureError(error: UpdateError | undefined): error is UpdateError & { code: 'signature' | 'signature-unverified' } {
+  return error?.code === 'signature' || error?.code === 'signature-unverified'
+}
+
+/** "code:version" of a signature error state (one toast each), null for any other state. */
+export function signatureToastKey(state: UpdateState): string | null {
+  return state.status === 'error' && isSignatureError(state.error) ? `${state.error.code}:${state.version ?? ''}` : null
+}
 
 // ---------------------------------------------------------------------------------------------
 // Validation of a received state
@@ -328,10 +353,15 @@ export interface UpdateDialogCtx {
 }
 
 export interface UpdateDialogView {
+  /**
+   * The head line instead of "Bản mới: X · phát hành …" (a version refused for its signature is never presented as a
+   * new version, and its release notes — written by whoever published that file — are not shown).
+   */
+  headline?: string
   statusText: string
   hint?: string
-  /** lines: a list (what is not finished); note: a paragraph under it. */
-  callout?: { title: string; lines: string[]; note?: string }
+  /** lines: a list (what is not finished); code: a monospace line (a certificate thumbprint); note: a paragraph under it. */
+  callout?: { title: string; lines: string[]; code?: string; note?: string }
   actions: UpdateDialogAction[]
   /** Replaces the primary button's label (with a spinner) while installing; every button is then disabled. */
   busyText?: string
@@ -357,6 +387,22 @@ const LATER_HINT = 'Chọn “Để sau” thì bản mới tự cài khi bạn 
 const SAFE_NOW =
   'Cập nhật ngay vẫn an toàn: video đang tạo vẫn chạy tiếp trên máy chủ và SanoVids theo dõi lại sau khi mở lại; video đang chờ sẽ được gửi sau đó. Không bị trừ credit hai lần.'
 
+/**
+ * How to recognise a genuine installer before installing one by hand. The download page may be the very place that
+ * served the refused file, and Windows shows "Unknown publisher" for the self-signed genuine installer and for an
+ * impostor alike: only the certificate thumbprint tells them apart.
+ */
+export const SIGNATURE_CHECK_CALLOUT = {
+  title: 'Trước khi tự cài một bộ cài SanoVids:',
+  lines: [
+    `Chuột phải file → Properties → Digital Signatures: người ký phải là ${ABOUT_AUTHOR}.`,
+    'Bấm Details → View Certificate → Details → Thumbprint: phải trùng dấu vân tay dưới đây (Windows có thể viết liền, chữ thường).',
+  ],
+  code: formatThumbprint(ABOUT_OFFICIAL_THUMBPRINT),
+  note: 'Cùng tên tác giả mà khác dấu vân tay là bản giả mạo: đừng cài, hãy báo cho tác giả.',
+} as const
+const SIGNATURE_RETRY_HINT = 'Nếu vẫn lỗi sau khi thử lại, có thể tải bộ cài ở trang tải về — nhớ kiểm tra chữ ký số trước khi cài.'
+
 /** "Đang tải về… 42% · 41 MB / 98 MB · 2,1 MB/giây" (unknown parts left out). */
 export function downloadLine(state: Pick<UpdateState, 'percent' | 'transferred' | 'total' | 'bytesPerSecond'>): string {
   let text = `Đang tải về… ${formatPercent(state.percent)}`
@@ -380,13 +426,26 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
     case 'none':
       return { ...base, statusText: `Bạn đang dùng bản mới nhất (${state.current}).`, actions: [CLOSE] }
     case 'error':
-      // A refused signature is never retried automatically: the way out is the download page (manual install).
+      // Refused for its signature: never retried automatically, its notes are not shown (they come from whoever
+      // published the refused file), and the download page is NOT the recommended way out — it may be the very page
+      // that served that file: the callout tells how to check an installer's certificate before installing it by hand.
       if (state.error?.code === 'signature') {
         return {
           ...base,
-          showNotes: !!state.version,
+          headline: state.version ? `Bản ${state.version} bị chặn — không phải bản cập nhật hợp lệ của tác giả` : undefined,
           statusText: state.error.message,
-          actions: [{ id: 'openPage', label: 'Mở trang tải về', primary: true, title: OPEN_PAGE_TITLE }, { id: 'retry', label: 'Thử lại' }, CLOSE],
+          callout: { ...SIGNATURE_CHECK_CALLOUT, lines: [...SIGNATURE_CHECK_CALLOUT.lines] },
+          actions: [{ id: 'openPage', label: 'Mở trang tải về', title: OPEN_PAGE_TITLE }, { id: 'retry', label: 'Thử lại' }, CLOSE],
+        }
+      }
+      // The check could not decide (blocked / too slow): nothing installed, "Thử lại" checks again.
+      if (state.error?.code === 'signature-unverified') {
+        return {
+          ...base,
+          headline: state.version ? `Bản ${state.version} chưa được cài — chưa kiểm tra được chữ ký số` : undefined,
+          statusText: state.error.message,
+          hint: SIGNATURE_RETRY_HINT,
+          actions: [{ id: 'retry', label: 'Thử lại', primary: true }, CLOSE],
         }
       }
       return {
@@ -501,10 +560,10 @@ export function autoDownloadNote(kind: UpdateKind): string | null {
   return kind === 'portable' ? 'Bản portable không tự cài — chỉ báo có bản mới.' : 'Chỉ có ở bản cài (Setup).'
 }
 
-/** "Xem chi tiết" is offered for these statuses (and for a known version refused for its signature: the dialog leads to the download page). */
+/** "Xem chi tiết" is offered for these statuses (and for a known version refused / not verified for its signature: the dialog explains what to do). */
 export const hasUpdateDetails = (s: UpdateState): boolean =>
   s.kind !== 'dev' &&
-  (s.status === 'available' || s.status === 'downloading' || s.status === 'ready' || (s.status === 'error' && s.error?.code === 'signature' && !!s.version))
+  (s.status === 'available' || s.status === 'downloading' || s.status === 'ready' || (s.status === 'error' && isSignatureError(s.error) && !!s.version))
 
 // ---------------------------------------------------------------------------------------------
 // Toasts
@@ -519,12 +578,17 @@ export interface ManualCheckToast {
   action?: 'restart' | 'open'
 }
 
+/** An error toast; "Xem" when the dialog explains it (a version refused / not verified for its signature). */
+function errorToast(state: UpdateState, text: string): ManualCheckToast {
+  return state.status === 'error' && isSignatureError(state.error) && hasUpdateDetails(state) ? { text, tone: 'error', action: 'open' } : { text, tone: 'error' }
+}
+
 /** The toast after "Kiểm tra ngay": `state` is the state read AFTER the check resolved. */
 export function manualCheckToast(state: UpdateState, result: UpdateResult): ManualCheckToast | null {
   if (!result.ok) {
     if (result.code === 'unsupported') return { text: UPDATE_UNSUPPORTED_TEXT, tone: 'info' }
     if (result.code === 'busy') return { text: result.message, tone: 'info' }
-    return { text: state.status === 'error' && state.error ? state.error.message : result.message, tone: 'error' }
+    return errorToast(state, state.status === 'error' && state.error ? state.error.message : result.message)
   }
   const v = state.version ?? ''
   switch (state.status) {
@@ -537,7 +601,7 @@ export function manualCheckToast(state: UpdateState, result: UpdateResult): Manu
     case 'ready':
       return { text: `Bản ${v} đã tải xong.`, tone: 'success', action: 'restart' }
     case 'error':
-      return { text: state.error?.message ?? UPDATE_ERROR_TEXT.failed, tone: 'error' }
+      return errorToast(state, state.error?.message ?? UPDATE_ERROR_TEXT.failed)
     case 'unsupported':
       return { text: UPDATE_UNSUPPORTED_TEXT, tone: 'info' }
     default:

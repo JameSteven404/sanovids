@@ -13,6 +13,7 @@ import {
   NOTES_CAP,
   PRIVATE_REPO,
   PUBLIC_REPO,
+  PUBLISHER_NAME_MISSING,
   PUBLISH_ENTRY,
   SIGNER_THUMBPRINT,
   SIGNING_CERT_FILE,
@@ -29,10 +30,14 @@ import {
   capText,
   certThumbprint,
   checkAppUpdateYml,
+  checkAsarIntegrity,
+  checkBuildFreshness,
   checkCertFile,
   checkFuseWire,
+  checkInstallerIdentity,
   checkLatestYml,
   checkPackagedIdentity,
+  checkRotation,
   checkSignatureVerdict,
   checkVersionInfo,
   compareAssets,
@@ -112,6 +117,17 @@ describe('versions', () => {
     ).toBe('0.5.1')
     expect(newestPublishedVersion([])).toBeNull()
     expect(newestPublishedVersion(null)).toBeNull()
+  })
+  it('with `below`, only versions strictly older count (the release users run before this one)', () => {
+    const list = [
+      { tag_name: 'v0.5.0', draft: false, prerelease: false },
+      { tag_name: 'v0.5.1', draft: false, prerelease: false },
+      { tag_name: 'v0.5.2', draft: true, prerelease: false },
+    ]
+    expect(newestPublishedVersion(list, '0.5.1')).toBe('0.5.0')
+    expect(newestPublishedVersion(list, '0.5.2')).toBe('0.5.1')
+    expect(newestPublishedVersion(list, '0.5.0')).toBeNull()
+    expect(newestPublishedVersion(list, null)).toBe('0.5.1')
   })
 })
 
@@ -319,9 +335,14 @@ describe('checkAppUpdateYml', () => {
     // compared after NFC: a decomposed "ễ" in the file is the same name
     expect(checkAppUpdateYml({ ...good, publisherName: [AUTHOR.normalize('NFD')] }, want)).toEqual([])
   })
-  it('publisherName is REQUIRED (the signed-update lock)', () => {
+  it('publisherName is REQUIRED (release configuration; the pinned verifier runs either way)', () => {
     const missing = checkAppUpdateYml(loadYaml(SIGNED_YML.replace(`publisherName:\n  - ${AUTHOR}\n`, '')), want)
-    expect(missing).toEqual(['app-update.yml thiếu publisherName — app sẽ không kiểm tra chữ ký số của bản cập nhật.'])
+    expect(missing).toEqual([PUBLISHER_NAME_MISSING])
+    expect(PUBLISHER_NAME_MISSING).toBe(
+      'app-update.yml thiếu publisherName — lớp kiểm tra thứ hai của electron-updater bị mất: bản build không đúng cấu hình phát hành (build.win.signtoolOptions.publisherName).',
+    )
+    // never claim the app stops checking update signatures without it: electron/updater.cjs overrides verifySignature
+    expect(PUBLISHER_NAME_MISSING).not.toMatch(/không kiểm tra chữ ký/)
     expect(checkAppUpdateYml({ ...good, publisherName: [] }, want)).toEqual(missing)
     expect(checkAppUpdateYml({ ...good, publisherName: null }, want)).toEqual(missing)
   })
@@ -376,6 +397,76 @@ describe('signed build checks', () => {
     expect(checkSignatureVerdict('Setup', null)).toHaveLength(1)
   })
 
+  it('checkSignatureVerdict with signer: signed by THE release certificate, not just any pin (rotation)', () => {
+    expect(checkSignatureVerdict('Setup', genuine, { signer: SIGNER_THUMBPRINT })).toEqual([])
+    expect(checkSignatureVerdict('Setup', genuine, { signer: SIGNER_THUMBPRINT.toLowerCase() })).toEqual([])
+    // pins = [OLD, NEW]: a file signed by the other pinned certificate is still the wrong one for this release
+    const otherPin = { ...genuine, thumbprint: TEST_PIN }
+    const p = checkSignatureVerdict('SanoVids.exe', otherPin, { signer: SIGNER_THUMBPRINT })
+    expect(p).toHaveLength(1)
+    expect(p[0]).toContain(TEST_PIN)
+    expect(p[0]).toContain('SIGNER_THUMBPRINT')
+    // both problems at once
+    expect(checkSignatureVerdict('SanoVids.exe', { ...otherPin, timestamped: false }, { signer: SIGNER_THUMBPRINT })).toHaveLength(2)
+    // timestamp: false leaves the timestamp to the caller (DLLs only warn)
+    expect(checkSignatureVerdict('ffmpeg.dll', { ...genuine, timestamped: false }, { timestamp: false })).toEqual([])
+  })
+
+  it('checkRotation: "ghim trước, ký sau" against the newest public release', () => {
+    const pkgWith = (signers) => ({ name: 'sanovids', version: '0.5.0', sanovids: { signers } })
+    expect(checkRotation({ prevVersion: null, prevPkg: null, signer: PIN }).level).toBe('ok')
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN]), signer: PIN })).toMatchObject({ level: 'ok' })
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN.toLowerCase()]), signer: PIN }).level).toBe('ok')
+    // step 2 of the rotation shipped: [OLD, NEW] is pinned, the new certificate may sign
+    expect(checkRotation({ prevVersion: '0.6.0', prevPkg: pkgWith([PIN, TEST_PIN]), signer: TEST_PIN }).level).toBe('ok')
+    // steps 2 and 3 merged: users on 0.5.0 pin only OLD and would refuse the update
+    const merged = checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN]), signer: TEST_PIN })
+    expect(merged.level).toBe('fail')
+    expect(merged.text).toContain('ghim trước, ký sau')
+    expect(merged.text).toContain(TEST_PIN)
+    expect(merged.text).toContain('v0.5.0')
+    // the previous package.json could not be read (tag not fetched): fail closed
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: null, signer: PIN })).toMatchObject({ level: 'fail' })
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: [], signer: PIN }).level).toBe('fail')
+    // a 0.5.x+ package.json without pins is wrong; before 0.5.0 there was no updater to refuse anything
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: { version: '0.5.0' }, signer: PIN }).level).toBe('fail')
+    expect(checkRotation({ prevVersion: '0.4.2', prevPkg: { version: '0.4.2' }, signer: PIN }).level).toBe('ok')
+    expect(checkRotation({ prevVersion: '0.5.0', prevPkg: pkgWith([PIN]), signer: 'nope' }).level).toBe('fail')
+  })
+
+  it('checkAsarIntegrity: exactly resources\\app.asar, SHA256, the header hash', () => {
+    const sha = 'cc718bbe00d3d903d3a843dc7bf1eb0bd231caa28347fd0ffcf880af7aefdaa3'
+    const res = (items) => JSON.stringify(items)
+    const good = res([{ file: 'resources\\app.asar', alg: 'SHA256', value: sha }])
+    expect(checkAsarIntegrity([good], sha)).toEqual([])
+    expect(checkAsarIntegrity([good], sha.toUpperCase())).toEqual([])
+    expect(checkAsarIntegrity([], sha)[0]).toMatch(/không mở trên mọi máy/)
+    expect(checkAsarIntegrity([good, good], sha)).toHaveLength(1)
+    expect(checkAsarIntegrity(['not json'], sha)).toHaveLength(1)
+    expect(checkAsarIntegrity([res([])], sha)).toHaveLength(1)
+    expect(checkAsarIntegrity([res([{ file: 'resources\\app.asar', alg: 'SHA256', value: sha }, { file: 'resources\\x.asar', alg: 'SHA256', value: sha }])], sha)).toHaveLength(1)
+    const stale = checkAsarIntegrity([good], 'a'.repeat(64))
+    expect(stale).toHaveLength(1)
+    expect(stale[0]).toMatch(/khác header app\.asar/)
+    expect(checkAsarIntegrity([res([{ file: 'resources\\other.asar', alg: 'SHA512', value: sha }])], sha)).toHaveLength(2)
+    expect(checkAsarIntegrity([good], 'xyz')[0]).toMatch(/Không tính được/)
+  })
+
+  it('checkBuildFreshness: win-unpacked must not be newer than the installers', () => {
+    const installers = [
+      { label: 'Setup', mtimeMs: 2000 },
+      { label: 'Portable', mtimeMs: 2100 },
+    ]
+    expect(checkBuildFreshness({ unpacked: [{ label: 'SanoVids.exe', mtimeMs: 1000 }, { label: 'app.asar', mtimeMs: 900 }], installers })).toEqual([])
+    expect(checkBuildFreshness({ unpacked: [{ label: 'SanoVids.exe', mtimeMs: 2000 }], installers })).toEqual([])
+    const late = checkBuildFreshness({ unpacked: [{ label: 'SanoVids.exe', mtimeMs: 2050 }], installers })
+    expect(late).toHaveLength(1)
+    expect(late[0]).toMatch(/^SanoVids\.exe trong win-unpacked mới hơn Setup/)
+    expect(checkBuildFreshness({ unpacked: [{ label: 'app.asar', mtimeMs: 9999 }], installers })).toHaveLength(2)
+    expect(checkBuildFreshness({ unpacked: [{ label: 'x', mtimeMs: NaN }], installers })).toEqual([])
+    expect(checkBuildFreshness({})).toEqual([])
+  })
+
   it('checkFuseWire: the exact wire on 0–7, index 8+ ignored', () => {
     const wire = { version: '1', ...EXPECTED_FUSE_WIRE, 8: 49 }
     expect(EXPECTED_FUSE_WIRE).toEqual({ 0: 48, 1: 48, 2: 48, 3: 48, 4: 49, 5: 49, 6: 48, 7: 48 })
@@ -426,6 +517,23 @@ describe('signed build checks', () => {
     expect(checkVersionInfo('Setup', null, expected)).toHaveLength(1)
   })
 
+  it('checkInstallerIdentity: the Setup is what installed apps accept as the update (updater-rules installerIdentityProblem)', () => {
+    const rules = require('../../electron/updater-rules.cjs')
+    const want = { productName: 'SanoVids', version: '0.5.0', size: rules.INSTALLER_MIN_BYTES, minBytes: rules.INSTALLER_MIN_BYTES }
+    const info = { productName: 'SanoVids', productVersion: '0.5.0' }
+    expect(checkInstallerIdentity('Setup', info, want)).toEqual([])
+    // the same decision the app makes on the downloaded file
+    expect(rules.installerIdentityProblem({ productName: 'SanoVids', productVersion: '0.5.0' }, { version: '0.5.0', current: '0.4.2', appName: 'SanoVids', size: want.size })).toBe('')
+    expect(checkInstallerIdentity('Setup', { ...info, productVersion: '0.5.0.0' }, want)).toEqual([
+      'Setup: ProductVersion là "0.5.0.0", cần "0.5.0" (mọi app đã cài sẽ từ chối bản cập nhật này).',
+    ])
+    expect(checkInstallerIdentity('Setup', { ...info, productName: 'SanoVidsSigT1' }, want)[0]).toMatch(/^Setup: ProductName là "SanoVidsSigT1", cần "SanoVids"/)
+    expect(checkInstallerIdentity('Setup', info, { ...want, size: want.minBytes - 1 })[0]).toMatch(/^Setup: chỉ \d+ byte, nhỏ hơn/)
+    expect(checkInstallerIdentity('Setup', info, { ...want, size: undefined })).toHaveLength(1)
+    expect(checkInstallerIdentity('Setup', { productName: null, productVersion: null }, want)).toHaveLength(2)
+    expect(checkInstallerIdentity('Setup', null, want)).toEqual(['Setup: không đọc được thông tin file (VersionInfo).'])
+  })
+
   it('checkCertFile: the public certificate is pinned and holds no key', () => {
     expect(certThumbprint(CERT)).toBe(PIN)
     expect(checkCertFile(CERT, [PIN])).toEqual([])
@@ -451,6 +559,8 @@ describe('release scripts (source guarantees)', () => {
     expect(src).toContain('/^publisherName:/m.test(feedText)')
     expect(src).toContain('!/^(token|private|channel):/m.test(feedText)')
     expect(src).not.toMatch(/token\|private\|publisherName/)
+    // publisherName is the second lock, not the thing that turns update signature checks on
+    expect(src).not.toMatch(/signed-update lock/)
     expect(src).toContain('`Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`')
     expect(`Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`).toBe(
       'Bộ cài được ký số bởi Nguyễn Giang Minh (Jame Steven) — vân tay chứng chỉ 7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED.',
@@ -468,6 +578,14 @@ describe('release scripts (source guarantees)', () => {
     expect(src).toContain("path.join(root, 'build', 'signing', SIGNING_CERT_FILE)")
     // (j) is a hard gate: it runs before the `if (failures) … exit(1)` that guards every gh write
     expect(src.indexOf('await inspectWindowsBuild(')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
+    // every file signed by THE release certificate, the rotation rule, the licences shipped next to the exe
+    expect(src).toContain('signer: SIGNER_THUMBPRINT,')
+    expect(src).toContain('checkRotation({ prevVersion, prevPkg, signer: SIGNER_THUMBPRINT })')
+    expect(src).toContain('newestPublishedVersion(publicReleases, V)')
+    expect(src).toContain("git(['show', `refs/tags/v${prevVersion}:package.json`])")
+    expect(src.indexOf('checkRotation({')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
+    expect(src).toContain("{ name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') }")
+    expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split(\'/\')) }')
   })
 })
 

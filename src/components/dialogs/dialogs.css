@@ -1268,7 +1268,10 @@
   user-select: text;
   -webkit-user-select: text;
 }
+/* Atomic: the thumbprint moves under its label as a whole instead of breaking halfway, so it reads in one line like the
+   Thumbprint field it is compared with (Properties → Digital Signatures); it still wraps if the column is narrower. */
 .dg-about-thumb .mono {
+  display: inline-block;
   color: var(--text-dim);
   font-size: 11px;
 }
@@ -1827,6 +1830,15 @@
 /* The paragraph under the list (reassurance / what to do if stuck): not one of the unfinished jobs. */
 .dg-upd-callout-note {
   margin: 6px 0 0;
+}
+/* A certificate thumbprint to compare: one selectable line (atomic, so it never breaks halfway). */
+.dg-upd-callout-code {
+  display: inline-block;
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
 }
 /* A work button while another action runs: still focusable (aria-disabled), looks disabled. */
 .btn.dg-upd-btn[aria-disabled='true'],

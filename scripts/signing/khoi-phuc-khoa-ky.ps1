@@ -13,7 +13,9 @@
   - Bạn chọn file .pfx (hộp chọn file, hoặc tham số -TepPfx) và tự gõ mật khẩu (không hiện khi gõ, không lưu).
   - Script mở thử file trước khi nhập: sai mật khẩu thì được gõ lại (tối đa 3 lần); file chứa chứng chỉ khác thì
     script hỏi lại trước khi nhập.
-  - Khoá được nhập ở dạng cho phép sao lưu lại (để chạy sao-luu-khoa-ky.ps1 trên máy này về sau).
+  - Mặc định khoá được nhập ở dạng KHÔNG cho xuất ra: vẫn ký bình thường, nhưng một chương trình chạy bằng tài
+    khoản của bạn không chép được khoá ra file bằng một lệnh. File .pfx bạn đang giữ chính là bản sao lưu.
+    Chỉ khi thật sự cần tạo bản sao lưu MỚI từ máy này (sao-luu-khoa-ky.ps1), thêm -ChoPhepSaoLuuLai.
   - Khoá đã có sẵn trên máy thì script không làm gì.
   Không cần quyền quản trị. Chỉ tài khoản Windows đang dùng mới ký được bằng khoá này.
 
@@ -21,6 +23,9 @@
 
 .PARAMETER TepPfx
   Đường dẫn file .pfx. Bỏ trống thì script mở hộp chọn file.
+
+.PARAMETER ChoPhepSaoLuuLai
+  Nhập khoá ở dạng cho phép xuất ra (để chạy sao-luu-khoa-ky.ps1 trên máy này về sau). Mặc định: không cho xuất.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\signing\khoi-phuc-khoa-ky.ps1
@@ -30,7 +35,8 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$TepPfx = ''
+  [string]$TepPfx = '',
+  [switch]$ChoPhepSaoLuuLai
 )
 
 Set-StrictMode -Version 2.0
@@ -135,7 +141,11 @@ function Invoke-Main {
       if (-not (Confirm-Continue 'Vẫn nhập chứng chỉ này vào máy?')) { Write-Host 'Đã huỷ, không thay đổi gì.'; return 2 }
     }
 
-    $imported = @(Import-PfxCertificate -FilePath $source -CertStoreLocation 'Cert:\CurrentUser\My' -Password $password -Exportable)
+    # Non-exportable unless asked: the offline .pfx already is the backup, and an exportable key can be copied out by
+    # any process of this user with one Export-PfxCertificate call.
+    $importArgs = @{ FilePath = $source; CertStoreLocation = 'Cert:\CurrentUser\My'; Password = $password }
+    if ($ChoPhepSaoLuuLai) { $importArgs['Exportable'] = $true }
+    $imported = @(Import-PfxCertificate @importArgs)
   } finally {
     if ($password) { $password.Dispose() }
   }
@@ -145,6 +155,8 @@ function Invoke-Main {
   if ($restored -and $restored.HasPrivateKey) {
     Show-Cert $restored ("Đã khôi phục vào Cert:\CurrentUser\My của tài khoản {0}:" -f $user)
     Write-Ok 'Khoá ký SanoVids đã sẵn sàng: electron-builder ký bản cài bằng dấu vân tay này.'
+    if ($ChoPhepSaoLuuLai) { Write-Warn 'Khoá được nhập ở dạng CHO PHÉP xuất ra (-ChoPhepSaoLuuLai): chỉ dùng trên máy riêng của tác giả, để tạo bản sao lưu mới.' }
+    else { Write-Host '  Khoá không cho xuất ra: muốn có thêm bản sao lưu, hãy chép file .pfx đang giữ (không cần máy này).' }
   } else {
     foreach ($c in $imported) {
       $fresh = Get-ChildItem -Path Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $c.Thumbprint } | Select-Object -First 1

@@ -173,7 +173,7 @@ function Invoke-Main {
     throw 'Chứng chỉ có trên máy nhưng không kèm khoá bí mật: không sao lưu được. Dùng máy đang giữ khoá ký.'
   }
   if ((Test-KeyExportable $cert) -eq $false) {
-    throw 'Khoá bí mật trên máy này được đánh dấu "không cho xuất": Windows không cho sao lưu. Khoá vẫn ký được bình thường.'
+    throw 'Khoá bí mật trên máy này được đánh dấu "không cho xuất" (khoi-phuc-khoa-ky.ps1 mặc định nhập như vậy): Windows không cho sao lưu từ máy này. Khoá vẫn ký được bình thường. Muốn thêm bản sao lưu, hãy chép file .pfx đang giữ.'
   }
 
   Write-Host ''
@@ -209,6 +209,8 @@ function Invoke-Main {
 
   Write-Host ("Sẽ tạo: {0}" -f $target)
   $password = Read-NewPassword
+  # Set right after Export-PfxCertificate succeeds: only a file THIS run created is ever deleted below.
+  $created = $false
   try {
     $exportArgs = @{
       Cert        = $cert
@@ -223,17 +225,25 @@ function Invoke-Main {
       $encryption = 'AES-256 / SHA-256'
     }
     [void](Export-PfxCertificate @exportArgs)
+    $created = $true
 
-    # Read the file back with the same password to prove the backup is usable (nothing is imported).
+    # Read the file back with the same password to prove the backup is usable (nothing is imported). A file that
+    # fails this check still holds the private key: it is deleted right away instead of being left on disk.
+    $problem = $null
     try {
       $data = Get-PfxData -FilePath $target -Password $password
       $thumbs = @($data.EndEntityCertificates | ForEach-Object { $_.Thumbprint.ToUpperInvariant() })
+      if ($thumbs -notcontains $PinnedThumbprint) { $problem = 'file vừa tạo không chứa đúng chứng chỉ ký SanoVids' }
     } catch {
-      Write-Warn ("Đã tạo file nhưng không mở lại được ({0}). Xoá file đó và chạy lại script." -f $_.Exception.Message)
-      return 1
+      $problem = ('không mở lại được file vừa tạo: {0}' -f $_.Exception.Message)
     }
-    if ($thumbs -notcontains $PinnedThumbprint) {
-      Write-Warn 'File vừa tạo không chứa đúng chứng chỉ ký SanoVids. Xoá file đó và chạy lại script.'
+    if ($problem) {
+      $removed = $false
+      if ($created) {
+        try { Remove-Item -LiteralPath $target -Force; $removed = -not (Test-Path -LiteralPath $target) } catch { $removed = $false }
+      }
+      if ($removed) { Write-Warn ("Sao lưu KHÔNG đạt ({0}). Đã xoá file vừa tạo; chạy lại script." -f $problem) }
+      else { Write-Warn ("Sao lưu KHÔNG đạt ({0}) và không xoá được file vừa tạo: hãy tự xoá {1} rồi chạy lại script." -f $problem, $target) }
       return 1
     }
   } finally {

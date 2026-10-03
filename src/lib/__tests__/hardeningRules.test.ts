@@ -1,6 +1,7 @@
-// electron/hardening-rules.cjs: the pure hardening rules of the desktop shell (refused command-line switches, DevTools
-// gate, download allowlist, default-session permissions, CSP of app://bdp, the 'app:signature' payload) — plus source
-// guarantees in main.cjs / preload.cjs that wire them in (docs/SIGNING.md "Bảo mật").
+// electron/hardening-rules.cjs: the pure hardening rules of the desktop shell (packaged detection, refused command-line
+// switches, stripped env, DevTools gate, download allowlist, default-session permissions, CSP of app://bdp, the
+// 'app:signature' payload and the self-check of the DLLs next to the exe) — plus source guarantees in main.cjs /
+// preload.cjs that wire them in (docs/SIGNING.md "Bảo mật").
 import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -8,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import hardeningSource from '../../../electron/hardening-rules.cjs?raw'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import pkgRaw from '../../../package.json?raw'
 
 type ProfileSource = 'env' | 'baked' | 'default'
 type SigStatus = 'signed' | 'unsigned' | 'other-signer' | 'tampered' | 'unknown'
@@ -21,8 +23,11 @@ interface Hardening {
   ALWAYS_REFUSED: readonly string[]
   REMOTE_DEBUG: readonly string[]
   REFUSED_DIALOG_TEXT: string
-  refusedSwitches(o: { isPackaged: boolean; profileSource: ProfileSource; hasSwitch: (name: string) => boolean }): string[]
-  allowDevTools(o: { isPackaged: boolean; profileSource: ProfileSource }): boolean
+  isPackagedApp(o: { isPackaged: unknown; appPath: unknown }): boolean
+  refusedSwitches(o: { isPackaged: boolean; profileSource: ProfileSource; testBuild?: boolean; hasSwitch: (name: string) => boolean }): string[]
+  allowDevTools(o: { isPackaged: boolean; profileSource: ProfileSource; testBuild?: boolean }): boolean
+  STRIPPED_ENV: readonly string[]
+  envToStrip(o: { isPackaged: boolean; env: unknown }): string[]
   DOWNLOAD_ALLOWED_EXT: readonly string[]
   downloadExtension(filename: unknown): string
   downloadAllowed(url: unknown, filename: unknown): boolean
@@ -33,6 +38,12 @@ interface Hardening {
   inlineScriptHashes(html: unknown): string[]
   contentSecurityPolicy(html: unknown): string
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
+  SIGNED_DLLS: readonly string[]
+  MICROSOFT_DLLS: readonly string[]
+  MICROSOFT_SIGNER: string
+  SELF_CHECK_FILES: readonly { name: string; kind: 'author' | 'microsoft' }[]
+  selfCheckFileState(kind: unknown, result: unknown, pins: unknown): 'ok' | 'bad' | 'unknown'
+  combineSelfCheck(exeVerdict: unknown, fileStates: unknown): Record<string, unknown>
 }
 
 const h = createRequire(import.meta.url)('../../../electron/hardening-rules.cjs') as Hardening
@@ -65,6 +76,16 @@ describe('hardening rules: command-line switches', () => {
       'disable-site-isolation-trials',
       'allow-running-insecure-content',
       'unsafely-treat-insecure-origin-as-secure',
+      'gpu-launcher',
+      'renderer-cmd-prefix',
+      'utility-cmd-prefix',
+      'browser-subprocess-path',
+      'disable-gpu-sandbox',
+      'single-process',
+      'in-process-gpu',
+      'disable-features',
+      'ssl-key-log-file',
+      'log-net-log',
     ])
     expect([...h.REMOTE_DEBUG]).toEqual(['remote-debugging-port', 'remote-debugging-pipe', 'remote-debugging-address', 'remote-allow-origins'])
     for (const n of ALL()) expect(n).toBe(n.toLowerCase())
@@ -76,7 +97,9 @@ describe('hardening rules: command-line switches', () => {
       asked++
       return true
     }
-    for (const profileSource of ['default', 'env', 'baked'] as const) expect(h.refusedSwitches({ isPackaged: false, profileSource, hasSwitch })).toEqual([])
+    for (const profileSource of ['default', 'env', 'baked'] as const) {
+      for (const testBuild of [false, true]) expect(h.refusedSwitches({ isPackaged: false, profileSource, testBuild, hasSwitch })).toEqual([])
+    }
     expect(asked).toBe(0)
   })
 
@@ -86,12 +109,24 @@ describe('hardening rules: command-line switches', () => {
     expect(h.refusedSwitches({ isPackaged: true, profileSource: 'default', hasSwitch: () => true })).toEqual(ALL())
   })
 
-  it('packaged, isolated test profile (env / baked): remote debugging allowed, the rest still refused', () => {
+  it('packaged TEST build on its isolated test profile (env / baked): remote debugging allowed, the rest still refused', () => {
     for (const profileSource of ['env', 'baked'] as const) {
-      for (const name of h.REMOTE_DEBUG) expect(h.refusedSwitches({ isPackaged: true, profileSource, hasSwitch: only(name) }), name).toEqual([])
-      for (const name of h.ALWAYS_REFUSED) expect(h.refusedSwitches({ isPackaged: true, profileSource, hasSwitch: only(name) }), name).toEqual([name])
-      expect(h.refusedSwitches({ isPackaged: true, profileSource, hasSwitch: () => true })).toEqual([...h.ALWAYS_REFUSED])
+      for (const name of h.REMOTE_DEBUG) expect(h.refusedSwitches({ isPackaged: true, profileSource, testBuild: true, hasSwitch: only(name) }), name).toEqual([])
+      for (const name of h.ALWAYS_REFUSED) expect(h.refusedSwitches({ isPackaged: true, profileSource, testBuild: true, hasSwitch: only(name) }), name).toEqual([name])
+      expect(h.refusedSwitches({ isPackaged: true, profileSource, testBuild: true, hasSwitch: () => true })).toEqual([...h.ALWAYS_REFUSED])
     }
+  })
+
+  it('official build: SANOVIDS_PROFILE_DIR alone never allows remote debugging (it only isolates the data)', () => {
+    for (const profileSource of ['default', 'env', 'baked'] as const) {
+      for (const testBuild of [false, undefined, 'true' as never, 1 as never]) {
+        for (const name of h.REMOTE_DEBUG) {
+          expect(h.refusedSwitches({ isPackaged: true, profileSource, testBuild, hasSwitch: only(name) }), `${profileSource} ${String(testBuild)} ${name}`).toEqual([name])
+        }
+      }
+    }
+    // A test build that somehow ran on the default profile (cannot happen: its baked profile is always used) stays locked.
+    expect(h.refusedSwitches({ isPackaged: true, profileSource: 'default', testBuild: true, hasSwitch: only('remote-debugging-port') })).toEqual(['remote-debugging-port'])
   })
 
   it('fails closed: a hasSwitch that throws counts the switch as present; odd input refuses everything', () => {
@@ -99,7 +134,10 @@ describe('hardening rules: command-line switches', () => {
       throw new Error('boom')
     }
     expect(h.refusedSwitches({ isPackaged: true, profileSource: 'default', hasSwitch: boom })).toEqual(ALL())
-    expect(h.refusedSwitches({ isPackaged: true, profileSource: 'env', hasSwitch: boom })).toEqual([...h.ALWAYS_REFUSED])
+    expect(h.refusedSwitches({ isPackaged: true, profileSource: 'env', hasSwitch: boom })).toEqual(ALL())
+    expect(h.refusedSwitches({ isPackaged: true, profileSource: 'env', testBuild: true, hasSwitch: boom })).toEqual([...h.ALWAYS_REFUSED])
+    // isPackaged anything but false → packaged (fail closed)
+    expect(h.refusedSwitches({ isPackaged: undefined as never, profileSource: 'default', hasSwitch: only('no-sandbox') })).toEqual(['no-sandbox'])
     const throwsFor = (bad: string) => (n: string) => {
       if (n === bad) throw new Error('x')
       return false
@@ -124,13 +162,45 @@ describe('hardening rules: command-line switches', () => {
     expect(h.REFUSED_DIALOG_TEXT).toBe(h.REFUSED_DIALOG_TEXT.normalize('NFC'))
   })
 
-  it('DevTools: from source or with an isolated test profile only', () => {
+  it('DevTools: from source, or in a test build on its isolated test profile only', () => {
     expect(h.allowDevTools({ isPackaged: false, profileSource: 'default' })).toBe(true)
     expect(h.allowDevTools({ isPackaged: false, profileSource: 'env' })).toBe(true)
-    expect(h.allowDevTools({ isPackaged: true, profileSource: 'env' })).toBe(true)
-    expect(h.allowDevTools({ isPackaged: true, profileSource: 'baked' })).toBe(true)
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'env', testBuild: true })).toBe(true)
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'baked', testBuild: true })).toBe(true)
+    // the official build: never, whatever the profile
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'env' })).toBe(false)
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'baked', testBuild: false })).toBe(false)
     expect(h.allowDevTools({ isPackaged: true, profileSource: 'default' })).toBe(false)
-    expect(h.allowDevTools({ isPackaged: true, profileSource: 'other' as ProfileSource })).toBe(false)
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'default', testBuild: true })).toBe(false)
+    expect(h.allowDevTools({ isPackaged: true, profileSource: 'other' as ProfileSource, testBuild: true })).toBe(false)
+    expect(h.allowDevTools({ isPackaged: undefined as never, profileSource: 'env' })).toBe(false)
+  })
+})
+
+describe('hardening rules: packaged detection and environment', () => {
+  it('packaged = app.isPackaged OR the app runs from an .asar (a renamed electron.exe stays packaged)', () => {
+    const asar = 'C:\\Users\\u\\AppData\\Local\\Programs\\SanoVids\\resources\\app.asar'
+    expect(h.isPackagedApp({ isPackaged: true, appPath: asar })).toBe(true)
+    // a copy of SanoVids.exe renamed electron.exe: Electron says isPackaged false, the app path is still app.asar
+    expect(h.isPackagedApp({ isPackaged: false, appPath: asar })).toBe(true)
+    expect(h.isPackagedApp({ isPackaged: false, appPath: asar.toUpperCase() })).toBe(true)
+    expect(h.isPackagedApp({ isPackaged: false, appPath: asar + '\\' })).toBe(true)
+    expect(h.isPackagedApp({ isPackaged: true, appPath: 'E:\\CANVAS TOOL' })).toBe(true)
+    // `electron .` from source
+    expect(h.isPackagedApp({ isPackaged: false, appPath: 'E:\\CANVAS TOOL' })).toBe(false)
+    expect(h.isPackagedApp({ isPackaged: false, appPath: 'E:\\x\\app.asar.bak' })).toBe(false)
+    expect(h.isPackagedApp({ isPackaged: false, appPath: undefined })).toBe(false)
+    expect(h.isPackagedApp({ isPackaged: 'yes', appPath: 'E:\\CANVAS TOOL' })).toBe(false)
+    expect(h.isPackagedApp(null as never)).toBe(false)
+  })
+
+  it('a packaged app drops SSLKEYLOGFILE (any spelling) from its environment; from source nothing', () => {
+    expect([...h.STRIPPED_ENV]).toEqual(['SSLKEYLOGFILE'])
+    expect(h.envToStrip({ isPackaged: true, env: { SSLKEYLOGFILE: 'C:\\k.txt', TEMP: 'x' } })).toEqual(['SSLKEYLOGFILE'])
+    expect(h.envToStrip({ isPackaged: true, env: { SslKeyLogFile: 'C:\\k.txt' } })).toEqual(['SslKeyLogFile'])
+    expect(h.envToStrip({ isPackaged: true, env: { TEMP: 'x' } })).toEqual([])
+    expect(h.envToStrip({ isPackaged: false, env: { SSLKEYLOGFILE: 'C:\\k.txt' } })).toEqual([])
+    expect(h.envToStrip({ isPackaged: true, env: null })).toEqual([])
   })
 })
 
@@ -170,10 +240,10 @@ describe('hardening rules: downloads', () => {
 })
 
 describe('hardening rules: default-session permissions', () => {
-  it('only clipboard writes, the folder picker API and full screen', () => {
-    expect([...h.DEFAULT_SESSION_PERMISSIONS]).toEqual(['clipboard-sanitized-write', 'fileSystem', 'fullscreen'])
+  it('only clipboard writes, the folder picker API, full screen and persistent storage', () => {
+    expect([...h.DEFAULT_SESSION_PERMISSIONS]).toEqual(['clipboard-sanitized-write', 'fileSystem', 'fullscreen', 'persistent-storage'])
     for (const p of h.DEFAULT_SESSION_PERMISSIONS) expect(h.permissionAllowed(p), p).toBe(true)
-    for (const p of ['media', 'geolocation', 'notifications', 'openExternal', 'clipboard-read', 'display-capture', 'hid', 'usb', 'serial', 'midi', 'pointerLock', 'FULLSCREEN', '', undefined, null, 7]) {
+    for (const p of ['media', 'geolocation', 'notifications', 'openExternal', 'clipboard-read', 'display-capture', 'hid', 'usb', 'serial', 'midi', 'pointerLock', 'storage-access', 'top-level-storage-access', 'FULLSCREEN', 'Persistent-Storage', '', undefined, null, 7]) {
       expect(h.permissionAllowed(p), String(p)).toBe(false)
     }
   })
@@ -261,6 +331,115 @@ describe("hardening rules: 'app:signature' payload", () => {
   })
 })
 
+describe('hardening rules: self-check of the DLLs next to the exe', () => {
+  const MS_D3D = '6ACE61BAE3F09F4DD2697806D73E022CBFE70EB4' // d3dcompiler_47.dll of Electron 44 (Microsoft Corporation)
+  const OTHER = '0123456789ABCDEF0123456789ABCDEF01234567'
+  const raw = (o: Record<string, unknown>) => ({
+    v: 1,
+    status: 0,
+    sigType: 'Authenticode',
+    thumbprint: MS_D3D,
+    signer: 'Microsoft Corporation',
+    tsThumbprint: 'AAAA' + '0'.repeat(36),
+    chainOk: true,
+    chainStatus: [],
+    chainLen: 3,
+    hresult: '0x00000000',
+    error: null,
+    ...o,
+  })
+  const ms = (o: Record<string, unknown>, pins: unknown = [PIN]) => h.selfCheckFileState('microsoft', { parsed: raw(o), verdict: { ok: false, status: 'other-signer' } }, pins)
+  const author = (verdict: Record<string, unknown> | null) => h.selfCheckFileState('author', { parsed: null, verdict }, [PIN])
+  const SIGNED = { ok: true, status: 'signed', reason: 'ok', thumbprint: PIN, signer: AUTHOR, timestamped: true }
+
+  it('lists the 4 author-signed DLLs (= package.json build.win.signExts) and Microsoft’s 2', () => {
+    const pkg = JSON.parse(pkgRaw) as { build: { win: { signExts: string[] } } }
+    expect([...h.SIGNED_DLLS]).toEqual(pkg.build.win.signExts)
+    expect([...h.MICROSOFT_DLLS]).toEqual(['d3dcompiler_47.dll', 'dxil.dll'])
+    expect(h.MICROSOFT_SIGNER).toBe('Microsoft Corporation')
+    expect(h.SELF_CHECK_FILES.map((f) => `${f.kind}:${f.name}`)).toEqual([
+      'author:ffmpeg.dll',
+      'author:vk_swiftshader.dll',
+      'author:vulkan-1.dll',
+      'author:dxcompiler.dll',
+      'microsoft:d3dcompiler_47.dll',
+      'microsoft:dxil.dll',
+    ])
+    expect(Object.isFrozen(h.SELF_CHECK_FILES)).toBe(true)
+  })
+
+  it('author DLL: the pinned verdict decides', () => {
+    expect(author(SIGNED)).toBe('ok')
+    for (const status of ['tampered', 'unsigned', 'other-signer']) expect(author({ ok: false, status }), status).toBe('bad')
+    for (const v of [{ ok: false, status: 'unknown', reason: 'verify-failed' }, { ok: false, status: 'unknown', reason: 'bad-chain' }, { ok: false, status: 'signed' }, null]) {
+      expect(author(v), JSON.stringify(v)).toBe('unknown')
+    }
+    expect(h.selfCheckFileState('author', undefined, [PIN])).toBe('unknown')
+  })
+
+  it('Microsoft DLL: valid and signed by Microsoft Corporation, never by us', () => {
+    expect(ms({})).toBe('ok')
+    expect(ms({ thumbprint: MS_D3D.toLowerCase() })).toBe('ok')
+    // signed again with OUR certificate (a pin), whatever the status
+    expect(ms({ thumbprint: PIN, signer: AUTHOR, status: 1, hresult: '0x800B0109' })).toBe('bad')
+    expect(ms({ thumbprint: PIN, status: 0 }, [PIN.toLowerCase()])).toBe('bad')
+    // NotSigned / HashMismatch / NotTrusted
+    expect(ms({ status: 2, sigType: 'None', thumbprint: null, signer: null, hresult: '0x800B0100' })).toBe('bad')
+    expect(ms({ status: 3, hresult: '0x80096010' })).toBe('bad')
+    expect(ms({ status: 4 })).toBe('bad')
+    // valid, but someone else's DLL; or a self-signed impostor named "Microsoft Corporation"
+    expect(ms({ thumbprint: OTHER, signer: 'Contoso Ltd' })).toBe('bad')
+    expect(ms({ thumbprint: OTHER, status: 1, hresult: '0x800B0109' })).toBe('bad')
+    // cannot decide: missing / unreadable file, catalog signature, revocation offline, odd output
+    expect(ms({ status: -1, error: 'System.IO.FileNotFoundException', thumbprint: null })).toBe('unknown')
+    expect(ms({ sigType: 'Catalog' })).toBe('unknown')
+    expect(ms({ status: 1, hresult: '0x80092013' })).toBe('unknown')
+    expect(ms({ status: 1, hresult: null })).toBe('unknown')
+    expect(ms({ status: 5 })).toBe('unknown')
+    expect(ms({ v: 2 })).toBe('unknown')
+    expect(ms({ thumbprint: 'nope' })).toBe('unknown')
+    expect(h.selfCheckFileState('microsoft', { parsed: null }, [PIN])).toBe('unknown')
+    expect(h.selfCheckFileState('other', { parsed: raw({}), verdict: SIGNED }, [PIN])).toBe('unknown')
+  })
+
+  it('combine: the exe decides unless signed; then a bad DLL → tampered, any other doubt → unknown', () => {
+    const ok = h.SELF_CHECK_FILES.map((f) => ({ name: f.name, state: 'ok' }))
+    expect(h.combineSelfCheck(SIGNED, ok)).toBe(SIGNED)
+    expect(h.combineSelfCheck(SIGNED, [])).toBe(SIGNED)
+    for (const exe of [
+      { ok: false, status: 'tampered', reason: 'hash-mismatch' },
+      { ok: false, status: 'other-signer', reason: 'other-signer', signer: AUTHOR, thumbprint: OTHER },
+      { ok: false, status: 'unsigned', reason: 'not-signed' },
+      { ok: false, status: 'unknown', reason: 'verify-failed' },
+      { ok: false, status: 'signed' },
+    ]) {
+      expect(h.combineSelfCheck(exe, [{ name: 'ffmpeg.dll', state: 'bad' }]), exe.status).toBe(exe)
+    }
+    const swapped = ok.map((f) => (f.name === 'ffmpeg.dll' ? { ...f, state: 'bad' } : f))
+    expect(h.combineSelfCheck(SIGNED, swapped)).toEqual({ ok: false, status: 'tampered', reason: 'hash-mismatch', timestamped: false, files: ['ffmpeg.dll'] })
+    const missing = ok.map((f) => (f.name === 'dxil.dll' ? { ...f, state: 'unknown' } : f))
+    expect(h.combineSelfCheck(SIGNED, missing)).toEqual({ ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false, files: ['dxil.dll'] })
+    // bad wins over unknown
+    expect(h.combineSelfCheck(SIGNED, [...missing, { name: 'vulkan-1.dll', state: 'bad' }])).toMatchObject({ status: 'tampered', files: ['vulkan-1.dll'] })
+    // odd input fails closed
+    expect(h.combineSelfCheck(SIGNED, [null, { name: 'x.dll', state: 'OK' }])).toMatchObject({ status: 'unknown', files: ['?', 'x.dll'] })
+    expect(h.combineSelfCheck(SIGNED, 'ok')).toMatchObject({ status: 'unknown' })
+    expect(h.combineSelfCheck(null, ok)).toEqual({ ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false })
+  })
+
+  it('the payload of a tampered DLL carries no signer / thumbprint (shown as "File của SanoVids đã bị thay đổi")', () => {
+    const v = h.combineSelfCheck(SIGNED, [{ name: 'ffmpeg.dll', state: 'bad' }])
+    expect(h.appSignaturePayload(v, { packaged: true })).toEqual({ status: 'tampered', packaged: true })
+    expect(h.appSignaturePayload(h.combineSelfCheck(SIGNED, [{ name: 'dxil.dll', state: 'unknown' }]), { packaged: true })).toEqual({ status: 'unknown', packaged: true })
+    expect(h.appSignaturePayload(h.combineSelfCheck(SIGNED, h.SELF_CHECK_FILES.map((f) => ({ name: f.name, state: 'ok' }))), { packaged: true })).toEqual({
+      status: 'signed',
+      packaged: true,
+      signer: AUTHOR,
+      thumbprint: PIN,
+    })
+  })
+})
+
 describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   const idx = (s: string) => {
     const i = mainSource.indexOf(s)
@@ -290,12 +469,33 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     }
     expect(mainSource).toContain("dialog.showErrorBox('SanoVids', hardening.REFUSED_DIALOG_TEXT)")
     expect(mainSource).toContain('hasSwitch: (n) => app.commandLine.hasSwitch(n)')
+    expect(mainSource).toContain(
+      'hardening.refusedSwitches({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD, hasSwitch: (n) => app.commandLine.hasSwitch(n) })',
+    )
     expect(idx('app.enableSandbox()')).toBeLessThan(idx('app.whenReady()'))
+  })
+
+  it('packaged = isPackagedApp (never app.isPackaged alone); test build = a baked test profile', () => {
+    expect(mainSource).toContain('const PACKAGED = hardening.isPackagedApp({ isPackaged: app.isPackaged, appPath: app.getAppPath() })')
+    // app.isPackaged appears only in comments and in that one definition
+    const code = mainSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code.split('app.isPackaged').length - 1).toBe(1)
+    expect(idx('const PACKAGED =')).toBeLessThan(idx('hardening.refusedSwitches('))
+    expect(mainSource).toContain("const TEST_BUILD = typeof bakedProfileDir === 'string' && bakedProfileDir !== ''")
+    expect(mainSource).toContain('baked: bakedProfileDir,')
+    expect([...mainSource.matchAll(/(?<!function )readBakedProfileDir\(\)/g)]).toHaveLength(1) // read once, reused
+  })
+
+  it('SSLKEYLOGFILE is dropped after the switch refusal and before anything else starts', () => {
+    const strip = idx('hardening.envToStrip({ isPackaged: PACKAGED, env: process.env })')
+    expect(mainSource).toContain('for (const name of hardening.envToStrip({ isPackaged: PACKAGED, env: process.env })) delete process.env[name]')
+    expect(strip).toBeGreaterThan(idx('process.exit(3)'))
+    for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(idx(later))
   })
 
   it('DevTools: devTools: DEVTOOLS on the 3 webPreferences, shortcuts only inside if (DEVTOOLS)', () => {
     expect(count('devTools: DEVTOOLS')).toBe(3)
-    expect(mainSource).toContain('const DEVTOOLS = hardening.allowDevTools({ isPackaged: app.isPackaged, profileSource: profile.source })')
+    expect(mainSource).toContain('const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })')
     const [start, end] = blockAt(idx('if (DEVTOOLS) {'))
     const toggles = [...mainSource.matchAll(/toggleDevTools|openDevTools/g)].map((m) => m.index!)
     expect(toggles.length).toBeGreaterThan(0)
@@ -308,9 +508,22 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(count("ipcMain.on('app:signature'")).toBe(0)
     expect(mainSource).toContain("ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))")
     expect(mainSource).toContain('setTimeout(() => void appSignature(), 3000)')
-    expect(mainSource).toContain('signature.checkFileSignature(process.execPath')
     expect(mainSource).toContain('hardening.appSignaturePayload(verdict, { packaged: true })')
+    expect(mainSource).toContain("computeAppSignature().catch(() => ({ status: 'unknown', packaged: PACKAGED }))")
+    expect(mainSource).toContain("if (!PACKAGED) return { status: 'unsigned', packaged: false }")
     expect(idx('registerAppBridge()')).toBeLessThan(idx('function registerAppBridge()'))
+  })
+
+  it('self-check covers the exe AND the DLLs next to it, in one PowerShell, combined by hardening-rules', () => {
+    const [start, end] = blockAt(idx('async function computeAppSignature()'))
+    const body = mainSource.slice(start, end)
+    expect(body).toContain('const companions = hardening.SELF_CHECK_FILES')
+    expect(body).toContain('signature.checkFilesSignature([process.execPath, ...companions.map((f) => path.join(dir, f.name))], { pins, log })')
+    expect(body).toContain('const dir = path.dirname(process.execPath)')
+    expect(body).toContain('hardening.selfCheckFileState(f.kind, results[i + 1], pins)')
+    expect(body).toContain('hardening.combineSelfCheck(results[0] && results[0].verdict, states)')
+    expect(body).not.toContain('checkFileSignature(')
+    expect(body.indexOf('combineSelfCheck')).toBeLessThan(body.indexOf('appSignaturePayload'))
   })
 
   it('window icon, downloads, permissions, webview / bluetooth, CSP', () => {

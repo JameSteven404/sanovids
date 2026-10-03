@@ -40,3 +40,8 @@ release/
 *.pfx
 *.p12
 *.pvk
+# …và các file khoá / mật khẩu do openssl tạo khi thử ký (chứng chỉ thử)
+*.key
+*.pem
+pw.txt
+*.pfx.txt
