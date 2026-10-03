@@ -6,7 +6,7 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
-## [0.5.0] — 2026-10-03 — Tự động cập nhật
+## [0.5.0] — 2026-10-03 — Tự động cập nhật, chữ ký số, icon mới
 
 ✨ **SanoVids tự cập nhật** (bản cài Setup)
 - Không phải tải và cài lại bằng tay mỗi lần có bản mới nữa. SanoVids tự tìm bản mới khi mở app và 4 giờ một lần, rồi **tải về trong nền**: bạn cứ làm việc bình thường. Thường chỉ tải phần thay đổi nên nhẹ hơn cả bộ cài.
@@ -17,14 +17,44 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 - Hộp **Cập nhật SanoVids** cho xem trước **Có gì mới**, dung lượng và tiến độ tải.
 - **Cài đặt → Cập nhật**: xem phiên bản đang dùng, lần kiểm tra gần nhất, nút **Kiểm tra ngay** và công tắc **Tự động tải bản cập nhật** (bật sẵn; tắt thì app chỉ báo có bản mới, bạn bấm để tải). Công tắc này khác với "Tự tải khi video xong" (tải video về máy).
 
+✨ **Chữ ký số của tác giả**
+- Mọi file `.exe` chính thức (Setup, Portable, app bên trong, trình gỡ cài đặt) được ký số bởi **Nguyễn Giang Minh (Jame Steven)**, kèm dấu thời gian. Dấu vân tay chứng chỉ: `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`.
+- Kiểm tra: chuột phải file → **Properties** → **Digital Signatures**. File không mang chữ ký này không phải bản gốc.
+- **Bản cập nhật chỉ được nhận khi mang đúng chữ ký đó.** File không có chữ ký, ký bởi người khác (kể cả trùng tên) hay đã bị sửa đều bị xoá, không cài; app báo lỗi và mời bạn tải bộ cài ở trang tải về.
+- Trang tải về có thêm file `SanoVids-NguyenGiangMinh.cer`: chứng chỉ công khai của tác giả (không chứa khoá), để kiểm tra chữ ký.
+
+✨ **Cài đặt → Giới thiệu**
+- Phiên bản và kiểu bản (bản cài / portable), tác giả **Nguyễn Giang Minh (Jame Steven)**, đồng hành **Sano Group**, bản quyền, giấy phép.
+- **Trạng thái chữ ký số** của chính app: "Đã ký số bởi Nguyễn Giang Minh (Jame Steven) ✓" khi là bản gốc, cảnh báo khi file bị sửa, ký bởi người khác hay không có chữ ký. Kèm dấu vân tay chứng chỉ và nút **Mở trang tải về**.
+- Tìm nhanh trong ô tìm kiếm của Cài đặt: "giới thiệu", "tác giả", "chữ ký số"…
+
+✨ **Icon mới**
+- Biểu tượng mới màu cam (chữ S nối dây) trên thanh tác vụ, Desktop, Start Menu, bộ cài và thanh trên cùng của app.
+
+🛠️ **Tác giả & giấy phép**
+- Tác giả: **Nguyễn Giang Minh (Jame Steven)** · Đồng hành: Sano Group. Windows ghi tên tác giả ở mục nhà phát hành (Cài đặt → Ứng dụng) và trong bản quyền của file (Properties → Details).
+- Bộ cài hiện trang **Giấy phép sử dụng** (bấm đồng ý để cài tiếp); file `LICENSE.txt` nằm trong thư mục cài đặt.
+
+🛠️ **Bảo mật**
+- SanoVids từ chối mở khi bị chạy kèm tham số gỡ lỗi hoặc tắt bảo mật (ví dụ `--remote-debugging-port`, `--inspect`, `--no-sandbox`) và báo lý do.
+- File của app bị sửa thì SanoVids không chạy (xem lưu ý bên dưới). Công cụ nhà phát triển (DevTools, F12) tắt trong bản cài.
+- Trang trong app chỉ chạy mã của chính SanoVids, chỉ tải về loại file app tạo ra (video, ảnh, `.txt`, `.zip`, `.json`) và không xin quyền vị trí, thông báo hay thiết bị.
+
+🛠️ **Trang tải về chuyển sang** [github.com/JameSteven404/sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases/latest): trang công khai, chỉ chứa file cài đặt và file dùng cho việc tự cập nhật. Mỗi lần kiểm tra, app chỉ gửi cho GitHub một mã cài đặt ngẫu nhiên, không gửi gì từ dự án của bạn.
+
 ⚠️ **Lần này phải cài tay 0.5.0 một lần**
 - Bản 0.4.2 trở về trước chưa biết tự cập nhật: tải `SanoVids-Setup-0.5.0.exe` và **cài tay 0.5.0 một lần**, cài đè lên bản cũ (đóng SanoVids trước; dự án và cài đặt giữ nguyên). Từ 0.5.0 trở đi các bản sau tự về.
 - **Portable chỉ báo có bản mới**: bản Portable không tự cài được. Khi có bản mới, app hiện **Bản mới …** trên thanh trên cùng và nút **Tải bản mới** mở trang tải về. Muốn tự cập nhật, hãy dùng bản Setup.
-- File `.exe` vẫn chưa có chữ ký số. Bản cập nhật chỉ tải qua HTTPS từ GitHub và được kiểm tra bằng mã SHA-512 ghi trong `latest.yml`; file sai mã bị bỏ, không bao giờ được cài.
+- Trước khi cài tay, kiểm tra chữ ký của `SanoVids-Setup-0.5.0.exe` (Properties → Digital Signatures: **Nguyễn Giang Minh (Jame Steven)**, đúng dấu vân tay ở trên). Từ 0.5.0, app tự kiểm tra chữ ký số và mã SHA-512 của mọi bản cập nhật, file sai bị bỏ, không bao giờ được cài.
 - Bản mới nào đổi phiên bản Electron (lõi của app) thì phải tải gần như cả bộ cài (khoảng 100 MB).
 - Đã cài **cho mọi người dùng** (thư mục `Program Files`)? Mỗi lần cập nhật Windows sẽ hỏi quyền quản trị (UAC), kể cả khi bản mới tự cài lúc tắt app: bấm **Có**. Cài kiểu "Only for me" (mặc định) thì không bị hỏi.
 
-🛠️ **Trang tải về chuyển sang** [github.com/JameSteven404/sanovids-releases](https://github.com/JameSteven404/sanovids-releases/releases/latest): trang công khai, chỉ chứa file cài đặt và file dùng cho việc tự cập nhật. Mỗi lần kiểm tra, app chỉ gửi cho GitHub một mã cài đặt ngẫu nhiên, không gửi gì từ dự án của bạn.
+⚠️ **"Windows protected your PC" / "Unknown publisher"**
+- Chứng chỉ ký là chứng chỉ tự ký của tác giả, nên SmartScreen có thể vẫn hiện **Windows protected your PC**: bấm **More info**, xem nhà phát hành rồi **Run anyway**. Máy chưa tin cậy chứng chỉ thì Windows ghi nhà phát hành là **Unknown publisher**: bình thường, miễn chữ ký đúng dấu vân tay.
+- Máy trong nhóm nội bộ có thể chạy script `tin-cay-chung-chi.ps1` (ở trang tải về) một lần để Windows hiện đúng tên **Nguyễn Giang Minh (Jame Steven)**. Không bắt buộc: SanoVids vẫn chạy và tự cập nhật bình thường.
+
+⚠️ **SanoVids không mở sau khi file bị sửa**
+- Phần mềm diệt virus "sửa" file, hay ai đó thay file trong thư mục cài, thì SanoVids không mở nữa. Khi đó tải bộ cài ở trang tải về rồi **cài lại** (cài đè; dự án và cài đặt giữ nguyên).
 
 ## [0.4.2] — 2026-10-02 — Dây nối chạm đúng tâm chấm tròn
 

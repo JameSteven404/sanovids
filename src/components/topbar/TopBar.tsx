@@ -1,6 +1,5 @@
 import {
   Bug,
-  Clapperboard,
   Download,
   FileInput,
   FolderOpen,
@@ -37,6 +36,7 @@ import { flush, useSave } from '../../store/persist'
 import { redo, undo, useProject } from '../../store/project'
 import { useActiveCount, useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { Logo } from '../common/Logo'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from './CreditPill'
 import './topbar.css'
@@ -63,7 +63,7 @@ export function TopBar() {
       <div className="tb-left">
         <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
           <span className="tb-logo" aria-hidden="true">
-            <Clapperboard size={14} />
+            <Logo size={24} />
           </span>
           <span className="tb-brand-text">SanoVids</span>
         </div>

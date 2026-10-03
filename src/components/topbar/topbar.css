@@ -104,16 +104,17 @@
 .tb-logo {
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: 5.25px; /* 22 %, the app icon's corner */
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(160deg, var(--accent-strong), var(--accent));
-  color: var(--on-accent);
+  flex: none;
+  /* Brand colours (base.css --brand-* tokens), fixed in both themes: the app icon's plate and ink. The light theme's
+     accent tokens are a deeper orange with WHITE ink, which would turn the mark into a low-contrast white S. */
+  background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
+  color: var(--brand-ink);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 12%, transparent), var(--shadow-sm);
 }
-.tb .tb-logo .lucide {
-  stroke-width: 2.2px;
+.tb-logo svg {
+  display: block;
 }
 .tb-brand-text {
   font-family: var(--font-display);

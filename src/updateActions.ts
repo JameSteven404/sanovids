@@ -4,7 +4,8 @@
 //   startUpdates(): () => void      ref-counted, called once from App's Shell: connects lib/updates and starts the
 //                                   effects — a toast when a download is ready ("Đã tải xong SanoVids X.", once per
 //                                   version per page load) and the one-shot notice of this launch ("Đã cập nhật
-//                                   SanoVids lên X.", once per page load). Automatic checks never toast.
+//                                   SanoVids lên X.", once per page load). Automatic checks never toast. A download
+//                                   refused for its signature toasts once per version (with "Trang tải về").
 //   openUpdateDialog()              "Cập nhật SanoVids" (never replaces an open “Nhập prompt”: a toast asks to close it).
 //   checkNow()                      "Kiểm tra ngay": check, then a toast with the result.
 //   requestInstall('pill'|'toast')  the pill opens the dialog; the toast's "Khởi động lại" installs at once when nothing
@@ -20,7 +21,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { flushAllPromptEditors } from './components/inspector/PromptEditor'
 import { pendingDownloadCount } from './lib/downloads'
-import { installBlockers, manualCheckToast, noticeToast, type InstallBusy } from './lib/updateModel'
+import { installBlockers, manualCheckToast, noticeToast, UPDATE_ERROR_TEXT, type InstallBusy } from './lib/updateModel'
 import { updatesClient, type UpdatesClient } from './lib/updates'
 import type { UpdateState } from './lib/updateTypes'
 import { flush, useSave } from './store/persist'
@@ -133,6 +134,7 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 
   // ---------------- effects ----------------
   const readyToasted = new Set<string>()
+  const signatureToasted = new Set<string>()
   const noticesShown = new Set<string>()
   let refs = 0
   let stopEffects: (() => void) | null = null
@@ -143,6 +145,21 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       readyToasted.add(state.version)
       if (deps.ui.dialogKind() !== 'update' && !ui().busy) {
         deps.toast(UPDATE_TOAST.ready(state.version), { tone: 'success', ms: 10_000, action: { label: 'Khởi động lại', run: () => void requestInstall('toast') } })
+      }
+    }
+    // A download (or the installer about to run) failed the signature check: main deleted it and installs nothing. Say
+    // so once per version, also when it ends a restart (not while the dialog already shows it).
+    if (state.status === 'error' && state.error?.code === 'signature') {
+      const key = state.version ?? ''
+      if (!signatureToasted.has(key)) {
+        signatureToasted.add(key)
+        if (deps.ui.dialogKind() !== 'update') {
+          deps.toast(state.error.message || UPDATE_ERROR_TEXT.signature, {
+            tone: 'error',
+            ms: 15_000,
+            action: { label: 'Trang tải về', run: () => void client.openReleasePage() },
+          })
+        }
       }
     }
     // News of this launch (updated / install failed): once per page load and per tab session.
@@ -348,7 +365,7 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     setBusy('restarting')
     runs.holdNewSubmits(true)
     hadInstallError = current().error?.code === 'install-failed'
-    let res: { ok: boolean }
+    let res: { ok: boolean; code?: string }
     try {
       res = await client.install()
     } catch {
@@ -356,7 +373,9 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     }
     if (ui().busy !== 'restarting') return // ended meanwhile by a pushed state
     if (!res.ok) {
-      failInstall()
+      // Refused for its signature: the pushed error state says why (toast above), "install on quit" is off too.
+      if (res.code === 'signature') endInstall()
+      else failInstall()
       return
     }
     // Still alive long after main said it would quit: the installer did not start.

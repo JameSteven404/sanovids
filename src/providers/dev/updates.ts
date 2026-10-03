@@ -14,7 +14,7 @@
 //                                     'unsupported'), release / progress / error / last check / notice dropped.
 //   devUpdates.setNextCheck(o)        what the next check finds: 'none' | 'available' | 'offline' | 'no-release'.
 //   devUpdates.setDraft(d)            running version / new version / release notes used by the next "available".
-//   devUpdates.announce() / runDownload() / markReady() / failNetwork() / markNone()   one-click states.
+//   devUpdates.announce() / runDownload() / markReady() / failNetwork() / failSignature() / markNone()   one-click states.
 //   devUpdates.reset()                back to the initial state (timers stopped; the auto-download pref is kept).
 //   createDevUpdatesBridge(opts)      a separate instance (tests).
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
@@ -173,6 +173,11 @@ export interface DevUpdatesSim extends DesktopUpdatesBridge {
   markReady(): void
   /** "Lỗi mạng": status 'error' (offline). */
   failNetwork(): void
+  /**
+   * "Lỗi chữ ký số": the downloaded update of the draft's new version was refused (not signed by a pinned
+   * certificate): status 'error', code 'signature'. "Thử lại" downloads again, as in main.
+   */
+  failSignature(): void
   /** "Không có bản mới". */
   markNone(): void
   reset(): void
@@ -398,6 +403,14 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
       setState({ ...without(s, PROGRESS_KEYS), status: 'error', error: { code: 'offline', message: UPDATE_ERROR_TEXT.offline }, lastCheck: now() })
     },
 
+    failSignature: () => {
+      stopTimers()
+      ensureUpdatable()
+      const s = get().state
+      const base = withRelease(without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), draftInfo())
+      setState({ ...base, status: 'error', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature }, lastCheck: now() })
+    },
+
     markNone: () => {
       stopTimers()
       ensureUpdatable()
@@ -432,6 +445,7 @@ export const devUpdates = {
   runDownload: () => devUpdatesBridge().runDownload(),
   markReady: () => devUpdatesBridge().markReady(),
   failNetwork: () => devUpdatesBridge().failNetwork(),
+  failSignature: () => devUpdatesBridge().failSignature(),
   markNone: () => devUpdatesBridge().markNone(),
   reset: () => devUpdatesBridge().reset(),
 }

@@ -1,6 +1,10 @@
 // Publishes the build in release/ as GitHub releases, in two repos:
-//   1. private JameSteven404/sanovids           source repo: both installers (the tag vX.Y.Z must already be pushed)
-//   2. public  JameSteven404/sanovids-releases  the auto-update feed: Setup, Setup blockmap, latest.yml, Portable
+//   1. private JameSteven404/sanovids           source repo: both installers + the public signing certificate (the tag
+//                                               vX.Y.Z must already be pushed)
+//   2. public  JameSteven404/sanovids-releases  the auto-update feed: Setup, Setup blockmap, latest.yml, Portable,
+//                                               SanoVids-NguyenGiangMinh.cer (build/signing/, public part only)
+// Every installer must be signed by a pinned certificate (package.json sanovids.signers) with a timestamp: check (j)
+// runs scripts/buildInspect.mjs (signatures, VersionInfo, fuses, app-update.yml publisherName) and blocks on any ✗.
 // Usage:
 //   npm run release:check    (= --dry-run)  read-only: every check, both release notes, the exact plan (gh argv)
 //   npm run release:publish                 checks, then draft → upload → verify → publish (private first, public LAST)
@@ -15,10 +19,15 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
+import { inspectAppUpdateYml, inspectWindowsBuild } from './buildInspect.mjs'
 import {
+  AUTHOR,
+  COPYRIGHT_BUILD,
   PRIVATE_REPO,
   PUBLIC_REPO,
   PUBLISH_ENTRY,
+  SIGNER_THUMBPRINT,
+  SIGNING_CERT_FILE,
   asarDataOffset,
   asarDependencyProblems,
   asarEntry,
@@ -26,8 +35,9 @@ import {
   asarHeaderBytes,
   assetsFor,
   buildReleaseNotes,
-  checkAppUpdateYml,
+  checkCertFile,
   checkLatestYml,
+  checkPackagedIdentity,
   compareAssets,
   compareVersions,
   extractChangelogSection,
@@ -38,6 +48,7 @@ import {
   ghPublishArgs,
   ghUploadArgs,
   newestPublishedVersion,
+  offlineEnvSet,
   peeledTagSha,
   planTarget,
   readAsarHeader,
@@ -63,6 +74,18 @@ const exists = (p) => {
 }
 const short = (sha) => (sha ? String(sha).slice(0, 7) : '—')
 const size = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
+/** Public part of the signing certificate, uploaded with every release (never a .pfx: checkCertFile refuses keys). */
+const certPath = path.join(root, 'build', 'signing', SIGNING_CERT_FILE)
+/** Files pushed BY HAND to the public repo's main branch (README, licence, certificate, trust script). */
+const releasesRepoDir = path.join(root, 'scripts', 'releases-repo')
+/** What a signed release must carry, from the repo's package.json (src/lib/__tests__/buildConfig.test.ts pins it). */
+const EXPECT = {
+  pins: Array.isArray(pkg.sanovids?.signers) ? pkg.sanovids.signers : [],
+  author: typeof pkg.author === 'string' ? pkg.author : pkg.author?.name,
+  copyright: pkg.build?.copyright,
+  publisherName: pkg.build?.win?.signtoolOptions?.publisherName,
+}
+const EXE_NAME = `${pkg.build?.executableName ?? pkg.productName ?? 'SanoVids'}.exe`
 
 // ───────────────────────────── checklist ─────────────────────────────
 
@@ -105,6 +128,12 @@ function readReleases(repo) {
 function sameJson(a, b) {
   const norm = (o) => JSON.stringify(Object.keys(o ?? {}).sort().reduce((acc, k) => ({ ...acc, [k]: o[k] }), {}))
   return norm(a) === norm(b)
+}
+
+// ───────────────────────────── environment ─────────────────────────────
+
+if (offlineEnvSet(process.env)) {
+  fail('Môi trường', 'Biến ELECTRON_BUILDER_OFFLINE đang bật: bản build làm trong môi trường này có thể đã ký số KHÔNG có dấu thời gian. Xoá biến đó, build lại (npm run dist:win) rồi chạy lại.')
 }
 
 // ───────────────────────────── (a) CHANGELOG ─────────────────────────────
@@ -165,9 +194,11 @@ const paths = {
   [FILES.portable]: exists(path.join(releaseDir, FILES.portable)) ? path.join(releaseDir, FILES.portable) : null,
   [FILES.blockmap]: pick(FILES.blockmap),
   [FILES.latestYml]: pick(FILES.latestYml),
+  [SIGNING_CERT_FILE]: exists(certPath) ? certPath : null,
 }
 for (const [name, p] of Object.entries(paths)) {
   if (p) ok('File', `${rel(p)} (${size(fs.statSync(p).size)})`)
+  else if (name === SIGNING_CERT_FILE) fail('File', `Thiếu ${rel(certPath)} (chứng chỉ công khai, đăng kèm mỗi bản; xem docs/SIGNING.md).`)
   else fail('File', `Thiếu ${name} trong release/ (hoặc release/_build/). Chạy npm run dist:win.`)
 }
 console.log(`Đang tính mã kiểm tra các file ${V}…`)
@@ -215,15 +246,12 @@ const resourcesDir = [path.join(buildDir, 'win-unpacked', 'resources'), path.joi
 )
 if (!resourcesDir) fail('Nguồn cập nhật', 'Không thấy win-unpacked/resources/app-update.yml trong release/_build. Chạy npm run dist:win.')
 else {
-  let feed = null
-  try {
-    feed = loadYaml(fs.readFileSync(path.join(resourcesDir, 'app-update.yml'), 'utf8'))
-  } catch {
-    feed = null
+  // public feed, no token / private / channel, publisherName REQUIRED and byte-exact (releaseLib.checkAppUpdateYml)
+  const feedResults = inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName)
+  for (const r of feedResults) {
+    if (r.level === 'fail') fail('Nguồn cập nhật', `${r.text} Không được đăng bản này: sửa package.json rồi build lại.`)
+    else ok('Nguồn cập nhật', `app-update.yml trỏ vào ${PUBLIC_REPO} (công khai, không token), publisherName "${EXPECT.publisherName}"`)
   }
-  const problems = checkAppUpdateYml(feed)
-  for (const p of problems) fail('Nguồn cập nhật', `${p} Đăng bản này thì máy người dùng sẽ KHÔNG BAO GIỜ nhận được bản sau.`)
-  if (!problems.length) ok('Nguồn cập nhật', `app-update.yml trỏ vào ${PUBLIC_REPO} (công khai, không token)`)
 }
 
 // ───────────────────────────── (g) app.asar ─────────────────────────────
@@ -238,9 +266,18 @@ if (asarPath && exists(asarPath)) {
     const headBuf = Buffer.alloc(asarHeaderBytes(prefix))
     fs.readSync(fd, headBuf, 0, headBuf.length, 0)
     const header = readAsarHeader(headBuf)
-    for (const p of ['electron/updater.cjs', 'electron/updater-rules.cjs', 'node_modules/electron-updater/package.json']) {
+    const required = [
+      'electron/main.cjs',
+      'electron/preload.cjs',
+      'electron/updater.cjs',
+      'electron/updater-rules.cjs',
+      'electron/signature.cjs',
+      'electron/hardening-rules.cjs',
+      'node_modules/electron-updater/package.json',
+    ]
+    for (const p of required) {
       if (asarHas(header, p)) ok('app.asar', `Có ${p}`)
-      else fail('app.asar', `Thiếu ${p}: bản build này không tự cập nhật được.`)
+      else fail('app.asar', `Thiếu ${p}: bản build này không chạy / không tự cập nhật / không kiểm tra chữ ký số được.`)
     }
     /** A JSON file inside the archive (or its .unpacked folder), or null. */
     const readAsarJson = (p) => {
@@ -261,13 +298,9 @@ if (asarPath && exists(asarPath)) {
     if (!entry || entry.unpacked || typeof entry.size !== 'number') fail('app.asar', 'Không đọc được package.json trong app.asar.')
     else {
       const inner = readAsarJson('package.json')
-      const bad = []
-      if (inner.name !== 'sanovids') bad.push(`name "${inner.name}"`)
-      if (inner.productName !== 'SanoVids') bad.push(`productName "${inner.productName}"`)
-      if (inner.version !== V) bad.push(`version "${inner.version}"`)
-      if ('sanovidsTestProfileDir' in inner) bad.push('có sanovidsTestProfileDir (bản build thử nghiệm!)')
-      if (bad.length) fail('app.asar', `package.json trong app không phải bản phát hành ${V}: ${bad.join(', ')}.`)
-      else ok('app.asar', `package.json trong app: sanovids / SanoVids / ${V}`)
+      const bad = checkPackagedIdentity(inner, pkg)
+      if (bad.length) fail('app.asar', `package.json trong app không phải bản phát hành ${V}: ${bad.join('; ')}.`)
+      else ok('app.asar', `package.json trong app: ${inner.name} / ${inner.productName} / ${V}, tác giả ${AUTHOR}, ${inner.sanovids.signers.length} vân tay chứng chỉ`)
     }
   } catch (e) {
     fail('app.asar', `Không đọc được app.asar (${e?.message ?? e}).`)
@@ -286,6 +319,20 @@ if (publishList.some((p) => p && typeof p === 'object' && ('token' in p || 'priv
 if (pkg.scripts && Object.prototype.hasOwnProperty.call(pkg.scripts, 'release')) {
   fail('package.json', 'Có script tên "release": electron-builder sẽ tự đăng bản khi chạy nó. Đổi tên script đó.')
 }
+if (EXPECT.author === AUTHOR && EXPECT.publisherName === AUTHOR && EXPECT.copyright === COPYRIGHT_BUILD) {
+  ok('package.json', `Tác giả, publisherName và copyright: ${AUTHOR}`)
+} else {
+  fail('package.json', `author.name, build.win.signtoolOptions.publisherName phải là "${AUTHOR}" và build.copyright là "${COPYRIGHT_BUILD}".`)
+}
+const certSha1 = String(pkg.build?.win?.signtoolOptions?.certificateSha1 ?? '').toUpperCase()
+const pinsUpper = EXPECT.pins.map((x) => String(x).toUpperCase())
+if (!EXPECT.pins.length) fail('package.json', 'Thiếu sanovids.signers (vân tay chứng chỉ được phép ký bản cập nhật).')
+else if (certSha1 !== SIGNER_THUMBPRINT || !pinsUpper.includes(SIGNER_THUMBPRINT)) {
+  fail(
+    'package.json',
+    `Chứng chỉ ký (build.win.signtoolOptions.certificateSha1 = ${certSha1 || '—'}) phải là ${SIGNER_THUMBPRINT} (SIGNER_THUMBPRINT trong scripts/releaseLib.mjs, ghi trong ghi chú phát hành) và nằm trong sanovids.signers.`,
+  )
+} else ok('package.json', `Ký bằng chứng chỉ ${SIGNER_THUMBPRINT.slice(0, 8)}…, có trong sanovids.signers (${EXPECT.pins.length} vân tay)`)
 
 // ───────────────────────────── (i) GitHub ─────────────────────────────
 
@@ -324,6 +371,59 @@ else {
   }
   privateReleases = readReleases(PRIVATE_REPO)
   if (!privateReleases) fail('GitHub', `Không đọc được Releases của ${PRIVATE_REPO}.`)
+}
+
+// ───────────────────────────── (j) signatures (hard fail) ─────────────────────────────
+
+if (paths[SIGNING_CERT_FILE]) {
+  const problems = checkCertFile(fs.readFileSync(paths[SIGNING_CERT_FILE]), EXPECT.pins)
+  for (const p of problems) fail('Chữ ký số', p)
+  if (!problems.length) ok('Chữ ký số', `${SIGNING_CERT_FILE}: chứng chỉ công khai, vân tay nằm trong sanovids.signers`)
+}
+const unpackedDir = resourcesDir ? path.dirname(resourcesDir) : null
+if (!paths[FILES.setup] || !paths[FILES.portable] || !unpackedDir) {
+  fail('Chữ ký số', 'Không kiểm tra được chữ ký số vì thiếu file Setup / Portable / win-unpacked.')
+} else {
+  console.log('Đang kiểm tra chữ ký số, thông tin file và fuse…')
+  const inspected = await inspectWindowsBuild({
+    setupPath: paths[FILES.setup],
+    portablePath: paths[FILES.portable],
+    unpackedDir,
+    exeName: EXE_NAME,
+    expect: EXPECT,
+    feed: false, // app-update.yml: group (f)
+  })
+  for (const r of inspected) results.push({ ...r, group: r.group === 'Chữ ký số' ? r.group : `Chữ ký số · ${r.group}` })
+}
+
+// ───────────────────────────── public repo files (pushed by hand, warn only) ─────────────────────────────
+
+{
+  const same = (a, b) => {
+    try {
+      return fs.readFileSync(a).equals(fs.readFileSync(b))
+    } catch {
+      return false
+    }
+  }
+  const checks = [
+    { name: 'README.md' },
+    { name: 'LICENSE.txt', twin: path.join(root, 'LICENSE.txt') },
+    { name: SIGNING_CERT_FILE, twin: certPath },
+    { name: 'tin-cay-chung-chi.ps1', twin: path.join(root, 'scripts', 'signing', 'tin-cay-chung-chi.ps1') },
+  ]
+  let missing = 0
+  for (const c of checks) {
+    const p = path.join(releasesRepoDir, c.name)
+    if (!exists(p)) {
+      missing += 1
+      warn('Repo công khai', `Thiếu ${rel(p)} (file này đẩy tay lên nhánh main của ${PUBLIC_REPO}).`)
+    } else if (c.twin && exists(c.twin) && !same(p, c.twin)) {
+      missing += 1
+      warn('Repo công khai', `${rel(p)} khác ${rel(c.twin)}: chép lại cho giống rồi đẩy tay lên ${PUBLIC_REPO}.`)
+    }
+  }
+  if (!missing) ok('Repo công khai', `scripts/releases-repo đủ README, giấy phép, chứng chỉ, script tin cậy (nhớ đẩy tay lên ${PUBLIC_REPO} khi có thay đổi)`)
 }
 
 // ───────────────────────────── notes + plan ─────────────────────────────

@@ -47,7 +47,8 @@ export const UPDATE_ERROR_TEXT: Record<UpdateErrorCode, string> = {
   'no-release': 'Chưa tìm thấy bản cập nhật nào trên trang tải về.',
   'rate-limited': 'Máy chủ cập nhật đang bận.',
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
-  signature: 'File cập nhật không có chữ ký hợp lệ nên đã bị từ chối.',
+  signature:
+    'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
   failed: 'Không kiểm tra được bản cập nhật.',
@@ -346,6 +347,7 @@ export const BUSY_TEXT: Record<Exclude<InstallBusy, null>, string> = {
   restarting: 'Đang khởi động lại…',
 }
 
+const OPEN_PAGE_TITLE = 'Mở trang tải về trên GitHub trong trình duyệt'
 const CLOSE: UpdateDialogAction = { id: 'close', label: 'Đóng' }
 const LATER: UpdateDialogAction = { id: 'later', label: 'Để sau' }
 const READY_TEXT = 'Đã tải xong. Khởi động lại để cập nhật ngay — dự án, video và cài đặt giữ nguyên.'
@@ -378,6 +380,15 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
     case 'none':
       return { ...base, statusText: `Bạn đang dùng bản mới nhất (${state.current}).`, actions: [CLOSE] }
     case 'error':
+      // A refused signature is never retried automatically: the way out is the download page (manual install).
+      if (state.error?.code === 'signature') {
+        return {
+          ...base,
+          showNotes: !!state.version,
+          statusText: state.error.message,
+          actions: [{ id: 'openPage', label: 'Mở trang tải về', primary: true, title: OPEN_PAGE_TITLE }, { id: 'retry', label: 'Thử lại' }, CLOSE],
+        }
+      }
       return {
         ...base,
         showNotes: !!state.version,
@@ -391,7 +402,7 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
           showNotes: true,
           statusText:
             'Bản portable không tự cài được. Tải bản mới ở trang tải về rồi dùng file đó thay file cũ — dự án và cài đặt giữ nguyên. Muốn từ nay tự cập nhật, hãy cài bản Setup.',
-          actions: [{ id: 'openPage', label: 'Tải bản mới', primary: true, title: 'Mở trang tải về trên GitHub trong trình duyệt' }, LATER],
+          actions: [{ id: 'openPage', label: 'Tải bản mới', primary: true, title: OPEN_PAGE_TITLE }, LATER],
         }
       }
       if (ctx.autoDownload) return { ...base, showNotes: true, statusText: 'Đang chuẩn bị tải về…', actions: [CLOSE] }
@@ -490,8 +501,10 @@ export function autoDownloadNote(kind: UpdateKind): string | null {
   return kind === 'portable' ? 'Bản portable không tự cài — chỉ báo có bản mới.' : 'Chỉ có ở bản cài (Setup).'
 }
 
-/** "Xem chi tiết" is offered for these statuses. */
-export const hasUpdateDetails = (s: UpdateState): boolean => s.kind !== 'dev' && (s.status === 'available' || s.status === 'downloading' || s.status === 'ready')
+/** "Xem chi tiết" is offered for these statuses (and for a known version refused for its signature: the dialog leads to the download page). */
+export const hasUpdateDetails = (s: UpdateState): boolean =>
+  s.kind !== 'dev' &&
+  (s.status === 'available' || s.status === 'downloading' || s.status === 'ready' || (s.status === 'error' && s.error?.code === 'signature' && !!s.version))
 
 // ---------------------------------------------------------------------------------------------
 // Toasts

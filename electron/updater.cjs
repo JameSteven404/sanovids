@@ -13,12 +13,21 @@
 // Never a dialog or a notification from here: every status reaches the page as an 'updates:state' push, and the page
 // decides what to show (automatic checks stay silent). Files: userData/updater.json (prefs + install attempt),
 // userData/logs/updater.log (+ updater.1.log).
+//
+// Signed updates only: every downloaded installer must carry an Authenticode signature by one of the certificates
+// pinned in package.json `sanovids.signers` (electron/signature.cjs; decision table in updater-rules judgeSignature).
+// Our verifier replaces BOTH electron-updater hooks — `verifyUpdateCodeSignature` and an instance override of
+// `verifySignature` (which would otherwise skip the check whenever app-update.yml has no publisherName) — and the file is
+// verified again on 'update-downloaded' (a cached installer skips the download hook), before every install, and (by
+// size + mtime, synchronously) in the app 'quit' event before the silent install on quit. A rejected file is deleted and
+// its version is not downloaded automatically again in this launch.
 'use strict'
 
 const { app, ipcMain, powerMonitor, shell } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const rules = require('./updater-rules.cjs')
+const signature = require('./signature.cjs')
 
 /** Pushes go only to the SanoVids page itself (never to the canvasapp login / checkout windows). */
 const APP_URL_PREFIX = 'app://bdp/'
@@ -147,6 +156,29 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
   let firstCheckTimer = null
   let scheduleTimer = null
   let installWatchdog = null
+  /** Both electron-updater signature hooks are ours and a signer is pinned; false → downloads are refused. */
+  let verifierOk = false
+  /** The installer that passed the signature check: { file, size, mtimeMs, version } (null = none). */
+  let verified = null
+  /** Versions whose download failed the signature check in this launch: never downloaded automatically again. */
+  const rejected = new Set()
+  /** The running pre-install verification (a second "install" waits for the same one). */
+  let installCheck = null
+
+  // 4. The pinned signer thumbprints (app.asar/package.json `sanovids.signers`).
+  const pins = signature.readSignerPins()
+  if (!pins.length) log.error('no signer pins in package.json: downloads refused')
+
+  /** electron-updater verifier contract: null = accepted, a string = the reason it was refused. Never throws. */
+  const verifyPinned = async (file) => {
+    try {
+      const v = await signature.checkFileSignature(file, { pins, log: (l) => log.info(l) })
+      return v && v.ok === true ? null : `sanovids-signature:${(v && v.reason) || 'verify-failed'}`
+    } catch (e) {
+      log.error(`signature check threw: ${rawError(e)}`)
+      return 'sanovids-signature:verify-failed'
+    }
+  }
 
   function readUpdaterFile() {
     try {
@@ -215,11 +247,21 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
     if (next === prev) return
     state = next
     if (next.status !== prev.status || next.version !== prev.version) log.info(`state ${next.status}${next.version ? ` ${next.version}` : ''}`)
-    // A newer version was found: the installer downloads it at once when the device pref says so.
-    if (event.type === 'available' && prev.status !== 'available' && next.status === 'available' && kind === 'installer' && next.autoDownload) {
-      startDownload()
+    // A newer version was found: the installer downloads it at once when the device pref says so — unless that version
+    // already failed the signature check in this launch: then it stays refused (no download; "Thử lại" retries by hand).
+    if (event.type === 'available' && prev.status !== 'available' && next.status === 'available' && kind === 'installer') {
+      if (rejected.has(next.version)) {
+        log.info(`auto-download skipped ${next.version}: its signature was rejected in this launch`)
+        dispatch(signatureError())
+      } else if (next.autoDownload) {
+        startDownload()
+      }
     }
     push(prev, event.type === 'progress')
+  }
+
+  function signatureError() {
+    return { type: 'download-error', error: { code: 'signature', message: rules.ERROR_TEXT.signature } }
   }
 
   // ---- electron-updater ----
@@ -236,6 +278,17 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
       updater.disableWebInstaller = true
       updater.disableDifferentialDownload = false
       // Never: updater.channel (it turns allowDowngrade on), setFeedURL, addAuthHeader, requestHeaders, forceDevUpdateConfig.
+      // Our pinned verifier on both hooks: the setter (used by electron-updater's default verifySignature) and an
+      // instance override of NsisUpdater.verifySignature, the method doDownloadUpdate actually awaits — electron-updater's
+      // own one returns "OK" without checking anything when app-update.yml lacks publisherName.
+      const verifyHook = (_publisherNames, file) => verifyPinned(file)
+      const verifyMethod = (file) => verifyPinned(file)
+      updater.verifyUpdateCodeSignature = verifyHook
+      updater.verifySignature = verifyMethod
+      if (updater.verifyUpdateCodeSignature !== verifyHook) log.error('signature hook verifyUpdateCodeSignature not installed: downloads refused')
+      else if (updater.verifySignature !== verifyMethod) log.error('signature override verifySignature not installed: downloads refused')
+      else if (!pins.length) log.error('signature verifier has no pinned signer: downloads refused')
+      else verifierOk = true
       updater.on('checking-for-update', () => dispatch({ type: 'checking' }))
       updater.on('update-not-available', () => dispatch({ type: 'not-available' }))
       updater.on('update-available', (info) => {
@@ -244,7 +297,8 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
         dispatch({ type: 'available', info: n })
       })
       updater.on('download-progress', (p) => dispatch({ type: 'progress', p }))
-      updater.on('update-downloaded', (info) => dispatch({ type: 'downloaded', info: rules.normalizeInfo(info) }))
+      // Never 'downloaded' straight away: a cached installer (validateDownloadedPath) never went through verifySignature.
+      updater.on('update-downloaded', (info) => void onDownloaded(info))
       updater.on('update-cancelled', () => dispatch({ type: 'cancelled' }))
       // Errors are mapped where the phase is known (the promise catches). This listener logs, and catches the
       // synchronous error of a quitAndInstall that could not start the installer.
@@ -262,17 +316,78 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
 
   function startDownload() {
     if (!au || downloadInFlight || kind !== 'installer') return
+    const version = state.version
+    if (!verifierOk) {
+      log.error(`download ${version || '?'} refused: the signature verifier is not active`)
+      dispatch(signatureError())
+      return
+    }
     downloadInFlight = true
-    log.info(`download ${state.version || '?'}`)
+    log.info(`download ${version || '?'}`)
     au.downloadUpdate()
       .catch((e) => {
         log.error(`download failed: ${rawError(e)}`)
         if (e && e.constructor && e.constructor.name === 'CancellationError') return
-        dispatch({ type: 'download-error', error: rules.mapUpdaterError(e, 'download') })
+        const error = rules.mapUpdaterError(e, 'download')
+        // electron-updater already deleted the file our verifier refused (ERR_UPDATER_INVALID_SIGNATURE).
+        if (error.code === 'signature' && version) rejected.add(version)
+        dispatch({ type: 'download-error', error })
       })
       .finally(() => {
         downloadInFlight = false
       })
+  }
+
+  /**
+   * Verifies the downloaded installer against the pinned signers. OK → remembered in `verified` (path, size, mtime).
+   * Refused → the file is deleted, its version rejected for this launch, install on quit turned off and the state
+   * becomes error 'signature'. Never throws.
+   */
+  async function verifyDownloaded(file, version) {
+    let reason = 'sanovids-signature:no-file'
+    try {
+      if (typeof file === 'string' && file !== '') {
+        const before = fs.statSync(file)
+        reason = await verifyPinned(file)
+        if (reason === null) {
+          const after = fs.statSync(file)
+          // The file must not have changed while PowerShell was reading it.
+          if (after.size === before.size && after.mtimeMs === before.mtimeMs) {
+            verified = { file, size: after.size, mtimeMs: after.mtimeMs, version: version || '' }
+            log.info(`signature verified ${version || '?'} ${path.basename(file)}`)
+            return true
+          }
+          reason = 'sanovids-signature:changed-while-verified'
+        }
+      }
+    } catch (e) {
+      log.error(`signature verification failed: ${rawError(e)}`)
+      reason = 'sanovids-signature:verify-failed'
+    }
+    verified = null
+    if (au) au.autoInstallOnAppQuit = false
+    if (typeof file === 'string' && file !== '') {
+      try {
+        fs.rmSync(file, { force: true })
+      } catch (e) {
+        log.warn(`could not delete the refused installer: ${rawError(e)}`)
+      }
+    }
+    if (version) rejected.add(version)
+    log.error(`signature rejected ${version || '?'} (${reason}): installer deleted, not installed`)
+    dispatch(signatureError())
+    return false
+  }
+
+  /** 'update-downloaded' → verify first; only a verified installer becomes 'ready' (and may install on quit). */
+  async function onDownloaded(info) {
+    const n = rules.normalizeInfo(info)
+    const version = (n && n.version) || state.version || ''
+    const file = info && typeof info.downloadedFile === 'string' && info.downloadedFile ? info.downloadedFile : au && au.installerPath
+    if (!(await verifyDownloaded(file, version))) return
+    // BaseUpdater registered its quit handler synchronously after this event and reads the flag again at quit time.
+    if (au) au.autoInstallOnAppQuit = kind === 'installer'
+    dispatch({ type: 'downloaded', info: n })
   }
 
   /** One check (manual or automatic). Resolves with the IPC result; never rejects. */
@@ -367,6 +482,11 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
   handle('updates:download', () => {
     if (kind !== 'installer' || !au) return fail('unsupported', MSG.downloadUnsupported)
     if (!(state.status === 'available' || (state.status === 'error' && state.version))) return fail('not-ready', MSG.downloadNotReady)
+    if (!verifierOk) {
+      startDownload() // refuses, and shows the signature error
+      return fail('signature', rules.ERROR_TEXT.signature)
+    }
+    // A version rejected earlier may be retried by hand (it is verified again like any download).
     const started = !downloadInFlight
     startDownload()
     // electron-updater's first progress event comes only after the blockmaps (1-3 s): show "downloading 0%" at once so
@@ -375,10 +495,19 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
     return OK
   })
 
-  handle('updates:install', () => {
+  handle('updates:install', async () => {
     if (kind !== 'installer' || !au) return fail('unsupported', MSG.installUnsupported)
     if (state.status !== 'ready') return fail('not-ready', MSG.installNotReady)
     if (quittingForUpdate) return OK
+    // Always verified again right before it runs (a refusal deletes it and the state is already error 'signature').
+    if (!installCheck) {
+      installCheck = verifyDownloaded(au.installerPath, state.version).finally(() => {
+        installCheck = null
+      })
+    }
+    if (!(await installCheck)) return fail('signature', rules.ERROR_TEXT.signature)
+    if (quittingForUpdate) return OK
+    if (state.status !== 'ready') return fail('not-ready', MSG.installNotReady)
     recordAttempt()
     quittingForUpdate = true
     log.info(`install quitAndInstall ${state.version}`)
@@ -438,7 +567,23 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource }) {
      * downloaded update in this same event, and only with exit code 0 → remember the attempt under the same condition.
      */
     onQuit(exitCode) {
-      if (kind === 'installer' && au && state.status === 'ready' && !quittingForUpdate && exitCode === 0) {
+      if (kind !== 'installer' || !au || quittingForUpdate) return
+      // Synchronous only (electron-updater's own quit handler runs right after this one, in the same event): the
+      // installer must still be the very file that passed the signature check, else nothing installs on quit. This also
+      // covers a quit while a cached installer is still being verified.
+      let stat = null
+      try {
+        stat = au.installerPath ? fs.statSync(au.installerPath) : null
+      } catch {
+        stat = null
+      }
+      const installsNow = state.status === 'ready' && exitCode === 0
+      if (!rules.sameVerifiedFile(verified, stat, au.installerPath)) {
+        au.autoInstallOnAppQuit = false
+        if (installsNow || stat) log.warn('install on quit skipped: installer not verified')
+        return
+      }
+      if (installsNow) {
         recordAttempt()
         log.info(`install on quit ${state.version}`)
       }

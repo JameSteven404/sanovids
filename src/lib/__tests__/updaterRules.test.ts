@@ -1,11 +1,14 @@
 // electron/updater-rules.cjs: the pure rules of the desktop auto-updater (versions, the test-only data folder override,
 // build kind, error mapping, release notes as text, the state machine, schedule, persistence) — plus the packaging
-// guarantees in package.json / preload / main.cjs that keep real users on the public feed and their real data folder.
+// guarantees in package.json / preload / main.cjs that keep real users on the public feed and their real data folder,
+// and the electron-updater internals our pinned signature verifier relies on (decision table: signature.test.ts).
+import nodeFs from 'node:fs'
 import { createRequire } from 'node:module'
 import nodePath from 'node:path'
 import { describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
 
 type PathMod = typeof nodePath.win32
@@ -76,6 +79,7 @@ interface Rules {
   startupNotice(file: UpdaterFile, current: string, now: number): unknown
   startupAttempt(file: UpdaterFile, current: string, now: number): { notice: unknown; keep: boolean }
   logLine(level: string, message: unknown, date: Date | number): string
+  sameVerifiedFile(verified: unknown, stat: unknown, file: unknown): boolean
 }
 
 const rules = createRequire(import.meta.url)('../../../electron/updater-rules.cjs') as Rules
@@ -305,6 +309,13 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     [{ code: 'ERR_CHECKSUM_MISMATCH', message: RAW }, 'download', 'checksum'],
     [new Error('sha512 checksum mismatch, expected abc, got def'), 'download', 'checksum'],
     [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: RAW }, 'download', 'signature'],
+    // A refused signature decides before whatever its message contains (offline, HTTP status, checksum, disk).
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'New version 0.5.92 is not signed by the application owner: net::ERR_FAILED' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:verify-failed HttpError: 403 Forbidden' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sha512 checksum mismatch, expected a, got b' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'ENOSPC: no space left on device' }, 'download', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: 'sanovids-signature:other-signer' }, 'check', 'signature'],
+    [{ code: 'ERR_UPDATER_INVALID_SIGNATURE', message: RAW }, 'install', 'install-failed'],
     [{ code: 'ENOSPC', message: RAW }, 'download', 'disk'],
     [new Error('No update filepath provided, can\'t quit and install'), 'install', 'install-failed'],
     [{ code: 'ENOSPC', message: RAW }, 'install', 'install-failed'],
@@ -333,7 +344,10 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     expect(rules.mapUpdaterError({ code: 'HTTP_ERROR_404' }, 'check').message).toBe('Chưa tìm thấy bản cập nhật nào trên trang tải về.')
     expect(rules.mapUpdaterError({ code: 'HTTP_ERROR_429' }, 'check').message).toBe('Máy chủ cập nhật đang bận.')
     expect(rules.mapUpdaterError({ code: 'ERR_CHECKSUM_MISMATCH' }, 'download').message).toBe('File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.')
-    expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE' }, 'download').message).toBe('File cập nhật không có chữ ký hợp lệ nên đã bị từ chối.')
+    expect(rules.mapUpdaterError({ code: 'ERR_UPDATER_INVALID_SIGNATURE' }, 'download').message).toBe(
+      'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
+    )
+    expect(rules.ERROR_TEXT.signature.length).toBeLessThanOrEqual(300)
     expect(rules.mapUpdaterError({ code: 'ENOSPC' }, 'download').message).toBe('Ổ đĩa không đủ chỗ để tải bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'install').message).toBe('Không khởi động được trình cài bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'check').message).toBe('Không kiểm tra được bản cập nhật.')
@@ -619,6 +633,62 @@ describe('updater rules: schedule, prefs, persistence, notices, log', () => {
   it('the feed constants point at the public releases repo', () => {
     expect(rules.RELEASES_URL).toBe('https://github.com/JameSteven404/sanovids-releases/releases/latest')
     expect(rules.FEED).toEqual({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases' })
+  })
+})
+
+describe('updater rules: the verified installer (install on quit)', () => {
+  const FILE = 'C:\\Users\\me\\AppData\\Local\\sanovids-updater\\pending\\SanoVids-Setup-0.5.1.exe'
+  const verified = { file: FILE, size: 98_000_000, mtimeMs: 1_759_000_000_123.5, version: '0.5.1' }
+  const stat = { size: 98_000_000, mtimeMs: 1_759_000_000_123.5 }
+
+  it('same path, size and mtime → still the verified file', () => {
+    expect(rules.sameVerifiedFile(verified, stat, FILE)).toBe(true)
+  })
+
+  it('anything else → not verified (no install on quit)', () => {
+    expect(rules.sameVerifiedFile(null, stat, FILE)).toBe(false) // never verified / refused
+    expect(rules.sameVerifiedFile(verified, null, FILE)).toBe(false) // stat failed: the file is gone
+    expect(rules.sameVerifiedFile(verified, stat, FILE.replace('0.5.1', '0.5.2'))).toBe(false) // another installer
+    expect(rules.sameVerifiedFile(verified, stat, FILE.toLowerCase())).toBe(false)
+    expect(rules.sameVerifiedFile(verified, stat, null)).toBe(false)
+    expect(rules.sameVerifiedFile(verified, stat, '')).toBe(false)
+    expect(rules.sameVerifiedFile(verified, { ...stat, size: stat.size + 1 }, FILE)).toBe(false) // replaced after the check
+    expect(rules.sameVerifiedFile(verified, { ...stat, mtimeMs: stat.mtimeMs + 1 }, FILE)).toBe(false)
+    expect(rules.sameVerifiedFile(verified, { size: stat.size }, FILE)).toBe(false)
+    expect(rules.sameVerifiedFile({ ...verified, file: '' }, stat, '')).toBe(false)
+    expect(rules.sameVerifiedFile('x', stat, FILE)).toBe(false)
+  })
+})
+
+describe('electron-updater internals the pinned verifier relies on (6.8.10)', () => {
+  const read = (rel: string) => nodeFs.readFileSync(nodePath.join(process.cwd(), 'node_modules', 'electron-updater', 'out', rel), 'utf8')
+
+  it('NsisUpdater awaits this.verifySignature on every download (our instance override replaces it)', () => {
+    const nsis = read('NsisUpdater.js')
+    expect(nsis).toContain('async verifySignature(tempUpdateFile)')
+    expect(nsis).toContain('await this.verifySignature(destinationFile)')
+    expect(nsis).toContain('"ERR_UPDATER_INVALID_SIGNATURE"')
+    // …and its own implementation skips the check when app-update.yml has no publisherName: why we override it.
+    expect(nsis).toMatch(/publisherName == null\) \{\s*return null;/)
+  })
+
+  it('BaseUpdater reads autoInstallOnAppQuit again at quit time', () => {
+    const base = read('BaseUpdater.js')
+    expect(base).toContain('this.autoInstallOnAppQuit')
+    expect(base).toMatch(/this\.app\.onQuit\(exitCode => \{[\s\S]*?if \(!this\.autoInstallOnAppQuit\)/)
+  })
+
+  it('updater.cjs installs our verifier on both hooks and re-verifies before installing', () => {
+    expect(updaterSource).toContain('updater.verifySignature =')
+    expect(updaterSource).toContain('updater.verifyUpdateCodeSignature =')
+    expect(updaterSource).toContain("require('./signature.cjs')")
+    expect(updaterSource).toContain('signature.readSignerPins()')
+    expect(updaterSource).toContain("updater.on('update-downloaded', (info) => void onDownloaded(info))")
+    expect(updaterSource).toContain('verifyDownloaded(au.installerPath, state.version)')
+    expect(updaterSource).toContain('rules.sameVerifiedFile(verified, stat, au.installerPath)')
+    expect(updaterSource).toContain("log.warn('install on quit skipped: installer not verified')")
+    // No direct 'downloaded' dispatch from the electron-updater event any more.
+    expect(updaterSource).not.toMatch(/on\('update-downloaded', \(info\) => dispatch\(/)
   })
 })
 

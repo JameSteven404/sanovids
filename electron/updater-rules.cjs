@@ -1,5 +1,5 @@
-// SanoVids — pure rules of the desktop auto-updater (electron/updater.cjs). Unit-tested by
-// src/lib/__tests__/updaterRules.test.ts.
+// SanoVids — pure rules of the desktop auto-updater (electron/updater.cjs) and of the code-signature check
+// (electron/signature.cjs). Unit-tested by src/lib/__tests__/updaterRules.test.ts and signature.test.ts.
 //
 // No require at all: not 'electron', not any npm package. In the packaged app.asar, electron-updater's own helpers
 // (semver…) are nested under node_modules/electron-updater and cannot be resolved from electron/, so versions are
@@ -38,7 +38,8 @@ const ERROR_TEXT = {
   'no-release': 'Chưa tìm thấy bản cập nhật nào trên trang tải về.',
   'rate-limited': 'Máy chủ cập nhật đang bận.',
   checksum: 'File cập nhật tải về bị lỗi (sai mã kiểm tra) nên đã bị bỏ.',
-  signature: 'File cập nhật không có chữ ký hợp lệ nên đã bị từ chối.',
+  signature:
+    'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
   disk: 'Ổ đĩa không đủ chỗ để tải bản cập nhật.',
   'install-failed': 'Không khởi động được trình cài bản cập nhật.',
 }
@@ -225,6 +226,9 @@ function mapUpdaterError(err, phase) {
   // An install that did not start is always 'install-failed' (the state goes back to 'ready' with it).
   if (phase === 'install') return { code: 'install-failed', message: message('install-failed') }
   const code = err && typeof err.code === 'string' ? err.code : ''
+  // A rejected signature (our pinned verifier, through electron-updater) decides before anything its message may
+  // contain: the file was refused, whatever else went wrong around it.
+  if (code === 'ERR_UPDATER_INVALID_SIGNATURE') return { code: 'signature', message: message('signature') }
   const text = err && typeof err.message === 'string' ? err.message : typeof err === 'string' ? err : ''
   const all = `${code} ${text}`
   // GitHubProvider wraps ANY failure of releases/latest (429, 403, 5xx…) in ERR_UPDATER_LATEST_VERSION_NOT_FOUND, with
@@ -239,7 +243,6 @@ function mapUpdaterError(err, phase) {
   else if (NO_RELEASE_CODES.has(code) || /No published versions/i.test(text)) out = 'no-release'
   else if (code === 'HTTP_ERROR_429' || code === 'HTTP_ERROR_403') out = 'rate-limited'
   else if (code === 'ERR_CHECKSUM_MISMATCH' || /sha512 checksum mismatch/i.test(text)) out = 'checksum'
-  else if (code === 'ERR_UPDATER_INVALID_SIGNATURE') out = 'signature'
   else if (code === 'ENOSPC' || /\bENOSPC\b/.test(text)) out = 'disk'
   return { code: out, message: message(out) }
 }
@@ -509,6 +512,171 @@ function logLine(level, message, date) {
   return `${iso} [${level}] ${msg}`.slice(0, LOG_LINE_MAX)
 }
 
+// ---- code signature (electron/signature.cjs runs it; the updater and the app's self-check judge with it) ----
+
+const SIGNATURE_MARK = 'SVSIG'
+const SIGNER_PINS_MAX = 8
+const SIGNER_MAX = 200
+const THUMBPRINT_RE = /^[0-9A-F]{40}$/
+
+/**
+ * Windows PowerShell 5.1, one line, run with -Command. It reads the file path ONLY from env SANOVIDS_SIG_PATH (never
+ * from the command line) and writes one JSON object between two SVSIG markers, every non-ASCII char \u-escaped (so the
+ * console code page cannot garble a name). Never a double quote, a newline or a backtick in it (tested): nothing a
+ * command line could re-split. Its fields feed judgeSignature; StatusMessage / Subject are localized and never read.
+ */
+const SIGNATURE_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  "$ProgressPreference='SilentlyContinue'",
+  '$r=[ordered]@{v=1;status=-1;sigType=$null;thumbprint=$null;signer=$null;tsThumbprint=$null;chainOk=$false;chainStatus=@();chainLen=0;hresult=$null;error=$null}',
+  "try { $p=$env:SANOVIDS_SIG_PATH; if([string]::IsNullOrEmpty($p)){throw 'no-path'}",
+  '$s=Get-AuthenticodeSignature -LiteralPath $p',
+  '$r.status=[int]$s.Status',
+  '$r.sigType=[string]$s.SignatureType',
+  "$f=$s.GetType().GetField('win32Error',[System.Reflection.BindingFlags]'NonPublic,Instance')",
+  "if($null -ne $f){$r.hresult='0x{0:X8}' -f [uint32]$f.GetValue($s)}",
+  'if($null -ne $s.TimeStamperCertificate){$r.tsThumbprint=$s.TimeStamperCertificate.Thumbprint}',
+  '$c=$s.SignerCertificate',
+  'if($null -ne $c){ $r.thumbprint=$c.Thumbprint; $r.signer=$c.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false)',
+  '$ch=New-Object System.Security.Cryptography.X509Certificates.X509Chain',
+  '$ch.ChainPolicy.RevocationMode=[System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck',
+  '$ch.ChainPolicy.VerificationFlags=[System.Security.Cryptography.X509Certificates.X509VerificationFlags]::AllowUnknownCertificateAuthority',
+  "[void]$ch.ChainPolicy.ApplicationPolicy.Add((New-Object System.Security.Cryptography.Oid '1.3.6.1.5.5.7.3.3'))",
+  '$r.chainOk=$ch.Build($c)',
+  '$r.chainStatus=@($ch.ChainStatus|ForEach-Object{[string]$_.Status})',
+  // `try {…} catch {…}` is ONE statement: no "; " may separate them.
+  '$r.chainLen=$ch.ChainElements.Count } } catch { $r.error=$_.Exception.GetType().FullName }',
+  '$j=$r|ConvertTo-Json -Compress',
+  '$sb=New-Object System.Text.StringBuilder',
+  "foreach($x in $j.ToCharArray()){ if([int]$x -gt 126){[void]$sb.AppendFormat('\\u{0:x4}',[int]$x)} else {[void]$sb.Append($x)} }",
+  `[Console]::Out.Write('${SIGNATURE_MARK}'+$sb.ToString()+'${SIGNATURE_MARK}')`,
+].join('; ')
+
+/**
+ * powershell.exe arguments: the script as a literal -Command. No -EncodedCommand and no -ExecutionPolicy Bypass (both
+ * are classic endpoint-protection heuristics); Get-AuthenticodeSignature runs under any execution policy.
+ */
+function powershellArgs() {
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-Command', SIGNATURE_SCRIPT]
+}
+
+/**
+ * The child's environment: a copy of `baseEnv` without PSModulePath (a PowerShell 7 value breaks module loading in
+ * Windows PowerShell 5.1), plus SANOVIDS_SIG_PATH = the file. Names are matched case-insensitively (Windows env).
+ */
+function powershellEnv(baseEnv, file) {
+  const out = {}
+  const src = baseEnv && typeof baseEnv === 'object' ? baseEnv : {}
+  for (const key of Object.keys(src)) {
+    const lower = key.toLowerCase()
+    if (lower === 'psmodulepath' || lower === 'sanovids_sig_path') continue
+    if (typeof src[key] === 'string') out[key] = src[key]
+  }
+  out.SANOVIDS_SIG_PATH = String(file)
+  return out
+}
+
+/**
+ * package.json sanovids.signers → the pinned SHA-1 thumbprints: whitespace removed, upper-cased, 40 hex chars only,
+ * deduped, at most 8. Not an array → [] (no pin: every check fails closed).
+ */
+function parseSignerPins(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const pin = item.replace(/\s+/g, '').toUpperCase()
+    if (THUMBPRINT_RE.test(pin) && !out.includes(pin)) out.push(pin)
+    if (out.length >= SIGNER_PINS_MAX) break
+  }
+  return out
+}
+
+/** ChainStatus as strings (a bare value becomes a one-item list; PowerShell's {value: [...]} array wrapper unwrapped). */
+function chainList(v) {
+  if (v == null) return []
+  if (Array.isArray(v)) return v.map((s) => String(s))
+  if (typeof v === 'object' && Array.isArray(v.value)) return v.value.map((s) => String(s))
+  return [String(v)]
+}
+
+const strOrNull = (v) => (typeof v === 'string' ? v : null)
+
+/** Display name of a signer: control characters removed, at most 200 chars ('' when there is none). */
+function cleanSigner(v) {
+  return typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, SIGNER_MAX) : ''
+}
+
+/** SIGNATURE_SCRIPT's stdout → the normalized object between the first and the last SVSIG marker, or null. */
+function parseSignatureOutput(stdout) {
+  if (typeof stdout !== 'string') return null
+  const start = stdout.indexOf(SIGNATURE_MARK)
+  const end = stdout.lastIndexOf(SIGNATURE_MARK)
+  if (start === -1 || end < start + SIGNATURE_MARK.length) return null
+  let o
+  try {
+    o = JSON.parse(stdout.slice(start + SIGNATURE_MARK.length, end))
+  } catch {
+    return null
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  return {
+    v: typeof o.v === 'number' ? o.v : null,
+    status: typeof o.status === 'number' ? o.status : null,
+    sigType: strOrNull(o.sigType),
+    thumbprint: typeof o.thumbprint === 'string' ? o.thumbprint.toUpperCase() : null,
+    signer: strOrNull(o.signer),
+    tsThumbprint: strOrNull(o.tsThumbprint),
+    chainOk: o.chainOk === true,
+    chainStatus: chainList(o.chainStatus),
+    chainLen: typeof o.chainLen === 'number' ? o.chainLen : null,
+    hresult: strOrNull(o.hresult),
+    error: o.error == null ? null : String(o.error),
+  }
+}
+
+/**
+ * The verdict on a parsed signature (parseSignatureOutput) against the pinned thumbprints. Rows IN ORDER; the status is
+ * looked at before the thumbprint because a HashMismatch file still reports its (pinned) signer:
+ *   1 no pins → unknown/no-pins · 2 no usable output → unknown/verify-failed · 3 NotSigned → unsigned/not-signed ·
+ *   4 HashMismatch → tampered/hash-mismatch · 5 not Authenticode or no thumbprint → unknown/verify-failed ·
+ *   6 thumbprint not pinned → other-signer · 7a Valid (machine trusts the cert) / 7b the genuine self-signed case
+ *   (UnknownError 0x800B0109 CERT_E_UNTRUSTEDROOT, chain = the one self-signed cert) → signed/ok ·
+ *   8 anything else → unknown/bad-chain.
+ * The common name is never trusted: an impostor with the author's exact CN differs by thumbprint (row 6).
+ * → { ok, status, reason, thumbprint?, signer?, timestamped }
+ */
+function judgeSignature(parsed, pins) {
+  const pinList = parseSignerPins(pins)
+  const p = parsed && typeof parsed === 'object' ? parsed : null
+  const timestamped = !!p && p.tsThumbprint != null
+  const verdict = (ok, status, reason, extra) => ({ ok, status, reason, ...(extra || {}), timestamped })
+  if (!pinList.length) return verdict(false, 'unknown', 'no-pins')
+  if (!p || p.v !== 1 || p.error != null || !Number.isInteger(p.status)) return { ...verdict(false, 'unknown', 'verify-failed'), timestamped: false }
+  const thumb = typeof p.thumbprint === 'string' ? p.thumbprint.toUpperCase() : ''
+  const who = THUMBPRINT_RE.test(thumb) ? { thumbprint: thumb, ...(cleanSigner(p.signer) ? { signer: cleanSigner(p.signer) } : {}) } : {}
+  if (p.status === 2) return verdict(false, 'unsigned', 'not-signed')
+  if (p.status === 3) return verdict(false, 'tampered', 'hash-mismatch', who)
+  if (p.sigType !== 'Authenticode' || !THUMBPRINT_RE.test(thumb)) return verdict(false, 'unknown', 'verify-failed')
+  if (!pinList.includes(thumb)) return verdict(false, 'other-signer', 'other-signer', who)
+  const chain = chainList(p.chainStatus)
+  const trusted = p.status === 0 && (p.hresult == null || p.hresult === '0x00000000') && p.chainOk === true && chain.every((s) => s === 'UntrustedRoot')
+  const selfSigned =
+    p.status === 1 && p.hresult === '0x800B0109' && p.chainOk === true && chain.length === 1 && chain[0] === 'UntrustedRoot' && p.chainLen === 1
+  if (trusted || selfSigned) return verdict(true, 'signed', 'ok', who)
+  return verdict(false, 'unknown', 'bad-chain', who)
+}
+
+/**
+ * Is the file on disk still the one that was verified? Same path, size and mtime (`stat` from fs.statSync; anything
+ * missing → false). Used synchronously in the app 'quit' event, before electron-updater installs on quit.
+ */
+function sameVerifiedFile(verified, stat, file) {
+  if (!verified || typeof verified !== 'object' || !stat || typeof stat !== 'object') return false
+  if (typeof file !== 'string' || file === '' || verified.file !== file) return false
+  return typeof stat.size === 'number' && verified.size === stat.size && typeof stat.mtimeMs === 'number' && verified.mtimeMs === stat.mtimeMs
+}
+
 module.exports = {
   RELEASES_URL,
   FEED,
@@ -531,4 +699,11 @@ module.exports = {
   startupAttempt,
   startupNotice,
   logLine,
+  SIGNATURE_SCRIPT,
+  powershellArgs,
+  powershellEnv,
+  parseSignerPins,
+  parseSignatureOutput,
+  judgeSignature,
+  sameVerifiedFile,
 }

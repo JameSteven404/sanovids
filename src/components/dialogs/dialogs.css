@@ -1194,6 +1194,100 @@
   line-height: 1.55;
   color: var(--text-dim);
 }
+/* settings: Giới thiệu (about) — brand tile, author lines, code-signature row, download page */
+.dg-about-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dg-about-logo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 22%;
+  background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
+  color: var(--brand-ink);
+  box-shadow: var(--shadow-sm);
+}
+.dg-about-logo svg {
+  display: block;
+}
+.dg-about-name {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.dg-about-name b {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.dg-about-name small {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.dg-about-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dg-about-lines p {
+  margin: 0;
+}
+.dg-about-lines .dg-about-author {
+  color: var(--text);
+  font-weight: 600;
+}
+.dg-about-lines .dg-about-license {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.dg-about-sig {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dg-about-sig .dg-callout > div > div {
+  margin-top: 2px;
+}
+.dg-about-thumb {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.dg-about-thumb .mono {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.dg-about-download {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dg-about-download > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dg-about-download > .btn {
+  flex: none;
+}
 .dg-value {
   font-size: 12px;
   color: var(--text);

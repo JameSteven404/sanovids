@@ -1,10 +1,13 @@
 // "Bảng phát triển → Cập nhật": drives the simulated app updater of development mode (providers/dev/updates) so the
 // update UI can be tried in a browser: top-bar pill, "Cập nhật SanoVids" dialog, Settings → Cập nhật, toasts and
-// "Cập nhật khi xong". Nothing is downloaded, no network. Only offered outside Electron (DevPanel / devPanelTabs).
-import { CloudDownload, FlaskConical, RotateCcw } from 'lucide-react'
+// "Cập nhật khi xong" — and the simulated code-signature self-check shown in Settings → Giới thiệu
+// (providers/dev/appSignature). Nothing is downloaded or checked, no network. Only offered outside Electron
+// (DevPanel / devPanelTabs).
+import { CloudDownload, FlaskConical, RotateCcw, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { isUpdateVersion } from '../../lib/updateModel'
 import type { UpdateKind } from '../../lib/updateTypes'
+import { DEV_SIGNATURE_OPTIONS, devSignature, devSignaturePresetOf, useDevSignature, type DevSignaturePreset } from '../../providers/dev/appSignature'
 import { DEV_NEXT_CHECK_LABEL, devUpdates, useDevUpdates, type DevNextCheck } from '../../providers/dev/updates'
 import { Segmented } from '../dialogs/Segmented'
 
@@ -16,9 +19,9 @@ const KIND_OPTIONS: { id: UpdateKind; label: string; title: string }[] = [
 
 const NEXT_CHECKS: DevNextCheck[] = ['none', 'available', 'offline', 'no-release']
 
-function UpdCard({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+function UpdCard({ title, icon, children, wide }: { title: string; icon: ReactNode; children: ReactNode; wide?: boolean }) {
   return (
-    <section className="dv-card">
+    <section className={wide ? 'dv-card dv-grid-wide' : 'dv-card'}>
       <header>
         <span className="dv-card-icon" aria-hidden="true">
           {icon}
@@ -36,6 +39,9 @@ export function DevUpdatesTab() {
   const draft = useDevUpdates((s) => s.draft)
   const currentOk = isUpdateVersion(draft.current)
   const versionOk = isUpdateVersion(draft.version)
+  const sigStatus = useDevSignature((s) => s.status)
+  const sigPackaged = useDevSignature((s) => s.packaged)
+  const sigPreset = devSignaturePresetOf({ status: sigStatus, packaged: sigPackaged })
 
   return (
     <div className="dv-upd">
@@ -104,6 +110,14 @@ export function DevUpdatesTab() {
             <button type="button" className="btn btn-sm" onClick={() => devUpdates.failNetwork()}>
               Lỗi mạng
             </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="Bản cập nhật tải về không có chữ ký số của tác giả nên bị bỏ"
+              onClick={() => devUpdates.failSignature()}
+            >
+              Lỗi chữ ký số
+            </button>
             <button type="button" className="btn btn-sm" onClick={() => devUpdates.markNone()}>
               Không có bản mới
             </button>
@@ -119,6 +133,16 @@ export function DevUpdatesTab() {
             <h4 className="dv-upd-heading">Trạng thái hiện tại</h4>
             <pre className="dv-json dv-upd-state">{JSON.stringify(state, null, 2)}</pre>
           </div>
+        </UpdCard>
+
+        <UpdCard title="Chữ ký số (Giới thiệu)" icon={<ShieldCheck size={15} />} wide>
+          <div className="dv-field">
+            <span className="label">Kết quả tự kiểm tra chữ ký số</span>
+            <Segmented<DevSignaturePreset> label="Kết quả tự kiểm tra chữ ký số" value={sigPreset} onChange={(p) => devSignature.simulate(p)} options={DEV_SIGNATURE_OPTIONS} />
+          </div>
+          <p className="dv-hint">
+            Trạng thái mà Cài đặt → Giới thiệu hiển thị. Bản desktop tự kiểm tra chữ ký số của file SanoVids.exe khi mở; ở đây chỉ giả lập, không kiểm tra gì.
+          </p>
         </UpdCard>
       </div>
     </div>

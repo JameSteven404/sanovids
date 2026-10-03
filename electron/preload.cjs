@@ -5,6 +5,7 @@
 // files: the "Lưu video" dialog and the folder nodes (main writes only into folders the user picked).
 // updates: the auto-updater (electron/updater.cjs) — check / download / install / open the fixed release page; the page
 // never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
+// app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses).
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -27,6 +28,11 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
   electron: process.versions.electron,
   platform: process.platform,
+  /** Self-check of the app's code signature (Cài đặt → Giới thiệu). */
+  app: {
+    /** → { status: 'signed'|'unsigned'|'other-signer'|'tampered'|'unknown', packaged, signer?, thumbprint? } */
+    signature: () => ipcRenderer.invoke('app:signature'),
+  },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */
     status: () => ipcRenderer.invoke('canvasapp:status'),

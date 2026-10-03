@@ -1,5 +1,6 @@
 // Settings search: level filter without a query; accent-free, multi-word matching across both levels with a query.
 import { describe, expect, it } from 'vitest'
+import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../../lib/aboutModel'
 import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
 
 const groups: SearchGroup[] = [
@@ -55,6 +56,20 @@ describe('matchSettings', () => {
   it('resultCount counts rows, a block as one', () => {
     expect(resultCount(matchSettings(groups, 'basic', 'txt'))).toBe(2)
     expect(resultCount(matchSettings(groups, 'basic', 'credit'))).toBe(1)
+  })
+})
+
+describe('Giới thiệu (about block)', () => {
+  // The same entry as SettingsDialog GROUPS (a block group: no rows; searched by title, description and keywords).
+  const about: SearchGroup = { id: 'about', level: 'basic', title: ABOUT_TITLE, desc: ABOUT_DESC, keywords: ABOUT_KEYWORDS }
+  const all = [...groups, about]
+
+  it('is listed last in Cơ bản and found from both levels by author, partner and signature words', () => {
+    expect(ids(matchSettings(all, 'basic', '')).at(-1)).toBe('about:')
+    for (const q of ['giới thiệu', 'gioi thieu', 'tac gia', 'chu ky so', 'chữ ký', 'jame', 'JAME STEVEN', 'nguyen giang minh', 'sano group', 'đồng hành', 'vân tay', 'phiên bản']) {
+      expect(ids(matchSettings(all, 'advanced', q))).toEqual(['about:'])
+    }
+    expect(resultCount(matchSettings(all, 'basic', 'jame'))).toBe(1)
   })
 })
 

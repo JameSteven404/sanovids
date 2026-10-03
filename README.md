@@ -2,7 +2,9 @@
 
 **SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@video_1`, chạy tạo video hàng loạt, rồi lấy video vừa tạo để nối tiếp sang cảnh sau.
 
-📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids-releases/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)** · 🔄 Bản cài **tự cập nhật** từ 0.5.0
+👤 Tác giả: **Nguyễn Giang Minh (Jame Steven)** · Đồng hành: Sano Group
+
+📥 **[Tải bản mới nhất (.exe)](https://github.com/JameSteven404/sanovids-releases/releases/latest)** · 📜 **[Lịch sử phiên bản](CHANGELOG.md)** · 🔄 Bản cài **tự cập nhật** từ 0.5.0 · 🔐 **Ký số** bởi tác giả
 
 Ứng dụng được thiết kế lại từ trải nghiệm thực tế với các công cụ canvas tạo video (Seedance 2.5, MiniMax-H3), để **nối node nhanh hơn, ít rối dây hơn và không lệch số tham chiếu**. SanoVids là **ứng dụng desktop cho Windows** (file `.exe`).
 
@@ -60,7 +62,7 @@
 ### Các màn hình khác
 - **Bảng cảnh**: xem dạng bảng, sắp xếp thứ tự, sửa hàng loạt.
 - **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, **kéo-thả để sắp xếp lại** (hoặc Alt + mũi tên), nút **Phát liền**.
-- **Cài đặt** chia **Cơ bản / Nâng cao**, có ô tìm kiếm, sao lưu / khôi phục cài đặt.
+- **Cài đặt** chia **Cơ bản / Nâng cao**, có ô tìm kiếm, sao lưu / khôi phục cài đặt. **Cài đặt → Giới thiệu**: phiên bản, tác giả, bản quyền và trạng thái chữ ký số của app.
 - Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh) để sao lưu hoặc chuyển máy.
 - Giao diện kiểu Apple, chế độ **Sáng / Tối / Theo hệ thống**.
 
@@ -123,12 +125,12 @@ Vào **[trang tải về](https://github.com/JameSteven404/sanovids-releases/rel
 
 | File | Dùng khi |
 |---|---|
-| `SanoVids-Setup-<phiên bản>.exe` | **Khuyên dùng.** Bộ cài đặt: chọn thư mục, tạo icon ở Desktop và Start Menu, **tự cập nhật** các bản sau. |
+| `SanoVids-Setup-<phiên bản>.exe` | **Khuyên dùng.** Bộ cài đặt: hiện **Giấy phép sử dụng**, chọn thư mục, tạo icon ở Desktop và Start Menu, **tự cập nhật** các bản sau. |
 | `SanoVids-Portable-<phiên bản>.exe` | Bấm là chạy, không cần cài (mở chậm hơn vì phải tự giải nén mỗi lần). Hợp để chép USB. Không tự cập nhật (app chỉ báo có bản mới). |
 
-> 🛡️ File chưa có chữ ký số nên lần đầu mở Windows có thể báo **"Windows protected your PC"**. Bấm **More info → Run anyway**.
+> 🛡️ Cả hai file đều được **ký số** bởi **Nguyễn Giang Minh (Jame Steven)** — kiểm tra trước khi chạy: chuột phải file → **Properties** → **Digital Signatures** (xem [Chữ ký số & bảo mật](#-chữ-ký-số--bảo-mật)). Chứng chỉ là chứng chỉ tự ký, nên lần đầu mở Windows có thể vẫn báo **"Windows protected your PC"**: bấm **More info**, xem nhà phát hành rồi **Run anyway**.
 
-Trang tải về còn có `latest.yml` và `SanoVids-Setup-<phiên bản>.exe.blockmap`: đó là file app dùng để tự cập nhật, bạn không cần tải.
+Trang tải về còn có `latest.yml` và `SanoVids-Setup-<phiên bản>.exe.blockmap` (file app dùng để tự cập nhật, bạn không cần tải) và `SanoVids-NguyenGiangMinh.cer` (chứng chỉ công khai của tác giả, để kiểm tra chữ ký).
 
 - Dữ liệu của bản desktop nằm ở `%APPDATA%\SanoVids` trên từng máy. Muốn mang dự án sang máy khác, dùng **Cài đặt → Xuất dự án** rồi **Nhập** ở máy kia.
 - Video tải về được lưu vào thư mục **Downloads**, hoặc thư mục bạn chọn trong Cài đặt.
@@ -150,10 +152,25 @@ Từ bản **0.5.0**, bản cài (Setup) tự cập nhật — không phải t�
 - **Vừa tắt app để cài bản mới**: đợi khoảng 15 giây rồi hãy mở lại SanoVids.
 - **Bản Portable chỉ báo có bản mới** (nút **Tải bản mới** mở trang tải về), không tự cài. Muốn tự cập nhật, hãy dùng bản Setup.
 - **Bản 0.4.2 trở về trước** chưa biết tự cập nhật: cài tay `SanoVids-Setup-0.5.0.exe` (hoặc mới hơn) **một lần**, cài đè lên bản cũ; dự án và cài đặt giữ nguyên.
-- **An toàn**: file `.exe` chưa có chữ ký số; bản cập nhật chỉ tải qua HTTPS từ [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest) và được kiểm tra bằng mã **SHA-512** ghi trong `latest.yml` — sai mã là bỏ, không cài.
+- **An toàn**: bản cập nhật chỉ được cài khi mang **đúng chữ ký số của tác giả** (dấu vân tay chứng chỉ ghim sẵn trong app). File không có chữ ký, ký bởi người khác (kể cả trùng tên) hay đã bị sửa đều bị xoá, không cài; app báo lỗi và mời bạn tải bộ cài ở trang tải về. Ngoài ra bản cập nhật chỉ tải qua HTTPS từ [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest) và phải khớp mã **SHA-512** ghi trong `latest.yml`.
 - **Riêng tư**: mỗi lần kiểm tra, app gửi cho GitHub một **mã cài đặt ngẫu nhiên** (`x-user-staging-id`, tạo một lần trên máy), không gửi gì từ dự án của bạn. Không cần tài khoản GitHub.
 
 Chi tiết kỹ thuật và cách phát hành: [docs/UPDATES.md](docs/UPDATES.md).
+
+---
+
+## 🔐 Chữ ký số & bảo mật
+
+- **Mọi file `.exe` chính thức** (Setup, Portable, `SanoVids.exe` bên trong, trình gỡ cài đặt) được ký số bởi **Nguyễn Giang Minh (Jame Steven)**, kèm dấu thời gian (chữ ký vẫn hợp lệ sau khi chứng chỉ hết hạn).
+  Dấu vân tay chứng chỉ: **`7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`**. File không mang đúng chữ ký này **không phải bản gốc**: đừng chạy.
+- **Cách kiểm tra**: chuột phải file `.exe` → **Properties** → tab **Digital Signatures** → chọn **Nguyễn Giang Minh (Jame Steven)** → **Details** → **View Certificate** → tab **Details** → dòng **Thumbprint** phải đúng dấu vân tay ở trên. Không có tab Digital Signatures = file chưa ký, không phải bản chính thức.
+- **"Unknown publisher" là bình thường**: chứng chỉ do tác giả tự ký (không mua của tổ chức cấp chứng chỉ), nên SmartScreen có thể hiện **"Windows protected your PC"** và UAC ghi nhà phát hành là **Unknown publisher**. Điều quan trọng là dấu vân tay khớp.
+  Máy trong nhóm nội bộ có thể chạy **`tin-cay-chung-chi.ps1`** (ở [trang tải về](https://github.com/JameSteven404/sanovids-releases)) một lần: script kiểm tra dấu vân tay rồi thêm **phần công khai** của chứng chỉ vào hai kho *Trusted Root Certification Authorities* và *Trusted Publishers* của Windows (cho tài khoản đang dùng; `-TatCaNguoiDung` cho mọi tài khoản, cần quyền quản trị). Windows hỏi xác nhận trước khi thêm. Sau đó Windows hiện đúng tên tác giả. `-KiemTra` để xem, `-Go` để gỡ. Không bắt buộc: SanoVids vẫn chạy và tự cập nhật bình thường khi chưa tin cậy.
+- **Bản cập nhật chỉ được nhận khi ký bởi đúng chứng chỉ đó** (ghim theo dấu vân tay, không theo tên). Sai là xoá, không cài.
+- **App tự kiểm tra chữ ký của chính nó**: **Cài đặt → Giới thiệu** hiện **"Đã ký số bởi Nguyễn Giang Minh (Jame Steven) ✓"** với bản gốc, hoặc cảnh báo khi file bị sửa, ký bởi người khác hay không có chữ ký.
+- **Chống can thiệp**: file trong thư mục cài bị sửa thì SanoVids **không mở** → tải bộ cài ở trang tải về và cài lại (cài đè, dự án và cài đặt giữ nguyên). SanoVids cũng từ chối mở khi bị chạy kèm tham số gỡ lỗi / tắt bảo mật (ví dụ `--remote-debugging-port`, `--inspect`, `--no-sandbox`), và tắt công cụ nhà phát triển (DevTools) trong bản cài.
+
+Chi tiết cho người phát triển (cách ký, sao lưu khoá, đổi chứng chỉ, bảng quyết định): [docs/SIGNING.md](docs/SIGNING.md).
 
 ---
 
@@ -181,7 +198,7 @@ npm run dev
 | `npm run build` | Kiểm tra kiểu và build giao diện vào `dist/` (bản desktop đóng gói thư mục này) |
 | `npm run preview` | Chạy thử bản đã build |
 | `npm run desktop` | Build rồi mở bản desktop (Electron) trên máy |
-| `npm run dist:win` | Tạo 2 file `.exe` (cài đặt + portable) trong `release/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/_build/`; bản cũ tự chuyển vào `release/ban-cu/` |
+| `npm run dist:win` | Tạo 2 file `.exe` **đã ký số** (cài đặt + portable) trong `release/`, file tự cập nhật (`latest.yml`, `.blockmap`) trong `release/_build/`; bản cũ tự chuyển vào `release/ban-cu/`. Cần khoá ký của tác giả trên máy và có mạng ([docs/SIGNING.md](docs/SIGNING.md)) |
 | `npm run release:check` | Xem trước việc đăng bản: kiểm tra tag, file, nguồn cập nhật, GitHub và in đúng các lệnh sẽ chạy (không đăng gì) |
 | `npm run release:publish` | Đăng bản lên GitHub: repo riêng `sanovids` trước, trang tải về công khai `sanovids-releases` sau cùng (chỉ chủ dự án) |
 | `npm run icons` | Tạo lại icon ứng dụng |
@@ -193,7 +210,7 @@ npm run dev
 1. Viết mục `## [x.y.z] — ngày — tiêu đề` ở đầu `CHANGELOG.md` (đây cũng là phần **Có gì mới** người dùng thấy trong app) và đổi `version` trong `package.json`.
 2. Merge vào `main`.
 3. Trên `main`: `git tag -a vX.Y.Z -m "SanoVids X.Y.Z"` rồi `git push origin vX.Y.Z`.
-4. `npm run dist:win` (build sau khi tag, để ngày build mới hơn commit).
+4. `npm run dist:win` (build sau khi tag, để ngày build mới hơn commit). Máy build phải có khoá ký trong `Cert:\CurrentUser\My`, thiếu là build dừng ([docs/SIGNING.md](docs/SIGNING.md)).
 5. `npm run release:check`: mọi dòng phải là ✓ (⚠ chỉ để lưu ý).
 6. `npm run release:publish`: tạo bản nháp → tải file lên → kiểm tra SHA-256 → đăng repo riêng rồi mới đăng trang tải về công khai. Bị ngắt giữa chừng thì chạy lại, an toàn.
 
@@ -245,10 +262,14 @@ src/
 │   └── common/    # Modal, thông báo, ảnh, kéo đổi độ rộng
 ├── actions.ts     # Lệnh dùng chung (nối, xoá, chạy, tải, copy…)
 └── App.tsx        # Khung ứng dụng
-electron/          # Vỏ ứng dụng desktop (Electron), cửa sổ đăng nhập / thanh toán canvasapp, tự cập nhật (updater)
-scripts/           # Build & phát hành: dọn release/, ghi chú cập nhật, đăng bản lên GitHub
+electron/          # Vỏ ứng dụng desktop (Electron), cửa sổ đăng nhập / thanh toán canvasapp, tự cập nhật (updater),
+                   #   kiểm tra chữ ký số (signature), chống can thiệp (hardening-rules)
+scripts/           # Build & phát hành: build có ký số, dọn release/, ghi chú cập nhật, kiểm tra bản build, đăng bản lên GitHub,
+                   #   icon; signing/ = sao lưu / khôi phục khoá ký, tin cậy chứng chỉ; releases-repo/ = trang tải về công khai
+build/             # Icon, ảnh bộ cài, giấy phép (license_vi.txt), chứng chỉ công khai (signing/*.cer)
 public/            # Icon, manifest PWA
-docs/              # Đặc tả (SPEC.md, SPEC-v2.md), cổng canvasapp, tự kiểm tra credit thật, tự cập nhật (UPDATES.md)
+docs/              # Đặc tả (SPEC.md, SPEC-v2.md), cổng canvasapp, tự kiểm tra credit thật, tự cập nhật (UPDATES.md),
+                   #   chữ ký số & chống can thiệp (SIGNING.md)
 ```
 
 ## 🛠️ Công nghệ
@@ -264,10 +285,22 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] v0.2 (thử nghiệm): cổng canvasapp.io.vn trong bản desktop (đăng nhập trên trang thật, credit thật, nạp credit bằng QR SePay), khoá chặt đồng bộ nhân vật, xem video có tiếng + thanh điều khiển ngay trên node. Tự kiểm tra trước khi dùng: [docs/TEST-REAL-CREDITS.md](docs/TEST-REAL-CREDITS.md)
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
 - [x] Tự cập nhật phiên bản (0.5.0)
+- [x] Ký số file .exe (0.5.0): bản cập nhật chỉ nhận chữ ký của tác giả, app tự kiểm tra chữ ký, chống can thiệp, icon mới
 - [ ] Video tham chiếu `@video_N` qua cổng canvasapp
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
-- [ ] Ký số file .exe
+
+## 👤 Tác giả
+**Nguyễn Giang Minh (Jame Steven)** — tác giả và người phát triển SanoVids.
+Đồng hành: Sano Group.
+
+Bản quyền © 2026 Nguyễn Giang Minh (Jame Steven). Giấy phép: [LICENSE.txt](LICENSE.txt). Bản chính thức chỉ có ở [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases).
 
 ## 📄 Giấy phép
-Dự án cá nhân, chưa chọn giấy phép mã nguồn mở. Mọi quyền được bảo lưu.
+SanoVids **không phải phần mềm mã nguồn mở**. Tóm tắt [LICENSE.txt](LICENSE.txt) (bộ cài cũng hiện toàn văn trước khi cài, và file này nằm trong thư mục cài đặt):
+- SanoVids thuộc quyền sở hữu của tác giả **Nguyễn Giang Minh (Jame Steven)**. Mọi quyền được bảo lưu.
+- Được cài và dùng **khi được tác giả cho phép** (ví dụ: trong nội bộ nhóm làm việc). Tải được từ trang công khai không có nghĩa là được phép dùng.
+- **Không** được sao chép, chỉnh sửa, dịch ngược, tháo rời, phân phối lại, cho thuê hoặc bán lại SanoVids (toàn bộ hay một phần) khi chưa có đồng ý bằng văn bản của tác giả.
+- Bản cài chính thức luôn được ký số bởi "Nguyễn Giang Minh (Jame Steven)", dấu vân tay `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`. Bản không mang chữ ký này không phải bản gốc.
+- Phần mềm được cung cấp "nguyên trạng", không kèm bảo đảm nào; tác giả không chịu trách nhiệm về thiệt hại phát sinh khi sử dụng.
+- Các thành phần mã nguồn mở (Electron, Chromium, React…) theo giấy phép riêng của chúng, được kèm trong thư mục cài đặt (`LICENSE.electron.txt`, `LICENSES.chromium.html`).

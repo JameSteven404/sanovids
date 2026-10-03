@@ -9,7 +9,8 @@
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
 //   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take they belong to), top-up orders
 //                  (decide what canvasapp says), uploaded pictures.
-//   Cập nhật       the simulated app updater (DevUpdatesTab.tsx; only outside Electron — the desktop app uses the real one).
+//   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
+//                  only outside Electron — the desktop app uses the real ones).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
 // Every texts/rule decision lives in devModel.ts (pure, tested).
 import {

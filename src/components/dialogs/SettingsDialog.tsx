@@ -5,6 +5,7 @@
 // the reset to defaults and the export / import of a settings file). Rows: SettingsBasic.tsx / SettingsAdvanced.tsx.
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../lib/aboutModel'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -21,6 +22,7 @@ import {
   ZipPromptsSetting,
 } from './SettingsAdvanced'
 import {
+  AboutBlock,
   AppBlock,
   AskWhereSetting,
   AutoDownloadSetting,
@@ -297,6 +299,8 @@ const GROUPS: Group[] = [
     keywords: 'dev phát triển giả lập debug bug lỗi nhật ký log tốc độ credit dev',
     Block: DevBlock,
   },
+  // Version, author, copyright and the app's code signature (texts: lib/aboutModel.ts).
+  { id: 'about', level: 'basic', col: 1, title: ABOUT_TITLE, desc: ABOUT_DESC, keywords: ABOUT_KEYWORDS, Block: AboutBlock },
 ]
 
 const LEVEL_KEY = 'bdp:pref:settingsLevel'

@@ -1,5 +1,6 @@
 // Auto-update UI model (lib/updateModel): received states are validated, release notes never render HTML, numbers and
 // dates read in Vietnamese, and the pill / dialog / toasts say exactly what the spec says for every state.
+import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 import {
   autoDownloadNote,
@@ -8,6 +9,7 @@ import {
   formatPercent,
   formatReleaseDate,
   formatSpeed,
+  hasUpdateDetails,
   installBlockers,
   lastCheckText,
   manualCheckToast,
@@ -349,6 +351,41 @@ describe('dialogView', () => {
     expect(v.actions[0].label).toBe('Thử lại')
     expect(v.showNotes).toBe(false)
     expect(dialogView(st({ status: 'error', version: '0.5.1', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }), ctx).showNotes).toBe(true)
+  })
+
+  it('signature refused: the text as is (no automatic retry), the download page first', () => {
+    const v = dialogView(st({ status: 'error', version: '0.5.92', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } }), ctx)
+    expect(v.statusText).toBe(
+      'Không xác minh được chữ ký số của tác giả trên bản cập nhật nên SanoVids đã bỏ file đó, không cài. Hãy tải bộ cài ở trang tải về rồi cài đè lên bản đang dùng.',
+    )
+    expect(v.statusText).not.toContain('tự thử lại')
+    expect(v.actions).toEqual([
+      { id: 'openPage', label: 'Mở trang tải về', primary: true, title: 'Mở trang tải về trên GitHub trong trình duyệt' },
+      { id: 'retry', label: 'Thử lại' },
+      { id: 'close', label: 'Đóng' },
+    ])
+    expect(v.showNotes).toBe(true)
+    expect(v.showProgress).toBe(false)
+    expect(dialogView(st({ status: 'error', error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } }), ctx).showNotes).toBe(false)
+    // Other errors keep the automatic-retry sentence and "Thử lại" first.
+    expect(ids(dialogView(st({ status: 'error', version: '0.5.92', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }), ctx))).toEqual(['retry*', 'close'])
+  })
+
+  it('"Xem chi tiết" also leads to a version refused for its signature (its dialog offers the download page)', () => {
+    const sig = { code: 'signature' as const, message: UPDATE_ERROR_TEXT.signature }
+    expect(hasUpdateDetails(st({ status: 'error', version: '0.5.92', error: sig }))).toBe(true)
+    expect(hasUpdateDetails(st({ status: 'error', error: sig }))).toBe(false)
+    expect(hasUpdateDetails(st({ status: 'error', version: '0.5.92', error: { code: 'checksum', message: UPDATE_ERROR_TEXT.checksum } }))).toBe(false)
+    expect(hasUpdateDetails(st({ kind: 'dev', status: 'error', version: '0.5.92', error: sig }))).toBe(false)
+    for (const status of ['available', 'downloading', 'ready'] as const) expect(hasUpdateDetails(st({ status, version: '0.5.1' }))).toBe(true)
+    expect(hasUpdateDetails(st({ status: 'none' }))).toBe(false)
+  })
+
+  it('the signature text is the one main sends (electron/updater-rules.cjs)', () => {
+    const mainRules = createRequire(import.meta.url)('../../../electron/updater-rules.cjs') as { ERROR_TEXT: Record<string, string> }
+    expect(UPDATE_ERROR_TEXT.signature).toBe(mainRules.ERROR_TEXT.signature)
+    expect(UPDATE_ERROR_TEXT.signature.length).toBeLessThanOrEqual(300)
+    for (const code of Object.keys(mainRules.ERROR_TEXT)) expect(UPDATE_ERROR_TEXT[code as keyof typeof UPDATE_ERROR_TEXT], code).toBe(mainRules.ERROR_TEXT[code])
   })
 })
 

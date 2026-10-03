@@ -1,7 +1,7 @@
-// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data.
-// Each row subscribes to its own pref only (the dialog never re-renders as a whole) and applies at once; the stores
-// save and validate the values (lib/theme, lib/downloads, lib/playback, lib/canvasPrefs, store/ui, store/project,
-// lib/updatePrefs).
+// Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data,
+// about (version, author, code signature). Each row subscribes to its own pref only (the dialog never re-renders as a
+// whole) and applies at once; the stores save and validate the values (lib/theme, lib/downloads, lib/playback,
+// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature.
 import {
   AppWindow,
   CircleArrowUp,
@@ -9,6 +9,7 @@ import {
   Clock,
   CloudDownload,
   Download,
+  ExternalLink,
   FileUp,
   FolderDown,
   FolderOpen,
@@ -19,12 +20,32 @@ import {
   MonitorDown,
   Moon,
   RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestionMark,
   Sparkles,
   Sun,
   TriangleAlert,
 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { version as APP_VERSION } from '../../../package.json'
 import type { EdgeMode } from '../../core/types'
+import {
+  ABOUT_AUTHOR_LINE,
+  ABOUT_COPYRIGHT,
+  ABOUT_DESC,
+  ABOUT_DOWNLOAD_LINE,
+  ABOUT_LICENSE_NOTE,
+  ABOUT_OPEN_PAGE,
+  ABOUT_OPEN_PAGE_TITLE,
+  ABOUT_OPEN_SOURCE,
+  ABOUT_PARTNER_LINE,
+  ABOUT_TITLE,
+  signatureView,
+  thumbprintRows,
+  versionLine,
+} from '../../lib/aboutModel'
+import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
 import { useCanvasPrefs } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
@@ -33,12 +54,13 @@ import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
-import { useUpdates } from '../../lib/updates'
+import { openReleasePage, useUpdates } from '../../lib/updates'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
 import { useProject } from '../../store/project'
 import { toast, useUI, type InteractionMode, type TakeDisplay } from '../../store/ui'
 import { checkNow, openUpdateDialog, useInstallUi } from '../../updateActions'
 import { rateLabel } from '../canvas/playerModel'
+import { Logo } from '../common/Logo'
 import './dialogs.css'
 import { Segmented } from './Segmented'
 import { Field, Section, Toggle, useSettingsCtx, type RowProps } from './settingsUi'
@@ -507,6 +529,86 @@ export function AppBlock() {
         </div>
       )}
       <div className="dg-field-hint">Mỗi trình duyệt / bản app giữ dữ liệu riêng. Chuyển máy: Xuất dự án ở mục Dữ liệu dự án rồi Nhập file .sanovids.json ở máy kia (file .bdp.json cũ vẫn nhập được).</div>
+    </Section>
+  )
+}
+
+// ---------------- Giới thiệu (block) ----------------
+/** Version, author (Sano Group only as a partner), copyright, licence and the app's own code-signature self-check. */
+export function AboutBlock() {
+  const sig = useAppSignature((s) => s.sig)
+  const kind = useUpdates((s) => s.state.kind)
+  const { desktop } = usePwaInstall()
+  const [opening, setOpening] = useState(false)
+
+  useEffect(() => {
+    void loadAppSignature()
+  }, [])
+
+  const version = desktopInfo()?.version || APP_VERSION
+  const view = signatureView(sig)
+
+  const openPage = async () => {
+    if (opening) return
+    setOpening(true)
+    try {
+      const res = await openReleasePage()
+      if (!res.ok) toast(res.message, { tone: 'error' })
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  return (
+    <Section title={ABOUT_TITLE} desc={ABOUT_DESC}>
+      <div className="dg-about-head">
+        <span className="dg-about-logo" aria-hidden="true">
+          <Logo size={40} />
+        </span>
+        <span className="dg-about-name">
+          <b>SanoVids</b>
+          <small>{versionLine(version, kind, desktop)}</small>
+        </span>
+      </div>
+      <div className="dg-about-lines">
+        <p className="dg-about-author">{ABOUT_AUTHOR_LINE}</p>
+        <p>{ABOUT_PARTNER_LINE}</p>
+        <p>{ABOUT_COPYRIGHT}</p>
+        <p className="dg-about-license">{ABOUT_LICENSE_NOTE}</p>
+      </div>
+      <div className="dg-about-sig" role="status">
+        {view.tone === 'warn' ? (
+          <div className="dg-callout warn">
+            <ShieldAlert size={15} />
+            <div>
+              <b>{view.title}</b>
+              <div>{view.detail}</div>
+            </div>
+          </div>
+        ) : (
+          <div className="dg-app-status">
+            <span className={`dg-app-icon${view.tone === 'ok' ? ' on' : ''}`} aria-hidden="true">
+              {view.tone === 'ok' ? <ShieldCheck size={17} /> : <ShieldQuestionMark size={17} />}
+            </span>
+            <span>
+              <b>{view.title}</b>
+              {view.detail ? <small>{view.detail}</small> : null}
+            </span>
+          </div>
+        )}
+        {thumbprintRows(sig).map((row) => (
+          <p key={row.label} className="dg-about-thumb">
+            {row.label}: <span className="mono">{row.value}</span>
+          </p>
+        ))}
+      </div>
+      <div className="dg-about-download">
+        <span>{ABOUT_DOWNLOAD_LINE}</span>
+        <button type="button" className="btn btn-sm" disabled={opening} onClick={() => void openPage()} title={ABOUT_OPEN_PAGE_TITLE}>
+          {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {ABOUT_OPEN_PAGE}
+        </button>
+      </div>
+      <div className="dg-field-hint">{ABOUT_OPEN_SOURCE}</div>
     </Section>
   )
 }

@@ -7,6 +7,7 @@
 // Call initPwa() once at startup (main.tsx) so the one-shot beforeinstallprompt event is never missed.
 import { useSyncExternalStore } from 'react'
 import type { CanvasappBridge } from '../providers/canvasapp/transport'
+import type { DesktopAppBridge } from './appSignature'
 import type { DesktopFilesBridge } from './desktopFiles'
 import type { DesktopUpdatesBridge } from './updateTypes'
 import { flush, useSave } from '../store/persist'
@@ -27,6 +28,8 @@ export interface DesktopInfo {
   version: string
   electron?: string
   platform?: string
+  /** self-check of the app's code signature; missing in builds before 0.5.0 */
+  app?: DesktopAppBridge
   /**
    * canvasapp.io.vn gateway (IPC to the main process); missing in older desktop builds. See providers/canvasapp.
    * Includes `checkout()` (top-up: opens the real SePay page in a modal window) in builds that support it.

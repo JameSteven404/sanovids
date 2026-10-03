@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { create } from 'zustand'
 import type { UpdatesStore } from '../lib/updates'
 import type { UpdateResult, UpdateState } from '../lib/updateTypes'
+import { UPDATE_ERROR_TEXT } from '../lib/updateModel'
 import { COUNTDOWN_MS, createUpdateController, INSTALL_WATCHDOG_MS, SEND_WAIT_MS, UPDATE_TOAST, type UpdateControllerDeps } from '../updateActions'
 
 const ready = (version = '0.5.1', patch: Partial<UpdateState> = {}): UpdateState => ({
@@ -170,6 +171,30 @@ describe('effects', () => {
     expect(failed.deps.client.openReleasePage).toHaveBeenCalled()
   })
 
+  it('a download refused for its signature: one toast per version with "Trang tải về" (none while the dialog shows it)', () => {
+    const sigError = (version: string): UpdateState => ({
+      kind: 'installer',
+      current: '0.5.0',
+      status: 'error',
+      version,
+      autoDownload: true,
+      error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature },
+    })
+    const h = harness()
+    h.c.start()
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'downloading', version: '0.5.1', percent: 40, autoDownload: true })
+    h.setState(sigError('0.5.1'))
+    h.setState({ kind: 'installer', current: '0.5.0', status: 'available', version: '0.5.1', autoDownload: true })
+    h.setState(sigError('0.5.1')) // the same version found again by a later check: no second toast
+    expect(h.texts()).toEqual([UPDATE_ERROR_TEXT.signature])
+    expect(h.toasts[0].opts).toMatchObject({ tone: 'error', action: { label: 'Trang tải về' } })
+    h.runToastAction(UPDATE_ERROR_TEXT.signature)
+    expect(h.deps.client.openReleasePage).toHaveBeenCalledTimes(1)
+    h.setDialog('update')
+    h.setState(sigError('0.5.2'))
+    expect(h.texts()).toHaveLength(1)
+  })
+
   it('automatic checks stay silent', () => {
     for (const kind of ['installer', 'portable'] as const) {
       const h = harness({ kind, current: '0.5.0', status: 'idle', autoDownload: true })
@@ -284,6 +309,35 @@ describe('installNow', () => {
     expect(h.texts()).toEqual([UPDATE_TOAST.installFailed])
     await vi.advanceTimersByTimeAsync(INSTALL_WATCHDOG_MS)
     expect(h.texts()).toHaveLength(1) // the watchdog was cleared
+  })
+
+  it('main refuses the installer for its signature → the hold is given back, the signature toast (not "install failed")', async () => {
+    const h = harness(ready())
+    h.c.start()
+    h.toasts.length = 0
+    vi.mocked(h.deps.client.install).mockImplementationOnce(async () => {
+      // main pushes the error state before it answers the install request
+      h.setState({ ...ready(), status: 'error', percent: undefined, error: { code: 'signature', message: UPDATE_ERROR_TEXT.signature } })
+      return { ok: false, code: 'signature', message: UPDATE_ERROR_TEXT.signature }
+    })
+    const done = h.c.installNow()
+    await vi.advanceTimersByTimeAsync(10)
+    await done
+    expect(h.c.installUi.getState().busy).toBeNull()
+    expect(h.hold()).toBe(false)
+    expect(h.texts()).toEqual([UPDATE_ERROR_TEXT.signature])
+    await vi.advanceTimersByTimeAsync(INSTALL_WATCHDOG_MS)
+    expect(h.texts()).toHaveLength(1)
+
+    // The answer before the push: still no "install failed" toast, and the hold is given back.
+    const h2 = harness(ready())
+    h2.results.install = { ok: false, code: 'signature', message: UPDATE_ERROR_TEXT.signature }
+    const done2 = h2.c.installNow()
+    await vi.advanceTimersByTimeAsync(10)
+    await done2
+    expect(h2.hold()).toBe(false)
+    expect(h2.c.installUi.getState().busy).toBeNull()
+    expect(h2.texts()).not.toContain(UPDATE_TOAST.installFailed)
   })
 
   it('does nothing unless an installer update is ready', async () => {

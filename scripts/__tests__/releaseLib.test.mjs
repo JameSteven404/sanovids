@@ -1,15 +1,22 @@
 // Unit tests of the pure release helpers (scripts/releaseLib.mjs). Fixtures: the real CHANGELOG.md, the latest.yml
-// of the published 0.4.2 build and a hand-made asar header.
+// of the published 0.4.2 build, a hand-made asar header and the public signing certificate (build/signing/*.cer).
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { load as loadYaml } from 'js-yaml'
 import {
+  AUTHOR,
+  COPYRIGHT_BUILD,
+  EXPECTED_FUSE_WIRE,
+  FUSE_NAMES,
   NOTES_CAP,
   PRIVATE_REPO,
   PUBLIC_REPO,
   PUBLISH_ENTRY,
+  SIGNER_THUMBPRINT,
+  SIGNING_CERT_FILE,
+  SIGNING_NOTE,
   asarDataOffset,
   asarDependencyProblems,
   asarEntry,
@@ -17,10 +24,17 @@ import {
   asarHeaderBytes,
   assetsFor,
   boldTitlesToHeadings,
+  buildArgsProblem,
   buildReleaseNotes,
   capText,
+  certThumbprint,
   checkAppUpdateYml,
+  checkCertFile,
+  checkFuseWire,
   checkLatestYml,
+  checkPackagedIdentity,
+  checkSignatureVerdict,
+  checkVersionInfo,
   compareAssets,
   compareVersions,
   extractChangelogSection,
@@ -31,6 +45,7 @@ import {
   ghPublishArgs,
   ghUploadArgs,
   newestPublishedVersion,
+  offlineEnvSet,
   peeledTagSha,
   planTarget,
   readAsarHeader,
@@ -43,6 +58,10 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CHANGELOG = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
+/** The public part of the real signing certificate (early signing track; DER, no key). */
+const CERT = fs.readFileSync(path.join(root, 'build', 'signing', 'SanoVids-NguyenGiangMinh.cer'))
+const PIN = '7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED'
+const TEST_PIN = 'A'.repeat(40)
 
 const LATEST_042 = `version: 0.4.2
 files:
@@ -145,13 +164,21 @@ describe('notes text', () => {
     expect(text.length).toBeLessThanOrEqual(NOTES_CAP + 1)
   })
   it('section titles become headings (the in-app notes show "### …" as headings)', () => {
-    const { text } = updateNotesText(CHANGELOG, '0.5.0')
+    const { found, text } = updateNotesText(CHANGELOG, '0.5.0')
+    expect(found).toBe(true)
+    // the 0.5.0 section fits the app's notes without being cut
+    expect(text.endsWith('…\n')).toBe(false)
     const headings = text.split('\n').filter((l) => l.startsWith('### '))
-    expect(headings).toEqual([
-      '### ✨ SanoVids tự cập nhật (bản cài Setup)',
-      '### ⚠️ Lần này phải cài tay 0.5.0 một lần',
-      '### 🛠️ Trang tải về chuyển sang',
-    ])
+    expect(headings).toEqual(
+      expect.arrayContaining([
+        '### ✨ SanoVids tự cập nhật (bản cài Setup)',
+        '### ⚠️ Lần này phải cài tay 0.5.0 một lần',
+        '### 🛠️ Trang tải về chuyển sang',
+      ]),
+    )
+    // only the CHANGELOG symbols, and no "emoji **Title**" line left unconverted
+    for (const h of headings) expect(h).toMatch(/^### (✨|🛠️|🐞|⚠️) \S/u)
+    expect(text).not.toMatch(/^(✨|🛠️|🐞|⚠️)\s+\*\*/mu)
     // a longer text after the bold part becomes the paragraph under the heading
     const after = text.split('\n')[text.split('\n').indexOf('### 🛠️ Trang tải về chuyển sang') + 1]
     expect(after.startsWith('[github.com/JameSteven404/sanovids-releases](')).toBe(true)
@@ -185,12 +212,15 @@ describe('release names and notes', () => {
       blockmap: 'SanoVids-Setup-0.5.0.exe.blockmap',
       latestYml: 'latest.yml',
     })
-    expect(assetsFor('private', '0.5.0')).toEqual(['SanoVids-Setup-0.5.0.exe', 'SanoVids-Portable-0.5.0.exe'])
+    // the public certificate (no key) goes with every release, in both repos
+    expect(SIGNING_CERT_FILE).toBe('SanoVids-NguyenGiangMinh.cer')
+    expect(assetsFor('private', '0.5.0')).toEqual(['SanoVids-Setup-0.5.0.exe', 'SanoVids-Portable-0.5.0.exe', 'SanoVids-NguyenGiangMinh.cer'])
     expect(assetsFor('public', '0.5.0')).toEqual([
       'SanoVids-Setup-0.5.0.exe',
       'SanoVids-Setup-0.5.0.exe.blockmap',
       'latest.yml',
       'SanoVids-Portable-0.5.0.exe',
+      'SanoVids-NguyenGiangMinh.cer',
     ])
     expect(() => assetsFor('other', '0.5.0')).toThrow()
   })
@@ -211,11 +241,26 @@ describe('release names and notes', () => {
       '\n✨ **Mới**\n- a\n\n---\n\n### ⬇️ Tải về\n\n| File | Dùng khi | SHA-256 |\n|---|---|---|\n' +
         `| **SanoVids-Setup-0.5.0.exe** | **Khuyên dùng.** Cài vào máy, có icon Desktop/Start Menu, tự cập nhật các bản sau. | \`${SHA_A}\` |\n` +
         `| **SanoVids-Portable-0.5.0.exe** | Chạy không cần cài (hợp chép USB). Không tự cập nhật — app chỉ báo có bản mới. | \`${SHA_B}\` |\n\n` +
-        'Cài đè lên bản cũ được, dự án và cài đặt giữ nguyên. Lịch sử đầy đủ: [CHANGELOG.md](https://github.com/JameSteven404/sanovids/blob/main/CHANGELOG.md).\n',
+        'Cài đè lên bản cũ được, dự án và cài đặt giữ nguyên. Lịch sử đầy đủ: [CHANGELOG.md](https://github.com/JameSteven404/sanovids/blob/main/CHANGELOG.md).\n\n' +
+        'Bản cài được ký số bởi **Nguyễn Giang Minh (Jame Steven)** — dấu vân tay chứng chỉ `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`. ' +
+        'Kiểm tra: chuột phải file → Properties → Digital Signatures. File `SanoVids-NguyenGiangMinh.cer` là chứng chỉ công khai (không chứa khoá).\n',
     )
     const pub = buildReleaseNotes({ version: '0.5.0', body: '✨ a', sha256, audience: 'public' })
     expect(pub).toContain('`latest.yml` và `.blockmap` là file dùng cho việc tự cập nhật — không cần tải.')
     expect(pub).not.toContain('github.com/JameSteven404/sanovids/')
+    expect(pub.endsWith(`\n\n${SIGNING_NOTE}\n`)).toBe(true)
+  })
+  it('the signing footer names the author and the pinned thumbprint (NFC, = the public certificate)', () => {
+    expect(SIGNING_NOTE).toBe(
+      'Bản cài được ký số bởi **Nguyễn Giang Minh (Jame Steven)** — dấu vân tay chứng chỉ `7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED`. ' +
+        'Kiểm tra: chuột phải file → Properties → Digital Signatures. File `SanoVids-NguyenGiangMinh.cer` là chứng chỉ công khai (không chứa khoá).',
+    )
+    expect(SIGNING_NOTE).toBe(SIGNING_NOTE.normalize('NFC'))
+    expect(AUTHOR).toBe('Nguyễn Giang Minh (Jame Steven)')
+    expect(AUTHOR).toBe(AUTHOR.normalize('NFC'))
+    expect(COPYRIGHT_BUILD).toBe('© 2026 Nguyễn Giang Minh (Jame Steven) · Đồng hành: Sano Group')
+    expect(COPYRIGHT_BUILD).toBe(COPYRIGHT_BUILD.normalize('NFC'))
+    expect(certThumbprint(CERT)).toBe(SIGNER_THUMBPRINT)
   })
   it('refuses notes without checksums or with an unknown audience', () => {
     expect(() => buildReleaseNotes({ version: '0.5.0', body: 'x', sha256: {}, audience: 'public' })).toThrow(/SHA-256/)
@@ -256,29 +301,216 @@ describe('checkLatestYml (0.4.2 latest.yml)', () => {
 })
 
 describe('checkAppUpdateYml', () => {
-  const good = { owner: 'JameSteven404', repo: 'sanovids-releases', provider: 'github', releaseType: 'release', updaterCacheDirName: 'sanovids-updater' }
-  it('accepts the public feed', () => {
-    expect(checkAppUpdateYml(good)).toEqual([])
-    expect(checkAppUpdateYml(loadYaml('owner: JameSteven404\nrepo: sanovids-releases\nprovider: github\nreleaseType: release\nupdaterCacheDirName: sanovids-updater\n'))).toEqual([])
+  const want = { publisherName: AUTHOR }
+  const good = {
+    owner: 'JameSteven404',
+    repo: 'sanovids-releases',
+    provider: 'github',
+    releaseType: 'release',
+    publisherName: [AUTHOR],
+    updaterCacheDirName: 'sanovids-updater',
+  }
+  // what electron-builder writes (js-yaml dump of the publish config + publisherName from signtoolOptions)
+  const SIGNED_YML = `owner: JameSteven404\nrepo: sanovids-releases\nprovider: github\nreleaseType: release\npublisherName:\n  - ${AUTHOR}\nupdaterCacheDirName: sanovids-updater\n`
+  it('accepts the signed public feed (array or string publisherName)', () => {
+    expect(checkAppUpdateYml(good, want)).toEqual([])
+    expect(checkAppUpdateYml(loadYaml(SIGNED_YML), want)).toEqual([])
+    expect(checkAppUpdateYml({ ...good, publisherName: AUTHOR }, want)).toEqual([])
+    // compared after NFC: a decomposed "ễ" in the file is the same name
+    expect(checkAppUpdateYml({ ...good, publisherName: [AUTHOR.normalize('NFD')] }, want)).toEqual([])
   })
-  it('refuses the 0.4.2 feed (private source repo)', () => {
-    const p = checkAppUpdateYml(loadYaml('owner: JameSteven404\nrepo: sanovids\nprovider: github\nupdaterCacheDirName: sanovids-updater\n'))
-    expect(p).toHaveLength(1)
+  it('publisherName is REQUIRED (the signed-update lock)', () => {
+    const missing = checkAppUpdateYml(loadYaml(SIGNED_YML.replace(`publisherName:\n  - ${AUTHOR}\n`, '')), want)
+    expect(missing).toEqual(['app-update.yml thiếu publisherName — app sẽ không kiểm tra chữ ký số của bản cập nhật.'])
+    expect(checkAppUpdateYml({ ...good, publisherName: [] }, want)).toEqual(missing)
+    expect(checkAppUpdateYml({ ...good, publisherName: null }, want)).toEqual(missing)
+  })
+  it('a wrong publisherName fails', () => {
+    for (const bad of [['Nguyễn Giang Minh'], ['Nguy?n Giang Minh (Jame Steven)'], 'SanoVids', [AUTHOR, 'SanoVids Thử Nghiệm A'], [42], { name: AUTHOR }]) {
+      const p = checkAppUpdateYml({ ...good, publisherName: bad }, want)
+      expect(p).toHaveLength(1)
+      expect(p[0]).toMatch(/^publisherName trong app-update.yml là .*, cần \["Nguyễn Giang Minh \(Jame Steven\)"\]\.$/)
+    }
+  })
+  it('without an expected publisherName nothing passes (fail closed)', () => {
+    expect(checkAppUpdateYml(good)).toHaveLength(1)
+    expect(checkAppUpdateYml(good, { publisherName: '' })).toHaveLength(1)
+  })
+  it('refuses the 0.4.2 feed (private source repo, unsigned)', () => {
+    const p = checkAppUpdateYml(loadYaml('owner: JameSteven404\nrepo: sanovids\nprovider: github\nupdaterCacheDirName: sanovids-updater\n'), want)
+    expect(p).toHaveLength(2)
     expect(p[0]).toMatch(/sanovids-releases/)
+    expect(p[1]).toMatch(/thiếu publisherName/)
   })
-  it('refuses tokens, private, publisherName, channel and other providers', () => {
-    expect(checkAppUpdateYml({ ...good, token: 'x' })).toHaveLength(1)
-    expect(checkAppUpdateYml({ ...good, private: true })).toHaveLength(1)
-    expect(checkAppUpdateYml({ ...good, publisherName: ['x'] })).toHaveLength(1)
-    expect(checkAppUpdateYml({ ...good, channel: 'beta' })).toHaveLength(1)
-    expect(checkAppUpdateYml({ ...good, provider: 'generic', owner: 'x' })).toHaveLength(2)
-    expect(checkAppUpdateYml(null)).toHaveLength(1)
+  it('refuses tokens, private, channel and other providers', () => {
+    expect(checkAppUpdateYml({ ...good, token: 'x' }, want)).toHaveLength(1)
+    expect(checkAppUpdateYml({ ...good, private: true }, want)).toHaveLength(1)
+    expect(checkAppUpdateYml({ ...good, channel: 'beta' }, want)).toHaveLength(1)
+    expect(checkAppUpdateYml({ ...good, provider: 'generic', owner: 'x' }, want)).toHaveLength(2)
+    expect(checkAppUpdateYml(null, want)).toHaveLength(1)
   })
   it('PUBLISH_ENTRY is the anonymous public feed', () => {
     expect(PUBLISH_ENTRY).toEqual({ provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases', releaseType: 'release' })
-    expect(checkAppUpdateYml({ ...PUBLISH_ENTRY })).toEqual([])
+    expect(checkAppUpdateYml({ ...PUBLISH_ENTRY, publisherName: [AUTHOR] }, want)).toEqual([])
     expect(PUBLIC_REPO).toBe('JameSteven404/sanovids-releases')
     expect(PRIVATE_REPO).toBe('JameSteven404/sanovids')
+  })
+})
+
+describe('signed build checks', () => {
+  const genuine = { ok: true, status: 'signed', reason: 'ok', thumbprint: PIN, signer: AUTHOR, timestamped: true }
+  it('checkSignatureVerdict: signed AND timestamped, nothing else', () => {
+    expect(checkSignatureVerdict('Setup', genuine)).toEqual([])
+    const noTs = checkSignatureVerdict('Setup', { ...genuine, timestamped: false })
+    expect(noTs).toHaveLength(1)
+    expect(noTs[0]).toMatch(/thiếu dấu thời gian/)
+    expect(checkSignatureVerdict('Setup', { ...genuine, ok: false })).toHaveLength(1)
+    expect(checkSignatureVerdict('Setup', { ok: false, status: 'unsigned', reason: 'not-signed', timestamped: false })[0]).toBe('Setup chưa được ký số.')
+    const other = checkSignatureVerdict('Setup', { ok: false, status: 'other-signer', reason: 'other-signer', thumbprint: '5B768D22' + '0'.repeat(32), signer: AUTHOR, timestamped: true })
+    expect(other[0]).toMatch(/không phải chứng chỉ của tác giả/)
+    expect(other[0]).toContain('5B768D22')
+    expect(checkSignatureVerdict('Setup', { ok: false, status: 'tampered', reason: 'hash-mismatch', thumbprint: PIN, timestamped: true })[0]).toMatch(/bị sửa/)
+    expect(checkSignatureVerdict('Setup', { ok: false, status: 'unknown', reason: 'verify-failed', timestamped: false })[0]).toMatch(/không đọc được/)
+    expect(checkSignatureVerdict('Setup', { ok: false, status: 'unknown', reason: 'bad-chain', timestamped: false })[0]).toMatch(/chuỗi chứng chỉ/)
+    expect(checkSignatureVerdict('Setup', { ok: false, status: 'unknown', reason: 'no-pins', timestamped: false })[0]).toMatch(/sanovids\.signers/)
+    expect(checkSignatureVerdict('Setup', null)).toHaveLength(1)
+  })
+
+  it('checkFuseWire: the exact wire on 0–7, index 8+ ignored', () => {
+    const wire = { version: '1', ...EXPECTED_FUSE_WIRE, 8: 49 }
+    expect(EXPECTED_FUSE_WIRE).toEqual({ 0: 48, 1: 48, 2: 48, 3: 48, 4: 49, 5: 49, 6: 48, 7: 48 })
+    expect(FUSE_NAMES).toHaveLength(8)
+    expect(checkFuseWire(wire)).toEqual([])
+    expect(checkFuseWire({ ...wire, 8: 48 })).toEqual([])
+    // stock electron.exe: RunAsNode on, cookie encryption off, NodeOptions on, inspect on, no asar integrity…
+    const stock = { 0: 49, 1: 48, 2: 49, 3: 49, 4: 48, 5: 48, 6: 48, 7: 49, 8: 49, version: '1' }
+    const p = checkFuseWire(stock)
+    expect(p).toHaveLength(6)
+    expect(p[0]).toBe('Fuse RunAsNode đang bật, cần tắt.')
+    // cookie encryption must stay OFF
+    expect(checkFuseWire({ ...wire, 1: 49 })).toEqual(['Fuse EnableCookieEncryption đang bật, cần tắt.'])
+    expect(checkFuseWire({ ...wire, 6: 114 })).toEqual(['Fuse LoadBrowserProcessSpecificV8Snapshot đang đã bị bỏ, cần tắt.'])
+    expect(checkFuseWire({ ...wire, version: '2' })).toHaveLength(1)
+    const short = { version: '1', 0: 48, 1: 48, 2: 48 }
+    expect(checkFuseWire(short)).toHaveLength(5)
+    expect(checkFuseWire(null)).toHaveLength(1)
+  })
+
+  it('checkPackagedIdentity: release name / version / author / exact pins, no test profile', () => {
+    const repo = { name: 'sanovids', productName: 'SanoVids', version: '0.5.0', author: { name: AUTHOR }, sanovids: { signers: [PIN] } }
+    const inner = { name: 'sanovids', productName: 'SanoVids', version: '0.5.0', author: { name: AUTHOR }, sanovids: { signers: [PIN] } }
+    expect(checkPackagedIdentity(inner, repo)).toEqual([])
+    // electron-builder may keep normalizePackageData's url next to the restored name
+    expect(checkPackagedIdentity({ ...inner, author: { name: AUTHOR, url: 'Jame Steven' } }, repo)).toEqual([])
+    // a test build: extraMetadata pins are unioned with the real one → [PIN, TEST]
+    const unioned = checkPackagedIdentity({ ...inner, sanovids: { signers: [PIN, TEST_PIN] } }, repo)
+    expect(unioned).toHaveLength(1)
+    expect(unioned[0]).toMatch(/sanovids\.signers/)
+    expect(checkPackagedIdentity({ ...inner, sanovids: { signers: [TEST_PIN] } }, repo)).toHaveLength(1)
+    expect(checkPackagedIdentity({ ...inner, sanovids: undefined }, repo)[0]).toMatch(/không có sanovids\.signers/)
+    expect(checkPackagedIdentity({ ...inner, author: { name: 'Nguyễn Giang Minh' } }, repo)[0]).toMatch(/tác giả/)
+    expect(checkPackagedIdentity({ ...inner, author: 'SanoVids' }, repo)).toHaveLength(1)
+    expect(checkPackagedIdentity({ ...inner, sanovidsTestProfileDir: 'C:\\x' }, repo)[0]).toMatch(/thử nghiệm/)
+    expect(checkPackagedIdentity({ ...inner, name: 'sanovids-sigt1', productName: 'SanoVidsSigT1', version: '0.5.80' }, repo)).toHaveLength(3)
+    expect(checkPackagedIdentity(inner, { ...repo, sanovids: {} })[0]).toMatch(/không có sanovids\.signers/)
+    expect(checkPackagedIdentity(null, repo)).toHaveLength(1)
+  })
+
+  it('checkVersionInfo: CompanyName = author (with "(Jame Steven)"), LegalCopyright = build.copyright', () => {
+    const expected = { company: AUTHOR, copyright: COPYRIGHT_BUILD }
+    expect(checkVersionInfo('SanoVids.exe', { companyName: AUTHOR, legalCopyright: COPYRIGHT_BUILD, productName: 'SanoVids' }, expected)).toEqual([])
+    const truncated = checkVersionInfo('SanoVids.exe', { companyName: 'Nguyễn Giang Minh', legalCopyright: COPYRIGHT_BUILD }, expected)
+    expect(truncated).toEqual(['SanoVids.exe: CompanyName là "Nguyễn Giang Minh", cần "Nguyễn Giang Minh (Jame Steven)".'])
+    expect(checkVersionInfo('Setup', { companyName: 'SanoVids', legalCopyright: '© 2026 SanoVids' }, expected)).toHaveLength(2)
+    expect(checkVersionInfo('Setup', { companyName: null, legalCopyright: null }, expected)).toHaveLength(2)
+    expect(checkVersionInfo('Setup', null, expected)).toHaveLength(1)
+  })
+
+  it('checkCertFile: the public certificate is pinned and holds no key', () => {
+    expect(certThumbprint(CERT)).toBe(PIN)
+    expect(checkCertFile(CERT, [PIN])).toEqual([])
+    expect(checkCertFile(CERT, [PIN.toLowerCase()])).toEqual([])
+    expect(checkCertFile(CERT, [TEST_PIN, PIN])).toEqual([])
+    expect(checkCertFile(CERT, [TEST_PIN])[0]).toMatch(/không nằm trong package\.json sanovids\.signers/)
+    expect(checkCertFile(CERT, [])).toHaveLength(1)
+    // PEM form of the same certificate is fine too
+    const pem = `-----BEGIN CERTIFICATE-----\n${CERT.toString('base64').replace(/(.{64})/g, '$1\n')}\n-----END CERTIFICATE-----\n`
+    expect(checkCertFile(Buffer.from(pem), [PIN])).toEqual([])
+    // anything carrying a private key is refused outright
+    expect(checkCertFile(Buffer.from(`${pem}-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n`), [PIN])[0]).toMatch(/khoá riêng/)
+    expect(checkCertFile(Buffer.from('not a certificate'), [PIN])[0]).toMatch(/không phải chứng chỉ/)
+    expect(checkCertFile(Buffer.alloc(0), [PIN])).toHaveLength(1)
+    expect(certThumbprint(Buffer.from('x'))).toBeNull()
+  })
+})
+
+describe('release scripts (source guarantees)', () => {
+  const read = (f) => fs.readFileSync(path.join(root, 'scripts', f), 'utf8')
+  it('tidy-release requires publisherName in the packaged feed and names the signer in DOC-TOI.txt', () => {
+    const src = read('tidy-release.mjs')
+    expect(src).toContain('/^publisherName:/m.test(feedText)')
+    expect(src).toContain('!/^(token|private|channel):/m.test(feedText)')
+    expect(src).not.toMatch(/token\|private\|publisherName/)
+    expect(src).toContain('`Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`')
+    expect(`Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`).toBe(
+      'Bộ cài được ký số bởi Nguyễn Giang Minh (Jame Steven) — vân tay chứng chỉ 7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED.',
+    )
+  })
+  it('publish-release checks the signed build before anything is published', () => {
+    const src = read('publish-release.mjs')
+    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs']) {
+      expect(src).toContain(`'${f}'`)
+    }
+    expect(src).toContain('checkPackagedIdentity(inner, pkg)')
+    expect(src).toContain("inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName)")
+    expect(src).toContain('await inspectWindowsBuild(')
+    expect(src).toContain('offlineEnvSet(process.env)')
+    expect(src).toContain("path.join(root, 'build', 'signing', SIGNING_CERT_FILE)")
+    // (j) is a hard gate: it runs before the `if (failures) … exit(1)` that guards every gh write
+    expect(src.indexOf('await inspectWindowsBuild(')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
+  })
+})
+
+describe('electron-build refusals', () => {
+  const ARGS = ['--win', 'nsis', 'portable', '--publish', 'never']
+  it('the dist:win command line passes', () => {
+    expect(buildArgsProblem({}, ARGS)).toBeNull()
+    expect(buildArgsProblem({ PATH: 'x', ELECTRON_BUILDER_OFFLINE: '0' }, ARGS)).toBeNull()
+    expect(buildArgsProblem({ ELECTRON_BUILDER_OFFLINE: 'false' }, ARGS)).toBeNull()
+    expect(buildArgsProblem({}, ['--publish', 'never', '--win', '--dir', '-c.directories.output=C:\\tmp\\x'])).toBeNull()
+  })
+  it('refuses ELECTRON_BUILDER_OFFLINE (any truthy value, any case of the name)', () => {
+    for (const env of [{ ELECTRON_BUILDER_OFFLINE: 'true' }, { ELECTRON_BUILDER_OFFLINE: '1' }, { electron_builder_offline: 'yes' }, { ELECTRON_BUILDER_OFFLINE: ' TRUE ' }]) {
+      expect(offlineEnvSet(env)).toBe(true)
+      expect(buildArgsProblem(env, ARGS)).toMatch(/ELECTRON_BUILDER_OFFLINE/)
+    }
+    expect(offlineEnvSet({})).toBe(false)
+    expect(offlineEnvSet({ ELECTRON_BUILDER_OFFLINE: '' })).toBe(false)
+    expect(offlineEnvSet(null)).toBe(false)
+  })
+  it('refuses a line without the adjacent pair --publish never', () => {
+    expect(buildArgsProblem({}, ['--win', 'nsis'])).toMatch(/Thiếu "--publish never"/)
+    expect(buildArgsProblem({}, ['--win', '--publish'])).toMatch(/không được phép/)
+    expect(buildArgsProblem({}, ['--win', 'never', '--publish'])).toMatch(/không được phép/)
+    expect(buildArgsProblem({}, ['--win', '-p', 'never'])).toMatch(/Thiếu "--publish never"/)
+    expect(buildArgsProblem({}, [])).toMatch(/Thiếu/)
+    expect(buildArgsProblem({}, null)).toMatch(/Thiếu/)
+  })
+  it('refuses any other publish policy, even next to --publish never', () => {
+    expect(buildArgsProblem({}, [...ARGS, '--publish', 'always'])).toMatch(/"--publish always" không được phép/)
+    expect(buildArgsProblem({}, [...ARGS, '-p', 'onTagOrDraft'])).toMatch(/"-p onTagOrDraft"/)
+    expect(buildArgsProblem({}, [...ARGS, '--publish=always'])).toMatch(/"--publish=always"/)
+    expect(buildArgsProblem({}, [...ARGS, '-p=always'])).toMatch(/"-p=always"/)
+    expect(buildArgsProblem({}, [...ARGS, '--publish=never'])).toBeNull()
+  })
+  it('electron-build.mjs spawns electron-builder without a shell and with the build cache off', () => {
+    const src = fs.readFileSync(path.join(root, 'scripts', 'electron-build.mjs'), 'utf8')
+    expect(src).toContain("require.resolve('electron-builder/cli.js')")
+    expect(src).toContain('spawn(process.execPath, [cli, ...args]')
+    expect(src).toContain("shell: false")
+    expect(src).toContain("env.ELECTRON_BUILDER_DISABLE_BUILD_CACHE = 'true'")
+    expect(src).toContain('buildArgsProblem(process.env, args)')
+    expect(src).not.toMatch(/shell:\s*true/)
   })
 })
 

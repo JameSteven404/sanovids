@@ -5,11 +5,13 @@
 //                                                                            (win-unpacked, latest.yml, blockmap…)
 // latest.yml and the current Setup blockmap stay in release/_build: scripts/publish-release.mjs uploads them to the
 // public feed repo (auto-update). build/release-notes.md (scripts/update-notes.mjs) stays in build/, never in release/.
-// Warns loudly when the packaged app-update.yml does not point at the public feed (installs would never update).
+// Warns loudly when the packaged app-update.yml does not point at the public feed (installs would never update) or has
+// no publisherName (the signed-update lock).
 // Safe to run any time; files that are locked (e.g. the unpacked app still running) are left where they are.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AUTHOR, SIGNER_THUMBPRINT } from './releaseLib.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const releaseDir = path.join(root, 'release')
@@ -69,6 +71,8 @@ fs.writeFileSync(
     `SanoVids-Setup-${version}.exe     Bộ cài (khuyên dùng): tạo icon ở Desktop / Start Menu, cài đè bản cũ được, TỰ CẬP NHẬT các bản sau.`,
     `SanoVids-Portable-${version}.exe  Bấm là chạy, không cần cài (hợp chép USB). Bản này không tự cập nhật.`,
     '',
+    `Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`,
+    '',
     `${OLD_DIR}\\<phiên bản>\\   Các bản cũ (để thử lại khi cần).`,
     `${BUILD_DIR}\\              File phụ của quá trình build (win-unpacked…) và file cập nhật (latest.yml, .blockmap) dùng khi đăng bản — không cần đụng tới.`,
     '',
@@ -80,7 +84,8 @@ fs.writeFileSync(
 console.log(`tidy-release: ${moved} item(s) moved; newest installers (${version}) stay in release/`)
 
 // The feed baked into the app (package.json build.publish → resources/app-update.yml). A build without it strands
-// everyone who installs it, so shout — but do not fail: test builds may point elsewhere on purpose.
+// everyone who installs it, so shout — but do not fail: test builds may point elsewhere on purpose. publisherName
+// (written from build.win.signtoolOptions.publisherName) must be there too: it is the signed-update lock.
 const feedFile = [path.join(buildDir, 'win-unpacked'), path.join(releaseDir, 'win-unpacked')]
   .map((dir) => path.join(dir, 'resources', 'app-update.yml'))
   .find((file) => fs.existsSync(file))
@@ -94,7 +99,8 @@ const feedOk =
   /^provider:\s*github\s*$/m.test(feedText) &&
   new RegExp(`^owner:\\s*${FEED_OWNER}\\s*$`, 'm').test(feedText) &&
   new RegExp(`^repo:\\s*${FEED_REPO}\\s*$`, 'm').test(feedText) &&
-  !/^(token|private|publisherName|channel):/m.test(feedText)
+  /^publisherName:/m.test(feedText) &&
+  !/^(token|private|channel):/m.test(feedText)
 if (!feedOk) {
   const bar = '!'.repeat(78)
   const where = feedFile ? path.relative(root, feedFile) : 'release/_build/win-unpacked/resources/app-update.yml'
@@ -102,9 +108,10 @@ if (!feedOk) {
     [
       '',
       bar,
-      `!! WARNING: ${where} ${feedFile ? 'does NOT point at' : 'is missing — no'} the public update feed`,
-      `!!   (provider github, owner ${FEED_OWNER}, repo ${FEED_REPO}; no token / private / publisherName / channel).`,
-      '!!   Installs of this build would NEVER receive updates. Check package.json build.publish and rebuild.',
+      `!! WARNING: ${where} ${feedFile ? 'is NOT' : 'is missing — no'} the signed public update feed`,
+      `!!   (provider github, owner ${FEED_OWNER}, repo ${FEED_REPO}, publisherName set; no token / private / channel).`,
+      '!!   Without the feed, installs of this build would NEVER receive updates; without publisherName the',
+      '!!   signed-update lock is missing. Check package.json build.publish / build.win.signtoolOptions and rebuild.',
       '!!   Do not publish it (npm run release:check refuses it too).',
       bar,
       '',
