@@ -62,6 +62,12 @@ export interface JobRequest {
   key: string
   takeId: string
   sceneId: string
+  /**
+   * SanoVids project of the take — never canvasapp's bridge project_id. With sceneId it names the take's video node on
+   * the canvasapp bridge canvas (mapping.sceneNodeKey): projects sharing scene ids (Nhân bản dự án, a file imported
+   * twice) never share a node.
+   */
+  sanovidsProjectId: string
   /** "S07" */
   sceneCode: string
   takeNumber: number

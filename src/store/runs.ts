@@ -866,6 +866,8 @@ function buildRequest(t: Take): JobRequest {
     key: t.id,
     takeId: t.id,
     sceneId: t.sceneId,
+    // the open project = the take's own (runs are per project); read now, when the request is built — never later
+    sanovidsProjectId: project.id,
     sceneCode: scene ? sceneCode(scene.order) : 'S??',
     takeNumber: t.number,
     title: scene?.title ?? '',

@@ -1,5 +1,6 @@
 // Development-mode UI model (Bảng phát triển): fault catalog, rule texts, custom rules, request log, character check.
 import { describe, expect, it } from 'vitest'
+import { canvasNodeId, sceneNodeId } from '../../../providers/canvasapp/mapping'
 import type { DevLogEntry } from '../../../providers/dev/log'
 import { DEV_CONFIG_DEFAULT, type DevServerSnapshot } from '../../../providers/dev/server'
 import {
@@ -14,6 +15,8 @@ import {
   faultKindText,
   faultRuleText,
   filterLog,
+  jobNodeOwners,
+  jobNodeText,
   logExport,
   minutesLeft,
   placeholderQr,
@@ -271,5 +274,39 @@ describe('devPanelTabs', () => {
     expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')
     expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
     expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs'])
+  })
+})
+
+describe('jobNodeOwners / jobNodeText (Job & đơn nạp)', () => {
+  const scenes = [
+    { id: 'scn_a', order: 3 },
+    { id: 'scn_b', order: 12 },
+  ]
+  const owners = jobNodeOwners('prj_1', scenes)
+
+  it('a scene of the open project, its old node (scene id alone), or anything else', () => {
+    expect(owners.get(sceneNodeId('prj_1', 'scn_a'))).toEqual({ kind: 'scene', code: 'S03' })
+    expect(owners.get(sceneNodeId('prj_1', 'scn_b'))).toEqual({ kind: 'scene', code: 'S12' })
+    expect(owners.get(canvasNodeId('scn_a'))).toEqual({ kind: 'legacy', code: 'S03' })
+    // the same scene in a duplicated project, a deleted scene: not the open project's
+    expect(owners.get(sceneNodeId('prj_2', 'scn_a'))).toBeUndefined()
+    expect(owners.get(sceneNodeId('prj_1', 'scn_gone'))).toBeUndefined()
+    expect(owners.size).toBe(4)
+  })
+
+  it('labels and tooltips (Vietnamese, the full node id first, no version numbers)', () => {
+    const id = sceneNodeId('prj_1', 'scn_a')
+    expect(jobNodeText(id, owners.get(id))).toEqual({ label: 'node S03', title: `canvas_node_id: ${id}\nNode của cảnh S03 trong dự án đang mở.` })
+    const old = canvasNodeId('scn_a')
+    expect(jobNodeText(old, owners.get(old))).toEqual({
+      label: 'node cũ S03',
+      title: `canvas_node_id: ${old}\nNode đặt theo riêng id cảnh (bản SanoVids cũ): dự án nhân bản hoặc nhập lại từ cùng tệp có thể dùng chung node này.`,
+    })
+    const gone = sceneNodeId('prj_1', 'scn_gone')
+    expect(jobNodeText(gone, owners.get(gone))).toEqual({
+      label: 'node khác',
+      title: `canvas_node_id: ${gone}\nKhông thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).`,
+    })
+    for (const o of [...owners.values(), undefined]) expect(jobNodeText('x', o).title).not.toMatch(/\d+\.\d+\.\d+/)
   })
 })

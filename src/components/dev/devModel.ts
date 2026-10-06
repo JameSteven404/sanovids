@@ -17,8 +17,11 @@
 //   characterCheck(body, ctx)                 "Kiểm tra nhân vật" of a POST /api/video-jobs body: each upload in order
 //                                             as @image_N → SanoVids image → asset; @image_N of the prompt without an
 //                                             upload are flagged.
-import { parseTokens } from '../../core/compile'
-import type { Asset } from '../../core/types'
+//   jobNodeOwners(projectId, scenes)          canvas_node_id → which scene of the open project a job ran on (its node,
+//   jobNodeText(nodeId, owner)                or the old one named by the scene id alone) + the job's label / tooltip.
+import { parseTokens, sceneCode } from '../../core/compile'
+import type { Asset, Scene } from '../../core/types'
+import { canvasNodeId, sceneNodeId } from '../../providers/canvasapp/mapping'
 import type { DevPanelTab } from '../../store/ui'
 import type { DevLogEntry } from '../../providers/dev/log'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
@@ -472,4 +475,36 @@ export function characterCheck(body: unknown, ctx: CharacterCheckContext): Chara
     missing.push({ n: t.n, token: prompt.slice(t.start, t.end) })
   }
   return { kind: frames ? 'frames' : 'images', slots, missing, prompt, promptTruncated, promptFromJob: !!job }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Job → bridge canvas node (Job & đơn nạp)
+// ---------------------------------------------------------------------------------------------
+
+/** Which bridge canvas node a job ran on, seen from the open project. */
+export type JobNodeOwner = { kind: 'scene' | 'legacy'; code: string } | { kind: 'other' }
+
+/**
+ * canvas_node_id → owner, for the open project: the node of each of its scenes ('scene', "S03") and the node builds
+ * before per-project nodes named by the scene id alone ('legacy': a duplicated / re-imported project may share it).
+ * Any other id — another project's, a deleted scene's — is not in the map ('other').
+ */
+export function jobNodeOwners(projectId: string, scenes: readonly Pick<Scene, 'id' | 'order'>[]): Map<string, JobNodeOwner> {
+  const m = new Map<string, JobNodeOwner>()
+  for (const s of scenes) m.set(canvasNodeId(s.id), { kind: 'legacy', code: sceneCode(s.order) })
+  for (const s of scenes) m.set(sceneNodeId(projectId, s.id), { kind: 'scene', code: sceneCode(s.order) })
+  return m
+}
+
+/** The job line's node label and its tooltip (which starts with the full canvas_node_id). */
+export function jobNodeText(nodeId: string, owner: JobNodeOwner | undefined): { label: string; title: string } {
+  const head = `canvas_node_id: ${nodeId}\n`
+  if (owner?.kind === 'scene') return { label: `node ${owner.code}`, title: `${head}Node của cảnh ${owner.code} trong dự án đang mở.` }
+  if (owner?.kind === 'legacy') {
+    return {
+      label: `node cũ ${owner.code}`,
+      title: `${head}Node đặt theo riêng id cảnh (bản SanoVids cũ): dự án nhân bản hoặc nhập lại từ cùng tệp có thể dùng chung node này.`,
+    }
+  }
+  return { label: 'node khác', title: `${head}Không thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).` }
 }

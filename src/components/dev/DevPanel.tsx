@@ -7,8 +7,9 @@
 //                  and the faults armed right now.
 //   Nhật ký        every request the app sent and what it got (fault badges, expandable JSON, filter, copy as JSON for
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
-//   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take they belong to), top-up orders
-//                  (decide what canvasapp says), uploaded pictures.
+//   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take and bridge node — a scene of the
+//                  open project, an old node, another one — they belong to), top-up orders (decide what canvasapp
+//                  says), uploaded pictures.
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
 //                  only outside Electron — the desktop app uses the real ones).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
@@ -92,6 +93,8 @@ import {
   faultRuleText,
   filterLog,
   isDevEndpoint,
+  jobNodeOwners,
+  jobNodeText,
   logExport,
   logTime,
   statusText,
@@ -1037,6 +1040,8 @@ function JobsTab({ snap }: { snap: DevServerSnapshot }) {
 function JobList({ jobs }: { jobs: DevJobView[] }) {
   const takes = useRuns((s) => s.takes)
   const scenes = useProject((s) => s.project.scenes)
+  const projectId = useProject((s) => s.project.id)
+  const nodeOwners = useMemo(() => jobNodeOwners(projectId, scenes), [projectId, scenes])
   const takeOf = useMemo(() => {
     const order = new Map(scenes.map((s) => [s.id, s.order]))
     const m = new Map<string, { id: string; code: string }>()
@@ -1063,6 +1068,7 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
             const st = JOB_STATUS[j.status]
             const running = j.status === 'queued' || j.status === 'processing'
             const take = takeOf.get(j.job_id)
+            const node = jobNodeText(j.canvas_node_id, nodeOwners.get(j.canvas_node_id))
             return (
               <li key={j.job_id} className={`dv-job ${j.status}`}>
                 <div className="dv-job-main">
@@ -1103,6 +1109,9 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                 <div className="dv-job-sub">
                   <span className="mono" title={`client_request_id: ${j.client_request_id}\njob_id: ${j.job_id}`}>
                     key {j.client_request_id.slice(0, 8)}… · job {j.job_id.slice(0, 8)}…
+                  </span>
+                  <span className="dv-hint" title={node.title}>
+                    · {node.label}
                   </span>
                   <span className="dv-hint">· {j.upload_ids.length ? `${j.upload_ids.length} ảnh` : j.first_frame_upload_id ? 'khung đầu/cuối' : 'không ảnh'}</span>
                   <span className="dv-hint">· {logTime(j.created_at)}</span>

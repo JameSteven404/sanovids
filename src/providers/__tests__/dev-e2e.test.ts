@@ -29,9 +29,10 @@ import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { DEV_UNKNOWN_SUBMIT_ERROR, isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, useRuns, type RunEvent } from '../../store/runs'
-import { memoryStorage } from '../canvasapp/adapter'
+import { createCanvasappProvider, memoryStorage } from '../canvasapp/adapter'
 import { openCheckout } from '../canvasapp/transport'
-import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
+import { clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
+import type { CanvasPayload } from '../canvasapp/api'
 import {
   answerDevCheckout,
   answerDevLogin,
@@ -47,7 +48,20 @@ import {
   type DevCanvasapp,
   type DevRenderInput,
 } from '../dev'
-import { activeGateway, activeProviderId, DEV_POLL_MS, devApi, gatewayFor, getProvider, normalizeProviderChoice, PROVIDER_LABEL, resetDevMode, useProviderPrefs } from '../index'
+import {
+  activeGateway,
+  activeProviderId,
+  DEV_LIST_CACHE_MS,
+  DEV_POLL_MS,
+  devApi,
+  gatewayFor,
+  getProvider,
+  normalizeProviderChoice,
+  PROVIDER_LABEL,
+  registerProvider,
+  resetDevMode,
+  useProviderPrefs,
+} from '../index'
 
 const asset = (id: string, name: string, imageIds: string[]): Asset => ({ id, kind: 'character', name, tag: name, description: '', imageIds, color: '#fff', position: null })
 
@@ -188,7 +202,7 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     ])
     expect(calls.every((e) => e.status !== null && e.status < 300)).toBe(true)
     const [job] = server.snapshot().jobs
-    expect(job).toMatchObject({ prompt: PROMPT, canvas_node_id: canvasNodeId('s1'), client_request_id: clientRequestIdFor(t.id), cost: S1_COST })
+    expect(job).toMatchObject({ prompt: PROMPT, canvas_node_id: sceneNodeId('p', 's1'), client_request_id: clientRequestIdFor(t.id), cost: S1_COST })
     expect(server.snapshot().uploads.map((u) => u.imageId).reverse()).toEqual(['img_e1', 'img_l1', 'img_l2'])
     expect(take(t.id).remoteId).toBe(`${job.project_id}:${job.job_id}`)
     expect(events).toContainEqual({ type: 'submitted', takeId: t.id, provider: 'dev' })
@@ -326,6 +340,97 @@ describe('dev mode e2e: idempotency', () => {
     expect(server.balance()).toBe(1000 - S1_COST)
     expect(take(t.id).remoteId).toBe(`${server.snapshot().jobs[0].project_id}:${server.snapshot().jobs[0].job_id}`)
     expect(['processing', 'completed']).toContain(take(t.id).status)
+  })
+})
+
+describe('dev mode e2e: a duplicated project (same scene ids)', () => {
+  it('the original and its copy run the same scene: two jobs on two nodes of the simulated bridge canvas, each with its prompt', async () => {
+    server.login()
+    const [a] = enqueue('s1')
+    await run(300)
+    const pOnDisk = JSON.parse(JSON.stringify(takes())) as Take[]
+    const copyPrompt = '@image_1 ôm @image_3 trên bãi biển đêm'
+    useProject.getState().loadProject({ ...project(), id: 'p2', scenes: project().scenes.map((s) => (s.id === 's1' ? { ...s, prompt: copyPrompt } : s)) })
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    const [b] = enqueue('s1')
+    await run(300)
+    const jobs = [...server.snapshot().jobs].reverse() // oldest first
+    expect(jobs.map((j) => [j.canvas_node_id, j.prompt])).toEqual([
+      [sceneNodeId('p', 's1'), PROMPT],
+      [sceneNodeId('p2', 's1'), copyPrompt],
+    ])
+    // the request log shows the two POST /api/video-jobs with their own canvas_node_id
+    expect(logOf('job-create').map((e) => (e.req as { canvas_node_id?: string } | undefined)?.canvas_node_id)).toEqual(jobs.map((j) => j.canvas_node_id))
+    // the bridge canvas on the simulated canvasapp holds both nodes, each with its own prompt
+    const bridge = (await devApi().getProject(jobs[0].project_id)) as { canvas: CanvasPayload }
+    expect(bridge.canvas.nodes.flatMap((n) => (n.type === 'video' ? [[n.id, n.data.prompt]] : []))).toEqual([
+      [sceneNodeId('p2', 's1'), copyPrompt],
+      [sceneNodeId('p', 's1'), PROMPT],
+    ])
+    await run(20_000)
+    expect(take(b.id).status).toBe('completed')
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: pOnDisk, credits: 1000, spent: 0 })
+    await run(20_000)
+    expect(take(a.id)).toMatchObject({ status: 'completed', remoteId: `${jobs[0].project_id}:${jobs[0].job_id}` })
+    expect(logOf('job-create')).toHaveLength(2)
+    expect(server.balance()).toBe(1000 - 2 * S1_COST)
+  })
+})
+
+describe('dev mode e2e: a lost answer next to a duplicated project', () => {
+  it.each([
+    ['dedupe on', true],
+    ['dedupe off', false],
+  ])('an unsure take of the original never takes the copy’s job (%s): one job, one charge', async (_label, dedupe) => {
+    server.login()
+    server.setConfig({ dedupe }) // the job list carries no client_request_id (exposeKey off, the default)
+    const copyProject = (): Project => ({ ...project(), id: 'p2', scenes: project().scenes.map((s) => (s.id === 's1' ? { ...s, prompt: '@image_1 trên biển' } : s)) })
+    // the dev adapter over its own storage, so the app can "restart" (a new adapter instance, same records)
+    const records = memoryStorage()
+    const boot = () =>
+      registerProvider(
+        createCanvasappProvider({
+          id: 'dev',
+          api: devApi(),
+          getBlob: async (id) => media.get(id) ?? null,
+          storage: records,
+          minPollMs: DEV_POLL_MS,
+          pollIntervalMs: DEV_POLL_MS,
+          listCacheMs: DEV_LIST_CACHE_MS,
+        }),
+      )
+    boot()
+    // the original: take A's POST never gets through, the app closes while A is still "processing"
+    const down = server.addFault({ endpoint: 'job-create', fault: { kind: 'network' }, sticky: true })
+    const [a] = enqueue('s1')
+    await run(300)
+    const pOnDisk = JSON.parse(JSON.stringify(takes())) as Take[]
+    await run(60_000) // (the closed app's last attempts: still nothing reaches the simulated canvasapp)
+    server.removeFault(down.id)
+    expect(server.snapshot().jobs).toHaveLength(0)
+    boot() // restart
+    // the copy: take B of the same scene; the simulated canvasapp creates its job, the answer is lost
+    useProject.getState().loadProject(copyProject())
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const [b] = enqueue('s1')
+    await run(300)
+    expect(server.snapshot().jobs).toHaveLength(1)
+    const p2OnDisk = JSON.parse(JSON.stringify(takes())) as Take[]
+    // while B waits to look for its job, the original is opened: A is looked up — B's job is on another node
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: pOnDisk, credits: 1000, spent: 0 })
+    await run(60_000)
+    expect(take(a.id)).toMatchObject({ status: 'failed', error: DEV_UNKNOWN_SUBMIT_ERROR, remoteId: null })
+    useProject.getState().loadProject(copyProject())
+    useRuns.getState().loadRuns({ takes: p2OnDisk, credits: 1000, spent: 0 })
+    await run(30_000)
+    const [job] = server.snapshot().jobs
+    expect(job.canvas_node_id).toBe(sceneNodeId('p2', 's1'))
+    expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: `${job.project_id}:${job.job_id}` })
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(1000 - S1_COST)
   })
 })
 

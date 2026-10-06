@@ -45,14 +45,18 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `client_request_id`. Project / upload / job ids come from the server.
 - SanoVids (`mapping.ts`) derives them deterministically with `uuidFromKey(text)` (128-bit cyrb128 hash printed as an
   RFC 4122 v4 UUID: lowercase, version nibble 4, variant 8–b):
-  - video node id = `canvasNodeId(sceneId)` — stable per scene (the `canvas_node_id` of that scene's jobs);
+  - video node id = `canvasNodeId(sceneNodeKey(projectId, sceneId))` (`sceneNodeId`) — stable per scene OF A SanoVids
+    PROJECT (the `canvas_node_id` of that scene's jobs): projects sharing scene ids (a duplicated / re-imported
+    project) get their own nodes. Key = `node:<length of projectId>:<projectId>:<sceneId>`; builds before that used
+    the bare scene id (`canvasNodeId(sceneId)`, same hash): those "legacy" nodes stay valid for the jobs sent on them;
   - image node id = `imageNodeId(uploadId, occurrence)` — one image node per upload, shared by every video node that
     uses it; occurrence > 0 only when one video node takes the same upload twice (the client keeps one edge per image
     node and target; first and last frame must be two different image nodes);
   - `client_request_id` = `clientRequestIdFor(take id)` — stable per take, so a retry of the same take always sends
     the same key. The local job ledger (`bdp:canvasapp:jobs`) stays keyed by the take id. A lost answer is matched in
     the job list by the UUID, or by the bare take id that v0.2.0 sent.
-  - Node ids are never stored: bridge entries saved by v0.2.0 (`sv_<sceneId>` era) are rebuilt with UUIDs.
+  - Node ids are never stored: bridge entries are keyed by the node key (a bare scene id for older entries) and the
+    id is derived each time; entries saved by v0.2.0 (`sv_<sceneId>` era) are rebuilt with UUIDs.
 
 ## Canvas projects ("Phiên")
 - `GET /api/projects` → `[{ project_id, name }]` (`refreshProjectPicker()`).
@@ -90,10 +94,11 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
     `transformInputState()`; `ratioFromDimensions()`: nearest of 16:9, 9:16, 1:1, 4:3, 3:4 within 2 %); the client
     will not run it when the frames differ in ratio or have an unsupported one. SanoVids reads both pictures' sizes
     before uploading and refuses the same cases.
-  - SanoVids' bridge canvas (`bridgeCanvas()`): one video node per scene, one image node per upload (shared), newest
-    scenes first, older ones left out past 40 nodes, 30 image uploads or 400.000 prompt characters (keeps the PUT far
-    below the desktop gateway's 2 MB JSON cap). Its scene entries are remembered only once canvasapp accepted the
-    PUT; a refused PUT is tried once more with the current scene alone (an older scene may be what is refused).
+  - SanoVids' bridge canvas (`bridgeCanvas()`): one video node per scene of a project, one image node per upload
+    (shared), newest scenes first, older ones left out past 40 nodes, 30 image uploads or 400.000 prompt characters
+    (keeps the PUT far below the desktop gateway's 2 MB JSON cap); nodes of running jobs are never left out. Its scene
+    entries are remembered only once canvasapp accepted the PUT, and only those on that canvas; a refused PUT is tried
+    once more without the scenes whose jobs have ended (an older scene may be what is refused).
 
 ## Video jobs (canvas mode)
 - `POST /api/video-jobs` — body as `runVideoNode()` builds it. Always, in this order:

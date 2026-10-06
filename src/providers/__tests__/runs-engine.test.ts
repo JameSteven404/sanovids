@@ -177,6 +177,8 @@ describe('runs engine with a provider', () => {
     expect(take(id).provider).toBe('dev')
     // request built from the snapshot: @image order, compiled prompt, idempotency key
     expect(f.submitted[0]).toMatchObject({ key: id, prompt: '@image_1 runs', sceneCode: 'S01', images: [{ n: 1, imageId: 'i1' }, { n: 2, imageId: 'i2' }] })
+    // the take's own project + scene (the canvasapp gateway names its bridge node after them)
+    expect(f.submitted[0]).toMatchObject({ sceneId: 's1', sanovidsProjectId: 'p' })
 
     f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'processing', progress: 40 })
     await vi.advanceTimersByTimeAsync(250)
