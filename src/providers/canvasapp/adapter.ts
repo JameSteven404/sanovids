@@ -259,8 +259,8 @@ interface JobLedger {
   /**
    * Jobs made on canvasapp's own page that became takes ("Nhập job", claimSiteJobs): take id → the job, when it was
    * claimed (local time). A key here is never posted (submitNow / recover return its job). Kept apart from `jobs`
-   * on purpose: findJob only rules out a claimed job for a POST sent AFTER the claim (it was listed before that POST,
-   * so it cannot be its job) — never one claimed later (sentMayOwn keeps those from being claimed at all).
+   * (jobs SanoVids made, whose nodes it keeps); findJob never takes a claimed job for any POST: one
+   * claimed before the POST was listed before it, one claimed after passed sentMayOwn against that POST's record.
    */
   imported: Record<string, { remoteId: string; at: number; nodeId: string }>
 }
@@ -805,14 +805,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // The list does not carry client_request_id: the job is the ONE canvas job on the canvas node the POST named
     // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
     // and was created after it.
-    // ...nor a job imported ("Nhập job") BEFORE this POST was sent: it was listed before it, so it is not its job.
-    // (One imported later cannot be a job this POST may own: sentMayOwn kept it from being claimed.)
-    const taken = new Set([
-      ...Object.values(ledger.jobs).map((j) => decodeRemoteId(j.remoteId)?.jobId),
-      ...Object.values(ledger.imported)
-        .filter((j) => j.at < rec.at)
-        .map((j) => decodeRemoteId(j.remoteId)?.jobId),
-    ])
+    // ...nor a job imported ("Nhập job"), whenever: one claimed before this POST was listed before it; one claimed
+    // after it passed sentMayOwn against this very record (its window ends CREATED_SKEW_MS + POST_WINDOW_MS after the
+    // POST, the lookup below has no such end) — either way not this POST's job, and never a second take of one job.
+    const taken = new Set([...Object.values(ledger.jobs), ...Object.values(ledger.imported)].map((j) => decodeRemoteId(j.remoteId)?.jobId))
     const before = new Set(rec.before ?? [])
     const model = modelProfileOf(req.model)
     const candidates = jobs.filter((j) => {

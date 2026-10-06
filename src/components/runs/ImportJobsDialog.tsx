@@ -3,13 +3,14 @@
 // Read-only toward canvasapp: nothing here can bill anything. Opened from the queue drawer, Settings › Nhà cung cấp
 // video and the Bảng phát triển (`back` = the dialog shown again when this one closes).
 import { CloudDownload, LoaderCircle, LogIn, RefreshCw, TriangleAlert } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { canvasappErrorText, isLoginRequired } from '../../providers/canvasapp/api'
 import type { Scene } from '../../core/types'
 import { useProject } from '../../store/project'
 import { useUI, type DialogState } from '../../store/ui'
 import { importGateway, importSiteJobs, pendingTakeLabel, scanForImport, type ImportScan } from '../../siteJobActions'
 import { Modal } from '../common/Modal'
+import { useLive } from '../common/useLive'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import {
   candidateSettingsText,
@@ -44,13 +45,8 @@ export function ImportJobsDialog({ back, provider }: { back?: DialogState; provi
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' })
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const [busy, setBusy] = useState<'import' | 'login' | null>(null)
-  const live = useRef(true)
-  useEffect(
-    () => () => {
-      live.current = false
-    },
-    [],
-  )
+  // answers arriving after the dialog closed are dropped (set again by StrictMode's second mount: useLive)
+  const live = useLive()
   // the gateway's words before the first scan answers
   const words = importWords(phase.kind === 'ready' ? phase.data.simulated : importGateway(provider).simulated)
 

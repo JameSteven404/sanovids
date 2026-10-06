@@ -192,7 +192,8 @@ const jobIdsOf = (records: Readonly<Record<string, { remoteId: string }>>): Set<
  * Could the unanswered POST of take `key` (ledger.sent record `rec`) have made `job`? With client_request_id in the
  * list: exactly when it carries that take's key. Without: a job on the node the POST named, not listed before it,
  * created within the skew of it (± CREATED_SKEW_MS, + POST_WINDOW_MS after) — an unknown creation time: it could.
- * Broader than the lookup itself (adapter findJob) on purpose: a job it could own is never imported.
+ * Broader than the lookup itself (adapter findJob) on purpose inside the window: a job it could own is never imported.
+ * The lookup has no window end, so it skips every imported job instead: a job claimed here is never that POST's.
  */
 export function sentMayOwn(job: CanvasJob, key: string, rec: SentLike, projectId: string, listHasKeys: boolean): boolean {
   if (listHasKeys) return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key

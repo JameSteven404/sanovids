@@ -188,7 +188,8 @@ export interface Take {
    * only polls and downloads it — it is never submitted, and "Chạy lại" makes a NEW take (cost dialog). The job list
    * does not say everything a take records: `unknown` fields hold placeholders (shown "?", never restored, cost "—");
    * `inferred` ones come from the bridge node (canvas or SanoVids' own entry) whose prompt matched the job's — likely,
-   * not sure (shown "≈", never restored as settings). See providers/canvasapp/siteJobs.ts.
+   * not sure (shown "≈", never restored as settings but the mode restored references need: components/runs/
+   * importedTake.restorePlan). See providers/canvasapp/siteJobs.ts.
    */
   imported?: TakeImport
 }

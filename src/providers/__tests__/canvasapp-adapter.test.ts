@@ -1610,6 +1610,53 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       expect(await p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: `proj1:${j.job_id}` })
       expect(jobPosts(w.server)).toHaveLength(0)
     })
+
+    /**
+     * take_b's POST lost its answer at t0 (nothing known before it on the node); 15 h later — past what that POST may own
+     * (CREATED_SKEW_MS + POST_WINDOW_MS) — the user makes a job on that node on canvasapp's page and imports it.
+     */
+    const importLater = async (w: ReturnType<typeof world>) => {
+      const t0 = w.clock.t
+      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
+      w.restart()
+      w.clock.t = t0 + 15 * 3600_000
+      const site = siteJob(w.server)
+      const scan = await w.p.scanSiteJobs(input())
+      expect(scan.candidates.map((c) => c.jobId)).toEqual([site.job_id])
+      const [c] = scan.candidates
+      expect(w.p.claimSiteJobs([{ key: 't_imp', remoteId: c.remoteId, nodeId: c.nodeId, job: c.job, reimport: false }])).toEqual(['t_imp'])
+      return { t0, site }
+    }
+
+    it('(d) imported long after a POST that never arrived: "Chạy lại" never takes the imported job — posted once, its own job', async () => {
+      const w = world()
+      const { site } = await importLater(w)
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
+      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
+      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual([site.job_id, 'job2'])
+      expect(jobPosts(w.server)).toHaveLength(1)
+    })
+
+    it('(e) imported long after a POST whose answer was lost: the take still finds its own job (never “không rõ” for good)', async () => {
+      const w = world()
+      // take_b's POST did create job1 a second after it was sent (paid); the answer never came back
+      w.server.state.jobs.push({
+        job_id: 'job1',
+        status: 'processing',
+        project_id: 'proj1',
+        canvas_node_id: NODE,
+        created_at: new Date(w.clock.t + 1_000).toISOString(),
+        model_profile: 'seedance_2_5',
+        duration: 15,
+        body: {},
+      })
+      await importLater(w)
+      const again = await w.p.scanSiteJobs(input())
+      expect(again.skipped).toContainEqual({ jobId: 'job1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b' })
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
+      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
+      expect(jobPosts(w.server)).toHaveLength(0)
+    })
   })
 })
 

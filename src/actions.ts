@@ -10,7 +10,7 @@ import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
 import { activeProviderId, getProvider, providerOf } from './providers'
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
-import { restorableSettings, restoreBlock, restoreNotes } from './components/runs/importedTake'
+import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
 import type { AssetKind, XY } from './core/types'
@@ -599,8 +599,9 @@ export function runNow(sceneIds: string[]) {
  * "Khôi phục prompt này" (take viewer): the scene's prompt, references and settings as they were when the take ran, in
  * ONE undo step (the toast's "Hoàn tác"). References deleted since are dropped and the old prompt's @image_N /
  * @video_N tokens renumbered to match (components/runs/restore.ts). An imported take ("Nhập job") is refused when
- * canvasapp did not tell its prompt or references (restoreBlock), and only its known settings are restored — the
- * scene keeps its own value for anything unknown or merely inferred (importedTake.restorableSettings).
+ * canvasapp did not tell its prompt or references (restoreBlock); otherwise only its known settings are restored, the
+ * references read from the bridge node with the mode they need, the scene's own references when its job sent none,
+ * the scene's @video references always (importedTake.restorePlan).
  */
 export function restoreFromTake(takeId: string) {
   const runs = useRuns.getState()
@@ -619,11 +620,11 @@ export function restoreFromTake(takeId: string) {
   }
   const live = new Set(runs.takes.map((t) => t.id))
   // Tokens of references that no longer exist are renumbered / replaced, like removing a reference by hand.
-  const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber, videoLabel })
-  const { settings, kept } = restorableSettings(take, scene.settings)
+  const plan = restorePlan(take, scene)
+  const r = restoredFromTake(plan.source, project.assets, live, { renumber: project.settings.autoRenumber, videoLabel })
   // One store mutation = one undo step, so the toast's "Hoàn tác" reverts everything together.
-  useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings }, live)
-  const importNotes = restoreNotes(take, kept)
+  useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: plan.settings }, live)
+  const importNotes = restoreNotes(take, plan)
   const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video', ...importNotes].filter(Boolean)
   // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
   const check = r.uncertain

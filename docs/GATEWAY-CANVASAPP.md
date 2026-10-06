@@ -301,9 +301,11 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    một `POST` chưa rõ có thể sở hữu → bỏ. Khoá có trong `imported` không bao giờ được `POST` (`submit` / `recover` trả
    luôn job đó). Đổi sang dự án khác trong lúc đọc prompt → không nhập, không ghi gì ("Đã mở dự án khác — chưa nhập gì.").
    Cảnh bị xoá, job đã có trong dự án → bỏ qua. 401 khi đọc prompt → không nhập gì (nút Đăng nhập rồi quét lại).
-4. Tìm job của câu trả lời bị mất (`findJob`, danh sách không có `client_request_id`): job đã **nhập trước** lần `POST`
-   đó (`imported.at < sent.at`) không thể là job của nó (đã có trong danh sách trước khi gửi) → không bao giờ nhận nhầm,
-   không làm take "không rõ" mãi. Job nhập sau lần `POST` đó không thể có (bước 2 chặn).
+4. Tìm job của câu trả lời bị mất (`findJob`, danh sách không có `client_request_id`): **mọi** job đã nhập (sổ
+   `imported`) bị loại — job nhập trước lần `POST` đó đã có trong danh sách trước khi gửi; job nhập sau đó đã qua
+   `sentMayOwn` với chính bản ghi `sent` này (bước 2), tức tạo ngoài khoảng ±14 giờ (+10 phút) quanh lần gửi, nên không
+   thể là job của nó (còn `findJob` không có mốc cuối) → không bao giờ nhận nhầm (hai take cùng một job), không làm take
+   "không rõ" mãi.
 5. Danh sách job **không** cho biết độ phân giải, chế độ (trừ Seedance chỉ có t2v), prompt, ảnh. Prompt lấy từ
    `/prompt` (trống / không đọc được / dài hơn 20.000 ký tự → **không rõ**). Phần còn lại chỉ được **đoán** (`inferred`,
    hiện "≈") khi node trên canvas đã lưu (hoặc mục SanoVids đã nhớ của node đó) có cùng prompt, model, thời lượng, tỷ lệ
@@ -311,8 +313,12 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    án. Không đoán được → **không rõ** (`unknown`, giá trị giữ chỗ, hiện "?"). Node có thể đã đổi từ lúc tạo job (ví dụ chỉ
    đổi độ phân giải rồi SanoVids ghi đè lại) nên giá trị đoán **không bao giờ** được coi là chắc chắn: chi phí "≈ 20
    credit" (không rõ độ phân giải / thời lượng → "—"); "Khôi phục prompt này" tắt khi không rõ prompt hoặc ảnh tham
-   chiếu, và chỉ khôi phục cấu hình chắc chắn — trường đoán / không rõ giữ giá trị của cảnh (thông báo nói rõ); Xem take
-   so sánh với cảnh chỉ trên những gì chắc chắn ("Take nhập — không đủ dữ liệu để so với cảnh").
+   chiếu, và chỉ khôi phục cấu hình chắc chắn — trường đoán / không rõ giữ giá trị của cảnh (thông báo nói rõ "không rõ"
+   hay "chỉ đoán được"); ảnh tham chiếu và chế độ đi cùng nhau (`importedTake.restorePlan`): job gửi ảnh tham chiếu →
+   khôi phục ảnh đoán theo node **cùng** chế độ cần cho chúng (kể cả chế độ đoán, thông báo ghi "đoán"); job không gửi
+   ảnh (MiniMax-H3 Text → Video / Khung đầu → cuối, có thể chỉ đoán) → cảnh giữ ảnh tham chiếu của nó (không bao giờ
+   xoá trắng); @video của cảnh luôn giữ (canvasapp không gửi video tham chiếu); khung hình không khôi phục (như mọi
+   take). Xem take so sánh với cảnh chỉ trên những gì chắc chắn ("Take nhập — không đủ dữ liệu để so với cảnh").
 6. "Chạy lại" / "Thử lại" một take nhập → hộp xác nhận chi phí → **take MỚI** (khoá mới, cấu hình hiện tại của cảnh).
    "Bỏ nhập" (nút trên thông báo) xoá các take vừa nhập (chỉ hỏi khi một take đang là @video); job vẫn còn trên trang, lần
    quét sau hiện lại với nhãn "đã nhập trước" (không tick sẵn). Hiển thị: chip **nhập** trên node / hàng đợi, dòng
@@ -487,7 +493,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   `net.request` chỉ xin thêm dữ liệu khi được đọc). Việc tiếp: lưu video lớn ra đĩa theo từng phần (`files:*`).
 - [x] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take — "Nhập job" (§4): chỉ đọc
   (`GET`), take nhập sinh ra `processing` có `remoteId` (chỉ theo dõi + tải, không bao giờ gửi, "Chạy lại" = take mới),
-  sổ `imported` (không bao giờ `POST` khoá đó; `findJob` loại job nhập trước lần gửi), không nhập job mà một lần gửi chưa
+  sổ `imported` (không bao giờ `POST` khoá đó; `findJob` loại mọi job đã nhập), không nhập job mà một lần gửi chưa
   rõ có thể sở hữu (kiểm tra cả lúc quét và lúc ghi), dự án được ghim, tối đa 20 job / lần, cấu hình chỉ "đoán" (≈) theo
   node có prompt khớp, không rõ (?) thì không tính chi phí / không khôi phục. Chế độ Phát triển: Bảng phát triển › Job &
   đơn nạp › "Tạo job như trên trang canvasapp" (sửa node trước nếu muốn) + nút "Nhập" ở job chưa có take. Test:

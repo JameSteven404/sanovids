@@ -1,10 +1,11 @@
 // Takes imported with "Nhập job" (their job was made on canvasapp's own page, see providers/canvasapp/siteJobs.ts):
 // how every place shows what such a take does not know for sure. Pure (no React, no stores) — tested in
 // __tests__/importedTake.test.ts. An `unknown` field holds a placeholder: shown "?", never restored, cost "—"; an
-// `inferred` one comes from the bridge node whose prompt matched the job: shown "≈", never restored as a setting.
+// `inferred` one comes from the bridge node whose prompt matched the job: shown "≈", never restored as a setting
+// (except the mode that goes with references restored from that node: restorePlan).
 // Takes SanoVids made itself (no `imported`) read exactly as before.
-import { modeLabel, normalizeSettings } from '../../core/models'
-import type { ImportedField, Take, VideoSettings } from '../../core/types'
+import { modeLabel, normalizeSettings, usesRefs } from '../../core/models'
+import type { ImportedField, Scene, Take, VideoSettings } from '../../core/types'
 
 type ImportInfo = Pick<Take, 'imported'> & Partial<Pick<Take, 'provider'>>
 
@@ -66,21 +67,49 @@ export function takeCostInferred(t: Pick<Take, 'imported'>): boolean {
   return !!t.imported && (t.imported.inferred.includes('resolution') || t.imported.inferred.includes('duration'))
 }
 
+/** What "Khôi phục prompt này" puts back from a take (restorePlan). */
+export interface RestorePlan {
+  /** What restoredFromTake (components/runs/restore.ts) rebuilds the prompt and the references from. */
+  source: Pick<Take, 'rawPromptSnapshot' | 'refsSnapshot' | 'videoRefsSnapshot'> & { imageKeysSnapshot?: readonly string[] }
+  settings: VideoSettings
+  /** Settings the scene keeps (an imported take does not know them for sure: unknown, or only inferred). */
+  kept: ImportedField[]
+  /** Inferred settings restored anyway: the mode the references taken from the node were sent with. */
+  guessed: ImportedField[]
+  /** The take tells nothing about the scene's reference images (its job sent none): the scene keeps its own. */
+  keepRefs: boolean
+}
+
 /**
- * Settings of an imported take as the scene may take them back ("Khôi phục prompt này"): its known fields; the scene's
- * own value for anything unknown or only inferred (`kept`). Takes SanoVids made: their settings as they are.
+ * "Khôi phục prompt này": takes SanoVids made come back as they ran (prompt, references, @video references, settings).
+ * An imported take (restoreBlock first) restores its prompt and its known settings; the scene keeps its own value for
+ * anything unknown or merely inferred (`kept`) and its @video references (canvasapp sends none, the take knows nothing
+ * of them). References and mode go together: when the job sent reference images (usesRefs of the take's settings),
+ * the ones read from the bridge node are restored WITH the mode they need, even an inferred one (`guessed`) — a kept
+ * Text → Video would leave them unsent; when it sent none (MiniMax-H3 Text → Video / Khung đầu → cuối, maybe only
+ * guessed) the scene keeps its references (`keepRefs`) — never emptied for a mode it may not even use. Frames are
+ * never restored (like any take).
  */
-export function restorableSettings(t: Pick<Take, 'settings' | 'imported'>, scene: VideoSettings): { settings: VideoSettings; kept: ImportedField[] } {
-  if (!t.imported) return { settings: t.settings, kept: [] }
-  const kept = (['mode', 'resolution', 'duration', 'ratio'] as const).filter((f) => fieldState(t, f) !== 'known')
+export function restorePlan(
+  t: Pick<Take, 'settings' | 'imported' | 'rawPromptSnapshot' | 'refsSnapshot' | 'videoRefsSnapshot' | 'imageKeysSnapshot'>,
+  scene: Pick<Scene, 'settings' | 'refs' | 'videoRefs'>,
+): RestorePlan {
+  if (!t.imported) return { source: t, settings: t.settings, kept: [], guessed: [], keepRefs: false }
+  const keepRefs = !usesRefs(t.settings)
+  const guessed: ImportedField[] = !keepRefs && fieldState(t, 'mode') === 'inferred' ? ['mode'] : []
+  const kept = (['mode', 'resolution', 'duration', 'ratio'] as const).filter((f) => fieldState(t, f) !== 'known' && !guessed.includes(f))
   const next: VideoSettings = { ...t.settings }
-  for (const f of kept) (next as unknown as Record<string, unknown>)[f] = scene[f]
-  return { settings: normalizeSettings(next), kept }
+  for (const f of kept) (next as unknown as Record<string, unknown>)[f] = scene.settings[f]
+  // the scene's own lists as the "snapshot" of what the take does not know: restored as they are, nothing renumbered
+  const source: RestorePlan['source'] = keepRefs
+    ? { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: [...scene.refs], videoRefsSnapshot: [...scene.videoRefs] }
+    : { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: t.refsSnapshot, videoRefsSnapshot: [...scene.videoRefs], ...(t.imageKeysSnapshot ? { imageKeysSnapshot: t.imageKeysSnapshot } : {}) }
+  return { source, settings: normalizeSettings(next), kept, guessed, keepRefs }
 }
 
 /**
  * Why "Khôi phục prompt này" cannot put this take back (null = it can): an imported take whose prompt or references
- * canvasapp did not tell (restoring would write "" / drop the scene's references).
+ * canvasapp did not tell (restoring would write "" / leave tokens pointing at unknown pictures).
  */
 export function restoreBlock(t: ImportInfo): string | null {
   if (!t.imported) return null
@@ -88,12 +117,17 @@ export function restoreBlock(t: ImportInfo): string | null {
   return missing.length ? `Take nhập từ canvasapp: không rõ ${missing.join(' / ')} lúc tạo — không khôi phục được.` : null
 }
 
-/** What the restore toast adds for an imported take: settings kept from the scene, references taken from the node. */
-export function restoreNotes(t: ImportInfo, kept: readonly ImportedField[]): string[] {
+/** What the restore toast adds for an imported take: what the scene kept and why, what was only a guess. */
+export function restoreNotes(t: Pick<Take, 'settings' | 'imported'>, plan: Pick<RestorePlan, 'kept' | 'guessed' | 'keepRefs'>): string[] {
   if (!t.imported) return []
   const out: string[] = []
-  if (kept.length) out.push(`giữ ${kept.map((f) => FIELD_LABEL[f]).join(', ')} của cảnh (không rõ lúc tạo)`)
-  if (fieldState(t, 'refs') === 'inferred') out.push('ảnh tham chiếu theo node trên canvas cầu nối — hãy kiểm tra')
+  const labels = (fs: readonly ImportedField[]) => fs.map((f) => FIELD_LABEL[f]).join(', ')
+  const unknownKept = plan.kept.filter((f) => fieldState(t, f) === 'unknown')
+  const inferredKept = plan.kept.filter((f) => fieldState(t, f) === 'inferred')
+  if (unknownKept.length) out.push(`giữ ${labels(unknownKept)} của cảnh (không rõ lúc tạo)`)
+  if (inferredKept.length) out.push(`giữ ${labels(inferredKept)} của cảnh (chỉ đoán được lúc tạo)`)
+  if (plan.keepRefs) out.push(`giữ ảnh tham chiếu của cảnh (job ${takeModeText(t)} không gửi ảnh tham chiếu)`)
+  else if (fieldState(t, 'refs') === 'inferred') out.push(`${labels([...plan.guessed, 'refs'])} theo node trên canvas cầu nối (đoán) — hãy kiểm tra`)
   return out
 }
 

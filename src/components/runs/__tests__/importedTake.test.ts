@@ -19,9 +19,9 @@ import {
   importedChipTitle,
   importedFieldsNote,
   importedSourceText,
-  restorableSettings,
   restoreBlock,
   restoreNotes,
+  restorePlan,
   takeCostInferred,
   takeCostKnown,
   takeDurationText,
@@ -106,13 +106,53 @@ describe('"Khôi phục prompt này" of an imported take', () => {
     expect(restoreBlock(take(['prompt', 'refs']))).toBe('Take nhập từ canvasapp: không rõ prompt / ảnh tham chiếu lúc tạo — không khôi phục được.')
   })
 
+  /** The take's snapshot fields as importTakes writes them (no @video references: canvasapp sends none). */
+  const snap = { rawPromptSnapshot: '@image_1 đi dạo', refsSnapshot: ['a_node'], videoRefsSnapshot: [] as string[], imageKeysSnapshot: ['a_node:img_n'] }
+  const sceneOf = (settings: VideoSettings) => ({ settings, refs: ['a_scene', 'b_scene'], videoRefs: ['take_v'] })
+  const H3 = (mode: VideoSettings['mode']): VideoSettings => ({ model: 'minimax_h3', mode, duration: 5, resolution: '768p', ratio: '16:9' })
+
   it('settings: only the known ones; the scene keeps its own for unknown or inferred fields (said in the toast)', () => {
-    expect(restorableSettings(plain(), scene)).toEqual({ settings: SETTINGS, kept: [] })
-    const r = restorableSettings(take(['resolution'], ['ratio']), scene)
-    expect(r).toEqual({ settings: { ...SETTINGS, resolution: '720p', ratio: '9:16' }, kept: ['resolution', 'ratio'] })
-    expect(restoreNotes(take(['resolution'], ['refs']), r.kept)).toEqual(['giữ độ phân giải, tỉ lệ khung của cảnh (không rõ lúc tạo)', 'ảnh tham chiếu theo node trên canvas cầu nối — hãy kiểm tra'])
+    const plainTake = { ...plain(), rawPromptSnapshot: 'p', refsSnapshot: ['x'], videoRefsSnapshot: ['v'] }
+    expect(restorePlan(plainTake, sceneOf(scene))).toEqual({ source: plainTake, settings: SETTINGS, kept: [], guessed: [], keepRefs: false })
+    const t = { ...take(['resolution'], ['ratio', 'refs']), ...snap }
+    const r = restorePlan(t, sceneOf(scene))
+    expect(r).toMatchObject({ settings: { ...SETTINGS, resolution: '720p', ratio: '9:16' }, kept: ['resolution', 'ratio'], guessed: [], keepRefs: false })
+    // the node's references (exact keys) — the scene's @video references stay
+    expect(r.source).toEqual({ ...snap, videoRefsSnapshot: ['take_v'] })
+    expect(restoreNotes(t, r)).toEqual([
+      'giữ độ phân giải của cảnh (không rõ lúc tạo)',
+      'giữ tỉ lệ khung của cảnh (chỉ đoán được lúc tạo)',
+      'ảnh tham chiếu theo node trên canvas cầu nối (đoán) — hãy kiểm tra',
+    ])
     // a scene value the take's model does not have → that model's default (never an invalid setting)
-    const h3 = restorableSettings(take(['resolution'], [], { settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }), scene)
+    const h3 = restorePlan({ ...take(['resolution'], [], { settings: H3('t2v') }), ...snap }, sceneOf(scene))
     expect(h3.settings).toMatchObject({ model: 'minimax_h3', resolution: '768p' })
+  })
+
+  it('MiniMax-H3 Text → Video / Khung đầu → cuối (job sent no reference images, mode maybe only guessed): the scene keeps its references and mode', () => {
+    const i2vScene = sceneOf(H3('i2v'))
+    for (const mode of ['t2v', 'transform'] as const) {
+      const t = { ...take([], ['mode', 'resolution', 'refs'], { settings: H3(mode) }), ...snap, refsSnapshot: [], imageKeysSnapshot: [] }
+      expect(restoreBlock(t)).toBeNull()
+      const r = restorePlan(t, i2vScene)
+      expect(r).toMatchObject({ settings: H3('i2v'), kept: ['mode', 'resolution'], guessed: [], keepRefs: true })
+      // the scene's own lists, unchanged — never emptied (and no renumbering against the take's empty list)
+      expect(r.source).toEqual({ rawPromptSnapshot: snap.rawPromptSnapshot, refsSnapshot: ['a_scene', 'b_scene'], videoRefsSnapshot: ['take_v'] })
+      const label = mode === 't2v' ? '≈Text → Video' : '≈Khung đầu → cuối'
+      expect(restoreNotes(t, r)).toEqual(['giữ chế độ, độ phân giải của cảnh (chỉ đoán được lúc tạo)', `giữ ảnh tham chiếu của cảnh (job ${label} không gửi ảnh tham chiếu)`])
+    }
+    // a mode canvasapp did tell: restored, the scene's references still kept
+    const told = take([], [], { settings: H3('t2v') })
+    const known = restorePlan({ ...told, ...snap, refsSnapshot: [] }, i2vScene)
+    expect(known).toMatchObject({ settings: H3('t2v'), kept: [], keepRefs: true })
+    expect(restoreNotes(told, known)).toEqual(['giữ ảnh tham chiếu của cảnh (job Text → Video không gửi ảnh tham chiếu)'])
+  })
+
+  it('MiniMax-H3 Ảnh → Video guessed from the node: its references come back WITH that mode (a kept Text → Video would leave them unsent)', () => {
+    const t = { ...take([], ['mode', 'refs'], { settings: H3('i2v') }), ...snap }
+    const r = restorePlan(t, sceneOf(H3('t2v')))
+    expect(r).toMatchObject({ settings: H3('i2v'), kept: [], guessed: ['mode'], keepRefs: false })
+    expect(r.source.refsSnapshot).toEqual(['a_node'])
+    expect(restoreNotes(t, r)).toEqual(['chế độ, ảnh tham chiếu theo node trên canvas cầu nối (đoán) — hãy kiểm tra'])
   })
 })

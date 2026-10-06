@@ -2157,6 +2157,22 @@ describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page beco
     expect(lastToast()?.text).toMatch(/giữ độ phân giải của cảnh/)
   })
 
+  it('MiniMax-H3 Text → Video (mode only guessed from the node), scene switched to Ảnh → Video since: restore keeps the scene’s mode, references and @video', async () => {
+    useProject.getState().updateSettings(['s2'], { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' })
+    const t2 = await done('s2')
+    const site = fake.siteJob(nodeOf('s2'))
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    expect(imp).toMatchObject({ settings: { model: 'minimax_h3', mode: 't2v' }, refsSnapshot: [], imported: { inferred: expect.arrayContaining(['mode', 'refs']) } })
+    // the user moves the scene on: Ảnh → Video with a character and a reference video
+    useProject.getState().updateSettings(['s2'], { mode: 'i2v' })
+    useProject.getState().restoreScene('s2', { prompt: '@image_1 đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { ...project().scenes[1].settings, model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } })
+    restoreFromTake(imp.id)
+    const s2 = useProject.getState().project.scenes.find((s) => s.id === 's2')!
+    expect(s2).toMatchObject({ prompt: 'Hai người đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { mode: 'i2v' } })
+    expect(lastToast()?.text).toMatch(/giữ ảnh tham chiếu của cảnh \(job ≈Text → Video không gửi ảnh tham chiếu\)/)
+  })
+
   it('a job an unanswered POST on that node may have made is never offered; that take’s retry never posts twice', async () => {
     await done('s1')
     fake.state.dedupe = false // a second POST would be billed
