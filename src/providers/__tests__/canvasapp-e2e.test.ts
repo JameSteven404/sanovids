@@ -38,11 +38,11 @@ import { takeCostLine } from '../../components/runs/creditText'
 import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
+import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type CanvasappProvider, type KeyValueStorage } from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
-import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
+import { canvasProblem, canvasUploadIds, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fake canvasapp.io.vn (server + what electron/main.cjs returns over IPC)
@@ -132,6 +132,8 @@ function fakeCanvasapp() {
     canvases: new Map<string, CanvasPayload>(),
     uploads: new Map<string, { content: string; type: string; filename: string }>(),
     jobs: [] as FakeJob[],
+    /** Prefix of the ids this account's data gets (another account: useAccount) — canvasapp's ids are unique. */
+    idPrefix: '',
     script: DEFAULT_SCRIPT,
     /** Requests electron/main.cjs would have refused (not allowlisted / too large): must stay empty. */
     refusedByMain: [] as string[],
@@ -176,7 +178,7 @@ function fakeCanvasapp() {
     if (state.balance < cost) return refuse(state.insufficientStatus, `Số dư không đủ: cần ${cost} credit, còn ${state.balance}`, path)
     state.balance -= cost
     const job: FakeJob = {
-      job_id: 'job' + (state.jobs.length + 1),
+      job_id: state.idPrefix + 'job' + (state.jobs.length + 1),
       project_id: project.project_id,
       canvas_node_id: String(b.canvas_node_id),
       client_request_id: key,
@@ -207,11 +209,17 @@ function fakeCanvasapp() {
     if (path === '/api/projects' && req.method === 'POST') {
       // canvasapp's page posts no body; the project gets a default name until PATCH {name}
       if (req.json !== undefined) return refuse(422, 'no body expected', path)
-      const p = { project_id: 'proj' + (state.projects.length + 1), name: 'Phiên mới' }
+      const p = { project_id: state.idPrefix + 'proj' + (state.projects.length + 1), name: 'Phiên mới' }
       state.projects.push(p)
       return ok({ project_id: p.project_id })
     }
     const named = /^\/api\/projects\/([^/]+)$/.exec(path)
+    if (named && req.method === 'GET') {
+      // loadProject(): the canvas as last saved (none yet → null)
+      const p = state.projects.find((x) => x.project_id === named[1])
+      if (!p) return refuse(404, 'Project not found', path)
+      return ok({ project_id: p.project_id, name: p.name, canvas: state.canvases.get(p.project_id) ?? null })
+    }
     if (named && req.method === 'PATCH') {
       const p = state.projects.find((x) => x.project_id === named[1])
       if (!p) return refuse(404, 'Project not found', path)
@@ -225,13 +233,15 @@ function fakeCanvasapp() {
       if (!state.projects.some((p) => p.project_id === canvas[1])) return refuse(404, 'Project not found', path)
       const problem = canvasProblem(req.json)
       if (problem) return refuse(422, `Invalid canvas payload (${problem})`, path)
+      // like the dev server: only this account's uploads
+      if (canvasUploadIds(req.json).some((id) => !state.uploads.has(id))) return refuse(400, 'Invalid canvas payload (unknown upload_id)', path)
       state.canvases.set(canvas[1], req.json as CanvasPayload)
       return ok({ ok: true })
     }
     if (path === '/api/uploads/images' && req.method === 'POST') {
       const f = req.form
       if (!f || f.field !== 'file' || !['image/png', 'image/jpeg', 'image/webp'].includes(f.contentType)) return refuse(400, 'bad file', path)
-      const id = 'up' + (state.uploads.size + 1)
+      const id = state.idPrefix + 'up' + (state.uploads.size + 1)
       state.uploads.set(id, { content: new TextDecoder().decode(f.bytes), type: f.contentType, filename: f.filename })
       return ok({ upload_id: id })
     }
@@ -291,12 +301,25 @@ function fakeCanvasapp() {
     },
   }
 
+  /** Data of each canvas account; the one logged in lives in `state`. */
+  type Account = Pick<typeof state, 'projects' | 'canvases' | 'uploads' | 'jobs' | 'balance' | 'idPrefix'>
+  const accounts = new Map<string, Account>()
+  let account = 'A'
+  /** Switches the data to another canvasapp account ('A' = the first one; a new one starts empty, ids prefixed). */
+  function useAccount(name: string) {
+    const { projects, canvases, uploads, jobs, balance, idPrefix } = state
+    accounts.set(account, { projects, canvases, uploads, jobs, balance, idPrefix })
+    Object.assign(state, accounts.get(name) ?? { projects: [], canvases: new Map(), uploads: new Map(), jobs: [], balance: 100, idPrefix: name.toLowerCase() })
+    account = name
+  }
+
   const is = (method: string, path: string | RegExp) => (c: Logged) =>
     c.method === method && (typeof path === 'string' ? c.path.split('?')[0] === path : path.test(c.path))
   return {
     bridge,
     state,
     log,
+    useAccount,
     count: (method: string, path: string | RegExp) => log.filter(is(method, path)).length,
     jobPosts: () => log.filter(is('POST', '/api/video-jobs')).map((c) => c.json as Json),
     listReads: () => log.filter(is('GET', '/api/video-jobs')),
@@ -1131,6 +1154,121 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     expect(take(all[0].id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
     expect(all.slice(1).every((t) => !!take(t.id).remoteId && !isUncertainSubmit(take(t.id)))).toBe(true)
     expect(fake.jobPosts()).toHaveLength(9)
+  })
+})
+
+describe('gateway e2e: Đăng xuất / đăng nhập lại while canvasapp takes run (docs §9, test 10)', () => {
+  const ENDED = ['completed', 'failed', 'cancelled', 'expired']
+  const LONG = Array.from({ length: 50 }, () => ({ status: 'processing', progress: 30 }))
+  const finishAll = () => {
+    for (const j of fake.state.jobs) j.script = [{ status: 'completed', progress: 100, download_available: true }]
+  }
+  /** Settings → Đăng xuất (GatewaySection doLogout): bridge logout, provider reset(), balance forgotten, new takes → Phát triển. */
+  async function logout() {
+    await fake.bridge.logout()
+    ;(getProvider('canvasapp') as CanvasappProvider).reset()
+    resetRealCredits()
+    useProviderPrefs.setState({ provider: 'dev' })
+    const read = refreshRealCredits({ force: true }) // the simulated account's balance: answered on (fake) timers
+    await run(2_000)
+    await read
+  }
+  /** Đăng nhập canvasapp (optionally as another account), then canvasapp.io.vn chosen again for new takes. */
+  async function login(account?: string) {
+    if (account) fake.useAccount(account)
+    await fake.bridge.login()
+    useProviderPrefs.setState({ provider: 'canvasapp' })
+    await refreshRealCredits({ force: true })
+  }
+  /** Every canvas PUT (project, video nodes, uploads) and the nodes of that project's running jobs it left out. */
+  function watchPuts() {
+    const puts: { projectId: string; videos: string[]; uploads: string[] }[] = []
+    const lost: string[] = []
+    fake.state.fault = (req) => {
+      const m = req.method === 'PUT' ? /^\/api\/projects\/([^/]+)\/canvas$/.exec(req.path) : null
+      if (!m) return undefined
+      const canvas = req.json as CanvasPayload
+      const videos = canvas.nodes.filter((n) => n.type === 'video').map((n) => n.id)
+      puts.push({ projectId: m[1], videos, uploads: canvasUploadIds(canvas) })
+      for (const j of fake.state.jobs) {
+        if (j.project_id === m[1] && !ENDED.includes(j.status) && !videos.includes(j.canvas_node_id)) lost.push(`${j.job_id} (${j.status})`)
+      }
+      return undefined
+    }
+    return { puts, lost }
+  }
+  const since = (mark: number) => fake.log.slice(mark).map((c) => `${c.method} ${c.path.split('?')[0]}`)
+
+  it('3 takes running → Đăng xuất → đăng nhập lại → one more scene: the canvas read back keeps their nodes; all complete, none sent twice', async () => {
+    fake.state.script = LONG
+    const watch = watchPuts()
+    const running = enqueue('s1', 's2', 's3')
+    await run(5_000)
+    expect(running.map((t) => take(t.id).remoteId)).toEqual(['proj1:job1', 'proj1:job2', 'proj1:job3'])
+
+    await logout()
+    await run(30_000) // logged out: the polls get 401, the takes keep running
+    expect(running.every((t) => take(t.id).status === 'processing')).toBe(true)
+    await login()
+    const mark = fake.log.length
+    const [next] = enqueue('s4')
+    await run(5_000)
+    expect(take(next.id).remoteId).toBe('proj1:job4')
+    expect(fake.state.projects).toEqual([{ project_id: 'proj1', name: 'SanoVids bridge' }]) // found again, no second bridge
+    const calls = since(mark)
+    expect(calls.indexOf('GET /api/projects/proj1')).toBeGreaterThan(calls.indexOf('GET /api/projects'))
+    expect(calls.indexOf('GET /api/projects/proj1')).toBeLessThan(calls.indexOf('PUT /api/projects/proj1/canvas'))
+    expect(watch.puts.at(-1)!.videos.sort()).toEqual(['s1', 's2', 's3', 's4'].map(canvasNodeId).sort())
+    // s1 keeps its four pictures, wired 1..4 as before
+    const canvas = fake.state.canvases.get('proj1')!
+    expect(canvas.connections.filter((c) => c.to === canvasNodeId('s1')).map((c) => c.order)).toEqual([1, 2, 3, 4])
+    expect(watch.lost).toEqual([])
+
+    finishAll()
+    await run(60_000)
+    expect(takes().map((t) => t.status)).toEqual(['completed', 'completed', 'completed', 'completed'])
+    expect(new Set(fake.jobPosts().map((b) => b.client_request_id)).size).toBe(4)
+    expect(fake.jobPosts()).toHaveLength(4)
+    expect(fake.state.rejected.filter((r) => r.status !== 401)).toEqual([])
+  })
+
+  it('another account logs in meanwhile: its own bridge, none of the first one’s pictures or nodes; back on the first, its running nodes stay', async () => {
+    fake.state.script = LONG
+    const watch = watchPuts()
+    const first = enqueue('s1', 's2')
+    await run(5_000)
+    expect(first.map((t) => take(t.id).remoteId)).toEqual(['proj1:job1', 'proj1:job2'])
+    const canvasA = JSON.stringify(fake.state.canvases.get('proj1'))
+
+    await logout()
+    await login('B')
+    const [other] = enqueue('s1') // same scene, other account: its own uploads on its own bridge
+    await run(5_000)
+    expect(take(other.id).remoteId).toBe('bproj1:bjob1')
+    const toB = watch.puts.filter((p) => p.projectId === 'bproj1')
+    expect(toB).toHaveLength(1)
+    expect(toB[0].videos).toEqual([canvasNodeId('s1')])
+    expect(toB[0].uploads).toEqual(['bup1', 'bup2', 'bup3', 'bup4'])
+    expect(sentCharacters(fake.jobPosts().at(-1)!)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
+    expect(watch.puts.filter((p) => p.projectId === 'proj1')).toHaveLength(2) // nothing written to A's bridge meanwhile
+
+    await logout()
+    await login('A')
+    expect(JSON.stringify(fake.state.canvases.get('proj1'))).toBe(canvasA)
+    const [back] = enqueue('s4') // H3 transform: its two frames uploaded again to account A
+    await run(5_000)
+    expect(take(back.id).remoteId).toBe('proj1:job3')
+    const toA = watch.puts.filter((p) => p.projectId === 'proj1').at(-1)!
+    expect(toA.videos.sort()).toEqual(['s1', 's2', 's4'].map(canvasNodeId).sort())
+    expect(toA.uploads.every((u) => /^up\d+$/.test(u))).toBe(true)
+    expect(watch.lost).toEqual([])
+    expect(fake.state.projects).toEqual([{ project_id: 'proj1', name: 'SanoVids bridge' }])
+    expect(fake.state.rejected.filter((r) => r.status !== 401)).toEqual([]) // never "unknown upload_id"
+
+    finishAll()
+    await run(60_000)
+    expect([...first, back].map((t) => take(t.id).status)).toEqual(['completed', 'completed', 'completed'])
+    expect(fake.jobPosts().map((b) => b.project_id)).toEqual(['proj1', 'proj1', 'bproj1', 'proj1'])
   })
 })
 

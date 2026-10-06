@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasImageNode, CanvasVideoNode } from '../canvasapp/api'
 import {
+  adoptBridgeCanvas,
+  adoptedKey,
   bridgeCanvas,
   bridgeEntriesFrom,
   canvasNodeId,
@@ -8,6 +10,7 @@ import {
   decodeRemoteId,
   encodeRemoteId,
   entryFromRequest,
+  entryNodeId,
   FIRST_FRAME_ORDER,
   imageNodeId,
   imagesToUpload,
@@ -31,6 +34,7 @@ import {
   validateRequest,
   VIDEO_NODE_H,
   VIDEO_NODE_W,
+  withEntry,
   type BridgeEntry,
 } from '../canvasapp/mapping'
 import type { JobRequest } from '../types'
@@ -564,5 +568,102 @@ describe('canvasapp mapping: persisted bridge entries', () => {
     expect(bridgeEntriesFrom(null)).toEqual({})
     expect(bridgeEntriesFrom([v020])).toEqual({})
     expect(bridgeEntriesFrom('x')).toEqual({})
+  })
+})
+
+describe('canvasapp mapping: bridge canvas read back from canvasapp (adoptBridgeCanvas)', () => {
+  /** Seedance refs, a shared upload, one upload twice, H3 transform without ratio, H3 t2v — newest first. */
+  const mixed = (): BridgeEntry[] => [
+    entryFromRequest(req({ sceneId: 'scene_a' }), uploadIdFor, 50),
+    { ...entryFromRequest(req({ sceneId: 'scene_b' }), uploadIdFor, 40), uploadIds: ['up_b', 'up_x', 'up_b'] },
+    entryFromRequest(h3Transform({ sceneId: 'scene_t' }), uploadIdFor, 30, null),
+    entryFromRequest(req({ sceneId: 'scene_h', model: 'minimax_h3', mode: 't2v', resolution: '768p', duration: 6, ratio: '9:16' }), uploadIdFor, 20),
+  ]
+
+  it('round trip: the entries read back from a saved canvas give that very canvas again (ids, data, wiring, layout)', () => {
+    const canvas = bridgeCanvas(mixed())
+    const adopted = adoptBridgeCanvas(JSON.parse(JSON.stringify(canvas)))!
+    const ids = ['scene_a', 'scene_b', 'scene_t', 'scene_h'].map(canvasNodeId)
+    expect(Object.keys(adopted)).toEqual(ids.map(adoptedKey))
+    expect(Object.values(adopted).map(entryNodeId)).toEqual(ids)
+    expect(Object.values(adopted).map((e) => e.sceneId)).toEqual(ids.map(adoptedKey)) // its scene is not known here
+    expect(adopted[adoptedKey(ids[1])].uploadIds).toEqual(['up_b', 'up_x', 'up_b'])
+    expect(adopted[adoptedKey(ids[2])]).toMatchObject({ mode: 'transform', ratio: '', firstFrameUploadId: 'up_f', lastFrameUploadId: 'up_l', uploadIds: [] })
+    const again = bridgeCanvas(Object.values(adopted))
+    expectClientCanvasShape(again)
+    expect(again).toEqual(canvas)
+    // older than anything submitted here: a new scene is placed before them, they are the first to go for room
+    expect(Math.max(...Object.values(adopted).map((e) => e.usedAt))).toBeLessThan(10)
+    // stored and read back (STATE_KEY) unchanged
+    expect(bridgeEntriesFrom(JSON.parse(JSON.stringify(adopted)))).toEqual(adopted)
+  })
+
+  it('only nodes SanoVids could have written are read back; pictures follow the connections in order', () => {
+    const vid = (k: string) => uuidFromKey('v:' + k)
+    const img = (k: string) => uuidFromKey('i:' + k)
+    const data = { model_profile: 'seedance_2_5', duration: 5, resolution: '480P', aspect_ratio: '16:9', mode: 't2v', prompt: 'p' }
+    const adopted = adoptBridgeCanvas({
+      nodes: [
+        { id: vid('ok'), type: 'video', x: 0, y: 0, w: 390, h: 600, data, extra: 1 },
+        { id: vid('nomode'), type: 'video', x: 0, y: 0, data: { ...data, mode: undefined } },
+        { id: vid('sora'), type: 'video', x: 0, y: 0, data: { ...data, model_profile: 'sora' } },
+        { id: vid('badmode'), type: 'video', x: 0, y: 0, data: { ...data, mode: 'v2v' } },
+        { id: vid('noprompt'), type: 'video', x: 0, y: 0, data: { ...data, prompt: 7 } },
+        { id: 'not-a-uuid', type: 'video', x: 0, y: 0, data },
+        { id: vid('ok'), type: 'video', x: 0, y: 0, data: { ...data, prompt: 'twice' } },
+        { id: uuidFromKey('r'), type: 'result', x: 0, y: 0, data: { job_id: 'j' } },
+        { id: img('two'), type: 'images', x: 0, y: 0, data: { upload_ids: ['u2', 'u3'] } },
+        { id: img('one'), type: 'images', x: 0, y: 0, data: { upload_ids: ['u1'] } },
+        null,
+      ],
+      connections: [
+        { from: img('two'), to: vid('ok'), target_handle: 'reference', order: 2 },
+        { from: img('one'), to: vid('ok'), target_handle: 'reference', order: 1 },
+        { from: img('gone'), to: vid('ok'), target_handle: 'reference', order: 3 },
+        { from: img('one'), to: vid('nomode'), target_handle: 'first_frame', order: 1 },
+        'junk',
+      ],
+    })!
+    expect(Object.keys(adopted)).toEqual([vid('ok'), vid('nomode')].map(adoptedKey))
+    expect(adopted[adoptedKey(vid('ok'))]).toMatchObject({ prompt: 'p', resolution: '480p', ratio: '16:9', uploadIds: ['u1', 'u2', 'u3'], firstFrameUploadId: null })
+    // canvasapp's default mode; a frame edge into a node that takes references carries nothing
+    expect(adopted[adoptedKey(vid('nomode'))]).toMatchObject({ mode: 't2v', uploadIds: [], firstFrameUploadId: null })
+    expectClientCanvasShape(bridgeCanvas(Object.values(adopted)))
+  })
+
+  it('no canvas saved yet → nothing to keep; a canvas of another shape → unreadable (null)', () => {
+    expect(adoptBridgeCanvas(null)).toEqual({})
+    expect(adoptBridgeCanvas(undefined)).toEqual({})
+    expect(adoptBridgeCanvas({ nodes: [], viewport: { zoom: 1 } })).toEqual({})
+    expect(adoptBridgeCanvas('canvas')).toBeNull()
+    expect(adoptBridgeCanvas([])).toBeNull()
+    expect(adoptBridgeCanvas({})).toBeNull()
+    expect(adoptBridgeCanvas({ nodes: {}, connections: [] })).toBeNull()
+    expect(adoptBridgeCanvas({ nodes: [], connections: {} })).toBeNull()
+  })
+
+  it('a stored adopted entry keeps its node id only under its own key', () => {
+    const node = canvasNodeId('scene_a')
+    const e = { ...entryFromRequest(req(), uploadIdFor, 1), sceneId: adoptedKey(node), nodeId: node }
+    expect(bridgeEntriesFrom({ [adoptedKey(node)]: e })).toEqual({ [adoptedKey(node)]: e })
+    expect(bridgeEntriesFrom({ wrong: { ...e, sceneId: 'wrong' } })).toEqual({})
+    expect(bridgeEntriesFrom({ [adoptedKey('x')]: { ...e, sceneId: adoptedKey('x'), nodeId: 'x' } })).toEqual({})
+  })
+
+  it('a scene submitted again replaces its node read back from canvasapp: one video node per id, never two', () => {
+    const node = canvasNodeId('scene_a')
+    const adopted = { ...entryFromRequest(req({ prompt: 'old' }), uploadIdFor, 1), sceneId: adoptedKey(node), nodeId: node }
+    const other = entryFromRequest(req({ sceneId: 'scene_b' }), uploadIdFor, 2)
+    const fresh = entryFromRequest(req({ prompt: 'new' }), uploadIdFor, 3)
+    const entries = withEntry({ [adopted.sceneId]: adopted, scene_b: other }, fresh)
+    expect(Object.keys(entries)).toEqual(['scene_b', 'scene_a'])
+    expect(entries.scene_a).toBe(fresh)
+    // planBridgeCanvas itself never places one node id twice (the scene being submitted wins)
+    const plan = planBridgeCanvas([adopted, other, fresh], { current: 'scene_a' })
+    expectClientCanvasShape(plan.canvas)
+    expect(videoNodes(plan.canvas).map((n) => [n.id, n.data.prompt])).toEqual([
+      [node, 'new'],
+      [canvasNodeId('scene_b'), '@image_1 walks to @image_2'],
+    ])
   })
 })
