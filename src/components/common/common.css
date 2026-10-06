@@ -4,6 +4,16 @@
  * Loaded after base.css, so these rules take over the older versions of the same classes there.
  */
 
+/* ---------- shortcut key caps ---------- */
+.cm-keys, .cm-key-chord {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cm-keys { flex-wrap: wrap; }
+.cm-keys-or { padding: 0 3px; color: var(--text-faint); }
+.cm-keys-plus { color: var(--text-dim); }
+
 /* ---------- modal (sheet) ---------- */
 .modal-backdrop {
   position: fixed;

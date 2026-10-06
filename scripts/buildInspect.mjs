@@ -37,6 +37,18 @@ import {
 } from './releaseLib.mjs'
 
 const require = createRequire(import.meta.url)
+
+/** Scan all JavaScript, including lazy chunks; a harness chunk must never ship. Fails closed on unreadable archives. */
+export function inspectPerfHarness(asarPath) {
+  try {
+    const asar = require('@electron/asar')
+    const matches = asar.listPackage(asarPath).filter((file) => /\.[cm]?js$/i.test(file)
+      && asar.extractFile(asarPath, file.replace(/^[\\/]+/, '')).includes('sanovids-perf-harness'))
+    return matches.length ? [`Bộ đo hiệu năng lọt vào app.asar: ${matches.join(', ')}`] : []
+  } catch (error) {
+    return [`Không kiểm được bộ đo trong app.asar: ${error.message}`]
+  }
+}
 const ELECTRON_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'electron')
 /** The app's own lists (electron/hardening-rules.cjs: pure, no requires): the release gate and the self-check agree. */
 const hardening = require(path.join(ELECTRON_DIR, 'hardening-rules.cjs'))
@@ -460,7 +472,12 @@ export async function inspectWindowsBuild({ setupPath, portablePath, unpackedDir
   const asarPath = resources ? path.join(resources, 'app.asar') : null
   if (!resources) add('fail', 'app.asar', 'Không biết thư mục win-unpacked.')
   else {
-    if (isFile(asarPath)) add('ok', 'app.asar', 'Có resources/app.asar')
+    if (isFile(asarPath)) {
+      add('ok', 'app.asar', 'Có resources/app.asar')
+      const perfProblems = inspectPerfHarness(asarPath)
+      if (perfProblems.length) for (const problem of perfProblems) add('fail', 'Bộ đo hiệu năng', problem)
+      else add('ok', 'Bộ đo hiệu năng', 'Không có bộ đo trong app.asar')
+    }
     else add('fail', 'app.asar', 'Thiếu resources/app.asar.')
     if (fs.existsSync(path.join(resources, 'app.asar.unpacked'))) add('fail', 'app.asar', 'Có resources/app.asar.unpacked: file trong đó không được kiểm tra toàn vẹn (bỏ asarUnpack).')
     else add('ok', 'app.asar', 'Không có app.asar.unpacked')

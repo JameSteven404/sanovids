@@ -6,10 +6,13 @@ import { LAYOUT, redo, undo, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
 import {
+  useCanvasLocal,
   DROP_BLOCKERS,
   inlineEditSavesDraft,
   inlineKeySavesDraft,
   layoutRowHeights,
+  livePosition,
+  autoTakePosition,
   measuredOf,
   layoutTakes,
   MINIMAP_LIFT_W,
@@ -69,6 +72,22 @@ describe('selectionSeed', () => {
   })
 })
 
+describe('live canvas placement', () => {
+  it('keeps stored identity at rest, follows dragging, and accounts for the left/top resize position', () => {
+    const base = { x: 200, y: 100 }
+    expect(livePosition('s', base, {}, {})).toBe(base)
+    const drag = { s: { x: 300, y: 200 } }
+    expect(livePosition('s', base, drag, {})).toBe(drag.s)
+    const resizing = { s: { x: 100, y: 80, w: 380, h: 260 } }
+    const position = livePosition('s', base, drag, resizing)
+    expect(position).toEqual({ x: 100, y: 80 })
+    expect(autoTakePosition(position, resizing.s.w, 240)).toEqual({ x: 100 + 380 + 240 + LAYOUT.takeOffsetX, y: 80 })
+    expect(livePosition('s', base, {}, { s: { w: 380, h: 260 } })).toBe(base)
+    // A take dragged independently overrides its automatic slot.
+    expect(livePosition('t', autoTakePosition(base, 280, 0), { t: { x: 900, y: 400 } }, {})).toEqual({ x: 900, y: 400 })
+  })
+})
+
 describe('layoutRowHeights', () => {
   it('per scene: the tallest of its card and the takes shown in its row (stored size, else measured)', () => {
     const scenes = [scene('s1', 1), scene('s2', 2, { size: { w: 280, h: 330 } }), scene('s3', 3)]
@@ -106,19 +125,19 @@ describe('autoLayoutCanvas', () => {
   })
   const initialProject = useProject.getState().project
   const initialTakes = useRuns.getState().takes
-  const initialMeasured = useUI.getState().measured
+  const initialMeasured = useCanvasLocal.getState().measured
   beforeEach(() => {
     useProject.setState({ project: project() })
     useProject.temporal.getState().clear()
     // t1 has CSS auto height (no stored size): only React Flow's measurement knows it is 380px tall.
     useRuns.setState({ takes: [take('t1', 's1', 1, { position: { x: 1600, y: 1200 } }), take('t2', 's2', 1)] })
-    useUI.setState({ measured: { t1: { width: 224, height: 380 } } })
+    useCanvasLocal.setState({ measured: { t1: { width: 224, height: 380 } } })
   })
   afterEach(() => {
     useProject.setState({ project: initialProject })
     useProject.temporal.getState().clear()
     useRuns.setState({ takes: initialTakes })
-    useUI.setState({ measured: initialMeasured })
+    useCanvasLocal.setState({ measured: initialMeasured })
   })
   const sc = (id: string) => useProject.getState().project.scenes.find((s) => s.id === id)!
   const tk = (id: string) => useRuns.getState().takes.find((t) => t.id === id)!
@@ -133,7 +152,8 @@ describe('autoLayoutCanvas', () => {
   it('"Chỉ take chọn": a tall hidden take still gets room (it returns to its row with "Tất cả")', () => {
     // t3 (560px, not chosen: t4 is the latest completed) is hidden; s2 must still go below t3's height
     useRuns.setState({ takes: [take('t3', 's1', 1, { size: { w: 224, h: 560 } }), take('t4', 's1', 2)] })
-    useUI.setState({ takeDisplay: 'chosen', measured: {} })
+    useUI.setState({ takeDisplay: 'chosen' })
+    useCanvasLocal.setState({ measured: {} })
     try {
       autoLayoutCanvas()
       expect(sc('s2').position).toEqual({ x: LAYOUT.scenesX, y: LAYOUT.scenesY + 560 + LAYOUT.gapY }) // was y 308, under t3
@@ -187,10 +207,10 @@ describe('inlineEditSavesDraft', () => {
 })
 
 describe('measuredOf', () => {
-  afterEach(() => useUI.setState({ measured: {} }))
+  afterEach(() => useCanvasLocal.setState({ measured: {} }))
   it('reads the size React Flow measured for a node (undefined before)', () => {
     expect(measuredOf('n1')).toBeUndefined()
-    useUI.getState().setMeasured('n1', { width: 280, height: 210 })
+    useCanvasLocal.setState({ measured: { n1: { width: 280, height: 210 } } })
     expect(measuredOf('n1')).toEqual({ width: 280, height: 210 })
   })
 })

@@ -16,6 +16,9 @@
     ]
   },
   "scripts": {
+    "perf:build": "vite build --mode perf",
+    "perf:serve": "node scripts/perf/serve.mjs",
+    "perf:run": "node scripts/perf/run-perf.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit --pretty false",

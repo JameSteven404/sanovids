@@ -24,6 +24,7 @@ import {
 } from '../settings'
 import { parseThemePref, useTheme } from '../theme'
 import { useUpdatePrefs } from '../updatePrefs'
+import { useKeymap } from '../keymapPrefs'
 
 /** In-memory localStorage (the tests run in Node, where there is none). */
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -50,6 +51,7 @@ const CUSTOM = {
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
   updates: { autoDownload: false },
+  keys: { 'scene.next': ['Alt+KeyN'], 'history.redo': [] },
 } as const
 
 describe('stored prefs are validated on read', () => {
@@ -131,6 +133,24 @@ describe('stored prefs are validated on read', () => {
 })
 
 describe('settings file (export / import)', () => {
+  it('validates keys with the same safety rules as capture and local preferences', () => {
+    for (const chord of ['Backspace', 'Ctrl+Backspace', 'Enter', 'ArrowLeft']) {
+      expect(sanitizeSettings({ keys: { 'selection.delete': [chord] } })).toMatchObject({ patch: {}, accepted: 0, rejected: ['keys.selection.delete'] })
+    }
+    expect(sanitizeSettings({ keys: { 'project.save': ['KeyS'] } }).rejected).toEqual(['keys.project.save'])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['KeyN', 'Alt+KeyN', 'F2'] } }).rejected).toEqual(['keys.scene.next'])
+    expect(sanitizeSettings({ keys: { 'canvas.fit': ['F2'], 'scene.next': ['F2'] } })).toMatchObject({
+      patch: { keys: { 'scene.next': ['F2'], 'canvas.fit': [] } }, accepted: 2, rejected: ['keys.canvas.fit'],
+    })
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, true).rejected).toEqual(['keys.scene.next'])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, true).keyIssues).toEqual([
+      expect.objectContaining({ path: 'keys.scene.next', reason: 'mac-system', message: expect.stringContaining('Ẩn SanoVids') }),
+    ])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, false).rejected).toEqual([])
+    expect(sanitizeSettings({ keys: {} })).toEqual({ patch: { keys: {} }, accepted: 1, rejected: [] })
+    expect(sanitizeSettings({ keys: null }).rejected).toEqual(['keys'])
+  })
+
   it('sanitizeSettings keeps valid values, refuses wrong ones, ignores unknown keys', () => {
     const res = sanitizeSettings({
       theme: 'dark',
@@ -265,6 +285,25 @@ describe('apply / reset / restore', () => {
     applySettings({ canvas: { nodeEditor: 'off', bigProject: 'off', editorWidth: 400 } })
     expect(changedSettingsCount()).toBe(3)
     expect(currentSettings().canvas).toEqual({ ...DEFAULT_SETTINGS.canvas, nodeEditor: 'off', bigProject: 'off', editorWidth: 400 })
+  })
+
+  it('replaces the entire keys group, preserves foreign ids, and resets/restores overrides', () => {
+    applySettings({ keys: { 'scene.next': ['Alt+KeyN'], 'canvas.fit': [] } })
+    expect(changedSettingsCount()).toBe(2)
+    applySettings({ keys: { 'future.action': ['F3'], 'project.save': ['Ctrl+Shift+KeyS'] } })
+    expect(useKeymap.getState().bindings).toEqual({ 'project.save': ['Ctrl+Shift+KeyS'] })
+    expect(useKeymap.getState().resolved.labels['scene.next']).toBe('N')
+    const before = resetAllSettings()
+    expect(currentSettings().keys).toEqual({})
+    restoreSettings(before)
+    expect(currentSettings().keys).toEqual({ 'future.action': ['F3'], 'project.save': ['Ctrl+Shift+KeyS'] })
+    expect(JSON.parse(storage.data.get('bdp:pref:keys')!)).toEqual({ v: 1, bindings: currentSettings().keys })
+    expect(changedSettingsCount()).toBe(1)
+    expect(changedSettingsCount({ ...DEFAULT_SETTINGS, keys: { 'scene.next': ['KeyN'] } })).toBe(0)
+    const read = readSettingsFile(settingsFileText())
+    expect(read.ok && read.patch.keys).toEqual(currentSettings().keys)
+    applySettings({ keys: {} })
+    expect(changedSettingsCount()).toBe(0)
   })
 
   it('changedSettingsCount counts "chuyển file vào Thùng rác" once; Hoàn tác of a reset brings it back', () => {

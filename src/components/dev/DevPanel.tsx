@@ -46,7 +46,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { lazy, Suspense, memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { takeCode } from '../../core/compile'
 import { MODELS, modeLabel } from '../../core/models'
 import { formatVnd } from '../../core/topup'
@@ -108,6 +108,9 @@ import {
 import './dev.css'
 import { DevUpdatesTab } from './DevUpdatesTab'
 
+let DevPerfTab: React.ComponentType | null = null
+if (__SANOVIDS_PERF__) DevPerfTab = lazy(() => import('./DevPerfTab').then((m) => ({ default: m.DevPerfTab })))
+
 /** After a change of the simulated account: the pill / dialogs read the balance again (only while dev is active). */
 function syncBalance() {
   if (activeProviderId() === 'dev') void refreshRealCredits({ force: true })
@@ -115,7 +118,7 @@ function syncBalance() {
 
 export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
   const close = () => useUI.getState().closeDialog()
-  const tabs = useMemo(() => devPanelTabs({ simulatedUpdates: updatesSource() === 'sim' }), [])
+  const tabs = useMemo(() => devPanelTabs({ simulatedUpdates: updatesSource() === 'sim', perf: __SANOVIDS_PERF__ }), [])
   // A requested tab that is not offered here (Cập nhật inside Electron) falls back to the first one.
   const pick = (t: DevPanelTab | undefined): DevPanelTab => (t && tabs.some((x) => x.id === t) ? t : 'status')
   const [tab, setTab] = useState<DevPanelTab>(() => pick(requested))
@@ -195,7 +198,7 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
           ))}
         </div>
         <div role="tabpanel" id={`dv-panel-${tab}`} aria-labelledby={`dv-tab-${tab}`} className="dv-tabpanel">
-          {tab === 'updates' ? (
+          {tab === 'perf' && DevPerfTab ? <Suspense fallback={<p>Đang tải bộ đo…</p>}><DevPerfTab /></Suspense> : tab === 'updates' ? (
             <div className="dv-upd">
               <DevUpdatesTab />
               <div className="dv-grid">

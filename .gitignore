@@ -45,3 +45,4 @@ release/
 *.pem
 pw.txt
 *.pfx.txt
+.perf/

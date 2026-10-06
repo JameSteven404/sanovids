@@ -1301,3 +1301,10 @@
     transition: none;
   }
 }
+.dv-perf-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.dv-perf-stop { position: fixed; right: 16px; bottom: 16px; z-index: 10000; background: var(--panel); color: var(--text); }
+.dv-perf-controls label { display: grid; gap: 4px; color: var(--text-dim); }
+.dv-perf-controls input { width: 100px; }
+.dv-perf-results { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dv-perf-results caption { text-align: left; padding: 12px 0; color: var(--text-dim); }
+.dv-perf-results th, .dv-perf-results td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }

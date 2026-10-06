@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MODELS } from '../../../core/models'
 import type { Asset } from '../../../core/types'
 import { findMention, fold, popupPlacement, POPUP_MAX_H } from '../mentions'
 import { changedSource, existingIds, pickView, type SelectionParts } from '../selection'
-import { patchFits, patchLabel, segmentsNeedFullRow } from '../SettingsFields'
+import { focusSettingsField, patchFits, patchLabel, segmentsNeedFullRow } from '../SettingsFields'
 import {
   imageOptsFor,
   insertAt,
@@ -276,6 +276,34 @@ describe('patchFits (batch settings on scenes with different models)', () => {
 })
 
 describe('segmented settings controls', () => {
+  it('fits options to the measured editor width, independently of zoom', () => {
+    const resolutions = ['480p', '720p', '1080p', '768p', '2k']
+    expect(segmentsNeedFullRow([5, 10, 15], resolutions, 220)).toBe(false)
+    expect(segmentsNeedFullRow([5, 10, 15], resolutions, 150)).toBe(true)
+    expect(segmentsNeedFullRow([5, 10, 15], ['720p', '1080p'], 80)).toBe(true)
+  })
+  it('focuses native selects and tolerates an unavailable / denied picker', () => {
+    const focus = vi.fn()
+    const showPicker = vi.fn(() => { throw new Error('No user activation') })
+    const target = { matches: (s: string) => s === 'select', focus, showPicker }
+    const root = { querySelector: vi.fn(() => target) } as unknown as Pick<HTMLElement, 'querySelector'>
+    expect(() => focusSettingsField(root, 'model')).not.toThrow()
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(showPicker).toHaveBeenCalledOnce()
+    expect(root.querySelector).toHaveBeenCalledWith('[data-settings-field="model"]')
+  })
+  it('focuses the roving radio and leaves disabled or absent fields alone', () => {
+    const focus = vi.fn()
+    const radio = { matches: () => false, focus }
+    const group = { matches: () => false, querySelector: vi.fn(() => radio) }
+    focusSettingsField({ querySelector: () => group } as unknown as Pick<HTMLElement, 'querySelector'>, 'duration')
+    expect(group.querySelector).toHaveBeenCalledWith('[role="radio"][tabindex="0"]')
+    expect(focus).toHaveBeenCalledOnce()
+    focus.mockClear()
+    focusSettingsField({ querySelector: () => null }, 'duration')
+    focusSettingsField({ querySelector: () => ({ matches: () => true, focus }) } as unknown as Pick<HTMLElement, 'querySelector'>, 'mode')
+    expect(focus).not.toHaveBeenCalled()
+  })
   it('keep duration and resolution side by side for one model', () => {
     const sd = MODELS.seedance_2_5
     const h3 = MODELS.minimax_h3

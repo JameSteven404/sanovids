@@ -16,6 +16,9 @@ import { bootstrap, useSave } from './store/persist'
 import { toast, useUI, type DialogState } from './store/ui'
 import { startUpdates } from './updateActions'
 
+let PerfProfiler = ({ children }: { id: string; children: ReactNode }) => <>{children}</>
+if (__SANOVIDS_PERF__) PerfProfiler = (await import('./perf/PerfProfiler')).PerfProfiler
+
 // Code splitting: the canvas (default view) ships in the main bundle; the other views and every dialog are
 // separate chunks, loaded on first use and prefetched once the browser is idle so opening them stays instant.
 const chunks = {
@@ -98,6 +101,9 @@ function BootError({ detail }: { detail: string }) {
 }
 
 function Shell() {
+  useEffect(() => {
+    if (__SANOVIDS_PERF__) void import('./perf/runner').then((m) => m.exposeHarness()).catch((error) => console.warn('[SanoVids perf]', error))
+  }, [])
   useShortcuts()
   useFileDropGuard()
   usePrefetchChunks()
@@ -114,13 +120,13 @@ function Shell() {
   return (
     <div className="app" ref={root}>
       <SectionBoundary area="Thanh công cụ" variant="bar" className="app-crash-topbar">
-        <TopBar />
+        {__SANOVIDS_PERF__ ? <PerfProfiler id="TopBar"><TopBar /></PerfProfiler> : <TopBar />}
       </SectionBoundary>
       <div className="app-main">
         {leftOpen && (
           <aside className="app-left">
             <SectionBoundary area="Thư viện">
-              <Sidebar />
+              {__SANOVIDS_PERF__ ? <PerfProfiler id="Sidebar"><Sidebar /></PerfProfiler> : <Sidebar />}
             </SectionBoundary>
           </aside>
         )}
@@ -128,7 +134,7 @@ function Shell() {
         <main className="app-center">
           <SectionBoundary key={view} area={VIEW_AREA[view] ?? 'Chế độ xem'}>
             {view === 'canvas' ? (
-              <CanvasView />
+              __SANOVIDS_PERF__ ? <PerfProfiler id="CanvasInner"><CanvasView /></PerfProfiler> : <CanvasView />
             ) : (
               <Suspense fallback={<div className="app-loading busy">Đang tải…</div>}>{view === 'table' ? <SceneTable /> : <Storyboard />}</Suspense>
             )}
@@ -141,7 +147,7 @@ function Shell() {
         {rightOpen && (
           <aside className="app-right">
             <SectionBoundary area="Bảng thuộc tính">
-              <Inspector />
+              {__SANOVIDS_PERF__ ? <PerfProfiler id="Inspector"><Inspector /></PerfProfiler> : <Inspector />}
             </SectionBoundary>
           </aside>
         )}

@@ -14,6 +14,7 @@
   --panel-2: #2c2c2e; /* raised controls */
   --panel-3: #3a3a3c; /* hover / pressed */
   --canvas-bg: #121214;
+  --cv-chip-solid: #252527;
   --canvas-dot: rgba(255, 255, 255, 0.09);
   --material: rgba(36, 36, 38, 0.72); /* translucent bars, popovers (with backdrop-filter) */
   --material-strong: rgba(44, 44, 46, 0.88);
@@ -79,6 +80,7 @@
   --panel-2: #f2f2f7;
   --panel-3: #e5e5ea;
   --canvas-bg: #eef0f3;
+  --cv-chip-solid: #343438;
   --canvas-dot: rgba(60, 60, 67, 0.16);
   --material: rgba(255, 255, 255, 0.72);
   --material-strong: rgba(255, 255, 255, 0.9);

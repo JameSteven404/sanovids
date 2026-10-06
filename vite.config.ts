@@ -33,15 +33,18 @@ function devServiceWorkerKillSwitch(): Plugin {
 
 // Relative base: the same dist/ works on any static host (sub-folder included), from `vite preview`
 // and inside the Electron desktop build (served through the app:// protocol, see electron/main.cjs).
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const perf = mode === 'perf' || process.env.SANOVIDS_PERF === '1'
+  return {
   base: './',
-  // Build flags. __SANOVIDS_PERF__: the performance harness (src/perf) — false here, so its probes are no-ops and it is
-  // tree-shaken out of every normal build (dev, tests, release).
-  define: { __SANOVIDS_PERF__: false },
+  // The harness and profiling renderer are reachable only with an explicit perf mode/flag.
+  define: { __SANOVIDS_PERF__: perf },
+  resolve: { alias: perf ? [{ find: /^react-dom\/client$/, replacement: 'react-dom/profiling' }] : [] },
   plugins: [
     devServiceWorkerKillSwitch(),
     react(),
     VitePWA({
+      disable: perf,
       registerType: 'autoUpdate',
       // Registered from src/lib/pwa.ts so it can be skipped inside Electron and on file:.
       injectRegister: false,
@@ -81,6 +84,7 @@ export default defineConfig({
     }),
   ],
   build: {
+    outDir: perf ? '.perf/dist' : 'dist',
     target: 'es2022',
     rolldownOptions: {
       output: {
@@ -105,11 +109,12 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5180,
+    port: perf ? 5191 : 5180,
     strictPort: true,
     // electron-builder output (hundreds of MB) — watching it slows the dev server and makes packaging fail with
     // EPERM on Windows while `npm run dev` is running.
-    watch: { ignored: ['**/release/**'] },
+    watch: { ignored: ['**/release/**', '**/.perf/**'] },
   },
-  preview: { port: 5180, strictPort: true },
+  preview: { port: perf ? 5191 : 5180, strictPort: true },
+  }
 })

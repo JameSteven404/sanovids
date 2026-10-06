@@ -11,6 +11,9 @@ import { useRuns } from '../../store/runs'
 import { toast, useUI, type TakeDisplay } from '../../store/ui'
 import {
   assetMapOf,
+  assetGraphOf,
+  sceneGraphOf,
+  measuredOf,
   assetNodeHeight,
   countScenes,
   FIT_EVENT,
@@ -44,9 +47,7 @@ const TAKE_DISPLAYS: { id: TakeDisplay; label: string; short: string; title: str
  * One undo step for scenes / assets; the take positions (runs store, not undoable) follow that step (watchLayoutUndo).
  */
 export function autoLayoutCanvas() {
-  const ui = useUI.getState()
-  const measured = ui.measured
-  const measuredH = (id: string) => measured[id]?.height
+  const measuredH = (id: string) => measuredOf(id)?.height
   const before = useProject.getState().project
   const runs = useRuns.getState()
   // Rows grow with their tallest node: the scene card or any of its takes (a resized take must not cover the next
@@ -126,12 +127,13 @@ function wheelScroll(e: WheelEvent<HTMLDivElement>) {
  * `density` follows the canvas width (CanvasView): 'full' shows every label; 'compact' keeps icons for Nối / Chạy and
  * turns the wire / video switches into one-button toggles; 'tight' also drops the zoom −/+ (wheel zooms anyway).
  */
-export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }) {
+export function CanvasToolbar({ density = 'full', big = false }: { density?: ToolbarDensity; big?: boolean }) {
   const rf = useReactFlow()
   const zoom = useStore((s) => Math.round(s.transform[2] * 100))
   const interaction = useUI((s) => s.interaction)
   const edgeMode = useUI((s) => s.edgeMode)
-  const showMinimap = useUI((s) => s.showMinimap)
+  const minimapHidden = useUI((s) => !!s.minimapAutoHiddenFor && !s.minimapShownFor.includes(s.minimapAutoHiddenFor))
+  const showMinimap = useUI((s) => s.showMinimap) && !minimapHidden
   const takeDisplay = useUI((s) => s.takeDisplay)
   const sceneCount = useUI((s) => countScenes(s.selectedIds))
   const ui = useUI.getState()
@@ -140,6 +142,7 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
   const edge = EDGE_MODES.find((m) => m.id === edgeMode) ?? EDGE_MODES[0]
   const display = TAKE_DISPLAYS.find((m) => m.id === takeDisplay) ?? TAKE_DISPLAYS[0]
   const otherDisplay = TAKE_DISPLAYS.find((m) => m.id !== takeDisplay) ?? TAKE_DISPLAYS[0]
+  const edgeTitle = (m: typeof edge) => big && m.id === 'all' ? 'Tất cả dây (dự án lớn: chỉ vẽ dây gần vùng đang xem)' : m.title
 
   return (
     <div className={`cv-toolbar material nodrag nopan is-${density}`} role="toolbar" aria-label="Công cụ canvas" onWheel={wheelScroll}>
@@ -223,7 +226,7 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
               className={edgeMode === m.id ? 'on' : ''}
               aria-pressed={edgeMode === m.id}
               onClick={() => ui.setEdgeMode(m.id)}
-              title={`${m.title} (E để đổi)`}
+              title={`${edgeTitle(m)} (E để đổi)`}
             >
               {m.label}
             </button>
@@ -233,7 +236,7 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
         <button
           className="cv-tb-btn cv-tb-toggle"
           onClick={() => ui.cycleEdgeMode()}
-          title={`Dây nối: ${edge.label} — ${edge.title}. Bấm để đổi (E)`}
+          title={`Dây nối: ${edge.label} — ${edgeTitle(edge)}. Bấm để đổi (E)`}
           aria-label={`Hiển thị dây nối: ${edge.label}`}
         >
           <Spline {...SMALL_ICON} />
@@ -265,7 +268,7 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
       <button
         className={`cv-tb-icon ${showMinimap ? 'on' : ''}`}
         onClick={() => ui.toggleMinimap()}
-        title="Bản đồ thu nhỏ (M)"
+        title={minimapHidden ? 'Bản đồ thu nhỏ đang tạm ẩn vì dự án lớn — bấm để hiện (M)' : 'Bản đồ thu nhỏ (M)'}
         aria-label="Bản đồ thu nhỏ"
         aria-pressed={showMinimap}
       >
@@ -296,8 +299,10 @@ export function CanvasToolbar({ density = 'full' }: { density?: ToolbarDensity }
 /** "3 nhân vật · 2 video · 12 cảnh đang chọn — bấm C để nối" when the selection mixes references and scenes. */
 export function SelectionHint() {
   const [selectedIds, librarySelection] = useUI(useShallow((s) => [s.selectedIds, s.librarySelection] as const))
-  const scenes = useProject((s) => s.project.scenes)
-  const assets = useProject((s) => s.project.assets)
+  const sceneSig = useProject((s) => sceneGraphOf(s.project.scenes))
+  const assetSig = useProject((s) => assetGraphOf(s.project.assets))
+  const scenes = useMemo(() => useProject.getState().project.scenes, [sceneSig])
+  const assets = useMemo(() => useProject.getState().project.assets, [assetSig])
   const takeN = useRuns((s) => {
     if (!selectedIds.length) return 0
     const byId = takeIndexOf(s.takes).byId

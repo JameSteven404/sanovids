@@ -867,8 +867,9 @@
   min-height: 112px;
 }
 .sb-takes .sb-sec-body {
-  /* 3px on top: room for the first row's focus ring inside the scroll area */
-  padding: 3px 8px 8px;
+  /* Vertical spacing lives inside each fixed-height slot, including room for its focus ring. */
+  padding: 0 8px;
+  overflow-anchor: none;
 }
 .sb-star-filter.icon-btn.active,
 .sb-star-filter.icon-btn.active:hover:not(:disabled) {
@@ -876,20 +877,21 @@
   color: var(--warn);
 }
 .sb-take-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+  position: relative;
   /* rows adapt to the panel width (see the @container rules below) */
   container: sb-takes / inline-size;
 }
 .sb-take {
-  position: relative;
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: calc(var(--sb-take-step) - 4px);
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   min-height: 44px;
-  padding: 5px 6px;
+  padding: 3px 6px;
   border-radius: var(--radius-sm);
   cursor: grab;
   user-select: none;

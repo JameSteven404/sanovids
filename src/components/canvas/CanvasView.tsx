@@ -1,5 +1,5 @@
 // The canvas board. Nodes and edges are DERIVED from the stores: scenes, on-canvas assets and folder nodes (project
-// store) and takes = video nodes (runs store). React Flow is fully controlled: drag positions live in ui.dragPos until drag end
+// store) and takes = video nodes (runs store). React Flow is fully controlled: drag positions live in useCanvasLocal.dragPos until drag end
 // (scenes/assets: one undo step in the project; takes: runs.setTakePositions, not undoable), selection is mirrored
 // into ui.selectedIds / ui.selectedEdgeIds. Resize handles (NodeSizer): the live box lives in useCanvasLocal.resizing
 // until resize end, then one commit (scenes/assets: project.setNodeSizes, one undo step; takes: runs.setTakeSizes).
@@ -16,6 +16,7 @@ import {
   useConnection,
   useReactFlow,
   useStoreApi,
+  useStore,
   type Connection,
   type EdgeChange,
   type EdgeMouseHandler,
@@ -26,6 +27,8 @@ import {
   type OnConnectStart,
 } from '@xyflow/react'
 import { Clapperboard, Plus } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
+import { perfCount } from '../../perf/probe'
 import {
   useCallback,
   useEffect,
@@ -71,6 +74,13 @@ import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } fro
 import { FolderNode, type FolderFlowNode } from './FolderNode'
 import {
   assetMapOf,
+  assetGraphOf,
+  bigCanvasState,
+  boxesIntersect,
+  canvasViewports,
+  sceneGraphOf,
+  wireViewport,
+  wireNearViewport,
   assetNodeHeight,
   ASSET_DEFAULT_W,
   autoTakePosition,
@@ -89,6 +99,7 @@ import {
   isEmptyCanvasTarget,
   keepHover,
   layoutTakes,
+  livePosition,
   MINIMAP_LIFT_W,
   orphanTakePosition,
   readAssetIds,
@@ -135,6 +146,7 @@ const TOOLBAR_ROOM = 56
 /** Room kept below the ConnectMenu's top edge (tallest menu ≈ 3 items) so it stays above the queue drawer. */
 const MENU_ROOM = 154
 const EMPTY_DATA: Record<string, unknown> = {}
+const minimapNotified = new Set<string>()
 /** Scene node data per reference-dot color: constant objects, so a scene node only re-renders when its color changes. */
 const SCENE_DATA: Record<RefDotTone | 'image', SceneNodeData> = { image: {}, video: { refDot: 'video' }, mixed: { refDot: 'mixed' } }
 
@@ -165,27 +177,31 @@ const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 &
 const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? s.size?.w ?? LAYOUT.sceneW
 
 function CanvasInner() {
+  perfCount('CanvasInner')
+  const projectId = useProject((s) => s.project.id)
+  const [savedViewport] = useState(() => canvasViewports.get(projectId))
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
   const stageRef = useRef<HTMLDivElement>(null)
 
-  const scenes = useProject((s) => s.project.scenes)
-  const assets = useProject((s) => s.project.assets)
+  const sceneSig = useProject((s) => sceneGraphOf(s.project.scenes))
+  const assetSig = useProject((s) => assetGraphOf(s.project.assets))
+  const scenes = useMemo(() => useProject.getState().project.scenes, [sceneSig])
+  const assets = useMemo(() => useProject.getState().project.assets, [assetSig])
   const folders = useProject((s) => s.project.folders ?? NO_FOLDERS)
   // Only what the take nodes' layout/status depends on (not progress): a string, so render ticks don't rebuild the graph.
   const takeSig = useRuns((s) => takeLayoutSig(s.takes))
+  const nodeColor = useCallback((node: CanvasNode) => minimapColor(node), [sceneSig, assetSig, takeSig])
   const takeDisplay = useUI((s) => s.takeDisplay)
-  const dragPos = useUI((s) => s.dragPos)
-  const measured = useUI((s) => s.measured)
+  const dragPos = useCanvasLocal((s) => s.dragPos)
+  const measuredVersion = useCanvasLocal((s) => s.measuredVersion)
   const selectedIds = useUI((s) => s.selectedIds)
   const selectedEdgeIds = useUI((s) => s.selectedEdgeIds)
-  const hoveredId = useUI((s) => s.hoveredId)
   const edgeMode = useUI((s) => s.edgeMode)
   const interaction = useUI((s) => s.interaction)
   const showMinimap = useUI((s) => s.showMinimap)
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
-  const hoveredEdgeId = useCanvasLocal((s) => s.hoveredEdgeId)
   const resizing = useCanvasLocal((s) => s.resizing)
   const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
@@ -194,6 +210,33 @@ function CanvasInner() {
   const theme = useTheme((s) => s.theme)
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const motion = useMotionLevel()
+  const bigPref = useCanvasPrefs((s) => s.bigProject)
+  const shownFor = useUI((s) => s.minimapShownFor.includes(projectId))
+  useEffect(() => rfStore.subscribe((state) => {
+    const [x, y, zoom] = state.transform
+    if (state.width && state.height) canvasViewports.set(projectId, { x, y, zoom })
+  }), [projectId, rfStore])
+  useEffect(() => {
+    if (!__SANOVIDS_PERF__) return
+    let disposed = false
+    let unregister: (() => void) | undefined
+    void import('../../perf/probe').then(({ registerPerfCanvas }) => {
+      if (disposed) return
+      unregister = registerPerfCanvas({
+        getViewport: rf.getViewport,
+        setViewport: (viewport) => rf.setViewport(viewport),
+        measure: () => {
+          const updates = new Map<string, { id: string; nodeElement: HTMLDivElement; force: boolean }>()
+          for (const el of stageRef.current?.querySelectorAll<HTMLDivElement>('.react-flow__node') ?? []) {
+            const id = el.dataset.id
+            if (id) updates.set(id, { id, nodeElement: el, force: true })
+          }
+          rfStore.getState().updateNodeInternals(updates)
+        },
+      })
+    })
+    return () => { disposed = true; unregister?.() }
+  }, [rf, rfStore])
 
   // Canvas width → toolbar density (narrow center panel) and whether the minimap must sit above the toolbar.
   // Only the derived levels are state, so resizing a side panel does not re-render the board on every pixel.
@@ -233,36 +276,32 @@ function CanvasInner() {
   // Each scene's reference dot takes the color of the wires drawn into it.
   const refTones = useMemo(() => refDotTones(rawEdges), [rawEdges])
 
-  // ---------------- derived nodes (cached per id so unchanged nodes keep their identity) ----------------
+  // ---------------- stored layout (unaffected by drag, selection and measurement frames) ----------------
   const nodeCache = useRef(new Map<string, CanvasNode>())
   const takeData = useRef(new Map<string, TakeNodeData>())
   /** Row offset of each take (accumulated widths of the takes before it) and its current auto spot. */
   const slotsRef = useRef(new Map<string, number>())
   const autoRef = useRef(new Map<string, XY>())
-  const nodes = useMemo(() => {
+  const baseNodes = useMemo(() => {
+    perfCount('baseNodes')
     const prevCache = nodeCache.current
     const next = new Map<string, CanvasNode>()
-    const sel = new Set(selectedIds)
     const out: CanvasNode[] = []
     const push = (id: string, type: NodeType, base: XY, data: Record<string, unknown>, size: Size | null | undefined) => {
       const prev = prevCache.get(id)
-      // A resize from the left / top edge moves the node live too.
-      const live = resizing[id]
-      let position = live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : (dragPos[id] ?? base)
+      let position = base
       if (prev && samePos(prev.position, position)) position = prev.position
-      const m = measured[id]
-      const selected = sel.has(id)
-      const dragging = id in dragPos
-      // Stored (or live) size sizes the React Flow wrapper; the card fills it. No size = CSS default (auto height).
-      const width = live?.w ?? size?.w
-      const height = live?.h ?? size?.h
+      const selected = false
+      const dragging = false
+      // Stored size sizes the React Flow wrapper; the card fills it. No size = CSS default (auto height).
+      const width = size?.w
+      const height = size?.h
       let node: CanvasNode
       if (
         prev &&
         prev.type === type &&
         prev.position === position &&
         prev.selected === selected &&
-        prev.measured === m &&
         prev.dragging === dragging &&
         prev.data === data &&
         prev.width === width &&
@@ -270,7 +309,7 @@ function CanvasInner() {
       ) {
         node = prev
       } else {
-        node = { id, type, position, data, selected, dragging, measured: m, width, height } as CanvasNode
+        node = { id, type, position, data, selected, dragging, width, height } as CanvasNode
       }
       next.set(id, node)
       out.push(node)
@@ -282,7 +321,7 @@ function CanvasInner() {
     const dataNext = new Map<string, TakeNodeData>()
     // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes in the row before it
     // (a take dragged away leaves the row; one only nudged on its slot keeps it).
-    const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
+    const widthOf = (id: string) => takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
     const slots = takeSlots(takeLayout.items, widthOf, (id, slotX) => {
       const item = takeLayout.byId.get(id)
       const anchor = item && sm.get(item.anchorId)
@@ -296,11 +335,10 @@ function CanvasInner() {
     for (const item of takeLayout.items) {
       const anchor = sm.get(item.anchorId)!
       const slot = slots.get(item.id) ?? 0
-      const live = resizing[anchor.id]
-      const anchorPos = dragPos[anchor.id] ?? (live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : anchor.position)
-      // Auto-placed takes follow their scene live while it is dragged or resized. An orphan (its scene was just
-      // deleted) stays where it was shown; without a previous spot it goes next to the scene that uses it.
-      const auto = item.orphan ? null : autoTakePosition(anchorPos, sceneWidth(anchor, live), slot)
+      const anchorPos = anchor.position
+      // An orphan (its scene was just deleted) stays where it was shown; without a previous spot it goes next to
+      // the scene that uses it. Live scene movement is applied separately below.
+      const auto = item.orphan ? null : autoTakePosition(anchorPos, sceneWidth(anchor), slot)
       if (auto) autos.set(item.id, auto)
       const base =
         item.explicit ??
@@ -317,7 +355,78 @@ function CanvasInner() {
     takeData.current = dataNext
     nodeCache.current = next
     return out
-  }, [scenes, assets, folders, takeLayout, refTones, dragPos, measured, selectedIds, resizing])
+  }, [scenes, assets, folders, takeLayout, refTones])
+
+  const liveCache = useRef(new Map<string, CanvasNode>())
+  const nodes = useMemo(() => {
+    const selected = new Set(selectedIds)
+    const local = useCanvasLocal.getState()
+    const sm = sceneMapOf(scenes)
+    const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
+    const hasResize = Object.keys(resizing).length > 0
+    const slots = hasResize ? takeSlots(takeLayout.items, widthOf, (id, slotX) => {
+      const item = takeLayout.byId.get(id)!
+      const anchor = sm.get(item.anchorId)!
+      const slot = item.orphan ? orphanTakePosition(anchor.position, item.index, slotX, widthOf(id)) : autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      return !!item.explicit && keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
+    }) : slotsRef.current
+    const next = new Map<string, CanvasNode>()
+    const out = baseNodes.map((base) => {
+      const id = base.id
+      const live = resizing[id]
+      let position = base.position
+      const item = takeLayout.byId.get(id)
+      if (item && !item.orphan && (hasResize || dragPos[item.anchorId])) {
+        const anchor = sm.get(item.anchorId)!
+        const box = resizing[anchor.id]
+        const pos = livePosition(anchor.id, anchor.position, dragPos, resizing)
+        const auto = autoTakePosition(pos, sceneWidth(anchor, box), slots.get(id) ?? 0)
+        autoRef.current.set(id, auto)
+        if (!item.explicit) position = auto
+      }
+      position = livePosition(id, position, dragPos, resizing)
+      const prev = liveCache.current.get(id)
+      const measured = local.measured[id]
+      const width = live?.w ?? base.width, height = live?.h ?? base.height
+      const isSelected = selected.has(id), dragging = id in dragPos
+      const node = prev && prev.data === base.data && prev.type === base.type && samePos(prev.position, position) &&
+        prev.measured === measured && prev.width === width && prev.height === height && prev.selected === isSelected && prev.dragging === dragging
+        ? prev : { ...base, position, measured, width, height, selected: isSelected, dragging }
+      next.set(id, node)
+      return node
+    })
+    liveCache.current = next
+    return out
+  }, [baseNodes, scenes, takeLayout, dragPos, resizing, selectedIds, measuredVersion])
+
+  const [wasBig, setWasBig] = useState(() => useCanvasLocal.getState().big)
+  const big = bigCanvasState(baseNodes.length, wasBig, bigPref)
+  useEffect(() => {
+    setWasBig(big)
+    if (useCanvasLocal.getState().big !== big) useCanvasLocal.setState({ big })
+  }, [big])
+  const minimapHidden = big && !shownFor
+  useEffect(() => {
+    useUI.setState({ minimapAutoHiddenFor: big ? projectId : null })
+    if (minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
+      minimapNotified.add(projectId)
+      toast(`Dự án lớn (${baseNodes.length} thẻ): bản đồ thu nhỏ tạm ẩn để canvas mượt hơn.`, {
+        action: { label: 'Hiện lại', run: () => {
+          const ui = useUI.getState()
+          if (!ui.minimapShownFor.includes(projectId)) useUI.setState({ minimapShownFor: [...ui.minimapShownFor, projectId] })
+        } },
+      })
+    }
+    return () => { useUI.setState({ minimapAutoHiddenFor: null }) }
+  }, [big, minimapHidden, showMinimap, projectId, baseNodes.length])
+  const wireArea = useStore(useShallow((s) => big && edgeMode === 'all' ? wireViewport(s.transform, s.width, s.height) : null))
+  const nearNodes = useMemo(() => {
+    if (!wireArea) return null
+    return new Set(nodes.filter((n) => {
+      const fallback = fallbackNodeSize(n.type)
+      return boxesIntersect(wireArea, { ...n.position, w: n.measured?.width ?? n.width ?? fallback.w, h: n.measured?.height ?? n.height ?? fallback.h })
+    }).map((n) => n.id))
+  }, [nodes, wireArea])
 
   // ---------------- derived edges ----------------
   const edgeCache = useRef(new Map<string, LinkEdge>())
@@ -330,21 +439,19 @@ function CanvasInner() {
     // Selected reference wires also come last, so their reconnect grip is on top of the other wires at the dot.
     const grabbable: LinkEdge[] = []
     for (const r of rawEdges) {
-      const touchesHover = !!hoveredId && (r.source === hoveredId || r.target === hoveredId)
       const touchesSel = sel.has(r.source) || sel.has(r.target)
       const isSel = selEdges.has(r.id)
-      const isHover = hoveredEdgeId === r.id
       // Scene → take wires are shown with their scene/take whenever it is selected or hovered, whatever the mode.
-      const visible = edgeMode === 'all' || touchesHover || isSel || isHover || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
-      if (!visible) continue
-      const highlight = touchesHover || touchesSel || isSel || isHover
+      if (!wireNearViewport(r.source, r.target, nearNodes, isSel)) continue
+      const visible = edgeMode === 'all' || isSel || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
+      const highlight = touchesSel || isSel
       // Every wire into one dot ends at its center, so React Flow puts their reconnect grips at the same spot (one
       // reconnect radius out from the dot): with several wires at one dot the last-drawn one would always be the one
       // moved. Only a wire that is alone at its dot, or selected (clicked first), can be dragged by its end.
       const isRef = r.kind === 'ref' || r.kind === 'vref'
       const reconnectable = isRef && (isSel || !r.shared)
       // Where wires share a dot, the one in focus is drawn on top (and stays under the cards).
-      const zIndex = wireZ({ selected: isSel, hovered: isHover, highlight })
+      const zIndex = wireZ({ selected: isSel, hovered: false, highlight })
       const prev = prevCache.get(r.id)
       const d = prev?.data
       let edge: LinkEdge
@@ -355,11 +462,12 @@ function CanvasInner() {
         !!prev.reconnectable === reconnectable &&
         prev.zIndex === zIndex &&
         d.highlight === highlight &&
+        d.visible === visible &&
         d.color === r.color
       ) {
         edge = prev
       } else {
-        const data: LinkEdgeData = { kind: r.kind, color: r.color, highlight }
+        const data: LinkEdgeData = { kind: r.kind, color: r.color, highlight, visible }
         const isOut = r.kind === 'out'
         edge = {
           id: r.id,
@@ -383,7 +491,7 @@ function CanvasInner() {
     }
     edgeCache.current = next
     return grabbable.length ? out.concat(grabbable) : out
-  }, [rawEdges, selectedIds, selectedEdgeIds, hoveredId, hoveredEdgeId, edgeMode])
+  }, [rawEdges, selectedIds, selectedEdgeIds, edgeMode, nearNodes])
 
   // Wire selection must only hold wires that exist on the canvas. React Flow can only deselect wires it renders, so a
   // wire that vanished (asset taken off the canvas, ref removed elsewhere, undo…) would stay selected and be cut by Delete.
@@ -452,19 +560,6 @@ function CanvasInner() {
     }
   }, [])
 
-  // Dim everything not connected to the hovered node (pure CSS, no node churn).
-  const dimCss = useMemo(() => {
-    if (!hoveredId || connecting || libraryDrag || takeDrag) return ''
-    const lit = new Set([hoveredId])
-    for (const r of rawEdges) {
-      if (r.source === hoveredId) lit.add(r.target)
-      else if (r.target === hoveredId) lit.add(r.source)
-    }
-    if (lit.size < 2) return ''
-    const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
-    return `.cv-stage .react-flow__node${nots}{opacity:.38}`
-  }, [hoveredId, rawEdges, connecting, libraryDrag, takeDrag])
-
   // While wiring a take, its own scene is not a valid target (a scene cannot reference its own video).
   const ownSceneCss = useMemo(() => {
     if (connKind !== 'take' || !connFrom) return ''
@@ -512,20 +607,7 @@ function CanvasInner() {
     }
     if (Object.keys(live).length) useCanvasLocal.getState().setResizing(live)
     for (const id of ended) commitResize(id, autoRef.current)
-    if (Object.keys(dims).length) {
-      useUI.setState((s) => {
-        let changed = false
-        const m = { ...s.measured }
-        for (const [id, d] of Object.entries(dims)) {
-          const cur = m[id]
-          if (!cur || cur.width !== d.width || cur.height !== d.height) {
-            m[id] = d
-            changed = true
-          }
-        }
-        return changed ? { measured: m } : s
-      })
-    }
+    if (Object.keys(dims).length) useCanvasLocal.getState().setMeasured(dims)
 
     // An auto-placed take dragged together with its scene just follows the scene (stays auto-placed).
     const layout = layoutRef.current
@@ -541,7 +623,7 @@ function CanvasInner() {
         }
       }
     }
-    if (Object.keys(drag).length) ui.setDragPos(drag)
+    if (Object.keys(drag).length) useCanvasLocal.getState().setDragPos(drag)
     if (commitIds.length) {
       const project = useProject.getState().project
       const sm = sceneMapOf(project.scenes)
@@ -574,14 +656,15 @@ function CanvasInner() {
       }
       if (projectMoved) useProject.getState().setPositions(projectCommit)
       if (takesMoved) useRuns.getState().setTakePositions(takeCommit)
-      ui.clearDragPos(commitIds)
+      useCanvasLocal.getState().clearDragPos(commitIds)
     }
     if (sel) {
       const s = sel
       const prev = ui.selectedIds
+      const prevSet = new Set(prev)
       rfSelecting.current = true
       try {
-        ui.select([...prev.filter((id) => s.has(id)), ...[...s].filter((id) => !prev.includes(id))])
+        ui.select([...prev.filter((id) => s.has(id)), ...[...s].filter((id) => !prevSet.has(id))])
       } finally {
         rfSelecting.current = false
       }
@@ -745,10 +828,10 @@ function CanvasInner() {
   // ---------------- hover ----------------
   const onNodeMouseEnter: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => {
     keepHover()
-    useUI.getState().setHovered(node.id)
+    useCanvasLocal.getState().setHovered(node.id)
   }, [])
   const onNodeMouseLeave: NodeMouseHandler<CanvasNode> = useCallback(() => {
-    scheduleHoverEnd(() => useUI.getState().setHovered(null))
+    scheduleHoverEnd(() => useCanvasLocal.getState().setHovered(null))
   }, [])
   const onEdgeMouseEnter: EdgeMouseHandler<LinkEdge> = useCallback((_e, edge) => {
     if (edge.type === 'out') return
@@ -756,13 +839,13 @@ function CanvasInner() {
     useCanvasLocal.getState().setHoveredEdge(edge.id)
   }, [])
   const onEdgeMouseLeave: EdgeMouseHandler<LinkEdge> = useCallback(() => {
-    scheduleHoverEnd(() => useUI.getState().setHovered(null), 180)
+    scheduleHoverEnd(() => useCanvasLocal.getState().setHovered(null), 180)
   }, [])
   useEffect(
     () => () => {
       keepHover()
       useCanvasLocal.getState().setHoveredEdge(null)
-      useUI.getState().setHovered(null)
+      useCanvasLocal.getState().setHovered(null)
       setWireReconnecting(false)
     },
     [],
@@ -947,7 +1030,7 @@ function CanvasInner() {
       // One card goes where it is dropped (even one already on the canvas: the user moves it here). Several: the ones
       // not on the canvas yet, in rows of 4 from the drop point; cards already on the canvas stay where they are.
       const fresh = valid.length === 1 ? valid : valid.filter((id) => !map.get(id)!.position)
-      const measured = useUI.getState().measured
+      const measured = useCanvasLocal.getState().measured
       const spots = gridPositions(
         base,
         fresh.map((id) => {
@@ -1003,7 +1086,8 @@ function CanvasInner() {
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {(dimCss || ownSceneCss) && <style>{dimCss + ownSceneCss}</style>}
+      <HoverDim rawEdges={rawEdges} disabled={!!connecting || libraryDrag || takeDrag} />
+      {ownSceneCss && <style>{ownSceneCss}</style>}
       <ReactFlow<CanvasNode, LinkEdge>
         nodes={nodes}
         edges={edges}
@@ -1051,19 +1135,20 @@ function CanvasInner() {
         connectionLineComponent={WireConnectionLine}
         nodeDragThreshold={2}
         elevateEdgesOnSelect={false}
-        fitView
+        defaultViewport={savedViewport}
+        fitView={!savedViewport}
         fitViewOptions={FIT_OPTIONS}
         colorMode={theme}
         attributionPosition="top-right"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
         <WireCutLayer />
-        {showMinimap && (
+        {showMinimap && !minimapHidden && (
           <MiniMap<CanvasNode>
             position="bottom-right"
             pannable
             zoomable
-            nodeColor={minimapColor}
+            nodeColor={nodeColor}
             nodeStrokeWidth={0}
             nodeBorderRadius={10}
             // Theme tokens (React Flow passes these through CSS variables, so var() / color-mix() work): a veil of the canvas color
@@ -1077,7 +1162,7 @@ function CanvasInner() {
         )}
       </ReactFlow>
       <SelectionHint />
-      <CanvasToolbar density={density} />
+      <CanvasToolbar density={density} big={big} />
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
       {scenes.length === 0 && !folders.length && assets.every((a) => !a.position) && (
         <div className="cv-empty">
@@ -1096,6 +1181,25 @@ function CanvasInner() {
       )}
     </div>
   )
+}
+
+/** Hover updates the style and incident edges without rebuilding the graph. */
+function HoverDim({ rawEdges, disabled }: { rawEdges: RawEdge[]; disabled: boolean }) {
+  const hoveredId = useCanvasLocal((s) => s.hoveredId)
+  // Dim everything not connected to the hovered node (pure CSS, no node churn).
+  const dimCss = useMemo(() => {
+    if (!hoveredId || disabled) return ''
+    const lit = new Set([hoveredId])
+    for (const r of rawEdges) {
+      if (r.source === hoveredId) lit.add(r.target)
+      else if (r.target === hoveredId) lit.add(r.source)
+    }
+    if (lit.size < 2) return ''
+    const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
+    return `.cv-stage .react-flow__node${nots}:not(:has(.is-editing)){opacity:.38}`
+  }, [hoveredId, rawEdges, disabled])
+
+  return dimCss ? <style>{dimCss}</style> : null
 }
 
 const cssId = (id: string) => id.replace(/["\\]/g, '')

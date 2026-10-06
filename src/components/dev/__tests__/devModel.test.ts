@@ -266,6 +266,11 @@ describe('characterCheck', () => {
 })
 
 describe('devPanelTabs', () => {
+  it('shows performance only with an explicit perf flag, including desktop', () => {
+    expect(devPanelTabs({ simulatedUpdates: false, perf: true }).at(-1)).toEqual({ id: 'perf', label: 'Hiệu năng' })
+    expect(devPanelTabs({ simulatedUpdates: true, perf: true }).map((t) => t.id)).toContain('perf')
+    expect(devPanelTabs({ simulatedUpdates: false, perf: false }).map((t) => t.id)).not.toContain('perf')
+  })
   it('"Cập nhật" only where the updater is simulated (outside Electron)', () => {
     expect(DEV_PANEL_TABS.map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
     expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')

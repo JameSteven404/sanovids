@@ -1,5 +1,5 @@
 // Resize handles of a canvas node (scene card, take, asset): React Flow's NodeResizer limited by NODE_SIZE.
-// Shown when the node is selected (subtle while hovered). The live box goes to useCanvasLocal.resizing and is
+// Shown for the only selected node, or during an active resize. The live box goes to useCanvasLocal.resizing and is
 // committed once on resize end by CanvasView.onNodesChange. Double-click a handle or press ↺ for the default size.
 // The invisible left / right resize edges leave a gap around the node's dots (resizeEdgeClip), so a press on a dot
 // starts a wire / grabs a wire end instead of a resize.
@@ -51,19 +51,18 @@ function edgeClipOf(s: ReactFlowState, id: string, side: 'left' | 'right'): stri
 }
 
 function NodeSizerView({ id, kind, selected, sized }: { id: string; kind: SizedKind; selected: boolean; sized: boolean }) {
-  const hovered = useUI((s) => s.hoveredId === id)
+  const single = useUI((s) => s.selectedIds.length === 1 && s.selectedIds[0] === id)
   const resizing = useCanvasLocal((s) => id in s.resizing)
   const l = NODE_SIZE[kind]
-  const visible = selected || hovered || resizing
+  const visible = (selected && single) || resizing
   // Strings (stable selector results), only computed while the edges are shown.
   const clipL = useStore((s) => (visible ? edgeClipOf(s, id, 'left') : null))
   const clipR = useStore((s) => (visible ? edgeClipOf(s, id, 'right') : null))
   const lineStyle = useMemo(() => ({ '--rs-clip-l': clipL ?? 'none', '--rs-clip-r': clipR ?? 'none' }) as CSSProperties, [clipL, clipR])
-  const subtle = !selected && !resizing ? ' is-subtle' : ''
   // Stable: NodeResizeControl re-binds its d3 drag handlers whenever this callback changes, and this component
   // re-renders mid-gesture (selected / resizing flip on the first move), which would drop an in-progress touch drag.
   const onResizeStart = useCallback(() => {
-    // A resize started from a hovered (unselected) node selects it, so the handles stay while dragging.
+    // Keep selection on the resized node if an external selection changed just before the gesture.
     const ui = useUI.getState()
     if (!ui.selectedIds.includes(id)) ui.select([id])
   }, [id])
@@ -75,12 +74,12 @@ function NodeSizerView({ id, kind, selected, sized }: { id: string; kind: SizedK
         minHeight={l.minH}
         maxWidth={l.maxW}
         maxHeight={l.maxH}
-        handleClassName={`cv-rs-handle${subtle}`}
-        lineClassName={`cv-rs-line${subtle}`}
+        handleClassName="cv-rs-handle"
+        lineClassName="cv-rs-line"
         lineStyle={lineStyle}
         onResizeStart={onResizeStart}
       />
-      {selected && sized && (
+      {visible && sized && (
         <button
           className="cv-rs-reset nodrag nopan"
           title="Về kích thước mặc định (hoặc bấm đúp vào góc kéo)"

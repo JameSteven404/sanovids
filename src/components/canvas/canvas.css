@@ -31,12 +31,9 @@
   --cv-video-veil: color-mix(in srgb, color-mix(in srgb, var(--panel) 86%, var(--video)) 90%, transparent);
   --cv-neutral-veil: color-mix(in srgb, var(--panel) 90%, transparent);
   /*
-   * Chips drawn over posters / images: dark glass with white text in BOTH themes (like Photos / TV) — the picture
-   * decides the background, not the theme. Theme-independent tokens (--on-media / --media-scrim) when base.css has
-   * them; the keyword fallbacks are the only literal colors in this file.
+   * Chips over posters/images use an opaque dark token with white text in both themes. No per-card backdrop blur.
    */
   --cv-on-media: var(--on-media, white);
-  --cv-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
   --cv-media-chip-line: color-mix(in srgb, var(--cv-on-media) 16%, transparent);
   --cv-on-media-video: color-mix(in srgb, var(--video) 40%, var(--cv-on-media));
   /* bottom fade behind the take player's controls and the hairline glyph shadow on it (dark in both themes) */
@@ -569,7 +566,7 @@
   bottom: 1px;
   padding: 0 2px;
   border-radius: 3px;
-  background: var(--cv-media-chip);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media-video);
   font-family: var(--mono);
   font-size: 9px;
@@ -978,9 +975,7 @@
   padding: 0;
   border: 1px solid var(--cv-media-chip-line);
   border-radius: 7px;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media);
   cursor: zoom-in;
   transition:
@@ -1015,9 +1010,7 @@
   padding: 1px 7px;
   border: 0;
   border-radius: 999px;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   font: inherit;
   font-size: 10.5px;
   font-weight: 600;
@@ -1173,9 +1166,7 @@ button.cv-asset-count:hover {
   top: 6px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media);
   font-family: var(--mono);
   font-size: 11px;
@@ -1196,9 +1187,7 @@ button.cv-asset-count:hover {
   padding: 0 7px 0 6px;
   border-radius: 999px;
   border: 1px solid var(--cv-media-chip-line);
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media);
   font-size: 10px;
   font-weight: 600;
@@ -1236,9 +1225,7 @@ button.cv-asset-count:hover {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: color-mix(in srgb, var(--cv-on-media) 80%, transparent);
   cursor: pointer;
   transition: color 0.15s var(--cv-ease);
@@ -1270,9 +1257,7 @@ button.cv-asset-count:hover {
   padding: 0 7px;
   border: 1px solid color-mix(in srgb, var(--video) 50%, transparent);
   border-radius: 999px;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media-video);
   font-size: 11px;
   font-weight: 600;
@@ -1415,9 +1400,7 @@ button.cv-asset-count:hover {
   margin-bottom: 2px;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--cv-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: var(--cv-chip-solid);
   color: var(--cv-on-media);
   font-family: var(--mono);
   font-size: 10px;

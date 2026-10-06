@@ -25,6 +25,10 @@ import { clearHistory, emptyProject, useProject } from './project'
 import { setEngineHooks, stopEngine, useRuns } from './runs'
 import { useUI } from './ui'
 
+// Loaded only in perf builds; regular autosave has no instrumentation dependency.
+let mark: typeof import('../perf/probe').perfMark | undefined
+if (__SANOVIDS_PERF__) void import('../perf/probe').then((m) => { mark = m.perfMark })
+
 export interface ProjectMeta {
   id: string
   name: string
@@ -203,7 +207,11 @@ async function guardedWrite(projectId: string, entries: [string, unknown][], met
             return // nothing written; the transaction just completes
           }
           out.stamp = nextStamp(stored, TAB_ID)
-          for (const [key, value] of entries) store.put(value, key)
+          for (const [key, value] of entries) {
+            const finish = mark?.(key.startsWith('runs:') ? 'autosaveRuns' : 'autosaveProject')
+            store.put(value, key)
+            finish?.()
+          }
           store.put(out.stamp, K.rev(projectId))
           if (meta) {
             const ireq = store.get(K.index)
@@ -264,7 +272,19 @@ let backupSeq = 0
 const projectDirty = () => useProject.getState().project !== savedProject
 function runsDirty() {
   const r = useRuns.getState()
-  return !savedRuns || r.takes !== savedRuns.takes || r.credits !== savedRuns.credits || r.spent !== savedRuns.spent
+  return !savedRuns || !progressOnlyChange(r, savedRuns)
+}
+
+/** Progress is disposable; every other field (including future fields) must reach storage. */
+export function progressOnlyChange(a: RunsData, b: RunsData): boolean {
+  if (a.credits !== b.credits || a.spent !== b.spent || a.takes.length !== b.takes.length) return false
+  return a.takes === b.takes || a.takes.every((take, i) => {
+    const previous = b.takes[i]
+    if (take === previous) return true
+    const keys = new Set([...Object.keys(take), ...Object.keys(previous)])
+    for (const key of keys) if (key !== 'progress' && take[key as keyof Take] !== previous[key as keyof Take]) return false
+    return true
+  })
 }
 const hasUnsaved = () => projectDirty() || runsDirty() || !!projectTimer || !!runsTimer
 
@@ -278,7 +298,7 @@ function reportSave() {
 }
 
 async function saveProjectNow(p: Project): Promise<WriteResult> {
-  if (!useSave.getState().stale) useSave.setState({ status: 'saving' })
+  if (!useSave.getState().stale && useSave.getState().status !== 'saving') useSave.setState({ status: 'saving' })
   // Listed with the save time: after an undo the project carries the (older) time of the restored snapshot.
   const res = await guardedWrite(p.id, [[K.project(p.id), p]], { ...metaOf(p), updatedAt: Math.max(p.updatedAt, Date.now()) })
   const open = useProject.getState().project.id === p.id
@@ -299,9 +319,11 @@ async function saveProjectNow(p: Project): Promise<WriteResult> {
 }
 
 async function saveRunsNow(projectId: string): Promise<WriteResult> {
+  const finish = mark?.('autosave.runs')
   const { takes, credits, spent } = useRuns.getState()
   const data: RunsData = { takes, credits, spent }
   const res = await guardedWrite(projectId, [[K.runs(projectId), data]])
+  finish?.()
   const open = useProject.getState().project.id === projectId
   if (res === 'ok' && open) savedRuns = data
   if (res === 'conflict' || !open) return res
@@ -385,7 +407,7 @@ let runsTimer: ReturnType<typeof setTimeout> | null = null
 let runsDirtySince = 0
 const PROJECT_DEBOUNCE_MS = 400
 const RUNS_DEBOUNCE_MS = 800
-/** Running jobs change progress every tick, so the debounce alone would never fire during a batch. */
+/** Sustained meaningful edits still have a deadline; progress-only ticks do not reset the debounce. */
 const RUNS_MAX_WAIT_MS = 3000
 
 function cancelPendingSaves() {
@@ -397,7 +419,7 @@ function cancelPendingSaves() {
 
 function scheduleProjectSave() {
   if (stale.has(useProject.getState().project.id)) return
-  useSave.setState({ status: 'saving' })
+  if (useSave.getState().status !== 'saving') useSave.setState({ status: 'saving' })
   if (projectTimer) clearTimeout(projectTimer)
   projectTimer = setTimeout(() => {
     projectTimer = null
@@ -530,6 +552,7 @@ export async function bootstrap(): Promise<void> {
   })
   useRuns.subscribe((s, prev) => {
     if (s.takes === prev.takes && s.credits === prev.credits && s.spent === prev.spent) return
+    if (progressOnlyChange(s, prev)) return
     if (!runsDirty()) return
     scheduleRunsSave()
   })
@@ -679,6 +702,34 @@ async function writeNewProject(p: Project): Promise<boolean> {
 async function openNewProject(p: Project) {
   if (!(await writeNewProject(p))) throw new Error('Không tạo được dự án: không ghi được vào bộ nhớ trình duyệt (bộ nhớ đầy?).')
   openProject({ project: p, runs: null, rev: baseRevs.get(p.id) ?? null, unsaved: false })
+}
+
+/** Harness-only entry point, removed by tree shaking from ordinary builds. Never overwrite an existing id. */
+export async function installProject(project: Project, runs: RunsData): Promise<void> {
+  if (!__SANOVIDS_PERF__ || !project.id.startsWith('prf_')) throw new Error('Chỉ cài dự án thử trong bản perf.')
+  await leaveCurrentProject()
+  if (await readStamp(project.id) || await readProject(project.id)) throw new Error('Dự án thử đã tồn tại; hãy dọn trước.')
+  const result = await guardedWrite(project.id, [[K.project(project.id), project], [K.runs(project.id), runs]], metaOf(project))
+  if (result !== 'ok') throw new Error('Không lưu được dự án thử.')
+  openProject({ project, runs, rev: baseRevs.get(project.id) ?? null, unsaved: false })
+}
+
+/** Remove a deleted harness project's tombstone only after its project/runs have gone. */
+export async function forgetDeletedProject(id: string): Promise<void> {
+  if (!__SANOVIDS_PERF__ || !id.startsWith('prf_')) throw new Error('Chỉ dọn dấu xoá của dự án thử.')
+  await db('readwrite', (store) => new Promise<void>((resolve, reject) => {
+    const request = store.get(K.project(id))
+    request.onsuccess = () => {
+      if (request.result) { store.transaction.abort(); return }
+      store.delete(K.rev(id))
+      store.delete(K.runs(id))
+    }
+    store.transaction.oncomplete = () => resolve()
+    store.transaction.onabort = store.transaction.onerror = () => reject(new Error('Không dọn được dấu xoá.'))
+  }))
+  baseRevs.delete(id)
+  stale.delete(id)
+  lsRemove(LS.backup(id))
 }
 
 export async function createProject(name = 'Dự án mới'): Promise<void> {

@@ -16,6 +16,7 @@ import { useCreditKind } from '../../store/credits'
 import { LAYOUT, useProject } from '../../store/project'
 import { providerVideoCapFor, useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
+import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
 import { costTitle, creditTone } from '../sidebar/shared'
 import {
@@ -35,6 +36,7 @@ import {
   readAssetIds,
   readTakeIds,
   sceneMapOf,
+  sceneAssetsOf,
   STATUS_COLOR,
   STATUS_LABEL,
   takeIndexOf,
@@ -74,6 +76,7 @@ const FOREIGN_BADGE_STYLE = {
 } as CSSProperties
 
 function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
+  perfCount('SceneNodeView')
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const status = useRuns((s) => takeSummary(s.takes, id).status)
@@ -273,8 +276,7 @@ function SceneFar({ scene, status }: { scene: Scene; status: TakeSummary['status
 // ---------------------------------------------------------------------------------------------
 /** `box`: size of a resized card (null = default): more prompt lines when taller, more avatars when wider. */
 function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['status']; box: Size | null }) {
-  const assets = useProject((s) => s.project.assets)
-  const settings = useProject((s) => s.project.settings)
+  const assets = useProject(useShallow((s) => sceneAssetsOf(s.project.assets, scene)))
   const presetName = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId)?.name : undefined))
   // Status of each @video ref as one string: stable while takes only make progress.
   const videoStatus = useRuns((s) => {
@@ -284,10 +286,10 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
   })
 
   const compiled = useMemo<CompiledPrompt>(() => {
-    const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings, scenes: [scene] }
+    const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings: { autoRenumber: true }, scenes: [scene] }
     const statuses = videoStatus.split(',')
     return compileScene(project, scene, { takeStatus: (id) => statuses[scene.videoRefs.indexOf(id)] || undefined })
-  }, [assets, settings, scene, videoStatus])
+  }, [assets, scene, videoStatus])
 
   const refAssets = useMemo(() => {
     const map = assetMapOf(assets)

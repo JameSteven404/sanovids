@@ -29,6 +29,7 @@ import { useProject } from '../../store/project'
 import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { sceneMapOf } from '../canvas/canvasModel'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
 import { takeCostLine } from './creditText'
@@ -181,8 +182,7 @@ function QueuePanel() {
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
-  const scenes = useProject((s) => s.project.scenes)
-  const sceneMap = useMemo(() => new Map(scenes.map((s) => [s.id, s])), [scenes])
+  const sceneMap = useProject((s) => sceneMapOf(s.project.scenes))
   const [doneLimit, setDoneLimit] = useState(DONE_PAGE)
 
   const groups = useMemo<Group[]>(() => {

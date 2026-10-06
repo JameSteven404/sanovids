@@ -7,7 +7,7 @@ import { costOf, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelS
 import { CREDIT_HINT, CREDIT_SOURCE_LABEL, formatCreditNumber, formatCredits, formatVnd, isSimulatedCredit, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
-import { ASSET_DEFAULT_W, assetNodeHeight, layoutTakes } from '../canvas/canvasModel'
+import { ASSET_DEFAULT_W, assetNodeHeight, layoutTakes, measuredOf } from '../canvas/canvasModel'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
 /**
@@ -74,10 +74,15 @@ export function norm(s: string): string {
 
 /** Every whitespace-separated term of the query must appear in one of the fields. */
 export function matchesQuery(query: string, ...fields: string[]): boolean {
-  const q = norm(query.trim())
-  if (!q) return true
+  const terms = queryTerms(query)
+  if (!terms.length) return true
   const hay = norm(fields.join(' \u0001 '))
-  return q.split(/\s+/).every((term) => hay.includes(term.replace(/^@/, '')))
+  return terms.every((term) => hay.includes(term))
+}
+
+export function queryTerms(query: string): string[] {
+  const q = norm(query.trim())
+  return q ? q.split(/\s+/).map((term) => term.replace(/^@/, '')) : []
 }
 
 // ---------------- @image numbers ----------------
@@ -176,11 +181,18 @@ export function useSceneMediaFlags(sceneId: string | null): SceneMediaFlags {
 }
 
 // ---------------- finished videos (takes) ----------------
-/** Completed takes whose scene still exists, newest first. */
-export function finishedTakes(takes: Take[], sceneIds: ReadonlySet<string>): Take[] {
-  return takes
+const finishedLists = new WeakMap<Take[], WeakMap<ReadonlySet<string>, Take[]>>()
+/** Completed takes whose scene still exists, newest first; inputs are immutable store snapshots. */
+export function finishedTakesOf(takes: Take[], sceneIds: ReadonlySet<string>): Take[] {
+  let byScenes = finishedLists.get(takes)
+  if (!byScenes) finishedLists.set(takes, byScenes = new WeakMap())
+  const cached = byScenes.get(sceneIds)
+  if (cached) return cached
+  const finished = takes
     .filter((t) => t.status === 'completed' && sceneIds.has(t.sceneId))
     .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt) || b.number - a.number)
+  byScenes.set(sceneIds, finished)
+  return finished
 }
 
 /**
@@ -275,8 +287,7 @@ export function nextAssetPosition(project: Project, card?: Pick<Asset, 'size' | 
       key = dist
     }
   }
-  const measured = useUI.getState().measured
-  const heightOf = (a: Asset) => assetNodeHeight(a, measured[a.id]?.height)
+  const heightOf = (a: Asset) => assetNodeHeight(a, measuredOf(a.id)?.height)
   const x = Math.min(...column.map((a) => a.position!.x))
   let y = Math.max(...column.map((a) => a.position!.y + heightOf(a))) + LAYOUT.assetGapY
   const w = card?.size?.w ?? ASSET_DEFAULT_W

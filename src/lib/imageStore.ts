@@ -8,6 +8,9 @@ const store = createStore('ban-dung-phim', 'media')
 const urlCache = new Map<string, string>()
 const pending = new Map<string, Promise<string | null>>()
 
+/** Number of live cached object URLs (performance harness). */
+export const urlCount = () => urlCache.size
+
 export async function putBlob(blob: Blob, prefix = 'img'): Promise<string> {
   const id = newId(prefix)
   await set(id, blob, store)

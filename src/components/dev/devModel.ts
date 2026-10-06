@@ -50,8 +50,9 @@ export const DEV_PANEL_TABS: { id: DevPanelTab; label: string }[] = [
  * Tabs of the panel: "Cập nhật" drives the simulated updater (providers/dev/updates), which exists only outside Electron
  * (lib/updates updatesSource() === 'sim'); the desktop app always uses the real updater, so the tab is left out there.
  */
-export function devPanelTabs({ simulatedUpdates }: { simulatedUpdates: boolean }): { id: DevPanelTab; label: string }[] {
-  return simulatedUpdates ? DEV_PANEL_TABS : DEV_PANEL_TABS.filter((t) => t.id !== 'updates')
+export function devPanelTabs({ simulatedUpdates, perf = false }: { simulatedUpdates: boolean; perf?: boolean }): { id: DevPanelTab; label: string }[] {
+  const tabs = simulatedUpdates ? DEV_PANEL_TABS : DEV_PANEL_TABS.filter((t) => t.id !== 'updates')
+  return perf ? [...tabs, { id: 'perf', label: 'Hiệu năng' }] : tabs
 }
 
 /** Faults armed on the simulated server: rules, job-level faults and a session ended by "Hết phiên (401)". */

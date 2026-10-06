@@ -6,7 +6,7 @@
 // applies such a value only to the scenes whose model supports it (see `patchFits`).
 // A scene on a model of a newer SanoVids build (Scene.foreignModel) shows that model as a temporary, selected entry
 // "veo_3_1 (bản mới hơn)" of the model picker; picking a real model drops the marker (store updateSettings).
-import { useRef, type CSSProperties } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { foreignModelOption, modeLabel, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 
@@ -21,15 +21,27 @@ const fmtResolution = (r: string) => r.toUpperCase()
 function segWidth(labels: string[]): number {
   return labels.reduce((w, l) => w + l.length * 7 + 8, 4)
 }
-/** Room in a half-row field at the default inspector width. */
-const HALF_ROW_W = 150
-
 /**
  * Do the duration / resolution segmented controls need a full row each? Scenes on several models offer the union of
  * their options (480P…2K = 5 resolutions): squeezed into half a row the labels would be cut ("10…").
  */
-export function segmentsNeedFullRow(durations: number[], resolutions: string[]): boolean {
-  return Math.max(segWidth(durations.map(fmtDuration)), segWidth(resolutions.map(fmtResolution))) > HALF_ROW_W
+export function segmentsNeedFullRow(durations: number[], resolutions: string[], halfRowWidth = 150): boolean {
+  return Math.max(segWidth(durations.map(fmtDuration)), segWidth(resolutions.map(fmtResolution))) > halfRowWidth
+}
+
+export type SettingsField = 'preset' | 'model' | 'mode' | 'duration' | 'resolution' | 'ratio'
+export type SettingsFocus = SettingsField | { field: SettingsField; seq: number }
+
+/** Focus the select / active radio; a native picker may refuse an effect without user activation. */
+export function focusSettingsField(root: Pick<HTMLElement, 'querySelector'>, field: SettingsField): void {
+  const control = root.querySelector<HTMLElement>(`[data-settings-field="${field}"]`)
+  if (!control) return
+  const target = control.matches('select') ? control : control.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
+  if (!target || target.matches(':disabled')) return
+  target.focus({ preventScroll: true })
+  if (target.matches('select')) {
+    try { (target as HTMLSelectElement).showPicker?.() } catch { /* Focus remains usable without a native picker. */ }
+  }
 }
 
 function common<T>(list: T[]): T | null {
@@ -82,6 +94,8 @@ export function SettingsFields({
   presets,
   onPatch,
   onPreset,
+  layout = 'panel',
+  focusField,
 }: {
   settings: VideoSettings[]
   /** Scene.foreignModel of each scene, parallel to `settings` (omit when none can have one). */
@@ -90,7 +104,27 @@ export function SettingsFields({
   presets: Preset[]
   onPatch: (patch: Partial<VideoSettings>) => void
   onPreset: (presetId: string) => void
+  layout?: 'panel' | 'node'
+  /** Pass seq from useSceneEditor to repeat a request for the same field. */
+  focusField?: SettingsFocus | null
 }) {
+  const root = useRef<HTMLDivElement>(null)
+  const [halfRowWidth, setHalfRowWidth] = useState(150)
+  const field = typeof focusField === 'string' ? focusField : focusField?.field
+  const focusSeq = typeof focusField === 'object' ? focusField?.seq : undefined
+  useLayoutEffect(() => {
+    if (field && root.current) focusSettingsField(root.current, field)
+  }, [field, focusSeq])
+  useLayoutEffect(() => {
+    const el = root.current
+    if (layout !== 'node' || !el || typeof ResizeObserver === 'undefined') return
+    // contentRect uses local CSS pixels, so zoom / the editor's counter-scale cannot change the layout.
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setHalfRowWidth(Math.max(0, (entry.contentRect.width - 8) / 2))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [layout])
   const model = common(settings.map((s) => s.model))
   const pick = modelPick(settings, foreignModels)
   const modelValue = pick.foreign ? FOREIGN : (pick.model ?? MIXED)
@@ -107,7 +141,7 @@ export function SettingsFields({
   const resolutions = union(specs.map((s) => s.resolutions))
   const ratios = union(specs.map((s) => s.ratios))
   // Too many options for half a row: duration and resolution take a full row each (like the narrow-panel rule).
-  const segField = `in-field c3 in-seg-field${segmentsNeedFullRow(durations, resolutions) ? ' is-wide' : ''}`
+  const segField = `in-field c3 in-seg-field${segmentsNeedFullRow(durations, resolutions, layout === 'node' ? halfRowWidth : 150) ? ' is-wide' : ''}`
   /** " · chỉ H3" when the selection mixes models and only some of them offer the option. */
   const onlyFor = (ok: (spec: ModelSpec) => boolean): string => {
     if (specs.length < 2) return ''
@@ -116,10 +150,11 @@ export function SettingsFields({
   }
 
   return (
-    <div className="in-grid">
+    <div ref={root} className="in-grid" data-layout={layout}>
       <label className="in-field c6">
         <span>Preset</span>
         <select
+          data-settings-field="preset"
           className="select in-sm"
           value={allSamePreset ? (presetId ?? '') : MIXED}
           onChange={(e) => e.target.value && e.target.value !== MIXED && onPreset(e.target.value)}
@@ -141,6 +176,7 @@ export function SettingsFields({
       <label className="in-field c3">
         <span>Model</span>
         <select
+          data-settings-field="model"
           className="select in-sm"
           value={modelValue}
           onChange={(e) => e.target.value !== MIXED && e.target.value !== FOREIGN && onPatch({ model: e.target.value as ModelId })}
@@ -165,6 +201,7 @@ export function SettingsFields({
       <label className="in-field c3">
         <span>Chế độ</span>
         <select
+          data-settings-field="mode"
           className="select in-sm"
           value={mode ?? MIXED}
           onChange={(e) => e.target.value !== MIXED && onPatch({ mode: e.target.value as Mode })}
@@ -183,7 +220,7 @@ export function SettingsFields({
           ))}
         </select>
       </label>
-      <div className={segField}>
+      <div className={segField} data-settings-field="duration">
         <span>
           Thời lượng{duration === null && <em className="in-mixed"> · khác nhau</em>}
         </span>
@@ -196,7 +233,7 @@ export function SettingsFields({
           onPick={(d) => onPatch({ duration: d })}
         />
       </div>
-      <div className={segField}>
+      <div className={segField} data-settings-field="resolution">
         <span>
           Độ phân giải{resolution === null && <em className="in-mixed"> · khác nhau</em>}
         </span>
@@ -209,7 +246,7 @@ export function SettingsFields({
           onPick={(r) => onPatch({ resolution: r })}
         />
       </div>
-      <div className="in-field c6">
+      <div className="in-field c6" data-settings-field="ratio">
         <span>
           Tỉ lệ{ratio === null && <em className="in-mixed"> · khác nhau</em>}
         </span>
@@ -231,7 +268,7 @@ export function SettingsFields({
  * between them. `value` null = the selected scenes differ (no segment selected). Arrow keys move the focus; Space /
  * Enter picks (each pick is an undo step, so arrows do not apply every option they pass).
  */
-function Segmented<T extends string | number>({
+export function Segmented<T extends string | number>({
   label,
   value,
   options,

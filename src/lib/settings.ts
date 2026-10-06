@@ -22,6 +22,9 @@ import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
 import { isThemePref, useTheme, type ThemePref } from './theme'
 import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
+import { changedBindingsCount, validateBindings, type BindingIssue } from '../core/keymap'
+import { IS_MAC } from './keyEvents'
+import { useKeymap } from './keymapPrefs'
 
 export interface PortableSettings {
   theme: ThemePref
@@ -31,6 +34,7 @@ export interface PortableSettings {
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
   mock: MockSettings
   updates: { autoDownload: boolean }
+  keys: Record<string, unknown>
 }
 
 /** Some settings (what a file or a reset changes). */
@@ -51,6 +55,7 @@ export const DEFAULT_SETTINGS: PortableSettings = {
   ui: { edgeMode: 'selected', takeDisplay: 'all', showMinimap: true, interaction: 'hand', toastTime: 'normal' },
   mock: { ...DEFAULT_MOCK_SETTINGS },
   updates: { autoDownload: DEFAULT_UPDATE_PREFS.autoDownload },
+  keys: {},
 }
 
 /** Every setting as it is now. */
@@ -74,6 +79,7 @@ export function currentSettings(): PortableSettings {
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
     updates: { autoDownload: useUpdatePrefs.getState().autoDownload },
+    keys: { ...useKeymap.getState().foreign, ...useKeymap.getState().bindings },
   }
 }
 
@@ -88,7 +94,7 @@ const isVolume = (v: unknown): v is number => typeof v === 'number' && Number.is
 const isTemplate = (v: unknown): v is string => checkNameTemplate(v).ok
 
 type Check = (v: unknown) => boolean
-const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock'>]: Record<keyof PortableSettings[K], Check> } = {
+const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock' | 'keys'>]: Record<keyof PortableSettings[K], Check> } = {
   downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
   canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
@@ -109,16 +115,19 @@ export interface SanitizedSettings {
   accepted: number
   /** "group.key" of the values that were refused (wrong type / out of range / unknown option). */
   rejected: string[]
+  /** Detailed shortcut refusals, including cross-platform mac-system import messages. */
+  keyIssues?: BindingIssue[]
 }
 
 /**
  * Untrusted settings (an imported file) → the values that are valid. Unknown groups and keys are ignored (a file
  * from a newer version still imports what this one knows); a wrong value is refused, never "fixed" by guessing.
  */
-export function sanitizeSettings(input: unknown): SanitizedSettings {
+export function sanitizeSettings(input: unknown, mac = IS_MAC): SanitizedSettings {
   const patch: SettingsPatch = {}
   const rejected: string[] = []
   let accepted = 0
+  let keyIssues: BindingIssue[] = []
   if (!isObj(input)) return { patch, accepted, rejected }
   if ('theme' in input) {
     if (isThemePref(input.theme)) {
@@ -146,7 +155,18 @@ export function sanitizeSettings(input: unknown): SanitizedSettings {
     }
     if (Object.keys(out).length) (patch as Record<string, unknown>)[group] = out
   }
-  return { patch, accepted, rejected }
+  if ('keys' in input) {
+    const keys = validateBindings(input.keys, mac)
+    keyIssues = keys.issues
+    rejected.push(...keys.rejected)
+    const clean = { ...keys.foreign, ...keys.bindings }
+    // An empty group is meaningful: importing it restores the default bindings.
+    if (Object.keys(clean).length || (isObj(input.keys) && !Object.keys(input.keys).length)) {
+      patch.keys = clean
+      accepted += Math.max(1, Object.keys(clean).length)
+    }
+  }
+  return { patch, accepted, rejected, ...(keyIssues.length ? { keyIssues } : {}) }
 }
 
 // ---------------- applying ----------------
@@ -171,6 +191,7 @@ export function applySettings(patch: SettingsPatch): void {
   }
   if (patch.mock) useRuns.getState().setMock(patch.mock)
   if (patch.updates) useUpdatePrefs.getState().set(patch.updates)
+  if (patch.keys) useKeymap.getState().replace(patch.keys)
 }
 
 /** What a reset / import changed, to put it back with "Hoàn tác". */
@@ -220,7 +241,7 @@ export function changedSettingsCount(s: PortableSettings = currentSettings()): n
     const def = DEFAULT_SETTINGS[group] as Record<string, unknown>
     for (const k of Object.keys(def)) if (cur[k] !== def[k]) n++
   }
-  return n
+  return n + changedBindingsCount(s.keys, IS_MAC)
 }
 
 // ---------------- file ----------------

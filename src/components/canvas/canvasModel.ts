@@ -2,6 +2,7 @@
 // and a tiny hover store.
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
+import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
 import { chooseTake, videoUsageOf } from '../../core/takes'
@@ -50,6 +51,76 @@ export function assetMapOf(assets: Asset[]): Map<string, Asset> {
   }
   return m
 }
+
+/** Every Scene field is classified, including individual settings fields (guarded by graphSig.test). */
+export const GRAPH_FIELDS = ['id', 'order', 'position', 'size', 'refs', 'videoRefs', 'settings.mode', 'firstFrame', 'lastFrame', 'color'] as const
+export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings'] as const
+
+/** Array identities are weakly cached; only the most recent graph is retained for comparison. */
+function graphCache<T extends object>(fieldsOf: (item: T) => unknown[]) {
+  const items = new WeakMap<T, string>()
+  const arrays = new WeakMap<T[], readonly string[]>()
+  let last: readonly string[] = []
+  return (list: T[]): readonly string[] => {
+    const cached = arrays.get(list)
+    if (cached) return last = cached
+    const next = list.map((item) => {
+      let key = items.get(item)
+      if (key === undefined) {
+        key = JSON.stringify(fieldsOf(item))
+        items.set(item, key)
+      }
+      return key
+    })
+    if (next.length !== last.length || next.some((key, i) => key !== last[i])) last = next
+    arrays.set(list, last)
+    return last
+  }
+}
+
+export const sceneGraphOf = graphCache<Scene>((s) => GRAPH_FIELDS.map((key) => key === 'settings.mode' ? s.settings.mode : s[key]))
+export const assetGraphOf = graphCache<Asset>((a) => [a.id, a.position, a.size, a.color, a.kind])
+
+const sceneAssetInputs = new WeakMap<Scene, WeakMap<Asset[], Asset[]>>()
+/** Compile/excerpt inputs include frames and legacy tags, even when those assets are not linked as refs. */
+export function sceneAssetsOf(assets: Asset[], scene: Scene): Asset[] {
+  let byAssets = sceneAssetInputs.get(scene)
+  if (!byAssets) sceneAssetInputs.set(scene, byAssets = new WeakMap())
+  const cached = byAssets.get(assets)
+  if (cached) return cached
+  const map = assetMapOf(assets)
+  const ids = new Set([...scene.refs, scene.firstFrame, scene.lastFrame])
+  for (const tag of extractMentions(scene.prompt)) ids.add(assetByTag(assets, tag)?.id ?? null)
+  const inputs = [...ids].flatMap((id) => id && map.has(id) ? [map.get(id)!] : [])
+  byAssets.set(assets, inputs)
+  return inputs
+}
+
+/** Hysteresis prevents minimap/wires flickering around the large-project threshold. */
+export function bigCanvasState(count: number, wasBig: boolean, pref: 'auto' | 'off' = 'auto'): boolean {
+  return pref === 'auto' && count >= (wasBig ? 700 : 800)
+}
+
+/** Quantize pan to a quarter viewport; the extra quarter covers movement before the next update. */
+export function wireViewport(transform: readonly number[], width: number, height: number): Box | null {
+  const [x, y, zoom] = transform
+  if (!(width > 0 && height > 0 && zoom > 0)) return null
+  const w = width / zoom, h = height / zoom
+  return { x: Math.floor(-x / zoom / (w / 4)) * (w / 4) - w / 2, y: Math.floor(-y / zoom / (h / 4)) * (h / 4) - h / 2, w: w * 2.25, h: h * 2.25 }
+}
+
+export function boxesIntersect(a: Box, b: Box): boolean {
+  return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y
+}
+
+/** Endpoint culling deliberately excludes long wires crossing the viewport with both cards far away. */
+export function wireNearViewport(source: string, target: string, near: ReadonlySet<string> | null, selected: boolean): boolean {
+  return !near || selected || near.has(source) || near.has(target)
+}
+
+/** Session-only viewport: leaving Canvas unmounts React Flow today. */
+export const canvasViewports = new Map<string, { x: number; y: number; zoom: number }>()
+export const PREVIEW_DELAY_MS = 200
 
 const usageMaps = new WeakMap<Scene[], Map<string, number>>()
 /** asset id -> number of scenes whose refs include it. */
@@ -326,6 +397,12 @@ export interface ResizeBox {
   y?: number
 }
 
+/** A left/top resize moves the node too; otherwise a drag overrides its stored/automatic position. */
+export function livePosition(id: string, base: XY, drag: Record<string, XY>, resizing: Record<string, ResizeBox>): XY {
+  const box = resizing[id]
+  return box?.x !== undefined && box.y !== undefined ? { x: box.x, y: box.y } : drag[id] ?? base
+}
+
 /** Prompt line height of the scene card (12px × 1.42). */
 export const PROMPT_LINE_H = 17
 /** Scene card chrome around the prompt: head, refs row, footer (+ the take status line when the scene has takes). */
@@ -518,20 +595,25 @@ export const KIND_LABEL: Record<AssetKind, string> = {
 
 /** Count of selected ids that are scenes (safe inside a ui selector: returns a number). */
 export function countScenes(ids: string[]): number {
-  if (!ids.length) return 0
-  const map = sceneMapOf(useProject.getState().project.scenes)
-  let n = 0
-  for (const id of ids) if (map.has(id)) n++
-  return n
+  return selectionCount(ids, sceneMapOf(useProject.getState().project.scenes))
 }
 
 /** Count of selected ids that are take nodes. */
 export function countTakes(ids: string[]): number {
-  if (!ids.length) return 0
-  const map = takeIndexOf(useRuns.getState().takes).byId
-  let n = 0
-  for (const id of ids) if (map.has(id)) n++
-  return n
+  return selectionCount(ids, takeIndexOf(useRuns.getState().takes).byId)
+}
+
+const selectionCounts = new WeakMap<string[], WeakMap<object, number>>()
+function selectionCount(ids: string[], map: ReadonlyMap<string, unknown>): number {
+  let counts = selectionCounts.get(ids)
+  if (!counts) selectionCounts.set(ids, counts = new WeakMap())
+  let count = counts.get(map)
+  if (count === undefined) {
+    count = 0
+    for (const id of ids) if (map.has(id)) count++
+    counts.set(map, count)
+  }
+  return count
 }
 
 // ---------------- multi-target expansion ----------------
@@ -790,15 +872,25 @@ export function inlineEditSavesDraft(e: InlineKey): boolean {
 }
 
 /**
- * Size React Flow measured for a node (undefined = not measured yet), read outside React. Today it lives in useUI
- * (`measured`); the canvas performance work moves it to the canvas-local store — callers keep using this.
+ * Size React Flow measured for a node (undefined = not measured yet), read outside React.
  */
 export function measuredOf(id: string): { width: number; height: number } | undefined {
-  return useUI.getState().measured[id]
+  return useCanvasLocal.getState().measured[id]
 }
 
 // ---------------- hover store (edges + cut button need a little grace period) ----------------
 interface CanvasLocal {
+  projectId: string | null
+  big: boolean
+  resetProject: (id: string) => void
+  hoveredId: string | null
+  setHovered: (id: string | null) => void
+  dragPos: Record<string, XY>
+  setDragPos: (pos: Record<string, XY>) => void
+  clearDragPos: (ids?: string[]) => void
+  measured: Record<string, { width: number; height: number }>
+  measuredVersion: number
+  setMeasured: (sizes: Record<string, { width: number; height: number }>) => void
   hoveredEdgeId: string | null
   setHoveredEdge: (id: string | null) => void
   /** Nodes whose resize handle is being dragged: their live box (committed to the stores on resize end). */
@@ -806,7 +898,44 @@ interface CanvasLocal {
   setResizing: (boxes: Record<string, ResizeBox>) => void
   clearResizing: (id: string) => void
 }
+let measureFrame: number | null = null
 export const useCanvasLocal = create<CanvasLocal>()((set) => ({
+  projectId: null,
+  big: false,
+  resetProject: (projectId) => {
+    if (useCanvasLocal.getState().projectId === projectId) return
+    if (measureFrame !== null) cancelAnimationFrame(measureFrame)
+    measureFrame = null
+    keepHover()
+    set({ projectId, big: false, measured: {}, measuredVersion: 0, dragPos: {}, resizing: {}, hoveredId: null, hoveredEdgeId: null })
+  },
+  hoveredId: null,
+  setHovered: (hoveredId) => set((s) => s.hoveredId === hoveredId ? s : { hoveredId }),
+  dragPos: {},
+  setDragPos: (pos) => set((s) => ({ dragPos: { ...s.dragPos, ...pos } })),
+  clearDragPos: (ids) => set((s) => {
+    const dragPos = ids ? { ...s.dragPos } : {}
+    for (const id of ids ?? []) delete dragPos[id]
+    return { dragPos }
+  }),
+  measured: {},
+  measuredVersion: 0,
+  setMeasured: (sizes) => {
+    // Measurements are readable immediately; subscribers are notified only once per animation frame.
+    const measured = useCanvasLocal.getState().measured
+    let changed = false
+    for (const [id, size] of Object.entries(sizes)) {
+      const old = measured[id]
+      if (!old || old.width !== size.width || old.height !== size.height) {
+        measured[id] = size
+        changed = true
+      }
+    }
+    if (changed && measureFrame === null) measureFrame = requestAnimationFrame(() => {
+      measureFrame = null
+      set((s) => ({ measuredVersion: s.measuredVersion + 1 }))
+    })
+  },
   hoveredEdgeId: null,
   setHoveredEdge: (hoveredEdgeId) => set((s) => (s.hoveredEdgeId === hoveredEdgeId ? s : { hoveredEdgeId })),
   resizing: {},
@@ -835,6 +964,12 @@ export function scheduleHoverEnd(clearNode: () => void, ms = 140) {
     clearNode()
   }, ms)
 }
+
+// Project switches can happen while Canvas is unmounted; the sidebar must never read the previous measurements.
+useCanvasLocal.getState().resetProject(useProject.getState().project.id)
+useProject.subscribe((s, prev) => {
+  if (s.project.id !== prev.project.id) useCanvasLocal.getState().resetProject(s.project.id)
+})
 
 /**
  * Color with alpha: hex ('#4fb6a8', 0.7 -> '#4fb6a8b3'), anything else (a theme token such as 'var(--ref)') through

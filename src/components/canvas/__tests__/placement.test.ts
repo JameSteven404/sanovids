@@ -3,9 +3,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Asset, Project } from '../../../core/types'
 import { LAYOUT } from '../../../store/project'
-import { useUI } from '../../../store/ui'
 import { nextAssetPosition } from '../../sidebar/shared'
 import {
+  useCanvasLocal,
   assetDefaultLayout,
   autoTakePosition,
   boxOnScreen,
@@ -62,7 +62,7 @@ describe('"Đưa lên canvas": next slot of the asset column', () => {
   const asset = (id: string, x: number, y: number): Asset => ({ id, kind: 'character', name: id, tag: id, description: '', imageIds: [], color: '#fff', position: { x, y } })
   const project = (assets: Asset[]): Project => ({ id: 'p', name: 'P', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], settings: { autoRenumber: true }, assets, scenes: [] })
   const H = assetDefaultLayout(1).h
-  beforeEach(() => useUI.setState({ measured: {} }))
+  beforeEach(() => useCanvasLocal.setState({ measured: {} }))
   it('[P4a] a card dragged next to a scene far below does not drag the column bottom there', () => {
     const p = project([asset('a1', 40, 60), asset('a2', 40, 60 + H + 28), asset('a3', 1200, 2000)])
     expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 2 * (H + 28) }) // was (40, 2255)

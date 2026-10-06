@@ -54,6 +54,11 @@ export interface CaretCoords {
   height: number
 }
 
+/** Convert local caret offsets (after subtracting textarea scroll) into scaled screen offsets. */
+export function scaleCaret(c: CaretCoords, k: number): CaretCoords {
+  return { top: c.top * k, left: c.left * k, height: c.height * k }
+}
+
 const WORD_TAIL = /^[^\s]*/
 
 /** Pixel position of character index `position` inside `el` (before scrolling is applied). */

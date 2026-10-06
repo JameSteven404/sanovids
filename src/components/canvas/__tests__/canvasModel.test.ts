@@ -1,10 +1,21 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
 import { ASSETS_MIME, TAKES_MIME } from '../../../lib/dnd'
-import { defaultTakePosition, LAYOUT } from '../../../store/project'
+import { defaultTakePosition, LAYOUT, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
+import { useUI } from '../../../store/ui'
 import {
   chooseTake,
+  bigCanvasState,
+  boxesIntersect,
+  countScenes,
+  countTakes,
+  measuredOf,
+  PREVIEW_DELAY_MS,
+  sceneMapOf,
+  useCanvasLocal,
+  wireViewport,
+  wireNearViewport,
   hasAssetDrag,
   hasTakeDrag,
   inlineEditKeyBubbles,
@@ -21,6 +32,113 @@ import {
   takeSummary,
   videoUsageOf,
 } from '../canvasModel'
+
+describe('large canvas defaults', () => {
+  it('enters at 800, exits below 700, and obeys the setting', () => {
+    expect(bigCanvasState(799, false)).toBe(false)
+    expect(bigCanvasState(800, false)).toBe(true)
+    expect(bigCanvasState(799, true)).toBe(true)
+    expect(bigCanvasState(700, true)).toBe(true)
+    expect(bigCanvasState(699, true)).toBe(false)
+    expect(bigCanvasState(2000, true, 'off')).toBe(false)
+    expect(PREVIEW_DELAY_MS).toBe(200)
+  })
+
+  it('keeps at least 50% overscan across quarter-viewport pan steps, including negative coordinates', () => {
+    const first = wireViewport([0, 0, 1], 1000, 800)!
+    expect(wireViewport([-249, -199, 1], 1000, 800)).toEqual(first)
+    expect(wireViewport([-250, 0, 1], 1000, 800)).not.toEqual(first)
+    expect(wireViewport([0, 0, 1], 0, 800)).toBeNull()
+    for (const zoom of [0.15, 0.4, 1, 2]) for (const x of [-999, -249, 0, 1, 900]) {
+      const area = wireViewport([x, x, zoom], 1000, 800)!
+      expect(area.x).toBeLessThanOrEqual(-x / zoom - 500 / zoom)
+      expect(area.x + area.w).toBeGreaterThanOrEqual(-x / zoom + 1500 / zoom)
+      expect(area.y).toBeLessThanOrEqual(-x / zoom - 400 / zoom)
+      expect(area.y + area.h).toBeGreaterThanOrEqual(-x / zoom + 1200 / zoom)
+    }
+    expect(boxesIntersect(first, { x: -510, y: 0, w: 20, h: 20 })).toBe(true)
+    expect(boxesIntersect(first, { x: -1000, y: 0, w: 20, h: 20 })).toBe(false)
+    const near = new Set(['s1'])
+    expect(wireNearViewport('s1', 'far', near, false)).toBe(true)
+    expect(wireNearViewport('far', 's1', near, false)).toBe(true)
+    expect(wireNearViewport('farLeft', 'farRight', near, false)).toBe(false)
+    expect(wireNearViewport('farLeft', 'farRight', near, true)).toBe(true)
+    expect(wireNearViewport('farLeft', 'farRight', null, false)).toBe(true)
+  })
+
+  it('M reveals an auto-hidden minimap without persisting over the preference', () => {
+    const initial = useUI.getState()
+    const setItem = vi.fn()
+    vi.stubGlobal('localStorage', { setItem })
+    try {
+      useUI.setState({ showMinimap: true, minimapAutoHiddenFor: 'large', minimapShownFor: [] })
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().minimapShownFor).toEqual(['large'])
+      expect(useUI.getState().showMinimap).toBe(true)
+      expect(setItem).not.toHaveBeenCalled()
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().showMinimap).toBe(false)
+      expect(setItem).toHaveBeenCalledWith('bdp:pref:minimap', 'false')
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().minimapShownFor).toEqual(['large'])
+    } finally { useUI.setState(initial); vi.unstubAllGlobals() }
+  })
+})
+
+describe('canvas-local updates', () => {
+  it('batches measurements per frame, isolates drag/hover from UI, clears measurements on project switch', () => {
+    const project = useProject.getState().project
+    const frames = new Map<number, FrameRequestCallback>()
+    let seq = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++seq, cb); return seq })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
+    const uiChanged = vi.fn()
+    const off = useUI.subscribe(uiChanged)
+    try {
+      useCanvasLocal.getState().resetProject('p1')
+      const local = useCanvasLocal.getState()
+      local.setMeasured({ s1: { width: 280, height: 200 } })
+      local.setMeasured({ s2: { width: 280, height: 300 } })
+      expect(measuredOf('s2')).toEqual({ width: 280, height: 300 })
+      expect(frames.size).toBe(1)
+      expect(useCanvasLocal.getState().measuredVersion).toBe(0)
+      const frame = [...frames.values()][0]; frames.clear(); frame(0)
+      expect(useCanvasLocal.getState().measuredVersion).toBe(1)
+      local.setMeasured({ s1: { width: 280, height: 200 } })
+      expect(frames.size).toBe(0)
+      local.setDragPos({ s1: { x: 10, y: 20 } })
+      local.setHovered('s1')
+      expect(uiChanged).not.toHaveBeenCalled()
+      local.setMeasured({ s1: { width: 300, height: 200 } })
+      useProject.setState({ project: { ...project, id: 'p2' } })
+      expect(frames.size).toBe(0)
+      expect(measuredOf('s1')).toBeUndefined()
+      expect(useCanvasLocal.getState()).toMatchObject({ dragPos: {}, hoveredId: null, measuredVersion: 0 })
+    } finally { off(); useProject.setState({ project }); vi.unstubAllGlobals() }
+  })
+})
+
+describe('selection count caching', () => {
+  it('scans an unchanged selection/map only once and invalidates when membership changes', () => {
+    const project = useProject.getState().project, takes = useRuns.getState().takes
+    try {
+      const scenes = [scene('s1'), scene('s2')]
+      useProject.setState({ project: { ...project, scenes } })
+      useRuns.setState({ takes: [take('t1', 's1', 1)] })
+      const ids = ['s1', 's2', 't1']
+      const has = vi.spyOn(sceneMapOf(scenes), 'has')
+      expect(countScenes(ids)).toBe(2)
+      expect(countScenes(ids)).toBe(2)
+      expect(has).toHaveBeenCalledTimes(3)
+      expect(countTakes(ids)).toBe(1)
+      useProject.setState({ project: { ...project, scenes: [scenes[0]] } })
+      useRuns.setState({ takes: [] })
+      expect(countScenes(ids)).toBe(1)
+      expect(countTakes(ids)).toBe(0)
+      has.mockRestore()
+    } finally { useProject.setState({ project }); useRuns.setState({ takes }) }
+  })
+})
 
 const scene = (id: string, over: Partial<Scene> = {}): Scene => ({
   id,

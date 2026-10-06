@@ -1,6 +1,6 @@
 // UI-only state: selection, view, dialogs, drag overlay, toasts. Never undoable, mostly not persisted.
 import { create } from 'zustand'
-import type { EdgeMode, ViewMode, XY } from '../core/types'
+import type { EdgeMode, ViewMode } from '../core/types'
 
 export interface ToastAction {
   label: string
@@ -103,6 +103,9 @@ export interface UIState {
   edgeMode: EdgeMode
   interaction: InteractionMode
   showMinimap: boolean
+  /** Large-canvas override is session-only and never writes the user's minimap preference. */
+  minimapAutoHiddenFor: string | null
+  minimapShownFor: string[]
   queueOpen: boolean
   leftOpen: boolean
   rightOpen: boolean
@@ -113,14 +116,9 @@ export interface UIState {
   selectedEdgeIds: string[]
   /** Asset ids selected in the left library (independent of canvas). */
   librarySelection: string[]
-  hoveredId: string | null
   /** Asset id being dragged from the library (HTML5 DnD), used to highlight drop targets. */
   draggingAssetIds: string[] | null
 
-  /** Live positions while a node is being dragged. Committed to the project store on drag end. */
-  dragPos: Record<string, XY>
-  /** Node sizes measured by React Flow (kept so derived nodes stay measured). */
-  measured: Record<string, { width: number; height: number }>
 
   dialog: DialogState
   toasts: Toast[]
@@ -146,15 +144,11 @@ export interface UIState {
   clearSelection: () => void
   setLibrarySelection: (ids: string[]) => void
   toggleLibrary: (id: string, additive: boolean) => void
-  setHovered: (id: string | null) => void
   setDraggingAssets: (ids: string[] | null) => void
   /** Take ids being dragged (HTML5 DnD from the library / take strips), to highlight drop targets. */
   draggingTakeIds: string[] | null
   setDraggingTakes: (ids: string[] | null) => void
 
-  setDragPos: (pos: Record<string, XY>) => void
-  clearDragPos: (ids?: string[]) => void
-  setMeasured: (id: string, size: { width: number; height: number }) => void
 
   openDialog: (d: DialogState) => void
   closeDialog: () => void
@@ -171,6 +165,8 @@ export const useUI = create<UIState>()((set, get) => ({
   edgeMode: pref('edgeMode', 'selected', oneOf(EDGE_MODES)),
   interaction: pref('interaction', 'hand', oneOf(INTERACTION_MODES)),
   showMinimap: pref('minimap', true, isBool),
+  minimapAutoHiddenFor: null,
+  minimapShownFor: [],
   takeDisplay: pref('takeDisplay', 'all', oneOf(TAKE_DISPLAYS)),
   toastTime: pref('toastTime', 'normal', oneOf(TOAST_TIMES)),
   queueOpen: false,
@@ -180,11 +176,8 @@ export const useUI = create<UIState>()((set, get) => ({
   selectedIds: [],
   selectedEdgeIds: [],
   librarySelection: [],
-  hoveredId: null,
   draggingAssetIds: null,
   draggingTakeIds: null,
-  dragPos: {},
-  measured: {},
   dialog: { kind: 'none' },
   toasts: [],
 
@@ -211,11 +204,18 @@ export const useUI = create<UIState>()((set, get) => ({
     savePref('takeDisplay', takeDisplay)
     set({ takeDisplay })
   },
-  toggleMinimap: () => get().setMinimap(!get().showMinimap),
+  toggleMinimap: () => {
+    const s = get()
+    const id = s.minimapAutoHiddenFor
+    if (id && s.showMinimap && !s.minimapShownFor.includes(id)) {
+      set({ minimapShownFor: [...s.minimapShownFor, id] })
+    } else get().setMinimap(!s.showMinimap)
+  },
   setMinimap: (showMinimap) => {
     if (typeof showMinimap !== 'boolean') return
     savePref('minimap', showMinimap)
-    set({ showMinimap })
+    const { minimapAutoHiddenFor: id, minimapShownFor } = get()
+    set({ showMinimap, minimapShownFor: id ? [...minimapShownFor.filter((p) => p !== id), ...(showMinimap ? [id] : [])] : minimapShownFor })
   },
   setToastTime: (toastTime) => {
     if (!TOAST_TIMES.includes(toastTime)) return
@@ -245,24 +245,9 @@ export const useUI = create<UIState>()((set, get) => ({
       if (!additive) return { librarySelection: s.librarySelection.length === 1 && s.librarySelection[0] === id ? [] : [id] }
       return { librarySelection: s.librarySelection.includes(id) ? s.librarySelection.filter((x) => x !== id) : [...s.librarySelection, id] }
     }),
-  setHovered: (hoveredId) => set((s) => (s.hoveredId === hoveredId ? s : { hoveredId })),
   setDraggingAssets: (draggingAssetIds) => set({ draggingAssetIds }),
   setDraggingTakes: (draggingTakeIds) => set({ draggingTakeIds }),
 
-  setDragPos: (pos) => set((s) => ({ dragPos: { ...s.dragPos, ...pos } })),
-  clearDragPos: (ids) =>
-    set((s) => {
-      if (!ids) return { dragPos: {} }
-      const next = { ...s.dragPos }
-      for (const id of ids) delete next[id]
-      return { dragPos: next }
-    }),
-  setMeasured: (id, size) =>
-    set((s) => {
-      const cur = s.measured[id]
-      if (cur && cur.width === size.width && cur.height === size.height) return s
-      return { measured: { ...s.measured, [id]: size } }
-    }),
 
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: { kind: 'none' } }),

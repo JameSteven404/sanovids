@@ -2,6 +2,17 @@
    dragging a wire (.cv-cl-*) and the cut animation (.cv-cut-*). Only stroke / opacity / transform change: no layout. */
 
 /* ============================== wires ============================== */
+/* Hidden-mode edges stay subscribed to incident hover; their reconnect grips must be hidden too. */
+.cv-stage .react-flow__edge:not(:has(.cv-wire)) {
+  display: none;
+}
+/* React Flow puts each edge in its own svg. Hover raises that svg without rebuilding all edge objects. */
+.cv-stage .react-flow__edges > svg:has(.cv-wire.is-highlighted):not(:has(.selected)) {
+  z-index: -2 !important;
+}
+.cv-stage .react-flow__edges > svg:has(.cv-wire.is-hovered):not(:has(.selected)) {
+  z-index: -1 !important;
+}
 .cv-stage .cv-wire {
   stroke-linecap: round;
   transition:

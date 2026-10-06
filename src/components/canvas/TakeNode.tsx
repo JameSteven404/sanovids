@@ -14,8 +14,9 @@ import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
+import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
-import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
+import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, PREVIEW_DELAY_MS, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { TakePlayer } from './TakePlayer'
 import './canvas.css'
@@ -132,16 +133,23 @@ function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void 
 }
 
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
+  perfCount('TakeNodeView')
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
   const order = useProject((s) => (take ? sceneMapOf(s.project.scenes).get(take.sceneId)?.order : undefined))
   const usage = useProject((s) => videoUsageOf(s.project.scenes).get(id) ?? 0)
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const [hover, setHover] = useState(false)
+  const [previewReady, setPreviewReady] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const done = take?.status === 'completed'
   // The player stays open after the mouse leaves once one of its controls was used (pinned, see TakePlayer).
   const pinned = usePlayback((s) => s.pinned === id)
-  const previewing = hover && done && !far
+  useEffect(() => {
+    if (!hover || !done || far) { setPreviewReady(false); return }
+    const timer = setTimeout(() => setPreviewReady(true), PREVIEW_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [hover, done, far])
+  const previewing = hover && previewReady && done && !far
   const videoUrl = useMediaUrl((previewing || pinned) && done && !far ? take?.videoId : null)
   // This node is the hover preview: a pinned player elsewhere pauses (never two videos with sound at once). Only when
   // it really plays something: a poster-only take (no video recorded) or a missing video blob mounts no player, so it

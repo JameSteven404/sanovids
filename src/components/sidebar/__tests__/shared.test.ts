@@ -6,11 +6,12 @@ import {
   changedPrompts,
   checkTag,
   countMentions,
-  finishedTakes,
+  finishedTakesOf,
   imageTokenLabels,
   matchesQuery,
   nextAssetPosition,
   norm,
+  queryTerms,
   renameAssetTag,
   takeHiddenOnCanvas,
   takeSearchFields,
@@ -53,7 +54,12 @@ describe('sidebar search', () => {
 
   it('finds a take by the usual spellings of its code and by scene title', () => {
     const fields = takeSearchFields(3, 2, 'Chợ đêm')
-    for (const q of ['S03·T2', 's03-t2', 'S03T2', 's03 t2', 's3 t2', 't2', 'cho dem']) expect(matchesQuery(q, ...fields)).toBe(true)
+    const hay = norm(fields.join(' \u0001 '))
+    for (const q of ['S03·T2', 's03-t2', 'S03T2', 's03 t2', 's3 t2', 't2', 'cho dem', '@s03 @t2', 'CHỢ ĐÊM', '   ']) {
+      expect(matchesQuery(q, ...fields)).toBe(true)
+      expect(queryTerms(q).every((term) => hay.includes(term))).toBe(true)
+    }
+    expect(queryTerms('no match').every((term) => hay.includes(term))).toBe(false)
     expect(matchesQuery('S03-T1', ...fields)).toBe(false)
     expect(matchesQuery('S04', ...fields)).toBe(false)
   })
@@ -83,7 +89,28 @@ describe('finished takes', () => {
       take('t5', 's1', 3, 'processing', null),
       take('t6', 's2', 2, 'completed', 200),
     ]
-    expect(finishedTakes(takes, new Set(['s1', 's2'])).map((t) => t.id)).toEqual(['t3', 't6', 't1'])
+    expect(finishedTakesOf(takes, new Set(['s1', 's2'])).map((t) => t.id)).toEqual(['t3', 't6', 't1'])
+  })
+
+  it('caches by both immutable inputs, without mutating their order', () => {
+    const takes = [take('old', 's1', 1, 'completed', 10), take('new', 's2', 1, 'completed', 20)]
+    const ids = new Set(['s1', 's2'])
+    const first = finishedTakesOf(takes, ids)
+    expect(finishedTakesOf(takes, ids)).toBe(first)
+    expect(takes.map((t) => t.id)).toEqual(['old', 'new'])
+    expect(finishedTakesOf(takes, new Set(['s1']))).toEqual([takes[0]])
+    expect(finishedTakesOf(takes, ids)).toBe(first)
+    expect(finishedTakesOf([takes[0], { ...takes[1], starred: true }], ids)[0].starred).toBe(true)
+  })
+
+  it('keeps completed objects stable across a progress tick; includes newly completed takes', () => {
+    const done = take('done', 's1', 1, 'completed', 10)
+    const running = take('running', 's1', 2, 'processing', null)
+    const ids = new Set(['s1'])
+    const tick = finishedTakesOf([done, { ...running, progress: 50 }], ids)
+    expect(tick).toEqual(finishedTakesOf([done, running], ids))
+    expect(tick[0]).toBe(done)
+    expect(finishedTakesOf([done, { ...running, status: 'completed', finishedAt: 30 }], ids).map((t) => t.id)).toEqual(['running', 'done'])
   })
 })
 
