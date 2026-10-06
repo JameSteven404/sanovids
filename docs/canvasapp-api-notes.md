@@ -145,6 +145,46 @@ e2e test so a request outside it fails the tests): `GET/POST /api/projects`, `GE
 - `POST /api/simple-video-jobs` (prompt references images by `@image_<slot>` tags — same idea as SanoVids tokens).
 - `GET /api/simple-video-jobs?simple_project_id=…&limit=50`.
 
+## Reference videos (@video_N) — not observed
+The client code these notes come from has **no video input anywhere**. These notes are a summary, not a copy (no
+`canvas.js` is kept in the repo), so this is strong evidence, not proof — "not observed", not "impossible":
+- the only upload is `POST /api/uploads/images` (JPG/PNG/WEBP); no other `/api/uploads/` path is recorded;
+- saved node types are `video` and `images` (`result` nodes are client-only and never saved, so no saved edge can
+  start from a finished job);
+- connections start at an image node, with `target_handle` `reference` / `first_frame` / `last_frame` only;
+- job bodies carry `upload_ids` or the two `*_frame_upload_id` keys, nothing else per node kind;
+- `/api/video-profiles` options (`modes, disabled_modes, durations, resolutions, aspect_ratios, pricing`) have no
+  video key; the only per-node media cap is `MAX_REFERENCE_IMAGES`;
+- simple mode stores `images:[{slot, upload_id}]` and tags `@image_<slot>` only.
+
+The server refuses unknown keys, so guessing is not an option: a wrong key is a 422 (no charge), but a key the server
+accepts and ignores would bill a video made without its reference. SanoVids therefore sends no video and refuses a
+scene that would send one **before uploading or billing anything**, at three layers: `capabilities().maxRefVideos`
+= `CANVASAPP_MAX_REF_VIDEOS` = 0 (`providers/capabilities.ts`, read by store/runs `check()`, the scene card and the
+inspector through `core/runGate.ts`), `validateRequest` in `mapping.ts` (refuses any `req.videos`, whatever the cap),
+and the strict dev / e2e validators (`providers/dev/validate.ts`: node types, handles and job keys). Development mode
+refuses it the same way (same adapter); it simulates no video endpoint, so no test passes against an invented shape.
+
+**What to capture before opening it** (functions of `canvas.js` / `simple-mode.js`, exact names and key order):
+1. `uploadCanvasFile()` and every `/api/uploads/` path: any video upload — path, multipart field, `accept=` / MIME
+   list, size and duration limits, response key.
+2. Node factories besides `createVideoNode()` and the image upload handler: a node type holding a video, its exact
+   `data` keys, `w` / `h`. Can a `result` node (a finished job) be the `from` end of an edge into a video node?
+3. `normalizeConnections()`: every `target_handle` value, how `order` is numbered for a video handle, any cap next to
+   `MAX_REFERENCE_IMAGES` (per node and per canvas), and where video edges sit relative to reference / frame edges.
+4. `runVideoNode()`: every body key per model / mode, in order. Is a reference video sent as an upload id or as a job
+   id, and for which `model_profile` / `mode`?
+5. `canvasPayload()`: is such a node / edge saved, and in what shape?
+6. `loadVideoProfiles()` / `PROFILE_FALLBACKS` / `profileSpec()`: any reference-video option (limit, modes) and
+   whether `pricing` changes when videos are attached.
+7. The tag the client inserts for a video (`@video_N` or another form SanoVids would have to map).
+8. `simple-mode.js` `PUT /api/simple-projects/{id}/state`: any `videos` array.
+9. If videos go by job id: must the job be in the same project / account, and what happens when it is `expired` or
+   deleted (`DELETE /api/video-jobs/{id}`)?
+10. The operator: do Seedance 2.5 / MiniMax-H3 on canvasapp take reference videos at all, and may SanoVids use them?
+
+What changes once the shape is known is listed in `docs/GATEWAY-CANVASAPP.md` §8.
+
 ## Pricing (credits) — identical to SanoVids' `core/models.ts`
 - Seedance 2.5: 480p {5:4,10:5,15:10,30:15} · 720p {5:5,10:10,15:15,30:20} · 1080p {5:10,10:15,15:20,30:25}
 - MiniMax-H3: 768p {5:4,10:6,15:8} · 2k {5:6,10:8,15:10}

@@ -27,13 +27,15 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { takeFileBase } from '../../actions'
+import { createSceneFromTake, takeFileBase } from '../../actions'
+import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf, MODELS } from '../../core/models'
 import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/types'
 import { takeFiles } from '../../lib/downloads'
 import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
+import { useUI } from '../../store/ui'
 import { takeCostLine } from '../../components/runs/creditText'
 import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
@@ -42,6 +44,7 @@ import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, JOBS_KEY, MAX_CONCURREN
 import { canvasNodeId, clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
+import type { JobRequest } from '../types'
 import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1364,6 +1367,75 @@ describe('gateway e2e: download', () => {
     await run(10 * 60_000)
     expect(take(t.id).status).toBe('completed')
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+})
+
+describe('gateway e2e: reference videos (@video_N) — nothing on record says canvasapp takes one', () => {
+  /** A finished canvasapp take of s2, ready to be a reference video; the fake's request log is cleared after it. */
+  async function finishedTake(): Promise<Take> {
+    const [t] = enqueue('s2')
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    fake.log.length = 0
+    return take(t.id)
+  }
+
+  it('a scene that sends a video is skipped with the shared reason: not one request reaches canvasapp, nothing is paid', async () => {
+    const t = await finishedTake()
+    const balance = fake.state.balance
+    useUI.setState({ toasts: [] })
+    const id = createSceneFromTake(t.id)!
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('bỏ video tham chiếu (@video_1) khỏi cảnh') })
+    useProject.getState().updateScene(id, { prompt: 'Continue from @video_1: trời tạnh mưa' })
+    const r = useRuns.getState().enqueue([id])
+    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: NO_VIDEO_REFS_REASON }] })
+    await run(30_000)
+    expect(fake.engineCalls()).toEqual([])
+    expect(fake.state.balance).toBe(balance)
+  })
+
+  it('the adapter refuses a request carrying a video before any upload, canvas save or job POST', async () => {
+    const t = await finishedTake()
+    const req: JobRequest = {
+      key: 'take_video',
+      takeId: 'take_video',
+      sceneId: 's1',
+      sanovidsProjectId: 'p',
+      sceneCode: 'S01',
+      takeNumber: 9,
+      title: '',
+      color: '#fff',
+      model: 'seedance_2_5',
+      mode: 't2v',
+      duration: 5,
+      resolution: '480p',
+      ratio: '16:9',
+      prompt: '@image_1 tiếp nối @video_1',
+      rawPrompt: '@image_1 tiếp nối @video_1',
+      images: [{ n: 1, assetId: 'elara', imageId: 'img_e1' }],
+      videos: [{ n: 1, takeId: t.id, videoId: t.videoId, posterId: t.posterId }],
+      firstFrame: null,
+      lastFrame: null,
+      startedAt: 0,
+    }
+    await expect(getProvider('canvasapp').submit(req)).rejects.toMatchObject({ code: 'unsupported', message: expect.stringContaining('chưa hỗ trợ video tham chiếu') })
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0)
+    expect(fake.count('PUT', /\/canvas$/)).toBe(0)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(0)
+    expect(JSON.parse(storage.get(JOBS_KEY) ?? '{}').sent?.take_video).toBeUndefined()
+  })
+
+  it('MiniMax-H3 t2v with a leftover reference video (no @video token) runs, and its body carries no video', async () => {
+    const t = await finishedTake()
+    const h3 = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s5', 5, { prompt: 'Một con mèo', videoRefs: [t.id], settings: { ...h3 } })] })
+    const [t5] = enqueue('s5')
+    await run(300)
+    const [body] = fake.jobPosts()
+    expect(body).toMatchObject({ model_profile: 'minimax_h3', mode: 't2v', upload_ids: [], client_request_id: clientRequestIdFor(t5.id) })
+    expect(Object.keys(body).filter((k) => /video/i.test(k))).toEqual([])
+    await run(60_000)
+    expect(take(t5.id).status).toBe('completed')
   })
 })
 

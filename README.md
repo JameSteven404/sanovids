@@ -111,7 +111,7 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 **Giới hạn hiện tại**
 - Tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), cập nhật tiến độ khoảng 20 giây/lần.
-- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy): bỏ `@video_N` để chạy cảnh tiếp nối.
+- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy; chưa thấy canvasapp nhận video): bỏ video tham chiếu khỏi cảnh (nút × trong inspector hoặc cắt dây) để chạy cảnh tiếp nối — chỉ xoá chữ `@video_N` thì chưa đủ. Cảnh MiniMax-H3 ở chế độ không gửi video (Text → Video, Khung đầu → cuối) vẫn chạy dù còn nối video.
 - App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Đừng sửa phiên này bằng tay.**
 - Huỷ trong SanoVids chỉ ngừng theo dõi: job đã gửi vẫn chạy và tính tiền trên canvasapp.
 
@@ -290,7 +290,7 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
 - [x] Tự cập nhật phiên bản (0.5.0)
 - [x] Ký số file .exe (0.5.0): bản cập nhật chỉ nhận chữ ký của tác giả, app tự kiểm tra chữ ký, chống can thiệp, icon mới
-- [ ] Video tham chiếu `@video_N` qua cổng canvasapp
+- [ ] Video tham chiếu `@video_N` qua cổng canvasapp (chờ ghi lại cách trang canvasapp gửi video, nếu có: [docs/canvasapp-api-notes.md](docs/canvasapp-api-notes.md))
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
 

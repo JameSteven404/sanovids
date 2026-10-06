@@ -32,7 +32,7 @@
 //     "không rõ đã trả chưa" and never resubmits that take under a new key by itself).
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
 import type { ModelId } from '../../core/types'
-import { capabilitiesFromModels } from '../capabilities'
+import { CANVASAPP_MAX_REF_VIDEOS, capabilitiesFromModels } from '../capabilities'
 import type { JobRequest, ProviderAvailability, ProviderCapabilities, ProviderId, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
@@ -783,7 +783,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     },
 
     capabilities: (model: ModelId): ProviderCapabilities => {
-      const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: 0 })
+      // never from the profile: a key canvasapp may add there does not say how a video is sent
+      const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: CANVASAPP_MAX_REF_VIDEOS })
       const o = profiles ? profileSpecOf(model, profiles).options : undefined
       if (!o || typeof o !== 'object') return base
       // Seedance's profile is used as canvasapp sends it: never trust a list to be one (the engine calls this)

@@ -98,8 +98,9 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           check: checks.get(scene.id)!,
           assets: scene.refs.map((id) => assetMap.get(id)).filter((a): a is Asset => !!a),
           images: compiled.images.length,
-          videos: scene.videoRefs.length,
-          videosReady: scene.videoRefs.filter((t) => status.get(t) === 'completed').length,
+          // the videos this run sends: none when the model/mode takes no video (leftover references stay unsent)
+          videos: compiled.videos.length,
+          videosReady: compiled.videos.filter((v) => status.get(v.takeId) === 'completed').length,
         }
       })
     // videoKey: re-run the check when a reference video finishes (or is deleted). provider: the checks depend on

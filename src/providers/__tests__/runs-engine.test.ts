@@ -21,6 +21,7 @@ import { useProject } from '../../store/project'
 import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
+import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -111,6 +112,29 @@ const legacyTake = (id: string, sceneId: string, over: Partial<Take> = {}): Take
   remoteId: null,
   charged: true,
   ...over,
+})
+
+/** A finished take of scene s1 (usable as a reference video). */
+const finishedTake = (id: string): Take => ({
+  id,
+  sceneId: 's1',
+  number: 1,
+  status: 'completed',
+  progress: 100,
+  createdAt: 0,
+  startedAt: 0,
+  finishedAt: 0,
+  promptSnapshot: '',
+  rawPromptSnapshot: '',
+  refsSnapshot: [],
+  videoRefsSnapshot: [],
+  settings: project().scenes[0].settings,
+  cost: 0,
+  starred: false,
+  posterId: null,
+  videoId: 'v',
+  error: null,
+  position: null,
 })
 
 /** Web Locks stand-in shared by "tabs": `otherTab(name)` holds a lock until the returned function is called. */
@@ -277,32 +301,61 @@ describe('runs engine with a provider', () => {
     ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
     registerProvider(fakeProvider('canvasapp', 20_000).p)
     useProviderPrefs.setState({ provider: 'canvasapp' })
-    const done: Take = {
-      id: 'tk',
-      sceneId: 's1',
-      number: 1,
-      status: 'completed',
-      progress: 100,
-      createdAt: 0,
-      startedAt: 0,
-      finishedAt: 0,
-      promptSnapshot: '',
-      rawPromptSnapshot: '',
-      refsSnapshot: [],
-      videoRefsSnapshot: [],
-      settings: project().scenes[0].settings,
-      cost: 0,
-      starred: false,
-      posterId: null,
-      videoId: 'v',
-      error: null,
-      position: null,
-    }
-    useRuns.setState({ takes: [done] })
+    useRuns.setState({ takes: [finishedTake('tk')] })
     useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1), scene('s2', 2, { videoRefs: ['tk'], prompt: '@video_1 again' })] })
     const [c] = useRuns.getState().check(['s2'])
     expect(c.ok).toBe(false)
-    expect(c.reason).toMatch(/video tham chiếu/)
+    expect(c.reason).toBe(NO_VIDEO_REFS_REASON)
+  })
+
+  describe('@video: one gate (the gateway’s capabilities().maxRefVideos), only for videos really sent', () => {
+    const load = (...scenes: Scene[]) => {
+      useRuns.setState({ takes: [finishedTake('tk')] })
+      useProject.getState().loadProject({ ...project(), scenes })
+    }
+
+    it('development mode: the reason names development mode (never "Cổng canvasapp chưa…" alone); nothing is submitted', async () => {
+      const f = fakeProvider('dev')
+      registerProvider(f.p)
+      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }), scene('s2', 2, { videoRefs: ['tk'], prompt: 'token removed' }))
+      const checks = useRuns.getState().check(['s1', 's2'])
+      // removing the @video token alone does not unblock: the reference itself is what would be sent
+      expect(checks.map((c) => c.reason)).toEqual([NO_VIDEO_REFS_REASON, NO_VIDEO_REFS_REASON])
+      expect(checks[0].reason).not.toMatch(/^Cổng canvasapp chưa/)
+      const r = useRuns.getState().enqueue(['s1', 's2'])
+      expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: 's1', reason: NO_VIDEO_REFS_REASON }, { sceneId: 's2', reason: NO_VIDEO_REFS_REASON }] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toEqual([])
+    })
+
+    it('a gateway that takes videos (cap from capabilities) lets the same scene through', () => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0, maxRefVideos: 1 }) })
+      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }))
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, reason: null })
+    })
+
+    it('H3 t2v / transform with leftover references and no @video token run, and send no video', async () => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0, maxRefVideos: 0 }) })
+      load(
+        scene('s1', 1, { videoRefs: ['tk'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+        scene('s2', 2, {
+          videoRefs: ['tk'],
+          settings: { model: 'minimax_h3', mode: 'transform', duration: 5, resolution: '768p', ratio: '16:9' },
+          firstFrame: 'a',
+          lastFrame: 'a',
+        }),
+        // a leftover reference to a deleted take is not sent either: pinned as runnable
+        scene('s3', 3, { videoRefs: ['deleted'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+      )
+      expect(useRuns.getState().check(['s1', 's2', 's3']).map((c) => c.reason)).toEqual([null, null, null])
+      const r = useRuns.getState().enqueue(['s1', 's2', 's3'])
+      expect(r.queued).toBe(3)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toHaveLength(3)
+      for (const req of f.submitted) expect(req.videos).toEqual([])
+    })
   })
 
   it('loadRuns puts demo jobs that were processing back in the queue', () => {

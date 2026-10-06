@@ -2,11 +2,12 @@
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
+import { refVideosProblem } from './core/runGate'
 import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, providerOf } from './providers'
+import { activeProviderId, getProvider, providerOf } from './providers'
 import { restoredFromTake } from './components/runs/restore'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
@@ -305,9 +306,10 @@ export function createSceneFromTake(takeId: string, position?: XY) {
   const id = useProject.getState().createNextScene(source.id, at, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   revealNodes([id])
-  // canvasapp (and its simulation in development mode) takes no reference video yet
-  if (creditKindOf(activeProviderId()) !== 'demo')
-    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {
+  // The gateway of the next run refuses the new scene's @video_1 (canvasapp and development mode take none yet):
+  // the same cap store/runs check() reads (core/runGate).
+  if (refVideosProblem(1, getProvider(activeProviderId()).capabilities(source.settings.model).maxRefVideos))
+    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ video tham chiếu (@video_1) khỏi cảnh để chạy cảnh này.`, {
       tone: 'warning',
       action: undoToastAction(),
       ms: 9000,

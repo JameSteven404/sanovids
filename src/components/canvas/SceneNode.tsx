@@ -6,6 +6,7 @@ import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactN
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
+import { refStatusLookup, runBlockReason } from '../../core/runGate'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
@@ -16,7 +17,8 @@ import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { costTitle, creditTone, NO_VIDEO_REFS_REASON } from '../sidebar/shared'
+import { useGatewayRefVideoCap } from '../runs/shared'
+import { costTitle, creditTone } from '../sidebar/shared'
 import {
   assetMapOf,
   avatarSlots,
@@ -268,11 +270,11 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
     return scene.videoRefs.map((t) => byId.get(t)?.status ?? '').join(',')
   })
 
+  const takeStatus = useMemo(() => refStatusLookup(scene.videoRefs, videoStatus), [scene.videoRefs, videoStatus])
   const compiled = useMemo<CompiledPrompt>(() => {
     const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings, scenes: [scene] }
-    const statuses = videoStatus.split(',')
-    return compileScene(project, scene, { takeStatus: (id) => statuses[scene.videoRefs.indexOf(id)] || undefined })
-  }, [assets, settings, scene, videoStatus])
+    return compileScene(project, scene, { takeStatus })
+  }, [assets, settings, scene, takeStatus])
 
   const refAssets = useMemo(() => {
     const map = assetMapOf(assets)
@@ -291,20 +293,10 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
   const cost = costOf(scene.settings)
   // Wallet of the next run: simulated credit dev (development mode) or real canvasapp credits (docs/SPEC-v2.md §9, §11).
   const creditKind = useCreditKind()
-  let reason: string | null = null
-  if (!scene.prompt.trim()) reason = 'Prompt trống'
-  else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
-  else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
-  else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
-  else if (compiled.unsentTokens.length) reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 2).join(', ')} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-  // Both gateways (canvasapp and its simulation) refuse @video; only the old demo ('demo') took them.
-  else if (scene.videoRefs.length && creditKind !== 'demo') reason = NO_VIDEO_REFS_REASON
-  else if (scene.videoRefs.length) {
-    // '' = the take no longer exists (e.g. an undo brought back a reference to a deleted video).
-    const sts = videoStatus.split(',')
-    if (sts.includes('')) reason = 'Video tham chiếu đã bị xoá (bỏ @video đó)'
-    else if (sts.some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
-  }
+  // The queue's own rules (core/runGate, = store/runs check()): @video against the gateway's cap, and only the videos
+  // this model/mode really sends — a leftover reference of an H3 t2v / transform scene does not block it.
+  const videoCap = useGatewayRefVideoCap(scene.settings.model)
+  const reason = runBlockReason(scene, compiled, assets, { maxRefVideos: videoCap, takeStatus })
 
   const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0

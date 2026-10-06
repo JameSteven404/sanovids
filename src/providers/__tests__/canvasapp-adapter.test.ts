@@ -33,6 +33,7 @@ import {
   sceneNodeKey,
 } from '../canvasapp/mapping'
 import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/transport'
+import { CANVASAPP_MAX_REF_VIDEOS } from '../capabilities'
 import type { JobRequest } from '../types'
 
 type Handler = (req: TransportRequest) => TransportResponse | undefined
@@ -344,6 +345,41 @@ describe('canvasapp adapter', () => {
     await expect(provider.submit(req({ videos: [{ n: 1, takeId: 't', videoId: 'v', posterId: null }] }))).rejects.toThrow(/video tham chiếu/)
     await expect(provider.submit(req({ images: [{ n: 1, assetId: 'g', imageId: 'img_gif' }] }))).rejects.toThrow(/JPG\/PNG\/WEBP/)
     expect(server.state.jobs.length).toBe(0)
+  })
+
+  it('reference videos: maxRefVideos is 0 for both models whatever /api/video-profiles says; a submit with one sends nothing', async () => {
+    const server = fakeServer()
+    const { provider, storage } = setup(server)
+    const caps = () => (['seedance_2_5', 'minimax_h3'] as const).map((m) => provider.capabilities(m).maxRefVideos)
+    expect(CANVASAPP_MAX_REF_VIDEOS).toBe(0) // opened only with a captured request shape (docs/canvasapp-api-notes.md)
+    expect(caps()).toEqual([0, 0])
+    // a profile hint alone never opens @video: it does not say how a video would be sent
+    const videoKeys = { max_reference_videos: 3, reference_videos: true, video_inputs: ['reference'] }
+    server.state.extra = (r) =>
+      r.path === '/api/video-profiles'
+        ? json({
+            profiles: [
+              { model_profile: 'seedance_2_5', can_create: true, options: { modes: ['t2v'], ...videoKeys } },
+              { model_profile: 'minimax_h3', display_name: 'MiniMax-H3', enabled: true, can_create: true, options: { disabled_modes: [], ...videoKeys } },
+            ],
+          })
+        : undefined
+    await provider.refreshProfiles()
+    expect(caps()).toEqual([0, 0])
+    const before = server.calls.length
+    const video = { n: 1, takeId: 't', videoId: 'v', posterId: null }
+    for (const over of [{}, { model: 'minimax_h3' as const, mode: 'i2v' as const, resolution: '768p', duration: 5 }]) {
+      await expect(provider.submit(req({ ...over, prompt: '@video_1 @image_1', videos: [video] }))).rejects.toMatchObject({
+        code: 'unsupported',
+        message: expect.stringContaining('chưa hỗ trợ video tham chiếu'),
+      })
+    }
+    expect(server.calls.slice(before)).toEqual([]) // no upload, no canvas, no job (the profiles were fresh)
+    expect(server.state.uploads).toBe(0)
+    expect(server.state.jobs).toHaveLength(0)
+    const ledger = JSON.parse(storage.get(JOBS_KEY) ?? '{}') as { jobs?: object; sent?: object }
+    expect(Object.keys(ledger.jobs ?? {})).toEqual([])
+    expect(Object.keys(ledger.sent ?? {})).toEqual([])
   })
 
   it('maps 401 to login-required', async () => {

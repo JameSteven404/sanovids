@@ -1,9 +1,9 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
 import { Ban, Bug, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type { JobStatus, Take, VideoSettings } from '../../core/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { JobStatus, ModelId, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
-import { activeProviderId, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
+import { activeProviderId, getProvider, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
 import { useRuns } from '../../store/runs'
 
 // ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
@@ -12,6 +12,16 @@ import { useRuns } from '../../store/runs'
 export function useActiveProvider(): ProviderId {
   useProviderPrefs((s) => s.provider)
   return activeProviderId()
+}
+
+/**
+ * Reference videos (@video_N) the gateway of new takes takes for `model`: its capabilities().maxRefVideos — the one
+ * source store/runs check() reads too (0 for canvasapp and development mode). Feeds core/runGate on the scene card and
+ * in the inspector. A number; read once per provider × model (not from /api/video-profiles, so nothing to re-read).
+ */
+export function useGatewayRefVideoCap(model: ModelId): number {
+  const provider = useActiveProvider()
+  return useMemo(() => getProvider(provider).capabilities(model).maxRefVideos, [provider, model])
 }
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).

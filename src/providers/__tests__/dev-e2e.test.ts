@@ -23,13 +23,16 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
+import { createSceneFromTake } from '../../actions'
 import { createTopupFlow } from '../../components/topup/topupFlow'
+import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
+import { useUI } from '../../store/ui'
 import { DEV_UNKNOWN_SUBMIT_ERROR, isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, useRuns, type RunEvent } from '../../store/runs'
-import { createCanvasappProvider, memoryStorage } from '../canvasapp/adapter'
+import { browserStorage, createCanvasappProvider, JOBS_KEY, memoryStorage } from '../canvasapp/adapter'
 import { openCheckout } from '../canvasapp/transport'
 import { clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
 import type { CanvasPayload } from '../canvasapp/api'
@@ -51,6 +54,7 @@ import {
 import {
   activeGateway,
   activeProviderId,
+  DEV_CLIENT_STORAGE_PREFIX,
   DEV_LIST_CACHE_MS,
   DEV_POLL_MS,
   devApi,
@@ -62,6 +66,7 @@ import {
   resetDevMode,
   useProviderPrefs,
 } from '../index'
+import type { JobRequest } from '../types'
 
 const asset = (id: string, name: string, imageIds: string[]): Asset => ({ id, kind: 'character', name, tag: name, description: '', imageIds, color: '#fff', position: null })
 
@@ -263,6 +268,87 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     expect(take(t.id)).toMatchObject({ status: 'failed', error: 'canvasapp giả lập: Nội dung vi phạm chính sách (giả lập)' })
     expect(server.balance()).toBe(1000)
     expect(useRealCredits.getState().balance).toBe(1000)
+  })
+})
+
+describe('dev mode e2e: reference videos (@video_N) — refused like the real gateway, nothing sent, nothing paid', () => {
+  const engineCalls = () => useDevLog.getState().entries.filter((e) => ['upload', 'canvas-put', 'job-create', 'project-create'].includes(String(e.endpoint)))
+  const H3_T2V = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+
+  /** A finished dev take of s2 (a real run on the simulated site), ready to be a reference video. */
+  async function finishedTake(): Promise<Take> {
+    server.login()
+    const [t] = enqueue('s2')
+    await run(20_000)
+    expect(take(t.id).status).toBe('completed')
+    clearDevLog()
+    return take(t.id)
+  }
+
+  it('"Tạo cảnh tiếp nối" warns in development mode; the new scene is skipped with the shared reason before any request', async () => {
+    const t = await finishedTake()
+    const balance = server.balance()
+    useUI.setState({ toasts: [] })
+    const id = createSceneFromTake(t.id)!
+    const sc = useProject.getState().project.scenes.find((x) => x.id === id)!
+    expect(sc).toMatchObject({ videoRefs: [t.id], prompt: 'Continue from @video_1: ' })
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('cả chế độ Phát triển') })
+    useProject.getState().updateScene(id, { prompt: 'Continue from @video_1: trời mưa' })
+    const r = useRuns.getState().enqueue([id])
+    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: NO_VIDEO_REFS_REASON }] })
+    await run(10_000)
+    expect(engineCalls()).toEqual([])
+    expect(server.snapshot().jobs).toHaveLength(1) // only the reference take's own job
+    expect(server.balance()).toBe(balance)
+  })
+
+  it('the dev adapter itself refuses a request with a video (development-mode words) before uploading, saving the canvas or posting', async () => {
+    const t = await finishedTake()
+    const balance = server.balance()
+    const req: JobRequest = {
+      key: 'take_video',
+      takeId: 'take_video',
+      sceneId: 's1',
+      sanovidsProjectId: 'p',
+      sceneCode: 'S01',
+      takeNumber: 9,
+      title: '',
+      color: '#fff',
+      ...S1,
+      prompt: '@image_1 tiếp nối @video_1',
+      rawPrompt: '@image_1 tiếp nối @video_1',
+      images: [{ n: 1, assetId: 'elara', imageId: 'img_e1' }],
+      videos: [{ n: 1, takeId: t.id, videoId: t.videoId, posterId: t.posterId }],
+      firstFrame: null,
+      lastFrame: null,
+      startedAt: 0,
+    }
+    const err = await getProvider('dev')
+      .submit(req)
+      .then(
+        () => null,
+        (e: unknown) => e as { code?: string; message: string },
+      )
+    expect(err).toMatchObject({ code: 'unsupported', message: expect.stringContaining('cả chế độ Phát triển') })
+    expect(err!.message).not.toContain('canvasapp.io.vn')
+    expect(engineCalls()).toEqual([])
+    const ledger = JSON.parse(browserStorage(DEV_CLIENT_STORAGE_PREFIX).get(JOBS_KEY) ?? '{}') as { jobs?: object; sent?: object }
+    expect(Object.keys(ledger.jobs ?? {})).not.toContain('take_video')
+    expect(Object.keys(ledger.sent ?? {})).not.toContain('take_video')
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(balance)
+  })
+
+  it('MiniMax-H3 t2v with a leftover reference video and no @video token runs: the strict simulated site gets no video', async () => {
+    const t = await finishedTake()
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s3', 3, { prompt: 'Một con mèo', videoRefs: [t.id], settings: { ...H3_T2V } })] })
+    expect(useRuns.getState().check(['s3'])).toMatchObject([{ ok: true, reason: null }])
+    const [t3] = enqueue('s3')
+    await run(20_000)
+    expect(take(t3.id).status).toBe('completed')
+    const job = server.snapshot().jobs.find((j) => j.client_request_id === clientRequestIdFor(t3.id))!
+    expect(job).toMatchObject({ model_profile: 'minimax_h3', mode: 't2v', upload_ids: [], prompt: 'Một con mèo' })
+    expect(logOf('job-create').every((e) => e.status !== null && e.status < 300)).toBe(true)
   })
 })
 

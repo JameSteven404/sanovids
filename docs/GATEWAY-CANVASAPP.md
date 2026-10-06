@@ -95,7 +95,7 @@ Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ k
 | cảnh của dự án (`sanovidsProjectId` + `sceneId`) | `canvas_node_id = sceneNodeId(projectId, sceneId)` = `canvasNodeId(sceneNodeKey(…))` (UUID, cố định theo cảnh **của dự án**) | node video tồn tại trong canvas "SanoVids bridge". Hai dự án có cùng id cảnh (Nhân bản dự án, nhập cùng một tệp hai lần) có hai node riêng. Node cũ đặt theo riêng `sceneId` (bản trước) vẫn dùng cho job đang chạy trên đó và cho take gửi lại sau khi bản trước mất câu trả lời |
 | — | `project_id` | phiên "SanoVids bridge" (tạo một lần bằng `POST` không body rồi `PATCH {name}`, như trang canvasapp; nhớ id) |
 | — | `generate_audio: true` | mặc định như trang canvasapp |
-| `@video_N` (video tham chiếu) | *không có* | **chưa hỗ trợ** → cảnh bị bỏ qua với lý do rõ ràng, không tốn credit |
+| `@video_N` (video tham chiếu) | *không có* | **chưa hỗ trợ** (chưa thấy canvasapp nhận video — `docs/canvasapp-api-notes.md` "Reference videos") → cảnh gửi video bị bỏ qua với lý do rõ ràng (`NO_VIDEO_REFS_REASON`), không tốn credit; video còn sót ở chế độ không gửi video (H3 t2v / transform) không chặn |
 
 ### 3.2 Canvas cầu nối (`PUT /api/projects/{id}/canvas`)
 
@@ -329,6 +329,34 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 - [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
 - [x] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá, hỏi xác nhận trước) thay vì tạo take mới: `actions.rerunTake` (take node, hàng đợi, xem take).
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
+  - **Chưa mở — chưa có bằng chứng canvasapp nhận video tham chiếu**: mọi dạng yêu cầu đã ghi nhận chỉ có ảnh (xem
+    `docs/canvasapp-api-notes.md` "Reference videos (@video_N) — not observed", kèm danh sách hàm `canvas.js` cần ghi
+    lại). Không mở khi chưa có dạng yêu cầu thật: một body lạ bị 422 (không mất tiền), nhưng một job được nhận mà bỏ
+    qua video thì vẫn bị trừ credit cho một video sai. Cần: các hàm trong danh sách đó + xác nhận của bên vận hành.
+  - Đã làm (0.6.0): một nguồn duy nhất cho cổng `@video` — `capabilities().maxRefVideos` (canvasapp và chế độ Phát
+    triển: `CANVASAPP_MAX_REF_VIDEOS = 0`, `providers/capabilities.ts`); quy tắc chặn chạy dùng chung
+    `core/runGate.ts` `runBlockReason` cho `useRuns.check()`, thẻ cảnh trên canvas và nút Chạy trong inspector (trước
+    đây thẻ / inspector chặn mọi cảnh có `videoRefs`, kể cả H3 t2v / transform không gửi video mà hộp xác nhận vẫn
+    chạy; lý do trong chế độ Phát triển ghi "Cổng canvasapp chưa…"). Chỉ tính video thật sự gửi (`compiled.videos`);
+    vượt mức của cổng → từ chối, không bao giờ cắt bớt. `validateRequest` vẫn từ chối mọi `req.videos` (không theo
+    cap). Test: `core/__tests__/runGate.test.ts`, `runs-engine`, `canvasapp-adapter`, `canvasapp-e2e` / `dev-e2e`
+    ("reference videos": không một request nào, không trừ credit).
+  - Khi đã có dạng thật, cần sửa: `api.ts` (`CanvasNode` / `target_handle` / `VideoJobBody`, hàm tải video nếu là
+    upload); `mapping.ts` (`InputShape` / `slotsOf` / `planBridgeCanvas` đếm node mới vào giới hạn 40 node,
+    `toVideoJobBody` thêm khoá đúng thứ tự, `validateRequest` đổi từ chối chung thành kiểm tra giới hạn / chế độ);
+    `adapter.ts` (`CANVASAPP_MAX_REF_VIDEOS` hoặc theo profile; kiểm tra blob của mọi video tham chiếu trước khi tải
+    lên / `PUT` — cả trên đường gửi lại take "không rõ", vốn không qua `check()` —, cache tải lên theo take, MIME:
+    take dev là WebM từ `lib/mockProvider.ts`, take thật là MP4); **chỉ nhận take tham chiếu của đúng cổng đang gửi**
+    (`providerOf(take)` = `'canvasapp'`, không bao giờ take `'dev'` / `'mock'` — video giả không được lên canvasapp;
+    nếu theo job id thì cùng tài khoản và phiên bridge), `buildRequest` (`store/runs.ts`) mang thêm `remoteId` nếu cần;
+    `electron/main.cjs` `<canvasapp-routes>` + MIME của `multipartBody` + giới hạn kích thước riêng ("Ảnh lớn hơn
+    20 MB" chỉ cho ảnh); chế độ Phát triển: `dev/routes.ts` (test đối chiếu), `dev/validate.ts`, `dev/server.ts`
+    (upload, job, nhãn `@video_N` trong video giả), `devModel.characterCheck` + "Kiểm tra nhân vật", một lỗi giả lập
+    cho endpoint mới; các chỗ còn đọc giới hạn của MODELS thay vì của cổng (nối / đếm / đánh số: `PromptEditor`,
+    `SceneInspector` "N/10 video", `CanvasView` khi nối dây, `store/project.ts` `linkTakes`, `compile.ts`
+    `videos` / `unsentTokens`, `runs.ts` `buildRequest`) — hoặc giữ `refVideosProblem` là lời từ chối (không cắt bớt);
+    test `canvasapp-mapping` (bộ khoá), `canvasapp-e2e` (máy chủ giả chặt), `dev-server`, `dev-e2e`; lần thử thật đầu
+    tiên theo kiểu `docs/TEST-REAL-CREDITS.md`, cấu hình rẻ nhất (Seedance 480p 5 s = 4 credit).
 - [ ] Tải video lớn: stream thẳng ra file trong main thay vì bytes qua IPC; dùng `download-token` nếu cần.
 - [ ] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take.
 - [ ] Khi có API chính thức / token từ bên vận hành: thay `transport.ts` (vd. HTTP + API key do người dùng nhập, lưu bằng `safeStorage`), giữ nguyên `adapter`/`mapping`.
@@ -347,7 +375,7 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 6. **Ảnh tham chiếu** — cảnh có 2 nhân vật (`@image_1`, `@image_2`). Chạy → trên canvasapp, job có 2 ảnh đúng thứ tự. Chạy lại lần 2 → ảnh **không** bị tải lên lại (xem phiên bridge chỉ có 2 upload).
 7. **Nhiều job cùng lúc** — chạy 3 cảnh: cả 3 take cùng "đang tạo" (tối đa 10 job cùng lúc; từ job thứ 11 trở đi thì chờ trong hàng đợi). Tiến độ vẫn cập nhật khoảng 20 s/lần.
 8. **Tắt app khi đang tạo** — trong lúc job chạy, đóng SanoVids, mở lại → take vẫn "đang tạo" và hoàn thành; trên canvasapp **không** có job trùng.
-9. **Video tham chiếu** — cảnh có `@video_1`: bị bỏ qua với lý do "Cổng canvasapp chưa hỗ trợ video tham chiếu", không tốn credit.
+9. **Video tham chiếu** — cảnh Seedance có video tham chiếu (`@video_1`): nút Chạy trên thẻ cảnh / inspector tắt, hộp xác nhận bỏ qua cảnh với lý do "Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy", không tốn credit. Bỏ video tham chiếu (nút × trong inspector hoặc cắt dây) thì chạy được; chỉ xoá chữ `@video_1` thì chưa. Cảnh MiniMax-H3 t2v còn sót video tham chiếu (không có `@video`) vẫn chạy, không gửi video.
 10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành.
 11. **Huỷ** — huỷ take đang chạy: SanoVids ghi "Đã huỷ"; ghi nhận job trên canvasapp vẫn chạy (đúng như cảnh báo).
 12. **Quay lại chế độ Phát triển** — chọn Phát triển (giả lập) → take mới chạy trên canvasapp giả lập, không gọi mạng.

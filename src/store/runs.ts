@@ -32,6 +32,7 @@ import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
 import { migrateTake } from '../core/migrate'
+import { runBlockReason } from '../core/runGate'
 import type { Asset, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
@@ -359,20 +360,11 @@ export const useRuns = create<RunsState>()((set, get) => ({
       .filter((s): s is Scene => !!s)
       .map((scene) => {
         const takes = get().takes
-        const compiled = compileScene(project, scene, { takeStatus: (id) => takes.find((t) => t.id === id)?.status })
-        let reason: string | null = null
-        if (!scene.prompt.trim()) reason = 'Prompt trống'
-        else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
-        else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
-        else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
-        else if (scene.settings.mode === 'transform' && [scene.firstFrame, scene.lastFrame].some((id) => !project.assets.find((a) => a.id === id)?.imageIds[0]))
-          reason = 'Khung đầu/cuối chưa có ảnh'
-        else if (compiled.unsentTokens.length)
-          reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 3).join(', ')}${compiled.unsentTokens.length > 3 ? '…' : ''} nhưng không có ảnh/video đó trong lần gửi — sửa số hoặc nối thêm`
-        else if (scene.videoRefs.some((id) => takes.find((t) => t.id === id)?.status !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
-        else if (providerId !== 'mock' && compiled.videos.length > getProvider(providerId).capabilities(scene.settings.model).maxRefVideos) {
-          reason = 'Cổng canvasapp chưa hỗ trợ video tham chiếu'
-        }
+        const takeStatus = (id: string) => takes.find((t) => t.id === id)?.status
+        const compiled = compileScene(project, scene, { takeStatus })
+        // The same rules as the scene card and the inspector (core/runGate); the @video cap is the gateway's own.
+        const maxRefVideos = getProvider(providerId).capabilities(scene.settings.model).maxRefVideos
+        const reason = runBlockReason(scene, compiled, project.assets, { maxRefVideos, takeStatus })
         return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: compiled.warnings }
       })
   },
