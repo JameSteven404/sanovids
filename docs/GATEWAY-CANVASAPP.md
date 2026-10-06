@@ -73,9 +73,9 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 | `recover?(req)` | tìm job mà một lần gửi trước của `req.key` có thể đã tạo (trang đóng/tải lại lúc gửi) — **không bao giờ** tạo job. canvasapp: có |
 
 Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ không có = demo):
-`provider` (`'mock' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
-`framesSnapshot` (khung đầu/cuối lúc bấm chạy). Hiện khai báo ở `providers/types.ts` (`RunTake`); nên chuyển vào
-`core/types.ts` + `migrateTake` (xem TODO).
+`provider` (`'mock' | 'dev' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
+`framesSnapshot` (khung đầu/cuối lúc bấm chạy). Khai báo trên `Take` (`core/types.ts`);
+`migrateTake` (`core/migrate.ts`) điền giá trị mặc định cho take cũ. `RunTake` (`providers/types.ts`) chỉ còn là tên khác của `Take`.
 
 ## 3. Ánh xạ dữ liệu
 
@@ -294,22 +294,22 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 ## 7. Bật thử
 
 1. Chạy bản desktop: `npm run desktop` (hoặc cài `SanoVids-Setup-*.exe`).
-2. Lead mount `GatewaySection` (từ `src/components/dialogs/GatewaySection.tsx`) vào hộp Cài đặt.
-3. Cài đặt › **Cổng canvasapp.io.vn (thử nghiệm)** › **Đăng nhập canvasapp** → đăng nhập trên trang canvasapp → cửa sổ tự đóng, thấy số credit.
+2. Mở Cài đặt › **Nâng cao** (mục cổng là `GatewaySection`, `src/components/dialogs/GatewaySection.tsx`).
+3. Cài đặt › Nâng cao › **Cổng canvasapp.io.vn** › **Đăng nhập canvasapp** → đăng nhập trên trang canvasapp → cửa sổ tự đóng, thấy số credit.
 4. Chọn **canvasapp.io.vn** ở "Nhà cung cấp video cho take mới". Từ giờ take **mới** đi qua canvasapp; take đang chạy giữ nơi đã gửi.
 5. Muốn quay lại: chọn **Phát triển (giả lập)** hoặc **Đăng xuất**.
 
 ## 8. Còn phải làm (TODO)
 
-- [ ] Lead: mount `GatewaySection` trong `SettingsDialog`; thêm `canvasapp?: CanvasappBridge` vào `DesktopInfo` (`lib/pwa.ts`).
-- [ ] Lead: chuyển `provider`, `remoteId`, `charged`, `framesSnapshot` vào `Take` (`core/types.ts`) + giá trị mặc định trong `migrateTake`.
-- [ ] UI: nhãn nhà cung cấp trên take node / hàng đợi; hộp xác nhận chạy (RunConfirmDialog) ghi "credit canvasapp" thay vì credit demo khi đang dùng cổng, và không chặn vì thiếu credit demo; hiển thị `useRuns.providerIssue` (toast/banner "Đăng nhập lại canvasapp").
+- [x] Lead: mount `GatewaySection` trong `SettingsDialog` (khối của `GROUPS`); `canvasapp?: CanvasappBridge` trong `DesktopInfo` (`lib/pwa.ts`).
+- [x] Lead: `provider`, `remoteId`, `charged`, `framesSnapshot` nằm trên `Take` (`core/types.ts`) + giá trị mặc định trong `migrateTake` (`core/migrate.ts`).
+- [x] UI: nhãn nhà cung cấp trên take node / hàng đợi (`PROVIDER_LABEL`, `providerOf`); hộp xác nhận chạy (`RunConfirmDialog`) ghi đúng loại credit (dev / canvasapp / demo cũ) và chỉ demo cũ bị chặn vì thiếu credit demo; `useRuns.providerIssue` hiện ở thanh trên cùng, hàng đợi và mục cổng trong Cài đặt.
 - [x] Đọc `/api/video-profiles` trước khi gửi (adapter, nhớ 10 phút) và từ chối điều trang canvasapp không chạy.
 - [ ] Dùng `capabilities()` (đã theo `/api/video-profiles` sau lần đọc đầu) để giới hạn lựa chọn model/mode trong inspector.
 - [ ] Node video của cảnh lấy id từ riêng `sceneId`: hai dự án SanoVids có cùng id cảnh (nhân bản / nhập cùng tệp hai lần) dùng chung một node trên canvas cầu nối. Chưa ảnh hưởng tiền (mỗi take có `client_request_id` riêng); khi cần, đưa id dự án vào `JobRequest` và vào `canvasNodeId`.
 - [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
 - [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
-- [ ] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` nên gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá) thay vì tạo take mới.
+- [x] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá, hỏi xác nhận trước) thay vì tạo take mới: `actions.rerunTake` (take node, hàng đợi, xem take).
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
 - [ ] Tải video lớn: stream thẳng ra file trong main thay vì bytes qua IPC; dùng `download-token` nếu cần.
 - [ ] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take.

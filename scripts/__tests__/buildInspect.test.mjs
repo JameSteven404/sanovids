@@ -392,7 +392,9 @@ describe('code files, integrity resource, shipped files (helpers)', () => {
   })
 })
 
-describe.skipIf(!hasSignatureModule)('inspectWindowsBuild over a fake build (canned PowerShell answers)', () => {
+// Windows only, like the other fake-spawn signature tests: electron/signature.cjs answers "unknown" on any other platform
+// before it spawns anything, so every signature check here would fail off Windows.
+describe.runIf(hasSignatureModule && process.platform === 'win32')('inspectWindowsBuild over a fake build (canned PowerShell answers)', () => {
   let dir
   let build
   let unpacked
