@@ -28,7 +28,8 @@
 //   providerLimits(id): SettingsLimits      synchronous, never a request ('mock' / no method → NO_LIMITS); stable object
 //                                          while what it refuses is unchanged.
 //   providerLimitsInfo(id): LimitsInfo      when / how it was read (Bảng phát triển, the inspector note, toasts).
-//   refreshProviderLimits(id, { force? })   read again (TTL-gated; force = "Đọc lại", at most every 5 s); never throws.
+//   refreshProviderLimits(id, opts?)        read again (TTL-gated; { force } = "Đọc lại", at most every 5 s; { changed }
+//                                          = after a login / a change of the site: at once, never held back); never throws.
 //   watchProviderLimits(id): () => void     while watched (inspector settings, run dialog), a firm read is renewed
 //                                          shortly before it expires, so what they show never lapses into a guess.
 //   providers/limits settingsRunBlock / settingsRunWarning   what the run check makes of it (store/runs, core/runGate).
@@ -44,9 +45,9 @@ import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { devBridge, devResult, resetDevServer, withDevWording } from './dev'
-import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
+import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
-export type { LimitsInfo, ProviderId, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
+export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
 export { NO_LIMITS, NO_LIMITS_INFO, providerOf } from './types'
 
 const PREF_KEY = 'bdp:pref:provider'
@@ -318,7 +319,7 @@ export function providerLimitsInfo(id: ProviderId): LimitsInfo {
 }
 
 /** Read `id`'s limits again (see VideoProvider.refreshLimits). Never throws. */
-export async function refreshProviderLimits(id: ProviderId, opts: { force?: boolean } = {}): Promise<RefreshLimitsResult> {
+export async function refreshProviderLimits(id: ProviderId, opts: RefreshLimitsOptions = {}): Promise<RefreshLimitsResult> {
   if (id === 'mock') return 'fresh'
   try {
     const p = getProvider(id)

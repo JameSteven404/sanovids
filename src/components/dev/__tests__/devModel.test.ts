@@ -339,6 +339,8 @@ describe('Model (video-profiles): what SanoVids knows of the simulated site', ()
     expect(limitsStatusText({ ...server, lastAttempt: { at: at + 1000, result: 'login' } }, { source: 'server', firm: true })).toMatch(/chưa đăng nhập \(401\) — vẫn dùng lần đọc trước\.$/)
     const fallback = info({ source: 'fallback', at, lastAttempt: { at, result: 'failed' } })
     expect(limitsStatusText(fallback, { source: 'fallback', firm: false })).toMatch(/^SanoVids không đọc được lúc 14:05:09 — đang dùng cấu hình dự phòng .*MiniMax-H3 khoá/)
+    // nothing re-reads on a timer: it says what does (showing the settings / run dialog, a submit, the button)
+    expect(limitsStatusText(fallback, { source: 'fallback', firm: false })).toMatch(/Không tự đọc lại theo giờ: đọc lại khi mở cấu hình video .*“Đọc lại ngay”\.$/)
   })
 
   it('says when what SanoVids knows differs from the toggles now ("Đọc lại ngay")', () => {

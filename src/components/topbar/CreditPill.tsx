@@ -40,8 +40,8 @@ export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<bo
       const ok = st.ok && st.authenticated
       if (ok) toast(`Đã đăng nhập ${name}.`, { tone: 'success' })
       else if (!st.ok) toast(`Không đăng nhập được ${name}: ${st.message}`, { tone: 'error' })
-      // what this account may run (/api/video-profiles): the inspector stops waiting out an earlier 401
-      if (ok) void refreshProviderLimits(gateway.id, { force: true })
+      // what this account may run (/api/video-profiles), read at once — even seconds after the inspector's own 401
+      if (ok) void refreshProviderLimits(gateway.id, { changed: true })
       await refreshRealCredits({ force: true })
       return ok
     } catch (e) {

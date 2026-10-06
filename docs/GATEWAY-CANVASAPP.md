@@ -73,7 +73,7 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 | `recover?(req)` | tìm job mà một lần gửi trước của `req.key` có thể đã tạo (trang đóng/tải lại lúc gửi) — **không bao giờ** tạo job. canvasapp: có |
 | `settingsLimits?()` | điều cổng đang từ chối theo lần đọc `/api/video-profiles` gần nhất (`source` `'none'` / `'server'` / `'fallback'`, `firm`, `issues(settings)` = `mapping.profileIssues`) — đồng bộ, không gửi gì. mock: không có (không giới hạn) |
 | `limitsInfo?()` | đọc lúc nào, lần thử gần nhất ra sao, đang đọc không (Bảng phát triển, ghi chú inspector) |
-| `refreshLimits?({force})` | đọc lại cho UI: theo TTL (đang mới / vừa lỗi < 1 phút → không gửi), `force` ("Đọc lại") tối đa mỗi 5 s; dùng chung một yêu cầu với lần đọc của submit; không bao giờ ném lỗi |
+| `refreshLimits?({force, changed})` | đọc lại cho UI: theo TTL (đang mới / vừa lỗi < 1 phút → không gửi), `force` ("Đọc lại") tối đa mỗi 5 s, `changed` (sau khi đăng nhập / đổi cấu hình trang giả lập) đọc ngay — không giới hạn 5 s, không dùng lần đọc đang bay đã gửi trước đó; dùng chung một yêu cầu với lần đọc của submit; không bao giờ ném lỗi |
 
 Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ không có = demo):
 `provider` (`'mock' | 'dev' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
@@ -213,8 +213,10 @@ luật), trên cùng bộ nhớ đệm `/api/video-profiles` của adapter (`set
   trong hộp Chạy, không chặn.
 Đọc cho UI (`refreshLimits`): khi inspector / hộp Chạy hiện (theo TTL: đang mới → không gửi; sau một lần lỗi hay 401 →
 chờ 1 phút), nút "Đọc lại" (ép, tối đa mỗi 5 s; đang có lần đọc chưa ép thì gửi thêm **một** lần sau nó), sau khi đăng
-nhập (ô credit, Bảng phát triển), và — chỉ khi inspector / hộp Chạy đang mở — đọc lại 30 s trước khi lần đọc hết
-`firm`. Bất biến: (1) UI và submit dùng chung một yêu cầu đang bay; (2) đọc hỏng không bao giờ thay danh sách còn mới
+nhập (ô credit, Bảng phát triển) và nút "Đọc lại ngay" của Bảng phát triển (`changed`: đọc ngay dù vừa nhận 401 vài giây
+trước, không chờ giới hạn 5 s; đang có lần đọc thì gửi thêm một lần sau nó), và — chỉ khi inspector / hộp Chạy đang mở —
+đọc lại 30 s trước khi lần đọc hết `firm`. Đọc hỏng thì **không** có hẹn giờ đọc lại: lần sau là khi inspector / hộp
+Chạy hiện lại (sau 1 phút), khi gửi, hoặc khi bấm "Đọc lại". Bất biến: (1) UI và submit dùng chung một yêu cầu đang bay; (2) đọc hỏng không bao giờ thay danh sách còn mới
 (< 10 phút) bằng cấu hình mặc định ('kept': bấm "Đọc lại" không làm submit từ chối điều nó vừa nhận), và chỉ lần hỏng mà
 một submit đã chờ mới giữ các submit ở cấu hình mặc định trong 1 phút — lần hỏng chỉ UI thấy không làm submit bỏ qua
 bước đọc; (3) `reset()` (đăng xuất) bỏ mọi câu trả lời đến muộn; (4) `getProvider` không bao giờ bắn tín hiệu (UI gọi

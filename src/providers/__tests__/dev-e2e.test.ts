@@ -72,7 +72,7 @@ import {
   useProviderPrefs,
   watchProviderLimits,
 } from '../index'
-import { PROFILES_FORCE_MIN_MS, PROFILES_RETRY_MS, PROFILES_TTL_MS } from '../canvasapp/adapter'
+import { PROFILES_FORCE_MIN_MS, PROFILES_TTL_MS } from '../canvasapp/adapter'
 import type { DevModelToggle } from '../dev'
 import type { JobRequest } from '../types'
 
@@ -641,16 +641,36 @@ describe('dev mode e2e: what the simulated site runs now (inspector, run check, 
     expect(server.balance()).toBe(1000)
   })
 
-  it('logged out → "login" (and a minute’s pause); "Đăng nhập ngay" in the panel then a forced read → "server" at once', async () => {
-    expect(await refreshProviderLimits('dev')).toBe('login')
+  it('logged out → "login" (and a minute’s pause); logging in seconds later reads at once → "server"', async () => {
+    expect(await refreshProviderLimits('dev')).toBe('login') // the inspector's own read
     expect(await refreshProviderLimits('dev')).toBe('login')
     expect(logOf('video-profiles')).toHaveLength(1)
     expect(providerLimits('dev').source).toBe('none')
-    await run(PROFILES_FORCE_MIN_MS)
-    server.login() // AccountCard: server-side login, then refreshProviderLimits('dev', { force: true })
-    expect(await refreshProviderLimits('dev', { force: true })).toBe('read')
+    await run(1_000) // well inside the 5 s limit of "Đọc lại" and the automatic reads' pause
+    expect(PROFILES_FORCE_MIN_MS).toBeGreaterThan(1_000)
+    expect(await refreshProviderLimits('dev', { force: true })).toBe('login') // a quick click: nothing sent
+    expect(logOf('video-profiles')).toHaveLength(1)
+    // the simulated login sheet (dev bridge) or "Đăng nhập ngay" (AccountCard), then refreshProviderLimits({ changed })
+    server.login()
+    const before = rev()
+    expect(await refreshProviderLimits('dev', { changed: true })).toBe('read')
+    expect(logOf('video-profiles')).toHaveLength(2)
     expect(providerLimits('dev').source).toBe('server')
-    expect(PROFILES_FORCE_MIN_MS).toBeLessThan(PROFILES_RETRY_MS) // ...well inside the automatic reads' pause
+    expect(rev()).toBeGreaterThan(before) // an inspector already shown re-renders with it
+  })
+
+  it('Bảng phát triển › Model: toggle, "Đọc lại ngay", toggle again, "Đọc lại ngay" seconds later → both changes read', async () => {
+    server.login()
+    withScenes(scene('s3', 3, { settings: { ...H3 } }))
+    setModel('minimax_h3', { can_create: false })
+    expect(await refreshProviderLimits('dev', { changed: true })).toBe('read')
+    expect(check('s3')[0]).toMatchObject({ ok: false })
+    setModel('minimax_h3', { can_create: true })
+    await run(1_000)
+    expect(await refreshProviderLimits('dev', { force: true })).toBe('fresh') // the inspector's "Đọc lại": click limit
+    expect(await refreshProviderLimits('dev', { changed: true })).toBe('read') // the panel's button: always reads
+    expect(logOf('video-profiles')).toHaveLength(2)
+    expect(check('s3')[0]).toMatchObject({ ok: true, warnings: [] })
   })
 
   it('a one-shot fault armed while the read is fresh is not used up by an automatic refresh', async () => {

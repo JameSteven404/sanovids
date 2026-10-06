@@ -418,6 +418,12 @@
 .in-field.is-refused .select {
   border-color: var(--danger);
 }
+/* ...without hiding the focus ring (`.select` has no outline: the ring is the only focus mark) */
+.in-field.is-refused .select:focus {
+  box-shadow:
+    var(--focus-ring),
+    inset 0 0 0 1px var(--danger);
+}
 .in-field.is-risky .select {
   border-color: var(--warn);
 }

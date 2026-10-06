@@ -541,7 +541,7 @@ export function limitsStatusText(info: LimitsInfo, limits: Pick<SettingsLimits, 
   }
   const at = info.at !== null ? logTime(info.at) : '—'
   if (info.source === 'fallback') {
-    return `SanoVids không đọc được lúc ${at} — đang dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): chỉ cảnh báo, chưa khoá lựa chọn nào; thử đọc lại sau 1 phút.${lastNote}`
+    return `SanoVids không đọc được lúc ${at} — đang dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): chỉ cảnh báo, chưa khoá lựa chọn nào. Không tự đọc lại theo giờ: đọc lại khi mở cấu hình video của một cảnh / hộp Chạy (sau 1 phút), trước lần gửi tiếp theo (sau 1 phút nếu chính một lần gửi đọc hỏng) hoặc khi bấm “Đọc lại ngay”.${lastNote}`
   }
   if (!limits.firm) {
     return `SanoVids đọc lúc ${at} — đã quá 10 phút: inspector chỉ còn cảnh báo, lần gửi sau đọc lại trước.${lastNote}`

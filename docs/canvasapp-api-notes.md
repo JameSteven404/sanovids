@@ -33,7 +33,7 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`). The inspector, the
   Run buttons and the run dialog use that same cache and the same rule (`profileIssues`, adapter `settingsLimits()`):
   a read < 10 min old disables what it refuses; fallbacks / an older read only warn. The UI reads it too (TTL-gated,
-  "Đọc lại" ≤ every 5 s, sharing one request with a submit). VERIFY: whether the endpoint needs a login (SanoVids
+  "Đọc lại" ≤ every 5 s, a read after a login at once, sharing one request with a submit). VERIFY: whether the endpoint needs a login (SanoVids
   assumes 401 when logged out, like the dev server), whether `visible: false` / `enabled: false` hide or grey a model in
   canvasapp's picker (SanoVids ignores both, like `runVideoNode()`), whether the server itself refuses a duration /
   resolution / ratio outside the lists (only the client is known to), and whether the lists can hold values SanoVids'

@@ -86,6 +86,17 @@ export const NO_LIMITS_INFO: LimitsInfo = Object.freeze({ source: 'none' as cons
  */
 export type RefreshLimitsResult = 'fresh' | 'read' | 'failed' | 'kept' | 'login' | 'unavailable'
 
+/** How refreshLimits() reads. */
+export interface RefreshLimitsOptions {
+  /** "Đọc lại": read now whatever the TTL — at most one request every few seconds (a quick second click gets its answer). */
+  force?: boolean
+  /**
+   * What decides the answer has just changed (a login; the simulated site's settings in development mode): read now
+   * with a request sent after this call — no few-seconds limit, never a read already in flight. Implies `force`.
+   */
+  changed?: boolean
+}
+
 /** A reference image, in @image_N order. The provider loads the blob from the media store when it needs it. */
 export interface JobImage {
   /** 1-based N in @image_N */
@@ -208,9 +219,10 @@ export interface VideoProvider {
   limitsInfo?(): LimitsInfo
   /**
    * Read it again when it is old (TTL-gated: nothing is sent while fresh, or within a minute of a failed attempt);
-   * `force` reads now (at most every few seconds). Shares one request with a submit's own read. Never throws.
+   * `force` reads now (at most every few seconds); `changed` after a login / a change of the site's settings (no
+   * limit). Shares one request with a submit's own read. Never throws.
    */
-  refreshLimits?(opts?: { force?: boolean }): Promise<RefreshLimitsResult>
+  refreshLimits?(opts?: RefreshLimitsOptions): Promise<RefreshLimitsResult>
 }
 
 /** Error with a machine-readable code, thrown by providers. */

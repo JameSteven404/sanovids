@@ -429,8 +429,8 @@ function AccountCard({ snap }: { snap: DevServerSnapshot }) {
             className="btn btn-sm btn-primary"
             onClick={() => {
               act(() => devServer().login(), 'Máy chủ giả lập đã đăng nhập tài khoản.')
-              // what the account may run: the inspector stops waiting out an earlier 401
-              void refreshProviderLimits('dev', { force: true })
+              // what the account may run, read at once — even seconds after the inspector's own 401
+              void refreshProviderLimits('dev', { changed: true })
             }}
           >
             <LogIn size={13} /> Đăng nhập ngay
@@ -512,7 +512,8 @@ function ModelsCard({ config }: { config: DevConfig }) {
     if (reading) return
     setReading(true)
     try {
-      const result = await refreshProviderLimits('dev', { force: true })
+      // every click here follows a change made in this panel: never the few-seconds limit of the inspector's "Đọc lại"
+      const result = await refreshProviderLimits('dev', { changed: true })
       const t = refreshToast(result, limitsSite('dev'), providerLimitsInfo('dev'))
       toast(t.text, { tone: t.tone })
     } finally {

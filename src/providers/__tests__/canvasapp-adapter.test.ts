@@ -796,6 +796,41 @@ describe('canvasapp adapter: what canvasapp runs now for the UI (settingsLimits 
     expect(reads()).toBe(4)
   })
 
+  it('a read after a login (`changed`) goes out at once: never the 5 s limit of "Đọc lại", never a read sent before it', async () => {
+    const { provider, server, clock, reads, hold } = limitsSetup({ authenticated: false })
+    expect(await provider.refreshLimits()).toBe('login') // the inspector's own read, logged out
+    // logged in seconds later
+    server.state.authenticated = true
+    profilesAre(server, h3Profiles({ can_create: false }))
+    expect(await provider.refreshLimits({ force: true })).toBe('login') // a quick "Đọc lại" click: its answer, nothing sent
+    expect(await provider.refreshLimits()).toBe('login') // automatic reads still wait out the 401
+    expect(reads()).toBe(1)
+    expect(await provider.refreshLimits({ changed: true })).toBe('read') // the login's read
+    expect(reads()).toBe(2)
+    expect(provider.settingsLimits()).toMatchObject({ source: 'server', firm: true })
+    expect(provider.settingsLimits().issues(H3).map((i) => i.field)).toEqual(['model'])
+    // a second change at once is read too (development mode: toggle, "Đọc lại ngay", toggle, "Đọc lại ngay")
+    profilesAre(server, h3Profiles({ options: { disabled_modes: ['i2v'] } }))
+    expect(await provider.refreshLimits({ force: true })).toBe('fresh') // a click: nothing sent
+    expect(await provider.refreshLimits({ changed: true })).toBe('read')
+    expect(reads()).toBe(3)
+    expect(provider.settingsLimits().issues(H3).map((i) => i.field)).toEqual(['mode'])
+    // a forced read in flight was sent before the change: the `changed` read goes after it and gets the newer answer
+    clock.t += PROFILES_FORCE_MIN_MS
+    const release = hold()
+    const click = provider.refreshLimits({ force: true })
+    await tick()
+    expect(provider.limitsInfo().reading).toBe(true)
+    profilesAre(server, h3Profiles())
+    const changed = provider.refreshLimits({ changed: true })
+    await tick()
+    release()
+    expect(await click).toBe('read')
+    expect(await changed).toBe('read')
+    expect(reads()).toBe(5)
+    expect(provider.settingsLimits().issues(H3)).toEqual([])
+  })
+
   it('a failed UI read with nothing fresh → "failed" (fallbacks, a guess) — but a submit still reads first', async () => {
     const { provider, server, reads } = limitsSetup()
     profilesAre(server, json({ detail: 'boom' }, 500))

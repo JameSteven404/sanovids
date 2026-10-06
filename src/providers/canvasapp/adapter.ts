@@ -17,7 +17,8 @@
 //          re-sent after such a build lost its answer goes to THAT node again (nodeKeyFor).
 // limits:  settingsLimits() = what that cached /api/video-profiles answer refuses (mapping.profileIssues, the rule of
 //          the submit check) for the inspector and the run check — synchronous, never a request; refreshLimits() reads
-//          it again for the UI (TTL-gated, shares the submit's read, a failed UI read never replaces a fresh OK list);
+//          it again for the UI (TTL-gated, shares the submit's read, a failed UI read never replaces a fresh OK list;
+//          `changed` after a login / a change of the site: no "Đọc lại" limit, a request sent after the call);
 //          onLimitsChange tells the app (see "/api/video-profiles: one cache" below for the invariants).
 // poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
 // result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame).
@@ -46,6 +47,7 @@ import {
   type ProviderAvailability,
   type ProviderCapabilities,
   type ProviderId,
+  type RefreshLimitsOptions,
   type RefreshLimitsResult,
   type RemoteStatus,
   type SettingsIssue,
@@ -112,7 +114,10 @@ export const PROFILES_TTL_MS = 10 * 60_000
  * Also the pause of the UI's automatic reads (refreshLimits) after any failed attempt — a 401 included.
  */
 export const PROFILES_RETRY_MS = 60_000
-/** A forced refreshLimits() ("Đọc lại") sends at most one read this often, whatever came of the last one. */
+/**
+ * A forced refreshLimits() ("Đọc lại") sends at most one read this often, whatever came of the last one — only the
+ * clicks: a read after a login / a change (`changed`) is never held back by it.
+ */
 export const PROFILES_FORCE_MIN_MS = 5_000
 
 export const UNCERTAIN_SUBMIT_TEXT =
@@ -248,7 +253,7 @@ export type CanvasappProvider = VideoProvider & {
   reset(): void
   settingsLimits(): SettingsLimits
   limitsInfo(): LimitsInfo
-  refreshLimits(opts?: { force?: boolean }): Promise<RefreshLimitsResult>
+  refreshLimits(opts?: RefreshLimitsOptions): Promise<RefreshLimitsResult>
   /** Re-read /api/video-profiles now (a forced read); throws when it cannot be read. */
   refreshProfiles(): Promise<VideoProfile[]>
   bridgeProjectId(): string | null
@@ -609,13 +614,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
   /**
    * A forced read whose request leaves after the call: never the answer of a read sent before it (that one may predate
-   * a change on canvasapp). Joins a read in flight only when it was itself forced (it left after an earlier click);
-   * otherwise one follow-up read is sent once it ends, shared by further clicks.
+   * a change on canvasapp). Joins a read in flight only when it was itself forced (it left after an earlier click) and
+   * nothing changed since (`afterChange`: a login / the site's settings — that read may predate it); otherwise one
+   * follow-up read is sent once it ends, shared by further calls.
    */
-  function readAfterCurrent(): Promise<ProfilesAnswer> {
+  function readAfterCurrent(afterChange = false): Promise<ProfilesAnswer> {
     const current = profilesReading
     if (!current) return readProfiles(false, true)
-    if (current.forced) return current.promise
+    if (current.forced && !afterChange) return current.promise
     if (!profilesFollowUp) {
       const epoch = profilesEpoch
       const followUp: Promise<ProfilesAnswer> = current.promise.then(() => {
@@ -678,21 +684,22 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     }
   }
 
-  async function refreshLimits({ force = false }: { force?: boolean } = {}): Promise<RefreshLimitsResult> {
+  async function refreshLimits({ force = false, changed = false }: RefreshLimitsOptions = {}): Promise<RefreshLimitsResult> {
     try {
       const t = now()
       const last = profilesAttempt
-      if (!force) {
+      if (!force && !changed) {
         if (okFresh()) return 'fresh'
         // after a failed attempt (a 401 included) the UI waits, like a submit after a failed read
         if (!profilesReading && last && (last.result === 'failed' || last.result === 'login') && t - last.at < PROFILES_RETRY_MS) return last.result
-      } else if (!profilesReading && last && t - last.at < PROFILES_FORCE_MIN_MS) {
-        // "Đọc lại" pressed again within seconds (whatever the last read gave): its answer, nothing sent
+      } else if (!changed && !profilesReading && last && t - last.at < PROFILES_FORCE_MIN_MS) {
+        // "Đọc lại" pressed again within seconds (whatever the last read gave): its answer, nothing sent. Never after a
+        // login / a change (`changed`): what was read or tried before it no longer answers.
         return last.result === 'read' ? 'fresh' : last.result
       }
       const avail = await api.transport.available().catch(() => ({ ok: false }))
       if (!avail.ok) return 'unavailable'
-      const answer = force ? await readAfterCurrent() : await readProfiles(false)
+      const answer = changed ? await readAfterCurrent(true) : force ? await readAfterCurrent() : await readProfiles(false)
       return answer.outcome
     } catch {
       return 'failed'
