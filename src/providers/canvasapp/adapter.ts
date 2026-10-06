@@ -21,7 +21,8 @@
 //          `changed` after a login / a change of the site: no "Đọc lại" limit, a request sent after the call);
 //          onLimitsChange tells the app (see "/api/video-profiles: one cache" below for the invariants).
 // poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
-// result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame).
+// result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame); the desktop transport
+//          pulls it in pieces (progress, abort when the take is cancelled, resume when canvasapp allows it).
 //
 // Paying at most once per take (key = req.key = the take id; sent as clientRequestIdFor(key)). Persisted under
 // JOBS_KEY (keyed by the take id), written synchronously:
@@ -1091,10 +1092,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       return out
     },
 
-    fetchResult: async (remoteId) => {
+    fetchResult: async (remoteId, opts) => {
       const d = decodeRemoteId(remoteId)
       if (!d) throw new CanvasappError('bad-request', 'Mã job canvasapp không hợp lệ.')
-      const video = await api.fetchVideo(d.jobId)
+      const video = await api.fetchVideo(d.jobId, opts)
       return { video, poster: null }
     },
 

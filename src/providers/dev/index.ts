@@ -9,7 +9,8 @@
 //                                        Settings, faults, balance, login, force a job…: see DevCanvasapp in server.ts.
 //                                        Every tab has its own copy on the SAME saved account: it re-reads it before
 //                                        each request / change, and on the window 'storage' event (another tab saved).
-//   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too).
+//   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too) —
+//                                        streamed video downloads included (downloads.ts: main's own rules, ported).
 //   devVideoRenderer                     the in-page renderer the dev server draws finished videos with (WebM).
 //   useDevServer                         zustand store { snapshot: DevServerSnapshot | null } — refreshed on every
 //                                        server change; startDevSnapshotTicker() also refreshes it every second while
@@ -46,6 +47,7 @@ export * from './server'
 export * from './log'
 export * from './prompts'
 export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridgeOptions } from './bridge'
+export * from './downloads'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
 export { devError, devResult, devWording, withDevWording } from './wording'

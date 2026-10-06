@@ -146,6 +146,17 @@ e2e test so a request outside it fails the tests): `GET/POST /api/projects`, `GE
 (`?project_id=` only), `GET /api/video-jobs/{id}/prompt|stream`, `DELETE /api/video-jobs/{id}`, plus `/api/me`,
 `/api/auth/state`, `/api/video-profiles`, top-up and credit history. JSON bodies ≤ 2 MB, uploads ≤ 20 MB, path ids
 `[A-Za-z0-9_-]{1,80}` (UUIDs fit).
+Videos (`GET /api/video-jobs/{id}/stream`, the only `binary` route) are pulled by the page in pieces through
+`canvasapp:downloadOpen / downloadRead / downloadClose` (block `<canvasapp-downloads>`): the page sends a download id it
+chose (UUID), the allowlisted path and a byte to continue from — never a URL, header or validator. Main sends
+`Accept: video/mp4,*/*`, and `Range: bytes=N-` + `If-Range: <ETag | Last-Modified>` only to continue a video whose
+strong validator it got from canvasapp (kept 10 min per path). It refuses an announced size over 1 GB, a final URL
+that is not https (checked after redirects: the request itself already left), a 206 that does not start where asked
+(or of unknown size) and a 416 to a resume (`bad-range` → the page starts over once). A `Content-Encoding` body has no
+usable length or offsets: no length check, no resume. Limits: pieces ≤ 4 MiB, 60 s without a byte, 5 min until the
+headers, 60 min per download, 30 s without a read from the page, 16 downloads open or waiting, one slot of the
+'download' lane (2) per download from open to end. `download-token` is not used (still refused by the allowlist).
+VERIFY on the live site: Content-Length, Accept-Ranges, ETag / Last-Modified, compression, redirects of `/stream`.
 
 ## Simple mode (pilot, only for eligible accounts)
 - `GET/POST /api/simple-projects`, `GET/PUT /api/simple-projects/{id}/state` `{ prompt, images:[{slot, upload_id}] }`.

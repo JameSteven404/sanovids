@@ -95,6 +95,7 @@ import {
   devPanelTabs,
   endpointText,
   faultArmedText,
+  faultKindsFor,
   faultRuleText,
   filterLog,
   isDevEndpoint,
@@ -326,6 +327,12 @@ function StatusTab({ snap }: { snap: DevServerSnapshot }) {
           onChange={(exposeKey) => setConfig({ exposeKey })}
           label="Danh sách job có client_request_id"
           hint="Trang thật chưa rõ có trả trường này không — tắt là mặc định an toàn."
+        />
+        <Switch
+          checked={c.rangeSupport}
+          onChange={(rangeSupport) => setConfig({ rangeSupport })}
+          label="Cho tải tiếp video (HTTP Range)"
+          hint="Trang thật chưa rõ /stream có hỗ trợ — tắt là mặc định: tải hỏng giữa chừng thì tải lại từ đầu (lần thử sau). Bật: tải tiếp từ chỗ dừng (206, ETag)."
         />
         <div className="dv-field">
           <span className="label">Mã lỗi khi không đủ credit</span>
@@ -844,6 +851,7 @@ function CustomRule() {
     setError(null)
   }
   const needsStatus = form.kind === 'response' || form.kind === 'processed-then'
+  const kinds = faultKindsFor(form.endpoint)
   const add = () => {
     const r = customFaultInput(form)
     if (!r.ok) {
@@ -861,7 +869,16 @@ function CustomRule() {
       <div className="dv-custom-form">
         <label className="dv-field">
           <span className="label">Yêu cầu</span>
-          <select className="select" value={form.endpoint} onChange={(e) => isDevEndpoint(e.target.value) && set({ endpoint: e.target.value })}>
+          <select
+            className="select"
+            value={form.endpoint}
+            onChange={(e) => {
+              const endpoint = e.target.value
+              if (!isDevEndpoint(endpoint)) return
+              // the video-download kinds exist only for "Tải video"
+              set(faultKindsFor(endpoint).includes(form.kind) ? { endpoint } : { endpoint, kind: 'response' })
+            }}
+          >
             <option value="*">{endpointText('*')}</option>
             {DEV_ENDPOINTS.map((ep) => (
               <option key={ep} value={ep}>
@@ -873,7 +890,7 @@ function CustomRule() {
         <label className="dv-field">
           <span className="label">Kiểu lỗi</span>
           <select className="select" value={form.kind} onChange={(e) => set({ kind: e.target.value as DevFaultKind })}>
-            {(Object.keys(DEV_FAULT_KIND_LABEL) as DevFaultKind[]).map((k) => (
+            {kinds.map((k) => (
               <option key={k} value={k}>
                 {DEV_FAULT_KIND_LABEL[k]}
               </option>
@@ -890,6 +907,12 @@ function CustomRule() {
           <label className="dv-field dv-field-sm">
             <span className="label">Chậm (ms)</span>
             <input className="input mono" inputMode="numeric" value={form.ms} onChange={(e) => set({ ms: e.target.value })} />
+          </label>
+        )}
+        {form.kind === 'trickle' && (
+          <label className="dv-field dv-field-sm">
+            <span className="label">KB/giây</span>
+            <input className="input mono" inputMode="numeric" value={form.kbps} onChange={(e) => set({ kbps: e.target.value })} />
           </label>
         )}
         {!form.sticky && (

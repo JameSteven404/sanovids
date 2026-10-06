@@ -11,6 +11,8 @@
 //   faultArmedText(item, sticky, n)           the toast after "Bật": "Đã bật lỗi giả: … (2 lần)" / "(giữ)".
 //   faultKindText(fault) / faultRuleText(rule) Vietnamese description of a fault / an armed rule.
 //   customFaultInput(form)                    the custom-rule form → DevFaultInput, or a Vietnamese error.
+//   faultKindsFor(endpoint)                   the kinds the custom-rule form offers for that request (the video
+//                                             download ones — ngắt / treo / chậm / quá lớn — only for "Tải video").
 //   statusTone(entry) / statusText(entry)     request-log status chip.
 //   filterLog(entries, query, onlyProblems)   newest first, filtered.
 //   logExport(entries, snapshot, now)         "Copy nhật ký" text (JSON) for bug reports.
@@ -33,6 +35,7 @@ import type { DevLogEntry } from '../../providers/dev/log'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
 import {
   DEV_FAULT_PRESETS,
+  DEV_STREAM_FAULT_KINDS,
   type DevConfig,
   type DevFault,
   type DevFaultInput,
@@ -171,6 +174,10 @@ export const DEV_UI_FAULTS: DevUiFault[] = [
   rule('profiles-500', 'Cấu hình model lỗi (500)'),
   rule('list-network', 'Mất mạng khi đọc danh sách job'),
   rule('stream-network', 'Mất mạng khi tải video'),
+  rule('stream-cut', 'Mất mạng giữa chừng khi tải video'),
+  rule('stream-stall', 'Tải video bị treo'),
+  rule('stream-slow', 'Tải video chậm (100 KB/giây)'),
+  rule('stream-oversize', 'Video quá lớn (> 1 GB)'),
   rule('offline', 'Mất mạng hoàn toàn'),
 ]
 
@@ -204,8 +211,18 @@ export function faultKindText(f: DevFault): string {
       return `trả ${f.status} (không xử lý)`
     case 'slow':
       return `chậm ${formatSeconds(f.ms)}`
+    case 'cut':
+      return `ngắt giữa chừng (sau ${formatShare(f.fraction)} video)`
+    case 'stall':
+      return `đứng, không gửi tiếp (sau ${formatShare(f.fraction)} video)`
+    case 'trickle':
+      return `chậm ${Math.round(f.bytesPerSec / 1024)} KB/giây`
+    case 'oversize':
+      return 'báo dung lượng > 1 GB'
   }
 }
+
+const formatShare = (x: number | undefined) => `${Math.round((typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.5) * 100)}%`
 
 const formatSeconds = (ms: number) => `${Math.round((ms / 1000) * 10) / 10} giây`.replace('.', ',')
 
@@ -230,6 +247,17 @@ export const DEV_FAULT_KIND_LABEL: Record<DevFaultKind, string> = {
   'processed-then': 'Xử lý rồi trả mã khác',
   response: 'Trả mã lỗi (không xử lý)',
   slow: 'Chậm',
+  cut: 'Ngắt giữa chừng (tải video)',
+  stall: 'Treo giữa chừng (tải video)',
+  trickle: 'Tải chậm (KB/giây)',
+  oversize: 'Báo video > 1 GB',
+}
+
+const isStreamKind = (k: DevFaultKind) => (DEV_STREAM_FAULT_KINDS as readonly string[]).includes(k)
+
+/** Kinds the custom-rule form offers for a request: the video-download ones only for 'job-stream'. */
+export function faultKindsFor(endpoint: DevEndpoint | '*'): DevFaultKind[] {
+  return (Object.keys(DEV_FAULT_KIND_LABEL) as DevFaultKind[]).filter((k) => endpoint === 'job-stream' || !isStreamKind(k))
 }
 
 export interface CustomFaultForm {
@@ -241,21 +269,30 @@ export interface CustomFaultForm {
   json: string
   /** Delay for 'slow'. */
   ms: string
+  /** KB per second for 'trickle'. */
+  kbps: string
   /** One-shot count. */
   times: string
   sticky: boolean
 }
 
-export const CUSTOM_FAULT_DEFAULT: CustomFaultForm = { endpoint: 'job-create', kind: 'response', status: '500', json: '', ms: '3000', times: '1', sticky: false }
+export const CUSTOM_FAULT_DEFAULT: CustomFaultForm = { endpoint: 'job-create', kind: 'response', status: '500', json: '', ms: '3000', kbps: '100', times: '1', sticky: false }
 
 export const isDevEndpoint = (v: string): v is DevEndpoint | '*' => v === '*' || (DEV_ENDPOINTS as string[]).includes(v)
 
 /** The custom-rule form as a server rule, or why it cannot be one (Vietnamese). */
 export function customFaultInput(f: CustomFaultForm): { ok: true; input: DevFaultInput } | { ok: false; error: string } {
   if (!isDevEndpoint(f.endpoint)) return { ok: false, error: 'Chọn một yêu cầu.' }
+  if (!(f.kind in DEV_FAULT_KIND_LABEL)) return { ok: false, error: 'Chọn một kiểu lỗi.' }
+  if (isStreamKind(f.kind) && f.endpoint !== 'job-stream') return { ok: false, error: 'Kiểu lỗi này chỉ dùng cho “Tải video”.' }
   let fault: DevFault
-  if (f.kind === 'network' || f.kind === 'lost-response') fault = { kind: f.kind }
-  else if (f.kind === 'slow') {
+  if (f.kind === 'network' || f.kind === 'lost-response' || f.kind === 'oversize') fault = { kind: f.kind }
+  else if (f.kind === 'cut' || f.kind === 'stall') fault = { kind: f.kind, fraction: 0.5 }
+  else if (f.kind === 'trickle') {
+    const kbps = Number(f.kbps)
+    if (!Number.isInteger(kbps) || kbps < 1 || kbps > 100_000) return { ok: false, error: 'Tốc độ phải là số nguyên 1–100000 KB/giây.' }
+    fault = { kind: 'trickle', bytesPerSec: kbps * 1024 }
+  } else if (f.kind === 'slow') {
     const ms = Number(f.ms)
     if (!Number.isInteger(ms) || ms < 0 || ms > 120_000) return { ok: false, error: 'Thời gian chậm phải là số nguyên 0–120000 ms.' }
     fault = { kind: 'slow', ms }

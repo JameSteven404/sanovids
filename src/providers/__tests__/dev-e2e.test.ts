@@ -30,6 +30,7 @@ import { costOf } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
+import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
 import { useUI } from '../../store/ui'
 import { DEV_UNKNOWN_SUBMIT_ERROR, isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, useRuns, type RunEvent } from '../../store/runs'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, memoryStorage } from '../canvasapp/adapter'
@@ -113,6 +114,8 @@ const project = (): Project => ({
 
 let server: DevCanvasapp
 let renders: { input: DevRenderInput; contents: (string | null)[] }[] = []
+/** Size of the simulated videos (0 = the short text "WEBM:#n"). */
+let videoSize = 0
 let stopSync: () => void = () => undefined
 let events: RunEvent[] = []
 let offEvents: () => void = () => undefined
@@ -134,12 +137,14 @@ beforeEach(async () => {
   media.clear()
   for (const id of ['img_e1', 'img_l1', 'img_l2']) media.set(id, new Blob(['IMG:' + id], { type: 'image/png' }))
   renders = []
+  videoSize = 0
   server = createDevCanvasapp({
     storage: memoryStorage(),
     blobs: memoryBlobStore(),
     random: () => 0.5,
     render: async (input) => {
       renders.push({ input, contents: await Promise.all(input.images.map((i) => (i.blob ? i.blob.text() : Promise.resolve(null)))) })
+      if (videoSize) return new Blob([new Uint8Array(videoSize).fill(input.jobNumber)], { type: 'video/webm' })
       return new Blob([`WEBM:#${input.jobNumber}`], { type: 'video/webm' })
     },
   })
@@ -357,6 +362,95 @@ describe('dev mode e2e: reference videos (@video_N) — refused like the real ga
     const job = server.snapshot().jobs.find((j) => j.client_request_id === clientRequestIdFor(t3.id))!
     expect(job).toMatchObject({ model_profile: 'minimax_h3', mode: 't2v', upload_ids: [], prompt: 'Một con mèo' })
     expect(logOf('job-create').every((e) => e.status !== null && e.status < 300)).toBe(true)
+  })
+})
+
+describe('dev mode e2e: the finished video comes in pieces through the simulated gateway', () => {
+  const streamLog = () => logOf('job-stream')
+
+  it('“Tải video chậm”: the take shows “Đang tải về …%” while the pieces come, then completes with the whole video', async () => {
+    server.login()
+    videoSize = 300 * 1024
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-slow')!.rule)
+    const [t] = enqueue('s1')
+    const labels = new Set<string>()
+    const off = useTakeTransfers.subscribe((st) => {
+      const l = transferLabel(st.byTake[t.id])
+      if (l) labels.add(l)
+    })
+    await run(30_000)
+    off()
+    expect(take(t.id).status).toBe('completed')
+    expect((await media.get(take(t.id).videoId!)!.arrayBuffer()).byteLength).toBe(300 * 1024)
+    expect([...labels].some((l) => /^Đang tải về \d+%$/.test(l))).toBe(true)
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+  })
+
+  it('“Mất mạng giữa chừng” with “Cho tải tiếp video” on → continues with Range (206) in the same attempt', async () => {
+    server.login()
+    server.setConfig({ rangeSupport: true })
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-cut')!.rule)
+    const [t] = enqueue('s1')
+    await run(20_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('WEBM:#1')
+    expect(streamLog().map((e) => e.status)).toEqual([200, null, 206])
+    expect(server.snapshot().jobs).toHaveLength(1)
+  })
+
+  it('… with it off (default) → the engine downloads it again later from the start; never a failed take', async () => {
+    server.login()
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-cut')!.rule)
+    const [t] = enqueue('s1')
+    await run(15_000)
+    expect(take(t.id).status).toBe('processing')
+    await run(40_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('WEBM:#1')
+    expect(streamLog().filter((e) => e.status !== null).map((e) => e.status)).toEqual([200, 200])
+    expect(events.filter((e) => e.type === 'failed')).toEqual([])
+  })
+
+  it('“Tải video bị treo” → stopped after 10 s without data, downloaded again later', async () => {
+    server.login()
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-stall')!.rule)
+    const [t] = enqueue('s1')
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    const failures = streamLog().filter((e) => e.status === null)
+    expect(failures.map((e) => e.res)).toEqual([{ code: 'network', message: 'canvasapp giả lập ngừng gửi video giữa chừng (10 giây không nhận thêm dữ liệu).' }])
+  })
+
+  it('“Video quá lớn” → the take fails at once in development-mode words (paid in credit dev, Bảng phát triển)', async () => {
+    server.login()
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-oversize')!.rule)
+    const [t] = enqueue('s1')
+    await run(20_000)
+    expect(take(t.id).status).toBe('failed')
+    expect(take(t.id).error).toContain('đã trừ credit dev')
+    expect(take(t.id).error).toContain('Bảng phát triển')
+    expect(take(t.id).error).toContain('Video lớn hơn 1 GB')
+    expect(take(t.id).error).not.toContain('canvasapp.io.vn')
+    await run(10 * 60_000)
+    expect(streamLog().filter((e) => e.status !== null)).toHaveLength(1) // never tried again
+  })
+
+  it('cancelling a take while its video downloads stops the download (cancelled, not failed); the slot is free for the next', async () => {
+    server.login()
+    videoSize = 300 * 1024
+    server.addFault({ ...DEV_FAULT_PRESETS.find((p) => p.id === 'stream-slow')!.rule, sticky: false, times: 1 })
+    const [a] = enqueue('s1')
+    await run(10_200)
+    expect(take(a.id).status).toBe('processing')
+    expect(useTakeTransfers.getState().byTake[a.id]).toBeDefined()
+    useRuns.getState().cancel(a.id)
+    await run(0)
+    expect(take(a.id).status).toBe('cancelled')
+    expect(useTakeTransfers.getState().byTake[a.id]).toBeUndefined()
+    const [b] = enqueue('s2')
+    await run(20_000)
+    expect(take(b.id).status).toBe('completed')
+    expect(events.filter((e) => e.type === 'failed')).toEqual([])
   })
 })
 

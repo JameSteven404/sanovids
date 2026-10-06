@@ -25,7 +25,7 @@ Nguyên tắc an toàn (bắt buộc):
 ## 1b. Chế độ Phát triển (giả lập canvasapp ngay trong app)
 Mặc định take mới chạy ở **chế độ Phát triển**: CHÍNH mã cổng canvasapp (api.ts, adapter.ts, mapping.ts, transport.ts) nói chuyện với một canvasapp.io.vn giả lập trong app (`src/providers/dev/`) — không gọi mạng, credit giả lập ("credit dev"), có đăng nhập / nạp credit qua SePay giả / lịch sử credit, và có thể gây lỗi có chủ đích (mất mạng, mất câu trả lời, 402, 422, 429, job lỗi…) để tìm bug. Xem docs/SPEC-v2.md §11.
 
-Dùng nó như bản tập dượt của mọi luồng trong tài liệu này: **Bảng phát triển** (nút 🐞 trên thanh trên cùng) bật lỗi giả theo từng endpoint (một lần hoặc “giữ”), xem **Nhật ký** từng yêu cầu (JSON, “Copy nhật ký” để báo lỗi), **Kiểm tra nhân vật** của mỗi `POST /api/video-jobs` (upload_ids theo thứ tự = `@image_N` → ảnh trong dự án), và điều khiển job / đơn nạp (hoàn tất, cho lỗi, cho hết hạn; đã thanh toán, đối soát, từ chối). Trang đăng nhập và trang SePay là hai bảng giả lập trong app — không mở trang thật nào. Cùng một bộ luật với máy chủ thật: allowlist của `electron/main.cjs`, giới hạn 2 MB / 20 MB, canvas và body job kiểm tra chặt (`providers/dev/validate.ts`).
+Dùng nó như bản tập dượt của mọi luồng trong tài liệu này: **Bảng phát triển** (nút 🐞 trên thanh trên cùng) bật lỗi giả theo từng endpoint (một lần hoặc “giữ”; với “Tải video” còn có ngắt / treo giữa chừng, tải chậm, video > 1 GB và công tắc “Cho tải tiếp video (HTTP Range)”), xem **Nhật ký** từng yêu cầu (JSON, “Copy nhật ký” để báo lỗi), **Kiểm tra nhân vật** của mỗi `POST /api/video-jobs` (upload_ids theo thứ tự = `@image_N` → ảnh trong dự án), và điều khiển job / đơn nạp (hoàn tất, cho lỗi, cho hết hạn; đã thanh toán, đối soát, từ chối). Trang đăng nhập và trang SePay là hai bảng giả lập trong app — không mở trang thật nào. Cùng một bộ luật với máy chủ thật: allowlist của `electron/main.cjs`, giới hạn 2 MB / 20 MB, canvas và body job kiểm tra chặt (`providers/dev/validate.ts`).
 
 ## 2. Kiến trúc
 
@@ -48,6 +48,7 @@ Dùng nó như bản tập dượt của mọi luồng trong tài liệu này: *
                                                  │ IPC (contextBridge, electron/preload.cjs)
  ┌───────────────────────────── Electron main (electron/main.cjs) ──────────────────────────────┐
  │  canvasapp:status | canvasapp:login | canvasapp:logout | canvasapp:request                     │
+ │  canvasapp:downloadOpen | downloadRead | downloadClose (video kết quả, từng phần ≤ 4 MiB)       │
  │  canvasapp:checkout (nạp credit: cửa sổ modal trang SePay thật, xem §5b)                      │
  │   • chỉ nhận lời gọi từ app://bdp/…                                                             │
  │   • allowlist method + path (+ query project_id), id chỉ gồm [A-Za-z0-9_-]                     │
@@ -68,7 +69,7 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 | `capabilities(model)` | giới hạn (modes, durations, resolutions, ratios — canvasapp: các giá trị của bảng model mà `profileIssues` không từ chối; ảnh/video tối đa, prompt, concurrency, chu kỳ poll) |
 | `submit(JobRequest)` | → `{ remoteId }` (lưu trên take: `take.remoteId`) |
 | `poll(remoteIds)` | → `[{remoteId, state, progress?, error?}]` |
-| `fetchResult(remoteId)` | → `{ video: Blob, poster?: Blob }` (thiếu poster → engine tự cắt khung hình từ video) |
+| `fetchResult(remoteId, { signal, onProgress })` | → `{ video: Blob, poster?: Blob }` (thiếu poster → engine tự cắt khung hình từ video). `signal` dừng tải (huỷ / xoá take, đổi dự án); `onProgress({ received, total })`. Lỗi `too-large` (`isResultTooLarge`): không bao giờ tải được; `deferred` (`isResultDeferred`): chưa tải gì, thử lại sau, không tính là một lần hỏng |
 | `cancel?(remoteId)` | mock: có. canvasapp: **không** (xem §6) |
 | `recover?(req)` | tìm job mà một lần gửi trước của `req.key` có thể đã tạo (trang đóng/tải lại lúc gửi) — **không bao giờ** tạo job. canvasapp: có |
 | `settingsLimits?()` | điều cổng đang từ chối theo lần đọc `/api/video-profiles` gần nhất (`source` `'none'` / `'server'` / `'fallback'`, `firm`, `issues(settings)` = `mapping.profileIssues`) — đồng bộ, không gửi gì. mock: không có (không giới hạn) |
@@ -227,10 +228,30 @@ không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main 
 Lỗi khi poll (mạng, 401, 429…) **không** làm hỏng take: engine giữ take đang chạy, nghỉ 1 → 2 → 4 → … tối đa 10 phút, và
 đặt `useRuns.providerIssue` để UI báo. Sau 401, đăng nhập lại (đọc được số dư) → hết nghỉ, poll lại ở lượt kế.
 
-**Tải kết quả** — `completed` → `GET /api/video-jobs/{job_id}/stream` (nhị phân qua IPC) → Blob `video/mp4` → engine cắt
+**Tải kết quả** — `completed` → `GET /api/video-jobs/{job_id}/stream` → Blob `video/mp4` → engine cắt
 poster (≤ 640 px, `providers/poster.ts`) → `putBlob` → take `completed` (+ tự tải về máy nếu bật "Tự tải video").
+Video **không** đi qua IPC trong một thông điệp: trang kéo từng phần (`transport.download()` → `canvasapp:downloadOpen`
+/ `downloadRead` / `downloadClose`, khối thuần `<canvasapp-downloads>` trong `electron/main.cjs`). Main tự đọc thân HTTP,
+mỗi lần đọc trả ≤ 4 MiB (hoặc phần đã về sau 1 giây trên mạng chậm), chỉ đọc mạng khi trang đang chờ một phần; trang ghép
+các phần thành một Blob (không chép lại). Mỗi lượt tải giữ **một** chỗ của làn tải video (2 chỗ) từ lúc mở tới lúc kết
+thúc. Giới hạn: ≤ 1 GB (báo trước bằng Content-Length → từ chối ngay, không đọc; vượt khi đang đọc → dừng); 60 giây không
+nhận thêm byte nào → dừng; 5 phút chờ phần đầu câu trả lời; 60 phút cho cả lượt; trang ngừng đọc 30 giây (tải lại /
+treo) → dừng. Trang tải lại / chuyển trang / renderer sập / cửa sổ đóng / đăng xuất → mọi lượt tải của trang đó dừng ngay,
+trả chỗ trong làn. Mã lượt tải (UUID) do trang chọn nên huỷ được cả khi lượt tải còn **chờ chỗ**. Trang chỉ gửi một
+đường dẫn trong allowlist (không URL, không header, không validator); main chỉ đọc thân câu trả lời https.
+**Tải tiếp (Range)**: chỉ khi canvasapp gửi ETag mạnh (hoặc Last-Modified) cho đúng video đó — main giữ nó 10 phút và
+gửi `Range: bytes=N-` + `If-Range`; trả 206 đúng chỗ → ghép tiếp; trả 200 (video đã đổi) → bỏ phần cũ, tải từ đầu; 416 /
+206 lệch chỗ → tải lại từ đầu một lần. Không có validator, hoặc thân bị nén (Content-Encoding) → không bao giờ ghép: lượt
+tải hỏng, engine tải lại từ đầu ở lần thử sau. Kích thước cuối phải đúng kích thước canvasapp báo; không báo kích thước
+thì chỉ nhận khi thân kết thúc tự nhiên — một lượt tải bị cắt (đăng xuất, đóng) **không bao giờ** thành video "xong".
+Tiến độ: take hiện "Đang tải về 45%" (hoặc "Đang tải về 12,3 MB" khi không biết kích thước) thay vì "Đang tạo 99%"
+(`store/takeTransfers.ts`). Bản desktop cũ chưa có `downloadOpen` → một lệnh `canvasapp:request` nhị phân như trước.
 Tải hỏng (mạng, phiên…) → take **vẫn** "đang tạo 99%" và thử lại sau 30 s, 1, 2, 5 phút; hỏng cả 5 lần → `failed` với lời
-nhắn "đã tạo xong, đã trừ credit — tải trực tiếp trên canvasapp, chạy lại sẽ trừ thêm".
+nhắn "đã tạo xong, đã trừ credit — tải trực tiếp trên canvasapp, chạy lại sẽ trừ thêm". Video > 1 GB → `failed` ngay với
+lời nhắn đó (không thử lại 5 lần một lời từ chối như nhau). "Đang tải quá nhiều video cùng lúc" (16 lượt mở / chờ) → thử
+lại sau 15 giây, không tính là một lần hỏng. Huỷ / xoá take, đổi dự án → lượt tải dừng ngay (không tính là hỏng).
+`download-token` **không** dùng: main đã gửi cookie phiên canvasapp với `GET /stream`; token chỉ là phương án dự phòng
+nếu `/stream` không tải trọn được (khi đó: allowlist riêng, che token trong `requestLabel` và nhật ký).
 
 **Mở lại app / đổi dự án** — take canvasapp đang `processing` có `remoteId` được giữ nguyên và **tiếp tục poll** (không gửi
 lại = không trả tiền hai lần). Take đang gửi dở (chưa có `remoteId` trên take — trang đóng/tải lại lúc gửi, hoặc lưu
@@ -331,7 +352,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
-| Video lớn qua IPC | MP4 đi qua IPC dạng bytes (giới hạn 10 phút). Video rất lớn → TODO ghi thẳng ra đĩa |
+| Video lớn qua IPC | Tải về: từng phần ≤ 4 MiB (`canvasapp:downloadOpen/Read/Close`), ≤ 1 GB, dừng sau 60 s không có dữ liệu, tải tiếp bằng Range khi canvasapp cho (xem §4 "Tải kết quả"). Chưa kiểm chứng trên bản build: luồng thân của `session.fetch` (Node `Readable.toWeb`) có thật sự hãm mạng khi trang chưa đọc không — nếu không, main có thể đệm trước nhiều hơn một phần (VERIFY, §9). **Còn lại**: lưu video lớn ra đĩa (tự tải, nút Thư mục, "Hỏi nơi lưu") vẫn gửi cả file qua IPC một lần (`files:saveAs` / `files:writeToFolder`, ≤ 1 GB) — cần làm từng phần như trên |
 | Người dùng sửa phiên "SanoVids bridge" trên canvasapp | canvas bị ghi đè ở lần gửi sau. Đừng chỉnh phiên này bằng tay |
 
 ## 7. Bật thử
@@ -388,7 +409,19 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
     `videos` / `unsentTokens`, `runs.ts` `buildRequest`) — hoặc giữ `refVideosProblem` là lời từ chối (không cắt bớt);
     test `canvasapp-mapping` (bộ khoá), `canvasapp-e2e` (máy chủ giả chặt), `dev-server`, `dev-e2e`; lần thử thật đầu
     tiên theo kiểu `docs/TEST-REAL-CREDITS.md`, cấu hình rẻ nhất (Seedance 480p 5 s = 4 credit).
-- [ ] Tải video lớn: stream thẳng ra file trong main thay vì bytes qua IPC; dùng `download-token` nếu cần.
+- [x] Tải video lớn: không gửi cả video qua IPC một lần — trang kéo từng phần ≤ 4 MiB từ main (`canvasapp:downloadOpen` /
+  `downloadRead` / `downloadClose`, khối thuần `<canvasapp-downloads>` của `electron/main.cjs` + bản TS
+  `providers/dev/downloads.ts`, chạy song song trong `gatewayDownloads.test.ts`), giữ một chỗ trong làn tải từ đầu tới
+  cuối, dừng sau 60 s không có dữ liệu thay vì giới hạn 10 phút cho cả video, ≤ 1 GB, tiến độ "Đang tải về …%", huỷ /
+  đổi dự án dừng tải ngay, tải tiếp bằng Range + If-Range chỉ khi có validator, bản desktop cũ dùng lệnh nhị phân cũ.
+  Chọn cách này thay vì ghi file tạm trong main (phải phục vụ file ngoài `dist/` qua `app://bdp`, dọn đĩa, không giả lập
+  được trên web); `download-token` không cần (xem §4). Chế độ Phát triển chạy đúng luật đó (lỗi giả "Mất mạng giữa
+  chừng", "Tải video bị treo", "Tải video chậm", "Video quá lớn", công tắc "Cho tải tiếp video (HTTP Range)").
+  Test: `gatewayDownloads`, `canvasapp-download`, `canvasapp-e2e` (tải theo phần + bản desktop cũ), `dev-server`,
+  `dev-e2e`, `runs-engine`, `hardeningRules`. Còn VERIFY trên máy chủ thật: `/stream` có Content-Length, Accept-Ranges,
+  ETag / Last-Modified, có nén không, có chuyển hướng (CDN, luôn https?) không, kích thước video thường gặp; luồng thân
+  `session.fetch` có hãm mạng không (RAM của main khi trang đọc chậm). Việc tiếp: lưu video lớn ra đĩa theo từng phần
+  (`files:*`).
 - [ ] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take.
 - [ ] Khi có API chính thức / token từ bên vận hành: thay `transport.ts` (vd. HTTP + API key do người dùng nhập, lưu bằng `safeStorage`), giữ nguyên `adapter`/`mapping`.
 
@@ -417,6 +450,9 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
     cảnh đang dùng nó có ghi chú đỏ, nút Chạy tắt, hộp Chạy ghi "Bỏ qua: …". Bấm **Đọc lại** → thông báo đã đọc lại.
     Ghi lại: khi chưa đăng nhập, `/api/video-profiles` trả 401 hay vẫn đọc được; model `visible: false` / `enabled: false`
     trên trang canvasapp có bị ẩn / làm mờ không. Thử trước trong chế độ Phát triển: Bảng phát triển › Trạng thái › Model.
+
+16. **Rút mạng giữa lúc tải video** (không tốn thêm credit) — cảnh dài / độ phân giải cao để video lớn; khi take hiện "Đang tải về …%", tắt Wi-Fi ~20 giây rồi bật lại → take vẫn "đang tạo/tải", không bị đánh lỗi, rồi xong (tải tiếp hoặc tải lại từ đầu); trên canvasapp vẫn chỉ **1** job. Ghi lại kích thước file, thời gian tải và (nếu xem được) tiêu đề trả lời của `/stream` (`Content-Length`, `Accept-Ranges`, `ETag`, `Content-Encoding`, có chuyển hướng không).
+17. **Mạng chậm / huỷ khi đang tải** — trong lúc "Đang tải về …%": bấm Huỷ → take "Đã huỷ" ngay, take khác tải được ngay sau. Mở Task Manager xem RAM của SanoVids khi tải một video lớn (≥ 300 MB nếu có) — ghi lại (kiểm tra main có đệm cả video không). Sau đó lưu video đó bằng nút Thư mục và "Hỏi nơi lưu" — ghi lại nếu lỗi (lưu vẫn gửi cả file qua IPC một lần).
 
 Tự động (không mạng, không tốn tiền): `npx vitest run src/providers/__tests__/canvasapp-e2e.test.ts` chạy toàn bộ luồng thật
 (engine → adapter → transport → cầu nối giả lập canvasapp) cho các trường hợp trên.

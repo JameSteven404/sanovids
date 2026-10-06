@@ -27,9 +27,36 @@ export interface TransportResponse {
   bytes?: Uint8Array
 }
 
+/** How much of a video arrived (total null = canvasapp did not say). */
+export interface DownloadProgress {
+  received: number
+  total: number | null
+}
+
+export interface DownloadOptions {
+  /** Abort = stop the download now (the transport closes it in the desktop app and rejects with code 'aborted'). */
+  signal?: AbortSignal
+  /** Called at most every ~250 ms while bytes arrive, and once at the end. */
+  onProgress?: (p: DownloadProgress) => void
+}
+
+/** A download's answer: the video (2xx) or what canvasapp said instead (json / text, like TransportResponse). */
+export interface TransportDownload {
+  status: number
+  contentType: string
+  blob?: Blob
+  json?: unknown
+  text?: string
+}
+
 export interface Transport {
   available(): Promise<ProviderAvailability>
   request(req: TransportRequest): Promise<TransportResponse>
+  /**
+   * A binary GET (the video stream) without holding it in one message: pieces, progress, abort, resume. Optional:
+   * without it fetchVideo uses request({ binary: true }).
+   */
+  download?(req: TransportRequest, opts?: DownloadOptions): Promise<TransportDownload>
 }
 
 export type CanvasappErrorCode =
@@ -46,6 +73,8 @@ export type CanvasappErrorCode =
   | 'busy'
   | 'deferred'
   | 'cancelled'
+  | 'aborted'
+  | 'too-large'
 
 export class CanvasappError extends Error {
   readonly code: CanvasappErrorCode
@@ -82,6 +111,8 @@ const CODE_TEXT: Record<CanvasappErrorCode, string> = {
   busy: 'Đang có một cửa sổ thanh toán mở — hoàn tất hoặc đóng nó trước.',
   cancelled: 'Đã huỷ trước khi gửi sang canvasapp — không bị trừ credit.',
   deferred: 'Chưa gửi sang canvasapp (chờ lượt sau) — không bị trừ credit.',
+  aborted: 'Đã dừng tải video.',
+  'too-large': 'Video quá lớn để SanoVids tải về.',
 }
 
 /** Shown when canvasapp refuses a job for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance). */
@@ -492,11 +523,33 @@ export function createCanvasappApi(transport: Transport) {
       asArray<CanvasJob>(await json<unknown>({ method: 'GET', path: `/api/video-jobs?project_id=${enc(safeId(projectId, 'phiên'))}` }), 'jobs'),
     jobPrompt: async (jobId: string) => (await json<{ prompt?: string }>({ method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/prompt` }))?.prompt ?? '',
     streamPath: (jobId: string) => `/api/video-jobs/${safeId(jobId, 'job')}/stream`,
-    fetchVideo: async (jobId: string): Promise<Blob> => {
-      const res = await call({ method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/stream`, binary: true })
-      if (!res.bytes?.byteLength) throw new CanvasappError('bad-response', 'canvasapp.io.vn trả về video rỗng.')
-      const type = res.contentType.split(';')[0].trim() || 'video/mp4'
-      return new Blob([res.bytes as BlobPart], { type: type.startsWith('video/') ? type : 'video/mp4' })
+    /**
+     * The finished video. Through transport.download when there is one (pieces, `opts.signal` stops it with code
+     * 'aborted', `opts.onProgress`), else one binary request. Typed video/* (video/mp4 when canvasapp says otherwise).
+     */
+    fetchVideo: async (jobId: string, opts: DownloadOptions = {}): Promise<Blob> => {
+      const req: TransportRequest = { method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/stream`, binary: true }
+      let video: Blob | null = null
+      let contentType = ''
+      if (typeof transport.download === 'function') {
+        let res: TransportDownload
+        try {
+          res = await transport.download(req, opts)
+        } catch (e) {
+          if (e instanceof CanvasappError) throw e
+          throw new CanvasappError('network', CODE_TEXT.network + (e instanceof Error && e.message ? ` (${e.message})` : ''))
+        }
+        if (res.status < 200 || res.status >= 300) throw errorFromResponse(res, req)
+        video = res.blob ?? null
+        contentType = res.contentType
+      } else {
+        const res = await call(req)
+        video = res.bytes?.byteLength ? new Blob([res.bytes as BlobPart]) : null
+        contentType = res.contentType
+      }
+      if (!video?.size) throw new CanvasappError('bad-response', 'canvasapp.io.vn trả về video rỗng.')
+      const type = (contentType || '').split(';')[0].trim() || 'video/mp4'
+      return new Blob([video], { type: type.startsWith('video/') ? type : 'video/mp4' })
     },
     deleteJob: async (jobId: string) => {
       await call({ method: 'DELETE', path: `/api/video-jobs/${safeId(jobId, 'job')}` })

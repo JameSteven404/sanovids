@@ -20,7 +20,7 @@ import { checkoutUrlAllowed, TOPUP_ORDER_TTL_MS } from '../../core/topup'
 import { memoryStorage } from '../canvasapp/adapter'
 import { CanvasappError, createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
 import { bridgeCanvas, canvasNodeId, clientRequestIdFor, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
-import { createDesktopTransport, openCheckout } from '../canvasapp/transport'
+import { createDesktopTransport, openCheckout, type BridgeDownloadOpen } from '../canvasapp/transport'
 import {
   answerDevCheckout,
   answerDevLogin,
@@ -42,9 +42,14 @@ import {
   useDevPrompts,
   type DevConfig,
   type DevRenderInput,
+  type DevStreamReader,
+  type DownloadLimits,
 } from '../dev'
 
 type Json = Record<string, unknown>
+
+/** Video bytes of a given size (a pattern per job). */
+const videoBytes = (size: number, seed: number) => Uint8Array.from({ length: size }, (_, i) => (i * 13 + seed) % 256)
 
 /** electron/main.cjs's own endpoint allowlist (the <canvasapp-routes> block, run as-is). */
 function loadMainRoutes(): (method: string, path: string) => unknown {
@@ -55,7 +60,18 @@ function loadMainRoutes(): (method: string, path: string) => unknown {
 
 const START = Date.parse('2026-10-02T10:00:00Z')
 
-function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typeof memoryStorage>; blobs?: ReturnType<typeof memoryBlobStore>; cacheMs?: number; t?: number } = {}) {
+function setup(
+  config: Partial<DevConfig> = {},
+  opts: {
+    storage?: ReturnType<typeof memoryStorage>
+    blobs?: ReturnType<typeof memoryBlobStore>
+    cacheMs?: number
+    t?: number
+    /** Size of the rendered videos (default: the short text "WEBM:#n"). */
+    videoSize?: number
+    downloadLimits?: Partial<DownloadLimits>
+  } = {},
+) {
   const clock = { t: opts.t ?? START }
   const storage = opts.storage ?? memoryStorage()
   const blobs = opts.blobs ?? memoryBlobStore()
@@ -69,11 +85,12 @@ function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typ
     sleep: async (ms) => void sleeps.push(ms),
     render: async (input) => {
       renders.push({ input, contents: await Promise.all(input.images.map((i) => (i.blob ? i.blob.text() : Promise.resolve(null)))) })
+      if (opts.videoSize) return new Blob([videoBytes(opts.videoSize, input.jobNumber)], { type: 'video/webm' })
       return new Blob([`WEBM:#${input.jobNumber}`], { type: 'video/webm' })
     },
   })
   server.setConfig({ latencyMs: 0, ...config })
-  const bridge = createDevBridge(() => server, { now: () => clock.t, jobListCacheMs: opts.cacheMs ?? 0 })
+  const bridge = createDevBridge(() => server, { now: () => clock.t, jobListCacheMs: opts.cacheMs ?? 0, downloadLimits: opts.downloadLimits })
   const api = createCanvasappApi(createDesktopTransport(() => bridge))
   return { clock, storage, blobs, server, bridge, api, renders, sleeps, advance: (ms: number) => void (clock.t += ms) }
 }
@@ -907,5 +924,178 @@ describe('request log', () => {
     expect(entries.every((e, i) => i === 0 || e.id > entries[i - 1].id)).toBe(true)
     clearDevLog()
     expect(useDevLog.getState().entries).toEqual([])
+  })
+})
+
+describe('dev server: streamed video downloads (openStream) and the dev bridge (main’s download rules)', () => {
+  /** A finished job of the prepared project. */
+  async function finishedJob(s: Setup): Promise<string> {
+    const { body } = await prepared(s)
+    const jobId = jobIdOf(await s.api.createVideoJob(body() as never))
+    s.advance(60_000)
+    return jobId
+  }
+  const path = (jobId: string) => `/api/video-jobs/${jobId}/stream`
+  async function readAll(r: DevStreamReader): Promise<{ bytes: number; error?: string }> {
+    let n = 0
+    for (;;) {
+      try {
+        const x = await r.read()
+        if (x.done) return { bytes: n }
+        n += x.value.byteLength
+      } catch (e) {
+        return { bytes: n, error: (e as Error).message }
+      }
+    }
+  }
+
+  it('Range off (default): always 200 from the start; on: 206 + Content-Range + ETag when If-Range matches, else 200; past the end → 416', async () => {
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    const off = await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: `"dev-${jobId}-1000"` } })
+    expect(off).toMatchObject({ ok: true, status: 200, headers: { 'content-length': '1000' } })
+    expect(off.ok && off.headers.etag).toBeUndefined()
+    expect(off.ok && off.headers['accept-ranges']).toBeUndefined()
+    expect(await readAll((off as { body: DevStreamReader }).body)).toEqual({ bytes: 1000 })
+
+    s.server.setConfig({ rangeSupport: true })
+    const full = await s.server.openStream({ path: path(jobId) })
+    expect(full).toMatchObject({ ok: true, status: 200, headers: { 'accept-ranges': 'bytes', etag: `"dev-${jobId}-1000"`, 'content-length': '1000' } })
+    const part = await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: `"dev-${jobId}-1000"` } })
+    expect(part).toMatchObject({ ok: true, status: 206, headers: { 'content-range': 'bytes 400-999/1000', 'content-length': '600' } })
+    expect(await readAll((part as { body: DevStreamReader }).body)).toEqual({ bytes: 600 })
+    expect(await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: '"other"' } })).toMatchObject({ status: 200 })
+    expect(await s.server.openStream({ path: path(jobId), range: { from: 1000, ifRange: `"dev-${jobId}-1000"` } })).toMatchObject({ status: 416, headers: { 'content-range': 'bytes */1000' } })
+    expect(useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').map((e) => e.status)).toEqual([200, 200, 206, 200, 416])
+    expect(useDevLog.getState().entries.find((e) => e.status === 206)?.note).toBe('tải tiếp từ byte 400')
+  })
+
+  it('canvasapp’s refusals and the request faults go through openStream like request(): 401, 409, the next-N 503s, network, 429', async () => {
+    const s = setup()
+    s.server.login()
+    const { body } = await prepared(s)
+    const jobId = jobIdOf(await s.api.createVideoJob(body() as never))
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 409, json: { detail: 'Video chưa sẵn sàng' } })
+    s.advance(60_000)
+    s.server.setJobFaults({ streamFailures: 1 })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ status: 503 })
+    expect(s.server.jobFaults().streamFailures).toBe(0)
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'network' } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: false, code: 'network' })
+    s.server.addFault({ endpoint: '*', fault: { kind: 'response', status: 429, json: { detail: 'Too many requests' } } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 429 })
+    s.server.logout()
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ status: 401 })
+    expect(useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').map((e) => [e.status, e.fault])).toEqual([
+      [409, null],
+      [503, null],
+      [null, 'network'],
+      [429, 'response 429'],
+      [401, null],
+    ])
+  })
+
+  it('body faults: cut throws after its share, stall waits until cancelled, trickle paces, oversize announces > 1 GB', async () => {
+    const s = setup({}, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 } })
+    const cut = await s.server.openStream({ path: path(jobId) })
+    expect(await readAll((cut as { body: DevStreamReader }).body)).toEqual({ bytes: 100_000, error: 'kết nối bị ngắt (lỗi giả)' })
+
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'stall', fraction: 0.25 } })
+    const stall = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    let got = 0
+    for (;;) {
+      const x = await Promise.race([stall.body.read(), new Promise<'pending'>((r) => setTimeout(() => r('pending'), 20))])
+      if (x === 'pending') break
+      if (!x.done) got += x.value.byteLength
+    }
+    expect(got).toBe(50_000)
+    const pending = stall.body.read()
+    await stall.body.cancel()
+    expect(await pending).toEqual({ done: true })
+
+    s.sleeps.length = 0
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 100_000 } })
+    const slow = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    expect(await readAll(slow.body)).toEqual({ bytes: 200_000 })
+    expect(s.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(1990) // ~2 s for 200 KB at 100 KB/s
+    s.server.clearFaults()
+
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'oversize' } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 200, headers: { 'content-length': String(1024 ** 3 + 1) } })
+  })
+
+  it('presets: stream-cut / stall / oversize one-shot, stream-slow sticky; a sticky trickle and a one-shot cut fire on the same download', async () => {
+    const p = (id: string) => DEV_FAULT_PRESETS.find((x) => x.id === id)!.rule
+    expect(['stream-cut', 'stream-stall', 'stream-slow', 'stream-oversize'].map((id) => [p(id).endpoint, !!p(id).sticky])).toEqual([
+      ['job-stream', false],
+      ['job-stream', false],
+      ['job-stream', true],
+      ['job-stream', false],
+    ])
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(p('stream-slow'))
+    s.server.addFault(p('stream-cut'))
+    s.sleeps.length = 0
+    const both = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    expect(await readAll(both.body)).toEqual({ bytes: 500, error: 'kết nối bị ngắt (lỗi giả)' })
+    expect(s.sleeps.length).toBeGreaterThan(0) // paced too
+    expect(s.server.faults().map((r) => r.fault.kind)).toEqual(['trickle']) // the cut was used up, the sticky one stays
+    expect(useDevLog.getState().entries.at(-1)?.fault).toBe('trickle 100KB/s + stream-cut')
+  })
+
+  it('the old one-message request() of /stream: cut / stall → no answer, oversize → the gateway’s 1 GB refusal', async () => {
+    const s = setup()
+    const jobId = await finishedJob(s)
+    for (const fault of [{ kind: 'cut' }, { kind: 'stall' }] as const) {
+      s.server.addFault({ endpoint: 'job-stream', fault })
+      expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toMatchObject({ ok: false, code: 'network' })
+    }
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'oversize' } })
+    expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toEqual({ ok: false, code: 'too-large', message: 'Video lớn hơn 1 GB — SanoVids không tải về máy được.' })
+    expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toMatchObject({ ok: true, status: 200 })
+  })
+
+  it('the dev bridge pulls 64 KiB pieces (progress), continues a cut download with Range when it is on, logs failures in dev words', async () => {
+    const s = setup({ rangeSupport: true }, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    const progress: number[] = []
+    const video = await s.api.fetchVideo(jobId, { onProgress: (x) => progress.push(x.received) })
+    expect(new Uint8Array(await video.arrayBuffer())).toEqual(videoBytes(200_000, 1))
+    expect(progress.at(-1)).toBe(200_000)
+
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-cut')!.rule)
+    const resumed = await s.api.fetchVideo(jobId)
+    expect(new Uint8Array(await resumed.arrayBuffer())).toEqual(videoBytes(200_000, 1))
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(-3).map((e) => [e.status, e.fault])).toEqual([
+      [200, 'stream-cut'],
+      [null, 'download-network'],
+      [206, null],
+    ])
+    expect(streams.at(-2)?.res).toEqual({ code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp giả lập.' })
+
+    s.server.setConfig({ rangeSupport: false })
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-cut')!.rule)
+    await expect(s.api.fetchVideo(jobId)).rejects.toMatchObject({ code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp giả lập.' })
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-oversize')!.rule)
+    await expect(s.api.fetchVideo(jobId)).rejects.toMatchObject({ code: 'too-large' })
+    expect(useDevLog.getState().entries.at(-1)).toMatchObject({ fault: 'download-too-large', status: null })
+  })
+
+  it('the dev bridge: a stalled download ends after the (dev) idle time; one id per download, only allowlisted video paths', async () => {
+    vi.useFakeTimers()
+    const s = setup({}, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-stall')!.rule)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(9_000)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(await p).toMatchObject({ code: 'network', message: 'canvasapp giả lập ngừng gửi video giữa chừng (10 giây không nhận thêm dữ liệu).' })
+    const refused = (await s.bridge.downloadOpen!({ id: 'abcdef00-0000-4000-8000-000000000001', path: '/api/me', from: 0 })) as BridgeDownloadOpen
+    expect(refused).toMatchObject({ ok: false, code: 'not-allowed' })
+    expect(await s.bridge.downloadRead!({ id: 'abcdef00-0000-4000-8000-000000000001' })).toMatchObject({ ok: false, code: 'gone' })
   })
 })

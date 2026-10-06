@@ -561,6 +561,53 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource).toMatch(/contextIsolation: true,\s+nodeIntegration: false,\s+sandbox: true,/)
   })
 
+  it('video downloads: three IPC calls behind guard (fromApp), owner-keyed, closed on navigation / crash / close / logout', () => {
+    for (const ch of ['canvasapp:downloadOpen', 'canvasapp:downloadRead', 'canvasapp:downloadClose']) {
+      expect(count(`'${ch}'`), ch).toBe(1)
+      const at = idx(`'${ch}'`)
+      expect(mainSource.slice(at - 30, at)).toMatch(/ipcMain\.handle\(\s*$/)
+      expect(mainSource.slice(at, at + 60)).toMatch(/^'[\w:]+',\s+guard\(\(event, args\) =>/)
+    }
+    expect(mainSource).toContain('return canvasappDownloads.open(event.sender.id, args)')
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))")
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))")
+    // the page that opened a download is watched before it opens: reload / navigation, crash, close end its downloads
+    const open = idx("'canvasapp:downloadOpen'")
+    expect(mainSource.slice(open, open + 200).indexOf('watchDownloadOwner(event.sender)')).toBeGreaterThan(-1)
+    const [ws, we] = blockAt(idx('function watchDownloadOwner(wc)'))
+    const watch = mainSource.slice(ws, we)
+    expect(watch).toContain("wc.once('destroyed', closeAll)")
+    expect(watch).toContain("wc.on('render-process-gone', closeAll)")
+    expect(watch).toContain("wc.on('did-start-navigation'")
+    expect(watch).toContain("typeof details.isMainFrame === 'boolean' ? details.isMainFrame")
+    expect(watch).toContain("typeof details.isSameDocument === 'boolean' ? details.isSameDocument")
+    expect(watch).toContain('if (main && !sameDocument) closeAll()')
+    // logout ends every download first
+    const [ls, le] = blockAt(idx('async function canvasappLogout()'))
+    expect(mainSource.slice(ls, le).trim().split('\n')[1].trim()).toBe('canvasappDownloads.closeAll()')
+    // the sessions use the allowlist, the 'download' lane and the canvasapp partition (no other session, no URL from the page)
+    const [cs, ce] = blockAt(idx('const canvasappDownloads = createDownloadSessions('))
+    const wiring = mainSource.slice(cs, ce)
+    expect(wiring).toContain("withSlot: (fn) => withCanvasappSlot('download', fn)")
+    expect(wiring).toContain("const m = matchCanvasappRoute('GET', rawPath)")
+    expect(wiring).toContain('canvasappSession().fetch(url, {')
+    expect(wiring).toContain("credentials: 'include'")
+    expect(wiring).toContain('bypassCustomProtocolHandlers: true')
+    // the pure block: no require, no Buffer, no Electron
+    const block = /\/\/ <canvasapp-downloads>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-downloads>/.exec(mainSource)![1]
+    const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code).not.toMatch(/\brequire\s*\(|\bBuffer\b|\bsession\.|\bipcMain\b|\bwebContents\b|\bprocess\./)
+  })
+
+  it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {
+    const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
+    expect(block).not.toBeNull()
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['status', 'login', 'logout', 'request', 'downloadOpen', 'downloadRead', 'downloadClose', 'checkout'])
+    expect(block![1]).toContain("ipcRenderer.invoke('canvasapp:downloadOpen', {\n        id: str(a && a.id),\n        path: str(a && a.path),\n        from: a && Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0,\n      })")
+    expect(block![1]).toContain("downloadRead: (a) => ipcRenderer.invoke('canvasapp:downloadRead', { id: str(a && a.id) })")
+    expect(block![1]).toContain("downloadClose: (a) => ipcRenderer.invoke('canvasapp:downloadClose', { id: str(a && a.id) })")
+  })
+
   it('hardening-rules.cjs requires nothing', () => {
     expect(hardeningSource).not.toMatch(/\brequire\s*\(/)
   })

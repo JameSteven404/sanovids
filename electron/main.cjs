@@ -355,7 +355,9 @@ function registerAppBridge() {
 // allowlist of canvasapp endpoints through that session. The main process adds the X-CSRF-Token header from the
 // partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low (2 API calls + 2 video
 // downloads at a time, whatever the number of running jobs) and caches the job list so it is never fetched more than
-// once every 15 s. No Origin/Referer spoofing, no Cloudflare workarounds.
+// once every 15 s. Finished videos are pulled by the page in pieces of ≤ 4 MiB (canvasapp:downloadOpen / downloadRead /
+// downloadClose, <canvasapp-downloads>): ≤ 1 GB, stopped after 60 s without data, continued with Range when canvasapp
+// allows it. No Origin/Referer spoofing, no Cloudflare workarounds.
 // ---------------------------------------------------------------------------------------------------------------
 
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
@@ -461,6 +463,602 @@ async function withCanvasappSlot(laneName, fn) {
 }
 // </canvasapp-lanes>
 
+// <canvasapp-downloads> (pure; src/providers/__tests__/gatewayDownloads.test.ts runs this block as-is next to its
+// TypeScript port src/providers/dev/downloads.ts (development mode): keep both in sync)
+/**
+ * Finished videos never cross IPC in one message. The page pulls them in pieces (canvasapp:downloadOpen / downloadRead /
+ * downloadClose): main reads the HTTP body of GET /api/video-jobs/{id}/stream itself and answers each read with what
+ * arrived (≤ 4 MiB, or less after 1 s on a slow link). One read at a time per download; the body stream is read only
+ * while the page waits for a piece (whether session.fetch's stream itself buffers further ahead is Electron's: VERIFY).
+ * A download holds one slot of the 'download' lane from open to end. It ends after 60 s without a network byte, after
+ * 30 s without a read from the page (reload / crash), after 60 min in all, past 1 GB, when the page closes it, reloads,
+ * navigates, crashes or logs out. A download cut half-way continues with Range + If-Range only when canvasapp gave a
+ * strong ETag (or a Last-Modified date) for that video: never spliced onto a file that may have changed.
+ * The page never sends a URL (only an allowlisted path), a header or a validator: main keeps those.
+ */
+const CANVASAPP_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
+const CANVASAPP_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+const CANVASAPP_DOWNLOAD_FLUSH_MS = 1000
+/** Until the answer's headers (from when the slot is held): generous, /stream may fetch the file before answering (VERIFY). */
+const CANVASAPP_DOWNLOAD_HEADERS_MS = 5 * 60_000
+const CANVASAPP_DOWNLOAD_IDLE_MS = 60_000
+const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 30_000
+const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
+/** Open + waiting for a slot. ≥ the jobs that may finish at once (src/providers/canvasapp/adapter.ts MAX_CONCURRENCY). */
+const CANVASAPP_DOWNLOAD_MAX_SESSIONS = 16
+const CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES = 64 * 1024
+/** A video's validator (ETag / Last-Modified) is kept this long for a later resume of the same path. */
+const CANVASAPP_DOWNLOAD_TAG_MS = 10 * 60_000
+const CANVASAPP_DOWNLOAD_MAX_TAGS = 64
+/** Download ids are chosen by the page (crypto.randomUUID()), so it can close one that still waits for a slot. */
+const CANVASAPP_DOWNLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+/** Content-Length → bytes, or null (missing / not a plain number). */
+function parseContentLength(v) {
+  const s = typeof v === 'string' ? v.trim() : ''
+  return /^\d{1,15}$/.test(s) ? Number(s) : null
+}
+
+/** "bytes 100-199/1000" → { start, end, total } (end inclusive; total null for "*"), or null. */
+function parseContentRange(v) {
+  const m = typeof v === 'string' ? /^bytes (\d{1,15})-(\d{1,15})\/(\d{1,15}|\*)$/i.exec(v.trim()) : null
+  if (!m) return null
+  const start = Number(m[1])
+  const end = Number(m[2])
+  const total = m[3] === '*' ? null : Number(m[3])
+  if (start > end || (total !== null && end >= total)) return null
+  return { start, end, total }
+}
+
+/** Where the page asks to continue from: a safe integer in (0, maxBytes), else 0. */
+function downloadStartByte(v, maxBytes) {
+  return Number.isSafeInteger(v) && v > 0 && v < maxBytes ? v : 0
+}
+
+/** A strong ETag (never W/), else an HTTP date (Last-Modified), else null. Strict: nothing else reaches a header. */
+function strongValidator(etag, lastModified) {
+  const e = typeof etag === 'string' ? etag.trim() : ''
+  if (/^"[\x21\x23-\x7e]{1,200}"$/.test(e)) return e
+  const d = typeof lastModified === 'string' ? lastModified.trim() : ''
+  if (/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(d)) return d
+  return null
+}
+
+/** Request headers: Range + If-Range only to continue (from > 0) a video whose validator main holds. */
+function downloadHeaders(from, validator) {
+  const h = { Accept: 'video/mp4,*/*' }
+  if (from > 0 && validator) {
+    h.Range = `bytes=${from}-`
+    h['If-Range'] = validator
+  }
+  return h
+}
+
+/** The answer came from https (after redirects). Checked before reading the body: the request itself already left. */
+function downloadFinalUrlOk(url) {
+  if (url === undefined || url === null || url === '') return true
+  try {
+    return new URL(String(url)).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * What to do with an answer:
+ *   { kind: 'answer' }      not 200 / 206: read a little of the body, hand it to the page (401, 404, 409, 5xx…);
+ *   { kind: 'bad-range' }   a 206 that does not start where asked (or of unknown size), or 416 to a resume;
+ *   { kind: 'too-large' }   the announced size is over maxBytes (nothing is read);
+ *   { kind: 'stream', from, end, total, resumable }   end = absolute end of this answer (null = unknown), total = the
+ *                           whole video's size (null = unknown); resumable = a cut can continue with Range.
+ * A 200 to a resume means "from the start". An encoded body (Content-Encoding) has no usable length nor offsets.
+ */
+function downloadPlan(o) {
+  const from = o.from > 0 ? o.from : 0
+  const enc = typeof o.contentEncoding === 'string' ? o.contentEncoding.trim() : ''
+  const encoded = enc !== '' && !/^identity$/i.test(enc)
+  if (o.status === 416 && from > 0) return { kind: 'bad-range' }
+  if (o.status !== 200 && o.status !== 206) return { kind: 'answer' }
+  if (o.status === 206) {
+    const r = encoded ? null : parseContentRange(o.contentRange)
+    if (!r || r.start !== from || r.total === null) return { kind: 'bad-range' }
+    if (r.total > o.maxBytes) return { kind: 'too-large' }
+    return { kind: 'stream', from: r.start, end: r.end + 1, total: r.total, resumable: !!o.validator }
+  }
+  const len = encoded ? null : parseContentLength(o.contentLength)
+  if (len !== null && len > o.maxBytes) return { kind: 'too-large' }
+  const ranges = typeof o.acceptRanges === 'string' && /^bytes$/i.test(o.acceptRanges.trim())
+  return { kind: 'stream', from: 0, end: len, total: len, resumable: !encoded && ranges && !!o.validator }
+}
+
+/**
+ * Pieces of one HTTP body for the page. o: { reader, start, end, maxBytes, chunkBytes, flushMs, idleMs, setTimer,
+ * clearTimer }. read() → { bytes } | { done: true } | { error: 'network' | 'too-large', reason }, never throws.
+ * The network is read only while a read() waits (one reader.read() at a time); a piece is chunkBytes, or what
+ * arrived once flushMs passed. 'done' only for a body that ended by itself with the announced length. Reasons: idle
+ * (no byte for idleMs), cut (the connection broke), length (not the announced size), size (over maxBytes), closed
+ * (cancel(), or a second read() at once), max (abort('max')). After a cut / idle, what arrived before is still handed
+ * out first; then (and after any other failure at once) every read() returns the failure.
+ */
+function createDownloadPump(o) {
+  const reader = o.reader
+  const start = o.start > 0 ? o.start : 0
+  const end = typeof o.end === 'number' ? o.end : null
+  let queue = []
+  let queued = 0
+  let received = 0
+  let pulling = false
+  let eof = false
+  let finished = false
+  let failure = null
+  let waiter = null
+  let idleTimer = null
+
+  const stopIdle = () => {
+    if (idleTimer !== null) o.clearTimer(idleTimer)
+    idleTimer = null
+  }
+
+  function fail(reason) {
+    if (failure || finished) return
+    failure = { error: reason === 'size' ? 'too-large' : 'network', reason }
+    stopIdle()
+    // a broken / stalled connection: what arrived before is still the video's start (handed out first, for a resume)
+    if (reason !== 'cut' && reason !== 'idle') {
+      queue = []
+      queued = 0
+    }
+    try {
+      const p = reader.cancel()
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+    answer()
+  }
+
+  /** The next piece: a fresh copy (a view would send its whole buffer over IPC). */
+  function take() {
+    const n = Math.min(o.chunkBytes, queued)
+    const out = new Uint8Array(n)
+    let off = 0
+    while (off < n) {
+      const head = queue[0]
+      const k = Math.min(head.byteLength, n - off)
+      out.set(k === head.byteLength ? head : head.subarray(0, k), off)
+      off += k
+      if (k === head.byteLength) queue.shift()
+      else queue[0] = head.subarray(k)
+    }
+    queued -= n
+    return out
+  }
+
+  function answer() {
+    if (!waiter) return
+    let out
+    if (failure) out = queued > 0 ? { bytes: take() } : failure
+    else if (queued >= o.chunkBytes || (queued > 0 && (eof || waiter.flushDue))) out = { bytes: take() }
+    else if (eof) {
+      finished = true
+      out = { done: true }
+    } else {
+      pull()
+      return
+    }
+    const w = waiter
+    waiter = null
+    o.clearTimer(w.timer)
+    w.resolve(out)
+  }
+
+  function pull() {
+    if (pulling || eof || failure) return
+    pulling = true
+    idleTimer = o.setTimer(() => {
+      idleTimer = null
+      fail('idle')
+    }, o.idleMs)
+    let p
+    try {
+      p = Promise.resolve(reader.read())
+    } catch (e) {
+      p = Promise.reject(e)
+    }
+    p.then(
+      (r) => {
+        pulling = false
+        stopIdle()
+        if (failure) return
+        if (!r || r.done) {
+          if (end !== null && start + received !== end) return fail('length')
+          eof = true
+          return answer()
+        }
+        const v = r.value
+        if (!v || !ArrayBuffer.isView(v)) return fail('cut')
+        const chunk = new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
+        received += chunk.byteLength
+        if (start + received > o.maxBytes) return fail('size')
+        if (end !== null && start + received > end) return fail('length')
+        if (chunk.byteLength) {
+          queue.push(chunk)
+          queued += chunk.byteLength
+        }
+        answer()
+      },
+      () => {
+        pulling = false
+        stopIdle()
+        fail('cut')
+      },
+    )
+  }
+
+  function read() {
+    if (failure && queued === 0) return Promise.resolve(failure)
+    if (waiter) {
+      fail('closed') // a second read at once: never hand out pieces out of order
+      return Promise.resolve(failure)
+    }
+    if (finished) return Promise.resolve({ done: true })
+    return new Promise((resolve) => {
+      const w = { resolve, flushDue: false, timer: null }
+      w.timer = o.setTimer(() => {
+        if (waiter !== w) return
+        w.flushDue = true
+        answer()
+      }, o.flushMs)
+      waiter = w
+      answer()
+    })
+  }
+
+  return { read, abort: (reason) => fail(reason), cancel: () => fail('closed'), received: () => received }
+}
+
+/** "1 GB", "512 MB" (decimal comma). */
+function downloadSizeText(bytes) {
+  const gb = bytes / (1024 * 1024 * 1024)
+  const n = gb >= 1 ? `${Math.round(gb * 10) / 10} GB` : `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`
+  return n.replace('.', ',')
+}
+
+/** { code, message } of a failed download (reason of createDownloadPump). o: { idleMs, maxMs, maxBytes }. */
+function downloadFailure(reason, o) {
+  const opt = o || {}
+  const secs = Math.max(1, Math.round((opt.idleMs || CANVASAPP_DOWNLOAD_IDLE_MS) / 1000))
+  const mins = Math.max(1, Math.round((opt.maxMs || CANVASAPP_DOWNLOAD_MAX_MS) / 60_000))
+  switch (reason) {
+    case 'idle':
+      return { code: 'network', message: `canvasapp.io.vn ngừng gửi video giữa chừng (${secs} giây không nhận thêm dữ liệu).` }
+    case 'cut':
+      return { code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp.io.vn.' }
+    case 'length':
+      return { code: 'network', message: 'Video tải về không khớp dung lượng canvasapp.io.vn báo (kết nối bị đóng giữa chừng).' }
+    case 'size':
+      return { code: 'too-large', message: `Video lớn hơn ${downloadSizeText(opt.maxBytes || CANVASAPP_VIDEO_MAX_BYTES)} — SanoVids không tải về máy được.` }
+    case 'max':
+      return { code: 'network', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
+    default:
+      return { code: 'gone', message: 'Lượt tải video này đã kết thúc.' }
+  }
+}
+
+/** The start of an error answer's body (≤ maxBytes, then cancelled; `signal` aborts the read), as text. Never throws. */
+async function readErrorBody(body, maxBytes, signal) {
+  if (!body || typeof body.getReader !== 'function') return ''
+  let reader
+  try {
+    reader = body.getReader()
+  } catch {
+    return ''
+  }
+  const parts = []
+  let size = 0
+  const stop = () => {
+    try {
+      const p = reader.cancel()
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+  }
+  if (signal) {
+    if (signal.aborted) stop()
+    else signal.addEventListener('abort', stop, { once: true })
+  }
+  try {
+    while (size < maxBytes) {
+      const r = await reader.read()
+      if (!r || r.done || !r.value || !ArrayBuffer.isView(r.value)) break
+      const v = r.value
+      const piece = new Uint8Array(v.buffer, v.byteOffset, Math.min(v.byteLength, maxBytes - size)).slice()
+      parts.push(piece)
+      size += piece.byteLength
+    }
+  } catch {
+    /* cut: what came is enough */
+  }
+  if (signal) signal.removeEventListener('abort', stop)
+  stop()
+  const all = new Uint8Array(size)
+  let off = 0
+  for (const p of parts) {
+    all.set(p, off)
+    off += p.byteLength
+  }
+  return new TextDecoder().decode(all)
+}
+
+/** A non-2xx answer for the page, like canvasapp:request's (JSON when it says so, else ≤ 2000 characters of text). */
+function downloadAnswer(status, contentType, text) {
+  const out = { ok: true, status, contentType }
+  if (/json/i.test(contentType)) {
+    try {
+      out.json = JSON.parse(text)
+    } catch {
+      out.text = text.slice(0, 2000)
+    }
+  } else {
+    out.text = text.slice(0, 2000)
+  }
+  return out
+}
+
+/**
+ * The downloads of the gateway. deps: { fetch(url, { headers, signal }) → Response-like, withSlot(fn) (a slot of the
+ * 'download' lane, held until fn's promise settles), matchRoute(path) → { binary, url, key } | null, setTimer,
+ * clearTimer, now, limits? } (limits overrides the constants above — development mode, tests).
+ *   open(owner, { id, path, from })   → { ok: true, id, status, contentType, from, total, resumable }   (streaming)
+ *                                     | { ok: true, status, contentType, json?, text? }                (not 200 / 206)
+ *                                     | { ok: false, code, message }   bad-request | busy | not-allowed | gone |
+ *                                       network | too-large | bad-range
+ *   read(owner, { id })               → { ok: true, done: false, bytes } | { ok: true, done: true } | { ok: false, … }
+ *   close(owner, { id })              → { ok: true } (idempotent; ends a download still waiting for its slot too)
+ *   closeAll(owner?)                  every download of that page (all without owner): reload, crash, logout.
+ * Only the page (owner = webContents id) that opened a download may read or close it. Every end frees the slot once.
+ */
+function createDownloadSessions(deps) {
+  const lim = Object.assign(
+    {
+      maxBytes: CANVASAPP_VIDEO_MAX_BYTES,
+      chunkBytes: CANVASAPP_DOWNLOAD_CHUNK_BYTES,
+      flushMs: CANVASAPP_DOWNLOAD_FLUSH_MS,
+      headersMs: CANVASAPP_DOWNLOAD_HEADERS_MS,
+      idleMs: CANVASAPP_DOWNLOAD_IDLE_MS,
+      pullIdleMs: CANVASAPP_DOWNLOAD_PULL_IDLE_MS,
+      maxMs: CANVASAPP_DOWNLOAD_MAX_MS,
+      maxSessions: CANVASAPP_DOWNLOAD_MAX_SESSIONS,
+      errorBodyBytes: CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES,
+    },
+    deps.limits || {},
+  )
+  const sessions = new Map()
+  const tags = new Map() // path → { validator, at }
+  const refusal = (code, message) => ({ ok: false, code, message })
+  const failure = (reason) => {
+    const f = downloadFailure(reason, lim)
+    return refusal(f.code, f.message)
+  }
+
+  function tagOf(key) {
+    const t = tags.get(key)
+    if (!t) return null
+    if (deps.now() - t.at >= CANVASAPP_DOWNLOAD_TAG_MS) {
+      tags.delete(key)
+      return null
+    }
+    return t.validator
+  }
+  function rememberTag(key, validator) {
+    tags.delete(key)
+    tags.set(key, { validator, at: deps.now() })
+    while (tags.size > CANVASAPP_DOWNLOAD_MAX_TAGS) tags.delete(tags.keys().next().value)
+  }
+
+  /** The one way a download ends: timers off, body cancelled, request aborted, slot freed — once. */
+  function end(s) {
+    if (s.ended) return
+    s.ended = true
+    for (const k of ['headerTimer', 'pullTimer', 'maxTimer']) {
+      if (s[k] !== null) deps.clearTimer(s[k])
+      s[k] = null
+    }
+    sessions.delete(s.id)
+    if (s.pump) s.pump.cancel()
+    try {
+      s.controller.abort()
+    } catch {
+      /* nothing in flight */
+    }
+    const release = s.release
+    s.release = null
+    if (release) release()
+  }
+
+  function armPull(s) {
+    if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
+    s.pullTimer = deps.setTimer(() => {
+      s.pullTimer = null
+      end(s)
+    }, lim.pullIdleMs)
+  }
+
+  function owned(owner, args) {
+    const id = args && typeof args === 'object' && typeof args.id === 'string' ? args.id : ''
+    if (!CANVASAPP_DOWNLOAD_ID_RE.test(id)) return null
+    const s = sessions.get(id)
+    return s && s.owner === owner ? s : null
+  }
+
+  function cancelBody(res) {
+    try {
+      const p = res && res.body && typeof res.body.cancel === 'function' ? res.body.cancel() : null
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+  }
+
+  async function open(owner, args) {
+    const a = args && typeof args === 'object' ? args : {}
+    const id = typeof a.id === 'string' && CANVASAPP_DOWNLOAD_ID_RE.test(a.id) ? a.id : null
+    if (!id) return refusal('bad-request', 'Mã lượt tải video không hợp lệ.')
+    if (sessions.has(id)) return refusal('busy', 'Mã lượt tải video này đang được dùng.')
+    const m = deps.matchRoute(a.path)
+    if (!m || !m.binary) return refusal('not-allowed', `SanoVids không được phép tải ${String(a.path).slice(0, 80)}.`)
+    if (sessions.size >= lim.maxSessions) return refusal('busy', 'Đang tải quá nhiều video cùng lúc — SanoVids tải video này sau.')
+    const s = { id, owner, key: m.key, controller: new AbortController(), pump: null, release: null, ended: false, reading: false, headerTimer: null, pullTimer: null, maxTimer: null, timedOut: false }
+    sessions.set(id, s)
+
+    // One slot of the 'download' lane for the whole download. Closed while waiting: the slot is let go at once.
+    const got = await new Promise((resolve) => {
+      const held = () => {
+        if (s.ended) {
+          resolve(false)
+          return Promise.resolve()
+        }
+        return new Promise((done) => {
+          s.release = done
+          resolve(true)
+        })
+      }
+      let slot
+      try {
+        slot = Promise.resolve(deps.withSlot(held))
+      } catch (e) {
+        slot = Promise.reject(e)
+      }
+      slot.then(undefined, () => resolve(false))
+    })
+    if (!got || s.ended) {
+      end(s)
+      return failure('closed')
+    }
+
+    const validator = tagOf(s.key)
+    const from = validator ? downloadStartByte(a.from, lim.maxBytes) : 0
+    s.headerTimer = deps.setTimer(() => {
+      s.headerTimer = null
+      s.timedOut = true
+      s.controller.abort()
+    }, lim.headersMs)
+    let res
+    try {
+      res = await deps.fetch(m.url, { headers: downloadHeaders(from, validator), signal: s.controller.signal })
+    } catch (e) {
+      const closed = s.ended && !s.timedOut
+      end(s)
+      if (closed) return failure('closed')
+      return refusal('network', s.timedOut ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
+    }
+    if (s.ended) {
+      cancelBody(res)
+      return failure('closed')
+    }
+    if (!res || typeof res.status !== 'number') {
+      end(s)
+      return refusal('network', 'canvasapp.io.vn trả về câu trả lời lạ.')
+    }
+    if (!downloadFinalUrlOk(res.url)) {
+      cancelBody(res)
+      end(s)
+      return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+    }
+    const header = (name) => {
+      const v = res.headers && typeof res.headers.get === 'function' ? res.headers.get(name) : null
+      return typeof v === 'string' ? v : null
+    }
+    const contentType = header('content-type') || ''
+    const validatorNow = strongValidator(header('etag'), header('last-modified'))
+    const plan = downloadPlan({
+      status: res.status,
+      from,
+      contentLength: header('content-length'),
+      contentRange: header('content-range'),
+      contentEncoding: header('content-encoding'),
+      acceptRanges: header('accept-ranges'),
+      validator: validatorNow,
+      maxBytes: lim.maxBytes,
+    })
+    if (plan.kind === 'answer') {
+      const text = await readErrorBody(res.body, lim.errorBodyBytes, s.controller.signal) // still under the headers timer
+      end(s)
+      return downloadAnswer(res.status, contentType, text)
+    }
+    if (plan.kind !== 'stream') {
+      cancelBody(res)
+      end(s)
+      if (plan.kind === 'too-large') return failure('size')
+      return refusal('bad-range', 'canvasapp.io.vn trả về phần video không khớp chỗ đang tải.')
+    }
+    deps.clearTimer(s.headerTimer)
+    s.headerTimer = null
+    if (validatorNow) rememberTag(s.key, validatorNow)
+    else tags.delete(s.key)
+    let reader = null
+    try {
+      reader = res.body && typeof res.body.getReader === 'function' ? res.body.getReader() : null
+    } catch {
+      reader = null
+    }
+    if (!reader) reader = { read: () => Promise.resolve({ done: true }), cancel: () => Promise.resolve() }
+    s.pump = createDownloadPump({
+      reader,
+      start: plan.from,
+      end: plan.end,
+      maxBytes: lim.maxBytes,
+      chunkBytes: lim.chunkBytes,
+      flushMs: lim.flushMs,
+      idleMs: lim.idleMs,
+      setTimer: deps.setTimer,
+      clearTimer: deps.clearTimer,
+    })
+    s.maxTimer = deps.setTimer(() => {
+      s.maxTimer = null
+      if (s.pump) s.pump.abort('max')
+    }, lim.maxMs)
+    armPull(s)
+    return { ok: true, id, status: res.status, contentType, from: plan.from, total: plan.total, resumable: plan.resumable }
+  }
+
+  async function read(owner, args) {
+    const s = owned(owner, args)
+    if (!s) return failure('closed')
+    if (!s.pump || s.reading) return refusal('busy', 'Lượt tải video này đang mở hoặc đang được đọc.')
+    s.reading = true
+    if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
+    s.pullTimer = null
+    try {
+      const r = await s.pump.read()
+      if (r && r.bytes) return { ok: true, done: false, bytes: r.bytes }
+      end(s)
+      if (r && r.done) return { ok: true, done: true }
+      return failure(r && r.reason)
+    } catch (e) {
+      end(s)
+      return refusal('network', `Không đọc được video (${(e && e.message) || e}).`)
+    } finally {
+      s.reading = false
+      if (!s.ended) armPull(s)
+    }
+  }
+
+  function close(owner, args) {
+    const s = owned(owner, args)
+    if (s) end(s)
+    return { ok: true }
+  }
+
+  function closeAll(owner) {
+    for (const s of [...sessions.values()]) if (owner === undefined || s.owner === owner) end(s)
+  }
+
+  return { open, read, close, closeAll, size: () => sessions.size }
+}
+// </canvasapp-downloads>
+
 async function canvasappCsrf() {
   const cookies = await canvasappSession().cookies.get({ url: CANVASAPP_ORIGIN, name: 'canvas_csrf' })
   return cookies[0] ? cookies[0].value : null
@@ -540,6 +1138,13 @@ async function canvasappRequest(req) {
       const contentType = res.headers.get('content-type') || ''
       const out = { ok: true, status: res.status, contentType }
       if (route.binary && res.ok) {
+        // Older pages only (the streamed downloads below replace this): the whole video in one answer, ≤ 1 GB.
+        const length = parseContentLength(res.headers.get('content-length'))
+        if (length !== null && length > CANVASAPP_VIDEO_MAX_BYTES) {
+          controller.abort()
+          const f = downloadFailure('size', { maxBytes: CANVASAPP_VIDEO_MAX_BYTES })
+          return gatewayError(f.code, f.message)
+        }
         out.bytes = new Uint8Array(await res.arrayBuffer())
       } else {
         const text = await res.text()
@@ -567,6 +1172,45 @@ async function canvasappRequest(req) {
       canvasappJobListCache.clear()
     }
   }
+}
+
+/** Video downloads of the gateway (<canvasapp-downloads>): the 'download' lane, the canvasapp partition, the allowlist. */
+const canvasappDownloads = createDownloadSessions({
+  fetch: (url, init) =>
+    canvasappSession().fetch(url, {
+      method: 'GET',
+      headers: init.headers,
+      credentials: 'include',
+      redirect: 'follow',
+      signal: init.signal,
+      bypassCustomProtocolHandlers: true,
+    }),
+  withSlot: (fn) => withCanvasappSlot('download', fn),
+  matchRoute: (rawPath) => {
+    const m = matchCanvasappRoute('GET', rawPath)
+    return m ? { binary: !!m.route.binary, url: m.url.toString(), key: m.url.pathname } : null
+  },
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (t) => clearTimeout(t),
+  now: () => Date.now(),
+})
+
+const canvasappDownloadOwners = new WeakSet()
+
+/** A page that reloads, navigates away, crashes or closes stops its video downloads at once (their slots are freed). */
+function watchDownloadOwner(wc) {
+  if (!wc || canvasappDownloadOwners.has(wc)) return
+  canvasappDownloadOwners.add(wc)
+  const owner = wc.id
+  const closeAll = () => canvasappDownloads.closeAll(owner)
+  wc.once('destroyed', closeAll)
+  wc.on('render-process-gone', closeAll)
+  // Electron ≥ 25 puts the details on the event object; older builds pass them as arguments.
+  wc.on('did-start-navigation', (details, _url, isInPlace, isMainFrame) => {
+    const main = details && typeof details.isMainFrame === 'boolean' ? details.isMainFrame : isMainFrame !== false
+    const sameDocument = details && typeof details.isSameDocument === 'boolean' ? details.isSameDocument : isInPlace === true
+    if (main && !sameDocument) closeAll()
+  })
 }
 
 async function canvasappStatus() {
@@ -646,6 +1290,7 @@ function canvasappLogin(parent) {
 }
 
 async function canvasappLogout() {
+  canvasappDownloads.closeAll()
   if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
   if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
   const ses = canvasappSession()
@@ -940,6 +1585,15 @@ function registerCanvasappGateway() {
   ipcMain.handle('canvasapp:login', guard((event) => canvasappLogin(BrowserWindow.fromWebContents(event.sender))))
   ipcMain.handle('canvasapp:logout', guard(() => canvasappLogout()))
   ipcMain.handle('canvasapp:request', guard((_event, req) => canvasappRequest(req)))
+  ipcMain.handle(
+    'canvasapp:downloadOpen',
+    guard((event, args) => {
+      watchDownloadOwner(event.sender)
+      return canvasappDownloads.open(event.sender.id, args)
+    }),
+  )
+  ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))
+  ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
 }
 

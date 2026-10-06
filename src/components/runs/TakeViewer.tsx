@@ -26,6 +26,7 @@ import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/mode
 import type { Asset, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useDownloadPrefs } from '../../lib/downloads'
+import { transferLabel, transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { useMediaUrl } from '../../lib/imageStore'
 import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
@@ -433,19 +434,31 @@ function BigActionButton({ take, label, onRerun }: { take: Take; label: string; 
       </button>
     )
   }
-  if (isActive(take)) {
-    const pct = take.status === 'processing' ? take.progress : 0
-    return (
-      <button type="button" className="btn btn-primary btn-lg rq-dl-big busy" disabled style={{ ['--p' as string]: `${pct}%` }} title="Video đang được tạo">
-        <LoaderCircle size={17} className="rq-spin" />
-        {take.status === 'processing' ? `Đang tạo ${pct}%` : 'Đang chờ…'}
-      </button>
-    )
-  }
+  if (isActive(take)) return <BusyButton take={take} />
   return (
     <button type="button" className="btn btn-primary btn-lg rq-dl-big" disabled={!onRerun} onClick={onRerun} title="Chạy lại cảnh với prompt hiện tại">
       <RotateCcw size={17} />
       Chạy lại
+    </button>
+  )
+}
+
+/** "Đang chờ…", "Đang tạo 40%", then "Đang tải về 45%" (or "… 12,3 MB") while the finished video downloads. */
+function BusyButton({ take }: { take: Take }) {
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[take.id]))
+  const transferPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
+  const processing = take.status === 'processing'
+  const pct = processing ? (transfer ? (transferPct ?? take.progress) : take.progress) : 0
+  return (
+    <button
+      type="button"
+      className="btn btn-primary btn-lg rq-dl-big busy"
+      disabled
+      style={{ ['--p' as string]: `${pct}%` }}
+      title={transfer ? 'Video đã tạo xong, đang tải về máy' : 'Video đang được tạo'}
+    >
+      <LoaderCircle size={17} className="rq-spin" />
+      {processing ? (transfer ?? `Đang tạo ${pct}%`) : 'Đang chờ…'}
     </button>
   )
 }

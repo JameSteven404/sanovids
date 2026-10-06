@@ -1,7 +1,10 @@
 // End-to-end proof of the REAL-credit path, without any network:
 //   the real queue engine (store/runs) → the real canvasapp adapter / api / desktop transport (providers/canvasapp)
 //   → window.bdpDesktop.canvasapp → an in-memory FAKE canvasapp.io.vn that behaves like the server + electron/main.cjs
-//   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request.
+//   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request. Videos come
+//   through main's OWN streamed downloads (its <canvasapp-downloads> + <canvasapp-lanes> blocks, run as-is: pieces,
+//   slots, idle timeout, 1 GB cap, Range only with the ETag); 'gateway e2e: download' also runs on an older desktop
+//   build (one binary request).
 // The fake is strict where canvasapp is: the canvas must have exactly canvasPayload()'s keys ("Invalid canvas
 // payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — the SAME validators the in-app dev
 // server uses (providers/dev/validate.ts) — and every request must pass the endpoint allowlist of electron/main.cjs
@@ -33,6 +36,7 @@ import { costOf, MODELS } from '../../core/models'
 import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/types'
 import { takeFiles } from '../../lib/downloads'
 import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
+import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
@@ -51,7 +55,9 @@ import {
   type KeyValueStorage,
 } from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
-import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
+import { createDesktopTransport, type BridgeDownloadOpen, type BridgeDownloadRead, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
+import type * as DownloadsPort from '../dev/downloads'
+import type { ByteReader, ResponseLike } from '../dev/downloads'
 import { getProvider, providerLimits, refreshProviderLimits, registerProvider, useProviderPrefs } from '../index'
 import type { JobRequest } from '../types'
 import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
@@ -72,6 +78,25 @@ function loadMainRoutes(): { match: (method: string, path: string) => unknown; m
   return factory('https://canvasapp.io.vn')
 }
 const mainRoutes = loadMainRoutes()
+
+function mainBlock(name: string): string {
+  const m = new RegExp(`// <${name}>[^\\n]*\\n([\\s\\S]*?)// </${name}>`).exec(mainSource)
+  if (!m) throw new Error(`${name} block not found in electron/main.cjs`)
+  return m[1]
+}
+/** electron/main.cjs's video downloads (the <canvasapp-downloads> block, run as-is). */
+const mainDownloads = new Function(`${mainBlock('canvasapp-downloads')}\nreturn { createDownloadSessions, CANVASAPP_VIDEO_MAX_BYTES }`)() as Pick<
+  typeof DownloadsPort,
+  'createDownloadSessions' | 'CANVASAPP_VIDEO_MAX_BYTES'
+>
+/** A fresh 'download' lane of main's <canvasapp-lanes> block (as-is). */
+function mainDownloadLane() {
+  const l = new Function(`${mainBlock('canvasapp-lanes')}\nreturn { withSlot: withCanvasappSlot, lanes: canvasappLanes }`)() as {
+    withSlot: (lane: string, fn: () => Promise<unknown>) => Promise<unknown>
+    lanes: { download: { active: number } }
+  }
+  return { withSlot: (fn: () => Promise<unknown>) => l.withSlot('download', fn), active: () => l.lanes.download.active }
+}
 
 interface FakeJob {
   job_id: string
@@ -107,6 +132,12 @@ type Fault =
   | { kind: 'wait'; until: Promise<void> }
   /** Answered with this status/body without being handled. */
   | { kind: 'response'; status: number; json?: unknown }
+  /** Video download: the connection breaks after `after` bytes of the body (old one-message builds: a network error). */
+  | { kind: 'cut'; after: number }
+  /** Video download: the server stops sending after `after` bytes (old builds: never answers). */
+  | { kind: 'stall'; after: number }
+  /** Video download: the answer announces more than 1 GB. */
+  | { kind: 'oversize' }
 
 const DEFAULT_SCRIPT: Partial<FakeJob>[] = [
   { status: 'queued', progress: 0 },
@@ -116,11 +147,20 @@ const DEFAULT_SCRIPT: Partial<FakeJob>[] = [
 
 interface Logged extends TransportRequest {
   at: number
+  /** Streamed video download: the Range header sent (continue from that byte). */
+  range?: string
 }
 
-function fakeCanvasapp() {
+function fakeCanvasapp(opts: { streaming?: boolean } = {}) {
+  const streaming = opts.streaming !== false
   const log: Logged[] = []
   const state = {
+    /** Video downloads honour Range + If-Range with an ETag (VERIFY on the live site). */
+    rangeSupport: false,
+    /** Video answers carry Content-Length. */
+    sendLength: true,
+    /** The video bytes of a job. */
+    video: (jobId: string): Uint8Array => new TextEncoder().encode('MP4:' + jobId),
     authenticated: true,
     balance: 100,
     /** Status for "not enough credits" (canvasapp: VERIFY 400 or 402). */
@@ -257,7 +297,7 @@ function fakeCanvasapp() {
       const job = state.jobs.find((j) => j.job_id === stream[1])
       if (!job) return refuse(404, 'Job not found', path)
       if (job.status !== 'completed' || !job.download_available) return refuse(409, 'Video chưa sẵn sàng', path)
-      return { ok: true, status: 200, contentType: 'video/mp4', bytes: new TextEncoder().encode('MP4:' + job.job_id) }
+      return { ok: true, status: 200, contentType: 'video/mp4', bytes: state.video(job.job_id) }
     }
     const one = /^\/api\/video-jobs\/([^/]+)$/.exec(path)
     if (one && req.method === 'DELETE') {
@@ -267,6 +307,81 @@ function fakeCanvasapp() {
     return refuse(404, 'Not found', path)
   }
 
+  // ---- streamed video downloads: main's own sessions in front of the fake server ----
+  const lane = mainDownloadLane()
+  /** canvasapp's answer to one GET …/stream (Range + If-Range when the gateway continues a download). */
+  async function streamFetch(url: string, init: { headers: Record<string, string>; signal: AbortSignal }): Promise<ResponseLike> {
+    const path = new URL(url).pathname
+    const req: TransportRequest = { method: 'GET', path, binary: true }
+    log.push({ ...req, at: Date.now(), ...(init.headers.Range ? { range: init.headers.Range } : {}) })
+    const aborted = new Promise<never>((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))
+    aborted.catch(() => undefined)
+    const fault = state.fault?.(req)
+    const text = (status: number, json: unknown): ResponseLike => {
+      const body = new TextEncoder().encode(JSON.stringify(json ?? {}))
+      const r = reader([body])
+      return { status, url: 'https://canvasapp.io.vn' + path, headers: { get: (n) => (n === 'content-type' ? 'application/json' : null) }, body: { getReader: () => r } }
+    }
+    if (fault?.kind === 'network') throw new Error('offline')
+    if (fault?.kind === 'response') return text(fault.status, fault.json)
+    if (fault?.kind === 'hang') {
+      if (fault.process) handle(req)
+      return aborted
+    }
+    if (fault?.kind === 'wait') await Promise.race([fault.until, aborted])
+    const res = handle(req)
+    if (fault?.kind === 'lost-response') throw new Error('timeout')
+    if (fault?.kind === 'processed-then') return text(fault.status, fault.json)
+    if (!res.ok) throw new Error(res.message)
+    if (!res.bytes) return text(res.status, res.json)
+    const all = res.bytes
+    const etag = `"fake-${all.byteLength}"`
+    const h: Record<string, string> = { 'content-type': res.contentType }
+    if (state.rangeSupport) {
+      h['accept-ranges'] = 'bytes'
+      h.etag = etag
+    }
+    const m = /^bytes=(\d+)-$/.exec(init.headers.Range ?? '')
+    const from = m && state.rangeSupport && init.headers['If-Range'] === etag ? Number(m[1]) : 0
+    const body = all.slice(from)
+    if (from > 0) h['content-range'] = `bytes ${from}-${all.byteLength - 1}/${all.byteLength}`
+    if (state.sendLength || from > 0) h['content-length'] = String(fault?.kind === 'oversize' ? mainDownloads.CANVASAPP_VIDEO_MAX_BYTES + 1 : body.byteLength)
+    const steps: (Uint8Array | 'error' | 'hang')[] =
+      fault?.kind === 'cut' ? [body.slice(0, fault.after), 'error'] : fault?.kind === 'stall' ? [body.slice(0, fault.after), 'hang'] : [body]
+    const r = reader(steps)
+    return { status: from > 0 ? 206 : 200, url: 'https://canvasapp.io.vn' + path, headers: { get: (n) => h[n] ?? null }, body: { getReader: () => r } }
+  }
+  /** A body: its pieces, then the end ('error' breaks the connection, 'hang' never sends more until cancelled). */
+  function reader(steps: (Uint8Array | 'error' | 'hang')[]): ByteReader {
+    let wake: (() => void) | null = null
+    return {
+      read: () => {
+        const step = steps.shift()
+        if (step === undefined) return Promise.resolve({ done: true })
+        if (step === 'error') return Promise.reject(new Error('connection reset'))
+        if (step === 'hang') return new Promise((resolve) => (wake = () => resolve({ done: true })))
+        return Promise.resolve({ done: false, value: step })
+      },
+      cancel: () => {
+        wake?.()
+        wake = null
+        return Promise.resolve()
+      },
+    }
+  }
+  const downloads = mainDownloads.createDownloadSessions({
+    fetch: streamFetch,
+    withSlot: lane.withSlot,
+    matchRoute: (p) => {
+      const m = mainRoutes.match('GET', String(p)) as { route: { binary?: boolean }; url: URL } | null
+      return m ? { binary: !!m.route.binary, url: m.url.toString(), key: m.url.pathname } : null
+    },
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+    now: () => Date.now(),
+  })
+  const downloadCalls: string[] = []
+
   const bridge: CanvasappBridge = {
     status: async () => ({ ok: true, authenticated: state.authenticated }),
     login: async () => {
@@ -274,9 +389,28 @@ function fakeCanvasapp() {
       return { ok: true, authenticated: true }
     },
     logout: async () => {
+      downloads.closeAll()
       state.authenticated = false
       return { ok: true }
     },
+    ...(streaming
+      ? {
+          downloadOpen: async (a: { id: string; path: string; from: number }) => {
+            downloadCalls.push(`open ${a.from}`)
+            const res = await downloads.open('page', a)
+            if (!res.ok && res.code === 'not-allowed') state.refusedByMain.push(`GET ${a.path} (download)`)
+            return res as BridgeDownloadOpen
+          },
+          downloadRead: async (a: { id: string }) => {
+            downloadCalls.push('read')
+            return (await downloads.read('page', a)) as BridgeDownloadRead
+          },
+          downloadClose: async (a: { id: string }) => {
+            downloadCalls.push('close')
+            return downloads.close('page', a)
+          },
+        }
+      : {}),
     request: async (req) => {
       log.push({ ...req, at: Date.now() })
       // what electron/main.cjs checks before anything leaves the computer
@@ -289,7 +423,8 @@ function fakeCanvasapp() {
         return { ok: false, code: 'too-large', message: 'Dữ liệu gửi đi quá lớn.' }
       }
       const fault = state.fault?.(req)
-      if (fault?.kind === 'network') return { ok: false, code: 'network', message: 'Không kết nối được tới canvasapp.io.vn (offline).' }
+      if (fault?.kind === 'network' || fault?.kind === 'cut') return { ok: false, code: 'network', message: 'Không kết nối được tới canvasapp.io.vn (offline).' }
+      if (fault?.kind === 'stall') return new Promise<BridgeResponse>(() => undefined)
       if (fault?.kind === 'response') return ok(fault.json ?? {}, fault.status)
       if (fault?.kind === 'hang') {
         if (fault.process) handle(req)
@@ -309,6 +444,10 @@ function fakeCanvasapp() {
     bridge,
     state,
     log,
+    /** downloadOpen / downloadRead / downloadClose as the page called them ("open <from>", "read", "close"). */
+    downloadCalls,
+    /** Video downloads holding a slot of main's 'download' lane right now. */
+    downloadSlots: lane.active,
     count: (method: string, path: string | RegExp) => log.filter(is(method, path)).length,
     jobPosts: () => log.filter(is('POST', '/api/video-jobs')).map((c) => c.json as Json),
     listReads: () => log.filter(is('GET', '/api/video-jobs')),
@@ -1332,7 +1471,15 @@ describe('gateway e2e: cancel', () => {
   })
 })
 
-describe('gateway e2e: download', () => {
+describe.each([
+  ['streamed (pieces through main)', true],
+  ['older desktop build (one binary request)', false],
+])('gateway e2e: download — %s', (_label, streaming) => {
+  beforeEach(() => {
+    fake = fakeCanvasapp({ streaming })
+    g.window = { bdpDesktop: { canvasapp: fake.bridge } }
+  })
+
   it('a completed take saves as "S01_T1 - <title>.mp4" + prompt .txt, also after a restart', async () => {
     const [t] = enqueue('s1')
     await run(45_000)
@@ -1365,6 +1512,7 @@ describe('gateway e2e: download', () => {
     expect(take(t.id).error).toMatch(/canvasapp\.io\.vn/)
     expect(fake.count('GET', '/api/video-jobs/job1/stream')).toBe(5)
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.downloadCalls.length > 0).toBe(streaming)
   })
 
   it('a failed download of a finished (paid) video is retried — never turned into a failed take that invites a paid re-run', async () => {
@@ -1375,6 +1523,150 @@ describe('gateway e2e: download', () => {
     expect(take(t.id).status).toBe('processing')
     await run(10 * 60_000)
     expect(take(t.id).status).toBe('completed')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+})
+
+describe('gateway e2e: streamed video download (main’s pieces, slots and timeouts)', () => {
+  const streamGets = () => fake.log.filter((c) => c.method === 'GET' && c.path === '/api/video-jobs/job1/stream')
+  /** A video bigger than one piece (4 MiB): 6 MiB. */
+  const BIG = 6 * 1024 * 1024
+  const big = (jobId: string) => {
+    const b = new Uint8Array(BIG)
+    b.fill(jobId.length)
+    b[0] = 77
+    b[BIG - 1] = 88
+    return b
+  }
+
+  it('in pieces of ≤ 4 MiB, with "Đang tải về …%" while it comes; the same bytes end up stored', async () => {
+    fake.state.video = big
+    const seen: (number | null)[] = []
+    const off = useTakeTransfers.subscribe((st) => {
+      const t = Object.values(st.byTake)[0]
+      if (t) seen.push(transferPercent(t))
+    })
+    const [t] = enqueue('s1')
+    await run(45_000)
+    off()
+    expect(take(t.id).status).toBe('completed')
+    const stored = new Uint8Array(await media.get(take(t.id).videoId!)!.arrayBuffer())
+    expect(stored.byteLength).toBe(BIG)
+    expect([stored[0], stored[BIG - 1]]).toEqual([77, 88])
+    expect(media.get(take(t.id).videoId!)!.type).toBe('video/mp4')
+    expect(fake.downloadCalls.filter((c) => c === 'read')).toHaveLength(3) // 4 MiB + 2 MiB + the end
+    expect(seen.length).toBeGreaterThan(0)
+    expect(useTakeTransfers.getState().byTake).toEqual({}) // cleared once done
+    expect(fake.downloadSlots()).toBe(0)
+  })
+
+  it('cut half-way, canvasapp sends an ETag and takes Range → continues where it stopped, in the same attempt', async () => {
+    fake.state.video = big
+    fake.state.rangeSupport = true
+    let cuts = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && cuts-- > 0 ? { kind: 'cut', after: 5 * 1024 * 1024 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(streamGets().map((c) => c.range ?? null)).toEqual([null, 'bytes=5242880-']) // nothing fetched twice
+    const stored = new Uint8Array(await media.get(take(t.id).videoId!)!.arrayBuffer())
+    expect([stored.byteLength, stored[0], stored[BIG - 1]]).toEqual([BIG, 77, 88])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('cut without Range support → no resume; the engine downloads it again later from the start (still one job)', async () => {
+    let cuts = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && cuts-- > 0 ? { kind: 'cut', after: 4 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing') // paid video: kept at 99 %, never "failed"
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('MP4:job1')
+    expect(streamGets().map((c) => c.range ?? null)).toEqual([null, null])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('a stalled download stops after 60 s without data (its slot comes back), then succeeds on the next try', async () => {
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 2 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBe(1)
+    await run(61_000)
+    expect(fake.downloadSlots()).toBe(0)
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('over 1 GB → the take fails at once (paid, where to get it) — not five tries of the same refusal', async () => {
+    fake.state.fault = (req) => (req.path.endsWith('/stream') ? { kind: 'oversize' } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', remoteId: 'proj1:job1' })
+    expect(take(t.id).error).toMatch(/đã trừ credit/)
+    expect(take(t.id).error).toContain('Video lớn hơn 1 GB')
+    await run(30 * 60_000)
+    expect(streamGets()).toHaveLength(1)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('cancelling a take while its video downloads closes the download (slot freed) — cancelled, not failed', async () => {
+    const g1 = gate()
+    fake.state.fault = (req) => (req.path === '/api/video-jobs/job1/stream' ? { kind: 'wait', until: g1.until } : undefined)
+    const [a, b] = enqueue('s1', 's2')
+    await run(45_000)
+    expect(take(a.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBeGreaterThan(0)
+    useRuns.getState().cancel(a.id)
+    await run(0)
+    expect(fake.downloadCalls).toContain('close')
+    expect(take(a.id)).toMatchObject({ status: 'cancelled' })
+    await run(60_000)
+    expect(take(b.id).status).toBe('completed') // the other take's download had a slot
+    expect(take(a.id).status).toBe('cancelled')
+    expect(events.filter((e) => e.type === 'failed')).toEqual([])
+    g1.open()
+    await run(1_000)
+    expect(fake.downloadSlots()).toBe(0)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(2)
+  })
+
+  it('switching project mid-download stops it; reopening downloads it again and completes — still one POST', async () => {
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 2 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBe(1)
+    const keep = saved()
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 }) // another project
+    await run(0)
+    expect(fake.downloadSlots()).toBe(0)
+    expect(fake.downloadCalls).toContain('close')
+    restart(keep)
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('MONEY: a video of unknown size cut by a logout is never stored as finished; after logging in it downloads whole', async () => {
+    fake.state.sendLength = false
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 4 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    await fake.bridge.logout() // main ends every download (the half-read body is never "done")
+    await run(1_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', videoId: null })
+    expect(fake.downloadSlots()).toBe(0)
+    await fake.bridge.login()
+    await run(10 * 60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('MP4:job1')
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
   })
 })

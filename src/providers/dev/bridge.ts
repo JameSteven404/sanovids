@@ -12,15 +12,30 @@
 //     with the state once it is closed — concurrent calls share it;
 //   - checkout(): one window at a time ('busy'), the URL must be SePay's ('refused'), fields like main's; the simulated
 //     SePay sheet answers success / cancel / error (with the order id, as SePay's return to canvasapp does), closed or
-//     timeout (15 min) — and tells the dev server what canvasapp says about the order afterwards (paid ~2 s later…).
+//     timeout (15 min) — and tells the dev server what canvasapp says about the order afterwards (paid ~2 s later…);
+//   - downloadOpen / downloadRead / downloadClose: main's video downloads (downloads.ts, the port of its
+//     <canvasapp-downloads> block) over the dev server's openStream(): pieces (64 KiB here), one of 2 download slots
+//     held per download, idle (10 s here) / pull-idle / 60-min limits, 1 GB cap, Range + If-Range only with the ETag
+//     the simulated site sent (DevConfig.rangeSupport). A download that stops by itself is written to the request log.
 // JSON bodies cross it as JSON (a deep copy), like IPC + HTTP would: nothing is shared by reference with the server.
 import { checkoutUrlAllowed, parsePaymentReturn } from '../../core/topup'
 import type { TransportRequest } from '../canvasapp/api'
-import type { BridgeCheckoutResponse, BridgeResponse, BridgeStatus, CanvasappBridge, CheckoutArgs } from '../canvasapp/transport'
+import type {
+  BridgeCheckoutResponse,
+  BridgeDownloadArgs,
+  BridgeDownloadOpen,
+  BridgeDownloadRead,
+  BridgeResponse,
+  BridgeStatus,
+  CanvasappBridge,
+  CheckoutArgs,
+} from '../canvasapp/transport'
+import { createDevLane, createDownloadSessions, DEV_DOWNLOAD_CHUNK_BYTES, DEV_DOWNLOAD_IDLE_MS, type DownloadLimits, type ResponseLike } from './downloads'
 import { pushDevLog, summarizeForLog } from './log'
 import { answerDevCheckout, checkoutPromptOpen, closeDevPrompts, openCheckoutPrompt, openLoginPrompt } from './prompts'
 import { matchDevRoute, MAX_JSON_BYTES, MAX_UPLOAD_BYTES } from './routes'
-import type { DevCanvasapp } from './server'
+import type { DevCanvasapp, DevStreamAnswer } from './server'
+import { devWording } from './wording'
 
 /**
  * Job-list answers reused this long (main.cjs: 15 s for the real site, polled every 20 s). The dev engine polls every
@@ -40,6 +55,29 @@ export interface DevBridgeOptions {
   now?: () => number
   /** Write gateway refusals / cache hits to the request log (default true). */
   log?: boolean
+  /** Video downloads: main's limits, except pieces of 64 KiB and 10 s without data (DEV_DOWNLOAD_*). Tests shorten them. */
+  downloadLimits?: Partial<DownloadLimits>
+}
+
+/** The one page that uses the simulated gateway (main keys downloads by the calling page). */
+const DEV_PAGE = 'page'
+
+/** A Response-like of the dev server's streamed answer (headers lower-case; a JSON / text answer as its bytes). */
+function devResponse(path: string, a: Extract<DevStreamAnswer, { ok: true }>): ResponseLike {
+  const headers = { get: (name: string) => a.headers[name.toLowerCase()] ?? null }
+  const url = 'https://canvasapp.io.vn' + path
+  if (a.body) {
+    const reader = a.body
+    return { status: a.status, url, headers, body: { getReader: () => reader, cancel: () => reader.cancel() } }
+  }
+  const text = a.json !== undefined ? JSON.stringify(a.json) : (a.text ?? '')
+  let sent = false
+  const bytes = new TextEncoder().encode(text)
+  const reader = {
+    read: async () => (sent || !bytes.byteLength ? { done: true } : ((sent = true), { done: false, value: bytes })),
+    cancel: async () => undefined,
+  }
+  return { status: a.status, url, headers, body: { getReader: () => reader, cancel: async () => undefined } }
 }
 
 type Fail = { ok: false; code: string; message: string }
@@ -77,6 +115,40 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
   const listCache = new Map<string, { at: number; result: BridgeResponse }>()
   let jobsEpoch = 0
   let loginInFlight: Promise<BridgeStatus> | null = null
+  const downloadLane = createDevLane(2)
+  const downloadPaths = new Map<string, string>()
+  const downloads = createDownloadSessions({
+    // `url` is the allowlisted path itself here (main: the absolute canvasapp URL)
+    fetch: (url, init) =>
+      new Promise<ResponseLike>((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (init.signal.aborted) return abort()
+        init.signal.addEventListener('abort', abort, { once: true })
+        const range = /^bytes=(\d+)-$/.exec(init.headers.Range ?? '')
+        server()
+          .openStream({ path: url, range: range ? { from: Number(range[1]), ifRange: init.headers['If-Range'] ?? null } : null })
+          .then(
+            (a) => {
+              init.signal.removeEventListener('abort', abort)
+              if (!a.ok) reject(new Error(a.message))
+              else resolve(devResponse(url, a))
+            },
+            (e: unknown) => {
+              init.signal.removeEventListener('abort', abort)
+              reject(e)
+            },
+          )
+      }),
+    withSlot: (fn) => downloadLane.withSlot(fn),
+    matchRoute: (rawPath) => {
+      const m = matchDevRoute('GET', rawPath)
+      return m ? { binary: m.binary, url: String(rawPath), key: m.pathname } : null
+    },
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+    now,
+    limits: { chunkBytes: DEV_DOWNLOAD_CHUNK_BYTES, idleMs: DEV_DOWNLOAD_IDLE_MS, ...opts.downloadLimits },
+  })
 
   function logGateway(req: TransportRequest, res: BridgeResponse, fault: string) {
     if (!logging) return
@@ -181,7 +253,62 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return loginInFlight
   }
 
+  /** A download refused / stopped by the gateway itself (never "closed by the page"): one request-log line. */
+  function logDownload(path: string, res: { code: string; message: string }) {
+    if (!logging) return
+    pushDevLog({
+      at: now(),
+      method: 'GET',
+      path,
+      endpoint: matchDevRoute('GET', path)?.endpoint ?? null,
+      status: null,
+      ms: 0,
+      req: null,
+      res: summarizeForLog({ code: res.code, message: res.message }),
+      fault: res.code === 'not-allowed' ? 'not-allowed' : `download-${res.code}`,
+      processed: false,
+    })
+  }
+
+  const worded = <T extends { ok: boolean }>(r: T): T => {
+    const f = r as unknown as { ok: boolean; message?: unknown }
+    return !f.ok && typeof f.message === 'string' ? ({ ...r, message: devWording(f.message) } as T) : r
+  }
+
+  async function downloadOpen(args: BridgeDownloadArgs): Promise<BridgeDownloadOpen> {
+    const a = args && typeof args === 'object' ? args : ({} as BridgeDownloadArgs)
+    // what the preload lets through: a string id / path and a safe positive integer
+    const plain = { id: typeof a.id === 'string' ? a.id : '', path: typeof a.path === 'string' ? a.path : '', from: Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0 }
+    const res = worded(await downloads.open(DEV_PAGE, plain))
+    if (res.ok && 'id' in res) {
+      downloadPaths.set(res.id, plain.path)
+      // downloads the page stopped reading end by themselves (pull-idle): keep only recent paths
+      while (downloadPaths.size > 64) downloadPaths.delete(downloadPaths.keys().next().value as string)
+    }
+    else if (!res.ok && res.code !== 'gone') logDownload(plain.path, res)
+    return res as BridgeDownloadOpen
+  }
+
+  async function downloadRead(args: { id: string }): Promise<BridgeDownloadRead> {
+    const id = args && typeof args.id === 'string' ? args.id : ''
+    const res = worded(await downloads.read(DEV_PAGE, { id }))
+    if (!res.ok || res.done) {
+      const path = downloadPaths.get(id)
+      downloadPaths.delete(id)
+      if (!res.ok && res.code !== 'gone' && path) logDownload(path, res)
+    }
+    return res as BridgeDownloadRead
+  }
+
+  async function downloadClose(args: { id: string }): Promise<{ ok: boolean }> {
+    const id = args && typeof args.id === 'string' ? args.id : ''
+    downloadPaths.delete(id)
+    return downloads.close(DEV_PAGE, { id })
+  }
+
   async function logout(): Promise<{ ok: boolean }> {
+    downloads.closeAll()
+    downloadPaths.clear()
     closeDevPrompts()
     server().logout()
     listCache.clear()
@@ -219,5 +346,5 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, result: a.choice, orderId, blockedHost: null }
   }
 
-  return { status, login, logout, request, checkout }
+  return { status, login, logout, request, checkout, downloadOpen, downloadRead, downloadClose }
 }

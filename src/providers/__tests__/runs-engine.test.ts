@@ -16,7 +16,8 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
-import type { JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
+import type { FetchResultOptions, JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
+import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
 import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
 import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
@@ -516,5 +517,116 @@ describe('runs engine with a provider', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(f.submitted.length).toBe(0)
     expect(locks.held.size).toBe(0)
+  })
+})
+
+describe('runs engine: downloading a finished video (abort, progress, refusals)', () => {
+  /** A dev take that is processing on the fake provider, its job finished: the engine downloads it on the next tick. */
+  async function finished(f: ReturnType<typeof fakeProvider>) {
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'completed', progress: 100 })
+    return id
+  }
+  /** fetchResult that waits until settled by hand (and records the options it got). */
+  function manualFetch(f: ReturnType<typeof fakeProvider>) {
+    const calls: { opts: FetchResultOptions | undefined; resolve: () => void; reject: (e: unknown) => void }[] = []
+    f.p.fetchResult = (_rid, opts) =>
+      new Promise((resolve, reject) => calls.push({ opts, resolve: () => resolve({ video: new Blob(['v'], { type: 'video/mp4' }), poster: new Blob(['p']) }), reject }))
+    return calls
+  }
+
+  it('passes a signal and a progress callback; progress shows as "Đang tải về …" and is cleared when it completes', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].opts?.signal).toBeInstanceOf(AbortSignal)
+    calls[0].opts!.onProgress!({ received: 45, total: 100 })
+    expect(transferLabel(useTakeTransfers.getState().byTake[id])).toBe('Đang tải về 45%')
+    calls[0].resolve()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('completed')
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+  })
+
+  it('cancel() aborts the download; the aborted fetch is not a failure (no retry counted, take stays cancelled)', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    calls[0].opts!.onProgress!({ received: 10, total: null })
+    useRuns.getState().cancel(id)
+    expect(calls[0].opts!.signal!.aborted).toBe(true)
+    calls[0].reject(Object.assign(new Error('Đã dừng tải video.'), { code: 'aborted' }))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(take(id)).toMatchObject({ status: 'cancelled', error: 'Đã huỷ' })
+    expect(calls).toHaveLength(1)
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+  })
+
+  it('a video over the size cap fails the take at once (paid wording), never five tries', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      throw Object.assign(new Error('Video lớn hơn 1 GB — SanoVids không tải về máy được.'), { code: 'too-large' })
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(take(id).status).toBe('failed')
+    expect(take(id).error).toContain('đã trừ credit dev')
+    expect(take(id).error).toContain('Video lớn hơn 1 GB')
+    expect(tries).toBe(1)
+  })
+
+  it('"too many downloads at once" (deferred) is never counted as a failed try: five of them never fail the take', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      if (tries <= 6) throw Object.assign(new Error('Đang tải quá nhiều video cùng lúc — SanoVids tải video này sau.'), { code: 'deferred' })
+      return { video: new Blob(['v'], { type: 'video/mp4' }), poster: new Blob(['p']) }
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(6 * 16_000)
+    expect(tries).toBe(7)
+    expect(take(id).status).toBe('completed')
+  })
+
+  it('reloading the same project mid-download: the old download is aborted, and its late end never touches the new one', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 }) // persist reload, same project
+    expect(calls[0].opts!.signal!.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(2) // downloaded again by the restarted engine
+    calls[1].opts!.onProgress!({ received: 30, total: 100 })
+    calls[0].reject(Object.assign(new Error('Đã dừng tải video.'), { code: 'aborted' })) // the old one ends late
+    await vi.advanceTimersByTimeAsync(0)
+    expect(transferLabel(useTakeTransfers.getState().byTake[id])).toBe('Đang tải về 30%') // not cleared by the old one
+    useRuns.getState().cancel(id)
+    expect(calls[1].opts!.signal!.aborted).toBe(true) // its controller is still the one cancel() reaches
+    calls[1].reject(new Error('aborted'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(take(id).status).toBe('cancelled')
+  })
+
+  it('a failed download clears its progress; the take keeps waiting at 99 % for the next try', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    calls[0].opts!.onProgress!({ received: 10, total: 100 })
+    calls[0].reject(Object.assign(new Error('Mất kết nối khi đang tải video.'), { code: 'network' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+    expect(take(id)).toMatchObject({ status: 'processing', progress: 99 })
   })
 })

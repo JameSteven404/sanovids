@@ -175,6 +175,19 @@ export interface JobResult {
   poster?: Blob | null
 }
 
+/** How much of a finished video has been downloaded (total null = the provider did not say). */
+export interface ResultProgress {
+  received: number
+  total: number | null
+}
+
+export interface FetchResultOptions {
+  /** Aborted when the take is cancelled / deleted or the project is switched: stop downloading (then it rejects). */
+  signal?: AbortSignal
+  /** Download progress (throttled by the provider). */
+  onProgress?: (p: ResultProgress) => void
+}
+
 export interface SubmitOptions {
   /**
    * True once the take was cancelled / deleted in SanoVids. A paying provider checks it before every step and right
@@ -205,7 +218,11 @@ export interface VideoProvider {
   recover?(req: JobRequest): Promise<{ remoteId: string } | null>
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
-  fetchResult(remoteId: string): Promise<JobResult>
+  /**
+   * The finished video. Errors: code 'too-large' (see isResultTooLarge: never downloadable, do not try again);
+   * 'deferred' (see isResultDeferred: nothing was fetched, too many downloads at once — try later, not a failure).
+   */
+  fetchResult(remoteId: string, opts?: FetchResultOptions): Promise<JobResult>
   /** Stop a job at the provider when possible. Optional: without it, cancel only stops tracking locally. */
   cancel?(remoteId: string): Promise<void> | void
   /** Forget in-memory state (new project loaded, logout…). */
@@ -244,6 +261,12 @@ export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'o
  * another take of that provider. Nothing was billed.
  */
 export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
+
+/** fetchResult() refused a video bigger than SanoVids can take (1 GB): trying again gives the same answer. */
+export const isResultTooLarge = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-large'
+
+/** fetchResult() fetched nothing and asks to be tried later (too many downloads at once): not a failed download. */
+export const isResultDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
 
 /**
  * submit() failed in a way that leaves it UNKNOWN whether the provider created (and billed) the job — e.g. the

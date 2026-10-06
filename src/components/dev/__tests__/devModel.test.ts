@@ -14,6 +14,7 @@ import {
   DEV_UI_FAULTS,
   devPanelTabs,
   faultArmedText,
+  faultKindsFor,
   faultKindText,
   faultRuleText,
   filterLog,
@@ -92,6 +93,10 @@ describe('DEV_UI_FAULTS', () => {
       'Tải video lỗi N lần',
       'Tải ảnh lên lỗi',
       'Chậm 3 giây',
+      'Mất mạng giữa chừng khi tải video',
+      'Tải video bị treo',
+      'Tải video chậm (100 KB/giây)',
+      'Video quá lớn (> 1 GB)',
     ]) {
       expect(labels).toContain(want)
     }
@@ -124,6 +129,13 @@ describe('DEV_UI_FAULTS', () => {
     expect(faultArmedText(item('canvas-400'), false)).toBe('Đã bật lỗi giả: Invalid canvas payload (400) (2 lần).')
     expect(faultArmedText(item('stream-failures'), false, 4)).toBe('Đã bật lỗi giả: Tải video lỗi N lần (N = 4).')
     expect(faultArmedText(item('fail-next'), false)).toBe('Đã bật lỗi giả: Job tiếp theo lỗi.')
+    // video downloads: one-shot cut / stall / oversize, a sticky slow body (it only shows while it lasts)
+    expect(faultArmedText(item('stream-cut'), false)).toBe('Đã bật lỗi giả: Mất mạng giữa chừng khi tải video (1 lần).')
+    expect(item('stream-slow').stickyByDefault).toBe(true)
+    expect(['stream-cut', 'stream-stall', 'stream-oversize'].map((id) => item(id).stickyByDefault)).toEqual([false, false, false])
+    // they come right after "Mất mạng khi tải video"
+    const ids = DEV_UI_FAULTS.map((f) => f.id)
+    expect(ids.slice(ids.indexOf('stream-network'), ids.indexOf('stream-network') + 5)).toEqual(['stream-network', 'stream-cut', 'stream-stall', 'stream-slow', 'stream-oversize'])
     for (const f of DEV_UI_FAULTS) expect(faultArmedText(f, false)).not.toMatch(/\(\d+ lần\) \(/)
   })
 })
@@ -134,6 +146,13 @@ describe('fault texts', () => {
     expect(faultKindText({ kind: 'processed-then', status: 502 })).toBe('xử lý xong rồi trả 502')
     expect(faultKindText({ kind: 'slow', ms: 3000 })).toBe('chậm 3 giây')
     expect(faultKindText({ kind: 'slow', ms: 1500 })).toBe('chậm 1,5 giây')
+    expect(faultKindText({ kind: 'cut', fraction: 0.5 })).toBe('ngắt giữa chừng (sau 50% video)')
+    expect(faultKindText({ kind: 'stall' })).toBe('đứng, không gửi tiếp (sau 50% video)')
+    expect(faultKindText({ kind: 'trickle', bytesPerSec: 100 * 1024 })).toBe('chậm 100 KB/giây')
+    expect(faultKindText({ kind: 'oversize' })).toBe('báo dung lượng > 1 GB')
+    expect(faultRuleText({ endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 }, sticky: false, remaining: 1, hits: 0 })).toBe(
+      'Tải video · ngắt giữa chừng (sau 50% video) · còn 1 lần',
+    )
     expect(faultRuleText({ endpoint: 'job-create', fault: { kind: 'response', status: 402 }, sticky: false, remaining: 1, hits: 0 })).toBe(
       'Tạo job video · trả 402 (không xử lý) · còn 1 lần',
     )
@@ -149,6 +168,23 @@ describe('customFaultInput', () => {
     const slow = customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: '*', kind: 'slow', ms: '500', sticky: true })
     expect(slow).toEqual({ ok: true, input: { endpoint: '*', fault: { kind: 'slow', ms: 500 }, sticky: true } })
     expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, kind: 'network' })).toMatchObject({ ok: true, input: { fault: { kind: 'network' } } })
+    // video-download kinds, for "Tải video" only
+    const stream = { ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream' as const }
+    expect(customFaultInput({ ...stream, kind: 'cut' })).toEqual({ ok: true, input: { endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 }, sticky: false, times: 1 } })
+    expect(customFaultInput({ ...stream, kind: 'stall' })).toMatchObject({ ok: true, input: { fault: { kind: 'stall', fraction: 0.5 } } })
+    expect(customFaultInput({ ...stream, kind: 'trickle', kbps: '50', sticky: true })).toEqual({ ok: true, input: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 51_200 }, sticky: true } })
+    expect(customFaultInput({ ...stream, kind: 'oversize' })).toMatchObject({ ok: true, input: { fault: { kind: 'oversize' } } })
+  })
+
+  it('offers the video-download kinds only for "Tải video" (and refuses them elsewhere)', () => {
+    expect(faultKindsFor('job-stream')).toEqual(['network', 'lost-response', 'processed-then', 'response', 'slow', 'cut', 'stall', 'trickle', 'oversize'])
+    for (const ep of ['job-create', '*', 'jobs-list'] as const) {
+      expect(faultKindsFor(ep)).toEqual(['network', 'lost-response', 'processed-then', 'response', 'slow'])
+      for (const kind of ['cut', 'stall', 'trickle', 'oversize'] as const) {
+        expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: ep, kind })).toEqual({ ok: false, error: 'Kiểu lỗi này chỉ dùng cho “Tải video”.' })
+      }
+    }
+    expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream', kind: 'trickle', kbps: '0' })).toMatchObject({ ok: false, error: expect.stringContaining('KB/giây') })
   })
 
   it('refuses bad input with a Vietnamese reason', () => {

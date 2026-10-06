@@ -13,6 +13,7 @@ import { usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
+import { transferLabel, transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
@@ -193,7 +194,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
         <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
           {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster is-empty" />}
           {videoUrl && <TakePlayer takeId={id} url={videoUrl} />}
-          <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
+          <TakeStatusOverlay takeId={id} status={take.status} progress={take.progress} error={take.error} />
 
           <span className="cv-take-code">{code}</span>
           {provider !== 'mock' && !far && (
@@ -360,13 +361,13 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
         <span>{saving ? 'Đang lưu…' : askWhere ? 'Tải video…' : 'Tải video'}</span>
       </button>
     )
-  } else if (take.status === 'processing' || take.status === 'queued') {
-    const processing = take.status === 'processing'
+  } else if (take.status === 'processing') {
+    button = <TakeBusyButton takeId={take.id} progress={take.progress} />
+  } else if (take.status === 'queued') {
     button = (
-      <button className="cv-take-main is-busy" disabled aria-label={processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}>
-        {processing && <i className="cv-take-main-fill" style={{ width: `${Math.max(3, take.progress)}%` }} />}
-        {processing ? <LoaderCircle size={14} className="cv-spin" /> : <Clock size={14} />}
-        <span>{processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}</span>
+      <button className="cv-take-main is-busy" disabled aria-label="Đang chờ">
+        <Clock size={14} />
+        <span>Đang chờ</span>
       </button>
     )
   } else {
@@ -393,7 +394,26 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
   )
 }
 
-function TakeStatusOverlay({ status, progress, error }: { status: string; progress: number; error: string | null }) {
+/** "Đang tạo 40%", then "Đang tải về 45%" (or "… 12,3 MB") while the finished video downloads. */
+function TakeBusyButton({ takeId, progress }: { takeId: string; progress: number }) {
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[takeId]))
+  const pct = useTakeTransfers((s) => transferPercent(s.byTake[takeId]))
+  const label = transfer ?? `Đang tạo ${progress}%`
+  return (
+    <button className="cv-take-main is-busy" disabled aria-label={label}>
+      <i className="cv-take-main-fill" style={{ width: `${Math.max(3, transfer ? (pct ?? progress) : progress)}%` }} />
+      <LoaderCircle size={14} className="cv-spin" />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function TakeTransferText({ takeId, progress }: { takeId: string; progress: number }) {
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[takeId]))
+  return <span>{transfer ?? `${progress}%`}</span>
+}
+
+function TakeStatusOverlay({ takeId, status, progress, error }: { takeId: string; status: string; progress: number; error: string | null }) {
   if (status === 'completed') return null
   if (status === 'queued')
     return (
@@ -406,7 +426,7 @@ function TakeStatusOverlay({ status, progress, error }: { status: string; progre
     return (
       <div className="cv-take-state">
         <LoaderCircle size={16} className="cv-spin" />
-        <span>{progress}%</span>
+        <TakeTransferText takeId={takeId} progress={progress} />
       </div>
     )
   if (status === 'failed')

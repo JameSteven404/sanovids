@@ -17,7 +17,9 @@
 // Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
-// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
+// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once (only
+// a video over the gateway's size cap is: it can never be downloaded). Its download reports progress (store/takeTransfers)
+// and stops when the take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure.
 // check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
 // recent /api/video-profiles read) and only warn on a guess or an older read; retry(takeId) of an "unknown" take never
 // goes through check() (it may only find its existing job), and every submit validates again with fresh profiles.
@@ -45,6 +47,8 @@ import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
+  isResultDeferred,
+  isResultTooLarge,
   isSubmitCancelled,
   isSubmitDeferred,
   isSubmitUncertain,
@@ -56,6 +60,7 @@ import {
   type RemoteStatus,
 } from '../providers/types'
 import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
+import { clearTakeTransfer, clearTakeTransfers, reportTakeTransfer } from './takeTransfers'
 import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
@@ -194,6 +199,11 @@ const ownedHere = new Set<string>()
 /** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
 const fetchFailures = new Map<string, number>()
 const fetchRetryAt = new Map<string, number>()
+/**
+ * Downloads in flight: take id → the controller of THAT download (cancel / delete / loadRuns abort it). Compared by
+ * identity: an older download's clean-up never touches a newer one of the same take.
+ */
+const fetchAborts = new Map<string, AbortController>()
 
 /**
  * Error of a remote take whose submit ended without a job id although the request may have reached the provider
@@ -233,6 +243,8 @@ export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp
 
 /** Download tries of a finished remote video: retried after these delays, then the take fails. */
 const FETCH_RETRY_MS = [30_000, 60_000, 120_000, 300_000]
+/** The gateway had no room for one more download (nothing fetched): asked again after this, not counted as a try. */
+const FETCH_DEFERRED_MS = 15_000
 
 // ---- engine ownership (one tab per project) ----
 let lockManagerOverride: LockManagerLike | null | undefined
@@ -442,6 +454,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
   cancel: (takeId) => {
     const take = get().takes.find((t) => t.id === takeId)
     if (!take || (take.status !== 'queued' && take.status !== 'processing')) return
+    fetchAborts.get(takeId)?.abort() // a download of its video stops now (frees the gateway's slot)
     const remoteId = remoteIdOf(take)
     if (remoteId) {
       try {
@@ -567,6 +580,9 @@ function resetEngineState() {
   ownedHere.clear()
   fetchFailures.clear()
   fetchRetryAt.clear()
+  for (const c of fetchAborts.values()) c.abort()
+  fetchAborts.clear()
+  clearTakeTransfers()
   mockProvider.reset?.()
   // The engine restarts for the loaded data (and adopts what was left running). The lock is kept for the same
   // project — persist reloads it right after this tab took over — and let go for another one.
@@ -1052,10 +1068,18 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
 
 async function finishTake(id: string, remoteId: string, gen: number) {
   const t = findTake(id)
+  const ctrl = new AbortController()
+  fetchAborts.get(id)?.abort()
+  fetchAborts.set(id, ctrl)
   try {
     if (!t) return
-    const result = await getProvider(providerOf(t)).fetchResult(remoteId)
-    if (!stillProcessing(id, gen)) return // cancelled meanwhile
+    const result = await getProvider(providerOf(t)).fetchResult(remoteId, {
+      signal: ctrl.signal,
+      onProgress: (p) => {
+        if (fetchAborts.get(id) === ctrl && !ctrl.signal.aborted) reportTakeTransfer(id, p)
+      },
+    })
+    if (!stillProcessing(id, gen) || ctrl.signal.aborted) return // cancelled meanwhile
     const poster = result.poster ?? (result.video ? await posterFromVideo(result.video) : null)
     const posterId = poster ? await putBlob(poster, 'poster') : null
     const videoId = result.video ? await putBlob(result.video, 'video') : null
@@ -1069,8 +1093,13 @@ async function finishTake(id: string, remoteId: string, gen: number) {
       void import('../actions').then(({ downloadTake }) => downloadTake(id, { auto: true }))
     }
   } catch (e) {
-    if (gen !== generation) return
+    // stopped on purpose (cancel / delete / project switch): not a failed download
+    if (gen !== generation || ctrl.signal.aborted) return
     if (t && providerOf(t) !== 'mock') {
+      // Bigger than SanoVids can take: the same answer every time — say so now (paid, where to get it).
+      if (isResultTooLarge(e)) return void failTake(id, downloadFailedError(errorText(e), providerOf(t)))
+      // Nothing fetched (too many downloads at once): ask again in a moment, not one of the tries.
+      if (isResultDeferred(e)) return void fetchRetryAt.set(id, Date.now() + FETCH_DEFERRED_MS)
       // The remote video is finished and paid: a failed download (network, session…) must not end the take — a
       // "failed" take invites a re-run that pays again. Keep it at 99 % and try again later; give up after a while.
       const n = (fetchFailures.get(id) ?? 0) + 1
@@ -1084,6 +1113,10 @@ async function finishTake(id: string, remoteId: string, gen: number) {
     }
     failTake(id, errorText(e))
   } finally {
+    if (fetchAborts.get(id) === ctrl) {
+      fetchAborts.delete(id)
+      clearTakeTransfer(id)
+    }
     if (gen === generation) fetching.delete(id)
   }
 }
