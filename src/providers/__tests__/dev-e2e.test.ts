@@ -330,6 +330,40 @@ describe('dev mode e2e: idempotency', () => {
     expect(server.balance()).toBe(1000 - S1_COST)
   })
 
+  it('two takes of one scene in doubt: the later one reads the job list right before its POST — each its own job, one charge each', async () => {
+    server.login()
+    server.setConfig({ dedupe: false }) // the job list carries no client_request_id (exposeKey off): only node + timing tell
+    // take A: the simulated canvasapp creates its job, the answer is lost and the job list is down → "không rõ"
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const [a] = enqueue('s1')
+    await run(60_000)
+    expect(take(a.id)).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
+    // take B of the same scene while the list is still down: not sent — nothing billed, and not "không rõ"
+    const [b] = enqueue('s1')
+    await run(5_000)
+    expect(take(b.id)).toMatchObject({ status: 'failed', remoteId: null })
+    expect(take(b.id).error).toMatch(/^Không đọc được danh sách job .*Chưa gửi yêu cầu tạo video, không bị trừ credit\./)
+    expect(isUncertainSubmit(take(b.id))).toBe(false)
+    expect(logOf('job-create')).toHaveLength(1)
+    // the list is back; take C of the scene loses its answer too, but the list was read right before its POST
+    server.removeFault(listDown.id)
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const [c] = enqueue('s1')
+    await run(60_000)
+    const jobs = [...server.snapshot().jobs].reverse() // oldest first
+    expect(jobs).toHaveLength(2)
+    const remote = (j: (typeof jobs)[number]) => `${j.project_id}:${j.job_id}`
+    expect(take(c.id).remoteId).toBe(remote(jobs[1])) // its own job (A's was listed before its POST)
+    // A, retried: finds ITS job, never C's; nothing posted again
+    expect(useRuns.getState().retry(a.id)).toMatchObject({ queued: 1 })
+    await run(30_000)
+    expect(take(a.id).remoteId).toBe(remote(jobs[0]))
+    expect(logOf('job-create')).toHaveLength(2)
+    expect(server.snapshot().jobs).toHaveLength(2)
+    expect(server.balance()).toBe(1000 - 2 * S1_COST)
+  })
+
   it('answer lost once (list readable) → the job is found and adopted 15 s later, never paid twice', async () => {
     server.login()
     server.setConfig({ dedupe: false }) // even a careless server: SanoVids must not post a second time when it finds the job
