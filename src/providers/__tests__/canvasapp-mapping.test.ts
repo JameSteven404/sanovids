@@ -23,6 +23,8 @@ import {
   parseSceneNodeKey,
   planBridgeCanvas,
   PROFILE_FALLBACKS,
+  profileIssues,
+  profilesSignature,
   profileSpecOf,
   promptLimitOf,
   ratioFromDimensions,
@@ -358,6 +360,75 @@ describe('canvasapp mapping: validation', () => {
       resolutions: ['768p', '2k', '4k'],
       disabled_modes: ['t2v'],
     })
+  })
+})
+
+describe('canvasapp mapping: profileIssues — the ONE rule of the submit, the inspector and the run check', () => {
+  const h3 = (over: Record<string, unknown> = {}, options: Record<string, unknown> = {}) => ({
+    model_profile: 'minimax_h3',
+    display_name: 'MiniMax-H3',
+    enabled: true,
+    can_create: true,
+    ...over,
+    options: { disabled_modes: [], ...options },
+  })
+  const sd = (options: Record<string, unknown> = {}, over: Record<string, unknown> = {}) => ({ model_profile: 'seedance_2_5', display_name: 'Seedance 2.5', can_create: true, ...over, options })
+  const H3_I2V = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+  const SD = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' } as const
+
+  it('tags each refusal with its field, in the submit order', () => {
+    expect(profileIssues(H3_I2V, [h3()])).toEqual([])
+    expect(profileIssues(H3_I2V, [h3({ can_create: false })])).toEqual([{ field: 'model', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' }])
+    expect(profileIssues(H3_I2V, [h3({}, { disabled_modes: ['i2v'] })])).toEqual([{ field: 'mode', reason: 'Chế độ Ảnh → Video hiện tạm ngừng trên canvasapp.' }])
+    expect(profileIssues(SD, [sd({ modes: ['i2v'] })]).map((i) => i.field)).toEqual(['mode'])
+    const all = profileIssues({ ...SD, ratio: '9:16' }, [sd({ durations: [5], resolutions: ['720P'], aspect_ratios: ['16:9'] }, { can_create: false })])
+    expect(all.map((i) => i.field)).toEqual(['model', 'duration', 'resolution', 'ratio'])
+    expect(all.map((i) => i.reason)).toEqual([
+      'Seedance 2.5 hiện không khả dụng trên canvasapp.',
+      'canvasapp không có thời lượng 15s cho Seedance 2.5.',
+      'canvasapp không có độ phân giải 1080p cho Seedance 2.5.',
+      'canvasapp không có tỉ lệ khung 9:16 cho Seedance 2.5.',
+    ])
+    // resolutions in any case; H3 transform: no ratio check (it comes from the frames)
+    expect(profileIssues({ ...SD, resolution: '720p', duration: 5, ratio: '16:9' }, [sd({ durations: [5], resolutions: ['720P'], aspect_ratios: ['16:9'] })])).toEqual([])
+    expect(profileIssues({ ...H3_I2V, mode: 'transform', ratio: '21:9' }, [h3({}, { aspect_ratios: ['16:9'] })])).toEqual([])
+    expect(profileIssues({ ...H3_I2V, ratio: '21:9' }, [h3()]).map((i) => i.field)).toEqual(['ratio'])
+    // unreadable ([]) → the client's fallbacks: H3 locked, transform off
+    expect(profileIssues({ ...H3_I2V, mode: 'transform' }, []).map((i) => i.field)).toEqual(['model', 'mode'])
+    expect(profileIssues(SD, [])).toEqual([])
+  })
+
+  it.each([
+    ['Seedance as read', req(), [sd({ durations: [5, 10], resolutions: ['720p'], aspect_ratios: ['16:9'] })]],
+    ['Seedance locked', req({ duration: 30 }), [sd({}, { can_create: false })]],
+    ['H3 missing → fallback', req({ model: 'minimax_h3', images: [] }), [sd()]],
+    ['H3 i2v off', req({ model: 'minimax_h3', mode: 'i2v', resolution: '768p', duration: 5 }), [h3({}, { disabled_modes: ['i2v'] })]],
+    ['H3 transform', h3Transform({ duration: 5, ratio: '21:9' }), [h3({ can_create: false }, { disabled_modes: ['transform'] })]],
+    ['unreadable', h3Transform(), []],
+    ['malformed', req({ resolution: '480p' }), [null, sd({ durations: 'all', modes: 5, resolutions: ['1080p', 7] })] as never],
+  ])('parity with validateRequest: %s', (_name, r, profiles) => {
+    // the profile part of the submit check is exactly profileIssues' texts, in its order
+    expect(validateRequest(r, profiles)).toEqual([...validateRequest(r, null), ...profileIssues(r, profiles).map((i) => i.reason)])
+  })
+
+  it('names a profile by its display_name, clamped (server text in the UI), else the built-in name', () => {
+    const long = 'Mô hình '.repeat(30)
+    const [issue] = profileIssues(SD, [sd({}, { can_create: false, display_name: long })])
+    expect(issue.reason.length).toBeLessThan(80)
+    expect(issue.reason).toMatch(/^Mô hình .*… hiện không khả dụng trên canvasapp\.$/)
+    expect(profileIssues(SD, [sd({}, { can_create: false, display_name: 42 })])[0].reason).toBe('Seedance 2.5 hiện không khả dụng trên canvasapp.')
+    expect(profileIssues(SD, [sd({}, { can_create: false, display_name: '   ' })])[0].reason).toBe('Seedance 2.5 hiện không khả dụng trên canvasapp.')
+  })
+
+  it('profilesSignature: the same refusals → the same string; a change of what is refused → another', () => {
+    const a = [sd({ durations: [5, 10] }), h3()]
+    const b = JSON.parse(JSON.stringify(a)) as typeof a
+    expect(profilesSignature(a, true)).toBe(profilesSignature(b, true))
+    // pricing / visible / enabled do not change what is refused
+    expect(profilesSignature([{ ...a[0], visible: false, options: { ...a[0].options, pricing: { x: 1 } } }, a[1]], true)).toBe(profilesSignature(a, true))
+    expect(profilesSignature([a[0], h3({ can_create: false })], true)).not.toBe(profilesSignature(a, true))
+    expect(profilesSignature([sd({ durations: [5] }), a[1]], true)).not.toBe(profilesSignature(a, true))
+    expect(profilesSignature([], false)).not.toBe(profilesSignature([], true))
   })
 })
 

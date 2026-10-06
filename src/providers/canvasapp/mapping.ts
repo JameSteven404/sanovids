@@ -9,8 +9,8 @@
 // normalizeConnections(), createVideoNode(), newId()) key for key — the server refuses anything else
 // ("Invalid canvas payload"). See docs/canvasapp-api-notes.md.
 import { modeLabel } from '../../core/models'
-import type { Mode, ModelId } from '../../core/types'
-import type { JobRequest, RemoteStatus } from '../types'
+import type { Mode, ModelId, VideoSettings } from '../../core/types'
+import type { JobRequest, RemoteStatus, SettingsIssue } from '../types'
 import type { CanvasConnection, CanvasImageNode, CanvasJob, CanvasNode, CanvasPayload, CanvasVideoNode, VideoJobBody, VideoProfile } from './api'
 
 export const BRIDGE_PROJECT_NAME = 'SanoVids bridge'
@@ -257,6 +257,61 @@ export function profileSpecOf(model: ModelId, profiles: readonly VideoProfile[])
 
 const listOf = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
 
+/** A profile name shown in a message: canvasapp's display_name (trimmed, at most this long), else the built-in one. */
+const MAX_PROFILE_NAME = 40
+
+function profileName(model: ModelId, profile: VideoProfile): string {
+  const raw = typeof profile.display_name === 'string' ? profile.display_name.trim() : ''
+  if (raw) return raw.length > MAX_PROFILE_NAME ? `${raw.slice(0, MAX_PROFILE_NAME - 1)}…` : raw
+  return PROFILE_FALLBACKS[model]?.display_name || model
+}
+
+/**
+ * What canvasapp's page would refuse in these settings, per /api/video-profiles (`profiles` as read; [] = unreadable →
+ * its fallbacks), each tagged with its field — in this order, with the texts of the submit refusal (validateRequest):
+ * can_create → 'model'; a mode not offered or in disabled_modes → 'mode'; durations → 'duration'; resolutions (any
+ * case) → 'resolution'; aspect_ratios → 'ratio' (not for H3 transform, whose ratio comes from its frames).
+ * ONE rule for the submit, the inspector and the run check. Pure; defensive about malformed lists.
+ */
+export function profileIssues(s: Pick<VideoSettings, 'model' | 'mode' | 'duration' | 'resolution' | 'ratio'>, profiles: readonly VideoProfile[]): SettingsIssue[] {
+  const out: SettingsIssue[] = []
+  const profile = profileSpecOf(s.model, profiles)
+  const name = profileName(s.model, profile)
+  const mode = modeLabel(s.mode, s.model)
+  // runVideoNode() refuses a profile that cannot create and a disabled mode (it only looks at can_create)
+  if (profile.can_create === false) out.push({ field: 'model', reason: `${name} hiện không khả dụng trên canvasapp.` })
+  const o: Record<string, unknown> = isPlainObject(profile.options) ? profile.options : {}
+  const modes = listOf(o.modes)
+  if (modes && !modes.includes(s.mode)) out.push({ field: 'mode', reason: `canvasapp không có chế độ ${mode} cho ${name}.` })
+  if (listOf(o.disabled_modes)?.includes(s.mode)) out.push({ field: 'mode', reason: `Chế độ ${mode} hiện tạm ngừng trên canvasapp.` })
+  const durations = listOf(o.durations)
+  if (durations && !durations.map(Number).includes(s.duration)) out.push({ field: 'duration', reason: `canvasapp không có thời lượng ${s.duration}s cho ${name}.` })
+  const resolutions = listOf(o.resolutions)
+  if (resolutions && !resolutions.map((r) => resolutionOf(String(r))).includes(resolutionOf(s.resolution))) {
+    out.push({ field: 'resolution', reason: `canvasapp không có độ phân giải ${s.resolution} cho ${name}.` })
+  }
+  // H3 transform takes its ratio from the two frames (no aspect_ratio is sent): checked by transformFrameRatio
+  const ratios = listOf(o.aspect_ratios)
+  if (ratios && inputShapeOf(s.model, s.mode) !== 'frames' && !ratios.includes(s.ratio)) out.push({ field: 'ratio', reason: `canvasapp không có tỉ lệ khung ${s.ratio} cho ${name}.` })
+  return out
+}
+
+/**
+ * What profileIssues reads of each model's profile, as one string: two reads with the same signature refuse exactly
+ * the same settings (the adapter keeps its SettingsLimits object then). `ok` false = canvasapp's fallbacks.
+ */
+export function profilesSignature(profiles: readonly VideoProfile[], ok: boolean): string {
+  const models = Object.keys(PROFILE_FALLBACKS) as ModelId[]
+  return JSON.stringify([
+    ok,
+    models.map((m) => {
+      const p = profileSpecOf(m, profiles)
+      const o: Record<string, unknown> = isPlainObject(p.options) ? p.options : {}
+      return [profileName(m, p), p.can_create === false, o.modes ?? null, o.disabled_modes ?? null, o.durations ?? null, o.resolutions ?? null, o.aspect_ratios ?? null]
+    }),
+  ])
+}
+
 // ---------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------
@@ -279,24 +334,9 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')
-  if (profiles) {
-    const profile = profileSpecOf(req.model, profiles)
-    const name = profile.display_name || PROFILE_FALLBACKS[req.model]?.display_name || req.model
-    const mode = modeLabel(req.mode, req.model)
-    // runVideoNode() refuses a profile that cannot create and a disabled mode (it only looks at can_create)
-    if (profile.can_create === false) out.push(`${name} hiện không khả dụng trên canvasapp.`)
-    const o: Record<string, unknown> = isPlainObject(profile.options) ? profile.options : {}
-    const modes = listOf(o.modes)
-    if (modes && !modes.includes(req.mode)) out.push(`canvasapp không có chế độ ${mode} cho ${name}.`)
-    if (listOf(o.disabled_modes)?.includes(req.mode)) out.push(`Chế độ ${mode} hiện tạm ngừng trên canvasapp.`)
-    const durations = listOf(o.durations)
-    if (durations && !durations.map(Number).includes(req.duration)) out.push(`canvasapp không có thời lượng ${req.duration}s cho ${name}.`)
-    const resolutions = listOf(o.resolutions)
-    if (resolutions && !resolutions.map((r) => resolutionOf(String(r))).includes(resolutionOf(req.resolution))) out.push(`canvasapp không có độ phân giải ${req.resolution} cho ${name}.`)
-    // H3 transform takes its ratio from the two frames (no aspect_ratio is sent): checked by transformFrameRatio
-    const ratios = listOf(o.aspect_ratios)
-    if (ratios && inputShapeOf(req.model, req.mode) !== 'frames' && !ratios.includes(req.ratio)) out.push(`canvasapp không có tỉ lệ khung ${req.ratio} cho ${name}.`)
-  }
+  // canvasapp's page refuses (runVideoNode) what /api/video-profiles says it cannot run — the SAME rule the inspector
+  // and the run check use (profileIssues), so they never disagree with this.
+  if (profiles) out.push(...profileIssues(req, profiles).map((i) => i.reason))
   return out
 }
 

@@ -60,12 +60,20 @@ import {
   devApi,
   gatewayFor,
   getProvider,
+  LIMITS_RENEW_EARLY_MS,
   normalizeProviderChoice,
   PROVIDER_LABEL,
+  providerLimits,
+  providerLimitsInfo,
+  refreshProviderLimits,
   registerProvider,
   resetDevMode,
+  useProviderLimits,
   useProviderPrefs,
+  watchProviderLimits,
 } from '../index'
+import { PROFILES_FORCE_MIN_MS, PROFILES_RETRY_MS, PROFILES_TTL_MS } from '../canvasapp/adapter'
+import type { DevModelToggle } from '../dev'
 import type { JobRequest } from '../types'
 
 const asset = (id: string, name: string, imageIds: string[]): Asset => ({ id, kind: 'character', name, tag: name, description: '', imageIds, color: '#fff', position: null })
@@ -569,5 +577,114 @@ describe('dev mode e2e: top-up', () => {
     expect(server.balance()).toBe(1100)
     expect((await activeGateway().api.creditHistory({ kind: 'topup' })).items[0]).toMatchObject({ delta: 100, amount_vnd: 100_000 })
     flow.dispose()
+  })
+})
+
+describe('dev mode e2e: what the simulated site runs now (inspector, run check, Bảng phát triển › Model)', () => {
+  const H3 = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+  const setModel = (id: 'seedance_2_5' | 'minimax_h3', patch: Partial<DevModelToggle>) =>
+    server.setConfig({ models: { ...server.config().models, [id]: { ...server.config().models[id], ...patch } } })
+  const withScenes = (...extra: Scene[]) => useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, ...extra] })
+  const check = (...ids: string[]) => useRuns.getState().check(ids)
+  const rev = () => useProviderLimits.getState().rev.dev
+
+  it('H3 locked in the panel + "Đọc lại ngay": the signal moves, the run check skips H3 (no take, no request), ONE read', async () => {
+    server.login()
+    setModel('minimax_h3', { can_create: false })
+    withScenes(scene('s3', 3, { settings: { ...H3 } }))
+    expect(providerLimits('dev').source).toBe('none') // nothing read yet: nothing limited (the submit decides)
+    expect(check('s3')[0]).toMatchObject({ ok: true, warnings: [] })
+    const before = rev()
+    expect(await refreshProviderLimits('dev', { force: true })).toBe('read')
+    expect(rev()).toBeGreaterThan(before)
+    expect(providerLimits('dev')).toMatchObject({ source: 'server', firm: true })
+    expect(providerLimitsInfo('dev')).toMatchObject({ source: 'server', reading: false, lastAttempt: { result: 'read' } })
+    // the dev provider is wrapped for development-mode words: the limits pass through as they are
+    expect(providerLimits('dev').issues({ ...H3 })).toEqual([{ field: 'model', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' }])
+    expect(check('s3')[0]).toMatchObject({ ok: false, reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp' })
+    expect(useRuns.getState().enqueue(['s3'])).toMatchObject({ queued: 0, error: 'Không có cảnh nào chạy được.' })
+    await run(1000)
+    expect(takes()).toEqual([])
+    expect(logOf('video-profiles')).toHaveLength(1)
+    expect(logOf('job-create')).toHaveLength(0)
+    // fresh: an automatic refresh (inspector shown again) sends nothing
+    expect(await refreshProviderLimits('dev')).toBe('fresh')
+    expect(logOf('video-profiles')).toHaveLength(1)
+  })
+
+  it('Seedance’s lists narrowed in the panel are followed; MiniMax-H3’s are ignored (canvasapp’s page uses its own)', async () => {
+    server.login()
+    setModel('seedance_2_5', { off_durations: [30] })
+    setModel('minimax_h3', { off_durations: [15] })
+    withScenes(scene('s3', 3, { settings: { ...S1, duration: 30 } }), scene('s4', 4, { settings: { ...H3, duration: 15 } }))
+    await refreshProviderLimits('dev', { force: true })
+    const [sd30, h3] = check('s3', 's4')
+    expect(sd30).toMatchObject({ ok: false, reason: 'canvasapp không có thời lượng 30s cho Seedance 2.5' })
+    expect(h3).toMatchObject({ ok: true })
+    expect(getProvider('dev').capabilities('seedance_2_5').durations).toEqual([5, 10, 15])
+  })
+
+  it('profiles unreadable ("Cấu hình model lỗi 500") → a guess: H3 runnable with a warning, refused at the submit (no credit)', async () => {
+    server.login()
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'profiles-500')!.rule)
+    withScenes(scene('s3', 3, { settings: { ...H3 } }))
+    expect(await refreshProviderLimits('dev')).toBe('failed')
+    expect(providerLimits('dev')).toMatchObject({ source: 'fallback', firm: false })
+    const [c] = check('s3')
+    expect(c.ok).toBe(true)
+    expect(c.warnings.join(' ')).toMatch(/Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng trên canvasapp/)
+    const [t] = enqueue('s3')
+    await run(1000)
+    expect(take(t.id).status).toBe('failed')
+    expect(take(t.id).error).toMatch(/không khả dụng/)
+    expect(logOf('job-create')).toHaveLength(0)
+    expect(server.balance()).toBe(1000)
+  })
+
+  it('logged out → "login" (and a minute’s pause); "Đăng nhập ngay" in the panel then a forced read → "server" at once', async () => {
+    expect(await refreshProviderLimits('dev')).toBe('login')
+    expect(await refreshProviderLimits('dev')).toBe('login')
+    expect(logOf('video-profiles')).toHaveLength(1)
+    expect(providerLimits('dev').source).toBe('none')
+    await run(PROFILES_FORCE_MIN_MS)
+    server.login() // AccountCard: server-side login, then refreshProviderLimits('dev', { force: true })
+    expect(await refreshProviderLimits('dev', { force: true })).toBe('read')
+    expect(providerLimits('dev').source).toBe('server')
+    expect(PROFILES_FORCE_MIN_MS).toBeLessThan(PROFILES_RETRY_MS) // ...well inside the automatic reads' pause
+  })
+
+  it('a one-shot fault armed while the read is fresh is not used up by an automatic refresh', async () => {
+    server.login()
+    await refreshProviderLimits('dev', { force: true })
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'rate-429')!.rule)
+    expect(await refreshProviderLimits('dev')).toBe('fresh')
+    expect(server.faults()).toHaveLength(1)
+    expect(logOf('video-profiles')).toHaveLength(1)
+  })
+
+  it('"Xoá dữ liệu máy chủ giả lập" (resetDevMode): a new provider knows nothing — "none", and the signal moves', async () => {
+    server.login()
+    await refreshProviderLimits('dev', { force: true })
+    expect(providerLimits('dev').source).toBe('server')
+    const before = rev()
+    await resetDevMode()
+    expect(rev()).toBeGreaterThan(before)
+    expect(providerLimits('dev').source).toBe('none')
+    expect(providerLimitsInfo('dev').lastAttempt).toBeNull()
+  })
+
+  it('while shown (watched) a firm read is renewed before it expires; unwatched it just stops being sure (no request)', async () => {
+    server.login()
+    await refreshProviderLimits('dev', { force: true })
+    const stop = watchProviderLimits('dev')
+    await run(PROFILES_TTL_MS - LIMITS_RENEW_EARLY_MS + 1_000)
+    expect(logOf('video-profiles')).toHaveLength(2)
+    expect(providerLimits('dev').firm).toBe(true)
+    stop()
+    const before = rev()
+    await run(PROFILES_TTL_MS + 1_000)
+    expect(logOf('video-profiles')).toHaveLength(2)
+    expect(providerLimits('dev')).toMatchObject({ source: 'server', firm: false })
+    expect(rev()).toBeGreaterThan(before)
   })
 })

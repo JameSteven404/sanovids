@@ -60,6 +60,15 @@ export interface DevModelToggle {
   can_create: boolean
   /** Modes switched off (/api/video-profiles disabled_modes). */
   disabled_modes: Mode[]
+  /**
+   * Values left out of the profile's lists (durations / resolutions / aspect_ratios), like canvasapp narrowing what a
+   * model offers. canvasapp's page (and SanoVids) uses Seedance's lists as sent, but replaces MiniMax-H3's lists that are
+   * narrower than its built-in ones — so for H3 these change nothing (mapping.profileSpecOf). Only values of the model
+   * are kept; missing = none.
+   */
+  off_durations?: number[]
+  off_resolutions?: string[]
+  off_ratios?: string[]
 }
 
 export interface DevConfig {
@@ -88,8 +97,8 @@ export const DEV_CONFIG_DEFAULT: DevConfig = {
   latencyMs: 150,
   failRate: 0,
   models: {
-    seedance_2_5: { can_create: true, disabled_modes: [] },
-    minimax_h3: { can_create: true, disabled_modes: [] },
+    seedance_2_5: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
+    minimax_h3: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
   },
 }
 
@@ -198,7 +207,7 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
   {
     id: 'profiles-500',
     label: 'Cấu hình model lỗi 500 (giữ)',
-    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá).',
+    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): inspector và hộp Chạy chỉ cảnh báo “có thể bị từ chối”, take MiniMax-H3 bị từ chối khi gửi (không tốn credit).',
     rule: { endpoint: 'video-profiles', fault: { kind: 'response', status: 500, json: { detail: 'boom' } }, sticky: true },
   },
   {
@@ -527,9 +536,15 @@ function mergeConfig(raw: unknown): DevConfig {
     for (const id of Object.keys(d.models) as ModelId[]) {
       const m = c.models[id]
       if (!isObj(m)) continue
+      const spec = MODELS[id]
+      /** The items of `v` that the model has (anything else is dropped), each once. */
+      const only = <T,>(v: unknown, values: readonly T[]): T[] => (Array.isArray(v) ? values.filter((x) => v.includes(x)) : [])
       models[id] = {
         can_create: typeof m.can_create === 'boolean' ? m.can_create : d.models[id].can_create,
         disabled_modes: Array.isArray(m.disabled_modes) ? (m.disabled_modes.filter((x) => typeof x === 'string') as Mode[]) : [],
+        off_durations: only(m.off_durations, spec.durations),
+        off_resolutions: only(m.off_resolutions, spec.resolutions),
+        off_ratios: only(m.off_ratios, spec.ratios),
       }
     }
   }
@@ -544,6 +559,28 @@ function mergeConfig(raw: unknown): DevConfig {
     failRate: num(c.failRate, d.failRate, 0, 1),
     models,
   }
+}
+
+/** /api/video-profiles of the simulated site for these model toggles (every model of SanoVids' table). */
+export function devVideoProfiles(models: DevConfig['models']): VideoProfile[] {
+  return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
+    const t = models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
+    return {
+      model_profile: m.id,
+      display_name: m.name,
+      visible: true,
+      enabled: t.can_create,
+      can_create: t.can_create,
+      options: {
+        modes: [...m.modes],
+        disabled_modes: [...t.disabled_modes],
+        durations: m.durations.filter((x) => !(t.off_durations ?? []).includes(x)),
+        resolutions: m.resolutions.filter((x) => !(t.off_resolutions ?? []).includes(x)),
+        aspect_ratios: m.ratios.filter((x) => !(t.off_ratios ?? []).includes(x)),
+        pricing: m.pricing,
+      },
+    }
+  })
 }
 
 function faultLabel(f: DevFault): string {
@@ -1023,26 +1060,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
     }
   }
 
-  function profilesNow(): VideoProfile[] {
-    return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
-      const t = config.models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
-      return {
-        model_profile: m.id,
-        display_name: m.name,
-        visible: true,
-        enabled: t.can_create,
-        can_create: t.can_create,
-        options: {
-          modes: [...m.modes],
-          disabled_modes: [...t.disabled_modes],
-          durations: [...m.durations],
-          resolutions: [...m.resolutions],
-          aspect_ratios: [...m.ratios],
-          pricing: m.pricing,
-        },
-      }
-    })
-  }
+  const profilesNow = (): VideoProfile[] => devVideoProfiles(config.models)
 
   const hasUpload = (id: string) => state.uploads.some((u) => u.upload_id === id)
 

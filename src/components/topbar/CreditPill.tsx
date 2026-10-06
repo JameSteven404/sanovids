@@ -11,7 +11,7 @@
 import { FlaskConical, LoaderCircle, LogIn, Plus, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
 import { openTopUp } from '../../actions'
-import { activeGateway, type Gateway } from '../../providers'
+import { activeGateway, refreshProviderLimits, type Gateway } from '../../providers'
 import { refreshRealCredits, useCreditInfo } from '../../store/credits'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
@@ -23,7 +23,7 @@ let loginInFlight: Promise<boolean> | null = null
 /**
  * Log in on the gateway's own login page — the active one by default: canvasapp's real page (desktop bridge, a
  * separate window — SanoVids never sees the password), or in development mode the simulated login sheet — then
- * re-read the balance. Without a bridge (real canvasapp on the web) it opens Cài đặt instead. Resolves true when
+ * re-read the balance and what the account may run (/api/video-profiles). Without a bridge (real canvasapp on the web) it opens Cài đặt instead. Resolves true when
  * logged in. Concurrent calls share one login window.
  */
 export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<boolean> {
@@ -40,6 +40,8 @@ export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<bo
       const ok = st.ok && st.authenticated
       if (ok) toast(`Đã đăng nhập ${name}.`, { tone: 'success' })
       else if (!st.ok) toast(`Không đăng nhập được ${name}: ${st.message}`, { tone: 'error' })
+      // what this account may run (/api/video-profiles): the inspector stops waiting out an earlier 401
+      if (ok) void refreshProviderLimits(gateway.id, { force: true })
       await refreshRealCredits({ force: true })
       return ok
     } catch (e) {

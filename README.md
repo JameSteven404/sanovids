@@ -46,6 +46,7 @@
 - **Preset** (ví dụ *Nháp 30s · 480p*, *Final 15s · 1080p*), áp dụng cho nhiều cảnh một lần.
 - **Chạy hàng loạt** với bảng xác nhận chi phí (ghi rõ trừ **credit dev** (giả lập) hay **credit canvasapp** (thật)), hàng đợi chạy song song, cập nhật tiến độ trực tiếp. Mọi nút Chạy / Chạy lại / Thử lại đều qua bảng chi phí, bấm đúp không bị chạy hai lần.
 - Nút Chạy bị khoá kèm lý do khi cảnh chưa chạy được (prompt trống, thiếu ảnh, `@image_N` không có ảnh thật…).
+- **Cấu hình video theo canvasapp**: model / chế độ / thời lượng / độ phân giải / tỉ lệ mà canvasapp đang tắt hiện mờ kèm lý do và không chọn được; cảnh đang dùng chúng chưa chạy được (bị bỏ qua khi chạy nhiều cảnh, không tốn credit). Cấu hình đã lưu của cảnh không bị đổi. Chưa đọc được cấu hình từ canvasapp thì chỉ cảnh báo "có thể bị từ chối"; bấm **Đọc lại** để cập nhật ngay.
 - Đánh dấu ★ take chọn, khôi phục prompt của take cũ.
 - **Tải video**: một nút cho từng video (kèm file `.txt` chứa prompt), **"Tải tất cả video chọn (.zip)"**, hoặc bật **Tự tải video khi tạo xong** vào thư mục bạn chọn.
 

@@ -15,6 +15,10 @@
 //          ids (Nhân bản dự án, a file imported twice) never share one. Nodes named by the bare scene id (builds
 //          before per-project nodes: "legacy") stay valid — their entries and running jobs keep them, and a take
 //          re-sent after such a build lost its answer goes to THAT node again (nodeKeyFor).
+// limits:  settingsLimits() = what that cached /api/video-profiles answer refuses (mapping.profileIssues, the rule of
+//          the submit check) for the inspector and the run check — synchronous, never a request; refreshLimits() reads
+//          it again for the UI (TTL-gated, shares the submit's read, a failed UI read never replaces a fresh OK list);
+//          onLimitsChange tells the app (see "/api/video-profiles: one cache" below for the invariants).
 // poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
 // result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame).
 //
@@ -31,9 +35,24 @@
 //     → post again ONCE with the same body and key; still nothing → error flagged `uncertain` (the engine then shows
 //     "không rõ đã trả chưa" and never resubmits that take under a new key by itself).
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
-import type { ModelId } from '../../core/types'
+import { normalizeSettings } from '../../core/models'
+import type { ModelId, VideoSettings } from '../../core/types'
 import { CANVASAPP_MAX_REF_VIDEOS, capabilitiesFromModels } from '../capabilities'
-import type { JobRequest, ProviderAvailability, ProviderCapabilities, ProviderId, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
+import {
+  NO_LIMITS,
+  type JobRequest,
+  type LimitField,
+  type LimitsInfo,
+  type ProviderAvailability,
+  type ProviderCapabilities,
+  type ProviderId,
+  type RefreshLimitsResult,
+  type RemoteStatus,
+  type SettingsIssue,
+  type SettingsLimits,
+  type SubmitOptions,
+  type VideoProvider,
+} from '../types'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
   ALLOWED_IMAGE_TYPES,
@@ -50,7 +69,8 @@ import {
   mapJobStatus,
   modelProfileOf,
   planBridgeCanvas,
-  profileSpecOf,
+  profileIssues,
+  profilesSignature,
   ratioFromDimensions,
   sceneNodeKey,
   toVideoJobBody,
@@ -87,8 +107,13 @@ const MAX_JOB_RECORDS = 500
 const MAX_SENT_RECORDS = 100
 /** /api/video-profiles is read again after this long (canvasapp's page reads it once per page load). */
 export const PROFILES_TTL_MS = 10 * 60_000
-/** ...and after a failed read, on the next submit once this long has passed (meanwhile the client's fallbacks apply). */
-const PROFILES_RETRY_MS = 60_000
+/**
+ * ...and after a failed read, on the next submit once this long has passed (meanwhile the client's fallbacks apply).
+ * Also the pause of the UI's automatic reads (refreshLimits) after any failed attempt — a 401 included.
+ */
+export const PROFILES_RETRY_MS = 60_000
+/** A forced refreshLimits() ("Đọc lại") sends at most one read this often, whatever came of the last one. */
+export const PROFILES_FORCE_MIN_MS = 5_000
 
 export const UNCERTAIN_SUBMIT_TEXT =
   'Mất kết nối đúng lúc gửi yêu cầu tạo video: không rõ canvasapp đã nhận (và trừ credit) hay chưa — kiểm tra trên canvasapp.io.vn trước khi chạy lại.'
@@ -182,6 +207,11 @@ export interface CanvasappProviderDeps {
   generateAudio?: () => boolean
   /** Pixel size of a picture (H3 transform frames' ratio); null = unreadable. Default createImageBitmap. */
   imageSize?: (blob: Blob) => Promise<{ width: number; height: number } | null>
+  /**
+   * Called when what settingsLimits() / limitsInfo() return may have changed (a read started or ended, reset). The app
+   * bumps its revision signal there (providers/index useProviderLimits). Must not throw.
+   */
+  onLimitsChange?: () => void
 }
 
 interface GatewayState {
@@ -216,7 +246,10 @@ export const JOBS_KEY = 'bdp:canvasapp:jobs'
 
 export type CanvasappProvider = VideoProvider & {
   reset(): void
-  /** Re-read /api/video-profiles (capabilities + validation). */
+  settingsLimits(): SettingsLimits
+  limitsInfo(): LimitsInfo
+  refreshLimits(opts?: { force?: boolean }): Promise<RefreshLimitsResult>
+  /** Re-read /api/video-profiles now (a forced read); throws when it cannot be read. */
   refreshProfiles(): Promise<VideoProfile[]>
   bridgeProjectId(): string | null
   uploadCacheSize(): number
@@ -263,6 +296,19 @@ function uploadsFrom(raw: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1].length > 0))
 }
 
+/** One read of /api/video-profiles: the list, or why not; `outcome` = what it did to the cache (record()). */
+type ProfilesAnswer =
+  | { ok: true; list: VideoProfile[]; outcome: 'read' }
+  | { ok: false; login: boolean; error: unknown; outcome: 'failed' | 'kept' | 'login' }
+
+interface ProfilesReading {
+  promise: Promise<ProfilesAnswer>
+  /** A submit waits for it: its failure keeps the fallbacks for submits for PROFILES_RETRY_MS. */
+  bySubmit: boolean
+  /** Sent by a forced refresh ("Đọc lại"). */
+  forced: boolean
+}
+
 export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappProvider {
   const { api } = deps
   const storage = deps.storage ?? memoryStorage()
@@ -276,7 +322,21 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   let ledger: JobLedger = loadLedger()
   /** /api/video-profiles as last read ([] = unreadable → canvasapp's fallbacks); null = not read yet. */
   let profiles: VideoProfile[] | null = null
-  let profilesRead: { at: number; ok: boolean } | null = null
+  /**
+   * When `profiles` was read. `bySubmit`: a failed read a submit waited for — its fallbacks stand for submits until
+   * PROFILES_RETRY_MS (as before the UI read too); a failed read only the UI asked for never keeps a submit from reading.
+   */
+  let profilesRead: { at: number; ok: boolean; bySubmit: boolean } | null = null
+  /** profilesSignature of `profiles` (what they refuse). */
+  let profilesSig = ''
+  /** The one read in flight (the UI's and a submit's share it). */
+  let profilesReading: ProfilesReading | null = null
+  /** A forced read asked for while another was in flight: sent once that one ends (shared by further clicks). */
+  let profilesFollowUp: Promise<ProfilesAnswer> | null = null
+  let profilesAttempt: { at: number; result: 'read' | 'failed' | 'kept' | 'login' } | null = null
+  /** Bumped by reset(): a read started before it lands without changing anything. */
+  let profilesEpoch = 0
+  let limitsMemo: { sig: string; firm: boolean; value: SettingsLimits } | null = null
   let ensuring: Promise<string> | null = null
   /** Serialises submits: uploads + canvas PUT + job POST of one take never interleave with another's. */
   let chain: Promise<unknown> = Promise.resolve()
@@ -473,23 +533,170 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     save()
   }
 
+  // ---- /api/video-profiles: one cache for the submit (validateRequest) and the UI (settingsLimits) ----
+  // Invariants: (1) a submit reads it only after the ledger lookups (`done` / `earlier` in submitNow), so a take whose
+  // earlier POST lost its answer is still found when the model is locked now; (2) a failed read never replaces a fresh
+  // OK list ('kept': pressing "Đọc lại" never makes a submit refuse what it accepted a second earlier), and only a
+  // failure a submit waited for keeps submits on the fallbacks for PROFILES_RETRY_MS — one only the UI saw never stops a
+  // submit from reading; (3) reset() drops whatever a read in flight brings back.
+
+  function limitsChanged() {
+    try {
+      deps.onLimitsChange?.()
+    } catch {
+      /* the UI signal never breaks the gateway */
+    }
+  }
+
+  /** The OK list is younger than PROFILES_TTL_MS (a submit decides with it without reading). */
+  const okFresh = () => !!profiles && !!profilesRead?.ok && now() - profilesRead.at < PROFILES_TTL_MS
+
+  /** profilesSignature, never throwing (server data): unreadable → a signature of its own (a new limits object). */
+  function signatureOf(list: VideoProfile[], ok: boolean, t: number): string {
+    try {
+      return profilesSignature(list, ok)
+    } catch {
+      return `unreadable:${t}:${Math.random()}`
+    }
+  }
+
+  function record(answer: ProfilesAnswer, bySubmit: boolean): ProfilesAnswer['outcome'] {
+    const t = now()
+    if (answer.ok) {
+      profiles = answer.list
+      profilesRead = { at: t, ok: true, bySubmit }
+      profilesSig = signatureOf(answer.list, true, t)
+      return 'read'
+    }
+    if (answer.login) return 'login' // what was read before stays (the session ended; reset() on logout drops it)
+    if (okFresh()) return 'kept'
+    profiles = []
+    profilesRead = { at: t, ok: false, bySubmit }
+    profilesSig = signatureOf([], false, t)
+    return 'failed'
+  }
+
+  /**
+   * GET /api/video-profiles — one read at a time: a call while one is in flight joins it (a submit joining marks it as
+   * its own). The state is only written when no reset() happened meanwhile; the caller always gets the answer.
+   * `forced`: started by a forced refresh ("Đọc lại"), see readAfterCurrent.
+   */
+  function readProfiles(bySubmit: boolean, forced = false): Promise<ProfilesAnswer> {
+    if (profilesReading) {
+      if (bySubmit) profilesReading.bySubmit = true
+      return profilesReading.promise
+    }
+    const epoch = profilesEpoch
+    const reading: ProfilesReading = { promise: Promise.resolve(null as unknown as ProfilesAnswer), bySubmit, forced }
+    reading.promise = (async (): Promise<ProfilesAnswer> => {
+      let answer: ProfilesAnswer
+      try {
+        answer = { ok: true, list: await api.videoProfiles(), outcome: 'read' }
+      } catch (e) {
+        answer = { ok: false, login: isLoginRequired(e), error: e, outcome: isLoginRequired(e) ? 'login' : 'failed' }
+      }
+      if (epoch !== profilesEpoch) return answer
+      if (profilesReading === reading) profilesReading = null
+      const outcome = record(answer, reading.bySubmit)
+      profilesAttempt = { at: now(), result: outcome }
+      limitsChanged()
+      return { ...answer, outcome } as ProfilesAnswer
+    })()
+    profilesReading = reading
+    limitsChanged()
+    return reading.promise
+  }
+
+  /**
+   * A forced read whose request leaves after the call: never the answer of a read sent before it (that one may predate
+   * a change on canvasapp). Joins a read in flight only when it was itself forced (it left after an earlier click);
+   * otherwise one follow-up read is sent once it ends, shared by further clicks.
+   */
+  function readAfterCurrent(): Promise<ProfilesAnswer> {
+    const current = profilesReading
+    if (!current) return readProfiles(false, true)
+    if (current.forced) return current.promise
+    if (!profilesFollowUp) {
+      const epoch = profilesEpoch
+      const followUp: Promise<ProfilesAnswer> = current.promise.then(() => {
+        if (profilesFollowUp === followUp) profilesFollowUp = null
+        if (epoch !== profilesEpoch) return { ok: false, login: false, error: null, outcome: 'failed' } as ProfilesAnswer
+        return readProfiles(false, true)
+      })
+      profilesFollowUp = followUp
+    }
+    return profilesFollowUp
+  }
+
   /**
    * /api/video-profiles, read like canvasapp's page does at boot (loadVideoProfiles()): 401 → login error; any other
    * failure → [] (= its fallbacks: Seedance on, MiniMax-H3 locked), tried again later. `ok` false = fallbacks.
    */
   async function currentProfiles(): Promise<{ list: VideoProfile[]; ok: boolean }> {
-    const fresh = profiles && profilesRead && now() - profilesRead.at < (profilesRead.ok ? PROFILES_TTL_MS : PROFILES_RETRY_MS)
-    if (!fresh) {
-      try {
-        profiles = await api.videoProfiles()
-        profilesRead = { at: now(), ok: true }
-      } catch (e) {
-        if (isLoginRequired(e)) throw e
-        profiles = []
-        profilesRead = { at: now(), ok: false }
-      }
+    const read = profilesRead
+    const fresh = !!profiles && !!read && (read.ok ? now() - read.at < PROFILES_TTL_MS : read.bySubmit && now() - read.at < PROFILES_RETRY_MS)
+    if (fresh) return { list: profiles ?? [], ok: read?.ok ?? false }
+    const answer = await readProfiles(true)
+    if (answer.ok) return { list: answer.list, ok: true }
+    if (answer.login) throw answer.error
+    // a UI read that ended meanwhile may have brought a fresh list
+    if (okFresh()) return { list: profiles ?? [], ok: true }
+    return { list: [], ok: false }
+  }
+
+  /** settingsLimits(): the same object while what it refuses and whether it is firm stay the same. */
+  function settingsLimits(): SettingsLimits {
+    const read = profilesRead
+    const list = profiles
+    if (!list || !read) return NO_LIMITS
+    const firm = read.ok && now() - read.at < PROFILES_TTL_MS
+    if (limitsMemo && limitsMemo.sig === profilesSig && limitsMemo.firm === firm) return limitsMemo.value
+    const value: SettingsLimits = Object.freeze({
+      source: read.ok ? ('server' as const) : ('fallback' as const),
+      firm,
+      issues: (s: VideoSettings): SettingsIssue[] => {
+        try {
+          return profileIssues(s, list)
+        } catch {
+          return [] // server data is rendered: it must never break a render
+        }
+      },
+    })
+    limitsMemo = { sig: profilesSig, firm, value }
+    return value
+  }
+
+  function limitsInfo(): LimitsInfo {
+    const read = profilesRead
+    const known = !!profiles && !!read
+    return {
+      source: !known ? 'none' : read.ok ? 'server' : 'fallback',
+      at: known ? read.at : null,
+      firmUntil: known && read.ok ? read.at + PROFILES_TTL_MS : null,
+      lastAttempt: profilesAttempt,
+      reading: !!profilesReading,
     }
-    return { list: profiles ?? [], ok: profilesRead?.ok ?? false }
+  }
+
+  async function refreshLimits({ force = false }: { force?: boolean } = {}): Promise<RefreshLimitsResult> {
+    try {
+      const t = now()
+      const last = profilesAttempt
+      if (!force) {
+        if (okFresh()) return 'fresh'
+        // after a failed attempt (a 401 included) the UI waits, like a submit after a failed read
+        if (!profilesReading && last && (last.result === 'failed' || last.result === 'login') && t - last.at < PROFILES_RETRY_MS) return last.result
+      } else if (!profilesReading && last && t - last.at < PROFILES_FORCE_MIN_MS) {
+        // "Đọc lại" pressed again within seconds (whatever the last read gave): its answer, nothing sent
+        return last.result === 'read' ? 'fresh' : last.result
+      }
+      const avail = await api.transport.available().catch(() => ({ ok: false }))
+      if (!avail.ok) return 'unavailable'
+      const answer = force ? await readAfterCurrent() : await readProfiles(false)
+      return answer.outcome
+    } catch {
+      return 'failed'
+    }
   }
 
   /**
@@ -785,20 +992,25 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     capabilities: (model: ModelId): ProviderCapabilities => {
       // never from the profile: a key canvasapp may add there does not say how a video is sent
       const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: CANVASAPP_MAX_REF_VIDEOS })
-      const o = profiles ? profileSpecOf(model, profiles).options : undefined
-      if (!o || typeof o !== 'object') return base
-      // Seedance's profile is used as canvasapp sends it: never trust a list to be one (the engine calls this)
-      const list = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
-      const strings = (v: unknown) => list(v)?.filter((x): x is string => typeof x === 'string') ?? null
-      const modes = strings(o.modes)
-      const disabled = strings(o.disabled_modes) ?? []
-      const durations = list(o.durations)
+      const list = profiles
+      if (!list) return base
+      // The values of SanoVids' model table that the submit would not refuse on that field (profileIssues — the very
+      // rule of validateRequest and settingsLimits(); a model that cannot create keeps its lists).
+      const start = normalizeSettings({ model: base.model })
+      const keep = <T extends string | number>(field: LimitField, values: T[]): T[] =>
+        values.filter((v) => {
+          try {
+            return !profileIssues({ ...start, [field]: v }, list).some((i) => i.field === field)
+          } catch {
+            return true
+          }
+        })
       return {
         ...base,
-        modes: base.modes.filter((m) => (!modes || modes.includes(m)) && !disabled.includes(m)),
-        durations: durations ? durations.map(Number).filter(Number.isFinite) : base.durations,
-        resolutions: strings(o.resolutions) ?? base.resolutions,
-        ratios: strings(o.aspect_ratios) ?? base.ratios,
+        modes: keep('mode', base.modes),
+        durations: keep('duration', base.durations),
+        resolutions: keep('resolution', base.resolutions),
+        ratios: keep('ratio', base.ratios),
       }
     },
 
@@ -889,14 +1101,26 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       lists.clear()
       lastLists.clear()
       misses.clear()
+      // what the account could run is not known any more (logout): back to 'none'; a read in flight is ignored
+      profilesEpoch++
       profiles = null
       profilesRead = null
+      profilesSig = ''
+      profilesReading = null
+      profilesFollowUp = null
+      profilesAttempt = null
+      limitsMemo = null
+      limitsChanged()
     },
 
+    settingsLimits,
+    limitsInfo,
+    refreshLimits,
+
     refreshProfiles: async () => {
-      profiles = await api.videoProfiles()
-      profilesRead = { at: now(), ok: true }
-      return profiles
+      const answer = await readAfterCurrent()
+      if (!answer.ok) throw answer.error ?? new CanvasappError('network', 'Không đọc được cấu hình model từ canvasapp.')
+      return answer.list
     },
     bridgeProjectId: () => state.projectId,
     uploadCacheSize: () => Object.keys(state.uploads).length,

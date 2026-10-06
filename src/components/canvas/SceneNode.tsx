@@ -17,7 +17,7 @@ import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { useGatewayRefVideoCap } from '../runs/shared'
+import { useGatewayRefVideoCap, useSettingsRunBlock } from '../runs/shared'
 import { costTitle, creditTone } from '../sidebar/shared'
 import {
   assetMapOf,
@@ -294,9 +294,11 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
   // Wallet of the next run: simulated credit dev (development mode) or real canvasapp credits (docs/SPEC-v2.md §9, §11).
   const creditKind = useCreditKind()
   // The queue's own rules (core/runGate, = store/runs check()): @video against the gateway's cap, and only the videos
-  // this model/mode really sends — a leftover reference of an H3 t2v / transform scene does not block it.
+  // this model/mode really sends — a leftover reference of an H3 t2v / transform scene does not block it; settings the
+  // gateway surely refuses now (/api/video-profiles, selected as a string: this card re-renders only when it changes).
   const videoCap = useGatewayRefVideoCap(scene.settings.model)
-  const reason = runBlockReason(scene, compiled, assets, { maxRefVideos: videoCap, takeStatus })
+  const settingsBlock = useSettingsRunBlock(scene.settings)
+  const reason = runBlockReason(scene, compiled, assets, { maxRefVideos: videoCap, takeStatus, settingsBlock })
 
   const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0

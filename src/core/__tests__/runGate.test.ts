@@ -136,6 +136,33 @@ describe('runBlockReason: the other rules, in the queue’s order', () => {
   })
 })
 
+describe('runBlockReason: settings the gateway surely refuses now (settingsBlock, /api/video-profiles)', () => {
+  const LOCKED = 'MiniMax-H3 hiện không khả dụng trên canvasapp'
+  const withBlock = (s: Scene, settingsBlock: string | null | undefined) => {
+    const p = project(s)
+    return runBlockReason(s, compileScene(p, s), p.assets, { ...gate(0), settingsBlock })
+  }
+
+  it('blocks a scene that would otherwise run; none / null → no block', () => {
+    const s = scene({ settings: H3('t2v') })
+    expect(withBlock(s, LOCKED)).toBe(LOCKED)
+    expect(withBlock(s, null)).toBeNull()
+    expect(withBlock(s, undefined)).toBeNull()
+  })
+
+  it('comes last, like the profile checks of the submit: the scene’s own problems are named first', () => {
+    expect(withBlock(scene({ settings: H3('t2v'), prompt: ' ' }), LOCKED)).toBe('Prompt trống')
+    expect(withBlock(scene({ settings: H3('i2v') }), LOCKED)).toBe('Thiếu ảnh tham chiếu')
+    expect(withBlock(scene({ videoRefs: ['t1'], prompt: '@video_1' }), LOCKED)).toBe(NO_VIDEO_REFS_REASON)
+  })
+
+  it('sceneRunBlock passes it on (one-scene Run buttons = store/runs check())', () => {
+    const s = scene({ settings: H3('t2v') })
+    expect(sceneRunBlock(s, project(s).assets, '', 0, LOCKED)).toBe(LOCKED)
+    expect(sceneRunBlock(s, project(s).assets, '', 0)).toBeNull()
+  })
+})
+
 describe('refStatusLookup: statuses joined in videoRefs order', () => {
   it('reads each take by its place; "" and unknown ids are deleted takes', () => {
     const look = refStatusLookup(['t1', 'gone', 'run1'], 'completed,,processing')
@@ -178,5 +205,11 @@ describe('every one-scene Run button is gated by core/runGate (no drift to a pro
   })
   it('the inspector gates both of its Run buttons (head + Take section)', () => {
     expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(2)
+  })
+  it('the places that call runBlockReason themselves pass the gateway’s refusal of the settings too', () => {
+    for (const file of ['../../components/canvas/SceneNode.tsx', '../../components/views/SceneTable.tsx', '../../store/runs.ts']) {
+      expect(read(file)).toMatch(/runBlockReason\([^)]*settingsBlock/)
+    }
+    expect(read('../../components/runs/shared.tsx')).toMatch(/sceneRunBlock\(scene, assets, videoStatus, videoCap, settingsBlock\)/)
   })
 })

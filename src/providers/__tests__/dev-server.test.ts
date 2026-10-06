@@ -192,6 +192,24 @@ describe('dev server: account and login', () => {
     s.server.setConfig({ models: { ...s.server.config().models, minimax_h3: { can_create: false, disabled_modes: ['transform'] } } })
     expect((await s.api.videoProfiles())[1]).toMatchObject({ can_create: false, enabled: false, options: { disabled_modes: ['transform'] } })
   })
+
+  it('narrowed lists (durations / resolutions / ratios left out): only values of the model are kept, saved, served', async () => {
+    const s = setup()
+    s.server.login()
+    const models = s.server.config().models
+    s.server.setConfig({
+      models: {
+        ...models,
+        seedance_2_5: { ...models.seedance_2_5, off_durations: [30, 7, '5' as never], off_resolutions: ['480p', '2k'], off_ratios: ['1:1', 'x'] },
+      },
+    })
+    // a value the model does not have (7, '2k', 'x') or of the wrong type is dropped; missing lists read as none
+    expect(s.server.config().models.seedance_2_5).toMatchObject({ off_durations: [30], off_resolutions: ['480p'], off_ratios: ['1:1'] })
+    expect(s.server.config().models.minimax_h3).toMatchObject({ off_durations: [], off_resolutions: [], off_ratios: [] })
+    const [sd, h3] = await s.api.videoProfiles()
+    expect(sd.options).toMatchObject({ durations: [5, 10, 15], resolutions: ['720p', '1080p'], aspect_ratios: ['16:9', '9:16', '4:3', '3:4'] })
+    expect(h3.options).toMatchObject({ durations: [5, 10, 15], resolutions: ['768p', '2k'] })
+  })
 })
 
 describe('dev server: projects, canvas, uploads', () => {

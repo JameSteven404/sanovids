@@ -1,8 +1,9 @@
 // "Bảng phát triển" — the console of development mode (docs/SPEC-v2.md §11). It drives the in-app simulated
 // canvasapp.io.vn (providers/dev devServer()) that new takes run against while "Phát triển (giả lập)" is chosen:
 //   Trạng thái     login state, balance (set / ±100 / back to 1.000), speed, top-up switch, server behaviour
-//                  (dedupe, client_request_id in the job list, 402/400, latency, random failures), model profiles,
-//                  wipe the simulated server.
+//                  (dedupe, client_request_id in the job list, 402/400, latency, random failures), model profiles
+//                  (can_create, modes, lists left out) with what SanoVids knows of them + "Đọc lại ngay", wipe the
+//                  simulated server.
 //   Gây lỗi        one-click faults (one-shot, "giữ" = sticky), job-level faults, session end, a custom rule builder,
 //                  and the faults armed right now.
 //   Nhật ký        every request the app sent and what it got (fault badges, expandable JSON, filter, copy as JSON for
@@ -35,6 +36,7 @@ import {
   LogOut,
   Minus,
   Plus,
+  RefreshCw,
   RotateCcw,
   ScrollText,
   ShieldAlert,
@@ -51,7 +53,8 @@ import { formatVnd } from '../../core/topup'
 import type { Mode, ModelId } from '../../core/types'
 import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
-import { activeProviderId, PROVIDER_LABEL, providerOf, resetDevMode, useProviderPrefs } from '../../providers'
+import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useProviderPrefs } from '../../providers'
+import { limitsSite } from '../../providers/limits'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import {
   clearDevLog,
@@ -65,6 +68,7 @@ import {
   useDevLog,
   useDevServer,
   type DevConfig,
+  type DevModelToggle,
   type DevJobView,
   type DevLogEntry,
   type DevServerSnapshot,
@@ -79,7 +83,8 @@ import { toast, useUI, type DevPanelTab } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { Segmented } from '../dialogs/Segmented'
-import { HighlightedPrompt } from '../runs/shared'
+import { refreshToast } from '../inspector/settingsLimits'
+import { HighlightedPrompt, useLimitsOf } from '../runs/shared'
 import {
   activeFaultCount,
   characterCheck,
@@ -95,6 +100,8 @@ import {
   isDevEndpoint,
   jobNodeOwners,
   jobNodeText,
+  limitsDifferFromConfig,
+  limitsStatusText,
   logExport,
   logTime,
   statusText,
@@ -417,7 +424,15 @@ function AccountCard({ snap }: { snap: DevServerSnapshot }) {
             </button>
           </>
         ) : (
-          <button type="button" className="btn btn-sm btn-primary" onClick={() => act(() => devServer().login(), 'Máy chủ giả lập đã đăng nhập tài khoản.')}>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              act(() => devServer().login(), 'Máy chủ giả lập đã đăng nhập tài khoản.')
+              // what the account may run: the inspector stops waiting out an earlier 401
+              void refreshProviderLimits('dev', { force: true })
+            }}
+          >
             <LogIn size={13} /> Đăng nhập ngay
           </button>
         )}
@@ -475,23 +490,73 @@ function BalanceCard({ snap }: { snap: DevServerSnapshot }) {
   )
 }
 
+type ModelList = 'off_durations' | 'off_resolutions' | 'off_ratios'
+
 function ModelsCard({ config }: { config: DevConfig }) {
   const ids = Object.keys(MODELS) as ModelId[]
+  // What SanoVids knows of these toggles (the dev provider's /api/video-profiles cache) — shown, never re-read here:
+  // like the real site, SanoVids re-reads only after 10 minutes (or "Đọc lại ngay").
+  const { limits, info } = useLimitsOf('dev')
+  const [reading, setReading] = useState(false)
+  const setModel = (id: ModelId, patch: Partial<DevModelToggle>) => setConfig({ models: { ...config.models, [id]: { ...config.models[id], ...patch } } })
   const toggleMode = (id: ModelId, mode: Mode) => {
     const cur = config.models[id]
     const off = cur.disabled_modes.includes(mode)
-    setConfig({ models: { ...config.models, [id]: { ...cur, disabled_modes: off ? cur.disabled_modes.filter((m) => m !== mode) : [...cur.disabled_modes, mode] } } })
+    setModel(id, { disabled_modes: off ? cur.disabled_modes.filter((m) => m !== mode) : [...cur.disabled_modes, mode] })
   }
+  const toggleValue = <T extends string | number>(id: ModelId, list: ModelList, value: T) => {
+    const cur = (config.models[id][list] ?? []) as T[]
+    setModel(id, { [list]: cur.includes(value) ? cur.filter((x) => x !== value) : [...cur, value] })
+  }
+  const reread = async () => {
+    if (reading) return
+    setReading(true)
+    try {
+      const result = await refreshProviderLimits('dev', { force: true })
+      const t = refreshToast(result, limitsSite('dev'), providerLimitsInfo('dev'))
+      toast(t.text, { tone: t.tone })
+    } finally {
+      setReading(false)
+    }
+  }
+  const differs = limitsDifferFromConfig(limits, config.models)
   return (
     <Card title="Model (video-profiles)" icon={<Cloud size={15} />}>
       {ids.map((id) => {
         const spec = MODELS[id]
         const t = config.models[id]
+        // canvasapp (and SanoVids) replaces MiniMax-H3's lists that are narrower than its built-in ones
+        const ignored = id === 'minimax_h3'
+        const chips = <T extends string | number>(label: string, list: ModelList, values: readonly T[], format: (v: T) => string) => (
+          <div className="dv-chips" role="group" aria-label={`${label} của ${spec.name}`}>
+            <span className="dv-chips-label">{label}</span>
+            {values.map((v) => {
+              const off = ((t[list] ?? []) as T[]).includes(v)
+              return (
+                <button
+                  key={String(v)}
+                  type="button"
+                  className={`dv-chip${off ? ' off' : ''}`}
+                  aria-pressed={!off}
+                  onClick={() => toggleValue(id, list, v)}
+                  title={
+                    off
+                      ? `Đang bỏ khỏi danh sách của /api/video-profiles${ignored ? ' (trang canvasapp bỏ qua danh sách hẹp hơn mặc định của MiniMax-H3: không có tác dụng)' : ''} — bấm để thêm lại`
+                      : 'Có trong danh sách — bấm để bỏ ra'
+                  }
+                >
+                  {off ? <Ban size={11} /> : <Check size={11} />}
+                  {format(v)}
+                </button>
+              )
+            })}
+          </div>
+        )
         return (
           <div key={id} className="dv-model">
             <Switch
               checked={t.can_create}
-              onChange={(can_create) => setConfig({ models: { ...config.models, [id]: { ...t, can_create } } })}
+              onChange={(can_create) => setModel(id, { can_create })}
               label={
                 <span className="dv-model-name">
                   <i style={{ background: spec.color }} />
@@ -519,10 +584,24 @@ function ModelsCard({ config }: { config: DevConfig }) {
                 })}
               </div>
             )}
+            {chips('Thời lượng', 'off_durations', spec.durations, (d) => `${d}s`)}
+            {chips('Độ phân giải', 'off_resolutions', spec.resolutions, (r) => r.toUpperCase())}
+            {chips('Tỉ lệ', 'off_ratios', spec.ratios, (r) => r)}
+            {ignored && <p className="dv-hint">Bỏ bớt thời lượng / độ phân giải / tỉ lệ của MiniMax-H3 không có tác dụng: trang canvasapp (và SanoVids) dùng danh sách mặc định của nó.</p>}
           </div>
         )
       })}
-      <p className="dv-hint">SanoVids đọc lại cấu hình model khoảng mỗi 10 phút hoặc khi mở lại app.</p>
+      <div className={`dv-limits${differs ? ' differs' : ''}`} role="status">
+        <span>{limitsStatusText(info, limits)}</span>
+        {differs && <b>Khác với các lựa chọn ở trên — bấm “Đọc lại ngay” để inspector thấy thay đổi.</b>}
+        <button type="button" className="btn btn-sm" onClick={() => void reread()} disabled={reading} title="Đọc lại /api/video-profiles của máy chủ giả lập ngay (như sau khi đăng nhập)">
+          <RefreshCw size={13} /> Đọc lại ngay
+        </button>
+      </div>
+      <p className="dv-hint">
+        Như canvasapp thật, SanoVids chỉ tự đọc lại sau 10 phút (1 phút nếu lần trước lỗi), khi mở cấu hình video của một cảnh hoặc hộp Chạy — bảng này không tự đọc
+        lại khi bạn bật/tắt. Lần đọc đó cũng là một yêu cầu: lỗi giả “Mọi yêu cầu” có thể rơi vào nó (lỗi khi đọc → cấu hình dự phòng, MiniMax-H3 khoá).
+      </p>
     </Card>
   )
 }

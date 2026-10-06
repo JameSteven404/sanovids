@@ -5,6 +5,7 @@ import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
 import { PROVIDER_LABEL } from '../../providers'
+import { limitsSite } from '../../providers/limits'
 import {
   CREDIT_HINT,
   creditUnitLabel,
@@ -23,7 +24,7 @@ import { AssetAvatar } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import { runCostPreview, type RunCostPreview } from './creditText'
-import { ProviderBadge, useActiveProvider } from './shared'
+import { ProviderBadge, useActiveLimits } from './shared'
 import './runs.css'
 
 interface Row {
@@ -61,7 +62,9 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   const close = useUI((s) => s.closeDialog)
   const project = useProject((s) => s.project)
   const takes = useRuns((s) => s.takes)
-  const provider = useActiveProvider()
+  // What the gateway runs now (/api/video-profiles): read when the dialog opens (TTL-gated — nothing is sent while the
+  // last read is fresh); the checks below (store/runs check()) skip what it surely refuses and warn on a guess.
+  const { provider, limits, info: limitsInfo } = useActiveLimits()
   const info = useCreditInfo()
   const kind = info.kind
   const demo = kind === 'demo'
@@ -103,9 +106,13 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           videosReady: compiled.videos.filter((v) => status.get(v.takeId) === 'completed').length,
         }
       })
-    // videoKey: re-run the check when a reference video finishes (or is deleted). provider: the checks depend on
-    // what the provider accepts (canvasapp has no @video yet).
-  }, [project, sceneIds, videoKey, provider])
+    // videoKey: re-run the check when a reference video finishes (or is deleted). provider / limits: the checks depend
+    // on what the provider accepts (canvasapp has no @video yet; /api/video-profiles) — `limits` keeps its identity
+    // while what it refuses is unchanged, so a re-read with the same answer re-checks nothing.
+  }, [project, sceneIds, videoKey, provider, limits])
+  // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
+  const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
+  const site = limitsSite(provider)
 
   const stats = useMemo(() => {
     const m = new Map<string, TakeStat>()
@@ -236,6 +243,15 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
               <TriangleAlert size={11} /> {withWarnings} có cảnh báo
             </span>
           )}
+          {limitsPending ? (
+            <span className="badge" title={`Đọc model / chế độ ${site.short} đang cho tạo — danh sách bên dưới tự cập nhật`}>
+              <LoaderCircle size={11} className="rq-spin" /> Đang đọc cấu hình model từ {site.short}…
+            </span>
+          ) : limits.source === 'fallback' ? (
+            <span className="badge warn" title={`Chưa đọc được cấu hình model từ ${site.full}: đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá): cảnh có cảnh báo có thể bị từ chối khi gửi (không tốn credit) — SanoVids sẽ thử đọc lại`}>
+              <TriangleAlert size={11} /> Chưa đọc được cấu hình model
+            </span>
+          ) : null}
         </div>
         <span className="rq-spacer" />
         <label className="checkbox">
@@ -386,7 +402,9 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
       <td className="num mono">{formatCreditNumber(check.cost)}</td>
       <td className="rq-cell-status">
         {!check.ok ? (
-          <span className="rq-skip">Bỏ qua: {check.reason}</span>
+          <span className="rq-skip" title={`Bỏ qua: ${check.reason}`}>
+            Bỏ qua: {check.reason}
+          </span>
         ) : !included ? (
           <span className="faint">Không chạy</span>
         ) : (

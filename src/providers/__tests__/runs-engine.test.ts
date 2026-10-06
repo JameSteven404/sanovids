@@ -16,7 +16,8 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
-import type { JobRequest, RemoteStatus, RunTake, VideoProvider } from '../types'
+import type { JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
+import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
 import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
@@ -306,6 +307,71 @@ describe('runs engine with a provider', () => {
     const [c] = useRuns.getState().check(['s2'])
     expect(c.ok).toBe(false)
     expect(c.reason).toBe(NO_VIDEO_REFS_REASON)
+  })
+
+  describe('what the gateway runs now (settingsLimits): a sure refusal skips, a guess only warns', () => {
+    const H3: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+    const LOCKED = 'MiniMax-H3 hiện không khả dụng trên canvasapp.'
+    const limitsOf = (source: SettingsLimits['source'], firm: boolean): SettingsLimits => ({
+      source,
+      firm,
+      issues: (s) => (source !== 'none' && s.model === 'minimax_h3' ? [{ field: 'model', reason: LOCKED }] : []),
+    })
+    const withLimits = (limits: SettingsLimits) => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, settingsLimits: () => limits })
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { refs: ['a'], prompt: '@image_1 runs', settings: H3 }), scene('s2', 2)] })
+      return f
+    }
+
+    it('a firm read: the scene is skipped with the reason (no final period), nothing is sent; all refused → error', async () => {
+      const f = withLimits(limitsOf('server', true))
+      const [h3, sd] = useRuns.getState().check(['s1', 's2'])
+      expect(h3).toMatchObject({ ok: false, reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp', warnings: [] })
+      expect(sd).toMatchObject({ ok: true, reason: null })
+      expect(useRuns.getState().enqueue(['s1'])).toEqual({ queued: 0, cost: 0, skipped: [{ sceneId: 's1', reason: h3.reason }], error: 'Không có cảnh nào chạy được.' })
+      expect(useRuns.getState().enqueue(['s1', 's2'])).toMatchObject({ queued: 1, skipped: [{ sceneId: 's1' }] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted.map((r) => r.sceneId)).toEqual(['s2'])
+    })
+
+    it('the scene’s own problems come first (an empty prompt says so, not the gateway)', () => {
+      withLimits(limitsOf('server', true))
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { prompt: '  ', settings: H3 })] })
+      expect(useRuns.getState().check(['s1'])[0].reason).toBe('Prompt trống')
+    })
+
+    it.each([
+      ['an older read (not firm)', limitsOf('server', false), /theo lần đọc cấu hình model trước/],
+      ['canvasapp’s fallbacks (unreadable)', limitsOf('fallback', false), /chưa đọc được cấu hình model/],
+    ])('%s: runnable, with a "Có thể bị từ chối" warning (the submit reads again and decides)', async (_name, limits, why) => {
+      const f = withLimits(limits)
+      const [h3, sd] = useRuns.getState().check(['s1', 's2'])
+      expect(h3.ok).toBe(true)
+      expect(h3.warnings).toHaveLength(1)
+      expect(h3.warnings[0]).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng trên canvasapp — /)
+      expect(h3.warnings[0]).toMatch(why)
+      expect(sd.warnings).toEqual([])
+      expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toHaveLength(1)
+    })
+
+    it('nothing known ("none") or a provider without settingsLimits: as before', () => {
+      withLimits(limitsOf('none', false))
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, warnings: [] })
+      registerProvider(fakeProvider('dev').p)
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, warnings: [] })
+    })
+
+    it('retry() of an "unknown" take is never held back (it may only find the job it already has)', () => {
+      withLimits(limitsOf('server', true))
+      const unknown: Take = { ...finishedTake('u1'), sceneId: 's1', status: 'failed', videoId: null, error: UNKNOWN_SUBMIT_ERROR, provider: 'dev', remoteId: null, submitUnknown: true, settings: H3 }
+      useRuns.setState({ takes: [unknown] })
+      expect(useRuns.getState().retry('u1')).toMatchObject({ queued: 1, skipped: [] })
+      expect(useRuns.getState().takes).toHaveLength(1)
+      expect(useRuns.getState().takes[0]).toMatchObject({ id: 'u1', status: 'queued' })
+    })
   })
 
   describe('@video: one gate (the gateway’s capabilities().maxRefVideos), only for videos really sent', () => {

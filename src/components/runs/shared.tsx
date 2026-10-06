@@ -4,7 +4,22 @@ import { useEffect, useMemo, useState } from 'react'
 import { sceneRunBlock } from '../../core/runGate'
 import type { JobStatus, ModelId, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
-import { activeProviderId, getProvider, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
+import {
+  activeProviderId,
+  getProvider,
+  PROVIDER_LABEL,
+  providerLimits,
+  providerLimitsInfo,
+  providerOf,
+  refreshProviderLimits,
+  useProviderLimits,
+  useProviderPrefs,
+  watchProviderLimits,
+  type LimitsInfo,
+  type ProviderId,
+  type SettingsLimits,
+} from '../../providers'
+import { settingsRunBlock } from '../../providers/limits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
@@ -26,6 +41,47 @@ export function useGatewayRefVideoCap(model: ModelId): number {
   return useMemo(() => getProvider(provider).capabilities(model).maxRefVideos, [provider, model])
 }
 
+// ---- what the gateway runs right now (/api/video-profiles; providers/index useProviderLimits) ----
+
+/**
+ * What `provider` refuses now and how it was read; re-renders only when its revision moves (a read, logout, expiry).
+ * `limits` keeps its identity while what it refuses is unchanged — memo on it, not on `info`.
+ */
+export function useLimitsOf(provider: ProviderId): { limits: SettingsLimits; info: LimitsInfo } {
+  const rev = useProviderLimits((s) => s.rev[provider] ?? 0)
+  // rev: the accessors read the provider's own state, which the revision tracks
+  return useMemo(() => ({ limits: providerLimits(provider), info: providerLimitsInfo(provider) }), [provider, rev])
+}
+
+/**
+ * The limits of the provider NEW takes use, for a place where the user picks settings or runs (inspector settings,
+ * run dialog): reads them when mounted (TTL-gated — nothing is sent while the last read is fresh, or within a minute
+ * of a failed one) and keeps a firm read renewed while mounted (watchProviderLimits).
+ */
+export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimits; info: LimitsInfo } {
+  const provider = useActiveProvider()
+  const { limits, info } = useLimitsOf(provider)
+  useEffect(() => watchProviderLimits(provider), [provider])
+  // an older read (seen as a guess) is read again: a firm one is renewed by the watcher before it gets there
+  const stale = limits.source === 'server' && !limits.firm
+  useEffect(() => {
+    void refreshProviderLimits(provider)
+  }, [provider, stale])
+  return { provider, limits, info }
+}
+
+/**
+ * The gateway's sure refusal of these settings (providers/limits settingsRunBlock: a firm 'server' read), or null —
+ * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
+ */
+export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+  const provider = useActiveProvider()
+  return useProviderLimits((s) => {
+    void s.rev[provider]
+    return settings ? settingsRunBlock(providerLimits(provider), settings) : null
+  })
+}
+
 const NO_IDS: readonly string[] = []
 
 /**
@@ -39,13 +95,17 @@ export function useRefVideoStatus(videoRefs: readonly string[]): string {
 /**
  * Why `scene`'s Run button is off — the queue's own rules (core/runGate sceneRunBlock = store/runs check()); null =
  * it can run (or no scene). Recompiles only when the scene, the assets, a reference video's status or the gateway
- * change, so a card per scene stays cheap with 100+ scenes.
+ * (its @video cap, its sure refusal of the settings) change, so a card per scene stays cheap with 100+ scenes.
  */
 export function useSceneRunBlock(scene: Scene | undefined): string | null {
   const assets = useProject((s) => s.project.assets)
   const videoStatus = useRefVideoStatus(scene?.videoRefs ?? NO_IDS)
   const videoCap = useGatewayRefVideoCap(scene?.settings.model ?? 'seedance_2_5')
-  return useMemo(() => (scene ? sceneRunBlock(scene, assets, videoStatus, videoCap) : null), [scene, assets, videoStatus, videoCap])
+  const settingsBlock = useSettingsRunBlock(scene?.settings)
+  return useMemo(
+    () => (scene ? sceneRunBlock(scene, assets, videoStatus, videoCap, settingsBlock) : null),
+    [scene, assets, videoStatus, videoCap, settingsBlock],
+  )
 }
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).

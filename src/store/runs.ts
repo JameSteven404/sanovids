@@ -18,6 +18,9 @@
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
 // isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
+// check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
+// recent /api/video-profiles read) and only warn on a guess or an older read; retry(takeId) of an "unknown" take never
+// goes through check() (it may only find its existing job), and every submit validates again with fresh profiles.
 //
 // Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet of the old demo (play money). Only takes
 // run on the mock provider were charged to it (take.charged) — new takes never are: 'dev' takes bill the simulated
@@ -37,7 +40,8 @@ import type { Asset, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, registerProvider } from '../providers'
+import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider } from '../providers'
+import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
@@ -355,6 +359,9 @@ export const useRuns = create<RunsState>()((set, get) => ({
   check: (sceneIds) => {
     const project = useProject.getState().project
     const providerId = activeProviderId()
+    // What the gateway runs right now, as last read (/api/video-profiles) — synchronous, never a request: a sure
+    // refusal skips the scene (nothing sent, no credit), a guess / an older read only warns (the submit reads again).
+    const limits = providerLimits(providerId)
     return sceneIds
       .map((id) => project.scenes.find((s) => s.id === id))
       .filter((s): s is Scene => !!s)
@@ -364,8 +371,10 @@ export const useRuns = create<RunsState>()((set, get) => ({
         const compiled = compileScene(project, scene, { takeStatus })
         // The same rules as the scene card and the inspector (core/runGate); the @video cap is the gateway's own.
         const maxRefVideos = getProvider(providerId).capabilities(scene.settings.model).maxRefVideos
-        const reason = runBlockReason(scene, compiled, project.assets, { maxRefVideos, takeStatus })
-        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: compiled.warnings }
+        const settingsBlock = settingsRunBlock(limits, scene.settings)
+        const reason = runBlockReason(scene, compiled, project.assets, { maxRefVideos, takeStatus, settingsBlock })
+        const warning = reason ? null : settingsRunWarning(limits, scene.settings)
+        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: warning ? [...compiled.warnings, warning] : compiled.warnings }
       })
   },
 

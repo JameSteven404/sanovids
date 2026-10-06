@@ -30,7 +30,14 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   fallback (a list narrower than the fallback's → the fallback's; `enabled` / `can_create` not a boolean → false).
   `runVideoNode()` refuses `can_create === false` and a mode in `disabled_modes` (it ignores `enabled`).
   SanoVids reads it before submitting (cached 10 min; after a failed read the fallbacks apply and it is read again a
-  minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`).
+  minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`). The inspector, the
+  Run buttons and the run dialog use that same cache and the same rule (`profileIssues`, adapter `settingsLimits()`):
+  a read < 10 min old disables what it refuses; fallbacks / an older read only warn. The UI reads it too (TTL-gated,
+  "Đọc lại" ≤ every 5 s, sharing one request with a submit). VERIFY: whether the endpoint needs a login (SanoVids
+  assumes 401 when logged out, like the dev server), whether `visible: false` / `enabled: false` hide or grey a model in
+  canvasapp's picker (SanoVids ignores both, like `runVideoNode()`), whether the server itself refuses a duration /
+  resolution / ratio outside the lists (only the client is known to), and whether the lists can hold values SanoVids'
+  model table lacks (they would not be offered until `core/models.ts` and its pricing learn them).
 - `GET /api/credits/history?kind=all&offset=0&limit=20`.
 
 ## Images

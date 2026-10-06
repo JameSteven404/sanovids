@@ -9,6 +9,10 @@
 // `getProvider(id).capabilities(model).maxRefVideos` — 0 for canvasapp and development mode (providers/capabilities
 // CANVASAPP_MAX_REF_VIDEOS, docs/canvasapp-api-notes.md "Reference videos"). Over the cap the scene is refused, never
 // sent with fewer videos.
+//
+// Settings the gateway refuses right now (/api/video-profiles: a model that cannot create, a mode switched off…): the
+// caller passes `settingsBlock` = providers/limits settingsRunBlock(providerLimits(id), scene.settings) — only a sure
+// refusal (a recent read); a guess or an older read never blocks (the submit reads again and decides).
 
 import { compileScene } from './compile'
 import type { Asset, CompiledPrompt, Project, Scene } from './types'
@@ -31,13 +35,16 @@ export interface RunGate {
   maxRefVideos: number
   /** Status of a take by id; undefined = no such take (deleted). */
   takeStatus: (takeId: string) => string | undefined
+  /** The gateway's sure refusal of the scene's settings (providers/limits settingsRunBlock); null / omitted = none. */
+  settingsBlock?: string | null
 }
 
 /**
  * Why `scene` cannot run now (Vietnamese, short: shown on the card, the inspector and the run dialog); null = it can.
  * `compiled` = compileScene(project, scene); `assets` = the project's (transform frames need a picture).
  * Order: prompt → images / frames → tokens with no media → reference videos (gateway first: waiting for a video to
- * finish would not help, then each SENT video must be a finished take).
+ * finish would not help, then each SENT video must be a finished take) → settings the gateway refuses now (last, like
+ * the profile checks of the submit's validateRequest).
  */
 export function runBlockReason(scene: Scene, compiled: CompiledPrompt, assets: readonly Asset[], gate: RunGate): string | null {
   if (!scene.prompt.trim()) return 'Prompt trống'
@@ -58,7 +65,7 @@ export function runBlockReason(scene: Scene, compiled: CompiledPrompt, assets: r
   const statuses = compiled.videos.map((v) => gate.takeStatus(v.takeId))
   if (statuses.includes(undefined)) return 'Video tham chiếu đã bị xoá — bỏ video đó khỏi cảnh'
   if (statuses.some((st) => st !== 'completed')) return 'Video tham chiếu chưa sẵn sàng'
-  return null
+  return gate.settingsBlock || null
 }
 
 /**
@@ -75,10 +82,10 @@ export function refStatusLookup(videoRefs: readonly string[], joined: string): (
 
 /**
  * runBlockReason from what a one-scene Run button holds: the project's assets, the statuses of `scene.videoRefs`
- * joined by ',' ('' = no such take, see refStatusLookup) and the gateway's cap for the scene's model. Compiles the
- * scene itself (compileScene reads nothing but `assets` from the project).
+ * joined by ',' ('' = no such take, see refStatusLookup), the gateway's cap for the scene's model and its sure refusal
+ * of the scene's settings. Compiles the scene itself (compileScene reads nothing but `assets` from the project).
  */
-export function sceneRunBlock(scene: Scene, assets: readonly Asset[], videoStatus: string, maxRefVideos: number): string | null {
+export function sceneRunBlock(scene: Scene, assets: readonly Asset[], videoStatus: string, maxRefVideos: number, settingsBlock: string | null = null): string | null {
   const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], settings: { autoRenumber: true }, assets: [...assets], scenes: [scene] }
-  return runBlockReason(scene, compileScene(project, scene), assets, { maxRefVideos, takeStatus: refStatusLookup(scene.videoRefs, videoStatus) })
+  return runBlockReason(scene, compileScene(project, scene), assets, { maxRefVideos, takeStatus: refStatusLookup(scene.videoRefs, videoStatus), settingsBlock })
 }

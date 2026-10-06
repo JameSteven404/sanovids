@@ -40,10 +40,19 @@ import { takeCostLine } from '../../components/runs/creditText'
 import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, JOBS_KEY, MAX_CONCURRENCY, memoryStorage, STATE_KEY, type KeyValueStorage } from '../canvasapp/adapter'
+import {
+  CANVAS_NOT_SAVED_TEXT,
+  createCanvasappProvider,
+  JOBS_KEY,
+  MAX_CONCURRENCY,
+  memoryStorage,
+  PROFILES_TTL_MS,
+  STATE_KEY,
+  type KeyValueStorage,
+} from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
-import { getProvider, registerProvider, useProviderPrefs } from '../index'
+import { getProvider, providerLimits, refreshProviderLimits, registerProvider, useProviderPrefs } from '../index'
 import type { JobRequest } from '../types'
 import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
 
@@ -1528,6 +1537,66 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
     expect(fake.jobPosts().map((b) => b.model_profile)).toEqual(['seedance_2_5'])
     expect(take(sd.id).remoteId).toBe('proj1:job1')
     expect(fake.count('GET', '/api/video-profiles')).toBe(1) // read once, then cached
+  })
+
+  it('once a run has read that MiniMax-H3 cannot create, the run check skips H3 scenes up front (no take, nothing sent)', async () => {
+    fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
+    const [sd] = enqueue('s2')
+    await run(300)
+    expect(take(sd.id).remoteId).toBe('proj1:job1')
+    expect(providerLimits('canvasapp')).toMatchObject({ source: 'server', firm: true })
+    expect(useRuns.getState().check(['s4'])[0]).toMatchObject({ ok: false, reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp' })
+    expect(useRuns.getState().enqueue(['s4'])).toMatchObject({ queued: 0, error: 'Không có cảnh nào chạy được.', skipped: [{ sceneId: 's4' }] })
+    expect(useRuns.getState().enqueue(['s4', 's3'])).toMatchObject({ queued: 1, skipped: [{ sceneId: 's4' }] })
+    await run(600)
+    expect(takes().map((t) => t.sceneId)).toEqual(['s2', 's3'])
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0) // s4's frames never uploaded
+    expect(fake.jobPosts().map((b) => b.model_profile)).toEqual(['seedance_2_5', 'seedance_2_5'])
+    expect(fake.count('GET', '/api/video-profiles')).toBe(1) // the run check never sends a request
+
+    // older than the cache life: no longer sure — a warning only; the submit reads again and decides (still locked)
+    await run(PROFILES_TTL_MS)
+    const [later] = useRuns.getState().check(['s4'])
+    expect(later.ok).toBe(true)
+    expect(later.warnings.join(' ')).toMatch(/Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng/)
+    const [h3] = enqueue('s4')
+    await run(600)
+    expect(take(h3.id).status).toBe('failed')
+    expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
+    expect(fake.count('GET', '/api/video-profiles')).toBe(2)
+    expect(fake.jobPosts()).toHaveLength(2)
+  })
+
+  it('a take whose POST lost its answer is still found once its model is locked: retry looks the job up, never posts again', async () => {
+    let lost = true
+    const listDown = { on: true }
+    fake.state.fault = (req) => {
+      if (req.method === 'POST' && req.path === '/api/video-jobs' && lost) {
+        lost = false
+        return { kind: 'lost-response' }
+      }
+      if (req.method === 'GET' && req.path.startsWith('/api/video-jobs?') && listDown.on) return { kind: 'network' }
+      return undefined
+    }
+    const [t] = enqueue('s4')
+    await run(3 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
+    const posts = fake.jobPosts().length
+    expect(fake.state.jobs).toHaveLength(1) // canvasapp did create (and bill) it
+
+    // canvasapp locks MiniMax-H3 meanwhile, and SanoVids knows it (a firm read)
+    listDown.on = false
+    fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
+    expect(await refreshProviderLimits('canvasapp', { force: true })).toBe('read')
+    expect(useRuns.getState().check(['s4'])[0].ok).toBe(false)
+    // "Chạy lại" of THIS take is not held back by the lock: the job it made is looked up first
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(2 * 60_000)
+    expect(fake.jobPosts()).toHaveLength(posts)
+    expect(take(t.id).remoteId).toBe(`proj1:${fake.state.jobs[0].job_id}`)
+    // a NEW take of that scene is skipped by the run check
+    expect(useRuns.getState().enqueue(['s4'])).toMatchObject({ queued: 0, error: 'Không có cảnh nào chạy được.' })
+    expect(fake.state.jobs).toHaveLength(1)
   })
 
   it('video profiles unreadable → canvasapp’s fallbacks, like its page: Seedance runs, MiniMax-H3 locked (and why)', async () => {

@@ -65,12 +65,15 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 | Hàm | Ý nghĩa |
 |---|---|
 | `available()` | `{ok, reason?}` — canvasapp: có bridge desktop **và** `/api/auth/state` báo đã đăng nhập |
-| `capabilities(model)` | giới hạn (modes, durations, resolutions, ratios, ảnh/video tối đa, prompt, concurrency, chu kỳ poll) |
+| `capabilities(model)` | giới hạn (modes, durations, resolutions, ratios — canvasapp: các giá trị của bảng model mà `profileIssues` không từ chối; ảnh/video tối đa, prompt, concurrency, chu kỳ poll) |
 | `submit(JobRequest)` | → `{ remoteId }` (lưu trên take: `take.remoteId`) |
 | `poll(remoteIds)` | → `[{remoteId, state, progress?, error?}]` |
 | `fetchResult(remoteId)` | → `{ video: Blob, poster?: Blob }` (thiếu poster → engine tự cắt khung hình từ video) |
 | `cancel?(remoteId)` | mock: có. canvasapp: **không** (xem §6) |
 | `recover?(req)` | tìm job mà một lần gửi trước của `req.key` có thể đã tạo (trang đóng/tải lại lúc gửi) — **không bao giờ** tạo job. canvasapp: có |
+| `settingsLimits?()` | điều cổng đang từ chối theo lần đọc `/api/video-profiles` gần nhất (`source` `'none'` / `'server'` / `'fallback'`, `firm`, `issues(settings)` = `mapping.profileIssues`) — đồng bộ, không gửi gì. mock: không có (không giới hạn) |
+| `limitsInfo?()` | đọc lúc nào, lần thử gần nhất ra sao, đang đọc không (Bảng phát triển, ghi chú inspector) |
+| `refreshLimits?({force})` | đọc lại cho UI: theo TTL (đang mới / vừa lỗi < 1 phút → không gửi), `force` ("Đọc lại") tối đa mỗi 5 s; dùng chung một yêu cầu với lần đọc của submit; không bao giờ ném lỗi |
 
 Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ không có = demo):
 `provider` (`'mock' | 'dev' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
@@ -164,7 +167,9 @@ app đóng giữa chừng thì nhiều nhất một take ở trạng thái "khô
 1. đọc `/api/video-profiles` (như trang canvasapp lúc mở; nhớ 10 phút; đọc hỏng → dùng cấu hình mặc định của trang:
    Seedance chạy, MiniMax-H3 tạm khoá, đọc lại sau 1 phút; 401 → báo đăng nhập) rồi kiểm tra (`validateRequest`): prompt,
    giới hạn ký tự (H3 t2v/i2v 7.000), video tham chiếu, i2v cần ảnh, transform cần 2 khung, `can_create`, chế độ đang
-   tạm ngừng (`disabled_modes`), thời lượng / độ phân giải / tỷ lệ có trong cấu hình; H3 transform: hai khung cùng tỷ lệ;
+   tạm ngừng (`disabled_modes`), thời lượng / độ phân giải / tỷ lệ có trong cấu hình; H3 transform: hai khung cùng tỷ lệ.
+   Bước này chạy **sau** khi tra sổ (`jobs` / `sent`): take gửi lại sau khi mất câu trả lời vẫn tìm thấy job cũ dù model
+   nay bị khoá;
 2. phiên "SanoVids bridge": dùng id đã nhớ → nếu chưa có thì tìm theo tên → nếu chưa có thì tạo;
 3. kiểm tra **mọi** ảnh có trong máy trước (thiếu ảnh → lỗi rõ ràng "Không tìm thấy ảnh tham chiếu @image_N…", chưa tải lên gì, chưa trả gì), rồi tải lên các ảnh chưa có trong cache (tuần tự; chỉ JPG/PNG/WEBP);
 4. `PUT …/canvas` (404 → tạo lại phiên một lần; bị từ chối → thử lại một lần không có các cảnh đã hết job chạy, xem
@@ -196,6 +201,24 @@ sau `POST` kia — job của một `POST` có trong danh sách trong 30 s hoặc
 khi gửi lại. Không chắc (ví dụ hai bản ghi của bản trước 0.6.0, không ghi giờ đọc) → **không take nào nhận** job đó,
 cả hai "không rõ", không gửi lại — kiểm tra trên canvasapp.io.vn. Lần gửi lại (sau 2 lần đọc không thấy) ghi lại giờ
 `at` của chính nó.
+
+**Cấu hình model trong inspector và hộp Chạy** — cùng một luật với bước 1 (`mapping.profileIssues`, không viết lại
+luật), trên cùng bộ nhớ đệm `/api/video-profiles` của adapter (`settingsLimits()`; tín hiệu `useProviderLimits` trong
+`providers/index.ts`). Ba trạng thái:
+- `none` (chưa đọc: chưa đăng nhập, chưa hỏi, demo cũ) → không giới hạn gì, bước 1 tự quyết khi gửi;
+- `server` đọc trong 10 phút (`firm`) → lựa chọn bị từ chối **tắt hẳn** kèm lý do (không ẩn, **không đổi** cấu hình đã
+  lưu của cảnh), nút Chạy của cảnh tắt (`core/runGate` `settingsBlock`), `useRuns.check()` / `enqueue` bỏ qua cảnh đó (không
+  tạo take, không gửi gì, không tốn credit); đọc cũ hơn 10 phút → chỉ còn là đoán (như dưới), vì submit sẽ đọc lại;
+- `fallback` (đọc hỏng → cấu hình mặc định của trang, MiniMax-H3 khoá) → chỉ đánh dấu "có thể bị từ chối" + cảnh báo
+  trong hộp Chạy, không chặn.
+Đọc cho UI (`refreshLimits`): khi inspector / hộp Chạy hiện (theo TTL: đang mới → không gửi; sau một lần lỗi hay 401 →
+chờ 1 phút), nút "Đọc lại" (ép, tối đa mỗi 5 s; đang có lần đọc chưa ép thì gửi thêm **một** lần sau nó), sau khi đăng
+nhập (ô credit, Bảng phát triển), và — chỉ khi inspector / hộp Chạy đang mở — đọc lại 30 s trước khi lần đọc hết
+`firm`. Bất biến: (1) UI và submit dùng chung một yêu cầu đang bay; (2) đọc hỏng không bao giờ thay danh sách còn mới
+(< 10 phút) bằng cấu hình mặc định ('kept': bấm "Đọc lại" không làm submit từ chối điều nó vừa nhận), và chỉ lần hỏng mà
+một submit đã chờ mới giữ các submit ở cấu hình mặc định trong 1 phút — lần hỏng chỉ UI thấy không làm submit bỏ qua
+bước đọc; (3) `reset()` (đăng xuất) bỏ mọi câu trả lời đến muộn; (4) `getProvider` không bao giờ bắn tín hiệu (UI gọi
+nó lúc render). `retry(takeId)` của take "không rõ" không đi qua `check()`.
 
 **Theo dõi (poll)** — mỗi nhà cung cấp một lời gọi: canvasapp gom mọi take đang chạy thành **1** `GET /api/video-jobs?project_id=…`,
 không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main cache 15 s, bỏ cache mỗi lần `POST /api/video-jobs`).
@@ -323,7 +346,11 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 - [x] Lead: `provider`, `remoteId`, `charged`, `framesSnapshot` nằm trên `Take` (`core/types.ts`) + giá trị mặc định trong `migrateTake` (`core/migrate.ts`).
 - [x] UI: nhãn nhà cung cấp trên take node / hàng đợi (`PROVIDER_LABEL`, `providerOf`); hộp xác nhận chạy (`RunConfirmDialog`) ghi đúng loại credit (dev / canvasapp / demo cũ) và chỉ demo cũ bị chặn vì thiếu credit demo; `useRuns.providerIssue` hiện ở thanh trên cùng, hàng đợi và mục cổng trong Cài đặt.
 - [x] Đọc `/api/video-profiles` trước khi gửi (adapter, nhớ 10 phút) và từ chối điều trang canvasapp không chạy.
-- [ ] Dùng `capabilities()` (đã theo `/api/video-profiles` sau lần đọc đầu) để giới hạn lựa chọn model/mode trong inspector.
+- [x] Dùng `/api/video-profiles` (cùng luật với submit, `settingsLimits()` của adapter) để giới hạn lựa chọn model / chế độ /
+  thời lượng / độ phân giải / tỉ lệ trong inspector (một cảnh và nhiều cảnh), nút Chạy và hộp Chạy — xem §4 "Cấu hình
+  model trong inspector". `capabilities()` dùng cùng luật đó. Còn cần thử trên máy chủ thật: `/api/video-profiles` có
+  cần đăng nhập không, `visible` / `enabled` có làm trang ẩn / làm mờ model không, máy chủ có tự từ chối thời lượng /
+  độ phân giải / tỉ lệ ngoài danh sách không, và danh sách có thể có giá trị SanoVids chưa biết (4K, 20 s, 21:9) không.
 - [x] Node video theo cảnh **của dự án**: `JobRequest.sanovidsProjectId` + `sceneId` → `sceneNodeKey` → `canvasNodeId` (trước đây chỉ theo `sceneId`: hai dự án có cùng id cảnh — nhân bản / nhập cùng tệp hai lần — dùng chung một node, và khi danh sách job không có `client_request_id`, take "không rõ" của dự án này có thể nhận nhầm job của dự án kia rồi take kia gửi lại → trả tiền hai lần nếu máy chủ không dedupe). Không chuyển đổi dữ liệu: job đang chạy / take gửi dở từ bản trước giữ node cũ, gửi lại cũng trên node cũ; bản cũ hơn vẫn đọc được mục mới. Thêm: mục canvas đã nhớ chỉ gồm các cảnh có trên canvas (≤ 40); khi tìm job của câu trả lời bị mất, không nhận job mà một take khác còn chưa rõ trên cùng node có thể sở hữu (trước khi `POST` cạnh take như vậy: đọc lại danh sách job, đọc không được → không gửi), và bỏ qua job đã có trong lần đọc danh sách trước `POST`. Test: `canvasapp-mapping`, `canvasapp-adapter`, `canvasapp-e2e` ("projects sharing scene ids"), `dev-e2e` ("a duplicated project", "a lost answer next to a duplicated project" — lỗi `lost-response` / `network` + công tắc dedupe của máy chủ giả lập); Bảng phát triển › Job & đơn nạp ghi node của mỗi job ("node S03" / "node cũ S03" / "node khác").
 - [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
 - [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
@@ -383,6 +410,11 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 12. **Quay lại chế độ Phát triển** — chọn Phát triển (giả lập) → take mới chạy trên canvasapp giả lập, không gọi mạng.
 13. **Huỷ lúc đang gửi** — chạy 2 cảnh có ảnh, huỷ take thứ hai ngay (khi take đầu còn đang tải ảnh) → trên canvasapp chỉ có 1 job; take huỷ ghi "không bị trừ credit".
 14. **Rút mạng lúc bấm chạy** — tắt Wi-Fi ngay sau khi bấm chạy, bật lại sau ~20 s → take tự tìm lại/gửi lại; trên canvasapp chỉ có **1** job cho take đó.
+15. **Cấu hình model theo canvasapp** (không tốn credit) — đã đăng nhập, chọn một cảnh: inspector đọc `/api/video-profiles`.
+    Nếu canvasapp đang khoá MiniMax-H3 (hoặc tắt một chế độ): lựa chọn đó hiện "· canvasapp đang tắt", không chọn được;
+    cảnh đang dùng nó có ghi chú đỏ, nút Chạy tắt, hộp Chạy ghi "Bỏ qua: …". Bấm **Đọc lại** → thông báo đã đọc lại.
+    Ghi lại: khi chưa đăng nhập, `/api/video-profiles` trả 401 hay vẫn đọc được; model `visible: false` / `enabled: false`
+    trên trang canvasapp có bị ẩn / làm mờ không. Thử trước trong chế độ Phát triển: Bảng phát triển › Trạng thái › Model.
 
 Tự động (không mạng, không tốn tiền): `npx vitest run src/providers/__tests__/canvasapp-e2e.test.ts` chạy toàn bộ luồng thật
 (engine → adapter → transport → cầu nối giả lập canvasapp) cho các trường hợp trên.

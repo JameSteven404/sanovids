@@ -19,14 +19,21 @@
 //                                             upload are flagged.
 //   jobNodeOwners(projectId, scenes)          canvas_node_id → which scene of the open project a job ran on (its node,
 //   jobNodeText(nodeId, owner)                or the old one named by the scene id alone) + the job's label / tooltip.
+//   limitsStatusText(info, limits)            "Model (video-profiles)": whether / when SanoVids read the simulated
+//                                             site's model settings and what the inspector does with them.
+//   limitsDifferFromConfig(limits, models)    what SanoVids knows ≠ the toggles now → suggest "Đọc lại ngay".
 import { parseTokens, sceneCode } from '../../core/compile'
-import type { Asset, Scene } from '../../core/types'
+import { MODELS, normalizeSettings } from '../../core/models'
+import type { Asset, ModelId, Scene } from '../../core/types'
 import { canvasNodeId, sceneNodeId } from '../../providers/canvasapp/mapping'
+import type { LimitField, LimitsInfo, SettingsLimits } from '../../providers/types'
+import { fieldBlock } from '../inspector/settingsLimits'
 import type { DevPanelTab } from '../../store/ui'
 import type { DevLogEntry } from '../../providers/dev/log'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
 import {
   DEV_FAULT_PRESETS,
+  type DevConfig,
   type DevFault,
   type DevFaultInput,
   type DevFaultRule,
@@ -507,4 +514,60 @@ export function jobNodeText(nodeId: string, owner: JobNodeOwner | undefined): { 
     }
   }
   return { label: 'node khác', title: `${head}Không thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).` }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Model (video-profiles): what SanoVids knows (Trạng thái › Model)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The line under the model toggles: whether SanoVids has read /api/video-profiles of the simulated site, when, and
+ * what it does with it (providers limitsInfo / settingsLimits of 'dev').
+ */
+export function limitsStatusText(info: LimitsInfo, limits: Pick<SettingsLimits, 'source' | 'firm'>): string {
+  const last = info.lastAttempt
+  const lastNote =
+    last && info.source !== 'none' && last.result !== 'read'
+      ? last.result === 'login'
+        ? ` Lần đọc lại lúc ${logTime(last.at)}: chưa đăng nhập (401) — vẫn dùng lần đọc trước.`
+        : last.result === 'kept'
+          ? ` Lần đọc lại lúc ${logTime(last.at)} lỗi — vẫn dùng lần đọc trước.`
+          : ''
+      : ''
+  if (info.source === 'none') {
+    if (info.reading) return 'SanoVids đang đọc cấu hình model…'
+    const tried = last?.result === 'login' ? ` Lần thử lúc ${logTime(last.at)}: chưa đăng nhập (401).` : ''
+    return `SanoVids chưa đọc cấu hình model — đọc khi mở cấu hình video của một cảnh, hộp Chạy, hoặc trước lần gửi đầu (cần đăng nhập tài khoản giả lập).${tried}`
+  }
+  const at = info.at !== null ? logTime(info.at) : '—'
+  if (info.source === 'fallback') {
+    return `SanoVids không đọc được lúc ${at} — đang dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): chỉ cảnh báo, chưa khoá lựa chọn nào; thử đọc lại sau 1 phút.${lastNote}`
+  }
+  if (!limits.firm) {
+    return `SanoVids đọc lúc ${at} — đã quá 10 phút: inspector chỉ còn cảnh báo, lần gửi sau đọc lại trước.${lastNote}`
+  }
+  return `SanoVids đọc lúc ${at} — inspector, nút Chạy và hộp Chạy khoá đúng những gì đang tắt ở đây lúc đó.${lastNote}`
+}
+
+/**
+ * Does what SanoVids knows (a 'server' read) differ from the toggles set here now? Then "Đọc lại ngay" shows the
+ * change (SanoVids re-reads by itself only after 10 minutes, like the real site's cache). Mirrors canvasapp's own
+ * rules: MiniMax-H3's narrowed lists are ignored (its built-in lists win), Seedance's are used as sent.
+ */
+export function limitsDifferFromConfig(limits: SettingsLimits, models: DevConfig['models']): boolean {
+  if (limits.source !== 'server') return false
+  for (const id of Object.keys(MODELS) as ModelId[]) {
+    const spec = MODELS[id]
+    const t = models[id]
+    if (!t) continue
+    const base = normalizeSettings({ model: id })
+    const refused = (field: LimitField, v: string | number) => fieldBlock(limits, base, field, v) !== null
+    const narrows = id !== 'minimax_h3'
+    if (refused('model', id) !== !t.can_create) return true
+    for (const m of spec.modes) if (refused('mode', m) !== t.disabled_modes.includes(m)) return true
+    for (const d of spec.durations) if (refused('duration', d) !== (narrows && (t.off_durations ?? []).includes(d))) return true
+    for (const r of spec.resolutions) if (refused('resolution', r) !== (narrows && (t.off_resolutions ?? []).includes(r))) return true
+    for (const r of spec.ratios) if (refused('ratio', r) !== (narrows && (t.off_ratios ?? []).includes(r))) return true
+  }
+  return false
 }

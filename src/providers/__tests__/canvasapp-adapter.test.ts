@@ -18,6 +18,8 @@ import {
   memoryStorage,
   MIN_POLL_MS,
   PROFILES_FALLBACK_TEXT,
+  PROFILES_FORCE_MIN_MS,
+  PROFILES_RETRY_MS,
   PROFILES_TTL_MS,
   STATE_KEY,
 } from '../canvasapp/adapter'
@@ -34,7 +36,9 @@ import {
 } from '../canvasapp/mapping'
 import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/transport'
 import { CANVASAPP_MAX_REF_VIDEOS } from '../capabilities'
-import type { JobRequest } from '../types'
+import { MODELS } from '../../core/models'
+import type { VideoSettings } from '../../core/types'
+import { NO_LIMITS, type JobRequest } from '../types'
 
 type Handler = (req: TransportRequest) => TransportResponse | undefined
 
@@ -670,6 +674,235 @@ describe('canvasapp adapter', () => {
     expect(server.state.projects.length).toBe(1)
     expect(server.state.uploads).toBe(2)
     expect(server.state.jobs.length).toBe(2)
+  })
+})
+
+describe('canvasapp adapter: what canvasapp runs now for the UI (settingsLimits / refreshLimits)', () => {
+  const H3: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+  const h3Req = (key: string) => req({ key, takeId: key, model: 'minimax_h3', mode: 'i2v', resolution: '768p', duration: 5 })
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+  const profilesAre = (server: ReturnType<typeof fakeServer>, answer: TransportResponse | (() => TransportResponse)) => {
+    server.state.extra = (r) => (r.path === '/api/video-profiles' ? (typeof answer === 'function' ? answer() : answer) : undefined)
+  }
+
+  /** The adapter over a transport whose /api/video-profiles answers can be held (the server handles it at once). */
+  function limitsSetup(opts: { authenticated?: boolean } = {}) {
+    const server = fakeServer(opts)
+    const clock = { t: 1_000_000 }
+    server.state.now = () => clock.t
+    let gate: Promise<void> | null = null
+    let available = true
+    const transport: Transport = {
+      available: async () => (available ? { ok: true } : { ok: false, reason: 'web' }),
+      request: async (r) => {
+        const res = await server.transport.request(r)
+        if (r.path === '/api/video-profiles' && gate) await gate
+        return res
+      },
+    }
+    const onLimitsChange = vi.fn()
+    const provider = createCanvasappProvider({
+      api: createCanvasappApi(transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage: memoryStorage(),
+      now: () => clock.t,
+      onLimitsChange,
+      imageSize: async () => ({ width: 1920, height: 1080 }),
+    })
+    /** Hold the next /api/video-profiles answers until the returned function is called. */
+    const hold = () => {
+      let release: () => void = () => undefined
+      gate = new Promise<void>((r) => (release = r))
+      return () => {
+        gate = null
+        release()
+      }
+    }
+    const reads = () => server.calls.filter((c) => c.path === '/api/video-profiles').length
+    return { server, clock, provider, onLimitsChange, hold, reads, setAvailable: (v: boolean) => (available = v) }
+  }
+
+  it("'none' before any read; the first submit's read makes it 'server' (firm), said through onLimitsChange", async () => {
+    const { provider, server, onLimitsChange } = limitsSetup()
+    expect(provider.settingsLimits()).toBe(NO_LIMITS)
+    expect(provider.limitsInfo()).toMatchObject({ source: 'none', at: null, firmUntil: null, lastAttempt: null, reading: false })
+    profilesAre(server, h3Profiles({ can_create: false }))
+    await provider.submit(req())
+    expect(onLimitsChange).toHaveBeenCalledTimes(2) // read started, read ended
+    const limits = provider.settingsLimits()
+    expect(limits).toMatchObject({ source: 'server', firm: true })
+    expect(limits.issues(H3)).toEqual([{ field: 'model', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' }])
+    expect(limits.issues(req())).toEqual([])
+    expect(provider.limitsInfo()).toMatchObject({ source: 'server', at: 1_000_000, firmUntil: 1_000_000 + PROFILES_TTL_MS, lastAttempt: { result: 'read' } })
+    expect(provider.settingsLimits()).toBe(limits) // same object until something changes
+  })
+
+  it('TTL-gated: nothing is sent while fresh; read once when old; a UI refresh and a submit share ONE request', async () => {
+    const { provider, server, clock, reads, hold } = limitsSetup()
+    profilesAre(server, h3Profiles())
+    expect(await provider.refreshLimits()).toBe('read')
+    expect(await provider.refreshLimits()).toBe('fresh')
+    expect(reads()).toBe(1)
+    clock.t += PROFILES_TTL_MS
+    expect(provider.settingsLimits()).toMatchObject({ source: 'server', firm: false }) // older: a guess until read again
+    const release = hold()
+    const ui = provider.refreshLimits()
+    const sent = provider.submit(h3Req('h3'))
+    await tick()
+    release()
+    expect(await ui).toBe('read')
+    expect((await sent).remoteId).toBe('proj1:job1')
+    expect(reads()).toBe(2)
+    expect(provider.settingsLimits()).toMatchObject({ source: 'server', firm: true })
+  })
+
+  it('the same answer read again keeps the SAME limits object (memos keyed on it re-run nothing); another answer → another', async () => {
+    const { provider, server, clock } = limitsSetup()
+    profilesAre(server, h3Profiles())
+    await provider.refreshLimits()
+    const first = provider.settingsLimits()
+    clock.t += PROFILES_FORCE_MIN_MS
+    expect(await provider.refreshLimits({ force: true })).toBe('read')
+    expect(provider.settingsLimits()).toBe(first)
+    profilesAre(server, h3Profiles({ options: { disabled_modes: ['i2v'] } }))
+    clock.t += PROFILES_FORCE_MIN_MS
+    await provider.refreshLimits({ force: true })
+    const second = provider.settingsLimits()
+    expect(second).not.toBe(first)
+    expect(second.issues(H3).map((i) => i.field)).toEqual(['mode'])
+  })
+
+  it('401 → "login" (what was read stays); automatic reads wait a minute, "Đọc lại" waits 5 s, then reads', async () => {
+    const { provider, server, clock, reads } = limitsSetup({ authenticated: false })
+    expect(await provider.refreshLimits()).toBe('login')
+    expect(provider.settingsLimits()).toBe(NO_LIMITS)
+    expect(provider.limitsInfo().lastAttempt).toMatchObject({ result: 'login' })
+    expect(await provider.refreshLimits()).toBe('login')
+    expect(await provider.refreshLimits({ force: true })).toBe('login') // a second click within seconds: nothing sent
+    expect(reads()).toBe(1)
+    clock.t += PROFILES_FORCE_MIN_MS
+    server.state.authenticated = true
+    profilesAre(server, h3Profiles())
+    expect(await provider.refreshLimits({ force: true })).toBe('read')
+    expect(reads()).toBe(2)
+    // the session ends: a 401 keeps the last read (logout → reset() drops it)
+    server.state.extra = null
+    server.state.authenticated = false
+    clock.t += PROFILES_TTL_MS
+    expect(await provider.refreshLimits()).toBe('login')
+    expect(provider.settingsLimits()).toMatchObject({ source: 'server', firm: false })
+    clock.t += PROFILES_RETRY_MS
+    expect(await provider.refreshLimits()).toBe('login')
+    expect(reads()).toBe(4)
+  })
+
+  it('a failed UI read with nothing fresh → "failed" (fallbacks, a guess) — but a submit still reads first', async () => {
+    const { provider, server, reads } = limitsSetup()
+    profilesAre(server, json({ detail: 'boom' }, 500))
+    expect(await provider.refreshLimits()).toBe('failed')
+    const limits = provider.settingsLimits()
+    expect(limits).toMatchObject({ source: 'fallback', firm: false })
+    expect(limits.issues({ ...H3, mode: 'transform' }).map((i) => i.field)).toEqual(['model', 'mode'])
+    expect(await provider.refreshLimits()).toBe('failed') // within a minute: nothing sent
+    expect(reads()).toBe(1)
+    // canvasapp answers again: the submit does not wait out a failure only the UI saw
+    profilesAre(server, h3Profiles())
+    expect((await provider.submit(h3Req('h3'))).remoteId).toBe('proj1:job1')
+    expect(reads()).toBe(2)
+    expect(provider.settingsLimits()).toMatchObject({ source: 'server', firm: true })
+  })
+
+  it('"Đọc lại" failing while the last read is fresh keeps it ("kept"): a submit accepts what it accepted a second earlier', async () => {
+    const { provider, server, clock, reads } = limitsSetup()
+    profilesAre(server, h3Profiles())
+    await provider.refreshLimits()
+    const limits = provider.settingsLimits()
+    profilesAre(server, json({ detail: 'Too many requests' }, 429))
+    clock.t += PROFILES_FORCE_MIN_MS
+    expect(await provider.refreshLimits({ force: true })).toBe('kept')
+    expect(provider.settingsLimits()).toBe(limits)
+    expect(provider.limitsInfo()).toMatchObject({ source: 'server', at: 1_000_000, lastAttempt: { result: 'kept' } })
+    const before = reads()
+    expect((await provider.submit(h3Req('h3'))).remoteId).toBe('proj1:job1') // no PROFILES_FALLBACK_TEXT
+    expect(reads()).toBe(before)
+    // past the TTL the submit reads again and a failure there brings the fallbacks, as before
+    clock.t += PROFILES_TTL_MS
+    await expect(provider.submit(h3Req('h3_2'))).rejects.toThrow(PROFILES_FALLBACK_TEXT)
+    expect(provider.settingsLimits()).toMatchObject({ source: 'fallback' })
+  })
+
+  it('"Đọc lại" during an automatic read sends ONE more read after it and returns the newer answer; two clicks share it', async () => {
+    const { provider, server, reads, hold } = limitsSetup()
+    profilesAre(server, h3Profiles())
+    const release = hold()
+    const auto = provider.refreshLimits()
+    await tick()
+    expect(provider.limitsInfo().reading).toBe(true)
+    // canvasapp locks H3 while that read is on its way back
+    profilesAre(server, h3Profiles({ can_create: false }))
+    const forced = [provider.refreshLimits({ force: true }), provider.refreshLimits({ force: true })]
+    release()
+    expect(await auto).toBe('read')
+    expect(await Promise.all(forced)).toEqual(['read', 'read'])
+    expect(reads()).toBe(2)
+    expect(provider.settingsLimits().issues(H3).map((i) => i.field)).toEqual(['model'])
+  })
+
+  it('reset() (logout) while a read is in flight: its answer is ignored — back to "none", no extra signal', async () => {
+    const { provider, server, onLimitsChange, hold } = limitsSetup()
+    profilesAre(server, h3Profiles())
+    const release = hold()
+    const p = provider.refreshLimits()
+    await tick()
+    expect(provider.limitsInfo().reading).toBe(true)
+    provider.reset()
+    const calls = onLimitsChange.mock.calls.length
+    expect(provider.limitsInfo()).toMatchObject({ source: 'none', reading: false, lastAttempt: null })
+    release()
+    await p
+    expect(provider.settingsLimits()).toBe(NO_LIMITS)
+    expect(provider.limitsInfo()).toMatchObject({ source: 'none', reading: false, lastAttempt: null })
+    expect(onLimitsChange.mock.calls.length).toBe(calls)
+  })
+
+  it('unavailable here (web build) → "unavailable", nothing sent; a thrown non-401 error → "failed", never "login"', async () => {
+    const { provider, server, reads, setAvailable } = limitsSetup()
+    setAvailable(false)
+    expect(await provider.refreshLimits()).toBe('unavailable')
+    expect(reads()).toBe(0)
+    setAvailable(true)
+    server.state.extra = (r) => {
+      if (r.path === '/api/video-profiles') throw new CanvasappError('unavailable', 'Cổng canvasapp chỉ dùng được trong bản desktop SanoVids.')
+      return undefined
+    }
+    expect(await provider.refreshLimits()).toBe('failed')
+    expect(provider.settingsLimits()).toMatchObject({ source: 'fallback' })
+  })
+
+  it('a malformed profile never breaks a render: issues() answers [] instead of throwing', async () => {
+    const { provider, server } = limitsSetup()
+    profilesAre(server, json({ profiles: [{ model_profile: 'seedance_2_5', can_create: true, options: { durations: [5], get resolutions(): never { throw new Error('boom') } } }] }))
+    expect(await provider.refreshLimits()).toBe('read')
+    expect(provider.settingsLimits().issues({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' })).toEqual([])
+    expect(provider.capabilities('seedance_2_5').resolutions).toEqual(MODELS.seedance_2_5.resolutions) // nothing left out on a throw
+  })
+
+  it('capabilities() follows the same rule: SanoVids values only, any-case resolutions, refused ones left out', async () => {
+    const { provider, server } = limitsSetup()
+    profilesAre(
+      server,
+      json({
+        profiles: [
+          { model_profile: 'seedance_2_5', can_create: true, options: { modes: ['t2v'], durations: [5, 10, 20], resolutions: ['1080P', '4K'], aspect_ratios: ['16:9', '21:9'] } },
+          { model_profile: 'minimax_h3', can_create: true, options: { disabled_modes: ['i2v'] } },
+        ],
+      }),
+    )
+    await provider.refreshLimits()
+    expect(provider.capabilities('seedance_2_5')).toMatchObject({ modes: ['t2v'], durations: [5, 10], resolutions: ['1080p'], ratios: ['16:9'] })
+    const h3 = provider.capabilities('minimax_h3')
+    expect(h3.modes).toEqual(['t2v', 'transform'])
+    for (const k of ['durations', 'resolutions', 'ratios'] as const) expect(h3[k]).toEqual(MODELS.minimax_h3[k])
   })
 })
 

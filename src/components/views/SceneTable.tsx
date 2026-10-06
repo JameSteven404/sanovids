@@ -13,7 +13,7 @@ import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { useGatewayRefVideoCap, useRefVideoStatus } from '../runs/shared'
+import { useGatewayRefVideoCap, useRefVideoStatus, useSettingsRunBlock } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { costTitle, creditTone, REAL_COST_HINT, totalCost } from '../sidebar/shared'
 import { isEditingTarget, isSelectAllKey, latestOf, MentionText, MenuButton, SCENE_MIME, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
@@ -420,13 +420,14 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, credi
   // Status of each reference video, as one string (cheap + stable): drives the "video not ready" warning and Run.
   const videoStatus = useRefVideoStatus(scene.videoRefs)
   const videoCap = useGatewayRefVideoCap(scene.settings.model)
+  const settingsBlock = useSettingsRunBlock(scene.settings)
   // One compile for both: the row's warnings and why Run is off (core/runGate = store/runs check()).
   const { warnings, reason } = useMemo(() => {
     const takeStatus = refStatusLookup(scene.videoRefs, videoStatus)
     const project = { ...useProject.getState().project, assets }
     const compiled = compileScene(project, scene, { takeStatus })
-    return { warnings: compiled.warnings.join('\n'), reason: runBlockReason(scene, compiled, assets, { maxRefVideos: videoCap, takeStatus }) }
-  }, [scene, assets, videoStatus, videoCap])
+    return { warnings: compiled.warnings.join('\n'), reason: runBlockReason(scene, compiled, assets, { maxRefVideos: videoCap, takeStatus, settingsBlock }) }
+  }, [scene, assets, videoStatus, videoCap, settingsBlock])
   const libraryDragging = useUI((s) => s.draggingAssetIds !== null)
   // A finished take is being dragged (take strip, library, canvas) and this row can use it as @video:
   // every row lights up except the scene that made all of the dragged takes (no self references).
