@@ -1190,6 +1190,15 @@
   line-height: 16px;
   letter-spacing: 0.02em;
 }
+/* a preset of a newer SanoVids build's model (Preset.foreignModel): warning tint, shrinks with an ellipsis */
+.sb-model.is-foreign {
+  --sb-m: var(--warn);
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .sb-preset-using {
   flex: none;
   display: inline-flex;

@@ -2,6 +2,7 @@
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
+import { TRASH_CONFIRM_MIN, trashConfirmText } from './core/folderTrash'
 import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
@@ -26,6 +27,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
+import { canTrashSaved, ownedGroupsOf } from './lib/saveFolders'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
@@ -334,7 +336,8 @@ export { keyboardDeletePlan, checkTakeDelete, type TakeDeleteConfirm } from './c
  * Delete what is selected: cut selected wires, delete scenes, hide asset nodes from the canvas (one undo step),
  * and delete selected takes for good (after confirmation when a finished video would be lost or is used as @video;
  * takes are not undoable). Takes selected together with their own scene are spared (keyboardDeletePlan): deleting
- * the scene hides them and Undo brings them back.
+ * the scene hides them and Undo brings them back. Cut take → folder wires take the files they copied to the Recycle
+ * Bin when that setting is on (folderActions.afterSaveUnlinked; asked first from TRASH_CONFIRM_MIN videos on).
  */
 export function deleteSelection() {
   const { selectedIds, selectedEdgeIds } = useUI.getState()
@@ -373,10 +376,22 @@ export function deleteSelection() {
   }
 
   const links = refs.length + videoRefs.length + frames.length + folderLinks.length
+  // Take → folder wires that exist (their cut may move the files they copied to the Recycle Bin).
+  const folderById = new Map((project.folders ?? []).map((f) => [f.id, f]))
+  const savePairs = folderLinks.filter((l) => l.kind === 'save' && folderById.get(l.folderId)?.takes?.includes(l.from)).map((l) => ({ folderId: l.folderId, takeId: l.from }))
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
     const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
     if (check.question && !window.confirm(check.question)) return
+  }
+  if (savePairs.length >= TRASH_CONFIRM_MIN && useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()) {
+    const dying = new Set(takeIds)
+    const status = new Map(takes.map((t) => [t.id, t.status]))
+    // Videos whose files this Delete would move: finished, kept, with copies their wire wrote itself.
+    const owned = ownedGroupsOf(savePairs)
+    const movers = savePairs.filter((p, i) => !dying.has(p.takeId) && status.get(p.takeId) === 'completed' && !!owned[i]?.length)
+    const videos = new Set(movers.map((p) => p.takeId)).size
+    if (videos >= TRASH_CONFIRM_MIN && !window.confirm(trashConfirmText(videos, movers.map((p) => folderById.get(p.folderId)?.name ?? 'Thư mục')))) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
   const projectBefore = useProject.getState().project
@@ -396,6 +411,8 @@ export function deleteSelection() {
   if (sceneIds.length || hideAssetIds.length || folderIds.length || links) {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames, folderIds, folderLinks }, videoLabel)
   }
+  // After the store change, in each folder's lock: the cut wires' files (setting on), one summary toast.
+  if (savePairs.length) void afterSaveUnlinked(savePairs, { source: 'delete', toast: 'summary', undo: undoToastAction() })
   if (!sceneIds.length && !hideAssetIds.length && !folderIds.length && !links && !takesDeleted) return
   useUI.getState().clearSelection()
   const deleted = [
@@ -878,5 +895,6 @@ export function openSettings(section?: string) {
 
 export { undo, redo }
 
-// Folder nodes ("Thư mục"): their commands live in ./folderActions (it also auto-saves finished takes into folders).
-import './folderActions'
+// Folder nodes ("Thư mục"): their commands live in ./folderActions (it also auto-saves finished takes into folders,
+// and moves the files of cut take → folder wires to the Recycle Bin).
+import { afterSaveUnlinked } from './folderActions'

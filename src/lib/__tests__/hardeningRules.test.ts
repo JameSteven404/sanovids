@@ -1,7 +1,8 @@
 // electron/hardening-rules.cjs: the pure hardening rules of the desktop shell (packaged detection, refused command-line
 // switches, stripped env, DevTools gate, download allowlist, default-session permissions, CSP of app://bdp, the
 // 'app:signature' payload and the self-check of the DLLs next to the exe) — plus source guarantees in main.cjs /
-// preload.cjs that wire them in (docs/SIGNING.md "Bảo mật").
+// preload.cjs that wire them in (docs/SIGNING.md "Bảo mật"), including 'app:placement' and the portable window's
+// setAppDetails. The Recycle Bin IPC (files:trashSaved) is guarded by trashWiring.test.ts.
 import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -565,14 +566,44 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(hardeningSource).not.toMatch(/\brequire\s*\(/)
   })
 
-  it('preload: app block (signature only) before canvasapp, updates still the last block', () => {
+  it("app:placement: behind fromApp, no argument, a kind only (never a path), computed once by updater-rules", () => {
+    expect(count("ipcMain.handle('app:placement'")).toBe(1)
+    expect(count("ipcMain.on('app:placement'")).toBe(0)
+    expect(mainSource).toContain("ipcMain.handle('app:placement', (event) => (fromApp(event) ? appPlacement() : { kind: 'unknown' }))")
+    // registered with app:signature in registerAppBridge (called on ready)
+    const [rs, re] = blockAt(idx('function registerAppBridge()'))
+    expect(mainSource.slice(rs, re)).toContain("ipcMain.handle('app:placement'")
+    expect(idx('registerAppBridge()')).toBeLessThan(idx('function registerAppBridge()'))
+    // the payload is { kind } and nothing else: kind comes from updater-rules.placement (a fixed set of strings)
+    const [start, end] = blockAt(idx('function appPlacement()'))
+    const body = mainSource.slice(start, end)
+    expect(body).toContain('placementPayload = { kind }')
+    expect(body).toContain('kind = updaterRules.placement({')
+    expect(body).toContain("kind = PACKAGED ? 'portable' : 'dev'")
+    expect(body.split('placementPayload =').length - 1).toBe(1)
+    expect(body).toMatch(/return placementPayload\s*\}$/)
+    // the placement rule gets the packaged flag used by every hardening decision, never app.isPackaged
+    expect(body).toContain('isPackaged: PACKAGED,')
+  })
+
+  it('portable taskbar identity: setAppDetails only with what updater-rules.portableRelaunch returns', () => {
+    const [start, end] = blockAt(idx('function createWindow()'))
+    const body = mainSource.slice(start, end)
+    expect(body).toContain('const relaunch = updaterRules.portableRelaunch({')
+    expect(body).toContain('isPackaged: PACKAGED,')
+    expect(body).toMatch(/if \(relaunch\) \{\s+try \{\s+win\.setAppDetails\(relaunch\)/)
+    expect(count('setAppDetails(')).toBe(1)
+  })
+
+  it('preload: app block (signature, placement) before canvasapp, updates still the last block', () => {
     const appAt = preloadSource.indexOf('  app: {')
     expect(appAt).toBeGreaterThan(preloadSource.indexOf('  platform: process.platform,'))
     expect(appAt).toBeLessThan(preloadSource.indexOf('  canvasapp: {'))
     const block = /\n {2}app: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
-    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['signature'])
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['signature', 'placement'])
     expect(block![1]).toContain("signature: () => ipcRenderer.invoke('app:signature')")
+    expect(block![1]).toContain("placement: () => ipcRenderer.invoke('app:placement')")
     expect(/updates: \{([\s\S]*?)\n {2}\},\n\}\)/.exec(preloadSource)).not.toBeNull()
     const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
     expect(topKeys.at(-1)).toBe('updates')

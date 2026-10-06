@@ -1,12 +1,12 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
 import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
-import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
+import { memo, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
-import { sceneRunBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
+import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { foreignModelReason, sceneRunBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
 import type { Asset } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
@@ -34,6 +34,9 @@ const REF_MIME = 'application/x-bdp-refidx'
 const VREF_MIME = 'application/x-bdp-vrefidx'
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files')
 const isTakeDrag = (e: DragEvent) => Array.from(e.dataTransfer.types).includes(TAKES_MIME)
+/** "veo_3_1 · bản mới hơn" in the settings header: may shrink (ellipsis, full text in the title) beside the cost. */
+const FOREIGN_BADGE_STYLE: CSSProperties = { minWidth: 0, maxWidth: '60%' }
+const ELLIPSIS_STYLE: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
 export function SceneInspector({ sceneId }: { sceneId: string }) {
   const exists = useProject((s) => s.project.scenes.some((x) => x.id === sceneId))
@@ -177,6 +180,9 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
 const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: string }) {
   const settings = useSceneField(sceneId, (s) => s.settings)
   const storedPresetId = useSceneField(sceneId, (s) => s.presetId) ?? null
+  // A newer build's model (migrate keeps it, Run is blocked): shown instead of the stand-in model.
+  const foreignModel = useSceneField(sceneId, (s) => s.foreignModel)
+  const foreignModels = useMemo(() => [foreignModel], [foreignModel])
   const presets = useProject((s) => s.project.presets)
   const list = useMemo(() => (settings ? [settings] : []), [settings])
   // A preset edited after it was applied no longer describes the scene: show "Tuỳ chỉnh" (picking it re-applies it).
@@ -192,6 +198,11 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
       title="Cấu hình video"
       meta={
         <span className="in-meta">
+          {foreignModel && (
+            <span className="badge warn" style={FOREIGN_BADGE_STYLE} title={foreignModelReason(foreignModel)}>
+              <span style={ELLIPSIS_STYLE}>{foreignModelBadge(foreignModel)}</span>
+            </span>
+          )}
           {preset && <span className="badge">{preset.name}</span>}
           <span className={`badge in-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
             {isSimulatedCredit(creditKind) && <FlaskConical size={11} />}
@@ -202,6 +213,7 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
     >
       <SettingsFields
         settings={list}
+        foreignModels={foreignModels}
         presetIds={presetIds}
         presets={presets}
         onPatch={(patch) => useProject.getState().updateSettings([sceneId], patch)}

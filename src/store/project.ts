@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
 import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
+import { foreignMarkOf } from '../core/foreignMark'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
@@ -729,18 +730,23 @@ export const useProject = create<ProjectState>()(
         restoreScene: (id, { prompt, refs, videoRefs, settings }, liveTakeIds) =>
           mutate((p) => {
             const alive = new Set(p.assets.map((a) => a.id))
+            // Settings of a newer build's model (a take made there, restored here): the scene takes its marker and
+            // stays blocked — never the stand-in Seedance 2.5 settings as a runnable scene. Known models keep the
+            // scene's own marker as it is.
+            const foreign = foreignMarkOf(settings)
             return {
               ...p,
               scenes: p.scenes.map((s) => {
                 if (s.id !== id) return s
                 const nextSettings = normalizeSettings({ ...s.settings, ...settings })
                 const same = (Object.keys(nextSettings) as (keyof VideoSettings)[]).every((k) => nextSettings[k] === s.settings[k])
+                const marked = foreign ? withForeignOf(s, foreign) : s
                 return {
-                  ...s,
+                  ...marked,
                   prompt,
                   refs: refs.filter((r) => alive.has(r)),
                   videoRefs: (videoRefs ?? s.videoRefs).filter((t) => !liveTakeIds || liveTakeIds.has(t)),
-                  presetId: same ? s.presetId : null,
+                  presetId: same && marked.foreignModel === s.foreignModel ? s.presetId : null,
                   settings: nextSettings,
                 }
               }),

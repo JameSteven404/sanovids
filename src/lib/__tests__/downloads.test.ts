@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { freeNames, numberedName } from '../downloads'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_DOWNLOAD_PREFS, DOWNLOAD_PREFS_KEY, freeNames, numberedName, parseDownloadPrefs, useDownloadPrefs, validDownloadPatch } from '../downloads'
 
 describe('saving into the chosen folder never overwrites a file', () => {
   it('numbers like the browser does', () => {
@@ -12,5 +12,31 @@ describe('saving into the chosen folder never overwrites a file', () => {
     const taken = new Set(['S01_T1.webm', 'S01_T1.txt', 'S01_T1 (2).txt'])
     expect(await freeNames(['S01_T1.webm', 'S01_T1.txt'], (n) => taken.has(n))).toEqual(['S01_T1 (3).webm', 'S01_T1 (3).txt'])
     expect(await freeNames(['S02_T1.webm', 'S02_T1.txt'], async (n) => taken.has(n))).toEqual(['S02_T1.webm', 'S02_T1.txt'])
+  })
+})
+
+describe('"Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (folderUnlinkTrash)', () => {
+  afterEach(() => {
+    useDownloadPrefs.setState({ folderUnlinkTrash: true })
+    vi.unstubAllGlobals()
+  })
+
+  it('is on by default and only a boolean is taken (BOOL_KEYS)', () => {
+    expect(DEFAULT_DOWNLOAD_PREFS.folderUnlinkTrash).toBe(true)
+    expect(validDownloadPatch({ folderUnlinkTrash: false })).toEqual({ folderUnlinkTrash: false })
+    for (const bad of ['false', 0, 1, null, {}, []]) expect(validDownloadPatch({ folderUnlinkTrash: bad }), String(bad)).toEqual({})
+    expect(parseDownloadPrefs(JSON.stringify({ folderUnlinkTrash: false, withPrompt: 'x' }))).toEqual({ ...DEFAULT_DOWNLOAD_PREFS, folderUnlinkTrash: false })
+  })
+
+  it('set() saves it with the other download prefs (it is in the list of stored keys)', () => {
+    const data = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+    useDownloadPrefs.getState().set({ folderUnlinkTrash: false })
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(false)
+    expect(JSON.parse(data.get(DOWNLOAD_PREFS_KEY)!)).toMatchObject({ folderUnlinkTrash: false, withPrompt: expect.any(Boolean) })
+    // junk is ignored, the stored value stays
+    useDownloadPrefs.getState().set({ folderUnlinkTrash: 'off' as never })
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(false)
+    expect(parseDownloadPrefs(data.get(DOWNLOAD_PREFS_KEY)).folderUnlinkTrash).toBe(false)
   })
 })

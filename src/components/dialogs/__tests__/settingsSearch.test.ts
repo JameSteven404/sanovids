@@ -1,6 +1,7 @@
 // Settings search: level filter without a query; accent-free, multi-word matching across both levels with a query.
 import { describe, expect, it } from 'vitest'
-import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../../lib/aboutModel'
+import { FOLDER_UNLINK_TRASH_ROW } from '../../../core/folderTrash'
+import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
 import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
 
@@ -102,6 +103,42 @@ describe('Dây nối & canvas: the scene-card editor and big projects', () => {
     }
     // "bản đồ" is in both the minimap row and the big-project hint
     expect(ids(matchSettings(all, 'basic', 'ban do thu nho'))).toEqual(['canvas:minimap,bigProject'])
+  })
+})
+
+describe('Tải video: the Recycle Bin on unlinking a folder wire', () => {
+  // The same row as SettingsDialog GROUPS 'downloads' (texts from core/folderTrash).
+  const downloads: SearchGroup = {
+    id: 'downloads',
+    level: 'basic',
+    title: 'Tải video',
+    rows: [
+      { id: 'withPrompt', label: 'Kèm file .txt chứa prompt', hint: 'Lưu thêm file .txt cạnh video' },
+      { id: 'folderUnlinkTrash', ...FOLDER_UNLINK_TRASH_ROW },
+    ],
+  }
+  const all = [downloads, groups[1], groups[2], groups[3]]
+
+  it('is found by what users type, from both levels, accents or not', () => {
+    for (const q of ['thung rac', 'Thùng rác', 'recycle bin', 'xoa file', 'xóa file', 'bo noi', 'cat day', 'go dong bo']) {
+      expect(ids(matchSettings(all, 'advanced', q)), q).toEqual(['downloads:folderUnlinkTrash'])
+    }
+  })
+})
+
+describe('Ứng dụng: the Portable / temp-copy reminder', () => {
+  // The same block entry as SettingsDialog GROUPS 'app'.
+  const app: SearchGroup = {
+    id: 'app',
+    level: 'basic',
+    title: 'Ứng dụng',
+    desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.',
+    keywords: `cài app desktop exe windows pwa ${PLACEMENT_KEYWORDS}`,
+  }
+  it('is found by icon / shortcut / Start menu / portable words', () => {
+    for (const q of ['icon', 'lối tắt', 'loi tat', 'shortcut', 'start menu', 'ghim', 'portable', 'setup']) {
+      expect(ids(matchSettings([...groups, app], 'advanced', q)), q).toEqual(['app:'])
+    }
   })
 })
 

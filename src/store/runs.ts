@@ -31,7 +31,7 @@ import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../c
 import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
-import { migrateTake } from '../core/migrate'
+import { migrateTake, parkForeignTake } from '../core/migrate'
 import { runBlockReason } from '../core/runRules'
 import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
@@ -291,15 +291,23 @@ export interface RestartWork {
 }
 
 /**
+ * A take of a newer SanoVids build's provider (migrateTake: provider 'mock' + foreignProvider). This build never
+ * runs, polls, re-queues or refunds it: migrate parks a running one as 'failed' (parkForeignTake) and the engine parks
+ * any it still finds running.
+ */
+export const isForeignTake = (t: Pick<Take, 'foreignProvider'>): boolean => !!t.foreignProvider
+
+/**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever.
+ * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) never counts either.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
   let processing = 0
   let sending = 0
   for (const t of takes) {
+    if (isForeignTake(t)) continue
     if (t.status === 'queued') {
       if (sceneIds.has(t.sceneId)) queued++
     } else if (t.status === 'processing') {
@@ -682,6 +690,7 @@ function canRecover(pid: ProviderId): boolean {
  * UNKNOWN_SUBMIT_ERROR when it cannot look — never submitted twice.
  */
 function adoptOrphans() {
+  parkForeignTakes()
   const now = Date.now()
   let refund = 0
   let changed = false
@@ -706,6 +715,16 @@ function adoptOrphans() {
   if (changed) useRuns.setState((s) => ({ takes, credits: s.credits + refund, spent: s.spent - refund }))
   for (const t of failed) emitRun('failed', t)
   for (const id of lookUp) void recoverTake(id)
+}
+
+const isForeignRunning = (t: Take) => isForeignTake(t) && (t.status === 'queued' || t.status === 'processing')
+
+/**
+ * Backstop of migrateTake (every saved take goes through it in loadRuns): a newer build's take found queued / running
+ * is parked (parkForeignTake) instead of being started, polled or adopted — it may still be running in that build.
+ */
+function parkForeignTakes() {
+  if (useRuns.getState().takes.some(isForeignRunning)) useRuns.setState((s) => ({ takes: s.takes.map(parkForeignTake) }))
 }
 
 const findTake = (id: string) => useRuns.getState().takes.find((t) => t.id === id)
@@ -759,6 +778,7 @@ function tick() {
     ensureEngine()
     return
   }
+  parkForeignTakes()
   const { takes } = useRuns.getState()
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)

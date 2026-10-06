@@ -397,3 +397,48 @@ describe('runs engine with a provider', () => {
     expect(locks.held.size).toBe(0)
   })
 })
+
+describe('takes of a newer SanoVids build (foreignProvider)', () => {
+  /** A take as a newer build saved it: a provider this build does not know, maybe still running there. */
+  const newerTake = (id: string, status: Take['status'], over: Record<string, unknown> = {}) =>
+    ({ ...legacyTake(id, 's2'), status, provider: 'seedvis', remoteId: 'job-' + id, charged: true, ...over }) as unknown as Take
+
+  it('loaded queued / running: parked as failed, never submitted, polled, refunded or counted as work', async () => {
+    const f = fakeProvider('mock')
+    registerProvider(f.p)
+    useRuns.getState().loadRuns({
+      takes: [newerTake('q', 'queued'), newerTake('p', 'processing', { progress: 40 }), newerTake('done', 'completed', { remoteId: null })],
+      credits: 100,
+      spent: 0,
+    })
+    for (const id of ['q', 'p']) {
+      expect(take(id)).toMatchObject({ status: 'failed', foreignStatus: id === 'q' ? 'queued' : 'processing', foreignProvider: 'seedvis', provider: 'mock', charged: false, remoteId: 'job-' + id })
+      expect(take(id).error).toContain('SanoVids bản mới hơn')
+    }
+    expect(take('done')).toMatchObject({ status: 'completed', foreignProvider: 'seedvis', charged: false })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(f.submitted).toEqual([])
+    expect(f.polls()).toBe(0)
+    expect(take('p')).toMatchObject({ status: 'failed', progress: 40 })
+    // cancelling / removing them gives back no demo credit (they were never paid here)
+    useRuns.getState().cancel('p')
+    useRuns.getState().removeTakes(['q'])
+    expect(useRuns.getState()).toMatchObject({ credits: 100, spent: 0 })
+  })
+
+  it('the engine parks one it finds running (backstop of migrate) instead of adopting or running it', async () => {
+    const f = fakeProvider('mock')
+    registerProvider(f.p)
+    const dev = fakeProvider('dev')
+    registerProvider(dev.p)
+    const raw = { ...newerTake('x', 'processing'), provider: 'mock', foreignProvider: 'seedvis', charged: false } as Take
+    const queued = { ...raw, id: 'y', status: 'queued', remoteId: null } as Take
+    useRuns.setState({ takes: [raw, queued] })
+    useRuns.getState().enqueue(['s1']) // starts the engine (a dev take of this build)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take('x')).toMatchObject({ status: 'failed', foreignStatus: 'processing', remoteId: 'job-x' })
+    expect(take('y')).toMatchObject({ status: 'failed', foreignStatus: 'queued' })
+    expect(f.submitted).toEqual([]) // the mock provider never saw them
+    expect(dev.submitted.map((r) => r.sceneCode)).toEqual(['S01']) // this build's own take ran as usual
+  })
+})

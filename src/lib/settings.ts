@@ -3,7 +3,7 @@
 // another version or edited by hand can never put a store into a broken state).
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
-//   theme (lib/theme) · downloads (lib/downloads) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
+//   theme (lib/theme) · downloads (lib/downloads, incl. the Recycle Bin on unlinking a folder wire) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
 //   animations, the editor on a scene card + its width, big-project optimisations) ·
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
 //   updates (lib/updatePrefs: auto-download of app updates).
@@ -25,7 +25,7 @@ import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
 
 export interface PortableSettings {
   theme: ThemePref
-  downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string }
+  downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string; folderUnlinkTrash: boolean }
   playback: { sound: boolean; volume: number; rate: number }
   canvas: CanvasPrefs
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: PortableSettings = {
     autoDownload: DEFAULT_DOWNLOAD_PREFS.autoDownload,
     zipPrompts: DEFAULT_DOWNLOAD_PREFS.zipPrompts,
     nameTemplate: DEFAULT_NAME_TEMPLATE,
+    folderUnlinkTrash: DEFAULT_DOWNLOAD_PREFS.folderUnlinkTrash,
   },
   playback: { sound: true, volume: 1, rate: 1 },
   canvas: { ...DEFAULT_CANVAS_PREFS },
@@ -60,7 +61,14 @@ export function currentSettings(): PortableSettings {
   const u = useUI.getState()
   return {
     theme: useTheme.getState().pref,
-    downloads: { askWhere: d.askWhere, withPrompt: d.withPrompt, autoDownload: d.autoDownload, zipPrompts: d.zipPrompts, nameTemplate: d.nameTemplate },
+    downloads: {
+      askWhere: d.askWhere,
+      withPrompt: d.withPrompt,
+      autoDownload: d.autoDownload,
+      zipPrompts: d.zipPrompts,
+      nameTemplate: d.nameTemplate,
+      folderUnlinkTrash: d.folderUnlinkTrash,
+    },
     playback: { sound: p.sound, volume: p.volume, rate: p.rate },
     canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject },
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
@@ -81,7 +89,7 @@ const isTemplate = (v: unknown): v is string => checkNameTemplate(v).ok
 
 type Check = (v: unknown) => boolean
 const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock'>]: Record<keyof PortableSettings[K], Check> } = {
-  downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate },
+  downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
   canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
   ui: { edgeMode: inList(EDGE_MODES), takeDisplay: inList(TAKE_DISPLAYS), showMinimap: isBool, interaction: inList(INTERACTION_MODES), toastTime: inList(TOAST_TIMES) },

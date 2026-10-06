@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { modelPick } from '../../components/inspector/SettingsFields'
+import { migrateProject } from '../../core/migrate'
+import { sceneRunBlockReason } from '../../core/runRules'
 import type { Preset, Project, Scene, Take, VideoSettings } from '../../core/types'
 import {
   LAYOUT,
@@ -555,11 +558,98 @@ describe('newer-build model marker (foreignModel / foreignSettings)', () => {
     expect(sc('s1').presetId).toBe('pv')
   })
 
+  it('restoring the settings of a take made on a newer build’s model marks the scene (blocked, never a runnable Seedance 2.5)', () => {
+    // A take saved by a newer build keeps its own settings as they were (migrateTake does not touch them).
+    const takeSettings = { model: 'seedvis/veo_3.1', mode: 'i2v', duration: 8, resolution: '1080p', ratio: '16:9', audio: true } as unknown as VideoSettings
+    const s2 = sc('s2')
+    st().restoreScene('s2', { prompt: 'Mưa', refs: [], settings: takeSettings })
+    expect(marked('s2')).toEqual({ foreignModel: 'seedvis/veo_3.1', foreignSettings: { ...takeSettings } })
+    expect(sc('s2').settings.model).toBe('seedance_2_5') // stand-in values, as everywhere
+    expect(sc('s2').prompt).toBe('Mưa')
+    undo()
+    expect(sc('s2')).toEqual(s2)
+    // Settings of a model this build knows keep the scene's own marker as it is (an edit of the prompt passes the
+    // scene's stand-in settings back: never a way to unblock it).
+    st().restoreScene('s1', { prompt: 'Sửa', refs: [], settings: sc('s1').settings })
+    expect(marked('s1')).toEqual(FOREIGN)
+    expect(sc('s1').presetId).toBe('pv')
+    st().restoreScene('s3', { prompt: 'x', refs: [], settings: { ...sc('s3').settings, duration: 5 } })
+    expect(unmarked('s3')).toBe(true)
+    // A marked scene restored from another newer-build take takes that take's marker.
+    st().restoreScene('s1', { prompt: 'y', refs: [], settings: { ...takeSettings, model: 'kling_9' } as unknown as VideoSettings })
+    expect(sc('s1').foreignModel).toBe('kling_9')
+    expect(sc('s1').presetId).toBeNull()
+  })
+
   it('addPreset keeps a marker it is given and adds none otherwise', () => {
     const withMark = st().addPreset({ name: 'Từ cảnh', ...STAND_IN, ...FOREIGN })
     const plain = st().addPreset({ name: 'Mới', ...STAND_IN })
     const find = (id: string) => st().project.presets.find((x) => x.id === id)!
     expect(find(withMark)).toMatchObject(FOREIGN)
     expect('foreignModel' in find(plain)).toBe(false)
+  })
+})
+
+describe('a newer build’s project through save / load (migrate round trip)', () => {
+  // A scene on a model this build does not know, exactly as the newer build saved it.
+  const VEO = { model: 'seedvis/veo_3.1', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16', audio: true }
+  const saveAndLoad = () => st().loadProject(migrateProject(JSON.parse(JSON.stringify(st().project))))
+  const blockReason = (id: string) => sceneRunBlockReason(st().project.assets, sc(id), () => undefined, 0)
+
+  beforeEach(() => {
+    const p = project(2)
+    const raw = { ...p, schemaVersion: 3, presets: [{ id: 'pv', name: 'Veo', ...VEO }], scenes: p.scenes.map((s) => (s.id === 's1' ? { ...s, prompt: 'x', presetId: 'pv', settings: VEO } : s)) }
+    st().loadProject(migrateProject(JSON.parse(JSON.stringify(raw))))
+    history().clear()
+  })
+
+  it('keeps foreignSettings exactly through edits, a save and a reload; the newer build gets its settings back', () => {
+    expect(sc('s1')).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO, presetId: 'pv' })
+    expect(sc('s1').settings.model).toBe('seedance_2_5') // stand-in: every reader keeps working
+    st().updateScene('s1', { title: 'Mở đầu' })
+    st().setScenePrompt('s1', 'Mưa rơi @image_1')
+    st().addRefs(['s1'], ['a'])
+    st().updateSettings(['s1'], { duration: 5 }) // an edit of the stand-in settings: the marker stays
+    saveAndLoad()
+    saveAndLoad()
+    const s = sc('s1')
+    expect(s).toMatchObject({ title: 'Mở đầu', prompt: 'Mưa rơi @image_1', refs: ['a'], foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+    expect(s.settings).toMatchObject({ model: 'seedance_2_5', duration: 5 })
+    // What the build that knows the model does on load (its migrate): settings = foreignSettings + foreignModel.
+    expect({ ...s.foreignSettings, model: s.foreignModel }).toEqual(VEO)
+    // The preset keeps its marker too.
+    expect(st().project.presets[0]).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+  })
+
+  it('the model picker shows the marker as its selected entry (several scenes: only when they share it)', () => {
+    const pick = (...ids: string[]) => modelPick(ids.map((id) => sc(id).settings), ids.map((id) => sc(id).foreignModel))
+    expect(pick('s1')).toEqual({ foreign: 'seedvis/veo_3.1', model: null })
+    expect(pick('s2')).toEqual({ foreign: null, model: 'seedance_2_5' })
+    expect(pick('s1', 's2')).toEqual({ foreign: null, model: null }) // "—": only one of them is on the newer model
+    const [copy] = st().duplicateScenes(['s1'])
+    expect(pick('s1', copy)).toEqual({ foreign: 'seedvis/veo_3.1', model: null })
+    expect(modelPick([sc('s1').settings])).toEqual({ foreign: null, model: 'seedance_2_5' }) // caller passes no markers
+  })
+
+  it('stays blocked until a model is picked here; picking one drops the marker for good', () => {
+    expect(blockReason('s1')).toContain('bản SanoVids mới hơn (seedvis/veo_3.1)')
+    expect(blockReason('s2')).not.toContain('mới hơn')
+    st().updateSettings(['s1'], { model: 'minimax_h3' })
+    saveAndLoad()
+    expect('foreignModel' in sc('s1') || 'foreignSettings' in sc('s1')).toBe(false)
+    expect(sc('s1').settings.model).toBe('minimax_h3')
+    expect(blockReason('s1')).toBeNull()
+  })
+
+  it('scenes made from it keep the marker through a save and a reload (next scene, scene from a take, duplicate, preset)', () => {
+    const next = st().createNextScene('s1')
+    const fromTake = st().createNextScene('s1', { x: 3000, y: 0 }, { videoRefs: [], prompt: 'Tiếp' })
+    const [copy] = st().duplicateScenes(['s1'])
+    st().applyPreset('pv', ['s2'])
+    saveAndLoad()
+    for (const id of [next, fromTake, copy, 's2']) {
+      expect(sc(id)).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+      expect(blockReason(id)).toContain('mới hơn')
+    }
   })
 })

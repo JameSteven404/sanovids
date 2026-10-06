@@ -4,11 +4,15 @@
 // plus "· khác nhau" until a value is picked for all.
 // Scenes on different models: options only some of the models offer are marked "· chỉ SD 2.5", and the caller
 // applies such a value only to the scenes whose model supports it (see `patchFits`).
+// A scene on a model of a newer SanoVids build (Scene.foreignModel) shows that model as a temporary, selected entry
+// "veo_3_1 (bản mới hơn)" of the model picker; picking a real model drops the marker (store updateSettings).
 import { useRef, type CSSProperties } from 'react'
-import { modeLabel, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
+import { foreignModelOption, modeLabel, MODELS, settingsLabel, type ModelSpec } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 
 const MIXED = '__mixed'
+/** Value of the model picker's temporary entry for a newer build's model (never a ModelId). */
+const FOREIGN = '__foreign'
 
 const fmtDuration = (d: number) => `${d}s`
 const fmtResolution = (r: string) => r.toUpperCase()
@@ -59,20 +63,37 @@ export function patchLabel(patch: Partial<VideoSettings>): string {
   return patch.ratio ?? ''
 }
 
+/**
+ * What the model picker shows: a newer build's model when every scene is on the same one (`foreign`), "—" when the
+ * scenes differ (some on a newer build's model, or on different ones), else the common model. `foreignModels` runs
+ * parallel to `settings` (missing = no scene has one).
+ */
+export function modelPick(settings: readonly VideoSettings[], foreignModels?: readonly (string | null | undefined)[]): { foreign: string | null; model: ModelId | null } {
+  const model = common(settings.map((s) => s.model))
+  const marks = settings.map((_, i) => foreignModels?.[i] || null)
+  if (!marks.some(Boolean)) return { foreign: null, model }
+  return { foreign: common(marks), model: null }
+}
+
 export function SettingsFields({
   settings,
+  foreignModels,
   presetIds,
   presets,
   onPatch,
   onPreset,
 }: {
   settings: VideoSettings[]
+  /** Scene.foreignModel of each scene, parallel to `settings` (omit when none can have one). */
+  foreignModels?: readonly (string | null | undefined)[]
   presetIds: (string | null)[]
   presets: Preset[]
   onPatch: (patch: Partial<VideoSettings>) => void
   onPreset: (presetId: string) => void
 }) {
   const model = common(settings.map((s) => s.model))
+  const pick = modelPick(settings, foreignModels)
+  const modelValue = pick.foreign ? FOREIGN : (pick.model ?? MIXED)
   const mode = common(settings.map((s) => s.mode))
   const duration = common(settings.map((s) => s.duration))
   const resolution = common(settings.map((s) => s.resolution))
@@ -111,17 +132,27 @@ export function SettingsFields({
           {allSamePreset && presetId === null && <option value="">Tuỳ chỉnh</option>}
           {presets.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name} · {MODELS[p.model]?.short ?? p.model} · {settingsLabel(p)}
+              {/* a preset of a newer build's model: its model, not the stand-in settings */}
+              {p.foreignModel ? `${p.name} · ${foreignModelOption(p.foreignModel)}` : `${p.name} · ${MODELS[p.model]?.short ?? p.model} · ${settingsLabel(p)}`}
             </option>
           ))}
         </select>
       </label>
       <label className="in-field c3">
         <span>Model</span>
-        <select className="select in-sm" value={model ?? MIXED} onChange={(e) => e.target.value !== MIXED && onPatch({ model: e.target.value as ModelId })}>
-          {model === null && (
+        <select
+          className="select in-sm"
+          value={modelValue}
+          onChange={(e) => e.target.value !== MIXED && e.target.value !== FOREIGN && onPatch({ model: e.target.value as ModelId })}
+        >
+          {modelValue === MIXED && (
             <option value={MIXED} disabled>
               —
+            </option>
+          )}
+          {pick.foreign && (
+            <option value={FOREIGN} disabled>
+              {foreignModelOption(pick.foreign)}
             </option>
           )}
           {Object.values(MODELS).map((m) => (

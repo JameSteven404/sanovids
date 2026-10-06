@@ -5,6 +5,7 @@
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
+import { FOLDER_TRASHING_TEXT, trashPendingSuffix } from '../../core/folderTrash'
 import { folderMapOf, shortPath } from '../../core/folders'
 import { chooseFolderPlace, grantFolderAccess, linkTakesToFolder, openFolderNode, refreshFolderNode, removeFolderNode } from '../../folderActions'
 import { desktopFiles } from '../../lib/desktopFiles'
@@ -35,10 +36,14 @@ function liveCount(ids: readonly string[] | undefined, live: ReadonlyMap<string,
   return n
 }
 
-/** One status line under the name: what the folder needs, or what was saved. */
+/**
+ * One status line under the name: what the folder needs, or what was saved. Cut wires whose files wait for the folder
+ * before going to the Recycle Bin add " · N file chờ xoá".
+ */
 function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 'error' | 'muted' | 'busy'; text: string } {
+  if (rt.trashing) return { tone: 'busy', text: FOLDER_TRASHING_TEXT }
   if (rt.busy) return { tone: 'busy', text: 'Đang lưu…' }
-  const waiting = rt.pending ? ` · ${rt.pending} video chờ lưu` : ''
+  const waiting = (rt.pending ? ` · ${rt.pending} video chờ lưu` : '') + trashPendingSuffix(rt.trashPending)
   switch (rt.access) {
     case 'checking':
       return { tone: 'muted', text: 'Đang kiểm tra thư mục…' }
@@ -51,9 +56,10 @@ function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 
     case 'ask':
       return { tone: 'warn', text: 'Cần cấp lại quyền ghi vào thư mục' + waiting }
   }
-  if (rt.error) return { tone: 'error', text: rt.error }
-  if (!rt.saved) return { tone: 'muted', text: 'Chưa lưu video nào' }
-  return { tone: 'ok', text: `Đã lưu ${rt.saved} video${rt.lastAt ? ` · lần cuối ${timeText(rt.lastAt)}` : ''}` }
+  const trashWaiting = trashPendingSuffix(rt.trashPending)
+  if (rt.error) return { tone: 'error', text: rt.error + trashWaiting }
+  if (!rt.saved) return { tone: 'muted', text: 'Chưa lưu video nào' + trashWaiting }
+  return { tone: 'ok', text: `Đã lưu ${rt.saved} video${rt.lastAt ? ` · lần cuối ${timeText(rt.lastAt)}` : ''}${trashWaiting}` }
 }
 
 function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
@@ -135,7 +141,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
     if (ids.length) linkTakesToFolder(ids, id)
   }
 
-  const Icon = rt.busy ? LoaderCircle : status.tone === 'ok' ? FolderCheck : Folder
+  const Icon = rt.busy || rt.trashing ? LoaderCircle : status.tone === 'ok' ? FolderCheck : Folder
   const cls = [
     'cv-folder',
     selected && 'is-selected',
@@ -151,7 +157,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
     <div className={cls} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="cv-folder-head">
         <span className={`cv-folder-icon tone-${status.tone}`} aria-hidden>
-          <Icon size={far ? 30 : 17} strokeWidth={1.75} className={rt.busy ? 'cv-spin' : undefined} />
+          <Icon size={far ? 30 : 17} strokeWidth={1.75} className={rt.busy || rt.trashing ? 'cv-spin' : undefined} />
         </span>
         <span className="cv-folder-titles">
           <span className="cv-folder-name" title={folder.name}>

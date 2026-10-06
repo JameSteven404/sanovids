@@ -127,7 +127,16 @@ export function withLink(folder: SaveFolder, kind: FolderLinkKind, fromId: strin
  * itself is wired into ('save', wired while it was still running). Each folder once, in folder order.
  */
 export function folderTargetsFor(folders: readonly SaveFolder[] | undefined, take: { id: string; sceneId: string }): SaveFolder[] {
-  return (folders ?? []).filter((f) => f.autoScenes?.includes(take.sceneId) || f.takes?.includes(take.id))
+  return (folders ?? []).filter((f) => isTargeted(f, take))
+}
+
+/**
+ * Is a wire still pointing this take at this folder: its own 'save' wire, or its scene's 'autosave' wire (the same test
+ * as folderTargetsFor)? A save is only written while it is (a waiting save of a cut wire is dropped), and a cut wire
+ * only takes its files along when nothing targets the folder for this take any more (core/folderTrash).
+ */
+export function isTargeted(folder: SaveFolder, take: { id: string; sceneId: string }): boolean {
+  return !!(folder.takes?.includes(take.id) || folder.autoScenes?.includes(take.sceneId))
 }
 
 const folderMaps = new WeakMap<readonly SaveFolder[], Map<string, SaveFolder>>()

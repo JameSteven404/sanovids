@@ -10,7 +10,8 @@
 //   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take they belong to), top-up orders
 //                  (decide what canvasapp says), uploaded pictures.
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
-//                  only outside Electron — the desktop app uses the real ones).
+//                  only outside Electron — the desktop app uses the real ones), and "Vị trí chạy" (where the app runs
+//                  from: the Portable / temp-copy reminder of Settings, providers/dev/appPlacement; PlacementCard below).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
 // Every texts/rule decision lives in devModel.ts (pure, tested).
 import {
@@ -33,6 +34,7 @@ import {
   ListChecks,
   LogIn,
   LogOut,
+  MapPin,
   Minus,
   Plus,
   RotateCcw,
@@ -53,6 +55,7 @@ import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
 import { activeProviderId, PROVIDER_LABEL, providerOf, resetDevMode, useProviderPrefs } from '../../providers'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
+import { DEV_PLACEMENT_OPTIONS, devPlacement, useDevPlacement } from '../../providers/dev/appPlacement'
 import {
   clearDevLog,
   DEV_ENDPOINT_LABEL,
@@ -193,7 +196,12 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
         </div>
         <div role="tabpanel" id={`dv-panel-${tab}`} aria-labelledby={`dv-tab-${tab}`} className="dv-tabpanel">
           {tab === 'updates' ? (
-            <DevUpdatesTab />
+            <div className="dv-upd">
+              <DevUpdatesTab />
+              <div className="dv-grid">
+                <PlacementCard />
+              </div>
+            </div>
           ) : !snap ? (
             <NoSnapshot />
           ) : tab === 'status' ? (
@@ -219,6 +227,22 @@ const TAB_ICON: Record<DevPanelTab, ReactNode> = {
   updates: <CloudDownload size={14} />,
   // Not listed by devPanelTabs yet (the perf build's tab, src/perf): pick() falls back to 'status' for it.
   perf: <Gauge size={14} />,
+}
+
+/** "Cập nhật → Vị trí chạy": the simulated answer of window.bdpDesktop.app.placement() (only outside Electron). */
+function PlacementCard() {
+  const kind = useDevPlacement((s) => s.kind)
+  return (
+    <Card title="Vị trí chạy" icon={<MapPin size={15} />} className="dv-grid-wide">
+      <div className="dv-field">
+        <span className="label">SanoVids đang chạy từ</span>
+        <Segmented label="Vị trí chạy" value={kind} onChange={(k) => devPlacement.simulate(k)} options={DEV_PLACEMENT_OPTIONS} />
+      </div>
+      <p className="dv-hint">
+        Bản Portable và bản sao trong thư mục tạm hiện lời nhắc cài bản Setup ở Cài đặt → Ứng dụng và Giới thiệu. Bản desktop hỏi tiến trình chính (chỉ nhận loại bản, không có đường dẫn); ở đây chỉ giả lập.
+      </p>
+    </Card>
+  )
 }
 
 /** The real gateway runs new takes: this panel only drives the simulation. */

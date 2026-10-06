@@ -5,10 +5,17 @@
 //     usually asks again before writing ("Cấp lại quyền": needs a click). Firefox / Safari cannot write folders.
 // Runtime state of each node (access, counters, last error, saves waiting for the permission) is the small store below;
 // its counters and the saves still waiting are kept per browser / computer (localStorage), not in the project.
+// Desktop app, "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (core/folderTrash, folderActions):
+//   - every folder write names its owner (folder node, take, where it comes from: SaveVia); the main process records
+//     the written group in its own ledger and answers its id (`recorded`);
+//   - the ownership record bdp:folder-link-owned keeps, per "folderId:takeId", the groups the take → folder wire itself
+//     wrote (never the auto-save wire's): only those may later be moved to the Recycle Bin (trashSavedFiles);
+//   - bdp:folder-trash-waiting keeps cut wires whose folder could not be reached, moved when it is back (≤ 30 days).
 import { del, get, set } from 'idb-keyval'
 import { create } from 'zustand'
+import { checkTrashAnswer, TRASH_BATCH_MAX, TRASH_GROUPS_MAX, TRASH_WAIT_DAYS, trashBatches } from '../core/folderTrash'
 import type { SaveFolder } from '../core/types'
-import { desktopFiles, toDesktopFiles } from './desktopFiles'
+import { desktopFiles, toDesktopFiles, type SaveVia, type TrashSavedItem, type TrashSavedTakeResult } from './desktopFiles'
 import { errName, fsError, settingsStore, writeGroup, type DirHandle, type FileToSave } from './downloads'
 
 /**
@@ -34,6 +41,10 @@ export interface FolderRuntime {
   pending: number
   /** A save is being written. */
   busy: boolean
+  /** Cut wires whose files wait for the folder to come back before going to the Recycle Bin (desktop). */
+  trashPending: number
+  /** Files are being moved to the Recycle Bin. */
+  trashing: boolean
 }
 
 const STATS_KEY = 'bdp:folder-stats'
@@ -94,7 +105,7 @@ function writeStats() {
   }
 }
 
-const EMPTY: FolderRuntime = { access: 'checking', saved: 0, lastAt: null, lastName: null, error: null, pending: 0, busy: false }
+const EMPTY: FolderRuntime = { access: 'checking', saved: 0, lastAt: null, lastName: null, error: null, pending: 0, busy: false, trashPending: 0, trashing: false }
 
 interface FolderStatusState {
   byId: Record<string, FolderRuntime>
@@ -115,8 +126,9 @@ export const useFolderStatus = create<FolderStatusState>()((setState) => ({
 function runtimeSeed(id: string): FolderRuntime {
   const st = stats[id]
   const pending = waitingCache[id]?.length ?? 0
-  if (!st && !pending) return EMPTY
-  return { ...EMPTY, saved: st?.saved ?? 0, lastAt: st?.lastAt ?? null, lastName: st?.lastName ?? null, pending }
+  const trashPending = trashWaitingCache[id]?.length ?? 0
+  if (!st && !pending && !trashPending) return EMPTY
+  return { ...EMPTY, saved: st?.saved ?? 0, lastAt: st?.lastAt ?? null, lastName: st?.lastName ?? null, pending, trashPending }
 }
 
 /** Runtime state of a folder node (a stable object until it changes). */
@@ -140,6 +152,23 @@ export function noteFolderSaved(id: string, names: string[], takeId?: string) {
 /** Was this take already saved into this folder (on this computer / browser)? */
 export function wasSavedTo(folderId: string, takeId: string): boolean {
   return !!stats[folderId]?.takes?.includes(takeId)
+}
+
+/**
+ * Files of a take went to the Recycle Bin: it no longer counts as saved there (a wire made again copies it again),
+ * the counter goes down by the copies moved (never below 0), and "lần cuối" no longer names a file that is gone.
+ */
+export function forgetSavedTake(folderId: string, takeId: string, copies: number, trashedNames: readonly string[]) {
+  const cur = stats[folderId]
+  if (!cur) return
+  const takes = (cur.takes ?? []).filter((t) => t !== takeId)
+  const saved = Math.max(0, cur.saved - Math.max(0, Math.floor(copies)))
+  const lastName = cur.lastName && trashedNames.includes(cur.lastName) ? null : cur.lastName
+  const next: FolderStats = { saved, lastAt: cur.lastAt, lastName }
+  if (takes.length) next.takes = takes
+  stats = { ...stats, [folderId]: next }
+  writeStats()
+  patch(folderId, { saved, lastName })
 }
 
 // ---------------- saves still waiting (per browser / computer, kept across reloads and restarts) ----------------
@@ -205,11 +234,183 @@ export function markWaiting(folderId: string, takeIds: readonly string[], on: bo
   return next.length
 }
 
-// Another tab saved / queued some: keep the "chờ lưu" counts of the nodes shown here right.
+// ---------------- what a take → folder wire wrote itself (desktop; per computer) ----------------
+// "folderId:takeId" → ledger group ids (electron/main.cjs `recorded`) written FOR that 'save' wire: the copy made when
+// it was wired, "Lưu thêm bản nữa" while it exists, its waiting save, the copy written again after Hoàn tác. Never the
+// auto-save wire's writes. [] = the wire exists but copied nothing (the file was already there). No key = nothing is
+// known (wired by an older build, storage cleared, another computer): nothing is ever moved then.
+const OWNED_KEY = 'bdp:folder-link-owned'
+/** Pairs remembered (the most recent ones). */
+const MAX_OWNED_KEYS = 5000
+/** Ledger group id: 16 hex characters. */
+export const GROUP_ID_RE = /^[0-9a-f]{16}$/i
+type Owned = Record<string, string[]>
+
+const ownedKey = (folderId: string, takeId: string) => `${folderId}:${takeId}`
+const isOwnedKey = (k: string) => k.length <= 401 && /^[^:]{1,200}:[^:]{1,200}$/.test(k) && !k.startsWith('__proto__')
+
+/** bdp:folder-link-owned as stored, repaired value by value (never throws). */
+export function parseFolderOwned(raw: unknown): Owned {
+  const out: Owned = {}
+  if (!isRecord(raw)) return out
+  const entries = Object.entries(raw).filter(([k, v]) => isOwnedKey(k) && Array.isArray(v))
+  for (const [k, v] of entries.slice(-MAX_OWNED_KEYS)) {
+    out[k] = [...new Set((v as unknown[]).filter((x): x is string => typeof x === 'string' && GROUP_ID_RE.test(x)))].slice(-TRASH_GROUPS_MAX)
+  }
+  return out
+}
+
+let ownedCache: Owned = parseFolderOwned(readJson(OWNED_KEY))
+
+function readOwned(): Owned {
+  try {
+    if (typeof localStorage === 'undefined') return ownedCache
+    ownedCache = parseFolderOwned(readJson(OWNED_KEY))
+  } catch {
+    /* storage not readable: keep the last known record */
+  }
+  return ownedCache
+}
+function writeOwned(all: Owned) {
+  const keys = Object.keys(all)
+  if (keys.length > MAX_OWNED_KEYS) for (const k of keys.slice(0, keys.length - MAX_OWNED_KEYS)) delete all[k]
+  ownedCache = all
+  try {
+    if (Object.keys(all).length) localStorage.setItem(OWNED_KEY, JSON.stringify(all))
+    else localStorage.removeItem(OWNED_KEY)
+  } catch {
+    /* quota / private mode: the record still holds for this session */
+  }
+}
+
+/** Groups the take → folder wire wrote itself; null = nothing known about this pair. */
+export function ownedGroups(folderId: string, takeId: string): string[] | null {
+  const v = readOwned()[ownedKey(folderId, takeId)]
+  return v ? [...v] : null
+}
+
+/** ownedGroups of many pairs, reading the record once (a Delete may cut hundreds of wires). */
+export function ownedGroupsOf(pairs: readonly { folderId: string; takeId: string }[]): (string[] | null)[] {
+  const all = readOwned()
+  return pairs.map((p) => {
+    const v = all[ownedKey(p.folderId, p.takeId)]
+    return v ? [...v] : null
+  })
+}
+
+/** A write for the 'save' wire was recorded by the main process as `groupId`. */
+export function addOwned(folderId: string, takeId: string, groupId: string) {
+  if (!GROUP_ID_RE.test(groupId)) return
+  const all = { ...readOwned() }
+  const k = ownedKey(folderId, takeId)
+  const cur = all[k] ?? []
+  delete all[k] // re-inserted last: the most recently used pairs are the ones kept
+  all[k] = [...cur.filter((g) => g !== groupId), groupId].slice(-TRASH_GROUPS_MAX)
+  writeOwned(all)
+}
+
+/** Set what the wire owns (e.g. [] = wired but nothing copied: the file was already there). */
+export function setOwned(folderId: string, takeId: string, groupIds: readonly string[]) {
+  const all = { ...readOwned() }
+  const k = ownedKey(folderId, takeId)
+  delete all[k]
+  all[k] = [...new Set(groupIds.filter((g) => GROUP_ID_RE.test(g)))].slice(-TRASH_GROUPS_MAX)
+  writeOwned(all)
+}
+
+/** The wire is gone and its files were dealt with: what is left in the folder is the user's now. */
+export function releaseOwned(folderId: string, takeId: string | readonly string[]) {
+  const all = readOwned()
+  const keys = (typeof takeId === 'string' ? [takeId] : takeId).map((t) => ownedKey(folderId, t)).filter((k) => k in all)
+  if (!keys.length) return
+  const next = { ...all }
+  for (const k of keys) delete next[k]
+  writeOwned(next)
+}
+
+// ---------------- cut wires waiting for their folder (desktop; per computer) ----------------
+// A wire cut while its folder could not be reached (drive unplugged…): its files go to the Recycle Bin when the folder
+// is back (folderActions.refreshFolderNode), within TRASH_WAIT_DAYS. The groups to move stay in the ownership record.
+const TRASH_WAITING_KEY = 'bdp:folder-trash-waiting'
+const MAX_TRASH_WAITING = 200
+const TRASH_WAIT_MS = TRASH_WAIT_DAYS * 24 * 3600 * 1000
+export interface TrashWaitingEntry {
+  takeId: string
+  /** When the wire was cut (ms). */
+  at: number
+}
+type TrashWaiting = Record<string, TrashWaitingEntry[]>
+
+/** bdp:folder-trash-waiting as stored, repaired (older than TRASH_WAIT_DAYS, from the future, duplicates, wrong types dropped). */
+export function parseFolderTrashWaiting(raw: unknown, now = Date.now()): TrashWaiting {
+  const out: TrashWaiting = {}
+  if (!isRecord(raw)) return out
+  for (const [id, v] of Object.entries(raw)) {
+    if (!isKey(id) || !Array.isArray(v)) continue
+    const seen = new Set<string>()
+    const list: TrashWaitingEntry[] = []
+    for (const e of v) {
+      if (!isRecord(e) || typeof e.takeId !== 'string' || !e.takeId || e.takeId.length > 200) continue
+      if (typeof e.at !== 'number' || !Number.isFinite(e.at) || e.at <= 0 || now - e.at > TRASH_WAIT_MS || e.at - now > 60_000) continue
+      if (seen.has(e.takeId)) continue
+      seen.add(e.takeId)
+      list.push({ takeId: e.takeId, at: e.at })
+    }
+    if (list.length) out[id] = list.slice(-MAX_TRASH_WAITING)
+  }
+  return out
+}
+
+let trashWaitingCache: TrashWaiting = parseFolderTrashWaiting(readJson(TRASH_WAITING_KEY))
+
+function readTrashWaiting(): TrashWaiting {
+  try {
+    // No storage (tests, blocked): the list of this session, still expiring.
+    if (typeof localStorage === 'undefined') return (trashWaitingCache = parseFolderTrashWaiting(trashWaitingCache))
+    trashWaitingCache = parseFolderTrashWaiting(readJson(TRASH_WAITING_KEY))
+  } catch {
+    /* storage not readable: keep the last known list */
+  }
+  return trashWaitingCache
+}
+function writeTrashWaiting(all: TrashWaiting) {
+  trashWaitingCache = all
+  try {
+    if (Object.keys(all).length) localStorage.setItem(TRASH_WAITING_KEY, JSON.stringify(all))
+    else localStorage.removeItem(TRASH_WAITING_KEY)
+  } catch {
+    /* quota / private mode: the list still holds for this session */
+  }
+}
+
+/** Takes whose cut wire waits for this folder (oldest first). */
+export function trashWaitingTakes(folderId: string): string[] {
+  return (readTrashWaiting()[folderId] ?? []).map((e) => e.takeId)
+}
+
+/** Add (`on`) or remove takes from the folder's "chờ xoá" list; the node shows "N file chờ xoá". Returns how many wait. */
+export function markTrashWaiting(folderId: string, takeIds: readonly string[], on: boolean, now = Date.now()): number {
+  const all = { ...readTrashWaiting() }
+  const cur = all[folderId] ?? []
+  const drop = new Set(takeIds)
+  const next = on
+    ? [...cur.filter((e) => !drop.has(e.takeId)), ...[...drop].map((takeId) => ({ takeId, at: now }))].slice(-MAX_TRASH_WAITING)
+    : cur.filter((e) => !drop.has(e.takeId))
+  if (next.length !== cur.length || next.some((e, i) => e.takeId !== cur[i].takeId || e.at !== cur[i].at)) {
+    if (next.length) all[folderId] = next
+    else delete all[folderId]
+    writeTrashWaiting(all)
+  }
+  patch(folderId, { trashPending: next.length })
+  return next.length
+}
+
+// Another tab saved / queued / cut some: keep the "chờ lưu" / "chờ xoá" counts of the nodes shown here right.
 function onStorage(e: StorageEvent) {
-  if (e.key !== WAITING_KEY && e.key !== null) return
+  if (e.key !== WAITING_KEY && e.key !== TRASH_WAITING_KEY && e.key !== null) return
   const all = readWaiting()
-  for (const id of Object.keys(useFolderStatus.getState().byId)) patch(id, { pending: all[id]?.length ?? 0 })
+  const trash = readTrashWaiting()
+  for (const id of Object.keys(useFolderStatus.getState().byId)) patch(id, { pending: all[id]?.length ?? 0, trashPending: trash[id]?.length ?? 0 })
 }
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('storage', onStorage)
@@ -331,7 +532,17 @@ export async function requestFolderAccess(folder: SaveFolder): Promise<FolderAcc
   return access
 }
 
-export type FolderWriteResult = { ok: true; names: string[] } | { ok: false; access: FolderAccess; message: string }
+/**
+ * `recorded` (desktop, with an owner): the main process's ledger id of the group just written — the only way those
+ * files can later go to the Recycle Bin. Missing when nothing was recorded (web, no owner, ledger error, older build).
+ */
+export type FolderWriteResult = { ok: true; names: string[]; recorded?: string } | { ok: false; access: FolderAccess; message: string }
+
+/** Who a folder write is for: the take, and where it comes from (lib/desktopFiles SaveVia). */
+export interface FolderWriteOwner {
+  takeId: string
+  via: SaveVia
+}
 
 const ACCESS_TEXT: Record<Exclude<FolderAccess, 'ok' | 'checking'>, string> = {
   ask: 'Trình duyệt cần bạn cho phép ghi vào thư mục này lần nữa.',
@@ -342,9 +553,10 @@ const ACCESS_TEXT: Record<Exclude<FolderAccess, 'ok' | 'checking'>, string> = {
 
 /**
  * Write a group of files (video + prompt .txt) into a folder node's folder, never overwriting (" (2)" for the
- * whole group). `interactive` = right after a click: the browser may show its permission prompt.
+ * whole group). `interactive` = right after a click: the browser may show its permission prompt. `owner` (desktop):
+ * the main process records the group under this folder node / take (answering its id in `recorded`).
  */
-export async function writeToFolder(folder: SaveFolder, files: FileToSave[], interactive: boolean): Promise<FolderWriteResult> {
+export async function writeToFolder(folder: SaveFolder, files: FileToSave[], interactive: boolean, owner?: FolderWriteOwner): Promise<FolderWriteResult> {
   const fail = (access: Exclude<FolderAccess, 'ok' | 'checking'>, message = ACCESS_TEXT[access]): FolderWriteResult => {
     patch(folder.id, { access, error: message })
     return { ok: false, access, message }
@@ -352,8 +564,12 @@ export async function writeToFolder(folder: SaveFolder, files: FileToSave[], int
   const bridge = desktopFiles()
   if (bridge) {
     if (!folder.path) return fail('pick')
-    const res = await bridge.writeToFolder({ folderPath: folder.path, files: await toDesktopFiles(files) })
-    if (res.ok) return { ok: true, names: res.names }
+    const res = await bridge.writeToFolder({
+      folderPath: folder.path,
+      files: await toDesktopFiles(files),
+      ...(owner ? { owner: { folderId: folder.id, takeId: owner.takeId, via: owner.via } } : {}),
+    })
+    if (res.ok) return typeof res.recorded === 'string' && GROUP_ID_RE.test(res.recorded) ? { ok: true, names: res.names, recorded: res.recorded } : { ok: true, names: res.names }
     if (res.code === 'not-allowed') return fail('pick')
     if (res.code === 'missing') return fail('missing')
     patch(folder.id, { error: res.message })
@@ -393,4 +609,86 @@ export async function revealFolder(folder: SaveFolder): Promise<string | null> {
 /** Mark a node busy / not busy (spinner while a save is written). */
 export function setFolderBusy(id: string, busy: boolean) {
   patch(id, { busy })
+}
+
+// ---------------- Recycle Bin (desktop) ----------------
+/** Moving saved files to the Recycle Bin can be asked for here (the desktop app with files:trashSaved). */
+export function canTrashSaved(): boolean {
+  return typeof desktopFiles()?.trashSaved === 'function'
+}
+
+/** Takes a files:trashSaved call could not handle, and why. */
+export interface TrashProblem {
+  /** missing: the folder is gone (wait for it) · pick: not chosen on this computer · unsupported: no bridge · error: retry. */
+  access: 'missing' | 'pick' | 'unsupported' | 'error'
+  message: string
+  takeIds: string[]
+}
+
+export interface TrashFilesOutcome {
+  /** One answer per take of the calls that worked (checked: core/folderTrash checkTrashAnswer). */
+  results: TrashSavedTakeResult[]
+  problems: TrashProblem[]
+}
+
+/**
+ * Ask the main process to move what these takes' wires wrote into this folder node's folder to the Recycle Bin (only
+ * ledger groups `groupIds`, only files still exactly as written; never deleted for good). Calls of ≤ TRASH_BATCH_MAX
+ * takes. The node shows "Đang chuyển file vào Thùng rác…" meanwhile. Never throws.
+ */
+export async function trashSavedFiles(folder: SaveFolder, items: readonly TrashSavedItem[]): Promise<TrashFilesOutcome> {
+  const out: TrashFilesOutcome = { results: [], problems: [] }
+  const asked = items.filter((i) => i.groupIds.length)
+  if (!asked.length) return out
+  const bridge = desktopFiles()
+  if (!bridge || typeof bridge.trashSaved !== 'function') {
+    out.problems.push({ access: 'unsupported', message: 'Chỉ có trong app SanoVids desktop.', takeIds: asked.map((i) => i.takeId) })
+    return out
+  }
+  if (!folder.path) {
+    out.problems.push({ access: 'pick', message: ACCESS_TEXT.pick, takeIds: asked.map((i) => i.takeId) })
+    return out
+  }
+  patch(folder.id, { trashing: true })
+  try {
+    const batches = trashBatches(asked, TRASH_BATCH_MAX)
+    for (let b = 0; b < batches.length; b++) {
+      const batch = batches[b]
+      const takeIds = batch.map((i) => i.takeId)
+      let res: Awaited<ReturnType<NonNullable<typeof bridge.trashSaved>>>
+      try {
+        res = await bridge.trashSaved({
+          folderPath: folder.path,
+          folderId: folder.id,
+          items: batch.map((i) => ({ takeId: i.takeId, groupIds: i.groupIds.slice(-TRASH_GROUPS_MAX) })),
+        })
+      } catch (e) {
+        res = { ok: false, code: 'failed', message: (e as Error)?.message || String(e) }
+      }
+      if (res && res.ok === true) {
+        const { results, unanswered } = checkTrashAnswer(res, takeIds)
+        out.results.push(...results)
+        if (unanswered.length) out.problems.push({ access: 'error', message: 'SanoVids không nhận được kết quả.', takeIds: unanswered })
+        continue
+      }
+      const code = (res as { code?: unknown } | undefined)?.code
+      const message = typeof (res as { message?: unknown } | undefined)?.message === 'string' ? (res as { message: string }).message : 'Lỗi không rõ.'
+      // The folder is gone / not allowed here: the remaining batches would get the same answer.
+      const rest = batches.slice(b).flatMap((x) => x.map((i) => i.takeId))
+      if (code === 'not-allowed') {
+        patch(folder.id, { access: 'pick' })
+        out.problems.push({ access: 'pick', message: ACCESS_TEXT.pick, takeIds: rest })
+        break
+      }
+      if (code === 'missing') {
+        patch(folder.id, { access: 'missing' })
+        out.problems.push({ access: 'missing', message: ACCESS_TEXT.missing, takeIds: rest })
+        break
+      }
+      out.problems.push({ access: 'error', message, takeIds })
+    }
+  } finally {
+    patch(folder.id, { trashing: false })
+  }
+  return out
 }

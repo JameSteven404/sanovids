@@ -1,6 +1,7 @@
 // Folder nodes ("Thư mục") and file names end to end, without a browser: the real queue engine (store/runs) with a
 // fake provider, the real project store (wires, undo), the real folder actions, and a fake desktop bridge
-// (window.bdpDesktop.files) standing in for electron/main.cjs. No network, no disk.
+// (window.bdpDesktop.files) standing in for electron/main.cjs — including its ledger of written groups and
+// files:trashSaved ("Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác"). No network, no disk.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const media = vi.hoisted(() => new Map<string, Blob>())
@@ -22,12 +23,27 @@ vi.mock('../lib/imageStore', () => {
 })
 
 import { deleteSelection, downloadChosenTakesZip, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
+import { cutEdge } from '../components/canvas/edges'
 import { DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
-import type { Project, Scene } from '../core/types'
-import { chooseFolderPlace, linkScenesToFolder, linkTakesToFolder, refreshFolderNode, removeFolderNode, saveTakeToFolder } from '../folderActions'
-import type { DesktopFile, DesktopFilesBridge } from '../lib/desktopFiles'
+import type { Project, Scene, Take } from '../core/types'
+import { afterSaveUnlinked, chooseFolderPlace, linkScenesToFolder, linkTakesToFolder, refreshFolderNode, removeFolderNode, saveTakeToFolder } from '../folderActions'
+import type { DesktopFile, DesktopFilesBridge, SaveOwner, TrashSavedArgs, TrashSavedTakeResult } from '../lib/desktopFiles'
 import { useDownloadPrefs } from '../lib/downloads'
-import { folderRuntime, markWaiting, parseFolderStats, parseFolderWaiting, waitingTakes } from '../lib/saveFolders'
+import {
+  folderRuntime,
+  markTrashWaiting,
+  markWaiting,
+  ownedGroups,
+  parseFolderOwned,
+  parseFolderStats,
+  parseFolderTrashWaiting,
+  parseFolderWaiting,
+  releaseOwned,
+  setOwned,
+  trashWaitingTakes,
+  waitingTakes,
+  wasSavedTo,
+} from '../lib/saveFolders'
 import { getProvider, registerProvider } from '../providers'
 import { capabilitiesFromModels } from '../providers/capabilities'
 import type { RemoteStatus, VideoProvider } from '../providers/types'
@@ -87,11 +103,37 @@ function fakeProvider() {
   return { p, finish }
 }
 
-/** What electron/main.cjs would do: writes into allowlisted folders, a save dialog the test answers. */
+/** A group the fake main process recorded (electron/main.cjs saved-files.json). */
+interface FakeGroup {
+  id: string
+  folderPath: string
+  owner: SaveOwner
+  names: string[]
+  /** Like main's ledger: the primary went to the Recycle Bin, `names` are the companions that could not follow. */
+  primaryTrashed?: boolean
+}
+
+/**
+ * What electron/main.cjs would do: writes into allowlisted folders (recording each group written with an owner in its
+ * ledger and answering its id), moves recorded groups to a fake Recycle Bin (only groups of that folder node / take,
+ * never 'autosave' ones; per file what `fileState` says, default unchanged → trashed), a save dialog the test answers.
+ */
 function fakeDesktop() {
-  const writes: { folderPath: string; files: DesktopFile[] }[] = []
+  const writes: { folderPath: string; files: DesktopFile[]; owner?: SaveOwner }[] = []
   const saveAs: { suggestedName: string; title?: string; files: DesktopFile[] }[] = []
   const allowed = new Set(['D:\\Phim'])
+  const ledger = new Map<string, FakeGroup>()
+  const trashCalls: TrashSavedArgs[] = []
+  /** Files moved to the Recycle Bin, in order. */
+  const bin: string[] = []
+  /**
+   * What a file is found like when moving it (renamed → missing, edited → changed, open in VLC → failed, a OneDrive
+   * online-only file → cloud = 'failed' + cloud).
+   */
+  const fileState = new Map<string, 'missing' | 'changed' | 'failed' | 'cloud'>()
+  let groupSeq = 0
+  /** false: the folder cannot be reached (drive unplugged). */
+  let exists = true
   let dialogAnswer: string | null = 'E:\\Chọn\\Phim của tôi.mp4'
   /** What the folder picker answers (null = the user closes it). */
   let pickAnswer: string | null = null
@@ -101,11 +143,54 @@ function fakeDesktop() {
       allowed.add(pickAnswer)
       return { ok: true, path: pickAnswer, name: pickAnswer.slice(pickAnswer.lastIndexOf(String.fromCharCode(92)) + 1) }
     },
-    folderStatus: async ({ folderPath }) => ({ ok: true, allowed: allowed.has(folderPath), exists: true }),
+    folderStatus: async ({ folderPath }) => ({ ok: true, allowed: allowed.has(folderPath), exists }),
     writeToFolder: async (args) => {
       if (!allowed.has(args.folderPath)) return { ok: false, code: 'not-allowed', message: 'Thư mục này chưa được chọn trên máy này.' }
+      if (!exists) return { ok: false, code: 'missing', message: 'Không tìm thấy thư mục.' }
       writes.push(args)
-      return { ok: true, names: args.files.map((f) => f.name) }
+      const names = args.files.map((f) => f.name)
+      if (!args.owner) return { ok: true, names }
+      const id = (++groupSeq).toString(16).padStart(16, '0')
+      ledger.set(id, { id, folderPath: args.folderPath, owner: { ...args.owner }, names })
+      return { ok: true, names, recorded: id }
+    },
+    trashSaved: async (args) => {
+      trashCalls.push(JSON.parse(JSON.stringify(args)) as TrashSavedArgs)
+      if (args.items.length > 200) return { ok: false, code: 'bad-request', message: 'Quá nhiều.' }
+      if (!allowed.has(args.folderPath)) return { ok: false, code: 'not-allowed', message: 'Thư mục này chưa được chọn trên máy này.' }
+      if (!exists) return { ok: false, code: 'missing', message: 'Không tìm thấy thư mục.' }
+      const results: TrashSavedTakeResult[] = args.items.map(({ takeId, groupIds }) => {
+        const mine = groupIds
+          .map((g) => ledger.get(g))
+          .filter((g): g is FakeGroup => !!g && g.owner.folderId === args.folderId && g.owner.takeId === takeId && g.owner.via !== 'autosave')
+        const here = mine.filter((g) => g.folderPath === args.folderPath)
+        if (!here.length) return { takeId, unknown: true, ...(mine.length ? { elsewhere: true } : {}), files: [] }
+        const files: TrashSavedTakeResult['files'] = []
+        const moveOne = (name: string, role: 'primary' | 'companion') => {
+          const st = fileState.get(name) ?? 'trashed'
+          if (st === 'trashed') bin.push(name)
+          files.push(st === 'cloud' ? { name, role, result: 'failed', cloud: true } : { name, role, result: st })
+          return st === 'cloud' ? 'failed' : st
+        }
+        /** Companions after a moved primary; the ones that could not follow stay recorded (main: primaryTrashed). */
+        const companionsOf = (g: FakeGroup, list: string[]) => {
+          const left = list.filter((c) => moveOne(c, 'companion') === 'failed')
+          if (left.length) ledger.set(g.id, { ...g, names: left, primaryTrashed: true })
+          else ledger.delete(g.id)
+        }
+        for (const g of here) {
+          if (g.primaryTrashed) {
+            companionsOf(g, g.names)
+            continue
+          }
+          const [primary, ...companions] = g.names
+          const p = moveOne(primary, 'primary')
+          if (p === 'trashed') companionsOf(g, companions)
+          else if (p !== 'failed') ledger.delete(g.id)
+        }
+        return { takeId, files }
+      })
+      return { ok: true, results }
     },
     openFolder: async () => ({ ok: true }),
     saveAs: async (args) => {
@@ -119,6 +204,13 @@ function fakeDesktop() {
     writes,
     saveAs,
     allowed,
+    ledger,
+    trashCalls,
+    bin,
+    fileState,
+    setExists: (v: boolean) => {
+      exists = v
+    },
     answer: (a: string | null) => {
       dialogAnswer = a
     },
@@ -132,6 +224,13 @@ const realDev = getProvider('dev')
 const takeOf = (id: string) => useRuns.getState().takes.find((t) => t.id === id)!
 let desk: ReturnType<typeof fakeDesktop>
 let prov: ReturnType<typeof fakeProvider>
+
+/** Wire a take into f1 ('save') without copying it (the store only, like a wire loaded with the project). */
+const wire = (takeId: string) => void useProject.getState().linkFolder('f1', 'save', [takeId])
+/** Let the folder lock, the fake bridge and the toasts settle. */
+const settle = () => vi.advanceTimersByTimeAsync(20)
+const lastToast = (re: RegExp) => [...useUI.getState().toasts].reverse().find((t) => re.test(t.text))
+const folderTakes = () => useProject.getState().project.folders![0].takes ?? []
 
 /** Run a scene until its take is completed (and every save after it ran). */
 async function runToCompletion(sceneId: string): Promise<string> {
@@ -155,10 +254,12 @@ beforeEach(() => {
   useProject.getState().loadProject(project())
   useProject.temporal.getState().clear()
   useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
-  useDownloadPrefs.setState({ withPrompt: true, askWhere: true, autoDownload: false, folderName: null })
+  useDownloadPrefs.setState({ withPrompt: true, askWhere: true, autoDownload: false, folderName: null, folderUnlinkTrash: true })
+  useUI.setState({ toasts: [], selectedIds: [], selectedEdgeIds: [] })
 })
 afterEach(() => {
   markWaiting('f1', waitingTakes('f1'), false)
+  markTrashWaiting('f1', trashWaitingTakes('f1'), false)
   useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
   vi.advanceTimersByTime(250)
   vi.useRealTimers()
@@ -262,6 +363,7 @@ describe('take → folder (lưu)', () => {
 
   it('an explicit save writes again; a folder node removed from the canvas comes back with Undo', async () => {
     const id = await runToCompletion('s1')
+    wire(id)
     expect(await saveTakeToFolder(id, 'f1')).toBe(true)
     expect(await saveTakeToFolder(id, 'f1')).toBe(true)
     expect(desk.writes).toHaveLength(2)
@@ -398,6 +500,7 @@ describe('saves that wait for the folder', () => {
 
   it('a save is noted as waiting while it is written (an app closed in the middle writes it again later)', async () => {
     const id = await runToCompletion('s1')
+    wire(id)
     let during: string[] = []
     const write = desk.bridge.writeToFolder
     desk.bridge.writeToFolder = async (args) => {
@@ -415,6 +518,7 @@ describe('saves that wait for the folder', () => {
 
   it('the node checking its folder while a save is being written does not write it a second time', async () => {
     const id = await runToCompletion('s1')
+    wire(id)
     let release: () => void = () => undefined
     const gate = new Promise<void>((r) => (release = r))
     const write = desk.bridge.writeToFolder
@@ -440,6 +544,7 @@ describe('saves that wait for the folder', () => {
 
   it('another problem (disk full) is said at once and not left waiting', async () => {
     const id = await runToCompletion('s1')
+    wire(id)
     const write = desk.bridge.writeToFolder
     desk.bridge.writeToFolder = async () => ({ ok: false, code: 'write-failed', message: 'Ổ đĩa đã đầy.' })
     try {
@@ -530,5 +635,496 @@ describe('stored folder state is repaired value by value', () => {
   it('the waiting list too', () => {
     expect(parseFolderWaiting({ f1: ['a', 'a', 1, 'b'], f2: 'x', f3: [] })).toEqual({ f1: ['a', 'b'] })
     expect(parseFolderWaiting(null)).toEqual({})
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (plan §3.2): only what the cut wire itself copied,
+// unchanged, goes to the Recycle Bin; Hoàn tác writes a new copy; never the auto-save wire's files, never a file that
+// was already there, never the last copy.
+describe('cutting a take → folder wire moves what it copied to the Recycle Bin', () => {
+  /** A finished take wired into f1 and copied by that wire; returns its id and the ledger group written. */
+  async function linkedAndCopied(sceneId = 's1') {
+    const id = await runToCompletion(sceneId)
+    linkTakesToFolder([id], 'f1')
+    await settle()
+    const group = desk.writes[desk.writes.length - 1]
+    expect(group.owner).toEqual({ folderId: 'f1', takeId: id, via: 'link' })
+    return { id, groupId: ownedGroups('f1', id)![0] }
+  }
+  const cut = (id: string) => cutEdge(edgeId('save', id, 'f1'))
+
+  it('click-cut: the copy and its prompt .txt go to the Recycle Bin, the video no longer counts as saved there', async () => {
+    const { id, groupId } = await linkedAndCopied()
+    expect(groupId).toMatch(/^[0-9a-f]{16}$/)
+    expect(wasSavedTo('f1', id)).toBe(true)
+    const saved = folderRuntime('f1').saved
+    expect(folderRuntime('f1').lastName).toBe('S01_T1 - Mở đầu.mp4')
+    cut(id)
+    expect(folderTakes()).toEqual([])
+    await settle()
+    expect(desk.trashCalls).toEqual([{ folderPath: 'D:\\Phim', folderId: 'f1', items: [{ takeId: id, groupIds: [groupId] }] }])
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    expect(wasSavedTo('f1', id)).toBe(false)
+    expect(folderRuntime('f1')).toMatchObject({ saved: saved - 1, lastName: null, trashing: false })
+    expect(ownedGroups('f1', id)).toBeNull() // dealt with: released
+    const t = lastToast(/Thùng rác/)!
+    expect(t.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim” và chuyển “S01_T1 - Mở đầu.mp4” và file prompt .txt vào Thùng rác.')
+    expect(t.action?.label).toBe('Hoàn tác')
+  })
+
+  it('Hoàn tác writes exactly one new copy (owned by the wire again); redo moves that copy too', async () => {
+    const { id } = await linkedAndCopied()
+    cut(id)
+    await settle()
+    lastToast(/Thùng rác/)!.action!.run() // Hoàn tác
+    expect(folderTakes()).toEqual([id])
+    await settle()
+    expect(desk.writes).toHaveLength(2)
+    expect(desk.writes[1].owner).toEqual({ folderId: 'f1', takeId: id, via: 'restore' })
+    expect(lastToast(/Đã lưu lại/)!.text).toBe('Đã lưu lại S01·T1 vào “Phim” (bản cũ vẫn nằm trong Thùng rác).')
+    const again = ownedGroups('f1', id)!
+    expect(again).toHaveLength(1)
+    redo()
+    await settle()
+    expect(desk.trashCalls).toHaveLength(2)
+    expect(desk.trashCalls[1].items).toEqual([{ takeId: id, groupIds: again }])
+    expect(desk.writes).toHaveLength(2)
+  })
+
+  it('Ctrl+Z of the wiring step moves only what that wiring copied (câu 9, điều 1)', async () => {
+    const { id, groupId } = await linkedAndCopied()
+    undo()
+    expect(folderTakes()).toEqual([])
+    await settle()
+    expect(desk.trashCalls.map((c) => c.items)).toEqual([[{ takeId: id, groupIds: [groupId] }]])
+    // redo brings the wire back: a new copy is written (the old one is in the Recycle Bin)
+    redo()
+    await settle()
+    expect(desk.writes).toHaveLength(2)
+    expect(desk.writes[1].owner?.via).toBe('restore')
+  })
+
+  it('"Lưu thêm bản nữa" while wired: both copies go ("2 bản")', async () => {
+    const { id } = await linkedAndCopied()
+    expect(await saveTakeToFolder(id, 'f1', { via: 'again' })).toBe(true)
+    expect(desk.writes[desk.writes.length - 1].owner?.via).toBe('again')
+    expect(ownedGroups('f1', id)).toHaveLength(2)
+    cut(id)
+    await settle()
+    expect(desk.trashCalls[0].items[0].groupIds).toHaveLength(2)
+    expect(lastToast(/Thùng rác/)!.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim” và chuyển 2 bản (4 file) vào Thùng rác.')
+  })
+
+  it('nothing is moved: setting off, auto-save wire, take still auto-saved there', async () => {
+    // setting off: the old wording, the record released (a wire made later never claims those files)
+    const a = await linkedAndCopied()
+    useDownloadPrefs.setState({ folderUnlinkTrash: false })
+    cut(a.id)
+    expect(lastToast(/vẫn còn/)!.text).toBe('Đã bỏ nối S01·T1 khỏi thư mục “Phim” (file đã lưu vẫn còn).')
+    await settle()
+    expect(ownedGroups('f1', a.id)).toBeNull()
+    useDownloadPrefs.setState({ folderUnlinkTrash: true })
+
+    // an auto-save wire (scene → folder) never moves files
+    linkScenesToFolder(['s2'], 'f1')
+    const b = await runToCompletion('s2')
+    expect(desk.writes[desk.writes.length - 1].owner).toEqual({ folderId: 'f1', takeId: b, via: 'autosave' })
+    cutEdge(edgeId('autosave', 's2', 'f1'))
+    await settle()
+
+    // the take's own wire cut while its scene still auto-saves there: kept
+    const c = await runToCompletion('s1')
+    linkTakesToFolder([c], 'f1')
+    await settle()
+    linkScenesToFolder(['s1'], 'f1')
+    cut(c)
+    await settle()
+    expect(lastToast(/vẫn tự lưu/)).toBeTruthy()
+    expect(desk.trashCalls).toEqual([])
+  })
+
+  it('never the last copy: SanoVids no longer has the video → the file in the folder is kept', async () => {
+    const { id } = await linkedAndCopied()
+    const take = useRuns.getState().takes.find((t) => t.id === id)!
+    media.delete(take.videoId!)
+    cut(id)
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+    expect(lastToast(/không còn bản video này/)).toBeTruthy()
+  })
+
+  it('an older desktop build (no trashSaved) or the web app: the old wording, no error', async () => {
+    const { id } = await linkedAndCopied()
+    delete (desk.bridge as { trashSaved?: unknown }).trashSaved
+    cut(id)
+    await settle()
+    expect(lastToast(/vẫn còn/)!.text).toBe('Đã bỏ nối S01·T1 khỏi thư mục “Phim” (file đã lưu vẫn còn).')
+    // web: no desktop bridge at all
+    useUI.setState({ toasts: [] })
+    wire(id)
+    ;(globalThis as { window?: unknown }).window = {}
+    cut(id)
+    await settle()
+    expect(lastToast(/vẫn còn/)).toBeTruthy()
+    expect(desk.trashCalls).toEqual([])
+  })
+
+  it('review example 1: auto-save copied T1, its wire cut, T1 wired (nothing copied) → Ctrl+Z or a cut keeps the file', async () => {
+    linkScenesToFolder(['s1'], 'f1')
+    const id = await runToCompletion('s1')
+    expect(desk.writes).toHaveLength(1)
+    cutEdge(edgeId('autosave', 's1', 'f1'))
+    await settle()
+    linkTakesToFolder([id], 'f1') // "đã có trong thư mục rồi": not copied
+    await settle()
+    expect(desk.writes).toHaveLength(1)
+    expect(ownedGroups('f1', id)).toEqual([])
+    undo()
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+    expect(lastToast(/có từ trước/)!.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim”. File trong thư mục có từ trước khi nối dây này nên được giữ.')
+    // the same with a cut
+    redo()
+    await settle()
+    cut(id)
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+  })
+
+  it('review example 2: wired with the setting off, cut, setting on, wired again (nothing copied) → kept', async () => {
+    useDownloadPrefs.setState({ folderUnlinkTrash: false })
+    const { id } = await linkedAndCopied()
+    cut(id)
+    await settle()
+    useDownloadPrefs.setState({ folderUnlinkTrash: true })
+    linkTakesToFolder([id], 'f1')
+    await settle()
+    expect(desk.writes).toHaveLength(1)
+    undo()
+    await settle()
+    redo()
+    await settle()
+    cut(id)
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+  })
+
+  it('a wire made by an older build (no record of what it wrote): nothing is moved, "lưu từ bản SanoVids cũ"', async () => {
+    const { id } = await linkedAndCopied()
+    releaseOwned('f1', id) // as if wired / saved before this version
+    cut(id)
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+    expect(lastToast(/bản SanoVids cũ/)).toBeTruthy()
+    expect(wasSavedTo('f1', id)).toBe(true)
+  })
+
+  it('what the main process found: changed / failed (Thử lại) / missing', async () => {
+    // edited after saving → kept, still counted as saved
+    const a = await linkedAndCopied()
+    desk.fileState.set('S01_T1 - Mở đầu.mp4', 'changed')
+    cut(a.id)
+    await settle()
+    expect(lastToast(/đã bị sửa/)!.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim”. Giữ lại “S01_T1 - Mở đầu.mp4” vì file đã bị sửa sau khi lưu.')
+    expect(wasSavedTo('f1', a.id)).toBe(true)
+    expect(ownedGroups('f1', a.id)).toBeNull()
+
+    // open in VLC → failed, kept with its record; "Thử lại" once it is closed
+    desk.fileState.clear()
+    const b = await linkedAndCopied('s2')
+    desk.fileState.set('S02_T1.mp4', 'failed')
+    cut(b.id)
+    await settle()
+    const failed = lastToast(/không chuyển được/)!
+    expect(failed.action?.label).toBe('Thử lại')
+    expect(ownedGroups('f1', b.id)).toEqual([b.groupId])
+    desk.fileState.delete('S02_T1.mp4')
+    failed.action!.run()
+    await settle()
+    expect(desk.bin).toContain('S02_T1.mp4')
+    expect(ownedGroups('f1', b.id)).toBeNull()
+
+    // renamed → missing
+    const c = await runToCompletion('s1')
+    linkTakesToFolder([c], 'f1')
+    await settle()
+    desk.fileState.set(desk.writes[desk.writes.length - 1].files[0].name, 'missing')
+    cut(c)
+    await settle()
+    expect(lastToast(/Không thấy file đã lưu/)).toBeTruthy()
+  })
+
+  it('the node now points at another folder: the files of the old one stay ("thư mục cũ")', async () => {
+    const { id } = await linkedAndCopied()
+    desk.pick('E:\\Phim B')
+    await chooseFolderPlace('f1')
+    cut(id)
+    await settle()
+    expect(desk.bin).toEqual([])
+    expect(lastToast(/thư mục cũ/)).toBeTruthy()
+    desk.pick(null)
+  })
+
+  it('"Lưu thêm bản nữa" from an old toast after the wire was cut writes nothing and says why', async () => {
+    linkScenesToFolder(['s1'], 'f1')
+    const id = await runToCompletion('s1') // auto-saved
+    linkTakesToFolder([id], 'f1') // already there: the toast offers another copy
+    const offer = lastToast(/đã có trong thư mục/)!
+    cutEdge(edgeId('autosave', 's1', 'f1'))
+    cut(id)
+    await settle()
+    const writes = desk.writes.length
+    offer.action!.run()
+    await settle()
+    expect(desk.writes).toHaveLength(writes)
+    expect(lastToast(/không còn nối với/)!.text).toBe('S01·T1 không còn nối với “Phim” — nối lại để lưu.')
+  })
+
+  it('bug A: a save waiting for its folder is not written once its wire was cut', async () => {
+    desk.allowed.clear()
+    useRuns.getState().enqueue(['s1'])
+    const id = useRuns.getState().takes[useRuns.getState().takes.length - 1].id
+    await vi.advanceTimersByTimeAsync(250)
+    linkTakesToFolder([id], 'f1')
+    prov.finish(id)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(waitingTakes('f1')).toEqual([id])
+    cut(id)
+    await settle()
+    expect(waitingTakes('f1')).toEqual([])
+    desk.allowed.add('D:\\Phim')
+    await refreshFolderNode('f1')
+    expect(desk.writes).toHaveLength(0)
+  })
+
+  it('bug B: a wire cut while its copy is being written takes that copy along (after the write)', async () => {
+    const id = await runToCompletion('s1')
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const write = desk.bridge.writeToFolder
+    desk.bridge.writeToFolder = async (args) => {
+      await gate
+      return write(args)
+    }
+    try {
+      linkTakesToFolder([id], 'f1')
+      await settle()
+      cut(id) // while writing
+      await settle()
+      expect(desk.trashCalls).toEqual([])
+      release()
+      await settle()
+    } finally {
+      desk.bridge.writeToFolder = write
+    }
+    expect(desk.writes).toHaveLength(1)
+    expect(desk.trashCalls).toHaveLength(1)
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    expect(wasSavedTo('f1', id)).toBe(false)
+  })
+
+  it('folder unreachable: the move waits, happens when the folder is back; wired again first → nothing waits', async () => {
+    const a = await linkedAndCopied()
+    desk.setExists(false)
+    cut(a.id)
+    await settle()
+    expect(trashWaitingTakes('f1')).toEqual([a.id])
+    expect(folderRuntime('f1').trashPending).toBe(1)
+    expect(lastToast(/khi thư mục có lại/)).toBeTruthy()
+    desk.setExists(true)
+    await refreshFolderNode('f1')
+    await settle()
+    expect(desk.trashCalls).toHaveLength(2)
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    expect(trashWaitingTakes('f1')).toEqual([])
+    expect(lastToast(/file chờ xoá/)!.text).toBe('Đã chuyển 2 file chờ xoá vào Thùng rác (thư mục “Phim”).')
+
+    // cut while away, then wired again before it is back: the pending move is dropped
+    const b = await linkedAndCopied('s2')
+    desk.setExists(false)
+    cut(b.id)
+    await settle()
+    expect(trashWaitingTakes('f1')).toEqual([b.id])
+    linkTakesToFolder([b.id], 'f1')
+    expect(trashWaitingTakes('f1')).toEqual([])
+    desk.setExists(true)
+    const calls = desk.trashCalls.length
+    await refreshFolderNode('f1')
+    await settle()
+    expect(desk.trashCalls).toHaveLength(calls)
+  })
+
+  it('deleting the video / the scene, removing the folder node or choosing another folder never moves files', async () => {
+    const a = await linkedAndCopied()
+    useRuns.getState().removeTakes([a.id])
+    await settle()
+    const b = await linkedAndCopied('s2')
+    removeFolderNode('f1')
+    await settle()
+    undo()
+    await settle()
+    useProject.getState().deleteItems({ sceneIds: ['s2'] })
+    await settle()
+    undo()
+    await settle()
+    useProject.getState().setFolderPlace('f1', { name: 'Phim', path: 'D:\\Phim' })
+    await settle()
+    expect(desk.trashCalls).toEqual([])
+    expect(folderTakes()).toEqual([b.id])
+  })
+
+  it('Delete of 450 wires into one folder: 3 calls (200 + 200 + 50), after one confirmation', async () => {
+    const takes: Take[] = []
+    for (let i = 0; i < 450; i++) {
+      const videoId = `vid_bulk_${i}`
+      media.set(videoId, new Blob(['V'], { type: 'video/mp4' }))
+      takes.push({
+        id: `tk_bulk_${i}`,
+        sceneId: 's1',
+        number: i + 1,
+        status: 'completed',
+        progress: 100,
+        createdAt: 1,
+        startedAt: 1,
+        finishedAt: 2,
+        promptSnapshot: 'p',
+        rawPromptSnapshot: 'p',
+        refsSnapshot: [],
+        videoRefsSnapshot: [],
+        settings: { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' },
+        cost: 0,
+        starred: false,
+        posterId: null,
+        videoId,
+        error: null,
+        position: null,
+        provider: 'dev',
+      })
+    }
+    useRuns.getState().loadRuns({ takes, credits: 1000, spent: 0 })
+    const ids = takes.map((t) => t.id)
+    useProject.getState().linkFolder('f1', 'save', ids)
+    ids.forEach((id, i) => setOwned('f1', id, [(0xa000 + i).toString(16).padStart(16, '0')]))
+    const asked: string[] = []
+    Object.assign((globalThis as { window?: object }).window!, { confirm: (q: string) => (asked.push(q), true) })
+    useUI.setState({ selectedIds: [], selectedEdgeIds: ids.map((id) => edgeId('save', id, 'f1')) })
+    deleteSelection()
+    expect(asked).toEqual(['Bỏ nối 450 video khỏi thư mục “Phim” và chuyển các file SanoVids đã lưu của chúng vào Thùng rác của Windows?'])
+    expect(folderTakes()).toEqual([])
+    await settle()
+    expect(desk.trashCalls.map((c) => c.items.length)).toEqual([200, 200, 50])
+    // groups the fake ledger does not know: kept, said in one summary toast
+    expect(lastToast(/lưu từ bản cũ/)).toBeTruthy()
+  })
+
+  it('Delete of 5 wires: Cancel at the question changes nothing', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const { id } = await linkedAndCopied(i % 2 ? 's2' : 's1')
+      ids.push(id)
+    }
+    const before = useProject.getState().project
+    Object.assign((globalThis as { window?: object }).window!, { confirm: () => false })
+    useUI.setState({ selectedIds: [], selectedEdgeIds: ids.map((id) => edgeId('save', id, 'f1')) })
+    deleteSelection()
+    await settle()
+    expect(useProject.getState().project).toBe(before)
+    expect(desk.trashCalls).toEqual([])
+    expect(ids.every((id) => ownedGroups('f1', id)?.length === 1)).toBe(true)
+  })
+
+  it('the video moved but its .txt could not follow: "Thử lại" moves the .txt alone, and Hoàn tác still writes a copy', async () => {
+    const { id, groupId } = await linkedAndCopied()
+    desk.fileState.set('S01_T1 - Mở đầu.txt', 'failed')
+    cut(id)
+    await settle()
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4'])
+    const partial = lastToast(/chưa chuyển được/)!
+    expect(partial.text).toMatch(/^Đã bỏ nối S01·T1 khỏi “Phim” và chuyển “S01_T1 - Mở đầu.mp4” vào Thùng rác\. Còn 1 file chưa chuyển được/)
+    expect(partial.action?.label).toBe('Thử lại')
+    expect(ownedGroups('f1', id)).toEqual([groupId]) // kept for the retry
+    desk.fileState.clear()
+    partial.action!.run()
+    await settle()
+    // main answers the companion alone (its primary went before): that is the .txt moved, not "không thấy file"
+    expect(desk.trashCalls[1].items).toEqual([{ takeId: id, groupIds: [groupId] }])
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    expect(lastToast(/Không thấy file đã lưu/)).toBeUndefined()
+    expect(lastToast(/S01_T1 - Mở đầu\.txt/)!.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim” và chuyển “S01_T1 - Mở đầu.txt” vào Thùng rác.')
+    expect(ownedGroups('f1', id)).toBeNull()
+    // the cut moved the video: bringing the wire back writes a new copy
+    undo()
+    await settle()
+    expect(folderTakes()).toEqual([id])
+    expect(desk.writes).toHaveLength(2)
+    expect(desk.writes[1].owner?.via).toBe('restore')
+  })
+
+  it('a OneDrive online-only file is kept without "Thử lại" (T12), and its record is released', async () => {
+    const { id } = await linkedAndCopied()
+    desk.fileState.set('S01_T1 - Mở đầu.mp4', 'cloud')
+    cut(id)
+    await settle()
+    expect(desk.bin).toEqual([])
+    const t = lastToast(/OneDrive/)!
+    expect(t.text).toBe('Đã bỏ nối S01·T1 khỏi “Phim”. Giữ “S01_T1 - Mở đầu.mp4” vì file đang chỉ có trên OneDrive (chưa tải về máy).')
+    expect(t.action?.label).toBe('Hoàn tác')
+    expect(wasSavedTo('f1', id)).toBe(true)
+    expect(ownedGroups('f1', id)).toBeNull()
+  })
+
+  it('afterSaveUnlinked keeps the record of pairs whose files could not be moved, releases the others', async () => {
+    const { id } = await linkedAndCopied()
+    useProject.getState().unlinkFolder('f1', 'save', id)
+    desk.fileState.set('S01_T1 - Mở đầu.mp4', 'failed')
+    const out = await afterSaveUnlinked([{ folderId: 'f1', takeId: id }], { source: 'cut', toast: 'none' })
+    expect(out.map((o) => o.kind)).toEqual(['failed'])
+    expect(ownedGroups('f1', id)).toHaveLength(1)
+  })
+})
+
+describe('stored ownership record and "chờ xoá" list are repaired value by value', () => {
+  it('bdp:folder-link-owned', () => {
+    const g = '0123456789abcdef'
+    expect(
+      parseFolderOwned({
+        'f1:t1': [g, g, 'nothex', 7, 'ABCDEF0123456789'],
+        'f1:t2': [],
+        nokey: [g],
+        'f1:t3': 'x',
+        'a:b:c': [g],
+        '__proto__:x': [g],
+      }),
+    ).toEqual({ 'f1:t1': [g, 'ABCDEF0123456789'], 'f1:t2': [] })
+    // at most 20 groups per pair (the most recent)
+    const many = Array.from({ length: 25 }, (_, i) => i.toString(16).padStart(16, '0'))
+    expect(parseFolderOwned({ 'f:t': many })['f:t']).toEqual(many.slice(-20))
+    expect(parseFolderOwned(null)).toEqual({})
+    expect(parseFolderOwned([1])).toEqual({})
+  })
+
+  it('bdp:folder-trash-waiting (30 days at most)', () => {
+    const now = 1_800_000_000_000
+    const day = 24 * 3600 * 1000
+    expect(
+      parseFolderTrashWaiting(
+        {
+          f1: [
+            { takeId: 't1', at: now - day },
+            { takeId: 't1', at: now },
+            { takeId: 't2', at: now - 31 * day },
+            { takeId: 't3', at: 'x' },
+            { takeId: '', at: now },
+            'bad',
+            { takeId: 't4', at: now + 3_600_000 },
+          ],
+          f2: 'x',
+          f3: [],
+        },
+        now,
+      ),
+    ).toEqual({ f1: [{ takeId: 't1', at: now - day }] })
+    expect(parseFolderTrashWaiting(null, now)).toEqual({})
   })
 })

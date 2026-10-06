@@ -3,8 +3,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent
 import { useShallow } from 'zustand/react/shallow'
 import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../actions'
 import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
-import { costOf, MODELS, settingsLabel } from '../../core/models'
-import { runBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
+import { costOf, foreignModelBadge, foreignModelOption, MODELS, settingsLabel } from '../../core/models'
+import { foreignModelReason, runBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
 import type { Asset, Scene } from '../../core/types'
 import { CREDIT_HINT, CREDIT_MARK, CREDIT_SOURCE_LABEL, formatCredits, type CreditKind } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
@@ -253,7 +253,7 @@ function TableHeader({ scenes, selected, creditKind }: { scenes: Scene[]; select
                 >
                   <span className="vw-menu-main">{p.name}</span>
                   <span className="vw-menu-sub" title={costTitle(costOf(p), creditKind, 'Mỗi lần chạy · ')}>
-                    {MODELS[p.model].short} · {settingsLabel(p)} ·{' '}
+                    {p.foreignModel ? foreignModelOption(p.foreignModel) : `${MODELS[p.model].short} · ${settingsLabel(p)}`} ·{' '}
                     <span className={`vw-cost-text ${creditTone(creditKind)}`}>{formatCredits(costOf(p), creditKind, { short: true })}</span>
                     {CREDIT_MARK[creditKind] && <span className="vw-demo-mark">{CREDIT_MARK[creditKind]}</span>}
                   </span>
@@ -624,10 +624,18 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, credi
         {scene.prompt.trim() ? <MentionText text={scene.prompt.replace(/\s+/g, ' ')} max={120} /> : <span className="vw-faint-cell">Chưa có prompt</span>}
       </span>
       <span className="vw-cell-settings">
-        <span className="vw-settings-line">
-          <i className="vw-model-dot" style={{ background: spec.color }} title={spec.name} />
-          {spec.short} · {settingsLabel(scene.settings)}
-        </span>
+        {scene.foreignModel ? (
+          // a newer build's model: that model (blocked), not the stand-in settings
+          <span className="vw-settings-line" title={foreignModelReason(scene.foreignModel)}>
+            <i className="vw-model-dot" style={{ background: 'var(--warn)' }} />
+            {foreignModelBadge(scene.foreignModel)}
+          </span>
+        ) : (
+          <span className="vw-settings-line">
+            <i className="vw-model-dot" style={{ background: spec.color }} title={spec.name} />
+            {spec.short} · {settingsLabel(scene.settings)}
+          </span>
+        )}
         {preset && <span className="vw-preset">{preset.name}</span>}
       </span>
       <span className={`vw-r vw-cell-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>

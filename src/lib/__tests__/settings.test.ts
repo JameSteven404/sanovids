@@ -44,7 +44,7 @@ function memoryStorage(initial: Record<string, string> = {}) {
 /** A device where the user changed nearly everything. */
 const CUSTOM = {
   theme: 'light',
-  downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}' },
+  downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}', folderUnlinkTrash: false },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
   canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
@@ -57,7 +57,11 @@ describe('stored prefs are validated on read', () => {
     expect(parseDownloadPrefs(null)).toEqual(DEFAULT_DOWNLOAD_PREFS)
     expect(parseDownloadPrefs('not json')).toEqual(DEFAULT_DOWNLOAD_PREFS)
     expect(parseDownloadPrefs('[true]')).toEqual(DEFAULT_DOWNLOAD_PREFS)
-    expect(DEFAULT_DOWNLOAD_PREFS).toMatchObject({ askWhere: true, withPrompt: true, autoDownload: false, zipPrompts: true, nameTemplate: DEFAULT_NAME_TEMPLATE })
+    expect(DEFAULT_DOWNLOAD_PREFS).toMatchObject({ askWhere: true, withPrompt: true, autoDownload: false, zipPrompts: true, nameTemplate: DEFAULT_NAME_TEMPLATE, folderUnlinkTrash: true })
+    // "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác": on by default, only a boolean is taken
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":false}').folderUnlinkTrash).toBe(false)
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":"no"}').folderUnlinkTrash).toBe(true)
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":0}').folderUnlinkTrash).toBe(true)
     // older versions stored only the first four keys
     expect(parseDownloadPrefs('{"autoDownload":true,"folderName":"Phim","withPrompt":false}')).toEqual({
       ...DEFAULT_DOWNLOAD_PREFS,
@@ -152,6 +156,11 @@ describe('settings file (export / import)', () => {
     expect(sanitizeSettings({ updates: { autoDownload: 'no' } })).toEqual({ patch: {}, accepted: 0, rejected: ['updates.autoDownload'] })
     expect(sanitizeSettings({ updates: { autoDownload: false, channel: 'beta' } })).toEqual({ patch: { updates: { autoDownload: false } }, accepted: 1, rejected: [] })
     expect(sanitizeSettings({ theme: 'pink', ui: 'all' }).rejected).toEqual(['theme', 'ui'])
+    // the Recycle Bin on unlinking a folder wire: a boolean only
+    expect(sanitizeSettings({ downloads: { folderUnlinkTrash: false } })).toEqual({ patch: { downloads: { folderUnlinkTrash: false } }, accepted: 1, rejected: [] })
+    for (const bad of ['false', 0, null, 'yes']) {
+      expect(sanitizeSettings({ downloads: { folderUnlinkTrash: bad } }), String(bad)).toEqual({ patch: {}, accepted: 0, rejected: ['downloads.folderUnlinkTrash'] })
+    }
   })
 
   it('the editor on a scene card and the big-project optimisations: valid values only, never "fixed"', () => {
@@ -198,7 +207,7 @@ describe('settings file (export / import)', () => {
 describe('apply / reset / restore', () => {
   let storage: ReturnType<typeof memoryStorage>
   beforeEach(() => {
-    storage = memoryStorage({ 'bdp:hint:storyboard-reorder': '1', 'bdp:pref:leftW': '300' })
+    storage = memoryStorage({ 'bdp:hint:storyboard-reorder': '1', 'bdp:hint:folder-trash': '1', 'bdp:pref:leftW': '300' })
     vi.stubGlobal('localStorage', storage)
     applySettings(DEFAULT_SETTINGS)
     useProviderPrefs.getState().setProvider('dev')
@@ -217,7 +226,7 @@ describe('apply / reset / restore', () => {
     expect(useCanvasPrefs.getState()).toMatchObject({ animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' })
     expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual(CUSTOM.canvas)
     expect(useRuns.getState().mock.concurrency).toBe(1)
-    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!)).toMatchObject({ nameTemplate: '{take} - {scene}', zipPrompts: false })
+    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!)).toMatchObject({ nameTemplate: '{take} - {scene}', zipPrompts: false, folderUnlinkTrash: false })
     expect(storage.data.get('bdp:pref:toastTime')).toBe('"long"')
     expect(storage.data.get('bdp:pref:minimap')).toBe('false')
     expect(storage.data.get('bdp:pref:theme')).toBe('"light"')
@@ -235,6 +244,8 @@ describe('apply / reset / restore', () => {
     expect(changedSettingsCount()).toBe(0)
     expect(useProviderPrefs.getState().provider).toBe('dev')
     expect(storage.data.has('bdp:hint:storyboard-reorder')).toBe(false)
+    expect(storage.data.has('bdp:hint:folder-trash')).toBe(false) // "Tắt ở Cài đặt → Tải video." shown again
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(true)
     // the chosen download folder is a place, not a setting: kept
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
     expect(storage.data.get('bdp:pref:leftW')).toBe('300') // panel widths: resetPanelLayout, not this
@@ -254,6 +265,18 @@ describe('apply / reset / restore', () => {
     applySettings({ canvas: { nodeEditor: 'off', bigProject: 'off', editorWidth: 400 } })
     expect(changedSettingsCount()).toBe(3)
     expect(currentSettings().canvas).toEqual({ ...DEFAULT_SETTINGS.canvas, nodeEditor: 'off', bigProject: 'off', editorWidth: 400 })
+  })
+
+  it('changedSettingsCount counts "chuyển file vào Thùng rác" once; Hoàn tác of a reset brings it back', () => {
+    expect(changedSettingsCount()).toBe(0)
+    applySettings({ downloads: { folderUnlinkTrash: false } })
+    expect(changedSettingsCount()).toBe(1)
+    expect(currentSettings().downloads.folderUnlinkTrash).toBe(false)
+    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!).folderUnlinkTrash).toBe(false)
+    const before = resetAllSettings()
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(true)
+    restoreSettings(before)
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(false)
   })
 
   it('changedSettingsCount counts the app-update pref', () => {

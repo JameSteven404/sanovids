@@ -18,6 +18,10 @@ import {
   buildLabel,
   formatThumbprint,
   officialThumbprintLine,
+  PLACEMENT_KEYWORDS,
+  PLACEMENT_PORTABLE_TEXT,
+  PLACEMENT_TEMP_TEXT,
+  placementNote,
   signatureView,
   thumbprintLine,
   thumbprintRows,
@@ -210,5 +214,29 @@ describe('versionLine', () => {
     expect(versionLine('0.5.0', 'dev', false)).toBe('Phiên bản 0.5.0 · Bản web')
     // the development-mode simulation of an installer build in the browser
     expect(buildLabel('installer', false)).toBe('Bản cài')
+  })
+})
+
+describe('placementNote (Portable / temp-copy reminder in Ứng dụng and Giới thiệu)', () => {
+  it('Portable and a copy in the temp folder are told to install the Setup build; others get nothing', () => {
+    expect(placementNote('portable')).toEqual({ kind: 'portable', text: PLACEMENT_PORTABLE_TEXT, action: 'Mở trang tải về' })
+    expect(PLACEMENT_PORTABLE_TEXT).toBe('Bản Portable: không có icon ở Desktop / Start và không tự cập nhật. Muốn có icon và tự cập nhật, hãy cài bản Setup.')
+    expect(placementNote('temp-copy')).toEqual({ kind: 'temp-copy', text: PLACEMENT_TEMP_TEXT, action: 'Mở trang tải về' })
+    expect(PLACEMENT_TEMP_TEXT).toBe(
+      'SanoVids đang chạy từ thư mục tạm của Windows — thư mục này có thể bị xoá bất cứ lúc nào. Hãy cài bản Setup để có icon và tự cập nhật.',
+    )
+    for (const k of ['installer', 'dev', 'unknown', null, undefined] as const) expect(placementNote(k), String(k)).toBeNull()
+  })
+
+  it("without a placement answer the updater's own kind still tells a Portable build; a known placement wins", () => {
+    expect(placementNote(null, 'portable')?.kind).toBe('portable')
+    expect(placementNote('unknown', 'portable')?.kind).toBe('portable')
+    expect(placementNote('temp-copy', 'portable')?.kind).toBe('temp-copy')
+    expect(placementNote('installer', 'portable')).toBeNull()
+    expect(placementNote(null, 'installer')).toBeNull()
+  })
+
+  it('search words', () => {
+    for (const w of ['icon', 'lối tắt', 'shortcut', 'desktop', 'start menu', 'ghim', 'portable', 'setup']) expect(PLACEMENT_KEYWORDS).toContain(w)
   })
 })

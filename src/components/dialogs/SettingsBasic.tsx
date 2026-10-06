@@ -1,7 +1,8 @@
 // Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data,
 // about (version, author, code signature). Each row subscribes to its own pref only (the dialog never re-renders as a
 // whole) and applies at once; the stores save and validate the values (lib/theme, lib/downloads, lib/playback,
-// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature.
+// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature;
+// the Portable / temp-copy reminder (AppBlock, AboutBlock): lib/appPlacement + aboutModel placementNote.
 import {
   AppWindow,
   CircleArrowUp,
@@ -29,6 +30,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { version as APP_VERSION } from '../../../package.json'
+import { FOLDER_UNLINK_TRASH_WEB_NOTE } from '../../core/folderTrash'
 import type { EdgeMode } from '../../core/types'
 import {
   ABOUT_AUTHOR_LINE,
@@ -41,10 +43,12 @@ import {
   ABOUT_OPEN_SOURCE,
   ABOUT_PARTNER_LINE,
   ABOUT_TITLE,
+  placementNote,
   signatureView,
   thumbprintRows,
   versionLine,
 } from '../../lib/aboutModel'
+import { loadAppPlacement, useAppPlacement } from '../../lib/appPlacement'
 import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
 import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, type BigProjectMode, type NodeEditorMode } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
@@ -117,6 +121,31 @@ export function WithPromptSetting({ label, hint }: RowProps) {
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
   const set = useDownloadPrefs((s) => s.set)
   return <Toggle checked={withPrompt} onChange={(v) => set({ withPrompt: v })} label={label} hint={hint} />
+}
+
+/** "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (desktop app only: shown off and disabled in a browser). */
+export function FolderUnlinkTrashSetting({ label, hint }: RowProps) {
+  const on = useDownloadPrefs((s) => s.folderUnlinkTrash)
+  const set = useDownloadPrefs((s) => s.set)
+  const desktop = !!desktopFiles()
+  return (
+    <Toggle
+      // A browser has no Recycle Bin: off and disabled there; the saved pref is untouched.
+      checked={desktop ? on : false}
+      onChange={(v) => set({ folderUnlinkTrash: v })}
+      label={label}
+      disabled={!desktop}
+      hint={
+        desktop ? (
+          hint
+        ) : (
+          <>
+            {hint} {FOLDER_UNLINK_TRASH_WEB_NOTE}
+          </>
+        )
+      }
+    />
+  )
 }
 
 export function AutoDownloadSetting({ label, hint }: RowProps) {
@@ -495,6 +524,38 @@ export function UpdateCheckSetting({ label, hint }: RowProps) {
   )
 }
 
+// ---------------- Portable / temp-copy reminder (Ứng dụng, Giới thiệu) ----------------
+/** "Install the Setup build" when running a Portable build or a copy in Windows' temp folder; nothing otherwise. */
+function PlacementNoteView() {
+  const placement = useAppPlacement((s) => s.placement)
+  const updateKind = useUpdates((s) => s.state.kind)
+  const [opening, setOpening] = useState(false)
+  useEffect(() => {
+    void loadAppPlacement()
+  }, [])
+  const note = placementNote(placement?.kind ?? null, updateKind)
+  if (!note) return null
+  const openPage = async () => {
+    if (opening) return
+    setOpening(true)
+    try {
+      const res = await openReleasePage()
+      if (!res.ok) toast(res.message, { tone: 'error' })
+    } finally {
+      setOpening(false)
+    }
+  }
+  return (
+    <div className="dg-callout warn dg-pending" role="note">
+      {note.kind === 'temp-copy' ? <TriangleAlert size={15} /> : <MonitorDown size={15} />}
+      <div>{note.text}</div>
+      <button type="button" className="btn btn-sm" disabled={opening} onClick={() => void openPage()} title={ABOUT_OPEN_PAGE_TITLE}>
+        {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {note.action}
+      </button>
+    </div>
+  )
+}
+
 // ---------------- Ứng dụng (block) ----------------
 export function AppBlock() {
   const { canInstall, installed, desktop, promptInstall } = usePwaInstall()
@@ -543,6 +604,7 @@ export function AppBlock() {
           </button>
         )}
       </div>
+      <PlacementNoteView />
       {!canInstall && !installed && !desktop && (
         <div className="dg-field-hint">
           Chrome / Edge / Brave: bấm biểu tượng cài đặt trên thanh địa chỉ, hoặc menu ⋮ → “Cài đặt SanoVids”. Trang phải được mở qua http(s).
@@ -602,6 +664,7 @@ export function AboutBlock() {
           <small>{versionLine(version, kind, desktop)}</small>
         </span>
       </div>
+      <PlacementNoteView />
       <div className="dg-about-lines">
         <p className="dg-about-author">{ABOUT_AUTHOR_LINE}</p>
         <p>{ABOUT_PARTNER_LINE}</p>

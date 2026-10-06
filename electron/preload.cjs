@@ -5,7 +5,8 @@
 // files: the "Lưu video" dialog and the folder nodes (main writes only into folders the user picked).
 // updates: the auto-updater (electron/updater.cjs) — check / download / install / open the fixed release page; the page
 // never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
-// app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses).
+// app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses),
+// and where the app runs from (installer / portable / temp-copy / dev — a kind, never a path).
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -23,6 +24,13 @@ const fileList = (files) =>
         text: f && typeof f.text === 'string' ? f.text : undefined,
       }))
     : []
+/** Owner of a folder write { folderId, takeId, via } (strings; main checks them and records the group), or undefined. */
+const saveOwner = (o) => (o && typeof o === 'object' ? { folderId: str(o.folderId), takeId: str(o.takeId), via: str(o.via) } : undefined)
+/** [{ takeId, groupIds }] for files:trashSaved — capped above main's limits (200 / 20), so main refuses a bigger batch. */
+const trashItems = (items) =>
+  Array.isArray(items)
+    ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
+    : []
 
 contextBridge.exposeInMainWorld('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
@@ -32,6 +40,8 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
   app: {
     /** → { status: 'signed'|'unsigned'|'other-signer'|'tampered'|'unknown', packaged, signer?, thumbprint? } */
     signature: () => ipcRenderer.invoke('app:signature'),
+    /** → { kind: 'installer'|'portable'|'temp-copy'|'dev' } — where this SanoVids runs from (no path). */
+    placement: () => ipcRenderer.invoke('app:placement'),
   },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */
@@ -62,8 +72,18 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     pickFolder: () => ipcRenderer.invoke('files:pickFolder'),
     /** { folderPath } → { ok: true, allowed, exists } */
     folderStatus: (args) => ipcRenderer.invoke('files:folderStatus', { folderPath: str(args && args.folderPath) }),
-    /** { folderPath, files: [{ name, bytes | text }] } → { ok: true, names } — never overwrites (" (2)"). */
-    writeToFolder: (args) => ipcRenderer.invoke('files:writeToFolder', { folderPath: str(args && args.folderPath), files: fileList(args && args.files) }),
+    /**
+     * { folderPath, files: [{ name, bytes | text }], owner?: { folderId, takeId, via } } → { ok: true, names, recorded? }
+     * — never overwrites (" (2)"); with an owner, main records the group (`recorded`: its id, or false).
+     */
+    writeToFolder: (args) =>
+      ipcRenderer.invoke('files:writeToFolder', { folderPath: str(args && args.folderPath), files: fileList(args && args.files), owner: saveOwner(args && args.owner) }),
+    /**
+     * { folderPath, folderId, items: [{ takeId, groupIds }] } → { ok: true, results } — moves to the Recycle Bin only the
+     * files main recorded for those groups and that are unchanged (never deletes; the page names no file).
+     */
+    trashSaved: (args) =>
+      ipcRenderer.invoke('files:trashSaved', { folderPath: str(args && args.folderPath), folderId: str(args && args.folderId), items: trashItems(args && args.items) }),
     /** { folderPath } → shows the (allowlisted) folder in Explorer / Finder. */
     openFolder: (args) => ipcRenderer.invoke('files:openFolder', { folderPath: str(args && args.folderPath) }),
     /** { suggestedName, title?, files } → native "Save as" for files[0], companions next to it → { ok: true, path, names } | { ok: false, canceled } */

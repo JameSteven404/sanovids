@@ -1,7 +1,7 @@
 import { Check, ChevronDown, FlaskConical, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { MODELS, costOf, modeLabel, settingsLabel } from '../../core/models'
+import { MODELS, costOf, foreignModelBadge, foreignModelOption, modeLabel, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 import { CREDIT_MARK, formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { useCreditKind } from '../../store/credits'
@@ -22,6 +22,9 @@ const presetUsageSelector = (s: ProjectState) => {
 }
 
 /** `focusName`: the preset was just created — focus and select its name so it can be typed right away. */
+/** Value of the model picker's stand-in entry for a preset of a newer build's model (Preset.foreignModel). */
+const FOREIGN_MODEL = '__foreign__'
+
 function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolean }) {
   const [name, setName] = useState(preset.name)
   useEffect(() => setName(preset.name), [preset.name])
@@ -57,7 +60,17 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
       </label>
       <label className="field">
         <span>Model</span>
-        <select className="select sb-input-sm" value={preset.model} onChange={(e) => update({ model: e.target.value as ModelId })}>
+        <select
+          className="select sb-input-sm"
+          value={preset.foreignModel ? FOREIGN_MODEL : preset.model}
+          onChange={(e) => e.target.value !== FOREIGN_MODEL && update({ model: e.target.value as ModelId })}
+        >
+          {/* a preset of a newer build's model: that model, selected, until a model of this build is picked */}
+          {preset.foreignModel && (
+            <option value={FOREIGN_MODEL} disabled>
+              {foreignModelOption(preset.foreignModel)}
+            </option>
+          )}
           {Object.values(MODELS).map((m) => (
             <option key={m.id} value={m.id}>
               {m.name}
@@ -166,9 +179,15 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
         <div className="sb-preset-main">
           <div className="sb-preset-top">
             <span className="sb-preset-name">{preset.name}</span>
-            <span className="sb-model" style={{ '--sb-m': spec.color } as CSSProperties} title={spec.name}>
-              {spec.short}
-            </span>
+            {preset.foreignModel ? (
+              <span className="sb-model is-foreign" title={`Model của SanoVids bản mới hơn (${preset.foreignModel}) — cảnh dùng preset này bị chặn chạy cho tới khi cập nhật hoặc chọn lại model.`}>
+                {foreignModelBadge(preset.foreignModel)}
+              </span>
+            ) : (
+              <span className="sb-model" style={{ '--sb-m': spec.color } as CSSProperties} title={spec.name}>
+                {spec.short}
+              </span>
+            )}
             {active && (
               <span className="sb-preset-using" title="Các cảnh đang chọn dùng preset này">
                 <Check size={11} />
@@ -245,7 +264,9 @@ export function PresetsPanel({
     const src: Partial<VideoSettings> = from?.settings ?? st.project.presets[0] ?? {}
     // Copy only the video settings (never the id/name of another preset).
     const base: Partial<VideoSettings> = { model: src.model, mode: src.mode, duration: src.duration, resolution: src.resolution, ratio: src.ratio }
-    const id = st.addPreset({ ...base, name: from ? 'Preset từ cảnh' : 'Preset mới' })
+    // A scene on a newer build's model hands its marker over: scenes given this preset stay blocked like it.
+    const marker = from?.foreignModel ? { foreignModel: from.foreignModel, foreignSettings: from.foreignSettings } : {}
+    const id = st.addPreset({ ...base, ...marker, name: from ? 'Preset từ cảnh' : 'Preset mới' })
     // The header button also shows while the section is collapsed: open it so the new preset's editor is visible.
     onExpand()
     setFresh(id)

@@ -13,8 +13,12 @@
 //   versionLine(version, kind, desktop)   'Phiên bản 0.5.0 · Bản cài'.
 //   signatureView(sig)              tone, title and detail of the signature row.
 //   borrowsAuthorName(signer)       a certificate name that copies the author's (an impostor when not pinned).
+//   placementNote(kind, updateKind) the reminder of a Portable build / a copy left in Windows' temp folder (no Desktop /
+//                                   Start icon, no auto-update): shown in "Ứng dụng" and "Giới thiệu" (null = none).
+//   PLACEMENT_KEYWORDS              search words of that reminder (Settings group "Ứng dụng").
 // Only `sanovids` is imported from package.json (a named import keeps `build` and the rest out of the bundle).
 import { sanovids } from '../../package.json'
+import type { AppPlacementKind } from './appPlacement'
 import type { AppSignature } from './appSignature'
 import { UPDATE_RELEASES_PAGE_LABEL, type UpdateKind } from './updateTypes'
 
@@ -157,4 +161,32 @@ export function signatureView(sig: AppSignature | null): SignatureView {
         detail: 'Windows không cho đọc chữ ký số lúc này (PowerShell bị chặn hoặc quá lâu). Bản chính thức luôn được ký số bởi Nguyễn Giang Minh (Jame Steven).',
       }
   }
+}
+
+// ---------------- where the app runs from (lib/appPlacement) ----------------
+/** Search words of the Portable / temp-copy reminder (Settings group "Ứng dụng"). */
+export const PLACEMENT_KEYWORDS = 'icon lối tắt shortcut desktop start menu ghim portable cài đặt setup'
+
+export interface PlacementNote {
+  kind: 'portable' | 'temp-copy'
+  text: string
+  /** The button: the official download page (lib/updates openReleasePage). */
+  action: string
+}
+
+export const PLACEMENT_PORTABLE_TEXT =
+  'Bản Portable: không có icon ở Desktop / Start và không tự cập nhật. Muốn có icon và tự cập nhật, hãy cài bản Setup.'
+export const PLACEMENT_TEMP_TEXT =
+  'SanoVids đang chạy từ thư mục tạm của Windows — thư mục này có thể bị xoá bất cứ lúc nào. Hãy cài bản Setup để có icon và tự cập nhật.'
+
+/**
+ * The reminder to install the Setup build: a Portable build, or a copy running from Windows' temp folder (what an
+ * interrupted Setup / Portable run leaves behind). `kind`: lib/appPlacement (null = not known yet, 'unknown' = could
+ * not be told); without it, the updater's own kind still tells a Portable build. null = nothing to say.
+ */
+export function placementNote(kind: AppPlacementKind | 'unknown' | null | undefined, updateKind?: UpdateKind): PlacementNote | null {
+  const k = kind && kind !== 'unknown' ? kind : updateKind === 'portable' ? 'portable' : null
+  if (k === 'portable') return { kind: 'portable', text: PLACEMENT_PORTABLE_TEXT, action: ABOUT_OPEN_PAGE }
+  if (k === 'temp-copy') return { kind: 'temp-copy', text: PLACEMENT_TEMP_TEXT, action: ABOUT_OPEN_PAGE }
+  return null
 }

@@ -1,5 +1,6 @@
-// SanoVids — pure rules of the desktop auto-updater (electron/updater.cjs) and of the code-signature check
-// (electron/signature.cjs). Unit-tested by src/lib/__tests__/updaterRules.test.ts and signature.test.ts.
+// SanoVids — pure rules of the desktop auto-updater (electron/updater.cjs), of the code-signature check
+// (electron/signature.cjs) and of where the app runs from (main.cjs: 'app:placement', the portable window's taskbar
+// identity). Unit-tested by src/lib/__tests__/updaterRules.test.ts and signature.test.ts.
 //
 // No require at all: not 'electron', not any npm package. In the packaged app.asar, electron-updater's own helpers
 // (semver…) are nested under node_modules/electron-updater and cannot be resolved from electron/, so versions are
@@ -225,6 +226,74 @@ function detectKind({ platform, isPackaged, portableFile, execPath, appName, exi
     if (found) return 'installer'
   }
   return 'portable'
+}
+
+/** Is `child` strictly inside `parent` (both already absolute, resolved by the caller)? */
+function isInsideDir(parent, child, pathMod) {
+  const rel = pathMod.relative(parent, child)
+  if (!rel || pathMod.isAbsolute(rel)) return false
+  return rel.split(/[\\/]+/)[0] !== '..'
+}
+
+/**
+ * Where this SanoVids runs from (main.cjs IPC 'app:placement' → Cài đặt → Ứng dụng / Giới thiệu hints). Only a kind
+ * ever leaves the main process, never a path.
+ *   'installer' | 'portable' | 'dev'  exactly detectKind (the kind of the updater's UpdateState);
+ *   'temp-copy' a portable-kind exe WITHOUT PORTABLE_EXECUTABLE_FILE running from inside the Windows temp folder — a
+ *               leftover copy of a Setup / Portable extraction ("…\Temp\ns*.tmp\7z-out\") that Windows may delete at any
+ *               time. The real Portable .exe also runs from %TEMP% but sets PORTABLE_EXECUTABLE_FILE: 'portable'.
+ * The containment test compares the REAL paths of both (realpath = fs.realpathSync.native: TEMP is often an 8.3 short
+ * path such as C:\Users\MINHM~1\…); any failure → not 'temp-copy'. Never throws.
+ */
+function placement({ platform, isPackaged, portableFile, execPath, tmpDir, appName, exists, realpath, pathMod }) {
+  let kind
+  try {
+    kind = detectKind({ platform, isPackaged, portableFile, execPath, appName, exists, pathMod })
+  } catch {
+    return isPackaged ? 'portable' : 'dev'
+  }
+  if (kind !== 'portable') return kind
+  if (typeof portableFile === 'string' && portableFile !== '') return 'portable'
+  try {
+    if (typeof realpath !== 'function') return 'portable'
+    for (const p of [execPath, tmpDir]) {
+      if (typeof p !== 'string' || p === '' || p.length > 1024 || p.includes('\u0000') || !pathMod.isAbsolute(p)) return 'portable'
+    }
+    const realExec = realpath(execPath)
+    const realTmp = realpath(tmpDir)
+    if (typeof realExec !== 'string' || typeof realTmp !== 'string' || !realExec || !realTmp) return 'portable'
+    return isInsideDir(pathMod.resolve(realTmp), pathMod.resolve(realExec), pathMod) ? 'temp-copy' : 'portable'
+  } catch {
+    return 'portable'
+  }
+}
+
+/**
+ * Taskbar identity of the PORTABLE build's window (BrowserWindow.setAppDetails): the portable stub extracts the app to
+ * %TEMP%\ns*.tmp\app and deletes it on exit, so a window pinned as is would point at that temp copy. With these details
+ * the pin relaunches the portable .exe itself, with its own icon. Only for a packaged win32 run whose
+ * PORTABLE_EXECUTABLE_FILE is an absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the
+ * relaunch command); anything else → null (nothing set). Never throws.
+ * → { appId, appIconPath, appIconIndex: 0, relaunchCommand: '"<file>"', relaunchDisplayName } | null
+ */
+function portableRelaunch({ platform, isPackaged, portableFile, appName, exists, pathMod }) {
+  if (platform !== 'win32' || !isPackaged) return null
+  if (typeof portableFile !== 'string' || portableFile === '' || portableFile.length > 1024) return null
+  if (/["\r\n\u0000]/.test(portableFile)) return null
+  try {
+    if (!pathMod.isAbsolute(portableFile) || pathMod.extname(portableFile).toLowerCase() !== '.exe') return null
+    if (!exists(portableFile)) return null
+  } catch {
+    return null
+  }
+  const name = typeof appName === 'string' && appName.trim() ? appName.trim().slice(0, 100) : 'SanoVids'
+  return {
+    appId: appUserModelId(appName),
+    appIconPath: portableFile,
+    appIconIndex: 0,
+    relaunchCommand: `"${portableFile}"`,
+    relaunchDisplayName: name,
+  }
 }
 
 // ---- errors ----
@@ -904,6 +973,8 @@ module.exports = {
   resolveProfileDir,
   appUserModelId,
   detectKind,
+  placement,
+  portableRelaunch,
   mapUpdaterError,
   notesToText,
   normalizeInfo,

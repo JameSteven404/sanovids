@@ -104,12 +104,15 @@ const MultiHeader = memo(function MultiHeader({ scenes }: { scenes: Scene[] }) {
 const MultiSettings = memo(function MultiSettings({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
   const presets = useProject((s) => s.project.presets)
   const settings = useMemo(() => scenes.map((s) => s.settings), [scenes])
+  // Scenes on a newer build's model show it in the model picker (not the stand-in model of their `settings`).
+  const foreignModels = useMemo(() => scenes.map((s) => s.foreignModel), [scenes])
   // A preset edited after it was applied no longer describes the scene ("Tuỳ chỉnh"; picking it re-applies it).
   const presetIds = useMemo(() => scenes.map((s) => appliedPresetId(s.presetId, s.settings, presets)), [scenes, presets])
   return (
     <Section id="m-settings" title="Cấu hình video (áp dụng cho tất cả)">
       <SettingsFields
         settings={settings}
+        foreignModels={foreignModels}
         presetIds={presetIds}
         presets={presets}
         onPatch={(patch) => {

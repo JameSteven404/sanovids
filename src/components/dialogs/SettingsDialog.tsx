@@ -7,7 +7,8 @@
 // scrolls the group into view (its <Section> carries data-set-anchor, settingsUi.tsx).
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
-import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../lib/aboutModel'
+import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
+import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../lib/canvasPrefs'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
@@ -35,6 +36,7 @@ import {
   DataBlock,
   DownloadFolderSetting,
   EdgeModeSetting,
+  FolderUnlinkTrashSetting,
   InteractionSetting,
   MinimapSetting,
   NodeEditorSetting,
@@ -96,6 +98,7 @@ const GROUPS: Group[] = [
         keywords: 'txt prompt văn bản kèm theo file phụ',
         C: WithPromptSetting,
       },
+      { id: 'folderUnlinkTrash', ...FOLDER_UNLINK_TRASH_ROW, C: FolderUnlinkTrashSetting },
       {
         id: 'autoDownload',
         label: 'Tự tải khi video xong',
@@ -148,7 +151,16 @@ const GROUPS: Group[] = [
       { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: 'SanoVids tự kiểm tra khi mở và 4 giờ một lần.', keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
     ],
   },
-  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.', keywords: 'cài app desktop exe windows pwa', Block: AppBlock },
+  {
+    id: 'app',
+    level: 'basic',
+    col: 0,
+    title: 'Ứng dụng',
+    desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.',
+    // Also the Portable / temp-copy reminder (no Desktop / Start icon, no auto-update): lib/aboutModel placementNote.
+    keywords: `cài app desktop exe windows pwa ${PLACEMENT_KEYWORDS}`,
+    Block: AppBlock,
+  },
   {
     id: 'playback',
     level: 'basic',
@@ -178,7 +190,7 @@ const GROUPS: Group[] = [
       {
         id: 'clickToCut',
         label: 'Bấm vào dây để cắt',
-        hint: 'Một cú bấm vào dây tham chiếu, khung hình, @video hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt.',
+        hint: `Một cú bấm vào dây tham chiếu, khung hình, @video hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
         keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire',
         C: ClickToCutSetting,
       },

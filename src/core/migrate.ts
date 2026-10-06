@@ -4,8 +4,9 @@ import { assetByTag, imageSlotsFor, mediaKeys, MENTION_RE, remapTokens, uniqueTa
 import { cleanTakeFileName } from './fileNames'
 import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
-import { normalizeSettings } from './models'
-import type { Asset, AssetKind, Preset, Project, Scene, Take, XY } from './types'
+import { cleanForeignSettings, foreignId } from './foreignMark'
+import { isModelId, normalizeSettings } from './models'
+import type { Asset, AssetKind, ForeignSettings, JobStatus, Preset, Project, Scene, Take, TakeProvider, VideoSettings, XY } from './types'
 
 interface V1Block {
   id: string
@@ -58,7 +59,61 @@ function normalizeAssets(raw: unknown): Asset[] {
   })
 }
 
-/** Presets with an id, a name and valid settings (files from other sources may miss some). */
+// ---------------- data of a newer SanoVids build (see Scene.foreignModel, Take.foreignProvider) ----------------
+// A newer build may save a model / provider this build does not know (e.g. a later provider's video model). Turning
+// such a scene into Seedance 2.5 would let "Chạy" bill the user's canvasapp account for a scene they made for another
+// service, so the id is kept as a marker that blocks running (core/runRules) and the original settings are kept too
+// (the stand-in `settings`, which every reader keeps using, would otherwise overwrite them at the next autosave).
+
+// The id / settings cleaning lives in ./foreignMark (pure, no store import: store/project uses it too).
+export { cleanForeignSettings, FOREIGN_ID_MAX, FOREIGN_SETTINGS_MAX_BYTES, FOREIGN_SETTINGS_MAX_KEYS, foreignMarkOf } from './foreignMark'
+
+/** Error of a take a newer build was still running (parked as 'failed' here, see migrateTake). */
+export const FOREIGN_RUNNING_ERROR = 'Video này đang tạo bằng SanoVids bản mới hơn — mở bằng bản đó để theo dõi.'
+
+const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev'] satisfies TakeProvider[]
+
+/** Settings + newer-build marker of a scene or preset, as migrate keeps them. */
+interface ModelMark {
+  settings: VideoSettings
+  foreignModel?: string
+  foreignSettings?: ForeignSettings
+}
+
+const markOf = (settings: VideoSettings, model: string | null, foreign: ForeignSettings | null): ModelMark => ({
+  settings,
+  ...(model ? { foreignModel: model } : {}),
+  ...(model && foreign ? { foreignSettings: foreign } : {}),
+})
+
+/**
+ * Valid settings of a scene / preset and its newer-build marker:
+ * - the saved settings name a model this build does not know (non-blank string, not a MODELS key) → the marker is
+ *   that id + the saved settings (cleanForeignSettings), `settings` the stand-in values of normalizeSettings;
+ * - else a marker saved with it (by a build that kept one) is validated and kept (foreignSettings without a
+ *   foreignModel is dropped); once the build knows that model, `settings` are restored from the marker
+ *   (foreignSettings + foreignModel) and the marker goes — what the build that brings the model does;
+ * - else no marker (an empty / missing model is the old default, Seedance 2.5, as always).
+ * `omit`: keys of `rawSettings` that are not settings (a preset is its own settings object: id, name, marker).
+ */
+function migrateModelMark(rawSettings: unknown, saved: { foreignModel?: unknown; foreignSettings?: unknown }, omit: readonly string[] = []): ModelMark {
+  const raw = (rawSettings && typeof rawSettings === 'object' ? rawSettings : {}) as Partial<VideoSettings>
+  const model: unknown = raw.model
+  const settings = normalizeSettings(raw)
+  if (typeof model === 'string' && model.trim() && !isModelId(model)) return markOf(settings, foreignId(model), cleanForeignSettings(raw, omit))
+  const kept = typeof saved.foreignModel === 'string' && saved.foreignModel.trim() ? saved.foreignModel : null
+  if (!kept) return markOf(settings, null, null)
+  const keptSettings = cleanForeignSettings(saved.foreignSettings)
+  if (isModelId(kept)) return markOf(normalizeSettings({ ...(keptSettings ?? {}), model: kept } as Partial<VideoSettings>), null, null)
+  return markOf(settings, foreignId(kept), keptSettings)
+}
+
+const PRESET_NOT_SETTINGS = ['id', 'name', 'foreignModel', 'foreignSettings']
+
+/**
+ * Presets with an id, a name and valid settings (files from other sources may miss some). A preset of a newer
+ * build's model keeps its marker (see migrateModelMark): applying it keeps the scenes blocked.
+ */
 export function normalizePresets(raw: unknown): Preset[] {
   const ids = new Set<string>()
   return (Array.isArray(raw) ? raw : [])
@@ -67,7 +122,8 @@ export function normalizePresets(raw: unknown): Preset[] {
       let id = typeof r.id === 'string' && r.id ? r.id : newId('pst')
       if (ids.has(id)) id = newId('pst')
       ids.add(id)
-      return { id, name: text(r.name).trim() || 'Preset', ...normalizeSettings(r) }
+      const { settings, ...marker } = migrateModelMark(r, r, PRESET_NOT_SETTINGS)
+      return { id, name: text(r.name).trim() || 'Preset', ...settings, ...marker }
     })
 }
 
@@ -76,6 +132,9 @@ export function normalizePresets(raw: unknown): Preset[] {
  * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
  * @Tag mentions become @image_N, continuity links and block data are dropped, scenes get videoRefs.
  * Always: unique ids, dense scene order (S01, S02… never "Sundefined"), a position and a title for every scene.
+ * A file of a newer build (schemaVersion > 2) is read as v2; scenes / presets on a model this build does not know keep
+ * it as a marker that blocks running (Scene.foreignModel / foreignSettings, see migrateModelMark). The result is
+ * always schemaVersion 2.
  */
 export function migrateProject(raw: unknown): Project {
   const p = (raw ?? {}) as Record<string, unknown> & Partial<Project>
@@ -83,7 +142,9 @@ export function migrateProject(raw: unknown): Project {
   const presets = normalizePresets(p.presets)
   const presetIds = new Set(presets.map((x) => x.id))
   const blocks = ((p as { blocks?: V1Block[] }).blocks ?? []) as V1Block[]
-  const v1 = p.schemaVersion !== 2
+  // Only versions before 2 are v1: a file of a newer build (schemaVersion 3…) must not get its @image_N / @Tag text
+  // rewritten as v1 prompts (it is read as v2; unknown fields are kept, unknown models become markers).
+  const v1 = !(typeof p.schemaVersion === 'number' && p.schemaVersion >= 2)
   const sceneIds = new Set<string>()
 
   const rawScenes = ((Array.isArray(p.scenes) ? p.scenes : []) as (Scene & { blockOverrides?: Record<string, boolean>; continueFrom?: unknown })[]).map(
@@ -99,7 +160,9 @@ export function migrateProject(raw: unknown): Project {
   )
   const scenes: Scene[] = rawScenes.map((s) => {
     const index = rank.get(s)!
-    const { blockOverrides, continueFrom: _c, ...rest } = s
+    const { blockOverrides, continueFrom: _c, foreignModel: _fm, foreignSettings: _fs, ...rest } = s
+    // Valid settings + the marker of a newer build's model (validated, never taken from the file as is).
+    const { settings, ...marker } = migrateModelMark(s.settings, s)
     const refs = strings(s.refs)
     let prompt = text(s.prompt)
     if (v1) {
@@ -120,13 +183,14 @@ export function migrateProject(raw: unknown): Project {
       prompt,
       refs,
       videoRefs: strings(s.videoRefs),
-      settings: normalizeSettings(s.settings ?? {}),
+      settings,
       firstFrame: s.firstFrame ?? null,
       lastFrame: s.lastFrame ?? null,
       color: s.color ?? null,
       position: isXY(s.position) ? s.position : scenePosition(index),
       note: text(s.note),
       presetId: typeof s.presetId === 'string' && presetIds.has(s.presetId) ? s.presetId : null,
+      ...marker,
     }
   })
 
@@ -170,19 +234,50 @@ export function dropVideoRefs(p: Project, label: (takeId: string) => string = ()
 }
 
 /**
+ * A take of a newer build's provider (foreignProvider) that was still queued / running there: parked as 'failed' with
+ * FOREIGN_RUNNING_ERROR, its status kept in foreignStatus and its remoteId kept, so this build's engine never submits,
+ * polls, re-queues or fails it, and the queue counters / "Cập nhật khi xong" (restartWork) do not wait for it. A build
+ * that knows the provider gives the status back. Any other take is returned as it is.
+ */
+export function parkForeignTake(t: Take): Take {
+  if (!t.foreignProvider || (t.status !== 'queued' && t.status !== 'processing')) return t
+  return { ...t, status: 'failed', foreignStatus: t.status, error: FOREIGN_RUNNING_ERROR }
+}
+
+const RUNNING: readonly JobStatus[] = ['queued', 'processing']
+
+/**
  * Bring a saved take up to date. Provider fields default to the demo provider: takes saved before providers
  * existed ran on the mock, were never submitted anywhere (no remote id) and were paid with demo credits.
+ * A non-blank provider id this build does not know (a newer build's provider) becomes provider 'mock' +
+ * foreignProvider (the id) + charged false — never paid here, so never refunded — and a running one is parked
+ * (parkForeignTake). Takes of 'canvasapp' / 'dev' / the old demo (missing provider) keep their `charged` as before.
  */
 export function migrateTake(raw: unknown): Take {
   const t = (raw ?? {}) as Partial<Take>
   const frames = t.framesSnapshot
+  const rawProvider: unknown = t.provider
+  // A newer build's provider, as saved now (`provider`) or kept by a build that parked it (provider 'mock').
+  const newer =
+    typeof rawProvider === 'string' && rawProvider.trim() && !KNOWN_PROVIDERS.includes(rawProvider)
+      ? foreignId(rawProvider)
+      : (rawProvider === undefined || rawProvider === 'mock') && !KNOWN_PROVIDERS.includes(String(t.foreignProvider))
+        ? foreignId(t.foreignProvider)
+        : null
   const out: Take = {
     ...(t as Take),
     videoRefsSnapshot: Array.isArray(t.videoRefsSnapshot) ? t.videoRefsSnapshot : [],
     position: t.position ?? null,
     provider: t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock',
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
-    charged: t.charged !== false,
+    charged: newer ? false : t.charged !== false,
+  }
+  delete out.foreignProvider
+  delete out.foreignStatus
+  if (newer) {
+    out.foreignProvider = newer
+    // Kept from an earlier park: the status the newer build had (only next to the 'failed' it was parked as).
+    if (t.status === 'failed' && RUNNING.includes(t.foreignStatus as JobStatus)) out.foreignStatus = t.foreignStatus
   }
   if (t.submitUnknown === true) out.submitUnknown = true
   else delete out.submitUnknown
@@ -196,5 +291,5 @@ export function migrateTake(raw: unknown): Take {
     if (Array.isArray(t.imageKeysSnapshot) && t.imageKeysSnapshot.every((k) => typeof k === 'string')) out.imageKeysSnapshot = [...t.imageKeysSnapshot]
     else delete out.imageKeysSnapshot
   }
-  return out
+  return parkForeignTake(out)
 }

@@ -1,5 +1,5 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
-import { Ban, Bug, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
+import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { JobStatus, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
@@ -24,8 +24,23 @@ const PROVIDER_TITLE: Record<ProviderId, string> = {
   canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
 }
 
-/** Small chip naming the provider a take ran on (queue rows, take viewer). */
-export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
+/** Chip of a take made by a newer SanoVids build's provider (Take.foreignProvider) instead of "Demo cũ". */
+export const NEWER_BUILD_SHORT = 'Bản mới hơn'
+export const NEWER_BUILD_TITLE = 'Tạo bằng SanoVids bản mới hơn'
+
+/**
+ * Small chip naming the provider a take ran on (queue rows, take viewer). A take of a newer build's provider
+ * (migrate: provider 'mock' + foreignProvider) says "Bản mới hơn", not "Demo cũ" — pass the take for that.
+ */
+export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider' | 'foreignProvider'>; provider?: ProviderId }) {
+  if (!provider && take?.foreignProvider) {
+    return (
+      <span className="rq-prov foreign" title={NEWER_BUILD_TITLE}>
+        <CircleArrowUp size={10} />
+        {NEWER_BUILD_SHORT}
+      </span>
+    )
+  }
   const id = provider ?? (take ? providerOf(take) : 'mock')
   return (
     <span

@@ -193,8 +193,9 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   if (!item) return null
 
   const totalS = items.reduce((t, i) => t + i.duration, 0)
-  // Development-mode (and old demo) takes are ~3 s fake clips; takes from canvasapp play at their own length.
-  const hasFake = items.some((i) => i.take && (providerOf(i.take) === 'dev' || providerOf(i.take) === 'mock'))
+  // Development-mode (and old demo) takes are ~3 s fake clips; takes from canvasapp play at their own length. So do
+  // takes of a newer build's provider (provider 'mock' + foreignProvider): real videos, not fakes.
+  const hasFake = items.some((i) => i.take && !i.take.foreignProvider && (providerOf(i.take) === 'dev' || providerOf(i.take) === 'mock'))
   const take = item.take
   const posterId = take?.posterId ?? null
   const canSave = take?.status === 'completed'

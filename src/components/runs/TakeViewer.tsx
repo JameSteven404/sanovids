@@ -45,6 +45,7 @@ import {
   HighlightedPrompt,
   isActive,
   isTypingTarget,
+  NEWER_BUILD_TITLE,
   paragraphDiff,
   ProviderBadge,
   sameSettings,
@@ -650,8 +651,8 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
         <dd className="mono">{settingsLabel(take.settings)}</dd>
         <dt>Tạo bằng</dt>
         <dd className="rq-info-provider">
-          <ProviderBadge provider={provider} />
-          <span className="faint">{PROVIDER_LABEL[provider]}</span>
+          <ProviderBadge take={take} />
+          <span className="faint">{take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}</span>
         </dd>
         <dt>Chi phí</dt>
         <dd className={`rq-info-cost ${cost.kind}`}>

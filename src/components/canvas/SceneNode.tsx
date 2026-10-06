@@ -2,12 +2,12 @@
 // Its takes are separate Take nodes to the right (wired from the 'take' handle); the card only shows a status line.
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
-import { costOf, MODELS, settingsLabel } from '../../core/models'
-import { runBlockReason } from '../../core/runRules'
+import { costOf, foreignModelBadge, MODELS, settingsLabel } from '../../core/models'
+import { foreignModelReason, runBlockReason } from '../../core/runRules'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { measureImage } from '../../lib/imageMeta'
@@ -58,6 +58,20 @@ const EMPTY_ASSETS: Asset[] = []
 
 /** The scene's two dots sit at the height of an unresized take's dots: the scene → take wire runs straight. */
 const DOT_STYLE = { top: DOT_TOP }
+/**
+ * Model badge of a scene on a newer build's model (Scene.foreignModel): warning tint; unlike the short "SD 2.5" the id
+ * can be long, so it is capped and may shrink (ellipsis; the full text is in the title) instead of squeezing the title
+ * out.
+ */
+const FOREIGN_BADGE_STYLE = {
+  ['--model-c' as string]: 'var(--warn)',
+  flex: '0 1 auto',
+  minWidth: 0,
+  maxWidth: '40%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+} as CSSProperties
 
 function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
@@ -313,9 +327,16 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
       <div className="cv-scene-head">
         <span className="cv-code">{sceneCode(scene.order)}</span>
         <EditableTitle sceneId={scene.id} title={scene.title} />
-        <span className="cv-model" style={{ ['--model-c' as string]: spec.color }} title={spec.name}>
-          {spec.short}
-        </span>
+        {scene.foreignModel ? (
+          // A newer build's model (migrate keeps it): its id instead of the stand-in "SD 2.5"; Run is blocked (reason).
+          <span className="cv-model" style={FOREIGN_BADGE_STYLE} title={foreignModelReason(scene.foreignModel)}>
+            {foreignModelBadge(scene.foreignModel)}
+          </span>
+        ) : (
+          <span className="cv-model" style={{ ['--model-c' as string]: spec.color }} title={spec.name}>
+            {spec.short}
+          </span>
+        )}
         <span className={`status-dot ${status ?? ''}`} title={status ? `Take mới nhất: ${STATUS_LABEL[status]}` : 'Chưa chạy'} />
       </div>
 

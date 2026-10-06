@@ -80,6 +80,11 @@ export interface TrashSavedFile {
   name: string
   role: TrashFileRole
   result: TrashFileResult
+  /**
+   * With 'failed': the file is only in the cloud (a OneDrive "online-only" file: no data on this disk). It is kept
+   * without being read (hashing it would download it); the ledger keeps its entry. Missing in other answers.
+   */
+  cloud?: true
 }
 
 /**

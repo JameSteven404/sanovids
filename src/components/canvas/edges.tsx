@@ -11,10 +11,14 @@ import { X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState, type AnimationEvent, type CSSProperties } from 'react'
 import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { offUnlinkText, SAVE_CUT_BUTTON_TITLE, saveWireTitle } from '../../core/folderTrash'
 import { folderMapOf } from '../../core/folders'
 import { staleNoteSince } from '../../core/staleTokens'
+import { afterSaveUnlinked } from '../../folderActions'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { flushScenes } from '../../lib/promptDrafts'
+import { canTrashSaved } from '../../lib/saveFolders'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
@@ -92,7 +96,12 @@ export function cutEdge(id: string, silent = false, at?: { x: number; y: number 
   })
 }
 
-/** Cut a wire into a folder node (one undo step). The files already saved there stay. */
+/**
+ * Cut a wire into a folder node (one undo step). An auto-save wire (scene → folder) never touches files. A take →
+ * folder wire: with "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" on (desktop app), the files that wire
+ * itself copied, unchanged, go to the Recycle Bin — folderActions.afterSaveUnlinked says so (Hoàn tác writes a new
+ * copy); otherwise the files stay and the toast says so right away.
+ */
 function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, folderId: string, silent: boolean) {
   const p = useProject.getState()
   const folder = folderMapOf(p.project.folders).get(folderId)
@@ -101,15 +110,18 @@ function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, fold
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
-  if (silent) return
-  const scene = kind === 'autosave' ? sceneMapOf(p.project.scenes).get(from) : undefined
-  const what = kind === 'autosave' ? (scene ? sceneCode(scene.order) : 'cảnh') : takeLabel(from)
-  toast(
-    kind === 'autosave'
-      ? `Đã bỏ tự lưu ${what} vào “${folder.name}” (video đã lưu vẫn còn trong thư mục).`
-      : `Đã bỏ nối ${what} khỏi thư mục “${folder.name}” (file đã lưu vẫn còn).`,
-    { action: undoToastAction() },
-  )
+  if (kind === 'autosave') {
+    if (silent) return
+    const scene = sceneMapOf(p.project.scenes).get(from)
+    toast(`Đã bỏ tự lưu ${scene ? sceneCode(scene.order) : 'cảnh'} vào “${folder.name}” (video đã lưu vẫn còn trong thư mục).`, { action: undoToastAction() })
+    return
+  }
+  // Captured now: Hoàn tác must undo this cut, not a newer step made while the files are being moved.
+  const undo = undoToastAction()
+  const trash = useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()
+  if (!silent && !trash) toast(offUnlinkText(takeLabel(from), folder.name), { action: undo })
+  // Always handled (in the folder's lock): a waiting save of this wire is dropped, its ownership record released.
+  void afterSaveUnlinked([{ folderId, takeId: from }], { source: 'cut', undo, toast: silent || !trash ? 'none' : 'single' })
 }
 
 /** Invisible hit band around every cuttable wire (px, flow units): thin wires stay easy to hit. */
@@ -130,6 +142,8 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   const hovered = useCanvasLocal((s) => s.hoveredEdgeId === id)
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const kind = data?.kind ?? 'ref'
+  // A take → folder wire whose cut moves the saved files to the Recycle Bin (setting on, desktop app): its tooltips say so.
+  const trash = useDownloadPrefs((s) => kind === 'save' && s.folderUnlinkTrash) && canTrashSaved()
   // A wire that just appeared (new link, undo of a cut) animates in once — not one scrolled into view.
   const [intro, setIntro] = useState(() => wireIntro(id, kind))
   const endIntro = useCallback((e: AnimationEvent<SVGPathElement>) => {
@@ -195,7 +209,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       {/* Hit band on top (transparent): the band is the wire for hover, click-to-cut and selection. It stops at the
           dots' rims, where the drawn wire runs on under the dot (wires.css: the drawn path takes no pointer). */}
       <path d={hitPath} fill="none" className="react-flow__edge-interaction cv-wire-hit" strokeOpacity={0} strokeWidth={WIRE_HIT_WIDTH}>
-        <title>{clickToCut ? 'Bấm để bỏ nối · Ctrl/Shift + bấm: chọn dây' : 'Bấm để chọn dây · Delete: bỏ nối'}</title>
+        <title>{saveWireTitle(clickToCut, trash)}</title>
       </path>
       {/* With click-to-cut the wire itself is the button; otherwise the × on hover / selection cuts it. */}
       {!clickToCut && (hovered || selected) && (
@@ -203,7 +217,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
           <button
             className="cv-edge-cut nodrag nopan"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-            title="Bỏ nối (Delete)"
+            title={trash ? SAVE_CUT_BUTTON_TITLE : 'Bỏ nối (Delete)'}
             aria-label="Bỏ nối"
             onMouseEnter={() => {
               keepHover()

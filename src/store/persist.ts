@@ -820,7 +820,26 @@ export async function importProjectFile(file: File): Promise<void> {
   for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
     idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
   }
-  await openNewProject(importedProject(data.project, data.videoLabels ?? {}, idMap))
+  const project = importedProject(data.project, data.videoLabels ?? {}, idMap)
+  await openNewProject(project)
+  // Opened all the same (a warning, not a refusal): what this build does not know stays blocked (core/runRules).
+  const warning = importWarning(data, project)
+  if (warning) useUI.getState().toast(warning, { tone: 'warning', ms: 12000 })
+}
+
+/** Shown after importing a project file made by a newer SanoVids build (see importWarning). */
+export const NEWER_FILE_WARNING = 'File này tạo bằng SanoVids mới hơn: cảnh dùng model lạ sẽ bị chặn chạy cho tới khi bạn cập nhật.'
+
+/**
+ * NEWER_FILE_WARNING when a .sanovids.json comes from a newer build: a file `version` above 2, a project
+ * `schemaVersion` above 2, or a scene / preset on a model this build does not know (the imported project's
+ * foreignModel markers, migrate) — a newer build may keep version 2 and still use new models. Null otherwise.
+ */
+export function importWarning(file: { version?: unknown; project?: unknown }, imported: Project): string | null {
+  const newer = (v: unknown) => typeof v === 'number' && v > 2
+  const rawSchema = file.project && typeof file.project === 'object' ? (file.project as { schemaVersion?: unknown }).schemaVersion : undefined
+  const foreign = imported.scenes.some((s) => !!s.foreignModel) || imported.presets.some((p) => !!p.foreignModel)
+  return newer(file.version) || newer(rawSchema) || foreign ? NEWER_FILE_WARNING : null
 }
 
 /**

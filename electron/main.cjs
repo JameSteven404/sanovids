@@ -243,6 +243,24 @@ function createWindow() {
     if (mainWindow === win) mainWindow = null
   })
 
+  // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
+  // portableRelaunch: packaged win32 with a valid PORTABLE_EXECUTABLE_FILE only; nothing is set otherwise).
+  const relaunch = updaterRules.portableRelaunch({
+    platform: process.platform,
+    isPackaged: PACKAGED,
+    portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+    appName: app.getName(),
+    exists: fs.existsSync,
+    pathMod: path,
+  })
+  if (relaunch) {
+    try {
+      win.setAppDetails(relaunch)
+    } catch (e) {
+      console.warn('[SanoVids] setAppDetails failed:', (e && e.message) || e)
+    }
+  }
+
   win.once('ready-to-show', () => {
     win.maximize()
     win.show()
@@ -343,8 +361,39 @@ async function computeAppSignature() {
   return hardening.appSignaturePayload(verdict, { packaged: true })
 }
 
+// Where this SanoVids runs from (Cài đặt → Ứng dụng / Giới thiệu hints: Portable, or a leftover copy in the temp folder
+// that Windows may delete). Only the kind crosses ('app:placement', no argument): never a path.
+let placementPayload = null
+
+/** → { kind: 'installer' | 'portable' | 'temp-copy' | 'dev' } (updater-rules.placement), computed once. Never throws. */
+function appPlacement() {
+  if (!placementPayload) {
+    let kind
+    try {
+      // PACKAGED, not app.isPackaged (see its definition): only differs for a renamed exe running the real app.asar,
+      // which the updater calls 'dev' and this calls 'portable' / 'temp-copy' (a hint, never a protection).
+      kind = updaterRules.placement({
+        platform: process.platform,
+        isPackaged: PACKAGED,
+        portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+        execPath: process.execPath,
+        tmpDir: app.getPath('temp'),
+        appName: app.getName(),
+        exists: fs.existsSync,
+        realpath: fs.realpathSync.native,
+        pathMod: path,
+      })
+    } catch {
+      kind = PACKAGED ? 'portable' : 'dev'
+    }
+    placementPayload = { kind }
+  }
+  return placementPayload
+}
+
 function registerAppBridge() {
   ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))
+  ipcMain.handle('app:placement', (event) => (fromApp(event) ? appPlacement() : { kind: 'unknown' }))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -951,6 +1000,10 @@ function registerCanvasappGateway() {
 //   files:pickFolder    the user picks a folder; it joins the ALLOWLIST (userData/save-locations.json);
 //   files:writeToFolder only into an allowlisted folder (exact path, not a sub-folder), plain file names only;
 //   files:openFolder    shows an allowlisted folder in Explorer / Finder;  files:folderStatus  allowed / exists.
+//   files:trashSaved    moves to the Windows Recycle Bin (shell.trashItem, never a permanent delete) ONLY files main
+//                       itself wrote into that allowlisted folder for that folder node / take — recorded in its own
+//                       ledger (userData/saved-files.json: names, sizes, SHA-256; never 'autosave' writes) — and still
+//                       exactly as written. The page names ledger group ids, never a file or a path.
 // Nothing is ever overwritten except the file the user confirmed in the save dialog: other names get " (2)".
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -993,19 +1046,19 @@ function saveNameExt(name) {
 
 /**
  * A plain file name to write, or null. Separators and forbidden characters become "-" (so no path can be named),
- * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", long names are cut
- * keeping their extension.
+ * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", names longer than `max`
+ * are cut keeping their extension.
  */
-function sanitizeSaveName(raw) {
+function sanitizeSaveName(raw, max = SAVE_MAX_NAME) {
   if (typeof raw !== 'string') return null
   let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
   s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
   s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (!s) return null
-  if (s.length > SAVE_MAX_NAME) {
+  if (s.length > max) {
     const ext = saveNameExt(s)
     const tail = ext && ext.length <= 8 ? '.' + ext : ''
-    s = cutSaveText(s, SAVE_MAX_NAME - tail.length).replace(/[.\s]+$/, '') + tail
+    s = cutSaveText(s, max - tail.length).replace(/[.\s]+$/, '') + tail
   }
   if (SAVE_RESERVED_RE.test(s)) s = '_' + s
   return s
@@ -1238,6 +1291,321 @@ async function writeSaveReplacing(fsp, target, data) {
     throw e
   }
 }
+
+// ---- the ledger of folder-node writes (userData/saved-files.json) and moving them to the Recycle Bin ----
+// { v: 1, groups: [{ id, folder, folderId, takeId, via, at, files: [{ name, size, sha256 }], primaryTrashed? }] }
+//   id      16 hex chars (the `recorded` answer of files:writeToFolder; the page sends it back to files:trashSaved);
+//   folder  folderKey of the folder written into; folderId / takeId / via: the owner the page gave with the write;
+//   files   files[0] = the primary (video, or the poster .jpg written without one), then its companions (the prompt .txt);
+//   primaryTrashed  kept only for companions that could not follow their primary to the Recycle Bin (a retry).
+// Lost or broken ledger = nothing can be moved (the safe side). The page never names a file or a path to move.
+const SAVE_LEDGER_VERSION = 1
+const SAVE_LEDGER_MAX_GROUPS = 3000
+/** Ledger names may be a little longer than SAVE_MAX_NAME: writeGroupExclusive adds " (n)". */
+const SAVE_LEDGER_MAX_NAME = SAVE_MAX_NAME + 16
+// Only what a folder node writes can ever go to the Recycle Bin: videos, posters, the prompt .txt (never a .zip / .json).
+const SAVE_TRASH_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'txt'])
+/** Folder node / take ids (the page's ids). */
+const SAVE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/
+const SAVE_GROUP_ID_RE = /^[0-9a-f]{16}$/
+const SAVE_SHA_RE = /^[0-9a-f]{64}$/
+/** Where a write comes from (src/lib/desktopFiles.ts SaveVia). 'autosave' groups are never moved. */
+const SAVE_VIAS = ['link', 'again', 'restore', 'autosave', 'manual']
+const SAVE_TRASH_MAX_ITEMS = 200
+const SAVE_TRASH_MAX_GROUPS = 20
+/**
+ * A file of at least this size with no data allocated on the disk is not here: a OneDrive / cloud "online-only"
+ * placeholder (or an all-holes sparse file). Never hashed (reading it would download it) and never moved: kept.
+ * (Smaller files may legitimately have no allocation: NTFS keeps them inside the MFT record.)
+ */
+const SAVE_CLOUD_MIN_BYTES = 4096
+const SAVE_HASH_MIN_MS = 60_000
+const SAVE_HASH_BYTES_PER_S = 10 * 1024 * 1024
+
+/** A name as recorded in the ledger: exactly what sanitizeSaveName keeps, of a type a folder node writes. */
+function isLedgerName(name) {
+  return typeof name === 'string' && sanitizeSaveName(name, SAVE_LEDGER_MAX_NAME) === name && SAVE_TRASH_EXT.has(saveNameExt(name))
+}
+
+/** `owner` of files:writeToFolder → { folderId, takeId, via }, or null (the write happens, nothing is recorded). */
+function checkSaveOwner(o) {
+  if (!o || typeof o !== 'object') return null
+  const { folderId, takeId, via } = o
+  if (typeof folderId !== 'string' || !SAVE_ID_RE.test(folderId)) return null
+  if (typeof takeId !== 'string' || !SAVE_ID_RE.test(takeId)) return null
+  if (typeof via !== 'string' || !SAVE_VIAS.includes(via)) return null
+  return { folderId, takeId, via }
+}
+
+/**
+ * files:trashSaved arguments → { folderPath, folderId, items: [{ takeId, groupIds }] } or { error }: an absolute folder
+ * path, a folder node id, 1–200 items with distinct take ids, each with 1–20 ledger group ids (16 hex, deduplicated).
+ */
+function checkTrashArgs(args, pathMod) {
+  const bad = { error: 'Yêu cầu không hợp lệ.' }
+  if (!args || typeof args !== 'object') return bad
+  if (!folderKey(args.folderPath, pathMod)) return bad
+  if (typeof args.folderId !== 'string' || !SAVE_ID_RE.test(args.folderId)) return bad
+  if (!Array.isArray(args.items) || args.items.length < 1 || args.items.length > SAVE_TRASH_MAX_ITEMS) return bad
+  const items = []
+  const seen = new Set()
+  for (const it of args.items) {
+    if (!it || typeof it !== 'object' || typeof it.takeId !== 'string' || !SAVE_ID_RE.test(it.takeId) || seen.has(it.takeId)) return bad
+    seen.add(it.takeId)
+    const ids = it.groupIds
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > SAVE_TRASH_MAX_GROUPS) return bad
+    if (!ids.every((g) => typeof g === 'string' && SAVE_GROUP_ID_RE.test(g))) return bad
+    items.push({ takeId: it.takeId, groupIds: [...new Set(ids)] })
+  }
+  return { folderPath: args.folderPath, folderId: args.folderId, items }
+}
+
+/** One ledger group checked value by value (a copy with known fields only), or null. */
+function checkLedgerGroup(g, pathMod) {
+  if (!g || typeof g !== 'object') return null
+  if (typeof g.id !== 'string' || !SAVE_GROUP_ID_RE.test(g.id)) return null
+  if (typeof g.folder !== 'string' || folderKey(g.folder, pathMod) !== g.folder) return null
+  const owner = checkSaveOwner(g)
+  if (!owner) return null
+  if (typeof g.at !== 'number' || !Number.isFinite(g.at) || g.at < 0) return null
+  if (!Array.isArray(g.files) || g.files.length < 1 || g.files.length > SAVE_MAX_FILES) return null
+  const files = []
+  const names = new Set()
+  for (const f of g.files) {
+    if (!f || typeof f !== 'object' || !isLedgerName(f.name) || names.has(f.name.toLowerCase())) return null
+    if (!Number.isSafeInteger(f.size) || f.size < 0 || f.size > SAVE_MAX_FILE_BYTES) return null
+    if (typeof f.sha256 !== 'string' || !SAVE_SHA_RE.test(f.sha256)) return null
+    names.add(f.name.toLowerCase())
+    files.push({ name: f.name, size: f.size, sha256: f.sha256 })
+  }
+  const out = { id: g.id, folder: g.folder, folderId: owner.folderId, takeId: owner.takeId, via: owner.via, at: g.at, files }
+  if (g.primaryTrashed === true) out.primaryTrashed = true
+  return out
+}
+
+/**
+ * userData/saved-files.json, checked value by value: unknown version / garbage → empty; invalid groups, groups of a
+ * folder no longer in the allowlist (`allowed`: folder keys of save-locations.json) and duplicated ids are dropped;
+ * at most SAVE_LEDGER_MAX_GROUPS (the newest).
+ */
+function parseSaveLedger(raw, allowed, pathMod) {
+  const ok = Array.isArray(allowed) ? allowed : []
+  const checked = []
+  if (raw && typeof raw === 'object' && raw.v === SAVE_LEDGER_VERSION && Array.isArray(raw.groups)) {
+    for (const g of raw.groups) {
+      const c = checkLedgerGroup(g, pathMod)
+      if (c && ok.includes(c.folder)) checked.push(c)
+    }
+  }
+  const count = new Map()
+  for (const g of checked) count.set(g.id, (count.get(g.id) || 0) + 1)
+  // The same id twice: something is wrong with both, neither can be moved.
+  const groups = checked.filter((g) => count.get(g.id) === 1)
+  return { v: SAVE_LEDGER_VERSION, groups: groups.slice(-SAVE_LEDGER_MAX_GROUPS) }
+}
+
+/**
+ * The ledger group of a write: `names` (as written, " (n)" included) with `digests` ([{ size, sha256 }], same order),
+ * into the folder `dirKey` (folderKey), for `owner`. → the group, or null when anything is not recordable.
+ */
+function ledgerGroup(dirKey, owner, names, digests, at, id, pathMod) {
+  const o = checkSaveOwner(owner)
+  if (!o || !Array.isArray(names) || !Array.isArray(digests) || names.length !== digests.length) return null
+  const files = names.map((name, i) => ({ name, size: digests[i] && digests[i].size, sha256: digests[i] && digests[i].sha256 }))
+  return checkLedgerGroup({ id, folder: dirKey, ...o, at, files }, pathMod)
+}
+
+/** The ledger without `removeIds`, with `add` (a group with an existing id replaces it in place), capped. */
+function ledgerWith(ledger, add, removeIds) {
+  const drop = new Set(Array.isArray(removeIds) ? removeIds : [])
+  const groups = (ledger && Array.isArray(ledger.groups) ? ledger.groups : []).filter((g) => !drop.has(g.id))
+  for (const g of Array.isArray(add) ? add : []) {
+    if (!g || typeof g.id !== 'string') continue
+    const i = groups.findIndex((x) => x.id === g.id)
+    if (i >= 0) groups[i] = g
+    else groups.push(g)
+  }
+  return { v: SAVE_LEDGER_VERSION, groups: groups.slice(-SAVE_LEDGER_MAX_GROUPS) }
+}
+
+/**
+ * The groups one trashSaved item may move: its `groupIds` AND this folder node / take AND written into this folder
+ * (`dirKey`) AND never 'autosave'. None → unknown (saved by an older build, ledger lost, not this wire's files);
+ * elsewhere = those groups were written into another folder (the node now points elsewhere): nothing is moved.
+ */
+function selectTrashGroups(ledger, dirKey, folderId, item) {
+  const wanted = new Set(item && Array.isArray(item.groupIds) ? item.groupIds : [])
+  const takeId = item && item.takeId
+  const owned = (ledger && Array.isArray(ledger.groups) ? ledger.groups : []).filter(
+    (g) => wanted.has(g.id) && g.folderId === folderId && g.takeId === takeId && g.via !== 'autosave',
+  )
+  const groups = owned.filter((g) => g.folder === dirKey)
+  return { groups, unknown: groups.length === 0, elsewhere: groups.length === 0 && owned.length > 0 }
+}
+
+/** '' when `st` (lstat; null = nothing there) may still be the recorded file, else 'missing' | 'changed'. */
+function savedFileStatProblem(entry, st) {
+  if (!st) return 'missing'
+  if (typeof st.isSymbolicLink === 'function' && st.isSymbolicLink()) return 'changed'
+  if (typeof st.isFile !== 'function' || !st.isFile()) return 'changed'
+  if (st.size !== entry.size) return 'changed'
+  return ''
+}
+
+/**
+ * Is the file at `st` still exactly the recorded one? 'ok' only for a regular file (not a link) of the recorded size
+ * whose SHA-256 (`sha`, hex) is the recorded one; 'missing' when nothing is there; 'changed' otherwise (it is the user's).
+ */
+function judgeSavedFile(entry, st, sha) {
+  const problem = savedFileStatProblem(entry, st)
+  if (problem) return problem
+  return typeof sha === 'string' && SAVE_SHA_RE.test(sha) && sha === entry.sha256 ? 'ok' : 'changed'
+}
+
+/** No data of this file on the disk (see SAVE_CLOUD_MIN_BYTES): kept, never read. */
+function savedFileOnlineOnly(st) {
+  return !!st && typeof st.blocks === 'number' && st.blocks === 0 && typeof st.size === 'number' && st.size >= SAVE_CLOUD_MIN_BYTES
+}
+
+/** The same file before and after hashing (size, last write, file id): nothing replaced or rewrote it meanwhile. */
+function sameSavedStat(a, b) {
+  return !!a && !!b && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino
+}
+
+/** Time allowed to hash a file: 60 s, or 10 MB/s for big files on slow drives. */
+function saveHashTimeoutMs(size) {
+  return Math.max(SAVE_HASH_MIN_MS, Math.ceil((Number(size) / SAVE_HASH_BYTES_PER_S) * 1000) || 0)
+}
+
+/** Windows network shares (\\server\share) and device paths (\\?\, \\.\) have no Recycle Bin: never tried there. */
+function saveTrashSupported(dir, pathMod) {
+  return !(pathMod.sep === '\\' && /^[\\/]{2}/.test(String(dir)))
+}
+
+/** `promise`, or a rejection as soon as `signal` (the watchdog) aborts. */
+function withSaveAbort(promise, signal) {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(saveError('ETIMEDOUT', 'watchdog'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(saveError('ETIMEDOUT', 'watchdog'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
+  })
+}
+
+/**
+ * Move the files of ledger `groups` (selected by selectTrashGroups) out of `dir` to the Recycle Bin.
+ * deps: fsp (lstat only), hashFile(path, timeoutMs, signal) → SHA-256 hex, trash(absolutePath) (shell.trashItem: the
+ * ONLY way anything leaves the folder — never a delete), pathMod, signal (watchdog: once aborted, nothing more is moved).
+ * Per file, decided only from lstat, the size and the hash (never from an error text or the mtime alone):
+ *   gone → 'missing' (entry dropped); a link / not a regular file / other size / other hash / rewritten while hashed →
+ *   'changed' (kept: it is the user's now; dropped); online-only → 'failed' + cloud (kept; entry kept); hashing failed or
+ *   timed out → 'failed' (entry kept); trash() resolved → 'trashed' (dropped); trash() failed → 'missing' when the file
+ *   is gone, else 'failed' (kept for "Thử lại"). Network shares → 'failed' without trying.
+ * The primary goes first; companions (the prompt .txt) only follow a 'trashed' primary, each only when unchanged, and
+ * are reported only then. Groups of another folder or written by 'autosave' are skipped (never touched, not reported).
+ * → { results: [{ id, takeId, files: [{ name, role, result, cloud? }] }], keep: [groups to keep, possibly reduced], removeIds }
+ */
+async function trashSavedGroups(dir, groups, { fsp, hashFile, trash, pathMod, signal }) {
+  const results = []
+  const keep = []
+  const removeIds = []
+  const dirKey = folderKey(dir, pathMod)
+  const supported = saveTrashSupported(dir, pathMod)
+  const aborted = () => !!(signal && signal.aborted)
+  const lstatOrNull = async (p) => {
+    try {
+      return await fsp.lstat(p)
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return null
+      throw e
+    }
+  }
+  /** Gone after a failure → 'missing', still there (or unreadable) → 'failed'. */
+  const goneOrFailed = async (p) => {
+    try {
+      return (await lstatOrNull(p)) ? 'failed' : 'missing'
+    } catch {
+      return 'failed'
+    }
+  }
+  const moveOne = async (entry) => {
+    const p = pathMod.join(dir, entry.name)
+    if (!isLedgerName(entry.name) || !isDirectChild(dir, p, pathMod)) return { result: 'changed' }
+    if (!supported || aborted()) return { result: 'failed' }
+    let before
+    try {
+      before = await lstatOrNull(p)
+    } catch {
+      return { result: 'failed' }
+    }
+    const problem = savedFileStatProblem(entry, before)
+    if (problem) return { result: problem }
+    if (savedFileOnlineOnly(before)) return { result: 'failed', cloud: true }
+    let sha
+    try {
+      sha = await withSaveAbort(Promise.resolve().then(() => hashFile(p, saveHashTimeoutMs(entry.size), signal)), signal)
+    } catch {
+      return { result: await goneOrFailed(p) }
+    }
+    let after
+    try {
+      after = await lstatOrNull(p)
+    } catch {
+      return { result: 'failed' }
+    }
+    if (!after) return { result: 'missing' }
+    if (!sameSavedStat(before, after)) return { result: 'changed' }
+    const verdict = judgeSavedFile(entry, after, sha)
+    if (verdict !== 'ok') return { result: verdict }
+    if (aborted()) return { result: 'failed' }
+    try {
+      await withSaveAbort(Promise.resolve().then(() => trash(pathMod.resolve(p))), signal)
+      return { result: 'trashed' }
+    } catch {
+      return { result: await goneOrFailed(p) }
+    }
+  }
+  const report = (entry, role, r) => (r.cloud ? { name: entry.name, role, result: r.result, cloud: true } : { name: entry.name, role, result: r.result })
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g || g.via === 'autosave' || !dirKey || g.folder !== dirKey || !Array.isArray(g.files) || g.files.length === 0) continue
+    const files = []
+    const failed = []
+    const companions = async (list) => {
+      for (const entry of list) {
+        const r = await moveOne(entry)
+        files.push(report(entry, 'companion', r))
+        if (r.result === 'failed') failed.push(entry)
+      }
+    }
+    if (g.primaryTrashed) {
+      await companions(g.files)
+      if (failed.length) keep.push({ ...g, files: failed })
+      else removeIds.push(g.id)
+    } else {
+      const [primary, ...rest] = g.files
+      const r = await moveOne(primary)
+      files.push(report(primary, 'primary', r))
+      if (r.result === 'trashed') {
+        await companions(rest)
+        if (failed.length) keep.push({ ...g, primaryTrashed: true, files: failed })
+        else removeIds.push(g.id)
+      } else if (r.result === 'failed') keep.push(g)
+      else removeIds.push(g.id)
+    }
+    results.push({ id: g.id, takeId: g.takeId, files })
+  }
+  return { results, keep, removeIds }
+}
 // </save-rules>
 
 const SAVE_STATE_FILE = 'save-locations.json'
@@ -1266,6 +1634,95 @@ async function storeSaveState(next) {
     await fs.promises.rename(tmp, file)
   } catch {
     /* the allowlist still works for this session */
+  }
+}
+
+// ---- the ledger of folder-node writes (rules above, in <save-rules>) ----
+const SAVE_LEDGER_FILE = 'saved-files.json'
+/** files:trashSaved never takes longer than this: files not done by then stay where they are ('failed'). */
+const SAVE_TRASH_WATCHDOG_MS = 5 * 60_000
+let saveLedger = null
+let saveLedgerChain = Promise.resolve()
+/** Ledger groups a files:trashSaved call is moving right now: another call never touches them at the same time. */
+const trashingIds = new Set()
+
+function saveLedgerPath() {
+  return path.join(app.getPath('userData'), SAVE_LEDGER_FILE)
+}
+
+/** The ledger from disk, checked value by value; missing / unreadable / broken → empty (nothing can be moved). */
+async function loadSaveLedger() {
+  try {
+    return parseSaveLedger(JSON.parse(await fs.promises.readFile(saveLedgerPath(), 'utf8')), loadSaveState().folders, path)
+  } catch {
+    return parseSaveLedger(null, [], path)
+  }
+}
+
+/** Written whole (tmp + rename); throws when it could not be stored. */
+async function storeSaveLedger(next) {
+  const file = saveLedgerPath()
+  const tmp = `${file}.tmp`
+  await fs.promises.writeFile(tmp, JSON.stringify(next), 'utf8')
+  await renameSaveFile(fs.promises, tmp, file)
+}
+
+/**
+ * fn(ledger) → the next ledger (or the same one), one call at a time. A next ledger becomes current only once stored,
+ * so what the page was told (`recorded`) always survives a restart. → the current ledger.
+ */
+function withLedger(fn) {
+  const run = saveLedgerChain.then(async () => {
+    if (!saveLedger) saveLedger = await loadSaveLedger()
+    const next = await fn(saveLedger)
+    if (next && next !== saveLedger) {
+      await storeSaveLedger(next)
+      saveLedger = next
+    }
+    return saveLedger
+  })
+  saveLedgerChain = run.catch(() => undefined)
+  return run
+}
+
+/** { size, sha256 } of a file as written (text = UTF-8, like fs.writeFile); hashed off the main thread. */
+async function digestOf(f) {
+  const data = f.bytes ? f.bytes : Buffer.from(f.text, 'utf8')
+  const sha256 = Buffer.from(await crypto.webcrypto.subtle.digest('SHA-256', data)).toString('hex')
+  return { size: data.byteLength, sha256 }
+}
+
+/** SHA-256 (hex) of a file on disk, streamed; rejects after `timeoutMs` or when `signal` aborts. */
+function hashSavedFile(p, timeoutMs, signal) {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const abort = signal ? AbortSignal.any([timeout, signal]) : timeout
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(p, { highWaterMark: 1024 * 1024, signal: abort })
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.once('error', reject)
+    stream.once('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+/** Record a group just written into `dir` for `owner` → its id, or false (not recorded: it can never be moved). */
+async function recordSavedGroup(dir, owner, names, files) {
+  try {
+    const digests = []
+    for (const f of files) digests.push(await digestOf(f))
+    const dirKey = folderKey(dir, path)
+    let id = ''
+    await withLedger((ledger) => {
+      do id = crypto.randomBytes(8).toString('hex')
+      while (ledger.groups.some((g) => g.id === id))
+      const group = ledgerGroup(dirKey, owner, names, digests, Date.now(), id, path)
+      if (!group) throw new Error('not recordable')
+      return ledgerWith(ledger, [group], [])
+    })
+    return id
+  } catch (e) {
+    console.warn('[SanoVids] saved files not recorded:', (e && e.message) || e)
+    return false
   }
 }
 
@@ -1334,10 +1791,71 @@ async function filesWriteToFolder(args) {
   if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục (đã đổi tên, chuyển hoặc xoá?).')
   const checked = checkSaveFiles(args.files)
   if (checked.error) return fileError('bad-request', checked.error)
+  let names
   try {
-    return { ok: true, names: await writeGroupExclusive(dir, checked.files, fs.promises, path) }
+    names = await writeGroupExclusive(dir, checked.files, fs.promises, path)
   } catch (e) {
     return fileError(e && e.code === 'ENOENT' ? 'missing' : 'write-failed', fsErrorText(e))
+  }
+  // With a valid owner the group is recorded BEFORE answering (so the page can hand its id back to files:trashSaved).
+  const owner = checkSaveOwner(args.owner)
+  if (!owner) return { ok: true, names }
+  return { ok: true, names, recorded: await recordSavedGroup(dir, owner, names, checked.files) }
+}
+
+/**
+ * Move the files a cut "video → Thư mục" wire had copied to the Recycle Bin (src/lib/saveFolders.ts trashSavedFiles).
+ * Only groups of the ledger: named by the page (groupIds), of this folder node and take, written into THIS allowlisted
+ * folder, never by 'autosave', and each file still exactly as written (trashSavedGroups). → { ok: true, results }
+ * (one per item: { takeId, unknown?, elsewhere?, files }) | { ok: false, code: 'bad-request' | 'not-allowed' | 'missing' }.
+ */
+async function filesTrashSaved(args) {
+  const checked = checkTrashArgs(args, path)
+  if (checked.error) return fileError('bad-request', checked.error)
+  if (!isAllowedFolder(loadSaveState().folders, checked.folderPath, path)) {
+    return fileError('not-allowed', 'Thư mục này chưa được chọn trên máy này.')
+  }
+  const dir = path.resolve(checked.folderPath)
+  if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục (đã đổi tên, chuyển hoặc xoá?).')
+  const dirKey = folderKey(dir, path)
+  const ledger = await withLedger((current) => current)
+  const picked = checked.items.map((item) => ({ item, ...selectTrashGroups(ledger, dirKey, checked.folderId, item) }))
+  const claimed = []
+  for (const p of picked) {
+    p.busy = p.groups.filter((g) => trashingIds.has(g.id))
+    p.groups = p.groups.filter((g) => !trashingIds.has(g.id))
+    for (const g of p.groups) {
+      trashingIds.add(g.id)
+      claimed.push(g.id)
+    }
+  }
+  try {
+    const out = await trashSavedGroups(dir, picked.flatMap((p) => p.groups), {
+      fsp: fs.promises,
+      hashFile: hashSavedFile,
+      trash: (p) => shell.trashItem(p),
+      pathMod: path,
+      signal: AbortSignal.timeout(SAVE_TRASH_WATCHDOG_MS),
+    })
+    try {
+      await withLedger((current) => ledgerWith(current, out.keep, out.removeIds))
+    } catch (e) {
+      // Not stored: the moved files read 'missing' next time and are dropped then.
+      console.warn('[SanoVids] saved-files ledger not updated:', (e && e.message) || e)
+    }
+    const filesOf = new Map(out.results.map((r) => [r.id, r.files]))
+    const results = picked.map(({ item, groups, busy, unknown, elsewhere }) => {
+      const files = groups.flatMap((g) => filesOf.get(g.id) || [])
+      // Being moved by another call right now: untouched here.
+      for (const g of busy) files.push({ name: g.files[0].name, role: g.primaryTrashed ? 'companion' : 'primary', result: 'failed' })
+      const r = { takeId: item.takeId, files }
+      if (unknown) r.unknown = true
+      if (elsewhere) r.elsewhere = true
+      return r
+    })
+    return { ok: true, results }
+  } finally {
+    for (const id of claimed) trashingIds.delete(id)
   }
 }
 
@@ -1406,6 +1924,7 @@ function registerFileBridge() {
   ipcMain.handle('files:pickFolder', guard((event) => filesPickFolder(winOf(event))))
   ipcMain.handle('files:folderStatus', guard((_event, args) => filesFolderStatus(args)))
   ipcMain.handle('files:writeToFolder', guard((_event, args) => filesWriteToFolder(args)))
+  ipcMain.handle('files:trashSaved', guard((_event, args) => filesTrashSaved(args)))
   ipcMain.handle('files:openFolder', guard((_event, args) => filesOpenFolder(args)))
   ipcMain.handle('files:saveAs', guard((event, args) => filesSaveAs(winOf(event), args)))
 }

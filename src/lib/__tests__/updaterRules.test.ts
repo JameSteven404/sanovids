@@ -9,6 +9,7 @@ import nodePath from 'node:path'
 import { describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import rulesSource from '../../../electron/updater-rules.cjs?raw'
 import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
 
@@ -91,6 +92,25 @@ interface Rules {
     exists: (p: string) => boolean
     pathMod: PathMod
   }): Kind
+  placement(o: {
+    platform: string
+    isPackaged: boolean
+    portableFile?: unknown
+    execPath: unknown
+    tmpDir: unknown
+    appName: string
+    exists: (p: string) => boolean
+    realpath?: unknown
+    pathMod: PathMod
+  }): Kind | 'temp-copy'
+  portableRelaunch(o: {
+    platform: string
+    isPackaged: boolean
+    portableFile?: unknown
+    appName: unknown
+    exists: (p: string) => boolean
+    pathMod: PathMod
+  }): { appId: string; appIconPath: string; appIconIndex: number; relaunchCommand: string; relaunchDisplayName: string } | null
   mapUpdaterError(err: unknown, phase: 'check' | 'download' | 'install'): UpdErr
   notesToText(notes: unknown): string
   normalizeInfo(info: unknown): Info | null
@@ -322,6 +342,103 @@ describe('updater rules: build kind', () => {
         exists: (p) => p === 'D:\\scratch\\install\\Uninstall SanoVidsUpdTest.exe',
       }),
     ).toBe('installer')
+  })
+})
+
+describe('updater rules: where the app runs from (app:placement)', () => {
+  const temp = 'C:\\Users\\minhm\\AppData\\Local\\Temp'
+  const shortTemp = 'C:\\Users\\MINHM~1\\AppData\\Local\\Temp'
+  const leftover = `${temp}\\nsyF6B5.tmp\\7z-out\\SanoVids.exe`
+  const installed = 'C:\\Users\\me\\AppData\\Local\\Programs\\sanovids\\SanoVids.exe'
+  /** fs.realpathSync.native stand-in: short names → long names (like Windows), unknown paths as they are. */
+  const realpath = (p: string) => p.replace(/^C:\\Users\\MINHM~1\\/i, 'C:\\Users\\minhm\\')
+  const base = { platform: 'win32', isPackaged: true, appName: 'SanoVids', pathMod: win, exists: () => false, realpath, tmpDir: shortTemp }
+
+  it('installer / portable / dev are exactly detectKind (= the updater state kind)', () => {
+    const cases = [
+      { ...base, execPath: installed, exists: (p: string) => p === installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe') },
+      { ...base, execPath: installed },
+      { ...base, execPath: installed, isPackaged: false },
+      { ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe`, portableFile: 'E:\\SanoVids-Portable-0.6.0.exe' },
+      { ...base, execPath: 'D:\\x\\SanoVids.exe', platform: 'linux' },
+    ]
+    for (const c of cases) expect(rules.placement(c), c.execPath).toBe(rules.detectKind(c as Parameters<Rules['detectKind']>[0]))
+    expect(rules.placement(cases[0])).toBe('installer')
+    expect(rules.placement(cases[2])).toBe('dev')
+  })
+
+  it('a leftover copy inside the temp folder (no PORTABLE_EXECUTABLE_FILE) → temp-copy, also through an 8.3 TEMP path', () => {
+    expect(rules.placement({ ...base, execPath: leftover })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: temp })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: leftover.toUpperCase(), tmpDir: temp })).toBe('temp-copy') // Windows paths ignore case
+    expect(rules.placement({ ...base, execPath: `${shortTemp}\\nsyF6B5.tmp\\7z-out\\SanoVids.exe` })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: `${temp}\\..foo\\SanoVids.exe` })).toBe('temp-copy') // a folder named "..foo" is inside
+  })
+
+  it('the real Portable (it sets PORTABLE_EXECUTABLE_FILE) is portable even though it runs from %TEMP%', () => {
+    expect(rules.placement({ ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe`, portableFile: 'E:\\USB\\SanoVids-Portable-0.6.0.exe' })).toBe('portable')
+  })
+
+  it('anything doubtful is plain portable, never temp-copy', () => {
+    expect(rules.placement({ ...base, execPath: 'D:\\Apps\\SanoVids\\SanoVids.exe' })).toBe('portable') // win-unpacked / a copied exe
+    expect(rules.placement({ ...base, execPath: `${temp}2\\SanoVids.exe` })).toBe('portable') // a sibling, not inside
+    expect(rules.placement({ ...base, execPath: temp })).toBe('portable') // the folder itself
+    expect(rules.placement({ ...base, execPath: leftover, realpath: () => { throw new Error('EACCES') } })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, realpath: undefined })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, realpath: () => 42 })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: '' })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: 'Temp' })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: undefined })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: '', tmpDir: temp })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: `${temp}\\x\u0000\\SanoVids.exe` })).toBe('portable')
+    // exists() throwing is detectKind's business: portable
+    expect(rules.placement({ ...base, execPath: installed, exists: () => { throw new Error('EACCES') } })).toBe('portable')
+  })
+
+  it('POSIX paths (case-sensitive)', () => {
+    const px = { ...base, platform: 'linux', pathMod: posix, realpath: (p: string) => p }
+    expect(rules.placement({ ...px, execPath: '/tmp/x/SanoVids', tmpDir: '/tmp' })).toBe('temp-copy')
+    expect(rules.placement({ ...px, execPath: '/TMP/x/SanoVids', tmpDir: '/tmp' })).toBe('portable')
+    expect(rules.placement({ ...px, execPath: '/opt/SanoVids/SanoVids', tmpDir: '/tmp' })).toBe('portable')
+  })
+})
+
+describe('updater rules: the portable window pins the portable .exe (setAppDetails)', () => {
+  const file = 'E:\\USB\\SanoVids-Portable-0.6.0.exe'
+  const base = { platform: 'win32', isPackaged: true, portableFile: file, appName: 'SanoVids', pathMod: win, exists: (p: string) => p === file }
+
+  it('a packaged win32 portable run → relaunch the portable file itself, with its icon and the app identity', () => {
+    expect(rules.portableRelaunch(base)).toEqual({
+      appId: 'com.sanovids.app',
+      appIconPath: file,
+      appIconIndex: 0,
+      relaunchCommand: `"${file}"`,
+      relaunchDisplayName: 'SanoVids',
+    })
+    const test = rules.portableRelaunch({ ...base, appName: 'SanoVidsIconTest' })
+    expect(test!.appId).toBe(rules.appUserModelId('SanoVidsIconTest'))
+    expect(test!.relaunchDisplayName).toBe('SanoVidsIconTest')
+    expect(rules.portableRelaunch({ ...base, portableFile: 'E:\\USB\\SANOVIDS.EXE', exists: () => true })!.relaunchCommand).toBe('"E:\\USB\\SANOVIDS.EXE"')
+  })
+
+  it('anything else → null (nothing set)', () => {
+    const bad = [
+      { ...base, platform: 'linux' },
+      { ...base, isPackaged: false },
+      { ...base, portableFile: undefined },
+      { ...base, portableFile: '' },
+      { ...base, portableFile: 42 },
+      { ...base, portableFile: 'SanoVids-Portable.exe', exists: () => true }, // relative
+      { ...base, portableFile: 'E:\\USB\\SanoVids-Portable.bat', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\SanoVids-Portable', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a" --inspect "b.exe', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a\r\nb.exe', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a\u0000.exe', exists: () => true },
+      { ...base, portableFile: `E:\\${'x'.repeat(1100)}.exe`, exists: () => true },
+      { ...base, exists: () => false }, // the portable file is gone
+      { ...base, exists: () => { throw new Error('EACCES') } },
+    ]
+    for (const b of bad) expect(rules.portableRelaunch(b), JSON.stringify(b.portableFile)?.slice(0, 60)).toBeNull()
   })
 })
 
@@ -1120,6 +1237,20 @@ describe('packaging guarantees (package.json, preload, main)', () => {
     expect(mainSource).not.toMatch(/forceDevUpdateConfig\s*=\s*true|setFeedURL\(/)
     // The guard sees through links (realpath) to the real folder.
     expect(mainSource).toContain('fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native }')
+  })
+
+  it('updater-rules.cjs requires nothing (main, updater and scripts share it; app.asar cannot resolve npm helpers from electron/)', () => {
+    const code = rulesSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code).not.toMatch(/\brequire\s*\(/)
+    expect(code).not.toMatch(/\bimport\s*\(/)
+  })
+
+  it('main.cjs: placement and the portable taskbar identity come from updater-rules (no path crosses to the page)', () => {
+    expect(mainSource.split('updaterRules.placement(').length - 1).toBe(1)
+    expect(mainSource.split('updaterRules.portableRelaunch(').length - 1).toBe(1)
+    expect(mainSource).toContain('realpath: fs.realpathSync.native,')
+    expect(mainSource).toContain('portableFile: process.env.PORTABLE_EXECUTABLE_FILE,')
+    expect(mainSource).toContain('win.setAppDetails(relaunch)')
   })
 
   it('main.cjs records the install-on-quit attempt in the app quit event (never for a vetoed quit)', () => {

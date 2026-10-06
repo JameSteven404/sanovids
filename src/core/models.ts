@@ -79,14 +79,27 @@ export function modeLabel(mode: Mode, model?: ModelId): string {
   return sendsImages ? label : label.replace(/\s*\(\+ảnh\)$/, '')
 }
 
+/**
+ * A model this build knows: an own key of MODELS (never an inherited name such as "constructor" or "toString", which a
+ * file of a newer build or from elsewhere may hold). Anything else is a newer build's model (see Scene.foreignModel).
+ */
+export function isModelId(v: unknown): v is ModelId {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(MODELS, v)
+}
+
+/** Badge of a scene / preset on a model of a newer SanoVids build (Scene.foreignModel): "veo_3_1 · bản mới hơn". */
+export const foreignModelBadge = (model: string): string => `${model} · bản mới hơn`
+/** The model picker's stand-in entry for that model while it is selected: "veo_3_1 (bản mới hơn)". */
+export const foreignModelOption = (model: string): string => `${model} (bản mới hơn)`
+
 export function costOf(s: VideoSettings): number {
-  const spec = MODELS[s.model]
+  const spec = isModelId(s.model) ? MODELS[s.model] : undefined
   return spec?.pricing[s.resolution]?.[s.duration] ?? 0
 }
 
-/** Clamp settings so they are valid for the chosen model. */
+/** Clamp settings so they are valid for the chosen model (an unknown model becomes Seedance 2.5). */
 export function normalizeSettings(s: Partial<VideoSettings> & { model?: ModelId }): VideoSettings {
-  const model: ModelId = s.model && MODELS[s.model] ? s.model : 'seedance_2_5'
+  const model: ModelId = isModelId(s.model) ? s.model : 'seedance_2_5'
   const spec = MODELS[model]
   const mode = s.mode && spec.modes.includes(s.mode) ? s.mode : spec.modes[0]
   const duration = s.duration && spec.durations.includes(s.duration) ? s.duration : spec.durations.includes(15) ? 15 : spec.durations[0]
