@@ -60,7 +60,9 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `PATCH /api/projects/{id} { name }` (`#renameProject`). SanoVids does the same for "SanoVids bridge" (a failed
   rename is ignored: the id is remembered locally).
 - `DELETE /api/projects/{id}` (not used by SanoVids).
-- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`).
+- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`). SanoVids reads it back
+  whenever it finds the bridge by name (after a logout, another account, a deleted remembered id…) before its first
+  `PUT`, so the nodes already there — those of running jobs among them — stay (`adoptBridgeCanvas`, mapping.ts).
 - `PUT /api/projects/{id}/canvas` — body exactly as `canvasPayload()` builds it, **no other key anywhere**:
   ```json
   { "nodes": [

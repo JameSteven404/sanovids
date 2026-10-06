@@ -4,11 +4,13 @@
 // submit:  read /api/video-profiles (cached; unreadable → canvasapp's fallbacks) and refuse what canvasapp's page
 //          would not run (H3 transform: also frames of different / unsupported ratios) → ensure the "SanoVids bridge"
 //          project (created once — POST without body, then PATCH its name, like canvasapp's own page — id
-//          remembered) → room on the bridge canvas next to the scenes whose jobs still run (their nodes are never
-//          taken off; no room → 'deferred': back to the queue, nothing sent) → check every reference image is on
-//          this computer → upload the missing ones (cache: SanoVids imageId → upload_id) → PUT a minimal bridge
-//          canvas (so canvas_node_id exists; its entries are remembered only once accepted; refused → once more
-//          without the scenes whose jobs have ended) → POST /api/video-jobs with
+//          remembered; found by name, e.g. after a logout: its canvas is read back first, GET /api/projects/{id}, so
+//          no PUT takes off a node already there — also when a job known to run is on a node not remembered here,
+//          e.g. made from another computer) → room on the bridge canvas next to the scenes whose jobs still run
+//          (their nodes are never taken off; no room → 'deferred': back to the queue, nothing sent) → check every
+//          reference image is on this computer → upload the missing ones (cache: SanoVids imageId → upload_id) → PUT
+//          a minimal bridge canvas (so canvas_node_id exists; its entries are remembered only once accepted; refused
+//          → once more without the scenes whose jobs have ended) → POST /api/video-jobs with
 //          client_request_id = clientRequestIdFor(take id), a UUID stable per take.
 //          Every body has exactly the client's shape (see mapping.ts and docs/canvasapp-api-notes.md).
 // poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
@@ -30,14 +32,15 @@ import { capabilitiesFromModels } from '../capabilities'
 import type { JobRequest, ProviderAvailability, ProviderCapabilities, ProviderId, RemoteStatus, SubmitOptions, VideoProvider } from '../types'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
+  adoptBridgeCanvas,
   ALLOWED_IMAGE_TYPES,
   BRIDGE_PROJECT_NAME,
   bridgeEntriesFrom,
-  canvasNodeId,
   clientRequestIdFor,
   decodeRemoteId,
   encodeRemoteId,
   entryFromRequest,
+  entryNodeId,
   imagesToUpload,
   inputShapeOf,
   jobIdFromCreateResponse,
@@ -50,6 +53,7 @@ import {
   transformFrameRatio,
   uploadFilename,
   validateRequest,
+  withEntry,
   type BridgeEntry,
 } from './mapping'
 
@@ -91,6 +95,11 @@ const CANVAS_NOT_SAVED_AFTER_LOST_TEXT =
  * off it): the take goes back to the queue (code 'deferred'), nothing was sent.
  */
 export const CANVAS_FULL_TEXT = 'Canvas cầu nối trên canvasapp đang kín chỗ bởi các cảnh còn đang chạy — chờ một video xong rồi tự gửi (chưa gửi, không bị trừ credit).'
+/**
+ * The bridge project was found by name (after a logout, …) and its canvas could not be read: without it a PUT could take
+ * a running job's node off, so none is sent. Followed by the cause; prefixed with CANVAS_NOT_SAVED_TEXT in the error.
+ */
+export const CANVAS_NOT_READ_TEXT = 'Không đọc được canvas cầu nối hiện có trên canvasapp (cần nó để giữ node của các video đang tạo):'
 /** Job statuses after which a job no longer needs its node on the bridge canvas. */
 const ENDED_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'expired'])
 /** Appended to a refusal decided with canvasapp's fallback profiles (/api/video-profiles could not be read). */
@@ -167,9 +176,15 @@ interface GatewayState {
   projectId: string | null
   /** SanoVids media-store imageId → canvasapp upload_id */
   uploads: Record<string, string>
-  /** sceneId → bridge entry */
+  /**
+   * The canvas of `projectId` as last accepted: sceneId → bridge entry (adoptedKey(node id) for a node read back from
+   * canvasapp's canvas). Always of the same account and project as `projectId`: forgotten with it, read back with it.
+   */
   entries: Record<string, BridgeEntry>
 }
+
+/** The bridge canvas could not be read back (canvasEntries). */
+class CanvasUnreadError extends CanvasappError {}
 
 /** A POST /api/video-jobs that was sent and whose answer is not known (yet). */
 interface SentRecord {
@@ -253,6 +268,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const lists = new Map<string, { at: number; jobs: CanvasJob[] }>()
   /** Last job list read per bridge project, kept when the cache above is dropped: which jobs still run. */
   const lastLists = new Map<string, { at: number; jobs: CanvasJob[] }>()
+  /** When the bridge canvas of a project was last read back (GET /api/projects/{id}). */
+  const readBack = new Map<string, number>()
   /** A job of the ledger that a job-list read does not show (yet): still treated as running this long after it was made. */
   const unlistedGraceMs = (MAX_MISSES + 1) * pollMs
   const misses = new Map<string, number>()
@@ -311,12 +328,37 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   }
 
   /**
-   * Scenes (bridge entry keys) whose canvas node a job may still need: the jobs not ended in the last job-list read
-   * (read again when older than MIN_POLL_MS; node = the job's canvas_node_id, else the one the ledger recorded), plus
-   * the ledger's jobs that read does not show — made after it, or not listed yet for a short while.
+   * Video nodes of the bridge canvas a job may still need according to `list` (a job-list read of the project): its
+   * jobs not ended (node = the job's canvas_node_id, else the one the ledger recorded), plus the ledger's jobs it does
+   * not show — made after it, or not listed yet for a short while. No read: those recent ledger jobs only.
+   */
+  function runningIn(projectId: string, list: { at: number; jobs: CanvasJob[] } | undefined): Set<string> {
+    /** This computer's jobs on that project (ledger): job id → node, when it was made. */
+    const mine = new Map<string, { nodeId?: string; at: number }>()
+    for (const rec of Object.values(ledger.jobs)) {
+      const d = decodeRemoteId(rec.remoteId)
+      if (d?.projectId === projectId) mine.set(d.jobId, { nodeId: rec.nodeId, at: rec.at })
+    }
+    const nodes = new Set<string>()
+    const listed = new Set<string>()
+    for (const j of list?.jobs ?? []) {
+      listed.add(j.job_id)
+      if (ENDED_JOB_STATUSES.has(String(j.status))) continue
+      const node = typeof j.canvas_node_id === 'string' ? j.canvas_node_id : mine.get(j.job_id)?.nodeId
+      if (node) nodes.add(node)
+    }
+    for (const [jobId, m] of mine) {
+      if (!m.nodeId || listed.has(jobId)) continue
+      if ((list && m.at >= list.at) || now() - m.at < unlistedGraceMs) nodes.add(m.nodeId)
+    }
+    return nodes
+  }
+
+  /**
+   * runningIn the last job-list read, read again when older than MIN_POLL_MS.
    * null = unknown (no list could be read). Throws when the login is needed.
    */
-  async function runningScenes(projectId: string): Promise<Set<string> | null> {
+  async function runningNodes(projectId: string): Promise<Set<string> | null> {
     let list = lastLists.get(projectId)
     if (!list || now() - list.at >= MIN_POLL_MS) {
       try {
@@ -327,26 +369,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         // unreadable now: an older read (plus the jobs made since) is better than nothing
       }
     }
-    if (!list) return null
-    /** This computer's jobs on that project (ledger): job id → node, when it was made. */
-    const mine = new Map<string, { nodeId?: string; at: number }>()
-    for (const rec of Object.values(ledger.jobs)) {
-      const d = decodeRemoteId(rec.remoteId)
-      if (d?.projectId === projectId) mine.set(d.jobId, { nodeId: rec.nodeId, at: rec.at })
-    }
-    const nodes = new Set<string>()
-    const listed = new Set<string>()
-    for (const j of list.jobs) {
-      listed.add(j.job_id)
-      if (ENDED_JOB_STATUSES.has(String(j.status))) continue
-      const node = typeof j.canvas_node_id === 'string' ? j.canvas_node_id : mine.get(j.job_id)?.nodeId
-      if (node) nodes.add(node)
-    }
-    for (const [jobId, m] of mine) {
-      if (!m.nodeId || listed.has(jobId)) continue
-      if (m.at >= list.at || now() - m.at < unlistedGraceMs) nodes.add(m.nodeId)
-    }
-    return new Set(Object.keys(state.entries).filter((sceneId) => nodes.has(canvasNodeId(sceneId))))
+    return list ? runningIn(projectId, list) : null
   }
   function markSent(key: string, rec: SentRecord) {
     saveLedger({ ...ledger, sent: { ...ledger.sent, [key]: rec } })
@@ -357,14 +380,58 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     saveLedger({ ...ledger, sent })
   }
 
+  /**
+   * The bridge canvas as canvasapp saved it, as entries (adoptBridgeCanvas): every node already there, those of the
+   * jobs still running among them. Throws CanvasUnreadError when it cannot be read — then nothing may be PUT.
+   */
+  async function canvasEntries(projectId: string): Promise<Record<string, BridgeEntry>> {
+    const at = now()
+    let entries: Record<string, BridgeEntry> | null
+    try {
+      const project: unknown = await api.getProject(projectId)
+      entries = project && typeof project === 'object' && !Array.isArray(project) ? adoptBridgeCanvas((project as { canvas?: unknown }).canvas) : null
+    } catch (e) {
+      if (!(e instanceof CanvasappError) || isLoginRequired(e)) throw e
+      throw new CanvasUnreadError(e.code, `${CANVAS_NOT_READ_TEXT} ${e.message}`, { status: e.status, detail: e.detail })
+    }
+    if (!entries) throw new CanvasUnreadError('bad-response', `${CANVAS_NOT_READ_TEXT} canvas trả về không đúng định dạng mong đợi [GET /api/projects/{id}].`)
+    readBack.set(projectId, at)
+    return entries
+  }
+
+  /**
+   * Nodes the ledger or the last job-list read (none is made for this) says a job still needs but the remembered canvas
+   * does not hold — a job made on this account from another computer, …: the canvas is read back and those nodes kept,
+   * so the next PUT does not take them off. Nothing missing (the usual case) → no request. Not read again when the
+   * last read is newer than that job-list read: a node it did not show is not on the canvas.
+   */
+  async function keepRunningNodes(projectId: string) {
+    const held = new Set(Object.values(state.entries).map(entryNodeId))
+    const list = lastLists.get(projectId)
+    const unheld = [...runningIn(projectId, list)].filter((n) => !held.has(n))
+    if (!unheld.length) return
+    const read = readBack.get(projectId)
+    if (read !== undefined && read >= (list?.at ?? -Infinity)) return
+    const back = Object.values(await canvasEntries(projectId)).filter((e) => unheld.includes(entryNodeId(e)))
+    if (!back.length) return
+    state = { ...state, entries: { ...Object.fromEntries(back.map((e) => [e.sceneId, e])), ...state.entries } }
+    save()
+  }
+
   async function ensureProject(): Promise<string> {
     if (state.projectId) return state.projectId
     if (!ensuring) {
       ensuring = (async () => {
         const existing = (await api.listProjects()).find((p) => p.name === BRIDGE_PROJECT_NAME)
+        // Found by name (after a logout or a login to another account, a deleted remembered id, another computer…):
+        // what is on its canvas is not known here — the entries remembered here (if any) belong to a forgotten
+        // session. Read it back, so the next PUT keeps every node there, the nodes of jobs still running among them
+        // (whether canvasapp cancels or loses a job whose node leaves the canvas is not known). The id is remembered
+        // only together with it: unreadable → nothing remembered, nothing PUT.
+        const entries = existing ? await canvasEntries(existing.project_id) : {}
         // canvasapp's page creates a project with an empty POST and names it with PATCH {name} ("Đổi tên phiên").
         const id = existing?.project_id ?? (await api.createProject())
-        state = { ...state, projectId: id, entries: existing ? state.entries : {} }
+        state = { ...state, projectId: id, entries }
         save()
         if (!existing) {
           try {
@@ -599,30 +666,41 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const problems = validateRequest(req, known.list)
     if (problems.length) throw new CanvasappError('unsupported', [...problems, ...(known.ok ? [] : [PROFILES_FALLBACK_TEXT])].join(' '))
     const frameRatio = await transformRatio(req)
-    let projectId = await ensureProject()
+    /** Nothing billable was sent this time: say so, and which step failed (the login message stays as it is). */
+    const notSaved = (e: unknown) => {
+      if (!(e instanceof CanvasappError) || isLoginRequired(e) || e.code === 'cancelled' || e.code === 'deferred') return e
+      const text = earlier ? CANVAS_NOT_SAVED_AFTER_LOST_TEXT : CANVAS_NOT_SAVED_TEXT
+      return new CanvasappError(e.code, `${text} ${e.message}`, { status: e.status, detail: e.detail, noCredit: e.noCredit })
+    }
+    const unread = (e: unknown) => {
+      throw e instanceof CanvasUnreadError ? notSaved(e) : e
+    }
+    let projectId = await ensureProject().catch(unread)
+    await keepRunningNodes(projectId).catch(unread)
     checkCancelled()
     // The bridge canvas holds one video node per scene. A scene whose job may still run keeps its node — whether
     // canvasapp cancels or loses a job whose node leaves the canvas is not known — so only the other scenes may be
-    // left out to make room. Which scenes run is only looked up when something has to be left out.
-    let running: Set<string> | null = null
-    const runningNow = async () => {
-      // unknown (job list unreadable): every remembered scene counts as running — nothing is taken off
-      running ??= (await runningScenes(projectId)) ?? new Set(Object.keys(state.entries))
-      return running
+    // left out to make room. Which nodes run is only looked up when something has to be left out.
+    let running: { nodes: Set<string> | null } | null = null
+    const runningNow = async () => (running ??= { nodes: await runningNodes(projectId) }).nodes
+    /** Keys of `entries` whose node a job may still need — all of them when that is unknown (job list unreadable). */
+    const keepOf = async (entries: Record<string, BridgeEntry>) => {
+      const nodes = await runningNow()
+      return new Set(Object.keys(entries).filter((k) => !nodes || nodes.has(entryNodeId(entries[k]))))
     }
     /** Canvas of `entries`: this scene first, every running scene kept; null = they do not all fit. */
     const canvasOf = async (entries: Record<string, BridgeEntry>) => {
       const list = Object.values(entries)
       const all = planBridgeCanvas(list, { current: req.sceneId })
       if (!all.dropped.length) return all.canvas
-      const plan = planBridgeCanvas(list, { current: req.sceneId, keep: await runningNow() })
+      const plan = planBridgeCanvas(list, { current: req.sceneId, keep: await keepOf(entries) })
       return plan.missing.length ? null : plan.canvas
     }
     const noRoom = () => new CanvasappError('deferred', CANVAS_FULL_TEXT)
     // Room first, before anything is uploaded (pictures not uploaded yet count as new image nodes): none → the take
     // goes back to the queue and is tried again once a running job has ended. Nothing sent.
     const draft = entryFromRequest(req, (imageId) => state.uploads[imageId] ?? `pending:${imageId}`, now(), frameRatio)
-    if (!(await canvasOf({ ...state.entries, [req.sceneId]: draft }))) throw noRoom()
+    if (!(await canvasOf(withEntry(state.entries, draft)))) throw noRoom()
     checkCancelled()
     await uploadMissing(req, checkCancelled)
     const entry = entryFromRequest(req, uploadIdFor, now(), frameRatio)
@@ -636,36 +714,37 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     }
     try {
       try {
-        await putCanvas({ ...state.entries, [req.sceneId]: entry })
+        await putCanvas(withEntry(state.entries, entry))
       } catch (e) {
         if (e instanceof CanvasappError && e.code === 'not-found') {
-          // The remembered bridge project was deleted on canvasapp → create/find it again once.
+          // The remembered bridge project was deleted on canvasapp → create/find it again once (a bridge found by
+          // name has its canvas read back first) and look up again which of its nodes run.
           state = { ...state, projectId: null, entries: {} }
           save()
-          running = new Set()
+          running = null
           projectId = await ensureProject()
-          await putCanvas({ ...state.entries, [req.sceneId]: entry })
+          await putCanvas(withEntry(state.entries, entry))
         } else if (e instanceof CanvasappError && e.code === 'bad-request') {
           // Refused: an older scene's node may be what canvasapp does not accept now (expired upload, changed
           // rules…). A PUT is free → once more without the scenes that may go: this one and the running ones only
           // (a running job keeps its node). Accepted → the others are dropped. Nothing may go → the refusal stands.
-          const keep = await runningNow()
-          const others = Object.keys(state.entries).filter((k) => k !== req.sceneId)
-          if (others.every((k) => keep.has(k))) throw e
-          const kept = Object.fromEntries(Object.entries(state.entries).filter(([k]) => k !== req.sceneId && keep.has(k)))
-          await putCanvas({ ...kept, [req.sceneId]: entry })
+          const keep = await keepOf(state.entries)
+          const node = entryNodeId(entry)
+          const others = Object.entries(state.entries).filter(([k, e]) => k !== req.sceneId && entryNodeId(e) !== node)
+          if (others.every(([k]) => keep.has(k))) throw e
+          await putCanvas(withEntry(Object.fromEntries(others.filter(([k]) => keep.has(k))), entry))
         } else throw e
       }
     } catch (e) {
-      // Nothing billable was sent this time: say so, and which step failed (the login message stays as it is).
-      if (!(e instanceof CanvasappError) || isLoginRequired(e) || e.code === 'cancelled' || e.code === 'deferred') throw e
-      const text = earlier ? CANVAS_NOT_SAVED_AFTER_LOST_TEXT : CANVAS_NOT_SAVED_TEXT
-      throw new CanvasappError(e.code, `${text} ${e.message}`, { status: e.status, detail: e.detail, noCredit: e.noCredit })
+      throw notSaved(e)
     }
     // Last chance to stop: the POST below is what canvasapp bills.
     checkCancelled()
     const body = toVideoJobBody(req, { projectId, uploadIdFor, generateAudio: deps.generateAudio?.() ?? true })
-    return postJob(req, body, opts, !!earlier, async () => (await runningNow()).has(req.sceneId))
+    return postJob(req, body, opts, !!earlier, async () => {
+      const nodes = await runningNow()
+      return !nodes || nodes.has(entryNodeId(entry))
+    })
   }
 
   async function jobsOf(projectId: string): Promise<CanvasJob[]> {
@@ -793,11 +872,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // only stops tracking; the job keeps running (and costing) on canvasapp.
 
     // The job ledger (JOBS_KEY) is kept: it is what proves a take was already paid for after logging in again.
+    // The bridge entries go with the session (they may be of another account than the next login's — never PUT into
+    // its canvas): the next submit finds the bridge by name and reads its canvas back first (ensureProject), so the
+    // nodes of jobs still running stay on it.
     reset: () => {
       state = { projectId: null, uploads: {}, entries: {} }
       storage.remove(STATE_KEY)
       lists.clear()
       lastLists.clear()
+      readBack.clear()
       misses.clear()
       profiles = null
       profilesRead = null

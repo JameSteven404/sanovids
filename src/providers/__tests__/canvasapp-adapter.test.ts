@@ -11,6 +11,7 @@ import {
   type TransportResponse,
 } from '../canvasapp/api'
 import {
+  CANVAS_NOT_READ_TEXT,
   CANVAS_NOT_SAVED_TEXT,
   createCanvasappProvider,
   JOBS_KEY,
@@ -20,7 +21,7 @@ import {
   PROFILES_TTL_MS,
   STATE_KEY,
 } from '../canvasapp/adapter'
-import { BRIDGE_PROJECT_NAME, canvasNodeId, clientRequestIdFor, isUuid } from '../canvasapp/mapping'
+import { adoptedKey, BRIDGE_PROJECT_NAME, canvasNodeId, clientRequestIdFor, isUuid } from '../canvasapp/mapping'
 import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/transport'
 import type { JobRequest } from '../types'
 
@@ -58,6 +59,11 @@ function fakeServer(opts: { authenticated?: boolean; projects?: { project_id: st
         return json({ project_id: p.project_id })
       }
       const one = /^\/api\/projects\/([^/]+)$/.exec(path)
+      if (one && req.method === 'GET') {
+        const p = state.projects.find((x) => x.project_id === one[1])
+        if (!p) return json({ detail: 'Project not found' }, 404)
+        return json({ project_id: p.project_id, name: p.name, canvas: state.canvases.get(p.project_id) ?? null })
+      }
       if (one && req.method === 'PATCH') {
         const p = state.projects.find((x) => x.project_id === one[1])
         if (!p) return json({ detail: 'Project not found' }, 404)
@@ -341,6 +347,101 @@ describe('canvasapp adapter', () => {
     expect(provider.bridgeProjectId()).toBeNull()
     expect(provider.uploadCacheSize()).toBe(0)
     expect(storage.get(STATE_KEY)).toBeNull()
+  })
+
+  it('after reset() (logout → login) the bridge canvas is read back before the next PUT: a running job keeps its node', async () => {
+    const server = fakeServer()
+    const { provider, storage, clock } = setup(server)
+    await provider.submit(req()) // scene A: job1 keeps running (queued), pictures up1 + up2
+    const before = server.state.canvases.get('proj1') as CanvasPayload
+    provider.reset()
+    clock.t += 60_000
+    const b = await provider.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [{ n: 1, assetId: 'b', imageId: 'img_b' }], prompt: '@image_1' }))
+    expect(b.remoteId).toBe('proj1:job2')
+    expect(server.state.projects).toHaveLength(1) // found again by name, not created twice
+    const calls = server.calls.map((c) => `${c.method} ${c.path}`)
+    expect(calls.lastIndexOf('GET /api/projects/proj1')).toBeGreaterThan(calls.lastIndexOf('GET /api/projects'))
+    expect(calls.lastIndexOf('GET /api/projects/proj1')).toBeLessThan(calls.lastIndexOf('PUT /api/projects/proj1/canvas'))
+    const after = server.state.canvases.get('proj1') as CanvasPayload
+    const videos = (c: CanvasPayload) => c.nodes.filter((n) => n.type === 'video')
+    expect(videos(after).map((n) => n.id)).toEqual([canvasNodeId('scene_b'), canvasNodeId('scene_a')])
+    // scene A's node exactly as it was, still wired to its pictures in @image order
+    expect(videos(after)[1].data).toEqual(videos(before)[0].data)
+    expect(uploadsIn(server.calls.filter(isPut).at(-1)!)).toEqual(['up3', 'up1', 'up2'])
+    expect(after.connections.filter((c) => c.to === canvasNodeId('scene_a')).map((c) => c.order)).toEqual([1, 2])
+    expect(savedEntries(storage)).toEqual([adoptedKey(canvasNodeId('scene_a')), 'scene_b'])
+
+    // scene A again while job1 still runs, its job refused: its node (now its own entry again, never two) stays
+    let refuse = 1
+    server.state.extra = (r) => (r.method === 'POST' && r.path === '/api/video-jobs' && refuse-- > 0 ? json({ detail: 'unknown upload_id' }, 400) : undefined)
+    await expect(provider.submit(req({ key: 'take_a2', takeId: 'take_a2' }))).rejects.toMatchObject({ code: 'bad-request' })
+    expect(videos(server.state.canvases.get('proj1') as CanvasPayload).map((n) => n.id)).toEqual([canvasNodeId('scene_a'), canvasNodeId('scene_b')])
+    expect(savedEntries(storage)).toEqual(['scene_b', 'scene_a'])
+    await provider.submit(req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_c', images: [], prompt: 'mưa' }))
+    expect(videos(server.state.canvases.get('proj1') as CanvasPayload).map((n) => n.id).sort()).toEqual(['scene_a', 'scene_b', 'scene_c'].map(canvasNodeId).sort())
+    expect(server.state.jobs).toHaveLength(3)
+  })
+
+  it('a bridge canvas that cannot be read back is never overwritten: no PUT, no job, nothing remembered — read again next time', async () => {
+    const server = fakeServer()
+    const { provider, storage } = setup(server)
+    await provider.submit(req()) // job1 keeps running on scene A
+    provider.reset()
+    const sceneB = () => req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [], prompt: 'mưa' })
+    const isGet = (r: TransportRequest) => r.method === 'GET' && r.path === '/api/projects/proj1'
+    const puts = server.calls.filter(isPut).length
+
+    server.state.extra = (r) => (isGet(r) ? json({ detail: 'boom' }, 500) : undefined)
+    const failed = provider.submit(sceneB())
+    await expect(failed).rejects.toMatchObject({ code: 'server' })
+    const message = (await failed.catch((e: Error) => e.message)) as string
+    expect(message.startsWith(`${CANVAS_NOT_SAVED_TEXT} ${CANVAS_NOT_READ_TEXT}`)).toBe(true)
+    expect(message).toContain('[GET /api/projects/{id} · HTTP 500]')
+    // an answer of another shape: unreadable too
+    server.state.extra = (r) => (isGet(r) ? json({ canvas: { nodes: 'x' } }) : undefined)
+    await expect(provider.submit(sceneB())).rejects.toMatchObject({ code: 'bad-response', message: expect.stringContaining(CANVAS_NOT_READ_TEXT) })
+    // the login message stays as it is
+    server.state.extra = (r) => (isGet(r) ? json({ detail: 'Not authenticated' }, 401) : undefined)
+    await expect(provider.submit(sceneB())).rejects.toMatchObject({ code: 'login-required', message: expect.not.stringContaining(CANVAS_NOT_SAVED_TEXT) })
+    expect(server.calls.filter(isPut).length).toBe(puts)
+    expect(server.state.jobs).toHaveLength(1)
+    expect(provider.bridgeProjectId()).toBeNull()
+    expect(storage.get(STATE_KEY)).toBeNull()
+
+    server.state.extra = null
+    expect((await provider.submit(sceneB())).remoteId).toBe('proj1:job2')
+    expect((server.state.canvases.get('proj1') as CanvasPayload).nodes.map((n) => n.id)).toContain(canvasNodeId('scene_a'))
+  })
+
+  it('a job the last job-list read shows running on a node this computer does not hold (another computer): read back and kept', async () => {
+    const server = fakeServer()
+    const { provider, clock } = setup(server)
+    const a = await provider.submit(req()) // scene A on proj1
+    // another computer on the same account puts its own scene on the bridge and runs a job on it
+    const elsewhere = canvasNodeId('scene_elsewhere')
+    const saved = server.state.canvases.get('proj1') as CanvasPayload
+    const data = { model_profile: 'seedance_2_5', duration: 5, resolution: '480p', aspect_ratio: '16:9', mode: 't2v', prompt: 'ở máy khác' }
+    server.state.canvases.set('proj1', { ...saved, nodes: [...saved.nodes, { id: elsewhere, type: 'video', x: 0, y: 2000, w: 390, h: 600, data }] })
+    server.state.extra = (r) =>
+      r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+        ? json([
+            { job_id: 'job1', status: 'queued', canvas_node_id: canvasNodeId('scene_a') },
+            { job_id: 'other', status: 'processing', canvas_node_id: elsewhere },
+          ])
+        : undefined
+    clock.t += MIN_POLL_MS
+    await provider.poll([a.remoteId]) // the engine's poll: the job list is read
+    const reads = () => server.calls.filter((c) => c.method === 'GET' && c.path === '/api/projects/proj1').length
+    const videos = () => (server.state.canvases.get('proj1') as CanvasPayload).nodes.filter((n) => n.type === 'video').map((n) => n.id)
+    expect(reads()).toBe(0)
+    await provider.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [], prompt: 'mưa' }))
+    expect(reads()).toBe(1)
+    expect(videos().sort()).toEqual([canvasNodeId('scene_a'), canvasNodeId('scene_b'), elsewhere].sort())
+    expect((server.state.canvases.get('proj1') as CanvasPayload).nodes.find((n) => n.id === elsewhere)?.data).toEqual(data)
+    // held from now on: not read again
+    await provider.submit(req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_c', images: [], prompt: 'nắng' }))
+    expect(reads()).toBe(1)
+    expect(videos()).toContain(elsewhere)
   })
 
   it('a key that already got its job is never posted again (also after a restart, also after logout)', async () => {
