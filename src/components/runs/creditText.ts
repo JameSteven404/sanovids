@@ -5,7 +5,8 @@
 // failure / cancel by SanoVids itself).
 import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
-import { providerOf } from '../../providers/types'
+import { PROVIDER_LABEL } from '../../providers'
+import { providerOf, type ProviderId } from '../../providers/types'
 import { isUncertainSubmit } from '../../store/runs'
 
 /** Wallet a take was paid from: its provider decides, never the provider chosen now. */
@@ -106,4 +107,51 @@ export function runCostPreview(kind: CreditKind, total: number, balance: number 
   const after = before === null ? null : before - total
   const below = after !== null && after < 0
   return { kind, total, before, after, short: kind === 'demo' && below, mayBeShort: kind !== 'demo' && below }
+}
+
+// ---- "Huỷ" of a running take (actions.cancelTake: queue row, Xem take) ----
+
+/** What "Huỷ" concerns, read at click time. */
+export interface CancelFacts {
+  /** "S03·T2" */
+  label: string
+  provider: ProviderId
+  status: 'queued' | 'processing'
+  cost: number
+  /** Paid with old demo credits (SanoVids refunds them). */
+  demoPaid: boolean
+  /** The site has the job (it runs there, or is done). */
+  sentAway: boolean
+  /** The site's job is finished (paid) and SanoVids is downloading its video, or waits to try again (runs.remoteVideoReady). */
+  videoReady: boolean
+}
+
+/**
+ * The question before "Huỷ" drops a video that is already made and paid (null = nothing to ask): cancelling only
+ * stops SanoVids tracking the take — the video stays on the site, re-running the scene pays again.
+ */
+export function cancelQuestion(f: CancelFacts): string | null {
+  if (!f.videoReady || f.status !== 'processing' || f.provider === 'mock') return null
+  return f.provider === 'dev'
+    ? `${f.label}: video đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.\nVẫn huỷ?`
+    : `${f.label}: video đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.\nVẫn huỷ?`
+}
+
+/** The toast once "Huỷ" went through. */
+export function cancelToastText(f: CancelFacts): { text: string; warning: boolean } {
+  const site = PROVIDER_LABEL[f.provider]
+  if (f.demoPaid) return { text: `Đã huỷ ${f.label} · hoàn ${formatCredits(f.cost, 'demo')}.`, warning: false }
+  if (f.videoReady && f.status === 'processing' && f.provider !== 'mock') {
+    return {
+      text:
+        f.provider === 'dev'
+          ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển.`
+          : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
+      warning: true,
+    }
+  }
+  if (f.sentAway) return { text: `Đã huỷ ${f.label} trong SanoVids — job đã gửi sang ${site} vẫn chạy ở đó.`, warning: true }
+  // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
+  if (f.status === 'processing') return { text: `Đã huỷ ${f.label} lúc đang gửi sang ${site} — nếu job đã được nhận thì có thể đã trừ credit.`, warning: true }
+  return { text: `Đã huỷ ${f.label}.`, warning: false }
 }

@@ -6,8 +6,9 @@ import { refVideosProblem } from './core/runGate'
 import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
-import { creditKindOf, formatCredits } from './lib/credits'
+import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
 import { activeProviderId, getProvider, providerOf } from './providers'
+import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
@@ -27,7 +28,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
-import { isUncertainSubmit, useRuns } from './store/runs'
+import { isUncertainSubmit, remoteVideoReady, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -545,6 +546,32 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   if (!res) return
   if (res.error) toast(res.error, { tone: 'error' })
   else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
+}
+
+/**
+ * "Huỷ" of a queued / running take (queue row, Xem take). When its video is already made and paid (the site's job is
+ * finished, SanoVids is downloading it or waits to try again) it asks first: cancelling drops that video in SanoVids.
+ * Then cancels and says what it means for the credits. Returns false when nothing was cancelled.
+ */
+export function cancelTake(takeId: string): boolean {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take || (take.status !== 'queued' && take.status !== 'processing')) return false
+  const demoPaid = chargedDemo(take)
+  const facts: CancelFacts = {
+    label: takeLabel(takeId),
+    provider: providerOf(take),
+    status: take.status,
+    cost: take.cost,
+    demoPaid,
+    sentAway: !demoPaid && !!take.remoteId,
+    videoReady: remoteVideoReady(takeId),
+  }
+  const question = cancelQuestion(facts)
+  if (question && !window.confirm(question)) return false
+  useRuns.getState().cancel(takeId)
+  const said = cancelToastText(facts)
+  toast(said.text, said.warning ? { tone: 'warning', ms: 7000 } : {})
+  return true
 }
 
 /** Enqueue immediately (used by the confirm dialog). */

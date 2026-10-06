@@ -53,8 +53,9 @@ export interface Transport {
   available(): Promise<ProviderAvailability>
   request(req: TransportRequest): Promise<TransportResponse>
   /**
-   * A binary GET (the video stream) without holding it in one message: pieces, progress, abort, resume. Optional:
-   * without it fetchVideo uses request({ binary: true }).
+   * A binary GET (the video stream) without holding it in one message: pieces, progress, abort, resume. The desktop
+   * transport always has it (main refuses the stream through request()); in-memory test transports may leave it out,
+   * then fetchVideo uses request({ binary: true }).
    */
   download?(req: TransportRequest, opts?: DownloadOptions): Promise<TransportDownload>
 }
@@ -75,6 +76,7 @@ export type CanvasappErrorCode =
   | 'cancelled'
   | 'aborted'
   | 'too-large'
+  | 'too-slow'
 
 export class CanvasappError extends Error {
   readonly code: CanvasappErrorCode
@@ -113,6 +115,7 @@ const CODE_TEXT: Record<CanvasappErrorCode, string> = {
   deferred: 'Chưa gửi sang canvasapp (chờ lượt sau) — không bị trừ credit.',
   aborted: 'Đã dừng tải video.',
   'too-large': 'Video quá lớn để SanoVids tải về.',
+  'too-slow': 'Tải video quá lâu nên SanoVids dừng lại.',
 }
 
 /** Shown when canvasapp refuses a job for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance). */

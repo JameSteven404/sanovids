@@ -18,15 +18,16 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
+import { cancelTake, deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
-import { chargedDemo, CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { CREDIT_MARK, formatCredits } from '../../lib/credits'
+import { PROVIDER_LABEL } from '../../providers'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
+import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { activeFaultCount } from '../dev/devModel'
@@ -322,18 +323,10 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
       setSaving(false)
     }
   }
-  const cancel = () => {
-    const label = `${code} · T${take.number}`
-    const demoPaid = chargedDemo(take)
-    const sentAway = !demoPaid && !!take.remoteId
-    useRuns.getState().cancel(take.id)
-    if (demoPaid) toast(`Đã huỷ ${label} · hoàn ${formatCredits(take.cost, 'demo')}.`)
-    else if (sentAway) toast(`Đã huỷ ${label} trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[providerOf(take)]} vẫn chạy ở đó.`, { tone: 'warning', ms: 7000 })
-    else if (!demoPaid && take.status === 'processing') {
-      // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
-      toast(`Đã huỷ ${label} lúc đang gửi sang ${PROVIDER_LABEL[providerOf(take)]} — nếu job đã được nhận thì có thể đã trừ credit.`, { tone: 'warning', ms: 7000 })
-    } else toast(`Đã huỷ ${label}.`)
-  }
+  // The finished video is downloading: its own progress ("tải 45%"), and "Huỷ" asks first (actions.cancelTake).
+  const downloading = useTakeTransfers((s) => take.id in s.byTake)
+  const downloadPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
+  const shownPct = take.status === 'queued' ? 0 : downloading ? (downloadPct ?? take.progress) : take.progress
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -372,13 +365,16 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         <StatusBadge take={take} showProgress={false} />
         {active && (
           <span className="progress">
-            <i style={{ width: `${take.status === 'queued' ? 0 : take.progress}%` }} />
+            <i style={{ width: `${shownPct}%` }} />
           </span>
         )}
       </div>
 
-      <span className="rq-row-time mono" title={take.status === 'queued' ? 'Thời gian chờ' : 'Thời gian tạo'}>
-        {take.status === 'processing' ? `${take.progress}% · ` : ''}
+      <span
+        className="rq-row-time mono"
+        title={take.status === 'queued' ? 'Thời gian chờ' : downloading ? 'Video đã tạo xong, đang tải về máy · thời gian tạo' : 'Thời gian tạo'}
+      >
+        {take.status === 'processing' ? (downloading ? `tải ${downloadPct === null ? '…' : `${downloadPct}%`} · ` : `${take.progress}% · `) : ''}
         {formatDuration(elapsed)}
       </span>
 
@@ -389,7 +385,12 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
 
       <div className="rq-row-actions">
         {active && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} title={`Huỷ ${code} · T${take.number}`}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => cancelTake(take.id)}
+            title={downloading ? `Huỷ ${code} · T${take.number} — video đã tạo xong (đã trừ credit), SanoVids hỏi trước khi bỏ` : `Huỷ ${code} · T${take.number}`}
+          >
             <CircleStop size={13} />
             <span className="rq-act-label">Huỷ</span>
           </button>

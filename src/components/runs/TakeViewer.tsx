@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, defaultTakeFileBase, deleteTakes, downloadTake, focusNodes, linkTakes, openDevPanel, renameTake, rerunTake, takeFileBase } from '../../actions'
+import { cancelTake, createSceneFromTake, defaultTakeFileBase, deleteTakes, downloadTake, focusNodes, linkTakes, openDevPanel, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
 import type { Asset, Scene, Take } from '../../core/types'
@@ -466,6 +466,8 @@ function BusyButton({ take }: { take: Take }) {
 function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const videoUrl = useMediaUrl(take.videoId)
   const posterUrl = useMediaUrl(take.posterId)
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[take.id]))
+  const transferPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
   const active = isActive(take)
   const now = useNow(active)
   const provider = providerOf(take)
@@ -499,20 +501,23 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
       </>
     )
   } else if (active) {
-    const pct = take.status === 'processing' ? take.progress : 0
+    const downloading = take.status === 'processing' && transfer !== null
+    const pct = take.status === 'processing' ? (downloading ? (transferPct ?? take.progress) : take.progress) : 0
     content = (
       <div className="rq-stage-state">
         <div className="rq-ring" style={{ ['--p' as string]: pct }}>
-          <span className="mono">{take.status === 'processing' ? `${pct}%` : '…'}</span>
+          <span className="mono">{take.status === 'processing' ? (downloading && transferPct === null ? '…' : `${pct}%`) : '…'}</span>
         </div>
         <div className="rq-stage-msg">
-          {take.status === 'processing'
-            ? provider === 'mock'
-              ? 'Đang tạo video (demo cũ)…'
-              : provider === 'dev'
-                ? 'Đang tạo video trên canvasapp giả lập (chế độ Phát triển)…'
-                : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`
-            : 'Đang chờ trong hàng đợi…'}
+          {downloading
+            ? `Video đã tạo xong — ${transfer!.charAt(0).toLowerCase()}${transfer!.slice(1)}…`
+            : take.status === 'processing'
+              ? provider === 'mock'
+                ? 'Đang tạo video (demo cũ)…'
+                : provider === 'dev'
+                  ? 'Đang tạo video trên canvasapp giả lập (chế độ Phát triển)…'
+                  : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`
+              : 'Đang chờ trong hàng đợi…'}
         </div>
         <div className="rq-stage-faint mono">
           {take.status === 'processing' ? 'đã chạy ' : 'đã chờ '}
@@ -521,19 +526,21 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
         <button
           type="button"
           className="btn btn-sm"
-          onClick={() => useRuns.getState().cancel(take.id)}
+          onClick={() => cancelTake(take.id)}
           title={
             demoPaid
               ? undefined
-              : take.status === 'queued' && !take.remoteId && !take.submitUnknown
-                ? `Huỷ trước khi gửi sang ${PROVIDER_LABEL[provider]} — không bị trừ credit`
-                : take.submitUnknown && !take.remoteId
-                  ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, ${checkWhere}`
-                : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`
+              : downloading
+                ? `Video đã tạo xong trên ${PROVIDER_LABEL[provider]} và đã trừ credit — huỷ sẽ bỏ video này trong SanoVids (hỏi trước)`
+                : take.status === 'queued' && !take.remoteId && !take.submitUnknown
+                  ? `Huỷ trước khi gửi sang ${PROVIDER_LABEL[provider]} — không bị trừ credit`
+                  : take.submitUnknown && !take.remoteId
+                    ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, ${checkWhere}`
+                    : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`
           }
         >
           <CircleStop size={13} />
-          {demoPaid ? `Huỷ job · hoàn ${formatCredits(take.cost, 'demo')}` : 'Huỷ job'}
+          {demoPaid ? `Huỷ job · hoàn ${formatCredits(take.cost, 'demo')}` : downloading ? 'Huỷ' : 'Huỷ job'}
         </button>
       </div>
     )

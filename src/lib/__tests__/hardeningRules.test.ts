@@ -590,13 +590,24 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     const wiring = mainSource.slice(cs, ce)
     expect(wiring).toContain("withSlot: (fn) => withCanvasappSlot('download', fn)")
     expect(wiring).toContain("const m = matchCanvasappRoute('GET', rawPath)")
-    expect(wiring).toContain('canvasappSession().fetch(url, {')
-    expect(wiring).toContain("credentials: 'include'")
-    expect(wiring).toContain('bypassCustomProtocolHandlers: true')
-    // the pure block: no require, no Buffer, no Electron
-    const block = /\/\/ <canvasapp-downloads>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-downloads>/.exec(mainSource)![1]
-    const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    expect(code).not.toMatch(/\brequire\s*\(|\bBuffer\b|\bsession\.|\bipcMain\b|\bwebContents\b|\bprocess\./)
+    // the GET goes through <canvasapp-net-get> (net.request, redirect 'manual', https only), never session.fetch
+    // (which follows https → http and cannot even tell where it ended)
+    expect(wiring).toContain('fetch: (url, init) => canvasappNetGet({ request: (opts) => net.request(opts), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),')
+    expect(wiring).not.toContain('.fetch(')
+    const netGet = /\/\/ <canvasapp-net-get>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-net-get>/.exec(mainSource)![1]
+    expect(netGet).toContain("credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true")
+    expect(netGet).toContain("new URL(String(url)).protocol === 'https:'")
+    // the pure blocks: no require, no Buffer, no Electron
+    for (const name of ['canvasapp-downloads', 'canvasapp-net-get']) {
+      const block = new RegExp(`// <${name}>[^\\n]*\\n([\\s\\S]*?)// </${name}>`).exec(mainSource)![1]
+      const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      expect(code, name).not.toMatch(/\brequire\s*\(|\bBuffer\b|\bsession\.|\bnet\.|\bipcMain\b|\bwebContents\b|\bprocess\./)
+    }
+    // canvasapp:request never carries a video (only the pieces above do): no binary branch, no 'download' lane there
+    const [rs, re] = blockAt(idx('async function canvasappRequest(req)'))
+    const request = mainSource.slice(rs, re)
+    expect(request).toContain('const match = matchCanvasappRequest(method, req.path)')
+    expect(request).not.toMatch(/route\.binary|arrayBuffer|'download'/)
   })
 
   it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {

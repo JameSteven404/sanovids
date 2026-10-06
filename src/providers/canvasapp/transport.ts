@@ -5,9 +5,11 @@
 // Web: unavailable — a browser page on another origin cannot (and must not try to) use canvasapp's cookies.
 // Top-up checkout: openCheckout() → canvasapp:checkout → a modal window showing the REAL SePay page (main.cjs).
 // Videos: download() pulls them in pieces (canvasapp:downloadOpen / downloadRead / downloadClose, main's
-// <canvasapp-downloads>) into a Blob made of the pieces — never the whole file in one IPC message. Abort closes the
-// download at once (also while it waits for a slot); a cut continues where it stopped when main says it can
-// (`resumable`: canvasapp sent a validator and takes Range), else it fails and the engine tries again later.
+// <canvasapp-downloads>) into a Blob made of the pieces — never the whole file in one IPC message (main refuses the
+// stream through request()). Abort closes the download at once (also while it waits for a slot); a cut — or a
+// connection main stopped after 60 min ('too-slow') — continues where it stopped when main says it can (`resumable`:
+// canvasapp sent a validator and takes Range); a reopen that cannot reach canvasapp is tried again a few times over
+// about a minute, keeping what came. Else it fails and the engine tries again later (a 'too-slow' one: not at all).
 import { newId } from '../../core/ids'
 import { checkoutUrlAllowed } from '../../core/topup'
 import type { ProviderAvailability } from '../types'
@@ -77,7 +79,7 @@ export interface CanvasappBridge {
   request(req: TransportRequest): Promise<BridgeResponse>
   /** Opens the real checkout page in a modal window (main re-validates the URL). Missing in older desktop builds. */
   checkout?(args: CheckoutArgs): Promise<BridgeCheckoutResponse>
-  /** Streamed video downloads. Missing in older desktop builds (→ request({ binary: true })). */
+  /** Streamed video downloads (the only way a video comes: main refuses the stream through request()). */
   downloadOpen?(args: BridgeDownloadArgs): Promise<BridgeDownloadOpen>
   downloadRead?(args: { id: string }): Promise<BridgeDownloadRead>
   downloadClose?(args: { id: string }): Promise<{ ok: boolean }>
@@ -101,6 +103,11 @@ export function hasCanvasappBridge(): boolean {
 
 /** A cut download continues at most this many times in a row without a new byte (then it fails; the engine retries). */
 export const MAX_STALLED_RESUMES = 2
+/**
+ * A resume whose open fails on the network (Wi-Fi back in a moment, ERR_NETWORK_CHANGED…) waits this long before each
+ * new try, keeping what came; after the last one it fails (the engine then starts again from 0 later).
+ */
+export const RESUME_RETRY_MS = [2_000, 5_000, 10_000, 20_000, 30_000]
 /** Opens of one download in all (resumes, pieces of a 206, one restart): a server that answers in crumbs is given up. */
 export const MAX_DOWNLOAD_OPENS = 32
 /** onProgress at most this often. */
@@ -108,6 +115,7 @@ export const DOWNLOAD_PROGRESS_MS = 250
 
 export const DOWNLOAD_ABORTED_TEXT = 'Đã dừng tải video.'
 const DOWNLOAD_SHORT_TEXT = 'Video tải về bị thiếu dữ liệu (kết nối đóng sớm).'
+export const DOWNLOAD_UNSUPPORTED_TEXT = 'Bản SanoVids desktop này không tải được video theo từng phần — cài lại bản mới nhất.'
 
 export interface DesktopTransportOptions {
   /** Download ids (tests). Default: a random UUID. */
@@ -132,7 +140,10 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
     return rest
   }
 
-  /** A refusal of the desktop gateway (open or read) as an error. 'busy' (too many at once) = try later ('deferred'). */
+  /**
+   * A refusal of the desktop gateway (open or read) as an error. 'busy' (too many at once) = try later ('deferred');
+   * 'too-slow' = a connection open longer than main allows that could not continue.
+   */
   function refused(res: { code: string; message: string }, req: TransportRequest): CanvasappError {
     const message = res.message || 'Không tải được video từ canvasapp.io.vn.'
     const own = (code: 'forbidden' | 'too-large' | 'bad-request') => new CanvasappError(code, `${message} [${requestLabel(req)} · SanoVids desktop]`)
@@ -140,6 +151,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
     if (res.code === 'too-large') return own('too-large')
     if (res.code === 'bad-request') return own('bad-request')
     if (res.code === 'busy') return new CanvasappError('deferred', message)
+    if (res.code === 'too-slow') return new CanvasappError('too-slow', message)
     return new CanvasappError('network', message)
   }
 
@@ -169,15 +181,12 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     const guarded = <T,>(p: Promise<T>): Promise<T> => (signal ? Promise.race([p, stopped]) : p)
+    const pause = (ms: number) => guarded(new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
     try {
+      // page, preload and main ship together (app.asar): a bridge without them is not a SanoVids build
       if (typeof b.downloadOpen !== 'function' || typeof b.downloadRead !== 'function' || typeof b.downloadClose !== 'function') {
-        // Older desktop build: the whole video in one answer (no progress; abort only stops waiting for it).
-        const res = await guarded(b.request(req))
-        if (!res.ok) throw refused(res, req)
-        const { ok: _ok, bytes, ...rest } = res
-        if (bytes?.byteLength) onProgress?.({ received: bytes.byteLength, total: bytes.byteLength })
-        return { ...rest, ...(bytes ? { blob: new Blob([bytes as BlobPart]) } : {}) }
+        throw new CanvasappError('unavailable', DOWNLOAD_UNSUPPORTED_TEXT)
       }
 
       let parts: Blob[] = []
@@ -187,6 +196,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
       let from = 0
       let restarts = 0
       let stalled = 0
+      let reopenFailures = 0
       let opens = 0
       let lastReport = -Infinity
       const report = (force = false) => {
@@ -220,6 +230,11 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
             restart()
             continue
           }
+          // continuing a cut download and canvasapp cannot be reached yet: what came is kept, the open tried again
+          if (opened.code === 'network' && from > 0 && reopenFailures < RESUME_RETRY_MS.length) {
+            await pause(RESUME_RETRY_MS[reopenFailures++])
+            continue
+          }
           throw refused(opened, req)
         }
         if (opened.id === undefined) {
@@ -239,10 +254,15 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
             current = null
             throw new CanvasappError('network', DOWNLOAD_SHORT_TEXT)
           }
-          // canvasapp starts again from byte 0 (no Range, or the video changed): what came before is dropped
-          parts = []
-          received = 0
-          from = 0
+          // canvasapp starts again from byte 0 (no Range, or the video changed): what came before is dropped — the one
+          // restart of this download (a site that always answers a resume from 0 never loops through the whole video)
+          try {
+            restart()
+          } catch (e) {
+            close(id)
+            current = null
+            throw e
+          }
         }
         if (opened.from > 0 && total !== null && opened.total !== total) {
           // the rest of ANOTHER file: never spliced
@@ -260,14 +280,15 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
           const r = await guarded(b.downloadRead({ id }))
           if (!r.ok) {
             current = null // main ended it
-            const code = r.code === 'too-large' ? 'too-large' : 'network'
-            if (code === 'network' && resumable && stalled < MAX_STALLED_RESUMES && (total === null || received < total)) {
+            // a cut / stalled connection, or one open longer than main allows ('too-slow'): continue when possible
+            const resumes = r.code === 'network' || r.code === 'too-slow'
+            if (resumes && resumable && stalled < MAX_STALLED_RESUMES && (total === null || received < total)) {
               stalled++
               from = received
               more = true
               break
             }
-            throw code === 'too-large' ? refused(r, req) : new CanvasappError('network', r.message || DOWNLOAD_SHORT_TEXT)
+            throw r.code === 'too-large' || r.code === 'too-slow' ? refused(r, req) : new CanvasappError('network', r.message || DOWNLOAD_SHORT_TEXT)
           }
           if (r.done) {
             current = null
@@ -278,6 +299,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
           parts.push(new Blob([bytes as BlobPart]))
           received += bytes.byteLength
           stalled = 0
+          reopenFailures = 0
           report()
         }
         if (more) continue

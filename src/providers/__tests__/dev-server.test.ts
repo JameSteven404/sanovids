@@ -15,6 +15,7 @@ vi.mock('../../lib/imageStore', () => ({
 }))
 
 import mainSource from '../../../electron/main.cjs?raw'
+import { CUSTOM_FAULT_DEFAULT, customFaultInput } from '../../components/dev/devModel'
 import { costOf } from '../../core/models'
 import { checkoutUrlAllowed, TOPUP_ORDER_TTL_MS } from '../../core/topup'
 import { memoryStorage } from '../canvasapp/adapter'
@@ -34,6 +35,7 @@ import {
   DEV_LOG_MAX,
   DEV_PAYMENT_DELAY_MS,
   DEV_SPEED_MS,
+  devStreamReader,
   imageIdFromUploadFilename,
   matchDevRoute,
   memoryBlobStore,
@@ -70,6 +72,8 @@ function setup(
     /** Size of the rendered videos (default: the short text "WEBM:#n"). */
     videoSize?: number
     downloadLimits?: Partial<DownloadLimits>
+    /** The server's sleep (default: none — only recorded in `sleeps`). */
+    sleep?: (ms: number) => Promise<void>
   } = {},
 ) {
   const clock = { t: opts.t ?? START }
@@ -82,7 +86,10 @@ function setup(
     blobs,
     now: () => clock.t,
     random: () => 0.5,
-    sleep: async (ms) => void sleeps.push(ms),
+    sleep: async (ms) => {
+      sleeps.push(ms)
+      if (opts.sleep) await opts.sleep(ms)
+    },
     render: async (input) => {
       renders.push({ input, contents: await Promise.all(input.images.map((i) => (i.blob ? i.blob.text() : Promise.resolve(null)))) })
       if (opts.videoSize) return new Blob([videoBytes(opts.videoSize, input.jobNumber)], { type: 'video/webm' })
@@ -1046,16 +1053,90 @@ describe('dev server: streamed video downloads (openStream) and the dev bridge (
     expect(useDevLog.getState().entries.at(-1)?.fault).toBe('trickle 100KB/s + stream-cut')
   })
 
-  it('the old one-message request() of /stream: cut / stall → no answer, oversize → the gateway’s 1 GB refusal', async () => {
+  it('the dev bridge refuses the video stream through request() like main (matchCanvasappRequest): videos only come in pieces', async () => {
     const s = setup()
     const jobId = await finishedJob(s)
-    for (const fault of [{ kind: 'cut' }, { kind: 'stall' }] as const) {
-      s.server.addFault({ endpoint: 'job-stream', fault })
-      expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toMatchObject({ ok: false, code: 'network' })
+    const before = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').length
+    expect(await s.bridge.request({ method: 'GET', path: path(jobId), binary: true })).toEqual({
+      ok: false,
+      code: 'not-allowed',
+      message: `SanoVids không được phép gọi GET ${path(jobId)}.`,
+    })
+    expect(await s.bridge.request({ method: 'GET', path: path(jobId) })).toMatchObject({ ok: false, code: 'not-allowed' })
+    // nothing reached the simulated site: only the gateway's refusal is logged
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(before).map((e) => [e.status, e.fault])).toEqual([
+      [null, 'not-allowed'],
+      [null, 'not-allowed'],
+    ])
+    // the same path through downloadOpen is the way
+    expect(new Uint8Array(await (await s.api.fetchVideo(jobId)).arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  it('a slow body comes in small pieces about every 250 ms: even at the form’s minimum (1 KB/s) no idle stop (10 s in dev)', async () => {
+    const piece = async (bytesPerSec: number) => {
+      const sleeps: number[] = []
+      const r = devStreamReader(videoBytes(100_000, 1), { bytesPerSec, sleep: async (ms) => void sleeps.push(ms) })
+      const x = await r.read()
+      return [x.done ? 0 : x.value.byteLength, sleeps[0]]
     }
-    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'oversize' } })
-    expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toEqual({ ok: false, code: 'too-large', message: 'Video lớn hơn 1 GB — SanoVids không tải về máy được.' })
-    expect(await s.server.request({ method: 'GET', path: path(jobId), binary: true })).toMatchObject({ ok: true, status: 200 })
+    expect(await piece(1024)).toEqual([256, 250])
+    expect(await piece(100 * 1024)).toEqual([25_600, 250])
+    expect(await piece(100_000 * 1024)).toEqual([64 * 1024, 1]) // fast: the usual 64 KiB pieces
+    expect(await piece(1)).toEqual([1, 1000]) // never an empty piece
+
+    vi.useFakeTimers()
+    const s = setup({}, { videoSize: 20_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) })
+    const jobId = await finishedJob(s)
+    const min = customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream', kind: 'trickle', kbps: '1', sticky: true })
+    if (!min.ok) throw new Error(min.error)
+    s.server.addFault(min.input)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(25_000) // ~20 s for 20 KB at 1 KB/s
+    const video = await p
+    expect(video).toBeInstanceOf(Blob)
+    expect(new Uint8Array(await (video as Blob).arrayBuffer())).toEqual(videoBytes(20_000, 1))
+  })
+
+  it('a connection open past the dev limit (2 min, main: 60 min): continues on a new one with Range, else too-slow at once', async () => {
+    vi.useFakeTimers()
+    const crawl = DEV_FAULT_PRESETS.find((x) => x.id === 'stream-crawl')!.rule
+    expect(crawl).toMatchObject({ endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 2048 }, sticky: true })
+    const s = setup({ rangeSupport: true }, { videoSize: 300_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) })
+    const jobId = await finishedJob(s)
+    s.server.addFault(crawl)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(160_000) // ~146 s at 2 KB/s, cut once at 2 min
+    const video = await p
+    expect(video).toBeInstanceOf(Blob)
+    expect(new Uint8Array(await (video as Blob).arrayBuffer())).toEqual(videoBytes(300_000, 1))
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(-3).map((e) => [e.status, e.fault])).toEqual([
+      [200, 'trickle 2KB/s'],
+      [null, 'download-too-slow'],
+      [206, 'trickle 2KB/s'],
+    ])
+    expect(streams.at(-2)?.res).toEqual({ code: 'too-slow', message: 'Tải video quá 2 phút nên SanoVids dừng lại.' })
+
+    s.server.setConfig({ rangeSupport: false })
+    const q = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect(await q).toMatchObject({ code: 'too-slow', message: 'Tải video quá 2 phút nên SanoVids dừng lại.' })
+  })
+
+  it('a redirect to http (fault stream-http): refused by the gateway, nothing sent there — forbidden, the engine tries again later', async () => {
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-http')!.rule)
+    const e = await s.api.fetchVideo(jobId).catch((x: unknown) => x)
+    expect(e).toMatchObject({ code: 'forbidden' })
+    expect((e as Error).message).toContain('chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+    const streams = useDevLog.getState().entries.filter((x) => x.endpoint === 'job-stream')
+    expect(streams.slice(-2).map((x) => [x.status, x.fault])).toEqual([
+      [null, 'http-redirect'],
+      [null, 'not-allowed'],
+    ])
+    expect(new Uint8Array(await (await s.api.fetchVideo(jobId)).arrayBuffer()).byteLength).toBe(1000) // one-shot
   })
 
   it('the dev bridge pulls 64 KiB pieces (progress), continues a cut download with Range when it is on, logs failures in dev words', async () => {

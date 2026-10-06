@@ -2,11 +2,21 @@
 // electron/main.cjs's OWN download sessions (its <canvasapp-downloads>, <canvasapp-lanes> and <canvasapp-routes>
 // blocks, run as-is) in front of a scripted canvasapp: pieces into one Blob, progress, abort (also while waiting for a
 // slot or during a stalled read), resume only with canvasapp's validator, 416 / 200 answers to a resume, the 1 GB cap,
-// "too many at once", older desktop builds (one binary request), errors that name the request.
+// "too many at once", reopening a cut download while the network is still down (parts kept), the 60-min limit of one
+// connection ('too-slow'), no video through canvasapp:request, errors that name the request.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import { CanvasappError, createCanvasappApi, type DownloadProgress, type TransportRequest } from '../canvasapp/api'
-import { createDesktopTransport, MAX_STALLED_RESUMES, type BridgeDownloadOpen, type BridgeDownloadRead, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
+import {
+  createDesktopTransport,
+  DOWNLOAD_UNSUPPORTED_TEXT,
+  MAX_STALLED_RESUMES,
+  RESUME_RETRY_MS,
+  type BridgeDownloadOpen,
+  type BridgeDownloadRead,
+  type BridgeResponse,
+  type CanvasappBridge,
+} from '../canvasapp/transport'
 import type * as Port from '../dev/downloads'
 import type { ByteReader, DownloadDeps, DownloadLimits, ResponseLike } from '../dev/downloads'
 
@@ -16,9 +26,12 @@ function block(name: string): string {
   return m[1]
 }
 const mainDownloads = new Function(`${block('canvasapp-downloads')}\nreturn { createDownloadSessions }`)() as Pick<typeof Port, 'createDownloadSessions'>
-const mainRoutes = (new Function('CANVASAPP_ORIGIN', `${block('canvasapp-routes')}\nreturn matchCanvasappRoute`) as (o: string) => (m: string, p: unknown) => { route: { binary?: boolean }; url: URL } | null)(
-  'https://canvasapp.io.vn',
-)
+type RouteMatch = (m: string, p: unknown) => { route: { binary?: boolean }; url: URL } | null
+const routesBlock = (new Function('CANVASAPP_ORIGIN', `${block('canvasapp-routes')}\nreturn { matchCanvasappRoute, matchCanvasappRequest }`) as (o: string) => {
+  matchCanvasappRoute: RouteMatch
+  matchCanvasappRequest: RouteMatch
+})('https://canvasapp.io.vn')
+const mainRoutes = routesBlock.matchCanvasappRoute
 function lane() {
   const l = new Function(`${block('canvasapp-lanes')}\nreturn { withSlot: withCanvasappSlot, lanes: canvasappLanes }`)() as {
     withSlot: (lane: string, fn: () => Promise<unknown>) => Promise<unknown>
@@ -63,8 +76,8 @@ function scripted(steps: Step[]): ByteReader {
   }
 }
 
-/** main.cjs's download sessions + a scripted canvasapp, exposed as window.bdpDesktop.canvasapp would be. */
-function desktop(answer: (n: number, headers: Record<string, string>) => Answer | 'hang', limits: Partial<DownloadLimits> = {}) {
+/** main.cjs's download sessions + a scripted canvasapp ('offline': no connection), as window.bdpDesktop.canvasapp. */
+function desktop(answer: (n: number, headers: Record<string, string>) => Answer | 'hang' | 'offline', limits: Partial<DownloadLimits> = {}) {
   const l = lane()
   const fetches: Record<string, string>[] = []
   const calls: string[] = []
@@ -74,8 +87,9 @@ function desktop(answer: (n: number, headers: Record<string, string>) => Answer 
     return new Promise<ResponseLike>((resolve, reject) => {
       init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
       if (a === 'hang') return
+      if (a === 'offline') return reject(new Error('net::ERR_INTERNET_DISCONNECTED'))
       const reader = scripted([...(a.body ?? ['done'])])
-      resolve({ status: a.status, url: 'https://canvasapp.io.vn/x', headers: { get: (n) => a.headers?.[n.toLowerCase()] ?? null }, body: { getReader: () => reader } })
+      resolve({ status: a.status, headers: { get: (n) => a.headers?.[n.toLowerCase()] ?? null }, body: { getReader: () => reader } })
     })
   }
   const sessions = mainDownloads.createDownloadSessions({
@@ -148,16 +162,18 @@ describe('desktop transport: streamed video download', () => {
     expect(d.sessions.size()).toBe(0)
   })
 
-  it('an older desktop build (no downloadOpen): one binary request, like before', async () => {
+  it('a video never comes through canvasapp:request: main refuses the stream there; a bridge without downloadOpen is refused too', async () => {
+    // main's own rule (<canvasapp-routes>): the stream route is allowlisted for downloadOpen only
+    expect(routesBlock.matchCanvasappRoute('GET', VIDEO_PATH)?.route.binary).toBe(true)
+    expect(routesBlock.matchCanvasappRequest('GET', VIDEO_PATH)).toBeNull()
+    expect(routesBlock.matchCanvasappRequest('GET', '/api/me')).not.toBeNull()
+    expect(routesBlock.matchCanvasappRequest('GET', '/api/video-jobs/job1/prompt')).not.toBeNull()
+    // page, preload and main ship together: no fallback to a one-message request
     const d = desktop(() => 'hang')
     const { downloadOpen: _o, downloadRead: _r, downloadClose: _c, ...old } = d.bridge
     const api = createCanvasappApi(createDesktopTransport(() => old))
-    const blob = await api.fetchVideo('job1')
-    expect(await blobBytes(blob)).toEqual(bytes(10))
-    expect(d.legacy).toEqual([REQ])
-    // its refusals keep their meaning
-    const tooBig = createCanvasappApi(createDesktopTransport(() => ({ ...old, request: async () => ({ ok: false, code: 'too-large', message: 'Video lớn hơn 1 GB — SanoVids không tải về máy được.' }) })))
-    await expect(tooBig.fetchVideo('job1')).rejects.toMatchObject({ code: 'too-large' })
+    await expect(api.fetchVideo('job1')).rejects.toMatchObject({ code: 'unavailable', message: DOWNLOAD_UNSUPPORTED_TEXT })
+    expect(d.legacy).toEqual([])
   })
 
   it.each([
@@ -246,6 +262,82 @@ describe('desktop transport: streamed video download', () => {
     })
     expect(await blobBytes(await d.api.fetchVideo('job1'))).toEqual(video)
     expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 200', 'open 400'])
+  })
+
+  it('cut, and canvasapp still unreachable when it reopens (Wi-Fi back a little later): waits, keeps the parts, continues', async () => {
+    const video = bytes(500)
+    const d = desktop((n, h) =>
+      n === 1
+        ? { status: 200, headers: { 'content-length': '500', 'accept-ranges': 'bytes', etag: ETAG }, body: [video.slice(0, 300), 'error'] }
+        : n <= 3
+          ? 'offline'
+          : { status: 206, headers: { 'content-range': `bytes ${h.Range.slice(6, -1)}-499/500`, etag: ETAG }, body: [video.slice(Number(h.Range.slice(6, -1))), 'done'] },
+    )
+    const p = d.api.fetchVideo('job1')
+    p.catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 300'])
+    await vi.advanceTimersByTimeAsync(RESUME_RETRY_MS[0])
+    expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 300', 'open 300'])
+    await vi.advanceTimersByTimeAsync(RESUME_RETRY_MS[1])
+    expect(await blobBytes(await p)).toEqual(video)
+    expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 300', 'open 300', 'open 300'])
+    expect(d.fetches.slice(1).map((h) => h.Range)).toEqual(['bytes=300-', 'bytes=300-', 'bytes=300-']) // nothing fetched twice
+    expect(d.lane.active()).toBe(0)
+  })
+
+  it(`a reopen that never reaches canvasapp is given up after ${RESUME_RETRY_MS.length} waits (~1 min); abort stops a wait at once`, async () => {
+    const d = desktop((n) => (n === 1 ? { status: 200, headers: { 'content-length': '500', 'accept-ranges': 'bytes', etag: ETAG }, body: [bytes(300), 'error'] } : 'offline'))
+    const p = d.api.fetchVideo('job1').catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RESUME_RETRY_MS.reduce((a, b) => a + b, 0) + 1)
+    expect(await p).toMatchObject({ code: 'network', message: expect.stringContaining('ERR_INTERNET_DISCONNECTED') })
+    expect(d.calls.filter((c) => c.startsWith('open'))).toHaveLength(2 + RESUME_RETRY_MS.length)
+
+    const d2 = desktop((n) => (n === 1 ? { status: 200, headers: { 'content-length': '500', 'accept-ranges': 'bytes', etag: ETAG }, body: [bytes(300), 'error'] } : 'offline'))
+    const ctrl = new AbortController()
+    const q = d2.api.fetchVideo('job1', { signal: ctrl.signal }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(10)
+    ctrl.abort()
+    expect(await q).toMatchObject({ code: 'aborted' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(d2.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 300']) // no open after the abort
+  })
+
+  it('a first open that cannot reach canvasapp is not waited on (nothing came yet: the engine tries again later)', async () => {
+    const d = desktop(() => 'offline')
+    await expect(d.api.fetchVideo('job1')).rejects.toMatchObject({ code: 'network' })
+    expect(d.calls).toEqual(['open 0'])
+  })
+
+  it('60 min on one connection (too-slow): continues on a new one when it can resume, else stops with too-slow', async () => {
+    const video = bytes(500)
+    const slow: Step[] = [video.slice(0, 200), 'hang']
+    const d = desktop(
+      (n, h) =>
+        n === 1
+          ? { status: 200, headers: { 'content-length': '500', 'accept-ranges': 'bytes', etag: ETAG }, body: slow }
+          : { status: 206, headers: { 'content-range': `bytes ${h.Range.slice(6, -1)}-499/500`, etag: ETAG }, body: [video.slice(Number(h.Range.slice(6, -1))), 'done'] },
+      { maxMs: 3_600_000, idleMs: 10_000_000, pullIdleMs: 10_000_000, chunkBytes: 1000 },
+    )
+    const p = d.api.fetchVideo('job1')
+    await vi.advanceTimersByTimeAsync(3_600_001)
+    expect(await blobBytes(await p)).toEqual(video)
+    expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 200'])
+
+    const stuck = desktop(() => ({ status: 200, headers: { 'content-length': '500' }, body: [bytes(200), 'hang'] }), { maxMs: 3_600_000, idleMs: 10_000_000, pullIdleMs: 10_000_000, chunkBytes: 1000 })
+    const q = stuck.api.fetchVideo('job1').catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(3_600_001)
+    expect(await q).toMatchObject({ code: 'too-slow', message: 'Tải video quá 60 phút nên SanoVids dừng lại.' })
+    expect(stuck.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0']) // never again from 0 within the try
+    expect(stuck.lane.active()).toBe(0)
+  })
+
+  it('MONEY: a site that answers every resume from byte 0 restarts the video once, then the try fails (no endless loop)', async () => {
+    const video = bytes(500)
+    const d = desktop(() => ({ status: 200, headers: { 'content-length': '500', 'accept-ranges': 'bytes', etag: ETAG }, body: [video.slice(0, 300), 'error'] }))
+    await expect(d.api.fetchVideo('job1')).rejects.toMatchObject({ code: 'network' })
+    expect(d.calls.filter((c) => c.startsWith('open'))).toEqual(['open 0', 'open 300', 'open 300'])
+    expect(d.lane.active()).toBe(0)
   })
 
   it(`gives up after ${MAX_STALLED_RESUMES} resumes in a row that bring no new byte`, async () => {

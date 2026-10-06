@@ -177,6 +177,8 @@ export const DEV_UI_FAULTS: DevUiFault[] = [
   rule('stream-cut', 'Mất mạng giữa chừng khi tải video'),
   rule('stream-stall', 'Tải video bị treo'),
   rule('stream-slow', 'Tải video chậm (100 KB/giây)'),
+  rule('stream-crawl', 'Tải video rất chậm (quá giới hạn mỗi kết nối)'),
+  rule('stream-http', 'Tải video bị chuyển sang http'),
   rule('stream-oversize', 'Video quá lớn (> 1 GB)'),
   rule('offline', 'Mất mạng hoàn toàn'),
 ]
@@ -219,6 +221,8 @@ export function faultKindText(f: DevFault): string {
       return `chậm ${Math.round(f.bytesPerSec / 1024)} KB/giây`
     case 'oversize':
       return 'báo dung lượng > 1 GB'
+    case 'insecure-redirect':
+      return 'chuyển hướng sang http (không được theo)'
   }
 }
 
@@ -251,6 +255,7 @@ export const DEV_FAULT_KIND_LABEL: Record<DevFaultKind, string> = {
   stall: 'Treo giữa chừng (tải video)',
   trickle: 'Tải chậm (KB/giây)',
   oversize: 'Báo video > 1 GB',
+  'insecure-redirect': 'Chuyển hướng sang http (tải video)',
 }
 
 const isStreamKind = (k: DevFaultKind) => (DEV_STREAM_FAULT_KINDS as readonly string[]).includes(k)
@@ -286,7 +291,7 @@ export function customFaultInput(f: CustomFaultForm): { ok: true; input: DevFaul
   if (!(f.kind in DEV_FAULT_KIND_LABEL)) return { ok: false, error: 'Chọn một kiểu lỗi.' }
   if (isStreamKind(f.kind) && f.endpoint !== 'job-stream') return { ok: false, error: 'Kiểu lỗi này chỉ dùng cho “Tải video”.' }
   let fault: DevFault
-  if (f.kind === 'network' || f.kind === 'lost-response' || f.kind === 'oversize') fault = { kind: f.kind }
+  if (f.kind === 'network' || f.kind === 'lost-response' || f.kind === 'oversize' || f.kind === 'insecure-redirect') fault = { kind: f.kind }
   else if (f.kind === 'cut' || f.kind === 'stall') fault = { kind: f.kind, fraction: 0.5 }
   else if (f.kind === 'trickle') {
     const kbps = Number(f.kbps)

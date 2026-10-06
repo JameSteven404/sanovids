@@ -3,10 +3,11 @@
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, session, shell } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { Readable } = require('node:stream')
 const { setupUpdater } = require('./updater.cjs')
 
 const SCHEME = 'app'
@@ -417,6 +418,16 @@ function matchCanvasappRoute(method, rawPath) {
   }
   return { route, url }
 }
+
+/**
+ * canvasapp:request takes every allowlisted route EXCEPT the video stream (`binary`): a video only comes in pieces
+ * (canvasapp:downloadOpen, <canvasapp-downloads>: the 1 GB cap while reading, the idle stop, no whole file in one IPC
+ * message). The page, the preload and main ship together in app.asar, so no page needs the old one-message way.
+ */
+function matchCanvasappRequest(method, rawPath) {
+  const m = matchCanvasappRoute(method, rawPath)
+  return m && !m.route.binary ? m : null
+}
 // </canvasapp-routes>
 
 let canvasappLoginWin = null
@@ -469,11 +480,14 @@ async function withCanvasappSlot(laneName, fn) {
  * Finished videos never cross IPC in one message. The page pulls them in pieces (canvasapp:downloadOpen / downloadRead /
  * downloadClose): main reads the HTTP body of GET /api/video-jobs/{id}/stream itself and answers each read with what
  * arrived (≤ 4 MiB, or less after 1 s on a slow link). One read at a time per download; the body stream is read only
- * while the page waits for a piece (whether session.fetch's stream itself buffers further ahead is Electron's: VERIFY).
- * A download holds one slot of the 'download' lane from open to end. It ends after 60 s without a network byte, after
- * 30 s without a read from the page (reload / crash), after 60 min in all, past 1 GB, when the page closes it, reloads,
- * navigates, crashes or logs out. A download cut half-way continues with Range + If-Range only when canvasapp gave a
- * strong ETag (or a Last-Modified date) for that video: never spliced onto a file that may have changed.
+ * while the page waits for a piece (deps.fetch = <canvasapp-net-get>: Electron's net response asks the network for
+ * more only as the stream is read).
+ * A download (one connection) holds one slot of the 'download' lane from open to end. It ends after 60 s without a
+ * network byte, after 30 s without a read from the page (reload / crash), after 60 min open ('too-slow': the page
+ * continues on a new connection when it can resume, else it stops — the slot goes to the next in line meanwhile),
+ * past 1 GB, when the page closes it, reloads, navigates, crashes or logs out. A download cut half-way continues with
+ * Range + If-Range only when canvasapp gave a strong ETag (or a Last-Modified date) for that video, and a 206 is taken
+ * only when it carries that same validator: never spliced onto a file that may have changed.
  * The page never sends a URL (only an allowlisted path), a header or a validator: main keeps those.
  */
 const CANVASAPP_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
@@ -487,7 +501,10 @@ const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
 /** Open + waiting for a slot. ≥ the jobs that may finish at once (src/providers/canvasapp/adapter.ts MAX_CONCURRENCY). */
 const CANVASAPP_DOWNLOAD_MAX_SESSIONS = 16
 const CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES = 64 * 1024
-/** A video's validator (ETag / Last-Modified) is kept this long for a later resume of the same path. */
+/**
+ * A video's validator (ETag / Last-Modified) is kept this long after the last connection for that path ended (or
+ * opened), for a resume: a download that ran longer than this still continues where it was cut.
+ */
 const CANVASAPP_DOWNLOAD_TAG_MS = 10 * 60_000
 const CANVASAPP_DOWNLOAD_MAX_TAGS = 64
 /** Download ids are chosen by the page (crypto.randomUUID()), so it can close one that still waits for a slot. */
@@ -534,20 +551,12 @@ function downloadHeaders(from, validator) {
   return h
 }
 
-/** The answer came from https (after redirects). Checked before reading the body: the request itself already left. */
-function downloadFinalUrlOk(url) {
-  if (url === undefined || url === null || url === '') return true
-  try {
-    return new URL(String(url)).protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
 /**
- * What to do with an answer:
+ * What to do with an answer (o.validator = the answer's strongValidator, o.sent = the one sent with If-Range):
  *   { kind: 'answer' }      not 200 / 206: read a little of the body, hand it to the page (401, 404, 409, 5xx…);
- *   { kind: 'bad-range' }   a 206 that does not start where asked (or of unknown size), or 416 to a resume;
+ *   { kind: 'bad-range' }   a 206 that does not start where asked (or of unknown size), a 206 to a resume without the
+ *                           validator sent (a server that ignores If-Range: maybe the rest of another file of the
+ *                           same size), or 416 to a resume;
  *   { kind: 'too-large' }   the announced size is over maxBytes (nothing is read);
  *   { kind: 'stream', from, end, total, resumable }   end = absolute end of this answer (null = unknown), total = the
  *                           whole video's size (null = unknown); resumable = a cut can continue with Range.
@@ -562,6 +571,8 @@ function downloadPlan(o) {
   if (o.status === 206) {
     const r = encoded ? null : parseContentRange(o.contentRange)
     if (!r || r.start !== from || r.total === null) return { kind: 'bad-range' }
+    // RFC 9110 §15.3.7: a 206 carries the validator a 200 would — it must be the one If-Range named
+    if (from > 0 && (!o.sent || o.validator !== o.sent)) return { kind: 'bad-range' }
     if (r.total > o.maxBytes) return { kind: 'too-large' }
     return { kind: 'stream', from: r.start, end: r.end + 1, total: r.total, resumable: !!o.validator }
   }
@@ -724,7 +735,10 @@ function downloadSizeText(bytes) {
   return n.replace('.', ',')
 }
 
-/** { code, message } of a failed download (reason of createDownloadPump). o: { idleMs, maxMs, maxBytes }. */
+/**
+ * { code, message } of a failed download (reason of createDownloadPump). o: { idleMs, maxMs, maxBytes }. Codes:
+ * network (idle / cut / length), too-large (size), too-slow (max: open longer than maxMs), gone (closed, unknown).
+ */
 function downloadFailure(reason, o) {
   const opt = o || {}
   const secs = Math.max(1, Math.round((opt.idleMs || CANVASAPP_DOWNLOAD_IDLE_MS) / 1000))
@@ -739,7 +753,8 @@ function downloadFailure(reason, o) {
     case 'size':
       return { code: 'too-large', message: `Video lớn hơn ${downloadSizeText(opt.maxBytes || CANVASAPP_VIDEO_MAX_BYTES)} — SanoVids không tải về máy được.` }
     case 'max':
-      return { code: 'network', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
+      // its own code: the page continues on a new connection only when it can resume, never starts again from 0
+      return { code: 'too-slow', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
     default:
       return { code: 'gone', message: 'Lượt tải video này đã kết thúc.' }
   }
@@ -813,8 +828,10 @@ function downloadAnswer(status, contentType, text) {
  *   open(owner, { id, path, from })   → { ok: true, id, status, contentType, from, total, resumable }   (streaming)
  *                                     | { ok: true, status, contentType, json?, text? }                (not 200 / 206)
  *                                     | { ok: false, code, message }   bad-request | busy | not-allowed | gone |
- *                                       network | too-large | bad-range
+ *                                       network | too-large | bad-range (not-allowed also = a redirect to http,
+ *                                       refused by deps.fetch with error.code 'insecure-redirect' before it is sent)
  *   read(owner, { id })               → { ok: true, done: false, bytes } | { ok: true, done: true } | { ok: false, … }
+ *                                       (code network | too-large | too-slow | gone)
  *   close(owner, { id })              → { ok: true } (idempotent; ends a download still waiting for its slot too)
  *   closeAll(owner?)                  every download of that page (all without owner): reload, crash, logout.
  * Only the page (owner = webContents id) that opened a download may read or close it. Every end frees the slot once.
@@ -866,6 +883,8 @@ function createDownloadSessions(deps) {
       s[k] = null
     }
     sessions.delete(s.id)
+    // the clock of the video's validator starts again: a cut after a long download can still resume
+    if (s.validator) rememberTag(s.key, s.validator)
     if (s.pump) s.pump.cancel()
     try {
       s.controller.abort()
@@ -909,7 +928,7 @@ function createDownloadSessions(deps) {
     const m = deps.matchRoute(a.path)
     if (!m || !m.binary) return refusal('not-allowed', `SanoVids không được phép tải ${String(a.path).slice(0, 80)}.`)
     if (sessions.size >= lim.maxSessions) return refusal('busy', 'Đang tải quá nhiều video cùng lúc — SanoVids tải video này sau.')
-    const s = { id, owner, key: m.key, controller: new AbortController(), pump: null, release: null, ended: false, reading: false, headerTimer: null, pullTimer: null, maxTimer: null, timedOut: false }
+    const s = { id, owner, key: m.key, controller: new AbortController(), pump: null, release: null, ended: false, reading: false, headerTimer: null, pullTimer: null, maxTimer: null, timedOut: false, validator: null }
     sessions.set(id, s)
 
     // One slot of the 'download' lane for the whole download. Closed while waiting: the slot is let go at once.
@@ -951,6 +970,9 @@ function createDownloadSessions(deps) {
       const closed = s.ended && !s.timedOut
       end(s)
       if (closed) return failure('closed')
+      if (e && e.code === 'insecure-redirect') {
+        return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+      }
       return refusal('network', s.timedOut ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
     }
     if (s.ended) {
@@ -960,11 +982,6 @@ function createDownloadSessions(deps) {
     if (!res || typeof res.status !== 'number') {
       end(s)
       return refusal('network', 'canvasapp.io.vn trả về câu trả lời lạ.')
-    }
-    if (!downloadFinalUrlOk(res.url)) {
-      cancelBody(res)
-      end(s)
-      return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
     }
     const header = (name) => {
       const v = res.headers && typeof res.headers.get === 'function' ? res.headers.get(name) : null
@@ -980,6 +997,7 @@ function createDownloadSessions(deps) {
       contentEncoding: header('content-encoding'),
       acceptRanges: header('accept-ranges'),
       validator: validatorNow,
+      sent: from > 0 ? validator : null,
       maxBytes: lim.maxBytes,
     })
     if (plan.kind === 'answer') {
@@ -995,6 +1013,7 @@ function createDownloadSessions(deps) {
     }
     deps.clearTimer(s.headerTimer)
     s.headerTimer = null
+    s.validator = validatorNow
     if (validatorNow) rememberTag(s.key, validatorNow)
     else tags.delete(s.key)
     let reader = null
@@ -1081,7 +1100,8 @@ function multipartBody(form) {
 async function canvasappRequest(req) {
   if (!req || typeof req !== 'object') return gatewayError('bad-request', 'Yêu cầu không hợp lệ.')
   const method = String(req.method || 'GET').toUpperCase()
-  const match = matchCanvasappRoute(method, req.path)
+  // never the video stream: it only comes in pieces (canvasapp:downloadOpen)
+  const match = matchCanvasappRequest(method, req.path)
   if (!match) return gatewayError('not-allowed', `SanoVids không được phép gọi ${method} ${String(req.path).slice(0, 80)}.`)
   const { route, url } = match
 
@@ -1092,7 +1112,7 @@ async function canvasappRequest(req) {
     if (hit && Date.now() - hit.at < CANVASAPP_JOBS_MIN_MS) return hit.result
   }
 
-  const headers = { Accept: route.binary ? 'video/mp4,*/*' : 'application/json' }
+  const headers = { Accept: 'application/json' }
   let body
   if (method !== 'GET') {
     const csrf = await canvasappCsrf()
@@ -1122,10 +1142,10 @@ async function canvasappRequest(req) {
   const controller = new AbortController()
   let timer = null
   try {
-    const result = await withCanvasappSlot(route.binary ? 'download' : 'api', async () => {
-      // The clock starts when the request is really sent, not while it waits for a slot (e.g. behind other video
-      // downloads): a timeout then means canvasapp did not answer, never "not sent yet".
-      timer = setTimeout(() => controller.abort(), route.binary ? 10 * 60_000 : 60_000)
+    const result = await withCanvasappSlot('api', async () => {
+      // The clock starts when the request is really sent, not while it waits for a slot: a timeout then means
+      // canvasapp did not answer, never "not sent yet".
+      timer = setTimeout(() => controller.abort(), 60_000)
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
@@ -1137,26 +1157,15 @@ async function canvasappRequest(req) {
       })
       const contentType = res.headers.get('content-type') || ''
       const out = { ok: true, status: res.status, contentType }
-      if (route.binary && res.ok) {
-        // Older pages only (the streamed downloads below replace this): the whole video in one answer, ≤ 1 GB.
-        const length = parseContentLength(res.headers.get('content-length'))
-        if (length !== null && length > CANVASAPP_VIDEO_MAX_BYTES) {
-          controller.abort()
-          const f = downloadFailure('size', { maxBytes: CANVASAPP_VIDEO_MAX_BYTES })
-          return gatewayError(f.code, f.message)
-        }
-        out.bytes = new Uint8Array(await res.arrayBuffer())
-      } else {
-        const text = await res.text()
-        if (/json/i.test(contentType)) {
-          try {
-            out.json = JSON.parse(text)
-          } catch {
-            out.text = text.slice(0, 2000)
-          }
-        } else {
+      const text = await res.text()
+      if (/json/i.test(contentType)) {
+        try {
+          out.json = JSON.parse(text)
+        } catch {
           out.text = text.slice(0, 2000)
         }
+      } else {
+        out.text = text.slice(0, 2000)
       }
       return out
     })
@@ -1174,17 +1183,87 @@ async function canvasappRequest(req) {
   }
 }
 
+// <canvasapp-net-get> (pure; src/providers/__tests__/gatewayDownloads.test.ts runs this block as-is with a fake net.request)
+/**
+ * The GET of a video for <canvasapp-downloads> (its deps.fetch), through net.request rather than session.fetch:
+ * session.fetch follows every redirect, https → http included, and its Response never says where it ended (url is
+ * always '' — Electron's net-fetch builds it without one), so a downgrade could not even be seen. Here redirect is
+ * 'manual' and a redirect is followed only to an https URL: the request to an http URL is never sent (Electron
+ * cancels a redirect that is not followed during the 'redirect' event; this aborts it at once).
+ * o: { request(options) → ClientRequest (net.request), toWeb(IncomingMessage) → web ReadableStream, session }.
+ * Resolves { status, headers: { get(name) }, body: web ReadableStream | null }; rejects on a network error, when
+ * init.signal aborts (which also aborts a body being read) and on a refused redirect (error.code 'insecure-redirect').
+ */
+function canvasappNetGet(o, url, init) {
+  return new Promise((resolve, reject) => {
+    const signal = init && init.signal
+    let settled = false
+    let req = null
+    const fail = (e) => {
+      if (settled) return
+      settled = true
+      reject(e)
+    }
+    const aborted = () => Object.assign(new Error('aborted'), { name: 'AbortError' })
+    const stop = () => {
+      try {
+        if (req) req.abort()
+      } catch {
+        /* already over */
+      }
+    }
+    if (signal && signal.aborted) return fail(aborted())
+    try {
+      req = o.request({ method: 'GET', url, session: o.session, credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true })
+      for (const [name, value] of Object.entries((init && init.headers) || {})) req.setHeader(name, value)
+    } catch (e) {
+      return fail(e)
+    }
+    req.on('redirect', (_status, _method, redirectUrl) => {
+      if (downloadRedirectOk(redirectUrl)) return req.followRedirect()
+      fail(Object.assign(new Error('Chuyển hướng sang http bị từ chối.'), { code: 'insecure-redirect' }))
+      stop()
+    })
+    req.on('response', (res) => {
+      if (settled) return
+      settled = true
+      const headers = (res && res.headers) || {}
+      const get = (name) => {
+        const v = headers[String(name).toLowerCase()]
+        return v === undefined || v === null ? null : Array.isArray(v) ? v.join(', ') : String(v)
+      }
+      const status = res.statusCode
+      resolve({ status, headers: { get }, body: [101, 204, 205, 304].includes(status) ? null : o.toWeb(res) })
+    })
+    req.on('error', (e) => fail(e))
+    req.on('abort', () => fail(aborted()))
+    if (signal) {
+      signal.addEventListener(
+        'abort',
+        () => {
+          fail(aborted())
+          stop()
+        },
+        { once: true },
+      )
+    }
+    req.end()
+  })
+}
+
+/** Where a video download may be redirected: https only (never http, never another scheme). */
+function downloadRedirectOk(url) {
+  try {
+    return new URL(String(url)).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+// </canvasapp-net-get>
+
 /** Video downloads of the gateway (<canvasapp-downloads>): the 'download' lane, the canvasapp partition, the allowlist. */
 const canvasappDownloads = createDownloadSessions({
-  fetch: (url, init) =>
-    canvasappSession().fetch(url, {
-      method: 'GET',
-      headers: init.headers,
-      credentials: 'include',
-      redirect: 'follow',
-      signal: init.signal,
-      bypassCustomProtocolHandlers: true,
-    }),
+  fetch: (url, init) => canvasappNetGet({ request: (opts) => net.request(opts), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),
   withSlot: (fn) => withCanvasappSlot('download', fn),
   matchRoute: (rawPath) => {
     const m = matchCanvasappRoute('GET', rawPath)

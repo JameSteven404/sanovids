@@ -27,9 +27,9 @@
 // 'slow' {ms}; and job-level ones: the next job fails / expires, the next N downloads fail, the session expires.
 // Video downloads (openStream, what the streaming gateway of the dev bridge calls) also meet 'cut' {fraction} (the
 // connection breaks part-way), 'stall' {fraction} (stops sending), 'trickle' {bytesPerSec} (slow body; adds up with
-// other faults like 'slow') and 'oversize' (announces more than 1 GB). config.rangeSupport: 206 + Content-Range,
-// Accept-Ranges and an ETag (off by default: the live site is not known to); the old one-message request() of /stream
-// takes cut / stall as a network error and oversize as the gateway's refusal.
+// other faults like 'slow'), 'oversize' (announces more than 1 GB) and 'insecure-redirect' (the answer would move to
+// an http URL: the gateway never sends that request). config.rangeSupport: 206 + Content-Range, Accept-Ranges and an
+// ETag (off by default: the live site is not known to). The gateway never asks /stream through request().
 //
 // ---- API ----
 //   createDevCanvasapp(deps?): DevCanvasapp      see the interface below (request() / openStream() are what the bridge calls).
@@ -41,7 +41,7 @@ import { memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
 import { ALLOWED_IMAGE_TYPES, uuidFromKey } from '../canvasapp/mapping'
-import { CANVASAPP_VIDEO_MAX_BYTES, downloadFailure } from './downloads'
+import { CANVASAPP_VIDEO_MAX_BYTES } from './downloads'
 import { pushDevLog, summarizeForLog } from './log'
 import type { DevTopupOutcome } from './prompts'
 import { matchDevRoute, MAX_UPLOAD_BYTES, type DevEndpoint } from './routes'
@@ -133,9 +133,11 @@ export type DevFault =
   | { kind: 'trickle'; bytesPerSec: number }
   /** Video download only: the answer announces a size over 1 GB (the gateway refuses it before reading). */
   | { kind: 'oversize' }
+  /** Video download only: /stream redirects to an http URL (the gateway refuses to follow: nothing is sent there). */
+  | { kind: 'insecure-redirect' }
 
 /** Fault kinds that only mean something for a video download ('job-stream'). */
-export const DEV_STREAM_FAULT_KINDS = ['cut', 'stall', 'trickle', 'oversize'] as const
+export const DEV_STREAM_FAULT_KINDS = ['cut', 'stall', 'trickle', 'oversize', 'insecure-redirect'] as const
 /** Kinds that add up with the one fault deciding the answer (every matching rule fires). */
 const MODIFIER_KINDS: readonly DevFault['kind'][] = ['slow', 'trickle']
 
@@ -192,10 +194,14 @@ export type DevStreamAnswer =
 
 /** Pieces the simulated body hands out (a real connection's are smaller; the gateway regroups them). */
 const DEV_STREAM_PIECE_BYTES = 64 * 1024
+/** A paced body hands out a piece about this often (a slow link sends small packets all the time, never one a minute). */
+const DEV_STREAM_TICK_MS = 250
 
 /**
  * The body of a video answer, piece by piece: 'cut' throws after its share, 'stall' stops sending (until cancelled),
- * `bytesPerSec` paces the pieces with `sleep`. cancel() ends a pending read with done (as a web stream does).
+ * `bytesPerSec` paces it with `sleep` — pieces of about a quarter of a second each, so even 1 KB/s delivers bytes well
+ * inside the gateway's idle limit (10 s in development mode). cancel() ends a pending read with done (as a web stream
+ * does).
  */
 export function devStreamReader(bytes: Uint8Array, opts: { fault?: DevFault | null; bytesPerSec?: number | null; sleep: (ms: number) => Promise<void> }): DevStreamReader {
   const f = opts.fault ?? null
@@ -215,7 +221,8 @@ export function devStreamReader(bytes: Uint8Array, opts: { fault?: DevFault | nu
         return { done: true }
       }
       if (off >= bytes.byteLength) return { done: true }
-      let n = Math.min(DEV_STREAM_PIECE_BYTES, bytes.byteLength - off)
+      const piece = rate ? Math.max(1, Math.min(DEV_STREAM_PIECE_BYTES, Math.floor((rate * DEV_STREAM_TICK_MS) / 1000))) : DEV_STREAM_PIECE_BYTES
+      let n = Math.min(piece, bytes.byteLength - off)
       if (cutAt !== null) n = Math.min(n, cutAt - off)
       if (stallAt !== null) n = Math.min(n, stallAt - off)
       if (rate) await opts.sleep(Math.max(1, Math.round((n * 1000) / rate)))
@@ -324,6 +331,18 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
     label: 'Tải video chậm (100 KB/giây, giữ)',
     hint: 'Video về từng chút một — để xem tiến độ “Đang tải về …%” trên take.',
     rule: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 100 * 1024 }, sticky: true },
+  },
+  {
+    id: 'stream-crawl',
+    label: 'Tải video rất chậm (2 KB/giây, giữ)',
+    hint: 'Mỗi kết nối tải video bị dừng sau 2 phút (bản thật: 60 phút). Bật “Cho tải tiếp video (HTTP Range)” → tải tiếp trên kết nối mới cho tới khi xong; tắt → take báo lỗi ngay, ghi rõ đã trừ credit dev (không tải lại từ đầu 5 lần).',
+    rule: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 2 * 1024 }, sticky: true },
+  },
+  {
+    id: 'stream-http',
+    label: 'Tải video bị chuyển sang http (1 lần)',
+    hint: 'Máy chủ chuyển việc tải video sang một địa chỉ http không mã hoá — SanoVids không gửi yêu cầu đó, lượt tải hỏng và được thử lại sau; take không bị đánh lỗi.',
+    rule: { endpoint: 'job-stream', fault: { kind: 'insecure-redirect' } },
   },
   {
     id: 'stream-oversize',
@@ -715,6 +734,8 @@ function faultLabel(f: DevFault): string {
       return `trickle ${Math.round(f.bytesPerSec / 1024)}KB/s`
     case 'oversize':
       return 'oversize'
+    case 'insecure-redirect':
+      return 'http-redirect'
   }
 }
 
@@ -1570,17 +1591,6 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       logEntry(req, endpoint, started, res, fault, false)
       return res
     }
-    // A video in one answer (the old way): a broken / stalled body is no answer; past 1 GB the gateway refuses it.
-    if (rule?.fault.kind === 'cut' || rule?.fault.kind === 'stall') {
-      const res: BridgeResponse = { ok: false, code: 'network', message: 'canvasapp giả lập ngắt kết nối giữa chừng (lỗi giả).' }
-      logEntry(req, endpoint, started, res, fault, false)
-      return res
-    }
-    if (rule?.fault.kind === 'oversize' && endpoint === 'job-stream') {
-      const res: BridgeResponse = { ok: false, code: 'too-large', message: downloadFailure('size').message }
-      logEntry(req, endpoint, started, res, fault, false)
-      return res
-    }
     let res: BridgeResponse
     try {
       // Another tab may have changed the account while this request waited.
@@ -1643,6 +1653,12 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
         message: kind === 'network' ? 'lỗi giả: mất mạng' : 'lỗi giả: mất câu trả lời',
       }
       logStream(req, endpoint, started, res, fault, kind === 'lost-response')
+      return res
+    }
+    if (kind === 'insecure-redirect' && endpoint === 'job-stream') {
+      // the 302 to http:// is all the gateway sees: it refuses to follow, so the request never reaches that address
+      const res: DevStreamAnswer = { ok: false, code: 'insecure-redirect', message: 'lỗi giả: chuyển hướng sang http://' }
+      logStream(req, endpoint, started, res, fault, false)
       return res
     }
     if (rule && (rule.fault.kind === 'response' || rule.fault.kind === 'processed-then')) {

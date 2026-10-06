@@ -2,7 +2,8 @@
 // the slots) next to the TypeScript port development mode runs (providers/dev/downloads.ts): every case runs on BOTH
 // and must give the same answers. Pieces ≤ 4 MiB pulled by the page, one slot per download from open to end (never
 // leaked: closed while waiting, logout, pull-idle, max time), idle timeout, 1 GB cap, Range + If-Range only with a
-// strong validator, 416 / bad ranges, a truncated body never reported as done.
+// strong validator and a 206 only with that same validator, 416 / bad ranges, a truncated body never reported as done.
+// Also main's <canvasapp-net-get> (the GET itself, over a fake net.request: a redirect is followed only to https).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import { MAX_CONCURRENCY } from '../canvasapp/adapter'
@@ -27,7 +28,6 @@ const NAMES = [
   'downloadStartByte',
   'strongValidator',
   'downloadHeaders',
-  'downloadFinalUrlOk',
   'downloadPlan',
   'createDownloadPump',
   'downloadSizeText',
@@ -156,15 +156,13 @@ describe('gateway downloads: constants and pure rules (main.cjs ≡ dev port)', 
         ['W/"weak"', 'Tue, 06 Oct 2026 10:00:00 GMT'],
       ].map(([e, d]) => impl.strongValidator(e, d)),
       h: [impl.downloadHeaders(0, '"x"'), impl.downloadHeaders(100, null), impl.downloadHeaders(100, '"x"')],
-      u: ['https://cdn.example/v.mp4', 'http://cdn.example/v.mp4', '', undefined, 'not a url', 'file:///x'].map((u) => impl.downloadFinalUrlOk(u)),
     }))
     expect(r.v).toEqual(['"abc-123"', null, null, null, 'Tue, 06 Oct 2026 10:00:00 GMT', null, 'Tue, 06 Oct 2026 10:00:00 GMT'])
     expect(r.h).toEqual([{ Accept: 'video/mp4,*/*' }, { Accept: 'video/mp4,*/*' }, { Accept: 'video/mp4,*/*', Range: 'bytes=100-', 'If-Range': '"x"' }])
-    expect(r.u).toEqual([true, false, true, true, false, false])
   })
 
   it('plan: what to do with each answer', async () => {
-    const base = { status: 200, from: 0, contentLength: null, contentRange: null, contentEncoding: null, acceptRanges: null, validator: null, maxBytes: 1000 }
+    const base = { status: 200, from: 0, contentLength: null, contentRange: null, contentEncoding: null, acceptRanges: null, validator: null, sent: null, maxBytes: 1000 }
     const cases = [
       {},
       { contentLength: '500' },
@@ -174,13 +172,19 @@ describe('gateway downloads: constants and pure rules (main.cjs ≡ dev port)', 
       { contentLength: '500', acceptRanges: 'bytes', validator: '"e"', contentEncoding: 'gzip' }, // decoded body: no length, no Range
       { contentLength: '500', contentEncoding: 'identity' },
       { from: 100, contentLength: '500' }, // a 200 to a resume: from the start
-      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: '"e"' },
-      { status: 206, from: 100, contentRange: 'bytes 100-299/500', validator: '"e"' }, // a part
-      { status: 206, from: 100, contentRange: 'bytes 0-499/500' }, // not where asked
-      { status: 206, from: 100, contentRange: 'bytes 100-499/*' }, // unknown size
-      { status: 206, from: 100, contentRange: 'nonsense' },
-      { status: 206, from: 100, contentRange: 'bytes 100-1499/1500' },
-      { status: 206, from: 100, contentRange: 'bytes 100-499/500', contentEncoding: 'br' },
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: '"e"', sent: '"e"' },
+      { status: 206, from: 100, contentRange: 'bytes 100-299/500', validator: '"e"', sent: '"e"' }, // a part
+      { status: 206, from: 100, contentRange: 'bytes 0-499/500', validator: '"e"', sent: '"e"' }, // not where asked
+      { status: 206, from: 100, contentRange: 'bytes 100-499/*', validator: '"e"', sent: '"e"' }, // unknown size
+      { status: 206, from: 100, contentRange: 'nonsense', validator: '"e"', sent: '"e"' },
+      { status: 206, from: 100, contentRange: 'bytes 100-1499/1500', validator: '"e"', sent: '"e"' },
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', contentEncoding: 'br', validator: '"e"', sent: '"e"' },
+      // MONEY: a 206 to a resume must carry the validator If-Range named (else maybe the rest of another file)
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: '"other"', sent: '"e"' },
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: null, sent: '"e"' },
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: '"e"', sent: null },
+      { status: 206, from: 0, contentRange: 'bytes 0-499/500' }, // not a resume: nothing to match
+      { status: 206, from: 100, contentRange: 'bytes 100-499/500', validator: 'Tue, 06 Oct 2026 10:00:00 GMT', sent: 'Tue, 06 Oct 2026 10:00:00 GMT' },
       { status: 416, from: 100 },
       { status: 416, from: 0 },
       { status: 404 },
@@ -206,6 +210,11 @@ describe('gateway downloads: constants and pure rules (main.cjs ≡ dev port)', 
       { kind: 'too-large' },
       { kind: 'bad-range' },
       { kind: 'bad-range' },
+      { kind: 'bad-range' },
+      { kind: 'bad-range' },
+      { kind: 'stream', from: 0, end: 500, total: 500, resumable: false },
+      { kind: 'stream', from: 100, end: 500, total: 500, resumable: true },
+      { kind: 'bad-range' },
       { kind: 'answer' },
       { kind: 'answer' },
       { kind: 'answer' },
@@ -224,7 +233,7 @@ describe('gateway downloads: constants and pure rules (main.cjs ≡ dev port)', 
         (a) => ({ ...a, text: a.text?.length }),
       ),
     }))
-    expect(r.texts.map((t) => t.code)).toEqual(['network', 'network', 'network', 'too-large', 'network', 'gone', 'gone'])
+    expect(r.texts.map((t) => t.code)).toEqual(['network', 'network', 'network', 'too-large', 'too-slow', 'gone', 'gone'])
     expect(r.texts[0].message).toBe('canvasapp.io.vn ngừng gửi video giữa chừng (10 giây không nhận thêm dữ liệu).')
     expect(r.texts[3].message).toBe('Video lớn hơn 1 GB — SanoVids không tải về máy được.')
     expect(r.texts[4].message).toBe('Tải video quá 60 phút nên SanoVids dừng lại.')
@@ -375,11 +384,13 @@ interface FakeAnswer {
   status: number
   headers?: Record<string, string | undefined>
   body?: (Uint8Array | 'done' | 'error' | 'hang')[]
-  url?: string
 }
 
-/** A fake canvasapp: records each request (url + headers), answers with `answer(n, headers)` (or never: 'hang'). */
-function fakeSite(answer: (n: number, headers: Record<string, string>) => FakeAnswer | 'hang' | 'throw') {
+/**
+ * A fake canvasapp: records each request (url + headers), answers with `answer(n, headers)` (or never: 'hang'; no
+ * connection: 'throw'; a redirect to http that <canvasapp-net-get> refused to follow: 'insecure').
+ */
+function fakeSite(answer: (n: number, headers: Record<string, string>) => FakeAnswer | 'hang' | 'throw' | 'insecure') {
   const calls: { url: string; headers: Record<string, string> }[] = []
   const readers: ReturnType<typeof scripted>['st'][] = []
   const fetch: DownloadDeps['fetch'] = (url, init) => {
@@ -389,10 +400,11 @@ function fakeSite(answer: (n: number, headers: Record<string, string>) => FakeAn
       init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })
       if (a === 'hang') return
       if (a === 'throw') return reject(new Error('ECONNREFUSED'))
+      if (a === 'insecure') return reject(Object.assign(new Error('Chuyển hướng sang http bị từ chối.'), { code: 'insecure-redirect' }))
       const s = scripted([...(a.body ?? ['done'])])
       readers.push(s.st)
       const h = Object.fromEntries(Object.entries(a.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]))
-      resolve({ status: a.status, url: a.url ?? 'https://canvasapp.io.vn' + PATH, headers: { get: (n) => h[n.toLowerCase()] ?? null }, body: { getReader: () => s.reader, cancel: () => s.reader.cancel() } })
+      resolve({ status: a.status, headers: { get: (n) => h[n.toLowerCase()] ?? null }, body: { getReader: () => s.reader, cancel: () => s.reader.cancel() } })
     })
   }
   return { fetch, calls, readers }
@@ -543,18 +555,18 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
     expect(r).toEqual({
       idle: { ok: false, code: 'network', message: 'canvasapp.io.vn ngừng gửi video giữa chừng (60 giây không nhận thêm dữ liệu).' },
       late: { ok: false, code: 'network', message: 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' },
-      max: { ok: false, code: 'network', message: 'Tải video quá 60 phút nên SanoVids dừng lại.' },
+      max: { ok: false, code: 'too-slow', message: 'Tải video quá 60 phút nên SanoVids dừng lại.' },
       active: 0,
     })
   })
 
-  it('answers that are not a video: 401 / 409 / 502 (JSON or text, body cut short), unreachable, http after a redirect, too large', async () => {
-    const answers: (FakeAnswer | 'throw')[] = [
+  it('answers that are not a video: 401 / 409 / 502 (JSON or text, body cut short), unreachable, a redirect to http, too large', async () => {
+    const answers: (FakeAnswer | 'throw' | 'insecure')[] = [
       { status: 401, headers: { 'content-type': 'application/json' }, body: [new TextEncoder().encode('{"detail":"Not authenticated"}'), 'done'] },
       { status: 409, headers: { 'content-type': 'application/json; charset=utf-8' }, body: [new TextEncoder().encode('{"detail":"Video chưa sẵn sàng"}'), 'done'] },
       { status: 502, headers: { 'content-type': 'text/html' }, body: [new TextEncoder().encode('<h1>Bad gateway</h1>'), 'hang'] },
       'throw',
-      { status: 200, url: 'http://cdn.example/v.mp4', headers: { 'content-length': '10' }, body: [bytes(10), 'done'] },
+      'insecure',
       { status: 200, headers: { 'content-length': String(2 * 1024 ** 3) } },
     ]
     const r = await both(async (impl, laneOf) => {
@@ -631,6 +643,65 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
     expect(r).toEqual({ a: badRange, b: badRange, size: 0 })
   })
 
+  it('the validator is kept 10 min after the LAST connection of that video ended: a download cut after 15 min still resumes', async () => {
+    const ETAG = '"long"'
+    const r = await both(async (impl, laneOf) => {
+      const site = fakeSite((n, h) =>
+        n === 1
+          ? { status: 200, headers: { 'content-length': '1000', 'accept-ranges': 'bytes', etag: ETAG }, body: [bytes(100), 'hang'] }
+          : h.Range
+            ? { status: 206, headers: { 'content-range': 'bytes 100-999/1000', etag: ETAG }, body: [bytes(900, 3), 'done'] }
+            : { status: 200, headers: { 'content-length': '1000', 'accept-ranges': 'bytes', etag: ETAG }, body: [bytes(1000), 'done'] },
+      )
+      const s = sessionsOf(impl, laneOf(), site.fetch, { chunkBytes: 100, idleMs: 60 * 60_000, maxMs: 60 * 60_000 })
+      await s.open('page', { id: ID(1), path: PATH })
+      await s.read('page', { id: ID(1) })
+      const stalled = s.read('page', { id: ID(1) })
+      await vi.advanceTimersByTimeAsync(15 * 60_000) // a long, slow download: opened 15 min ago
+      s.close('page', { id: ID(1) }) // the connection ends now (cut / stall / closed)
+      await stalled
+      await vi.advanceTimersByTimeAsync(9 * 60_000)
+      const resumed = await s.open('page', { id: ID(2), path: PATH, from: 100 })
+      const rest = await drain(s, 'page', ID(2))
+      // 10 min after that one ended (completed), the validator is gone: a resume request starts from 0
+      await vi.advanceTimersByTimeAsync(10 * 60_000 + 1)
+      const late = await s.open('page', { id: ID(3), path: PATH, from: 100 })
+      s.closeAll()
+      return { resumed, rest: rest.length, late, headers: site.calls.map((c) => c.headers.Range ?? null) }
+    })
+    expect(r.resumed).toMatchObject({ ok: true, status: 206, from: 100, total: 1000 })
+    expect(r.late).toMatchObject({ ok: true, from: 0 })
+    expect(r.headers).toEqual([null, 'bytes=100-', null])
+  })
+
+  it('MONEY: a 206 to a resume that carries another ETag than the one If-Range named → bad-range, nothing spliced', async () => {
+    const r = await both(async (impl, laneOf) => {
+      const site = fakeSite((n, h) =>
+        n === 1
+          ? { status: 200, headers: { 'content-length': '1000', 'accept-ranges': 'bytes', etag: '"A"' }, body: [bytes(400, 1), 'error'] }
+          : n === 2
+            ? // a server that honours Range but ignores If-Range: the rest of ANOTHER file of the same size
+              { status: 206, headers: { 'content-range': 'bytes 400-999/1000', etag: '"B"' }, body: [bytes(600, 9), 'done'] }
+            : { status: 206, headers: { 'content-range': 'bytes 400-999/1000' }, body: [bytes(600, 9), 'done'] }, // no validator at all
+      )
+      const s = sessionsOf(impl, laneOf(), site.fetch, { chunkBytes: 1000 })
+      await s.open('page', { id: ID(1), path: PATH })
+      await drain(s, 'page', ID(1))
+      const other = await s.open('page', { id: ID(2), path: PATH, from: 400 })
+      const sentFirst = site.calls[1].headers
+      // "B" was not remembered as the video's validator: the next resume still names "A"
+      const none = await s.open('page', { id: ID(3), path: PATH, from: 400 })
+      return { other, none, sentFirst, sentSecond: site.calls[2].headers, size: s.size(), cancelled: site.readers.map((x) => x.cancels) }
+    })
+    const badRange = { ok: false, code: 'bad-range', message: 'canvasapp.io.vn trả về phần video không khớp chỗ đang tải.' }
+    expect(r.other).toEqual(badRange)
+    expect(r.none).toEqual(badRange)
+    expect(r.sentFirst).toEqual({ Accept: 'video/mp4,*/*', Range: 'bytes=400-', 'If-Range': '"A"' })
+    expect(r.sentSecond).toEqual({ Accept: 'video/mp4,*/*', Range: 'bytes=400-', 'If-Range': '"A"' })
+    expect(r.size).toBe(0)
+    expect(r.cancelled.slice(1)).toEqual([1, 1]) // the refused bodies are never read
+  })
+
   it('a decoded (gzip) body: no length check, no resume — the bytes as they come', async () => {
     const r = await both(async (impl, laneOf) => {
       const s = sessionsOf(impl, laneOf(), fakeSite(() => ({ status: 200, headers: { 'content-length': '40', 'content-encoding': 'gzip', 'accept-ranges': 'bytes', etag: '"g"' }, body: [bytes(90), 'done'] })).fetch)
@@ -639,5 +710,143 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
     })
     expect(r.open).toMatchObject({ ok: true, total: null, resumable: false })
     expect(r.reads).toEqual([{ bytes: 90 }, { ok: true, done: true }])
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// <canvasapp-net-get>: the GET itself over net.request (a fake ClientRequest with Electron's redirect semantics)
+// ---------------------------------------------------------------------------------------------------------------
+
+type NetGet = (o: unknown, url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ status: number; headers: { get(n: string): string | null }; body: unknown }>
+const netGet = new Function(`${block('canvasapp-net-get')}\nreturn canvasappNetGet`)() as NetGet
+
+/**
+ * A ClientRequest like Electron's net-client-request.ts: redirect 'manual' emits 'redirect' and, unless
+ * followRedirect() was called during it (or the request was aborted), dies with "Redirect was cancelled" ('error').
+ */
+function fakeNet() {
+  type Listener = (...a: unknown[]) => void
+  const made: { options: Record<string, unknown>; headers: Record<string, string>; events: string[]; aborted: boolean; ended: boolean; emit: (ev: string, ...a: unknown[]) => void; redirect: (url: string) => boolean }[] = []
+  const request = (options: Record<string, unknown>) => {
+    const listeners = new Map<string, Listener[]>()
+    const r = {
+      options,
+      headers: {} as Record<string, string>,
+      events: [] as string[],
+      aborted: false,
+      ended: false,
+      following: false as boolean | null,
+      emit(ev: string, ...a: unknown[]) {
+        for (const l of listeners.get(ev) ?? []) l(...a)
+      },
+      /** canvasapp answers with a redirect: true when the request followed it. */
+      redirect(url: string) {
+        r.following = null
+        r.emit('redirect', 302, 'GET', url, {})
+        const followed = r.following === true
+        r.following = false
+        if (!followed && !r.aborted) r.emit('error', new Error('Redirect was cancelled'))
+        return followed
+      },
+    }
+    const api = {
+      setHeader: (k: string, v: string) => void (r.headers[k] = v),
+      on: (ev: string, l: Listener) => {
+        listeners.set(ev, [...(listeners.get(ev) ?? []), l])
+        return api
+      },
+      followRedirect: () => {
+        if (r.following !== null) throw new Error('followRedirect() called, but was not waiting for a redirect')
+        r.following = true
+        r.events.push('follow')
+      },
+      abort: () => {
+        if (!r.aborted) queueMicrotask(() => r.emit('abort'))
+        r.aborted = true
+        r.events.push('abort')
+      },
+      end: () => {
+        r.ended = true
+        r.events.push('end')
+      },
+    }
+    made.push(r)
+    return api
+  }
+  const toWeb = (res: { body: string }) => ({ webBody: res.body })
+  return { o: { request, toWeb, session: 'SESSION' }, made }
+}
+
+describe('gateway downloads: <canvasapp-net-get> (main.cjs, a redirect is followed only to https)', () => {
+  const HEADERS = { Accept: 'video/mp4,*/*', Range: 'bytes=100-', 'If-Range': '"e"' }
+  const message = (status: number, headers: Record<string, string | string[]>) => ({ statusCode: status, headers, body: 'BODY' })
+
+  it('sends a GET through the canvasapp session with the headers, redirect manual; follows https redirects; reads the answer', async () => {
+    const net = fakeNet()
+    const p = netGet(net.o, 'https://canvasapp.io.vn/api/video-jobs/j/stream', { headers: HEADERS, signal: new AbortController().signal })
+    const req = net.made[0]
+    expect(req.options).toEqual({ method: 'GET', url: 'https://canvasapp.io.vn/api/video-jobs/j/stream', session: 'SESSION', credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true })
+    expect(req.headers).toEqual(HEADERS)
+    expect(req.ended).toBe(true)
+    expect(req.redirect('https://cdn.example/v.mp4?sig=1')).toBe(true)
+    req.emit('response', message(206, { 'content-range': 'bytes 100-499/500', etag: '"e"', 'x-two': ['a', 'b'] }))
+    const res = await p
+    expect(res.status).toBe(206)
+    expect([res.headers.get('Content-Range'), res.headers.get('etag'), res.headers.get('x-two'), res.headers.get('missing')]).toEqual(['bytes 100-499/500', '"e"', 'a, b', null])
+    expect(res.body).toEqual({ webBody: 'BODY' })
+    expect(req.events).toEqual(['end', 'follow'])
+  })
+
+  it('MONEY / SECURITY: a redirect to http (or any other scheme) is never followed — refused before it is sent', async () => {
+    for (const to of ['http://canvasapp.io.vn/api/video-jobs/j/stream', 'http://cdn.example/v.mp4', 'ftp://x/v.mp4', 'not a url']) {
+      const net = fakeNet()
+      const p = netGet(net.o, 'https://canvasapp.io.vn/api/video-jobs/j/stream', { headers: {}, signal: new AbortController().signal })
+      const req = net.made[0]
+      expect(req.redirect(to)).toBe(false)
+      await expect(p).rejects.toMatchObject({ code: 'insecure-redirect' })
+      expect(req.events).toEqual(['end', 'abort'])
+      req.emit('response', message(200, {})) // nothing can come after that
+    }
+  })
+
+  it('an https redirect, then one to http: refused at the second hop', async () => {
+    const net = fakeNet()
+    const p = netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: new AbortController().signal })
+    const req = net.made[0]
+    expect(req.redirect('https://cdn.example/a')).toBe(true)
+    expect(req.redirect('http://cdn.example/b')).toBe(false)
+    await expect(p).rejects.toMatchObject({ code: 'insecure-redirect' })
+  })
+
+  it('network errors reject; abort rejects at once (AbortError) and aborts the request, also after the answer (body)', async () => {
+    const net = fakeNet()
+    const failed = netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: new AbortController().signal })
+    net.made[0].emit('error', new Error('net::ERR_INTERNET_DISCONNECTED'))
+    await expect(failed).rejects.toThrow('net::ERR_INTERNET_DISCONNECTED')
+
+    const ctrl = new AbortController()
+    const waiting = netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: ctrl.signal })
+    ctrl.abort()
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' })
+    expect(net.made[1].events).toContain('abort')
+
+    const reading = new AbortController()
+    const p = netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: reading.signal })
+    net.made[2].emit('response', message(200, { 'content-length': '10' }))
+    expect((await p).status).toBe(200)
+    reading.abort() // <canvasapp-downloads> end(): the body being read stops too
+    expect(net.made[2].events).toContain('abort')
+
+    const already = new AbortController()
+    already.abort()
+    await expect(netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: already.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(net.made).toHaveLength(3) // nothing was created for it
+  })
+
+  it('statuses without a body have none (204, 304)', async () => {
+    const net = fakeNet()
+    const p = netGet(net.o, 'https://canvasapp.io.vn/x', { headers: {}, signal: new AbortController().signal })
+    net.made[0].emit('response', message(204, {}))
+    expect((await p).body).toBeNull()
   })
 })

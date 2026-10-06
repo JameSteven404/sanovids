@@ -3,7 +3,8 @@
 // (transport.ts createDesktopTransport / openCheckout, api.ts, adapter.ts) runs on top of it unchanged.
 //
 // Like main.cjs it:
-//   - refuses anything outside the endpoint allowlist ({ ok:false, code:'not-allowed' }), JSON bodies over 2 MB and
+//   - refuses anything outside the endpoint allowlist ({ ok:false, code:'not-allowed' }) — and the video stream in
+//     request(): it only comes through downloadOpen, like main's matchCanvasappRequest —, JSON bodies over 2 MB and
 //     uploads over 20 MB ('too-large'); sends no JSON body with GET / DELETE; sanitizes the multipart filename;
 //   - reuses a job-list answer for a short while per project, and forgets it around every POST /api/video-jobs (so a
 //     lookup after a lost answer always reads the server);
@@ -15,8 +16,10 @@
 //     timeout (15 min) — and tells the dev server what canvasapp says about the order afterwards (paid ~2 s later…);
 //   - downloadOpen / downloadRead / downloadClose: main's video downloads (downloads.ts, the port of its
 //     <canvasapp-downloads> block) over the dev server's openStream(): pieces (64 KiB here), one of 2 download slots
-//     held per download, idle (10 s here) / pull-idle / 60-min limits, 1 GB cap, Range + If-Range only with the ETag
-//     the simulated site sent (DevConfig.rangeSupport). A download that stops by itself is written to the request log.
+//     held per download, idle (10 s here) / pull-idle / per-connection (2 min here, main: 60 min) limits, 1 GB cap,
+//     Range + If-Range only with the ETag the simulated site sent (DevConfig.rangeSupport), a redirect to http refused
+//     (dev fault 'insecure-redirect', main's <canvasapp-net-get>). A download that stops by itself is written to the
+//     request log.
 // JSON bodies cross it as JSON (a deep copy), like IPC + HTTP would: nothing is shared by reference with the server.
 import { checkoutUrlAllowed, parsePaymentReturn } from '../../core/topup'
 import type { TransportRequest } from '../canvasapp/api'
@@ -30,7 +33,15 @@ import type {
   CanvasappBridge,
   CheckoutArgs,
 } from '../canvasapp/transport'
-import { createDevLane, createDownloadSessions, DEV_DOWNLOAD_CHUNK_BYTES, DEV_DOWNLOAD_IDLE_MS, type DownloadLimits, type ResponseLike } from './downloads'
+import {
+  createDevLane,
+  createDownloadSessions,
+  DEV_DOWNLOAD_CHUNK_BYTES,
+  DEV_DOWNLOAD_IDLE_MS,
+  DEV_DOWNLOAD_MAX_MS,
+  type DownloadLimits,
+  type ResponseLike,
+} from './downloads'
 import { pushDevLog, summarizeForLog } from './log'
 import { answerDevCheckout, checkoutPromptOpen, closeDevPrompts, openCheckoutPrompt, openLoginPrompt } from './prompts'
 import { matchDevRoute, MAX_JSON_BYTES, MAX_UPLOAD_BYTES } from './routes'
@@ -55,7 +66,7 @@ export interface DevBridgeOptions {
   now?: () => number
   /** Write gateway refusals / cache hits to the request log (default true). */
   log?: boolean
-  /** Video downloads: main's limits, except pieces of 64 KiB and 10 s without data (DEV_DOWNLOAD_*). Tests shorten them. */
+  /** Video downloads: main's limits, except pieces of 64 KiB, 10 s without data, 2 min per connection (DEV_DOWNLOAD_*). Tests shorten them. */
   downloadLimits?: Partial<DownloadLimits>
 }
 
@@ -63,12 +74,11 @@ export interface DevBridgeOptions {
 const DEV_PAGE = 'page'
 
 /** A Response-like of the dev server's streamed answer (headers lower-case; a JSON / text answer as its bytes). */
-function devResponse(path: string, a: Extract<DevStreamAnswer, { ok: true }>): ResponseLike {
+function devResponse(a: Extract<DevStreamAnswer, { ok: true }>): ResponseLike {
   const headers = { get: (name: string) => a.headers[name.toLowerCase()] ?? null }
-  const url = 'https://canvasapp.io.vn' + path
   if (a.body) {
     const reader = a.body
-    return { status: a.status, url, headers, body: { getReader: () => reader, cancel: () => reader.cancel() } }
+    return { status: a.status, headers, body: { getReader: () => reader, cancel: () => reader.cancel() } }
   }
   const text = a.json !== undefined ? JSON.stringify(a.json) : (a.text ?? '')
   let sent = false
@@ -77,7 +87,7 @@ function devResponse(path: string, a: Extract<DevStreamAnswer, { ok: true }>): R
     read: async () => (sent || !bytes.byteLength ? { done: true } : ((sent = true), { done: false, value: bytes })),
     cancel: async () => undefined,
   }
-  return { status: a.status, url, headers, body: { getReader: () => reader, cancel: async () => undefined } }
+  return { status: a.status, headers, body: { getReader: () => reader, cancel: async () => undefined } }
 }
 
 type Fail = { ok: false; code: string; message: string }
@@ -130,8 +140,9 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
           .then(
             (a) => {
               init.signal.removeEventListener('abort', abort)
-              if (!a.ok) reject(new Error(a.message))
-              else resolve(devResponse(url, a))
+              // 'insecure-redirect': what main's <canvasapp-net-get> rejects with (the http request is never sent)
+              if (!a.ok) reject(Object.assign(new Error(a.message), a.code === 'insecure-redirect' ? { code: a.code } : {}))
+              else resolve(devResponse(a))
             },
             (e: unknown) => {
               init.signal.removeEventListener('abort', abort)
@@ -147,7 +158,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
     now,
-    limits: { chunkBytes: DEV_DOWNLOAD_CHUNK_BYTES, idleMs: DEV_DOWNLOAD_IDLE_MS, ...opts.downloadLimits },
+    limits: { chunkBytes: DEV_DOWNLOAD_CHUNK_BYTES, idleMs: DEV_DOWNLOAD_IDLE_MS, maxMs: DEV_DOWNLOAD_MAX_MS, ...opts.downloadLimits },
   })
 
   function logGateway(req: TransportRequest, res: BridgeResponse, fault: string) {
@@ -170,13 +181,14 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     if (!req || typeof req !== 'object') return gatewayError('bad-request', 'Yêu cầu không hợp lệ.')
     const method = String(req.method || 'GET').toUpperCase() as TransportRequest['method']
     const match = matchDevRoute(method, req.path)
-    if (!match) {
+    // main's matchCanvasappRequest: never the video stream here — it only comes in pieces (downloadOpen)
+    if (!match || match.binary) {
       const res = gatewayError('not-allowed', `SanoVids không được phép gọi ${method} ${String(req.path).slice(0, 80)}.`)
       logGateway(req, res, 'not-allowed')
       return res
     }
     // What main.cjs would put on the wire.
-    const out: TransportRequest = { method, path: req.path, ...(req.binary ? { binary: true } : {}) }
+    const out: TransportRequest = { method, path: req.path }
     if (match.multipart) {
       const f = req.form
       if (!f || !(f.bytes instanceof Uint8Array)) return gatewayError('bad-request', 'Thiếu file ảnh.')

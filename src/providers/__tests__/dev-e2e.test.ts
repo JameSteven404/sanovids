@@ -23,7 +23,7 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { createSceneFromTake } from '../../actions'
+import { cancelTake, createSceneFromTake } from '../../actions'
 import { createTopupFlow } from '../../components/topup/topupFlow'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf } from '../../core/models'
@@ -451,6 +451,59 @@ describe('dev mode e2e: the finished video comes in pieces through the simulated
     await run(20_000)
     expect(take(b.id).status).toBe('completed')
     expect(events.filter((e) => e.type === 'failed')).toEqual([])
+  })
+})
+
+describe('dev mode e2e: “Huỷ” of a take whose video is already made (paid) and downloading', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('asks first (credit dev, Bảng phát triển): “no” keeps the download going to the end, “yes” cancels with that said', async () => {
+    server.login()
+    videoSize = 300 * 1024
+    server.addFault({ ...DEV_FAULT_PRESETS.find((p) => p.id === 'stream-slow')!.rule, sticky: true })
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('window', { confirm })
+    const [a] = enqueue('s1')
+    await run(10_200)
+    expect(take(a.id).status).toBe('processing')
+    expect(useTakeTransfers.getState().byTake[a.id]).toBeDefined()
+    expect(cancelTake(a.id)).toBe(false)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0]).toEqual([expect.stringContaining('video đã tạo xong trên canvasapp giả lập và đã trừ credit dev')])
+    expect(String((confirm.mock.calls[0] as unknown[])[0])).toContain('Bảng phát triển')
+    expect(take(a.id).status).toBe('processing')
+    await run(20_000)
+    expect(take(a.id).status).toBe('completed') // kept: the paid video came in full
+    expect((await media.get(take(a.id).videoId!)!.arrayBuffer()).byteLength).toBe(300 * 1024)
+
+    const [b] = enqueue('s2')
+    await run(10_200)
+    expect(useTakeTransfers.getState().byTake[b.id]).toBeDefined()
+    confirm.mockReturnValue(true)
+    useUI.setState({ toasts: [] })
+    expect(cancelTake(b.id)).toBe(true)
+    await run(0)
+    expect(take(b.id)).toMatchObject({ status: 'cancelled', videoId: null })
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({
+      tone: 'warning',
+      text: expect.stringContaining('video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển'),
+    })
+    expect(events.filter((e) => e.type === 'failed')).toEqual([])
+  })
+
+  it('a take whose job still runs (or waits in the queue) is cancelled without a question', async () => {
+    server.login()
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('window', { confirm })
+    const [a, b] = enqueue('s1', 's2')
+    expect(cancelTake(b.id)).toBe(true) // queued
+    await run(2_000)
+    expect(take(a.id).status).toBe('processing')
+    expect(cancelTake(a.id)).toBe(true) // its job runs on the simulated site
+    expect(confirm).not.toHaveBeenCalled()
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('vẫn chạy ở đó') })
   })
 })
 

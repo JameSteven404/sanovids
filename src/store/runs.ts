@@ -18,8 +18,10 @@
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
 // isCancelled before posting). A finished remote video that fails to download is retried, never failed at once (only
-// a video over the gateway's size cap is: it can never be downloaded). Its download reports progress (store/takeTransfers)
-// and stops when the take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure.
+// a video over the gateway's size cap, or one whose download outlived the gateway's time limit without being able to
+// continue, is: another try gives the same end). Its download reports progress (store/takeTransfers) and stops when the
+// take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure. remoteVideoReady()
+// tells the UI a running take's video is already made (and paid): "Huỷ" then asks first (actions.cancelTake).
 // check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
 // recent /api/video-profiles read) and only warn on a guess or an older read; retry(takeId) of an "unknown" take never
 // goes through check() (it may only find its existing job), and every submit validates again with fresh profiles.
@@ -49,6 +51,7 @@ import { posterFromVideo } from '../providers/poster'
 import {
   isResultDeferred,
   isResultTooLarge,
+  isResultTooSlow,
   isSubmitCancelled,
   isSubmitDeferred,
   isSubmitUncertain,
@@ -204,6 +207,14 @@ const fetchRetryAt = new Map<string, number>()
  * identity: an older download's clean-up never touches a newer one of the same take.
  */
 const fetchAborts = new Map<string, AbortController>()
+
+/**
+ * The remote job of this running take is finished (so paid) and SanoVids is downloading its video, or waits to try
+ * again: cancelling the take now drops a video that exists. Read at click time (not a store value).
+ */
+export function remoteVideoReady(takeId: string): boolean {
+  return fetching.has(takeId) || fetchAborts.has(takeId) || fetchRetryAt.has(takeId) || fetchFailures.has(takeId)
+}
 
 /**
  * Error of a remote take whose submit ended without a job id although the request may have reached the provider
@@ -455,6 +466,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
     const take = get().takes.find((t) => t.id === takeId)
     if (!take || (take.status !== 'queued' && take.status !== 'processing')) return
     fetchAborts.get(takeId)?.abort() // a download of its video stops now (frees the gateway's slot)
+    fetchFailures.delete(takeId)
+    fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
     if (remoteId) {
       try {
@@ -1096,8 +1109,9 @@ async function finishTake(id: string, remoteId: string, gen: number) {
     // stopped on purpose (cancel / delete / project switch): not a failed download
     if (gen !== generation || ctrl.signal.aborted) return
     if (t && providerOf(t) !== 'mock') {
-      // Bigger than SanoVids can take: the same answer every time — say so now (paid, where to get it).
-      if (isResultTooLarge(e)) return void failTake(id, downloadFailedError(errorText(e), providerOf(t)))
+      // Bigger than SanoVids can take, or too slow to come within the time limit from 0: the same end every time —
+      // say so now (paid, where to get it) rather than holding a download slot for five more tries.
+      if (isResultTooLarge(e) || isResultTooSlow(e)) return void failTake(id, downloadFailedError(errorText(e), providerOf(t)))
       // Nothing fetched (too many downloads at once): ask again in a moment, not one of the tries.
       if (isResultDeferred(e)) return void fetchRetryAt.set(id, Date.now() + FETCH_DEFERRED_MS)
       // The remote video is finished and paid: a failed download (network, session…) must not end the take — a

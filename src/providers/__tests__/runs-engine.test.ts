@@ -20,7 +20,7 @@ import type { FetchResultOptions, JobRequest, RemoteStatus, RunTake, SettingsLim
 import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
 import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
-import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
+import { remoteVideoReady, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
@@ -581,6 +581,47 @@ describe('runs engine: downloading a finished video (abort, progress, refusals)'
     expect(take(id).error).toContain('đã trừ credit dev')
     expect(take(id).error).toContain('Video lớn hơn 1 GB')
     expect(tries).toBe(1)
+  })
+
+  it('a download that outlived the gateway’s time limit and could not continue (too-slow) fails at once — no new try from 0', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      throw Object.assign(new Error('Tải video quá 60 phút nên SanoVids dừng lại.'), { code: 'too-slow' })
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(take(id).status).toBe('failed')
+    expect(take(id).error).toContain('đã trừ credit dev')
+    expect(take(id).error).toContain('Tải video quá 60 phút')
+    expect(tries).toBe(1)
+  })
+
+  it('remoteVideoReady: only once the job is finished — while it downloads and while it waits for the next try', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    expect(remoteVideoReady(id)).toBe(false) // queued
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('processing')
+    expect(remoteVideoReady(id)).toBe(false) // the job still runs on the site
+    f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'completed', progress: 100 })
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    expect(remoteVideoReady(id)).toBe(true) // downloading
+    calls[0].reject(Object.assign(new Error('Mất kết nối khi đang tải video.'), { code: 'network' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(take(id).status).toBe('processing')
+    expect(remoteVideoReady(id)).toBe(true) // waiting for the next try: the video exists all the same
+    await vi.advanceTimersByTimeAsync(31_000)
+    expect(calls).toHaveLength(2)
+    calls[1].resolve()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('completed')
+    expect(remoteVideoReady(id)).toBe(false)
   })
 
   it('"too many downloads at once" (deferred) is never counted as a failed try: five of them never fail the take', async () => {

@@ -4,8 +4,10 @@
 // Pure (no stores, no timers of its own: they are injected). providers/__tests__/gatewayDownloads.test.ts runs main's
 // own block next to this one on the same cases: keep both in sync (names, constants, decisions, texts).
 //
-// Development-mode extras (not in main): DEV_DOWNLOAD_CHUNK_BYTES / DEV_DOWNLOAD_IDLE_MS (dev videos are small and a
-// developer does not wait 60 s) and createDevLane() — the 'download' lane of <canvasapp-lanes> for the dev bridge.
+// Development-mode extras (not in main): DEV_DOWNLOAD_CHUNK_BYTES / DEV_DOWNLOAD_IDLE_MS / DEV_DOWNLOAD_MAX_MS (dev
+// videos are small and a developer does not wait 60 s, nor 60 min) and createDevLane() — the 'download' lane of
+// <canvasapp-lanes> for the dev bridge. main's <canvasapp-net-get> (https-only redirects) has no port: the dev bridge's
+// fetch rejects with code 'insecure-redirect' when the simulated site redirects to http.
 
 export const CANVASAPP_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
 export const CANVASAPP_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
@@ -24,6 +26,8 @@ export const CANVASAPP_DOWNLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[
 export const DEV_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 /** No byte for this long → the download stops (main: 60 s). */
 export const DEV_DOWNLOAD_IDLE_MS = 10_000
+/** One connection open this long → 'too-slow' (main: 60 min), so a slow download reaches it in development mode. */
+export const DEV_DOWNLOAD_MAX_MS = 2 * 60_000
 
 export type Timer = unknown
 export type SetTimer = (fn: () => void, ms: number) => Timer
@@ -45,7 +49,10 @@ export interface DownloadPlanInput {
   contentRange: string | null
   contentEncoding: string | null
   acceptRanges: string | null
+  /** The answer's strongValidator. */
   validator: string | null
+  /** The validator sent with If-Range (a resume), else null. */
+  sent: string | null
   maxBytes: number
 }
 
@@ -91,15 +98,6 @@ export function downloadHeaders(from: number, validator: string | null): Record<
   return h
 }
 
-export function downloadFinalUrlOk(url: unknown): boolean {
-  if (url === undefined || url === null || url === '') return true
-  try {
-    return new URL(String(url)).protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
 export function downloadPlan(o: DownloadPlanInput): DownloadPlan {
   const from = o.from > 0 ? o.from : 0
   const enc = typeof o.contentEncoding === 'string' ? o.contentEncoding.trim() : ''
@@ -109,6 +107,8 @@ export function downloadPlan(o: DownloadPlanInput): DownloadPlan {
   if (o.status === 206) {
     const r = encoded ? null : parseContentRange(o.contentRange)
     if (!r || r.start !== from || r.total === null) return { kind: 'bad-range' }
+    // RFC 9110 §15.3.7: a 206 carries the validator a 200 would — it must be the one If-Range named
+    if (from > 0 && (!o.sent || o.validator !== o.sent)) return { kind: 'bad-range' }
     if (r.total > o.maxBytes) return { kind: 'too-large' }
     return { kind: 'stream', from: r.start, end: r.end + 1, total: r.total, resumable: !!o.validator }
   }
@@ -299,7 +299,8 @@ export function downloadFailure(reason: unknown, o?: FailureOptions): { code: st
     case 'size':
       return { code: 'too-large', message: `Video lớn hơn ${downloadSizeText(opt.maxBytes || CANVASAPP_VIDEO_MAX_BYTES)} — SanoVids không tải về máy được.` }
     case 'max':
-      return { code: 'network', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
+      // its own code: the page continues on a new connection only when it can resume, never starts again from 0
+      return { code: 'too-slow', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
     default:
       return { code: 'gone', message: 'Lượt tải video này đã kết thúc.' }
   }
@@ -382,7 +383,6 @@ export function downloadAnswer(status: number, contentType: string, text: string
 /** What deps.fetch resolves to: the parts of a web Response the downloads use. */
 export interface ResponseLike {
   status: number
-  url?: string
   headers?: { get(name: string): string | null }
   body?: ByteBody | null
 }
@@ -437,6 +437,8 @@ interface Session {
   pullTimer: Timer | null
   maxTimer: Timer | null
   timedOut: boolean
+  /** The validator of this connection's answer (refreshed in `tags` when it ends). */
+  validator: string | null
 }
 
 export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
@@ -485,6 +487,8 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
       s[k] = null
     }
     sessions.delete(s.id)
+    // the clock of the video's validator starts again: a cut after a long download can still resume
+    if (s.validator) rememberTag(s.key, s.validator)
     if (s.pump) s.pump.cancel()
     try {
       s.controller.abort()
@@ -542,6 +546,7 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
       pullTimer: null,
       maxTimer: null,
       timedOut: false,
+      validator: null,
     }
     sessions.set(id, s)
 
@@ -583,6 +588,9 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
       const closed = s.ended && !s.timedOut
       end(s)
       if (closed) return failure('closed')
+      if ((e as { code?: unknown } | null)?.code === 'insecure-redirect') {
+        return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+      }
       return refusal(
         'network',
         s.timedOut ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e as Error | null)?.message || e}).`,
@@ -595,11 +603,6 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
     if (!res || typeof res.status !== 'number') {
       end(s)
       return refusal('network', 'canvasapp.io.vn trả về câu trả lời lạ.')
-    }
-    if (!downloadFinalUrlOk(res.url)) {
-      cancelBody(res)
-      end(s)
-      return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
     }
     const header = (name: string): string | null => {
       const v = res.headers && typeof res.headers.get === 'function' ? res.headers.get(name) : null
@@ -615,6 +618,7 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
       contentEncoding: header('content-encoding'),
       acceptRanges: header('accept-ranges'),
       validator: validatorNow,
+      sent: from > 0 ? validator : null,
       maxBytes: lim.maxBytes,
     })
     if (plan.kind === 'answer') {
@@ -630,6 +634,7 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
     }
     deps.clearTimer(s.headerTimer)
     s.headerTimer = null
+    s.validator = validatorNow
     if (validatorNow) rememberTag(s.key, validatorNow)
     else tags.delete(s.key)
     let reader: ByteReader | null = null

@@ -220,7 +220,9 @@ export interface VideoProvider {
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
   /**
    * The finished video. Errors: code 'too-large' (see isResultTooLarge: never downloadable, do not try again);
-   * 'deferred' (see isResultDeferred: nothing was fetched, too many downloads at once — try later, not a failure).
+   * 'too-slow' (see isResultTooSlow: a connection open past the gateway's time limit that could not continue — a new
+   * try would start again from 0 and hit the same limit); 'deferred' (see isResultDeferred: nothing was fetched, too
+   * many downloads at once — try later, not a failure).
    */
   fetchResult(remoteId: string, opts?: FetchResultOptions): Promise<JobResult>
   /** Stop a job at the provider when possible. Optional: without it, cancel only stops tracking locally. */
@@ -264,6 +266,12 @@ export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'ob
 
 /** fetchResult() refused a video bigger than SanoVids can take (1 GB): trying again gives the same answer. */
 export const isResultTooLarge = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-large'
+
+/**
+ * fetchResult() stopped a download that stayed open past the gateway's time limit (60 min per connection) and could
+ * not continue where it stopped (no Range): another try from 0 would hit the same limit — do not try again.
+ */
+export const isResultTooSlow = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-slow'
 
 /** fetchResult() fetched nothing and asks to be tried later (too many downloads at once): not a failed download. */
 export const isResultDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
