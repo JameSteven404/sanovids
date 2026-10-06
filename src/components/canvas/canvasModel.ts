@@ -739,21 +739,62 @@ export function isEmptyCanvasTarget(target: EventTarget | null): boolean {
   return !el.closest('.react-flow__node, .react-flow__panel, .react-flow__minimap, .react-flow__edgelabel-renderer')
 }
 
+/** What the inline-field key helpers read of a keyboard event. */
+export interface InlineKey {
+  key: string
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey?: boolean
+  shiftKey?: boolean
+}
+
+/** A modifier pressed on its own: never a shortcut (React Flow would take a lone Ctrl / Shift as its selection keys). */
+const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Alt', 'AltGraph', 'Shift', 'OS', 'Super', 'Hyper', 'CapsLock', 'Fn', 'FnLock'])
+
 /**
- * Should a key pressed in an inline text field on a node (scene title) reach the global shortcuts? Ctrl/Cmd combos
- * do (useShortcuts: Ctrl+S saves, Ctrl+Enter runs, the others are ignored while typing); plain keys and Escape (the
- * field cancels the edit itself) do not.
+ * Should a key pressed in an inline text field on a node (scene title, take name, the editor on a scene card) reach the
+ * global shortcuts? Only a chord of a command that runs while typing (`isTypingChord`, from the keymap: Ctrl+S saves,
+ * Ctrl+Enter runs…). Never Escape (the field cancels the edit itself), never a modifier pressed alone.
  */
-export function inlineEditKeyBubbles(e: { key: string; ctrlKey: boolean; metaKey: boolean }): boolean {
-  return (e.ctrlKey || e.metaKey) && e.key !== 'Escape'
+export function inlineKeyBubbles<E extends InlineKey>(e: E, isTypingChord: (e: E) => boolean): boolean {
+  if (e.key === 'Escape' || MODIFIER_KEYS.has(e.key)) return false
+  return isTypingChord(e)
 }
 
 /**
- * Ctrl/Cmd+S pressed in an inline text field: useShortcuts saves the project right after, so the field must put its
- * draft in the store first (other combos — copy, paste, undo inside the field — must not create history steps).
+ * The save chord pressed in an inline text field (`isSaveChord`, from the keymap): the global shortcut saves the
+ * project right after, so the field must put its draft in the store first (other combos — copy, paste, undo inside the
+ * field — must not create history steps).
  */
-export function inlineEditSavesDraft(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey?: boolean }): boolean {
-  return (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's'
+export function inlineKeySavesDraft<E extends InlineKey>(e: E, isSaveChord: (e: E) => boolean): boolean {
+  if (MODIFIER_KEYS.has(e.key)) return false
+  return isSaveChord(e)
+}
+
+/** Today's commands that run while typing (useShortcuts): any Ctrl/Cmd combination. The keymap (0.6.0) replaces it. */
+export const legacyTypingChord = (e: InlineKey): boolean => e.ctrlKey || e.metaKey
+/** Today's save chord (useShortcuts): Ctrl/Cmd+S without Alt. */
+export const legacySaveChord = (e: InlineKey): boolean => (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's'
+
+/**
+ * @deprecated use inlineKeyBubbles(e, isTypingChord). Wrapper with today's chords: Ctrl/Cmd combos bubble; plain keys,
+ * Escape — and now a lone Ctrl / Cmd — do not.
+ */
+export function inlineEditKeyBubbles(e: InlineKey): boolean {
+  return inlineKeyBubbles(e, legacyTypingChord)
+}
+
+/** @deprecated use inlineKeySavesDraft(e, isSaveChord). Wrapper with today's save chord (Ctrl/Cmd+S). */
+export function inlineEditSavesDraft(e: InlineKey): boolean {
+  return inlineKeySavesDraft(e, legacySaveChord)
+}
+
+/**
+ * Size React Flow measured for a node (undefined = not measured yet), read outside React. Today it lives in useUI
+ * (`measured`); the canvas performance work moves it to the canvas-local store — callers keep using this.
+ */
+export function measuredOf(id: string): { width: number; height: number } | undefined {
+  return useUI.getState().measured[id]
 }
 
 // ---------------- hover store (edges + cut button need a little grace period) ----------------

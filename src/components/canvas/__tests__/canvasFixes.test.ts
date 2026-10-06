@@ -8,7 +8,9 @@ import { useUI } from '../../../store/ui'
 import {
   DROP_BLOCKERS,
   inlineEditSavesDraft,
+  inlineKeySavesDraft,
   layoutRowHeights,
+  measuredOf,
   layoutTakes,
   MINIMAP_LIFT_W,
   selectionSeed,
@@ -175,6 +177,21 @@ describe('inlineEditSavesDraft', () => {
     expect(inlineEditSavesDraft(k('c', { ctrlKey: true }))).toBe(false)
     expect(inlineEditSavesDraft(k('z', { ctrlKey: true }))).toBe(false)
     expect(inlineEditSavesDraft(k('s', { ctrlKey: true, altKey: true }))).toBe(false)
+  })
+  it('inlineKeySavesDraft follows the injected save chord (the keymap), never a lone modifier', () => {
+    const f2 = (e: { key: string }) => e.key === 'F2'
+    expect(inlineKeySavesDraft(k('F2'), f2)).toBe(true)
+    expect(inlineKeySavesDraft(k('s', { ctrlKey: true }), f2)).toBe(false)
+    expect(inlineKeySavesDraft(k('Control', { ctrlKey: true }), () => true)).toBe(false)
+  })
+})
+
+describe('measuredOf', () => {
+  afterEach(() => useUI.setState({ measured: {} }))
+  it('reads the size React Flow measured for a node (undefined before)', () => {
+    expect(measuredOf('n1')).toBeUndefined()
+    useUI.getState().setMeasured('n1', { width: 280, height: 210 })
+    expect(measuredOf('n1')).toEqual({ width: 280, height: 210 })
   })
 })
 

@@ -4,18 +4,20 @@ import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Downl
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
+import { sceneCode } from '../../core/compile'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { sceneRunBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
 import type { Asset } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
-import { useSceneTakes } from '../../store/runs'
+import { providerVideoCapFor, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, costTitle, creditTone, NO_VIDEO_REFS_REASON, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { sceneMapOf } from '../canvas/canvasModel'
+import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -631,31 +633,26 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
 const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }) {
   const takes = useSceneTakes(sceneId)
   const settings = useSceneField(sceneId, (s) => s.settings)
-  const promptEmpty = useSceneField(sceneId, (s) => !s.prompt.trim()) ?? true
-  const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
-  const hasVideoRefs = useSceneField(sceneId, (s) => s.videoRefs.length > 0) ?? false
-  // Tokens with no picture/video in the request (character sync): a string, so the selector result is stable.
-  const unsent = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    return sc ? compileScene(s.project, sc).unsentTokens.slice(0, 2).join(', ') : ''
-  })
+  const videoRefs = useSceneField(sceneId, (s) => s.videoRefs) ?? EMPTY_IDS
+  // Status of each reference video as one string: changes with a status, never with progress ticks.
+  const videoStatus = useRuns((s) => videoStatusKey(videoRefs, (id) => s.takes.find((t) => t.id === id)?.status))
+  const takeStatus = useMemo(() => takeStatusFromKey(videoStatus), [videoStatus])
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
+  // useCreditKind() also re-renders on a provider change, which may change the gateway's @video limit.
   const creditKind = useCreditKind()
+  const videoCap = settings ? providerVideoCapFor(settings.model) : null
+  // Why Run is disabled: the engine's rule list (core/runRules) on a cached compile of this scene (recompiled only when
+  // the scene or the assets change). A string, so typing elsewhere in the project does not re-render this section.
+  const reason = useProject((s) => {
+    const sc = sceneMapOf(s.project.scenes).get(sceneId)
+    return sc ? sceneRunBlockReason(s.project.assets, sc, takeStatus, videoCap) : null
+  })
   if (!settings) return null
   const cost = costOf(settings)
   // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
   const acceptsVideo = usesVideoRefs(settings)
   const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
-  const reason = promptEmpty
-    ? 'Prompt trống'
-    : framesMissing
-      ? 'Thiếu khung đầu/cuối'
-      : unsent
-        ? `Prompt nhắc ${unsent} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-        : hasVideoRefs && creditKind !== 'demo'
-          ? NO_VIDEO_REFS_REASON
-          : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
   const shown = completed.slice(-6)
   if (chosen && !shown.includes(chosen)) shown.splice(0, 1, chosen)
@@ -719,7 +716,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
         <Play size={14} fill="currentColor" />
         Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
       </button>
-      {reason && <div className="in-run-reason">{reason} — chưa thể chạy.</div>}
+      {reason && <div className="in-run-reason">{reason.replace(/\.$/, '')} — chưa thể chạy.</div>}
     </Section>
   )
 })

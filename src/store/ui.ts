@@ -18,7 +18,11 @@ export interface Toast {
 export type DialogState =
   | { kind: 'none' }
   | { kind: 'import' }
-  | { kind: 'settings' }
+  /**
+   * "Cài đặt". `section`: id of a group of its GROUPS (components/dialogs/SettingsDialog, e.g. 'canvas', 'keys') to show
+   * — the dialog switches to that group's level and scrolls it into view. Open it with actions.openSettings(section).
+   */
+  | { kind: 'settings'; section?: string }
   | { kind: 'shortcuts' }
   /** `follow`: after the run starts, open the take viewer on the new take (re-run from the viewer). */
   | { kind: 'runConfirm'; sceneIds: string[]; follow?: boolean }
@@ -36,8 +40,11 @@ export type DialogState =
 /** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
 export type TopUpTab = 'topup' | 'history'
 
-/** Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater. */
-export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates'
+/**
+ * Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater ·
+ * performance ('perf': only in a perf build, see src/perf; devPanelTabs leaves it out everywhere else).
+ */
+export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'perf'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'

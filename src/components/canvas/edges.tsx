@@ -14,6 +14,7 @@ import { sceneCode } from '../../core/compile'
 import { folderMapOf } from '../../core/folders'
 import { staleNoteSince } from '../../core/staleTokens'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
+import { flushScenes } from '../../lib/promptDrafts'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
@@ -67,6 +68,8 @@ export function cutEdge(id: string, silent = false, at?: { x: number; y: number 
     cutFolderEdge(id, e.kind, e.from, e.to, silent)
     return
   }
+  // Commit the prompt being typed in the scene first: it is renumbered with the cut instead of overwriting it.
+  flushScenes([e.to])
   const p = useProject.getState()
   const projectBefore = p.project
   const before = sceneMapOf(p.project.scenes).get(e.to)

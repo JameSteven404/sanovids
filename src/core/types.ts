@@ -49,9 +49,19 @@ export interface VideoSettings {
   ratio: string
 }
 
+/**
+ * The `settings` object of a scene / preset exactly as a newer SanoVids build saved it, for a model this build does
+ * not know (see Scene.foreignModel). Flat JSON: primitive values only (migrate keeps at most 32 keys / 2 KB).
+ */
+export type ForeignSettings = Record<string, string | number | boolean>
+
 export interface Preset extends VideoSettings {
   id: string
   name: string
+  /** Model id of a newer build this build does not know (see Scene.foreignModel); applyPreset copies it to scenes. */
+  foreignModel?: string
+  /** The preset's original settings as the newer build saved them (see Scene.foreignSettings). */
+  foreignSettings?: ForeignSettings
 }
 
 export interface Scene {
@@ -76,6 +86,17 @@ export interface Scene {
   /** Canvas card size (null/undefined = default). */
   size?: Size | null
   note: string
+  /**
+   * Model id saved by a newer SanoVids build that this build does not know (e.g. a later provider's model). Migrate
+   * keeps it instead of silently turning the scene into Seedance 2.5: `settings` still holds valid stand-in values
+   * (normalizeSettings) so every reader keeps working, but the scene must not run until the user picks a model
+   * (`updateSettings` with `model` drops both foreign fields; `applyPreset` copies the preset's). New scenes made from
+   * this one (next scene, scene from a take, duplicate) keep both fields. A later build that knows the model restores
+   * `settings` from `foreignSettings` and drops both.
+   */
+  foreignModel?: string
+  /** The scene's original `settings` as the newer build saved them (the stand-in `settings` would lose them on save). */
+  foreignSettings?: ForeignSettings
 }
 
 export interface ProjectSettings {
@@ -182,6 +203,17 @@ export interface Take {
    * @image_N order — the full list, before the model's image cap. Lets "restore prompt" renumber exactly.
    */
   imageKeysSnapshot?: string[]
+  /**
+   * Provider id saved by a newer SanoVids build that this build does not know (migrate then gives the take
+   * provider 'mock' and charged false: it was never paid here, nothing is refunded). Missing = a known provider.
+   */
+  foreignProvider?: string
+  /**
+   * Status such a take had in the newer build while it was still running ('queued' / 'processing'): migrate parks it
+   * as 'failed' here (the engine, the queue counters and "Cập nhật khi xong" skip it) and keeps its remoteId; a build
+   * that knows the provider gives the status back.
+   */
+  foreignStatus?: JobStatus
 }
 
 /**

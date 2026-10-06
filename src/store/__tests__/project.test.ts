@@ -1,6 +1,19 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import type { Project, Scene } from '../../core/types'
-import { LAYOUT, redo, ROW_H, rowHeightOf, scenePosition, setTakeHeightSource, undo, useProject } from '../project'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Preset, Project, Scene, Take, VideoSettings } from '../../core/types'
+import {
+  LAYOUT,
+  onHistoryJump,
+  presetSettings,
+  redo,
+  ROW_H,
+  rowHeightOf,
+  scenePosition,
+  setTakeHeightSource,
+  undo,
+  undoToastAction,
+  useProject,
+  type HistoryJumpKind,
+} from '../project'
 
 const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
   id: 's' + (i + 1),
@@ -286,5 +299,267 @@ describe('removed images fall back to a readable name', () => {
     })
     st().removeRef('s1', 'a')
     expect(sc('s1').prompt).toBe('Elara walks')
+  })
+})
+
+describe('history jumps (onHistoryJump)', () => {
+  type Call = { before: Project; after: Project; kind: HistoryJumpKind }
+  const record = () => {
+    const calls: Call[] = []
+    const off = onHistoryJump((before, after, kind) => calls.push({ before, after, kind }))
+    return { calls, off }
+  }
+
+  it('undo and redo report the project before and after the jump', () => {
+    const { calls, off } = record()
+    try {
+      st().updateScene('s1', { title: 'x' })
+      const edited = st().project
+      expect(calls).toEqual([]) // a plain edit is not a jump
+      undo()
+      expect(sc('s1').title).toBe('')
+      expect(calls).toHaveLength(1)
+      expect(calls[0].kind).toBe('undo')
+      expect(calls[0].before).toBe(edited)
+      expect(calls[0].after).toBe(st().project)
+      redo()
+      expect(sc('s1').title).toBe('x')
+      expect(calls).toHaveLength(2)
+      expect(calls[1].kind).toBe('redo')
+      expect(calls[1].before).toBe(calls[0].after)
+      expect(calls[1].after).toBe(st().project)
+    } finally {
+      off()
+    }
+  })
+
+  it('shows a cut folder wire coming back (before / after of the jump)', () => {
+    st().loadProject({ ...st().project, folders: [{ id: 'f1', name: 'Phim', path: 'D:\\Phim', position: { x: 0, y: 0 }, mode: 'copy', takes: ['t1'] }] })
+    history().clear()
+    const { calls, off } = record()
+    try {
+      st().unlinkFolder('f1', 'save', 't1')
+      undo()
+      expect(calls[0].before.folders?.[0].takes ?? []).toEqual([])
+      expect(calls[0].after.folders?.[0].takes).toEqual(['t1'])
+      redo()
+      expect(calls[1].before.folders?.[0].takes).toEqual(['t1'])
+      expect(calls[1].after.folders?.[0].takes ?? []).toEqual([])
+    } finally {
+      off()
+    }
+  })
+
+  it('reports nothing for an empty history, loads, changes outside the history or after unsubscribing', () => {
+    const { calls, off } = record()
+    try {
+      undo()
+      redo()
+      st().loadProject({ ...project(2), folders: [{ id: 'f1', name: 'A', path: 'D:\\A', position: { x: 0, y: 0 }, mode: 'copy' }] })
+      st().addVideoRefs(['s1'], ['t1'])
+      st().removeTakesEverywhere(['t1'], {}) // applyEverywhere: not a jump
+      st().setFolderPlace('f1', { name: 'B', path: 'D:\\B' }) // applyEverywhere: not a jump
+      history().clear()
+      undo()
+      expect(calls).toEqual([])
+      st().updateScene('s1', { title: 'x' })
+      off()
+      undo()
+      expect(sc('s1').title).toBe('')
+      expect(calls).toEqual([])
+    } finally {
+      off()
+    }
+  })
+
+  it('the toast undo (undoToastAction) is a jump too', () => {
+    const { calls, off } = record()
+    try {
+      st().updateScene('s1', { title: 'x' })
+      undoToastAction().run()
+      expect(sc('s1').title).toBe('')
+      expect(calls.map((c) => c.kind)).toEqual(['undo'])
+    } finally {
+      off()
+    }
+  })
+
+  it('a throwing listener breaks neither the jump nor the other listeners', () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const offBad = onHistoryJump(() => {
+      throw new Error('boom')
+    })
+    const { calls, off } = record()
+    try {
+      st().updateScene('s1', { title: 'x' })
+      undo()
+      expect(sc('s1').title).toBe('')
+      expect(calls).toHaveLength(1)
+      expect(quiet).toHaveBeenCalled()
+    } finally {
+      offBad()
+      off()
+      quiet.mockRestore()
+    }
+  })
+})
+
+describe('newer-build model marker (foreignModel / foreignSettings)', () => {
+  const STAND_IN: VideoSettings = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' }
+  const FOREIGN = {
+    foreignModel: 'veo_3_1',
+    foreignSettings: { model: 'veo_3_1', mode: 'i2v', duration: 8, resolution: '1080p', ratio: '16:9', audio: true },
+  }
+  const veo: Preset = { id: 'pv', name: 'Veo', ...STAND_IN, ...FOREIGN }
+  const draft: Preset = { id: 'pd', name: 'Nháp', model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' }
+  const marked = (id: string) => ({ foreignModel: sc(id).foreignModel, foreignSettings: sc(id).foreignSettings })
+  const unmarked = (id: string) => !('foreignModel' in sc(id)) && !('foreignSettings' in sc(id))
+
+  beforeEach(() => {
+    const p = project(3)
+    st().loadProject({ ...p, presets: [draft, veo], scenes: p.scenes.map((s) => (s.id === 's1' ? { ...s, presetId: 'pv', ...FOREIGN } : s)) })
+    history().clear()
+  })
+
+  it('picking a model drops it — even the stand-in model already set; other settings keep it', () => {
+    st().updateSettings(['s1'], { duration: 5 })
+    expect(marked('s1')).toEqual(FOREIGN)
+    expect(sc('s1').settings.duration).toBe(5)
+    st().updateSettings(['s1'], { duration: 15 })
+    st().updateSettings(['s1'], { model: 'seedance_2_5' })
+    expect(unmarked('s1')).toBe(true)
+    expect(sc('s1').settings).toEqual(STAND_IN)
+    expect(sc('s1').presetId).toBeNull() // no longer what the (newer-build) preset describes
+    undo()
+    expect(marked('s1')).toEqual(FOREIGN)
+    // Several scenes at once: the marker goes where it is, scenes with nothing to change stay the same object.
+    const s3 = sc('s3')
+    st().updateSettings(['s1', 's3'], { model: 'seedance_2_5' })
+    expect(unmarked('s1')).toBe(true)
+    expect(sc('s3')).toBe(s3)
+  })
+
+  it('applyPreset copies the preset marker; a preset without one drops it', () => {
+    st().applyPreset('pv', ['s2'])
+    expect(marked('s2')).toEqual(FOREIGN)
+    expect(sc('s2').presetId).toBe('pv')
+    expect(sc('s2').settings).toEqual(presetSettings(veo))
+    st().applyPreset('pd', ['s1', 's2'])
+    expect(unmarked('s1')).toBe(true)
+    expect(unmarked('s2')).toBe(true)
+    expect(sc('s1').settings).toEqual(presetSettings(draft))
+    undo()
+    expect(marked('s1')).toEqual(FOREIGN)
+    expect(marked('s2')).toEqual(FOREIGN)
+  })
+
+  it('next scene, scene from a take (createNextScene) and duplicate keep it; unmarked sources add none', () => {
+    const next = st().createNextScene('s1')
+    expect(marked(next)).toEqual(FOREIGN)
+    expect(sc(next).settings).toEqual(sc('s1').settings)
+    const fromTake = st().createNextScene('s1', { x: 2000, y: 0 }, { videoRefs: ['t1'], prompt: 'Continue from @video_1: ' })
+    expect(marked(fromTake)).toEqual(FOREIGN)
+    const [copy] = st().duplicateScenes(['s1'])
+    expect(marked(copy)).toEqual(FOREIGN)
+    expect(unmarked(st().createNextScene('s2'))).toBe(true)
+    expect(unmarked(st().duplicateScenes(['s3'])[0])).toBe(true)
+  })
+
+  it('the actions nextScene and createSceneFromTake keep it', async () => {
+    const { createSceneFromTake, nextScene, noteRecentScene, setCanvasViewSource } = await import('../../actions')
+    const { useRuns } = await import('../runs')
+    const { useUI } = await import('../ui')
+    const offView = setCanvasViewSource(() => null)
+    try {
+      noteRecentScene(null)
+      useUI.setState({ selectedIds: ['s1'], selectedEdgeIds: [] })
+      expect(marked(nextScene())).toEqual(FOREIGN)
+      const t1: Take = {
+        id: 't1',
+        sceneId: 's1',
+        number: 1,
+        status: 'completed',
+        progress: 100,
+        createdAt: 1,
+        startedAt: null,
+        finishedAt: null,
+        promptSnapshot: '',
+        rawPromptSnapshot: '',
+        refsSnapshot: [],
+        videoRefsSnapshot: [],
+        settings: STAND_IN,
+        cost: 1,
+        starred: false,
+        posterId: null,
+        videoId: null,
+        error: null,
+        position: null,
+      }
+      useRuns.setState({ takes: [t1] })
+      const id = createSceneFromTake('t1')
+      expect(id).toBeTruthy()
+      expect(marked(id!)).toEqual(FOREIGN)
+      expect(sc(id!).videoRefs).toEqual(['t1'])
+    } finally {
+      offView()
+      useRuns.setState({ takes: [] })
+      useUI.setState({ selectedIds: [], selectedEdgeIds: [] })
+    }
+  })
+
+  it('a new scene that takes the draft preset takes its marker too; given settings do not', () => {
+    st().loadProject({ ...project(1), presets: [veo, draft] })
+    const fromDraft = st().addScene()
+    expect(sc(fromDraft).presetId).toBe('pv')
+    expect(marked(fromDraft)).toEqual(FOREIGN)
+    expect(unmarked(st().addScene({ settings: STAND_IN }))).toBe(true)
+    st().loadProject({ ...project(1), presets: [draft, veo] })
+    expect(unmarked(st().addScene())).toBe(true)
+  })
+
+  it('edits that pick no model keep it, through undo and a save / load', () => {
+    st().updateScene('s1', { title: 'Mở đầu' })
+    st().setScenePrompt('s1', 'Một ngày mưa')
+    st().addRefs(['s1'], ['a'])
+    // PromptEditor writes prompt + refs with the scene's own settings through restoreScene.
+    st().restoreScene('s1', { prompt: '@image_1 dưới mưa', refs: ['a'], videoRefs: [], settings: sc('s1').settings })
+    st().moveScene('s1', 3)
+    st().setNodeSizes({ s1: { w: 320, h: 260 } })
+    expect(marked('s1')).toEqual(FOREIGN)
+    undo()
+    expect(marked('s1')).toEqual(FOREIGN)
+    const saved = JSON.parse(JSON.stringify(st().project)) as Project
+    st().loadProject(saved)
+    expect(marked('s1')).toEqual(FOREIGN)
+    expect(sc('s1').title).toBe('Mở đầu')
+  })
+
+  it('updatePreset: picking a model drops the preset marker and unlinks the scenes still carrying it', () => {
+    const pv = () => st().project.presets.find((x) => x.id === 'pv')!
+    st().updatePreset('pv', { name: 'Veo 3.1' })
+    st().updatePreset('pv', { duration: 5 })
+    expect(pv().foreignModel).toBe('veo_3_1')
+    st().loadProject({
+      ...st().project,
+      presets: st().project.presets.map((x) => (x.id === 'pv' ? { ...x, duration: 15 } : x)),
+      scenes: st().project.scenes.map((s) => (s.id === 's1' || s.id === 's2' ? { ...s, presetId: 'pv' } : s)),
+    })
+    history().clear()
+    st().updatePreset('pv', { model: 'seedance_2_5' }) // the stand-in model: settings unchanged, the marker goes
+    expect('foreignModel' in pv() || 'foreignSettings' in pv()).toBe(false)
+    expect(sc('s1').presetId).toBeNull() // still a newer-build scene: no longer what the preset describes
+    expect(marked('s1')).toEqual(FOREIGN)
+    expect(sc('s2').presetId).toBe('pv') // same settings, no marker: still matches
+    undo()
+    expect(pv().foreignModel).toBe('veo_3_1')
+    expect(sc('s1').presetId).toBe('pv')
+  })
+
+  it('addPreset keeps a marker it is given and adds none otherwise', () => {
+    const withMark = st().addPreset({ name: 'Từ cảnh', ...STAND_IN, ...FOREIGN })
+    const plain = st().addPreset({ name: 'Mới', ...STAND_IN })
+    const find = (id: string) => st().project.presets.find((x) => x.id === id)!
+    expect(find(withMark)).toMatchObject(FOREIGN)
+    expect('foreignModel' in find(plain)).toBe(false)
   })
 })

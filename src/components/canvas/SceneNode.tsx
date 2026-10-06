@@ -7,16 +7,17 @@ import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
+import { runBlockReason } from '../../core/runRules'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useCreditKind } from '../../store/credits'
 import { LAYOUT, useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { providerVideoCapFor, useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
-import { costTitle, creditTone, NO_VIDEO_REFS_REASON } from '../sidebar/shared'
+import { costTitle, creditTone } from '../sidebar/shared'
 import {
   assetMapOf,
   avatarSlots,
@@ -291,20 +292,16 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
   const cost = costOf(scene.settings)
   // Wallet of the next run: simulated credit dev (development mode) or real canvasapp credits (docs/SPEC-v2.md §9, §11).
   const creditKind = useCreditKind()
-  let reason: string | null = null
-  if (!scene.prompt.trim()) reason = 'Prompt trống'
-  else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
-  else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
-  else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
-  else if (compiled.unsentTokens.length) reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 2).join(', ')} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-  // Both gateways (canvasapp and its simulation) refuse @video; only the old demo ('demo') took them.
-  else if (scene.videoRefs.length && creditKind !== 'demo') reason = NO_VIDEO_REFS_REASON
-  else if (scene.videoRefs.length) {
-    // '' = the take no longer exists (e.g. an undo brought back a reference to a deleted video).
-    const sts = videoStatus.split(',')
-    if (sts.includes('')) reason = 'Video tham chiếu đã bị xoá (bỏ @video đó)'
-    else if (sts.some((st) => st !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
-  }
+  // The engine's rule list (core/runRules). '' in videoStatus = the take no longer exists (e.g. an undo brought back a
+  // reference to a deleted video). useCreditKind() re-renders the card when the provider (its @video limit) changes.
+  const reason = runBlockReason({
+    scene,
+    assets,
+    compiled,
+    takeStatus: (id) => videoStatus.split(',')[scene.videoRefs.indexOf(id)] || undefined,
+    spec,
+    providerVideoCap: providerVideoCapFor(scene.settings.model),
+  })
 
   const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0

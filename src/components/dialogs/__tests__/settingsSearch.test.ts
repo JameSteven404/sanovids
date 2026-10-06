@@ -1,6 +1,7 @@
 // Settings search: level filter without a query; accent-free, multi-word matching across both levels with a query.
 import { describe, expect, it } from 'vitest'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../../lib/aboutModel'
+import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
 import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
 
 const groups: SearchGroup[] = [
@@ -70,6 +71,37 @@ describe('Giới thiệu (about block)', () => {
       expect(ids(matchSettings(all, 'advanced', q))).toEqual(['about:'])
     }
     expect(resultCount(matchSettings(all, 'basic', 'jame'))).toBe(1)
+  })
+})
+
+describe('Dây nối & canvas: the scene-card editor and big projects', () => {
+  // The same rows as SettingsDialog GROUPS 'canvas' (texts from lib/canvasPrefs).
+  const canvas: SearchGroup = {
+    id: 'canvas',
+    level: 'basic',
+    title: 'Dây nối & canvas',
+    desc: 'Cách dây nối, thẻ cảnh và video hiện trên canvas.',
+    rows: [
+      { id: 'nodeEditor', ...NODE_EDITOR_ROW },
+      { id: 'clickToCut', label: 'Bấm vào dây để cắt', keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire' },
+      { id: 'minimap', label: 'Bản đồ thu nhỏ', keywords: 'minimap bản đồ góc' },
+      { id: 'bigProject', ...BIG_PROJECT_ROW },
+    ],
+  }
+  const all = [...groups, canvas]
+
+  it('finds the editor on the scene card, from both levels', () => {
+    for (const q of ['sua prompt tren the', 'sửa prompt trên thẻ', 'inline', 'nhập trực tiếp', 'thu gon', 'trinh sua']) {
+      expect(ids(matchSettings(all, 'advanced', q)), q).toEqual(['canvas:nodeEditor'])
+    }
+  })
+
+  it('finds the big-project optimisations by what users type when it is slow', () => {
+    for (const q of ['du an lon', 'hiệu năng', 'hieu nang', 'lag', 'giật', 'performance', 'chậm']) {
+      expect(ids(matchSettings(all, 'basic', q)), q).toEqual(['canvas:bigProject'])
+    }
+    // "bản đồ" is in both the minimap row and the big-project hint
+    expect(ids(matchSettings(all, 'basic', 'ban do thu nho'))).toEqual(['canvas:minimap,bigProject'])
   })
 })
 

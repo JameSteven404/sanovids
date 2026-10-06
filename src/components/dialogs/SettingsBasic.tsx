@@ -46,7 +46,7 @@ import {
   versionLine,
 } from '../../lib/aboutModel'
 import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
-import { useCanvasPrefs } from '../../lib/canvasPrefs'
+import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, type BigProjectMode, type NodeEditorMode } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
@@ -289,6 +289,38 @@ export function RateSetting({ label, hint }: RowProps) {
 }
 
 // ---------------- Dây nối & canvas ----------------
+// Segments are narrow (three in half a column): a short label + a second line; the full name is the tooltip.
+const NODE_EDITOR_OPTIONS: { id: NodeEditorMode; label: string; hint: string; title: string }[] = [
+  { id: 'click', label: 'Bấm vào prompt', hint: 'hoặc nút ✎ trên thẻ', title: `${NODE_EDITOR_LABEL.click}: bấm vào prompt, nhãn cấu hình hoặc nút ✎ trên thẻ cảnh để mở khung sửa` },
+  { id: 'select', label: 'Tự mở', hint: 'khi chọn 1 cảnh', title: `${NODE_EDITOR_LABEL.select}: chọn đúng 1 cảnh là khung sửa mở ra (chưa đặt con trỏ vào ô gõ)` },
+  { id: 'off', label: 'Tắt', hint: 'sửa ở bảng bên phải', title: NODE_EDITOR_LABEL.off },
+]
+
+export function NodeEditorSetting({ label, hint }: RowProps) {
+  const nodeEditor = useCanvasPrefs((s) => s.nodeEditor)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={nodeEditor} onChange={(v) => set({ nodeEditor: v })} options={NODE_EDITOR_OPTIONS} />
+    </Field>
+  )
+}
+
+const BIG_PROJECT_OPTIONS: { id: BigProjectMode; label: string; title: string }[] = [
+  { id: 'auto', label: BIG_PROJECT_LABEL.auto, title: 'Tự tối ưu khi canvas có từ 800 thẻ' },
+  { id: 'off', label: BIG_PROJECT_LABEL.off, title: 'Luôn hiện bản đồ thu nhỏ và mọi dây như dự án nhỏ' },
+]
+
+export function BigProjectSetting({ label, hint }: RowProps) {
+  const bigProject = useCanvasPrefs((s) => s.bigProject)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={bigProject} onChange={(v) => set({ bigProject: v })} options={BIG_PROJECT_OPTIONS} />
+    </Field>
+  )
+}
+
 export function ClickToCutSetting({ label, hint }: RowProps) {
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const set = useCanvasPrefs((s) => s.set)

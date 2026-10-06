@@ -373,6 +373,29 @@ export function presetSettings(p: Preset): VideoSettings {
   return { model: p.model, mode: p.mode, duration: p.duration, resolution: p.resolution, ratio: p.ratio }
 }
 
+/** Marker of a model saved by a newer build that this build does not know (see Scene.foreignModel). */
+type ForeignMark = Pick<Scene, 'foreignModel' | 'foreignSettings'>
+
+const hasForeign = (m: ForeignMark | undefined): m is ForeignMark => !!m && (m.foreignModel !== undefined || m.foreignSettings !== undefined)
+
+/** `x` without the newer-build model marker; `x` itself when it has none. */
+function withoutForeign<T extends ForeignMark>(x: T): T {
+  if (!hasForeign(x)) return x
+  const { foreignModel: _m, foreignSettings: _s, ...rest } = x
+  return rest as T
+}
+
+/** `x` carrying exactly the marker of `src` (the preset applied to it, the scene it is made from): none when `src` has none. */
+function withForeignOf<T extends ForeignMark>(x: T, src: ForeignMark | undefined): T {
+  const out = withoutForeign(x)
+  if (!hasForeign(src)) return out
+  return {
+    ...out,
+    ...(src.foreignModel !== undefined ? { foreignModel: src.foreignModel } : {}),
+    ...(src.foreignSettings !== undefined ? { foreignSettings: src.foreignSettings } : {}),
+  }
+}
+
 /** Same model, mode, duration, resolution and ratio. */
 export function sameSettings(a: VideoSettings, b: VideoSettings): boolean {
   return a.model === b.model && a.mode === b.mode && a.duration === b.duration && a.resolution === b.resolution && a.ratio === b.ratio
@@ -420,6 +443,7 @@ export interface ProjectState {
   addPreset: (partial: Partial<Preset> & { name: string }) => string
   updatePreset: (id: string, patch: Partial<Omit<Preset, 'id'>>) => void
   removePreset: (id: string) => void
+  /** Copies the preset's settings and its newer-build model marker (none when the preset has none) to the scenes. */
   applyPreset: (presetId: string, sceneIds: string[]) => void
 
   // scenes
@@ -428,12 +452,16 @@ export interface ProjectState {
   updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs'>>) => void
   /** Prompt edits are coalesced in the undo history; legacy @Tag mentions auto-link their asset. Returns newly linked asset ids. */
   setScenePrompt: (id: string, prompt: string) => string[]
+  /** A patch with `model` also drops a newer build's model marker (Scene.foreignModel / foreignSettings). */
   updateSettings: (sceneIds: string[], patch: Partial<VideoSettings>) => void
   /** Restore prompt, refs, video refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
   restoreScene: (id: string, data: { prompt: string; refs: string[]; videoRefs?: string[]; settings: VideoSettings }, liveTakeIds?: Set<string>) => void
   removeScenes: (ids: string[]) => void
   duplicateScenes: (ids: string[]) => string[]
-  /** New scene right after `fromId` (placed below it), inheriting refs, video refs and settings, with an empty prompt. */
+  /**
+   * New scene right after `fromId` (placed below it), inheriting refs, video refs and settings (with a newer build's
+   * model marker), with an empty prompt.
+   */
   createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'prompt' | 'videoRefs' | 'title'>>) => string
   moveScene: (id: string, toOrder: number) => void
   setFrame: (sceneId: string, which: 'first' | 'last', assetId: string | null) => void
@@ -526,7 +554,10 @@ export const useProject = create<ProjectState>()(
       }
       const buildScene = (p: Project, partial: Partial<Scene>, position: XY, order: number): Scene => {
         const draftPreset = p.presets[0]
-        return {
+        // The newer-build model marker follows the settings: the given ones (`partial`), else the draft preset's (as
+        // applying that preset would).
+        const marker = partial.settings ? partial : draftPreset
+        const scene: Scene = {
           id: partial.id ?? newId('scn'),
           order,
           title: partial.title ?? '',
@@ -541,6 +572,7 @@ export const useProject = create<ProjectState>()(
           position,
           note: partial.note ?? '',
         }
+        return withForeignOf(scene, marker)
       }
 
       return {
@@ -613,7 +645,7 @@ export const useProject = create<ProjectState>()(
         addPreset: (partial) => {
           const id = partial.id ?? newId('pst')
           const settings = normalizeSettings(partial)
-          mutate((p) => ({ ...p, presets: [...p.presets, { id, name: partial.name, ...settings }] }))
+          mutate((p) => ({ ...p, presets: [...p.presets, withForeignOf<Preset>({ id, name: partial.name, ...settings }, partial)] }))
           return id
         },
         /**
@@ -624,12 +656,17 @@ export const useProject = create<ProjectState>()(
           if (!get().project.presets.some((x) => x.id === id)) return
           mutate((p) => {
             const old = p.presets.find((x) => x.id === id)!
-            const next: Preset = { ...old, ...patch, id, ...normalizeSettings({ ...old, ...patch }) }
+            let next: Preset = { ...old, ...patch, id, ...normalizeSettings({ ...old, ...patch }) }
             if (typeof next.name !== 'string' || !next.name.trim()) next.name = old.name
+            // Picking a model for a preset of a newer build's model drops its marker (like updateSettings for scenes).
+            if (patch.model !== undefined) next = withoutForeign(next)
             const settings = presetSettings(next)
-            const scenes = sameSettings(presetSettings(old), settings)
-              ? p.scenes
-              : p.scenes.map((s) => (s.presetId === id && !sameSettings(s.settings, settings) ? { ...s, presetId: null } : s))
+            // A scene keeps the link only while it still matches the preset: its settings and its newer-build model.
+            const matches = (s: Scene) => sameSettings(s.settings, settings) && s.foreignModel === next.foreignModel
+            const scenes =
+              sameSettings(presetSettings(old), settings) && old.foreignModel === next.foreignModel
+                ? p.scenes
+                : p.scenes.map((s) => (s.presetId === id && !matches(s) ? { ...s, presetId: null } : s))
             return { ...p, presets: p.presets.map((x) => (x.id === id ? next : x)), scenes }
           })
         },
@@ -642,8 +679,9 @@ export const useProject = create<ProjectState>()(
         applyPreset: (presetId, sceneIds) => {
           const preset = get().project.presets.find((x) => x.id === presetId)
           if (!preset) return
-          const { id: _id, name: _name, ...settings } = preset
-          mapScenes(sceneIds, (s) => ({ ...s, presetId, settings: normalizeSettings(settings) }))
+          const settings = normalizeSettings(presetSettings(preset))
+          // A preset of a newer build's model brings its marker along (the scenes stay blocked); any other drops it.
+          mapScenes(sceneIds, (s) => withForeignOf({ ...s, presetId, settings }, preset))
         },
 
         // ---------------- scenes ----------------
@@ -683,7 +721,10 @@ export const useProject = create<ProjectState>()(
           mapScenes(sceneIds, (s) => {
             const settings = normalizeSettings({ ...s.settings, ...patch })
             const same = (Object.keys(settings) as (keyof VideoSettings)[]).every((k) => settings[k] === s.settings[k])
-            return same ? s : { ...s, presetId: null, settings }
+            // Picking a model is the user's choice — even the stand-in one already in `settings`: a newer build's model
+            // marker goes (the scene can run again). Other fields keep it.
+            const next = patch.model !== undefined ? withoutForeign(s) : s
+            return same && next === s ? s : { ...next, presetId: null, settings: same ? s.settings : settings }
           }),
         restoreScene: (id, { prompt, refs, videoRefs, settings }, liveTakeIds) =>
           mutate((p) => {
@@ -737,9 +778,21 @@ export const useProject = create<ProjectState>()(
           // Below the source row: a resized (taller) card or a tall take in its row puts the new card further down.
           // Asset nodes, other scenes' take rows and videos placed by hand right there are stepped over (not pushed).
           const pos = position ?? slideDown({ x: from.position.x, y: from.position.y + rowHeightOf(from) + LAYOUT.gapY }, otherBoxes(p))
+          // A newer build's model marker goes along with the settings (nextScene / createSceneFromTake must not turn
+          // a blocked scene into a runnable Seedance 2.5 one).
           const next = buildScene(
             p,
-            { refs: from.refs, videoRefs: from.videoRefs, settings: from.settings, presetId: from.presetId, firstFrame: from.firstFrame, lastFrame: from.lastFrame, ...overrides },
+            {
+              refs: from.refs,
+              videoRefs: from.videoRefs,
+              settings: from.settings,
+              presetId: from.presetId,
+              firstFrame: from.firstFrame,
+              lastFrame: from.lastFrame,
+              foreignModel: from.foreignModel,
+              foreignSettings: from.foreignSettings,
+              ...overrides,
+            },
             pos,
             from.order + 0.5,
           )
@@ -1101,8 +1154,45 @@ export const useProject = create<ProjectState>()(
   ),
 )
 
-export const undo = () => useProject.temporal.getState().undo()
-export const redo = () => useProject.temporal.getState().redo()
+/** Direction of an undo-history jump. */
+export type HistoryJumpKind = 'undo' | 'redo'
+/** Called right after an undo / redo that changed the project, with the project before and after the jump. */
+export type HistoryJumpListener = (before: Project, after: Project, kind: HistoryJumpKind) => void
+
+const historyListeners = new Set<HistoryJumpListener>()
+
+/**
+ * Listen to undo / redo jumps (e.g. folder wires a jump cut or brought back). Fired by the exported `undo` / `redo`,
+ * which every UI path uses (shortcuts, top bar, sidebar, undoToastAction) — on purpose NOT a store subscription:
+ * loading / importing a project, applyEverywhere (deleted takes, setFolderPlace) and plain edits are not jumps.
+ * Nothing is fired when the jump changed nothing (empty history). A throwing listener never breaks the jump or the
+ * other listeners. Returns the unsubscribe function (HMR dispose).
+ */
+export function onHistoryJump(fn: HistoryJumpListener): () => void {
+  historyListeners.add(fn)
+  return () => {
+    historyListeners.delete(fn)
+  }
+}
+
+function historyJump(kind: HistoryJumpKind) {
+  const before = useProject.getState().project
+  const history = useProject.temporal.getState()
+  if (kind === 'undo') history.undo()
+  else history.redo()
+  const after = useProject.getState().project
+  if (after === before) return
+  for (const fn of [...historyListeners]) {
+    try {
+      fn(before, after, kind)
+    } catch (err) {
+      console.error('[project] history listener failed', err)
+    }
+  }
+}
+
+export const undo = () => historyJump('undo')
+export const redo = () => historyJump('redo')
 export const clearHistory = () => useProject.temporal.getState().clear()
 
 /**

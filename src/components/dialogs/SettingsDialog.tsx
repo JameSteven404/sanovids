@@ -3,9 +3,12 @@
 // GROUPS below: the same label / hint feeds the row and the search (settingsSearch.ts). Each row component
 // subscribes to its own pref and applies at once; the stores persist and validate (see lib/settings.ts for the list,
 // the reset to defaults and the export / import of a settings file). Rows: SettingsBasic.tsx / SettingsAdvanced.tsx.
+// Deep link: `{ kind: 'settings', section: <group id> }` (actions.openSettings(section)) opens on that group's level and
+// scrolls the group into view (its <Section> carries data-set-anchor, settingsUi.tsx).
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../lib/aboutModel'
+import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../lib/canvasPrefs'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -27,12 +30,14 @@ import {
   AskWhereSetting,
   AutoDownloadSetting,
   AutoRenumberSetting,
+  BigProjectSetting,
   ClickToCutSetting,
   DataBlock,
   DownloadFolderSetting,
   EdgeModeSetting,
   InteractionSetting,
   MinimapSetting,
+  NodeEditorSetting,
   RateSetting,
   SoundSetting,
   TakeDisplaySetting,
@@ -44,7 +49,7 @@ import {
   WithPromptSetting,
 } from './SettingsBasic'
 import { matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
-import { Section, SettingsCtx, type RowProps } from './settingsUi'
+import { Section, SectionAnchorCtx, SettingsCtx, type RowProps } from './settingsUi'
 
 interface Row extends SearchRow {
   C: ComponentType<RowProps>
@@ -167,8 +172,9 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Dây nối & canvas',
-    desc: 'Cách dây nối và video hiện trên canvas.',
+    desc: 'Cách dây nối, thẻ cảnh và video hiện trên canvas.',
     rows: [
+      { id: 'nodeEditor', ...NODE_EDITOR_ROW, C: NodeEditorSetting },
       {
         id: 'clickToCut',
         label: 'Bấm vào dây để cắt',
@@ -192,6 +198,7 @@ const GROUPS: Group[] = [
         C: InteractionSetting,
       },
       { id: 'minimap', label: 'Bản đồ thu nhỏ', hint: 'Khung nhỏ ở góc canvas cho thấy toàn bộ dự án.', keywords: 'minimap bản đồ góc', C: MinimapSetting },
+      { id: 'bigProject', ...BIG_PROJECT_ROW, C: BigProjectSetting },
     ],
   },
   {
@@ -323,12 +330,17 @@ function saveLevel(level: SettingsLevel) {
 
 const LEVEL_HINT: Record<SettingsLevel, string> = { basic: 'Dùng hằng ngày', advanced: 'Tên file, hiệu ứng, cổng…' }
 
-export function SettingsDialog() {
+/** `section`: id of a group to show (deep link, see the top of this file); unknown ids are ignored. */
+export function SettingsDialog({ section }: { section?: string } = {}) {
   const closeDialog = useUI((s) => s.closeDialog)
-  const [level, setLevel] = useState<SettingsLevel>(readLevel)
+  const target = section ? GROUPS.find((g) => g.id === section) : undefined
+  const [level, setLevel] = useState<SettingsLevel>(() => target?.level ?? readLevel())
   const [query, setQuery] = useState('')
   const [epoch, setEpoch] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+  /** Group to bring into view once its level is shown (set by a deep link). */
+  const pendingAnchor = useRef<Group | undefined>(target)
   const resultsId = useId()
   const resync = useCallback(() => setEpoch((e) => e + 1), [])
   const ctx = useMemo(() => ({ close: closeDialog, resync, epoch }), [closeDialog, resync, epoch])
@@ -348,6 +360,34 @@ export function SettingsDialog() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // Deep link while the dialog is already open (another "Cài đặt → …" button): show that group's level, no search.
+  // The level is not saved: the next plain opening uses the level the user chose.
+  useEffect(() => {
+    if (!target) return
+    pendingAnchor.current = target
+    setLevel(target.level)
+    setQuery('')
+  }, [target])
+
+  // Bring the requested group into view once its level is rendered, and move the focus there (screen readers land on
+  // it; Tab continues inside it). A group whose section has no anchor (the gateway block) only gets its level shown.
+  useEffect(() => {
+    const group = pendingAnchor.current
+    if (!group || group.level !== level || searchWords(query).length) return
+    pendingAnchor.current = undefined
+    const root = resultsRef.current
+    const el = [...(root?.querySelectorAll<HTMLElement>('[data-set-anchor]') ?? [])].find((x) => x.dataset.setAnchor === group.id)
+    if (!el) {
+      // The section that had the focus may just have left with the old level: keep the focus inside the dialog.
+      const dialog = root?.closest<HTMLElement>('[role="dialog"]')
+      if (dialog && !dialog.contains(document.activeElement)) dialog.focus({ preventScroll: true })
+      return
+    }
+    el.scrollIntoView({ block: 'start' })
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
+    el.focus({ preventScroll: true })
+  })
 
   const chooseLevel = (next: SettingsLevel) => {
     setLevel(next)
@@ -409,7 +449,7 @@ export function SettingsDialog() {
           <div className="dg-set-status" role="status">
             {searching && count > 0 ? `${count} cài đặt khớp “${query.trim()}” — tìm trong cả Cơ bản và Nâng cao.` : ''}
           </div>
-          <div id={resultsId}>
+          <div id={resultsId} ref={resultsRef}>
             {!searching ? (
               <Columns matches={matches} />
             ) : matches.length ? (
@@ -463,10 +503,16 @@ function Columns({ matches }: { matches: GroupMatch<Group>[] }) {
 }
 
 function GroupView({ match: { group, rows } }: { match: GroupMatch<Group> }) {
-  if (group.Block) return <group.Block />
+  // A block renders its own <Section>: the context gives it this group's anchor (deep link).
+  if (group.Block)
+    return (
+      <SectionAnchorCtx.Provider value={group.id}>
+        <group.Block />
+      </SectionAnchorCtx.Provider>
+    )
   const Intro = group.Intro
   return (
-    <Section title={group.title} desc={group.desc} badge={group.badge}>
+    <Section title={group.title} desc={group.desc} badge={group.badge} anchor={group.id}>
       {Intro && <Intro />}
       {rows.map((r) => (
         <r.C key={r.id} label={r.label} hint={r.hint} />

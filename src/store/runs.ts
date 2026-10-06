@@ -32,7 +32,8 @@ import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
 import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
 import { migrateTake } from '../core/migrate'
-import type { Asset, Scene, Size, Take, XY } from '../core/types'
+import { runBlockReason } from '../core/runRules'
+import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
@@ -327,6 +328,16 @@ function savedMock(): MockSettings {
 const mockProvider = createMockProvider(() => useRuns.getState().mock)
 registerProvider(mockProvider)
 
+/**
+ * Reference videos (@video_N) per request that the gateway of new takes accepts for this model — its
+ * capabilities().maxRefVideos (canvasapp and development mode: 0) — or null for the old demo, which had no gateway
+ * limit. The run-block rules (core/runRules) use it in check() and on every Run button; a component calling it must
+ * re-render when the provider choice changes (useCreditKind() does).
+ */
+export function providerVideoCapFor(model: ModelId, providerId: ProviderId = activeProviderId()): number | null {
+  return providerId === 'mock' ? null : getProvider(providerId).capabilities(model).maxRefVideos
+}
+
 /** Paid with demo credits (so refunded on failure / cancel). canvasapp takes never are, whatever the flag says. */
 const isCharged = (t: Take) => chargedDemo(t)
 const remoteIdOf = (t: Take) => t.remoteId ?? null
@@ -359,20 +370,17 @@ export const useRuns = create<RunsState>()((set, get) => ({
       .filter((s): s is Scene => !!s)
       .map((scene) => {
         const takes = get().takes
-        const compiled = compileScene(project, scene, { takeStatus: (id) => takes.find((t) => t.id === id)?.status })
-        let reason: string | null = null
-        if (!scene.prompt.trim()) reason = 'Prompt trống'
-        else if (compiled.charCount > compiled.limit) reason = 'Prompt quá dài'
-        else if (scene.settings.mode === 'i2v' && compiled.images.length === 0) reason = 'Thiếu ảnh tham chiếu'
-        else if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) reason = 'Thiếu khung đầu/cuối'
-        else if (scene.settings.mode === 'transform' && [scene.firstFrame, scene.lastFrame].some((id) => !project.assets.find((a) => a.id === id)?.imageIds[0]))
-          reason = 'Khung đầu/cuối chưa có ảnh'
-        else if (compiled.unsentTokens.length)
-          reason = `Prompt nhắc ${compiled.unsentTokens.slice(0, 3).join(', ')}${compiled.unsentTokens.length > 3 ? '…' : ''} nhưng không có ảnh/video đó trong lần gửi — sửa số hoặc nối thêm`
-        else if (scene.videoRefs.some((id) => takes.find((t) => t.id === id)?.status !== 'completed')) reason = 'Video tham chiếu chưa sẵn sàng'
-        else if (providerId !== 'mock' && compiled.videos.length > getProvider(providerId).capabilities(scene.settings.model).maxRefVideos) {
-          reason = 'Cổng canvasapp chưa hỗ trợ video tham chiếu'
-        }
+        const takeStatus = (id: string) => takes.find((t) => t.id === id)?.status
+        const compiled = compileScene(project, scene, { takeStatus })
+        // The one rule list (core/runRules) shared with every Run button.
+        const reason = runBlockReason({
+          scene,
+          assets: project.assets,
+          compiled,
+          takeStatus,
+          spec: MODELS[scene.settings.model],
+          providerVideoCap: providerVideoCapFor(scene.settings.model, providerId),
+        })
         return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: compiled.warnings }
       })
   },

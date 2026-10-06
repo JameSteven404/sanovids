@@ -35,6 +35,9 @@ function devServiceWorkerKillSwitch(): Plugin {
 // and inside the Electron desktop build (served through the app:// protocol, see electron/main.cjs).
 export default defineConfig({
   base: './',
+  // Build flags. __SANOVIDS_PERF__: the performance harness (src/perf) — false here, so its probes are no-ops and it is
+  // tree-shaken out of every normal build (dev, tests, release).
+  define: { __SANOVIDS_PERF__: false },
   plugins: [
     devServiceWorkerKillSwitch(),
     react(),

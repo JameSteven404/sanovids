@@ -27,6 +27,7 @@ import {
   CloudDownload,
   Eraser,
   FlaskConical,
+  Gauge,
   Hourglass,
   ImageOff,
   ListChecks,
@@ -216,6 +217,8 @@ const TAB_ICON: Record<DevPanelTab, ReactNode> = {
   log: <ScrollText size={14} />,
   jobs: <ListChecks size={14} />,
   updates: <CloudDownload size={14} />,
+  // Not listed by devPanelTabs yet (the perf build's tab, src/perf): pick() falls back to 'status' for it.
+  perf: <Gauge size={14} />,
 }
 
 /** The real gateway runs new takes: this panel only drives the simulation. */

@@ -29,9 +29,11 @@ import { assetByTag, sceneCode } from '../../core/compile'
 import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { flushAll, flushScenes, register as registerDraft } from '../../lib/promptDrafts'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
+import { sceneMapOf } from '../canvas/canvasModel'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from './caret'
 import { useTakeInfos } from './hooks'
@@ -65,20 +67,21 @@ const COMMIT_MS = 160
 const HOLD_MAX_MS = 1500
 const FIELD_SIZING = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('field-sizing', 'content')
 
-/** Flush functions of mounted editors, so other panels can commit pending text before changing refs. */
-const flushers = new Map<string, () => void>()
-
 /** A whole word after "@" that is a legacy asset @Tag: picking a suggestion there replaces all of it (findMention). */
 const isTagWord = (word: string) => !!assetByTag(useProject.getState().project.assets, word)
 
-/** Commit the text being typed in the prompt editor of `sceneId` (no-op when none is mounted). */
+/**
+ * Commit the text being typed in every editor of `sceneId` (no-op when none is mounted). Mounted editors register
+ * their flush in lib/promptDrafts; structural changes (actions.linkAssets / linkTakes / requestRun, edges.cutEdge)
+ * call promptDrafts.flushScenes themselves.
+ */
 export function flushPromptEditor(sceneId: string) {
-  flushers.get(sceneId)?.()
+  flushScenes([sceneId])
 }
 
 /** Commit the text being typed in every mounted prompt editor (before restarting to install an app update). */
 export function flushAllPromptEditors(): void {
-  for (const f of [...flushers.values()]) f()
+  flushAll()
 }
 
 export type TokenHighlight = { kind: 'image' | 'video'; n: number } | null
@@ -182,11 +185,12 @@ function planTakes(sceneId: string, ids: string[]): MediaPlan | null {
 }
 
 export function PromptEditor({ sceneId }: { sceneId: string }) {
-  const storePrompt = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.prompt ?? '')
-  const refs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.refs) ?? EMPTY_IDS
-  const videoRefs = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.videoRefs) ?? EMPTY_IDS
+  // sceneMapOf: one cached id → scene map per scenes array, shared by every selector (no scan of 600 scenes each).
+  const storePrompt = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.prompt ?? '')
+  const refs = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.refs) ?? EMPTY_IDS
+  const videoRefs = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.videoRefs) ?? EMPTY_IDS
   const assets = useProject((s) => s.project.assets)
-  const settings = useProject((s) => s.project.scenes.find((x) => x.id === sceneId)?.settings)
+  const settings = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.settings)
   const takeInfos = useTakeInfos(videoRefs)
 
   const imageOpts = useMemo(() => imageOptsFor(assets, refs), [assets, refs])
@@ -277,7 +281,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
 
   useEffect(() => {
     const flush = () => void commit()
-    flushers.set(sceneId, flush)
+    const unregister = registerDraft(sceneId, flush)
     // Closing the window / app or hiding the tab does not blur the textarea: commit before the autosave flushes
     // (capture phase on window runs before persist.ts' own pagehide / visibilitychange listeners).
     const onHidden = () => {
@@ -289,7 +293,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       window.removeEventListener('pagehide', flush, true)
       window.removeEventListener('visibilitychange', onHidden, true)
       flush()
-      if (flushers.get(sceneId) === flush) flushers.delete(sceneId)
+      unregister()
     }
   }, [sceneId, commit])
 

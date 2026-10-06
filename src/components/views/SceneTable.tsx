@@ -4,12 +4,13 @@ import { useShallow } from 'zustand/react/shallow'
 import { linkAssets, linkTakes, newScene, requestRun, takeLabel } from '../../actions'
 import { compileScene, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
 import { costOf, MODELS, settingsLabel } from '../../core/models'
+import { runBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
 import type { Asset, Scene } from '../../core/types'
 import { CREDIT_HINT, CREDIT_MARK, CREDIT_SOURCE_LABEL, formatCredits, type CreditKind } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useCreditKind } from '../../store/credits'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
-import { useRuns, useSceneTakes } from '../../store/runs'
+import { providerVideoCapFor, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { TakeStrip } from '../runs/TakeStrip'
@@ -415,13 +416,24 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, credi
   const id = scene.id
   const assets = useProject((s) => s.project.assets)
   const preset = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId) : undefined))
-  // Status of each reference video, as one string (cheap + stable): drives the "video not ready" warning.
-  const videoStatus = useRuns((s) => (scene.videoRefs.length ? scene.videoRefs.map((t) => s.takes.find((x) => x.id === t)?.status ?? '-').join(',') : ''))
-  const warnings = useMemo(() => {
-    const status = new Map(scene.videoRefs.map((t, i) => [t, videoStatus.split(',')[i]]))
+  // Status of each reference video, as one string (cheap + stable): drives the "video not ready" warning and Run.
+  const videoStatus = useRuns((s) => videoStatusKey(scene.videoRefs, (t) => s.takes.find((x) => x.id === t)?.status))
+  const takeStatus = useMemo(() => takeStatusFromKey(videoStatus), [videoStatus])
+  const compiled = useMemo(() => {
     const project = { ...useProject.getState().project, assets }
-    return compileScene(project, scene, { takeStatus: (t) => (status.get(t) === '-' ? undefined : status.get(t)) }).warnings.join('\n')
-  }, [scene, assets, videoStatus])
+    return compileScene(project, scene, { takeStatus })
+  }, [scene, assets, takeStatus])
+  const warnings = compiled.warnings.join('\n')
+  // Why Run is disabled: the engine's rule list (core/runRules). `creditKind` (a prop) re-renders the row when the
+  // provider — and with it the gateway's @video limit — changes.
+  const reason = runBlockReason({
+    scene,
+    assets,
+    compiled,
+    takeStatus,
+    spec: MODELS[scene.settings.model],
+    providerVideoCap: providerVideoCapFor(scene.settings.model),
+  })
   const libraryDragging = useUI((s) => s.draggingAssetIds !== null)
   // A finished take is being dragged (take strip, library, canvas) and this row can use it as @video:
   // every row lights up except the scene that made all of the dragged takes (no self references).
@@ -636,8 +648,8 @@ const SceneRow = memo(function SceneRow({ scene, selected, selectionCount, credi
       <span className="vw-cell-run">
         <button
           className="vw-run"
-          disabled={!scene.prompt.trim()}
-          title={scene.prompt.trim() ? costTitle(cost, creditKind, `Chạy ${code} · ${settingsLabel(scene.settings)} · `) : 'Prompt trống — chưa chạy được'}
+          disabled={!!reason}
+          title={reason ? `${reason.replace(/\.$/, '')} — chưa chạy được` : costTitle(cost, creditKind, `Chạy ${code} · ${settingsLabel(scene.settings)} · `)}
           onClick={(e) => {
             e.stopPropagation()
             requestRun([id])

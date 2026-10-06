@@ -8,6 +8,7 @@ import {
   hasAssetDrag,
   hasTakeDrag,
   inlineEditKeyBubbles,
+  inlineKeyBubbles,
   isAutoSlot,
   isEmptyCanvasTarget,
   layoutTakes,
@@ -201,6 +202,36 @@ describe('inlineEditKeyBubbles', () => {
     expect(inlineEditKeyBubbles(key('Enter', { metaKey: true }))).toBe(true)
     expect(inlineEditKeyBubbles(key('Escape', { ctrlKey: true }))).toBe(false)
     for (const k of ['a', 'Delete', 'Backspace', 'Enter', 'Escape', 'c', 'n']) expect(inlineEditKeyBubbles(key(k))).toBe(false)
+  })
+  it('a lone Ctrl / Cmd no longer leaks out of the field (React Flow took it as its multi-select key)', () => {
+    expect(inlineEditKeyBubbles(key('Control', { ctrlKey: true }))).toBe(false)
+    expect(inlineEditKeyBubbles(key('Meta', { metaKey: true }))).toBe(false)
+    expect(inlineEditKeyBubbles(key('Shift', { ctrlKey: true }))).toBe(false)
+  })
+})
+
+describe('inlineKeyBubbles (keymap predicate injected)', () => {
+  type K = { key: string; ctrlKey: boolean; metaKey: boolean; altKey?: boolean }
+  const key = (k: string, mods: Partial<K> = {}): K => ({ key: k, ctrlKey: false, metaKey: false, ...mods })
+  it('only chords of commands that run while typing bubble — whatever they are', () => {
+    // e.g. a user who moved "Lưu" to F2 and "Tạo video" to Alt+Enter
+    const typing = (e: K) => e.key === 'F2' || (e.key === 'Enter' && !!e.altKey)
+    expect(inlineKeyBubbles(key('F2'), typing)).toBe(true)
+    expect(inlineKeyBubbles(key('Enter', { altKey: true }), typing)).toBe(true)
+    expect(inlineKeyBubbles(key('s', { ctrlKey: true }), typing)).toBe(false) // no longer a typing chord
+    expect(inlineKeyBubbles(key('Enter'), typing)).toBe(false)
+  })
+  it('never Escape, never a modifier alone, even when the predicate says yes', () => {
+    const always = () => true
+    expect(inlineKeyBubbles(key('Escape', { ctrlKey: true }), always)).toBe(false)
+    for (const m of ['Control', 'Meta', 'Alt', 'AltGraph', 'Shift', 'CapsLock']) expect(inlineKeyBubbles(key(m, { ctrlKey: true }), always), m).toBe(false)
+    expect(inlineKeyBubbles(key('a'), always)).toBe(true)
+  })
+  it('the predicate gets the event itself', () => {
+    const seen: K[] = []
+    const e = key('Enter', { ctrlKey: true })
+    inlineKeyBubbles(e, (x) => (seen.push(x), false))
+    expect(seen).toEqual([e])
   })
 })
 

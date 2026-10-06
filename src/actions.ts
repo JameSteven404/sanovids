@@ -25,6 +25,7 @@ import {
   type SaveResult,
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
+import { flushScenes } from './lib/promptDrafts'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
@@ -168,6 +169,8 @@ export function takeLabel(takeId: string): string {
 /** Link assets (reference images) to scenes in one undo step and report what happened. */
 export function linkAssets(sceneIds: string[], assetIds: string[]) {
   if (!sceneIds.length || !assetIds.length) return
+  // Commit the prompt being typed first: it is renumbered with the change instead of overwriting it a moment later.
+  flushScenes(sceneIds)
   const res = useProject.getState().addRefs(sceneIds, assetIds)
   const names = assetIds.map((id) => useProject.getState().project.assets.find((a) => a.id === id)?.name).filter(Boolean)
   if (res.added) {
@@ -199,6 +202,7 @@ export function linkTakes(sceneIds: string[], takeIds: string[]) {
     return
   }
   // Per pair: a scene never gets one of its own takes, even when several scenes and takes are linked at once.
+  flushScenes(targets)
   const res = useProject.getState().addVideoRefs(targets, ready, (sid, t) => ownScene.get(t) === sid)
   if (res.added) {
     toast(`Đã nối ${ready.map(takeLabel).join(', ')} làm video tham chiếu → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped})` : ''}`, {
@@ -515,6 +519,8 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
     toast('Chọn cảnh cần chạy trước.', { tone: 'warning' })
     return
   }
+  // The cost dialog checks and sends the prompt in the store: commit the text being typed first.
+  flushScenes(sceneIds)
   useUI.getState().openDialog({ kind: 'runConfirm', sceneIds, follow: opts.follow })
 }
 
@@ -859,6 +865,15 @@ export function openTopUp(tab: TopUpTab = 'topup') {
  */
 export function openDevPanel(tab?: DevPanelTab) {
   useUI.getState().openDialog({ kind: 'dev', tab })
+}
+
+/**
+ * Open "Cài đặt", optionally on one group (`section` = the id of a SettingsDialog GROUPS entry, e.g. 'canvas', 'keys'):
+ * the dialog switches to that group's level ("Cơ bản" / "Nâng cao") and scrolls it into view. An unknown id opens the
+ * dialog as usual.
+ */
+export function openSettings(section?: string) {
+  useUI.getState().openDialog(section ? { kind: 'settings', section } : { kind: 'settings' })
 }
 
 export { undo, redo }

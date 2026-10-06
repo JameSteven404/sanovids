@@ -3,7 +3,8 @@
 // another version or edited by hand can never put a store into a broken state).
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
-//   theme (lib/theme) · downloads (lib/downloads) · playback (lib/playback) · canvas (lib/canvasPrefs) ·
+//   theme (lib/theme) · downloads (lib/downloads) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
+//   animations, the editor on a scene card + its width, big-project optimisations) ·
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
 //   updates (lib/updatePrefs: auto-download of app updates).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download
@@ -16,7 +17,7 @@ import { DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../
 import { useProviderPrefs, type ProviderId } from '../providers'
 import { useRuns } from '../store/runs'
 import { EDGE_MODES, INTERACTION_MODES, TAKE_DISPLAYS, TOAST_TIMES, useUI, type InteractionMode, type TakeDisplay, type ToastTime } from '../store/ui'
-import { DEFAULT_CANVAS_PREFS, MOTION_LEVELS, useCanvasPrefs, type MotionLevel } from './canvasPrefs'
+import { BIG_PROJECT_MODES, DEFAULT_CANVAS_PREFS, isEditorWidth, MOTION_LEVELS, NODE_EDITOR_MODES, useCanvasPrefs, type CanvasPrefs } from './canvasPrefs'
 import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
 import { isThemePref, useTheme, type ThemePref } from './theme'
@@ -26,7 +27,7 @@ export interface PortableSettings {
   theme: ThemePref
   downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string }
   playback: { sound: boolean; volume: number; rate: number }
-  canvas: { clickToCut: boolean; animations: MotionLevel }
+  canvas: CanvasPrefs
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
   mock: MockSettings
   updates: { autoDownload: boolean }
@@ -61,7 +62,7 @@ export function currentSettings(): PortableSettings {
     theme: useTheme.getState().pref,
     downloads: { askWhere: d.askWhere, withPrompt: d.withPrompt, autoDownload: d.autoDownload, zipPrompts: d.zipPrompts, nameTemplate: d.nameTemplate },
     playback: { sound: p.sound, volume: p.volume, rate: p.rate },
-    canvas: { clickToCut: c.clickToCut, animations: c.animations },
+    canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject },
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
     updates: { autoDownload: useUpdatePrefs.getState().autoDownload },
@@ -82,7 +83,7 @@ type Check = (v: unknown) => boolean
 const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock'>]: Record<keyof PortableSettings[K], Check> } = {
   downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
-  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS) },
+  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
   ui: { edgeMode: inList(EDGE_MODES), takeDisplay: inList(TAKE_DISPLAYS), showMinimap: isBool, interaction: inList(INTERACTION_MODES), toastTime: inList(TOAST_TIMES) },
   updates: { autoDownload: isBool },
 }

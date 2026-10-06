@@ -171,7 +171,7 @@ function renderDialog(dialog: DialogState): ReactNode {
     case 'import':
       return <ImportDialog />
     case 'settings':
-      return <SettingsDialog />
+      return <SettingsDialog section={dialog.section} />
     case 'shortcuts':
       return <ShortcutsDialog />
     case 'projects':

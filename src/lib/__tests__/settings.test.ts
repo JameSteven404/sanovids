@@ -46,7 +46,7 @@ const CUSTOM = {
   theme: 'light',
   downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}' },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
-  canvas: { clickToCut: false, animations: 'off' },
+  canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
   updates: { autoDownload: false },
@@ -109,7 +109,7 @@ describe('stored prefs are validated on read', () => {
           'bdp:pref:leftOpen': '{',
           'bdp:pref:downloads': '{"withPrompt":"nope","askWhere":false,"nameTemplate":"{x}"}',
           'bdp:pref:mock': '{"concurrency":50,"speed":"normal"}',
-          'bdp:pref:canvas': '{"animations":"wild"}',
+          'bdp:pref:canvas': '{"animations":"wild","nodeEditor":"always","editorWidth":"wide","bigProject":true}',
           'bdp:pref:updates': '{"autoDownload":"no"}',
         }),
       )
@@ -120,7 +120,7 @@ describe('stored prefs are validated on read', () => {
       expect(dl).toMatchObject({ withPrompt: true, askWhere: false, nameTemplate: DEFAULT_NAME_TEMPLATE })
       const runs = (await import('../../store/runs')).useRuns.getState()
       expect(runs.mock).toEqual({ ...DEFAULT_MOCK_SETTINGS, concurrency: 5, speed: 'normal' })
-      expect((await import('../canvasPrefs')).useCanvasPrefs.getState().animations).toBe('full')
+      expect((await import('../canvasPrefs')).useCanvasPrefs.getState()).toMatchObject({ animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto' })
       expect((await import('../updatePrefs')).useUpdatePrefs.getState().autoDownload).toBe(true)
     })
   })
@@ -152,6 +152,19 @@ describe('settings file (export / import)', () => {
     expect(sanitizeSettings({ updates: { autoDownload: 'no' } })).toEqual({ patch: {}, accepted: 0, rejected: ['updates.autoDownload'] })
     expect(sanitizeSettings({ updates: { autoDownload: false, channel: 'beta' } })).toEqual({ patch: { updates: { autoDownload: false } }, accepted: 1, rejected: [] })
     expect(sanitizeSettings({ theme: 'pink', ui: 'all' }).rejected).toEqual(['theme', 'ui'])
+  })
+
+  it('the editor on a scene card and the big-project optimisations: valid values only, never "fixed"', () => {
+    expect(sanitizeSettings({ canvas: { nodeEditor: 'off', editorWidth: 640, bigProject: 'off' } })).toEqual({
+      patch: { canvas: { nodeEditor: 'off', editorWidth: 640, bigProject: 'off' } },
+      accepted: 3,
+      rejected: [],
+    })
+    expect(sanitizeSettings({ canvas: { editorWidth: 340 } }).patch).toEqual({ canvas: { editorWidth: 340 } })
+    for (const bad of [339, 641, 400.5, '400', null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(sanitizeSettings({ canvas: { editorWidth: bad } }), String(bad)).toEqual({ patch: {}, accepted: 0, rejected: ['canvas.editorWidth'] })
+    }
+    expect(sanitizeSettings({ canvas: { nodeEditor: 'always', bigProject: 'on' } }).rejected.sort()).toEqual(['canvas.bigProject', 'canvas.nodeEditor'])
   })
 
   it('readSettingsFile explains what is wrong with a file', () => {
@@ -201,7 +214,8 @@ describe('apply / reset / restore', () => {
     expect(useTheme.getState().pref).toBe('light')
     expect(useUI.getState().toastTime).toBe('long')
     expect(usePlayback.getState().rate).toBe(1.5)
-    expect(useCanvasPrefs.getState().animations).toBe('off')
+    expect(useCanvasPrefs.getState()).toMatchObject({ animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' })
+    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual(CUSTOM.canvas)
     expect(useRuns.getState().mock.concurrency).toBe(1)
     expect(JSON.parse(storage.data.get('bdp:pref:downloads')!)).toMatchObject({ nameTemplate: '{take} - {scene}', zipPrompts: false })
     expect(storage.data.get('bdp:pref:toastTime')).toBe('"long"')
@@ -224,7 +238,7 @@ describe('apply / reset / restore', () => {
     // the chosen download folder is a place, not a setting: kept
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
     expect(storage.data.get('bdp:pref:leftW')).toBe('300') // panel widths: resetPanelLayout, not this
-    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full' })
+    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto' })
     expect(useUpdatePrefs.getState().autoDownload).toBe(true)
     expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":true}')
 
@@ -233,6 +247,13 @@ describe('apply / reset / restore', () => {
     expect(useProviderPrefs.getState().provider).toBe('canvasapp')
     useProviderPrefs.getState().setProvider('dev')
     useDownloadPrefs.getState().set({ folderName: null })
+  })
+
+  it('changedSettingsCount counts the new canvas prefs, each once', () => {
+    expect(changedSettingsCount()).toBe(0)
+    applySettings({ canvas: { nodeEditor: 'off', bigProject: 'off', editorWidth: 400 } })
+    expect(changedSettingsCount()).toBe(3)
+    expect(currentSettings().canvas).toEqual({ ...DEFAULT_SETTINGS.canvas, nodeEditor: 'off', bigProject: 'off', editorWidth: 400 })
   })
 
   it('changedSettingsCount counts the app-update pref', () => {
