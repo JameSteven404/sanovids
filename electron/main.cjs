@@ -498,7 +498,11 @@ const CANVASAPP_DOWNLOAD_HEADERS_MS = 5 * 60_000
 const CANVASAPP_DOWNLOAD_IDLE_MS = 60_000
 const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 30_000
 const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
-/** Open + waiting for a slot. ≥ the jobs that may finish at once (src/providers/canvasapp/adapter.ts MAX_CONCURRENCY). */
+/**
+ * Open + waiting for a slot. ≥ the jobs SanoVids itself runs at once (src/providers/canvasapp/adapter.ts
+ * MAX_CONCURRENCY); imported takes ("Nhập job") take no submit slot, so more finishing videos than this can ask at once:
+ * the extra ones are refused 'busy' and the engine asks again 15 s later (deferred, not a failed try).
+ */
 const CANVASAPP_DOWNLOAD_MAX_SESSIONS = 16
 const CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES = 64 * 1024
 /**

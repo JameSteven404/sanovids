@@ -22,7 +22,7 @@ export const FIELD_LABEL: Record<ImportedField, string> = {
 }
 
 /** Tooltips of a "?" / "≈" value. */
-export const UNKNOWN_FIELD_TITLE = 'canvasapp không cho biết — không rõ'
+export const unknownFieldTitle = (t: Partial<Pick<Take, 'provider'>>) => `${importSite(t)} không cho biết — không rõ`
 export const INFERRED_FIELD_TITLE = 'Đoán theo node trên canvas cầu nối (prompt khớp với job) — không chắc chắn'
 
 export type FieldState = 'known' | 'inferred' | 'unknown'
@@ -114,7 +114,7 @@ export function restorePlan(
 export function restoreBlock(t: ImportInfo): string | null {
   if (!t.imported) return null
   const missing = (['prompt', 'refs'] as const).filter((f) => fieldState(t, f) === 'unknown').map((f) => FIELD_LABEL[f])
-  return missing.length ? `Take nhập từ canvasapp: không rõ ${missing.join(' / ')} lúc tạo — không khôi phục được.` : null
+  return missing.length ? `Take nhập từ ${importSite(t)}: không rõ ${missing.join(' / ')} lúc tạo — không khôi phục được.` : null
 }
 
 /** What the restore toast adds for an imported take: what the scene kept and why, what was only a guess. */

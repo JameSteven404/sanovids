@@ -46,7 +46,7 @@ import { getBlob } from '../lib/imageStore'
 import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
-import { devBridge, devResult, resetDevServer, withDevWording } from './dev'
+import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
@@ -153,6 +153,8 @@ export function devProvider(): CanvasappProvider {
       minPollMs: DEV_POLL_MS,
       pollIntervalMs: DEV_POLL_MS,
       listCacheMs: DEV_LIST_CACHE_MS,
+      // the dev bridge's own job-list cache (main.cjs: 15 s, the adapter's default)
+      gatewayListCacheMs: DEV_JOB_LIST_CACHE_MS,
       onLimitsChange: () => bumpProviderLimits('dev'),
     })
     dev = withDevWording(adapter, { poll: devResult, available: devResult })

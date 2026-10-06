@@ -218,7 +218,7 @@ export function GatewaySection() {
                   className="btn btn-sm"
                   onClick={() => openImportJobs({ back: { kind: 'settings' }, provider: gw.id })}
                   disabled={!!busy}
-                  title={`Tìm video đã tạo trực tiếp trên ${site} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ credit`}
+                  title={`Tìm video đã tạo trực tiếp trên ${site} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${dev ? 'credit dev' : 'credit'}`}
                 >
                   <CloudDownload size={13} /> Nhập job
                 </button>

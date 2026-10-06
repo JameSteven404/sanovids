@@ -70,6 +70,15 @@ export interface DevBridgeOptions {
   downloadLimits?: Partial<DownloadLimits>
 }
 
+/** The simulated gateway, plus what "Xoá dữ liệu máy chủ giả lập" needs of it (dev/index.ts resetDevServer). */
+export interface DevBridge extends CanvasappBridge {
+  /**
+   * The simulated account is about to be wiped: like main's logout, every video download is stopped first (none keeps
+   * streaming the old account's video into a take, or holds a download slot) and no cached job list of it is served.
+   */
+  reset(): void
+}
+
 /** The one page that uses the simulated gateway (main keys downloads by the calling page). */
 const DEV_PAGE = 'page'
 
@@ -117,7 +126,7 @@ function orderIdOf(checkoutUrl: string, fields: Record<string, string>): string 
   return m ? m[1] : null
 }
 
-export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptions = {}): CanvasappBridge {
+export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptions = {}): DevBridge {
   const now = opts.now ?? (() => Date.now())
   const cacheMs = opts.jobListCacheMs ?? DEV_JOB_LIST_CACHE_MS
   const timeoutMs = opts.checkoutTimeoutMs ?? DEV_CHECKOUT_TIMEOUT_MS
@@ -327,6 +336,13 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true }
   }
 
+  function reset(): void {
+    downloads.closeAll()
+    downloadPaths.clear()
+    listCache.clear()
+    jobsEpoch++ // a job-list read in flight across the reset is not cached
+  }
+
   async function checkout(args: CheckoutArgs): Promise<BridgeCheckoutResponse> {
     if (checkoutPromptOpen()) return gatewayError('busy', 'Đang có một cửa sổ thanh toán mở — hoàn tất hoặc đóng nó trước.')
     const url = args && typeof args === 'object' ? args.checkoutUrl : null
@@ -358,5 +374,5 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, result: a.choice, orderId, blockedHost: null }
   }
 
-  return { status, login, logout, request, checkout, downloadOpen, downloadRead, downloadClose }
+  return { status, login, logout, request, checkout, downloadOpen, downloadRead, downloadClose, reset }
 }

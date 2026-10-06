@@ -62,9 +62,9 @@ import {
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
 import {
   classifySiteJobs,
-  CREATED_SKEW_MS,
   createdTime,
   hintsFor,
+  inPostWindow,
   MAX_IMPORT_BATCH,
   normalizeImportPrompt,
   sentMayOwn,
@@ -115,7 +115,8 @@ export const RECONCILE_DELAYS_MS = [15_000, 15_000]
  * posts again. So a list read this long after another take's POST shows that take's job, if it has one.
  */
 const SETTLE_MS = RECONCILE_DELAYS_MS.reduce((a, b) => a + b, 0)
-// CREATED_SKEW_MS (how far created_at may be off): siteJobs.ts, shared with the import's reservation rule.
+// CREATED_SKEW_MS / POST_WINDOW_MS (which jobs a POST may have made: inPostWindow): siteJobs.ts, shared with the import's
+// reservation rule.
 const MAX_JOB_RECORDS = 500
 const MAX_SENT_RECORDS = 100
 const MAX_IMPORTED_RECORDS = 500
@@ -213,6 +214,12 @@ export interface CanvasappProviderDeps {
    * poll interval minus the latency, or every other poll is served from the cache (the dev simulator: 2 s under 3 s).
    */
   listCacheMs?: number
+  /**
+   * How old a job-list answer of the GATEWAY itself may be: electron/main.cjs serves GET /api/video-jobs from its own
+   * cache for CANVASAPP_JOBS_MIN_MS (15 s, the default here), the dev bridge for DEV_JOB_LIST_CACHE_MS. A read is
+   * only trusted to show what existed this long before it was sent (SentRecord.beforeAt).
+   */
+  gatewayListCacheMs?: number
   /** Media-store lookup (lib/imageStore getBlob). */
   getBlob: (imageId: string) => Promise<Blob | null>
   storage?: KeyValueStorage
@@ -247,8 +254,22 @@ interface SentRecord {
   at: number
   /** Job ids already on that canvas node before the POST (last job list read), when known. */
   before?: string[]
-  /** When that read was made (local time; records of earlier builds do not say). */
+  /**
+   * The latest time that read is sure to show every job made before it (local time): when it was SENT, minus how
+   * long the gateway may serve a cached answer (gatewayListCacheMs). Records of earlier builds do not say.
+   */
   beforeAt?: number
+}
+
+/** One job-list read. */
+interface ListRead {
+  /** When the answer arrived (the poll's cache, which nodes still run). */
+  at: number
+  /** It shows every job made before this time (local): when it was sent, less the gateway's own cache time. */
+  shows: number
+  /** Job POSTs sent before it was sent (`postsSent`): a later one makes the gateway drop its cached list. */
+  posts: number
+  jobs: CanvasJob[]
 }
 
 /** Per idempotency key (take id): what canvasapp was asked to create and what it created. Survives logout. */
@@ -336,13 +357,13 @@ async function bitmapSize(blob: Blob): Promise<{ width: number; height: number }
 }
 
 /**
- * Could `j` be the job that the POST recorded as `r` made? On its node, not listed before it, not created long before
- * it (created_at may be off by hours: CREATED_SKEW_MS) — unknown creation time: it could.
+ * Could `j` be the job that the POST recorded as `r` made? On its node, not listed before it, created within its window
+ * (inPostWindow: created_at may be off by hours) — unknown creation time: it could.
  */
 function mayBeJobOf(j: CanvasJob, r: SentRecord): boolean {
   if (j.canvas_node_id !== r.nodeId || r.before?.includes(j.job_id)) return false
   const t = createdTime(j.created_at)
-  return !Number.isFinite(t) || t >= r.at - CREATED_SKEW_MS
+  return !Number.isFinite(t) || inPostWindow(t, r.at)
 }
 
 /** Persisted upload cache (imageId → upload_id), keeping only string → non-empty string pairs. */
@@ -372,6 +393,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const minPollMs = Math.max(0, deps.minPollMs ?? MIN_POLL_MS)
   const pollMs = Math.max(minPollMs, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
   const listCacheMs = Math.max(0, Math.min(minPollMs, deps.listCacheMs ?? minPollMs))
+  const gatewayListCacheMs = Math.max(0, deps.gatewayListCacheMs ?? MIN_POLL_MS)
 
   let state: GatewayState = load()
   let ledger: JobLedger = loadLedger()
@@ -398,9 +420,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   /** Submits in progress by key (a second submit / recover of the same key joins it). */
   const inflight = new Map<string, Promise<{ remoteId: string }>>()
   /** Job list cache of the poll (dropped after a POST so the next poll sees the new job). */
-  const lists = new Map<string, { at: number; jobs: CanvasJob[] }>()
+  const lists = new Map<string, ListRead>()
   /** Last job list read per bridge project, kept when the cache above is dropped: which jobs still run. */
-  const lastLists = new Map<string, { at: number; jobs: CanvasJob[] }>()
+  const lastLists = new Map<string, ListRead>()
+  /** Job POSTs sent so far (each attempt): the gateway (main.cjs, the dev bridge) drops its cached job list at each. */
+  let postsSent = 0
   /** A job of the ledger that a job-list read does not show (yet): still treated as running this long after it was made. */
   const unlistedGraceMs = (MAX_MISSES + 1) * pollMs
   const misses = new Map<string, number>()
@@ -456,11 +480,18 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     saveLedger({ ...ledger, jobs: { ...ledger.jobs, [key]: { remoteId, at: now(), nodeId } }, sent })
     return { remoteId }
   }
-  /** A job list was read (poll, lookup or room check). */
-  function remember(projectId: string, jobs: CanvasJob[]) {
-    const read = { at: now(), jobs }
+  /**
+   * Read the job list of a bridge project (poll, lookup, room check, the read before a POST, the scan) and remember it.
+   * `shows` is stamped from when the request was SENT, less how long the gateway may answer from its own cache.
+   */
+  async function readJobs(projectId: string): Promise<CanvasJob[]> {
+    const sent = now()
+    const posts = postsSent
+    const jobs = await api.listVideoJobs(projectId)
+    const read: ListRead = { at: now(), shows: sent - gatewayListCacheMs, posts, jobs }
     lists.set(projectId, read)
     lastLists.set(projectId, read)
+    return jobs
   }
 
   /**
@@ -474,7 +505,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     let list = lastLists.get(projectId)
     if (!list || now() - list.at >= MIN_POLL_MS) {
       try {
-        remember(projectId, await api.listVideoJobs(projectId))
+        await readJobs(projectId)
         list = lastLists.get(projectId)
       } catch (e) {
         if (isLoginRequired(e)) throw e
@@ -793,8 +824,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    */
   async function findJob(req: JobRequest, rec: SentRecord): Promise<{ remoteId: string } | 'none' | 'ambiguous'> {
     lists.delete(rec.projectId)
-    const jobs = await api.listVideoJobs(rec.projectId)
-    remember(rec.projectId, jobs)
+    const jobs = await readJobs(rec.projectId)
     const remote = (j: CanvasJob) => ({ remoteId: encodeRemoteId(rec.projectId, j.job_id) })
     if (jobs.some((j) => typeof j.client_request_id === 'string')) {
       // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
@@ -806,8 +836,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
     // and was created after it.
     // ...nor a job imported ("Nhập job"), whenever: one claimed before this POST was listed before it; one claimed
-    // after it passed sentMayOwn against this very record (its window ends CREATED_SKEW_MS + POST_WINDOW_MS after the
-    // POST, the lookup below has no such end) — either way not this POST's job, and never a second take of one job.
+    // after it passed sentMayOwn against this very record — either way not this POST's job, and never a second take of
+    // one job. The creation-time window is that rule's too (inPostWindow): a job made on the site long after the POST
+    // (still importable) is never taken for it.
     const taken = new Set([...Object.values(ledger.jobs), ...Object.values(ledger.imported)].map((j) => decodeRemoteId(j.remoteId)?.jobId))
     const before = new Set(rec.before ?? [])
     const model = modelProfileOf(req.model)
@@ -818,14 +849,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       if (j.model_profile !== undefined && j.model_profile !== model) return false
       if (j.duration !== undefined && Number(j.duration) !== req.duration) return false
       const t = createdTime(j.created_at)
-      return Number.isFinite(t) ? t >= rec.at - CREATED_SKEW_MS : rec.before !== undefined
+      return Number.isFinite(t) ? inPostWindow(t, rec.at) : rec.before !== undefined
     })
     if (candidates.length !== 1) return candidates.length ? 'ambiguous' : 'none'
     // ...and that no other take still without an answer on that node may own: that take looks for it too — taking it
     // would make that take post again (a second charge, the wrong video here). A LATER POST may own any job its own
-    // read before it did not show; an EARLIER one only a job this POST's read did not show although it was made
-    // SETTLE_MS after that POST (postJob reads the list right before posting next to such a take). Not known → both
-    // could own it: neither takes it ("không rõ" for both, nothing re-posted).
+    // read before it did not show; an EARLIER one only a job this POST's read did not show although that read shows
+    // what existed SETTLE_MS after that POST (beforeAt: when it was sent, less the gateway's cache time; submitNow reads
+    // the list right before every POST). Not known → both could own it: neither takes it ("không rõ" for both, nothing
+    // re-posted).
     const [job] = candidates
     const contested = rivalsOf(req.key, rec.projectId, rec.nodeId).some(
       (r) => mayBeJobOf(job, r) && (r.at >= rec.at || rec.beforeAt === undefined || rec.beforeAt - r.at < SETTLE_MS),
@@ -863,18 +895,20 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     afterLost: boolean,
     nodeRunning: () => Promise<boolean>,
   ): Promise<{ remoteId: string }> {
-    // Jobs on that node in the last job-list read, however old: listed before this POST, so none of them is its job.
+    // Jobs on that node in the last job-list read (the one right before this POST, unless it failed): listed before
+    // this POST, so none of them is its job.
     const known = lastLists.get(body.project_id)
     let rec: SentRecord = {
       projectId: body.project_id,
       nodeId: body.canvas_node_id,
       at: now(),
-      ...(known ? { before: known.jobs.filter((j) => j.canvas_node_id === body.canvas_node_id).map((j) => j.job_id), beforeAt: known.at } : {}),
+      ...(known ? { before: known.jobs.filter((j) => j.canvas_node_id === body.canvas_node_id).map((j) => j.job_id), beforeAt: known.shows } : {}),
     }
     markSent(req.key, rec)
     let reposted = false
     for (;;) {
       try {
+        postsSent++
         const jobId = jobIdFromCreateResponse(await api.createVideoJob(body))
         if (jobId) {
           lists.delete(body.project_id) // next poll sees the new job
@@ -1008,20 +1042,27 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       throw new CanvasappError(e.code, `${text} ${e.message}`, { status: e.status, detail: e.detail, noCredit: e.noCredit })
     }
     const body = toVideoJobBody(req, { projectId, nodeKey, uploadIdFor, generateAudio: deps.generateAudio?.() ?? true })
-    // Another take's POST on this node has no answer yet: read the job list now, so its job (if it has one) is in this
-    // POST's `before` — then neither take can take the other's job (findJob). Unreadable → not sent: posting now could
-    // leave two takes that can never tell their jobs apart.
-    if (rivalsOf(req.key, projectId, body.canvas_node_id).length) {
+    // Read the job list right before the POST, so every job already on its node is in the POST's `before` and is never
+    // taken for its job by a lost-answer lookup (findJob): another take's (still in doubt, or done), or one made on
+    // canvasapp's own page since the last read ("Tạo video" on a bridge node, not imported yet). Next to another take
+    // whose POST on this node has no answer yet it MUST be read — unreadable → not sent: posting now could leave two
+    // takes that can never tell their jobs apart. Otherwise unreadable → sent with the last read as `before` (a site
+    // job made since then may leave a lost answer "không rõ", never paid twice). A read that the gateway would answer
+    // from its own cache anyway (younger than gatewayListCacheMs, no POST since) is used as it is.
+    const last = lastLists.get(projectId)
+    if (!last || last.posts !== postsSent || now() - last.at >= gatewayListCacheMs) {
       checkCancelled()
       lists.delete(projectId)
       try {
-        remember(projectId, await api.listVideoJobs(projectId))
+        await readJobs(projectId)
       } catch (e) {
         if (isLoginRequired(e)) throw e
-        const text = earlier ? LIST_NEEDED_AFTER_LOST_TEXT : LIST_NEEDED_TEXT
-        throw new CanvasappError(e instanceof CanvasappError ? e.code : 'network', `${text} (${canvasappErrorText(e)})`, {
-          status: e instanceof CanvasappError ? e.status : undefined,
-        })
+        if (rivalsOf(req.key, projectId, body.canvas_node_id).length) {
+          const text = earlier ? LIST_NEEDED_AFTER_LOST_TEXT : LIST_NEEDED_TEXT
+          throw new CanvasappError(e instanceof CanvasappError ? e.code : 'network', `${text} (${canvasappErrorText(e)})`, {
+            status: e instanceof CanvasappError ? e.status : undefined,
+          })
+        }
       }
     }
     // Last chance to stop: the POST below is what canvasapp bills.
@@ -1033,9 +1074,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const hit = lists.get(projectId)
     // ≤ minPollMs (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
     if (hit && now() - hit.at < listCacheMs) return hit.jobs
-    const jobs = await api.listVideoJobs(projectId)
-    remember(projectId, jobs)
-    return jobs
+    return readJobs(projectId)
   }
 
   return {
@@ -1197,12 +1236,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       // always read (the user asked: a job just made on the site must show); the poll reuses this read
       let jobs: CanvasJob[]
       try {
-        jobs = await api.listVideoJobs(projectId)
+        jobs = await readJobs(projectId)
       } catch (e) {
         if (e instanceof CanvasappError && e.code === 'not-found') return { projectId: null, listHasKeys: false, candidates: [], skipped: [] }
         throw e
       }
-      remember(projectId, jobs)
       const found = classifySiteJobs(jobs, { ...input, projectId, ledger, now: now() })
       if (found.candidates.length) {
         // the saved canvas (what the site ran the job from, unless edited since): hints only — unreadable is fine

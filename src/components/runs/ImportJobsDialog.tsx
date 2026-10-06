@@ -25,10 +25,11 @@ import {
   importLead,
   importTitle,
   importWords,
+  jobNameTitle,
   LOADING_TEXT,
   loginButtonText,
   noBridgeText,
-  REIMPORT_TITLE,
+  reimportTitle,
   skipLines,
 } from './importJobsModel'
 import './runs.css'
@@ -201,12 +202,12 @@ export function ImportJobsBody({ simulated, phase, scenes, picked, busy, onToggl
                 <span className="rq-imp-settings">{candidateSettingsText(c)}</span>
                 <span className="rq-imp-meta faint">{candidateTimeText(c)}</span>
                 {c.jobName && (
-                  <span className="rq-imp-name faint" title={`job_name: ${c.jobName}`}>
+                  <span className="rq-imp-name faint" title={jobNameTitle(c.jobName)}>
                     {c.jobName}
                   </span>
                 )}
                 {c.reimport && (
-                  <span className="rq-imp-again" title={REIMPORT_TITLE}>
+                  <span className="rq-imp-again" title={reimportTitle(words)}>
                     đã nhập trước
                   </span>
                 )}

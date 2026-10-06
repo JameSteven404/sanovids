@@ -412,7 +412,10 @@ describe('canvasapp adapter', () => {
     const { provider, server, clock } = setup()
     const a = await provider.submit(req())
     const b = await provider.submit(req({ key: 'take_2', takeId: 'take_2', sceneId: 'scene_b' }))
-    const listCount = () => server.calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/video-jobs?')).length
+    // each submit read the list once, right before its POST
+    const submitted = 2
+    const listCount = () => server.calls.filter((c) => c.method === 'GET' && c.path.startsWith('/api/video-jobs?')).length - submitted
+    expect(listCount()).toBe(0)
 
     server.state.jobs[0].status = 'processing'
     server.state.jobs[0].progress = 30
@@ -523,7 +526,7 @@ describe('canvasapp adapter', () => {
     await provider.submit(req({ images: [{ n: 1, assetId: 'a', imageId: 'img_a' }], prompt: '@image_1' })) // scene A: up1
     expect(savedEntries(storage)).toEqual(['scene_a'])
     server.state.jobs[0].status = 'completed' // A's job has ended: its node may leave the canvas
-    clock.t += 1_000
+    clock.t += MIN_POLL_MS // (a job list read less than that ago is used as it is)
     // later canvasapp refuses up1 (e.g. expired): every canvas still holding scene A's node is refused
     server.state.extra = (r) => (isPut(r) && uploadsIn(r).includes('up1') ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
     const b = await provider.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [{ n: 1, assetId: 'b', imageId: 'img_b' }], prompt: '@image_1' }))
@@ -545,7 +548,7 @@ describe('canvasapp adapter', () => {
     await provider.submit(one('scene_a', 'take_a')) // job1: still running (queued)
     await provider.submit(one('scene_b', 'take_b')) // job2: ends below
     server.state.jobs[1].status = 'completed'
-    clock.t += 1_000
+    clock.t += MIN_POLL_MS // (a job list read less than that ago is used as it is)
     // canvasapp refuses the first canvas (with every scene): once more without the ended scene B — A stays
     let refusals = 1
     server.state.extra = (r) => (isPut(r) && refusals-- > 0 ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
@@ -1277,9 +1280,15 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
   })
 
   it('a take in doubt sent again next to another one: the list read before its POST fails → not sent again, still “maybe billed”', async () => {
-    const { provider, server, storage, down, A, B } = await twoInDoubt()
+    const { provider, server, storage, clock, down, A, B } = await twoInDoubt()
     const before = sentRecords(storage).take_b
     down.reads = [true, false] // B's lookup answers (A's job is not B's), the read before its POST fails
+    // (saving the canvas takes a while: the lookup's read is too old to stand for the read before the POST)
+    const flaky = server.state.extra!
+    server.state.extra = (r) => {
+      if (isPut(r)) clock.t += MIN_POLL_MS
+      return flaky(r)
+    }
     const message = (await provider.submit(B).catch((e: Error) => e.message)) as string
     expect(message).toMatch(/^Không đọc được danh sách job .* Lần này chưa gửi lại yêu cầu tạo video \(lần gửi trước vẫn chưa rõ/)
     expect(jobPosts(server)).toHaveLength(2)
@@ -1331,6 +1340,68 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     expect(await Promise.all([again.recover!(B), again.recover!(A)])).toEqual([null, null])
     expect(jobPosts(server)).toHaveLength(0)
     expect(server.state.jobs).toHaveLength(1)
+  })
+
+  /**
+   * electron/main.cjs in front of the fake: GET /api/video-jobs answered from a cache for 15 s (stamped when the answer
+   * arrives), dropped at every POST /api/video-jobs (CANVASAPP_JOBS_MIN_MS, canvasappJobListCache).
+   */
+  function mainListCache(server: ReturnType<typeof fakeServer>, clock: { t: number }) {
+    const cache = new Map<string, { at: number; res: TransportResponse }>()
+    const inner = server.transport.request
+    server.transport.request = async (r) => {
+      const list = r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+      const post = r.method === 'POST' && r.path === '/api/video-jobs'
+      const hit = list ? cache.get(r.path) : undefined
+      if (hit && clock.t - hit.at < MIN_POLL_MS) return hit.res
+      if (post) cache.clear()
+      try {
+        const res = await inner(r)
+        if (list && res.status === 200) cache.set(r.path, { at: clock.t, res })
+        return res
+      } finally {
+        if (post) cache.clear()
+      }
+    }
+  }
+
+  it('a job-list answer main may have cached (15 s) never counts as fresher than it is: a later take never settles on an earlier take’s job', async () => {
+    const { provider, server, clock, waiting, wake, wakeTwice } = restarted()
+    mainListCache(server, clock)
+    const T0 = clock.t
+    const down = flakyList(server)
+    // canvasapp lists take A's job only 20 s after its POST (inside the 30 s the lookups bet on)
+    const flaky = server.state.extra!
+    server.state.extra = (r) =>
+      flaky(r) ??
+      (r.method === 'GET' && r.path.startsWith('/api/video-jobs?') && clock.t < T0 + 20_000
+        ? json(server.state.jobs.filter((j) => j.body.prompt !== 'take A').map(({ body: _b, ...j }) => j))
+        : undefined)
+    const A = req({ key: 'take_a', takeId: 'take_a', prompt: 'take A' })
+    const B = req({ key: 'take_b', takeId: 'take_b', prompt: 'take B' })
+    // A: canvasapp makes its job, the answer is lost and the list cannot be read → "không rõ"
+    server.state.loseAnswers = 1
+    down.list = true
+    const a = provider.submit(A)
+    await wakeTwice()
+    await expect(a).rejects.toMatchObject({ uncertain: true })
+    down.list = false
+    // 16 s after A's POST: a read (A looked up again) — A's job not listed yet; main caches that answer
+    clock.t = T0 + 16_000
+    expect(await provider.recover!(A)).toBeNull()
+    // B, same scene, 30.5 s after A's POST: the read before its POST is that cached answer; B's POST never arrives
+    clock.t = T0 + 30_500
+    server.state.unreachablePosts = 1
+    const b = provider.submit(B)
+    await waiting()
+    wake()
+    // A's job (listed now) could still be A's: B never takes it — "không rõ", not A's video
+    await expect(b).rejects.toMatchObject({ uncertain: true })
+    // ...and A is never posted again (its job might be "B's"): both in doubt, nothing paid twice
+    clock.t += 60_000
+    await expect(provider.submit(A)).rejects.toMatchObject({ uncertain: true })
+    expect(jobPosts(server)).toHaveLength(2) // A's, B's (never arrived)
+    expect(server.state.jobs.map((j) => j.body.prompt)).toEqual(['take A'])
   })
 
   it('the job list cannot be read when room is needed: every remembered entry counts as running — nothing taken off, nothing sent', async () => {
@@ -1504,9 +1575,12 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
     const scan = await p.scanSiteJobs(input())
     const [c] = scan.candidates
     expect(c.jobId).toBe('site1')
-    // logout + login meanwhile: SanoVids no longer knows which jobs were listed before take_b's POST — which loses its
-    // answer, so its "sent" record may own the site job (made within the time window, not known to be older)
+    // logout + login meanwhile (what was read is forgotten), and the job list cannot be read right before take_b's POST
+    // (sent all the same: no other take in doubt there): SanoVids does not know which jobs were on the node before it —
+    // its answer is lost, so its "sent" record may own the site job (made within the time window, not known to be older)
     p.reset()
+    let listDown = true
+    server.state.extra = (r) => (listDown && r.method === 'GET' && r.path.startsWith('/api/video-jobs?') ? ((listDown = false), json({ detail: 'x' }, 503)) : undefined)
     server.state.loseAnswers = 1
     const b = p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
     await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
@@ -1540,7 +1614,7 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
     expect(jobPosts(server)).toHaveLength(1)
   })
 
-  describe('the lost-answer lookup with an imported job on the node (server without dedupe, list without keys)', () => {
+  describe('the lost-answer lookup with a site job on the node, imported or not (server without dedupe, list without keys)', () => {
     function world() {
       const server = fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] })
       const storage = memoryStorage()
@@ -1656,6 +1730,63 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
       expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
       expect(jobPosts(w.server)).toHaveLength(0)
+    })
+
+    /**
+     * The user made a job on scene_a's node on canvasapp's page and did not import it; SanoVids' last read of the job
+     * list is an hour older than that job, or there is none (the first POST since the app started).
+     */
+    const siteJobUnread = async (w: ReturnType<typeof world>, lastRead: boolean) => {
+      if (lastRead) await w.p.poll(['proj1:job_x'])
+      w.clock.t += 30 * 60_000
+      const site = siteJob(w.server, { status: 'completed', progress: 100, download_available: true })
+      w.clock.t += 60 * 60_000
+      if (!lastRead) w.restart()
+      return site
+    }
+    const runsOf = [
+      ['the last read is older than the site job', true],
+      ['the first POST since the app started', false],
+    ] as const
+
+    it.each(runsOf)('(f) a site job not imported, the POST never reached canvasapp: the take never settles on it — sent again, its own job (%s)', async (_, lastRead) => {
+      const w = world()
+      const site = await siteJobUnread(w, lastRead)
+      w.server.state.unreachablePosts = 1
+      const b = w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+      await w.wakeTwice()
+      expect(await b).toEqual({ remoteId: 'proj1:job2' })
+      expect(jobPosts(w.server)).toHaveLength(2) // the first never arrived
+      // the site job is still the user's to import
+      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
+    })
+
+    it.each(runsOf)('(g) a site job not imported, the POST reached canvasapp but its answer was lost: it finds its own job, never “không rõ” for good (%s)', async (_, lastRead) => {
+      const w = world()
+      const site = await siteJobUnread(w, lastRead)
+      w.server.state.loseAnswers = 1
+      const b = w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+      await vi.waitFor(() => expect(w.server.state.jobs).toHaveLength(2))
+      await w.wakeTwice().catch(() => undefined)
+      expect(await b).toEqual({ remoteId: 'proj1:job2' })
+      expect(jobPosts(w.server)).toHaveLength(1)
+      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
+    })
+
+    it('(h) a site job made long after a POST that never arrived, not imported: "Chạy lại" never takes it — posted once, its own job', async () => {
+      const w = world()
+      const t0 = w.clock.t
+      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
+      w.restart()
+      // a day later — past what that POST may own (inPostWindow) — the user runs the node on canvasapp's page
+      w.clock.t = t0 + 24 * 3600_000
+      const site = siteJob(w.server)
+      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
+      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
+      expect(jobPosts(w.server)).toHaveLength(1)
+      // the lookup and the import agree: still importable, never both a POST's and a new take's
+      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
     })
   })
 })

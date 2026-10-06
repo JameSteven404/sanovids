@@ -16,8 +16,9 @@
 //                                        server change; startDevSnapshotTicker() also refreshes it every second while
 //                                        jobs run (progress moves with the clock). Select fields of `snapshot`.
 //   startDevSnapshotTicker(): () => void ref-counted; call from an effect of the dev panel, returns stop.
-//   resetDevServer(): Promise<void>      wipe the simulated account (keeps the settings). Prefer providers/index
-//                                        resetDevMode(), which also clears SanoVids' own dev-mode caches.
+//   resetDevServer(): Promise<void>      wipe the simulated account (keeps the settings); the bridge's downloads are
+//                                        stopped first (DevBridge.reset). Prefer providers/index resetDevMode(), which
+//                                        also clears SanoVids' own dev-mode caches.
 //   useDevLog / clearDevLog              request log (log.ts).   useDevPrompts / answerDevLogin / answerDevCheckout
 //                                        the login + SePay sheets (prompts.ts).
 //   devWording / withDevWording          development-mode words for the real gateway's messages (wording.ts).
@@ -48,7 +49,7 @@ import {
 export * from './server'
 export * from './log'
 export * from './prompts'
-export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridgeOptions } from './bridge'
+export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridge, type DevBridgeOptions } from './bridge'
 export * from './downloads'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
@@ -175,6 +176,8 @@ export function devBridge(): CanvasappBridge {
 
 export async function resetDevServer(): Promise<void> {
   closeDevPrompts()
+  // like main's logout: the downloads stop first (a take never completes with the wiped account's video)
+  bridge.reset()
   await devServer().reset({ keepConfig: true })
 }
 

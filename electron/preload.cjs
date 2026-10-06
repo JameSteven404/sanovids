@@ -40,7 +40,10 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     login: () => ipcRenderer.invoke('canvasapp:login'),
     /** Clears the canvasapp session (cookies, storage, cache) of the gateway partition. */
     logout: () => ipcRenderer.invoke('canvasapp:logout'),
-    /** { method, path, json?, form?, binary? } → { ok: true, status, contentType, json?, text?, bytes? } | { ok: false, code, message } */
+    /**
+     * { method, path, json?, form? } → { ok: true, status, contentType, json?, text? } | { ok: false, code, message }
+     * — never the video stream (main refuses it here: downloadOpen / downloadRead / downloadClose).
+     */
     request: (req) => ipcRenderer.invoke('canvasapp:request', req),
     /**
      * Finished videos, pulled in pieces (main reads the HTTP body; nothing big crosses in one message).

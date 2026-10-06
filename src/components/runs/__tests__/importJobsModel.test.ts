@@ -17,8 +17,10 @@ import {
   importTitle,
   importToastText,
   importWords,
+  jobNameTitle,
   loginButtonText,
   noBridgeText,
+  reimportTitle,
   skipLines,
 } from '../importJobsModel'
 
@@ -57,6 +59,10 @@ describe('importJobsModel: words', () => {
     expect(footNote(real)).toContain('“Chạy lại” một take đã nhập tạo take MỚI và trừ credit như bình thường')
     expect(loginButtonText(real)).toBe('Đăng nhập canvasapp')
     expect(loginButtonText(dev)).toBe('Đăng nhập')
+    expect(reimportTitle(real)).toMatch(/Nhập lại không trừ credit\.$/)
+    expect(reimportTitle(dev)).toMatch(/Nhập lại không trừ credit dev\.$/)
+    // never an API key name in the UI
+    expect(jobNameTitle('Video 9')).toBe('Tên job: Video 9')
   })
 
   it('a row: status, what the list says, when', () => {

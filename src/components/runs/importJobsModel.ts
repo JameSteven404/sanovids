@@ -34,8 +34,11 @@ export const emptyText = (w: ImportWords) =>
 /** The button that answers a 401: log in, then scan again. */
 export const loginButtonText = (w: ImportWords) => (w.simulated ? 'Đăng nhập' : 'Đăng nhập canvasapp')
 
-export const REIMPORT_TITLE =
-  'Job này đã được nhập vào một take trước đây (take đã xoá, hoặc ở dự án khác có cùng cảnh). Nhập lại không trừ credit.'
+export const reimportTitle = (w: ImportWords) =>
+  `Job này đã được nhập vào một take trước đây (take đã xoá, hoặc ở dự án khác có cùng cảnh). Nhập lại không trừ ${w.credit}.`
+
+/** Tooltip of a job's name in the list. */
+export const jobNameTitle = (name: string) => `Tên job: ${name}`
 
 export const footNote = (w: ImportWords) =>
   `Không trừ ${w.credit}: video đã được trả khi tạo trên ${w.site}. Video đang tạo được theo dõi và tự tải về khi xong (bật “Tự tải video” thì mỗi video cũng được lưu về máy). Take nhập không chiếm chỗ trong hàng đợi gửi. “Chạy lại” một take đã nhập tạo take MỚI và trừ ${w.credit} như bình thường.`

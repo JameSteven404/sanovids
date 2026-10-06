@@ -210,7 +210,7 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     expect(t).toMatchObject({ provider: 'dev', charged: false, status: 'queued', cost: S1_COST })
     await run(300)
     const calls = useDevLog.getState().entries.filter((e) => !['me', 'auth-state'].includes(String(e.endpoint)))
-    expect(calls.map((e) => e.endpoint).slice(0, 9)).toEqual([
+    expect(calls.map((e) => e.endpoint).slice(0, 10)).toEqual([
       'video-profiles',
       'projects-list',
       'project-create',
@@ -219,6 +219,7 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
       'upload',
       'upload',
       'canvas-put',
+      'jobs-list', // read right before the POST: every job already on the node is in its `before`
       'job-create',
     ])
     expect(calls.every((e) => e.status !== null && e.status < 300)).toBe(true)
@@ -242,8 +243,12 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     expect(renders).toHaveLength(1)
     expect(renders[0].input.images.map((i) => i.label)).toEqual(['@image_1', '@image_2', '@image_3'])
     expect(renders[0].contents).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2'])
-    // polled gently: never closer than the dev floor (3 s)
-    const at = logOf('jobs-list').filter((e) => e.fault === null).map((e) => e.at)
+    // polled gently: never closer than the dev floor (3 s) — after the read right before the POST
+    const [posted] = logOf('job-create')
+    const at = logOf('jobs-list')
+      .filter((e) => e.fault === null && e.at > posted.at)
+      .map((e) => e.at)
+    expect(logOf('jobs-list').filter((e) => e.at <= posted.at)).toHaveLength(1)
     expect(at.length).toBeGreaterThan(1)
     for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(DEV_POLL_MS)
     expect(server.balance()).toBe(1000 - S1_COST)
@@ -436,6 +441,20 @@ describe('dev mode e2e: the finished video comes in pieces through the simulated
     expect(take(t.id).error).not.toContain('canvasapp.io.vn')
     await run(10 * 60_000)
     expect(streamLog().filter((e) => e.status !== null)).toHaveLength(1) // never tried again
+  })
+
+  it('“Xoá dữ liệu máy chủ giả lập” while a video downloads: the download stops — never completed with the wiped account’s video', async () => {
+    server.login()
+    videoSize = 300 * 1024
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'stream-slow')!.rule)
+    const [t] = enqueue('s1')
+    await run(10_200)
+    expect(take(t.id).status).toBe('processing')
+    expect(useTakeTransfers.getState().byTake[t.id]).toBeDefined()
+    await resetDevMode()
+    await run(5 * 60_000)
+    expect(take(t.id).status).not.toBe('completed')
+    expect(take(t.id).videoId ?? null).toBeNull()
   })
 
   it('cancelling a take while its video downloads stops the download (cancelled, not failed); the slot is free for the next', async () => {
@@ -896,6 +915,28 @@ describe('dev mode e2e: "Nhập job" — a job made "on the site" (Bảng phát 
     expect(server.balance()).toBe(1000 - S1_COST - cost720)
     expect(server.snapshot().jobs.map((j) => j.origin)).toEqual(['site', 'app'])
     expect(logOf('job-create')).toEqual([])
+  })
+
+  it('a site job not imported yet on the node of a take whose answer is lost: the take finds its own job, the site job stays importable', async () => {
+    server.login()
+    server.setConfig({ dedupe: false }) // the job list carries no client_request_id (exposeKey off): only node + timing tell
+    const [t1] = enqueue('s1')
+    await run(20_000)
+    expect(take(t1.id).status).toBe('completed')
+    // the user presses "Tạo video" on S01's node "on the site" and does not import it
+    const made = server.createSiteJob({ nodeId: sceneNodeId('p', 's1') })
+    expect(made).toMatchObject({ ok: true })
+    await run(DEV_LIST_CACHE_MS + 500)
+    // back in SanoVids: S01 runs again and the answer of its POST is lost
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
+    const [t2] = enqueue('s1')
+    await run(60_000)
+    const jobs = [...server.snapshot().jobs].reverse() // oldest first
+    expect(jobs.map((j) => j.origin)).toEqual(['app', 'site', 'app'])
+    expect(take(t2.id).remoteId).toBe(`${jobs[2].project_id}:${jobs[2].job_id}`) // never the site job
+    expect(logOf('job-create')).toHaveLength(2)
+    const scan = await scanForImport()
+    expect(scan.scan.candidates.map((c) => c.jobId)).toEqual([jobs[1].job_id])
   })
 
   it('errors reach the dialog in development-mode words (never canvasapp.io.vn): session ended, network down', async () => {

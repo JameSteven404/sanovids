@@ -25,6 +25,7 @@ import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
+import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -230,7 +231,7 @@ function QueuePanel() {
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={() => openImportJobs()}
-          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ credit`}
+          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
         >
           <CloudDownload size={13} />
           <span className="rq-btn-label">Nhập job</span>
@@ -406,7 +407,11 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => cancelTake(take.id)}
-            title={downloading ? `Huỷ ${code} · T${take.number} — video đã tạo xong (đã trừ credit), SanoVids hỏi trước khi bỏ` : `Huỷ ${code} · T${take.number}`}
+            title={
+              downloading
+                ? `Huỷ ${code} · T${take.number} — video đã tạo xong (đã trừ ${providerOf(take) === 'dev' ? 'credit dev' : 'credit'}), SanoVids hỏi trước khi bỏ`
+                : `Huỷ ${code} · T${take.number}`
+            }
           >
             <CircleStop size={13} />
             <span className="rq-act-label">Huỷ</span>

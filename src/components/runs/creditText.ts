@@ -165,7 +165,9 @@ export function cancelQuestion(f: CancelFacts): string | null {
 
 /** The toast once "Huỷ" went through. */
 export function cancelToastText(f: CancelFacts): { text: string; warning: boolean } {
-  const site = PROVIDER_LABEL[f.provider]
+  // development mode: "canvasapp giả lập" / "credit dev" (never the mode's own label)
+  const site = f.provider === 'dev' ? GATEWAY_WORDS.dev.siteName : PROVIDER_LABEL[f.provider]
+  const credit = f.provider === 'dev' ? GATEWAY_WORDS.dev.credit : 'credit'
   if (f.demoPaid) return { text: `Đã huỷ ${f.label} · hoàn ${formatCredits(f.cost, 'demo')}.`, warning: false }
   if (f.videoReady && f.status === 'processing' && f.provider !== 'mock') {
     return {
@@ -179,6 +181,6 @@ export function cancelToastText(f: CancelFacts): { text: string; warning: boolea
   if (f.sentAway && f.imported) return { text: `Đã ngừng theo dõi ${f.label} trong SanoVids — job tạo trên ${site} vẫn chạy ở đó.`, warning: true }
   if (f.sentAway) return { text: `Đã huỷ ${f.label} trong SanoVids — job đã gửi sang ${site} vẫn chạy ở đó.`, warning: true }
   // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
-  if (f.status === 'processing') return { text: `Đã huỷ ${f.label} lúc đang gửi sang ${site} — nếu job đã được nhận thì có thể đã trừ credit.`, warning: true }
+  if (f.status === 'processing') return { text: `Đã huỷ ${f.label} lúc đang gửi sang ${site} — nếu job đã được nhận thì có thể đã trừ ${credit}.`, warning: true }
   return { text: `Đã huỷ ${f.label}.`, warning: false }
 }

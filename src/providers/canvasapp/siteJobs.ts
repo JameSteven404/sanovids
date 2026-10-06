@@ -14,6 +14,7 @@
 // ---- API ----
 //   classifySiteJobs(jobs, ctx)        → { listHasKeys, candidates, skipped } (candidates sorted by scene, then time)
 //   sentMayOwn(job, key, rec, …)       could an unanswered POST of take `key` (ledger.sent) have made this job?
+//   inPostWindow(t, at)                the creation-time window of that rule (shared with the adapter's lookup)
 //   hintsFor(nodeId, canvas, entries, imageOfUpload)   the node's settings as the bridge canvas / SanoVids' entry hold them
 //   canvasHintFor / entryHint / hintMatches            the parts of hintsFor + the match rule
 //   reconstructSiteJob(candidate, prompt, assetOf)     → SiteTakeDraft (settings + what is unknown / inferred)
@@ -32,6 +33,12 @@ export const CREATED_SKEW_MS = 14 * 3600_000
 export const MAX_IMPORT_BATCH = 20
 /** How long after its POST a job may still appear (the reservation of an unanswered POST, past the skew). */
 export const POST_WINDOW_MS = 10 * 60_000
+/**
+ * Could a job created at `t` (created_at, ms) be the job of a POST sent at `at` (local time)? Created within the skew
+ * before it, or within the skew + POST_WINDOW_MS after it. The ONE window of the lost-answer lookup (adapter findJob),
+ * its rival test and the import's reservation (sentMayOwn): a job is either a POST's to find or importable, never both.
+ */
+export const inPostWindow = (t: number, at: number): boolean => t >= at - CREATED_SKEW_MS && t <= at + CREATED_SKEW_MS + POST_WINDOW_MS
 /** A finished job canvasapp does not let download (download_available false) this long: not offered any more. */
 export const NO_DOWNLOAD_AFTER_MS = 60 * 60_000
 /** canvasapp's own prompt limit (20.000): a longer /prompt answer is not trusted (unknown). */
@@ -191,15 +198,15 @@ const jobIdsOf = (records: Readonly<Record<string, { remoteId: string }>>): Set<
 /**
  * Could the unanswered POST of take `key` (ledger.sent record `rec`) have made `job`? With client_request_id in the
  * list: exactly when it carries that take's key. Without: a job on the node the POST named, not listed before it,
- * created within the skew of it (± CREATED_SKEW_MS, + POST_WINDOW_MS after) — an unknown creation time: it could.
+ * created within the window of it (inPostWindow) — an unknown creation time: it could.
  * Broader than the lookup itself (adapter findJob) on purpose inside the window: a job it could own is never imported.
- * The lookup has no window end, so it skips every imported job instead: a job claimed here is never that POST's.
+ * The lookup uses the same window and also skips every imported job: a job claimed here is never that POST's.
  */
 export function sentMayOwn(job: CanvasJob, key: string, rec: SentLike, projectId: string, listHasKeys: boolean): boolean {
   if (listHasKeys) return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key
   if (rec.projectId !== projectId || job.canvas_node_id !== rec.nodeId || rec.before?.includes(job.job_id)) return false
   const t = createdTime(job.created_at)
-  return !Number.isFinite(t) || (t >= rec.at - CREATED_SKEW_MS && t <= rec.at + CREATED_SKEW_MS + POST_WINDOW_MS)
+  return !Number.isFinite(t) || inPostWindow(t, rec.at)
 }
 
 /** The first unanswered POST that may own `job` (its take id), or null. */

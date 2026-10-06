@@ -714,8 +714,8 @@ describe('gateway e2e: happy path + character sync', () => {
 
     await run(300)
     // order of the submit: video profiles (like canvasapp's page at boot) → bridge project → uploads (sequential) →
-    // canvas → job
-    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 10)).toEqual([
+    // canvas → job list (what is on the node before the POST) → job
+    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 11)).toEqual([
       'GET /api/video-profiles',
       'GET /api/projects',
       'POST /api/projects',
@@ -725,6 +725,7 @@ describe('gateway e2e: happy path + character sync', () => {
       'POST /api/uploads/images',
       'POST /api/uploads/images',
       'PUT /api/projects/proj1/canvas',
+      'GET /api/video-jobs',
       'POST /api/video-jobs',
     ])
     expect([...fake.state.uploads.values()].map((u) => u.content)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
@@ -1333,13 +1334,8 @@ describe('gateway e2e: gentleness and engine ownership', () => {
   it('at most 10 jobs in flight; one job-list read per poll for all of them, never closer than 15 s', async () => {
     expect(MAX_CONCURRENCY).toBe(10)
     expect(MAX_REMOTE_CONCURRENCY).toBe(10)
-    fake.state.script = [
-      { status: 'queued' },
-      { status: 'processing', progress: 20 },
-      { status: 'processing', progress: 50 },
-      { status: 'processing', progress: 80 },
-      { status: 'completed', progress: 100, download_available: true },
-    ]
+    // still running whatever the number of reads (this fake moves a job one step per job-list read)
+    fake.state.script = [{ status: 'queued' }, ...Array.from({ length: 40 }, () => ({ status: 'processing', progress: 20 }))]
     // 12 scenes (more than the cap): Seedance 2.5 · 5 s · 480p each
     const ids = Array.from({ length: 12 }, (_, i) => `m${i + 1}`)
     useProject.getState().loadProject({ ...project(), scenes: ids.map((id, i) => scene(id, i + 1)) })
@@ -1349,17 +1345,25 @@ describe('gateway e2e: gentleness and engine ownership', () => {
     expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all.slice(0, 10)))
     expect(takes().filter((x) => x.status === 'processing')).toHaveLength(10)
     expect(all.slice(10).map((t) => take(t.id).status)).toEqual(['queued', 'queued'])
-    // ten running jobs, still one read of the job list per poll cycle (not one per job)
-    const reads = fake.listReads().length
+    // ten running jobs, still one read of the job list per poll cycle (not one per job) — plus the one right before
+    // each POST (what is on the node before it)
+    const reads = fake.listReads().length - fake.count('POST', '/api/video-jobs')
     expect(reads).toBeGreaterThan(0)
     expect(reads).toBeLessThanOrEqual(4)
-    await run(60_000) // the first ten complete → the last two go
+    // the first ten complete → the last two go
+    for (const j of fake.state.jobs) j.script = [{ status: 'completed', progress: 100, download_available: true }]
+    fake.state.script = DEFAULT_SCRIPT
+    await run(60_000)
     expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all))
     await run(120_000)
     expect(takes().every((x) => x.status === 'completed')).toBe(true)
     expect(fake.count('POST', '/api/video-jobs')).toBe(12)
-    const at = fake.listReads().map((x) => x.at)
-    for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(15_000)
+    // two reads of the job list without a job POST between them are ≥ 15 s apart (after a POST, the list is read again
+    // at once: electron/main.cjs drops its 15 s cache there too)
+    const order = fake.log.filter((c) => c.path.split('?')[0] === '/api/video-jobs' && (c.method === 'GET' || c.method === 'POST'))
+    for (let i = 1; i < order.length; i++) {
+      if (order[i].method === 'GET' && order[i - 1].method === 'GET') expect(order[i].at - order[i - 1].at).toBeGreaterThanOrEqual(15_000)
+    }
   })
 
   it('only the tab holding the engine lock talks to canvasapp', async () => {
@@ -1396,7 +1400,8 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
   }
 
   it('10 scenes × 4 different characters: a running job never loses its node; the 8th waits in the queue for room', async () => {
-    fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 30 }, { status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    // still running whatever the number of reads (this fake moves a job one step per job-list read)
+    fake.state.script = [{ status: 'queued' }, ...Array.from({ length: 40 }, () => ({ status: 'processing', progress: 30 }))]
     const watch = watchRunningNodes()
     const all = enqueue(...crowd(10, 4))
     await run(5_000)
@@ -1405,7 +1410,10 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     expect(all.slice(0, 7).every((t) => take(t.id).status === 'processing' && !!take(t.id).remoteId)).toBe(true)
     expect(all.slice(7).map((t) => take(t.id).status)).toEqual(['queued', 'queued', 'queued']) // honestly waiting
     expect(fake.count('POST', '/api/uploads/images')).toBe(28) // the waiting scenes uploaded nothing yet
-    await run(300_000) // running jobs end → room → the others go, three more PUTs
+    // running jobs end → room → the others go, three more PUTs
+    for (const j of fake.state.jobs) j.script = [{ status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 30 }, { status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    await run(300_000)
     expect(takes().every((t) => t.status === 'completed')).toBe(true)
     expect(new Set(fake.jobPosts().map((b) => b.client_request_id)).size).toBe(10)
     expect(fake.jobPosts()).toHaveLength(10)

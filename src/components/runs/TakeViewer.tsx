@@ -50,7 +50,7 @@ import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { takeCostLine } from './creditText'
-import { fieldState, importedFieldsNote, importedSourceText, INFERRED_FIELD_TITLE, restoreBlock, takeModeText, takeSettingsText, UNKNOWN_FIELD_TITLE } from './importedTake'
+import { fieldState, importedFieldsNote, importedSourceText, importSite, INFERRED_FIELD_TITLE, restoreBlock, takeModeText, takeSettingsText, unknownFieldTitle } from './importedTake'
 import { exactImageKeys, snapshotImageNumbers } from './restore'
 import { TakeStrip } from './TakeStrip'
 import {
@@ -458,6 +458,9 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const demoPaid = chargedDemo(take)
   // Where to check an uncertain charge: the real site, or the dev panel for the simulation.
   const checkWhere = provider === 'dev' ? 'kiểm tra trong Bảng phát triển' : 'kiểm tra trên canvasapp.io.vn'
+  // The site and its credits by name (development mode: "canvasapp giả lập", "credit dev").
+  const siteName = provider === 'dev' ? 'canvasapp giả lập' : PROVIDER_LABEL[provider]
+  const creditWord = provider === 'dev' ? 'credit dev' : 'credit'
   const refundNote = demoPaid ? (
     <div className="rq-stage-faint">Đã hoàn {formatCredits(take.cost, 'demo')} (giả lập).</div>
   ) : provider === 'canvasapp' && take.remoteId ? (
@@ -513,12 +516,14 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
             demoPaid
               ? undefined
               : downloading
-                ? `Video đã tạo xong trên ${PROVIDER_LABEL[provider]} và đã trừ credit — huỷ sẽ bỏ video này trong SanoVids (hỏi trước)`
+                ? `Video đã tạo xong trên ${siteName} và đã trừ ${creditWord} — huỷ sẽ bỏ video này trong SanoVids (hỏi trước)`
                 : take.status === 'queued' && !take.remoteId && !take.submitUnknown
-                  ? `Huỷ trước khi gửi sang ${PROVIDER_LABEL[provider]} — không bị trừ credit`
+                  ? `Huỷ trước khi gửi sang ${siteName} — không bị trừ ${creditWord}`
                   : take.submitUnknown && !take.remoteId
-                    ? `Huỷ trong SanoVids — lần gửi trước sang ${PROVIDER_LABEL[provider]} không rõ đã bị trừ credit chưa, ${checkWhere}`
-                    : `Huỷ trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[provider]} vẫn chạy ở đó`
+                    ? `Huỷ trong SanoVids — lần gửi trước sang ${siteName} không rõ đã bị trừ ${creditWord} chưa, ${checkWhere}`
+                    : take.imported
+                      ? `Ngừng theo dõi trong SanoVids — job tạo trên ${siteName} vẫn chạy ở đó`
+                      : `Huỷ trong SanoVids — job đã gửi sang ${siteName} vẫn chạy ở đó`
           }
         >
           <CircleStop size={13} />
@@ -724,8 +729,8 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           <span className="faint">{take.refsSnapshot.length}</span>
         </div>
         {fieldState(take, 'refs') === 'unknown' ? (
-          <div className="faint rq-small" title={UNKNOWN_FIELD_TITLE}>
-            Không rõ (job tạo trên {take.provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} — SanoVids không biết ảnh tham chiếu của nó).
+          <div className="faint rq-small" title={unknownFieldTitle(take)}>
+            Không rõ (job tạo trên {importSite(take)} — SanoVids không biết ảnh tham chiếu của nó).
           </div>
         ) : refAssets.found.length ? (
           <div className="rq-chips">
@@ -979,5 +984,5 @@ const VideoRefChip = memo(function VideoRefChip({ takeId, n }: { takeId: string;
 /** Tooltip of a value an imported take does not know for sure (undefined = known). */
 function fieldTitle(take: Take, f: ImportedField): string | undefined {
   const st = fieldState(take, f)
-  return st === 'unknown' ? UNKNOWN_FIELD_TITLE : st === 'inferred' ? INFERRED_FIELD_TITLE : undefined
+  return st === 'unknown' ? unknownFieldTitle(take) : st === 'inferred' ? INFERRED_FIELD_TITLE : undefined
 }

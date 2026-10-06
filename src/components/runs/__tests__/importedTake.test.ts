@@ -27,6 +27,7 @@ import {
   takeDurationText,
   takeModeText,
   takeSettingsText,
+  unknownFieldTitle,
 } from '../importedTake'
 
 const SETTINGS: VideoSettings = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' }
@@ -84,6 +85,10 @@ describe('what an imported take shows', () => {
     const facts = { label: 'S01·T2', provider: 'canvasapp' as const, status: 'processing' as const, cost: 20, demoPaid: false, sentAway: true, videoReady: false }
     expect(cancelToastText({ ...facts, imported: true }).text).toBe('Đã ngừng theo dõi S01·T2 trong SanoVids — job tạo trên canvasapp.io.vn vẫn chạy ở đó.')
     expect(cancelToastText(facts).text).toBe('Đã huỷ S01·T2 trong SanoVids — job đã gửi sang canvasapp.io.vn vẫn chạy ở đó.')
+    // development mode: "canvasapp giả lập" / "credit dev", never the mode's label
+    const dev = { ...facts, provider: 'dev' as const }
+    expect(cancelToastText({ ...dev, imported: true }).text).toBe('Đã ngừng theo dõi S01·T2 trong SanoVids — job tạo trên canvasapp giả lập vẫn chạy ở đó.')
+    expect(cancelToastText({ ...dev, sentAway: false }).text).toBe('Đã huỷ S01·T2 lúc đang gửi sang canvasapp giả lập — nếu job đã được nhận thì có thể đã trừ credit dev.')
   })
 
   it('source line, chip and the note of what is not sure', () => {
@@ -91,6 +96,8 @@ describe('what an imported take shows', () => {
     expect(importedSourceText(take([], [], { provider: 'dev' }))).toMatch(/^Tạo trên canvasapp giả lập /)
     expect(importedSourceText(plain())).toBeNull()
     expect(importedChipTitle(take())).toMatch(/“Chạy lại” tạo take mới/)
+    expect(unknownFieldTitle(take())).toBe('canvasapp.io.vn không cho biết — không rõ')
+    expect(unknownFieldTitle(take([], [], { provider: 'dev' }))).toBe('canvasapp giả lập không cho biết — không rõ')
     expect(importedFieldsNote(take(['resolution', 'refs'], ['mode']))).toBe('không rõ: độ phân giải, ảnh tham chiếu · đoán theo node: chế độ')
     expect(importedFieldsNote(take())).toBeNull()
   })
@@ -102,8 +109,10 @@ describe('"Khôi phục prompt này" of an imported take', () => {
   it('refused when the prompt or the references are unknown (it would write "" / drop the scene’s references)', () => {
     expect(restoreBlock(plain())).toBeNull()
     expect(restoreBlock(take([], ['refs']))).toBeNull()
-    expect(restoreBlock(take(['refs']))).toBe('Take nhập từ canvasapp: không rõ ảnh tham chiếu lúc tạo — không khôi phục được.')
-    expect(restoreBlock(take(['prompt', 'refs']))).toBe('Take nhập từ canvasapp: không rõ prompt / ảnh tham chiếu lúc tạo — không khôi phục được.')
+    expect(restoreBlock(take(['refs']))).toBe('Take nhập từ canvasapp.io.vn: không rõ ảnh tham chiếu lúc tạo — không khôi phục được.')
+    expect(restoreBlock(take(['prompt', 'refs']))).toBe('Take nhập từ canvasapp.io.vn: không rõ prompt / ảnh tham chiếu lúc tạo — không khôi phục được.')
+    // development mode: the simulation, never the real site
+    expect(restoreBlock(take(['refs'], [], { provider: 'dev' }))).toBe('Take nhập từ canvasapp giả lập: không rõ ảnh tham chiếu lúc tạo — không khôi phục được.')
   })
 
   /** The take's snapshot fields as importTakes writes them (no @video references: canvasapp sends none). */
