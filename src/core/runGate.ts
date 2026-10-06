@@ -1,6 +1,8 @@
 // Why a scene cannot run yet — ONE rule list, in one order, for every place that decides it: the queue
-// (store/runs check(), used by enqueue and the run dialog), the scene card on the canvas (Run button) and the
-// inspector's Run button. Pure (no stores): callers pass the gateway's cap and how to read a take's status.
+// (store/runs check(), used by enqueue and the run dialog) and every one-scene Run button (scene card on the canvas,
+// inspector head + Take section, Storyboard card, Bảng cảnh row: components/runs/shared useSceneRunBlock or
+// sceneRunBlock). Buttons that run a selection only open the run dialog, which lists the refused scenes with these
+// texts. Pure (no stores): callers pass the gateway's cap and how to read a take's status.
 //
 // Reference videos (@video_N): only the videos the request would really send count (`compiled.videos`: none when
 // the model/mode takes no video, at most the model's cap). The gateway's own cap comes from ONE place,
@@ -8,7 +10,8 @@
 // CANVASAPP_MAX_REF_VIDEOS, docs/canvasapp-api-notes.md "Reference videos"). Over the cap the scene is refused, never
 // sent with fewer videos.
 
-import type { Asset, CompiledPrompt, Scene } from './types'
+import { compileScene } from './compile'
+import type { Asset, CompiledPrompt, Project, Scene } from './types'
 
 /** Why a scene that sends reference videos cannot run on the canvasapp gateway (and development mode, its simulation). */
 export const NO_VIDEO_REFS_REASON = 'Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy'
@@ -68,4 +71,14 @@ export function refStatusLookup(videoRefs: readonly string[], joined: string): (
     const i = videoRefs.indexOf(takeId)
     return i < 0 ? undefined : statuses[i] || undefined
   }
+}
+
+/**
+ * runBlockReason from what a one-scene Run button holds: the project's assets, the statuses of `scene.videoRefs`
+ * joined by ',' ('' = no such take, see refStatusLookup) and the gateway's cap for the scene's model. Compiles the
+ * scene itself (compileScene reads nothing but `assets` from the project).
+ */
+export function sceneRunBlock(scene: Scene, assets: readonly Asset[], videoStatus: string, maxRefVideos: number): string | null {
+  const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], settings: { autoRenumber: true }, assets: [...assets], scenes: [scene] }
+  return runBlockReason(scene, compileScene(project, scene), assets, { maxRefVideos, takeStatus: refStatusLookup(scene.videoRefs, videoStatus) })
 }

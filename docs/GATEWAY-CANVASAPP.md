@@ -335,7 +335,9 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
     qua video thì vẫn bị trừ credit cho một video sai. Cần: các hàm trong danh sách đó + xác nhận của bên vận hành.
   - Đã làm (0.6.0): một nguồn duy nhất cho cổng `@video` — `capabilities().maxRefVideos` (canvasapp và chế độ Phát
     triển: `CANVASAPP_MAX_REF_VIDEOS = 0`, `providers/capabilities.ts`); quy tắc chặn chạy dùng chung
-    `core/runGate.ts` `runBlockReason` cho `useRuns.check()`, thẻ cảnh trên canvas và nút Chạy trong inspector (trước
+    `core/runGate.ts` `runBlockReason` cho `useRuns.check()` và mọi nút Chạy một cảnh — thẻ cảnh trên canvas, hai nút
+    Chạy trong inspector (trên đầu + mục Take), thẻ Storyboard, hàng Bảng cảnh (`runs/shared.useSceneRunBlock`); nút
+    chạy cả vùng chọn chỉ mở hộp xác nhận, hộp này bỏ qua cảnh bị chặn kèm đúng lý do đó (trước
     đây thẻ / inspector chặn mọi cảnh có `videoRefs`, kể cả H3 t2v / transform không gửi video mà hộp xác nhận vẫn
     chạy; lý do trong chế độ Phát triển ghi "Cổng canvasapp chưa…"). Chỉ tính video thật sự gửi (`compiled.videos`);
     vượt mức của cổng → từ chối, không bao giờ cắt bớt. `validateRequest` vẫn từ chối mọi `req.videos` (không theo
@@ -375,7 +377,7 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 6. **Ảnh tham chiếu** — cảnh có 2 nhân vật (`@image_1`, `@image_2`). Chạy → trên canvasapp, job có 2 ảnh đúng thứ tự. Chạy lại lần 2 → ảnh **không** bị tải lên lại (xem phiên bridge chỉ có 2 upload).
 7. **Nhiều job cùng lúc** — chạy 3 cảnh: cả 3 take cùng "đang tạo" (tối đa 10 job cùng lúc; từ job thứ 11 trở đi thì chờ trong hàng đợi). Tiến độ vẫn cập nhật khoảng 20 s/lần.
 8. **Tắt app khi đang tạo** — trong lúc job chạy, đóng SanoVids, mở lại → take vẫn "đang tạo" và hoàn thành; trên canvasapp **không** có job trùng.
-9. **Video tham chiếu** — cảnh Seedance có video tham chiếu (`@video_1`): nút Chạy trên thẻ cảnh / inspector tắt, hộp xác nhận bỏ qua cảnh với lý do "Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy", không tốn credit. Bỏ video tham chiếu (nút × trong inspector hoặc cắt dây) thì chạy được; chỉ xoá chữ `@video_1` thì chưa. Cảnh MiniMax-H3 t2v còn sót video tham chiếu (không có `@video`) vẫn chạy, không gửi video.
+9. **Video tham chiếu** — cảnh Seedance có video tham chiếu (`@video_1`): mọi nút Chạy của cảnh đó tắt (thẻ cảnh, cả hai nút trong inspector, thẻ Storyboard, hàng Bảng cảnh; di chuột lên nút để xem lý do), hộp xác nhận bỏ qua cảnh với lý do "Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy", không tốn credit. Bỏ video tham chiếu (nút × trong inspector hoặc cắt dây) thì chạy được; chỉ xoá chữ `@video_1` thì chưa. Cảnh MiniMax-H3 t2v còn sót video tham chiếu (không có `@video`) vẫn chạy, không gửi video.
 10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành.
 11. **Huỷ** — huỷ take đang chạy: SanoVids ghi "Đã huỷ"; ghi nhận job trên canvasapp vẫn chạy (đúng như cảnh báo).
 12. **Quay lại chế độ Phát triển** — chọn Phát triển (giả lập) → take mới chạy trên canvasapp giả lập, không gọi mạng.

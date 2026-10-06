@@ -160,8 +160,8 @@ The client code these notes come from has **no video input anywhere**. These not
 The server refuses unknown keys, so guessing is not an option: a wrong key is a 422 (no charge), but a key the server
 accepts and ignores would bill a video made without its reference. SanoVids therefore sends no video and refuses a
 scene that would send one **before uploading or billing anything**, at three layers: `capabilities().maxRefVideos`
-= `CANVASAPP_MAX_REF_VIDEOS` = 0 (`providers/capabilities.ts`, read by store/runs `check()`, the scene card and the
-inspector through `core/runGate.ts`), `validateRequest` in `mapping.ts` (refuses any `req.videos`, whatever the cap),
+= `CANVASAPP_MAX_REF_VIDEOS` = 0 (`providers/capabilities.ts`, read by store/runs `check()` and every one-scene
+Run button through `core/runGate.ts`), `validateRequest` in `mapping.ts` (refuses any `req.videos`, whatever the cap),
 and the strict dev / e2e validators (`providers/dev/validate.ts`: node types, handles and job keys). Development mode
 refuses it the same way (same adapter); it simulates no video endpoint, so no test passes against an invented shape.
 

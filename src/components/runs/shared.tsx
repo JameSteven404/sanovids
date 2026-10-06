@@ -1,9 +1,11 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
 import { Ban, Bug, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import type { JobStatus, ModelId, Take, VideoSettings } from '../../core/types'
+import { sceneRunBlock } from '../../core/runGate'
+import type { JobStatus, ModelId, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
 import { activeProviderId, getProvider, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
+import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
 // ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
@@ -16,12 +18,34 @@ export function useActiveProvider(): ProviderId {
 
 /**
  * Reference videos (@video_N) the gateway of new takes takes for `model`: its capabilities().maxRefVideos — the one
- * source store/runs check() reads too (0 for canvasapp and development mode). Feeds core/runGate on the scene card and
- * in the inspector. A number; read once per provider × model (not from /api/video-profiles, so nothing to re-read).
+ * source store/runs check() reads too (0 for canvasapp and development mode). Feeds core/runGate on every one-scene
+ * Run button. A number; read once per provider × model (not from /api/video-profiles, so nothing to re-read).
  */
 export function useGatewayRefVideoCap(model: ModelId): number {
   const provider = useActiveProvider()
   return useMemo(() => getProvider(provider).capabilities(model).maxRefVideos, [provider, model])
+}
+
+const NO_IDS: readonly string[] = []
+
+/**
+ * Status of each of `videoRefs` joined by ',' ('' = no such take): the stable string core/runGate refStatusLookup /
+ * sceneRunBlock read. It only changes when a reference video changes status (not on progress ticks).
+ */
+export function useRefVideoStatus(videoRefs: readonly string[]): string {
+  return useRuns((s) => (videoRefs.length ? videoRefs.map((id) => s.takes.find((t) => t.id === id)?.status ?? '').join(',') : ''))
+}
+
+/**
+ * Why `scene`'s Run button is off — the queue's own rules (core/runGate sceneRunBlock = store/runs check()); null =
+ * it can run (or no scene). Recompiles only when the scene, the assets, a reference video's status or the gateway
+ * change, so a card per scene stays cheap with 100+ scenes.
+ */
+export function useSceneRunBlock(scene: Scene | undefined): string | null {
+  const assets = useProject((s) => s.project.assets)
+  const videoStatus = useRefVideoStatus(scene?.videoRefs ?? NO_IDS)
+  const videoCap = useGatewayRefVideoCap(scene?.settings.model ?? 'seedance_2_5')
+  return useMemo(() => (scene ? sceneRunBlock(scene, assets, videoStatus, videoCap) : null), [scene, assets, videoStatus, videoCap])
 }
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).

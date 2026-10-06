@@ -10,6 +10,7 @@ import { useDownloadPrefs } from '../../lib/downloads'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { useSceneRunBlock } from '../runs/shared'
 import { formatRuntime, isEditingTarget, isSelectAllKey, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
 import { edgeAnnouncement, gridStep, insertBar, moveAnnouncement, reorderToast, sceneOrderAt } from './storyboardOrder'
@@ -383,6 +384,8 @@ const StoryCard = memo(function StoryCard({
   onPlay: (index: number) => void
 }) {
   const code = sceneCode(scene.order)
+  // Why Run is off: the queue's own rules (core/runGate = store/runs check()), like the canvas card and the inspector.
+  const runBlock = useSceneRunBlock(scene)
   const running = latest && (latest.status === 'processing' || latest.status === 'queued') ? latest : undefined
   const failed = latest?.status === 'failed' ? latest : undefined
   const accent = scene.color ?? 'var(--accent)'
@@ -480,8 +483,8 @@ const StoryCard = memo(function StoryCard({
             )}
             <button
               className="btn btn-sm"
-              disabled={!scene.prompt.trim()}
-              title={scene.prompt.trim() ? 'Chạy cảnh này' : 'Prompt trống'}
+              disabled={!!runBlock}
+              title={runBlock ? `Chưa chạy được: ${runBlock}` : 'Chạy cảnh này'}
               onClick={(e) => {
                 e.stopPropagation()
                 requestRun([scene.id])

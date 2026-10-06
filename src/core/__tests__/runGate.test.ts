@@ -1,8 +1,10 @@
-// The run rules every place shares (core/runGate): store/runs check(), the scene card, the inspector's Run button.
+// The run rules every place shares (core/runGate): store/runs check() and every one-scene Run button (scene card,
+// inspector head + Take section, Storyboard card, Bảng cảnh row).
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { compileScene } from '../compile'
 import { MODELS } from '../models'
-import { NO_VIDEO_REFS_REASON, refStatusLookup, refVideosProblem, runBlockReason, type RunGate } from '../runGate'
+import { NO_VIDEO_REFS_REASON, refStatusLookup, refVideosProblem, runBlockReason, sceneRunBlock, type RunGate } from '../runGate'
 import type { Project, Scene, VideoSettings } from '../types'
 
 const SEEDANCE: VideoSettings = { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' }
@@ -139,5 +141,42 @@ describe('refStatusLookup: statuses joined in videoRefs order', () => {
     const look = refStatusLookup(['t1', 'gone', 'run1'], 'completed,,processing')
     expect(['t1', 'gone', 'run1', 'other'].map(look)).toEqual(['completed', undefined, 'processing', undefined])
     expect(refStatusLookup([], '')('t1')).toBeUndefined()
+  })
+})
+
+describe('sceneRunBlock: what a one-scene Run button holds (assets + joined statuses + cap)', () => {
+  const statusOf = (s: Scene) => s.videoRefs.map((id) => STATUS[id] ?? '').join(',')
+  it.each([
+    ['blank prompt', scene({ prompt: ' ' }), 0],
+    ['Seedance sends a video, gateway takes none', scene({ videoRefs: ['t1'], prompt: '@video_1' }), 0],
+    ['video still running', scene({ videoRefs: ['t1', 'run1'], prompt: '@video_1 @video_2' }), 10],
+    ['video deleted', scene({ videoRefs: ['t1', 'gone'], prompt: '@video_1 @video_2' }), 10],
+    ['H3 t2v leftover reference', scene({ settings: H3('t2v'), videoRefs: ['run1'] }), 0],
+    ['H3 t2v leftover token', scene({ settings: H3('t2v'), videoRefs: ['t1'], prompt: '@video_1 chạy' }), 0],
+    ['i2v without a picture', scene({ settings: H3('i2v'), refs: ['empty'] }), 0],
+    ['runnable', scene({ refs: ['a', 'b'], prompt: '@image_1 trong @image_2' }), 0],
+  ])('%s: same answer as runBlockReason (= store/runs check())', (_name, s, cap) => {
+    expect(sceneRunBlock(s, project(s).assets, statusOf(s), cap)).toBe(reasonOf(s, cap))
+  })
+})
+
+describe('every one-scene Run button is gated by core/runGate (no drift to a prompt-only check)', () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const FILES = ['../../components/canvas/SceneNode.tsx', '../../components/inspector/SceneInspector.tsx', '../../components/views/Storyboard.tsx', '../../components/views/SceneTable.tsx']
+  /** The <button>…</button> around each `requestRun([…])` (a one-scene run; a selection opens the dialog). */
+  const runButtons = (src: string) =>
+    [...src.matchAll(/requestRun\(\[/g)].map((m) => src.slice(src.lastIndexOf('<button', m.index), src.indexOf('</button>', m.index)))
+  it.each(FILES)('%s', (file) => {
+    const src = read(file)
+    expect(src).toMatch(/useSceneRunBlock\(|runBlockReason\(/)
+    const buttons = runButtons(src)
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const b of buttons) {
+      expect(b).toMatch(/disabled=\{!!\w+\}/)
+      expect(b).not.toMatch(/prompt\.trim\(\)/)
+    }
+  })
+  it('the inspector gates both of its Run buttons (head + Take section)', () => {
+    expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(2)
   })
 })

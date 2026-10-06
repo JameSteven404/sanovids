@@ -4,8 +4,8 @@ import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Downl
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
-import { refStatusLookup, refVideosProblem, runBlockReason } from '../../core/runGate'
+import { sceneCode } from '../../core/compile'
+import { refVideosProblem } from '../../core/runGate'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
@@ -13,11 +13,11 @@ import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
-import { useRuns, useSceneTakes } from '../../store/runs'
+import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
-import { useGatewayRefVideoCap } from '../runs/shared'
+import { useGatewayRefVideoCap, useSceneRunBlock } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -113,6 +113,8 @@ function goTo(id: string) {
 const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) {
   const order = useSceneField(sceneId, (s) => s.order) ?? 0
   const title = useSceneField(sceneId, (s) => s.title) ?? ''
+  // Same gate as the Run button of the Take section below (core/runGate = store/runs check()).
+  const reason = useSceneRunBlock(useSceneField(sceneId, (s) => s))
   const options = useSceneOptions()
   const idx = options.findIndex((o) => o.id === sceneId)
   const prev = idx > 0 ? options[idx - 1] : undefined
@@ -164,7 +166,13 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
           <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title="Xoá cảnh (Delete)">
             <Trash size={14} />
           </button>
-          <button type="button" className="btn btn-primary btn-sm in-head-run" onClick={() => requestRun([sceneId])} title="Chạy cảnh này (Ctrl+Enter)">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm in-head-run"
+            onClick={() => requestRun([sceneId])}
+            disabled={!!reason}
+            title={reason ? `Chưa chạy được: ${reason}` : 'Chạy cảnh này (Ctrl+Enter)'}
+          >
             <Play size={12} fill="currentColor" /> Chạy
           </button>
         </div>
@@ -633,17 +641,10 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
 const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }) {
   const takes = useSceneTakes(sceneId)
   const settings = useSceneField(sceneId, (s) => s.settings)
-  const videoRefs = useSceneField(sceneId, (s) => s.videoRefs) ?? EMPTY_IDS
-  // Status of each reference video as one string: stable while takes only make progress.
-  const videoStatus = useRuns((s) => (videoRefs.length ? videoRefs.map((id) => s.takes.find((t) => t.id === id)?.status ?? '').join(',') : ''))
   // Hooks stay above the early return below (a deleted scene renders nothing).
   const videoCap = useGatewayRefVideoCap(settings?.model ?? 'seedance_2_5')
-  // Why Run is off: the queue's own rules (core/runGate, = store/runs check()). A string: a stable selector result.
-  const reason = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    if (!sc) return null
-    return runBlockReason(sc, compileScene(s.project, sc), s.project.assets, { maxRefVideos: videoCap, takeStatus: refStatusLookup(sc.videoRefs, videoStatus) })
-  })
+  // Why Run is off: the queue's own rules (core/runGate, = store/runs check()), same as the head's Run button.
+  const reason = useSceneRunBlock(useSceneField(sceneId, (s) => s))
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
   const creditKind = useCreditKind()
   if (!settings) return null
@@ -717,7 +718,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
         <Play size={14} fill="currentColor" />
         Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
       </button>
-      {reason && <div className="in-run-reason">{reason} — chưa thể chạy.</div>}
+      {reason && <div className="in-run-reason">Chưa chạy được: {reason}</div>}
     </Section>
   )
 })
