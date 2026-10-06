@@ -2,7 +2,8 @@
 // the scene card's ▶, the inspector's "Chạy", the scene table and the storyboard. Pure (no store, no provider).
 //
 // Order = the engine's; the first reason wins:
-//   1. model of a newer SanoVids build (scene.foreignModel, kept by migrate)
+//   1. model of a newer SanoVids build (scene.foreignModel, kept by migrate), or values of a newer build for a model
+//      this build knows (a config marker: scene.foreignSettings without foreignModel)
 //   2. empty prompt                      3. prompt over the model's limit
 //   4. i2v without any image             5. transform without both frames     6. a frame without an image
 //   7. tokens with no media in the request (compiled.unsentTokens: 3 shown + "…")
@@ -11,6 +12,7 @@
 // Rules 8–9 look at every @video of the scene (as the engine always did); rule 10 only at the videos really sent
 // (compiled.videos: none in a mode that sends no video).
 import { compileScene } from './compile'
+import { lostConfigValues, type ConfigKey } from './foreignMark'
 import { MODELS, type ModelSpec } from './models'
 import type { Asset, CompiledPrompt, Project, Scene } from './types'
 
@@ -47,6 +49,22 @@ export function foreignModelReason(model: string): string {
   return `Cảnh dùng model của bản SanoVids mới hơn (${model}) — cập nhật SanoVids để chạy (hoặc chọn lại model để chạy bằng model này).`
 }
 
+const CONFIG_LABEL: Record<ConfigKey, (v: string | number) => string> = {
+  mode: (v) => `chế độ ${v}`,
+  duration: (v) => `thời lượng ${v}s`,
+  resolution: (v) => `độ phân giải ${v}`,
+  ratio: (v) => `tỉ lệ ${v}`,
+}
+
+/**
+ * The scene keeps values of a newer SanoVids build for a model this build knows (scene.foreignSettings without
+ * foreignModel): `settings` only hold stand-in values for them.
+ */
+export function foreignConfigReason(foreignSettings: Record<string, unknown>): string {
+  const values = lostConfigValues(foreignSettings, true).map((x) => CONFIG_LABEL[x.key](x.value))
+  return `Cảnh dùng cấu hình của bản SanoVids mới hơn${values.length ? ` (${values.join(', ')})` : ''} — cập nhật SanoVids để chạy (hoặc chọn lại cấu hình để chạy bằng cấu hình này).`
+}
+
 /** Tokens with no picture / video behind them in the request: the first 3, then "…". */
 export function unsentTokensReason(tokens: readonly string[]): string {
   return `Prompt nhắc ${tokens.slice(0, 3).join(', ')}${tokens.length > 3 ? '…' : ''} nhưng không có ảnh/video đó trong lần gửi — sửa số hoặc nối thêm`
@@ -55,6 +73,7 @@ export function unsentTokensReason(tokens: readonly string[]): string {
 /** Why the scene cannot run (the first rule that fails), or null when it can. */
 export function runBlockReason({ scene, assets, compiled, takeStatus, providerVideoCap }: RunRuleInput): string | null {
   if (typeof scene.foreignModel === 'string' && scene.foreignModel) return foreignModelReason(scene.foreignModel)
+  if (scene.foreignSettings && typeof scene.foreignSettings === 'object') return foreignConfigReason(scene.foreignSettings)
   if (!scene.prompt.trim()) return EMPTY_PROMPT_REASON
   if (compiled.charCount > compiled.limit) return LONG_PROMPT_REASON
   const mode = scene.settings.mode

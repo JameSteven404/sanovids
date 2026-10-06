@@ -679,6 +679,10 @@
 .rq-group-head.failed {
   color: var(--danger-text);
 }
+/* takes of a newer SanoVids build still running there (parked here): a warning, not an error */
+.rq-group-head.newer {
+  color: var(--warn);
+}
 .rq-group-head.completed {
   color: var(--ok);
 }

@@ -18,7 +18,7 @@ import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
 import type { JobRequest, RemoteStatus, RunTake, VideoProvider } from '../types'
 import { useProject } from '../../store/project'
-import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 
@@ -440,5 +440,70 @@ describe('takes of a newer SanoVids build (foreignProvider)', () => {
     expect(take('y')).toMatchObject({ status: 'failed', foreignStatus: 'queued' })
     expect(f.submitted).toEqual([]) // the mock provider never saw them
     expect(dev.submitted.map((r) => r.sceneCode)).toEqual(['S01']) // this build's own take ran as usual
+  })
+})
+
+describe('takes of a newer build’s model on a provider this build knows (foreignModel)', () => {
+  const kling = { model: 'kling_3', mode: 't2v', duration: 10, resolution: '1080p', ratio: '16:9' }
+  const newerModelTake = (id: string, status: Take['status'], over: Record<string, unknown> = {}) =>
+    ({ ...legacyTake(id, 's2'), status, provider: 'canvasapp', remoteId: null, charged: true, settings: kling, ...over }) as unknown as Take
+
+  it('loaded queued / running (no remote id yet): parked, never submitted, looked up or failed over it', async () => {
+    const canvas = fakeProvider('canvasapp')
+    const recovered: JobRequest[] = []
+    canvas.p.recover = async (req) => (recovered.push(req), null)
+    registerProvider(canvas.p)
+    useRuns.getState().loadRuns({ takes: [newerModelTake('q', 'queued'), newerModelTake('p', 'processing', { startedAt: 5 })], credits: 100, spent: 0 })
+    for (const id of ['q', 'p']) {
+      expect(take(id)).toMatchObject({ status: 'failed', foreignStatus: id === 'q' ? 'queued' : 'processing', foreignModel: 'kling_3', provider: 'canvasapp' })
+    }
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(canvas.submitted).toEqual([])
+    expect(recovered).toEqual([])
+    expect(canvas.polls()).toBe(0)
+    expect(useRuns.getState()).toMatchObject({ credits: 100, spent: 0 })
+  })
+
+  it('backstop: a take with an unknown model that reaches the engine is never sent (failed before the provider sees it)', async () => {
+    const dev = fakeProvider('dev')
+    registerProvider(dev.p)
+    // no marker (as if it never went through migrate): the engine itself refuses it
+    useRuns.setState({ takes: [{ ...newerModelTake('z', 'queued'), provider: 'dev' } as Take] })
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take('z')).toMatchObject({ status: 'failed' })
+    expect(take('z').error).toContain('Model của video này không có trong bản SanoVids này')
+    expect(dev.submitted.map((r) => r.model)).toEqual(['seedance_2_5']) // only this build's own take
+  })
+
+  it('"Dọn job lỗi/đã huỷ" never deletes a parked take of a newer build (it may still be running — and paid — there)', () => {
+    useRuns.getState().loadRuns({
+      takes: [
+        newerModelTake('parked', 'processing', { remoteId: 'prj:job' }),
+        { ...legacyTake('f', 's2'), status: 'failed', error: 'boom' },
+        { ...legacyTake('c', 's2'), status: 'cancelled' },
+        { ...legacyTake('done', 's2'), status: 'completed' },
+        { ...legacyTake('newerDone', 's2'), status: 'failed', provider: 'seedvis' } as unknown as Take, // failed there: an ordinary failed take
+      ],
+      credits: 100,
+      spent: 0,
+    })
+    expect(take('parked')).toMatchObject({ status: 'failed', foreignStatus: 'processing' })
+    expect(isParkedTake(take('parked'))).toBe(true)
+    expect(clearableTakes(useRuns.getState().takes).map((t) => t.id)).toEqual(['f', 'c', 'newerDone'])
+  })
+
+  it('backstop: a running one without a remote id is parked, never looked up', async () => {
+    const canvas = fakeProvider('canvasapp')
+    const recovered: JobRequest[] = []
+    canvas.p.recover = async (req) => (recovered.push(req), null)
+    registerProvider(canvas.p)
+    const dev = fakeProvider('dev')
+    registerProvider(dev.p)
+    useRuns.setState({ takes: [newerModelTake('r', 'processing', { startedAt: 5 })] })
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(recovered).toEqual([])
+    expect(take('r')).toMatchObject({ status: 'failed', foreignStatus: 'processing', foreignModel: 'kling_3' })
   })
 })

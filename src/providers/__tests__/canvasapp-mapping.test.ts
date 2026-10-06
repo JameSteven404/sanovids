@@ -313,6 +313,19 @@ describe('canvasapp mapping: validation', () => {
   })
 })
 
+describe('canvasapp mapping: a model this build does not know is never sent', () => {
+  // canvasapp would get no model_profile (JSON.stringify drops undefined), pick a default model and still bill the job
+  const unknown = req({ model: 'kling_3' as never })
+  it('validateRequest refuses it outright (before any profile fallback)', () => {
+    expect(validateRequest(unknown, null)).toEqual(['Model “kling_3” không có trong bản SanoVids này — cập nhật SanoVids để chạy.'])
+    expect(validateRequest(unknown, [])).toHaveLength(1)
+    expect(validateRequest(req({ model: 'constructor' as never }), [])).toHaveLength(1) // an inherited name is no model either
+  })
+  it('toVideoJobBody throws instead of building a body without model_profile', () => {
+    expect(() => toVideoJobBody(unknown, { projectId: 'proj1', uploadIdFor: (id) => 'up_' + id })).toThrow(/kling_3/)
+  })
+})
+
 describe('canvasapp mapping: transform frame ratio (ratioFromDimensions / transformInputState)', () => {
   it('nearest supported ratio within 2 %, else null', () => {
     expect(ratioFromDimensions(1920, 1080)).toBe('16:9')

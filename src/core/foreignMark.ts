@@ -1,8 +1,8 @@
 // Data of a newer SanoVids build kept as a marker (Scene.foreignModel / foreignSettings, Preset, Take.foreignProvider):
 // the pure cleaning of ids and settings objects. Used by core/migrate (loading a project / file) and store/project
 // (restoring a take's settings onto a scene). No store import (store/project imports this module).
-import { isModelId } from './models'
-import type { ForeignSettings } from './types'
+import { isModelId, MODELS, normalizeSettings } from './models'
+import type { ForeignSettings, VideoSettings } from './types'
 
 /** Longest model / provider id kept from a newer build (real ids are short; a longer one is cut and still blocks). */
 export const FOREIGN_ID_MAX = 64
@@ -43,15 +43,53 @@ export function cleanForeignSettings(raw: unknown, omit: readonly string[] = [])
   return n ? out : null
 }
 
+/** Settings a newer build may give values this build does not offer for a model it knows. */
+export const CONFIG_KEYS = ['mode', 'duration', 'resolution', 'ratio'] as const
+export type ConfigKey = (typeof CONFIG_KEYS)[number]
+
+/** Every value some model of this build offers, per key (none of these lists ever shrank). */
+const OFFERED: Record<ConfigKey, ReadonlySet<string | number>> = {
+  mode: new Set(Object.values(MODELS).flatMap((m) => m.modes)),
+  duration: new Set(Object.values(MODELS).flatMap((m) => m.durations)),
+  resolution: new Set(Object.values(MODELS).flatMap((m) => m.resolutions)),
+  ratio: new Set(Object.values(MODELS).flatMap((m) => m.ratios)),
+}
+
 /**
- * The marker a settings object of a newer build's model gives (a take's `settings` keep the id as it was saved): its
- * model id (cut to FOREIGN_ID_MAX) + the settings (cleanForeignSettings), or null for a model this build knows (or
- * none). Used when such settings are copied onto a scene (restore from a take): the scene stays blocked instead of
- * becoming a runnable Seedance 2.5 scene.
+ * The saved values (non-empty string mode / resolution / ratio, finite number duration) of a KNOWN model's settings that
+ * normalizeSettings replaces — the ones a newer build must have written: every one when `strict` (a file of a newer
+ * schema, a take), else only values no model of this build has ever offered (an older build's own mix, e.g. a Seedance
+ * scene left on an H3-only mode, is still quietly fixed as before). [] = nothing lost (or not a known model).
  */
-export function foreignMarkOf(settings: unknown): { foreignModel: string; foreignSettings?: ForeignSettings } | null {
+export function lostConfigValues(raw: unknown, strict: boolean): { key: ConfigKey; value: string | number }[] {
+  if (!raw || typeof raw !== 'object') return []
+  const r = raw as Record<string, unknown>
+  if (!isModelId(r.model)) return []
+  const normalized = normalizeSettings(r as Partial<VideoSettings>)
+  const out: { key: ConfigKey; value: string | number }[] = []
+  for (const key of CONFIG_KEYS) {
+    const v = r[key]
+    const typed = key === 'duration' ? typeof v === 'number' && Number.isFinite(v) : typeof v === 'string' && v.trim() !== ''
+    if (!typed || v === normalized[key]) continue
+    if (strict || !OFFERED[key].has(v as string | number)) out.push({ key, value: v as string | number })
+  }
+  return out
+}
+
+/**
+ * The marker a settings object of a newer build gives (a take's `settings` keep what was saved): for a model this build
+ * does not know, its id (cut to FOREIGN_ID_MAX) + the settings (cleanForeignSettings); for a known model with values
+ * this build does not offer for it (lostConfigValues, strict), a config marker (foreignSettings alone); else null.
+ * Used when such settings are copied onto a scene (restore from a take): the scene stays blocked instead of becoming a
+ * runnable stand-in scene.
+ */
+export function foreignMarkOf(settings: unknown): { foreignModel?: string; foreignSettings?: ForeignSettings } | null {
   const model: unknown = settings && typeof settings === 'object' ? (settings as { model?: unknown }).model : undefined
-  if (typeof model !== 'string' || !model.trim() || isModelId(model)) return null
+  if (isModelId(model)) {
+    const config = lostConfigValues(settings, true).length ? cleanForeignSettings(settings) : null
+    return config ? { foreignSettings: config } : null
+  }
+  if (typeof model !== 'string' || !model.trim()) return null
   const foreign = cleanForeignSettings(settings)
   return { foreignModel: model.slice(0, FOREIGN_ID_MAX), ...(foreign ? { foreignSettings: foreign } : {}) }
 }

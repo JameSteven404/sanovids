@@ -134,7 +134,11 @@ export interface SaveFolder {
 export interface Project {
   id: string
   name: string
-  schemaVersion: 2
+  /**
+   * 2 for every project this build makes. A newer build's number (3…) is kept as it was saved (migrateProject reads such
+   * a file as v2): written back as 2, a build that relies on the number would migrate its v3 data a second time.
+   */
+  schemaVersion: number
   createdAt: number
   updatedAt: number
   assets: Asset[]
@@ -209,11 +213,24 @@ export interface Take {
    */
   foreignProvider?: string
   /**
-   * Status such a take had in the newer build while it was still running ('queued' / 'processing'): migrate parks it
-   * as 'failed' here (the engine, the queue counters and "Cập nhật khi xong" skip it) and keeps its remoteId; a build
-   * that knows the provider gives the status back.
+   * Model id (settings.model, kept as it was saved) of a newer SanoVids build that this build does not know, on a take
+   * of any provider — e.g. a later canvasapp model: such a take is never sent, polled or looked up here (it may be
+   * running, and paid, in that build); a queued / running one is parked like a foreignProvider take. A build that
+   * knows the model gives the status back (migrateTake). Missing = a known model.
+   */
+  foreignModel?: string
+  /**
+   * Status such a take (foreignProvider / foreignModel) had in the newer build while it was still running
+   * ('queued' / 'processing'): migrate parks it as 'failed' here (the engine, the queue counters, "Dọn job lỗi" and
+   * "Cập nhật khi xong" skip it) and keeps its remoteId; a build that knows the provider / model gives the status back.
    */
   foreignStatus?: JobStatus
+  /** The take's settings as the newer build saved them (foreignProvider / foreignModel takes; flat, primitives only). */
+  foreignSettings?: ForeignSettings
+  /** `charged` as the newer build saved it (a foreignProvider take gets charged false here). Missing = it had none. */
+  foreignCharged?: boolean
+  /** `error` as the newer build saved it, when parking replaced it with the "bản mới hơn" text. */
+  foreignError?: string
 }
 
 /**

@@ -10,7 +10,8 @@ import {
   migrateTake,
   parkForeignTake,
 } from '../migrate'
-import { costOf, isModelId, normalizeSettings } from '../models'
+import { costOf, isModelId, normalizeSettings, settingsLabel } from '../models'
+import { foreignConfigReason } from '../runRules'
 
 const v1 = {
   id: 'p',
@@ -244,9 +245,13 @@ describe('projects of a newer build', () => {
     ...over,
   })
 
-  it('schemaVersion 3 is not read as v1 (prompts are not rewritten); the result is v2', () => {
+  it('schemaVersion 3 is not read as v1 (prompts are not rewritten); its number is kept (never relabelled 2)', () => {
     const p = migrateProject(newer())
-    expect(p.schemaVersion).toBe(2)
+    expect(p.schemaVersion).toBe(3)
+    // saved and loaded again: still 3 (a build that relies on the number never migrates its v3 data twice)
+    expect(migrateProject(JSON.parse(JSON.stringify(p))).schemaVersion).toBe(3)
+    // only a sane integer above 2 is kept; anything else comes out as 2
+    for (const schemaVersion of [2, 2.5, 1e9, -3, '3', NaN, undefined]) expect(migrateProject({ ...newer(), schemaVersion }).schemaVersion, String(schemaVersion)).toBe(2)
     expect(p.scenes[0].prompt).toBe('@image_1 nhìn @Elara')
     // v1 is only what came before 2 (or carries no number)
     for (const schemaVersion of [1, 0, undefined, '2', NaN]) {
@@ -393,5 +398,155 @@ describe('migrateProject presets', () => {
     expect(p.presets[1].id).toBeTruthy()
     expect(p.presets[1].name).toBe('B')
     expect(p.scenes.map((s) => s.presetId)).toEqual(['k', null])
+  })
+})
+
+describe('takes of a newer build’s model on a provider this build knows (foreignModel)', () => {
+  const take = (over: Record<string, unknown> = {}) => ({
+    id: 't',
+    sceneId: 's',
+    number: 1,
+    status: 'queued',
+    provider: 'canvasapp',
+    remoteId: null,
+    charged: true,
+    error: null,
+    settings: { model: 'kling_3', mode: 't2v', duration: 10, resolution: '1080p', ratio: '16:9', audio: true },
+    ...over,
+  })
+
+  it('a queued / running canvasapp take on an unknown model is parked: never sent, polled or looked up here', () => {
+    for (const status of ['queued', 'processing'] as const) {
+      const t = migrateTake(take({ status, remoteId: status === 'processing' ? 'prj:job-9' : null }))
+      expect(t).toMatchObject({
+        provider: 'canvasapp',
+        foreignModel: 'kling_3',
+        status: 'failed',
+        foreignStatus: status,
+        error: FOREIGN_RUNNING_ERROR,
+        charged: true, // a known provider keeps its own billing state
+        remoteId: status === 'processing' ? 'prj:job-9' : null,
+      })
+      expect('foreignProvider' in t).toBe(false)
+      // the model id stays as saved (badges show it; the engine refuses it)
+      expect(t.settings.model).toBe('kling_3')
+    }
+    // a finished one keeps its status (only the marker)
+    expect(migrateTake(take({ status: 'completed' }))).toMatchObject({ status: 'completed', foreignModel: 'kling_3' })
+    expect(parkForeignTake(migrateTake(take({ status: 'completed' })))).toMatchObject({ status: 'completed' })
+  })
+
+  it('known models, and blank / missing ones, are no marker (a missing model is never "a newer build")', () => {
+    for (const model of ['seedance_2_5', 'minimax_h3', '', '  ', undefined, 7, 'constructor']) {
+      const t = migrateTake(take({ settings: { model, mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' } }))
+      if (model === 'constructor') expect(t.foreignModel).toBe('constructor')
+      else expect('foreignModel' in t, String(model)).toBe(false)
+    }
+  })
+
+  it('is idempotent; a later build that knows the model gets the status and error back', () => {
+    const once = migrateTake(take({ status: 'processing', remoteId: 'prj:job-9', error: 'old error' }))
+    expect(once.foreignError).toBe('old error')
+    expect(migrateTake(JSON.parse(JSON.stringify(once)))).toEqual(once)
+    // what a build that knows the model does with the parked take (simulated: the saved model id is one it knows)
+    const known = { ...JSON.parse(JSON.stringify(once)), settings: { ...once.settings, model: 'minimax_h3' }, foreignModel: 'minimax_h3' }
+    const back = migrateTake(known)
+    expect(back).toMatchObject({ status: 'processing', error: 'old error', remoteId: 'prj:job-9', provider: 'canvasapp' })
+    for (const k of ['foreignModel', 'foreignStatus', 'foreignError', 'foreignSettings']) expect(k in back, k).toBe(false)
+    // a parked take whose error was changed meanwhile is not resumed (only the park's own text)
+    expect(migrateTake({ ...known, error: 'Bị huỷ' })).toMatchObject({ status: 'failed', error: 'Bị huỷ' })
+  })
+})
+
+describe('originals of a newer build are kept for the build that knows them', () => {
+  it('a foreign provider take keeps its own charged (foreignCharged) and its error when parked (foreignError)', () => {
+    const t = migrateTake({ id: 't', provider: 'seedvis', charged: true, status: 'processing', remoteId: 'j', error: 'tạm dừng' })
+    expect(t).toMatchObject({ provider: 'mock', charged: false, foreignCharged: true, foreignError: 'tạm dừng', error: FOREIGN_RUNNING_ERROR })
+    expect(migrateTake(JSON.parse(JSON.stringify(t)))).toEqual(t)
+    // nothing saved → nothing invented
+    const none = migrateTake({ id: 't', provider: 'seedvis', status: 'completed' })
+    expect('foreignCharged' in none || 'foreignError' in none).toBe(false)
+    expect(migrateTake({ id: 't', provider: 'seedvis', charged: false }).foreignCharged).toBe(false)
+    // a known provider never gets them (a file's markers are not trusted)
+    const odd = migrateTake({ id: 't', provider: 'dev', foreignCharged: true, foreignError: 'x', foreignSettings: { a: 1 } })
+    expect('foreignCharged' in odd || 'foreignError' in odd || 'foreignSettings' in odd).toBe(false)
+  })
+
+  it('take settings: safe primitives for every reader (settingsLabel never throws), the saved values kept', () => {
+    const odd = migrateTake({ id: 't', provider: 'seedvis', status: 'completed', settings: { model: 'veo', duration: '8', resolution: 1080, extra: 'x' } })
+    expect(odd.settings).toEqual({ model: 'veo', mode: '', duration: 0, resolution: '', ratio: '', extra: 'x' })
+    expect(odd.foreignSettings).toEqual({ model: 'veo', duration: '8', resolution: 1080, extra: 'x' })
+    expect(() => settingsLabel(odd.settings)).not.toThrow()
+    expect(migrateTake(JSON.parse(JSON.stringify(odd)))).toEqual(odd)
+    const bare = migrateTake({ id: 't', provider: 'dev', status: 'completed' })
+    expect(settingsLabel(bare.settings)).toBe('0s ·  · ')
+    expect(settingsLabel({} as never)).toBe('?s ·  · ')
+    // a normal take is unchanged (its extra keys too)
+    const normal = { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' }
+    expect(migrateTake({ id: 't', provider: 'dev', settings: normal }).settings).toEqual(normal)
+  })
+})
+
+describe('values of a newer build for a model this build knows (config marker)', () => {
+  const scene = (settings: Record<string, unknown>, over: Record<string, unknown> = {}) => ({
+    id: 's1',
+    order: 1,
+    title: '',
+    prompt: 'x',
+    refs: [],
+    videoRefs: [],
+    presetId: null,
+    settings,
+    firstFrame: null,
+    lastFrame: null,
+    color: null,
+    position: { x: 0, y: 0 },
+    note: '',
+    ...over,
+  })
+  const project = (schemaVersion: number, settings: Record<string, unknown>, over: Record<string, unknown> = {}) => ({
+    id: 'p',
+    name: 'P',
+    schemaVersion,
+    createdAt: 1,
+    updatedAt: 1,
+    settings: { autoRenumber: true },
+    assets: [],
+    presets: [{ id: 'p4k', name: '4K', ...settings }],
+    scenes: [scene(settings, over)],
+  })
+  const FOURK = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '4k', ratio: '21:9' }
+
+  it('kept as foreignSettings alone (stand-in settings), it blocks running, survives a save, also on presets', () => {
+    const p = migrateProject(project(3, FOURK))
+    const s = p.scenes[0]
+    expect(s.foreignSettings).toEqual(FOURK)
+    expect('foreignModel' in s).toBe(false)
+    expect(s.settings).toEqual({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' })
+    expect(p.presets[0].foreignSettings).toEqual(FOURK)
+    const again = migrateProject(JSON.parse(JSON.stringify(p)))
+    expect(again.scenes[0].foreignSettings).toEqual(FOURK)
+    expect(again.scenes[0].settings).toEqual(s.settings)
+    expect(foreignConfigReason(FOURK)).toBe(
+      'Cảnh dùng cấu hình của bản SanoVids mới hơn (độ phân giải 4k, tỉ lệ 21:9) — cập nhật SanoVids để chạy (hoặc chọn lại cấu hình để chạy bằng cấu hình này).',
+    )
+  })
+
+  it('a v2 file: only values no model here ever offered (an old Seedance scene left on an H3 mode is quietly fixed as before)', () => {
+    const oldMix = migrateProject(project(2, { model: 'seedance_2_5', mode: 'i2v', duration: 10, resolution: '2k', ratio: '16:9' }))
+    expect('foreignSettings' in oldMix.scenes[0]).toBe(false)
+    expect(oldMix.scenes[0].settings).toMatchObject({ mode: 't2v', resolution: '480p' })
+    const v2new = migrateProject(project(2, FOURK))
+    expect(v2new.scenes[0].foreignSettings).toEqual(FOURK)
+    // the same mix in a newer schema: kept (a newer build may have added 2k to Seedance)
+    expect(migrateProject(project(3, { model: 'seedance_2_5', mode: 't2v', duration: 10, resolution: '2k', ratio: '16:9' })).scenes[0].foreignSettings).toMatchObject({ resolution: '2k' })
+  })
+
+  it('a build that offers those values restores them and drops the marker', () => {
+    // simulated: a marker whose values this build offers (as the build that adds 4k would see its own marker)
+    const offered = { model: 'seedance_2_5', mode: 't2v', duration: 10, resolution: '720p', ratio: '9:16' }
+    const p = migrateProject({ ...project(2, offered), scenes: [scene({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' }, { foreignSettings: offered })] })
+    expect(p.scenes[0].settings).toEqual(offered)
+    expect('foreignSettings' in p.scenes[0]).toBe(false)
   })
 })

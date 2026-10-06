@@ -2,7 +2,7 @@
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
-import { TRASH_CONFIRM_MIN, trashConfirmText } from './core/folderTrash'
+import { TRASH_CONFIRM_MIN, trashBusyDeleteText, trashConfirmText } from './core/folderTrash'
 import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
@@ -27,7 +27,6 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
-import { canTrashSaved, ownedGroupsOf } from './lib/saveFolders'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
@@ -384,12 +383,11 @@ export function deleteSelection() {
     const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
     if (check.question && !window.confirm(check.question)) return
   }
-  if (savePairs.length >= TRASH_CONFIRM_MIN && useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()) {
-    const dying = new Set(takeIds)
-    const status = new Map(takes.map((t) => [t.id, t.status]))
+  // Decided now, once (the question below is about it): what happens to the cut wires' files.
+  const trash = savePairs.length > 0 && trashAllowed()
+  if (trash && savePairs.length >= TRASH_CONFIRM_MIN) {
     // Videos whose files this Delete would move: finished, kept, with copies their wire wrote itself.
-    const owned = ownedGroupsOf(savePairs)
-    const movers = savePairs.filter((p, i) => !dying.has(p.takeId) && status.get(p.takeId) === 'completed' && !!owned[i]?.length)
+    const movers = trashMoverPairs(savePairs, new Set(takeIds))
     const videos = new Set(movers.map((p) => p.takeId)).size
     if (videos >= TRASH_CONFIRM_MIN && !window.confirm(trashConfirmText(videos, movers.map((p) => folderById.get(p.folderId)?.name ?? 'Thư mục')))) return
   }
@@ -412,7 +410,7 @@ export function deleteSelection() {
     useProject.getState().deleteItems({ sceneIds, hideAssetIds, refs, videoRefs, frames, folderIds, folderLinks }, videoLabel)
   }
   // After the store change, in each folder's lock: the cut wires' files (setting on), one summary toast.
-  if (savePairs.length) void afterSaveUnlinked(savePairs, { source: 'delete', toast: 'summary', undo: undoToastAction() })
+  if (savePairs.length) void afterSaveUnlinked(savePairs, { source: 'delete', toast: 'summary', undo: undoToastAction(), trash })
   if (!sceneIds.length && !hideAssetIds.length && !folderIds.length && !links && !takesDeleted) return
   useUI.getState().clearSelection()
   const deleted = [
@@ -456,6 +454,13 @@ export interface DeleteTakesOptions {
 export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
   const project = useProject.getState().project
   const all = useRuns.getState().takes
+  // A video whose cut wire's saved copy is going to the Recycle Bin right now waits: deleting it meanwhile would leave
+  // the only copy in the Recycle Bin (folderActions "never the last copy").
+  const busy = takesBeingTrashed(takeIds)
+  if (busy.length) {
+    toast(trashBusyDeleteText(busy.length === 1 ? takeLabel(busy[0]) : `${busy.length} video`), { tone: 'warning' })
+    takeIds = takeIds.filter((id) => !busy.includes(id))
+  }
   const check = checkTakeDelete(takeIds, all, project.scenes, {
     confirm: opts.confirm ?? true,
     ignoreScenes: opts.ignoreScenes,
@@ -897,4 +902,4 @@ export { undo, redo }
 
 // Folder nodes ("Thư mục"): their commands live in ./folderActions (it also auto-saves finished takes into folders,
 // and moves the files of cut take → folder wires to the Recycle Bin).
-import { afterSaveUnlinked } from './folderActions'
+import { afterSaveUnlinked, takesBeingTrashed, trashAllowed, trashMoverPairs } from './folderActions'

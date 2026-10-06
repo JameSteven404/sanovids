@@ -16,6 +16,8 @@ interface LedgerFile {
   name: string
   size: number
   sha256: string
+  ino: string
+  birthNs: string
 }
 interface Group {
   id: string
@@ -40,8 +42,10 @@ interface TrashOut {
 interface StatLike {
   size: number
   mtimeMs?: number
-  ino?: number
+  mtimeNs?: string
+  ino?: number | string
   blocks?: number
+  identity?: { ino: string; birthNs: string } | null
   isFile(): boolean
   isSymbolicLink(): boolean
 }
@@ -51,6 +55,8 @@ interface TrashDeps {
   trash: (p: string) => Promise<void>
   pathMod: PathMod
   signal?: AbortSignal
+  /** GetDriveType of the folder's drive (Windows): 3 = fixed disk. */
+  driveType?: number | null
 }
 interface SaveRules {
   sanitizeSaveName(raw: unknown, max?: number): string | null
@@ -89,13 +95,19 @@ interface SaveRules {
   savedFileStatProblem(entry: LedgerFile, st: StatLike | null): '' | 'missing' | 'changed'
   sameSavedStat(a: unknown, b: unknown): boolean
   withSaveAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
+  ledgerWithout(ledger: Ledger, dirKey: string | null, names: unknown, pathMod: PathMod): Ledger
+  savedFileIdentity(st: unknown): { ino: string; birthNs: string } | null
+  sameSavedIdentity(entry: LedgerFile, st: unknown): boolean
+  savedStatOf(st: unknown): StatLike | null
+  saveDriveRoot(realDir: string, pathMod: PathMod): string | null
+  saveTrashDriveAllowed(driveType: unknown, pathMod: PathMod): boolean
 }
 
 function loadSaveRules(): SaveRules {
   const m = /\/\/ <save-rules>[^\n]*\n([\s\S]*?)\/\/ <\/save-rules>/.exec(mainSource)
   if (!m) throw new Error('save-rules block not found in electron/main.cjs')
   return new Function(
-    `${m[1]}\nreturn { sanitizeSaveName, numberedSaveName, folderKey, isAllowedFolder, addAllowedFolder, parseSaveLocations, checkSaveFiles, checkSaveAsArgs, saveDialogFilters, withSaveExtension, companionSaveName, isDirectChild, writeGroupExclusive, writeSaveReplacing, SAVE_MAX_FILE_BYTES, SAVE_MAX_FOLDERS, checkSaveOwner, checkTrashArgs, parseSaveLedger, ledgerGroup, ledgerWith, selectTrashGroups, judgeSavedFile, savedFileOnlineOnly, saveHashTimeoutMs, saveTrashSupported, trashSavedGroups, SAVE_LEDGER_MAX_GROUPS, SAVE_TRASH_MAX_ITEMS, SAVE_TRASH_MAX_GROUPS, isLedgerName, checkLedgerGroup, savedFileStatProblem, sameSavedStat, withSaveAbort }`,
+    `${m[1]}\nreturn { sanitizeSaveName, numberedSaveName, folderKey, isAllowedFolder, addAllowedFolder, parseSaveLocations, checkSaveFiles, checkSaveAsArgs, saveDialogFilters, withSaveExtension, companionSaveName, isDirectChild, writeGroupExclusive, writeSaveReplacing, SAVE_MAX_FILE_BYTES, SAVE_MAX_FOLDERS, checkSaveOwner, checkTrashArgs, parseSaveLedger, ledgerGroup, ledgerWith, selectTrashGroups, judgeSavedFile, savedFileOnlineOnly, saveHashTimeoutMs, saveTrashSupported, trashSavedGroups, SAVE_LEDGER_MAX_GROUPS, SAVE_TRASH_MAX_ITEMS, SAVE_TRASH_MAX_GROUPS, isLedgerName, checkLedgerGroup, savedFileStatProblem, sameSavedStat, withSaveAbort, ledgerWithout, savedFileIdentity, sameSavedIdentity, savedStatOf, saveDriveRoot, saveTrashDriveAllowed }`,
   )() as SaveRules
 }
 
@@ -378,14 +390,64 @@ describe('electron main: writing a group of files', () => {
     expect(await list()).toEqual(['a (2).mp4', 'a.mp4'])
   })
 
-  it('a rename Windows still holds for a moment (antivirus) is tried again', async () => {
+  it('drives without hard links: a file that appears under the name after the check is never replaced (no rename)', async () => {
+    // Someone else creates "c.mp4" between the free-name check and the claim (a second folder node on the same path…):
+    // a rename would silently replace it (Windows MoveFileEx with REPLACE_EXISTING); the exclusive create refuses.
+    let raced = false
+    const racing = {
+      ...nodeFs,
+      link: async () => Promise.reject(Object.assign(new Error('no links'), { code: 'EPERM' })),
+      rename: async () => {
+        throw new Error('rename must not be used to claim a name')
+      },
+      writeFile: async (file: string, data: string | Uint8Array, opts?: { flag?: string }) => {
+        const out = await nodeFs.writeFile(file, data, opts)
+        if (!raced && file.endsWith('.part')) {
+          raced = true
+          await nodeFs.writeFile(p.join(dir, 'c.mp4'), 'THEIRS')
+        }
+        return out
+      },
+    } as unknown as FsLike
+    expect(await rules.writeGroupExclusive(dir, [video('c.mp4')], racing, p)).toEqual(['c (2).mp4'])
+    expect(await nodeFs.readFile(p.join(dir, 'c.mp4'), 'utf8')).toBe('THEIRS')
+    expect(await nodeFs.readFile(p.join(dir, 'c (2).mp4'), 'utf8')).toBe('VIDEO')
+    expect(await list()).toEqual(['c (2).mp4', 'c.mp4'])
+  })
+
+  it('drives without hard links: a write cut short under the real name removes only the file it created', async () => {
+    let n = 0
+    const failing = {
+      ...nodeFs,
+      link: async () => Promise.reject(Object.assign(new Error('no links'), { code: 'EPERM' })),
+      open: async (file: string, flags: string) => {
+        const fh = await nodeFs.open(file, flags)
+        if (file.endsWith('d.mp4') && ++n === 1) {
+          return Object.assign(Object.create(Object.getPrototypeOf(fh) as object) as object, {
+            writeFile: async () => {
+              await fh.writeFile('half')
+              throw Object.assign(new Error('no space'), { code: 'ENOSPC' })
+            },
+            close: () => fh.close(),
+          })
+        }
+        return fh
+      },
+    } as unknown as FsLike
+    await expect(rules.writeGroupExclusive(dir, [video('d.mp4')], failing, p)).rejects.toMatchObject({ code: 'ENOSPC' })
+    expect(await list()).toEqual([])
+  })
+
+  it('a rename Windows still holds for a moment (antivirus) is tried again (the file chosen in the save dialog)', async () => {
     let busy = 2
     const held = {
       ...nodeFs,
-      link: async () => Promise.reject(Object.assign(new Error('no links'), { code: 'EPERM' })),
       rename: async (a: string, b: string) => (busy-- > 0 ? Promise.reject(Object.assign(new Error('busy'), { code: 'EBUSY' })) : nodeFs.rename(a, b)),
     } as unknown as FsLike
-    expect(await rules.writeGroupExclusive(dir, [video('b.mp4')], held, p)).toEqual(['b.mp4'])
+    const target = p.join(dir, 'b.mp4')
+    await nodeFs.writeFile(target, 'OLD')
+    await rules.writeSaveReplacing(held, target, 'NEW')
+    expect(await nodeFs.readFile(target, 'utf8')).toBe('NEW')
     expect(await list()).toEqual(['b.mp4'])
   })
 
@@ -407,7 +469,9 @@ const ID1 = '0123456789abcdef'
 const ID2 = 'fedcba9876543210'
 const ID3 = 'aaaaaaaaaaaaaaaa'
 const owner = (via: Via = 'link', takeId = 't1', folderId = 'f1') => ({ folderId, takeId, via })
-const fileEntry = (name: string, data: string): LedgerFile => ({ name, size: Buffer.byteLength(data), sha256: sha(data) })
+const fileEntry = (name: string, data: string, ino = '1', birthNs = '1'): LedgerFile => ({ name, size: Buffer.byteLength(data), sha256: sha(data), ino, birthNs })
+/** What a write records per file: the bytes and the identity of the file right after the write. */
+const digestOf = (data: string, ino = '7', birthNs = '9') => ({ size: Buffer.byteLength(data), sha256: sha(data), ino, birthNs })
 const winKey = 'd:\\phim'
 const winGroup = (over: Partial<Group> = {}): Group => ({
   id: ID1,
@@ -468,7 +532,7 @@ describe('electron main: the saved-files ledger (userData/saved-files.json)', ()
   const allowed = [winKey]
 
   it('a recorded group: names as written (" (n)" included), sizes, SHA-256, the folder key and the owner', () => {
-    const g = rules.ledgerGroup(winKey, owner(), ['S01_T1 (2).mp4', 'S01_T1 (2).txt'], [{ size: 5, sha256: sha('VIDEO') }, { size: 6, sha256: sha('prompt') }], 7, ID1, win)
+    const g = rules.ledgerGroup(winKey, owner(), ['S01_T1 (2).mp4', 'S01_T1 (2).txt'], [digestOf('VIDEO', '281474976710657', '1700000000123456789'), digestOf('prompt', '42', '17')], 7, ID1, win)
     expect(g).toEqual({
       id: ID1,
       folder: winKey,
@@ -477,15 +541,19 @@ describe('electron main: the saved-files ledger (userData/saved-files.json)', ()
       via: 'link',
       at: 7,
       files: [
-        { name: 'S01_T1 (2).mp4', size: 5, sha256: sha('VIDEO') },
-        { name: 'S01_T1 (2).txt', size: 6, sha256: sha('prompt') },
+        { name: 'S01_T1 (2).mp4', size: 5, sha256: sha('VIDEO'), ino: '281474976710657', birthNs: '1700000000123456789' },
+        { name: 'S01_T1 (2).txt', size: 6, sha256: sha('prompt'), ino: '42', birthNs: '17' },
       ],
     })
     // the longest names a write produces (180 + " (n)") are still recordable
     const long = 'x'.repeat(176) + ' (12).mp4'
-    expect(rules.ledgerGroup(winKey, owner(), [long], [{ size: 1, sha256: sha('x') }], 1, ID1, win)).not.toBeNull()
+    expect(rules.ledgerGroup(winKey, owner(), [long], [digestOf('x')], 1, ID1, win)).not.toBeNull()
+    // without the file's identity (it could not be read after the write): never recorded
+    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ size: 5, sha256: sha('VIDEO') }], 1, ID1, win)).toBeNull()
+    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ ...digestOf('VIDEO'), ino: 7 }], 1, ID1, win)).toBeNull()
+    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ ...digestOf('VIDEO'), birthNs: '-1' }], 1, ID1, win)).toBeNull()
     // anything doubtful → not recorded (the write still happened; it can just never be moved)
-    const d = [{ size: 5, sha256: sha('VIDEO') }]
+    const d = [digestOf('VIDEO')]
     expect(rules.ledgerGroup(winKey, null, ['a.mp4'], d, 1, ID1, win)).toBeNull()
     expect(rules.ledgerGroup(winKey, owner(), ['a.mp4', 'a.txt'], d, 1, ID1, win)).toBeNull()
     expect(rules.ledgerGroup(winKey, owner(), ['a.zip'], d, 1, ID1, win)).toBeNull()
@@ -494,8 +562,8 @@ describe('electron main: the saved-files ledger (userData/saved-files.json)', ()
     expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], d, 1, 'not-an-id', win)).toBeNull()
     expect(rules.ledgerGroup(null, owner(), ['a.mp4'], d, 1, ID1, win)).toBeNull()
     expect(rules.ledgerGroup('D:\\Phim', owner(), ['a.mp4'], d, 1, ID1, win)).toBeNull() // not a folder key (case)
-    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ size: -1, sha256: sha('x') }], 1, ID1, win)).toBeNull()
-    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ size: 5, sha256: 'xyz' }], 1, ID1, win)).toBeNull()
+    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ ...digestOf('x'), size: -1 }], 1, ID1, win)).toBeNull()
+    expect(rules.ledgerGroup(winKey, owner(), ['a.mp4'], [{ ...digestOf('VIDEO'), sha256: 'xyz' }], 1, ID1, win)).toBeNull()
   })
 
   it('reads its file defensively: garbage or another version → empty (nothing can be moved)', () => {
@@ -534,6 +602,13 @@ describe('electron main: the saved-files ledger (userData/saved-files.json)', ()
       { files: f({ sha256: 'g'.repeat(64) }) },
       { files: f({ sha256: sha('x').toUpperCase() }) },
       { files: [fileEntry('a.mp4', 'x'), fileEntry('A.MP4', 'y')] },
+      // the identity of the file as written is required (decimal strings)
+      { files: f({ ino: undefined as unknown as string }) },
+      { files: f({ ino: 7 as unknown as string }) },
+      { files: f({ ino: '' }) },
+      { files: f({ birthNs: undefined as unknown as string }) },
+      { files: f({ birthNs: '1e9' }) },
+      { files: f({ birthNs: '9'.repeat(41) }) },
     ]
     for (const over of bad) {
       const ids = rules.parseSaveLedger({ v: 1, groups: [winGroup(over), winGroup({ id: ID2 })] }, allowed, win).groups.map((g) => g.id)
@@ -571,6 +646,36 @@ describe('electron main: the saved-files ledger (userData/saved-files.json)', ()
     expect(next.groups[0]).toEqual(reduced)
     expect(l.groups).toHaveLength(3) // the old ledger is not modified
     expect(rules.ledgerWith(l, [], []).groups).toEqual(l.groups)
+  })
+
+  it('ledgerWithout: a name written again proves the recorded file gone (writes never overwrite)', () => {
+    const video = fileEntry('S01_T1 - Mở đầu.mp4', 'VIDEO')
+    const txt = fileEntry('S01_T1 - Mở đầu.txt', 'prompt')
+    const l: Ledger = {
+      v: 1,
+      groups: [
+        winGroup({ id: ID1, files: [video, txt] }),
+        winGroup({ id: ID2, files: [fileEntry('S02_T1.mp4', 'V2'), fileEntry('S02_T1.txt', 'p2')] }),
+        winGroup({ id: ID3, folder: 'e:\\khac', files: [video] }), // same name, another folder
+        winGroup({ id: 'bbbbbbbbbbbbbbbb', primaryTrashed: true, files: [fileEntry('S03_T1.txt', 'p3')] }),
+      ],
+    }
+    // the primary's name reused (case-insensitive on Windows) → the whole group goes; other folders are untouched
+    expect(rules.ledgerWithout(l, winKey, ['s01_t1 - mở đầu.MP4'], win).groups.map((g) => g.id)).toEqual([ID2, ID3, 'bbbbbbbbbbbbbbbb'])
+    // a companion's name reused → only that entry goes (the video stays recorded)
+    const companion = rules.ledgerWithout(l, winKey, ['S02_T1.txt'], win)
+    expect(companion.groups.find((g) => g.id === ID2)!.files.map((f) => f.name)).toEqual(['S02_T1.mp4'])
+    // the rest of a moved copy (only companions left): its last entry reused → the group goes
+    expect(rules.ledgerWithout(l, winKey, ['S03_T1.txt'], win).groups.map((g) => g.id)).toEqual([ID1, ID2, ID3])
+    // nothing matches → the same ledger object (nothing to store)
+    expect(rules.ledgerWithout(l, winKey, ['S09_T1.mp4'], win)).toBe(l)
+    expect(rules.ledgerWithout(l, winKey, [], win)).toBe(l)
+    expect(rules.ledgerWithout(l, null, ['S01_T1 - Mở đầu.mp4'], win)).toBe(l)
+    expect(l.groups).toHaveLength(4) // never modified in place
+    // POSIX names are case-sensitive
+    const pl: Ledger = { v: 1, groups: [winGroup({ folder: '/p', files: [fileEntry('a.mp4', 'x')] })] }
+    expect(rules.ledgerWithout(pl, '/p', ['A.mp4'], posix)).toBe(pl)
+    expect(rules.ledgerWithout(pl, '/p', ['a.mp4'], posix).groups).toEqual([])
   })
 
   it('selecting what a cut wire may move: its own groups of this node / take / folder, never autosave', () => {
@@ -630,7 +735,8 @@ describe('electron main: is the saved file still exactly the one SanoVids wrote?
     expect(rules.savedFileStatProblem(entry, null)).toBe('missing')
     expect(rules.savedFileStatProblem(entry, st({ size: 4 }))).toBe('changed')
     expect(rules.sameSavedStat(st(), st())).toBe(true)
-    for (const over of [{ size: 6 }, { mtimeMs: 2 }, { ino: 2 }]) expect(rules.sameSavedStat(st(), st(over))).toBe(false)
+    for (const over of [{ size: 6 }, { mtimeMs: 2 }, { ino: 2 }, { mtimeNs: '5' }]) expect(rules.sameSavedStat(st(), st(over))).toBe(false)
+    expect(rules.sameSavedStat(st({ mtimeNs: '5' }), st({ mtimeNs: '5' }))).toBe(true)
     expect(rules.sameSavedStat(null, st())).toBe(false)
     expect(await rules.withSaveAbort(Promise.resolve(3))).toBe(3)
     const ctl = new AbortController()
@@ -644,6 +750,49 @@ describe('electron main: is the saved file still exactly the one SanoVids wrote?
     expect(rules.saveHashTimeoutMs(0)).toBe(60_000)
     expect(rules.saveHashTimeoutMs(100 * 1024 * 1024)).toBe(60_000)
     expect(rules.saveHashTimeoutMs(1024 * 1024 * 1024)).toBe(102_400)
+  })
+
+  it('identity: file id + creation time of a bigint lstat, compared exactly', async () => {
+    const bigintStat = { ino: 281474976710657n, birthtimeNs: 1700000000123456789n, size: 5n, mtimeMs: 12n, mtimeNs: 12000001n, blocks: 8n, isFile: () => true, isSymbolicLink: () => false }
+    expect(rules.savedFileIdentity(bigintStat)).toEqual({ ino: '281474976710657', birthNs: '1700000000123456789' })
+    expect(rules.savedFileIdentity({ ino: 5, birthtimeNs: undefined })).toBeNull() // a plain (number) lstat: unknown
+    expect(rules.savedFileIdentity(null)).toBeNull()
+    const view = rules.savedStatOf(bigintStat)!
+    expect(view).toMatchObject({ size: 5, mtimeMs: 12, mtimeNs: '12000001', ino: '281474976710657', blocks: 8, identity: { ino: '281474976710657', birthNs: '1700000000123456789' } })
+    expect(view.isFile()).toBe(true)
+    expect(rules.savedStatOf(null)).toBeNull()
+    const e = fileEntry('a.mp4', 'VIDEO', '281474976710657', '1700000000123456789')
+    expect(rules.sameSavedIdentity(e, view)).toBe(true)
+    expect(rules.sameSavedIdentity({ ...e, ino: '281474976710658' }, view)).toBe(false)
+    expect(rules.sameSavedIdentity({ ...e, birthNs: '1700000000123456788' }, view)).toBe(false)
+    expect(rules.sameSavedIdentity(e, rules.savedStatOf({ ...bigintStat, birthtimeNs: undefined }))).toBe(false) // unknown → never the same
+    expect(rules.sameSavedIdentity(e, null)).toBe(false)
+    // a real file: written, deleted, written again with the same bytes under the same name → another identity
+    const dir = await nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), 'sanovids-id-'))
+    try {
+      const f = nodePath.join(dir, 'a.mp4')
+      await nodeFs.writeFile(f, 'VIDEO')
+      const first = rules.savedFileIdentity(await nodeFs.lstat(f, { bigint: true }))
+      await nodeFs.rm(f)
+      await nodeFs.writeFile(nodePath.join(dir, 'filler.bin'), 'x') // take the freed file record, like a busy disk
+      await new Promise((r) => setTimeout(r, 20))
+      await nodeFs.writeFile(f, 'VIDEO')
+      const again = rules.savedFileIdentity(await nodeFs.lstat(f, { bigint: true }))
+      expect(first).not.toBeNull()
+      expect(again).not.toEqual(first)
+    } finally {
+      await nodeFs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('drive type: only a fixed disk (GetDriveType 3) on Windows; the root of the real path', () => {
+    expect(rules.saveTrashDriveAllowed(3, win)).toBe(true)
+    for (const t of [0, 1, 2, 4, 5, 6, null, undefined, '3']) expect(rules.saveTrashDriveAllowed(t, win), String(t)).toBe(false)
+    expect(rules.saveTrashDriveAllowed(null, posix)).toBe(true) // no drive types there
+    expect(rules.saveDriveRoot('d:\\Phim\\Tập 1', win)).toBe('D:\\')
+    expect(rules.saveDriveRoot('E:/Phim', win)).toBe('E:\\')
+    for (const bad of ['\\\\nas\\share\\Phim', '\\\\?\\D:\\Phim', 'Volume{x}\\Phim', 'Phim', '']) expect(rules.saveDriveRoot(bad, win), bad).toBeNull()
+    expect(rules.saveDriveRoot('/home/me/Phim', posix)).toBe('/')
   })
 
   it('network shares and device paths have no Recycle Bin: never tried', () => {
@@ -672,22 +821,28 @@ describe('electron main: moving a cut wire’s files to the Recycle Bin (trashSa
     trashed.push(file)
     await nodeFs.rename(file, p.join(bin, `${trashed.length}-${p.basename(file)}`))
   }
-  const deps = (over: Partial<TrashDeps> = {}): TrashDeps => ({ fsp: nodeFs, hashFile, trash, pathMod: p, ...over })
+  const deps = (over: Partial<TrashDeps> = {}): TrashDeps => ({ fsp: nodeFs, hashFile, trash, pathMod: p, driveType: 3, ...over })
   const list = async () => (await nodeFs.readdir(dir)).sort()
   const binList = async () => (await nodeFs.readdir(bin)).map((n) => n.replace(/^\d+-/, '')).sort()
   /** lstat that reports `over` for the files whose name ends with `suffix` (a link, a cloud placeholder…). */
   const lstatWith = (suffix: string, over: Record<string, unknown>) =>
     ({
-      lstat: async (file: string) => {
-        const s = await nodeFs.lstat(file)
+      lstat: async (file: string, opts?: { bigint?: boolean }) => {
+        const s = await nodeFs.lstat(file, opts)
         return file.endsWith(suffix) ? Object.assign(Object.create(Object.getPrototypeOf(s) as object) as object, s, over) : s
       },
     }) as unknown as Pick<FsLike, 'lstat'>
 
-  /** Writes a group like files:writeToFolder does and returns its ledger group. */
+  /** Writes a group like files:writeToFolder does (bytes + identity read right after the write) and returns its ledger group. */
   const save = async (files: { name: string; data: string }[], id = ID1, own = owner()): Promise<Group> => {
     const names = await rules.writeGroupExclusive(dir, files.map((f) => ({ name: f.name, text: f.data })), nodeFs, p)
-    const g = rules.ledgerGroup(key, own, names, files.map((f) => ({ size: Buffer.byteLength(f.data), sha256: sha(f.data) })), Date.now(), id, p)
+    const digests = []
+    for (let i = 0; i < files.length; i++) {
+      const identity = rules.savedFileIdentity(await nodeFs.lstat(p.join(dir, names[i]), { bigint: true }))
+      expect(identity).not.toBeNull()
+      digests.push({ size: Buffer.byteLength(files[i].data), sha256: sha(files[i].data), ...identity! })
+    }
+    const g = rules.ledgerGroup(key, own, names, digests, Date.now(), id, p)
     expect(g).not.toBeNull()
     return g!
   }
@@ -773,6 +928,37 @@ describe('electron main: moving a cut wire’s files to the Recycle Bin (trashSa
     expect(await list()).toContain('S01_T1 - Mở đầu.mp4')
   })
 
+  it('deleted, then the same bytes written again under the same name by another write (auto-save, Save As) → changed, kept', async () => {
+    // probe of the review: a save-wire group G1, its file deleted in Explorer, an auto-save write of the same take
+    // getting the free name again with identical bytes — cutting the save wire must not move the auto-save copy
+    const g1 = await save([VIDEO[0]])
+    await nodeFs.rm(p.join(dir, VIDEO[0].name))
+    await nodeFs.writeFile(p.join(dir, 'filler.bin'), 'x')
+    await new Promise((r) => setTimeout(r, 20))
+    const g2 = await save([VIDEO[0]], ID2, owner('autosave', 't1', 'f2'))
+    expect(g2.files[0].name).toBe(g1.files[0].name)
+    const out = await rules.trashSavedGroups(dir, [g1], deps())
+    expect(out.results[0].files).toEqual([{ name: VIDEO[0].name, role: 'primary', result: 'changed' }])
+    expect(hashed).toEqual([]) // decided from the identity, before reading it
+    expect(trashed).toEqual([])
+    expect(await list()).toEqual(['S01_T1 - Mở đầu.mp4', 'filler.bin'])
+    // and main forgets G1 as soon as the second write takes the name (ledgerWithout in recordSavedGroup)
+    const ledger: Ledger = { v: 1, groups: [g1] }
+    expect(rules.ledgerWithout(ledger, key, g2.files.map((f) => f.name), p).groups).toEqual([])
+  })
+
+  it('a drive that is not a fixed disk (USB stick, network drive, unknown) → failed without reading or moving anything', async () => {
+    const g = await save(VIDEO)
+    for (const driveType of [2, 4, 0, null]) {
+      const out = await rules.trashSavedGroups(dir, [g], deps({ driveType }))
+      expect(out.results[0].files, String(driveType)).toEqual([{ name: 'S01_T1 - Mở đầu.mp4', role: 'primary', result: 'failed' }])
+      expect(out.keep).toEqual([g])
+    }
+    expect(hashed).toEqual([])
+    expect(trashed).toEqual([])
+    expect(await list()).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+  })
+
   it('a link (or anything not a regular file) under the recorded name → changed, never followed', async () => {
     const g = await save(VIDEO)
     const out = await rules.trashSavedGroups(dir, [g], deps({ fsp: lstatWith('.mp4', { isSymbolicLink: () => true }) }))
@@ -851,7 +1037,7 @@ describe('electron main: moving a cut wire’s files to the Recycle Bin (trashSa
 
   it('a ledger entry with a doctored name is never used to reach outside the folder', async () => {
     await nodeFs.writeFile(p.join(root, 'secret.mp4'), 'VIDEO-BYTES')
-    const g: Group = { ...(await save(VIDEO)), files: [{ name: '..' + p.sep + 'secret.mp4', size: 11, sha256: sha('VIDEO-BYTES') }] }
+    const g: Group = { ...(await save(VIDEO)), files: [{ name: '..' + p.sep + 'secret.mp4', size: 11, sha256: sha('VIDEO-BYTES'), ino: '1', birthNs: '1' }] }
     const out = await rules.trashSavedGroups(dir, [g], deps())
     expect(out.results[0].files[0].result).toBe('changed')
     expect(trashed).toEqual([])
@@ -947,16 +1133,23 @@ describe('electron main: moving a cut wire’s files to the Recycle Bin (trashSa
     expect(hashed).toEqual([])
   })
 
-  it('a trash() that hangs is abandoned when the watchdog fires (failed while the file is still there)', async () => {
-    const g = await save([VIDEO[0]])
+  it('a move already handed to trash() is awaited when the watchdog fires: its real outcome, nothing new starts', async () => {
+    const g = await save(VIDEO)
     const ctl = new AbortController()
-    const hanging = () => {
-      setTimeout(() => ctl.abort(), 10)
-      return new Promise<void>(() => undefined)
+    // shell.trashItem cannot be stopped: the watchdog fires while the video is being moved, and it still lands in the bin
+    const slowTrash = async (file: string) => {
+      ctl.abort()
+      await new Promise((r) => setTimeout(r, 20))
+      await trash(file)
     }
-    const out = await rules.trashSavedGroups(dir, [g], deps({ trash: hanging, signal: ctl.signal }))
-    expect(out.results[0].files[0].result).toBe('failed')
-    expect(out.keep).toEqual([g])
+    const out = await rules.trashSavedGroups(dir, [g], deps({ trash: slowTrash, signal: ctl.signal }))
+    // reported as moved (Hoàn tác writes a copy again, the group leaves the ledger) — never 'failed' for a moved file
+    expect(out.results[0].files).toEqual([
+      { name: 'S01_T1 - Mở đầu.mp4', role: 'primary', result: 'trashed' },
+      { name: 'S01_T1 - Mở đầu.txt', role: 'companion', result: 'failed' }, // not started after the watchdog
+    ])
+    expect(await binList()).toEqual(['S01_T1 - Mở đầu.mp4'])
+    expect(out.keep).toEqual([{ ...g, primaryTrashed: true, files: [g.files[1]] }])
   })
 
   it('network share (no Recycle Bin): failed without reading or moving anything', async () => {

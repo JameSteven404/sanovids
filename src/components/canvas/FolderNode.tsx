@@ -5,7 +5,7 @@
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
-import { FOLDER_TRASHING_TEXT, trashPendingSuffix } from '../../core/folderTrash'
+import { FOLDER_TRASHING_TEXT, trashExpiredSuffix, trashPendingSuffix } from '../../core/folderTrash'
 import { folderMapOf, shortPath } from '../../core/folders'
 import { chooseFolderPlace, grantFolderAccess, linkTakesToFolder, openFolderNode, refreshFolderNode, removeFolderNode } from '../../folderActions'
 import { desktopFiles } from '../../lib/desktopFiles'
@@ -38,12 +38,13 @@ function liveCount(ids: readonly string[] | undefined, live: ReadonlyMap<string,
 
 /**
  * One status line under the name: what the folder needs, or what was saved. Cut wires whose files wait for the folder
- * before going to the Recycle Bin add " · N file chờ xoá".
+ * before going to the Recycle Bin add " · N file chờ xoá"; waits that expired this session (files kept) say so too.
  */
 function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 'error' | 'muted' | 'busy'; text: string } {
   if (rt.trashing) return { tone: 'busy', text: FOLDER_TRASHING_TEXT }
   if (rt.busy) return { tone: 'busy', text: 'Đang lưu…' }
-  const waiting = (rt.pending ? ` · ${rt.pending} video chờ lưu` : '') + trashPendingSuffix(rt.trashPending)
+  const trashNotes = trashPendingSuffix(rt.trashPending) + trashExpiredSuffix(rt.trashExpired)
+  const waiting = (rt.pending ? ` · ${rt.pending} video chờ lưu` : '') + trashNotes
   switch (rt.access) {
     case 'checking':
       return { tone: 'muted', text: 'Đang kiểm tra thư mục…' }
@@ -56,7 +57,7 @@ function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 
     case 'ask':
       return { tone: 'warn', text: 'Cần cấp lại quyền ghi vào thư mục' + waiting }
   }
-  const trashWaiting = trashPendingSuffix(rt.trashPending)
+  const trashWaiting = trashNotes
   if (rt.error) return { tone: 'error', text: rt.error + trashWaiting }
   if (!rt.saved) return { tone: 'muted', text: 'Chưa lưu video nào' + trashWaiting }
   return { tone: 'ok', text: `Đã lưu ${rt.saved} video${rt.lastAt ? ` · lần cuối ${timeText(rt.lastAt)}` : ''}${trashWaiting}` }

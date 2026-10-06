@@ -118,10 +118,11 @@ function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, fold
   }
   // Captured now: Hoàn tác must undo this cut, not a newer step made while the files are being moved.
   const undo = undoToastAction()
+  // Decided now, once: what this toast says is what happens (the setting is not read again in the folder's lock).
   const trash = useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()
   if (!silent && !trash) toast(offUnlinkText(takeLabel(from), folder.name), { action: undo })
   // Always handled (in the folder's lock): a waiting save of this wire is dropped, its ownership record released.
-  void afterSaveUnlinked([{ folderId, takeId: from }], { source: 'cut', undo, toast: silent || !trash ? 'none' : 'single' })
+  void afterSaveUnlinked([{ folderId, takeId: from }], { source: 'cut', undo, toast: silent || !trash ? 'none' : 'single', trash })
 }
 
 /** Invisible hit band around every cuttable wire (px, flow units): thin wires stay easy to hit. */

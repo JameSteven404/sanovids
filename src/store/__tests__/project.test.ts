@@ -581,6 +581,33 @@ describe('newer-build model marker (foreignModel / foreignSettings)', () => {
     expect(sc('s1').presetId).toBeNull()
   })
 
+  it('a config marker (a newer build’s values for a known model) goes with ANY setting chosen here, and is kept otherwise', () => {
+    const CONFIG = { foreignSettings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '4k', ratio: '16:9' } }
+    st().loadProject({ ...st().project, scenes: st().project.scenes.map((s) => (s.id === 's2' ? { ...s, ...CONFIG } : s)) })
+    st().updateScene('s2', { title: 'Mưa' })
+    expect(sc('s2').foreignSettings).toEqual(CONFIG.foreignSettings)
+    // the same duration chosen again is still a choice: the scene runs with what it shows
+    st().updateSettings(['s2'], { duration: sc('s2').settings.duration })
+    expect(unmarked('s2')).toBe(true)
+    undo()
+    expect(sc('s2').foreignSettings).toEqual(CONFIG.foreignSettings)
+    // restoring settings over it drops it too; restoring a take's settings with such values marks the scene
+    st().restoreScene('s2', { prompt: 'x', refs: [], settings: sc('s2').settings })
+    expect(unmarked('s2')).toBe(true)
+    const takeSettings = { model: 'minimax_h3', mode: 't2v', duration: 20, resolution: '4k', ratio: '16:9' } as unknown as VideoSettings
+    st().restoreScene('s3', { prompt: 'y', refs: [], settings: takeSettings })
+    expect(sc('s3').foreignSettings).toEqual({ ...takeSettings })
+    expect('foreignModel' in sc('s3')).toBe(false)
+    expect(sc('s3').settings).toMatchObject({ model: 'minimax_h3', resolution: '768p' })
+    // a preset with one: renaming keeps it, a setting drops it
+    const id = st().addPreset({ name: '4K', ...STAND_IN, ...CONFIG })
+    const find = () => st().project.presets.find((x) => x.id === id)!
+    st().updatePreset(id, { name: '4K dọc' })
+    expect(find().foreignSettings).toEqual(CONFIG.foreignSettings)
+    st().updatePreset(id, { ratio: '9:16' })
+    expect('foreignSettings' in find()).toBe(false)
+  })
+
   it('addPreset keeps a marker it is given and adds none otherwise', () => {
     const withMark = st().addPreset({ name: 'Từ cảnh', ...STAND_IN, ...FOREIGN })
     const plain = st().addPreset({ name: 'Mới', ...STAND_IN })

@@ -22,7 +22,7 @@ vi.mock('../lib/imageStore', () => {
   }
 })
 
-import { deleteSelection, downloadChosenTakesZip, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
+import { deleteSelection, deleteTakes, downloadChosenTakesZip, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
 import { cutEdge } from '../components/canvas/edges'
 import { DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
 import type { Project, Scene, Take } from '../core/types'
@@ -30,6 +30,7 @@ import { afterSaveUnlinked, chooseFolderPlace, linkScenesToFolder, linkTakesToFo
 import type { DesktopFile, DesktopFilesBridge, SaveOwner, TrashSavedArgs, TrashSavedTakeResult } from '../lib/desktopFiles'
 import { useDownloadPrefs } from '../lib/downloads'
 import {
+  expiredFolderTrashWaiting,
   folderRuntime,
   markTrashWaiting,
   markWaiting,
@@ -1082,6 +1083,196 @@ describe('cutting a take → folder wire moves what it copied to the Recycle Bin
     expect(out.map((o) => o.kind)).toEqual(['failed'])
     expect(ownedGroups('f1', id)).toHaveLength(1)
   })
+
+  /** The main process takes its time (hashing a big file on a USB disk): files:trashSaved answers once released. */
+  function slowTrash() {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const real = desk.bridge.trashSaved!
+    let started = 0
+    desk.bridge.trashSaved = async (args) => {
+      started++
+      await gate
+      return real(args)
+    }
+    return { release, started: () => started }
+  }
+
+  it('wired again by hand while the main process moves its files: the copy is written again, owned by the wire (never "đã có rồi")', async () => {
+    const { id, groupId } = await linkedAndCopied()
+    const main = slowTrash()
+    cut(id)
+    await settle()
+    expect(main.started()).toBe(1) // main is hashing…
+    useUI.setState({ toasts: [] })
+    linkTakesToFolder([id], 'f1') // the user drags the video back to the folder
+    await settle()
+    expect(lastToast(/đã có trong thư mục/)).toBeUndefined()
+    main.release()
+    await settle()
+    // the cut's copy went to the Recycle Bin; the wire that is back got a new copy, recorded as its own
+    expect(folderTakes()).toEqual([id])
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    expect(desk.writes).toHaveLength(2)
+    expect(desk.writes[1].owner).toEqual({ folderId: 'f1', takeId: id, via: 'restore' })
+    expect(wasSavedTo('f1', id)).toBe(true)
+    const owned = ownedGroups('f1', id)!
+    expect(owned).toHaveLength(1)
+    expect(owned[0]).not.toBe(groupId)
+    expect(lastToast(/Đã lưu lại/)!.text).toBe('Đã lưu lại S01·T1 vào “Phim” (bản cũ vẫn nằm trong Thùng rác).')
+    expect(lastToast(/^Đã bỏ nối/)).toBeUndefined() // the undone cut is not announced
+    // that new copy is the wire's: a later cut moves it
+    cut(id)
+    await settle()
+    expect(desk.trashCalls.at(-1)!.items).toEqual([{ takeId: id, groupIds: owned }])
+  })
+
+  it('Ctrl+Z while the main process moves the files: exactly one copy is written again', async () => {
+    const { id } = await linkedAndCopied()
+    const main = slowTrash()
+    cut(id)
+    await settle()
+    undo()
+    await settle()
+    main.release()
+    await settle()
+    expect(folderTakes()).toEqual([id])
+    expect(desk.writes).toHaveLength(2)
+    expect(desk.writes[1].owner?.via).toBe('restore')
+  })
+
+  it('a video deleted while its saved copy goes to the Recycle Bin waits — never the last copy only in the bin', async () => {
+    const { id } = await linkedAndCopied()
+    const videoId = takeOf(id).videoId!
+    const main = slowTrash()
+    cut(id)
+    await settle()
+    expect(main.started()).toBe(1)
+    expect(deleteTakes([id], { confirm: false, toast: false })).toBe(0)
+    expect(useRuns.getState().takes.some((t) => t.id === id)).toBe(true)
+    expect(media.has(videoId)).toBe(true)
+    expect(lastToast(/Chưa xoá/)!.text).toBe('Chưa xoá S01·T1: SanoVids đang chuyển file đã lưu vào Thùng rác — thử lại sau giây lát.')
+    main.release()
+    await settle()
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+    // once the move is done the video can be deleted (SanoVids had it while its copy was moved)
+    expect(deleteTakes([id], { confirm: false, toast: false })).toBe(1)
+    await settle()
+    expect(media.has(videoId)).toBe(false)
+  })
+
+  it('the setting is decided at the gesture: off at the cut → the files stay, even when turned on before the folder is free', async () => {
+    const { id } = await linkedAndCopied()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const write = desk.bridge.writeToFolder
+    desk.bridge.writeToFolder = async (args) => {
+      await gate
+      return write(args)
+    }
+    try {
+      void saveTakeToFolder(id, 'f1', { via: 'again' }) // holds the folder's lock while it is written
+      await settle()
+      useDownloadPrefs.setState({ folderUnlinkTrash: false })
+      cut(id)
+      expect(lastToast(/vẫn còn/)!.text).toBe('Đã bỏ nối S01·T1 khỏi thư mục “Phim” (file đã lưu vẫn còn).')
+      useDownloadPrefs.setState({ folderUnlinkTrash: true }) // turned on meanwhile
+      release()
+      await settle()
+    } finally {
+      desk.bridge.writeToFolder = write
+    }
+    expect(desk.trashCalls).toEqual([])
+    expect(desk.bin).toEqual([])
+    expect(ownedGroups('f1', id)).toBeNull() // dealt with: a wire made later never claims those files
+    expect(lastToast(/Thùng rác/)).toBeUndefined()
+  })
+
+  it('wired again by hand after a cut whose files wait for the folder: the new wire owns nothing (Ctrl+Z of it keeps the file)', async () => {
+    const { id } = await linkedAndCopied()
+    desk.setExists(false)
+    cut(id)
+    await settle()
+    expect(trashWaitingTakes('f1')).toEqual([id])
+    desk.setExists(true)
+    linkTakesToFolder([id], 'f1') // "đã có trong thư mục rồi": nothing copied, the pending move dropped
+    await settle()
+    expect(trashWaitingTakes('f1')).toEqual([])
+    expect(ownedGroups('f1', id)).toEqual([])
+    const calls = desk.trashCalls.length
+    undo()
+    await settle()
+    expect(desk.trashCalls).toHaveLength(calls)
+    expect(desk.bin).toEqual([])
+    expect(lastToast(/có từ trước/)).toBeTruthy()
+  })
+
+  it('Hoàn tác of a cut whose files wait for the folder: the wire is the same wire again (a later cut moves its copy)', async () => {
+    const { id, groupId } = await linkedAndCopied()
+    desk.setExists(false)
+    cut(id)
+    await settle()
+    lastToast(/khi thư mục có lại/)!.action!.run() // Hoàn tác
+    await settle()
+    expect(trashWaitingTakes('f1')).toEqual([])
+    expect(ownedGroups('f1', id)).toEqual([groupId])
+    desk.setExists(true)
+    cut(id)
+    await settle()
+    expect(desk.bin).toEqual(['S01_T1 - Mở đầu.mp4', 'S01_T1 - Mở đầu.txt'])
+  })
+
+  it('a move that waited more than 30 days for its folder is dropped: its record released, the node says the files were kept', async () => {
+    const { id } = await linkedAndCopied()
+    desk.setExists(false)
+    cut(id)
+    await settle()
+    expect(ownedGroups('f1', id)).toHaveLength(1)
+    const expiredBefore = folderRuntime('f1').trashExpired
+    vi.setSystemTime(Date.now() + 31 * 24 * 3600 * 1000)
+    expect(trashWaitingTakes('f1')).toEqual([])
+    expect(ownedGroups('f1', id)).toBeNull()
+    expect(folderRuntime('f1')).toMatchObject({ trashPending: 0, trashExpired: expiredBefore + 1 })
+    // a wire made later owns nothing of it: Ctrl+Z / a cut keeps the file
+    desk.setExists(true)
+    linkTakesToFolder([id], 'f1')
+    await settle()
+    expect(ownedGroups('f1', id)).toEqual([])
+  })
+
+  /** Five finished videos wired into f1 in ONE step (each copied by that wiring). */
+  async function fiveWired() {
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) ids.push(await runToCompletion(i % 2 ? 's2' : 's1'))
+    linkTakesToFolder(ids, 'f1')
+    await settle()
+    expect(ids.every((id) => ownedGroups('f1', id)?.length === 1)).toBe(true)
+    return ids
+  }
+
+  it('Ctrl+Z of a step that wired 5 copied videos asks first; "Huỷ" keeps every file (the jump itself stays)', async () => {
+    const ids = await fiveWired()
+    const asked: string[] = []
+    Object.assign((globalThis as { window?: object }).window!, { confirm: (q: string) => (asked.push(q), false) })
+    undo()
+    await settle()
+    expect(asked).toEqual(['Bỏ nối 5 video khỏi thư mục “Phim” và chuyển các file SanoVids đã lưu của chúng vào Thùng rác của Windows?'])
+    expect(folderTakes()).toEqual([])
+    expect(desk.trashCalls).toEqual([])
+    expect(desk.bin).toEqual([])
+    expect(ids.every((id) => ownedGroups('f1', id) === null)).toBe(true)
+    expect(lastToast(/Đã giữ nguyên/)!.text).toBe('Đã giữ nguyên các file đã lưu của 5 video (không chuyển vào Thùng rác).')
+  })
+
+  it('… and OK moves them (one call for the 5 videos)', async () => {
+    const ids = await fiveWired()
+    Object.assign((globalThis as { window?: object }).window!, { confirm: () => true })
+    undo()
+    await settle()
+    expect(desk.trashCalls).toHaveLength(1)
+    expect(desk.trashCalls[0].items.map((i) => i.takeId).sort()).toEqual([...ids].sort())
+    expect(desk.bin).toHaveLength(10)
+  })
 })
 
 describe('stored ownership record and "chờ xoá" list are repaired value by value', () => {
@@ -1126,5 +1317,23 @@ describe('stored ownership record and "chờ xoá" list are repaired value by va
       ),
     ).toEqual({ f1: [{ takeId: 't1', at: now - day }] })
     expect(parseFolderTrashWaiting(null, now)).toEqual({})
+    // the entries that expired (their record is released by saveFolders): well formed, older than 30 days, not waiting again
+    expect(
+      expiredFolderTrashWaiting(
+        {
+          f1: [
+            { takeId: 't1', at: now - 40 * day },
+            { takeId: 't1', at: now - day }, // waits again (cut again later): not expired
+            { takeId: 't2', at: now - 31 * day },
+            { takeId: 't2', at: now - 35 * day },
+            { takeId: 't3', at: 'x' },
+            { takeId: 't4', at: now + 3_600_000 }, // from the future: invalid, not expired
+          ],
+          f2: 'x',
+        },
+        now,
+      ),
+    ).toEqual([{ folderId: 'f1', takeId: 't2' }])
+    expect(expiredFolderTrashWaiting(null, now)).toEqual([])
   })
 })

@@ -210,12 +210,13 @@ function appUserModelId(appName) {
 
 /**
  * 'dev'       not packaged (`electron .`): never checks;
- * 'portable'  the portable .exe (PORTABLE_EXECUTABLE_FILE), win-unpacked or a copied exe: check only;
- * 'installer' an NSIS install (its uninstaller sits next to the exe): check, download, install.
+ * 'portable'  the portable .exe (PORTABLE_EXECUTABLE_FILE, see trustedPortableFile), win-unpacked or a copied exe:
+ *             check only;
+ * 'installer' an NSIS install (its uninstaller sits next to the exe — whatever the environment says): check, download,
+ *             install.
  */
-function detectKind({ platform, isPackaged, portableFile, execPath, appName, exists, pathMod }) {
+function detectKind({ platform, isPackaged, execPath, appName, exists, pathMod }) {
   if (!isPackaged) return 'dev'
-  if (typeof portableFile === 'string' && portableFile !== '') return 'portable'
   if (platform === 'win32' && typeof execPath === 'string' && execPath !== '') {
     let found = false
     try {
@@ -226,6 +227,51 @@ function detectKind({ platform, isPackaged, portableFile, execPath, appName, exi
     if (found) return 'installer'
   }
   return 'portable'
+}
+
+/** Variables the electron-builder Portable stub (portable.nsi) sets for the app it extracted and starts. */
+const PORTABLE_ENV = Object.freeze(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'PORTABLE_EXECUTABLE_APP_FILENAME'])
+
+/** Those variables of `env` (process.env) → { file, dir, appFilename }: non-empty strings, else undefined. */
+function portableEnvOf(env) {
+  const get = (name) => {
+    const v = env && typeof env === 'object' ? env[name] : undefined
+    return typeof v === 'string' && v !== '' ? v : undefined
+  }
+  return { file: get('PORTABLE_EXECUTABLE_FILE'), dir: get('PORTABLE_EXECUTABLE_DIR'), appFilename: get('PORTABLE_EXECUTABLE_APP_FILENAME') }
+}
+
+/**
+ * PORTABLE_EXECUTABLE_FILE (portableEnvOf, read once at start-up, then removed from the environment by main.cjs),
+ * trusted only when THIS run is the app a Portable stub extracted — Windows hands environment variables down to child
+ * processes, so an installed SanoVids started by another electron-builder portable app (or by a program a Portable
+ * started) would otherwise take that other .exe for itself (kind 'portable', a taskbar pin relaunching it):
+ *   packaged win32; the file an absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the
+ *   relaunch command); no uninstaller next to the running exe (an NSIS install is never the portable); the stub's app
+ *   name (PORTABLE_EXECUTABLE_APP_FILENAME) = the running exe's name without '.exe' (case-insensitive); the running exe
+ *   inside the Windows temp folder (real paths, as placement: the stub extracts there).
+ * → the file, or undefined. Never throws.
+ */
+function trustedPortableFile({ platform, isPackaged, portable, execPath, tmpDir, appName, exists, realpath, pathMod }) {
+  try {
+    if (platform !== 'win32' || !isPackaged || !portable || typeof portable !== 'object') return undefined
+    const file = portable.file
+    if (typeof file !== 'string' || file === '' || file.length > 1024 || /["\r\n\u0000]/.test(file)) return undefined
+    if (!pathMod.isAbsolute(file) || pathMod.extname(file).toLowerCase() !== '.exe' || !exists(file)) return undefined
+    for (const p of [execPath, tmpDir]) {
+      if (typeof p !== 'string' || p === '' || p.length > 1024 || p.includes('\u0000') || !pathMod.isAbsolute(p)) return undefined
+    }
+    if (exists(pathMod.join(pathMod.dirname(execPath), `Uninstall ${appName}.exe`))) return undefined
+    const own = pathMod.basename(execPath).replace(/\.exe$/i, '').toLowerCase()
+    if (typeof portable.appFilename !== 'string' || portable.appFilename.toLowerCase() !== own) return undefined
+    if (typeof realpath !== 'function') return undefined
+    const realExec = realpath(execPath)
+    const realTmp = realpath(tmpDir)
+    if (typeof realExec !== 'string' || typeof realTmp !== 'string' || !realExec || !realTmp) return undefined
+    return isInsideDir(pathMod.resolve(realTmp), pathMod.resolve(realExec), pathMod) ? file : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Is `child` strictly inside `parent` (both already absolute, resolved by the caller)? */
@@ -239,7 +285,8 @@ function isInsideDir(parent, child, pathMod) {
  * Where this SanoVids runs from (main.cjs IPC 'app:placement' → Cài đặt → Ứng dụng / Giới thiệu hints). Only a kind
  * ever leaves the main process, never a path.
  *   'installer' | 'portable' | 'dev'  exactly detectKind (the kind of the updater's UpdateState);
- *   'temp-copy' a portable-kind exe WITHOUT PORTABLE_EXECUTABLE_FILE running from inside the Windows temp folder — a
+ *   'temp-copy' a portable-kind exe WITHOUT a trusted PORTABLE_EXECUTABLE_FILE (`portableFile` = trustedPortableFile's
+ *               answer) running from inside the Windows temp folder — a
  *               leftover copy of a Setup / Portable extraction ("…\Temp\ns*.tmp\7z-out\") that Windows may delete at any
  *               time. The real Portable .exe also runs from %TEMP% but sets PORTABLE_EXECUTABLE_FILE: 'portable'.
  * The containment test compares the REAL paths of both (realpath = fs.realpathSync.native: TEMP is often an 8.3 short
@@ -272,8 +319,9 @@ function placement({ platform, isPackaged, portableFile, execPath, tmpDir, appNa
  * Taskbar identity of the PORTABLE build's window (BrowserWindow.setAppDetails): the portable stub extracts the app to
  * %TEMP%\ns*.tmp\app and deletes it on exit, so a window pinned as is would point at that temp copy. With these details
  * the pin relaunches the portable .exe itself, with its own icon. Only for a packaged win32 run whose
- * PORTABLE_EXECUTABLE_FILE is an absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the
- * relaunch command); anything else → null (nothing set). Never throws.
+ * PORTABLE_EXECUTABLE_FILE (`portableFile` = trustedPortableFile's answer: this run really came from that stub) is an
+ * absolute path to an existing .exe without '"', CR, LF or NUL (it is quoted into the relaunch command); anything else
+ * → null (nothing set). Never throws.
  * → { appId, appIconPath, appIconIndex: 0, relaunchCommand: '"<file>"', relaunchDisplayName } | null
  */
 function portableRelaunch({ platform, isPackaged, portableFile, appName, exists, pathMod }) {
@@ -973,6 +1021,9 @@ module.exports = {
   resolveProfileDir,
   appUserModelId,
   detectKind,
+  PORTABLE_ENV,
+  portableEnvOf,
+  trustedPortableFile,
   placement,
   portableRelaunch,
   mapUpdaterError,

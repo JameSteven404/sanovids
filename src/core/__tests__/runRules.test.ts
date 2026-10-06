@@ -15,6 +15,7 @@ import {
   DELETED_VIDEO_REASON,
   EMPTY_PROMPT_REASON,
   FRAME_IMAGE_REASON,
+  foreignConfigReason,
   foreignModelReason,
   LONG_PROMPT_REASON,
   NO_FRAMES_REASON,
@@ -100,6 +101,17 @@ describe('runBlockReason — each rule', () => {
       'Cảnh dùng model của bản SanoVids mới hơn (veo_3_1@seedvis) — cập nhật SanoVids để chạy (hoặc chọn lại model để chạy bằng model này).',
     )
     expect(reasonOf(scene({ foreignModel: '' }))).toBeNull()
+  })
+
+  it('1b. values of a newer build for a model this build knows (config marker: foreignSettings alone) block too', () => {
+    const config = { model: 'seedance_2_5', mode: 't2v', duration: 20, resolution: '4k', ratio: '16:9' }
+    const s = scene({ prompt: '', foreignSettings: config })
+    expect(reasonOf(s)).toBe(foreignConfigReason(config))
+    expect(foreignConfigReason(config)).toBe(
+      'Cảnh dùng cấu hình của bản SanoVids mới hơn (thời lượng 20s, độ phân giải 4k) — cập nhật SanoVids để chạy (hoặc chọn lại cấu hình để chạy bằng cấu hình này).',
+    )
+    // a model marker wins (its own text)
+    expect(reasonOf(scene({ foreignModel: 'veo', foreignSettings: config }))).toBe(foreignModelReason('veo'))
   })
 
   it('2. empty prompt', () => {

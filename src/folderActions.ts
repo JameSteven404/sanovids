@@ -14,6 +14,9 @@
 // process to move the files THAT wire wrote, unchanged, to the Recycle Bin (never the auto-save wire's, never a file
 // already there, never the last copy: SanoVids must still have the video). It runs in the folder's lock, after a save
 // being written. Hoàn tác / Ctrl+Z brings the wire back and writes a NEW copy (the old one stays in the Recycle Bin).
+// Whether files may move is decided once, at the gesture (UnlinkOptions.trash); a jump that would move the files of
+// TRASH_CONFIRM_MIN videos asks first, like Delete. A wire made again while the main process moves its files is undone
+// like Hoàn tác (restoreInLock), and its video cannot be deleted meanwhile (takesBeingTrashed).
 // Deleting a video / a scene, removing the folder node, choosing another folder or cutting an auto-save wire never
 // touches files. Texts: core/folderTrash.
 import { sceneCode } from './core/compile'
@@ -23,11 +26,14 @@ import {
   outcomeOfResult,
   removedSaveLinks,
   restoreToastText,
+  TRASH_CONFIRM_MIN,
   TRASH_FIRST_HINT,
   TRASH_HINT_KEY,
   TRASH_SLOW_MS,
+  trashConfirmText,
   trashFlushText,
   trashingToastText,
+  trashKeptText,
   trashSummaryText,
   unlinkToast,
   type SaveLinkPair,
@@ -228,6 +234,13 @@ async function saveNow(takeId: string, folderId: string, opts: SaveNowOptions): 
   return { ok: false, message: res.message }
 }
 
+/** In the folder's lock: copy the take there unless it is (again) saved there by then. Never throws. */
+async function saveIfMissing(takeId: string, folderId: string): Promise<void> {
+  await withFolderLock(folderId, async () => {
+    if (!wasSavedTo(folderId, takeId)) await saveNow(takeId, folderId, { via: 'link' })
+  }).catch((e: unknown) => console.error('[folders] save failed', e))
+}
+
 /** Waiting saves of videos that are gone (deleted, not in this project) or no longer wired to the folder are dropped. */
 function pruneWaiting(folderId: string) {
   const folder = folderOf(folderId)
@@ -304,6 +317,52 @@ export interface UnlinkOptions {
   undo?: ToastAction
   /** 'single': one toast for the one pair · 'summary': one toast for all · 'none': the caller says it. */
   toast: 'single' | 'summary' | 'none'
+  /**
+   * May the files go to the Recycle Bin — decided ONCE, by the caller, when the user acted (the setting, the desktop
+   * bridge, a question it asked), so what was said at the gesture is what happens even if the setting changes while a
+   * save into the folder holds its lock. Missing (retries, the folder coming back): trashAllowed() at the call.
+   */
+  trash?: boolean
+}
+
+/** "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" is on and this app can do it (desktop bridge). */
+export function trashAllowed(): boolean {
+  return useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()
+}
+
+/**
+ * Of these cut take → folder wires, those whose files a cut would move now (for the question asked from
+ * TRASH_CONFIRM_MIN videos on): a finished video, not in `dying`, whose wire wrote copies itself.
+ */
+export function trashMoverPairs(pairs: readonly SaveLinkPair[], dying: ReadonlySet<string> = new Set()): SaveLinkPair[] {
+  const owned = ownedGroupsOf(pairs)
+  return pairs.filter((p, i) => !dying.has(p.takeId) && takeOf(p.takeId)?.status === 'completed' && !!owned[i]?.length)
+}
+
+/** window.confirm when there is one (the app always has it), else yes. */
+function confirmTrash(question: string): boolean {
+  const w = (globalThis as { window?: { confirm?: (q: string) => boolean } }).window
+  return typeof w?.confirm === 'function' ? w.confirm(question) : true
+}
+
+/**
+ * Takes whose cut wires are being handled right now (count of folder passes: a take may be cut from several folders):
+ * actions.deleteTakes waits for them — deleting a video while its saved copy goes to the Recycle Bin would leave the
+ * only copy there ("never the last copy").
+ */
+const trashBusy = new Map<string, number>()
+
+function markTrashBusy(takeIds: readonly string[], on: boolean) {
+  for (const id of takeIds) {
+    const n = (trashBusy.get(id) ?? 0) + (on ? 1 : -1)
+    if (n > 0) trashBusy.set(id, n)
+    else trashBusy.delete(id)
+  }
+}
+
+/** Of `takeIds`, those whose cut wires are being handled right now (their saved files may be moving to the Recycle Bin). */
+export function takesBeingTrashed(takeIds: readonly string[]): string[] {
+  return takeIds.filter((id) => trashBusy.has(id))
 }
 
 /**
@@ -357,17 +416,29 @@ interface FolderPass {
 
 /**
  * One folder's cut wires, inside its lock (after a save being written for them). Each pair: dropped from the waiting
- * saves; then, only when the setting is on (desktop), the folder node and its path exist, the take exists, is finished
- * and no wire targets the folder for it any more, SanoVids still has the video, and the wire itself wrote groups
- * (ownership record) → those groups go to files:trashSaved. The ownership record of a pair is released once dealt with,
- * except while its files wait for the folder or could not be moved (Thử lại).
+ * saves; then, only when `trash` (decided by the caller) and the desktop bridge allow it, the folder node and its path
+ * exist, the take exists, is finished and no wire targets the folder for it any more, SanoVids still has the video, and
+ * the wire itself wrote groups (ownership record) → those groups go to files:trashSaved. The ownership record of a pair
+ * is released once dealt with, except while its files wait for the folder or could not be moved (Thử lại).
+ * The wires are read again from the store at every step (the user may wire a video back while this waits for the
+ * blobs or for the main process): a wire back before main is asked keeps everything; a wire back while main was moving
+ * the files is undone like Hoàn tác (restoreInLock: a copy that went to the Recycle Bin is written again). Its takes
+ * cannot be deleted meanwhile (takesBeingTrashed).
  */
-async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSlow?: () => void): Promise<FolderPass> {
+async function unlinkInFolder(folderId: string, takeIds: readonly string[], trash: boolean, onSlow?: () => void): Promise<FolderPass> {
+  markTrashBusy(takeIds, true)
+  try {
+    return await unlinkPass(folderId, takeIds, trash, onSlow)
+  } finally {
+    markTrashBusy(takeIds, false)
+  }
+}
+
+async function unlinkPass(folderId: string, takeIds: readonly string[], trash: boolean, onSlow?: () => void): Promise<FolderPass> {
   const pass: FolderPass = { outcomes: new Map(), retry: [] }
   const folder = folderOf(folderId)
   const name = folder?.name ?? 'Thư mục'
-  const prefOn = useDownloadPrefs.getState().folderUnlinkTrash
-  const canTrash = canTrashSaved()
+  const canTrash = trash && canTrashSaved()
   const ask: TrashSavedItem[] = []
   /** Pairs whose ownership record goes (dealt with: what is left in the folder is the user's now). */
   const release: string[] = []
@@ -382,10 +453,12 @@ async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSl
     for (const takeId of takeIds) settle(takeId, 'skip', null)
     return pass
   }
-  // Wired again meanwhile (Ctrl+Z, a new wire): the wire owns its files again — nothing is moved, nothing waits.
+  /** A wire points this take at the folder again (Ctrl+Z, a new wire): read from the store, not from `folder`. */
+  const wiredAgain = (takeId: string) => !!folderOf(folderId)?.takes?.includes(takeId)
+  // Wired again meanwhile: the wire owns its files again — nothing is moved, nothing waits.
   const relinked: string[] = []
   const cut = takeIds.filter((takeId) => {
-    if (!folder.takes?.includes(takeId)) return true
+    if (!wiredAgain(takeId)) return true
     relinked.push(takeId)
     settle(takeId, 'skip', null)
     return false
@@ -399,13 +472,16 @@ async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSl
   for (let i = 0; i < cut.length; i++) {
     const takeId = cut[i]
     const take = takeOf(takeId)
-    if (!take) {
+    if (wiredAgain(takeId)) {
+      // Wired again while an earlier video's blob was being checked: left as it is.
+      settle(takeId, 'skip', null)
+    } else if (!take) {
       release.push(takeId)
       settle(takeId, 'skip', null)
-    } else if (!prefOn || !canTrash) {
+    } else if (!canTrash) {
       release.push(takeId)
       settle(takeId, 'off', 'kept')
-    } else if (isTargeted(folder, take)) {
+    } else if (isTargeted(folderOf(folderId) ?? folder, take)) {
       // Its scene still auto-saves into this folder: the files stay there.
       release.push(takeId)
       settle(takeId, 'linked', 'kept')
@@ -419,7 +495,7 @@ async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSl
     } else if (!owned[i]!.length) {
       release.push(takeId)
       settle(takeId, 'preexisting', 'kept')
-    } else if (!folder.path) {
+    } else if (!(folderOf(folderId) ?? folder).path) {
       release.push(takeId)
       settle(takeId, 'pick', 'kept')
     } else if (!(await hasBlob(take))) {
@@ -428,11 +504,26 @@ async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSl
       settle(takeId, 'noBlob', 'kept')
     } else ask.push({ takeId, groupIds: owned[i]! })
   }
-  if (ask.length) {
+  // Read again right before the main process is asked (the blobs were checked one by one): a video wired back or
+  // deleted meanwhile is left alone; the folder node as it is NOW (another folder chosen → its old files are "elsewhere").
+  const target = folderOf(folderId)
+  const send = ask.filter(({ takeId }) => {
+    if (wiredAgain(takeId)) {
+      settle(takeId, 'skip', null)
+      return false
+    }
+    if (!target || !takeOf(takeId)) {
+      release.push(takeId)
+      settle(takeId, 'skip', null)
+      return false
+    }
+    return true
+  })
+  if (send.length && target) {
     const slow = onSlow ? setTimeout(onSlow, TRASH_SLOW_MS) : undefined
     let res: Awaited<ReturnType<typeof trashSavedFiles>>
     try {
-      res = await trashSavedFiles(folder, ask)
+      res = await trashSavedFiles(target, send)
     } finally {
       if (slow) clearTimeout(slow)
     }
@@ -472,6 +563,18 @@ async function unlinkInFolder(folderId: string, takeIds: readonly string[], onSl
     if (queued.length) markTrashWaiting(folderId, queued, true)
   }
   releaseOwned(folderId, release)
+  // Wired again while the main process was moving the files (dragged back, Ctrl+Z): the cut is undone right here, like
+  // Hoàn tác — a copy that went to the Recycle Bin is written again, a pending move dropped (restoreInLock says so).
+  // Nothing more is said about their cut.
+  const back = takeIds.filter((takeId) => unlinked.has(unlinkedKey({ folderId, takeId })) && wiredAgain(takeId))
+  if (back.length) {
+    for (const takeId of back) {
+      const o = pass.outcomes.get(takeId)
+      if (o) pass.outcomes.set(takeId, { ...o, kind: 'skip' })
+    }
+    pass.retry = pass.retry.filter((p) => !back.includes(p.takeId))
+    await restoreInLock(folderId, back)
+  }
   return pass
 }
 
@@ -485,6 +588,8 @@ const QUIET_KINDS = new Set<UnlinkKind>(['skip', 'off', 'unsaved', 'linked'])
  */
 export async function afterSaveUnlinked(pairs: readonly SaveLinkPair[], opts: UnlinkOptions): Promise<UnlinkOutcome[]> {
   const groups = byFolder(pairs)
+  // Decided once, now (see UnlinkOptions.trash): never read again inside the folder locks.
+  const trash = opts.trash ?? trashAllowed()
   for (const [folderId, takeIds] of groups) for (const takeId of takeIds) unlinked.set(unlinkedKey({ folderId, takeId }), 'trashing')
   const single = opts.toast === 'single' && pairs.length === 1 ? pairs[0] : null
   let interim: number | undefined
@@ -501,7 +606,7 @@ export async function afterSaveUnlinked(pairs: readonly SaveLinkPair[], opts: Un
     // Every folder's lock is asked for now (in order with saves / restores asked for later).
     passes = await Promise.all(
       [...groups].map(([folderId, takeIds]) =>
-        withFolderLock(folderId, () => unlinkInFolder(folderId, takeIds, onSlow)).catch((e: unknown) => {
+        withFolderLock(folderId, () => unlinkInFolder(folderId, takeIds, trash, onSlow)).catch((e: unknown) => {
           console.error('[folders] unlink failed', e)
           return { outcomes: new Map<string, UnlinkOutcome>(), retry: [] } as FolderPass
         }),
@@ -547,38 +652,44 @@ async function restoreAfterUndo(pairs: readonly SaveLinkPair[]): Promise<void> {
   const groups = byFolder(pairs.filter((p) => unlinked.has(unlinkedKey(p))))
   await Promise.all(
     [...groups].map(([folderId, takeIds]) =>
-      withFolderLock(folderId, async () => {
-        const ok: string[] = []
-        const failed: { takeId: string; message: string }[] = []
-        for (const takeId of takeIds) {
-          const key = unlinkedKey({ folderId, takeId })
-          const state = unlinked.get(key)
-          const folder = folderOf(folderId)
-          if (!state || !folder || !folder.takes?.includes(takeId)) continue
-          // 'trashing': its cut has not been handled yet — it will see the wire back and leave everything as it is.
-          if (state === 'trashing' || state === 'restored') continue
-          unlinked.set(key, 'restored')
-          if (state === 'queued') markTrashWaiting(folderId, [takeId], false)
-          else if (state === 'kept') {
-            if (ownedGroups(folderId, takeId) === null) setOwned(folderId, takeId, [])
-          } else if (state === 'unsaved') {
-            const take = takeOf(takeId)
-            if (take?.status === 'completed' && !wasSavedTo(folderId, takeId)) await saveNow(takeId, folderId, { auto: true, via: 'link' })
-          } else if (state === 'trashed') {
-            const res = await saveNow(takeId, folderId, { via: 'restore', quiet: true })
-            if (res.ok) ok.push(takeId)
-            else failed.push({ takeId, message: res.message })
-          }
-        }
-        const name = folderOf(folderId)?.name ?? 'Thư mục'
-        if (ok.length) toast(restoreToastText(true, ok.length === 1 ? takeLabel(ok[0]) : `${ok.length} video`, name), { tone: 'success' })
-        if (failed.length) {
-          const what = failed.length === 1 ? takeLabel(failed[0].takeId) : `${failed.length} video`
-          toast(restoreToastText(false, what, name, failed[0].message.replace(/[.。]\s*$/, '')), { tone: 'warning', ms: 12000 })
-        }
-      }).catch((e: unknown) => console.error('[folders] restore failed', e)),
+      withFolderLock(folderId, () => restoreInLock(folderId, takeIds)).catch((e: unknown) => console.error('[folders] restore failed', e)),
     ),
   )
+}
+
+/**
+ * restoreAfterUndo for one folder, inside its lock (also called by unlinkInFolder for wires brought back while the
+ * main process was moving their files). Only pairs whose wire is back and whose cut was handled ('trashing' = not yet:
+ * that handling sees the wire back itself).
+ */
+async function restoreInLock(folderId: string, takeIds: readonly string[]): Promise<void> {
+  const ok: string[] = []
+  const failed: { takeId: string; message: string }[] = []
+  for (const takeId of takeIds) {
+    const key = unlinkedKey({ folderId, takeId })
+    const state = unlinked.get(key)
+    const folder = folderOf(folderId)
+    if (!state || !folder || !folder.takes?.includes(takeId)) continue
+    if (state === 'trashing' || state === 'restored') continue
+    unlinked.set(key, 'restored')
+    if (state === 'queued') markTrashWaiting(folderId, [takeId], false)
+    else if (state === 'kept') {
+      if (ownedGroups(folderId, takeId) === null) setOwned(folderId, takeId, [])
+    } else if (state === 'unsaved') {
+      const take = takeOf(takeId)
+      if (take?.status === 'completed' && !wasSavedTo(folderId, takeId)) await saveNow(takeId, folderId, { auto: true, via: 'link' })
+    } else if (state === 'trashed') {
+      const res = await saveNow(takeId, folderId, { via: 'restore', quiet: true })
+      if (res.ok) ok.push(takeId)
+      else failed.push({ takeId, message: res.message })
+    }
+  }
+  const name = folderOf(folderId)?.name ?? 'Thư mục'
+  if (ok.length) toast(restoreToastText(true, ok.length === 1 ? takeLabel(ok[0]) : `${ok.length} video`, name), { tone: 'success' })
+  if (failed.length) {
+    const what = failed.length === 1 ? takeLabel(failed[0].takeId) : `${failed.length} video`
+    toast(restoreToastText(false, what, name, failed[0].message.replace(/[.。]\s*$/, '')), { tone: 'warning', ms: 12000 })
+  }
 }
 
 /** The folder is back: wires cut while it was away take their files to the Recycle Bin now (if still allowed). */
@@ -609,7 +720,23 @@ const stopHistory = onHistoryJump((before, after) => {
   if (before.id !== after.id) return
   const removed = removedSaveLinks(before.folders, after.folders)
   const added = addedSaveLinks(before.folders, after.folders)
-  if (removed.length) void afterSaveUnlinked(removed, { source: 'history', toast: removed.length === 1 ? 'single' : 'summary' })
+  if (removed.length) {
+    // Decided now, once: the setting, then — like Delete — a question when this one jump (Ctrl+Z of a step that wired
+    // many videos, redo of a big Delete) would move the files of TRASH_CONFIRM_MIN videos or more. "Huỷ" keeps every
+    // file (the jump itself stays).
+    let trash = trashAllowed()
+    if (trash) {
+      const videos = new Set(trashMoverPairs(removed).map((p) => p.takeId)).size
+      if (videos >= TRASH_CONFIRM_MIN) {
+        const names = removed.map((p) => folderMapOf(after.folders).get(p.folderId)?.name ?? 'Thư mục')
+        if (!confirmTrash(trashConfirmText(videos, names))) {
+          trash = false
+          toast(trashKeptText(videos), { tone: 'info' })
+        }
+      }
+    }
+    void afterSaveUnlinked(removed, { source: 'history', toast: removed.length === 1 ? 'single' : 'summary', trash })
+  }
   if (added.length) void restoreAfterUndo(added)
 })
 // What a cut did belongs to the open project's undo history: forgotten with it.
@@ -639,7 +766,10 @@ function finishedChosenTake(sceneId: string): Take | undefined {
 /**
  * Wire videos into a folder ('save'): finished ones are copied now, running / queued ones as soon as they finish.
  * A video already saved there is not copied twice by itself: the toast offers "Lưu thêm bản nữa" — and that new wire
- * owns nothing it did not copy (cutting it, or Ctrl+Z, keeps the file that was already there).
+ * owns nothing it did not copy (cutting it, or Ctrl+Z, keeps the file that was already there), also when an earlier
+ * cut kept a record (its files waited for the folder or could not be moved: they are the user's now). A video whose
+ * cut is being handled right now is left to that handling: it sees the wire back and undoes the cut (unlinkInFolder →
+ * restoreInLock: a copy already in the Recycle Bin is written again) — nothing is copied or said here.
  */
 export function linkTakesToFolder(takeIds: readonly string[], folderId: string) {
   const folder = folderOf(folderId)
@@ -657,19 +787,24 @@ export function linkTakesToFolder(takeIds: readonly string[], folderId: string) 
       usable.map((t) => t.id),
     ),
   )
+  // Cuts of these videos being handled right now (waiting for the folder's lock, or main moving their files).
+  const handling = new Set(usable.filter((t) => unlinked.get(unlinkedKey({ folderId, takeId: t.id })) === 'trashing').map((t) => t.id))
   // Wired again: a move waiting for the folder, and what an earlier cut did, are forgotten.
   markTrashWaiting(
     folderId,
     usable.map((t) => t.id),
     false,
   )
-  for (const t of usable) unlinked.delete(unlinkedKey({ folderId, takeId: t.id }))
+  for (const t of usable) if (!handling.has(t.id)) unlinked.delete(unlinkedKey({ folderId, takeId: t.id }))
   const later = usable.filter((t) => t.status !== 'completed')
-  const finished = usable.filter((t) => t.status === 'completed')
+  const completed = usable.filter((t) => t.status === 'completed')
+  // A new wire to a video already there copies nothing: it owns nothing — whatever an earlier cut left in the record.
+  for (const t of completed) if (added.has(t.id) && wasSavedTo(folderId, t.id)) setOwned(folderId, t.id, [])
+  const finished = completed.filter((t) => !handling.has(t.id))
   const already = finished.filter((t) => wasSavedTo(folderId, t.id))
-  // A new wire to a video already there copies nothing: it owns nothing (unless a failed / waiting cut kept its groups).
-  for (const t of already) if (added.has(t.id) && ownedGroups(folderId, t.id) === null) setOwned(folderId, t.id, [])
   for (const t of finished) if (!already.includes(t)) void saveTakeToFolder(t.id, folderId, { via: 'link' })
+  // After that handling (same lock): a video still not in the folder then is copied like any new wire.
+  for (const t of completed) if (handling.has(t.id)) void saveIfMissing(t.id, folderId)
   if (already.length) {
     const what = already.length === 1 ? takeLabel(already[0].id) : `${already.length} video`
     toast(`${what} đã có trong thư mục “${folder.name}” rồi.`, {

@@ -366,6 +366,16 @@ export function trashConfirmText(videos: number, folderNames: readonly string[])
   return `Bỏ nối ${videos} video khỏi ${from} và chuyển các file SanoVids đã lưu của chúng vào Thùng rác của Windows?`
 }
 
+/** "Huỷ" at that question after an undo / redo: the jump stays, every saved file stays where it is. */
+export function trashKeptText(videos: number): string {
+  return `Đã giữ nguyên các file đã lưu của ${videos} video (không chuyển vào Thùng rác).`
+}
+
+/** Deleting a video while its cut wire's files are being moved to the Recycle Bin: it waits (never the last copy). */
+export function trashBusyDeleteText(what: string): string {
+  return `Chưa xoá ${what}: SanoVids đang chuyển file đã lưu vào Thùng rác — thử lại sau giây lát.`
+}
+
 /** After Hoàn tác / Ctrl+Z brought back a wire whose files went to the Recycle Bin: a new copy was (not) written. */
 export function restoreToastText(ok: boolean, code: string, folder: string, reason?: string): string {
   return ok
@@ -414,4 +424,12 @@ export const FOLDER_TRASHING_TEXT = 'Đang chuyển file vào Thùng rác…'
 /** Folder node status suffix: cut wires whose files wait for the folder to come back. */
 export function trashPendingSuffix(n: number): string {
   return n > 0 ? ` · ${n} file chờ xoá` : ''
+}
+
+/**
+ * Folder node status suffix (this session): cut wires whose files waited longer than TRASH_WAIT_DAYS for the folder —
+ * no longer moved; the files stay (their record was released, a wire made later never claims them).
+ */
+export function trashExpiredSuffix(n: number): string {
+  return n > 0 ? ` · ${n} video chờ xoá quá ${TRASH_WAIT_DAYS} ngày (đã giữ file)` : ''
 }

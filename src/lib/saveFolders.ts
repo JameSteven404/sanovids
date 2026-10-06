@@ -45,6 +45,8 @@ export interface FolderRuntime {
   trashPending: number
   /** Files are being moved to the Recycle Bin. */
   trashing: boolean
+  /** Cut wires (this session) whose files waited longer than TRASH_WAIT_DAYS: no longer moved, their files stay. */
+  trashExpired: number
 }
 
 const STATS_KEY = 'bdp:folder-stats'
@@ -105,7 +107,7 @@ function writeStats() {
   }
 }
 
-const EMPTY: FolderRuntime = { access: 'checking', saved: 0, lastAt: null, lastName: null, error: null, pending: 0, busy: false, trashPending: 0, trashing: false }
+const EMPTY: FolderRuntime = { access: 'checking', saved: 0, lastAt: null, lastName: null, error: null, pending: 0, busy: false, trashPending: 0, trashing: false, trashExpired: 0 }
 
 interface FolderStatusState {
   byId: Record<string, FolderRuntime>
@@ -361,17 +363,58 @@ export function parseFolderTrashWaiting(raw: unknown, now = Date.now()): TrashWa
   return out
 }
 
+/**
+ * Entries of bdp:folder-trash-waiting (as stored) that expired: well formed but older than TRASH_WAIT_DAYS, for a take
+ * the folder no longer waits for otherwise. Their files stay where they are; the caller releases their ownership record.
+ */
+export function expiredFolderTrashWaiting(raw: unknown, now = Date.now()): { folderId: string; takeId: string }[] {
+  const out: { folderId: string; takeId: string }[] = []
+  if (!isRecord(raw)) return out
+  const kept = parseFolderTrashWaiting(raw, now)
+  for (const [folderId, v] of Object.entries(raw)) {
+    if (!isKey(folderId) || !Array.isArray(v)) continue
+    const live = new Set((kept[folderId] ?? []).map((e) => e.takeId))
+    const seen = new Set<string>()
+    for (const e of v) {
+      if (!isRecord(e) || typeof e.takeId !== 'string' || !e.takeId || e.takeId.length > 200) continue
+      if (typeof e.at !== 'number' || !Number.isFinite(e.at) || e.at <= 0 || now - e.at <= TRASH_WAIT_MS) continue
+      if (live.has(e.takeId) || seen.has(e.takeId)) continue
+      seen.add(e.takeId)
+      out.push({ folderId, takeId: e.takeId })
+    }
+  }
+  return out
+}
+
 let trashWaitingCache: TrashWaiting = parseFolderTrashWaiting(readJson(TRASH_WAITING_KEY))
 
 function readTrashWaiting(): TrashWaiting {
   try {
     // No storage (tests, blocked): the list of this session, still expiring.
-    if (typeof localStorage === 'undefined') return (trashWaitingCache = parseFolderTrashWaiting(trashWaitingCache))
-    trashWaitingCache = parseFolderTrashWaiting(readJson(TRASH_WAITING_KEY))
+    const raw: unknown = typeof localStorage === 'undefined' ? trashWaitingCache : readJson(TRASH_WAITING_KEY)
+    const now = Date.now()
+    trashWaitingCache = parseFolderTrashWaiting(raw, now)
+    const expired = expiredFolderTrashWaiting(raw, now)
+    if (expired.length) forgetExpiredTrashWaiting(expired)
   } catch {
     /* storage not readable: keep the last known list */
   }
   return trashWaitingCache
+}
+
+/**
+ * Cut wires whose files waited too long for their folder: dropped from the stored list, their ownership record released
+ * (what is left in the folder is the user's: a wire made later never claims it), counted on the node ("đã giữ file").
+ */
+function forgetExpiredTrashWaiting(expired: readonly { folderId: string; takeId: string }[]) {
+  writeTrashWaiting(trashWaitingCache)
+  const byFolder = new Map<string, string[]>()
+  for (const e of expired) byFolder.set(e.folderId, [...(byFolder.get(e.folderId) ?? []), e.takeId])
+  for (const [folderId, takeIds] of byFolder) {
+    releaseOwned(folderId, takeIds)
+    const cur = useFolderStatus.getState().byId[folderId] ?? runtimeSeed(folderId)
+    patch(folderId, { trashExpired: cur.trashExpired + takeIds.length, trashPending: trashWaitingCache[folderId]?.length ?? 0 })
+  }
 }
 function writeTrashWaiting(all: TrashWaiting) {
   trashWaitingCache = all

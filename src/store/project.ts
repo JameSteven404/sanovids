@@ -379,6 +379,9 @@ type ForeignMark = Pick<Scene, 'foreignModel' | 'foreignSettings'>
 
 const hasForeign = (m: ForeignMark | undefined): m is ForeignMark => !!m && (m.foreignModel !== undefined || m.foreignSettings !== undefined)
 
+/** A config marker: a newer build's values for a model this build knows (foreignSettings without foreignModel). */
+const isConfigMark = (m: ForeignMark): boolean => m.foreignModel === undefined && m.foreignSettings !== undefined
+
 /** `x` without the newer-build model marker; `x` itself when it has none. */
 function withoutForeign<T extends ForeignMark>(x: T): T {
   if (!hasForeign(x)) return x
@@ -453,7 +456,10 @@ export interface ProjectState {
   updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs'>>) => void
   /** Prompt edits are coalesced in the undo history; legacy @Tag mentions auto-link their asset. Returns newly linked asset ids. */
   setScenePrompt: (id: string, prompt: string) => string[]
-  /** A patch with `model` also drops a newer build's model marker (Scene.foreignModel / foreignSettings). */
+  /**
+   * A patch with `model` also drops a newer build's model marker (Scene.foreignModel / foreignSettings); any patch drops
+   * a config marker (a newer build's values for a known model: foreignSettings alone).
+   */
   updateSettings: (sceneIds: string[], patch: Partial<VideoSettings>) => void
   /** Restore prompt, refs, video refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
   restoreScene: (id: string, data: { prompt: string; refs: string[]; videoRefs?: string[]; settings: VideoSettings }, liveTakeIds?: Set<string>) => void
@@ -659,8 +665,10 @@ export const useProject = create<ProjectState>()(
             const old = p.presets.find((x) => x.id === id)!
             let next: Preset = { ...old, ...patch, id, ...normalizeSettings({ ...old, ...patch }) }
             if (typeof next.name !== 'string' || !next.name.trim()) next.name = old.name
-            // Picking a model for a preset of a newer build's model drops its marker (like updateSettings for scenes).
-            if (patch.model !== undefined) next = withoutForeign(next)
+            // Picking a model for a preset of a newer build's model drops its marker (like updateSettings for scenes); a
+            // preset that only keeps a newer build's values for a known model (config marker) loses it on any setting.
+            const setting = (['model', 'mode', 'duration', 'resolution', 'ratio'] as const).some((k) => patch[k] !== undefined)
+            if (patch.model !== undefined || (setting && isConfigMark(old))) next = withoutForeign(next)
             const settings = presetSettings(next)
             // A scene keeps the link only while it still matches the preset: its settings and its newer-build model.
             const matches = (s: Scene) => sameSettings(s.settings, settings) && s.foreignModel === next.foreignModel
@@ -723,8 +731,9 @@ export const useProject = create<ProjectState>()(
             const settings = normalizeSettings({ ...s.settings, ...patch })
             const same = (Object.keys(settings) as (keyof VideoSettings)[]).every((k) => settings[k] === s.settings[k])
             // Picking a model is the user's choice — even the stand-in one already in `settings`: a newer build's model
-            // marker goes (the scene can run again). Other fields keep it.
-            const next = patch.model !== undefined ? withoutForeign(s) : s
+            // marker goes (the scene can run again). Other fields keep it — except a config marker (a newer build's
+            // values for a known model): any setting chosen here replaces those values.
+            const next = patch.model !== undefined || isConfigMark(s) ? withoutForeign(s) : s
             return same && next === s ? s : { ...next, presetId: null, settings: same ? s.settings : settings }
           }),
         restoreScene: (id, { prompt, refs, videoRefs, settings }, liveTakeIds) =>
@@ -740,7 +749,8 @@ export const useProject = create<ProjectState>()(
                 if (s.id !== id) return s
                 const nextSettings = normalizeSettings({ ...s.settings, ...settings })
                 const same = (Object.keys(nextSettings) as (keyof VideoSettings)[]).every((k) => nextSettings[k] === s.settings[k])
-                const marked = foreign ? withForeignOf(s, foreign) : s
+                // A config marker of the scene goes with the settings restored over it.
+                const marked = foreign ? withForeignOf(s, foreign) : isConfigMark(s) ? withoutForeign(s) : s
                 return {
                   ...marked,
                   prompt,

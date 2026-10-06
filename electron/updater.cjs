@@ -147,9 +147,10 @@ function hashFileSync(file) {
 /**
  * Called once, in the primary instance, inside app.whenReady(), BEFORE the main window exists.
  * → { onWindowReady(), onQuit(exitCode), isQuittingForUpdate() }
- * pendingClearRetryMs: tests only (main.cjs never passes it).
+ * portableFile: the portable .exe this run came from (main.cjs portableFile(): the Portable stub's variable, trusted and
+ * already removed from process.env), else undefined. pendingClearRetryMs: tests only (main.cjs never passes it).
  */
-function setupUpdater({ isAppSender, getMainWindow, profileSource, pendingClearRetryMs = PENDING_CLEAR_RETRY_MS }) {
+function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile, pendingClearRetryMs = PENDING_CLEAR_RETRY_MS }) {
   const userData = app.getPath('userData')
   const log = createLogger(path.join(userData, 'logs'))
   const current = app.getVersion()
@@ -158,7 +159,7 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, pendingClearR
   const kind = rules.detectKind({
     platform: process.platform,
     isPackaged: app.isPackaged,
-    portableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+    portableFile,
     execPath: process.execPath,
     appName: app.getName(),
     exists: fs.existsSync,

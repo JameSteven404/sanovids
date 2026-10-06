@@ -108,8 +108,10 @@ export function normalizeSettings(s: Partial<VideoSettings> & { model?: ModelId 
   return { model, mode, duration, resolution, ratio }
 }
 
+/** "15s · 480P · 16:9". Tolerates settings of another build missing a field (a take of a newer build's route). */
 export function settingsLabel(s: VideoSettings): string {
-  return `${s.duration}s · ${s.resolution.toUpperCase()} · ${s.ratio}`
+  const duration = typeof s?.duration === 'number' && Number.isFinite(s.duration) ? `${s.duration}s` : '?s'
+  return `${duration} · ${String(s?.resolution ?? '').toUpperCase()} · ${s?.ratio ?? ''}`
 }
 
 /** Whether this mode sends reference images. */

@@ -26,7 +26,7 @@ import { chargedDemo, CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { activeFaultCount } from '../dev/devModel'
@@ -192,15 +192,18 @@ function QueuePanel() {
       { key: 'processing', title: 'Đang tạo', takes: pick((t) => t.status === 'processing') },
       // Queue order: the next job to start is listed first.
       { key: 'queued', title: 'Đang chờ', takes: pick((t) => t.status === 'queued').reverse() },
-      { key: 'failed', title: 'Lỗi / đã huỷ', takes: pick((t) => t.status === 'failed' || t.status === 'cancelled') },
+      // A newer build's take still running there (parked as 'failed' here): its own group, never "Dọn job lỗi".
+      { key: 'newer', title: 'Đang chạy ở bản SanoVids mới hơn', takes: pick(isParkedTake) },
+      { key: 'failed', title: 'Lỗi / đã huỷ', takes: pick((t) => (t.status === 'failed' || t.status === 'cancelled') && !isParkedTake(t)) },
       { key: 'completed', title: 'Hoàn thành', takes: pick((t) => t.status === 'completed') },
     ].filter((g) => g.takes.length)
   }, [takes])
 
-  const clearable = useMemo(() => takes.filter((t) => t.status === 'failed' || t.status === 'cancelled'), [takes])
+  const clearable = useMemo(() => clearableTakes(takes), [takes])
 
   // The shared delete (actions.deleteTakes): also drops the takes from @video references and the selection and
-  // deletes their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming.
+  // deletes their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming. A newer
+  // build's take parked here (it may still be running, and paid, there) is never part of it (clearableTakes).
   const clearFailed = () => {
     const n = deleteTakes(
       clearable.map((t) => t.id),

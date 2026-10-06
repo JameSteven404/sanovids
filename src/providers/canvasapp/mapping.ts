@@ -7,7 +7,7 @@
 // Every request shape mirrors canvasapp's own client (/static/canvas.js: canvasPayload(), runVideoNode(),
 // normalizeConnections(), createVideoNode(), newId()) key for key — the server refuses anything else
 // ("Invalid canvas payload"). See docs/canvasapp-api-notes.md.
-import { modeLabel } from '../../core/models'
+import { isModelId, modeLabel } from '../../core/models'
 import type { Mode, ModelId } from '../../core/types'
 import type { JobRequest, RemoteStatus } from '../types'
 import type { CanvasConnection, CanvasImageNode, CanvasJob, CanvasNode, CanvasPayload, CanvasVideoNode, VideoJobBody, VideoProfile } from './api'
@@ -36,8 +36,14 @@ export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
 const MODEL_PROFILE: Record<ModelId, string> = { seedance_2_5: 'seedance_2_5', minimax_h3: 'minimax_h3' }
 
+/** canvasapp's model_profile of a model; undefined for a model this build does not know (never sent). */
 export function modelProfileOf(model: ModelId): string {
-  return MODEL_PROFILE[model]
+  return isModelId(model) ? MODEL_PROFILE[model] : (undefined as unknown as string)
+}
+
+/** A request whose model this build does not know (a newer build's take): refused before anything is sent. */
+export function unknownModelProblem(model: unknown): string {
+  return `Model “${String(model)}” không có trong bản SanoVids này — cập nhật SanoVids để chạy.`
 }
 
 /** Prompt limit enforced by canvasapp's client: 20.000 chars, H3 t2v/i2v 7.000. */
@@ -236,6 +242,8 @@ const listOf = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
  * null / undefined = not known → no profile check.
  */
 export function validateRequest(req: JobRequest, profiles?: readonly VideoProfile[] | null): string[] {
+  // No model_profile could be sent (canvasapp would pick a default model and still bill the job): refused outright.
+  if (!isModelId(req.model)) return [unknownModelProblem(req.model)]
   const out: string[] = []
   const prompt = req.prompt.trim()
   if (!prompt) out.push('Prompt trống.')
@@ -321,6 +329,8 @@ const refImagesOf = (req: JobRequest) => [...req.images].sort((a, b) => a.n - b.
  * The prompt is trimmed at both ends only (runVideoNode sends node.data.prompt.trim()); take.promptSnapshot is untouched.
  */
 export function toVideoJobBody(req: JobRequest, ctx: JobBodyContext): VideoJobBody {
+  const profile = modelProfileOf(req.model)
+  if (!profile) throw new Error(unknownModelProblem(req.model))
   const shape = inputShapeOf(req.model, req.mode)
   const inputs: Pick<VideoJobBody, 'upload_ids' | 'aspect_ratio' | 'first_frame_upload_id' | 'last_frame_upload_id'> =
     shape === 'frames'
@@ -331,7 +341,7 @@ export function toVideoJobBody(req: JobRequest, ctx: JobBodyContext): VideoJobBo
       : { upload_ids: shape === 'refs' ? refImagesOf(req).map((i) => ctx.uploadIdFor(i.imageId)) : [], aspect_ratio: req.ratio || '16:9' }
   return {
     project_id: ctx.projectId,
-    model_profile: modelProfileOf(req.model),
+    model_profile: profile,
     canvas_node_id: canvasNodeId(req.sceneId),
     prompt: req.prompt.trim(),
     mode: req.mode,

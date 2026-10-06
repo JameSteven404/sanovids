@@ -111,6 +111,19 @@ interface Rules {
     exists: (p: string) => boolean
     pathMod: PathMod
   }): { appId: string; appIconPath: string; appIconIndex: number; relaunchCommand: string; relaunchDisplayName: string } | null
+  PORTABLE_ENV: readonly string[]
+  portableEnvOf(env: unknown): { file?: string; dir?: string; appFilename?: string }
+  trustedPortableFile(o: {
+    platform: string
+    isPackaged: boolean
+    portable: unknown
+    execPath: unknown
+    tmpDir: unknown
+    appName: string
+    exists: (p: string) => boolean
+    realpath?: unknown
+    pathMod: PathMod
+  }): string | undefined
   mapUpdaterError(err: unknown, phase: 'check' | 'download' | 'install'): UpdErr
   notesToText(notes: unknown): string
   normalizeInfo(info: unknown): Info | null
@@ -328,7 +341,9 @@ describe('updater rules: build kind', () => {
 
   it('dev / portable / installer', () => {
     expect(rules.detectKind({ ...base, isPackaged: false, exists: () => true })).toBe('dev')
-    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: () => true })).toBe('portable')
+    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: (p) => p !== uninstaller })).toBe('portable')
+    // an NSIS install is the installer whatever the environment says (a Portable stub's variable it inherited)
+    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: () => true })).toBe('installer')
     expect(rules.detectKind({ ...base, exists: (p) => p === uninstaller })).toBe('installer')
     expect(rules.detectKind({ ...base, portableFile: '', exists: (p) => p === uninstaller })).toBe('installer')
     expect(rules.detectKind({ ...base, exists: () => false })).toBe('portable') // win-unpacked / a copied exe
@@ -400,6 +415,59 @@ describe('updater rules: where the app runs from (app:placement)', () => {
     expect(rules.placement({ ...px, execPath: '/tmp/x/SanoVids', tmpDir: '/tmp' })).toBe('temp-copy')
     expect(rules.placement({ ...px, execPath: '/TMP/x/SanoVids', tmpDir: '/tmp' })).toBe('portable')
     expect(rules.placement({ ...px, execPath: '/opt/SanoVids/SanoVids', tmpDir: '/tmp' })).toBe('portable')
+  })
+})
+
+describe('updater rules: PORTABLE_EXECUTABLE_FILE is trusted only for a run its own Portable stub started', () => {
+  const temp = 'C:\\Users\\minhm\\AppData\\Local\\Temp'
+  const shortTemp = 'C:\\Users\\MINHM~1\\AppData\\Local\\Temp'
+  const file = 'E:\\USB\\SanoVids-Portable-0.6.0.exe'
+  const extracted = `${temp}\\2pZ0QkK4yS1x\\SanoVids.exe`
+  const installed = 'C:\\Users\\me\\AppData\\Local\\Programs\\sanovids\\SanoVids.exe'
+  const realpath = (p: string) => p.replace(/^C:\\Users\\MINHM~1\\/i, 'C:\\Users\\minhm\\')
+  const portable = { file, dir: 'E:\\USB', appFilename: 'SanoVids' }
+  const base = { platform: 'win32', isPackaged: true, portable, execPath: extracted, tmpDir: shortTemp, appName: 'SanoVids', exists: (p: string) => p === file, realpath, pathMod: win }
+
+  it('reads the three variables the stub sets (non-empty strings only)', () => {
+    expect([...rules.PORTABLE_ENV]).toEqual(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'PORTABLE_EXECUTABLE_APP_FILENAME'])
+    expect(rules.portableEnvOf({ PORTABLE_EXECUTABLE_FILE: file, PORTABLE_EXECUTABLE_DIR: 'E:\\USB', PORTABLE_EXECUTABLE_APP_FILENAME: 'SanoVids', TEMP: 'x' })).toEqual(portable)
+    expect(rules.portableEnvOf({ PORTABLE_EXECUTABLE_FILE: '', PORTABLE_EXECUTABLE_DIR: 7 })).toEqual({ file: undefined, dir: undefined, appFilename: undefined })
+    expect(rules.portableEnvOf(null)).toEqual({ file: undefined, dir: undefined, appFilename: undefined })
+  })
+
+  it('the app its stub extracted into %TEMP% (also through an 8.3 TEMP path) → the portable file', () => {
+    expect(rules.trustedPortableFile(base)).toBe(file)
+    expect(rules.trustedPortableFile({ ...base, tmpDir: temp })).toBe(file)
+    expect(rules.trustedPortableFile({ ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe` })).toBe(file) // older stubs
+    expect(rules.trustedPortableFile({ ...base, portable: { ...portable, appFilename: 'sanovids' } })).toBe(file) // case-insensitive
+    expect(rules.trustedPortableFile({ ...base, appName: 'SanoVidsIconTest', execPath: `${temp}\\x\\SanoVidsIconTest.exe`, portable: { ...portable, appFilename: 'SanoVidsIconTest' } })).toBe(file)
+  })
+
+  it('inherited by an installed SanoVids (another portable app, a browser a Portable opened…) → not trusted', () => {
+    const uninstaller = installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe')
+    expect(rules.trustedPortableFile({ ...base, execPath: installed, exists: (p) => p === file || p === uninstaller })).toBeUndefined()
+    // no uninstaller, but not in the temp folder (win-unpacked, a copied exe)
+    expect(rules.trustedPortableFile({ ...base, execPath: 'D:\\Apps\\SanoVids\\SanoVids.exe' })).toBeUndefined()
+    // another app's stub: its own app name
+    expect(rules.trustedPortableFile({ ...base, portable: { ...portable, appFilename: 'OtherTool' } })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, portable: { file } })).toBeUndefined()
+    // an uninstaller next to an exe in %TEMP% (a leftover install copy) is never the portable either
+    expect(rules.trustedPortableFile({ ...base, exists: () => true })).toBeUndefined()
+  })
+
+  it('anything doubtful → not trusted (never throws)', () => {
+    for (const bad of ['', 'Portable.exe', 'E:\\USB\\SanoVids.txt', 'E:\\USB\\Sano"Vids.exe', 'E:\\USB\\a\nb.exe', 'E:\\USB\\a\u0000.exe', 'x'.repeat(1100) + '.exe', 7, null]) {
+      expect(rules.trustedPortableFile({ ...base, portable: { ...portable, file: bad }, exists: (p) => !p.includes('Uninstall') }), String(bad)).toBeUndefined()
+    }
+    expect(rules.trustedPortableFile({ ...base, exists: () => false })).toBeUndefined() // the portable .exe is gone
+    expect(rules.trustedPortableFile({ ...base, isPackaged: false })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, platform: 'linux' })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, portable: null })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, realpath: undefined })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, realpath: () => { throw new Error('EACCES') } })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, tmpDir: 'Temp' })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, execPath: temp })).toBeUndefined() // the temp folder itself
+    expect(rules.trustedPortableFile({ ...base, exists: () => { throw new Error('EACCES') } })).toBeUndefined()
   })
 })
 
@@ -1249,8 +1317,20 @@ describe('packaging guarantees (package.json, preload, main)', () => {
     expect(mainSource.split('updaterRules.placement(').length - 1).toBe(1)
     expect(mainSource.split('updaterRules.portableRelaunch(').length - 1).toBe(1)
     expect(mainSource).toContain('realpath: fs.realpathSync.native,')
-    expect(mainSource).toContain('portableFile: process.env.PORTABLE_EXECUTABLE_FILE,')
     expect(mainSource).toContain('win.setAppDetails(relaunch)')
+    // The Portable stub's variables: read once, removed from the environment (children never inherit them), and the
+    // file trusted only through trustedPortableFile — placement, the taskbar identity and the updater all get that.
+    expect(mainSource).toContain('const portableEnv = updaterRules.portableEnvOf(process.env)')
+    const strip = mainSource.indexOf('for (const name of updaterRules.PORTABLE_ENV) delete process.env[name]')
+    expect(strip).toBeGreaterThan(-1)
+    for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(mainSource.indexOf(later))
+    expect(mainSource.split('updaterRules.trustedPortableFile(').length - 1).toBe(1)
+    expect(mainSource).toContain('portable: portableEnv,')
+    expect(mainSource.split('portableFile: portableFile(),').length - 1).toBe(2)
+    expect(mainSource).toContain('setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })')
+    const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    for (const src of [mainSource, updaterSource]) expect(code(src)).not.toContain('process.env.PORTABLE_EXECUTABLE')
+    expect(updaterSource).toContain('    portableFile,\n    execPath: process.execPath,')
   })
 
   it('main.cjs records the install-on-quit attempt in the app quit event (never for a vetoed quit)', () => {

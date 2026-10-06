@@ -55,7 +55,7 @@ describe('files:trashSaved wiring (electron/main.cjs)', () => {
   })
 
   it('nothing on the Recycle Bin path can delete, truncate or write a file', () => {
-    for (const name of ['filesTrashSaved', 'trashSavedGroups', 'savedFileStatProblem', 'judgeSavedFile', 'selectTrashGroups', 'withSaveAbort']) {
+    for (const name of ['filesTrashSaved', 'trashSavedGroups', 'savedFileStatProblem', 'judgeSavedFile', 'selectTrashGroups', 'withSaveAbort', 'sameSavedIdentity', 'savedStatOf', 'saveTrashDriveAllowed', 'saveDriveTypeOf']) {
       const body = fnBody(name)
       expect(body, name).not.toMatch(DELETE_CALL)
       expect(body, name).not.toMatch(/\.rm\b|writeFile|appendFile|rename\(|copyFile|createWriteStream/)
@@ -64,7 +64,16 @@ describe('files:trashSaved wiring (electron/main.cjs)', () => {
     const body = fnBody('trashSavedGroups')
     expect([...new Set([...body.matchAll(/\bfsp\.(\w+)/g)].map((m) => m[1]))]).toEqual(['lstat'])
     expect(body).not.toMatch(/\bfs\.|\bshell\b|require\(/)
-    expect(body).toContain('await withSaveAbort(Promise.resolve().then(() => trash(pathMod.resolve(p))), signal)')
+    // a move handed to trash() is always awaited (never raced against the watchdog: its real outcome is reported)
+    expect(body).toContain('await Promise.resolve().then(() => trash(pathMod.resolve(p)))')
+    expect(body).not.toMatch(/withSaveAbort\([^\n]*trash\(/)
+    expect(body.indexOf("if (aborted()) return { result: 'failed' }", body.indexOf('judgeSavedFile('))).toBeLessThan(body.indexOf('trash(pathMod.resolve(p))'))
+    // the bigint lstat; another file under the recorded name (identity) is 'changed' before anything is read
+    expect(body).toContain('savedStatOf(await fsp.lstat(p, { bigint: true }))')
+    expect(body).toContain("if (!sameSavedIdentity(entry, before)) return { result: 'changed' }")
+    expect(body.indexOf('sameSavedIdentity(entry, before)')).toBeLessThan(body.indexOf('hashFile('))
+    // only a fixed disk (Windows) is ever tried
+    expect(body).toContain('const supported = saveTrashSupported(dir, pathMod) && saveTrashDriveAllowed(driveType, pathMod)')
     // a file is moved only after the size / hash / unchanged-while-hashed checks said 'ok'
     const verdict = body.indexOf("if (verdict !== 'ok') return { result: verdict }")
     expect(verdict).toBeGreaterThan(body.indexOf('if (!sameSavedStat(before, after))'))
@@ -83,6 +92,11 @@ describe('files:trashSaved wiring (electron/main.cjs)', () => {
     expect(body).toContain("return fileError('bad-request', checked.error)")
     expect(body).toContain("return fileError('not-allowed'")
     expect(body).toContain("return fileError('missing'")
+    expect(body).toContain('driveType: groups.length ? await saveDriveTypeOf(dir) : null,')
+    expect(fnBody('saveDriveTypeOf')).toContain('saveDriveRoot(await fs.promises.realpath(dir), path)')
+    expect(fnBody('saveDriveTypeOf')).toContain('signature.checkDriveType(root,')
+    // a kept group a write dropped meanwhile is not brought back
+    expect(body).toContain('out.keep.filter((g) => current.groups.some((x) => x.id === g.id))')
     // watchdog, and groups another call is moving are never touched twice
     expect(body).toContain('signal: AbortSignal.timeout(SAVE_TRASH_WATCHDOG_MS),')
     expect(mainCode).toContain('const SAVE_TRASH_WATCHDOG_MS = 5 * 60_000')
@@ -106,9 +120,15 @@ describe('files:trashSaved wiring (electron/main.cjs)', () => {
     expect(write).toBeGreaterThan(-1)
     expect(owner).toBeGreaterThan(write)
     expect(record).toBeGreaterThan(owner)
-    expect(body).toContain('if (!owner) return { ok: true, names }')
+    expect(body).toMatch(/if \(!owner\) \{\s+await forgetSavedNames\(dir, names\)\s+return \{ ok: true, names \}/)
     // recording never turns a done write into a failure
     expect(fnBody('recordSavedGroup')).toMatch(/catch \(e\) \{[\s\S]*return false/)
+    // every write forgets the ledger entries its names prove gone (the save dialog too, also when it fails half way)
+    expect(fnBody('recordSavedGroup')).toContain('const pruned = ledgerWithout(ledger, dirKey, names, path)')
+    expect(fnBody('recordSavedGroup')).toContain('const identities = await savedIdentities(dir, names)')
+    expect(fnBody('forgetSavedNames')).toContain('withLedger((ledger) => ledgerWithout(ledger, dirKey, names, path))')
+    expect(fnBody('filesSaveAs')).toMatch(/finally \{\s+if \(names\.length\) await forgetSavedNames\(targetDir, names\)/)
+    expect(fnBody('savedIdentities')).toContain('fs.promises.lstat(path.join(dir, name), { bigint: true })')
   })
 
   it('the ledger lives in userData, is stored whole (tmp + rename) and loaded through the allowlist', () => {
@@ -125,7 +145,7 @@ describe('files:trashSaved wiring (electron/main.cjs)', () => {
     expect(saveRules).not.toMatch(/\brequire\s*\(/)
     expect(saveRules).not.toMatch(/\bshell\b|\belectron\b|\bipcMain\b|\bprocess\./)
     expect(saveRules).not.toMatch(/\bfs\./)
-    for (const fn of ['checkSaveOwner', 'checkTrashArgs', 'parseSaveLedger', 'ledgerGroup', 'ledgerWith', 'selectTrashGroups', 'judgeSavedFile', 'trashSavedGroups']) {
+    for (const fn of ['checkSaveOwner', 'checkTrashArgs', 'parseSaveLedger', 'ledgerGroup', 'ledgerWith', 'ledgerWithout', 'savedFileIdentity', 'saveDriveRoot', 'saveTrashDriveAllowed', 'selectTrashGroups', 'judgeSavedFile', 'trashSavedGroups']) {
       expect(saveRules, fn).toMatch(new RegExp(`function ${fn}\\(`))
     }
   })

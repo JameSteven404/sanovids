@@ -30,8 +30,8 @@ import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
-import { costOf, MODELS, usesRefs, usesVideoRefs } from '../core/models'
-import { migrateTake, parkForeignTake } from '../core/migrate'
+import { costOf, isModelId, MODELS, usesRefs, usesVideoRefs } from '../core/models'
+import { isForeignTake, migrateTake, parkForeignTake } from '../core/migrate'
 import { runBlockReason } from '../core/runRules'
 import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
@@ -291,11 +291,25 @@ export interface RestartWork {
 }
 
 /**
- * A take of a newer SanoVids build's provider (migrateTake: provider 'mock' + foreignProvider). This build never
- * runs, polls, re-queues or refunds it: migrate parks a running one as 'failed' (parkForeignTake) and the engine parks
- * any it still finds running.
+ * A take of a newer SanoVids build: its provider (migrateTake: provider 'mock' + foreignProvider) or its model
+ * (foreignModel, e.g. a later canvasapp model) is unknown here. This build never runs, polls, looks up, re-queues or
+ * refunds it: migrate parks a running one as 'failed' (parkForeignTake) and the engine parks any it still finds running.
  */
-export const isForeignTake = (t: Pick<Take, 'foreignProvider'>): boolean => !!t.foreignProvider
+export { isForeignTake }
+
+/**
+ * A parked take of a newer build (parkForeignTake: 'failed' + foreignStatus): it may still be running — and be paid —
+ * in that build, so bulk clean-ups ("Dọn job lỗi/đã huỷ") never delete it.
+ */
+export const isParkedTake = (t: Pick<Take, 'foreignStatus'>): boolean => !!t.foreignStatus
+
+/** Takes "Dọn job lỗi/đã huỷ" deletes: failed / cancelled ones, never a parked take of a newer build (isParkedTake). */
+export function clearableTakes<T extends Pick<Take, 'status' | 'foreignStatus'>>(takes: readonly T[]): T[] {
+  return takes.filter((t) => (t.status === 'failed' || t.status === 'cancelled') && !isParkedTake(t))
+}
+
+/** Error of a take whose model this build does not know when it was about to be sent (never sent, nothing charged). */
+export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bản SanoVids này — cập nhật SanoVids để chạy (không gửi đi, không trừ credit).'
 
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
@@ -919,6 +933,9 @@ async function submitTake(id: string) {
   if (!t || submitting.has(id)) return
   // A remote job is submitted once per take (a second submit could be paid twice) — except an explicit retry().
   if (providerOf(t) !== 'mock' && (ownedHere.has(id) || remoteIdOf(t))) return
+  // Never sent with a model this build does not know (a newer build's take is parked by migrate; this is the backstop):
+  // canvasapp would get no model_profile and could still bill the account.
+  if (!isModelId(t.settings?.model)) return failTake(id, UNKNOWN_MODEL_ERROR)
   submitting.add(id)
   ownedHere.add(id)
   const pid = providerOf(t)
@@ -984,6 +1001,12 @@ async function recoverTake(id: string) {
   const gen = generation
   const t = findTake(id)
   if (!t || submitting.has(id) || ownedHere.has(id)) return
+  // A take of a model this build does not know is never looked up (its jobs cannot be matched): it may be running in
+  // the build that knows it — parked, never failed over it.
+  if (!isModelId(t.settings?.model)) {
+    useRuns.setState((s) => ({ takes: s.takes.map((x) => (x.id === id ? parkForeignTake({ ...x, foreignModel: x.foreignModel || x.settings?.model || '?' }) : x)) }))
+    return
+  }
   submitting.add(id)
   ownedHere.add(id)
   try {
