@@ -22,6 +22,8 @@
 // continue, is: another try gives the same end). Its download reports progress (store/takeTransfers) and stops when the
 // take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure. remoteVideoReady()
 // tells the UI a running take's video is already made (and paid): "Huỷ" then asks first (actions.cancelTake).
+// Imported takes ("Nhập job", importTakes: jobs made on canvasapp's own page) are born `processing` with their remote
+// id: the engine only polls and downloads them, never submits them, and they do not take a submit slot (concurrency).
 // check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
 // recent /api/video-profiles read) and only warn on a guess or an older read; retry(takeId) of an "unknown" take never
 // goes through check() (it may only find its existing job), and every submit validates again with fresh profiles.
@@ -45,6 +47,8 @@ import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/cr
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
 import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider } from '../providers'
+import { decodeRemoteId } from '../providers/canvasapp/mapping'
+import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
 import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
@@ -68,6 +72,21 @@ import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
 export { DEMO_CREDITS_DEFAULT } from '../lib/credits'
+
+/** importTakes: what was imported, and why the other drafts were not. */
+export interface ImportTakesResult {
+  takeIds: string[]
+  skipped: { jobId: string; code: 'project-changed' | 'scene-gone' | 'in-project' | 'claimed' }[]
+}
+
+export interface ImportTakesInput {
+  /** The project the drafts were made for: another one open now → nothing imported, nothing claimed. */
+  projectId: string
+  provider: 'dev' | 'canvasapp'
+  drafts: SiteTakeDraft[]
+  /** The adapter's claimSiteJobs (checked against its ledger right now); returns the accepted keys (take ids). */
+  claim: (claims: SiteJobClaim[]) => string[]
+}
 
 export interface EnqueueResult {
   queued: number
@@ -118,6 +137,12 @@ export interface RunsState {
    * any other take → a new take of its scene (enqueue).
    */
   retry: (takeId: string) => EnqueueResult | null
+  /**
+   * "Nhập job": takes for jobs made on canvasapp's own page (siteJobActions). Synchronous: drafts whose scene is gone
+   * or whose job a take of this provider already tracks are dropped, the rest claimed (`claim`, the adapter's ledger)
+   * and only the accepted ones added — `processing` with their remote id (polled, downloaded, never submitted).
+   */
+  importTakes: (input: ImportTakesInput) => ImportTakesResult
   toggleStar: (takeId: string) => void
   removeTake: (takeId: string) => void
   /** Delete takes (cancelling running ones) and drop them from every scene's @video refs. */
@@ -502,6 +527,79 @@ export const useRuns = create<RunsState>()((set, get) => ({
     return get().enqueue([take.sceneId])
   },
 
+  importTakes: ({ projectId, provider, drafts, claim }) => {
+    const project = useProject.getState().project
+    const skipped: ImportTakesResult['skipped'] = []
+    if (project.id !== projectId) return { takeIds: [], skipped: drafts.map((d) => ({ jobId: d.jobId, code: 'project-changed' })) }
+    const scenes = new Set(project.scenes.map((s) => s.id))
+    const tracked = new Set(
+      get()
+        .takes.filter((t) => providerOf(t) === provider && t.remoteId)
+        .map((t) => decodeRemoteId(t.remoteId!)?.jobId),
+    )
+    const now = Date.now()
+    const when = (d: SiteTakeDraft) => (d.createdAt !== null && Number.isFinite(d.createdAt) && d.createdAt <= now + 60_000 ? d.createdAt : now)
+    const ready: SiteTakeDraft[] = []
+    for (const d of drafts) {
+      if (!scenes.has(d.sceneId)) skipped.push({ jobId: d.jobId, code: 'scene-gone' })
+      else if (tracked.has(d.jobId)) skipped.push({ jobId: d.jobId, code: 'in-project' })
+      else {
+        tracked.add(d.jobId)
+        ready.push(d)
+      }
+    }
+    // in the order canvasapp made them (their numbers, after the scene's takes, follow it)
+    ready.sort((a, b) => when(a) - when(b))
+    const built = ready.map((d): { d: SiteTakeDraft; take: Take } => {
+      const at = when(d)
+      return {
+        d,
+        take: {
+          id: newId('take'),
+          sceneId: d.sceneId,
+          number: 0,
+          status: 'processing',
+          progress: d.progress,
+          createdAt: at,
+          startedAt: at,
+          finishedAt: null,
+          promptSnapshot: d.prompt,
+          rawPromptSnapshot: d.prompt,
+          refsSnapshot: [...d.refs],
+          videoRefsSnapshot: [],
+          imageKeysSnapshot: [...d.imageKeys],
+          settings: { ...d.settings },
+          cost: d.cost,
+          starred: false,
+          posterId: null,
+          videoId: null,
+          error: null,
+          position: null,
+          provider,
+          remoteId: d.remoteId,
+          // paid on canvasapp when the job was made there — never with SanoVids' demo wallet
+          charged: false,
+          framesSnapshot: { ...d.frames },
+          imported: { at: now, jobName: d.jobName, unknown: [...d.unknown], inferred: [...d.inferred] },
+        },
+      }
+    })
+    // the adapter's ledger decides last (a POST in flight on that node, a double click…): only accepted keys become takes
+    const accepted = new Set(built.length ? claim(built.map(({ d, take }) => ({ key: take.id, remoteId: d.remoteId, nodeId: d.nodeId, job: d.job, reimport: d.reimport }))) : [])
+    const added = built.filter(({ take }) => accepted.has(take.id)).map(({ take }) => take)
+    for (const { d, take } of built) if (!accepted.has(take.id)) skipped.push({ jobId: d.jobId, code: 'claimed' })
+    if (added.length) {
+      const next = new Map<string, number>()
+      for (const t of added) {
+        t.number = next.get(t.sceneId) ?? Math.max(0, ...get().takes.filter((x) => x.sceneId === t.sceneId).map((x) => x.number)) + 1
+        next.set(t.sceneId, t.number + 1)
+      }
+      set((s) => ({ takes: [...s.takes, ...added] }))
+      ensureEngine()
+    }
+    return { takeIds: added.map((t) => t.id), skipped }
+  },
+
   /** One chosen (starred) take per scene: starring a take un-stars its siblings. */
   toggleStar: (takeId) =>
     set((s) => {
@@ -795,7 +893,8 @@ function tick() {
   // Start queued jobs up to each provider's concurrency cap. A take whose scene was deleted waits (never sent while
   // the scene is gone; Undo of the delete brings the scene back and the take runs).
   const running = new Map<ProviderId, number>()
-  for (const t of active) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
+  // An imported take (its job was made on canvasapp's page) is only polled: it never takes a submit slot.
+  for (const t of active) if (!t.imported) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
   // A remote provider gets ONE new submit at a time: a take is only marked running once the previous one has its
   // remote id (the canvasapp adapter sends them one by one anyway). The takes behind it stay honestly "queued": they
   // cancel cleanly, and a page closed meanwhile leaves at most one take whose submit is unknown — not up to 10.

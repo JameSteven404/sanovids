@@ -31,6 +31,11 @@
 // an http URL: the gateway never sends that request). config.rangeSupport: 206 + Content-Range, Accept-Ranges and an
 // ETag (off by default: the live site is not known to). The gateway never asks /stream through request().
 //
+// "Tạo job như trên trang canvasapp" (createSiteJob): the job canvasapp's OWN page makes when the user presses
+// "Tạo video" on a bridge node (siteClient.ts: the node's saved data, a random client_request_id) — through the same
+// validation, billing and history as any job, marked origin 'site'; SanoVids does not know it until "Nhập job".
+// It is the site acting, not SanoVids: no fault, no latency, no request-log line, logged in or not.
+//
 // ---- API ----
 //   createDevCanvasapp(deps?): DevCanvasapp      see the interface below (request() / openStream() are what the bridge calls).
 //   DEV_CONFIG_DEFAULT, DEV_SPEED_LABEL, DEV_FAULT_PRESETS, imageIdFromUploadFilename(filename)
@@ -40,11 +45,12 @@ import type { Mode, ModelId } from '../../core/types'
 import { memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
-import { ALLOWED_IMAGE_TYPES, uuidFromKey } from '../canvasapp/mapping'
+import { ALLOWED_IMAGE_TYPES, BRIDGE_PROJECT_NAME, uuidFromKey } from '../canvasapp/mapping'
 import { CANVASAPP_VIDEO_MAX_BYTES } from './downloads'
 import { pushDevLog, summarizeForLog } from './log'
 import type { DevTopupOutcome } from './prompts'
 import { matchDevRoute, MAX_UPLOAD_BYTES, type DevEndpoint } from './routes'
+import { applyNodeEdit, siteJobBody, siteNodeList, type SiteNodeEdit, type SiteNodeInfo } from './siteClient'
 import { canvasProblem, canvasUploadIds, isFramesJob, isObj, jobBodyProblem, jobKeyProblem, profileProblem, sameKeys } from './validate'
 
 // ---------------------------------------------------------------------------------------------
@@ -422,6 +428,8 @@ interface DevJob {
   error_message: string | null
   download_available: boolean
   refunded: boolean
+  /** 'site': made by canvasapp's own page (createSiteJob), not by SanoVids. */
+  origin: 'app' | 'site'
 }
 
 interface DevHistoryItem {
@@ -560,6 +568,24 @@ export interface DevJobView {
   refunded: boolean
   /** Planned to fail / expire (fault or random failure) — shown in the dev UI. */
   planned: 'fail' | 'expire' | null
+  /** 'site': made "on canvasapp's page" (createSiteJob) — SanoVids knows it only once imported. */
+  origin: 'app' | 'site'
+}
+
+/** createSiteJob input: the bridge project (default: the newest "SanoVids bridge"), the node, an edit made first. */
+export interface DevSiteJobInput {
+  projectId?: string
+  nodeId: string
+  edit?: SiteNodeEdit
+}
+
+export type DevSiteJobResult = { ok: true; jobId: string; number: number; cost: number } | { ok: false; detail: string }
+
+/** The video nodes of a bridge session's saved canvas (dev panel). */
+export interface DevSiteNodes {
+  projectId: string
+  name: string
+  nodes: SiteNodeInfo[]
 }
 
 export interface DevUploadView {
@@ -637,6 +663,14 @@ export interface DevCanvasapp {
   simulatePayment(orderId: string, outcome: DevTopupOutcome, delayMs?: number): boolean
   /** An uploaded picture (dev UI previews). */
   uploadBlob(uploadId: string): Promise<Blob | null>
+  /**
+   * "Tạo job như trên trang canvasapp": the job canvasapp's own page makes for a node of the bridge session (after an
+   * optional edit of that node, saved like saveCanvas()), with a random client_request_id — validated, billed and
+   * written to the history like any job, origin 'site'. No fault / latency / log line (the site, not SanoVids).
+   */
+  createSiteJob(input: DevSiteJobInput): DevSiteJobResult
+  /** The video nodes of a bridge session (default: the newest "SanoVids bridge"); null = none. Read-only. */
+  siteNodes(projectId?: string): DevSiteNodes | null
   // ---- inspection / lifecycle ----
   /** Current state for the dev UI (job statuses brought up to now). */
   snapshot(): DevServerSnapshot
@@ -833,6 +867,7 @@ function readJob(x: Record<string, unknown>): DevJob | null {
     error_message: strOrNull(x.error_message),
     download_available: x.download_available === true,
     refunded: x.refunded === true,
+    origin: x.origin === 'site' ? 'site' : 'app',
   }
 }
 
@@ -1207,7 +1242,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
 
   const hasUpload = (id: string) => state.uploads.some((u) => u.upload_id === id)
 
-  function createJob(body: unknown): BridgeResponse {
+  function createJob(body: unknown, origin: DevJob['origin'] = 'app'): BridgeResponse {
     const keyProblem = jobKeyProblem(body)
     if (keyProblem) return detail(keyProblem.status, keyProblem.detail)
     const b = body as Record<string, unknown>
@@ -1270,6 +1305,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       error_message: null,
       download_available: false,
       refunded: false,
+      origin,
     }
     state.jobs.push(job)
     addHistory({
@@ -1741,7 +1777,45 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       download_available: j.download_available,
       refunded: j.refunded,
       planned: j.plan.failMessage !== null ? 'fail' : j.plan.expire ? 'expire' : null,
+      origin: j.origin,
     }
+  }
+
+  /** The bridge session `projectId`, or the newest one named "SanoVids bridge". */
+  const bridgeProject = (projectId?: string): DevProject | undefined =>
+    projectId ? state.projects.find((p) => p.project_id === projectId) : [...state.projects].reverse().find((p) => p.name === BRIDGE_PROJECT_NAME)
+
+  function createSiteJob(input: DevSiteJobInput): DevSiteJobResult {
+    pull()
+    settleAll()
+    const project = bridgeProject(input.projectId)
+    if (!project) return { ok: false, detail: 'Chưa có phiên “SanoVids bridge” trên canvasapp giả lập — chạy một cảnh ở chế độ Phát triển trước.' }
+    let canvas = project.canvas
+    const edited = !!input.edit && Object.values(input.edit).some((v) => v !== undefined)
+    if (edited) {
+      // the user edits the node on the page; saveCanvas() stores it right before the job is sent
+      const r = applyNodeEdit(canvas, input.nodeId, input.edit!)
+      if ('problem' in r) return { ok: false, detail: r.problem }
+      const problem = canvasProblem(r.canvas)
+      if (problem) return { ok: false, detail: `Canvas không hợp lệ (${problem}).` }
+      canvas = r.canvas
+    }
+    // what the page checks before anything is sent (a node it would not run: nothing saved, nothing sent)
+    const built = siteJobBody(canvas, input.nodeId, project.project_id, newUuid('site-request'))
+    if ('problem' in built) return { ok: false, detail: built.problem }
+    if (edited) {
+      project.canvas = canvas
+      project.canvas_saved_at = now()
+    }
+    const res = createJob(built.body, 'site')
+    if (!res.ok || res.status >= 400) {
+      if (edited) save() // the canvas was saved before the job was refused
+      const body = res.ok ? (res.json as { detail?: unknown } | undefined) : undefined
+      return { ok: false, detail: typeof body?.detail === 'string' ? body.detail : 'canvasapp giả lập không nhận job này.' }
+    }
+    const jobId = String((res.json as { job_id?: unknown }).job_id)
+    const job = state.jobs.find((j) => j.job_id === jobId)
+    return { ok: true, jobId, number: job?.number ?? 0, cost: job?.cost ?? 0 }
   }
 
   function snapshot(): DevServerSnapshot {
@@ -1886,6 +1960,12 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       return true
     },
     uploadBlob: (uploadId) => blobs.get(`dev:upload:${uploadId}`),
+    createSiteJob,
+    siteNodes: (projectId) => {
+      pull()
+      const p = bridgeProject(projectId)
+      return p ? { projectId: p.project_id, name: p.name, nodes: siteNodeList(p.canvas) } : null
+    },
     snapshot,
     subscribe: (listener) => {
       listeners.add(listener)

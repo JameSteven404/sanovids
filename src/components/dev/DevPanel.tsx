@@ -8,9 +8,10 @@
 //                  and the faults armed right now.
 //   Nhật ký        every request the app sent and what it got (fault badges, expandable JSON, filter, copy as JSON for
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
-//   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take and bridge node — a scene of the
-//                  open project, an old node, another one — they belong to), top-up orders (decide what canvasapp
-//                  says), uploaded pictures.
+//   Job & đơn nạp  "Tạo job như trên trang canvasapp" (a job the site's own page makes on a bridge node — to test
+//                  "Nhập job"), the server's jobs (finish / fail / expire now, which SanoVids take and bridge node — a
+//                  scene of the open project, an old node, another one — they belong to; "Nhập" for one without a
+//                  take), top-up orders (decide what canvasapp says), uploaded pictures.
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
 //                  only outside Electron — the desktop app uses the real ones).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
@@ -35,6 +36,7 @@ import {
   LogIn,
   LogOut,
   Minus,
+  MousePointerClick,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -55,7 +57,7 @@ import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
 import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useProviderPrefs } from '../../providers'
 import { limitsSite } from '../../providers/limits'
-import { decodeRemoteId } from '../../providers/canvasapp/mapping'
+import { canvasNodeId, decodeRemoteId, sceneNodeId } from '../../providers/canvasapp/mapping'
 import {
   clearDevLog,
   DEV_ENDPOINT_LABEL,
@@ -76,6 +78,7 @@ import {
   type DevTopupOutcome,
   type DevTopupView,
 } from '../../providers/dev'
+import { openImportJobs } from '../../siteJobActions'
 import { refreshRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -101,6 +104,9 @@ import {
   isDevEndpoint,
   jobNodeOwners,
   jobNodeText,
+  SITE_JOB_HINT,
+  siteJobToast,
+  siteNodeLabel,
   limitsDifferFromConfig,
   limitsStatusText,
   logExport,
@@ -1130,9 +1136,13 @@ const TOPUP_STATUS: Record<DevTopupView['status'], string> = {
   rejected: 'Bị từ chối',
 }
 
+/** Open "Nhập job" from here — always the simulated site; closing it comes back to this tab. */
+const importHere = () => openImportJobs({ back: { kind: 'dev', tab: 'jobs' }, provider: 'dev' })
+
 function JobsTab({ snap }: { snap: DevServerSnapshot }) {
   return (
     <div className="dv-jobs">
+      <SiteJobCard snap={snap} />
       <JobList jobs={snap.jobs} />
       <TopupList orders={snap.topups} />
       <UploadGrid snap={snap} />
@@ -1189,6 +1199,11 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                     {formatCredits(j.cost, 'dev', { short: true })}
                   </span>
                   {j.refunded && <span className="dv-hint">đã hoàn</span>}
+                  {j.origin === 'site' && (
+                    <span className="dv-pill" title="Tạo bằng “Tạo job như trên trang canvasapp” — client_request_id ngẫu nhiên, SanoVids chỉ biết khi nhập">
+                      tạo trên trang
+                    </span>
+                  )}
                   {take ? (
                     <button
                       type="button"
@@ -1199,9 +1214,14 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                       {take.code}
                     </button>
                   ) : (
-                    <span className="dv-hint" title="Không có take nào trong dự án đang mở trỏ tới job này">
-                      không có take
-                    </span>
+                    <>
+                      <span className="dv-hint" title="Không có take nào trong dự án đang mở trỏ tới job này">
+                        không có take
+                      </span>
+                      <button type="button" className="btn btn-sm" onClick={importHere} title="Mở “Nhập job”: đưa job tạo trên trang vào dự án thành take (không trừ credit dev)">
+                        <CloudDownload size={13} /> Nhập
+                      </button>
+                    </>
                   )}
                 </div>
                 {running && (
@@ -1239,6 +1259,92 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
         </ul>
       )}
     </section>
+  )
+}
+
+/**
+ * "Tạo job như trên trang canvasapp": a node of the bridge session → the job the site's own page would make for it
+ * (optionally after editing the node there), billed in credit dev. SanoVids learns of it only through "Nhập job".
+ */
+function SiteJobCard({ snap }: { snap: DevServerSnapshot }) {
+  const scenes = useProject((s) => s.project.scenes)
+  const projectId = useProject((s) => s.project.id)
+  const owners = useMemo(() => jobNodeOwners(projectId, scenes), [projectId, scenes])
+  // the snapshot changes with every change of the simulated account: the saved canvas is read again then
+  const site = useMemo(() => devServer().siteNodes(), [snap])
+  const [picked, setPicked] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [prompt, setPrompt] = useState('')
+  const [resolution, setResolution] = useState('')
+  const node = site?.nodes.find((n) => n.id === picked) ?? site?.nodes[0]
+  /** canvas_node_id → the scene's title (its node in this project, or the old node named by the scene id). */
+  const titles = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const x of scenes) m.set(canvasNodeId(x.id), x.title)
+    for (const x of scenes) m.set(sceneNodeId(projectId, x.id), x.title)
+    return m
+  }, [projectId, scenes])
+  const titleOf = (nodeId: string) => titles.get(nodeId) || undefined
+  useEffect(() => {
+    setPrompt(node?.prompt ?? '')
+    setResolution(node?.resolution ?? '')
+  }, [node?.id])
+  const create = () => {
+    if (!node) return
+    const res = devServer().createSiteJob({ nodeId: node.id, edit: editing ? { prompt, resolution } : undefined })
+    const said = siteJobToast(res)
+    if (said.ok) {
+      toast(said.text, { tone: 'success', action: { label: 'Nhập job', run: importHere } })
+      syncBalance()
+    } else toast(said.text, { tone: 'warning', ms: 7000 })
+  }
+  return (
+    <Card title="Tạo job như trên trang canvasapp" icon={<MousePointerClick size={15} />}>
+      <p className="dv-hint">{SITE_JOB_HINT}</p>
+      {!site || !site.nodes.length ? (
+        <div className="empty">Chưa có phiên “SanoVids bridge” (hoặc canvas của nó chưa có node) — chạy một cảnh ở chế độ Phát triển trước.</div>
+      ) : (
+        <>
+          <label className="dv-field">
+            <span className="dv-label-row">Node (cảnh)</span>
+            <select className="select" value={node?.id ?? ''} onChange={(e) => setPicked(e.target.value)}>
+              {site.nodes.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {siteNodeLabel(n, owners.get(n.id), titleOf(n.id))}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Switch checked={editing} onChange={setEditing} label="Sửa node trước khi tạo (như chỉnh trên trang)" hint="Trang canvasapp lưu canvas rồi mới tạo job — lần chạy cảnh sau của SanoVids ghi đè lại node." />
+          {editing && node && (
+            <div className="dv-site-edit">
+              <label className="dv-field">
+                <span className="dv-label-row">Prompt</span>
+                <textarea className="textarea" rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              </label>
+              <label className="dv-field">
+                <span className="dv-label-row">Độ phân giải</span>
+                <select className="select" value={resolution} onChange={(e) => setResolution(e.target.value)}>
+                  {(node.model ? MODELS[node.model].resolutions : [node.resolution]).map((r) => (
+                    <option key={r} value={r.toLowerCase()}>
+                      {r.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
+          <div className="dv-actions">
+            <button type="button" className="btn btn-sm btn-primary" disabled={!node || (editing && !prompt.trim())} onClick={create}>
+              <MousePointerClick size={13} /> Tạo job trên trang (giả lập)
+            </button>
+            <button type="button" className="btn btn-sm" onClick={importHere}>
+              <CloudDownload size={13} /> Nhập job…
+            </button>
+          </div>
+        </>
+      )}
+    </Card>
   )
 }
 

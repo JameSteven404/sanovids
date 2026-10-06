@@ -21,6 +21,8 @@
 //                                             upload are flagged.
 //   jobNodeOwners(projectId, scenes)          canvas_node_id → which scene of the open project a job ran on (its node,
 //   jobNodeText(nodeId, owner)                or the old one named by the scene id alone) + the job's label / tooltip.
+//   siteNodeLabel(node, owner, title)         "Tạo job như trên trang canvasapp": a bridge node's option label;
+//   siteJobToast(result) / SITE_JOB_HINT      what the card says.
 //   limitsStatusText(info, limits)            "Model (video-profiles)": whether / when SanoVids read the simulated
 //                                             site's model settings and what the inspector does with them.
 //   limitsDifferFromConfig(limits, models)    what SanoVids knows ≠ the toggles now → suggest "Đọc lại ngay".
@@ -33,6 +35,7 @@ import { fieldBlock } from '../inspector/settingsLimits'
 import type { DevPanelTab } from '../../store/ui'
 import type { DevLogEntry } from '../../providers/dev/log'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
+import type { SiteNodeInfo } from '../../providers/dev/siteClient'
 import {
   DEV_FAULT_PRESETS,
   DEV_STREAM_FAULT_KINDS,
@@ -42,6 +45,7 @@ import {
   type DevFaultRule,
   type DevJobView,
   type DevServerSnapshot,
+  type DevSiteJobResult,
   type DevUploadView,
 } from '../../providers/dev/server'
 
@@ -556,6 +560,28 @@ export function jobNodeText(nodeId: string, owner: JobNodeOwner | undefined): { 
     }
   }
   return { label: 'node khác', title: `${head}Không thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).` }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Tạo job như trên trang canvasapp" (Job & đơn nạp)
+// ---------------------------------------------------------------------------------------------
+
+export const SITE_JOB_HINT =
+  'Giống bấm “Tạo video” trên node của phiên “SanoVids bridge” ở canvasapp: lưu canvas, tạo job với client_request_id ngẫu nhiên (không phải của take nào), trừ credit dev. SanoVids không biết job này cho tới khi bạn dùng “Nhập job” (Hàng đợi, Cài đặt hoặc nút “Nhập” ở dòng job).'
+
+/** "S01 · Ôm nhau — Seedance 2.5 · 15s · 1080P" — a video node of the bridge session, named after its scene. */
+export function siteNodeLabel(node: SiteNodeInfo, owner: JobNodeOwner | undefined, title?: string): string {
+  const who =
+    owner?.kind === 'scene' ? `${owner.code}${title ? ` · ${title}` : ''}` : owner?.kind === 'legacy' ? `node cũ ${owner.code}${title ? ` · ${title}` : ''}` : 'node lạ'
+  const model = node.model ? MODELS[node.model].name : 'model lạ'
+  const what = [model, node.duration !== null ? `${node.duration}s` : null, node.resolution ? node.resolution.toUpperCase() : null].filter(Boolean).join(' · ')
+  return `${who} — ${what}`
+}
+
+/** The toast after "Tạo job trên trang (giả lập)". */
+export function siteJobToast(res: DevSiteJobResult): { text: string; ok: boolean } {
+  if (!res.ok) return { text: `canvasapp giả lập không tạo job: ${res.detail}`, ok: false }
+  return { text: `Đã tạo job #${res.number} trên canvasapp giả lập (như trên trang) — đã trừ ${res.cost} credit dev. Dùng “Nhập job” để đưa vào dự án.`, ok: true }
 }
 
 // ---------------------------------------------------------------------------------------------

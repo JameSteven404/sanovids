@@ -21,6 +21,8 @@
 //   useDevLog / clearDevLog              request log (log.ts).   useDevPrompts / answerDevLogin / answerDevCheckout
 //                                        the login + SePay sheets (prompts.ts).
 //   devWording / withDevWording          development-mode words for the real gateway's messages (wording.ts).
+//   devServer().createSiteJob / siteNodes "Tạo job như trên trang canvasapp" (siteClient.ts: what the site's page posts)
+//                                        — a job SanoVids does not know until "Nhập job" (siteJobActions).
 //   useDevUpdates / devUpdates / devUpdatesBridge   the simulated app updater (updates.ts; lib/updates uses it only
 //                                        outside Electron, "Bảng phát triển → Cập nhật" drives it).
 // ---- For tests / embedding ----
@@ -50,6 +52,7 @@ export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type D
 export * from './downloads'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
+export { applyNodeEdit, siteJobBody, siteNodeList, type SiteNodeEdit, type SiteNodeInfo } from './siteClient'
 export { devError, devResult, devWording, withDevWording } from './wording'
 export * from './updates'
 

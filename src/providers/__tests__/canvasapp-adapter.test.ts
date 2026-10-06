@@ -22,7 +22,9 @@ import {
   PROFILES_RETRY_MS,
   PROFILES_TTL_MS,
   STATE_KEY,
+  type SiteScanInput,
 } from '../canvasapp/adapter'
+import type { SiteJobClaim } from '../canvasapp/siteJobs'
 import {
   BRIDGE_PROJECT_NAME,
   bridgeEntriesFrom,
@@ -60,6 +62,11 @@ function fakeServer(opts: { authenticated?: boolean; projects?: { project_id: st
       project_id: string
       canvas_node_id?: string
       created_at?: string
+      // a job made on canvasapp's own page lists these too (siteJob in the "Nhập job" tests)
+      model_profile?: string
+      duration?: number
+      aspect_ratio?: string | null
+      creation_mode?: string
       body: Record<string, unknown>
     }[],
     extra: null as Handler | null,
@@ -105,6 +112,10 @@ function fakeServer(opts: { authenticated?: boolean; projects?: { project_id: st
       return json({ project_id: p.project_id })
     }
     const one = /^\/api\/projects\/([^/]+)$/.exec(path)
+    if (one && req.method === 'GET') {
+      const p = state.projects.find((x) => x.project_id === one[1])
+      return p ? json({ ...p, canvas: state.canvases.get(p.project_id) ?? { nodes: [], connections: [], viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 } } }) : json({ detail: 'Project not found' }, 404)
+    }
     if (one && req.method === 'PATCH') {
       const p = state.projects.find((x) => x.project_id === one[1])
       if (!p) return json({ detail: 'Project not found' }, 404)
@@ -139,6 +150,11 @@ function fakeServer(opts: { authenticated?: boolean; projects?: { project_id: st
     if (path === '/api/video-jobs' && req.method === 'GET') {
       const pid = new URLSearchParams(query).get('project_id')
       return json(state.jobs.filter((j) => j.project_id === pid).map(({ body: _b, ...j }) => j))
+    }
+    const prompt = /^\/api\/video-jobs\/([^/]+)\/prompt$/.exec(path)
+    if (prompt) {
+      const j = state.jobs.find((x) => x.job_id === prompt[1])
+      return j ? json({ prompt: j.body.prompt }) : json({ detail: 'Job not found' }, 404)
     }
     const stream = /^\/api\/video-jobs\/([^/]+)\/stream$/.exec(path)
     if (stream) return { status: 200, contentType: 'video/mp4', bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]) }
@@ -1340,6 +1356,260 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     expect(videos).not.toContain(canvasNodeId('old_1'))
     expect(rawEntries(storage)).toContain('old_0')
     expect(rawEntries(storage)).not.toContain('old_1')
+  })
+})
+
+describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)', () => {
+  const NODE = node('scene_a')
+  const input = (over: Partial<SiteScanInput> = {}): SiteScanInput => ({
+    sceneByNode: new Map([[NODE, 'scene_a']]),
+    sceneOrder: new Map([['scene_a', 1]]),
+    takeJobIds: new Set(),
+    takeIds: new Set(),
+    ...over,
+  })
+  /** A job made on canvasapp's page (random client_request_id), the way the job list shows it. */
+  function siteJob(server: ReturnType<typeof fakeServer>, over: Partial<(typeof server.state.jobs)[number]> = {}) {
+    const j = {
+      job_id: 'site' + (server.state.jobs.length + 1),
+      status: 'processing',
+      progress: 30,
+      project_id: 'proj1',
+      canvas_node_id: NODE,
+      created_at: new Date(server.state.now()).toISOString(),
+      model_profile: 'seedance_2_5',
+      duration: 15,
+      aspect_ratio: '16:9',
+      creation_mode: 'canvas',
+      body: { prompt: '@image_1 trên trang', client_request_id: '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f' },
+      ...over,
+    }
+    server.state.jobs.push(j)
+    return j
+  }
+  const claim = (key: string, jobId: string, over: Partial<SiteJobClaim> = {}): SiteJobClaim => ({
+    key,
+    remoteId: `proj1:${jobId}`,
+    nodeId: NODE,
+    job: { job_id: jobId, canvas_node_id: NODE, status: 'processing', created_at: new Date(1_000_000).toISOString() },
+    reimport: false,
+    ...over,
+  })
+  const imported = (storage: ReturnType<typeof memoryStorage>) => JSON.parse(storage.get(JOBS_KEY) ?? '{}').imported as Record<string, { remoteId: string; at: number }>
+  const writes = (server: ReturnType<typeof fakeServer>) => server.calls.filter((c) => c.method !== 'GET')
+
+  it('the scan only reads: no bridge session → nothing (never created, never remembered); one found by name → read, not kept', async () => {
+    const { provider, server } = setup()
+    expect(await provider.scanSiteJobs(input())).toEqual({ projectId: null, listHasKeys: false, candidates: [], skipped: [] })
+    expect(server.state.projects).toEqual([])
+    server.state.projects.push({ project_id: 'proj1', name: BRIDGE_PROJECT_NAME })
+    siteJob(server)
+    const scan = await provider.scanSiteJobs(input())
+    expect(scan.projectId).toBe('proj1')
+    expect(scan.candidates.map((c) => [c.jobId, c.sceneId])).toEqual([['site1', 'scene_a']])
+    expect(provider.bridgeProjectId()).toBeNull() // looked up only
+    expect(await provider.siteJobPrompts(['site1'])).toEqual({ site1: '@image_1 trên trang' })
+    expect(writes(server)).toEqual([])
+    expect(server.calls.map((c) => `${c.method} ${c.path.split('?')[0]}`)).toEqual([
+      'GET /api/projects',
+      'GET /api/projects',
+      'GET /api/video-jobs',
+      'GET /api/projects/proj1', // the saved canvas (hints), only because there is a candidate
+      'GET /api/video-jobs/site1/prompt',
+    ])
+  })
+
+  it('hints come from the saved canvas and SanoVids’ entry: references mapped back to SanoVids pictures', async () => {
+    const { provider, server } = setup()
+    await provider.submit(req()) // scene_a on the bridge canvas with img_a / img_b
+    siteJob(server, { body: { prompt: '@image_1 and @image_2' } })
+    const scan = await provider.scanSiteJobs(input({ takeIds: new Set(['take_1']) }))
+    expect(scan.skipped).toEqual([{ jobId: 'job1', sceneId: 'scene_a', code: 'sanovids' }])
+    const [c] = scan.candidates
+    expect(c.hints.map((h) => [h.source, h.refImages])).toEqual([
+      ['canvas', ['img_a', 'img_b']],
+      ['entry', ['img_a', 'img_b']],
+    ])
+    expect(c.hints[0]).toMatchObject({ resolution: '1080p', duration: 15, prompt: '@image_1 and @image_2' })
+  })
+
+  it('401 → login-required (nothing claimed); a list error other than 404 is thrown; an unreadable prompt is unknown', async () => {
+    const { provider, server } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
+    siteJob(server)
+    server.state.authenticated = false
+    await expect(provider.scanSiteJobs(input())).rejects.toMatchObject({ code: 'login-required' })
+    server.state.authenticated = true
+    server.state.extra = (r) => (r.path.startsWith('/api/video-jobs?') ? json({ detail: 'boom' }, 503) : undefined)
+    await expect(provider.scanSiteJobs(input())).rejects.toMatchObject({ code: 'server' })
+    server.state.extra = (r) => (r.path.endsWith('/prompt') ? json({}, 200) : undefined)
+    expect(await provider.siteJobPrompts(['site1'])).toEqual({ site1: null }) // {} → '' → unknown
+    server.state.extra = (r) => (r.path.endsWith('/prompt') ? json({ detail: 'x' }, 429) : undefined)
+    expect(await provider.siteJobPrompts(['site1'])).toEqual({ site1: null })
+    server.state.extra = (r) => (r.path.endsWith('/prompt') ? json({ detail: 'Not authenticated' }, 401) : undefined)
+    await expect(provider.siteJobPrompts(['site1'])).rejects.toMatchObject({ code: 'login-required' })
+    expect(writes(server)).toEqual([])
+  })
+
+  it('the scan always reads the job list (a job just made on the site must show); the poll reuses that read', async () => {
+    const { provider, server } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
+    await provider.poll(['proj1:other'])
+    siteJob(server)
+    const scan = await provider.scanSiteJobs(input())
+    expect(scan.candidates.map((c) => c.jobId)).toEqual(['site1'])
+    await provider.poll(['proj1:other'])
+    expect(server.calls.filter((c) => c.path.startsWith('/api/video-jobs?'))).toHaveLength(2)
+  })
+
+  it('claims: written to ledger.imported (survives a restart); never the same job twice, a claimed one unless re-imported, SanoVids’ own, a used key', async () => {
+    const { provider, server, storage } = setup()
+    await provider.submit(req()) // take_1 → job1 (SanoVids')
+    expect(provider.claimSiteJobs([claim('t_a', 'site9'), claim('t_b', 'site9'), claim('t_c', 'job1'), claim('take_1', 'site8'), claim('t_d', 'site8', { remoteId: 'proj1:other' })])).toEqual(['t_a'])
+    expect(provider.claimSiteJobs([claim('t_e', 'site9')])).toEqual([]) // claimed before
+    expect(provider.claimSiteJobs([claim('t_e', 'site9', { reimport: true })])).toEqual(['t_e'])
+    expect(provider.claimSiteJobs([claim('t_a', 'site7')])).toEqual([]) // that key already has a job
+    expect(Object.keys(imported(storage))).toEqual(['t_a', 't_e'])
+    // a new instance (app restart) reads them back; a ledger written before "Nhập job" loads without them
+    const again = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
+    expect(again.claimSiteJobs([claim('t_f', 'site9')])).toEqual([])
+    storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: {} }))
+    const old = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
+    expect(old.claimSiteJobs([claim('t_g', 'site9')])).toEqual(['t_g'])
+    storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: {}, imported: { bad: { remoteId: 5 }, worse: 'x', ok: { remoteId: 'proj1:site5', at: 1, nodeId: NODE } } }))
+    const mixed = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
+    expect(mixed.claimSiteJobs([claim('t_h', 'site5'), claim('t_i', 'site6')])).toEqual(['t_i'])
+  })
+
+  it('an imported key is never posted: submit / recover return its job (0 POST) — also after another take settles', async () => {
+    const { provider, server, storage } = setup()
+    expect(provider.claimSiteJobs([claim('t_imp', 'site9')])).toEqual(['t_imp'])
+    await provider.submit(req()) // a normal submit settles take_1: the ledger write keeps the claims
+    expect(imported(storage).t_imp.remoteId).toBe('proj1:site9')
+    expect(await provider.submit(req({ key: 't_imp', takeId: 't_imp' }))).toEqual({ remoteId: 'proj1:site9' })
+    expect(await provider.recover!(req({ key: 't_imp', takeId: 't_imp' }))).toEqual({ remoteId: 'proj1:site9' })
+    expect(jobPosts(server)).toHaveLength(1)
+  })
+
+  it('a job an unanswered POST may own is refused at claim time even when the scan offered it (a POST sent after the scan)', async () => {
+    const { server, clock } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
+    const wakers: (() => void)[] = []
+    // a provider whose waits after an unanswered POST hang until the test releases them
+    const p = createCanvasappProvider({
+      api: createCanvasappApi(server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage: memoryStorage(),
+      now: () => clock.t,
+      sleep: () => new Promise<void>((resolve) => void wakers.push(resolve)),
+    })
+    siteJob(server)
+    const scan = await p.scanSiteJobs(input())
+    const [c] = scan.candidates
+    expect(c.jobId).toBe('site1')
+    // logout + login meanwhile: SanoVids no longer knows which jobs were listed before take_b's POST — which loses its
+    // answer, so its "sent" record may own the site job (made within the time window, not known to be older)
+    p.reset()
+    server.state.loseAnswers = 1
+    const b = p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+    await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
+    expect(p.claimSiteJobs([{ key: 't_x', remoteId: c.remoteId, nodeId: NODE, job: c.job, reimport: false }])).toEqual([])
+    const again = await p.scanSiteJobs(input())
+    expect(again.skipped).toContainEqual({ jobId: 'site1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b' })
+    wakers.splice(0).forEach((w) => w())
+    // two jobs could be take_b's (its own + the site's): never guessed, never posted again
+    await expect(b).rejects.toMatchObject({ uncertain: true })
+    expect(jobPosts(server)).toHaveLength(1)
+  })
+
+  it('a site job listed before a POST is no job of that POST: still claimable, and the take finds its own job', async () => {
+    const { server, clock } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
+    const wakers: (() => void)[] = []
+    const p = createCanvasappProvider({
+      api: createCanvasappApi(server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage: memoryStorage(),
+      now: () => clock.t,
+      sleep: () => new Promise<void>((resolve) => void wakers.push(resolve)),
+    })
+    siteJob(server)
+    const [c] = (await p.scanSiteJobs(input())).candidates // this read is the "before" of the POST below
+    server.state.loseAnswers = 1
+    const b = p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+    await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
+    expect(p.claimSiteJobs([{ key: 't_x', remoteId: c.remoteId, nodeId: NODE, job: c.job, reimport: false }])).toEqual(['t_x'])
+    wakers.splice(0).forEach((w) => w())
+    expect(await b).toEqual({ remoteId: 'proj1:job2' })
+    expect(jobPosts(server)).toHaveLength(1)
+  })
+
+  describe('the lost-answer lookup with an imported job on the node (server without dedupe, list without keys)', () => {
+    function world() {
+      const server = fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] })
+      const storage = memoryStorage()
+      const clock = { t: 10_000_000 }
+      server.state.now = () => clock.t
+      const wakers: (() => void)[] = []
+      /** A provider over `storage` (called again = an app restart: what it read of the job list is gone). */
+      const start = () =>
+        createCanvasappProvider({
+          api: createCanvasappApi(server.transport),
+          getBlob: async (id) => blobs[id] ?? null,
+          storage,
+          now: () => clock.t,
+          sleep: () => new Promise<void>((resolve) => void wakers.push(resolve)),
+        })
+      const w = { server, storage, clock, provider: start(), wakeTwice: async () => undefined as void }
+      w.wakeTwice = async () => {
+        for (let i = 0; i < 2; i++) {
+          await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
+          wakers.splice(0).forEach((x) => x())
+        }
+      }
+      return { ...w, restart: () => (w.provider = start()), get p() { return w.provider } }
+    }
+    /** Import a site job on scene_a's node, then restart the app a minute later (no job-list read in memory). */
+    const importSite = async (w: ReturnType<typeof world>) => {
+      siteJob(w.server)
+      const scan = await w.p.scanSiteJobs(input())
+      const [c] = scan.candidates
+      expect(w.p.claimSiteJobs([{ key: 't_imp', remoteId: c.remoteId, nodeId: c.nodeId, job: c.job, reimport: false }])).toEqual(['t_imp'])
+      w.clock.t += 60_000
+      w.restart()
+    }
+
+    it('(a) the POST never reached canvasapp: the imported job is not taken for it — posted once more, billed once', async () => {
+      const w = world()
+      await importSite(w)
+      w.server.state.unreachablePosts = 1
+      const b = w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+      await w.wakeTwice()
+      expect(await b).toEqual({ remoteId: 'proj1:job2' })
+      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual(['site1', 'job2'])
+      expect(jobPosts(w.server)).toHaveLength(2) // the first never arrived
+    })
+
+    it('(b) the POST reached canvasapp but its answer was lost: it finds its own job, not “ambiguous”', async () => {
+      const w = world()
+      await importSite(w)
+      w.server.state.loseAnswers = 1
+      const b = w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+      await vi.waitFor(() => expect(w.server.state.jobs).toHaveLength(2))
+      await w.wakeTwice().catch(() => undefined)
+      expect(await b).toEqual({ remoteId: 'proj1:job2' })
+      expect(jobPosts(w.server)).toHaveLength(1)
+    })
+
+    it('(c) a site job made after that POST was sent is never claimable while its answer is unknown', async () => {
+      const w = world()
+      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: w.clock.t } }, imported: {} }))
+      const p = createCanvasappProvider({ api: createCanvasappApi(w.server.transport), getBlob: async (id) => blobs[id] ?? null, storage: w.storage, now: () => w.clock.t })
+      w.clock.t += 5_000
+      const j = siteJob(w.server)
+      const scan = await p.scanSiteJobs(input())
+      expect(scan.candidates).toEqual([])
+      expect(p.claimSiteJobs([{ key: 't_x', remoteId: `proj1:${j.job_id}`, nodeId: NODE, job: { ...j, body: undefined } as never, reimport: false }])).toEqual([])
+      // take_b's own lookup still sees it (the one job on its node): "Chạy lại" of take_b settles onto it, no POST
+      expect(await p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: `proj1:${j.job_id}` })
+      expect(jobPosts(w.server)).toHaveLength(0)
+    })
   })
 })
 

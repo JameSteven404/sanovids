@@ -5,7 +5,6 @@ import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, Penci
 import { memo, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
-import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
@@ -16,6 +15,7 @@ import { useRuns } from '../../store/runs'
 import { transferLabel, transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { importedChipTitle, takeSettingsText } from '../runs/importedTake'
 import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { TakePlayer } from './TakePlayer'
@@ -254,14 +254,19 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           <div className="cv-take-foot">
             <span
               className={`cv-take-settings${take.fileName ? ' is-name' : ''}`}
-              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${settingsLabel(take.settings)}` : settingsLabel(take.settings)}\nBấm đúp để đổi tên file video`}
+              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${takeSettingsText(take)}` : takeSettingsText(take)}\nBấm đúp để đổi tên file video`}
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 setRenaming(true)
               }}
             >
-              {take.fileName ?? settingsLabel(take.settings)}
+              {take.fileName ?? takeSettingsText(take)}
             </span>
+            {take.imported && (
+              <span className="cv-take-imported" title={importedChipTitle(take)}>
+                nhập
+              </span>
+            )}
             {order === undefined && (
               <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
                 cảnh đã xoá

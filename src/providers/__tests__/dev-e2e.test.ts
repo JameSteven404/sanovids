@@ -24,6 +24,9 @@ vi.mock('../../lib/imageStore', () => {
 })
 
 import { cancelTake, createSceneFromTake } from '../../actions'
+import { importSiteJobs, scanForImport } from '../../siteJobActions'
+import { importWords } from '../../components/runs/importJobsModel'
+import { takeCostLine } from '../../components/runs/creditText'
 import { createTopupFlow } from '../../components/topup/topupFlow'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf } from '../../core/models'
@@ -853,5 +856,64 @@ describe('dev mode e2e: what the simulated site runs now (inspector, run check, 
     expect(logOf('video-profiles')).toHaveLength(2)
     expect(providerLimits('dev')).toMatchObject({ source: 'server', firm: false })
     expect(rev()).toBeGreaterThan(before)
+  })
+})
+
+describe('dev mode e2e: "Nhập job" — a job made "on the site" (Bảng phát triển) becomes a take', () => {
+  it('the simulated site’s job (edited node) is imported through the real engine: 720p from the node, billed once (by the site), dev words', async () => {
+    server.login()
+    const [t1] = enqueue('s1')
+    await run(20_000)
+    expect(take(t1.id).status).toBe('completed')
+    const made = server.createSiteJob({ nodeId: sceneNodeId('p', 's1'), edit: { prompt: '@image_2 chạy dưới mưa', resolution: '720p' } })
+    expect(made).toMatchObject({ ok: true })
+    const cost720 = costOf({ ...S1, resolution: '720p' })
+    expect(server.balance()).toBe(1000 - S1_COST - cost720)
+    await run(DEV_LIST_CACHE_MS + 500) // the gateway's job-list cache (main: 15 s) may hide a job made a moment ago
+    clearDevLog()
+    const scan = await scanForImport()
+    expect(scan).toMatchObject({ pid: 'dev', simulated: true })
+    expect(scan.scan.candidates.map((c) => c.sceneId)).toEqual(['s1'])
+    const res = await importSiteJobs(scan, scan.scan.candidates.map((c) => c.jobId))
+    expect(res?.takeIds).toHaveLength(1)
+    // read-only: nothing but GETs reached the simulated site
+    expect(useDevLog.getState().entries.filter((e) => e.method !== 'GET')).toEqual([])
+    const imp = take(res!.takeIds[0])
+    expect(imp).toMatchObject({
+      provider: 'dev',
+      number: 2,
+      promptSnapshot: '@image_2 chạy dưới mưa',
+      settings: { resolution: '720p' },
+      cost: cost720,
+      imported: { inferred: ['resolution', 'refs'], unknown: [] },
+    })
+    expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã nhập 1 video từ canvasapp giả lập vào S01 — không trừ credit dev.')
+    expect(takeCostLine(imp).note).toBe('trả trên canvasapp giả lập khi tạo job (ngoài SanoVids) — nhập không trừ thêm')
+    await run(20_000)
+    expect(take(imp.id).status).toBe('completed')
+    expect(await media.get(take(imp.id).videoId!)!.text()).toBe('WEBM:#2')
+    // charged once — by the site, when it made the job; SanoVids sent no job
+    expect(server.balance()).toBe(1000 - S1_COST - cost720)
+    expect(server.snapshot().jobs.map((j) => j.origin)).toEqual(['site', 'app'])
+    expect(logOf('job-create')).toEqual([])
+  })
+
+  it('errors reach the dialog in development-mode words (never canvasapp.io.vn): session ended, network down', async () => {
+    server.login()
+    const [t1] = enqueue('s1')
+    await run(20_000)
+    expect(take(t1.id).status).toBe('completed')
+    server.expireSession()
+    const e401 = await scanForImport().catch((e: unknown) => e)
+    expect(e401).toMatchObject({ code: 'login-required' })
+    expect((e401 as Error).message).toContain('canvasapp giả lập')
+    expect((e401 as Error).message).not.toContain('canvasapp.io.vn')
+    server.login()
+    server.addFault(DEV_FAULT_PRESETS.find((p) => p.id === 'list-network')!.rule)
+    const eNet = await scanForImport().catch((e: unknown) => e)
+    expect(eNet).toMatchObject({ code: 'network' })
+    expect((eNet as Error).message).toContain('canvasapp giả lập')
+    expect((eNet as Error).message).not.toContain('canvasapp.io.vn')
+    expect(importWords(true)).toMatchObject({ site: 'canvasapp giả lập', credit: 'credit dev' })
   })
 })

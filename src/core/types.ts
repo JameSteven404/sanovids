@@ -182,6 +182,29 @@ export interface Take {
    * @image_N order — the full list, before the model's image cap. Lets "restore prompt" renumber exactly.
    */
   imageKeysSnapshot?: string[]
+  /**
+   * The take was IMPORTED ("Nhập job"): its job was created on canvasapp's own page (the user pressed "Tạo video" on a
+   * node of the "SanoVids bridge" session), not by SanoVids. It is born `processing` with `remoteId` set, so the queue
+   * only polls and downloads it — it is never submitted, and "Chạy lại" makes a NEW take (cost dialog). The job list
+   * does not say everything a take records: `unknown` fields hold placeholders (shown "?", never restored, cost "—");
+   * `inferred` ones come from the bridge node (canvas or SanoVids' own entry) whose prompt matched the job's — likely,
+   * not sure (shown "≈", never restored as settings). See providers/canvasapp/siteJobs.ts.
+   */
+  imported?: TakeImport
+}
+
+/** Settings / data of an imported take that canvasapp's job list does not tell for sure. */
+export type ImportedField = 'mode' | 'resolution' | 'duration' | 'ratio' | 'prompt' | 'refs'
+
+export interface TakeImport {
+  /** When SanoVids imported it (local time). */
+  at: number
+  /** canvasapp's job_name, when it had one (≤ 200 chars). */
+  jobName: string | null
+  /** Not known at all: the take holds a placeholder value. */
+  unknown: ImportedField[]
+  /** Taken from the bridge node: likely, not sure. Never in `unknown` too. */
+  inferred: ImportedField[]
 }
 
 /**

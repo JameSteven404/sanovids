@@ -4,6 +4,7 @@ import {
   ChevronUp,
   CircleStop,
   Cloud,
+  CloudDownload,
   Download,
   Eye,
   ListVideo,
@@ -20,7 +21,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { cancelTake, deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { MODELS, settingsLabel } from '../../core/models'
+import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
@@ -33,6 +34,8 @@ import { MediaImg } from '../common/Media'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
 import { takeCostLine } from './creditText'
+import { importedChipTitle, takeCostKnown, takeSettingsText } from './importedTake'
+import { openImportJobs } from '../../siteJobActions'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
@@ -223,6 +226,15 @@ function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => openImportJobs()}
+          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ credit`}
+        >
+          <CloudDownload size={13} />
+          <span className="rq-btn-label">Nhập job</span>
+        </button>
         {provider === 'dev' ? (
           <DevPanelButton />
         ) : (
@@ -349,10 +361,15 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         </div>
         <div className="rq-row-sub">
           <ProviderBadge take={take} />
+          {take.imported && (
+            <span className="rq-imported" title={importedChipTitle(take)}>
+              nhập
+            </span>
+          )}
           <span className="rq-row-model" style={{ ['--rq-model-c' as string]: MODELS[take.settings.model]?.color }}>
             {MODELS[take.settings.model]?.short ?? take.settings.model}
           </span>
-          <span>{settingsLabel(take.settings)}</span>
+          <span>{takeSettingsText(take)}</span>
           {take.status === 'failed' && take.error && (
             <span className="rq-row-err" title={take.error}>
               {take.error}
@@ -379,7 +396,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
       </span>
 
       <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
-        <span className="mono">{formatCredits(take.cost, cost.kind, { short: true })}</span>
+        <span className="mono">{formatCredits(takeCostKnown(take), cost.kind, { short: true })}</span>
         {CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
       </span>
 

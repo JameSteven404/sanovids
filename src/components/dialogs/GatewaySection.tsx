@@ -6,10 +6,11 @@
 // dev console (faults, request log, simulated jobs).
 // Login state and balance come from the shared gateway-credit store (store/credits useRealCredits: GET /api/me of the
 // active gateway) — the same numbers as the top bar pill, no separate request here.
-import { Bug, Cable, Cloud, FlaskConical, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, TriangleAlert, Wallet } from 'lucide-react'
+import { Bug, Cable, Cloud, CloudDownload, FlaskConical, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, TriangleAlert, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { openDevPanel, openTopUp } from '../../actions'
+import { openImportJobs } from '../../siteJobActions'
 import { activeGateway, activeProviderId, PROVIDER_LABEL, SELECTABLE_PROVIDERS, useProviderPrefs, type ProviderId } from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE } from '../../providers/canvasapp/transport'
 import { DEV_CREDIT_HINT, formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
@@ -212,6 +213,14 @@ export function GatewaySection() {
                   aria-label={dev ? 'Lịch sử credit dev' : 'Lịch sử credit canvasapp'}
                 >
                   <History size={14} />
+                </button>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => openImportJobs({ back: { kind: 'settings' }, provider: gw.id })}
+                  disabled={!!busy}
+                  title={`Tìm video đã tạo trực tiếp trên ${site} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ credit`}
+                >
+                  <CloudDownload size={13} /> Nhập job
                 </button>
               </>
             )}

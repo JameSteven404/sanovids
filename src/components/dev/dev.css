@@ -1336,3 +1336,15 @@
     transition: none;
   }
 }
+/* "Tạo job như trên trang canvasapp": the node edit fields */
+.dv-site-edit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: 10px;
+  align-items: start;
+}
+@media (max-width: 640px) {
+  .dv-site-edit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

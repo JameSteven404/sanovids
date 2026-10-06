@@ -71,7 +71,10 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `PATCH /api/projects/{id} { name }` (`#renameProject`). SanoVids does the same for "SanoVids bridge" (a failed
   rename is ignored: the id is remembered locally).
 - `DELETE /api/projects/{id}` (not used by SanoVids).
-- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`).
+- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`). SanoVids reads it only for
+  "Nhập job" (reverse sync, `scanSiteJobs`): the bridge node a site-made job ran from hints its resolution / mode /
+  pictures — only when that node's prompt, model, duration and ratio match the job (VERIFY: is node data kept exactly as
+  PUT?).
 - `PUT /api/projects/{id}/canvas` — body exactly as `canvasPayload()` builds it, **no other key anywhere**:
   ```json
   { "nodes": [
@@ -135,7 +138,12 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   'submitting'|'accepted'), progress (0–100), download_available, error_message, duration, aspect_ratio, created_at,
   finished_at, provider_started_at, provider_finished_at, creation_mode`.
 - `GET /api/video-jobs/{job_id}/stream` → the MP4; `GET /api/video-jobs/{job_id}/prompt` → `{ prompt }`
-  (`runDownloadTask()`, both plain GETs).
+  (`runDownloadTask()`, both plain GETs). SanoVids reads `/prompt` for "Nhập job" only (one job at a time, ≤ 20 per
+  import; empty / unreadable / over 20.000 chars = unknown). VERIFY: the trimmed prompt as posted, also for jobs made on
+  the site and expired ones.
+- Jobs made on canvasapp's own page (a node of "SanoVids bridge", random `client_request_id`) are imported as takes by
+  "Nhập job" — read-only (GETs above + the job list); the job list must carry `canvas_node_id` for that (VERIFY), and
+  `client_request_id` / `mode` / `resolution` there would make it exact (see docs/GATEWAY-CANVASAPP.md §4).
 - `POST /api/video-jobs/{job_id}/download-token` → `{ download_token }`, then `GET /api/download/{token}`.
 - `DELETE /api/video-jobs/{job_id}`. The site polls the job list every 60 s.
 

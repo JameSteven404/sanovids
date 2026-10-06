@@ -32,6 +32,12 @@ export type DialogState =
   | { kind: 'dev'; tab?: DevPanelTab }
   /** "Cập nhật SanoVids" (components/dialogs/UpdateDialog). Open with updateActions.openUpdateDialog(). */
   | { kind: 'update' }
+  /**
+   * "Nhập job" — jobs made on canvasapp's own page become takes (components/runs/ImportJobsDialog, siteJobActions).
+   * `back`: the dialog it was opened from (Settings, Bảng phát triển), shown again when it closes. `provider`: the
+   * gateway to read (default: the one new takes use; the Bảng phát triển always reads the simulated one).
+   */
+  | { kind: 'importJobs'; back?: DialogState; provider?: 'dev' | 'canvasapp' }
 
 /** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
 export type TopUpTab = 'topup' | 'history'

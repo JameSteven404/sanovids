@@ -78,8 +78,9 @@ Giao diện nhà cung cấp (`src/providers/types.ts`):
 
 Trường mới trên take (tuỳ chọn, tương thích ngược — take cũ không có = demo):
 `provider` (`'mock' | 'dev' | 'canvasapp'`), `remoteId`, `charged` (đã trừ credit demo hay chưa → có hoàn khi lỗi/huỷ hay không),
-`framesSnapshot` (khung đầu/cuối lúc bấm chạy). Khai báo trên `Take` (`core/types.ts`);
-`migrateTake` (`core/migrate.ts`) điền giá trị mặc định cho take cũ. `RunTake` (`providers/types.ts`) chỉ còn là tên khác của `Take`.
+`framesSnapshot` (khung đầu/cuối lúc bấm chạy), `imported` (take **nhập** từ một job tạo trên trang canvasapp — xem §4
+"Nhập job": `{ at, jobName, unknown, inferred }`). Khai báo trên `Take` (`core/types.ts`);
+`migrateTake` (`core/migrate.ts`) điền giá trị mặc định cho take cũ (và kiểm tra `imported`). `RunTake` (`providers/types.ts`) chỉ còn là tên khác của `Take`.
 
 ## 3. Ánh xạ dữ liệu
 
@@ -277,6 +278,49 @@ tự `POST` lại. Đổi sang dự án khác lúc đang gửi không huỷ lầ
 `JobRequest` dựng ngay lúc gửi); mở lại dự án → take tìm lại job. Take của một dự án không bao giờ nhận nhầm job của bản
 sao (node khác nhau), và hai take còn "không rõ" trên cùng một node không bao giờ nhận job của nhau (xem trên).
 
+**Nhập job từ canvasapp (đồng bộ ngược)** — người dùng có thể bấm "Tạo video" ngay trên trang canvasapp.io.vn, trên node
+của một cảnh trong phiên "SanoVids bridge". Nút **Nhập job** (Hàng đợi; Cài đặt › Nhà cung cấp video khi đã đăng nhập;
+Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa các job đó vào dự án đang mở thành take của đúng cảnh (`siteJobActions.ts`, luật thuần trong
+`providers/canvasapp/siteJobs.ts`, adapter `scanSiteJobs` / `siteJobPrompts` / `claimSiteJobs`):
+1. **Chỉ đọc** (chỉ `GET`, không bao giờ trừ credit): id phiên đã nhớ, nếu chưa có thì tìm theo tên (`GET /api/projects`
+   — không tạo, không nhớ); `GET /api/video-jobs?project_id=` (luôn đọc lại — cache 15 s của main vẫn áp dụng, job vừa
+   tạo có thể chưa hiện); `GET /api/projects/{id}` (canvas đã lưu, chỉ khi có job nhập được); sau khi chọn: `GET
+   /api/video-jobs/{id}/prompt` từng job một, tối đa **20 job** mỗi lần.
+2. Job nhập được = job canvas (`creation_mode` trống / `canvas`), mã job hợp lệ, `canvas_node_id` là node của một cảnh
+   trong dự án đang mở (`sceneNodeId`, hoặc node cũ theo id cảnh), chưa kết thúc lỗi / huỷ / hết hạn (job xong mà
+   `download_available: false` quá 1 giờ thì bỏ), model SanoVids có. **Không bao giờ** nhập: job đã là take của dự án;
+   job SanoVids tạo (sổ `jobs`, hoặc `client_request_id` của một take khi danh sách có trường này); job mà một lần `POST`
+   còn chưa rõ câu trả lời (sổ `sent`) **có thể** đã tạo (`sentMayOwn`: cùng `client_request_id` nếu danh sách có, nếu
+   không thì cùng node, không có trong lần đọc trước `POST`, tạo trong khoảng ±14 giờ quanh lần gửi — take đó phải tự tìm
+   ra job của nó, không bao giờ thành take mới).
+3. Take nhập sinh ra ở trạng thái **`processing` có sẵn `remoteId`** (`useRuns.importTakes`, đồng bộ): engine chỉ theo
+   dõi + tải video (poster, tự tải, lưu vào Thư mục như mọi take), **không bao giờ gửi**; không chiếm chỗ trong 10 job
+   gửi cùng lúc (vẫn được tính trong "Cập nhật khi xong"). `charged: false`, `provider` = cổng đã quét. Ghi vào sổ
+   **`imported[take.id]`** của adapter đang chạy take (`gatewayProvider` = instance trong registry) — kiểm tra lại ngay
+   lúc ghi: khoá đã có job / đã gửi, job SanoVids tạo, job đã nhập (trừ khi chọn nhập lại), cùng một job hai lần, job mà
+   một `POST` chưa rõ có thể sở hữu → bỏ. Khoá có trong `imported` không bao giờ được `POST` (`submit` / `recover` trả
+   luôn job đó). Đổi sang dự án khác trong lúc đọc prompt → không nhập, không ghi gì ("Đã mở dự án khác — chưa nhập gì.").
+   Cảnh bị xoá, job đã có trong dự án → bỏ qua. 401 khi đọc prompt → không nhập gì (nút Đăng nhập rồi quét lại).
+4. Tìm job của câu trả lời bị mất (`findJob`, danh sách không có `client_request_id`): job đã **nhập trước** lần `POST`
+   đó (`imported.at < sent.at`) không thể là job của nó (đã có trong danh sách trước khi gửi) → không bao giờ nhận nhầm,
+   không làm take "không rõ" mãi. Job nhập sau lần `POST` đó không thể có (bước 2 chặn).
+5. Danh sách job **không** cho biết độ phân giải, chế độ (trừ Seedance chỉ có t2v), prompt, ảnh. Prompt lấy từ
+   `/prompt` (trống / không đọc được / dài hơn 20.000 ký tự → **không rõ**). Phần còn lại chỉ được **đoán** (`inferred`,
+   hiện "≈") khi node trên canvas đã lưu (hoặc mục SanoVids đã nhớ của node đó) có cùng prompt, model, thời lượng, tỷ lệ
+   với job; ảnh tham chiếu đoán được khi mọi upload của node ứng với ảnh trong máy (cache upload) và một nhân vật của dự
+   án. Không đoán được → **không rõ** (`unknown`, giá trị giữ chỗ, hiện "?"). Node có thể đã đổi từ lúc tạo job (ví dụ chỉ
+   đổi độ phân giải rồi SanoVids ghi đè lại) nên giá trị đoán **không bao giờ** được coi là chắc chắn: chi phí "≈ 20
+   credit" (không rõ độ phân giải / thời lượng → "—"); "Khôi phục prompt này" tắt khi không rõ prompt hoặc ảnh tham
+   chiếu, và chỉ khôi phục cấu hình chắc chắn — trường đoán / không rõ giữ giá trị của cảnh (thông báo nói rõ); Xem take
+   so sánh với cảnh chỉ trên những gì chắc chắn ("Take nhập — không đủ dữ liệu để so với cảnh").
+6. "Chạy lại" / "Thử lại" một take nhập → hộp xác nhận chi phí → **take MỚI** (khoá mới, cấu hình hiện tại của cảnh).
+   "Bỏ nhập" (nút trên thông báo) xoá các take vừa nhập (chỉ hỏi khi một take đang là @video); job vẫn còn trên trang, lần
+   quét sau hiện lại với nhãn "đã nhập trước" (không tick sẵn). Hiển thị: chip **nhập** trên node / hàng đợi, dòng
+   "Nguồn" trong Xem take, "?" / "≈" ở mọi chỗ ghi cấu hình (`components/runs/importedTake.ts`).
+Lời khuyên: nhập **trước** khi chạy lại cảnh đó trong SanoVids (lần `PUT` canvas sau của SanoVids ghi đè node đã sửa trên
+trang, mất gợi ý cấu hình); đóng tab phiên "SanoVids bridge" trên trình duyệt trước khi chạy cảnh trong SanoVids (trang tự
+lưu canvas có thể gỡ node SanoVids vừa thêm → job bị từ chối, không trừ credit).
+
 ## 5. Credit
 
 - Take canvasapp **không** trừ credit demo của SanoVids (`charged: false`) và không được "hoàn" khi lỗi — tiền thật nằm ở
@@ -364,12 +408,12 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request API + ≤ 2 lượt tải video song song, ≤ 10 job, một lần đọc danh sách job mỗi chu kỳ poll (≥ 15 s) cho mọi job, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie; **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
-| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job không bao giờ `POST` lại; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu); vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: đọc danh sách job ngay trước `POST`, đọc không được → không gửi). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts` |
+| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu); vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: đọc danh sách job ngay trước `POST`, đọc không được → không gửi). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
 | Video lớn qua IPC | Tải về: từng phần ≤ 4 MiB (`canvasapp:downloadOpen/Read/Close`), ≤ 1 GB, dừng sau 60 s không có dữ liệu, tải tiếp bằng Range khi canvasapp cho (xem §4 "Tải kết quả"). GET qua `net.request` (chỉ theo chuyển hướng https); luồng thân (`IncomingMessage` của Electron qua Node `Readable.toWeb`) chỉ xin thêm dữ liệu từ mạng khi được đọc — chưa kiểm chứng trên bản build: RAM của main khi trang đọc chậm (VERIFY, §9). **Còn lại**: lưu video lớn ra đĩa (tự tải, nút Thư mục, "Hỏi nơi lưu") vẫn gửi cả file qua IPC một lần (`files:saveAs` / `files:writeToFolder`, ≤ 1 GB) — cần làm từng phần như trên |
-| Người dùng sửa phiên "SanoVids bridge" trên canvasapp | canvas bị ghi đè ở lần gửi sau. Đừng chỉnh phiên này bằng tay |
+| Người dùng dùng phiên "SanoVids bridge" trên canvasapp | **Chạy** một node ở đó thì được — job nhập vào SanoVids bằng "Nhập job" (§4). **Sửa** node thì bị ghi đè ở lần gửi sau của SanoVids: nhập job trước khi chạy lại cảnh đó trong SanoVids. Đóng tab phiên này trước khi chạy cảnh trong SanoVids: trang tự lưu canvas có thể gỡ node SanoVids vừa thêm → job bị từ chối (không trừ credit) |
 
 ## 7. Bật thử
 
@@ -441,7 +485,21 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   `devModel`. Còn VERIFY trên máy chủ thật: `/stream` có Content-Length, Accept-Ranges, ETag / Last-Modified, có nén không,
   có chuyển hướng (CDN, luôn https?) không, kích thước video thường gặp; RAM của main khi trang đọc chậm (luồng của
   `net.request` chỉ xin thêm dữ liệu khi được đọc). Việc tiếp: lưu video lớn ra đĩa theo từng phần (`files:*`).
-- [ ] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take.
+- [x] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take — "Nhập job" (§4): chỉ đọc
+  (`GET`), take nhập sinh ra `processing` có `remoteId` (chỉ theo dõi + tải, không bao giờ gửi, "Chạy lại" = take mới),
+  sổ `imported` (không bao giờ `POST` khoá đó; `findJob` loại job nhập trước lần gửi), không nhập job mà một lần gửi chưa
+  rõ có thể sở hữu (kiểm tra cả lúc quét và lúc ghi), dự án được ghim, tối đa 20 job / lần, cấu hình chỉ "đoán" (≈) theo
+  node có prompt khớp, không rõ (?) thì không tính chi phí / không khôi phục. Chế độ Phát triển: Bảng phát triển › Job &
+  đơn nạp › "Tạo job như trên trang canvasapp" (sửa node trước nếu muốn) + nút "Nhập" ở job chưa có take. Test:
+  `canvasapp-siteJobs`, `canvasapp-adapter`, `canvasapp-e2e`, `dev-server`, `dev-e2e`, `runs-engine`, `importedTake`,
+  `importJobsModel`, `migrate`, `devModel`. Còn VERIFY trên máy chủ thật: mọi job trong `GET /api/video-jobs` có
+  `canvas_node_id` không (không có → không nhập được gì); danh sách có `client_request_id` / `mode` / `resolution` /
+  `upload_ids` / số credit không (có → nhập chính xác, không cần đoán); danh sách có cắt trang không, `creation_mode` của
+  job canvas / simple là gì; `created_at` có múi giờ không (cửa sổ ±14 giờ); `GET /api/projects/{id}` trả `{ canvas: {
+  nodes, connections } }` và giữ nguyên dữ liệu node như đã `PUT` không; job H3 transform có `aspect_ratio: null` trong
+  danh sách không; `GET …/prompt` trả prompt đã trim như lúc gửi, cho job tạo trên trang và job đã hết hạn không; `GET
+  …/stream` có tải được job tạo trên trang không; có thể có nhiều phiên tên "SanoVids bridge" không (nhập chỉ đọc phiên
+  đã nhớ, hoặc phiên đầu tiên trùng tên).
 - [ ] Khi có API chính thức / token từ bên vận hành: thay `transport.ts` (vd. HTTP + API key do người dùng nhập, lưu bằng `safeStorage`), giữ nguyên `adapter`/`mapping`.
 
 ## 9. Kế hoạch thử thủ công (cho người dùng)
@@ -472,6 +530,13 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 
 16. **Rút mạng giữa lúc tải video** (không tốn thêm credit) — cảnh dài / độ phân giải cao để video lớn; khi take hiện "Đang tải về …%", tắt Wi-Fi ~20 giây rồi bật lại → take vẫn "đang tạo/tải", không bị đánh lỗi, rồi xong (tải tiếp hoặc tải lại từ đầu); trên canvasapp vẫn chỉ **1** job. Ghi lại kích thước file, thời gian tải và (nếu xem được) tiêu đề trả lời của `/stream` (`Content-Length`, `Accept-Ranges`, `ETag`, `Content-Encoding`, có chuyển hướng không).
 17. **Mạng chậm / huỷ khi đang tải** — trong lúc "Đang tải về …%": bấm Huỷ → SanoVids **hỏi trước** (video đã tạo xong, đã trừ credit, huỷ sẽ bỏ video trong SanoVids); không đồng ý → vẫn tải tiếp tới xong; đồng ý → take "Đã huỷ" ngay, thông báo nói video vẫn tải được trên canvasapp.io.vn (tải về ở đó để không mất), take khác tải được ngay sau. Mở Task Manager xem RAM của SanoVids khi tải một video lớn (≥ 300 MB nếu có) — ghi lại (kiểm tra main có đệm cả video không). Sau đó lưu video đó bằng nút Thư mục và "Hỏi nơi lưu" — ghi lại nếu lỗi (lưu vẫn gửi cả file qua IPC một lần).
+
+18. **Nhập job** (4 credit, tuỳ chọn) — sau bước 5: trên canvasapp.io.vn mở phiên "SanoVids bridge", bấm **Tạo video** trên node
+    của cảnh đó (không sửa gì). Trong SanoVids: Hàng đợi › **Nhập job** → job hiện dưới đúng cảnh (đợi ~15 giây rồi "Quét
+    lại" nếu chưa thấy) → **Nhập 1 job** → take mới có chip "nhập", cấu hình "≈480P", tự tải video khi xong; credit canvasapp
+    chỉ giảm một lần (lúc tạo trên trang). Quét lại → "Không có job mới nào". Bấm **Chạy lại** trên take nhập → hộp xác nhận
+    chi phí (take mới). Ghi lại: danh sách job có `canvas_node_id` / `client_request_id` không, `created_at` có múi giờ không
+    (DevTools › Network nếu xem được).
 
 Tự động (không mạng, không tốn tiền): `npx vitest run src/providers/__tests__/canvasapp-e2e.test.ts` chạy toàn bộ luồng thật
 (engine → adapter → transport → cầu nối giả lập canvasapp) cho các trường hợp trên.

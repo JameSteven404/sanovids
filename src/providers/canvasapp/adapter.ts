@@ -37,6 +37,9 @@
 //     → post again ONCE with the same body and key; still nothing → error flagged `uncertain` (the engine then shows
 //     "không rõ đã trả chưa" and never resubmits that take under a new key by itself).
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
+//   - `imported[key]`: a job made on canvasapp's own page that became the take `key` ("Nhập job": scanSiteJobs →
+//     siteJobPrompts → claimSiteJobs, rules in siteJobs.ts). Such a key is never posted either; the import itself
+//     only reads (GET), and never offers a job an unanswered POST may own (sentMayOwn, checked again at claim time).
 import { normalizeSettings } from '../../core/models'
 import type { ModelId, VideoSettings } from '../../core/types'
 import { CANVASAPP_MAX_REF_VIDEOS, capabilitiesFromModels } from '../capabilities'
@@ -57,6 +60,17 @@ import {
   type VideoProvider,
 } from '../types'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi, type CanvasJob, type VideoJobBody, type VideoProfile } from './api'
+import {
+  classifySiteJobs,
+  CREATED_SKEW_MS,
+  createdTime,
+  hintsFor,
+  MAX_IMPORT_BATCH,
+  normalizeImportPrompt,
+  sentMayOwn,
+  type SiteJobClaim,
+  type SiteJobScan,
+} from './siteJobs'
 import {
   ALLOWED_IMAGE_TYPES,
   BRIDGE_PROJECT_NAME,
@@ -101,13 +115,10 @@ export const RECONCILE_DELAYS_MS = [15_000, 15_000]
  * posts again. So a list read this long after another take's POST shows that take's job, if it has one.
  */
 const SETTLE_MS = RECONCILE_DELAYS_MS.reduce((a, b) => a + b, 0)
-/**
- * A job found for a lost answer must be created after the request was sent. Generous on purpose: canvasapp's
- * created_at may come without a time zone (VERIFY), which can shift it by up to ±14 h.
- */
-const CREATED_SKEW_MS = 14 * 3600_000
+// CREATED_SKEW_MS (how far created_at may be off): siteJobs.ts, shared with the import's reservation rule.
 const MAX_JOB_RECORDS = 500
 const MAX_SENT_RECORDS = 100
+const MAX_IMPORTED_RECORDS = 500
 /** /api/video-profiles is read again after this long (canvasapp's page reads it once per page load). */
 export const PROFILES_TTL_MS = 10 * 60_000
 /**
@@ -245,10 +256,37 @@ interface JobLedger {
   /** `nodeId`: the bridge canvas node of the job (v0.2.5+), kept on the canvas while the job runs. */
   jobs: Record<string, { remoteId: string; at: number; nodeId?: string }>
   sent: Record<string, SentRecord>
+  /**
+   * Jobs made on canvasapp's own page that became takes ("Nhập job", claimSiteJobs): take id → the job, when it was
+   * claimed (local time). A key here is never posted (submitNow / recover return its job). Kept apart from `jobs`
+   * on purpose: findJob only rules out a claimed job for a POST sent AFTER the claim (it was listed before that POST,
+   * so it cannot be its job) — never one claimed later (sentMayOwn keeps those from being claimed at all).
+   */
+  imported: Record<string, { remoteId: string; at: number; nodeId: string }>
+}
+
+/** Ledger records read back from storage, keeping only `{ remoteId: string, at: number, … }` ones. */
+function recordsFrom<T extends { remoteId: string; at: number }>(raw: unknown, keep: (r: Record<string, unknown>) => boolean = () => true): Record<string, T> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, T> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== 'object') continue
+    const r = v as Record<string, unknown>
+    if (typeof r.remoteId === 'string' && r.remoteId && typeof r.at === 'number' && Number.isFinite(r.at) && keep(r)) out[k] = r as unknown as T
+  }
+  return out
 }
 
 export const STATE_KEY = 'bdp:canvasapp:gateway'
 export const JOBS_KEY = 'bdp:canvasapp:jobs'
+
+/** What "Nhập job" tells the adapter about the open project (siteJobActions.scanForImport). */
+export interface SiteScanInput {
+  sceneByNode: ReadonlyMap<string, string>
+  sceneOrder: ReadonlyMap<string, number>
+  takeJobIds: ReadonlySet<string>
+  takeIds: ReadonlySet<string>
+}
 
 export type CanvasappProvider = VideoProvider & {
   reset(): void
@@ -259,6 +297,22 @@ export type CanvasappProvider = VideoProvider & {
   refreshProfiles(): Promise<VideoProfile[]>
   bridgeProjectId(): string | null
   uploadCacheSize(): number
+  // ---- "Nhập job" (reverse sync; siteJobs.ts). Read-only toward canvasapp: GET requests only, never a project made. ----
+  /**
+   * The jobs of the "SanoVids bridge" session that may become takes of the open project (and why the others may not).
+   * Reads: GET /api/projects (only when no bridge id is remembered — never creates or remembers one), the job list
+   * (always read; the poll's cache reuses it), GET /api/projects/{id} (the saved canvas, for hints; only with candidates).
+   * Throws on 401 ('login-required') and other list errors; projectId null = no bridge session.
+   */
+  scanSiteJobs(input: SiteScanInput): Promise<SiteJobScan>
+  /** GET /api/video-jobs/{id}/prompt of at most MAX_IMPORT_BATCH jobs, one after the other; null = unknown. Rethrows 401. */
+  siteJobPrompts(jobIds: readonly string[]): Promise<Record<string, string | null>>
+  /**
+   * Record jobs as imported takes (ledger.imported), checked again NOW against the ledger: never a key that has a
+   * job / a POST, a job SanoVids made, one claimed before (unless `reimport`), the same job twice, or one an
+   * unanswered POST may own (sentMayOwn). Synchronous; returns the accepted keys.
+   */
+  claimSiteJobs(claims: readonly SiteJobClaim[]): string[]
 }
 
 /** Errors after which canvasapp may have created the job although no job id came back. */
@@ -279,11 +333,6 @@ async function bitmapSize(blob: Blob): Promise<{ width: number; height: number }
   } catch {
     return null
   }
-}
-
-function createdTime(v: unknown): number {
-  if (typeof v === 'number') return v
-  return typeof v === 'string' ? Date.parse(v) : NaN
 }
 
 /**
@@ -378,19 +427,24 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       const raw = storage.get(JOBS_KEY)
       if (raw) {
         const p = JSON.parse(raw) as Partial<JobLedger>
-        return { jobs: p.jobs && typeof p.jobs === 'object' ? p.jobs : {}, sent: p.sent && typeof p.sent === 'object' ? p.sent : {} }
+        return {
+          jobs: p.jobs && typeof p.jobs === 'object' ? p.jobs : {},
+          sent: p.sent && typeof p.sent === 'object' ? p.sent : {},
+          // a ledger of a build before "Nhập job" has none; malformed records are dropped
+          imported: recordsFrom(p.imported, (r) => typeof r.nodeId === 'string'),
+        }
       }
     } catch {
       /* ignore */
     }
-    return { jobs: {}, sent: {} }
+    return { jobs: {}, sent: {}, imported: {} }
   }
   function newest<T extends { at: number }>(rec: Record<string, T>, max: number): Record<string, T> {
     const entries = Object.entries(rec)
     return entries.length <= max ? rec : Object.fromEntries(entries.sort((a, b) => b[1].at - a[1].at).slice(0, max))
   }
   function saveLedger(next: JobLedger) {
-    ledger = { jobs: newest(next.jobs, MAX_JOB_RECORDS), sent: newest(next.sent, MAX_SENT_RECORDS) }
+    ledger = { jobs: newest(next.jobs, MAX_JOB_RECORDS), sent: newest(next.sent, MAX_SENT_RECORDS), imported: newest(next.imported, MAX_IMPORTED_RECORDS) }
     storage.set(JOBS_KEY, JSON.stringify(ledger))
   }
   /**
@@ -399,7 +453,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    */
   function settle(key: string, remoteId: string, nodeId: string): { remoteId: string } {
     const { [key]: _done, ...sent } = ledger.sent
-    saveLedger({ jobs: { ...ledger.jobs, [key]: { remoteId, at: now(), nodeId } }, sent })
+    saveLedger({ ...ledger, jobs: { ...ledger.jobs, [key]: { remoteId, at: now(), nodeId } }, sent })
     return { remoteId }
   }
   /** A job list was read (poll, lookup or room check). */
@@ -751,7 +805,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // The list does not carry client_request_id: the job is the ONE canvas job on the canvas node the POST named
     // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
     // and was created after it.
-    const taken = new Set(Object.values(ledger.jobs).map((j) => decodeRemoteId(j.remoteId)?.jobId))
+    // ...nor a job imported ("Nhập job") BEFORE this POST was sent: it was listed before it, so it is not its job.
+    // (One imported later cannot be a job this POST may own: sentMayOwn kept it from being claimed.)
+    const taken = new Set([
+      ...Object.values(ledger.jobs).map((j) => decodeRemoteId(j.remoteId)?.jobId),
+      ...Object.values(ledger.imported)
+        .filter((j) => j.at < rec.at)
+        .map((j) => decodeRemoteId(j.remoteId)?.jobId),
+    ])
     const before = new Set(rec.before ?? [])
     const model = modelProfileOf(req.model)
     const candidates = jobs.filter((j) => {
@@ -857,8 +918,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const checkCancelled = () => {
       if (opts.isCancelled?.()) throw new CanvasappError('cancelled', CANCELLED_TEXT)
     }
-    // A job already exists for this key: never post it again.
-    const done = ledger.jobs[req.key]
+    // A job already exists for this key (made by SanoVids, or imported from canvasapp's page): never post it again.
+    const done = ledger.jobs[req.key] ?? ledger.imported[req.key]
     if (done) return { remoteId: done.remoteId }
     checkCancelled()
     // This key was posted before without a known answer (an explicit retry of an "unknown" take): look first —
@@ -1037,7 +1098,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     },
 
     recover: async (req) => {
-      const known = () => ledger.jobs[req.key]?.remoteId ?? null
+      const known = () => ledger.jobs[req.key]?.remoteId ?? ledger.imported[req.key]?.remoteId ?? null
       if (known()) return { remoteId: known()! }
       const running = inflight.get(req.key)
       if (running) {
@@ -1132,5 +1193,69 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     },
     bridgeProjectId: () => state.projectId,
     uploadCacheSize: () => Object.keys(state.uploads).length,
+
+    scanSiteJobs: async (input) => {
+      // the remembered bridge session, else the one canvasapp has by name — looked up only, never created / remembered
+      const projectId = state.projectId ?? (await api.listProjects()).find((p) => p.name === BRIDGE_PROJECT_NAME)?.project_id ?? null
+      if (!projectId) return { projectId: null, listHasKeys: false, candidates: [], skipped: [] }
+      // always read (the user asked: a job just made on the site must show); the poll reuses this read
+      let jobs: CanvasJob[]
+      try {
+        jobs = await api.listVideoJobs(projectId)
+      } catch (e) {
+        if (e instanceof CanvasappError && e.code === 'not-found') return { projectId: null, listHasKeys: false, candidates: [], skipped: [] }
+        throw e
+      }
+      remember(projectId, jobs)
+      const found = classifySiteJobs(jobs, { ...input, projectId, ledger, now: now() })
+      if (found.candidates.length) {
+        // the saved canvas (what the site ran the job from, unless edited since): hints only — unreadable is fine
+        let canvas: unknown = null
+        try {
+          canvas = (await api.getProject(projectId))?.canvas ?? null
+        } catch (e) {
+          if (isLoginRequired(e)) throw e
+        }
+        const byUpload = new Map(Object.entries(state.uploads).map(([imageId, uploadId]) => [uploadId, imageId]))
+        const imageOfUpload = (uploadId: string) => byUpload.get(uploadId) ?? null
+        for (const c of found.candidates) c.hints = hintsFor(c.nodeId, canvas, state.entries, imageOfUpload)
+      }
+      return { projectId, ...found }
+    },
+
+    siteJobPrompts: async (jobIds) => {
+      const out: Record<string, string | null> = {}
+      // one after the other (gentle on canvasapp); an unreadable prompt is just unknown — a 401 stops everything
+      for (const id of jobIds.slice(0, MAX_IMPORT_BATCH)) {
+        try {
+          out[id] = normalizeImportPrompt(await api.jobPrompt(id))
+        } catch (e) {
+          if (isLoginRequired(e)) throw e
+          out[id] = null
+        }
+      }
+      return out
+    },
+
+    claimSiteJobs: (claims) => {
+      const jobIdsOf = (records: Record<string, { remoteId: string }>) => new Set(Object.values(records).map((r) => decodeRemoteId(r.remoteId)?.jobId))
+      const made = jobIdsOf(ledger.jobs)
+      const before = jobIdsOf(ledger.imported)
+      const taken = new Set<string>()
+      const next: JobLedger['imported'] = {}
+      for (const c of claims) {
+        const d = decodeRemoteId(c.remoteId)
+        if (!d || d.jobId !== c.job.job_id || c.key in ledger.jobs || c.key in ledger.imported || c.key in ledger.sent || c.key in next) continue
+        if (taken.has(d.jobId) || made.has(d.jobId) || (before.has(d.jobId) && !c.reimport)) continue
+        // an unanswered POST may have made it (its take finds it, never a new take): the scan's rule, checked again now
+        const keys = typeof c.job.client_request_id === 'string'
+        if (Object.entries(ledger.sent).some(([k, r]) => !(k in ledger.jobs) && sentMayOwn(c.job, k, r, d.projectId, keys))) continue
+        taken.add(d.jobId)
+        next[c.key] = { remoteId: c.remoteId, at: now(), nodeId: c.nodeId }
+      }
+      const accepted = Object.keys(next)
+      if (accepted.length) saveLedger({ ...ledger, imported: { ...ledger.imported, ...next } })
+      return accepted
+    },
   }
 }

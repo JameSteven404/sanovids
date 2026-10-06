@@ -20,6 +20,8 @@ import {
   filterLog,
   jobNodeOwners,
   jobNodeText,
+  siteJobToast,
+  siteNodeLabel,
   limitsDifferFromConfig,
   limitsStatusText,
   logExport,
@@ -407,5 +409,21 @@ describe('Model (video-profiles): what SanoVids knows of the simulated site', ()
     const h3Short = models({ minimax_h3: { off_durations: [15], off_resolutions: ['2k'] } })
     expect(limitsDifferFromConfig(known(now), h3Short)).toBe(false)
     expect(limitsDifferFromConfig(known(h3Short), h3Short)).toBe(false)
+  })
+})
+
+describe('"Tạo job như trên trang canvasapp" (Job & đơn nạp)', () => {
+  const node = { id: 'n1', model: 'seedance_2_5' as const, mode: 't2v', duration: 15, resolution: '1080p', aspectRatio: '16:9', prompt: 'x', pictures: 2 }
+  it('names a bridge node after its scene of the open project (old node / another one too)', () => {
+    expect(siteNodeLabel(node, { kind: 'scene', code: 'S01' }, 'Ôm nhau')).toBe('S01 · Ôm nhau — Seedance 2.5 · 15s · 1080P')
+    expect(siteNodeLabel(node, { kind: 'legacy', code: 'S02' })).toBe('node cũ S02 — Seedance 2.5 · 15s · 1080P')
+    expect(siteNodeLabel({ ...node, model: null, duration: null }, undefined)).toBe('node lạ — model lạ · 1080P')
+  })
+  it('says what was made and billed — or why the simulated site refused', () => {
+    expect(siteJobToast({ ok: true, jobId: 'j', number: 4, cost: 20 })).toEqual({
+      text: 'Đã tạo job #4 trên canvasapp giả lập (như trên trang) — đã trừ 20 credit dev. Dùng “Nhập job” để đưa vào dự án.',
+      ok: true,
+    })
+    expect(siteJobToast({ ok: false, detail: 'Số dư không đủ' })).toEqual({ text: 'canvasapp giả lập không tạo job: Số dư không đủ', ok: false })
   })
 })

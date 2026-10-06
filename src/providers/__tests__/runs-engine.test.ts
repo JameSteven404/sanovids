@@ -24,6 +24,7 @@ import { remoteVideoReady, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
+import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -669,5 +670,85 @@ describe('runs engine: downloading a finished video (abort, progress, refusals)'
     await vi.advanceTimersByTimeAsync(0)
     expect(useTakeTransfers.getState().byTake).toEqual({})
     expect(take(id)).toMatchObject({ status: 'processing', progress: 99 })
+  })
+})
+
+describe('runs engine: imported takes ("Nhập job" — the job was made on canvasapp’s page)', () => {
+  const draft = (jobId: string, sceneId: string, createdAt: number | null): SiteTakeDraft => ({
+    jobId,
+    remoteId: `proj:${jobId}`,
+    nodeId: 'node',
+    sceneId,
+    job: { job_id: jobId, status: 'processing' },
+    jobName: `Video ${jobId}`,
+    createdAt,
+    progress: 30,
+    reimport: false,
+    settings: { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' },
+    unknown: ['resolution'],
+    inferred: [],
+    prompt: 'A hero walks',
+    refs: [],
+    imageKeys: [],
+    frames: { first: null, last: null },
+    cost: 0,
+    hint: null,
+  })
+
+  it('only claimed drafts become takes — processing with their remote id, numbered in creation order; polled and finished, never submitted', async () => {
+    const f = fakeProvider('dev')
+    registerProvider(f.p)
+    useRuns.setState({ takes: [{ ...finishedTake('old'), sceneId: 's2', number: 3 }] })
+    const asked: SiteJobClaim[] = []
+    const res = useRuns.getState().importTakes({
+      projectId: 'p',
+      provider: 'dev',
+      drafts: [draft('job_b', 's2', 2000), draft('job_a', 's2', 1000), draft('job_x', 's2', 1500), draft('gone', 's9', 1)],
+      claim: (c) => {
+        asked.push(...c)
+        return c.filter((x) => x.job.job_id !== 'job_x').map((x) => x.key)
+      },
+    })
+    expect(asked.map((c) => c.job.job_id)).toEqual(['job_a', 'job_x', 'job_b'])
+    expect(res.skipped).toEqual([
+      { jobId: 'gone', code: 'scene-gone' },
+      { jobId: 'job_x', code: 'claimed' },
+    ])
+    const [a, b] = res.takeIds.map(take)
+    expect([a.number, b.number]).toEqual([4, 5])
+    expect(a).toMatchObject({ status: 'processing', remoteId: 'proj:job_a', provider: 'dev', charged: false, progress: 30, createdAt: 1000, startedAt: 1000, imported: { jobName: 'Video job_a', unknown: ['resolution'], inferred: [] } })
+    // the same job again (a second scan / click) is never a second take
+    expect(useRuns.getState().importTakes({ projectId: 'p', provider: 'dev', drafts: [draft('job_a', 's2', 1000)], claim: (c) => c.map((x) => x.key) })).toEqual({
+      takeIds: [],
+      skipped: [{ jobId: 'job_a', code: 'in-project' }],
+    })
+    f.statuses.set('proj:job_a', { remoteId: 'proj:job_a', state: 'completed' })
+    f.statuses.set('proj:job_b', { remoteId: 'proj:job_b', state: 'processing', progress: 60 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take(a.id).status).toBe('completed')
+    expect(take(b.id).progress).toBe(60)
+    expect(f.submitted).toEqual([])
+    // "Chạy lại" (retry) of an imported take: a NEW take of its scene, never the imported one sent
+    const r = useRuns.getState().retry(a.id)
+    expect(r?.queued).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f.submitted.map((s) => s.key)).not.toContain(a.id)
+    expect(f.submitted).toHaveLength(1)
+  })
+
+  it('another project open now: nothing imported, the ledger never asked', () => {
+    let asked = false
+    const res = useRuns.getState().importTakes({
+      projectId: 'other',
+      provider: 'dev',
+      drafts: [draft('job_a', 's2', 1000)],
+      claim: (c) => {
+        asked = true
+        return c.map((x) => x.key)
+      },
+    })
+    expect(res).toEqual({ takeIds: [], skipped: [{ jobId: 'job_a', code: 'project-changed' }] })
+    expect(asked).toBe(false)
+    expect(useRuns.getState().takes).toEqual([])
   })
 })

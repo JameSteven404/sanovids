@@ -15,6 +15,8 @@
 //                                          (balance, login, top-up, credit history) goes through activeGateway(): in
 //                                          development mode it is the in-app simulation, never the network.
 //   canvasappApi() / devApi()               the API clients of the real / simulated gateway (prefer activeGateway().api).
+//   gatewayProvider(id)                     the adapter that RUNS id's takes (the registry's: what the queue submits and
+//                                          polls with) — "Nhập job" scans and claims on it, never on another instance.
 //   resetDevMode()                          wipe the simulated canvasapp account AND SanoVids' dev-mode caches
 //                                          (bridge project, upload cache, job ledger). Running dev takes then fail as
 //                                          "job not found" — warn first. Refresh the balance afterwards
@@ -176,6 +178,18 @@ export function getProvider(id: ProviderId): VideoProvider {
     return p
   }
   throw new Error(`Chưa đăng ký nhà cung cấp video “${id}”.`)
+}
+
+/**
+ * The canvasapp adapter that runs `id`'s takes: getProvider(id), i.e. the very instance the queue submits and polls
+ * with (its job ledger is the one that must hold an import's claims). Throws when that provider is not one.
+ */
+export function gatewayProvider(id: 'dev' | 'canvasapp'): CanvasappProvider {
+  const p = getProvider(id) as Partial<CanvasappProvider>
+  if (typeof p.scanSiteJobs !== 'function' || typeof p.siteJobPrompts !== 'function' || typeof p.claimSiteJobs !== 'function') {
+    throw new Error(`Nhà cung cấp “${id}” không hỗ trợ nhập job.`)
+  }
+  return p as CanvasappProvider
 }
 
 /** Provider used for NEW takes: the real gateway when chosen and possible, else development mode. */

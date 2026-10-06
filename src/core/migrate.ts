@@ -5,7 +5,7 @@ import { cleanTakeFileName } from './fileNames'
 import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
 import { normalizeSettings } from './models'
-import type { Asset, AssetKind, Preset, Project, Scene, Take, XY } from './types'
+import type { Asset, AssetKind, ImportedField, Preset, Project, Scene, Take, TakeImport, XY } from './types'
 
 interface V1Block {
   id: string
@@ -196,5 +196,32 @@ export function migrateTake(raw: unknown): Take {
     if (Array.isArray(t.imageKeysSnapshot) && t.imageKeysSnapshot.every((k) => typeof k === 'string')) out.imageKeysSnapshot = [...t.imageKeysSnapshot]
     else delete out.imageKeysSnapshot
   }
+  const imported = takeImportFrom(t.imported)
+  if (imported) out.imported = imported
+  else delete out.imported
   return out
+}
+
+/** Every field an imported take may not know (core/types ImportedField). */
+export const IMPORTED_FIELDS: readonly ImportedField[] = ['mode', 'resolution', 'duration', 'ratio', 'prompt', 'refs']
+const MAX_JOB_NAME = 200
+
+/** The fields of `v` that are ImportedField values, each once, in IMPORTED_FIELDS order. */
+const importedFields = (v: unknown): ImportedField[] => (Array.isArray(v) ? IMPORTED_FIELDS.filter((f) => v.includes(f)) : [])
+
+/**
+ * Take.imported as saved (or from a file): kept only as an object with a finite `at`; `jobName` a string ≤ 200 chars
+ * (else null); `unknown` / `inferred` only ImportedField values (a field in both counts as unknown). Null = drop it.
+ */
+export function takeImportFrom(raw: unknown): TakeImport | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.at !== 'number' || !Number.isFinite(r.at)) return null
+  const unknown = importedFields(r.unknown)
+  return {
+    at: r.at,
+    jobName: typeof r.jobName === 'string' && r.jobName.length <= MAX_JOB_NAME ? r.jobName : null,
+    unknown,
+    inferred: importedFields(r.inferred).filter((f) => !unknown.includes(f)),
+  }
 }

@@ -20,11 +20,12 @@ import { costOf } from '../../core/models'
 import { checkoutUrlAllowed, TOPUP_ORDER_TTL_MS } from '../../core/topup'
 import { memoryStorage } from '../canvasapp/adapter'
 import { CanvasappError, createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { bridgeCanvas, canvasNodeId, clientRequestIdFor, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
+import { bridgeCanvas, canvasNodeId, clientRequestIdFor, isUuid, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
 import { createDesktopTransport, openCheckout, type BridgeDownloadOpen } from '../canvasapp/transport'
 import {
   answerDevCheckout,
   answerDevLogin,
+  canvasProblem,
   clearDevLog,
   closeDevPrompts,
   createDevBridge,
@@ -37,8 +38,10 @@ import {
   DEV_SPEED_MS,
   devStreamReader,
   imageIdFromUploadFilename,
+  jobBodyProblem,
   matchDevRoute,
   memoryBlobStore,
+  siteJobBody,
   summarizeForLog,
   useDevLog,
   useDevPrompts,
@@ -438,6 +441,87 @@ describe('dev server: video jobs', () => {
     await s.api.fetchVideo(jobId)
     expect(s.renders[0].input.images.map((i) => i.label)).toEqual(['khung đầu', 'khung cuối'])
     expect(s.renders[0].contents).toEqual(['IMG:elara', 'IMG:lumi'])
+  })
+})
+
+describe('dev server: "Tạo job như trên trang canvasapp" (a job SanoVids did not make)', () => {
+  it('builds exactly runVideoNode()’s body from the saved node, with a random key; billed and logged in the history like any job', async () => {
+    const s = setup()
+    const { projectId, u1, u2, body } = await prepared(s)
+    clearDevLog()
+    const res = s.server.createSiteJob({ nodeId: canvasNodeId('s1') })
+    expect(res).toMatchObject({ ok: true, number: 1, cost: COST })
+    // the site acted, not SanoVids: nothing in the request log
+    expect(useDevLog.getState().entries).toEqual([])
+    const job = s.server.snapshot().jobs[0]
+    expect(job).toMatchObject({ origin: 'site', project_id: projectId, canvas_node_id: canvasNodeId('s1'), upload_ids: [u1, u2], resolution: '1080p', prompt: '@image_1 ôm @image_2' })
+    expect(isUuid(job.client_request_id)).toBe(true)
+    expect(job.client_request_id).not.toBe(clientRequestIdFor('take_1'))
+    expect(s.server.balance()).toBe(1000 - COST)
+    expect((await s.api.creditHistory({ kind: 'video' })).items[0]).toMatchObject({ delta: -COST })
+    // the job list shows it like any canvas job (no key unless exposeKey); /prompt answers its prompt
+    const [listed] = await s.api.listVideoJobs(projectId)
+    expect(listed).toMatchObject({ job_id: job.job_id, canvas_node_id: canvasNodeId('s1'), creation_mode: 'canvas', model_profile: 'seedance_2_5', duration: 15 })
+    expect(listed).not.toHaveProperty('client_request_id')
+    expect(await s.api.jobPrompt(job.job_id)).toBe('@image_1 ôm @image_2')
+    // a SanoVids job keeps origin 'app'; the origin survives a reload
+    const mine = jobIdOf(await s.api.createVideoJob(body() as never))
+    const again = createDevCanvasapp({ storage: s.storage, blobs: s.blobs, now: () => s.clock.t })
+    const origins = Object.fromEntries(again.snapshot().jobs.map((j) => [j.job_id, j.origin]))
+    expect(origins).toEqual({ [job.job_id]: 'site', [mine]: 'app' })
+  })
+
+  it('an edit made on the page first: saved canvas still valid, the job uses it; refusals bill nothing', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    const res = s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { prompt: '@image_2 chạy  ', resolution: '720P' } })
+    expect(res).toMatchObject({ ok: true })
+    const canvas = (await s.api.getProject(projectId)).canvas as CanvasPayload
+    expect(canvasProblem(canvas)).toBeNull()
+    const node = canvas.nodes.find((n) => n.id === canvasNodeId('s1'))!
+    expect(node.type === 'video' && node.data).toMatchObject({ prompt: '@image_2 chạy  ', resolution: '720p' })
+    const job = s.server.snapshot().jobs[0]
+    expect(job).toMatchObject({ prompt: '@image_2 chạy', resolution: '720p' })
+    const paid = s.server.balance()
+    expect(paid).toBe(1000 - costOf({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '720p', ratio: '16:9' }))
+    expect(s.server.createSiteJob({ nodeId: 'not-a-node' })).toMatchObject({ ok: false })
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { resolution: '2k' } })).toMatchObject({ ok: false })
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { prompt: '   ' } })).toMatchObject({ ok: false })
+    s.server.setBalance(1)
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1') })).toMatchObject({ ok: false, detail: expect.stringMatching(/Số dư không đủ/) })
+    expect(s.server.snapshot().jobs).toHaveLength(1)
+    expect(s.server.balance()).toBe(1)
+  })
+
+  it('no bridge session → refused; siteNodes lists the bridge’s video nodes (read-only)', async () => {
+    const s = setup()
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1') })).toMatchObject({ ok: false, detail: expect.stringMatching(/Chưa có phiên/) })
+    expect(s.server.siteNodes()).toBeNull()
+    const { projectId } = await prepared(s)
+    expect(s.server.siteNodes()).toEqual({
+      projectId,
+      name: 'SanoVids bridge',
+      nodes: [{ id: canvasNodeId('s1'), model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', aspectRatio: '16:9', prompt: '@image_1 ôm @image_2', pictures: 2 }],
+    })
+  })
+
+  it('siteJobBody: H3 transform sends the frames only, H3 t2v no picture — every body passes the strict validator', async () => {
+    const s = setup()
+    const { projectId, u1, u2 } = await prepared(s)
+    const entries: BridgeEntry[] = [
+      { sceneId: 't', model: 'minimax_h3', mode: 'transform', duration: 5, resolution: '768p', ratio: '16:9', prompt: 'biến', uploadIds: [], firstFrameUploadId: u1, lastFrameUploadId: u2, usedAt: 2 },
+      { sceneId: 'n', model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '2k', ratio: '9:16', prompt: 'đi', uploadIds: [], firstFrameUploadId: null, lastFrameUploadId: null, usedAt: 1 },
+    ]
+    const canvas = bridgeCanvas(entries)
+    const t = siteJobBody(canvas, canvasNodeId('t'), projectId, '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f')
+    const n = siteJobBody(canvas, canvasNodeId('n'), projectId, '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e70')
+    if ('problem' in t || 'problem' in n) throw new Error('no body')
+    expect(Object.keys(t.body)).toEqual(['project_id', 'model_profile', 'canvas_node_id', 'prompt', 'mode', 'duration', 'resolution', 'generate_audio', 'first_frame_upload_id', 'last_frame_upload_id', 'client_request_id'])
+    expect(n.body).toMatchObject({ upload_ids: [], aspect_ratio: '9:16' })
+    const has = (id: string) => [u1, u2].includes(id)
+    expect(jobBodyProblem(t.body, { hasUpload: has })).toBeNull()
+    expect(jobBodyProblem(n.body, { hasUpload: has })).toBeNull()
+    expect(siteJobBody(null, 'x', projectId, 'k')).toMatchObject({ problem: expect.any(String) })
   })
 })
 
