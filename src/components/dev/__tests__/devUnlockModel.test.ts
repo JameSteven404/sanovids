@@ -123,6 +123,9 @@ describe('formats and small rules', () => {
       'Đã mở khoá chế độ Phát triển trên máy này cho tới khi khoá lại. Take mới vẫn dùng canvasapp.io.vn — đổi trong Cài đặt → Nhà cung cấp video.',
     )
     expect(M.lockConfirm(0)).not.toContain('take giả lập đang chạy')
+    // DEV take badges stay after a lock: the question never promises every DEV label disappears
+    expect(M.lockConfirm(0)).toContain('vẫn giữ nhãn DEV')
+    expect(M.lockConfirm(0)).not.toContain('mọi chữ DEV')
     expect(M.lockConfirm(2)).toContain('2 take giả lập đang chạy vẫn chạy nốt')
   })
 

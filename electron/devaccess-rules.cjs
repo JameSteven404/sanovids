@@ -507,6 +507,7 @@ function afterFail(fails, nowMs) {
   return { n, waitUntil: nowMs + Math.min(WAIT_MAX_MS, WAIT_BASE_MS * 2 ** (n - FREE_FAILS - 1)) }
 }
 
+/** After a right 6-digit code, a confirmed link, or a verified owner-signed code (proof of ownership): no wait. */
 function afterSuccess() {
   return { n: 0, waitUntil: 0 }
 }

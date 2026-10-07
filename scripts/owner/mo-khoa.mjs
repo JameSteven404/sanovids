@@ -344,9 +344,12 @@ async function cmdMakeCode(positional, flags) {
   if (maxDays) link = false
   const mine = localDeviceCode(appDataDeviceFile())
   if (mine !== pretty) {
-    const hours = flags.han ?? (link && !maxDays ? rules.CODE_HOURS.linkDefault : rules.CODE_HOURS.plainDefault)
+    // The answer below can turn the code into one without a link (longer default lifetime): name both.
+    const ownHours = flags.han ?? (link && !maxDays ? rules.CODE_HOURS.linkDefault : rules.CODE_HOURS.plainDefault)
+    const otherHours = flags.han ?? rules.CODE_HOURS.plainDefault
+    const hoursText = ownHours === otherHours ? `${ownHours} giờ` : `${ownHours} giờ nếu là máy của bạn, ${otherHours} giờ nếu không`
     console.log('')
-    console.log(`!!! Mã này MỞ KHOÁ MỘT MÁY KHÁC (${pretty}${mine ? `, máy đang chạy công cụ là ${mine}` : ''}) trong ${hours} giờ.`)
+    console.log(`!!! Mã này MỞ KHOÁ MỘT MÁY KHÁC (${pretty}${mine ? `, máy đang chạy công cụ là ${mine}` : ''}), dùng được trong ${hoursText}.`)
     console.log('!!! Chỉ tạo nếu đó là máy của bạn hoặc máy bạn tin. Đừng tạo mã cho một mã máy ai đó nhắn tới nhờ "mở giùm".')
     const answer = await askLine('Đây là máy CỦA BẠN? (c/k): ')
     const daysText = String(answer).trim().toLowerCase().startsWith('k') && !maxDays ? await askLine('Mở tối đa bao nhiêu ngày? (1–255, Enter = 2): ') : String(maxDays || '')

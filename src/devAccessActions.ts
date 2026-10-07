@@ -1,9 +1,11 @@
 // The development-mode lock, app side (providers/devAccess mirrors main; electron/devaccess.cjs decides):
 //   initDevAccess()          once, before the first render (main.tsx): the browser simulation on loopback hosts, the
 //                            sync with main, and what follows a change of access.
-//   When it LOCKS            Bảng phát triển closes, the simulated login / SePay sheets close (answered "closed"), a
-//                            toast says why (by hand / time ran out / clock went back). Running DEV takes finish (the
-//                            engine keeps polling them through getProvider('dev')); saved DEV takes stay viewable.
+//   When it LOCKS            Bảng phát triển closes, and so do "Nạp credit" / "Nhập job" when they were on the
+//                            simulated gateway (closesOnLock: they would follow the real canvasapp gateway otherwise);
+//                            the simulated login / SePay sheets close (answered "closed"), a toast says why (by hand /
+//                            time ran out / clock went back). Running DEV takes finish (the engine keeps polling them
+//                            through getProvider('dev')); saved DEV takes stay viewable.
 //   One-time notice          locked + development mode was used on this device (the simulated server's data) + not
 //                            shown before → "Chế độ Phát triển đã được ẩn…" [Mở Cài đặt]. It never turns the canvasapp
 //                            gateway on (real money): only the user does, in Cài đặt.
@@ -11,7 +13,9 @@
 //                            the UI's calls (DevUnlock, DevTotpLink, DevAccessRows): forward to the bridge, mirror the
 //                            answer. Main checks every one of them; nothing here decides an unlock.
 import { openSettings } from './actions'
-import { DEV_HIDDEN_NOTICE, DEV_HIDDEN_NOTICE_KEY, DEV_TRACE_KEYS, lockToastText, shouldNoticeHidden } from './components/dev/devUnlockModel'
+import { closesOnLock, DEV_HIDDEN_NOTICE, DEV_HIDDEN_NOTICE_KEY, DEV_TRACE_KEYS, lockToastText, shouldNoticeHidden } from './components/dev/devUnlockModel'
+import { effectiveProvider, useProviderPrefs } from './providers'
+import { hasCanvasappBridge } from './providers/canvasapp/transport'
 import { installDevAccessSim } from './providers/dev/devAccess'
 import { closeDevPrompts } from './providers/dev/prompts'
 import {
@@ -37,7 +41,9 @@ function isElectron(): boolean {
 function onAccessChange(next: ReturnType<typeof useDevAccess.getState>, prev: ReturnType<typeof useDevAccess.getState>) {
   if (next.state.access === prev.state.access) return
   if (next.state.access !== 'locked') return
-  if (useUI.getState().dialog.kind === 'dev') useUI.getState().closeDialog()
+  // The gateway new takes used right before the lock (the saved choice is never rewritten by locking).
+  const wasSimulated = effectiveProvider({ access: prev.state.access, saved: useProviderPrefs.getState().provider, bridge: hasCanvasappBridge() }) === 'dev'
+  if (closesOnLock(useUI.getState().dialog, wasSimulated)) useUI.getState().closeDialog()
   closeDevPrompts()
   toast(lockToastText(next.reason), { tone: next.reason ? 'warning' : 'info' })
 }

@@ -91,6 +91,17 @@ export function visibleGroups<G extends SearchGroup>(groups: readonly G[], devOp
   return out
 }
 
+/**
+ * The group a deep link should switch the dialog to NOW, or undefined. Only a new request (`section` differs from the
+ * one already followed, `followed`; null = none yet) moves the dialog. The same request with other group objects —
+ * development mode locking / unlocking moves 'gateway' between the levels — never does: jumping to "Nâng cao" right
+ * after an unlock from Giới thiệu would unmount the unlock box and drop its one-time authenticator link offer.
+ */
+export function deepLinkStep<G extends SearchGroup>(followed: string | undefined | null, section: string | undefined, groups: readonly G[]): G | undefined {
+  if (!section || section === followed) return undefined
+  return groups.find((g) => g.id === section)
+}
+
 /** Number of results (a block group counts as one). */
 export function resultCount(matches: readonly GroupMatch<SearchGroup>[]): number {
   return matches.reduce((n, m) => n + (m.group.rows ? m.rows.length : 1), 0)

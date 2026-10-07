@@ -180,7 +180,7 @@ export const unlinkConfirm = (label: string) =>
 /** "Khoá lại ngay" confirmation: running DEV takes finish (they cost nothing). */
 export function lockConfirm(runningDev: number): string {
   const run = runningDev > 0 ? `${runningDev} take giả lập đang chạy vẫn chạy nốt. ` : ''
-  return `Khoá chế độ Phát triển trên máy này? Nút Bảng phát triển và mọi chữ DEV sẽ ẩn; ${run}Mở lại bằng mã 6 số từ app xác thực.`
+  return `Khoá chế độ Phát triển trên máy này? Nút Bảng phát triển và mục Chế độ Phát triển sẽ ẩn (take giả lập đã có vẫn giữ nhãn DEV); ${run}Mở lại bằng mã 6 số từ app xác thực.`
 }
 
 export const SIM_LOCK_LABEL = 'Xem như bản phát hành (đã khoá)'
@@ -194,6 +194,21 @@ export function lockToastText(reason: DevLockReason | null): string {
   if (reason === 'expired') return 'Chế độ Phát triển đã tự khoá (hết thời gian mở khoá).'
   if (reason === 'clock-back') return 'Chế độ Phát triển đã khoá vì đồng hồ máy bị lùi.'
   return 'Đã khoá chế độ Phát triển.'
+}
+
+/**
+ * Does the open dialog close when development mode locks? Bảng phát triển always. The "Nạp credit" / "Lịch sử credit"
+ * sheet and "Nhập job" when they were on the simulated gateway (`wasSimulated`: new takes used development mode right
+ * before the lock; "Nhập job" also when it was opened on the simulation itself): after the lock they would silently
+ * follow the REAL canvasapp gateway — turned off, or real money — without the user choosing it ("Tạo mã QR", "Đăng
+ * nhập canvasapp", the history). A sheet already on the real gateway stays. An order in flight keeps being tracked on
+ * its own gateway (components/topup/appFlow), sheet open or not.
+ */
+export function closesOnLock(dialog: { kind: string; provider?: string }, wasSimulated: boolean): boolean {
+  if (dialog.kind === 'dev') return true
+  if (dialog.kind === 'topup') return wasSimulated
+  if (dialog.kind === 'importJobs') return dialog.provider ? dialog.provider === 'dev' : wasSimulated
+  return false
 }
 
 /** One-time notice for people who used development mode before it was hidden (0.5.0 made it the default). */

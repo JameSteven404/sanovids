@@ -52,7 +52,7 @@ import {
   VolumeSetting,
   WithPromptSetting,
 } from './SettingsBasic'
-import { matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, visibleGroups, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
+import { deepLinkStep, matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, visibleGroups, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
 import { Section, SectionAnchorCtx, SettingsCtx, type RowProps } from './settingsUi'
 
 interface Row extends SearchRow {
@@ -379,13 +379,17 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
   }, [])
 
   // Deep link while the dialog is already open (another "Cài đặt → …" button): show that group's level, no search.
-  // The level is not saved: the next plain opening uses the level the user chose.
+  // The level is not saved: the next plain opening uses the level the user chose. Only a NEW request moves the dialog
+  // (deepLinkStep): a lock flip that only moves 'gateway' to the other level leaves the user where they are.
+  const followedSection = useRef<string | undefined | null>(null)
   useEffect(() => {
-    if (!target) return
-    pendingAnchor.current = target
-    setLevel(target.level)
+    const next = deepLinkStep(followedSection.current, section, groups)
+    followedSection.current = section
+    if (!next) return
+    pendingAnchor.current = next
+    setLevel(next.level)
     setQuery('')
-  }, [target])
+  }, [section, groups])
 
   // Bring the requested group into view once its level is rendered, and move the focus there (screen readers land on
   // it; Tab continues inside it). A group whose section has no anchor (the gateway block) only gets its level shown.

@@ -242,6 +242,46 @@ describe('devaccess.cjs flow (fake electron, real files and crypto)', () => {
     expect((await call('unlock', { code: makeCode(dc, { nowMs: clock.now }) })).ok).toBe(true)
   })
 
+  // Regression: a verified SV1 code proves ownership and clears the wait, otherwise the authenticator could never be
+  // (re)linked after a wait longer than the 5-minute link window — and the one-time code would be burned.
+  it('an SV1 unlock clears the wait of earlier wrong 6-digit codes, so the link window can be used', async () => {
+    const { dir, call, clock } = boot()
+    const dc = String((await call('getState')).deviceCode)
+    await call('unlock', { code: makeCode(dc) })
+    const secret = ((await call('totpBegin')).secretGroups as string[]).join('')
+    clock.now += 1500
+    expect((await call('totpConfirm', { code: totpAt(secret, clock.now) })).ok).toBe(true)
+    await call('lock')
+    // 5 wrong → wait 5 min; past it, a 6th wrong → wait 10 min (longer than the link window)
+    for (let i = 0; i < 5; i++) {
+      clock.now += 1500
+      await call('unlock', { code: totpAt(secret, clock.now, 40) })
+    }
+    clock.now += 5 * 60_000 + 1000
+    const sixth = await call('unlock', { code: totpAt(secret, clock.now, 40) })
+    expect(sixth).toMatchObject({ ok: false, error: 'totp-wrong', waitUntil: clock.now + 10 * 60_000 })
+    expect(file(dir).fails.n).toBe(6)
+    expect((await call('getState')).waitUntil).toBe(clock.now + 10 * 60_000)
+    // the owner's recovery: a new SV1 code (link allowed) → unlocked, the wait is gone (in the file and the state)
+    clock.now += 1500
+    const ok = await call('unlock', { code: makeCode(dc, { nowMs: clock.now }) })
+    expect(ok.ok).toBe(true)
+    expect(ok.state).toMatchObject({ access: 'unlocked', method: 'code', waitUntil: null, linkUntil: clock.now + R.LINK_WINDOW_MS })
+    expect(file(dir).fails).toEqual({ n: 0, waitUntil: 0 })
+    // relinking inside the window now works with the right code
+    const again = await call('totpBegin')
+    expect(again.ok).toBe(true)
+    const secret2 = (again.secretGroups as string[]).join('')
+    clock.now += 1500
+    const linked = await call('totpConfirm', { code: totpAt(secret2, clock.now) })
+    expect(linked).toMatchObject({ ok: true })
+    expect((linked.state as { totp: unknown }).totp).toMatchObject({ linked: true, lost: false })
+    // and the new secret unlocks later
+    await call('lock')
+    clock.now += 31_000
+    expect(await call('unlock', { code: totpAt(secret2, clock.now) })).toMatchObject({ ok: true })
+  })
+
   it('keep / cap: setKeep only while unlocked, never past a code\'s max days; unlink only while unlocked', async () => {
     const { call, clock } = boot()
     const dc = String((await call('getState')).deviceCode)

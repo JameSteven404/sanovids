@@ -5,7 +5,7 @@ import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
 import { KEEP_LOGIN_KEYWORDS } from '../keepLoginModel'
 import settingsDialogSource from '../SettingsDialog.tsx?raw'
-import { foldText, matchSettings, resultCount, searchWords, visibleGroups, type SearchGroup } from '../settingsSearch'
+import { deepLinkStep, foldText, matchSettings, resultCount, searchWords, visibleGroups, type SearchGroup } from '../settingsSearch'
 
 const groups: SearchGroup[] = [
   {
@@ -186,5 +186,35 @@ describe('development mode locked: visibleGroups', () => {
     expect(settingsDialogSource).toContain('const target = section ? groups.find((g) => g.id === section) : undefined')
     expect(settingsDialogSource).toContain('matchSettings(groups, level, query)')
     expect(settingsDialogSource).not.toContain('matchSettings(GROUPS')
+  })
+  // Regression: opened through a deep link to 'gateway' while locked (the one-time notice, the "Chưa bật" pill, the
+  // Run toast), the owner unlocks from Giới thiệu; the lock flip hands 'gateway' back as the "Nâng cao" object. The
+  // dialog must NOT follow it there: the Cơ bản column (Giới thiệu with the unlock box and its one-time authenticator
+  // link offer) would unmount and the link window be cancelled, burning the one-time code.
+  it('a lock flip never re-targets a deep link (only a new request does)', () => {
+    const locked = visibleGroups(all, false)
+    const open = visibleGroups(all, true)
+    // first render, locked: the gateway in Cơ bản
+    const first = deepLinkStep(null, 'gateway', locked)
+    expect(first?.id).toBe('gateway')
+    expect(first?.level).toBe('basic')
+    // unlocked: the same request with other group objects (gateway now in Nâng cao) → stay
+    expect(open.find((g) => g.id === 'gateway')?.level).toBe('advanced')
+    expect(deepLinkStep('gateway', 'gateway', open)).toBeUndefined()
+    // locked again: still the same request → stay
+    expect(deepLinkStep('gateway', 'gateway', locked)).toBeUndefined()
+    // an id unknown while locked ('dev') that appears after the unlock: already followed → stay
+    expect(deepLinkStep(null, 'dev', locked)).toBeUndefined()
+    expect(deepLinkStep('dev', 'dev', open)).toBeUndefined()
+    // a NEW request while open moves the dialog; no request does nothing
+    expect(deepLinkStep('gateway', 'about', open)?.id).toBe('about')
+    expect(deepLinkStep(null, undefined, open)).toBeUndefined()
+    expect(deepLinkStep('gateway', undefined, open)).toBeUndefined()
+  })
+  it('SettingsDialog follows deep links through deepLinkStep, keyed on the request — not on the group object', () => {
+    expect(settingsDialogSource).toContain('const next = deepLinkStep(followedSection.current, section, groups)')
+    expect(settingsDialogSource).toContain('followedSection.current = section')
+    expect(settingsDialogSource).toContain('}, [section, groups])')
+    expect(settingsDialogSource).not.toContain('}, [target])')
   })
 })

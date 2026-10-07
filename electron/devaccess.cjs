@@ -312,6 +312,10 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
     const times = rules.unlockTimes({ nowMs: t, keepDays: record.keepDays, maxDays: r.maxDays })
     record.used = rules.withUsed(record.used, r.nonce, r.useByMs, t)
     record.unlock = { method: 'code', at: t, until: times.until, capUntil: times.capUntil, code: input.text }
+    // A verified owner-signed code proves ownership: earlier wrong 6-digit tries (someone at the PC, a script, a PC
+    // clock a few minutes off) no longer hold a wait — otherwise totpConfirm would refuse with 'wait' for longer than
+    // the 5-minute link window and the one-time code that the wait texts recommend would be burned for nothing.
+    record.fails = rules.afterSuccess()
     const saved = writeRecord()
     // Linking an authenticator: only right after a code that allows it, for this device's owner (no max days), and
     // only when the link can be stored.
