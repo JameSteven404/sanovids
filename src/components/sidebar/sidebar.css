@@ -589,6 +589,7 @@
   }
 }
 .sb-card-info {
+  position: relative;
   padding: 6px 9px 8px;
   min-width: 0;
 }
@@ -727,6 +728,33 @@
 }
 .sb-libfoot-count b {
   color: var(--sb-accent-ink);
+}
+/* delete the selected cards (one click, "Hoàn tác" in the toast); aria-disabled while every selected card is hidden */
+.sb-xs.icon-btn.sb-libfoot-del:hover:not(.off) {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.sb-libfoot-del.off {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* ✓ on every selected card while several are selected */
+.sb-card.multi .sb-card-info {
+  padding-right: 28px;
+}
+.sb-card-check {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .sb-link-btn.btn {
   height: 26px;

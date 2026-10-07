@@ -12,6 +12,7 @@ import {
   selectedSceneIds,
   undo,
 } from '../actions'
+import { cancelLibraryKey, handleLibraryKey } from '../libraryActions'
 import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { useProject } from '../store/project'
 import { flush } from '../store/persist'
@@ -73,6 +74,7 @@ export function useShortcuts(): void {
     const onKey = (e: KeyboardEvent) => {
       // Any key right after a macOS ⌫ means an input tool is rewriting a letter: that ⌫ was not meant to delete.
       cancelPendingDelete()
+      cancelLibraryKey()
       if (e.defaultPrevented || e.isComposing) return
       const ui = useUI.getState()
       const mod = e.ctrlKey || e.metaKey
@@ -106,6 +108,9 @@ export function useShortcuts(): void {
         return
       }
       if (typing || dialogOpen) return
+      // Library scope first (libraryActions): while the library is where the user works, Delete / ⌫ / Ctrl+A act on
+      // the library selection and never reach the canvas rules below — not even with nothing selected there.
+      if (handleLibraryKey(e, IS_MAC)) return
 
       // ---- with Ctrl / Cmd ----
       if (mod) {
