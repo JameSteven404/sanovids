@@ -1,9 +1,10 @@
 // UI state + controller of the "Test giới hạn" tab. Module-level on purpose: a run goes on when the dev panel is closed
 // (StressHud shows it), and only one run can exist. Select primitives / existing objects from useStress.
+// Light on purpose (StressHud imports it at start-up in development mode): the tester itself (sandbox → runner →
+// actions…) and the report formatting load only when a run starts / a report is saved.
 import { create } from 'zustand'
+import { rememberReport } from './manifest'
 import { randomSeed, parseSeed } from './rng'
-import { summaryText, toJSON, toMarkdown, reportFileName } from './report'
-import { cleanupLeftovers, rememberReport, runInSandbox } from './sandbox'
 import type { FaultLevel, StressProgress, StressReport, Tier } from './types'
 
 export type StressPhase = 'idle' | 'running' | 'stopping' | 'restoring'
@@ -67,6 +68,7 @@ export async function startStress(opts: { sameSeed?: boolean } = {}): Promise<vo
   useStress.setState({ phase: 'running', progress: null, error: null, seed, hasFailureSnapshot: false, phaseText: '' })
   let lastPaint = 0
   try {
+    const [{ runInSandbox }, { summaryText }] = await Promise.all([import('./sandbox'), import('./report')])
     const report = await runInSandbox(
       {
         scenarios,
@@ -119,9 +121,10 @@ export function downloadText(name: string, text: string, type = 'application/jso
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
-export function downloadReport(kind: 'json' | 'md') {
+export async function downloadReport(kind: 'json' | 'md') {
   const r = useStress.getState().report
   if (!r) return
+  const { reportFileName, toJSON, toMarkdown } = await import('./report')
   downloadText(reportFileName(r, kind), kind === 'json' ? toJSON(r) : toMarkdown(r), kind === 'json' ? 'application/json' : 'text/markdown')
 }
 
@@ -137,6 +140,7 @@ export async function copySummary(): Promise<boolean> {
   const r = useStress.getState().report
   if (!r) return false
   try {
+    const { toMarkdown } = await import('./report')
     await navigator.clipboard.writeText(toMarkdown(r))
     return true
   } catch {
@@ -145,7 +149,11 @@ export async function copySummary(): Promise<boolean> {
 }
 
 export async function cleanup(): Promise<string> {
+  const { cleanupLeftovers } = await import('./sandbox')
   const text = await cleanupLeftovers()
   useStress.setState({ error: null })
   return text
 }
+
+/** A run of this window is going on (its manifest is not a leftover). */
+export const stressRunning = () => useStress.getState().phase !== 'idle'

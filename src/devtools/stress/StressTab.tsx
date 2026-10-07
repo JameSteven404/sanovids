@@ -1,13 +1,14 @@
 // "Test giới hạn" tab of the developer panel. Development mode only: everything runs on a temporary project with a
 // private simulated server; the user's project is put back at the end. Wiring into DevPanel is done outside this
 // folder (see index.ts).
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Play, Square, RotateCcw, Download, Copy, Save, Trash2, ShieldCheck, CircleAlert, CircleCheck, TriangleAlert, LoaderCircle } from 'lucide-react'
 import { SCENARIOS, NOT_IMPLEMENTED } from './scenarios'
 import { TIER_LABEL } from './synth'
-import { startBlockedReason, lastReportSummary, leftover } from './sandbox'
-import { useStress, startStress, stopStress, downloadReport, downloadFailureProject, copySummary, cleanup } from './store'
+import { lastReportSummary, leftover, recoverLeftover } from './manifest'
+import { startBlockedReason } from './sandbox'
+import { useStress, startStress, stopStress, downloadReport, downloadFailureProject, copySummary, cleanup, stressRunning } from './store'
 import { summaryText } from './report'
 import type { FaultLevel, ScenarioGroup, StressReport, Tier } from './types'
 import './stress.css'
@@ -214,10 +215,10 @@ function ReportView({ report }: { report: StressReport }) {
         </ul>
       )}
       <div className="dv-stress-actions">
-        <button className="btn btn-sm" onClick={() => downloadReport('json')}>
+        <button className="btn btn-sm" onClick={() => void downloadReport('json')}>
           <Download size={14} /> Tải báo cáo (.json)
         </button>
-        <button className="btn btn-sm" onClick={() => downloadReport('md')}>
+        <button className="btn btn-sm" onClick={() => void downloadReport('md')}>
           <Download size={14} /> Tải .md
         </button>
         <button className="btn btn-sm" onClick={() => void copySummary().then(setCopied)}>
@@ -239,6 +240,11 @@ function StressTabImpl() {
   const report = useStress((s) => s.report)
   const nothingPicked = useStress((s) => s.scenarios.length === 0)
   const [cleanMsg, setCleanMsg] = useState('')
+  // A run that never finished (crash, closed window) is cleaned up first; re-render when that is done.
+  const [, setRecovered] = useState(0)
+  useEffect(() => {
+    void recoverLeftover(stressRunning).then(() => setRecovered((n) => n + 1))
+  }, [])
   const running = phase !== 'idle'
   const blocked = running ? null : startBlockedReason()
   const last = useMemo(() => (report || running ? null : lastReportSummary()), [report, running])

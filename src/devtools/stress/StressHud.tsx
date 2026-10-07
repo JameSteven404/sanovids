@@ -1,8 +1,11 @@
 // Small floating pill shown while a stress run goes on, so it can be watched / stopped with the dev panel closed.
-// Mount once in App (development mode only): `{isDev && <StressHud />}`. Renders nothing when idle.
-import { memo } from 'react'
+// Mounted once by App (lazy, development mode only). Renders nothing when idle. On mount it also cleans up after a run
+// that never finished (crash, window closed, update restart — manifest.ts). Keep its imports light: this chunk loads at
+// every start in development mode, the tester itself only when a run starts.
+import { memo, useEffect } from 'react'
 import { LoaderCircle, Square } from 'lucide-react'
-import { useStress, stopStress } from './store'
+import { recoverLeftover } from './manifest'
+import { useStress, stopStress, stressRunning } from './store'
 import './stress.css'
 
 function StressHudImpl() {
@@ -11,6 +14,9 @@ function StressHudImpl() {
   const steps = useStress((s) => s.progress?.steps ?? 0)
   const errors = useStress((s) => s.progress?.errors ?? 0)
   const phaseText = useStress((s) => s.phaseText)
+  useEffect(() => {
+    void recoverLeftover(stressRunning)
+  }, [])
   if (phase === 'idle') return null
   return (
     <div className="dv-stress-hud" role="status">

@@ -42,9 +42,10 @@ export type TopUpTab = 'topup' | 'history'
 
 /**
  * Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater ·
- * performance ('perf': only in a perf build, see src/perf; devPanelTabs leaves it out everywhere else).
+ * stress tester ("Test giới hạn", src/devtools/stress) · performance ('perf': only in a perf build, see src/perf;
+ * devPanelTabs leaves it out everywhere else).
  */
-export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'perf'
+export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'stress' | 'perf'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'

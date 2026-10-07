@@ -272,9 +272,13 @@ describe('devPanelTabs', () => {
     expect(devPanelTabs({ simulatedUpdates: false, perf: false }).map((t) => t.id)).not.toContain('perf')
   })
   it('"Cập nhật" only where the updater is simulated (outside Electron)', () => {
-    expect(DEV_PANEL_TABS.map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
+    expect(DEV_PANEL_TABS.map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates', 'stress'])
     expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')
-    expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
-    expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs'])
+    expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates', 'stress'])
+    expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'stress'])
+  })
+  it('"Test giới hạn" (the stress tester) on the web and in the desktop app, before the perf tab', () => {
+    expect(DEV_PANEL_TABS.find((t) => t.id === 'stress')?.label).toBe('Test giới hạn')
+    expect(devPanelTabs({ simulatedUpdates: false, perf: true }).map((t) => t.id).slice(-2)).toEqual(['stress', 'perf'])
   })
 })

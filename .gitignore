@@ -46,3 +46,5 @@ release/
 pw.txt
 *.pfx.txt
 .perf/
+# Báo cáo của bộ Test giới hạn chạy dòng lệnh (npm run stress)
+.stress/
