@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { budgetFor, relativeBudget } from '../budgets'
-import { compare, reportExitCode, withBaselineBudgets, stats, verdict, type PerfReport } from '../report'
+import { compare, mountsWithinBudget, reportExitCode, withBaselineBudgets, stats, verdict, type PerfReport } from '../report'
 
 const report = (value: number): PerfReport => ({ version: 1, marker: 'sanovids-perf-harness', at: '', size: 'L', spec: { scenes: 600, takes: 1200 }, dataHash: 'hash', runs: 3, complete: true,
   machine: { userAgent: 'test', cores: 8, viewport: [1440, 900], dpr: 1, target: 'web', headed: false },
@@ -13,6 +13,22 @@ describe('performance report math', () => {
     expect(stats([])).toBeNull()
     expect(verdict(null, 6)).toBe('unavailable')
     expect(verdict(2, null)).toBe('unbudgeted')
+  })
+  it('opening a project has its wave B budget (B1 + B5, plan §3.5.2) and a mount-count check', () => {
+    expect(budgetFor('open', 'L')).toBe(800)
+    expect(budgetFor('open', 'M')).toBeCloseTo(480)
+    expect(budgetFor('open', 'XL')).toBe(1500)
+    expect(mountsWithinBudget([57, 60], [40, 30])).toBe(true)
+    expect(mountsWithinBudget([61], [30])).toBe(false)
+    expect(mountsWithinBudget([2], [0])).toBe(true)
+    expect(mountsWithinBudget([764], [57])).toBe(false) // every node mounted on open (before B1)
+    expect(mountsWithinBudget([], [])).toBe(false)
+    expect(mountsWithinBudget([10, 10], [10])).toBe(false)
+    expect(mountsWithinBudget(undefined, undefined)).toBe(false)
+    const source = readFileSync(new URL('../scenarios.ts', import.meta.url), 'utf8')
+    expect(source).toContain('perfValue(OPEN_MOUNTED, mounted)')
+    expect(readFileSync(new URL('../runner.ts', import.meta.url), 'utf8'))
+      .toContain('mountsWithinBudget(result.renders.durations[OPEN_MOUNTED], result.renders.durations[OPEN_VISIBLE])')
   })
   it('uses tier and relative budgets and the 10% release tolerance', () => {
     expect(budgetFor('pan', 'M')).toBeCloseTo(3.6)

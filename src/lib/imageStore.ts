@@ -5,11 +5,70 @@ import { useEffect, useState } from 'react'
 import { newId } from '../core/ids'
 
 const store = createStore('ban-dung-phim', 'media')
-interface MediaUrl { refs: number; url: string | null; pending?: Promise<string | null>; deleted?: boolean; deleting?: boolean }
+/**
+ * One object URL per media id, shared by its readers (getUrl … releaseUrl). A URL no reader holds stays IDLE — ready
+ * for the next reader without a new IndexedDB read / decode (a canvas node panned out of view and back, the far / near
+ * card swap, a viewer opening a poster) — until the project changes (revokeUnusedUrls), the media is deleted, or it
+ * falls out of the most recent IDLE_MAX idle URLs.
+ */
+interface MediaUrl {
+  refs: number
+  url: string | null
+  pending?: Promise<string | null>
+  deleted?: boolean
+  deleting?: boolean
+  /** Project generation of the last getUrl: an idle URL of an older generation is revoked. */
+  gen: number
+}
 const urlCache = new Map<string, MediaUrl>()
+/** Ids with no reader, least recently released first. */
+const idle = new Set<string>()
+/** Idle URLs kept at most (the most recently released): a long pan over thousands of posters stays bounded. */
+export const IDLE_MAX = 400
+let generation = 0
+let sweepTimer: ReturnType<typeof setTimeout> | null = null
 
 /** Number of live cached object URLs (performance harness). */
 export const urlCount = () => [...urlCache.values()].filter((entry) => entry.url).length
+
+function dropEntry(id: string, entry: MediaUrl) {
+  if (entry.url) URL.revokeObjectURL(entry.url)
+  entry.url = null
+  idle.delete(id)
+  // A deletion still running keeps its entry (it refuses new readers); a read still running sees the entry gone.
+  if (!entry.deleting && urlCache.get(id) === entry) urlCache.delete(id)
+}
+
+/**
+ * Revokes idle URLs of an older project and the oldest beyond IDLE_MAX. Deferred (never inside a React commit):
+ * when one card unmounts and another mounts in the same commit (far / near swap, a node remounted), the new reader's
+ * getUrl runs before this and keeps the URL the card was rendered with.
+ */
+function scheduleSweep() {
+  sweepTimer ??= setTimeout(() => {
+    sweepTimer = null
+    for (const id of [...idle]) {
+      const entry = urlCache.get(id)
+      if (!entry || entry.refs) idle.delete(id)
+      else if (entry.gen !== generation) dropEntry(id, entry)
+    }
+    for (const id of idle) {
+      if (idle.size <= IDLE_MAX) break
+      const entry = urlCache.get(id)
+      if (entry) dropEntry(id, entry)
+      else idle.delete(id)
+    }
+  }, 0)
+}
+
+/**
+ * The open project changed: every idle URL is revoked, and each URL still shown by the previous project's views is
+ * revoked when its last reader leaves — unless a view of the new project (a shared asset image) took it first.
+ */
+export function revokeUnusedUrls(): void {
+  generation++
+  scheduleSweep()
+}
 
 export async function putBlob(blob: Blob, prefix = 'img'): Promise<string> {
   const id = newId(prefix)
@@ -29,8 +88,10 @@ export function cachedUrl(id: string | null | undefined): string | null {
 /** Acquire one reader, paired with releaseUrl even when loading fails or is cancelled. */
 export function getUrl(id: string): Promise<string | null> {
   let entry = urlCache.get(id)
-  if (!entry) urlCache.set(id, entry = { refs: 0, url: null })
+  if (!entry) urlCache.set(id, entry = { refs: 0, url: null, gen: generation })
   entry.refs++
+  entry.gen = generation
+  idle.delete(id)
   if (entry.deleted) return Promise.resolve(null)
   if (entry.url) return Promise.resolve(entry.url)
   const current = entry
@@ -44,19 +105,28 @@ export function getUrl(id: string): Promise<string | null> {
   return current.pending
 }
 
-/** The last reader owns revocation, including a reader still showing deleted media. */
+/**
+ * Release one reader. The last reader of deleted media revokes its URL right away; otherwise the URL goes idle (kept
+ * for this project, see MediaUrl) and the deferred sweep decides.
+ */
 export function releaseUrl(id: string): void {
   const entry = urlCache.get(id)
-  if (!entry || --entry.refs > 0) return
-  if (entry.url) URL.revokeObjectURL(entry.url)
-  entry.url = null
-  if (!entry.deleting) urlCache.delete(id)
+  if (!entry || entry.refs <= 0 || --entry.refs > 0) return
+  if (entry.deleted) {
+    dropEntry(id, entry)
+    return
+  }
+  idle.delete(id)
+  idle.add(id)
+  if (entry.gen !== generation || idle.size > IDLE_MAX) scheduleSweep()
 }
 
 export async function deleteMedia(id: string): Promise<void> {
   let entry = urlCache.get(id)
-  if (!entry) urlCache.set(id, entry = { refs: 0, url: null })
+  if (!entry) urlCache.set(id, entry = { refs: 0, url: null, gen: generation })
   entry.deleted = entry.deleting = true
+  // Nobody shows an idle URL: revoke it now. A displayed one is revoked by its last reader (releaseUrl).
+  if (!entry.refs) dropEntry(id, entry)
   try {
     await del(id, store)
   } catch (error) {
@@ -80,18 +150,21 @@ export function dataUrlToBlob(dataUrl: string): Blob {
 
 /** React hook: object URL for a stored image key (null while loading / missing). */
 export function useMediaUrl(id: string | null | undefined): string | null {
-  const [media, setMedia] = useState<{ id: string; url: string | null } | null>(null)
+  // A re-render trigger only (the URL shown is always read from the cache below), seeded with the cached URL: a mount
+  // whose URL is already live is not rendered a second time when its read resolves to that same URL.
+  const [, setShown] = useState<string | null>(() => cachedUrl(id))
   useEffect(() => {
     if (!id) return
     let alive = true
-    getUrl(id).then((url) => { if (alive) setMedia({ id, url }) }, () => { if (alive) setMedia({ id, url: null }) })
+    getUrl(id).then((url) => { if (alive) setShown(url) }, () => { if (alive) setShown(null) })
     return () => {
       alive = false
       releaseUrl(id)
     }
   }, [id])
-  // Never render the old id's URL during the render before its effect cleans up.
-  return media && media.id === id && media.url === cachedUrl(id) ? media.url : null
+  // The live URL of THIS id (held by another reader, or idle for this project) shows on the first render, before the
+  // effect takes its reference: a remounted card never blinks. Never the previous id's URL, never a revoked one.
+  return id ? cachedUrl(id) : null
 }
 
 /** Generated placeholder portrait (SVG) used by the demo seed and by assets without photos. */

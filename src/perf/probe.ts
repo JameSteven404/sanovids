@@ -16,6 +16,10 @@ export function perfMark(name: string): () => void {
   const start = performance.now()
   return () => { (snapshot.durations[name] ??= []).push(performance.now() - start) }
 }
+/** A measured count (not a time) kept with the durations for the runner's checks, e.g. canvas nodes mounted on open. */
+export function perfValue(name: string, value: number): void {
+  if (__SANOVIDS_PERF__) (snapshot.durations[name] ??= []).push(value)
+}
 export const perfRender: ProfilerOnRenderCallback = (id, _phase, duration) => {
   if (!__SANOVIDS_PERF__) return
   snapshot.commits[id] = (snapshot.commits[id] ?? 0) + 1

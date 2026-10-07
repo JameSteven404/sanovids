@@ -25,6 +25,7 @@ import {
   type NodeChange,
   type NodeMouseHandler,
   type OnConnectStart,
+  type Viewport,
 } from '@xyflow/react'
 import { Clapperboard, Plus } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
@@ -32,10 +33,12 @@ import { perfCount } from '../../perf/probe'
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type DragEvent,
+  type RefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
@@ -87,6 +90,7 @@ import {
   drawerInset,
   fallbackNodeSize,
   estimatedGeometry,
+  estimateDependsOnZoom,
   initialViewport,
   LOD_ZOOM,
   FIT_EVENT,
@@ -167,11 +171,18 @@ interface RawEdge {
 
 export function CanvasView() {
   const projectId = useProject((s) => s.project.id)
+  const rootRef = useRef<HTMLDivElement>(null)
+  // React Flow mounts once the board's size is known (one synchronous re-render, before the first paint), so a project
+  // opens at its fitted viewport (defaultViewport) instead of mounting the nodes at the default transform first.
+  const [ready, setReady] = useState(false)
+  useLayoutEffect(() => setReady(true), [])
   return (
-    <div className="cv-root">
-      <ReactFlowProvider key={projectId}>
-        <CanvasInner />
-      </ReactFlowProvider>
+    <div className="cv-root" ref={rootRef}>
+      {ready && (
+        <ReactFlowProvider key={projectId}>
+          <CanvasInner rootRef={rootRef} />
+        </ReactFlowProvider>
+      )}
     </div>
   )
 }
@@ -179,7 +190,7 @@ export function CanvasView() {
 const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
 const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? sceneNodeSize(s.size)?.w ?? LAYOUT.sceneW
 
-function CanvasInner() {
+function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> }) {
   perfCount('CanvasInner')
   const projectId = useProject((s) => s.project.id)
   const [savedViewport] = useState(() => canvasViewports.get(projectId))
@@ -398,11 +409,14 @@ function CanvasInner() {
       const measured = local.measured[id]
       const width = live?.w ?? base.width, height = live?.h ?? base.height
       const isSelected = selected.has(id), dragging = id in dragPos
-      const sameEstimate = measured || (far === estimateState.current.far && sm.get(id)?.settings.mode === previousScenes.get(id)?.settings.mode)
+      const box = width && height ? { w: width, h: height } : null
+      // An unmeasured node keeps its estimate object across LOD_ZOOM unless its dots really move (folder, resized take).
+      const sameEstimate = measured || ((far === estimateState.current.far || !estimateDependsOnZoom(base.type, box)) &&
+        sm.get(id)?.settings.mode === previousScenes.get(id)?.settings.mode)
       const node = prev && sameEstimate && prev.data === base.data && prev.type === base.type && samePos(prev.position, position) &&
         prev.measured === measured && prev.width === width && prev.height === height && prev.selected === isSelected && prev.dragging === dragging
         ? prev : { ...base, position, measured, width, height, selected: isSelected, dragging,
-          ...(!measured ? estimatedGeometry(base.type, width && height ? { w: width, h: height } : null, far, sm.get(id)?.settings.mode) : {}) }
+          ...(!measured ? estimatedGeometry(base.type, box, far, sm.get(id)?.settings.mode) : {}) }
       next.set(id, node)
       return node
     })
@@ -411,7 +425,15 @@ function CanvasInner() {
     return out
   }, [baseNodes, scenes, takeLayout, dragPos, resizing, selectedIds, measuredVersion, far])
 
-  const initialFit = useRef<{ done: boolean; off?: () => void }>({ done: !!savedViewport })
+  // Opening viewport, decided once before React Flow mounts (defaultViewport): the one saved this session, else a fit of
+  // every node from its estimate. A board without a size yet (null) falls back to the onInit fit below, which waits
+  // for React Flow's first real size.
+  const startViewport = useRef<Viewport | null | undefined>(savedViewport)
+  if (startViewport.current === undefined) {
+    const root = rootRef.current
+    startViewport.current = root ? initialViewport(nodes, root.clientWidth, root.clientHeight) : null
+  }
+  const initialFit = useRef<{ done: boolean; off?: () => void }>({ done: !!startViewport.current })
   const onInit = useCallback(() => {
     const fit = () => {
       if (initialFit.current.done) return true
@@ -907,7 +929,13 @@ function CanvasInner() {
     type Mode = 'focus' | 'reveal' | 'fit' | 'type'
     const run = (ids: string[], mode: Mode, attempt = 0) => {
       if (!ids.length) {
-        if (mode === 'fit') void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
+        // Fit everything (F / "Vừa màn hình" with nothing selected, after "Sắp xếp"). Never rf.fitView: it waits until
+        // EVERY node is measured and then fits the measured ones only, and nodes that were never on screen are never
+        // measured (estimated geometry, onlyRenderVisibleElements). Estimates count here, like on open.
+        if (mode !== 'fit') return
+        const { width, height } = rfStore.getState()
+        const next = initialViewport(rf.getNodes(), width, height)
+        if (next) void rf.setViewport(next, { duration: 300 })
         return
       }
       const boxes = ids.map(boxOf).filter((b): b is Box => !!b)
@@ -940,7 +968,7 @@ function CanvasInner() {
     }
     const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
     return () => offs.forEach((off) => off())
-  }, [rf, stageSize])
+  }, [rf, rfStore, stageSize])
 
   // ---------------- wires: click to cut ----------------
   // A plain click on a wire cuts it (pref clickToCut). Decided in the capture phase, before React Flow's own click
@@ -1167,7 +1195,7 @@ function CanvasInner() {
         // prompt text opens the field there. React Flow's default (0) swallowed it without moving the node.
         nodeClickDistance={2}
         elevateEdgesOnSelect={false}
-        defaultViewport={savedViewport}
+        defaultViewport={startViewport.current ?? undefined}
         onInit={onInit}
         colorMode={theme}
         attributionPosition="top-right"

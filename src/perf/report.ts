@@ -36,6 +36,16 @@ export interface PerfReport {
   host?: { platform: string; release: string; cpu?: string; node: string }
   complete: boolean
 }
+/** Probe values recorded by the 'open' scenario: canvas nodes in the DOM / on screen once the project is shown. */
+export const OPEN_MOUNTED = 'mount.open.nodes'
+export const OPEN_VISIBLE = 'mount.open.visible'
+/**
+ * Plan §3.5.2, after B1: the nodes mounted right at open are at most 2 × the nodes on screen (a board with nothing
+ * on screen may mount 2). Missing or unpaired samples never pass.
+ */
+export function mountsWithinBudget(mounted: readonly number[] = [], visible: readonly number[] = []): boolean {
+  return mounted.length > 0 && mounted.length === visible.length && mounted.every((m, i) => m <= 2 * Math.max(1, visible[i]))
+}
 export function verdict(value: number | null, budget: number | null): PerfResult['status'] {
   return value === null ? 'unavailable' : budget === null ? 'unbudgeted' : value <= budget ? 'pass' : 'fail'
 }

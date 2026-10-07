@@ -9,7 +9,7 @@ import { useUI } from '../store/ui'
 import { SIZES, synthProject, type PerfSize, type SynthSpec } from './synth'
 import { synthMedia } from './synthMedia'
 import { budgetFor } from './budgets'
-import { compare, reportExitCode, withBaselineBudgets, stats, verdict, type PerfReport, type PerfResult } from './report'
+import { compare, mountsWithinBudget, OPEN_MOUNTED, OPEN_VISIBLE, reportExitCode, withBaselineBudgets, stats, verdict, type PerfReport, type PerfResult } from './report'
 import { frame, measure, pause, settle } from './measure'
 import { PERF_MARKER, perfCanvas, type ProbeSnapshot } from './probe'
 import { scenarios } from './scenarios'
@@ -149,6 +149,8 @@ async function run(runs = 3): Promise<PerfReport> {
         const check = (label: string, passed: boolean) => result.assertions.push({ label, passed })
         if (['typeInspector', 'promptCommit', 'runsTick'].includes(scenario.id)) check('CanvasInner không render', !result.renders.counts.CanvasInner)
         if (scenario.id === 'select') check('Tối đa 25 dòng video cho một lựa chọn', (result.maxRenders!.TakeRow ?? 0) <= 25)
+        if (scenario.id === 'open') check('Số node mount lúc mở ≤ 2 × số node trên màn hình',
+          mountsWithinBudget(result.renders.durations[OPEN_MOUNTED], result.renders.durations[OPEN_VISIBLE]))
         if (scenario.id === 'runsTick') check('Không ghi runs khi chỉ đổi tiến độ', !(result.renders.durations.autosaveRuns?.length))
         if (['drag', 'drag50'].includes(scenario.id)) check('Không commit ngoài canvas khi kéo', ['Sidebar', 'Inspector', 'TopBar'].every((id) => !result.renders.commits[id]))
         if (result.frames && ['pan', 'pan04', 'panFar', 'zoom', 'drag', 'drag50', 'typeInspector'].includes(scenario.id)) {

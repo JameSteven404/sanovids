@@ -40,16 +40,19 @@ vi.mock('../project', async () => {
   return { useProject, clearHistory: vi.fn(), emptyProject: vi.fn() }
 })
 vi.mock('../ui', () => ({ useUI: { getState: () => ({ clearSelection: vi.fn(), toast: vi.fn() }) } }))
-vi.mock('../../lib/imageStore', () => ({ deleteMedia: vi.fn(), getBlob: vi.fn(), putBlob: vi.fn(), dataUrlToBlob: vi.fn() }))
+vi.mock('../../lib/imageStore', () => ({ deleteMedia: vi.fn(), getBlob: vi.fn(), putBlob: vi.fn(), dataUrlToBlob: vi.fn(), revokeUnusedUrls: vi.fn() }))
 vi.mock('../../lib/saveFolders', () => ({ copyFolderHandle: vi.fn() }))
 vi.mock('../../core/seed', () => ({ createDemoProject: vi.fn() }))
 import { bootstrap, flush, progressOnlyChange, useSave } from '../persist'
 import { useRuns } from '../runs'
 import { useProject } from '../project'
+import { revokeUnusedUrls } from '../../lib/imageStore'
 
 const data = synthProject({ scenes: 2, takes: 4 })
 const { project, runs } = data
 const runsWrites = () => db.writes.filter((k) => k.startsWith('runs:')).length
+/** imageStore.revokeUnusedUrls calls made by bootstrap (Vitest clears mock calls before each test). */
+let revokesOnOpen = -1
 const turn = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 beforeAll(async () => {
   vi.useFakeTimers()
@@ -62,8 +65,16 @@ beforeAll(async () => {
   db.values.set(`project:${project.id}`, project)
   db.values.set(`runs:${project.id}`, runs)
   await bootstrap()
+  revokesOnOpen = vi.mocked(revokeUnusedUrls).mock.calls.length
 })
 afterAll(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+describe('opening a project', () => {
+  it('ends the previous project\'s media URLs (imageStore.revokeUnusedUrls) once, when the id changes', () => {
+    expect(useProject.getState().project.id).toBe(project.id)
+    expect(revokesOnOpen).toBe(1)
+  })
+})
 
 describe('progress-only autosave', () => {
   it('ignores only progress, never a persisted field, credits, insertion, deletion or reordering', () => {
