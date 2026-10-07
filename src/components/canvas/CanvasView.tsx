@@ -64,8 +64,9 @@ import { linkScenesToFolder, linkTakesToFolder } from '../../folderActions'
 import { useCanvasPrefs, useMotionLevel } from '../../lib/canvasPrefs'
 import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
-import { LAYOUT, refImageCount, undoToastAction, useProject, type Box } from '../../store/project'
+import { canvasObstacles, LAYOUT, refImageCount, rowHeightOf, undoToastAction, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
+import { useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
@@ -81,19 +82,17 @@ import {
   sceneGraphOf,
   wireViewport,
   wireNearViewport,
-  assetNodeHeight,
-  ASSET_DEFAULT_W,
   autoTakePosition,
   clientPoint,
   drawerInset,
   fallbackNodeSize,
   FIT_EVENT,
   focusViewport,
-  gridPositions,
   hasAssetDrag,
   hasFileDrag,
   hasTakeDrag,
   hitTest,
+  imageDropSpots,
   imageFiles,
   isAutoSlot,
   isEmptyCanvasTarget,
@@ -106,7 +105,10 @@ import {
   readTakeIds,
   resetNodeSize,
   revealViewport,
+  typingViewport,
+  TYPE_EVENT,
   sceneMapOf,
+  sceneNodeSize,
   scheduleHoverEnd,
   selectionSeed,
   snap,
@@ -126,6 +128,7 @@ import {
   type TakeLayout,
   type ToolbarDensity,
 } from './canvasModel'
+import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode, type SceneNodeData } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import { isWireClick, markFreshWires, newWireIds, refDotTones, setWireReconnecting, wireClickAction, wireZ, type RefDotTone, type WirePress } from './wireFx'
@@ -174,7 +177,7 @@ export function CanvasView() {
 }
 
 const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
-const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? s.size?.w ?? LAYOUT.sceneW
+const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? sceneNodeSize(s.size)?.w ?? LAYOUT.sceneW
 
 function CanvasInner() {
   perfCount('CanvasInner')
@@ -212,6 +215,10 @@ function CanvasInner() {
   const motion = useMotionLevel()
   const bigPref = useCanvasPrefs((s) => s.bigProject)
   const shownFor = useUI((s) => s.minimapShownFor.includes(projectId))
+  // A project laid out for the 0.5.x cards (280 × 200, rows 248 apart): spread its rows once for the 352 × 304 node.
+  useEffect(() => {
+    maybeSpaceRows()
+  }, [projectId])
   useEffect(() => rfStore.subscribe((state) => {
     const [x, y, zoom] = state.transform
     if (state.width && state.height) canvasViewports.set(projectId, { x, y, zoom })
@@ -316,7 +323,7 @@ function CanvasInner() {
     }
     for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA, a.size)
     for (const f of folders) push(f.id, 'folder', f.position, EMPTY_DATA, null)
-    for (const s of scenes) push(s.id, 'scene', s.position, SCENE_DATA[refTones.get(s.id) ?? 'image'], s.size)
+    for (const s of scenes) push(s.id, 'scene', s.position, SCENE_DATA[refTones.get(s.id) ?? 'image'], sceneNodeSize(s.size))
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
     // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes in the row before it
@@ -875,7 +882,7 @@ function CanvasInner() {
       const p = n.internals.positionAbsolute
       return { x: p.x, y: p.y, w: n.measured?.width || n.width || fb.w, h: n.measured?.height || n.height || fb.h }
     }
-    type Mode = 'focus' | 'reveal' | 'fit'
+    type Mode = 'focus' | 'reveal' | 'fit' | 'type'
     const run = (ids: string[], mode: Mode, attempt = 0) => {
       if (!ids.length) {
         if (mode === 'fit') void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
@@ -897,6 +904,7 @@ function CanvasInner() {
         const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(size.bottom + size.h * 0.1)}px` as const }
         next = getViewportForBounds({ x: box.x, y: box.y, width: box.w, height: box.h }, size.w, size.h, 0.1, 1.2, padding)
       } else if (mode === 'reveal') next = revealViewport(box, vp, size)
+      else if (mode === 'type') next = typingViewport(box, vp, size)
       else next = focusViewport(box, vp, size)
       if (next) void rf.setViewport(next, { duration: 300 })
     }
@@ -908,7 +916,7 @@ function CanvasInner() {
       canvasEvents.addEventListener(type, handler)
       return () => canvasEvents.removeEventListener(type, handler)
     }
-    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30)]
+    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
     return () => offs.forEach((off) => off())
   }, [rf, stageSize])
 
@@ -973,9 +981,12 @@ function CanvasInner() {
   // The empty canvas' "Cảnh mới" button disappears on its first click: when it was double-clicked, the second click
   // lands on the canvas below and must not create another scene there.
   const emptyActionAt = useRef(-Infinity)
+  // A scene made on purpose where the user points (double-click, the empty canvas' "Cảnh mới" button) is ready to
+  // type in: its node opens its prompt field (N and the toolbar's + do not — they make several scenes in a row).
   const onEmptyAction = () => {
     emptyActionAt.current = performance.now()
-    nextScene()
+    const id = nextScene()
+    if (id) useSceneEditor.getState().open(id, 'prompt', 0)
   }
   const onDoubleClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement
@@ -983,7 +994,7 @@ function CanvasInner() {
     if (performance.now() - emptyActionAt.current < 600) return
     if (performance.now() - wireCutAt.current < 500) return
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    newScene({ x: snap(p.x - 140), y: snap(p.y - 40) })
+    useSceneEditor.getState().open(newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) }), 'prompt', 0)
   }
 
   const onDragOver = (e: DragEvent) => {
@@ -1004,7 +1015,7 @@ function CanvasInner() {
       if (ids.length === 1) {
         // "Tạo cảnh tiếp theo từ video này" with its card's top-left corner near the drop point.
         const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-        createSceneFromVideo(ids[0], { x: snap(p.x - 140), y: snap(p.y - 40) })
+        createSceneFromVideo(ids[0], { x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) })
       } else if (ids.length > 1) {
         toast('Thả từng video ra nền để tạo cảnh tiếp theo từ video đó.', { tone: 'info' })
       }
@@ -1013,37 +1024,40 @@ function CanvasInner() {
     if (!hasAssetDrag(e.dataTransfer) && !hasFileDrag(e.dataTransfer)) return
     e.preventDefault()
     useUI.getState().setDraggingAssets(null)
+    // Image tiles land like canvasapp's (one size, lined up): left of the scene column → one column next to the scene
+    // row under the pointer; elsewhere → a 2-column grid at the pointer, slid off whatever it would cover.
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const base = { x: snap(p.x - 90), y: snap(p.y - 100) }
+    const project = useProject.getState().project
+    const spotsFor = (count: number, moving: readonly string[] = []) =>
+      imageDropSpots(
+        p,
+        count,
+        project.scenes,
+        canvasObstacles(moving.length ? { ...project, assets: project.assets.filter((a) => !moving.includes(a.id)) } : project),
+        rowHeightOf,
+      )
     const ids = readAssetIds(e.dataTransfer)
     if (ids && ids.length) {
-      const map = assetMapOf(useProject.getState().project.assets)
+      const map = assetMapOf(project.assets)
       const valid = ids.filter((id) => map.has(id))
       if (!valid.length) return
       // One card goes where it is dropped (even one already on the canvas: the user moves it here). Several: the ones
-      // not on the canvas yet, in rows of 4 from the drop point; cards already on the canvas stay where they are.
+      // not on the canvas yet; cards already on the canvas stay where they are.
       const fresh = valid.length === 1 ? valid : valid.filter((id) => !map.get(id)!.position)
-      const measured = useCanvasLocal.getState().measured
-      const spots = gridPositions(
-        base,
-        fresh.map((id) => {
-          const a = map.get(id)!
-          return { w: a.size?.w ?? ASSET_DEFAULT_W, h: assetNodeHeight(a, measured[id]?.height) }
-        }),
-      )
+      const spots = spotsFor(fresh.length, fresh)
       if (fresh.length) useProject.getState().setAssetsOnCanvas(Object.fromEntries(fresh.map((id, i) => [id, spots[i]])))
       useUI.getState().select(valid)
       const kept = valid.length - fresh.length
       toast(
         fresh.length
-          ? `Đã đặt ${fresh.length} mục lên canvas${kept ? ` (${kept} mục đã có sẵn trên canvas — giữ nguyên chỗ)` : ''} — kéo chấm bên phải vào cảnh để nối.`
-          : `${kept} mục này đã có trên canvas — đã chọn chúng, giữ nguyên chỗ.`,
+          ? `Đã đặt ${fresh.length} ảnh lên canvas${kept ? ` (${kept} ảnh đã có sẵn trên canvas — giữ nguyên chỗ)` : ''}. Kéo chấm bên phải ảnh vào node cảnh để nối.`
+          : `${kept} ảnh này đã có trên canvas — đã chọn chúng, giữ nguyên chỗ.`,
         { tone: fresh.length ? 'success' : 'info', ...(fresh.length ? { action: undoToastAction() } : {}) },
       )
       return
     }
     const files = imageFiles(e.dataTransfer)
-    if (files.length) void createAssetsFromFiles(files, { position: base })
+    if (files.length) void createAssetsFromFiles(files, { spots: spotsFor(files.length) })
   }
 
   const closeMenu = useCallback(() => setMenu(null), [])
@@ -1127,6 +1141,9 @@ function CanvasInner() {
         connectionRadius={28}
         connectionLineComponent={WireConnectionLine}
         nodeDragThreshold={2}
+        // Same 2px as the drag threshold: a click that jittered 1px (pressed mouse, pen) is still a click — the static
+        // prompt text opens the field there. React Flow's default (0) swallowed it without moving the node.
+        nodeClickDistance={2}
         elevateEdgesOnSelect={false}
         defaultViewport={savedViewport}
         fitView={!savedViewport}

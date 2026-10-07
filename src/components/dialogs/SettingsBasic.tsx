@@ -320,8 +320,8 @@ export function RateSetting({ label, hint }: RowProps) {
 // ---------------- Dây nối & canvas ----------------
 // Segments are narrow (three in half a column): a short label + a second line; the full name is the tooltip.
 const NODE_EDITOR_OPTIONS: { id: NodeEditorMode; label: string; hint: string; title: string }[] = [
-  { id: 'click', label: 'Bấm vào prompt', hint: 'hoặc nút ✎ trên thẻ', title: `${NODE_EDITOR_LABEL.click}: bấm vào prompt, nhãn cấu hình hoặc nút ✎ trên thẻ cảnh để mở khung sửa` },
-  { id: 'select', label: 'Tự mở', hint: 'khi chọn 1 cảnh', title: `${NODE_EDITOR_LABEL.select}: chọn đúng 1 cảnh là khung sửa mở ra (chưa đặt con trỏ vào ô gõ)` },
+  { id: 'click', label: 'Bấm vào prompt', hint: 'là gõ ngay', title: `${NODE_EDITOR_LABEL.click}: bấm vào chữ prompt trên node cảnh là gõ ngay, con trỏ đặt đúng chỗ bấm` },
+  { id: 'select', label: 'Tự mở', hint: 'khi chọn 1 cảnh', title: `${NODE_EDITOR_LABEL.select}: chọn đúng 1 cảnh là ô gõ trên node sẵn sàng (chưa đặt con trỏ vào)` },
   { id: 'off', label: 'Tắt', hint: 'sửa ở bảng bên phải', title: NODE_EDITOR_LABEL.off },
 ]
 

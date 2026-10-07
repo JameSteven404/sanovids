@@ -5,7 +5,7 @@
 // scene uses a video as @video any more) are nothing.
 import { chooseTake, keepsSlot } from '../core/takes'
 import type { Scene, Take } from '../core/types'
-import { LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
+import { drawnSceneSize, LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
 import { useRuns } from './runs'
 import { useUI, type TakeDisplay } from './ui'
 
@@ -37,7 +37,8 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
     list.sort((a, b) => a.number - b.number)
     const chosen = mode === 'chosen' ? chooseTake(list) : undefined
     const shown = mode === 'chosen' ? list.filter((t) => t === chosen) : list
-    const cardW = s.size?.w ?? LAYOUT.sceneW
+    // The width the canvas draws the node at: a stored size from before 0.6.0 (below today's minimum) reads as the default.
+    const cardW = drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW
     let acc = 0
     let h = 0
     for (const t of shown) {

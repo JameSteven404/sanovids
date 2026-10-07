@@ -135,8 +135,8 @@ describe('every one-scene Run button is gated by core/runGate (no drift to a pro
       expect(b).not.toMatch(/prompt\.trim\(\)/)
     }
   })
-  it('the inspector gates both of its Run buttons (head + Take section)', () => {
-    expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(2)
+  it('the inspector gates its Run button (head; the costed one moved onto the scene node in 0.6.0)', () => {
+    expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(1)
   })
   it('the places that call runBlockReason themselves pass the gateway’s refusal of the settings too', () => {
     for (const file of ['../../components/canvas/SceneNode.tsx', '../../store/runs.ts']) {

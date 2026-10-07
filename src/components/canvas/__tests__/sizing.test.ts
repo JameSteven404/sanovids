@@ -1,20 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
-import { useImageMeta } from '../../../lib/imageMeta'
 import { defaultTakePosition, LAYOUT, NODE_SIZE } from '../../../store/project'
 import {
-  ASSET_CHROME,
   ASSET_DEFAULT_W,
-  ASSET_MAX_ASPECT,
-  ASSET_MIN_ASPECT,
-  ASSET_PAD_X,
+  ASSET_TILE,
   assetDefaultLayout,
+  assetFrame,
   assetNodeHeight,
   autoTakePosition,
-  avatarSlots,
-  DEFAULT_AVATARS,
   DOT_TOP,
-  excerptChars,
   fitMedia,
   layoutTakes,
   orphanTakePosition,
@@ -22,11 +16,9 @@ import {
   PREVIEW_MAX_H,
   PREVIEW_MAX_W,
   previewSize,
-  promptLines,
-  PROMPT_LINE_H,
   RESIZE_DOT_GAP,
   resizeEdgeClip,
-  SCENE_CHROME,
+  sceneNodeSize,
   TAKE_CHROME,
   takeDotTop,
   takeLayoutSig,
@@ -142,24 +134,20 @@ describe('take sizes in the layout', () => {
   })
 })
 
-describe('scene card content', () => {
-  it('shows more prompt lines when taller (at least 2)', () => {
-    expect(promptLines(NODE_SIZE.scene.minH)).toBe(2)
-    expect(promptLines(SCENE_CHROME + 5 * PROMPT_LINE_H)).toBe(5)
-    expect(promptLines(SCENE_CHROME + 5 * PROMPT_LINE_H, true)).toBeLessThan(5)
-    expect(promptLines(600)).toBeGreaterThan(promptLines(300))
+describe('scene node size (0.6.0: the node is the editor, 352 × 304)', () => {
+  it('defaults and resize limits of the approved design (E0 v3, 1A)', () => {
+    expect(LAYOUT.sceneW).toBe(352)
+    expect(LAYOUT.sceneH).toBe(304)
+    expect(NODE_SIZE.scene).toEqual({ minW: 320, maxW: 720, minH: 256, maxH: 900 })
   })
-
-  it('renders enough prompt text for the lines shown', () => {
-    expect(excerptChars(2, LAYOUT.sceneW)).toBe(280)
-    expect(excerptChars(20, 600)).toBeGreaterThan(1500)
-  })
-
-  it('shows more avatars when wider, fewer when @video thumbs need room', () => {
-    expect(avatarSlots(LAYOUT.sceneW)).toBe(DEFAULT_AVATARS)
-    expect(avatarSlots(600)).toBeGreaterThan(DEFAULT_AVATARS)
-    expect(avatarSlots(600, 4)).toBeLessThan(avatarSlots(600))
-    expect(avatarSlots(NODE_SIZE.scene.minW, 4)).toBeGreaterThanOrEqual(2)
+  it('a size of the old 280 × 200 cards (below today’s minimum) reads as the default node', () => {
+    expect(sceneNodeSize(null)).toBeNull()
+    expect(sceneNodeSize(undefined)).toBeNull()
+    expect(sceneNodeSize({ w: 280, h: 200 })).toBeNull()
+    expect(sceneNodeSize({ w: 600, h: 200 })).toBeNull()
+    expect(sceneNodeSize({ w: 300, h: 500 })).toBeNull()
+    expect(sceneNodeSize({ w: 320, h: 256 })).toEqual({ w: 320, h: 256 })
+    expect(sceneNodeSize({ w: 500, h: 640 })).toEqual({ w: 500, h: 640 })
   })
 })
 
@@ -224,62 +212,34 @@ describe('connection dots', () => {
   })
 })
 
-describe('asset node: whole image at its own aspect ratio', () => {
-  const inner = ASSET_DEFAULT_W - ASSET_PAD_X
-
-  it('default card: image fills the width at its aspect, card = image + name/meta rows', () => {
-    const square = assetDefaultLayout(1)
-    expect(square).toEqual({ w: ASSET_DEFAULT_W, h: inner + ASSET_CHROME, imgW: inner, imgH: inner })
-    const portrait = assetDefaultLayout(9 / 16)
-    expect(portrait.imgW).toBe(inner)
-    expect(portrait.imgH).toBe(Math.round((inner * 16) / 9))
-    expect(portrait.h).toBe(portrait.imgH + ASSET_CHROME)
-    const landscape = assetDefaultLayout(16 / 9)
-    expect(landscape.imgH).toBe(Math.round((inner * 9) / 16))
-    expect(landscape.h).toBeLessThan(square.h)
-    expect(portrait.h).toBeGreaterThan(square.h)
+describe('image tile: one size for every picture (choice 3L, like canvasapp)', () => {
+  it('is 220 × 275 with a 204 × 240 frame for the whole picture and one caption line', () => {
+    expect(ASSET_DEFAULT_W).toBe(220)
+    expect(ASSET_TILE).toMatchObject({ w: 220, h: 275 })
+    expect(LAYOUT.assetW).toBe(ASSET_TILE.w)
+    expect(LAYOUT.assetH).toBe(ASSET_TILE.h)
+    expect(assetDefaultLayout()).toEqual({ w: 220, h: 275, imgW: 204, imgH: 240 })
+    expect(assetFrame()).toEqual({ w: 204, h: 240 })
+    // a resized tile: the frame follows, the caption keeps its line
+    expect(assetFrame(400, 500)).toEqual({ w: 400 - 2 - 14, h: 500 - 2 - 7 - 26 })
+    expect(assetFrame(10, 10)).toEqual({ w: 0, h: 0 })
   })
 
-  it('stays within NODE_SIZE.asset (very wide images get a letterboxed, minH-tall card)', () => {
+  it('fits the column step and the resize limits', () => {
     const l = NODE_SIZE.asset
-    for (const a of [ASSET_MIN_ASPECT, 0.5, 1, 1.5, ASSET_MAX_ASPECT, 10, 0.05]) {
-      const box = assetDefaultLayout(a)
-      expect(box.h).toBeGreaterThanOrEqual(l.minH)
-      expect(box.h).toBeLessThanOrEqual(l.maxH)
-      expect(box.w).toBeGreaterThanOrEqual(l.minW)
-      expect(box.w).toBeLessThanOrEqual(l.maxW)
-    }
-    expect(assetDefaultLayout(ASSET_MAX_ASPECT).h).toBe(l.minH)
-    // A tall strip in a wide card hits maxH.
-    expect(assetDefaultLayout(ASSET_MIN_ASPECT, l.maxW).h).toBe(l.maxH)
-    // Width is clamped too.
-    expect(assetDefaultLayout(1, 40).w).toBe(l.minW)
+    expect(ASSET_TILE.h + LAYOUT.assetGapY).toBe(299)
+    expect(ASSET_TILE.w).toBeGreaterThanOrEqual(l.minW)
+    expect(ASSET_TILE.h).toBeLessThanOrEqual(l.maxH)
   })
 
-  it('falls back to a square for an unknown / broken aspect', () => {
-    expect(assetDefaultLayout(Number.NaN)).toEqual(assetDefaultLayout(1))
-    expect(assetDefaultLayout(0)).toEqual(assetDefaultLayout(1))
+  it('assetNodeHeight: the stored size, else the tile (the picture’s shape no longer matters)', () => {
+    expect(assetNodeHeight({ size: { w: 300, h: 400 } }, 999)).toBe(400)
+    expect(assetNodeHeight({ size: null }, 333)).toBe(275)
+    expect(assetNodeHeight({ size: undefined })).toBe(275)
   })
 
-  it('a default square card still fits the asset column slots (seed, saved projects, "add to canvas")', () => {
-    expect(assetDefaultLayout(1).h).toBeLessThan(LAYOUT.assetH + LAYOUT.assetGapY)
-  })
-
-  describe('assetNodeHeight (asset column layout)', () => {
-    afterEach(() => useImageMeta.setState({ sizes: {} }))
-
-    it('uses the stored size, else the default card for the known image aspect', () => {
-      expect(assetNodeHeight({ size: { w: 300, h: 400 }, imageIds: ['img_a'] }, 999)).toBe(400)
-      useImageMeta.setState({ sizes: { img_a: { w: 900, h: 1600 } } })
-      // Known aspect wins over a stale measurement (taken while the card was still square).
-      expect(assetNodeHeight({ size: null, imageIds: ['img_a'] }, 227)).toBe(assetDefaultLayout(9 / 16).h)
-    })
-
-    it('falls back to the measured card, then to a square card', () => {
-      expect(assetNodeHeight({ size: null, imageIds: ['img_b'] }, 333)).toBe(333)
-      expect(assetNodeHeight({ size: null, imageIds: ['img_b'] })).toBe(assetDefaultLayout(1).h)
-      expect(assetNodeHeight({ size: null, imageIds: [] }, 500)).toBe(assetDefaultLayout(1).h)
-    })
+  it('keeps ~200px of wire room between the image column and the scene column', () => {
+    expect(LAYOUT.scenesX - (LAYOUT.assetX + LAYOUT.assetW)).toBeGreaterThanOrEqual(200)
   })
 })
 

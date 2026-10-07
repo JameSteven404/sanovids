@@ -28,4 +28,42 @@ describe('canvas subscription boundaries', () => {
     const baseMemo = view.slice(view.indexOf('const baseNodes = useMemo'), view.indexOf('const liveCache'))
     expect(baseMemo).not.toMatch(/dragPos|measuredVersion|selectedIds|resizing\[/)
   })
+
+  it('the node is the editor: static text everywhere, ONE live field (the editing node), never the old .cv-m marks', () => {
+    const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
+    // the live field is mounted only behind `live` (= this node is the one being edited, not open in the panel)
+    expect(scene).toMatch(/const live = editing && !inPanel/)
+    expect(scene).toMatch(/\{live \? \(\s*<NodePromptField /)
+    expect(scene.match(/<NodePromptField /g)).toHaveLength(1)
+    // static text and the field's backdrop render tokens through the shared helpers (tokens.ts) and .in-tk marks
+    expect(scene).toMatch(/segmentPrompt\(/)
+    expect(scene).not.toMatch(/cv-m\b/)
+    expect(scene).not.toMatch(/new RegExp|\/@\(\?:image/)
+    const field = readFileSync(new URL('SceneNodeEditor.tsx', canvas), 'utf8')
+    expect(field).toMatch(/className="cv-sn-ta nodrag nowheel nokey/)
+    expect(field).toMatch(/className=\{`in-tk is-\$\{s\.kind\}/)
+    expect(field).not.toMatch(/import[^\n]*\bPromptEditor\b/)
+  })
+
+  it('the far view lays out a bounded excerpt (never a whole paragraph per far node)', () => {
+    const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
+    const far = scene.slice(scene.indexOf('function SceneFar('), scene.indexOf('function SceneFull('))
+    expect(far).toMatch(/farExcerpt\(scene\.prompt, w\)/)
+    expect(far).not.toMatch(/scene\.prompt\.trim\(\)\.split/)
+  })
+
+  it('a click that jittered within the drag threshold is still a click (React Flow nodeClickDistance = nodeDragThreshold)', () => {
+    const view = readFileSync(new URL('CanvasView.tsx', canvas), 'utf8')
+    const drag = /nodeDragThreshold=\{(\d+)\}/.exec(view)?.[1]
+    expect(drag).toBeDefined()
+    expect(view).toContain(`nodeClickDistance={${drag}}`)
+  })
+
+  it('"Gõ trên node" brings the node near first (typeOnNode), never opens a field that cannot mount', () => {
+    const inspector = readFileSync(new URL('../inspector/SceneInspector.tsx', canvas), 'utf8')
+    expect(inspector).toContain('onClick={() => typeOnNode(sceneId)}')
+    expect(inspector).not.toContain('useSceneEditor.getState().open(sceneId)')
+    const view = readFileSync(new URL('CanvasView.tsx', canvas), 'utf8')
+    expect(view).toContain("listen(TYPE_EVENT, 'type'")
+  })
 })

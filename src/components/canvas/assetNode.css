@@ -1,0 +1,86 @@
+/* ============================== image tile (cv-tile) ==============================
+ * One size for every picture (choice 3L, = canvasapp): 220 × 275 = canvasModel ASSET_TILE / LAYOUT.assetW × assetH.
+ * Border 1 · padding 7 (top, sides) · the picture's frame (204 × 240, the WHOLE picture, contain, bands on the
+ * --panel-2 well) · one 26px caption line: kind icon, name, use. The root keeps .cv-asset for selection / hover / the
+ * colour bar (canvas.css); only theme / canvas tokens. */
+.cv-stage .cv-asset.cv-tile {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  height: 275px;
+  padding: 7px 7px 0;
+}
+.cv-stage .cv-asset.cv-tile.is-sized {
+  width: 100%;
+  height: 100%;
+}
+.cv-tile-img {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+.cv-tile-img > .full-img {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  /* the bands around a picture of another shape are the frame's plain well, not a checkerboard */
+  background: transparent;
+}
+.cv-tile-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--asset-c);
+  color: var(--cv-on-solid);
+  font-size: 56px;
+  font-weight: 700;
+}
+.cv-tile-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  flex: none;
+  min-width: 0;
+  padding: 0 3px;
+}
+.cv-tile-kind {
+  flex: none;
+  color: var(--asset-c);
+}
+.cv-tile-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-tile-use {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.cv-tile-use.is-none {
+  color: var(--text-faint);
+}
+/* zoomed out: the picture and a big name (≈ 11px on screen at 45%) */
+.cv-asset.cv-tile.is-far .cv-tile-cap {
+  height: 46px;
+}
+.cv-asset.cv-tile.is-far .cv-tile-name {
+  font-size: 26px;
+  font-weight: 700;
+}
+.cv-asset.cv-tile.is-far .cv-tile-kind,
+.cv-asset.cv-tile.is-far .cv-tile-use {
+  display: none;
+}

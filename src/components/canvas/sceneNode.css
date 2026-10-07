@@ -1,0 +1,910 @@
+/* ============================== scene node = the editor (cv-sn-) ==============================
+ * Approved design E0 v3 ("Số đo cho người làm app"): 352 × 304 at 100%, border 1 · head 32 · settings line 24 + gap 6 ·
+ * prompt (flexible, 194 by default) · [red placeholder strip 6 + 22] · foot 6 + 32 · [reason line 16] · padding 8.
+ * The static prompt and the live field share one box and every text metric (13.5 / 19px, insets 6 · 16 · 17 · 10,
+ * pre-wrap, break-word, the .in-tk token marks): a click turns the text into the field without moving a letter.
+ * Only theme tokens (styles/base.css) and canvas tokens (canvas.css .cv-stage). Root keeps .cv-scene for the shared
+ * selection / drop / wiring states in canvas.css and saving.css. */
+.cv-stage .cv-scene.cv-sn {
+  /* the token inks of the field's marks (inspector.css defines them on .in-root only) */
+  --in-ref-ink: color-mix(in srgb, var(--ref) 72%, var(--text));
+  --in-video-ink: color-mix(in srgb, var(--video) 72%, var(--text));
+  --sn-field: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  width: 352px;
+  height: 304px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.cv-stage .cv-scene.cv-sn.is-sized {
+  width: 100%;
+  height: 100%;
+}
+.cv-sn-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 8px 8px;
+}
+
+/* ---- head: code · name · compact take status ---- */
+.cv-sn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  flex: none;
+  min-width: 0;
+  padding-left: 2px;
+}
+.cv-sn-code {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+}
+.cv-sn-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: text;
+}
+.cv-sn-title.is-empty {
+  color: transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  user-select: none;
+  transition: color 0.12s ease-out;
+}
+.cv-sn:hover .cv-sn-title.is-empty,
+.cv-sn.is-selected .cv-sn-title.is-empty {
+  color: var(--text-faint);
+}
+.cv-sn-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--accent);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-sn-st {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cv-sn-st > i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.cv-sn-st.is-none {
+  color: var(--text-faint);
+}
+.cv-sn-st.is-ok > i {
+  background: var(--ok);
+}
+.cv-sn-st.is-fail > i {
+  background: var(--danger);
+}
+.cv-sn-st.is-wait > i {
+  background: var(--info);
+}
+.cv-sn-st.is-going {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.cv-sn-st.is-going > i {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---- settings: one summary line (choice 2B) ---- */
+.cv-sn-sum {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  flex: none;
+  margin-bottom: 6px;
+  min-width: 0;
+  padding: 0 6px 0 3px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cv-sn-sum:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--sn-field);
+  color: var(--text);
+}
+.cv-sn-sum:disabled {
+  cursor: default;
+}
+.cv-sn-sum:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-sn-sum-m {
+  flex: none;
+  max-width: 45%;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--model-c, var(--text-dim)) 16%, transparent);
+  color: color-mix(in srgb, var(--model-c, var(--text-dim)) var(--cv-model-mix, 78%), var(--text));
+  font-weight: 700;
+  line-height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cv-sn-sum-t {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.cv-sn-sum-chev {
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.cv-sn-sum:hover .cv-sn-sum-chev,
+.cv-sn-sum:focus-visible .cv-sn-sum-chev {
+  opacity: 1;
+}
+
+/* ...opened in place: pickers on the line, three 19px rows of buttons (the prompt gives up 3 lines) */
+.cv-sn-setx {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  height: 81px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+.cv-sn-setx-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  flex: none;
+  min-width: 0;
+}
+.cv-sn-sel {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 120px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--sn-field);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cv-sn-sel.is-model {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--model-c, var(--text-dim)) 16%, var(--panel));
+  color: color-mix(in srgb, var(--model-c, var(--text-dim)) var(--cv-model-mix, 78%), var(--text));
+  font-weight: 700;
+}
+.cv-sn-sel.is-preset {
+  max-width: 96px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.cv-sn-sel:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-sn-setx-sp {
+  flex: 1 1 auto;
+}
+.cv-sn-setx-close {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.cv-sn-setx-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.cv-sn-setx-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-sn-setx-row {
+  height: 19px;
+  flex: none;
+}
+.cv-sn-setx-row .in-seg {
+  height: 19px;
+  padding: 1px;
+  border-radius: 6px;
+}
+.cv-sn-setx-row .in-seg-thumb {
+  top: 1px;
+  bottom: 1px;
+  left: 1px;
+  width: calc((100% - 2px) / var(--n, 1));
+  border-radius: 5px;
+}
+.cv-sn-setx-row .in-seg-btn {
+  font-size: 11px;
+  line-height: 17px;
+  border-radius: 5px;
+}
+/* H3 "Đầu→cuối": the ratio comes from the frames — one read-only segment "theo ảnh" */
+.cv-sn-setx-row .in-seg-btn.is-fixed {
+  text-align: center;
+  cursor: help;
+}
+
+/* ---- prompt box: one box, same insets static or live ---- */
+.cv-sn-pr {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--sn-field);
+  font-size: 13.5px;
+  line-height: 19px;
+  overflow: hidden;
+  cursor: text;
+}
+.cv-sn-pr.is-off {
+  cursor: default;
+}
+/* only the focused field gets the ring and the caret: at rest a node being edited looks like every other */
+.cv-sn-pr:focus-within {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.cv-sn-text,
+.cv-sn-back,
+.cv-sn-ta {
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 19px;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 2;
+  color: var(--text);
+}
+/* static text: clamped to the lines the box shows (--lines from sceneNodeModel.promptLinesFor), "…" at the end */
+.cv-sn-text {
+  position: absolute;
+  left: 10px;
+  right: 16px;
+  top: 5px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cv-sn-ph {
+  color: var(--text-faint);
+}
+/* live field: the textarea's text is transparent, the backdrop mirror draws it with the coloured tokens */
+.cv-sn-back,
+.cv-sn-ta {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 5px 10px 16px;
+  border: 0;
+  border-radius: 8px;
+}
+.cv-sn-back {
+  overflow: hidden;
+  /* = 10px + the field's 6px scrollbar gutter: wraps exactly like the field (and the static text) */
+  padding-right: 16px;
+  pointer-events: none;
+}
+.cv-sn-ta {
+  display: block;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  cursor: text;
+  user-select: text;
+}
+.cv-sn-ta::-webkit-scrollbar {
+  width: 6px;
+}
+.cv-sn-ta::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 4px;
+  background: var(--scrollbar);
+}
+.cv-sn-ta::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: transparent;
+}
+.cv-sn-ta::placeholder {
+  color: var(--text-faint);
+}
+.cv-sn-count {
+  position: absolute;
+  right: 8px;
+  bottom: 2px;
+  padding: 0 3px;
+  border-radius: 4px;
+  /* the field scrolls under it: keep it readable */
+  background: var(--sn-field);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.cv-sn-pr:focus-within .cv-sn-count {
+  background: var(--panel);
+}
+.cv-sn-pr.is-over .cv-sn-count {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.cv-sn-dropcaret {
+  position: absolute;
+  z-index: 2;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--ref);
+  pointer-events: none;
+}
+/* an image dragged onto the static text: insert where it lands (no veil over the text) */
+.cv-sn.is-drop-text .cv-sn-pr {
+  border-color: var(--ref);
+  box-shadow: 0 0 0 3px var(--ref-soft);
+}
+
+/* ---- red placeholder strip ("Chữ đỏ chờ ảnh") ---- */
+.cv-sn-hole {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  flex: none;
+  margin-top: 6px;
+  min-width: 0;
+  padding: 0 4px 0 7px;
+  border: 1px dashed color-mix(in srgb, var(--danger) 60%, transparent);
+  border-radius: 7px;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 11.5px;
+  overflow: hidden;
+}
+.cv-sn-hole > svg {
+  flex: none;
+}
+.cv-sn-hole-l {
+  flex: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cv-sn-hole-c {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-sn-hole-more {
+  flex: none;
+  font-weight: 600;
+}
+
+/* ---- foot: pictures on the left, Run on the right ---- */
+.cv-sn-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  flex: none;
+  margin-top: 6px;
+  min-width: 0;
+}
+.cv-sn-refs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.cv-sn-th {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  border-radius: 7px;
+  cursor: default;
+}
+.cv-sn-th.is-viewable {
+  cursor: zoom-in;
+}
+.cv-sn-th-i {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--sn-field);
+  overflow: hidden;
+}
+.cv-sn-th-i > img,
+.cv-sn-th-i > i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cv-on-solid);
+}
+.cv-sn-th-n {
+  position: absolute;
+  /* anchored right: a wide "2–3" grows over its own picture, never over the next one */
+  right: -5px;
+  bottom: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--cv-ref-solid);
+  color: var(--cv-on-tint);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 0 0 2px var(--panel);
+  pointer-events: none;
+}
+/* named pill: picture · number · name (1–2 images while the full Run button still fits) */
+.cv-sn-th.is-named {
+  gap: 5px;
+  padding: 2px 8px 2px 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--sn-field);
+}
+.cv-sn-th.is-named .cv-sn-th-i {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+}
+.cv-sn-th.is-named .cv-sn-th-n {
+  position: static;
+  box-shadow: none;
+}
+.cv-sn-th-name {
+  min-width: 0;
+  max-width: 72px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-sn-th-x {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--panel);
+  background: var(--danger);
+  color: var(--cv-on-solid);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.cv-sn-th:hover .cv-sn-th-x,
+.cv-sn-th-x:focus-visible {
+  display: inline-flex;
+}
+.cv-sn-more {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 7px;
+  background: var(--sn-field);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.cv-sn-add {
+  position: relative;
+  flex: none;
+}
+.cv-sn-add-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.cv-sn-add-btn:hover {
+  border-color: var(--ref);
+  color: var(--ref);
+}
+.cv-sn-add-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* the picker opens upward from the foot (the node's bottom edge is close) */
+.cv-sn-add .in-picker {
+  top: auto;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+}
+
+/* Run: ready = the action fill on every node; blocked = a different object (dashed danger outline, lock, reason) */
+.cv-sn-run-wrap {
+  display: flex;
+  flex: 1 0 150px;
+  min-width: 150px;
+}
+.cv-sn-run-wrap.is-compact {
+  flex: 1 0 96px;
+  min-width: 96px;
+}
+.cv-sn-run {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: linear-gradient(115deg, var(--accent), var(--accent-strong));
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition:
+    filter 0.12s ease-out,
+    transform 0.12s ease-out;
+}
+.cv-sn-run > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-sn-run > svg {
+  flex: none;
+}
+.cv-sn-run:hover:not(.is-blocked) {
+  filter: brightness(1.06);
+}
+.cv-sn-run:active:not(.is-blocked) {
+  transform: scale(0.98);
+}
+.cv-sn-run:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-sn-run.is-blocked {
+  border: 1.5px dashed var(--danger);
+  background: transparent;
+  color: var(--danger-text);
+  box-shadow: none;
+  /* the hover reaches the wrapper (its title = the full reason) */
+  pointer-events: none;
+}
+.cv-sn-run-wrap:has(.is-blocked) {
+  cursor: not-allowed;
+}
+.cv-sn-why {
+  height: 16px;
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--danger-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================== far node (zoom < 55%): readable at 45% ============================== */
+.cv-stage .cv-scene.cv-sn.is-far {
+  padding: 0;
+}
+.cv-snf {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 20px 18px;
+  overflow: hidden;
+  border-radius: calc(var(--cv-radius) - 1px);
+}
+.cv-snf-bar {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 0;
+  height: 8px;
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+  background: var(--border-strong);
+}
+.cv-snf-bar.is-ok {
+  background: var(--ok);
+}
+.cv-snf-bar.is-bad {
+  background: var(--danger);
+}
+.cv-snf-bar.is-going {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.cv-snf-bar.is-going > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.cv-snf-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 48px;
+  flex: none;
+  min-width: 0;
+}
+.cv-snf-code {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  letter-spacing: -0.02em;
+}
+.cv-snf-dot {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.cv-snf-dot.is-ok {
+  background: var(--ok);
+}
+.cv-snf-dot.is-bad {
+  background: var(--danger);
+}
+.cv-snf-dot.is-going {
+  background: var(--accent);
+}
+.cv-snf-sum {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 24px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cv-snf-ttl {
+  flex: none;
+  margin-top: 4px;
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 42px;
+  letter-spacing: -0.01em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+.cv-snf-ttl.is-empty {
+  color: var(--text-faint);
+}
+.cv-snf-ex {
+  flex: none;
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 32px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.cv-snf-bot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  margin-top: auto;
+}
+.cv-snf-av {
+  display: flex;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.cv-snf-img {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 11px;
+  border: 2px solid var(--border);
+  object-fit: cover;
+  background: var(--sn-field);
+}
+.cv-snf-sp {
+  flex: 1;
+}
+.cv-snf-pill {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 46px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 46px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-snf-pill.is-bad {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.cv-snf-pill.is-going {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.cv-snf-cost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.cv-snf-mark {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+}
+.cv-snf-run-wrap {
+  display: inline-flex;
+  flex: none;
+}
+.cv-snf-run {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  padding: 0 0 0 4px;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(115deg, var(--accent), var(--accent-strong));
+  color: var(--on-accent);
+  cursor: pointer;
+}
+.cv-snf-run:disabled {
+  background: var(--panel-3);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.cv-snf-run-wrap:has(:disabled) {
+  cursor: not-allowed;
+}
+
+/* the "@" list follows the canvas (portal on <body>, screen size) */
+.in-mention.cv-sn-mention {
+  position: fixed;
+  z-index: 96;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-sn-run:active:not(.is-blocked) {
+    transform: none;
+  }
+}
+.cv-stage[data-motion='off'] .cv-sn-sum-chev,
+.cv-stage[data-motion='off'] .cv-sn-run {
+  transition: none;
+}

@@ -1,6 +1,7 @@
 import { flushSync } from 'react-dom'
 import { useProject } from '../store/project'
 import { useRuns, stopEngine } from '../store/runs'
+import { useSceneEditor } from '../store/sceneEditor'
 import { flush, switchProject } from '../store/persist'
 import { useUI } from '../store/ui'
 import { flushAll } from '../lib/promptDrafts'
@@ -69,6 +70,8 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
     { id: 'drag50', label: 'Kéo 50 thẻ', run: (sample) => drag(sample, 50) },
     { id: 'typeInspector', label: 'Gõ prompt ở bảng bên phải', run: async (sample) => {
       flushSync(() => useUI.getState().select([ids()[0]])); await frame()
+      // From 0.6.0 the prompt is typed on the scene node: the panel's prompt field is the wide composer, opened on demand.
+      flushSync(() => useSceneEditor.getState().openPanel(ids()[0])); await frame()
       const textarea = element<HTMLTextAreaElement>('.app-right textarea[aria-label="Prompt của cảnh"]')
       textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length)
       const before = textarea.value

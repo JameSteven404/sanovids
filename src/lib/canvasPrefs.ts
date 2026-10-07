@@ -4,10 +4,10 @@
 //   Off: a click selects the wire (old behaviour) and Delete or the wire's × cuts it. Ctrl / Shift + click always selects.
 // - animations ("Hoạt ảnh", default 'full'): 'full' = wire cut / draw-in / drag effects; 'reduced' = short fades only,
 //   no movement; 'off' = no canvas animation at all. The OS "reduce motion" setting turns 'full' into 'reduced'.
-// - nodeEditor ("Sửa prompt & cấu hình trên thẻ cảnh", default 'click'): how the editor on a scene card opens —
-//   'click' = a plain click on the card's prompt / settings / ✎ opens it with the caret there; 'select' = it opens
-//   (without focus) when exactly one scene is selected; 'off' = edit in the right panel only. Enter / double-click
-//   open it in every mode but 'off'.
+// - nodeEditor ("Sửa prompt & cấu hình trên thẻ cảnh", default 'click'): the scene node is the editor —
+//   'click' = a plain click on the node's prompt text types there (caret where clicked), its settings line opens in
+//   place; 'select' = also ready to type (without focus) as soon as exactly one scene is selected; 'off' = the node is
+//   read-only, edit in the right panel only. Enter on the selected node types in it in every mode but 'off'.
 // - editorWidth (no Settings row: the editor's resize grip): width of that editor on screen, px, 340–640 (default 380).
 // - bigProject ("Tối ưu khi dự án lớn", default 'auto'): from 800 cards the minimap hides itself for the session and
 //   "Tất cả dây" draws only the wires near the view; 'off' = never. The minimap pref itself is never overwritten.
@@ -57,8 +57,8 @@ export const BIG_PROJECT_LABEL: Record<BigProjectMode, string> = { auto: 'Tự �
 /** Texts of the Settings rows (SettingsDialog GROUPS 'canvas'), kept here so the settings search test reads the real ones. */
 export const NODE_EDITOR_ROW = {
   label: 'Sửa prompt & cấu hình trên thẻ cảnh',
-  hint: 'Mở khung sửa ngay trên thẻ (giống canvasapp): gõ prompt, chọn model, thời lượng, độ phân giải, tỉ lệ rồi bấm Tạo video. Chỉ một thẻ mở một lúc nên dự án nhiều cảnh vẫn nhanh. Esc để thu gọn.',
-  keywords: 'node thẻ cảnh sửa prompt nhập trực tiếp cấu hình inline canvasapp trình sửa',
+  hint: 'Node cảnh là chỗ sửa (giống canvasapp): bấm vào chữ prompt để gõ ngay, bấm dòng cấu hình để chọn model, thời lượng, độ phân giải, tỉ lệ rồi bấm Tạo video. Chỉ node đang gõ có ô gõ thật nên dự án nhiều cảnh vẫn nhanh. Esc để thôi gõ.',
+  keywords: 'node thẻ cảnh sửa prompt nhập trực tiếp cấu hình inline canvasapp trình sửa thu gọn thôi gõ',
 } as const
 export const BIG_PROJECT_ROW = {
   label: 'Tối ưu khi dự án lớn',

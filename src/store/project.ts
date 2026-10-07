@@ -23,6 +23,10 @@ import { toast } from './ui'
 let coalesceKey: string | null = null
 let lastKey: string | null = null
 let lastTime = 0
+/** oneUndoStep is running: its actions are recorded once, as one step, when it ends. */
+let grouping = 0
+/** Undo steps kept (zundo `limit`). */
+const HISTORY_LIMIT = 200
 /** Call right before a set() that should merge with the previous one of the same key (e.g. 'prompt:<sceneId>'). */
 function coalesce(key: string) {
   coalesceKey = key
@@ -30,13 +34,15 @@ function coalesce(key: string) {
 
 /**
  * Canvas layout. Scenes are laid out one per row (S01 above S02…); each scene's takes (video nodes) extend to the
- * right of it in the same row. Assets sit in a column on the left.
+ * right of it in the same row. Assets (image tiles, 220 × 275 like canvasapp) sit in a column on the left, at least
+ * ~200px of wire room away from the scene column (assetX + assetW + 204 = scenesX).
+ * The scene node is the editor itself (SceneNode, approved design E0 v3): 352 × 304, so a row is 304 + 48 = 352.
  */
 export const LAYOUT = {
-  sceneW: 280,
-  sceneH: 200,
+  sceneW: 352,
+  sceneH: 304,
   gapY: 48,
-  scenesX: 420,
+  scenesX: 464,
   scenesY: 60,
   /** Take (video) nodes */
   takeW: 224,
@@ -45,15 +51,23 @@ export const LAYOUT = {
   /** Distance between the scene card's right edge and its first take. */
   takeOffsetX: 64,
   assetX: 40,
-  assetW: 180,
-  assetH: 210,
-  assetGapY: 28,
+  assetW: 220,
+  assetH: 275,
+  assetGapY: 24,
 }
 /** Resize limits of canvas nodes (React Flow NodeResizer min/max). Defaults are LAYOUT sizes. */
 export const NODE_SIZE = {
-  scene: { minW: 240, maxW: 720, minH: 150, maxH: 760 },
+  scene: { minW: 320, maxW: 720, minH: 256, maxH: 900 },
   take: { minW: 180, maxW: 640, minH: 150, maxH: 560 },
   asset: { minW: 140, maxW: 520, minH: 150, maxH: 820 },
+}
+
+/**
+ * Size a scene node is drawn at: its stored size, or null (= the default LAYOUT.sceneW × sceneH) for none and for a size
+ * from before 0.6.0 below today's minimum (the 280 × 200 cards: such a size reads as the default, never as a squeezed node).
+ */
+export function drawnSceneSize(size: Size | null | undefined): Size | null {
+  return size && size.w >= NODE_SIZE.scene.minW && size.h >= NODE_SIZE.scene.minH ? size : null
 }
 
 export function clampSize(kind: keyof typeof NODE_SIZE, size: Size): Size {
@@ -132,11 +146,11 @@ export function setTakeHeightSource(fn: (sceneId: string) => number) {
 
 /** Height of a scene's row without the gap: its card or its tallest take in the row, whichever is taller (resized ones included). */
 export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
-  return Math.max(scene.size?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeSource.rowHeight(scene.id))
+  return Math.max(drawnSceneSize(scene.size)?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeSource.rowHeight(scene.id))
 }
 
 /** Area a scene's row takes in the card column (x, y, card width, row height). */
-const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
+const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
 /** Height of a new scene card's row (default size, no takes yet). */
 const NEW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH)
 /** A new scene card (default size, no takes yet). */
@@ -157,7 +171,7 @@ function takeRowBoxes(p: Project): Box[] {
   const out: Box[] = []
   for (const s of p.scenes) {
     const w = takeSource.rowWidth?.(s.id) ?? 0
-    if (w > 0) out.push({ x: s.position.x + (s.size?.w ?? LAYOUT.sceneW), y: s.position.y, w, h: rowHeightOf(s) })
+    if (w > 0) out.push({ x: s.position.x + (drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW), y: s.position.y, w, h: rowHeightOf(s) })
   }
   return out
 }
@@ -296,7 +310,7 @@ export function newScenePosition(p: Project, hint: PlaceHint = {}): XY {
   const anchor = (hint.anchorId ? p.scenes.find((s) => s.id === hint.anchorId) : undefined) ?? last
   const view = hint.view
   if (!view) return anchor ? belowScene(anchor, taken) : slideDown(scenePosition(0), taken)
-  const inView = (s: Scene) => boxesTouch({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: s.size?.h ?? LAYOUT.sceneH }, view, 0)
+  const inView = (s: Scene) => boxesTouch({ x: s.position.x, y: s.position.y, w: drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, h: drawnSceneSize(s.size)?.h ?? LAYOUT.sceneH }, view, 0)
   if (anchor && inView(anchor)) return belowScene(anchor, taken)
   const lowest = p.scenes.filter(inView).reduce<Scene | undefined>((m, s) => (!m || s.position.y > m.position.y || (s.position.y === m.position.y && s.order > m.order) ? s : m), undefined)
   if (lowest) return belowScene(lowest, taken)
@@ -448,6 +462,8 @@ export interface ProjectState {
 
   // assets
   addAsset: (partial: Partial<Asset> & { name: string }) => string
+  /** Several assets in ONE undo step (images dropped together: one "Hoàn tác" takes them all back). Returns their ids. */
+  addAssets: (partials: (Partial<Asset> & { name: string })[]) => string[]
   /** Changing `imageIds` renumbers the prompts of every scene that uses the asset. */
   updateAsset: (id: string, patch: Partial<Omit<Asset, 'id'>>) => void
   removeAssets: (ids: string[]) => void
@@ -543,7 +559,10 @@ export interface ProjectState {
 
   // layout
   setPositions: (positions: Record<string, XY>) => void
-  /** Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too (resizing from the left/top edge). */
+  /**
+   * Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too
+   * (resizing from the left/top edge) — and folder nodes (the one-time row spacing moves them with their row).
+   */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
   /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards). */
   autoLayout: (rowHeights?: Record<string, number>) => void
@@ -625,23 +644,29 @@ export const useProject = create<ProjectState>()(
         updateProjectSettings: (patch) => mutate((p) => ({ ...p, settings: { ...p.settings, ...patch } })),
 
         // ---------------- assets ----------------
-        addAsset: (partial) => {
-          const p = get().project
-          const id = partial.id ?? newId('ast')
-          // named exactly as migrate reads it back (core/names): a blank name is "Không tên" now, not after a reopen
-          const name = normalizeAssetName(partial.name)
-          const asset: Asset = {
-            id,
-            kind: partial.kind ?? 'character',
-            name,
-            tag: partial.tag && !assetByTag(p.assets, partial.tag) ? partial.tag : uniqueTag(name, p.assets.map((a) => a.tag)),
-            description: partial.description ?? '',
-            imageIds: partial.imageIds ?? [],
-            color: partial.color ?? pickColor(p.assets.length),
-            position: partial.position ?? null,
+        addAsset: (partial) => get().addAssets([partial])[0],
+        addAssets: (partials) => {
+          if (!partials.length) return []
+          const list = [...get().project.assets]
+          const added: Asset[] = []
+          for (const partial of partials) {
+            // named exactly as migrate reads it back (core/names): a blank name is "Không tên" now, not after a reopen
+            const name = normalizeAssetName(partial.name)
+            const asset: Asset = {
+              id: partial.id ?? newId('ast'),
+              kind: partial.kind ?? 'character',
+              name,
+              tag: partial.tag && !assetByTag(list, partial.tag) ? partial.tag : uniqueTag(name, list.map((a) => a.tag)),
+              description: partial.description ?? '',
+              imageIds: partial.imageIds ?? [],
+              color: partial.color ?? pickColor(list.length),
+              position: partial.position ?? null,
+            }
+            list.push(asset)
+            added.push(asset)
           }
-          mutate((pp) => ({ ...pp, assets: [...pp.assets, asset] }))
-          return id
+          mutate((pp) => ({ ...pp, assets: [...pp.assets, ...added] }))
+          return added.map((a) => a.id)
         },
         updateAsset: (id, patch) => {
           if (patch.name !== undefined || patch.description !== undefined) coalesce('asset:' + id)
@@ -1123,6 +1148,7 @@ export const useProject = create<ProjectState>()(
                   }
                 : a,
             ),
+            ...(p.folders?.some((f) => positions[f.id]) ? { folders: p.folders.map((f) => (positions[f.id] ? { ...f, position: positions[f.id] } : f)) } : {}),
           })),
         autoLayout: (rowHeights = {}) =>
           mutate((p) => {
@@ -1168,10 +1194,11 @@ export const useProject = create<ProjectState>()(
     {
       partialize: (s) => ({ project: s.project }),
       equality: (a, b) => a.project === b.project,
-      limit: 200,
+      limit: HISTORY_LIMIT,
       handleSet: (handleSet) => (pastState, replace, currentState, deltaState) => {
         const key = coalesceKey
         coalesceKey = null
+        if (grouping) return // oneUndoStep records the whole group as one step when it ends
         const now = Date.now()
         if (key && key === lastKey && now - lastTime < 1500) {
           lastTime = now
@@ -1255,6 +1282,29 @@ export function dropBurstStep(key: string, unchanged: (before: Project, now: Pro
   useProject.temporal.setState({ pastStates: history.pastStates.slice(0, -1) })
   lastKey = null
   return true
+}
+
+/**
+ * Run several store actions as ONE undo step: an image drop that adds tiles, links them and inserts their tags is
+ * taken back by one Ctrl+Z / "Hoàn tác". The actions inside are not recorded one by one; when they changed the
+ * project, the project from before them becomes the newest undo step (the redo stack goes, like after any edit).
+ * A nested call joins the outer step; a burst of typing never merges into it. Returns what `fn` returns.
+ */
+export function oneUndoStep<T>(fn: () => T): T {
+  if (grouping) return fn()
+  const before = useProject.getState().project
+  grouping++
+  try {
+    return fn()
+  } finally {
+    grouping--
+    coalesceKey = null
+    lastKey = null
+    if (useProject.getState().project !== before) {
+      const past = [...useProject.temporal.getState().pastStates, { project: before }]
+      useProject.temporal.setState({ pastStates: past.slice(-HISTORY_LIMIT), futureStates: [] })
+    }
+  }
 }
 
 /**

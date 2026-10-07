@@ -31,7 +31,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
-import { freeSpotFrom, LAYOUT, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
+import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
@@ -172,13 +172,20 @@ export function takeLabel(takeId: string): string {
 }
 
 // ---------------- connecting ----------------
-/** Link assets (reference images) to scenes in one undo step and report what happened. */
-export function linkAssets(sceneIds: string[], assetIds: string[]) {
+/**
+ * Link assets (reference images) to scenes in one undo step and report what happened. `inSameStep` runs after a link
+ * that added something, inside that undo step (a card dropped on a node also gets its tile on the canvas).
+ */
+export function linkAssets(sceneIds: string[], assetIds: string[], inSameStep?: () => void) {
   if (!sceneIds.length || !assetIds.length) return
   // Commit the prompt being typed first: it is renumbered with the change instead of overwriting it a moment later.
   flushScenes(sceneIds)
   const before = useProject.getState().project
-  const res = useProject.getState().addRefs(sceneIds, assetIds)
+  const res = oneUndoStep(() => {
+    const r = useProject.getState().addRefs(sceneIds, assetIds)
+    if (r.added) inSameStep?.()
+    return r
+  })
   const names = assetIds.map((id) => useProject.getState().project.assets.find((a) => a.id === id)?.name).filter(Boolean)
   if (res.added) {
     const text = `Đã nối ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''} → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped} vì vượt giới hạn ảnh)` : ''}`
@@ -506,22 +513,56 @@ export function deleteTakesForever(takeIds: string[]): number {
 }
 
 // ---------------- assets from files ----------------
-export async function createAssetsFromFiles(files: File[], opts: { kind?: AssetKind; position?: XY | null } = {}): Promise<string[]> {
+/**
+ * New assets from image files, all in ONE undo step. Where they go on the canvas: `spots` (one per image, computed by
+ * the drop target — canvasModel imageDropSpots / sceneRowImageSpots: the image column or a 2-column grid), else
+ * `position` (+24px per image), else the library only. Tiles placed on the canvas are selected (ready to be dragged
+ * elsewhere) unless `select: false`; `quiet` leaves the message to the caller (a drop on a scene says "Đã nối").
+ * `inSameStep(ids)` runs right after they are added, inside that same undo step (a drop on a scene links them: one
+ * "Hoàn tác" takes back the tiles and the link); the prompts being typed in `flush` are committed before it, as
+ * their own step.
+ */
+export async function createAssetsFromFiles(
+  files: File[],
+  opts: {
+    kind?: AssetKind
+    position?: XY | null
+    spots?: readonly XY[]
+    select?: boolean
+    quiet?: boolean
+    flush?: readonly string[]
+    inSameStep?: (ids: string[]) => void
+  } = {},
+): Promise<string[]> {
   const images = files.filter((f) => /^image\//.test(f.type))
   if (!images.length) {
     toast('Chỉ nhận file ảnh (JPG, PNG, WEBP).', { tone: 'warning' })
     return []
   }
-  const ids: string[] = []
-  let i = 0
-  for (const file of images) {
-    const imageId = await putBlob(file, 'img')
-    const name = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 40) || 'Ảnh'
-    const position = opts.position ? { x: opts.position.x + i * 24, y: opts.position.y + i * 24 } : (opts.position ?? null)
-    ids.push(useProject.getState().addAsset({ name, kind: opts.kind ?? 'character', imageIds: [imageId], position }))
-    i++
+  const imageIds: string[] = []
+  for (const file of images) imageIds.push(await putBlob(file, 'img'))
+  const placeAt = (i: number): XY | null => opts.spots?.[i] ?? (opts.position ? { x: opts.position.x + i * 24, y: opts.position.y + i * 24 } : null)
+  if (opts.flush?.length) flushScenes(opts.flush)
+  const ids = oneUndoStep(() => {
+    const added = useProject.getState().addAssets(
+      images.map((file, i) => ({
+        name: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 40) || 'Ảnh',
+        kind: opts.kind ?? 'character',
+        imageIds: [imageIds[i]],
+        position: placeAt(i),
+      })),
+    )
+    if (added.length) opts.inSameStep?.(added)
+    return added
+  })
+  const onCanvas = ids.length > 0 && placeAt(0) !== null
+  if (onCanvas && opts.select !== false) useUI.getState().select(ids)
+  if (!opts.quiet) {
+    toast(onCanvas ? `Đã thêm ${ids.length} ảnh lên canvas. Kéo chấm bên phải ảnh vào node cảnh để nối.` : `Đã thêm ${ids.length} mục vào thư viện.`, {
+      tone: 'success',
+      action: undoToastAction(),
+    })
   }
-  toast(`Đã thêm ${ids.length} mục vào thư viện.`, { tone: 'success' })
   return ids
 }
 
