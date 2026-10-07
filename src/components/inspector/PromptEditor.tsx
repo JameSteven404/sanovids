@@ -28,13 +28,12 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { refuseTakesAsReference, VIDEO_NOT_REFERENCE_TEXT } from '../../actions'
-import { assetByTag, continueStarterOf, sceneCode } from '../../core/compile'
+import { assetByTag, continueStarterOf, removeTokenAt, sceneCode } from '../../core/compile'
 import { MODELS, usesRefs } from '../../core/models'
-import { groupAtOffset } from '../../core/placeholders'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { flushAll, flushScenes, register as registerDraft } from '../../lib/promptDrafts'
-import { fillPlaceholderAction } from '../../placeholderActions'
+import { fillAtOffsetAction, linkInsertToastWithFill } from '../../placeholderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast } from '../../store/ui'
 import { removeContinueStarter, removeRetiredTokenFromScene, retiredTokenCounts } from '../../videoRetired'
@@ -43,6 +42,7 @@ import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from './caret'
 import { useImagePreview } from './ImagePreview'
 import { findMention, popupPlacement, sameToken, type MentionToken } from './mentions'
+import { usePlaceholderPicker } from './PlaceholderBar'
 import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
 import {
   imageOptsFor,
@@ -198,6 +198,8 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   const mentionRef = useRef<MentionToken | null>(null)
   const [tall, setTall] = usePref('promptTall', false)
   const [hl, setHl] = useState<TokenHighlight>(null)
+  // Red text under the caret: its own picker (PlaceholderBar's commands), never the "@" popup.
+  const picker = usePlaceholderPicker(sceneId, text, assets, refs, taRef)
 
   // ---------- commit to the store ----------
   const commit = useCallback(
@@ -346,6 +348,10 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   const updateMention = useCallback(
     (value: string, selStart: number, selEnd: number, typing: boolean) => {
       lastSel.current = { start: selStart, end: selEnd }
+      if (picker.update(value, selStart, selEnd, typing ? 'type' : 'move')) {
+        setToken(null) // inside red text: the picker's place, never the "@" popup
+        return
+      }
       const raw = selStart === selEnd ? findMention(value, selStart, isTagWord) : null
       if (!typing && raw && raw.start !== mentionRef.current?.start) {
         setToken(null)
@@ -358,7 +364,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       dismissedAt.current = null
       setToken(raw)
     },
-    [setToken],
+    [setToken, picker.update],
   )
 
   const suggestions = useMemo<MediaSuggestion[]>(
@@ -408,12 +414,15 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       // Stay closed on this token even when linking fails below (replaceRange moves this to the inserted token).
       dismissedAt.current = tok.start
       if (s.type === 'link') {
-        // Link + insert in one undo step; the toast's "Hoàn tác" undoes both.
+        // Link + insert in one undo step; the toast's "Hoàn tác" undoes both — or, when the scene waits for this
+        // character's red text, "Gắn vào chỗ …" turns that step into a fill (keeping what was typed, minus the "@…").
+        const before = useProject.getState().project
+        const draft = removeTokenAt(textRef.current, tok.start, tok.end)
         const plan = planAssets(sceneId, [s.assetId])
         const token = plan?.tokens[0]
         if (!plan || !token) return
         replaceRange(tok.start, tok.end, token, plan.media)
-        toast(`Đã nối ${s.name} vào cảnh → ${token}.`, { tone: 'success', action: undoToastAction() })
+        linkInsertToastWithFill(before, sceneId, [s.assetId], `Đã nối ${s.name} vào cảnh → ${token}.`, draft)
         return
       }
       const token = suggestionToken(s)
@@ -519,27 +528,21 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     if (!ids.length) return
     commit()
     // One card right on red text fills that red text (the bar's "Gắn ảnh" path, one undo step) — never inserted into it.
-    if (ids.length === 1) {
-      const st = useProject.getState()
-      const scene = st.project.scenes.find((s) => s.id === sceneId)
-      const group = scene && groupAtOffset(scene.prompt, st.project.assets, scene.refs, point)
-      if (group) {
-        fillPlaceholderAction(sceneId, group.key, ids[0])
-        return
-      }
-    }
+    if (fillAtOffsetAction(sceneId, point, ids)) return
+    const before = useProject.getState().project
     // Appending refs never renumbers existing tokens, so `at` stays valid.
     const plan = planAssets(sceneId, ids)
     if (!plan?.tokens.length) return
     const pos = Math.min(at, textRef.current.length)
     // replaceRange keeps the "@" popup closed for the last token when the caret ends right after it. The new links
-    // and the tokens are one undo step, so the toast's "Hoàn tác" removes both.
+    // and the tokens are one undo step, so the toast's "Hoàn tác" removes both ("Gắn vào chỗ …" when red text waits).
     replaceRange(pos, pos, plan.tokens.join(' '), plan.media)
-    if (plan.done) toast(plan.done, { tone: 'success', action: undoToastAction() })
+    if (plan.done) linkInsertToastWithFill(before, sceneId, ids, plan.done)
   }
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return
+    if (picker.onKeyDown(e)) return
     if (mention && suggestions.length) {
       const n = suggestions.length
       if (e.key === 'ArrowDown') {
@@ -618,6 +621,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
           value={text}
           spellCheck={false}
           rows={8}
+          aria-controls={picker.open ? picker.menuId : undefined}
           placeholder={'Mô tả cảnh… Gõ @ để chèn ảnh tham chiếu (@image_1).\nVí dụ: At dusk @image_1 climbs the last rocky slope above @image_2…'}
           onChange={(e) => {
             const v = e.target.value
@@ -630,6 +634,11 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
             const ta = e.currentTarget
             updateMention(ta.value, ta.selectionStart, ta.selectionEnd, false)
           }}
+          // A click inside red text opens its picker, even right where Esc closed it.
+          onClick={(e) => {
+            const ta = e.currentTarget
+            if (picker.update(ta.value, ta.selectionStart, ta.selectionEnd, 'click')) setToken(null)
+          }}
           onScroll={syncBackdrop}
           onKeyDown={onKeyDown}
           onDragEnter={onDragOver}
@@ -640,6 +649,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
             lastSel.current = { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd }
             commit()
             setToken(null)
+            picker.onBlur(e.relatedTarget)
           }}
           aria-label="Prompt của cảnh"
           aria-autocomplete="list"
@@ -669,7 +679,8 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
           </div>
         )}
       </div>
-      {mention && suggestions.length > 0 && (
+      {picker.popup}
+      {!picker.open && mention && suggestions.length > 0 && (
         <MentionPopup
           taRef={taRef}
           anchor={mention.start}

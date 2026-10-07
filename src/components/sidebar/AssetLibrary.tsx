@@ -2,6 +2,7 @@ import { Check, ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, Trash2, X,
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
+import { flushScenes } from '../../lib/promptDrafts'
 import { sceneCode } from '../../core/compile'
 import { deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
 import { usesRefs } from '../../core/models'
@@ -178,8 +179,11 @@ function linkCardToSelection(id: string) {
 /**
  * "+ Nối" on a card while one scene is selected: link it and tell which @image number it got — and, when the scene
  * still holds red placeholders, offer "Gắn vào chỗ …" (GT1 linkToastWithFill: an explicit click, never filled by itself).
+ * The prompt being typed is committed first, so the offer sees its red text. A mode that sends no reference picture
+ * keeps the warning toast (no offer: the fill would not let the scene run anyway).
  */
-function linkToScene(sceneId: string, assetId: string) {
+export function linkToScene(sceneId: string, assetId: string) {
+  flushScenes([sceneId])
   const before = useProject.getState().project
   const token = ensureAssetToken(sceneId, assetId)
   const p = useProject.getState().project

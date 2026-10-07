@@ -2,15 +2,19 @@
 // (components/inspector/PlaceholderBar), the link toast's "Gắn vào chỗ…" and the toasts of every change that removes a
 // reference picture. Every command is an explicit click and ONE undo step; a refused one changes nothing. Nothing is
 // ever filled automatically (not even when a character with the same name is linked).
+import { platformText } from './lib/platformText'
 import { sceneCode } from './core/compile'
+import { MODELS } from './core/models'
 import {
   allGroupsToText,
+  groupAtOffset,
   groupOf,
   imagePlaceholders,
   keepTokenOnly,
   labelFitsSlot,
   linkFillOffer,
   membersToText,
+  planFill,
   removeMembers,
   splitTokenLabel,
   type FillRefusal,
@@ -18,7 +22,7 @@ import {
 import { mediaChangeNote } from './core/staleTokens'
 import type { Project } from './core/types'
 import { flushScenes } from './lib/promptDrafts'
-import { oneUndoStep, undoToastAction, useProject } from './store/project'
+import { oneUndoStep, undo, undoToastAction, useProject } from './store/project'
 import { toast } from './store/ui'
 
 /** "S02, S05" (in order, at most 4, then "… (N cảnh)"). */
@@ -100,6 +104,25 @@ export function fillPlaceholderAction(sceneId: string, groupKey: string, assetId
     tone: 'success',
     action: undoToastAction(),
   })
+  return true
+}
+
+/**
+ * ONE picture dropped right on red text — offset `at` of the scene's prompt strictly inside a placeholder or a label
+ * that does not fit (core/placeholders groupAtOffset) — fills that group through the explicit fill path
+ * (fillPlaceholderAction; `inSameStep` as there). Shared by the inspector's PromptEditor and the scene node's field /
+ * static text (SceneNodeEditor fillAtOffset), for library cards and image files alike. false = not on red text, or
+ * several pictures: the caller inserts them, never inside the red text (tokens.snapToWordEnd). A refused fill is
+ * still handled (true): it changed nothing and its toast says why.
+ */
+export function fillAtOffsetAction(sceneId: string, at: number, ids: readonly string[], inSameStep?: () => void): boolean {
+  if (ids.length !== 1) return false
+  flushScenes([sceneId])
+  const { project } = useProject.getState()
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  const group = scene && groupAtOffset(scene.prompt, project.assets, scene.refs, at)
+  if (!group) return false
+  fillPlaceholderAction(sceneId, group.key, ids[0], inSameStep)
   return true
 }
 
@@ -192,6 +215,70 @@ export function linkToastWithFill(before: Project, after: Project, assetIds: rea
     return true
   }
   return false
+}
+
+/**
+ * The sentence a link toast starts with, without its closing period and its undo hint ("Đã nối Mira → S01
+ * (@image_2). Ctrl+Z để bỏ nối." → "Đã nối Mira → S01 (@image_2)"), so a red-text tail can follow it.
+ */
+export function linkSentence(text: string): string {
+  return text.replace(/\s*(?:Ctrl|⌘)\+Z để bỏ nối\.\s*$/u, '').replace(/[\s.]+$/u, '')
+}
+
+/**
+ * Toast of a link + insert into ONE scene ("Nối & chèn", cards / image files dropped on a prompt or on a node's static
+ * text): `before` = the project right before the insertion, `done` = the usual toast text. When the new character fits
+ * the scene's only labelled red text (core/placeholders linkFillOffer) the toast says so ("Đã nối Mira → S01
+ * (@image_2). S01 còn chữ đỏ @image_?1(Lumi). Ctrl+Z để bỏ nối.") and its button "Gắn vào chỗ Lumi" replaces that
+ * insertion by a fill — one undo step, the text typed meanwhile (`draft`: the field's text without the "@…" that asked
+ * for "Nối & chèn") and the new tile kept. Offered only when the insertion is the last undo step on its own (not one
+ * made inside a larger step — image files dropped on a node: the new tiles' step), and run only while it still is
+ * (nothing changed since, not even a draft): otherwise it refuses and changes nothing. Red text the offer does not
+ * cover: "· S01 còn chữ đỏ — chọn ở dải dưới ô prompt" with "Hoàn tác". None: the usual toast.
+ */
+export function linkInsertToastWithFill(before: Project, sceneId: string, assetIds: readonly string[], done: string, draft?: string): void {
+  const after = useProject.getState().project
+  const { offer, pending } = linkFillOffer(before, after, assetIds)
+  const original = before.scenes.find((s) => s.id === sceneId)
+  const scene = after.scenes.find((s) => s.id === sceneId)
+  const said = linkSentence(done)
+  const ownStep = useProject.temporal.getState().pastStates.at(-1)?.project === before
+  if (!offer || !ownStep || !original || !scene || offer.sceneIds.length !== 1 || offer.sceneIds[0] !== sceneId) {
+    const waiting = offer ? offer.sceneIds : pending
+    if (waiting.length) toast(`${said} · ${codesOf(after, waiting)} còn chữ đỏ — chọn ở dải dưới ô prompt.`, { tone: 'success', ms: 8000, action: undoToastAction() })
+    else toast(done, { tone: 'success', action: undoToastAction() })
+    return
+  }
+  toast(`${said}. ${sceneCode(scene.order)} còn chữ đỏ ${offer.example}. ${platformText.mod}+Z để bỏ nối.`, {
+    tone: 'success',
+    ms: 12000,
+    action: {
+      label: `Gắn vào chỗ ${offer.base}`,
+      run: () => {
+        flushScenes([sceneId])
+        if (useProject.getState().project !== after || useProject.temporal.getState().pastStates.at(-1)?.project !== before) {
+          toast('Đã có thay đổi khác — gắn ở dải dưới ô prompt.', { tone: 'info' })
+          return
+        }
+        const key = `L:${offer.base}`
+        // Keep the text typed meanwhile; only the "@…" used to ask for this insertion goes (the editor passes it).
+        const source = draft === undefined ? original : { ...original, prompt: draft }
+        const plan = planFill(source, before.assets, key, offer.assetId, { renumber: before.settings.autoRenumber, maxImages: MODELS[original.settings.model].maxRefImages })
+        if (!plan.ok) {
+          toast(fillRefusalText(plan.why, assetName(after, offer.assetId), plan.token), { tone: 'warning' })
+          return
+        }
+        const position = after.assets.find((a) => a.id === offer.assetId)?.position
+        undo()
+        oneUndoStep(() => {
+          if (source.prompt !== original.prompt) useProject.getState().setPrompts({ [sceneId]: source.prompt })
+          fillPlaceholderAction(sceneId, key, offer.assetId, () => {
+            if (position) useProject.getState().setAssetsOnCanvas({ [offer.assetId]: position })
+          })
+        })
+      },
+    },
+  })
 }
 
 /**
