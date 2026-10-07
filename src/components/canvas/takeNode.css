@@ -215,8 +215,10 @@
   background: var(--video-soft);
 }
 /*
- * ★ and "+N" stay 13px in the 13px line (TITLE_LINE_H); their hit areas are 24px, up from the line and down to the
- * card's top edge, never into the card.
+ * ★ and "+N" stay 13px in the 13px line (TITLE_LINE_H); their hit areas are 24px wide and 19px tall (y −19 … 0): down
+ * to the card's top edge (TITLE_LINE_GAP), never into the card, and up only 2px above the line, never into the take
+ * above (an old project's 248px rows leave ~19px under it: takeNodeModel). On a selected take the top resize edge
+ * (−4 … +4, z-index 2) keeps the lowest 4px, so 15px there. Under 24px tall: a documented exception (no free room).
  */
 .cv-take-label .cv-take-more::before,
 .cv-take-star::before {
@@ -225,9 +227,10 @@
   left: 50%;
   bottom: -4px;
   width: max(100%, 24px);
-  height: 24px;
+  height: 19px;
   transform: translateX(-50%);
 }
+/* "+N" has a 1px border: its ::before is placed from the padding box, 1px higher; this lands on the same y −19 … 0 */
 .cv-take-label .cv-take-more::before {
   bottom: -5px;
 }
@@ -293,8 +296,12 @@
   /* the focus ring stays inside the box: an outer ring would reach into the row above */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
+/*
+ * keyboard focus: a stronger ring, still inside the 15px box. An explicit 1px ring, not `inset var(--focus-ring)`: a
+ * 3px theme ring would cover the text (diacritics, descenders), and every layer after the first would land outside.
+ */
 .cv-take-name-input:focus-visible {
-  box-shadow: inset var(--focus-ring);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .cv-take-name-input::placeholder {
   color: var(--text-faint);
@@ -329,9 +336,13 @@
   position: absolute;
   left: 4px;
   right: 4px;
-  /* Grow into the poster; keep the rail at y=4 and the 30px bar unchanged. */
-  top: -16px;
-  height: 24px;
+  /*
+   * Inside the bar, never over the picture: there a press drags / selects the node and a double-click opens the viewer
+   * (the player root is nodrag and takes presses). An 8px strip, under the 24px target size: a documented exception
+   * (it spans the card's width, and the slider is reachable with Tab + arrow keys).
+   */
+  top: 0;
+  height: 8px;
   border-radius: 4px;
   cursor: pointer;
   touch-action: none;
@@ -349,7 +360,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(100% - 4px);
+  top: 50%;
   height: 3px;
   margin-top: -1.5px;
   border-radius: 999px;
@@ -398,7 +409,7 @@
 .cv-tp-knob > i {
   position: absolute;
   left: -4.5px;
-  top: calc(100% - 4px);
+  top: 50%;
   width: 9px;
   height: 9px;
   margin-top: -4.5px;
@@ -655,15 +666,11 @@
 .cv-take-stage:fullscreen .cv-tp {
   color: color-mix(in srgb, var(--on-media) 78%, transparent);
 }
+/* still inside the bar: a click on the picture toggles play / pause */
 .cv-take-stage:fullscreen .cv-tp-track {
   left: 12px;
   right: 12px;
-  top: -12px;
-  height: 24px;
-}
-.cv-take-stage:fullscreen .cv-tp-rail,
-.cv-take-stage:fullscreen .cv-tp-knob > i {
-  top: calc(100% - 6px);
+  height: 12px;
 }
 .cv-take-stage:fullscreen .cv-tp-rail,
 .cv-take-stage:fullscreen .cv-tp-vslider::before {
@@ -891,20 +898,15 @@
 }
 
 /* ============================== reduced motion ============================== */
+/*
+ * Only the press "squash" goes. Fades, color changes and the running spinner follow the app-wide data-motion rules
+ * (styles/app.css; initMotion already turns the OS setting into 'reduced'), like the queue and the rest of the app.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .cv-take *,
-  .cv-take *::before,
-  .cv-take *::after {
-    animation: none !important;
-    transition: none !important;
-  }
   .cv-take-main:active:not(:disabled) {
     transform: none;
   }
 }
 :root:is([data-motion='reduced'], [data-motion='off']) .cv-take-main:active:not(:disabled) {
   transform: none;
-}
-:root[data-motion='reduced'] .cv-take-btn.danger.is-armed {
-  animation: none;
 }

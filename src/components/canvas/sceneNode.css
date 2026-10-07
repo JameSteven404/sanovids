@@ -590,23 +590,16 @@
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
-/* the 14px badge keeps a 24px hit area */
-.cv-sn-th-x::before {
-  content: '';
-  position: absolute;
-  inset: -6px;
-  border-radius: 50%;
-}
+/*
+ * Shown (and clickable) while the picture is hovered or the badge has keyboard focus (Tab reaches it). Its hit area is
+ * the 14px badge itself, never more: a bigger one would spread an invisible "unlink" over the picture, whose own click
+ * opens the viewer (and over the next one). A documented exception to 24px: the same unlink is the wire's "Bỏ nối" button
+ * and the × of the panel's reference list (SceneInspector).
+ */
 .cv-sn-th:hover .cv-sn-th-x,
 .cv-sn-th:focus-within .cv-sn-th-x {
   opacity: 1;
   pointer-events: auto;
-}
-@media (hover: none) {
-  .cv-sn-th-x {
-    opacity: 1;
-    pointer-events: auto;
-  }
 }
 .cv-sn-th-x:focus-visible {
   outline: none;
@@ -943,14 +936,16 @@
   transition: none;
 }
 
-/* Keep activation effects still for both the OS preference and the app preference. */
+/*
+ * No press "squash" when motion is reduced. Only these transforms: fades, color changes and spinners follow the app-wide
+ * data-motion rules (styles/app.css; initMotion already turns the OS setting into 'reduced'), like the rest of the app.
+ */
 @media (prefers-reduced-motion: reduce) {
-  .cv-sn *, .cv-sn *::before, .cv-sn *::after {
-    animation: none !important;
-    transition: none !important;
+  .cv-sn-run:active:not(.is-blocked),
+  .cv-snf-run:active:not(:disabled),
+  .cv-sn-setx-row .in-seg-btn:active {
+    transform: none;
   }
-  .cv-sn-run:active:not(.is-blocked), .cv-snf-run:active:not(:disabled),
-  .cv-sn-setx-row .in-seg-btn:active { transform: none; }
 }
 :root:is([data-motion='reduced'], [data-motion='off']) .cv-sn-run:active:not(.is-blocked),
 :root:is([data-motion='reduced'], [data-motion='off']) .cv-snf-run:active:not(:disabled),

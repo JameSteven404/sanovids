@@ -372,7 +372,6 @@ const AssetCard = memo(function AssetCard({
             className="sb-card-btn"
             title={asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}
             aria-label={`${asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}: ${asset.name}`}
-            aria-pressed={!!asset.position}
             onClick={(e) => {
               e.stopPropagation()
               toggleOnCanvas(asset.id)

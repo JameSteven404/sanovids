@@ -550,10 +550,14 @@ button.cv-asset-count:hover {
   box-shadow: var(--cv-handle-line);
   z-index: 5;
 }
+/*
+ * a 16px grab area (−5px around the 6px inside): it must stay clear of the take's ★ / "+N" (title line, right: 0) and
+ * the code chip (left: 9px). Under 24px: a documented exception, a bigger corner would cover those controls.
+ */
 .cv-stage .react-flow__resize-control.handle.cv-rs-handle::before {
   content: '';
   position: absolute;
-  inset: -9px;
+  inset: -5px;
 }
 .cv-stage .react-flow__resize-control.handle.cv-rs-handle.is-subtle {
   background: var(--text-faint);

@@ -351,7 +351,6 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
           onClick={toggleFull}
           title={full ? 'Thoát toàn màn hình (Esc)' : 'Toàn màn hình (`)'}
           aria-label={full ? 'Thoát toàn màn hình' : 'Toàn màn hình'}
-          aria-pressed={full}
         >
           {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
         </button>

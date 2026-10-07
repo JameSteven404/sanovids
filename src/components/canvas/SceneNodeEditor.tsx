@@ -639,7 +639,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
         placeholder={placeholder}
         aria-label={`Prompt cảnh ${sceneCode(scene.order)}`}
         aria-autocomplete="list"
-        aria-haspopup="listbox"
+        aria-expanded={!!mention && suggestions.length > 0}
         onChange={(e) => {
           const v = e.target.value
           textRef.current = v
