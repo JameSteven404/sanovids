@@ -43,6 +43,7 @@ import { transferLabel, transferPercent, useTakeTransfers } from '../../store/ta
 import { useMediaUrl } from '../../lib/imageStore'
 import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { useDevAllowed } from '../../providers/devAccess'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { useProject } from '../../store/project'
 import { isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
@@ -552,6 +553,8 @@ function Stage({
 }) {
   const videoUrl = useMediaUrl(take.videoId)
   const posterUrl = useMediaUrl(take.posterId)
+  // "Bảng phát triển" exists only while development mode is open (its links on a DEV take would do nothing when locked)
+  const devOpen = useDevAllowed()
   const transfer = useTakeTransfers((s) => transferLabel(s.byTake[take.id]))
   const transferPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
   const active = isActive(take)
@@ -561,7 +564,7 @@ function Stage({
   // bills (and refunds) the account itself.
   const demoPaid = chargedDemo(take)
   // Where to check an uncertain charge: the real site, or the dev panel for the simulation.
-  const checkWhere = provider === 'dev' ? 'kiểm tra trong Bảng phát triển' : 'kiểm tra trên canvasapp.io.vn'
+  const checkWhere = provider !== 'dev' ? 'kiểm tra trên canvasapp.io.vn' : devOpen ? 'kiểm tra trong Bảng phát triển' : 'mở khoá chế độ Phát triển để kiểm tra'
   // The site and its credits by name (development mode: "canvasapp giả lập", "credit dev").
   const siteName = provider === 'dev' ? 'canvasapp giả lập' : PROVIDER_LABEL[provider]
   const creditWord = provider === 'dev' ? 'credit dev' : 'credit'
@@ -571,10 +574,15 @@ function Stage({
     <div className="rq-stage-faint">Credit canvasapp: hoàn hay không do canvasapp quyết định — xem lịch sử credit trên canvasapp.io.vn.</div>
   ) : provider === 'dev' && take.remoteId ? (
     <div className="rq-stage-faint">
-      Credit dev (giả lập): máy chủ giả lập hoàn khi job lỗi ở đó — xem Lịch sử credit hoặc{' '}
-      <button type="button" className="rq-link" onClick={() => openDevPanel('jobs')}>
-        Bảng phát triển
-      </button>
+      Credit dev (giả lập): máy chủ giả lập hoàn khi job lỗi ở đó — xem Lịch sử credit
+      {devOpen && (
+        <>
+          {' '}hoặc{' '}
+          <button type="button" className="rq-link" onClick={() => openDevPanel('jobs')}>
+            Bảng phát triển
+          </button>
+        </>
+      )}
       .
     </div>
   ) : null
@@ -682,6 +690,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
   const spec = MODELS[take.settings.model]
   const provider = providerOf(take)
   const cost = takeCostLine(take)
+  const devOpen = useDevAllowed()
 
   const refAssets = useMemo(() => {
     const map = new Map(assets.map((a) => [a.id, a]))
@@ -806,7 +815,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
               <span className="mono" title={`job_id trên ${PROVIDER_LABEL[provider]}: ${decodeRemoteId(take.remoteId)?.jobId ?? take.remoteId}`}>
                 {(decodeRemoteId(take.remoteId)?.jobId ?? take.remoteId).slice(0, 8)}…
               </span>
-              {provider === 'dev' && (
+              {provider === 'dev' && devOpen && (
                 <button type="button" className="rq-link" onClick={() => openDevPanel('jobs')} title="Xem job này trên máy chủ giả lập (hoàn tất / cho lỗi / cho hết hạn)">
                   xem trong Bảng phát triển
                 </button>

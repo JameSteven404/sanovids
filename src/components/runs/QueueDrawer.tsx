@@ -25,6 +25,7 @@ import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { PROVIDER_LABEL } from '../../providers'
+import { useDevAllowed } from '../../providers/devAccess'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
@@ -187,6 +188,8 @@ function QueuePanel() {
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
+  // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
+  const devOpen = useDevAllowed()
   const sceneMap = useProject((s) => sceneMapOf(s.project.scenes))
   const [doneLimit, setDoneLimit] = useState(DONE_PAGE)
 
@@ -263,7 +266,7 @@ function QueuePanel() {
               </b>
               <small>Các take đang chạy được giữ nguyên; SanoVids tự kiểm tra lại sau · lúc {formatClock(issue.at)}</small>
             </div>
-            {issue.provider === 'dev' && (
+            {issue.provider === 'dev' && devOpen && (
               <button type="button" className="btn btn-sm" onClick={() => openDevPanel('log')} title="Xem nhật ký yêu cầu và lỗi giả đang bật">
                 <Bug size={13} /> Bảng phát triển
               </button>
