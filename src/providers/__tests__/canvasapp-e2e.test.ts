@@ -40,6 +40,7 @@ import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/type
 import { takeFiles } from '../../lib/downloads'
 import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
+import { useTakeWaits } from '../../store/takeWaits'
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
@@ -56,6 +57,7 @@ import {
   PROFILES_TTL_MS,
   STATE_KEY,
   LOOKUP_FAILED_TEXT,
+  RIVAL_PENDING_TEXT,
   STILL_SENDING_TEXT,
   type KeyValueStorage,
 } from '../canvasapp/adapter'
@@ -1105,6 +1107,35 @@ describe('gateway e2e: app restart', () => {
     }
   })
 
+  it('closed while posting: another take of that scene waits — saying why and until when — while other scenes run, then it is posted once; each its own job', async () => {
+    fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: false } : undefined)
+    const [a] = enqueue('s1')
+    await run(300)
+    const onDisk = saved()
+    fake.state.fault = null
+    restart(onDisk)
+    // right after the restart: a new take of the same scene, and one of another scene
+    const [b] = enqueue('s1')
+    const [c] = enqueue('s2')
+    // A is looked for (at once, then once more 45 s later): nothing → "không rõ"
+    await run(50_000)
+    expect(take(a.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+    // B waits (main may still be sending A's request for minutes): nothing sent, and it says why and until when
+    expect(take(b.id)).toMatchObject({ status: 'queued', remoteId: null, error: null })
+    const wait = useTakeWaits.getState().byTake[b.id]
+    expect(wait).toMatchObject({ why: RIVAL_PENDING_TEXT, provider: 'canvasapp' })
+    expect(wait.until).toBeGreaterThan(Date.now() + 4 * 60_000)
+    // C, another scene, runs meanwhile
+    await run(1_000)
+    expect(take(c.id).remoteId).toBe('proj1:job1')
+    // once a read surely shows A's job (if any): B is sent, once — the reason is gone
+    await run(6 * 60_000)
+    expect(take(b.id).remoteId).toBe('proj1:job2')
+    expect(useTakeWaits.getState().byTake[b.id]).toBeUndefined()
+    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(c.id), clientRequestIdFor(b.id)])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(3) // A's (hung, never arrived), C's, B's
+  })
+
   it('“Chạy lại” while the job list cannot be read: held back with the reason, still “không rõ”, nothing sent', async () => {
     fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: false } : undefined)
     const [t] = enqueue('s1')
@@ -1953,10 +1984,11 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
 
   it('a take whose POST lost its answer is still found once its model is locked: retry looks the job up, never posts again', async () => {
     let lost = true
-    const listDown = { on: true }
+    const listDown = { on: false }
     fake.state.fault = (req) => {
       if (req.method === 'POST' && req.path === '/api/video-jobs' && lost) {
         lost = false
+        listDown.on = true // (the read right before the POST answered; the network drops as it goes out)
         return { kind: 'lost-response' }
       }
       if (req.method === 'GET' && req.path.startsWith('/api/video-jobs?') && listDown.on) return { kind: 'network' }

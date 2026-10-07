@@ -132,9 +132,38 @@ const enqueue = (...ids: string[]): Take[] => {
   return takes().slice(-r.queued)
 }
 const logOf = (endpoint: string) => useDevLog.getState().entries.filter((e) => e.endpoint === endpoint)
+/**
+ * The job list goes down (sticky network fault) once the next job POST reached the simulated canvasapp: the read right
+ * before that POST answered (every POST is sent with one), the lookups after it fail. `stop()` brings the list back.
+ */
+const listDownAfterNextPost = () => {
+  const posts = logOf('job-create').length
+  let rule: { id: string } | null = null
+  const off = useDevLog.subscribe(() => {
+    if (!rule && logOf('job-create').length > posts) rule = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+  })
+  return {
+    stop: () => {
+      off()
+      if (rule) server.removeFault(rule.id)
+    },
+  }
+}
+
+/** The page's localStorage (Node has none): the dev gateway's ledger is saved there, and a POST is only sent once it is. */
+function pageStorage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'> {
+  const m = new Map<string, string>()
+  return {
+    getItem: (k) => m.get(k) ?? null,
+    setItem: (k, v) => void m.set(k, String(v)),
+    removeItem: (k) => void m.delete(k),
+    clear: () => m.clear(),
+  }
+}
 
 beforeEach(async () => {
   vi.useFakeTimers()
+  vi.stubGlobal('localStorage', pageStorage())
   setEngineLockManager(null)
   setEngineHooks({})
   media.clear()
@@ -173,6 +202,7 @@ afterEach(async () => {
   vi.useRealTimers()
   resetRealCredits()
   setDevServer(null)
+  vi.unstubAllGlobals()
   // no request ever left the gateway's allowlist
   expect(useDevLog.getState().entries.filter((e) => e.fault === 'not-allowed')).toEqual([])
 })
@@ -591,7 +621,7 @@ describe('dev mode e2e: idempotency', () => {
   it('answer lost AND the job list unreadable → "không rõ" (never re-posted); retry finds the job — one job, one charge', async () => {
     server.login()
     server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
-    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const listDown = listDownAfterNextPost()
     const [t] = enqueue('s1')
     await run(60_000)
     // a dev take is sent to the Bảng phát triển, not to canvasapp.io.vn (that site never saw it)
@@ -605,7 +635,7 @@ describe('dev mode e2e: idempotency', () => {
     expect(logOf('job-create')).toHaveLength(1)
 
     // the network is back; the user retries THIS take: the adapter looks for the job first and adopts it
-    server.removeFault(listDown.id)
+    listDown.stop()
     expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
     expect(takes()).toHaveLength(1)
     await run(30_000)
@@ -621,7 +651,7 @@ describe('dev mode e2e: idempotency', () => {
     server.setConfig({ dedupe: false }) // the job list carries no client_request_id (exposeKey off): only node + timing tell
     // take A: the simulated canvasapp creates its job, the answer is lost and the job list is down → "không rõ"
     server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
-    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const listDown = listDownAfterNextPost()
     const [a] = enqueue('s1')
     await run(60_000)
     expect(take(a.id)).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
@@ -629,11 +659,11 @@ describe('dev mode e2e: idempotency', () => {
     const [b] = enqueue('s1')
     await run(5_000)
     expect(take(b.id)).toMatchObject({ status: 'failed', remoteId: null })
-    expect(take(b.id).error).toMatch(/^Không đọc được danh sách job .*Chưa gửi yêu cầu tạo video, không bị trừ credit\./)
+    expect(take(b.id).error).toMatch(/^Không đọc được danh sách job .*Chưa gửi yêu cầu tạo video, không bị trừ credit dev\./)
     expect(isUncertainSubmit(take(b.id))).toBe(false)
     expect(logOf('job-create')).toHaveLength(1)
     // the list is back; take C of the scene loses its answer too, but the list was read right before its POST
-    server.removeFault(listDown.id)
+    listDown.stop()
     server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
     const [c] = enqueue('s1')
     await run(60_000)

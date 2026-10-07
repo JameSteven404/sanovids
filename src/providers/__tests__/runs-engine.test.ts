@@ -18,6 +18,7 @@ import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
 import type { FetchResultOptions, JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
 import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
+import { clearTakeWaits, useTakeWaits, waitText } from '../../store/takeWaits'
 import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
 import { remoteVideoReady, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
@@ -646,11 +647,46 @@ describe('runs engine: downloading a finished video (abort, progress, refusals)'
     // s1 went back to the queue (nothing sent, never failed); s2, queued after it, was sent at once
     expect(take(idOf('s1'))).toMatchObject({ status: 'queued', remoteId: null, error: null })
     expect(take(idOf('s2'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s2') })
+    // ...and says why it waits, and until when (the take node, the queue, Xem take)
+    const wait = useTakeWaits.getState().byTake[idOf('s1')]
+    expect(wait).toMatchObject({ why: 'chờ take khác của cảnh này', provider: 'dev' })
+    expect(waitText(wait)).toMatch(/^Chờ tới \d\d:\d\d — chờ take khác của cảnh này$/)
     await vi.advanceTimersByTimeAsync(3_500)
     expect(take(idOf('s1')).status).toBe('queued')
     await vi.advanceTimersByTimeAsync(1_000)
     expect(take(idOf('s1'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s1') })
+    expect(useTakeWaits.getState().byTake[idOf('s1')]).toBeUndefined() // tried again: the reason is gone
     expect(f.submitted.map((r) => r.sceneId)).toEqual(['s2', 's1'])
+  })
+
+  it('a deferred take’s wait ends with its provider’s reset (Xoá dữ liệu máy chủ giả lập) and with a cancel; a provider-wide wait says why too', async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    let defer: 'take' | 'provider' | null = 'take'
+    f.p.submit = async (req, opts) => {
+      if (defer === 'take') throw Object.assign(new Error('chờ take khác của cảnh này'), { code: 'deferred', retryAfterMs: 5 * 60_000 })
+      if (defer === 'provider') throw Object.assign(new Error('Canvas cầu nối đang kín chỗ'), { code: 'deferred' })
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1_000)
+    const id = useRuns.getState().takes[0].id
+    expect(useTakeWaits.getState().byTake[id]).toMatchObject({ provider: 'dev' })
+    // the dev records were wiped (resetDevMode): what it waited for is gone → tried again at once
+    defer = 'provider'
+    clearTakeWaits('dev')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(useTakeWaits.getState().byTake[id]).toMatchObject({ why: 'Canvas cầu nối đang kín chỗ', provider: 'dev' })
+    expect(take(id).status).toBe('queued')
+    useRuns.getState().cancel(id)
+    expect(useTakeWaits.getState().byTake[id]).toBeUndefined()
+    // a new take of the scene is not held by the cancelled one's wait
+    defer = null
+    await vi.advanceTimersByTimeAsync(60_000)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(250)
+    expect(useRuns.getState().takes.at(-1)).toMatchObject({ status: 'processing' })
   })
 
   it('"too many downloads at once" (deferred) is never counted as a failed try: five of them never fail the take', async () => {

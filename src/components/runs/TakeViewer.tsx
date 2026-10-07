@@ -45,7 +45,8 @@ import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { useProject } from '../../store/project'
-import { useRuns, useSceneTakes } from '../../store/runs'
+import { rerunTitle, useRuns, useSceneTakes } from '../../store/runs'
+import { useTakeWaits, waitLabel } from '../../store/takeWaits'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
@@ -419,7 +420,7 @@ function BigActionButton({ take, label, onRerun }: { take: Take; label: string; 
   }
   if (isActive(take)) return <BusyButton take={take} />
   return (
-    <button type="button" className="btn btn-primary btn-lg rq-dl-big" disabled={!onRerun} onClick={onRerun} title="Chạy lại cảnh với prompt hiện tại">
+    <button type="button" className="btn btn-primary btn-lg rq-dl-big" disabled={!onRerun} onClick={onRerun} title={rerunTitle(take, 'Chạy lại cảnh với prompt hiện tại')}>
       <RotateCcw size={17} />
       Chạy lại
     </button>
@@ -451,6 +452,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   const posterUrl = useMediaUrl(take.posterId)
   const transfer = useTakeTransfers((s) => transferLabel(s.byTake[take.id]))
   const transferPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
+  const wait = useTakeWaits((s) => s.byTake[take.id])
   const active = isActive(take)
   const now = useNow(active)
   const provider = providerOf(take)
@@ -503,8 +505,11 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
                 : provider === 'dev'
                   ? 'Đang tạo video trên canvasapp giả lập (chế độ Phát triển)…'
                   : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`
-              : 'Đang chờ trong hàng đợi…'}
+              : wait
+                ? `${waitLabel(wait)} (chưa gửi)`
+                : 'Đang chờ trong hàng đợi…'}
         </div>
+        {take.status === 'queued' && wait?.why && <div className="rq-stage-dim">{wait.why}</div>}
         <div className="rq-stage-faint mono">
           {take.status === 'processing' ? 'đã chạy ' : 'đã chờ '}
           {formatDuration(take.status === 'processing' && take.startedAt ? now - take.startedAt : now - take.createdAt)}

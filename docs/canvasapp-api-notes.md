@@ -136,7 +136,10 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `creation_mode` or with `creation_mode === 'canvas'`). Job fields: `job_id, job_name, canvas_node_id, model_profile,
   status ('queued'|'processing'|'completed'|'failed'|'cancelled'|'expired'), submission_state ('not_submitted'|
   'submitting'|'accepted'), progress (0–100), download_available, error_message, duration, aspect_ratio, created_at,
-  finished_at, provider_started_at, provider_finished_at, creation_mode`.
+  finished_at, provider_started_at, provider_finished_at, creation_mode`. VERIFY the format of `created_at` /
+  `finished_at` (ISO 8601 with or without a time zone, or a Unix number) and of `duration`: SanoVids reads only an
+  ISO 8601 date-time or a number (below 1e11 = seconds) as a time and a number / numeric string as a duration;
+  anything else is unknown, and an unknown value never rules a job out of a lost answer's lookup.
 - `GET /api/video-jobs/{job_id}/stream` → the MP4; `GET /api/video-jobs/{job_id}/prompt` → `{ prompt }`
   (`runDownloadTask()`, both plain GETs). SanoVids reads `/prompt` for "Nhập job" only (one job at a time, ≤ 20 per
   import; empty / unreadable / over 20.000 chars = unknown). VERIFY: the trimmed prompt as posted, also for jobs made on

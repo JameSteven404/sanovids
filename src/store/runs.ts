@@ -70,6 +70,7 @@ import {
 } from '../providers/types'
 import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
 import { clearTakeTransfer, clearTakeTransfers, reportTakeTransfer } from './takeTransfers'
+import { clearTakeWait, clearTakeWaits, setTakeWait, takeWaitUntil } from './takeWaits'
 import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
@@ -221,8 +222,8 @@ const lastPoll = new Map<ProviderId, number>()
 const pollPausedUntil = new Map<ProviderId, number>()
 /** A submit was deferred (provider: "try later", nothing sent): provider → time before which no queued take starts. */
 const startPausedUntil = new Map<ProviderId, number>()
-/** ...for that take alone (provider: `retryAfterMs`, submitDeferredFor): take id → time before which it does not start. */
-const takeStartAfter = new Map<string, number>()
+// (the deferred take itself — that take alone when the provider says `retryAfterMs`, submitDeferredFor — waits until
+// its store/takeWaits entry's `until`, which also tells the UI why)
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
@@ -272,6 +273,17 @@ export const heldBackSubmitError = (pid: ProviderId, why: string): string => `${
 export function isUncertainSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'status' | 'error' | 'submitUnknown'>): boolean {
   if (providerOf(t) === 'mock' || (t.remoteId ?? null) || (t.status !== 'failed' && t.status !== 'cancelled')) return false
   return !!t.submitUnknown || hasUncertainSubmitText(t.error)
+}
+
+/**
+ * Hover text of a "Chạy lại" / "Thử lại" button (actions.rerunTake): `fresh` for a take re-run as a NEW take of its
+ * scene; a take in doubt (isUncertainSubmit) is sent again as ITSELF — its earlier job looked for first, the same
+ * request key, no cost dialog.
+ */
+export function rerunTitle(t: Pick<Take, 'provider' | 'remoteId' | 'status' | 'error' | 'submitUnknown'>, fresh: string): string {
+  if (!isUncertainSubmit(t)) return fresh
+  const site = providerOf(t) === 'dev' ? 'canvasapp giả lập' : 'canvasapp'
+  return `Gửi lại chính take này: tìm job của lần gửi trước trên ${site} trước, chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có — không tạo take mới`
 }
 
 /** Takes saved before `submitUnknown` existed: recognised by their error text (current and earlier wordings). */
@@ -501,6 +513,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
     const take = get().takes.find((t) => t.id === takeId)
     if (!take || (take.status !== 'queued' && take.status !== 'processing')) return
     fetchAborts.get(takeId)?.abort() // a download of its video stops now (frees the gateway's slot)
+    clearTakeWait(takeId)
     fetchFailures.delete(takeId)
     fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
@@ -697,7 +710,7 @@ function resetEngineState() {
   lastPoll.clear()
   pollPausedUntil.clear()
   startPausedUntil.clear()
-  takeStartAfter.clear()
+  clearTakeWaits()
   pollFailures.clear()
   ownedHere.clear()
   fetchFailures.clear()
@@ -918,11 +931,11 @@ function tick() {
   // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
   for (const t of submitHold ? [] : queued) {
     if (!scenes.has(t.sceneId)) continue
-    // a take deferred on its own (e.g. next to another take of its scene in doubt) waits; the ones behind it may start
-    const after = takeStartAfter.get(t.id)
-    if (after !== undefined) {
+    // a deferred take waits (alone, e.g. next to another take of its scene in doubt: the ones behind it may start)
+    const after = takeWaitUntil(t.id)
+    if (after !== null) {
       if (now < after) continue
-      takeStartAfter.delete(t.id)
+      clearTakeWait(t.id)
     }
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
@@ -1072,10 +1085,12 @@ async function submitTake(id: string) {
     const deferred = isSubmitDeferred(e)
     if (deferred) {
       // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while —
-      // or, when only this take has to wait (submitDeferredFor), this take alone.
+      // or, when only this take has to wait (submitDeferredFor), this take alone. The take keeps the provider's words
+      // and the time (store/takeWaits): "Đang chờ" says why.
       const wait = submitDeferredFor(e)
-      if (wait !== null) takeStartAfter.set(id, Date.now() + wait)
-      else startPausedUntil.set(pid, Date.now() + pollIntervalFor(pid))
+      const until = Date.now() + (wait ?? pollIntervalFor(pid))
+      if (wait === null) startPausedUntil.set(pid, until)
+      if (findTake(id)?.status === 'processing') setTakeWait(id, { until, why: errorText(e), provider: pid })
     }
     if (deferred || isSubmitCancelled(e)) {
       // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").

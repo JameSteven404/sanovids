@@ -9,26 +9,18 @@
 //   withDevWording(obj, results?) a copy of `obj` whose methods throw devError(…) and (for the listed ones) return
 //                                 their result through `results[name]`.
 
-import { LOOKUP_FAILED_TEXT, STILL_SENDING_TEXT } from '../canvasapp/adapter'
-
 /**
- * Whole sentences of the real gateway that say "trên canvasapp" and "credit" without the site's address: the reasons a
- * "Chạy lại" was held back, shown right after the dev "không rõ" text (runs.heldBackSubmitError) — said for the
- * simulation and its credit dev, never mixed with the real site's.
- */
-const DEV_SENTENCES: [string, string][] = [STILL_SENDING_TEXT, LOOKUP_FAILED_TEXT].map((t) => [
-  t,
-  t.replace('trên canvasapp', 'trên canvasapp giả lập').replace(/credit/g, 'credit dev'),
-])
-
-/**
- * "Kiểm tra trên canvasapp.io.vn" → "Kiểm tra trong Bảng phát triển"; any other "canvasapp.io.vn" → "canvasapp giả lập";
- * the held-back reasons (DEV_SENTENCES) → their development-mode words.
+ * "Kiểm tra trên canvasapp.io.vn" → "Kiểm tra trong Bảng phát triển"; any other "canvasapp.io.vn" — and a bare
+ * "canvasapp" ("trên canvasapp", "Tài khoản canvasapp") — → "canvasapp giả lập"; "credit" → "credit dev". By rule, not
+ * by sentence: every message of the real gateway reads right for a dev take (e.g. the reasons a "Chạy lại" was held
+ * back, shown right after the dev "không rõ" text — runs.heldBackSubmitError), never mixed with the real site's words.
  */
 export function devWording(text: string): string {
-  let out = text
-  for (const [real, dev] of DEV_SENTENCES) out = out.split(real).join(dev)
-  return out.replace(/([Kk])iểm tra trên canvasapp\.io\.vn/g, '$1iểm tra trong Bảng phát triển').replace(/canvasapp\.io\.vn/g, 'canvasapp giả lập')
+  return text
+    .replace(/([Kk])iểm tra trên canvasapp\.io\.vn/g, '$1iểm tra trong Bảng phát triển')
+    .replace(/canvasapp\.io\.vn/g, 'canvasapp giả lập')
+    .replace(/\bcanvasapp(?![\w-]| giả lập)/g, 'canvasapp giả lập')
+    .replace(/\b([Cc]redit)(?![\w-]| dev)/g, '$1 dev')
 }
 
 /** The error with a development-mode message (same object: its code, status and flags stay). */

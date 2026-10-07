@@ -11,8 +11,9 @@ import { useMediaUrl } from '../../lib/imageStore'
 import { usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { rerunTitle, useRuns } from '../../store/runs'
 import { transferLabel, transferPercent, useTakeTransfers } from '../../store/takeTransfers'
+import { useTakeWaits, waitLabel, waitText } from '../../store/takeWaits'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { importedChipTitle, takeSettingsText } from '../runs/importedTake'
@@ -296,7 +297,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
               </button>
               <button
                 className="cv-take-btn"
-                title={`Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`}
+                title={rerunTitle(take, `Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`)}
                 aria-label="Chạy lại"
                 disabled={order === undefined}
                 onClick={(e) => {
@@ -370,18 +371,13 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
   } else if (take.status === 'processing') {
     button = <TakeBusyButton takeId={take.id} progress={take.progress} />
   } else if (take.status === 'queued') {
-    button = (
-      <button className="cv-take-main is-busy" disabled aria-label="Đang chờ">
-        <Clock size={14} />
-        <span>Đang chờ</span>
-      </button>
-    )
+    button = <TakeQueuedButton takeId={take.id} />
   } else {
     button = (
       <button
         className="cv-take-main is-retry"
         disabled={order === undefined}
-        title={order === undefined ? 'Cảnh của take này đã bị xoá' : `Chạy lại ${sceneCode(order)} (tạo take mới)`}
+        title={order === undefined ? 'Cảnh của take này đã bị xoá' : rerunTitle(take, `Chạy lại ${sceneCode(order)} (tạo take mới)`)}
         aria-label="Chạy lại"
         onClick={(e) => {
           e.stopPropagation()
@@ -397,6 +393,18 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
     <div className="cv-take-main-wrap nodrag nopan" onPointerDown={stop} onDoubleClick={stop} onClick={stop}>
       {button}
     </div>
+  )
+}
+
+/** "Đang chờ" — or "Chờ tới 14:32" when its provider deferred it (store/takeWaits), the reason in the tooltip. */
+function TakeQueuedButton({ takeId }: { takeId: string }) {
+  const wait = useTakeWaits((s) => s.byTake[takeId])
+  const label = waitLabel(wait) ?? 'Đang chờ'
+  return (
+    <button className="cv-take-main is-busy" disabled aria-label={waitText(wait) ?? label} title={waitText(wait) ?? undefined}>
+      <Clock size={14} />
+      <span>{label}</span>
+    </button>
   )
 }
 
@@ -419,15 +427,19 @@ function TakeTransferText({ takeId, progress }: { takeId: string; progress: numb
   return <span>{transfer ?? `${progress}%`}</span>
 }
 
+function TakeQueuedState({ takeId }: { takeId: string }) {
+  const wait = useTakeWaits((s) => s.byTake[takeId])
+  return (
+    <div className="cv-take-state" title={waitText(wait) ?? undefined}>
+      <Clock size={16} />
+      <span>{waitLabel(wait) ?? STATUS_LABEL.queued}</span>
+    </div>
+  )
+}
+
 function TakeStatusOverlay({ takeId, status, progress, error }: { takeId: string; status: string; progress: number; error: string | null }) {
   if (status === 'completed') return null
-  if (status === 'queued')
-    return (
-      <div className="cv-take-state">
-        <Clock size={16} />
-        <span>{STATUS_LABEL.queued}</span>
-      </div>
-    )
+  if (status === 'queued') return <TakeQueuedState takeId={takeId} />
   if (status === 'processing')
     return (
       <div className="cv-take-state">

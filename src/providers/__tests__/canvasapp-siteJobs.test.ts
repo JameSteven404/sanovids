@@ -8,10 +8,12 @@ import {
   classifySiteJobs,
   CREATED_SKEW_MS,
   createdSkewOf,
+  createdTime,
   entryHint,
   hintMatches,
   hintsFor,
   inPostWindow,
+  listedDuration,
   MAX_IMPORT_PROMPT,
   NAIVE_CREATED_SKEW_MS,
   NO_DOWNLOAD_AFTER_MS,
@@ -19,6 +21,7 @@ import {
   POST_WINDOW_MS,
   reconstructSiteJob,
   sentMayOwn,
+  zonedTime,
   type SiteJobCandidate,
   type SiteJobContext,
   type SiteJobHint,
@@ -258,6 +261,28 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
     inZone('Pacific/Honolulu', () => expect(inPostWindow(new Date(T + 15 * 3600_000).toISOString(), T)).toBe(false))
     expect(inPostWindow(undefined, T)).toBeNull()
     expect(inPostWindow('not a date', T)).toBeNull()
+  })
+
+  it('only an ISO 8601 date-time or a number is read as a time (a number below 1e11 in seconds): anything else is unknown, never “outside the window”', () => {
+    const at = Date.parse('2026-10-07T05:00:00Z')
+    const secs = Math.floor(at / 1000)
+    expect(createdTime(secs)).toBe(secs * 1000)
+    expect(createdTime(at)).toBe(at)
+    expect(zonedTime(secs + 5)).toBe((secs + 5) * 1000)
+    expect(inPostWindow(secs + 5, at)).toBe(true)
+    expect(createdTime('2026-10-07 12:00:00')).toBe(Date.parse('2026-10-07 12:00:00'))
+    expect(createdTime(' 2026-10-07T05:00:01Z ')).toBe(at + 1000)
+    // "07/10/2026 12:00" (7 October, day first): Date.parse reads July 10 — a POST's own job would fall outside its window
+    expect(createdTime('07/10/2026 12:00')).toBeNaN()
+    expect(inPostWindow('07/10/2026 12:00', at)).toBeNull()
+    expect(may({ created_at: '07/10/2026 12:00' }, { ...rec, at })).toBe(true)
+    expect(createdTime('2026-10-07')).toBeNaN() // a date alone: off by up to a day
+    expect(createdTime(Number.NaN)).toBeNaN()
+  })
+
+  it('a listed duration is a number or a numeric string; anything else is unknown (null)', () => {
+    expect([15, '15', ' 10 ', '15s', '', null, undefined, true, Number.NaN].map(listedDuration)).toEqual([15, 15, 10, null, null, null, null, null, null])
+    expect(codes([job({ duration: '15s' as unknown as number })], ctx()).r.candidates[0].duration).toBeNull()
   })
 
   it('the scan holds such a job back as maybe-pending, naming the take; a POST whose job is known reserves nothing', () => {

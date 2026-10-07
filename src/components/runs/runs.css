@@ -807,6 +807,14 @@
   color: var(--danger-text);
   min-width: 0;
 }
+/* a queued take its provider deferred (nothing sent): why, and until when */
+.rq-row-wait {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  min-width: 0;
+}
 .rq-row-status {
   display: flex;
   flex-direction: column;

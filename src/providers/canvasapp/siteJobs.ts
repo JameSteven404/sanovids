@@ -15,7 +15,9 @@
 //   classifySiteJobs(jobs, ctx)        → { listHasKeys, candidates, skipped } (candidates sorted by scene, then time)
 //   sentMayOwn(job, key, rec, …)       could an unanswered POST of take `key` (ledger.sent) have made this job?
 //   inPostWindow(createdAt, at)        the creation-time window of that rule (shared with the adapter's lookup;
-//                                      createdSkewOf: ±14 h with a time zone, ±27 h without one)
+//                                      createdSkewOf: ±14 h with a time zone, ±27 h without one; null = unknown time)
+//   createdTime(v) / zonedTime(v)      a listed time in ms (ISO 8601 or a number in s / ms only, else unknown)
+//   listedDuration(v)                  a listed duration, or null when it is not a number
 //   hintsFor(nodeId, canvas, entries, imageOfUpload)   the node's settings as the bridge canvas / SanoVids' entry hold them
 //   canvasHintFor / entryHint / hintMatches            the parts of hintsFor + the match rule
 //   reconstructSiteJob(candidate, prompt, assetOf)     → SiteTakeDraft (settings + what is unknown / inferred)
@@ -63,9 +65,8 @@ export function inPostWindow(createdAt: unknown, at: number): boolean | null {
 export const NO_DOWNLOAD_AFTER_MS = 60 * 60_000
 /** A time canvasapp lists (created_at / finished_at) as a real instant: a number, or a string with its time zone. */
 export function zonedTime(v: unknown): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null
-  if (typeof v !== 'string' || !ZONED_RE.test(v.trim())) return null
-  const t = Date.parse(v)
+  if (typeof v === 'string' && !ZONED_RE.test(v.trim())) return null
+  const t = createdTime(v)
   return Number.isFinite(t) ? t : null
 }
 const WALL_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/
@@ -239,9 +240,26 @@ export interface SiteJobClaim {
   reimport: boolean
 }
 
+/** An ISO 8601 date and time of day ("2026-10-07T12:00:00Z", "2026-10-07 12:00:00.123456"): what FastAPI writes. */
+const ISO_TIME_RE = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}/
+/** A number below this is a Unix time in SECONDS (in milliseconds it would be before March 1973): read × 1000. */
+const SECONDS_BELOW = 1e11
+/**
+ * created_at / finished_at as canvasapp lists them, in milliseconds (local reading of a time without a time zone) —
+ * NaN when not surely readable: only an ISO 8601 date-time or a number (seconds or milliseconds) is read. Anything else
+ * (a date alone, "07/10/2026 12:00", which Date.parse reads as July 10) is unknown: a misread time could put a POST's
+ * own job outside its window (inPostWindow), and every caller treats an unknown time as "could be" instead.
+ */
 export function createdTime(v: unknown): number {
-  if (typeof v === 'number') return v
-  return typeof v === 'string' ? Date.parse(v) : NaN
+  if (typeof v === 'number') return !Number.isFinite(v) ? NaN : Math.abs(v) < SECONDS_BELOW ? v * 1000 : v
+  if (typeof v !== 'string' || !ISO_TIME_RE.test(v.trim())) return NaN
+  return Date.parse(v.trim())
+}
+
+/** A job's duration as the list writes it (a number, or a numeric string); null = unknown (missing, null, "8s"…). */
+export function listedDuration(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) ? n : null
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -330,7 +348,6 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
         else {
           const at = zonedTime(job.created_at)
           const p = typeof job.progress === 'number' && Number.isFinite(job.progress) ? job.progress : null
-          const duration = Number(job.duration)
           candidates.push({
             jobId,
             remoteId: encodeRemoteId(ctx.projectId, jobId),
@@ -343,7 +360,7 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
             createdAt: at,
             createdWall: at === null ? wallText(job.created_at) : null,
             model,
-            duration: job.duration !== undefined && job.duration !== null && Number.isFinite(duration) ? duration : null,
+            duration: listedDuration(job.duration),
             ratio: typeof job.aspect_ratio === 'string' ? job.aspect_ratio : null,
             reimport: imported.has(jobId),
             hints: [],

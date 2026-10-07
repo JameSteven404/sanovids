@@ -28,8 +28,9 @@ import { PROVIDER_LABEL } from '../../providers'
 import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { rerunTitle, useRuns } from '../../store/runs'
 import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
+import { useTakeWaits, waitText } from '../../store/takeWaits'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { activeFaultCount } from '../dev/devModel'
@@ -340,6 +341,8 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
   const downloading = useTakeTransfers((s) => take.id in s.byTake)
   const downloadPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
   const shownPct = take.status === 'queued' ? 0 : downloading ? (downloadPct ?? take.progress) : take.progress
+  // its provider deferred it (nothing sent): why, and until when
+  const wait = useTakeWaits((s) => s.byTake[take.id])
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -374,6 +377,11 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
           {take.status === 'failed' && take.error && (
             <span className="rq-row-err" title={take.error}>
               {take.error}
+            </span>
+          )}
+          {take.status === 'queued' && wait && (
+            <span className="rq-row-wait" title={waitText(wait) ?? undefined}>
+              {waitText(wait)}
             </span>
           )}
         </div>
@@ -418,7 +426,7 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
           </button>
         )}
         {ended && (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={!scene} onClick={() => rerunTake(take.id)} title="Chạy lại cảnh này (xem chi phí trước khi gửi)">
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!scene} onClick={() => rerunTake(take.id)} title={rerunTitle(take, 'Chạy lại cảnh này (xem chi phí trước khi gửi)')}>
             <RotateCcw size={13} />
             <span className="rq-act-label">Thử lại</span>
           </button>

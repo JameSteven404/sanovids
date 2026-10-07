@@ -83,6 +83,7 @@ import { openImportJobs } from '../../siteJobActions'
 import { refreshRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
+import { clearTakeWaits } from '../../store/takeWaits'
 import { toast, useUI, type DevPanelTab } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
@@ -635,6 +636,8 @@ async function wipeDevServer(): Promise<void> {
   if (!window.confirm(`Xoá toàn bộ dữ liệu của máy chủ giả lập (phiên, job, ảnh đã tải lên, lịch sử credit, đơn nạp) và đặt lại số dư ${formatCreditNumber(DEV_INITIAL_BALANCE)}? Cài đặt của bảng này được giữ.${warn}`)) return
   try {
     await resetDevMode()
+    // what dev takes waited for (another take's record, a full canvas) is gone with it: they are tried again now
+    clearTakeWaits('dev')
     await refreshRealCredits({ force: true })
     toast('Đã xoá dữ liệu máy chủ giả lập — tài khoản giả lập mới, chưa đăng nhập.', { tone: 'success' })
   } catch (e) {
