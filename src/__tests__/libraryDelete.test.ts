@@ -1,6 +1,7 @@
-// Library delete end to end (libraryActions) with the real project / UI stores: unused items go at once, items scenes
-// use ask once, one undo step, drafts committed first, selections cleaned, media never deleted, and where the delete
-// keys act (isLibraryKeyTarget, drag & drop). The replacement text of a deleted item's tokens belongs to the placeholder
+// Library delete end to end (libraryActions) with the real project / UI stores: the delete goes at once unless it would
+// block scenes (red placeholders in prompts naming a deleted picture, a lost first / last frame: GT1 Q7a), which asks
+// ONE question in the app's own dialog (store/confirm, never window.confirm); one undo step, drafts committed first,
+// selections cleaned, media never deleted, and where the delete keys act (isLibraryKeyTarget, drag & drop). The replacement text of a deleted item's tokens belongs to the placeholder
 // track: these tests only check that no numbered token points at the deleted item (or at another picture) and that
 // Hoàn tác gives the prompts back verbatim.
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
@@ -29,6 +30,7 @@ import {
 import { register as registerDraft } from '../lib/promptDrafts'
 import { redo, undo, useProject } from '../store/project'
 import { requestImages } from '../store/runs'
+import { answerConfirm, useConfirm } from '../store/confirm'
 import { useUI } from '../store/ui'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
@@ -105,6 +107,7 @@ let collapsed: boolean
 let focusCard: Mock<(id: string) => void>
 let confirm: Mock<(question: string) => boolean>
 let unregister: () => void
+let offConfirm: () => void
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -113,7 +116,12 @@ beforeEach(() => {
   history().clear()
   useUI.setState({ librarySelection: [], selectedIds: [], toasts: [], view: 'canvas', dialog: { kind: 'none' }, draggingAssetIds: null })
   confirm = vi.fn((_question: string) => true)
-  vi.stubGlobal('window', { confirm, addEventListener: () => {}, removeEventListener: () => {} })
+  // The question shows in the app's own dialog (store/confirm → ConfirmSheet): answered here as the user would. No
+  // window.confirm in the stub — using it would throw.
+  offConfirm = useConfirm.subscribe((s) => {
+    if (s.request) answerConfirm(confirm(s.request.text))
+  })
+  vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} })
   visible = ['a', 'b', 'c', 'd', 'e']
   collapsed = false
   focusCard = vi.fn((_id: string) => {})
@@ -121,6 +129,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  offConfirm()
+  answerConfirm(false)
   unregister()
   vi.unstubAllGlobals()
   vi.useRealTimers()
@@ -174,7 +184,7 @@ describe('unused items: one press, no question', () => {
   })
 })
 
-describe('items scenes use: one question with the counts', () => {
+describe('items whose delete would block scenes: one question with the counts', () => {
   it('asks once; Cancel leaves everything untouched', () => {
     confirm.mockReturnValue(false)
     const before = st().project
@@ -182,9 +192,8 @@ describe('items scenes use: one question with the counts', () => {
     expect(deleteLibrarySelection()).toBe(false)
     expect(confirm).toHaveBeenCalledTimes(1)
     const question = String(confirm.mock.calls[0][0])
-    expect(question).toContain('Lumi')
-    expect(question).toContain('đang dùng ở 2 cảnh')
-    expect(question).toContain('Chữ trong prompt sẽ thành chữ đỏ chờ ảnh.')
+    expect(question).toBe('Xoá “Lumi” khỏi thư viện? 2 cảnh đang dùng nhân vật này sẽ giữ chữ đỏ và chưa chạy được cho tới khi bạn gắn nhân vật khác (Ctrl+Z để hoàn tác).')
+    expect(useConfirm.getState().request).toBeNull()
     expect(st().project).toBe(before)
     expect(history().pastStates).toHaveLength(0)
     expect(useUI.getState().librarySelection).toEqual(['b'])
@@ -221,7 +230,7 @@ describe('items scenes use: one question with the counts', () => {
     } finally {
       canvasEvents.removeEventListener(WIRES_CUT_EVENT, onCut)
     }
-    expect(String(confirm.mock.calls[0][0])).toContain('khung đầu / cuối')
+    expect(String(confirm.mock.calls[0][0])).toContain('1 cảnh mất khung đầu / khung cuối')
     expect(sc('s3').firstFrame).toBeNull()
     expect(cuts).toEqual([[edgeId('first', 'e', 's3')]])
     undo()
@@ -232,10 +241,48 @@ describe('items scenes use: one question with the counts', () => {
     useUI.setState({ librarySelection: ['d', 'b', 'c'] })
     deleteLibrarySelection()
     expect(confirm).toHaveBeenCalledTimes(1)
-    expect(String(confirm.mock.calls[0][0]).split('\n')[0]).toBe('Xoá 3 mục khỏi thư viện? 2 mục trong đó đang dùng ở 2 cảnh.')
+    expect(String(confirm.mock.calls[0][0])).toBe('Xoá 3 mục khỏi thư viện? 2 cảnh đang dùng các mục này sẽ giữ chữ đỏ và chưa chạy được cho tới khi bạn gắn nhân vật khác (Ctrl+Z để hoàn tác).')
     expect(assetIds()).toEqual(['a', 'e'])
     expect(history().pastStates).toHaveLength(1)
     expect(lastToast().text).toContain('Đã xoá 3 mục khỏi thư viện (2 mục đang dùng ở 2 cảnh)')
+  })
+
+  it('an item only linked (no prompt names its picture, no frame): at once, links gone in the same step, no question', () => {
+    // s2 links Lumi without naming her; s1 does not link her at all
+    const p = project()
+    p.scenes = p.scenes.map((s) => (s.id === 's2' ? { ...s, prompt: 'waves' } : s.id === 's1' ? { ...s, refs: ['a', 'c'], prompt: '@image_1 @image_2 in @image_3' } : s))
+    st().loadProject(p)
+    history().clear()
+    const before = st().project
+    useUI.setState({ librarySelection: ['b'] })
+    expect(deleteLibrarySelection()).toBe(true)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(sc('s2').refs).toEqual([])
+    expect(lastToast().text).toBe('Đã xoá “Lumi” khỏi thư viện và 1 cảnh.')
+    expect(history().pastStates).toHaveLength(1)
+    undo()
+    expect(st().project).toBe(before)
+  })
+
+  it('the question waits for its answer in the app\'s dialog: nothing changes meanwhile; confirmed later, one step', () => {
+    offConfirm() // nobody answers right away
+    const before = st().project
+    const closed = vi.fn()
+    expect(deleteLibraryAssets(['b'], { onDeleted: closed })).toBe(false)
+    const req = useConfirm.getState().request!
+    expect(req).toMatchObject({ title: 'Xoá khỏi thư viện?', confirmLabel: 'Xoá', danger: true })
+    expect(st().project).toBe(before)
+    expect(closed).not.toHaveBeenCalled()
+    answerConfirm(true)
+    expect(assetIds()).not.toContain('b')
+    expect(closed).toHaveBeenCalledTimes(1)
+    expect(history().pastStates).toHaveLength(1)
+    // cancelled: nothing, and the dialog stays open
+    useUI.setState({ librarySelection: ['a'] })
+    expect(deleteLibrarySelection()).toBe(false)
+    answerConfirm(false)
+    expect(assetIds()).toContain('a')
+    expect(history().pastStates).toHaveLength(1)
   })
 
   it('renumbering off: the other numbers stay as written, the deleted item\x27s own turn red, and the toast warns which scenes to fix', () => {

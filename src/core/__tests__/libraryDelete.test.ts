@@ -10,6 +10,7 @@ import {
   libraryCollapsedHint,
   libraryDeleteQuestion,
   libraryDeleteText,
+  libraryDeleteTitle,
   libraryFooterHint,
   libraryNothingToDeleteHint,
   librarySelectionCounts,
@@ -28,6 +29,7 @@ const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => (
 })
 
 // Library order: elara, lumi, cave, spare, door. Scenes are stored out of order on purpose (usedBy follows scene.order).
+// s3 names Lumi (@image_1) and Elara (@image_2) in its prompt; s1 / s2 only link their pictures.
 const project: Pick<Project, 'assets' | 'scenes'> = {
   assets: [
     asset('elara', 'Elara', { position: { x: 0, y: 0 } }),
@@ -37,9 +39,9 @@ const project: Pick<Project, 'assets' | 'scenes'> = {
     asset('door', 'Door', { position: { x: 10, y: 10 } }),
   ],
   scenes: [
-    scene('s3', 3, { refs: ['lumi', 'elara'] }),
+    scene('s3', 3, { refs: ['lumi', 'elara'], prompt: '@image_1 meets @image_2' }),
     scene('s1', 1, { refs: ['elara'], firstFrame: 'door' }),
-    scene('s2', 2, { refs: ['cave'], lastFrame: 'elara' }),
+    scene('s2', 2, { refs: ['cave'], lastFrame: 'elara', prompt: 'a cave' }),
     scene('s4', 4, { firstFrame: 'door', lastFrame: 'door' }),
   ],
 }
@@ -91,45 +93,53 @@ describe('assetSceneCounts (the card badge "dùng ở N cảnh")', () => {
     expect(assetSceneCounts(project.scenes)).toEqual({ elara: 3, lumi: 1, cave: 1, door: 2 })
   })
 
-  it('agrees with what a delete asks about: a card saying "chưa dùng" never gets the in-use question', () => {
+  it('agrees with what a delete asks about: a card saying "chưa dùng" is never asked about', () => {
     const counts = assetSceneCounts(project.scenes)
     for (const a of project.assets) {
       const plan = planLibraryDelete(project, [a.id], null)
       expect(counts[a.id] ?? 0, a.id).toBe(plan.usedBy.length)
-      expect(!!libraryDeleteQuestion(plan, names, false), a.id).toBe((counts[a.id] ?? 0) > 0)
+      // asked ⇒ used (a used item is asked about only when the delete blocks a scene: GT1 Q7a)
+      if (libraryDeleteQuestion(plan, names, false)) expect(counts[a.id] ?? 0, a.id).toBeGreaterThan(0)
     }
+    expect(libraryDeleteQuestion(planLibraryDelete(project, ['spare'], null), names, false)).toBeNull()
     // a frame-only item is in use (it was "chưa dùng" when only refs were counted)
     expect(assetSceneCounts([scene('x', 1, { lastFrame: 'spare' })])).toEqual({ spare: 1 })
   })
 })
 
-describe('the question before deleting items scenes use', () => {
-  it('no question when nothing is used (those go at once)', () => {
+describe('the question: only when the delete would block scenes (GT1 Q7a, core/placeholders assetDeleteImpact)', () => {
+  it('no question when nothing is used, or when the item is only linked (no prompt names its picture, no frame)', () => {
     expect(libraryDeleteQuestion(planLibraryDelete(project, ['spare'], null), names, false)).toBeNull()
     expect(libraryDeleteQuestion(planLibraryDelete(project, [], null), names, false)).toBeNull()
+    const cave = planLibraryDelete(project, ['cave'], null)
+    expect(cave.usedBy).toEqual(['s2'])
+    expect(cave.impact.needsConfirm).toBe(false)
+    expect(libraryDeleteQuestion(cave, names, false)).toBeNull()
   })
 
-  it('one item: its name and the scene count, red placeholders, how to undo', () => {
-    const q = libraryDeleteQuestion(planLibraryDelete(project, ['lumi'], null), names, false)!
-    expect(q).toContain('Xoá “Lumi” khỏi thư viện? Mục này đang dùng ở 1 cảnh.')
-    expect(q).toContain('Chữ trong prompt sẽ thành chữ đỏ chờ ảnh.')
-    expect(q).toContain('Ctrl+Z')
-    expect(q).not.toContain('khung')
+  it('one item a prompt names: its name, the scenes that keep red text and stop running, how to undo', () => {
+    const plan = planLibraryDelete(project, ['lumi'], null)
+    expect(plan.impact).toMatchObject({ sceneIds: ['s3'], placeholders: 1, needsConfirm: true })
+    const q = libraryDeleteQuestion(plan, names, false)!
+    expect(q).toBe('Xoá “Lumi” khỏi thư viện? 1 cảnh đang dùng nhân vật này sẽ giữ chữ đỏ và chưa chạy được cho tới khi bạn gắn nhân vật khác (Ctrl+Z để hoàn tác).')
+    expect(libraryDeleteTitle(plan)).toBe('Xoá khỏi thư viện?')
   })
 
-  it('several items all in use / some in use', () => {
-    const all = libraryDeleteQuestion(planLibraryDelete(project, ['lumi', 'cave'], null), names, false)!
-    expect(all.split('\n')[0]).toBe('Xoá 2 mục đang dùng ở 2 cảnh?')
-    const some = libraryDeleteQuestion(planLibraryDelete(project, ['lumi', 'cave', 'spare'], null), names, false)!
-    expect(some.split('\n')[0]).toBe('Xoá 3 mục khỏi thư viện? 2 mục trong đó đang dùng ở 2 cảnh.')
+  it('several items: one question for all of them, counted', () => {
+    const plan = planLibraryDelete(project, ['lumi', 'cave', 'spare'], null)
+    expect(libraryDeleteQuestion(plan, names, false)).toBe(
+      'Xoá 3 mục khỏi thư viện? 1 cảnh đang dùng các mục này sẽ giữ chữ đỏ và chưa chạy được cho tới khi bạn gắn nhân vật khác (Ctrl+Z để hoàn tác).',
+    )
+    expect(libraryDeleteTitle(plan)).toBe('Xoá 3 mục khỏi thư viện?')
   })
 
-  it('frames are named; a frame-only item says nothing about prompt text', () => {
+  it('frames are named; a frame-only item says nothing about red text', () => {
     const q = libraryDeleteQuestion(planLibraryDelete(project, ['door'], null), names, false)!
-    expect(q).toContain('đang dùng ở 2 cảnh')
-    expect(q).toContain('khung đầu / cuối')
+    expect(q).toContain('2 cảnh mất khung đầu / khung cuối')
     expect(q).not.toContain('chữ đỏ')
-    expect(libraryDeleteQuestion(planLibraryDelete(project, ['elara'], null), names, false)).toContain('khung đầu / cuối')
+    const elara = libraryDeleteQuestion(planLibraryDelete(project, ['elara'], null), names, false)!
+    expect(elara).toContain('1 cảnh đang dùng nhân vật này sẽ giữ chữ đỏ')
+    expect(elara).toContain('1 cảnh mất khung đầu / khung cuối')
   })
 
   it('Mac wording: ⌘Z, never Ctrl', () => {
@@ -139,34 +149,38 @@ describe('the question before deleting items scenes use', () => {
   })
 })
 
-describe('the toast after a delete', () => {
-  const none = { rewritten: 0, staleNote: '' }
+describe('the toast after a delete (its prompt part: core/staleTokens mediaChangeNote)', () => {
+  const renumbered = { text: ' · đánh lại số @image trong 2 prompt', tone: 'info' as const }
   it('one unused item', () => {
-    expect(libraryDeleteText(planLibraryDelete(project, ['spare'], null), names, none)).toEqual({ text: 'Đã xoá “Spare” khỏi thư viện.', tone: 'info' })
+    expect(libraryDeleteText(planLibraryDelete(project, ['spare'], null), names, null)).toEqual({ text: 'Đã xoá “Spare” khỏi thư viện.', tone: 'info' })
   })
   it('one item in use: the scenes and the renumbered prompts; longer on screen', () => {
-    const t = libraryDeleteText(planLibraryDelete(project, ['elara'], null), names, { rewritten: 2, staleNote: '' })
+    const t = libraryDeleteText(planLibraryDelete(project, ['elara'], null), names, renumbered)
     expect(t.text).toBe('Đã xoá “Elara” khỏi thư viện và 3 cảnh · đánh lại số @image trong 2 prompt.')
     expect(t.ms).toBe(8000)
   })
   it('several items: how many are in use where', () => {
-    expect(libraryDeleteText(planLibraryDelete(project, ['spare', 'cave', 'lumi'], null), names, { rewritten: 2, staleNote: '' }).text).toBe(
+    expect(libraryDeleteText(planLibraryDelete(project, ['spare', 'cave', 'lumi'], null), names, renumbered).text).toBe(
       'Đã xoá 3 mục khỏi thư viện (2 mục đang dùng ở 2 cảnh) · đánh lại số @image trong 2 prompt.',
     )
-    expect(libraryDeleteText(planLibraryDelete(project, ['cave', 'lumi'], null), names, none).text).toBe('Đã xoá 2 mục khỏi thư viện (đang dùng ở 2 cảnh).')
-    const unused = libraryDeleteText(planLibraryDelete(project, ['spare'], null), names, none)
+    expect(libraryDeleteText(planLibraryDelete(project, ['cave', 'lumi'], null), names, null).text).toBe('Đã xoá 2 mục khỏi thư viện (đang dùng ở 2 cảnh).')
+    const unused = libraryDeleteText(planLibraryDelete(project, ['spare'], null), names, null)
     expect(unused.ms).toBeUndefined()
-    expect(libraryDeleteText({ ...planLibraryDelete(project, ['spare'], null), ids: ['spare', 'x'] }, names, none).ms).toBe(8000)
+    expect(libraryDeleteText({ ...planLibraryDelete(project, ['spare'], null), ids: ['spare', 'x'] }, names, null).ms).toBe(8000)
   })
-  it('renumbering off: the stale note replaces the renumber part, warning tone', () => {
-    const t = libraryDeleteText(planLibraryDelete(project, ['lumi'], null), names, { rewritten: 0, staleNote: ' · tự đánh lại số đang tắt — hãy sửa số @image trong S03' })
-    expect(t.text).toBe('Đã xoá “Lumi” khỏi thư viện và 1 cảnh · tự đánh lại số đang tắt — hãy sửa số @image trong S03.')
+  it('red placeholders left / numbers left stale: the warning note, its tone and its time', () => {
+    const red = { text: ' — prompt giữ chữ đỏ @image_?1(Lumi) (chặn Chạy) để bạn gắn ảnh thay thế', tone: 'warning' as const, ms: 10000 }
+    const t = libraryDeleteText(planLibraryDelete(project, ['lumi'], null), names, red)
+    expect(t.text).toBe('Đã xoá “Lumi” khỏi thư viện và 1 cảnh — prompt giữ chữ đỏ @image_?1(Lumi) (chặn Chạy) để bạn gắn ảnh thay thế.')
     expect(t.tone).toBe('warning')
-    expect(t.ms).toBe(8000)
+    expect(t.ms).toBe(10000)
+    const stale = libraryDeleteText(planLibraryDelete(project, ['lumi'], null), names, { text: ' · tự đánh lại số đang tắt — hãy sửa số @image trong S03', tone: 'warning', ms: 8000 })
+    expect(stale.text).toBe('Đã xoá “Lumi” khỏi thư viện và 1 cảnh · tự đánh lại số đang tắt — hãy sửa số @image trong S03.')
+    expect(stale.ms).toBe(8000)
   })
   it('selected items hidden by the search / tab are kept, and the toast says so', () => {
     const plan = planLibraryDelete(project, ['spare', 'elara', 'lumi'], ['spare'])
-    expect(libraryDeleteText(plan, names, none).text).toBe('Đã xoá “Spare” khỏi thư viện. Giữ 2 mục đang chọn nhưng bị ẩn bởi ô tìm / thẻ lọc.')
+    expect(libraryDeleteText(plan, names, null).text).toBe('Đã xoá “Spare” khỏi thư viện. Giữ 2 mục đang chọn nhưng bị ẩn bởi ô tìm / thẻ lọc.')
   })
 })
 

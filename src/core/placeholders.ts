@@ -576,9 +576,9 @@ export function assetDeleteImpact(project: Pick<Project, 'assets' | 'scenes'>, a
 
 /**
  * The question before deleting characters that are in use (assetDeleteImpact), or null when none is needed. `name` =
- * the character's name (one) or null (several).
+ * the character's name (one) or null (several). `undoKey`: how Undo is written on this platform (Mac: "⌘Z").
  */
-export function assetDeleteQuestion(name: string | null, count: number, impact: AssetDeleteImpact): string | null {
+export function assetDeleteQuestion(name: string | null, count: number, impact: AssetDeleteImpact, undoKey = 'Ctrl+Z'): string | null {
   const parts: string[] = []
   const who = count > 1 || !name ? `${count} mục` : `“${name}”`
   if (impact.sceneIds.length) {
@@ -588,5 +588,5 @@ export function assetDeleteQuestion(name: string | null, count: number, impact: 
   }
   if (impact.frameSceneIds.length) parts.push(`${impact.frameSceneIds.length} cảnh mất khung đầu / khung cuối`)
   if (!parts.length) return null
-  return `Xoá ${who} khỏi thư viện? ${parts.join('; ')} (Ctrl+Z để hoàn tác).`
+  return `Xoá ${who} khỏi thư viện? ${parts.join('; ')} (${undoKey} để hoàn tác).`
 }

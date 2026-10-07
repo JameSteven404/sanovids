@@ -57,10 +57,11 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
   // only once the edit ends.
   const [nameDraft, setNameDraft] = useState<string | null>(null)
 
-  // One click (libraryActions, same rule as the Delete key): an item no scene uses goes at once, one that scenes use
-  // asks once; "Hoàn tác" in the toast. Cancelled: the dialog stays open.
+  // One click (libraryActions, the one delete flow of the Delete key): it goes at once, unless it would block scenes
+  // (red placeholders in prompts naming it, a lost first / last frame) — then one question in the app's own dialog,
+  // above this one; "Hoàn tác" in the toast. This dialog closes once the item is gone; cancelled, it stays open.
   const remove = () => {
-    if (deleteLibraryAssets([asset.id])) onClose()
+    deleteLibraryAssets([asset.id], { onDeleted: onClose })
   }
 
   const title = (

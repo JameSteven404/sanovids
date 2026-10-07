@@ -4,6 +4,7 @@ import { SectionBoundary } from './components/common/ErrorBoundary'
 import { errorSummary, isChunkLoadError } from './components/common/errorInfo'
 import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './components/common/PanelResizer'
 import { ImageLightbox } from './components/common/ImageLightbox'
+import { ConfirmSheet } from './components/common/ConfirmSheet'
 import { Toasts } from './components/common/Toasts'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
@@ -160,6 +161,7 @@ function Shell() {
         )}
       </div>
       <Dialogs />
+      <ConfirmSheet />
       <DevPrompts />
       <StressHudSlot />
       <Toasts />

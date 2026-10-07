@@ -15,29 +15,34 @@
 //   lastArea is 'library'. Such a Delete never falls through to the canvas, even with nothing selected in the library
 //   or with the section collapsed (both show a hint instead).
 //
-// What a delete does: the selected cards on screen (search / kind tab applied; hidden ones stay selected), one
-// removeAssets = one undo step with a "Hoàn tác" toast. Items no scene uses go at once; items scenes use ask one
-// question first (core/libraryDelete libraryDeleteQuestion). Prompt drafts of those scenes are committed first
-// (flushScenes). Media blobs are never deleted (duplicated projects share them, queued takes read imageKeysSnapshot,
+// What a delete does — ONE flow for the Delete key, the footer's trash button and the item dialog's "Xoá khỏi thư
+// viện": the selected cards on screen (search / kind tab applied; hidden ones stay selected), one removeAssets = one
+// undo step (assets, links and prompt tokens together) with a "Hoàn tác" toast. Prompt drafts of the scenes using them
+// are committed first (flushScenes), then the delete goes at once — unless it would block scenes (GT1 Q7a: prompts
+// naming a deleted picture keep red placeholders, scenes lose a first / last frame; core/placeholders
+// assetDeleteImpact), which asks ONE question first in the app's own dialog (store/confirm → ConfirmSheet, never
+// window.confirm). Media blobs are never deleted (duplicated projects share them, queued takes read imageKeysSnapshot,
 // the undo history still needs them). Nothing gets selected afterwards; the keyboard focus moves to the next card.
+// Delete on the canvas only hides an image tile (actions.deleteSelection): not this flow.
 import { announceWireCuts, edgeId } from './actions'
-import { changedPrompts } from './components/sidebar/shared'
 import { selectAllVisible } from './components/sidebar/librarySelection'
 import {
   BACKSPACE_HINT,
   libraryCollapsedHint,
   libraryDeleteQuestion,
   libraryDeleteText,
+  libraryDeleteTitle,
   libraryNothingToDeleteHint,
   nextFocusAfterDelete,
   planLibraryDelete,
   type LibraryDeletePlan,
 } from './core/libraryDelete'
 import { LIBRARY_KEY_GRACE_MS, libraryKeyAction } from './core/libraryKeys'
-import { scenesWithStaleTokens, staleTokenNote } from './core/staleTokens'
+import { mediaChangeNote } from './core/staleTokens'
 import type { Project } from './core/types'
 import { IS_MAC } from './lib/platform'
 import { flushScenes } from './lib/promptDrafts'
+import { askConfirm } from './store/confirm'
 import { undoToastAction, useProject } from './store/project'
 import { toast, useUI } from './store/ui'
 
@@ -194,7 +199,7 @@ export function selectAllInLibrary(): boolean {
 /**
  * Delete key / the footer's trash button: delete the selected cards on screen. With nothing on screen to delete (none
  * selected, all hidden, the section collapsed), a hint; the library not mounted: nothing at all. Returns whether
- * something was deleted.
+ * something was deleted now (false too while its question is open: the delete happens when it is confirmed).
  */
 export function deleteLibrarySelection(): boolean {
   if (!view) return false
@@ -212,23 +217,19 @@ export function deleteLibrarySelection(): boolean {
 }
 
 /**
- * Delete these library items (the asset dialog's "Xoá khỏi thư viện", menus). Items scenes use ask once; others go at
- * once. Returns whether they were deleted (false: cancelled, or none exists).
+ * Delete these library items (the asset dialog's "Xoá khỏi thư viện", menus): the same flow as the Delete key.
+ * `onDeleted` runs once they are gone (right away, or when the question is confirmed — e.g. close the item's dialog).
+ * Returns whether they were deleted now (false: a question is open, cancelled, or none exists).
  */
-export function deleteLibraryAssets(ids: readonly string[]): boolean {
+export function deleteLibraryAssets(ids: readonly string[], opts: { onDeleted?: () => void } = {}): boolean {
   const plan = planLibraryDelete(useProject.getState().project, ids, null)
   if (!plan.ids.length) return false
-  return applyDelete(plan, null)
+  return applyDelete(plan, null, opts.onDeleted)
 }
 
 const nameOf = (project: Project) => {
   const byId = new Map(project.assets.map((a) => [a.id, a]))
   return (id: string) => byId.get(id)?.name || byId.get(id)?.tag || 'mục'
-}
-
-function askDelete(question: string): boolean {
-  // Cancel must leave everything untouched; without a way to ask, nothing is deleted.
-  return typeof window !== 'undefined' && typeof window.confirm === 'function' && window.confirm(question)
 }
 
 /** Canvas wires of the deleted items that are drawn (items placed on the canvas): ref / first / last. */
@@ -251,21 +252,48 @@ function later(fn: () => void): void {
   else setTimeout(fn, 0)
 }
 
-function applyDelete(plan: LibraryDeletePlan, visible: string[] | null): boolean {
+/**
+ * The one delete flow. The prompts being typed in the scenes using the items are committed first (their tokens are
+ * judged and renumbered with the change), then the delete goes at once, or after its question when it would block
+ * scenes. Returns whether it was done now.
+ */
+function applyDelete(first: LibraryDeletePlan, visible: string[] | null, onDeleted?: () => void): boolean {
+  flushScenes(first.usedBy)
+  // The drafts may have changed what the delete does: plan it again on the committed prompts (same items).
+  const plan = { ...planLibraryDelete(useProject.getState().project, first.ids, null), hidden: first.hidden }
+  const question = libraryDeleteQuestion(plan, nameOf(useProject.getState().project), IS_MAC)
+  if (!question) {
+    removeNow(plan, visible)
+    onDeleted?.()
+    return true
+  }
+  let done = false
+  askConfirm({
+    title: libraryDeleteTitle(plan),
+    text: question,
+    confirmLabel: 'Xoá',
+    danger: true,
+    onConfirm: () => {
+      // Confirmed later: only what still exists goes. The drafts were committed before asking, and the question (a top
+      // overlay) keeps every key and click away from the prompts meanwhile.
+      const now = { ...planLibraryDelete(useProject.getState().project, plan.ids, null), hidden: plan.hidden }
+      if (!now.ids.length) return
+      removeNow(now, visible)
+      done = true
+      onDeleted?.()
+    },
+  })
+  return done
+}
+
+function removeNow(plan: LibraryDeletePlan, visible: string[] | null): void {
   const names = nameOf(useProject.getState().project)
-  const question = libraryDeleteQuestion(plan, names, IS_MAC)
-  if (question && !askDelete(question)) return false
-  // The prompts being typed in those scenes are committed first, and renumbered with the change.
-  flushScenes(plan.usedBy)
   const before = useProject.getState().project
   // The canvas animates the wires that go (before they leave the store).
   if (useUI.getState().view === 'canvas') announceWireCuts(cutWireIds(before, plan))
   useProject.getState().removeAssets(plan.ids)
   const after = useProject.getState().project
   const action = undoToastAction()
-  const used = new Set(plan.usedBy)
-  const rewritten = changedPrompts(before.scenes, after.scenes).filter((id) => used.has(id)).length
-  const stale = scenesWithStaleTokens(before, after)
   // Both selections forget the deleted ids (the canvas keeps unknown ids on its own); hidden selected cards stay.
   const dead = new Set(plan.ids)
   const ui = useUI.getState()
@@ -275,10 +303,10 @@ function applyDelete(plan: LibraryDeletePlan, visible: string[] | null): boolean
   const next = visible ? nextFocusAfterDelete(visible, plan.ids) : null
   const focus = view?.focusCard
   if (next && focus) later(() => focus(next))
-  const said = libraryDeleteText(plan, names, { rewritten, staleNote: stale.length ? staleTokenNote(after, stale) : '' })
+  // red placeholders left in prompts, numbers left stale (renumbering off) or prompts renumbered (GT1 mediaChangeNote)
+  const said = libraryDeleteText(plan, names, mediaChangeNote(before, after))
   dismissHint()
   toast(said.text, { tone: said.tone, action, ...(said.ms ? { ms: said.ms } : {}) })
-  return true
 }
 
 // ---------------- keys (hooks/useShortcuts) ----------------

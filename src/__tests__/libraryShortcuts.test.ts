@@ -33,6 +33,7 @@ vi.mock('../store/persist', () => ({ flush: async () => true }))
 import type { Project, Scene } from '../core/types'
 import { useShortcuts } from '../hooks/useShortcuts'
 import { handleLibraryKey, libraryArea, noteLibraryPointer, registerLibraryView, resetLibraryActionsForTests } from '../libraryActions'
+import { answerConfirm, useConfirm } from '../store/confirm'
 import { useProject } from '../store/project'
 import { useUI } from '../store/ui'
 
@@ -41,8 +42,8 @@ let listeners: Listener[] = []
 /** The pointerdown listeners installed on the window stub, with their capture flag. */
 let pointerListeners: Array<{ fn: (e: { target: unknown }) => void; capture: unknown }> = []
 
-const scene = (id: string, order: number, refs: string[] = []): Scene => ({
-  id, order, title: '', prompt: '', refs, videoRefs: [], presetId: null,
+const scene = (id: string, order: number, refs: string[] = [], prompt = ''): Scene => ({
+  id, order, title: '', prompt, refs, videoRefs: [], presetId: null,
   settings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
   firstFrame: null, lastFrame: null, color: null, position: { x: 0, y: order * 400 }, note: '',
 })
@@ -53,7 +54,7 @@ const project = (): Project => ({
     { id: 'b', kind: 'character', name: 'Lumi', tag: 'Lumi', description: '', imageIds: ['i2'], color: '#fff', position: null },
     { id: 'c', kind: 'prop', name: 'Spare', tag: 'Spare', description: '', imageIds: ['i3'], color: '#fff', position: null },
   ],
-  scenes: [scene('s1', 1, ['a']), scene('s2', 2)],
+  scenes: [scene('s1', 1, ['a'], '@image_1 walks'), scene('s2', 2)],
 })
 
 /** Fake elements, duck-typed like libraryActions reads them. */
@@ -103,6 +104,7 @@ const assetIds = () => useProject.getState().project.assets.map((a) => a.id)
 const toastTexts = () => useUI.getState().toasts.map((t) => t.text)
 let confirm: Mock<(question: string) => boolean>
 let unregister: () => void
+let offConfirm: () => void
 let collapsed: boolean
 
 beforeEach(() => {
@@ -116,8 +118,11 @@ beforeEach(() => {
   useProject.temporal.getState().clear()
   useUI.setState({ dialog: { kind: 'none' }, toasts: [], view: 'canvas', librarySelection: [], selectedIds: ['s2'], draggingAssetIds: null })
   confirm = vi.fn((_question: string) => true)
+  // The question shows in the app's own dialog (store/confirm): answered here as the user would; no window.confirm.
+  offConfirm = useConfirm.subscribe((s) => {
+    if (s.request) answerConfirm(confirm(s.request.text))
+  })
   vi.stubGlobal('window', {
-    confirm,
     addEventListener: (type: string, fn: Listener, capture?: unknown) => {
       if (type === 'keydown') listeners.push(fn)
       if (type === 'pointerdown') pointerListeners.push({ fn: fn as unknown as (e: { target: unknown }) => void, capture })
@@ -133,6 +138,8 @@ beforeEach(() => {
   expect(listeners).toHaveLength(1)
 })
 afterEach(() => {
+  offConfirm()
+  answerConfirm(false)
   for (const cleanup of h.cleanups.splice(0)) cleanup()
   unregister()
   vi.unstubAllGlobals()
@@ -162,7 +169,7 @@ describe('Delete in the library', () => {
     expect(toastTexts().join()).toContain('Chưa chọn thẻ nào trong Thư viện')
   })
 
-  it('an item in use asks first; Cancel deletes nothing anywhere', () => {
+  it('an item whose delete blocks a scene asks first (in the app\'s dialog); Cancel deletes nothing anywhere', () => {
     confirm.mockReturnValue(false)
     useUI.setState({ librarySelection: ['a'] })
     press({ key: 'Delete', target: inLibrary() })
@@ -382,11 +389,22 @@ describe('wiring (source guards)', () => {
     expect(lib).toContain('registerLibraryView(')
     expect(lib).toContain('data-asset-id={asset.id}')
   })
-  it('the asset dialog deletes in one click through the shared command (no two-click button)', () => {
+  it('the asset dialog deletes in one click through the shared command (no two-click button), closing once it is gone', () => {
     const dlg = src('components/sidebar/AssetDialog.tsx')
-    expect(dlg).toContain('deleteLibraryAssets([asset.id])')
+    expect(dlg).toContain('deleteLibraryAssets([asset.id], { onDeleted: onClose })')
     expect(dlg).not.toContain('ConfirmButton')
     expect(dlg).not.toContain('removeAssets(')
+  })
+  it('one delete flow asks in the app\'s own dialog: no window.confirm in the library delete, a ConfirmSheet at the root', () => {
+    for (const file of ['libraryActions.ts', 'components/sidebar/AssetDialog.tsx', 'components/sidebar/AssetLibrary.tsx']) {
+      expect(src(file), file).not.toMatch(/window\.confirm\(|\bconfirm\(/)
+    }
+    expect(src('libraryActions.ts')).toContain('askConfirm({')
+    expect(src('App.tsx')).toContain('<ConfirmSheet />')
+    expect(src('components/common/ConfirmSheet.tsx')).toContain('layer="top"')
+  })
+  it('"+ Nối" on a card offers "Gắn vào chỗ…" when the scene still waits for a picture (GT1 linkToastWithFill)', () => {
+    expect(src('components/sidebar/AssetLibrary.tsx')).toContain('linkToastWithFill(before, p, [assetId], text)')
   })
   it('the dispatcher marks canvas commands (N, Ctrl+D, canvas Ctrl+A, Alt+Up/Down) right before running them', () => {
     const code = src('hooks/useShortcuts.ts')

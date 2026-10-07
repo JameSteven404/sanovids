@@ -4,11 +4,17 @@
 // Rules (0.6.0):
 // - Delete takes the selected cards the user can SEE (search box and kind tab applied) that still exist, in library
 //   order. Selected cards hidden by the search / tab are kept, still selected, and the toast says so.
-// - Items no scene uses go at once (one Delete / one click, "Hoàn tác" in the toast). Items scenes use (reference image,
-//   H3 first / last frame) ask ONE question first with the counts: their @image tokens are left waiting for a picture.
+// - One question, asked only when the delete blocks scenes (GT1 Q7a, core/placeholders assetDeleteImpact /
+//   assetDeleteQuestion): prompts that name a deleted picture keep red placeholders "@image_?N(Tên)" and stop running,
+//   or scenes lose their H3 first / last frame. Everything else — items no scene uses, items only linked — goes at once
+//   (one Delete / one click, "Hoàn tác" in the toast).
 // - One removeAssets = one undo step; media blobs are never deleted here (duplicated projects share them, queued takes
 //   read them by imageKeysSnapshot, the undo history still points at them).
+// - Delete on the canvas only HIDES an image tile (actions.deleteSelection → hideAssetIds: the item stays in the
+//   library and in its scenes): a different path, never this one (plan §3.9.1).
 import { textsFor } from '../lib/platformText'
+import { assetDeleteImpact, assetDeleteQuestion, type AssetDeleteImpact } from './placeholders'
+import type { MediaChangeNote } from './staleTokens'
 import type { Project, Scene } from './types'
 
 export interface LibraryDeletePlan {
@@ -26,6 +32,8 @@ export interface LibraryDeletePlan {
   usingAssets: string[]
   /** Deleted assets placed on the canvas. */
   onCanvas: string[]
+  /** What the delete would do to prompts and frames (core/placeholders assetDeleteImpact): `needsConfirm` = ask first. */
+  impact: AssetDeleteImpact & { needsConfirm: boolean }
 }
 
 export interface AssetUsage {
@@ -40,9 +48,8 @@ export interface AssetUsage {
 }
 
 /**
- * Which scenes use these assets (reference images, first / last frames).
- * TODO(RVGT): switch to the placeholder track's pure impact helper (assetDeleteImpact or similar) once it is merged, so
- * the question counts exactly the scenes that will be blocked by a placeholder.
+ * Which scenes use these assets (reference images, first / last frames): whose drafts to commit, which wires go, what
+ * the toast counts. Whether to ASK is assetDeleteImpact's (the scenes the delete would block), not this.
  */
 export function assetUsage(project: Pick<Project, 'scenes'>, ids: Iterable<string>): AssetUsage {
   const dead = new Set(ids)
@@ -72,7 +79,8 @@ export function assetUsage(project: Pick<Project, 'scenes'>, ids: Iterable<strin
 
 /**
  * How many scenes use each asset (reference image or first / last frame; a scene counts once per asset): the library
- * card's "dùng ở N cảnh" badge. Same rule as assetUsage, so a card that says "chưa dùng" is deleted without a question.
+ * card's "dùng ở N cảnh" badge. Same rule as assetUsage, so a card that says "chưa dùng" is never asked about (one
+ * that is used is asked about only when the delete would block a scene: libraryDeleteQuestion).
  */
 export function assetSceneCounts(scenes: readonly Pick<Scene, 'refs' | 'firstFrame' | 'lastFrame'>[]): Record<string, number> {
   const counts: Record<string, number> = {}
@@ -115,6 +123,7 @@ export function planLibraryDelete(project: Pick<Project, 'assets' | 'scenes'>, s
     frameScenes: usage.frameScenes,
     usingAssets: ids.filter((id) => usage.usingAssets.has(id)),
     onCanvas,
+    impact: assetDeleteImpact(project, ids),
   }
 }
 
@@ -141,25 +150,18 @@ export const deleteKeyLabel = (mac: boolean) => (mac ? '⌫' : 'Delete')
 const undoKeyLabel = (mac: boolean) => (mac ? '⌘Z' : 'Ctrl+Z')
 
 /**
- * The one question asked before deleting items that scenes use, or null when none is used (those go at once).
- * `nameOf` gives an item's display name.
+ * The one question asked before a delete that blocks scenes (plan.impact.needsConfirm: prompts naming a deleted picture
+ * keep red placeholders and stop running, scenes lose a first / last frame — core/placeholders assetDeleteQuestion), or
+ * null: the delete goes at once. `nameOf` gives an item's display name.
  */
 export function libraryDeleteQuestion(plan: LibraryDeletePlan, nameOf: (id: string) => string, mac: boolean): string | null {
-  const used = plan.usingAssets.length
-  if (!used || !plan.ids.length) return null
-  const n = plan.ids.length
-  const scenes = plan.usedBy.length
-  const head =
-    n === 1
-      ? `Xoá ${quoted(nameOf(plan.ids[0]))} khỏi thư viện? Mục này đang dùng ở ${scenes} cảnh.`
-      : used === n
-        ? `Xoá ${n} mục đang dùng ở ${scenes} cảnh?`
-        : `Xoá ${n} mục khỏi thư viện? ${used} mục trong đó đang dùng ở ${scenes} cảnh.`
-  const lines = [head]
-  if (plan.refScenes.length) lines.push('Chữ trong prompt sẽ thành chữ đỏ chờ ảnh.')
-  if (plan.frameScenes.length) lines.push('Cảnh dùng làm khung đầu / cuối sẽ mất khung đó.')
-  lines.push(`Hoàn tác được (${undoKeyLabel(mac)}).`)
-  return lines.join('\n')
+  if (!plan.ids.length || !plan.impact.needsConfirm) return null
+  return assetDeleteQuestion(plan.ids.length === 1 ? nameOf(plan.ids[0]) : null, plan.ids.length, plan.impact, undoKeyLabel(mac))
+}
+
+/** Title of the question's dialog (store/confirm → ConfirmSheet). */
+export function libraryDeleteTitle(plan: Pick<LibraryDeletePlan, 'ids'>): string {
+  return plan.ids.length === 1 ? 'Xoá khỏi thư viện?' : `Xoá ${plan.ids.length} mục khỏi thư viện?`
 }
 
 export interface LibraryDeleteToast {
@@ -170,22 +172,22 @@ export interface LibraryDeleteToast {
 }
 
 /**
- * The toast after a delete (its "Hoàn tác" button comes from undoToastAction). `rewritten` = prompts renumbered by the
- * store; `staleNote` = staleTokenNote(...) when automatic renumbering is off ('' otherwise).
+ * The toast after a delete (its "Hoàn tác" button comes from undoToastAction). `note` = core/staleTokens
+ * mediaChangeNote(before, after): red placeholders left, numbers left stale (renumbering off), or prompts renumbered.
  */
-export function libraryDeleteText(plan: LibraryDeletePlan, nameOf: (id: string) => string, opts: { rewritten: number; staleNote: string }): LibraryDeleteToast {
+export function libraryDeleteText(plan: LibraryDeletePlan, nameOf: (id: string) => string, note: MediaChangeNote | null): LibraryDeleteToast {
   const n = plan.ids.length
   const used = plan.usingAssets.length
   const scenes = plan.usedBy.length
   let text: string
   if (n === 1) text = `Đã xoá ${quoted(nameOf(plan.ids[0]))} khỏi thư viện${used ? ` và ${scenes} cảnh` : ''}`
   else text = `Đã xoá ${n} mục khỏi thư viện${used ? (used === n ? ` (đang dùng ở ${scenes} cảnh)` : ` (${used} mục đang dùng ở ${scenes} cảnh)`) : ''}`
-  if (opts.staleNote) text += opts.staleNote
-  else if (opts.rewritten) text += ` · đánh lại số @image trong ${opts.rewritten} prompt`
+  if (note) text += note.text
   text += '.'
   if (plan.hidden.length) text += ` Giữ ${plan.hidden.length} mục đang chọn nhưng bị ẩn bởi ô tìm / thẻ lọc.`
-  const toast: LibraryDeleteToast = { text, tone: opts.staleNote ? 'warning' : 'info' }
-  if (used || n > 1 || opts.staleNote) toast.ms = 8000
+  const toast: LibraryDeleteToast = { text, tone: note?.tone ?? 'info' }
+  const ms = Math.max(note?.ms ?? 0, used || n > 1 || note?.tone === 'warning' ? 8000 : 0)
+  if (ms) toast.ms = ms
   return toast
 }
 

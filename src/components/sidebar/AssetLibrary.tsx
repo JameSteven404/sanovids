@@ -11,6 +11,7 @@ import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { cachedUrl } from '../../lib/imageStore'
 import { IS_MAC } from '../../lib/platform'
 import { assetDragEnded, deleteLibrarySelection, registerLibraryView } from '../../libraryActions'
+import { linkToastWithFill } from '../../placeholderActions'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
@@ -160,8 +161,12 @@ function linkCardToSelection(id: string) {
   linkAssets(scenes, dragIdsFor(id))
 }
 
-/** "+ Nối" on a card while one scene is selected: link it and tell which @image number it got. */
+/**
+ * "+ Nối" on a card while one scene is selected: link it and tell which @image number it got — and, when the scene
+ * still holds red placeholders, offer "Gắn vào chỗ …" (GT1 linkToastWithFill: an explicit click, never filled by itself).
+ */
 function linkToScene(sceneId: string, assetId: string) {
+  const before = useProject.getState().project
   const token = ensureAssetToken(sceneId, assetId)
   const p = useProject.getState().project
   const scene = p.scenes.find((s) => s.id === sceneId)
@@ -169,12 +174,12 @@ function linkToScene(sceneId: string, assetId: string) {
   // Not linked: ensureAssetToken already explained why (image limit of the model).
   if (!scene || !asset || !scene.refs.includes(assetId)) return
   const sends = usesRefs(scene.settings)
-  toast(
-    `Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}${
-      sends ? '' : ' · chế độ hiện tại của cảnh không gửi ảnh tham chiếu (nối vẫn được giữ khi đổi chế độ)'
-    }.`,
-    { tone: sends ? 'success' : 'warning', action: undoToastAction() },
-  )
+  const text = `Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}${
+    sends ? '' : ' · chế độ hiện tại của cảnh không gửi ảnh tham chiếu (nối vẫn được giữ khi đổi chế độ)'
+  }`
+  // Newly linked to a scene that waits for a picture: the fill offer (only when this click added the link).
+  if (sends && !before.scenes.find((s) => s.id === sceneId)?.refs.includes(assetId) && linkToastWithFill(before, p, [assetId], text)) return
+  toast(`${text}.`, { tone: sends ? 'success' : 'warning', action: undoToastAction() })
 }
 
 async function copyToken(token: string, code: string) {

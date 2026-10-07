@@ -28,6 +28,16 @@
   backdrop-filter: blur(3px);
   animation: cm-fade-in 0.2s ease-out;
 }
+/* a question asked above an open dialog (Modal layer 'top', ConfirmSheet): above dialogs (100), below toasts (200) */
+.modal-backdrop.is-top {
+  z-index: 140;
+}
+/* the question of a ConfirmSheet: its line breaks are kept */
+.cm-confirm-text {
+  margin: 0;
+  white-space: pre-line;
+  line-height: 1.5;
+}
 .modal {
   width: min(560px, 100%);
   max-height: calc(100vh - 48px);
