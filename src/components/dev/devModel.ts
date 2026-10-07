@@ -27,6 +27,9 @@
 //   limitsStatusText(info, limits)            "Model (video-profiles)": whether / when SanoVids read the simulated
 //                                             site's model settings and what the inspector does with them.
 //   limitsDifferFromConfig(limits, models)    what SanoVids knows ≠ the toggles now → suggest "Đọc lại ngay".
+//   DEV_LOGIN_COOKIE_OPTIONS / DEV_ENCRYPTION_OPTIONS / devRestartText(outcome) / devRestartTone(outcome)
+//                                             "Giữ đăng nhập (giả lập)": the two settings and the toast of
+//                                             "Giả lập tắt app rồi mở lại" (providers/dev/keepLogin.ts).
 import { parseTokens, sceneCode } from '../../core/compile'
 import { MODELS, normalizeSettings } from '../../core/models'
 import type { Asset, ModelId, Scene } from '../../core/types'
@@ -35,6 +38,7 @@ import type { LimitField, LimitsInfo, SettingsLimits } from '../../providers/typ
 import { fieldBlock } from '../inspector/settingsLimits'
 import type { DevPanelTab } from '../../store/ui'
 import type { DevLogEntry } from '../../providers/dev/log'
+import { KEEP_LOGIN_DAYS, type DevEncryption, type DevLoginCookie, type DevRestartOutcome } from '../../providers/dev/keepLogin'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
 import type { SiteNodeInfo } from '../../providers/dev/siteClient'
 import {
@@ -78,7 +82,7 @@ export function devPanelTabs({ simulatedUpdates, perf = false }: { simulatedUpda
 export function activeFaultCount(s: Pick<DevServerSnapshot, 'faults' | 'jobFaults' | 'sessionExpired'> | null | undefined): number {
   if (!s) return 0
   const j = s.jobFaults
-  return s.faults.length + (j.failNext !== null ? 1 : 0) + (j.expireNext ? 1 : 0) + (j.streamFailures > 0 ? 1 : 0) + (s.sessionExpired ? 1 : 0)
+  return s.faults.length + (j.failNext !== null ? 1 : 0) + (j.expireNext ? 1 : 0) + (j.streamFailures > 0 ? 1 : 0) + (j.logoutCopyStuck ? 1 : 0) + (s.sessionExpired ? 1 : 0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -96,6 +100,8 @@ export type DevUiFaultAction =
   | { type: 'stream-failures' }
   /** The session ends on the server: every request answers 401 until the user logs in again. */
   | { type: 'expire-session' }
+  /** The next Đăng xuất cannot delete the kept login copy (setJobFaults({ logoutCopyStuck })). */
+  | { type: 'logout-copy-stuck' }
 
 export interface DevUiFault {
   id: string
@@ -141,6 +147,14 @@ export const DEV_UI_FAULTS: DevUiFault[] = [
     label: 'Hết phiên (401)',
     hint: 'Máy chủ giả lập đăng xuất tài khoản: mọi yêu cầu trả 401 cho tới khi đăng nhập lại — SanoVids phải mời đăng nhập, không làm mất take đang chạy.',
     action: { type: 'expire-session' },
+    canStick: false,
+    stickyByDefault: false,
+  },
+  {
+    id: 'logout-copy-stuck',
+    label: 'Đăng xuất: không xoá được bản sao đăng nhập',
+    hint: 'Lần Đăng xuất kế tiếp vẫn đăng xuất nhưng không xoá được bản sao đăng nhập trên máy (tệp bị khoá) — SanoVids phải báo lỗi rõ ràng kèm nút “Thử lại”, không báo “Đã đăng xuất”.',
+    action: { type: 'logout-copy-stuck' },
     canStick: false,
     stickyByDefault: false,
   },
@@ -641,4 +655,38 @@ export function limitsDifferFromConfig(limits: SettingsLimits, models: DevConfig
     for (const r of spec.ratios) if (refused('ratio', r) !== (narrows && (t.off_ratios ?? []).includes(r))) return true
   }
   return false
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Giữ đăng nhập (giả lập)" — what a restart of the desktop app does to the login (providers/dev/keepLogin.ts)
+// ---------------------------------------------------------------------------------------------
+
+export const DEV_LOGIN_COOKIE_OPTIONS: { id: DevLoginCookie; label: string; title: string }[] = [
+  { id: 'session', label: 'Theo phiên (mất khi tắt app)', title: 'Như canvasapp thật (theo hiểu biết hiện tại): cookie phiên — chỉ còn sau khi mở lại nếu SanoVids giữ đăng nhập' },
+  { id: 'persistent', label: 'Có hạn dùng', title: 'Cookie có ngày hết hạn: còn đăng nhập sau khi mở lại, không cần giữ' },
+]
+
+export const DEV_ENCRYPTION_OPTIONS: { id: DevEncryption; label: string; title: string }[] = [
+  { id: 'ok', label: 'Có', title: 'Máy mã hoá được bản sao đăng nhập (safeStorage / DPAPI)' },
+  { id: 'unavailable', label: 'Không có', title: 'Máy không mã hoá được: SanoVids không giữ đăng nhập (công tắc bị khoá)' },
+  { id: 'decrypt-fails', label: 'Giải mã lỗi', title: 'Bản sao không giải mã được khi mở lại (tài khoản Windows khác, Local State bị đặt lại…): bị xoá, cần đăng nhập lại' },
+]
+
+const RESTART_TEXT: Record<DevRestartOutcome, string> = {
+  'not-logged-in': 'Đã giả lập mở lại app (tài khoản giả lập chưa đăng nhập từ trước).',
+  persistent: 'Đã giả lập mở lại app: vẫn đăng nhập (cookie đăng nhập có hạn dùng — không cần giữ).',
+  kept: 'Đã giả lập mở lại app: vẫn đăng nhập (đang giữ đăng nhập).',
+  'keep-off': 'Đã giả lập mở lại app: phiên mất — cần đăng nhập lại (“Giữ đăng nhập” đang tắt).',
+  'encryption-unavailable': 'Đã giả lập mở lại app: phiên mất — cần đăng nhập lại (máy không mã hoá được nên không giữ).',
+  'decrypt-fails': 'Đã giả lập mở lại app: phiên mất — cần đăng nhập lại (không giải mã được bản sao, SanoVids đã xoá nó).',
+  expired: `Đã giả lập mở lại app: phiên mất — cần đăng nhập lại (bản sao đã quá ${KEEP_LOGIN_DAYS} ngày).`,
+}
+
+/** The toast after "Giả lập tắt app rồi mở lại". */
+export function devRestartText(outcome: DevRestartOutcome): string {
+  return RESTART_TEXT[outcome] ?? RESTART_TEXT['not-logged-in']
+}
+
+export function devRestartTone(outcome: DevRestartOutcome): 'success' | 'warning' | 'info' {
+  return outcome === 'kept' || outcome === 'persistent' ? 'success' : outcome === 'not-logged-in' ? 'info' : 'warning'
 }

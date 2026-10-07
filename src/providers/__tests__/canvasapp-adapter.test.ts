@@ -11,6 +11,8 @@ import {
   type TransportResponse,
 } from '../canvasapp/api'
 import {
+  ACCOUNT_KEY,
+  accountKeyOf,
   CANVAS_NOT_READ_TEXT,
   CANVAS_NOT_SAVED_TEXT,
   createCanvasappProvider,
@@ -870,6 +872,49 @@ describe('canvasapp adapter', () => {
     expect(server.state.projects.length).toBe(1)
     expect(server.state.uploads).toBe(2)
     expect(server.state.jobs.length).toBe(2)
+  })
+})
+
+describe('canvasapp adapter: the account the session state belongs to (noteAccount)', () => {
+  it('accountKeyOf: the e-mail, trimmed and case-insensitive, never kept as such; nothing without one', () => {
+    const a = accountKeyOf({ email: 'a@example.test', credits_balance: 3 })
+    expect(a).toMatch(/^[0-9a-f]{16}$/)
+    expect(accountKeyOf({ email: ' A@Example.TEST ' })).toBe(a)
+    expect(accountKeyOf({ email: 'b@example.test' })).not.toBe(a)
+    for (const v of [null, undefined, 'a@example.test', [], {}, { email: '' }, { email: '  ' }, { email: 5 }, { credits_balance: 1 }]) expect(accountKeyOf(v)).toBeNull()
+  })
+
+  it('the first account is remembered; the same one changes nothing; another one resets the bridge state (ledger kept); Đăng xuất forgets it', async () => {
+    const server = fakeServer()
+    const storage = memoryStorage()
+    const make = () => createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
+    const provider = make()
+    expect((await provider.submit(req())).remoteId).toBe('proj1:job1')
+    const a = accountKeyOf({ email: 'a@example.test' })
+    const b = accountKeyOf({ email: 'b@example.test' })
+    expect(provider.noteAccount(null)).toBe(false) // /api/me named no account: nothing decided, nothing stored
+    expect(storage.get(ACCOUNT_KEY)).toBeNull()
+    expect(provider.noteAccount(a)).toBe(false)
+    expect(provider.noteAccount(a)).toBe(false)
+    expect(provider.bridgeProjectId()).toBe('proj1')
+    expect(storage.get(ACCOUNT_KEY)).toBe(a)
+    expect([...[STATE_KEY, JOBS_KEY, ACCOUNT_KEY].map((k) => storage.get(k) ?? '')].join('')).not.toContain('example')
+    // a restart (same records): still account A's state; then a confirmed balance of account B (a kept login of B put
+    // back, B logged in on canvasapp's page without Đăng xuất) → the bridge state goes, the job ledger stays
+    const again = make()
+    expect(again.noteAccount(a)).toBe(false)
+    expect(again.bridgeProjectId()).toBe('proj1')
+    expect(again.noteAccount(b)).toBe(true)
+    expect(again.bridgeProjectId()).toBeNull()
+    expect(storage.get(STATE_KEY)).toBeNull()
+    expect(JSON.parse(storage.get(JOBS_KEY)!).jobs.take_1).toMatchObject({ remoteId: 'proj1:job1' })
+    expect(storage.get(ACCOUNT_KEY)).toBe(b)
+    expect(again.noteAccount(b)).toBe(false)
+    // Đăng xuất (reset): the next login's account is the first one of the new state — no second reset
+    again.reset()
+    expect(storage.get(ACCOUNT_KEY)).toBeNull()
+    expect(again.noteAccount(a)).toBe(false)
+    expect(storage.get(ACCOUNT_KEY)).toBe(a)
   })
 })
 

@@ -207,6 +207,8 @@ function fakeCanvasapp() {
     jobs: [] as FakeJob[],
     /** Prefix of the ids this account's data gets (another account: useAccount) — canvasapp's ids are unique. */
     idPrefix: '',
+    /** The e-mail /api/me names (canvasapp's is not known to carry one: none unless a test sets it). */
+    email: undefined as string | undefined,
     script: DEFAULT_SCRIPT,
     /** Requests electron/main.cjs would have refused (not allowlisted / too large): must stay empty. */
     refusedByMain: [] as string[],
@@ -276,7 +278,7 @@ function fakeCanvasapp() {
     const [path, query = ''] = req.path.split('?')
     if (path === '/api/auth/state') return ok({ authenticated: state.authenticated, topup_enabled: true })
     if (!state.authenticated) return refuse(401, 'Not authenticated', path)
-    if (path === '/api/me' && req.method === 'GET') return ok({ credits_balance: state.balance })
+    if (path === '/api/me' && req.method === 'GET') return ok({ credits_balance: state.balance, ...(state.email ? { email: state.email } : {}) })
     if (path === '/api/video-profiles' && req.method === 'GET') return ok({ profiles: state.profiles })
     if (path === '/api/projects' && req.method === 'GET') return ok(state.projects)
     if (path === '/api/projects' && req.method === 'POST') {
@@ -496,14 +498,14 @@ function fakeCanvasapp() {
   }
 
   /** Data of each canvas account; the one logged in lives in `state`. */
-  type Account = Pick<typeof state, 'projects' | 'canvases' | 'uploads' | 'jobs' | 'balance' | 'idPrefix'>
+  type Account = Pick<typeof state, 'projects' | 'canvases' | 'uploads' | 'jobs' | 'balance' | 'idPrefix' | 'email'>
   const accounts = new Map<string, Account>()
   let account = 'A'
   /** Switches the data to another canvasapp account ('A' = the first one; a new one starts empty, ids prefixed). */
   function useAccount(name: string) {
-    const { projects, canvases, uploads, jobs, balance, idPrefix } = state
-    accounts.set(account, { projects, canvases, uploads, jobs, balance, idPrefix })
-    Object.assign(state, accounts.get(name) ?? { projects: [], canvases: new Map(), uploads: new Map(), jobs: [], balance: 100, idPrefix: name.toLowerCase() })
+    const { projects, canvases, uploads, jobs, balance, idPrefix, email } = state
+    accounts.set(account, { projects, canvases, uploads, jobs, balance, idPrefix, email })
+    Object.assign(state, accounts.get(name) ?? { projects: [], canvases: new Map(), uploads: new Map(), jobs: [], balance: 100, idPrefix: name.toLowerCase(), email: undefined })
     account = name
   }
 
@@ -1705,6 +1707,40 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     expect(take(all[0].id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
     expect(all.slice(1).every((t) => !!take(t.id).remoteId && !isUncertainSubmit(take(t.id)))).toBe(true)
     expect(fake.jobPosts()).toHaveLength(9)
+  })
+})
+
+describe('gateway e2e: the login that comes back after a restart is another account ("Giữ đăng nhập")', () => {
+  const gateway = () => getProvider('canvasapp') as CanvasappProvider
+  it('the first confirmed balance of the other account drops the bridge state of the first: nothing is PUT into its project, the ledger stays', async () => {
+    fake.state.email = 'a@example.test'
+    const [t1] = enqueue('s1')
+    await run(5_000)
+    await refreshRealCredits({ force: true })
+    for (const j of fake.state.jobs) j.script = [{ status: 'completed', progress: 100, download_available: true }]
+    await run(60_000)
+    expect(take(t1.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
+    expect(gateway().bridgeProjectId()).toBe('proj1')
+    // account B logged in on canvasapp's own page (no Đăng xuất in SanoVids) and its login was kept; the app restarts
+    fake.useAccount('B')
+    fake.state.email = 'b@example.test'
+    restart(saved())
+    resetRealCredits()
+    expect(gateway().bridgeProjectId()).toBe('proj1') // still account A's (persisted)
+    const mark = fake.log.length
+    await refreshRealCredits({ force: true })
+    expect(gateway().bridgeProjectId()).toBeNull()
+    // a scene runs: the bridge of account B, never a request into account A's project
+    const [t2] = enqueue('s2')
+    await run(5_000)
+    expect(take(t2.id).remoteId).toMatch(/^bproj\d+:/)
+    expect(fake.log.slice(mark).filter((c) => c.path.startsWith('/api/projects/proj1'))).toEqual([])
+    // the same account again (a later read): nothing more is dropped
+    const bridge = gateway().bridgeProjectId()
+    await refreshRealCredits({ force: true })
+    expect(gateway().bridgeProjectId()).toBe(bridge)
+    // the job ledger of account A's take is kept (it proves that take was paid for)
+    expect(JSON.parse(storage.get(JOBS_KEY)!).jobs[t1.id]).toMatchObject({ remoteId: 'proj1:job1' })
   })
 })
 

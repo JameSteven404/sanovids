@@ -602,7 +602,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(wiring).toContain("const m = matchCanvasappRoute('GET', rawPath)")
     // the GET goes through <canvasapp-net-get> (net.request, redirect 'manual', https only), never session.fetch
     // (which follows https → http and cannot even tell where it ended)
-    expect(wiring).toContain('fetch: (url, init) => canvasappNetGet({ request: (opts) => net.request(opts), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),')
+    // (each net.request is watched until Electron reports it over: Đăng xuất waits for it — drainCanvasappRequests)
+    expect(wiring).toContain('fetch: (url, init) => canvasappNetGet({ request: (opts) => watchDownloadRequest(net.request(opts)), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),')
     expect(wiring).not.toContain('.fetch(')
     const netGet = /\/\/ <canvasapp-net-get>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-net-get>/.exec(mainSource)![1]
     expect(netGet).toContain("credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true")
@@ -631,7 +632,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {
     const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
-    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['status', 'login', 'logout', 'request', 'downloadOpen', 'downloadRead', 'downloadClose', 'checkout'])
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['status', 'login', 'logout', 'keepLogin', 'setKeepLogin', 'request', 'downloadOpen', 'downloadRead', 'downloadClose', 'checkout'])
     expect(block![1]).toContain("ipcRenderer.invoke('canvasapp:downloadOpen', {\n        id: str(a && a.id),\n        path: str(a && a.path),\n        from: a && Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0,\n      })")
     expect(block![1]).toContain("downloadRead: (a) => ipcRenderer.invoke('canvasapp:downloadRead', { id: str(a && a.id) })")
     expect(block![1]).toContain("downloadClose: (a) => ipcRenderer.invoke('canvasapp:downloadClose', { id: str(a && a.id) })")
@@ -683,5 +684,20 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
     expect(topKeys.at(-1)).toBe('updates')
     expect(topKeys.indexOf('app')).toBe(topKeys.indexOf('platform') + 1)
+  })
+
+  it('preload: "Giữ đăng nhập" lives INSIDE the canvasapp block (no new top-level key); only a boolean crosses', () => {
+    const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
+    expect(block).not.toBeNull()
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(expect.arrayContaining(['status', 'login', 'logout', 'keepLogin', 'setKeepLogin', 'request']))
+    expect(block![1]).toContain("keepLogin: () => ipcRenderer.invoke('canvasapp:keepLogin')")
+    expect(block![1]).toContain("setKeepLogin: (on) => ipcRenderer.invoke('canvasapp:setKeepLogin', on === true)")
+    const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
+    expect(topKeys).not.toContain('keepLogin')
+    expect(topKeys).not.toContain('setKeepLogin')
+    expect(count("'canvasapp:keepLogin'") + count("'canvasapp:setKeepLogin'")).toBe(2) // main: one handler each
+    // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
+    expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
+    expect(mainSource).not.toMatch(/'before-quit'|'will-quit'/)
   })
 })

@@ -152,6 +152,35 @@ describe('real credits: status transitions', () => {
   })
 })
 
+describe('real credits: the account of a confirmed balance (onMe)', () => {
+  it('gets every applied /api/me answer — never an error, a 401, or one a reset() made stale', async () => {
+    const seen: unknown[] = []
+    const fake = fakeBridge(() => ok({ credits_balance: 5, email: 'a@example.test' }))
+    const api = createCanvasappApi(createDesktopTransport(() => fake.bridge))
+    const rc = createRealCredits({ api: () => api, onMe: (me) => void seen.push(me) })
+    await rc.refresh({ force: true })
+    expect(seen).toEqual([{ credits_balance: 5, email: 'a@example.test' }])
+    fake.state.answer = () => ok({ detail: 'Not authenticated' }, 401)
+    await rc.refresh({ force: true })
+    fake.state.answer = () => ok({ detail: 'boom' }, 500)
+    await rc.refresh({ force: true })
+    fake.state.answer = () => ok({ email: 'a@example.test' }) // no balance: not a confirmed read
+    await rc.refresh({ force: true })
+    expect(seen).toHaveLength(1)
+    // an answer that lands after a reset (gateway switched, logged out) is not this gateway's any more
+    fake.state.answer = () => ok({ credits_balance: 9, email: 'b@example.test' })
+    fake.hold()
+    const p = rc.refresh({ force: true })
+    rc.reset()
+    fake.release()
+    await p
+    expect(seen).toHaveLength(1)
+    // a throwing listener never hides the balance
+    const rc2 = createRealCredits({ api: () => api, onMe: () => { throw new Error('x') } })
+    expect(await rc2.refresh({ force: true })).toMatchObject({ status: 'ok', balance: 9 })
+  })
+})
+
 describe('real credits: throttle and dedupe', () => {
   it('no second read within 15 s unless forced', async () => {
     const f = setup()

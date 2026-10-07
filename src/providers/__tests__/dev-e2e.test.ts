@@ -27,6 +27,7 @@ import { cancelTake, createSceneFromTake } from '../../actions'
 import { importSiteJobs, scanForImport } from '../../siteJobActions'
 import { importWords } from '../../components/runs/importJobsModel'
 import { takeCostLine } from '../../components/runs/creditText'
+import { logoutOutcome } from '../../components/dialogs/keepLoginModel'
 import { createTopupFlow } from '../../components/topup/topupFlow'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf } from '../../core/models'
@@ -302,7 +303,7 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     const login = devBridge().login()
     await vi.waitFor(() => expect(useDevPrompts.getState().login).not.toBeNull())
     answerDevLogin(true)
-    expect(await login).toEqual({ ok: true, authenticated: true })
+    expect(await login).toEqual({ ok: true, authenticated: true, keepLogin: true })
     await refreshRealCredits({ force: true })
     expect(useRealCredits.getState()).toMatchObject({ status: 'ok', balance: 1000 })
     const [again] = enqueue('s1')
@@ -787,6 +788,56 @@ describe('dev mode e2e: a lost answer next to a duplicated project', () => {
     expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: `${job.project_id}:${job.job_id}` })
     expect(server.snapshot().jobs).toHaveLength(1)
     expect(server.balance()).toBe(1000 - S1_COST)
+  })
+})
+
+describe('dev mode e2e: a restart of the desktop app ("Giữ đăng nhập")', () => {
+  it('kept: still logged in, the balance shows at once; not kept: the poll gets 401, the take waits, logging in again finishes it', async () => {
+    server.login()
+    const [t] = enqueue('s1')
+    await run(4_000)
+    expect(take(t.id).status).toBe('processing')
+    // kept (source run default: on)
+    expect(await devBridge().simulateRestart()).toMatchObject({ survived: true, outcome: 'kept', keepLogin: true })
+    resetRealCredits()
+    await refreshRealCredits({ force: true })
+    expect(useRealCredits.getState()).toMatchObject({ status: 'ok', balance: 1000 - S1_COST })
+
+    await devBridge().setKeepLogin(false)
+    try {
+      expect(await devBridge().simulateRestart()).toMatchObject({ survived: false, outcome: 'keep-off' })
+      resetRealCredits()
+      await run(3_500)
+      // the take is kept (never failed over a lost session) and the app asks to log in
+      expect(take(t.id).status).toBe('processing')
+      expect(useRuns.getState().providerIssue).toMatchObject({ provider: 'dev', code: 'login-required' })
+      await refreshRealCredits({ force: true })
+      expect(useRealCredits.getState().status).toBe('login-required')
+
+      const login = devBridge().login()
+      await vi.waitFor(() => expect(useDevPrompts.getState().login).not.toBeNull())
+      answerDevLogin(true)
+      expect(await login).toEqual({ ok: true, authenticated: true, keepLogin: false })
+      await refreshRealCredits({ force: true }) // (what loginToCanvasapp does) → polling resumes
+      expect(useRuns.getState().providerIssue).toBeNull()
+      await run(20_000)
+      expect(take(t.id).status).toBe('completed')
+      expect(server.snapshot().jobs).toHaveLength(1) // never sent twice
+      expect(server.balance()).toBe(1000 - S1_COST)
+    } finally {
+      await devBridge().setKeepLogin(true)
+    }
+  })
+
+  it('"Đăng xuất: không xoá được bản sao": logged out, but the answer says so (no "Đã đăng xuất")', async () => {
+    server.login()
+    server.setJobFaults({ logoutCopyStuck: true })
+    const res = await devBridge().logout()
+    expect(res).toMatchObject({ ok: false, code: 'keep-login-not-cleared' })
+    expect(logoutOutcome(res)).toMatchObject({ ok: false, notCleared: true })
+    expect(server.isAuthenticated()).toBe(false)
+    // "Thử lại" = logout again: fine now
+    expect(logoutOutcome(await devBridge().logout())).toEqual({ ok: true })
   })
 })
 

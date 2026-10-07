@@ -52,7 +52,8 @@ import { useEffect, useMemo } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { creditKindOf, type CreditKind } from '../lib/credits'
-import { activeGateway, activeProviderId, useProviderPrefs } from '../providers'
+import { activeGateway, activeProviderId, getProvider, useProviderPrefs } from '../providers'
+import { accountKeyOf, type CanvasappProvider } from '../providers/canvasapp/adapter'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi } from '../providers/canvasapp/api'
 import { WEB_UNAVAILABLE } from '../providers/canvasapp/transport'
 import { onRunEvent, resumeProviderPolling, useRuns, type RunEvent } from './runs'
@@ -104,6 +105,11 @@ export interface RealCreditsDeps {
   now?: () => number
   /** Throttle for non-forced reads (default CREDITS_MIN_REFRESH_MS). */
   minIntervalMs?: number
+  /**
+   * Every confirmed /api/me answer (a balance was read), as canvasapp sent it — only one that is applied (never one a
+   * reset() made stale). The app: which account the gateway's session state belongs to (provider.noteAccount).
+   */
+  onMe?: (me: unknown) => void
 }
 
 export interface RealCredits {
@@ -133,20 +139,20 @@ export function createRealCredits(deps: RealCreditsDeps): RealCredits {
   /** Bumped by reset(): a read started before is ignored when it lands. */
   let epoch = 0
 
-  async function read(): Promise<Partial<RealCreditsState>> {
+  async function read(): Promise<{ patch: Partial<RealCreditsState>; me?: unknown }> {
     try {
       const api = deps.api()
       const avail = await api.transport.available()
-      if (!avail.ok) return { status: 'unavailable', balance: null, error: avail.reason || WEB_UNAVAILABLE }
+      if (!avail.ok) return { patch: { status: 'unavailable', balance: null, error: avail.reason || WEB_UNAVAILABLE } }
       const me = await api.me()
       const balance = balanceOf((me as { credits_balance?: unknown } | undefined)?.credits_balance)
-      if (balance === null) return { status: 'error', balance: null, error: NO_BALANCE }
-      return { status: 'ok', balance, updatedAt: now(), error: null }
+      if (balance === null) return { patch: { status: 'error', balance: null, error: NO_BALANCE } }
+      return { patch: { status: 'ok', balance, updatedAt: now(), error: null }, me }
     } catch (e) {
-      if (isLoginRequired(e)) return { status: 'login-required', balance: null, error: canvasappErrorText(e) }
-      if (e instanceof CanvasappError && e.code === 'unavailable') return { status: 'unavailable', balance: null, error: e.message || WEB_UNAVAILABLE }
+      if (isLoginRequired(e)) return { patch: { status: 'login-required', balance: null, error: canvasappErrorText(e) } }
+      if (e instanceof CanvasappError && e.code === 'unavailable') return { patch: { status: 'unavailable', balance: null, error: e.message || WEB_UNAVAILABLE } }
       // Network / server trouble: keep the last confirmed balance (updatedAt says how old it is).
-      return { status: 'error', error: canvasappErrorText(e) }
+      return { patch: { status: 'error', error: canvasappErrorText(e) } }
     }
   }
 
@@ -154,9 +160,16 @@ export function createRealCredits(deps: RealCreditsDeps): RealCredits {
     const mine = epoch
     lastAttempt = now()
     store.setState((s) => ({ refreshing: true, status: s.status === 'idle' ? 'loading' : s.status }))
-    const p = read().then((patch) => {
+    const p = read().then(({ patch, me }) => {
       if (mine !== epoch) return store.getState() // reset meanwhile: forget this answer
       inflight = null
+      if (me !== undefined && deps.onMe) {
+        try {
+          deps.onMe(me)
+        } catch {
+          /* the balance is shown anyway */
+        }
+      }
       store.setState({ ...patch, refreshing: false })
       return store.getState()
     })
@@ -295,7 +308,17 @@ export function createCreditsSync(deps: CreditsSyncDeps): { start: () => () => v
 // Default instance (the app's)
 // ---------------------------------------------------------------------------------------------
 
-const realCredits = createRealCredits({ api: () => activeGateway().api })
+const realCredits = createRealCredits({
+  api: () => activeGateway().api,
+  // The balance's account is the one logged in now: another one than the gateway's bridge state was built under (a
+  // kept login restored after a restart, another account logged in on canvasapp's page) resets that state, like Đăng
+  // xuất. A reset() of this store on a gateway switch drops a stale answer before it gets here.
+  // (the provider that runs the takes: the registry's — the gateway's own one in the app)
+  onMe: (me) => {
+    const p = getProvider(activeProviderId()) as Partial<CanvasappProvider>
+    if (typeof p.noteAccount === 'function') p.noteAccount(accountKeyOf(me))
+  },
+})
 
 export const useRealCredits = realCredits.store
 export const refreshRealCredits = realCredits.refresh

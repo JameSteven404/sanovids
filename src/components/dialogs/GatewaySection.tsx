@@ -12,15 +12,105 @@ import { useShallow } from 'zustand/react/shallow'
 import { openDevPanel, openTopUp } from '../../actions'
 import { openImportJobs } from '../../siteJobActions'
 import { activeGateway, activeProviderId, PROVIDER_LABEL, SELECTABLE_PROVIDERS, useProviderPrefs, type ProviderId } from '../../providers'
-import { canvasappBridge, WEB_UNAVAILABLE } from '../../providers/canvasapp/transport'
+import { canvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from '../../providers/canvasapp/transport'
 import { DEV_CREDIT_HINT, formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
 import { activeCount, useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
 import { clockText } from '../topbar/creditPillModel'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import './dialogs.css'
+import {
+  KEEP_LOGIN_LABEL,
+  KEEP_LOGIN_TOAST_OFF,
+  KEEP_LOGIN_TOAST_ON,
+  keepLoginChecked,
+  keepLoginDisabled,
+  keepLoginHint,
+  logoutOutcome,
+  parseKeepLoginState,
+  type KeepLoginView,
+} from './keepLoginModel'
 import { Segmented } from './Segmented'
+import { Toggle } from './settingsUi'
 import { gatewayLoginFromCredits, type GatewayCreditsView } from './shared'
+
+/** logout() of a bridge; a rejected IPC call becomes an ok:false answer (shown, never "Đã đăng xuất"). */
+function bridgeLogout(bridge: CanvasappBridge): Promise<unknown> {
+  return bridge.logout().catch((e: unknown) => ({ ok: false, code: 'error', message: e instanceof Error && e.message ? e.message : String(e) }))
+}
+
+/**
+ * Logout did not finish cleanly: the message as an error toast. When only the kept login copy could not be deleted,
+ * it stays (persistent) with "Thử lại" = Đăng xuất again (works logged out too: it deletes the copy, clears the partition).
+ */
+function showLogoutProblem(outcome: { message: string; notCleared: boolean }, bridge: CanvasappBridge) {
+  const retry = async () => {
+    const again = logoutOutcome(await bridgeLogout(bridge))
+    if (again.ok) toast('Đã xoá bản sao đăng nhập canvasapp trên máy.', { tone: 'success' })
+    else showLogoutProblem(again, bridge)
+  }
+  toast(outcome.message, { tone: 'error', ...(outcome.notCleared ? { action: { label: 'Thử lại', run: () => void retry() }, persistent: true } : {}) })
+}
+
+/**
+ * "Giữ đăng nhập canvasapp trên máy này" — held by the main process (or the simulated bridge in development mode), read
+ * when the section mounts and again whenever the login state changes (`loginState`: a login may have shown that this
+ * computer can / cannot encrypt). Hidden with a desktop build that does not have it.
+ */
+function KeepLoginRow({ bridge, dev, loginState }: { bridge: CanvasappBridge; dev: boolean; loginState: string }) {
+  const [view, setView] = useState<KeepLoginView | null>(null)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    let alive = true
+    const read = bridge.keepLogin
+    if (!read) return
+    void read
+      .call(bridge)
+      .then((raw) => {
+        const st = parseKeepLoginState(raw)
+        if (alive) setView(st.ok ? st : null)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [bridge, loginState])
+  if (!view || !bridge.setKeepLogin) return null
+  const change = async (on: boolean) => {
+    if (saving || !bridge.setKeepLogin) return
+    setSaving(true)
+    try {
+      const st = parseKeepLoginState(await bridge.setKeepLogin(on).catch((e: unknown) => ({ ok: false, code: 'error', message: e instanceof Error ? e.message : String(e) })))
+      if (st.ok) {
+        setView(st)
+        toast(on ? KEEP_LOGIN_TOAST_ON : KEEP_LOGIN_TOAST_OFF, { tone: on ? 'success' : 'info' })
+      } else {
+        toast(st.message, { tone: st.code === 'keep-login-not-cleared' ? 'warning' : 'error' })
+        // what main holds now (the choice may be stored although the copy could not be deleted)
+        const now = bridge.keepLogin ? parseKeepLoginState(await bridge.keepLogin().catch(() => null)) : null
+        if (now?.ok) setView(now)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="dg-gw-keep">
+      <Toggle
+        checked={keepLoginChecked(view)}
+        disabled={keepLoginDisabled(view) || saving}
+        onChange={(on) => void change(on)}
+        label={
+          <>
+            {dev && <span className="dg-dev-tag">DEV</span>}
+            {KEEP_LOGIN_LABEL}
+          </>
+        }
+        hint={keepLoginHint(view)}
+      />
+    </div>
+  )
+}
 
 export function GatewaySection() {
   const desktop = !!canvasappBridge()
@@ -29,7 +119,8 @@ export function GatewaySection() {
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
   const gw = activeGateway()
   const dev = gw.simulated
-  const hasBridge = !!gw.bridge()
+  const gwBridge = gw.bridge()
+  const hasBridge = !!gwBridge
   const running = useRuns(activeCount)
   const issue = useRuns((s) => (s.providerIssue && s.providerIssue.provider === activeProviderId() ? s.providerIssue.message : null))
   const real = useRealCredits(
@@ -60,16 +151,19 @@ export function GatewaySection() {
 
   const doLogout = async () => {
     // the account the balance shown belongs to: the simulated one in development mode, else the real canvasapp
-    const gwBridge = gw.bridge()
-    if (!gwBridge || busy) return
+    const bridge = gw.bridge()
+    if (!bridge || busy) return
     setBusy('logout')
     try {
-      await gwBridge.logout()
+      // Main stops requests in flight, deletes the kept login copy, asks canvasapp to end the session, clears the
+      // partition — and SAYS when the copy could not be deleted (never "Đã đăng xuất" then).
+      const outcome = logoutOutcome(await bridgeLogout(bridge))
       gw.provider().reset()
       // Forget the balance of the account that just logged out, then confirm the logged-out state (→ 401).
       resetRealCredits()
       if (!gw.simulated) setProvider('dev')
-      toast(gw.simulated ? 'Đã đăng xuất tài khoản giả lập (chế độ Phát triển).' : 'Đã đăng xuất canvasapp và chuyển về chế độ Phát triển (giả lập).', { tone: 'success' })
+      if (!outcome.ok) showLogoutProblem(outcome, bridge)
+      else toast(gw.simulated ? 'Đã đăng xuất tài khoản giả lập (chế độ Phát triển).' : 'Đã đăng xuất canvasapp và chuyển về chế độ Phát triển (giả lập).', { tone: 'success' })
       await refreshRealCredits({ force: true })
     } finally {
       setBusy(null)
@@ -241,6 +335,8 @@ export function GatewaySection() {
           </div>
         </div>
       )}
+
+      {gwBridge && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
 
       {issue && (
         <div className="dg-callout warn">

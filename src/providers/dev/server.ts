@@ -47,6 +47,7 @@ import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
 import { ALLOWED_IMAGE_TYPES, BRIDGE_PROJECT_NAME, uuidFromKey } from '../canvasapp/mapping'
 import { CANVASAPP_VIDEO_MAX_BYTES } from './downloads'
+import { DEV_ENCRYPTIONS, DEV_LOGIN_COOKIES, restartOutcome, type DevEncryption, type DevLoginCookie, type DevRestartOutcome } from './keepLogin'
 import { pushDevLog, summarizeForLog } from './log'
 import type { DevTopupOutcome } from './prompts'
 import { matchDevRoute, MAX_UPLOAD_BYTES, type DevEndpoint } from './routes'
@@ -103,6 +104,10 @@ export interface DevConfig {
    */
   rangeSupport: boolean
   models: Record<ModelId, DevModelToggle>
+  /** How the login cookie is set (keepLogin.ts): 'session' = lost when the app quits, like the real site as believed. */
+  loginCookie: DevLoginCookie
+  /** safeStorage on this simulated computer: the kept login copy can be written / read ('ok') or not. */
+  encryption: DevEncryption
 }
 
 export const DEV_CONFIG_DEFAULT: DevConfig = {
@@ -118,6 +123,8 @@ export const DEV_CONFIG_DEFAULT: DevConfig = {
     seedance_2_5: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
     minimax_h3: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
   },
+  loginCookie: 'session',
+  encryption: 'ok',
 }
 
 export type DevFault =
@@ -177,9 +184,14 @@ export interface DevJobFaults {
   expireNext: boolean
   /** The next N video downloads (stream) fail with 503. */
   streamFailures: number
+  /**
+   * The next Đăng xuất cannot delete the kept login copy (an antivirus holds the file): the bridge's logout() logs out
+   * but answers { ok: false, code: 'keep-login-not-cleared' } (then cleared).
+   */
+  logoutCopyStuck: boolean
 }
 
-const NO_JOB_FAULTS: DevJobFaults = { failNext: null, expireNext: false, streamFailures: 0 }
+const NO_JOB_FAULTS: DevJobFaults = { failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false }
 
 /** A video download as the streaming gateway asks for it: Range + If-Range only to continue (the bridge decides). */
 export interface DevStreamRequest {
@@ -463,6 +475,8 @@ interface DevState {
   authenticated: boolean
   /** The session was ended from the dev panel (expireSession): an armed fault until the next login. */
   sessionExpired: boolean
+  /** When the account logged in (= when SanoVids saved its kept login copy; simulateRestart's 30-day rule). */
+  loginAt: number | null
   balance: number
   projects: DevProject[]
   uploads: DevUpload[]
@@ -643,6 +657,12 @@ export interface DevCanvasapp {
   logout(): void
   /** The session ends on the server side: every request answers 401 until login() again. */
   expireSession(): void
+  /**
+   * "Giả lập tắt app rồi mở lại": the desktop app quit and started again. The login survives when its cookie has an
+   * expiry (config.loginCookie) or SanoVids kept it (keepLogin + config.encryption + ≤ 30 days since the login) —
+   * keepLogin.ts restartOutcome; otherwise the account is logged out. Faults and settings stay (they are the site's).
+   */
+  simulateRestart(keepLogin: boolean): { survived: boolean; outcome: DevRestartOutcome }
   balance(): number
   /** Set the balance (adds an "adjustment" history line). */
   setBalance(credits: number): void
@@ -726,6 +746,8 @@ function mergeConfig(raw: unknown): DevConfig {
     failRate: num(c.failRate, d.failRate, 0, 1),
     rangeSupport: typeof c.rangeSupport === 'boolean' ? c.rangeSupport : d.rangeSupport,
     models,
+    loginCookie: (DEV_LOGIN_COOKIES as readonly unknown[]).includes(c.loginCookie) ? (c.loginCookie as DevLoginCookie) : d.loginCookie,
+    encryption: (DEV_ENCRYPTIONS as readonly unknown[]).includes(c.encryption) ? (c.encryption as DevEncryption) : d.encryption,
   }
 }
 
@@ -918,6 +940,7 @@ function parseState(raw: string | null): DevState | null {
       seq: isNum(p.seq) ? p.seq : 0,
       authenticated,
       sessionExpired: !authenticated && p.sessionExpired === true,
+      loginAt: authenticated && isNum(p.loginAt) ? p.loginAt : null,
       balance: p.balance,
       projects: listOf(p.projects, readProject),
       uploads: listOf(p.uploads, readUpload),
@@ -966,6 +989,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       seq: 0,
       authenticated: false,
       sessionExpired: false,
+      loginAt: null,
       balance: DEV_INITIAL_BALANCE,
       projects: [],
       uploads: [],
@@ -1865,6 +1889,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
         if (state.authenticated && !state.sessionExpired) return
         state.authenticated = true
         state.sessionExpired = false
+        state.loginAt = now()
         save()
       }),
     logout: () =>
@@ -1872,14 +1897,29 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
         if (!state.authenticated && !state.sessionExpired) return
         state.authenticated = false
         state.sessionExpired = false
+        state.loginAt = null
         save()
       }),
     expireSession: () =>
       change(() => {
         state.authenticated = false
         state.sessionExpired = true
+        state.loginAt = null
         save()
       }),
+    simulateRestart: (keepLogin) => {
+      pull()
+      const daysSinceSaved = state.loginAt === null ? 0 : (now() - state.loginAt) / 86_400_000
+      const outcome = restartOutcome({ authenticated: state.authenticated, loginCookie: config.loginCookie, keepLogin, encryption: config.encryption, daysSinceSaved })
+      const survived = outcome === 'persistent' || outcome === 'kept'
+      if (state.authenticated && !survived) {
+        state.authenticated = false
+        state.sessionExpired = false
+        state.loginAt = null
+        save()
+      }
+      return { survived, outcome }
+    },
     balance: () => {
       pull()
       return state.balance
@@ -1933,6 +1973,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
         failNext: patch.failNext !== undefined ? patch.failNext : jobFaults.failNext,
         expireNext: patch.expireNext ?? jobFaults.expireNext,
         streamFailures: Math.max(0, Math.trunc(patch.streamFailures ?? jobFaults.streamFailures)),
+        logoutCopyStuck: patch.logoutCopyStuck ?? jobFaults.logoutCopyStuck,
       }
       notify()
     },

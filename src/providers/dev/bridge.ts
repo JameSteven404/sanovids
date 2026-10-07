@@ -19,20 +19,29 @@
 //     held per download, idle (10 s here) / pull-idle / per-connection (2 min here, main: 60 min) limits, 1 GB cap,
 //     Range + If-Range only with the ETag the simulated site sent (DevConfig.rangeSupport), a redirect to http refused
 //     (dev fault 'insecure-redirect', main's <canvasapp-net-get>). A download that stops by itself is written to the
-//     request log.
+//     request log;
+//   - "Giữ đăng nhập canvasapp trên máy này" (keepLogin.ts): keepLogin() / setKeepLogin(on) like main's IPC (the switch
+//     in localStorage 'bdp:dev:keepLogin', default from "Vị trí chạy": installer / source on, Portable / temp copy off;
+//     available unless the dev setting "Mã hoá trên máy" says unavailable); login() says whether the login is kept;
+//     logout() ends every download first and answers keep-login-not-cleared when the dev fault is armed;
+//     simulateRestart() = quit + start again (downloads end, the gateway cache is forgotten).
 // JSON bodies cross it as JSON (a deep copy), like IPC + HTTP would: nothing is shared by reference with the server.
 import { checkoutUrlAllowed, parsePaymentReturn } from '../../core/topup'
 import type { TransportRequest } from '../canvasapp/api'
+import type { KeyValueStorage } from '../canvasapp/adapter'
 import type {
   BridgeCheckoutResponse,
   BridgeDownloadArgs,
   BridgeDownloadOpen,
   BridgeDownloadRead,
+  BridgeLogoutResult,
   BridgeResponse,
   BridgeStatus,
   CanvasappBridge,
   CheckoutArgs,
+  KeepLoginState,
 } from '../canvasapp/transport'
+import { useDevPlacement } from './appPlacement'
 import {
   createDevLane,
   createDownloadSessions,
@@ -42,6 +51,7 @@ import {
   type DownloadLimits,
   type ResponseLike,
 } from './downloads'
+import { defaultKeepLogin, DEV_KEEP_LOGIN_KEY, KEEP_LOGIN_NOT_CLEARED_TEXT, parseDevKeepLogin, type DevRestartOutcome } from './keepLogin'
 import { pushDevLog, summarizeForLog } from './log'
 import { answerDevCheckout, checkoutPromptOpen, closeDevPrompts, openCheckoutPrompt, openLoginPrompt } from './prompts'
 import { matchDevRoute, MAX_JSON_BYTES, MAX_UPLOAD_BYTES } from './routes'
@@ -70,15 +80,69 @@ export interface DevBridgeOptions {
   log?: boolean
   /** Video downloads: main's limits, except pieces of 64 KiB, 10 s without data, 2 min per connection (DEV_DOWNLOAD_*). Tests shorten them. */
   downloadLimits?: Partial<DownloadLimits>
+  /** Where the simulated switch "Giữ đăng nhập" is kept (default: localStorage when there is one, else memory). */
+  keepLoginStorage?: KeyValueStorage
+  /** "Vị trí chạy" for the switch's default (default: the dev panel's simulated placement). */
+  placement?: () => string
 }
 
-/** The simulated gateway, plus what "Xoá dữ liệu máy chủ giả lập" needs of it (dev/index.ts resetDevServer). */
+/**
+ * The simulated desktop gateway: CanvasappBridge (keepLogin / setKeepLogin always there), the restart simulation, and
+ * what "Xoá dữ liệu máy chủ giả lập" needs of it (dev/index.ts resetDevServer).
+ */
 export interface DevBridge extends CanvasappBridge {
+  logout(): Promise<BridgeLogoutResult>
+  keepLogin(): Promise<KeepLoginState>
+  setKeepLogin(on: boolean): Promise<KeepLoginState>
+  /**
+   * "Giả lập tắt app rồi mở lại": closes the simulated windows, ends every video download, forgets the gateway cache,
+   * decides the login (server).
+   */
+  simulateRestart(): Promise<{ survived: boolean; outcome: DevRestartOutcome; keepLogin: boolean }>
   /**
    * The simulated account is about to be wiped: like main's logout, every video download is stopped first (none keeps
    * streaming the old account's video into a take, or holds a download slot) and no cached job list of it is served.
    */
   reset(): void
+}
+
+/** localStorage when the page has one (a failed write is ignored: the switch then lasts until reload), else memory. */
+function defaultKeepLoginStorage(): KeyValueStorage {
+  const mem = new Map<string, string>()
+  const ls = (): Storage | null => {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage : null
+    } catch {
+      return null
+    }
+  }
+  return {
+    get: (k) => {
+      try {
+        const s = ls()
+        return s ? s.getItem(k) : (mem.get(k) ?? null)
+      } catch {
+        return mem.get(k) ?? null
+      }
+    },
+    set: (k, v) => {
+      try {
+        const s = ls()
+        if (s) s.setItem(k, v)
+        else mem.set(k, v)
+      } catch {
+        mem.set(k, v)
+      }
+    },
+    remove: (k) => {
+      try {
+        ls()?.removeItem(k)
+      } catch {
+        /* nothing to remove */
+      }
+      mem.delete(k)
+    },
+  }
 }
 
 /** The one page that uses the simulated gateway (main keys downloads by the calling page). */
@@ -130,6 +194,8 @@ function orderIdOf(checkoutUrl: string, fields: Record<string, string>): string 
 
 export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptions = {}): DevBridge {
   const now = opts.now ?? (() => Date.now())
+  const keepStore = opts.keepLoginStorage ?? defaultKeepLoginStorage()
+  const placement = opts.placement ?? (() => useDevPlacement.getState().kind)
   const cacheMs = opts.jobListCacheMs ?? DEV_JOB_LIST_CACHE_MS
   const timeoutMs = opts.checkoutTimeoutMs ?? DEV_CHECKOUT_TIMEOUT_MS
   const logging = opts.log !== false
@@ -265,14 +331,43 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, authenticated: j.authenticated === true }
   }
 
+  /** The switch: the user's choice, else the placement default (like main's canvasapp-prefs.json + defaultKeepLogin). */
+  function keepState(): { ok: true; keepLogin: boolean; available: boolean; chosen: boolean } {
+    let chosen: boolean | null = null
+    try {
+      chosen = parseDevKeepLogin(keepStore.get(DEV_KEEP_LOGIN_KEY))
+    } catch {
+      chosen = null
+    }
+    return { ok: true, keepLogin: chosen ?? defaultKeepLogin(placement()), available: server().config().encryption !== 'unavailable', chosen: chosen !== null }
+  }
+
+  async function keepLogin(): Promise<KeepLoginState> {
+    return keepState()
+  }
+
+  async function setKeepLogin(on: boolean): Promise<KeepLoginState> {
+    if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
+    try {
+      keepStore.set(DEV_KEEP_LOGIN_KEY, on ? 'true' : 'false')
+    } catch {
+      /* kept for this page only */
+    }
+    return keepState()
+  }
+
   function login(): Promise<BridgeStatus> {
     if (loginInFlight) return loginInFlight
-    loginInFlight = (async () => {
+    loginInFlight = (async (): Promise<BridgeStatus> => {
       const before = await status()
       if (before.ok && before.authenticated) return before
       const accepted = await openLoginPrompt(now())
       if (accepted) server().login()
-      return status()
+      const st = await status()
+      if (!st.ok || !st.authenticated) return st
+      // like main: a confirmed login is kept when the switch is on and the (simulated) computer can encrypt it
+      const k = keepState()
+      return { ...st, keepLogin: k.keepLogin && k.available }
     })().finally(() => {
       loginInFlight = null
     })
@@ -332,13 +427,31 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return downloads.close(DEV_PAGE, { id })
   }
 
-  async function logout(): Promise<{ ok: boolean }> {
+  async function logout(): Promise<BridgeLogoutResult> {
+    // like main: no video download of the account outlives the logout
     downloads.closeAll()
     downloadPaths.clear()
     closeDevPrompts()
+    const stuck = server().jobFaults().logoutCopyStuck
     server().logout()
     listCache.clear()
+    if (stuck) {
+      server().setJobFaults({ logoutCopyStuck: false })
+      return gatewayError('keep-login-not-cleared', KEEP_LOGIN_NOT_CLEARED_TEXT)
+    }
     return { ok: true }
+  }
+
+  async function simulateRestart(): Promise<{ survived: boolean; outcome: DevRestartOutcome; keepLogin: boolean }> {
+    closeDevPrompts()
+    // the app quits: its video downloads end, the gateway's job-list cache is gone (a read in flight is not cached)
+    downloads.closeAll()
+    downloadPaths.clear()
+    listCache.clear()
+    jobsEpoch++
+    const k = keepState()
+    const r = server().simulateRestart(k.keepLogin)
+    return { ...r, keepLogin: k.keepLogin }
   }
 
   function reset(): void {
@@ -379,5 +492,5 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, result: a.choice, orderId, blockedHost: null }
   }
 
-  return { status, login, logout, request, checkout, downloadOpen, downloadRead, downloadClose, reset }
+  return { status, login, logout, request, checkout, downloadOpen, downloadRead, downloadClose, keepLogin, setKeepLogin, simulateRestart, reset }
 }

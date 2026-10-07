@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { FOLDER_UNLINK_TRASH_ROW } from '../../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
+import { KEEP_LOGIN_KEYWORDS } from '../keepLoginModel'
+import settingsDialogSource from '../SettingsDialog.tsx?raw'
 import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
 
 const groups: SearchGroup[] = [
@@ -53,6 +55,13 @@ describe('matchSettings', () => {
   it('a block group is found by its title, description or keywords', () => {
     expect(ids(matchSettings(groups, 'basic', 'credit'))).toEqual(['gateway:'])
     expect(ids(matchSettings(groups, 'basic', 'dang nhap'))).toEqual(['gateway:'])
+  })
+
+  it('"Giữ đăng nhập canvasapp trên máy này" is found through the gateway group’s keywords', () => {
+    const withKeep: SearchGroup[] = groups.map((g) => (g.id === 'gateway' ? { ...g, keywords: `${g.keywords} ${KEEP_LOGIN_KEYWORDS}` } : g))
+    for (const q of ['giữ đăng nhập', 'giu dang nhap', 'nhớ đăng nhập', 'ghi nho', 'đăng nhập lại']) expect(ids(matchSettings(withKeep, 'basic', q)), q).toEqual(['gateway:'])
+    // the real group carries them (SettingsDialog GROUPS)
+    expect(settingsDialogSource).toContain('${KEEP_LOGIN_KEYWORDS}')
   })
 
   it('resultCount counts rows, a block as one', () => {

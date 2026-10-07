@@ -185,7 +185,19 @@ sổ `https://canvasapp.io.vn/` (phân vùng `persist:canvasapp`, sandbox, khôn
 (email/mật khẩu hoặc Google). Main kiểm tra `GET /api/auth/state` khi trang điều hướng và mỗi 5 s; khi `authenticated`
 → đóng cửa sổ và trả `{ok:true, authenticated:true}`. Đóng cửa sổ giữa chừng → trả trạng thái hiện tại.
 
-**Đăng xuất** — `canvasapp:logout` xoá cookie/storage/cache của phân vùng; renderer gọi `canvasappProvider().reset()`
+**Giữ đăng nhập** (`electron/keeplogin-rules.cjs`) — cookie đăng nhập của canvasapp là cookie phiên (mất khi tắt app);
+khi canvasapp đã xác nhận đăng nhập, main giữ một bản sao mã hoá (safeStorage) và đặt lại trước yêu cầu đầu tiên của
+lần chạy sau (tối đa 30 ngày; bản cài bật sẵn, Portable tắt sẵn; Cài đặt › "Giữ đăng nhập canvasapp trên máy này").
+Mỗi lần đọc số dư thành công (`GET /api/me`, `store/credits`) cho adapter biết tài khoản (`accountKeyOf`: băm e-mail nếu
+canvasapp trả về, không lưu e-mail): **khác** tài khoản mà phiên cầu nối đã nhớ (bản sao của tài khoản khác được đặt lại
+sau khi mở app, hoặc đăng nhập tài khoản khác trên trang mà không Đăng xuất) → `noteAccount` gọi `reset()` như Đăng xuất
+(giữ sổ job); không có e-mail → không quyết gì.
+
+**Đăng xuất** — `canvasapp:logout`: từ dòng đầu chặn mở lượt tải video mới (`canvasappDownloadsBlocked` → 'busy') và
+từ chối yêu cầu mới (`canvasappLoggingOut` → 'logged-out' = như 401, chưa gửi gì), đóng mọi lượt tải, huỷ và **chờ**
+mọi yêu cầu đang chạy — cả `net.request` của lượt tải video cho tới khi Electron báo đã xong (tối đa 5 s) —, xoá bản sao
+giữ đăng nhập trước, báo canvasapp kết thúc phiên (`POST /api/auth/logout`, chỉ main gửi), xoá cookie/storage/cache của
+phân vùng, đóng lại lượt tải nào lọt vào; renderer gọi `canvasappProvider().reset()`
 (quên phiên cầu nối, cache upload và danh sách cảnh của canvas cầu nối — chúng thuộc tài khoản vừa đăng xuất; **giữ** sổ
 job `bdp:canvasapp:jobs`) và chuyển về chế độ Phát triển (giả lập). Take đang chạy vẫn chạy trên canvasapp: poll nhận
 401 → báo đăng nhập lại, take không bị đánh lỗi. Đăng nhập lại rồi chạy thêm cảnh: phiên "SanoVids bridge" được tìm lại

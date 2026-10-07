@@ -411,6 +411,26 @@ function anchorsIn(rec: SentRecord): { ended: EndedAnchor[]; open: string[] } {
 
 export const STATE_KEY = 'bdp:canvasapp:gateway'
 export const JOBS_KEY = 'bdp:canvasapp:jobs'
+/**
+ * The canvasapp account the session-bound state (STATE_KEY: bridge project, canvas entries, upload cache) was built
+ * under: accountKeyOf of a confirmed GET /api/me (noteAccount). Forgotten with that state (reset()).
+ */
+export const ACCOUNT_KEY = 'bdp:canvasapp:account'
+
+/**
+ * The account a GET /api/me answer names, as a key (FNV-1a 64 of the trimmed, lower-cased e-mail: the address itself is
+ * never stored), or null when the answer names none (canvasapp's /api/me is only known to carry credits_balance —
+ * then nothing is decided).
+ */
+export function accountKeyOf(me: unknown): string | null {
+  const email = me && typeof me === 'object' && !Array.isArray(me) ? (me as { email?: unknown }).email : undefined
+  if (typeof email !== 'string') return null
+  const norm = email.trim().toLowerCase()
+  if (!norm) return null
+  let h = 0xcbf29ce484222325n
+  for (const byte of new TextEncoder().encode(norm)) h = ((h ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn
+  return h.toString(16).padStart(16, '0')
+}
 
 /** What "Nhập job" tells the adapter about the open project (siteJobActions.scanForImport). */
 export interface SiteScanInput {
@@ -428,6 +448,13 @@ export type CanvasappProvider = VideoProvider & {
   /** Re-read /api/video-profiles now (a forced read); throws when it cannot be read. */
   refreshProfiles(): Promise<VideoProfile[]>
   bridgeProjectId(): string | null
+  /**
+   * A confirmed GET /api/me named this account (accountKeyOf; null = it named none → nothing decided). Another account
+   * than the one the session-bound state was built under — a kept login restored after a restart ("Giữ đăng nhập"),
+   * another account logged in on canvasapp's page without Đăng xuất — → reset(), exactly like Đăng xuất (the job ledger
+   * stays). The first account seen is only remembered. True when it reset.
+   */
+  noteAccount(key: string | null): boolean
   uploadCacheSize(): number
   // ---- "Nhập job" (reverse sync; siteJobs.ts). Read-only toward canvasapp: GET requests only, never a project made. ----
   /**
@@ -1410,6 +1437,31 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     return readJobs(projectId)
   }
 
+  // The job ledger (JOBS_KEY) is kept: it is what proves a take was already paid for after logging in again.
+  // The bridge entries go with the session (they may be of another account than the next login's — never PUT into
+  // its canvas): the next submit finds the bridge by name and reads its canvas back first (ensureProject), so the
+  // nodes of jobs still running stay on it.
+  function resetSession() {
+    state = { projectId: null, uploads: {}, entries: {} }
+    storage.remove(STATE_KEY)
+    storage.remove(ACCOUNT_KEY) // the next confirmed account is the first one of the new state
+    lists.clear()
+    lastLists.clear()
+    readBack.clear()
+    absentNodes.clear()
+    misses.clear()
+    // what the account could run is not known any more (logout): back to 'none'; a read in flight is ignored
+    profilesEpoch++
+    profiles = null
+    profilesRead = null
+    profilesSig = ''
+    profilesReading = null
+    profilesFollowUp = null
+    profilesAttempt = null
+    limitsMemo = null
+    limitsChanged()
+  }
+
   return {
     id: deps.id ?? 'canvasapp',
     label: deps.label ?? 'canvasapp.io.vn',
@@ -1531,29 +1583,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // No cancel(): canvasapp has no documented cancel endpoint and DELETE may not refund. Cancelling in SanoVids
     // only stops tracking; the job keeps running (and costing) on canvasapp.
 
-    // The job ledger (JOBS_KEY) is kept: it is what proves a take was already paid for after logging in again.
-    // The bridge entries go with the session (they may be of another account than the next login's — never PUT into
-    // its canvas): the next submit finds the bridge by name and reads its canvas back first (ensureProject), so the
-    // nodes of jobs still running stay on it.
-    reset: () => {
-      state = { projectId: null, uploads: {}, entries: {} }
-      storage.remove(STATE_KEY)
-      lists.clear()
-      lastLists.clear()
-      readBack.clear()
-      absentNodes.clear()
-      misses.clear()
-      // what the account could run is not known any more (logout): back to 'none'; a read in flight is ignored
-      profilesEpoch++
-      profiles = null
-      profilesRead = null
-      profilesSig = ''
-      profilesReading = null
-      profilesFollowUp = null
-      profilesAttempt = null
-      limitsMemo = null
-      limitsChanged()
-    },
+    reset: resetSession,
 
     settingsLimits,
     limitsInfo,
@@ -1565,6 +1595,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       return answer.list
     },
     bridgeProjectId: () => state.projectId,
+    noteAccount(key) {
+      if (!key) return false
+      const known = storage.get(ACCOUNT_KEY)
+      if (known === key) return false
+      if (known) resetSession()
+      storage.set(ACCOUNT_KEY, key)
+      return !!known
+    },
     uploadCacheSize: () => Object.keys(state.uploads).length,
 
     scanSiteJobs: async (input) => {
