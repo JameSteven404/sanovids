@@ -11,7 +11,7 @@ import { ACTION_BY_ID, ACTIONS } from './actions'
 import { allowlistBreach, checkEngine, checkHistorySize, checkProject, checkStructural, JobAudit, scenesWithVideoTokens } from './invariants'
 import { createRng, parseSeed, randomSeed, type Seed } from './rng'
 import { FAULT_SCALE, NOT_IMPLEMENTED, SCENARIO_BY_ID } from './scenarios'
-import { goodImage, startSession, type Session } from './session'
+import { goodImage, sessionActive, startSession, type Session } from './session'
 import { generateProject, type GeneratedProject } from './synth'
 import type { ActionStats, FaultLevel, LoggedStep, RingEntry, ScenarioDef, StressAction, StressContext, StressEnv, StressOptions, StressReport, Tier, Violation } from './types'
 
@@ -153,8 +153,9 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     session = startSession({ rng, kind: env.kind, checkResume: plan.defs.some((d) => d.id === 'download-chaos') })
     const s = session
     report.coverage = s.coverage
-    // Observe before the simulated site's bounded job list evicts older charges.
-    offJobs = s.server.subscribe(() => pending.push(...audit.audit(s.server.snapshot(), useRuns.getState().takes, useProject.getState().project.assets, s.server.config().dedupe)))
+    // Observe every new job before the simulated site's bounded job list (200) evicts older charges: right after each
+    // request that may add one — not on every server change (polls, downloads, saves), which rebuilt a snapshot each time.
+    offJobs = s.onJobsChanged(() => pending.push(...audit.audit(s.server.snapshot(), useRuns.getState().takes, useProject.getState().project.assets, s.server.config().dedupe)))
     if (plan.server.dedupe !== undefined) s.server.setConfig({ dedupe: plan.server.dedupe })
     if (plan.server.failRate !== undefined) s.server.setConfig({ failRate: plan.server.failRate })
     if (plan.server.latencyMs !== undefined) s.server.setConfig({ latencyMs: plan.server.latencyMs })
@@ -350,13 +351,21 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         break
       }
       if (!devAllowed() || activeProviderId() !== 'dev') {
-        report.result = 'stopped'
-        note('Đã dừng: chế độ Phát triển bị khoá hoặc provider đã đổi.')
+        // a failure already recorded (keep-going) stays the result
+        report.result = report.result === 'fail' ? 'fail' : 'stopped'
+        note(`Đã dừng sau ${n - 1} bước: chế độ Phát triển bị khoá hoặc provider đã đổi.`)
         stopping = true
         break
       }
       if (!ownProjectOpen()) {
         note(`Dự án thử nghiệm không còn mở (đã mở dự án khác) sau ${n - 1} bước — dừng, dự án kia không bị đụng tới.`)
+        report.result = report.result === 'fail' ? 'fail' : 'stopped'
+        stopping = true
+        break
+      }
+      // The in-app sandbox stops the session itself the moment another project opens / development mode locks.
+      if (!sessionActive()) {
+        note(`Phiên thử nghiệm đã được dừng từ bên ngoài sau ${n - 1} bước — dừng.`)
         report.result = report.result === 'fail' ? 'fail' : 'stopped'
         stopping = true
         break
@@ -437,7 +446,13 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     }
 
     // The end: everything must settle once the network is healthy again.
-    if (!stopping && ownProjectOpen() && (report.result === 'pass' || !opts.stopOnFirst)) {
+    // Only in the run's own world: the end checks run the queue, which must never meet the app's providers.
+    const ownWorld = ownProjectOpen() && sessionActive() && devAllowed() && activeProviderId() === 'dev'
+    if (!stopping && !ownWorld) {
+      note('Phiên thử nghiệm đã dừng ở bước cuối (dự án khác / chế độ Phát triển khoá): bỏ qua kiểm tra cuối.')
+      report.result = report.result === 'fail' ? 'fail' : 'stopped'
+    }
+    if (!stopping && ownWorld && (report.result === 'pass' || !opts.stopOnFirst)) {
       await quiesce()
       fullChecks()
       pending.push(...await s.checkCompleted(useRuns.getState().takes))

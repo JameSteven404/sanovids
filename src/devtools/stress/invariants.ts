@@ -209,13 +209,21 @@ export function checkHistorySize(): Violation[] {
 export class JobAudit {
   private seen = new Map<string, string>() // job id → client_request_id
   private perKey = new Map<string, number>()
+  /** take id → its client_request_id (a hash: computed once per take, the audit runs after every job POST). */
+  private keys = new Map<string, string>()
   jobs = 0
 
   audit(snap: DevServerSnapshot, takes: readonly Take[], assets: Asset[], dedupe: boolean): Violation[] {
     const out: Violation[] = []
+    if (snap.jobs.every((j) => this.seen.has(j.job_id))) return out
     const byKey = new Map<string, Take>()
-    for (const t of takes) byKey.set(clientRequestIdFor(t.id), t)
-    const uploadImage = new Map(snap.uploads.map((u) => [u.upload_id, u.imageId]))
+    for (const t of takes) {
+      let key = this.keys.get(t.id)
+      if (key === undefined) this.keys.set(t.id, (key = clientRequestIdFor(t.id)))
+      byKey.set(key, t)
+    }
+    let uploads: Map<string, DevServerSnapshot['uploads'][number]['imageId']> | null = null
+    const uploadImage = () => (uploads ??= new Map(snap.uploads.map((u) => [u.upload_id, u.imageId])))
     for (const job of snap.jobs) {
       if (this.seen.has(job.job_id)) continue
       this.seen.set(job.job_id, job.client_request_id)
@@ -238,7 +246,7 @@ export class JobAudit {
       if (usesRefs(take.settings)) {
         const spec = MODELS[take.settings.model] ?? MODELS.seedance_2_5
         const expected = requestImages(take, assets, spec.maxRefImages).map((i) => i.imageId)
-        const got = job.upload_ids.map((u) => uploadImage.get(u))
+        const got = job.upload_ids.map((u) => uploadImage().get(u))
         if (got.every((g) => g !== undefined && g !== null)) {
           const same = expected.length === got.length && expected.every((id, i) => (got[i] ?? '') === id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60))
           if (!same) out.push(err('C1', `Ảnh gửi đi không đúng thứ tự @image của take (lệch nhân vật).`, { takeId: take.id, expected, got }))

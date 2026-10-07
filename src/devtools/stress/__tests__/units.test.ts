@@ -12,8 +12,10 @@ import { allowlistBreach, checkProject, checkStructural, isSubsequence, videoTok
 import { summaryText, toMarkdown, toJSON, reportFileName } from '../report'
 import { SCENARIOS, SCENARIO_BY_ID } from '../scenarios'
 import { ACTION_BY_ID } from '../actions'
-import { checkExplicitRewrite } from '../featureActions'
-import type { Project } from '../../../core/types'
+import { checkExplicitRewrite, expectedFilmTake, expectedNodeFull, expectedPlayerOp, fillKeyProblem, replaceKeyProblem, transportMismatches } from '../featureActions'
+import { groupKeyOf, groupOf, planFill, planReplace } from '../../../core/placeholders'
+import { nodeFullKey, transportKey } from '../../../core/transportKeys'
+import type { Asset, Project, Take } from '../../../core/types'
 import type { StressReport } from '../types'
 
 describe('rng', () => {
@@ -151,6 +153,50 @@ describe('scenarios & report', () => {
     expect(checkExplicitRewrite('ệ @image_?2(Lumi) 👩‍👩‍👧‍👦', 'ệ @image_1 👩‍👩‍👧‍👦')).toBe(true)
     expect(checkExplicitRewrite('ệ @image_?2(Lumi) cuối', '@image_1 cuối')).toBe(false)
     expect(checkExplicitRewrite('ệ @image_?2(Lumi) cuối', 'ệ Lumi cuối')).toBe(false)
+  })
+  it('P3 of an explicit fill: only the filled group changes picture', () => {
+    const assets = ['a1', 'a2', 'a3'].map((id, i) => ({ id, kind: 'character', name: id, tag: id, description: '', imageIds: [`img${i + 1}`], color: '', position: null }) as Asset)
+    const before = { prompt: 'A @image_1 B @image_?2(Lumi) C @image_2', refs: ['a1', 'a2'] }
+    const members = new Set(groupOf(before.prompt, assets, before.refs, groupKeyOf('@image_?2(Lumi)'))!.members.map((m) => m.start))
+    // the app's own fill (the character goes at the removed one's place, the other tokens renumber)
+    const plan = planFill(before, assets, groupKeyOf('@image_?2(Lumi)'), 'a3', { renumber: true, maxImages: 9 })
+    expect(plan.ok).toBe(true)
+    if (plan.ok) expect(fillKeyProblem(before, { prompt: plan.prompt, refs: plan.refs }, assets, members, 'a3')).toBeNull()
+    expect(fillKeyProblem(before, { prompt: 'A @image_1 B @image_2 C @image_3', refs: ['a1', 'a3', 'a2'] }, assets, members, 'a3')).toBeNull()
+    // the filled character inserted in front without renumbering: @image_1 now names another picture
+    expect(fillKeyProblem(before, { prompt: 'A @image_1 B @image_1 C @image_3', refs: ['a3', 'a1', 'a2'] }, assets, members, 'a3')).toContain('Token ảnh thứ 1')
+    // the placeholder filled with another character's picture
+    expect(fillKeyProblem(before, { prompt: 'A @image_1 B @image_1 C @image_2', refs: ['a1', 'a2'] }, assets, members, 'a3')).toContain('Chữ đỏ thứ 2')
+  })
+  it('P3 of a replacement: picture k of the old character becomes picture k of the new one, nothing else moves', () => {
+    const assets = [
+      { id: 'a1', imageIds: ['p1', 'p2'] },
+      { id: 'a2', imageIds: ['q1'] },
+      { id: 'a3', imageIds: ['r1'] },
+    ].map((a) => ({ kind: 'character', name: a.id, tag: a.id, description: '', color: '', position: null, ...a }) as Asset)
+    const before = { prompt: '@image_1 và @image_2 với @image_3', refs: ['a1', 'a2'] }
+    const plan = planReplace(before, assets, 'a1', 'a3', { renumber: true, maxImages: 9 })
+    expect(plan.ok).toBe(true)
+    if (plan.ok) expect(replaceKeyProblem(before, { prompt: plan.prompt, refs: plan.refs }, assets, 'a1', 'a3')).toBeNull()
+    // a2's token renumbered to the wrong slot
+    expect(replaceKeyProblem(before, { prompt: '@image_1 và @image_?2(a1 · ảnh 2) với @image_1', refs: ['a3', 'a2'] }, assets, 'a1', 'a3')).toContain('Token ảnh thứ 3')
+    // a1's second picture has no counterpart in a3: it must turn red, not name another picture
+    expect(replaceKeyProblem(before, { prompt: '@image_1 và @image_2 với @image_2', refs: ['a3', 'a2'] }, assets, 'a1', 'a3')).toContain('Token ảnh thứ 2')
+  })
+  it('transport keys: the app follows the written plan; a rule that ignores the focus is caught', () => {
+    expect(transportMismatches()).toEqual([])
+    const ignoresFocus = { playerKey: (e: Parameters<typeof transportKey>[0], _f: unknown, ctx: Parameters<typeof transportKey>[1]) => transportKey(e, ctx), nodeFullKey }
+    expect(transportMismatches(['KeyJ'], ignoresFocus).some((m) => m.includes('typing'))).toBe(true)
+    expect(transportMismatches(['Space'], ignoresFocus).some((m) => m.includes('control-key'))).toBe(true)
+    expect(expectedPlayerOp('ArrowUp', 'none', 'film')).toBe('clip-prev')
+    expect(expectedNodeFull('ArrowUp', 'none')).toEqual({ kind: 'op', op: 'volume-up' })
+  })
+  it('the film plays the newest starred finished take, else the newest finished one', () => {
+    const t = (id: string, number: number, status: Take['status'], starred = false) => ({ id, number, status, starred }) as Take
+    expect(expectedFilmTake([t('a', 1, 'completed'), t('b', 3, 'completed'), t('c', 4, 'failed')])?.id).toBe('b')
+    expect(expectedFilmTake([t('a', 1, 'completed', true), t('b', 3, 'completed')])?.id).toBe('a')
+    expect(expectedFilmTake([t('a', 1, 'completed', true), t('b', 3, 'failed', true)])?.id).toBe('a')
+    expect(expectedFilmTake([t('c', 4, 'queued')])).toBeNull()
   })
   it('every scenario only weights known actions', () => {
     expect(SCENARIOS.length).toBeGreaterThanOrEqual(18)
