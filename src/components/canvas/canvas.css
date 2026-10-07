@@ -193,14 +193,7 @@
 }
 /* the scene's ref / take dots and the take's in / out dots get their `top` inline (canvasModel DOT_TOP / takeDotTop:
    the middle of the take's poster, so the scene → take wire of an unresized row runs straight) */
-/* a scene's reference dot takes the color of what is wired into it: images teal, videos purple, both = two-tone */
-.cv-stage .cv-h-ref.is-video {
-  --h-c: var(--video);
-  --h-glow: var(--video-soft);
-}
-.cv-stage .cv-h-ref.is-mixed {
-  --h-fill: linear-gradient(135deg, var(--ref) 50%, var(--video) 50%);
-}
+
 /* anchors of the scene -> take wires: small, not draggable (the scene's can start a "tự lưu" wire: saving.css) */
 .cv-stage .cv-h-takes,
 .cv-stage .cv-h-take-in {
@@ -326,119 +319,6 @@
   }
 }
 
-.cv-scene-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  /* 10 + 18px pills + 6 = 34px, as before the restyle (canvasModel SCENE_CHROME counts on it) */
-  padding: 10px 11px 6px;
-  min-width: 0;
-}
-/* quiet header: the scene code is a neutral pill, the title carries the weight */
-.cv-code {
-  flex: none;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-  letter-spacing: 0.02em;
-}
-.cv-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.25;
-  cursor: text;
-}
-/* No title (optional): an empty double-click area; a small faint hint shows only on hover / selection. */
-.cv-title.is-empty {
-  color: transparent;
-  font-size: 11px;
-  font-weight: 500;
-  user-select: none;
-  transition: color 0.12s ease-out;
-}
-.cv-scene:hover .cv-title.is-empty,
-.cv-scene.is-selected .cv-title.is-empty {
-  color: var(--text-faint);
-}
-.cv-title-input {
-  flex: 1;
-  min-width: 0;
-  height: 24px;
-  padding: 0 7px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--accent);
-  background: var(--bg-elev);
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-/* model badge: soft pill tinted with the model's own color (--model-c, set by SceneNode) */
-.cv-model {
-  flex: none;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--model-c, var(--text-dim)) 15%, transparent);
-  color: color-mix(in srgb, var(--model-c, var(--text-dim)) var(--cv-model-mix, 78%), var(--text));
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 18px;
-  letter-spacing: 0.02em;
-}
-
-/* refs row */
-.cv-refs {
-  display: flex;
-  align-items: center;
-  height: 30px;
-  padding: 0 11px;
-}
-.cv-av {
-  position: relative;
-  flex: none;
-  width: 24px;
-  height: 24px;
-  margin-right: -5px;
-  border-radius: 6px;
-  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px color-mix(in srgb, var(--av-c, transparent) 55%, transparent);
-  background: var(--panel-3);
-  transition:
-    transform 0.15s var(--cv-ease),
-    margin 0.15s var(--cv-ease);
-}
-.cv-av > img,
-.cv-av > i {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  object-fit: cover;
-  font-style: normal;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cv-on-solid);
-}
-.cv-av:hover {
-  transform: translateY(-2px);
-  margin-right: 1px;
-  z-index: 2;
-}
-.cv-av.is-viewable {
-  cursor: zoom-in;
-}
 /* hover preview of an avatar: the whole picture at its own aspect ratio (RefPreview, portal on document.body) */
 .cv-ref-preview {
   position: fixed;
@@ -501,337 +381,14 @@
     transform: translateY(3px);
   }
 }
-.cv-av-x {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid var(--panel);
-  background: var(--danger);
-  color: var(--cv-on-solid);
-  box-shadow: var(--shadow-sm);
-  cursor: pointer;
-}
-.cv-av:hover .cv-av-x {
-  display: inline-flex;
-}
-.cv-av-n {
-  position: absolute;
-  left: -4px;
-  bottom: -4px;
-  min-width: 13px;
-  height: 13px;
-  padding: 0 3px;
-  border-radius: 7px;
-  border: 1px solid var(--panel);
-  background: var(--cv-ref-solid);
-  color: var(--cv-on-tint);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 11px;
-  text-align: center;
-  pointer-events: none;
-}
-.cv-vrefs {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 12px;
-}
-.cv-vref {
-  position: relative;
-  flex: none;
-  width: 34px;
-  height: 20px;
-  border-radius: 5px;
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--video) 80%, transparent);
-  background: var(--panel-3);
-}
-.cv-vref-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  object-fit: cover;
-}
-.cv-vref-n {
-  position: absolute;
-  left: 2px;
-  bottom: 1px;
-  padding: 0 2px;
-  border-radius: 3px;
-  background: var(--cv-chip-solid);
-  color: var(--cv-on-media-video);
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 11px;
-  pointer-events: none;
-}
-.cv-vref:hover .cv-av-x {
-  display: inline-flex;
-}
-.cv-av-more {
-  margin-left: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
-}
-.cv-refs-empty {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
 
-/* prompt excerpt */
-.cv-prompt {
-  margin: 2px 11px 0;
-  min-height: 34px;
-  font-size: 12px;
-  line-height: 1.42;
-  color: var(--text-dim);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-.cv-m {
-  color: var(--ref);
-  font-weight: 600;
-}
-.cv-m.img {
-  color: var(--ref);
-}
-.cv-m.vid {
-  color: var(--video);
-}
-.cv-m.bad {
-  color: var(--danger);
-  text-decoration: underline wavy;
-  text-decoration-thickness: 1px;
-}
-
-/* footer */
-.cv-scene-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 6px 8px 7px 11px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-dim);
-  min-width: 0;
-}
-.cv-settings {
-  /* shrinks first (narrow / resized card) so the cost and the run button always stay visible */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--mono);
-  font-size: 10.5px;
-}
-.cv-preset {
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--text-dim);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 64px;
-}
 .cv-spacer {
   flex: 1;
-}
-.cv-warn {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--warn);
-  font-weight: 600;
-  cursor: help;
-}
-/*
- * Cost chip (docs/SPEC-v2.md §9 — same language as the inspector, presets panel and scene table):
- * simulated credits (dev / old demo) = neutral text in a dashed outline + a small "demo" mark; real canvasapp credits = solid --info
- * tint (the top bar credit pill's color — the accent stays for the Run button).
- */
-.cv-cost {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 18px;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  white-space: nowrap;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  cursor: help;
-}
-.cv-cost.is-real {
-  border-color: color-mix(in srgb, var(--info) 26%, transparent);
-  background: var(--info-soft);
-  color: color-mix(in srgb, var(--info) 80%, var(--text));
-}
-.cv-cost.is-sim {
-  padding-right: 4px;
-  border-style: dashed;
-  border-color: var(--text-faint);
-  background: transparent;
-  color: var(--text-dim);
-}
-.cv-cost-mark {
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--text-dim);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  line-height: 12px;
-}
-.cv-run-wrap {
-  display: inline-flex;
-  flex: none;
-}
-.cv-run:disabled {
-  pointer-events: none;
-}
-.cv-run {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0 0 0 1px;
-  border-radius: 50%;
-  border: 0;
-  background: var(--accent);
-  color: var(--on-accent);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 35%, transparent);
-  cursor: pointer;
-  transition:
-    background 0.15s var(--cv-ease),
-    box-shadow 0.15s var(--cv-ease),
-    transform 0.12s var(--cv-ease);
-}
-.cv-run:hover:not(:disabled) {
-  background: var(--accent-strong);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.cv-run:active:not(:disabled) {
-  transform: scale(0.94);
-}
-/* :not(:disabled) = same weight as the hover rule above, so the focus ring is not replaced by the hover shadow */
-.cv-run:focus-visible:not(:disabled) {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.cv-run:disabled {
-  background: var(--panel-2);
-  color: var(--text-faint);
-  box-shadow: none;
-  cursor: not-allowed;
-}
-/* compact take status line ("3 take · ★ T2 · đang chạy 45%") */
-.cv-take-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 11px 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  min-width: 0;
-}
-.cv-take-line > svg {
-  flex: none;
-  color: var(--video);
-}
-.cv-take-line-star {
-  color: var(--warn);
-  font-weight: 600;
-}
-.cv-take-line-run {
-  color: var(--accent);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* far (zoomed-out) version */
 .cv-scene.is-far {
   border-radius: var(--cv-radius);
-}
-.cv-far {
-  display: flex;
-  flex-direction: column;
-  min-height: 190px;
-  /* concentric with the card: radius − 1px border (no sliver of card fill in the corners) */
-  border-radius: calc(var(--cv-radius) - 1px);
-  overflow: hidden;
-}
-.cv-far-bar {
-  height: 8px;
-  flex: none;
-}
-.cv-far-poster {
-  position: relative;
-  height: 118px;
-  background: var(--panel-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.cv-far-poster .media-img {
-  position: absolute;
-  inset: 0;
-}
-.cv-far-code-bg {
-  font-family: var(--mono);
-  font-size: 54px;
-  font-weight: 700;
-  color: var(--panel-3);
-}
-.cv-far-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 10px 14px 12px;
-  min-width: 0;
-}
-.cv-far-code {
-  font-family: var(--mono);
-  font-size: 30px;
-  font-weight: 700;
-  color: var(--accent);
-  line-height: 1;
-}
-.cv-far-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 20px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* drop / connect feedback */
@@ -852,11 +409,7 @@
   font-size: 13px;
   pointer-events: none;
 }
-.cv-conn-hint.take {
-  border-color: var(--video);
-  color: var(--video);
-  background: var(--cv-video-veil);
-}
+
 .cv-scene.is-drop .cv-drop-hint {
   display: flex;
 }
@@ -867,31 +420,9 @@
   border-color: var(--ref);
   box-shadow: 0 0 0 1px var(--ref), 0 0 0 5px var(--ref-soft), var(--cv-lift-shadow);
 }
-/* a generated video dragged from the library / a take strip: scenes that can use it as @video get a purple ring */
-.cv-scene.is-take-target:not(.is-drop) {
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--video) 55%, transparent), var(--cv-card-shadow);
-}
-.cv-scene.is-drop.is-drop-take {
-  border-color: var(--video);
-  box-shadow: 0 0 0 1px var(--video), 0 0 0 5px var(--video-soft), var(--cv-lift-shadow);
-}
-.cv-scene.is-drop-take .cv-drop-hint {
-  border-color: var(--video);
-  color: var(--video);
-  background: var(--cv-video-veil);
-}
-.cv-scene.is-drop.is-drop-bad {
-  border-color: var(--border-strong);
-  box-shadow: var(--cv-card-shadow);
-}
-.cv-scene.is-drop-bad .cv-drop-hint {
-  border-color: var(--text-faint);
-  color: var(--text-dim);
-  background: var(--cv-neutral-veil);
-}
+
 /* while dragging a wire from an asset: every scene is a valid target; the hovered one lights up */
-.cv-connecting-asset .cv-scene,
-.cv-connecting-asset .cv-connect-target {
+.cv-connecting-asset .cv-scene {
   box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ref) 55%, transparent), var(--cv-card-shadow);
 }
 .cv-connecting-asset .cv-scene:hover {
@@ -899,17 +430,6 @@
   box-shadow: 0 0 0 1px var(--ref), 0 0 0 5px var(--ref-soft), var(--cv-lift-shadow);
 }
 .cv-connecting-asset .cv-scene:hover .cv-conn-hint.asset {
-  display: flex;
-}
-/* while dragging a wire from a finished take: scenes accept it as @video */
-.cv-connecting-take .cv-scene {
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--video) 50%, transparent), var(--cv-card-shadow);
-}
-.cv-connecting-take .cv-scene:hover {
-  border-color: var(--video);
-  box-shadow: 0 0 0 1px var(--video), 0 0 0 5px var(--video-soft), var(--cv-lift-shadow);
-}
-.cv-connecting-take .cv-scene:hover .cv-conn-hint.take {
   display: flex;
 }
 
@@ -947,22 +467,7 @@
   border-color: var(--accent);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
-/* the WHOLE picture (FullImage, object-fit contain): its height comes from the image's aspect (AssetNode) */
-.cv-asset-img {
-  position: relative;
-  width: 100%;
-  /* concentric with the card: 14px card radius − 8px padding */
-  border-radius: var(--radius-xs);
-  overflow: hidden;
-  background: var(--panel-2);
-}
-/* the image area always has a definite size (default: px height from AssetNode; resized: flex) — fill it */
-.cv-asset .cv-asset-img > .full-img {
-  position: absolute;
-  inset: 0;
-  width: auto;
-  height: auto;
-}
+
 .cv-asset-zoom {
   position: absolute;
   top: 5px;
@@ -991,18 +496,7 @@
   border-color: var(--cv-ref-solid);
   color: var(--cv-on-tint);
 }
-.cv-asset-fallback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--asset-c);
-  color: var(--cv-on-solid);
-  font-size: 40px;
-  font-weight: 700;
-}
+
 .cv-asset-count {
   position: absolute;
   right: 5px;
@@ -1024,48 +518,6 @@ button.cv-asset-count:hover {
   background: var(--cv-ref-solid);
   color: var(--cv-on-tint);
 }
-.cv-asset-name {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 0;
-}
-.cv-asset-name > span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.cv-asset-kind {
-  flex: none;
-  color: var(--asset-c);
-}
-.cv-asset-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-top: 3px;
-  font-size: 11px;
-}
-.cv-asset-tag {
-  color: var(--ref);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.cv-asset-usage {
-  flex: none;
-  color: var(--text-dim);
-}
-.cv-asset-usage.none {
-  color: var(--text-faint);
-}
 
 /* ============================== take (video) node: takeNode.css ============================== */
 /* spinner: also the folder node's (FolderNode.tsx) */
@@ -1086,37 +538,6 @@ button.cv-asset-count:hover {
   flex-direction: column;
   width: 100%;
   height: 100%;
-}
-.cv-scene.is-sized > .cv-scene-body,
-.cv-scene.is-sized > .cv-far {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-  border-radius: calc(var(--cv-radius) - 1px);
-}
-.cv-scene.is-sized .cv-scene-body > * {
-  flex: none;
-}
-.cv-scene.is-sized .cv-scene-body > .cv-prompt-box {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-.cv-scene.is-sized .cv-far-poster {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-}
-/* resized asset card: the image area takes all the height the name/meta rows leave (picture letterboxed, whole) */
-.cv-asset.is-sized .cv-asset-img {
-  flex: 1 1 auto;
-  min-height: 40px;
-}
-.cv-asset.is-sized .cv-asset-name,
-.cv-asset.is-sized .cv-asset-meta {
-  flex: none;
 }
 
 /* resize handles: corners + edges (wider invisible grab area); subtle while only hovered */
@@ -1600,7 +1021,6 @@ button.cv-asset-count:hover {
 .cv-asset-count:focus-visible,
 .cv-edge-cut:focus-visible,
 .cv-rs-reset:focus-visible,
-.cv-av-x:focus-visible,
 .cv-empty-action:focus-visible,
 .cv-menu-item:focus-visible {
   outline: none;
@@ -1625,8 +1045,6 @@ button.cv-asset-count:hover {
     animation: none !important;
     background: var(--accent);
   }
-  .cv-av:hover,
-  .cv-run:active:not(:disabled),
   .cv-tb-btn:active:not(:disabled) {
     transform: none;
   }
