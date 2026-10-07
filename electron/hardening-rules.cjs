@@ -496,6 +496,93 @@ function mainWindowCloseHides(o) {
   return platform === 'darwin' && quitting !== true && quittingForUpdate !== true
 }
 
+/** macOS: how long a hidden main window waits before it keeps working at full speed (createHiddenWork). */
+const HIDDEN_WORK_SETTLE_MS = 1000
+
+/**
+ * macOS: what the main window does while its close button / ⌘W keeps it hidden (main.cjs hideMainWindow, its 'show').
+ *   hide()               sound off at once (hover previews, the take viewer, "Phát liền" may play with sound).
+ *   hidden + busy        takes queued / being made (the page says so: 'app:busy', setBusy) — HIDDEN_WORK_SETTLE_MS
+ *                        after hide(), so the page has seen itself hidden and saved its drafts first: background
+ *                        throttling off (Chromium slows a hidden page's timers to about one a minute after 5 minutes,
+ *                        and the take polls with them) + ONE 'prevent-app-suspension' blocker (App Nap; on macOS it
+ *                        also keeps the Mac from idle sleep, so it is NEVER held while nothing is being made).
+ *   work ends / show() / stop()  throttling back on + the blocker stopped, always as a pair; show() turns sound back on.
+ * The effects are injected (main.cjs passes Electron's), so these rules run in tests without Electron.
+ */
+function createHiddenWork(fx) {
+  let hidden = false
+  let settled = false
+  let busy = false
+  let held = false
+  let blocker = null
+  let timer = null
+  let muted = false
+  function sync() {
+    const want = hidden && settled && busy
+    if (want === held) return
+    held = want
+    if (want) {
+      fx.setThrottling(false)
+      blocker = fx.startBlocker()
+    } else {
+      fx.setThrottling(true)
+      fx.stopBlocker(blocker)
+      blocker = null
+    }
+  }
+  function cancelTimer() {
+    if (timer === null) return
+    fx.cancel(timer)
+    timer = null
+  }
+  return {
+    /** The window was just hidden by its close button / ⌘W. */
+    hide() {
+      if (hidden) return
+      hidden = true
+      settled = false
+      if (!muted) {
+        muted = true
+        fx.setMuted(true)
+      }
+      timer = fx.schedule(() => {
+        timer = null
+        if (!hidden) return
+        settled = true
+        sync()
+      }, HIDDEN_WORK_SETTLE_MS)
+    },
+    /** The window shows again (Dock icon, second launch, 'show'). */
+    show() {
+      cancelTimer()
+      hidden = false
+      settled = false
+      if (muted) {
+        muted = false
+        fx.setMuted(false)
+      }
+      sync()
+    },
+    /** Takes queued / being made in the page (true) or none (false); anything but true is false. */
+    setBusy(value) {
+      busy = value === true
+      sync()
+    },
+    /** The window closes / the app quits: everything held is let go (what the page last said is kept). */
+    stop() {
+      cancelTimer()
+      hidden = false
+      settled = false
+      sync()
+    },
+    /** For tests and logs: { hidden, busy, held, muted }. */
+    state() {
+      return { hidden, busy, held, muted }
+    },
+  }
+}
+
 module.exports = {
   ALWAYS_REFUSED,
   REMOTE_DEBUG,
@@ -528,4 +615,6 @@ module.exports = {
   TEXT_MENU_ROLES,
   textContextMenu,
   mainWindowCloseHides,
+  HIDDEN_WORK_SETTLE_MS,
+  createHiddenWork,
 }

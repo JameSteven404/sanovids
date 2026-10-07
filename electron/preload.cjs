@@ -6,7 +6,8 @@
 // updates: the auto-updater (electron/updater.cjs) — check / download / install / open the fixed release page; the page
 // never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
 // app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses),
-// and where the app runs from (installer / portable / temp-copy / dev — a kind, never a path).
+// and where the app runs from (installer / portable / temp-copy / dev — a kind, never a path); setBusy tells main whether
+// takes are being made (macOS: a window hidden by its close button keeps working at full speed only then).
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -42,6 +43,8 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     signature: () => ipcRenderer.invoke('app:signature'),
     /** → { kind: 'installer'|'portable'|'temp-copy'|'dev' } — where this SanoVids runs from (no path). */
     placement: () => ipcRenderer.invoke('app:placement'),
+    /** (busy) → whether main heard it. macOS: takes queued / being made keep a hidden window working (only a boolean). */
+    setBusy: (busy) => ipcRenderer.invoke('app:busy', busy === true),
   },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */

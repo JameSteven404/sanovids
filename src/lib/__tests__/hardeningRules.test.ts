@@ -50,6 +50,23 @@ interface Hardening {
   TEXT_MENU_ROLES: readonly string[]
   textContextMenu(params: unknown): MenuItem[] | null
   mainWindowCloseHides(o: unknown): boolean
+  HIDDEN_WORK_SETTLE_MS: number
+  createHiddenWork(fx: HiddenWorkFx): HiddenWork
+}
+interface HiddenWorkFx {
+  setThrottling(on: boolean): void
+  setMuted(on: boolean): void
+  startBlocker(): unknown
+  stopBlocker(id: unknown): void
+  schedule(fn: () => void, ms: number): unknown
+  cancel(timer: unknown): void
+}
+interface HiddenWork {
+  hide(): void
+  show(): void
+  setBusy(value: unknown): void
+  stop(): void
+  state(): { hidden: boolean; busy: boolean; held: boolean; muted: boolean }
 }
 interface MenuItem {
   label?: string
@@ -538,6 +555,122 @@ describe('hardening rules: macOS application menu, text menu, close button', () 
   })
 })
 
+describe('hardening rules: a main window hidden by its close button (macOS createHiddenWork)', () => {
+  /** Electron's effects, recorded; timers run only when the test says so. */
+  function harness() {
+    const log: string[] = []
+    const timers = new Map<number, () => void>()
+    let nextTimer = 1
+    let nextBlocker = 0 // Electron's first blocker id may be 0: never tested for truthiness
+    const live = new Set<number>()
+    const work = h.createHiddenWork({
+      setThrottling: (on) => log.push(`throttling:${on}`),
+      setMuted: (on) => log.push(`muted:${on}`),
+      startBlocker: () => {
+        const id = nextBlocker++
+        live.add(id)
+        log.push(`start:${id}`)
+        return id
+      },
+      stopBlocker: (id) => {
+        live.delete(id as number)
+        log.push(`stop:${String(id)}`)
+      },
+      schedule: (fn, ms) => {
+        expect(ms).toBe(h.HIDDEN_WORK_SETTLE_MS)
+        const id = nextTimer++
+        timers.set(id, fn)
+        return id
+      },
+      cancel: (t) => {
+        timers.delete(t as number)
+        log.push('cancel')
+      },
+    })
+    const settle = () => {
+      const pending = [...timers.values()]
+      timers.clear()
+      for (const fn of pending) fn()
+    }
+    return { work, log, live, settle, pendingTimers: () => timers.size }
+  }
+
+  it('hidden with nothing being made: sound off, but NO power-save blocker and throttling left on (the Mac may sleep)', () => {
+    const { work, log, live, settle } = harness()
+    work.hide()
+    settle()
+    expect(log).toEqual(['muted:true'])
+    expect(live.size).toBe(0)
+    expect(work.state()).toEqual({ hidden: true, busy: false, held: false, muted: true })
+  })
+
+  it('hidden while takes are being made: ONE blocker + throttling off, only after the settle delay (the page sees itself hidden first)', () => {
+    const { work, log, live, settle } = harness()
+    work.setBusy(true)
+    expect(log).toEqual([]) // shown: nothing to hold
+    work.hide()
+    expect(log).toEqual(['muted:true']) // nothing held before the page could save its drafts
+    settle()
+    expect(log).toEqual(['muted:true', 'throttling:false', 'start:0'])
+    expect(live.size).toBe(1)
+    work.setBusy(true) // repeated: still one blocker
+    work.hide() // already hidden: no second timer, no second blocker
+    settle()
+    expect(live.size).toBe(1)
+    expect(log.filter((l) => l.startsWith('start:'))).toHaveLength(1)
+  })
+
+  it('the work ends while hidden: blocker stopped and throttling back on, as a pair; it starts again: held again', () => {
+    const { work, log, live, settle } = harness()
+    work.setBusy(true)
+    work.hide()
+    settle()
+    log.length = 0
+    work.setBusy(false)
+    expect(log).toEqual(['throttling:true', 'stop:0'])
+    expect(live.size).toBe(0)
+    expect(work.state().held).toBe(false)
+    work.setBusy(true) // a queued take starts while hidden
+    expect(log.slice(2)).toEqual(['throttling:false', 'start:1'])
+    expect(live.size).toBe(1)
+  })
+
+  it('shown again: sound on, everything let go; shown before the delay: nothing is ever held', () => {
+    const { work, log, live, settle, pendingTimers } = harness()
+    work.setBusy(true)
+    work.hide()
+    settle()
+    log.length = 0
+    work.show()
+    expect(log).toEqual(['muted:false', 'throttling:true', 'stop:0'])
+    expect(live.size).toBe(0)
+    log.length = 0
+    work.hide()
+    work.show() // the Dock icon within the settle delay
+    expect(pendingTimers()).toBe(0)
+    settle()
+    expect(log).toEqual(['muted:true', 'cancel', 'muted:false'])
+    expect(live.size).toBe(0)
+    work.show() // a 'show' without a hide (the window was only uncovered): nothing to undo
+    expect(log).toEqual(['muted:true', 'cancel', 'muted:false'])
+  })
+
+  it('stop (window closed / ⌘Q): everything held is let go; the busy answer is kept; anything but true is not busy', () => {
+    const { work, log, live, settle } = harness()
+    work.setBusy(true)
+    work.hide()
+    settle()
+    work.stop()
+    expect(live.size).toBe(0)
+    expect(log.slice(-2)).toEqual(['throttling:true', 'stop:0'])
+    expect(work.state()).toMatchObject({ hidden: false, busy: true, held: false })
+    for (const v of ['true', 1, {}, null, undefined]) {
+      work.setBusy(v)
+      expect(work.state().busy, String(v)).toBe(false)
+    }
+  })
+})
+
 describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   const idx = (s: string) => {
     const i = mainSource.indexOf(s)
@@ -774,9 +907,10 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(appAt).toBeLessThan(preloadSource.indexOf('  canvasapp: {'))
     const block = /\n {2}app: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
-    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['signature', 'placement'])
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['signature', 'placement', 'setBusy'])
     expect(block![1]).toContain("signature: () => ipcRenderer.invoke('app:signature')")
     expect(block![1]).toContain("placement: () => ipcRenderer.invoke('app:placement')")
+    expect(block![1]).toContain("setBusy: (busy) => ipcRenderer.invoke('app:busy', busy === true)")
     expect(/updates: \{([\s\S]*?)\n {2}\},\n\}\)/.exec(preloadSource)).not.toBeNull()
     const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
     expect(topKeys.at(-1)).toBe('updates')
@@ -887,27 +1021,44 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(inDarwinBlock(mainSource.indexOf("win.on('close', (event) => {"))).toBe(true)
     expect(create).toContain('hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })')
     expect(create).toContain('const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())')
-    expect(create).toMatch(/return\s+event\.preventDefault\(\)\s+hideMainWindow\(win\)/)
-    expect(create).toContain("win.on('show', () => keepWorkingHidden(win, false))")
-    expect(create).toMatch(/win\.on\('closed', \(\) => \{\s+if \(mainWindow === win\) mainWindow = null\s+if \(process\.platform === 'darwin'\) stopHiddenWork\(\)/)
+    expect(create).toMatch(/return\s+event\.preventDefault\(\)\s+hideMainWindow\(win, work\)/)
+    // one hidden-work controller per main window, macOS only (Windows: null, nothing listens)
+    expect(create).toContain("const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null")
+    expect(create).toContain("win.on('show', () => work.show())")
+    expect(create).toContain("win.webContents.on('render-process-gone', () => work.setBusy(false))")
+    expect(inDarwinBlock(mainSource.indexOf("win.on('show', () => work.show())"))).toBe(true)
+    expect(create).toMatch(/win\.on\('closed', \(\) => \{\s+if \(mainWindow === win\) mainWindow = null\s+if \(work\) work\.stop\(\)\s+if \(mainWindowWork === work\) mainWindowWork = null/)
     const hide = fnBody('hideMainWindow')
-    for (const s of ['win.isFullScreen()', "win.once('leave-full-screen', hide)", 'win.setFullScreen(false)', 'keepWorkingHidden(win, true)', 'win.hide()']) expect(hide, s).toContain(s)
-    expect(hide.indexOf('keepWorkingHidden(win, true)')).toBeLessThan(hide.indexOf('win.hide()'))
-    // throttling and the power-save blocker always in pairs
-    const keep = fnBody('keepWorkingHidden')
-    expect(keep).toContain('page.setBackgroundThrottling(false)')
-    expect(keep).toContain('page.setBackgroundThrottling(true)')
-    expect(keep).toContain("powerSaveBlocker.start('prevent-app-suspension')")
-    expect(keep).toContain('if (hiddenWorkBlocker === null) hiddenWorkBlocker =')
-    expect(fnBody('stopHiddenWork')).toContain('powerSaveBlocker.stop(hiddenWorkBlocker)')
-    expect(count('setBackgroundThrottling(')).toBe(2)
+    for (const s of ['win.isFullScreen()', "win.once('leave-full-screen', hide)", 'win.setFullScreen(false)', 'work.hide()', 'win.hide()']) expect(hide, s).toContain(s)
+    expect(hide.indexOf('work.hide()')).toBeLessThan(hide.indexOf('win.hide()')) // sound off before the window goes
+    expect(hide).not.toContain('setBackgroundThrottling') // never at hide time: only createHiddenWork decides, later
+    // Electron's effects only in hiddenWorkOf; throttling / blocker in pairs is createHiddenWork's job (tested above)
+    const fx = fnBody('hiddenWorkOf')
+    expect(fx).toContain('return hardening.createHiddenWork({')
+    expect(fx).toContain('if (wc) wc.setBackgroundThrottling(on)')
+    expect(fx).toContain('if (wc) wc.setAudioMuted(on)')
+    expect(fx).toContain("startBlocker: () => require('electron').powerSaveBlocker.start('prevent-app-suspension'),")
+    expect(fx).toContain("if (typeof id === 'number' && powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)")
+    expect(count('setBackgroundThrottling(')).toBe(1)
+    expect(count('setAudioMuted(')).toBe(1)
     expect(count('powerSaveBlocker.start(')).toBe(1)
     expect(count('powerSaveBlocker.stop(')).toBe(1)
+    expect(count('hiddenWorkOf(')).toBe(2) // definition + createWindow
+    // the page says whether takes are being made: behind fromApp, from the main window only, a boolean only
+    expect(count("ipcMain.handle('app:busy'")).toBe(1)
+    const [bs, be] = blockAt(idx("ipcMain.handle('app:busy', (event, busy) => {"))
+    const busyBody = mainSource.slice(bs, be)
+    expect(busyBody).toContain('if (!fromApp(event) || !win || win.isDestroyed() || event.sender !== win.webContents || !mainWindowWork) return false')
+    expect(busyBody).toContain('mainWindowWork.setBusy(busy === true)')
+    const [ab, ae] = blockAt(idx('function registerAppBridge()'))
+    expect(idx("ipcMain.handle('app:busy'") > ab && idx("ipcMain.handle('app:busy'") < ae).toBe(true)
+    // the Dock icon / a second launch: sound back on even when no 'show' event follows
+    expect(fnBody('showMainWindow')).toContain('if (mainWindowWork) mainWindowWork.show()')
     // quit flags: ⌘Q (before-quit, macOS only) and an update (before-quit-for-update)
     const quitAt = idx("app.on('before-quit', () => {")
     expect(inDarwinBlock(quitAt)).toBe(true)
     const [qs, qe] = blockAt(quitAt)
-    expect(mainSource.slice(qs, qe)).toMatch(/^\{\s+quitting = true\s+stopHiddenWork\(\)\s+\}$/)
+    expect(mainSource.slice(qs, qe)).toMatch(/^\{\s+quitting = true\s+if \(mainWindowWork\) mainWindowWork\.stop\(\)\s+\}$/)
     const updAt = idx("autoUpdater.on('before-quit-for-update', () => {")
     const [us, ue] = blockAt(updAt)
     expect(mainSource.slice(us, ue)).toMatch(/^\{\s+macQuitForUpdate = true\s+\}$/)

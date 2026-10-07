@@ -135,6 +135,8 @@ let mainWindowShown = false
  */
 let quitting = false
 let macQuitForUpdate = false
+/** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
+let mainWindowWork = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -200,7 +202,7 @@ if (!app.requestSingleInstanceLock()) {
     // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
     app.on('before-quit', () => {
       quitting = true
-      stopHiddenWork()
+      if (mainWindowWork) mainWindowWork.stop()
     })
   }
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
@@ -305,9 +307,12 @@ function createWindow() {
 
   mainWindow = win
   mainWindowShown = false
+  const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null
+  mainWindowWork = work
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
-    if (process.platform === 'darwin') stopHiddenWork()
+    if (work) work.stop()
+    if (mainWindowWork === work) mainWindowWork = null
   })
   if (process.platform === 'darwin') {
     // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
@@ -316,9 +321,11 @@ function createWindow() {
       const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
       if (!hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
       event.preventDefault()
-      hideMainWindow(win)
+      hideMainWindow(win, work)
     })
-    win.on('show', () => keepWorkingHidden(win, false))
+    win.on('show', () => work.show())
+    // A page that crashed or reloads says again what it is doing ('app:busy' when it starts): nothing is being made now.
+    win.webContents.on('render-process-gone', () => work.setBusy(false))
   }
 
   // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
@@ -408,17 +415,20 @@ function showMainWindow() {
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
+  // macOS: sound back on, full-speed work let go — also when no 'show' event follows (the window was not hidden).
+  if (mainWindowWork) mainWindowWork.show()
 }
 
 /**
  * macOS: hides the main window instead of closing it (close button / ⌘W). A full-screen window leaves full screen first:
- * hiding it there would leave an empty black Space behind.
+ * hiding it there would leave an empty black Space behind. Sound off at once; the takes being made keep going at full
+ * speed only while there are some (createHiddenWork).
  */
-function hideMainWindow(win) {
+function hideMainWindow(win, work) {
   if (win.isDestroyed()) return
   const hide = () => {
     if (win.isDestroyed()) return
-    keepWorkingHidden(win, true)
+    work.hide()
     win.hide()
   }
   if (win.isFullScreen()) {
@@ -427,33 +437,29 @@ function hideMainWindow(win) {
   } else hide()
 }
 
-/** macOS: the power-save blocker held while the main window is hidden (null = none). */
-let hiddenWorkBlocker = null
-
 /**
- * macOS: while the main window is hidden its page keeps polling the takes being made — Chromium would throttle a hidden
- * page's timers (about one wake-up a minute after 5 minutes) and App Nap would suspend the app. In pairs: hidden →
- * background throttling off + one 'prevent-app-suspension' blocker; shown again (or gone, or quitting: stopHiddenWork)
- * → throttling back on + the blocker stopped. No IPC: the page does not need to know.
+ * macOS: the hidden-work rules of one main window (hardening-rules createHiddenWork) with Electron's effects: its
+ * page's background throttling and sound, one 'prevent-app-suspension' blocker (powerSaveBlocker is loaded here only).
  */
-function keepWorkingHidden(win, hidden) {
-  const wc = win.isDestroyed() ? null : win.webContents
-  const page = wc && !wc.isDestroyed() ? wc : null
-  if (!hidden) {
-    if (page) page.setBackgroundThrottling(true)
-    stopHiddenWork()
-    return
-  }
-  if (page) page.setBackgroundThrottling(false)
-  if (hiddenWorkBlocker === null) hiddenWorkBlocker = require('electron').powerSaveBlocker.start('prevent-app-suspension')
-}
-
-/** macOS: stops the hidden-window power-save blocker (window shown, closed, app quitting). */
-function stopHiddenWork() {
-  if (hiddenWorkBlocker === null) return
-  const { powerSaveBlocker } = require('electron')
-  if (powerSaveBlocker.isStarted(hiddenWorkBlocker)) powerSaveBlocker.stop(hiddenWorkBlocker)
-  hiddenWorkBlocker = null
+function hiddenWorkOf(win) {
+  const page = () => (!win.isDestroyed() && !win.webContents.isDestroyed() ? win.webContents : null)
+  return hardening.createHiddenWork({
+    setThrottling: (on) => {
+      const wc = page()
+      if (wc) wc.setBackgroundThrottling(on)
+    },
+    setMuted: (on) => {
+      const wc = page()
+      if (wc) wc.setAudioMuted(on)
+    },
+    startBlocker: () => require('electron').powerSaveBlocker.start('prevent-app-suspension'),
+    stopBlocker: (id) => {
+      const { powerSaveBlocker } = require('electron')
+      if (typeof id === 'number' && powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)
+    },
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: (t) => clearTimeout(t),
+  })
 }
 
 /** From the sources on macOS the Dock shows Electron's icon (a window's `icon` is ignored there): ours instead. */
@@ -602,6 +608,14 @@ function appPlacement() {
 function registerAppBridge() {
   ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))
   ipcMain.handle('app:placement', (event) => (fromApp(event) ? appPlacement() : { kind: 'unknown' }))
+  // macOS: the SanoVids page says whether takes are queued / being made (only a boolean crosses); a hidden window keeps
+  // working at full speed only then (createHiddenWork). Windows: nothing listens (mainWindowWork is null).
+  ipcMain.handle('app:busy', (event, busy) => {
+    const win = mainWindow
+    if (!fromApp(event) || !win || win.isDestroyed() || event.sender !== win.webContents || !mainWindowWork) return false
+    mainWindowWork.setBusy(busy === true)
+    return true
+  })
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2304,12 +2318,20 @@ const SAVE_MAX_FILE_BYTES = 1024 * 1024 * 1024 // 1 GB per file
 const SAVE_MAX_TEXT_CHARS = 2_000_000
 const SAVE_MAX_NAME = 180
 /**
- * The same name in bytes / in decomposed form: APFS allows 255 UTF-8 bytes per name, HFS+ and exFAT 255 UTF-16 units
- * after decomposition (NFD: "ệ" takes 3). A long title full of Vietnamese letters (3 bytes each) passes the 180-unit cut
- * and still fails there with ENAMETOOLONG. 224 leaves room for " (n)" (SAVE_LEDGER_MAX_NAME). Every platform: the same
- * project gives the same names on Windows and on a Mac; only very long accented names get shorter.
+ * macOS only: the same name in bytes / in decomposed form. APFS allows 255 UTF-8 bytes per name, HFS+ and exFAT 255
+ * UTF-16 units after decomposition (NFD: "ệ" takes 3): a long title full of Vietnamese letters (3 bytes each) passes the
+ * 180-unit cut and still fails there with ENAMETOOLONG. 224 leaves room for " (n)" (SAVE_LEDGER_MAX_NAME). Windows (NTFS:
+ * 255 UTF-16 units, nothing decomposed) keeps the 180-unit cut alone: the page builds names well below it, so main never
+ * shortens one there (the page would report the changed name as a clash with an existing file).
  */
 const SAVE_MAX_NAME_BYTES = 224
+/** Whether names also get the macOS byte / decomposed budget (configureSaveNames; off = the Windows rules). */
+let saveNameByteBudget = false
+
+/** Set once by main.cjs at start (process.platform): the budget above applies on macOS only. */
+function configureSaveNames(o) {
+  saveNameByteBudget = !!(o && typeof o === 'object' && o.platform === 'darwin')
+}
 const SAVE_MAX_PATH = 1024
 const SAVE_MAX_FOLDERS = 200
 // Windows device names, also as "nul .txt" / "Con ...x" (spaces before the first dot are ignored there too).
@@ -2344,10 +2366,11 @@ function saveNameExt(name) {
 /**
  * A plain file name to write, or null. Separators and forbidden characters become "-" (so no path can be named),
  * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", names longer than `max`
- * UTF-16 units — or than the byte / decomposed budget (SAVE_MAX_NAME_BYTES, + the same slack as `max` above
- * SAVE_MAX_NAME) — are cut keeping their extension.
+ * UTF-16 units — or, on macOS, than the byte / decomposed budget (SAVE_MAX_NAME_BYTES, + the same slack as `max` above
+ * SAVE_MAX_NAME) — are cut keeping their extension. `tailRoom`: the room kept for the extension when it is longer than
+ * this name's own (checkSaveFiles: the files of one group are cut alike, so a video and its .txt keep the same base).
  */
-function sanitizeSaveName(raw, max = SAVE_MAX_NAME) {
+function sanitizeSaveName(raw, max = SAVE_MAX_NAME, tailRoom = 0) {
   if (typeof raw !== 'string') return null
   let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
   s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
@@ -2355,13 +2378,17 @@ function sanitizeSaveName(raw, max = SAVE_MAX_NAME) {
   if (!s) return null
   const ext = saveNameExt(s)
   const tail = ext && ext.length <= 8 ? '.' + ext : ''
-  if (s.length > max) s = cutSaveText(s, max - tail.length).replace(/[.\s]+$/, '') + tail
-  const budget = SAVE_MAX_NAME_BYTES + Math.max(0, max - SAVE_MAX_NAME)
-  if (!saveNameFits(s, budget)) {
-    const tailCost = Math.max(Buffer.byteLength(tail, 'utf8'), tail.normalize('NFD').length)
-    s = fitSaveText(s.slice(0, s.length - tail.length), budget - tailCost).replace(/[.\s]+$/, '')
-    if (!s) return null
-    s += tail
+  const room = Math.max(tail.length, tailRoom)
+  if (s.length - tail.length + room > max) s = cutSaveText(s.slice(0, s.length - tail.length), max - room).replace(/[.\s]+$/, '') + tail
+  if (saveNameByteBudget) {
+    const budget = SAVE_MAX_NAME_BYTES + Math.max(0, max - SAVE_MAX_NAME)
+    const tailCost = Math.max(Buffer.byteLength(tail, 'utf8'), tail.normalize('NFD').length, tailRoom)
+    const base = s.slice(0, s.length - tail.length)
+    if (!saveNameFits(base, budget - tailCost)) {
+      s = fitSaveText(base, budget - tailCost).replace(/[.\s]+$/, '')
+      if (!s) return null
+      s += tail
+    }
   }
   if (SAVE_RESERVED_RE.test(s)) s = '_' + s
   return s
@@ -2469,9 +2496,12 @@ function checkSaveFiles(files) {
   if (!Array.isArray(files) || files.length < 1 || files.length > SAVE_MAX_FILES) return { error: 'Danh sách file không hợp lệ.' }
   const out = []
   const seen = new Set()
+  // One cut for the whole group: a video and its prompt .txt keep the same base name when it has to be shortened (alone,
+  // the file with the shorter extension would keep a longer base). The room is that of the longest allowed extension.
+  const room = Math.max(0, ...files.map((f) => saveTailRoom(f && typeof f === 'object' ? sanitizeSaveName(f.name) : null)))
   for (const f of files) {
     if (!f || typeof f !== 'object') return { error: 'File không hợp lệ.' }
-    const name = sanitizeSaveName(f.name)
+    const name = sanitizeSaveName(f.name, SAVE_MAX_NAME, room)
     if (!name) return { error: 'Tên file không hợp lệ.' }
     // Never a program, a shortcut or a settings file of Windows (.exe, .lnk, .url, desktop.ini…), whatever the page says.
     if (!SAVE_ALLOWED_EXT.has(saveNameExt(name))) return { error: 'Loại file này không được phép lưu.' }
@@ -2486,6 +2516,12 @@ function checkSaveFiles(files) {
     } else return { error: 'File không có nội dung.' }
   }
   return { files: out }
+}
+
+/** ".mp4" → 4: the room of a sanitized name's extension when SanoVids may write that type (ASCII), else 0. */
+function saveTailRoom(name) {
+  const ext = name ? saveNameExt(name) : ''
+  return SAVE_ALLOWED_EXT.has(ext) ? ext.length + 1 : 0
 }
 
 /** files:saveAs arguments → { suggestedName, title, files } or { error }. */
@@ -3073,6 +3109,7 @@ async function trashSavedGroups(dir, groups, { fsp, hashFile, trash, pathMod, si
   return { results, keep, removeIds }
 }
 // </save-rules>
+configureSaveNames({ platform: process.platform })
 
 const SAVE_STATE_FILE = 'save-locations.json'
 let saveState = null
