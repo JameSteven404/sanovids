@@ -4,15 +4,14 @@ import { useShallow } from 'zustand/react/shallow'
 import { downloadChosenTakesZip, downloadTake, newScene, requestRun } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { settingsLabel } from '../../core/models'
-import { sceneRunBlockReason, takeStatusFromKey, videoStatusKey } from '../../core/runRules'
 import type { Scene, Take } from '../../core/types'
 import { useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
-import { useCreditKind } from '../../store/credits'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
-import { providerVideoCapFor, useRuns } from '../../store/runs'
+import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { useSceneRunBlock } from '../runs/shared'
 import { formatRuntime, isEditingTarget, isSelectAllKey, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
 import { edgeAnnouncement, gridStep, insertBar, moveAnnouncement, reorderToast, sceneOrderAt } from './storyboardOrder'
@@ -386,13 +385,9 @@ const StoryCard = memo(function StoryCard({
   onPlay: (index: number) => void
 }) {
   const code = sceneCode(scene.order)
-  // Why "Chạy" is disabled: the engine's rule list (core/runRules), as strings (stable selections): the cached compile
-  // only reruns when this scene or the assets change. useCreditKind(): the provider sets the gateway's @video limit.
-  useCreditKind()
-  const videoCap = providerVideoCapFor(scene.settings.model)
-  const videoStatus = useRuns((s) => videoStatusKey(scene.videoRefs, (t) => s.takes.find((x) => x.id === t)?.status))
-  const takeStatus = useMemo(() => takeStatusFromKey(videoStatus), [videoStatus])
-  const reason = useProject((s) => sceneRunBlockReason(s.project.assets, scene, takeStatus, videoCap))
+  // Why "Chạy" is disabled: the engine's rule list (core/runRules = store/runs check()), like the canvas card and the
+  // inspector — as a string (stable selection): the cached compile only reruns when this scene or the assets change.
+  const runBlock = useSceneRunBlock(scene)
   const running = latest && (latest.status === 'processing' || latest.status === 'queued') ? latest : undefined
   const failed = latest?.status === 'failed' ? latest : undefined
   const accent = scene.color ?? 'var(--accent)'
@@ -490,8 +485,8 @@ const StoryCard = memo(function StoryCard({
             )}
             <button
               className="btn btn-sm"
-              disabled={!!reason}
-              title={reason ? `${reason.replace(/\.$/, '')} — chưa chạy được` : 'Chạy cảnh này'}
+              disabled={!!runBlock}
+              title={runBlock ? `Chưa chạy được: ${runBlock}` : 'Chạy cảnh này'}
               onClick={(e) => {
                 e.stopPropagation()
                 requestRun([scene.id])

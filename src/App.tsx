@@ -35,6 +35,7 @@ const chunks = {
   devPanel: () => import('./components/dev/DevPanel'),
   devSheets: () => import('./components/dev/DevSheets'),
   updateDialog: () => import('./components/dialogs/UpdateDialog'),
+  importJobsDialog: () => import('./components/runs/ImportJobsDialog'),
 }
 
 const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
@@ -50,6 +51,7 @@ const TopUpDialog = lazy(() => chunks.topUpDialog().then((m) => ({ default: m.To
 const DevPanel = lazy(() => chunks.devPanel().then((m) => ({ default: m.DevPanel })))
 const DevSheets = lazy(() => chunks.devSheets().then((m) => ({ default: m.DevSheets })))
 const UpdateDialog = lazy(() => chunks.updateDialog().then((m) => ({ default: m.UpdateDialog })))
+const ImportJobsDialog = lazy(() => chunks.importJobsDialog().then((m) => ({ default: m.ImportJobsDialog })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -196,6 +198,8 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <DevPanel tab={dialog.tab} />
     case 'update':
       return <UpdateDialog />
+    case 'importJobs':
+      return <ImportJobsDialog back={dialog.back} provider={dialog.provider} />
     default:
       return null
   }

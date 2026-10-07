@@ -6,7 +6,7 @@ Mục tiêu: chắc chắn 3 điều trước khi làm phim thật, tốn **ít 
 2. **Video về đúng chỗ**: theo dõi tiến độ, tải video về máy, mở lại app vẫn không mất và không bị tính tiền hai lần.
 3. **Credit đúng**: số dư canvasapp giảm đúng giá. Nạp credit cộng đúng số. Credit dev (giả lập) không bị lẫn vào.
 
-**Chi phí dự kiến: 8 credit** (2 video Seedance 2.5 · 5 giây · 480p, mỗi video 4 credit). Cần số dư **≥ 10 credit**.
+**Chi phí dự kiến: 8 credit** (2 video Seedance 2.5 · 5 giây · 480p, mỗi video 4 credit; **12 credit** nếu làm Bước 3b). Cần số dư **≥ 10 credit** (**≥ 14 credit** nếu làm Bước 3b).
 Phần nạp credit là tuỳ chọn: lần nạp nhỏ nhất là 10.000đ = 10 credit.
 
 > Chỉ dùng **bản cài .exe mới nhất** (cổng canvasapp và nạp credit chỉ có trong bản desktop, bản web sẽ khoá).
@@ -26,8 +26,10 @@ Chế độ Phát triển chạy **đúng mã của cổng canvasapp** với m�
 - [ ] **Gây lỗi › Mất phản hồi sau khi tạo job (đã trừ tiền)** → chạy một cảnh: take vẫn xong, ô credit **chỉ giảm một lần** (SanoVids tìm lại job, không gửi lần hai).
 - [ ] **Gây lỗi › Mất mạng khi tạo job** → chạy: take báo lỗi rõ ràng, credit **không** giảm; bấm Chạy lại thì chạy được.
 - [ ] **Gây lỗi › Tải video lỗi N lần** (N = 3) → chạy: video vẫn về (SanoVids tự tải lại), take không bị đánh lỗi.
+- [ ] **Gây lỗi › Mất mạng giữa chừng khi tải video** → chạy: take không bị đánh lỗi, video vẫn về (bật **Trạng thái › Cho tải tiếp video (HTTP Range)** thì tải tiếp ngay từ chỗ dừng — Nhật ký có dòng **206**). **Tải video chậm** → take hiện **Đang tải về …%**; bấm **Huỷ** lúc đó → SanoVids hỏi trước (video đã xong, đã trừ credit dev); không đồng ý → video vẫn về. **Tải video rất chậm** → mỗi kết nối dừng sau 2 phút: có Range thì tải tiếp tới xong, không có thì take báo lỗi ngay (đã trừ credit dev). **Tải video bị chuyển sang http** → không tải từ địa chỉ http, lần sau tải lại được. **Video quá lớn (> 1 GB)** → take báo lỗi ngay, ghi rõ đã trừ credit dev.
 - [ ] **Gây lỗi › Hết phiên (401)** khi một take đang chạy: ô credit đổi thành **DEV · Đăng nhập**; đăng nhập lại → take chạy tiếp và xong.
 - [ ] Nút **+** cạnh ô credit → **Mở thanh toán QR** → trang **SePay giả lập** → **Thanh toán thành công** → sau ≈ 2 giây báo “Đã nhận tiền”, số dư +50. Thử thêm **Huỷ**, **Lỗi thanh toán**, **Đóng cửa sổ**.
+- [ ] **Bảng phát triển › Job & đơn nạp › Tạo job như trên trang canvasapp** (chọn node của S01) → **Hàng đợi › Nhập job** → job hiện dưới S01 → **Nhập 1 job** → take mới có chip **nhập**, video về, ô credit **chỉ giảm một lần** (lúc tạo "trên trang"). Quét lại → không còn job mới. **Chạy lại** trên take nhập → hộp xác nhận chi phí (take mới).
 - [ ] Nếu có gì sai: **Nhật ký › Copy nhật ký** rồi gửi kèm khi báo lỗi.
 
 Xong bước này mới chuyển sang **canvasapp.io.vn** (bản desktop) và làm tiếp từ Bước 0.
@@ -85,6 +87,14 @@ Xong bước này mới chuyển sang **canvasapp.io.vn** (bản desktop) và l�
    - [ ] Video vẫn đúng 2 nhân vật.
    - [ ] Số dư = **S0 − 8**.
    - [ ] Trên canvasapp, ảnh của Áo đỏ và Chó **không bị tải lên lại** (dùng lại bản đã tải lần trước), chỉ ảnh mới thêm được tải lên.
+
+## Bước 3b — Nhập job tạo trên canvasapp (tuỳ chọn, 4 credit)
+
+1. Trên canvasapp.io.vn (trình duyệt), mở phiên **"SanoVids bridge"**, bấm **Tạo video** trên node của S01 (không sửa gì). Số dư = **S0 − 12**.
+2. Đóng tab đó. Trong SanoVids: **Hàng đợi › Nhập job** (đợi ~15 giây rồi **Quét lại** nếu chưa thấy).
+   - [ ] Job hiện dưới **S01**, đã tick sẵn. Bấm **Nhập 1 job**: thông báo "… không trừ credit", take mới có chip **nhập**.
+   - [ ] Video tự về khi xong. Số dư **vẫn là S0 − 12** (nhập không trừ thêm).
+   - [ ] Mở **Nhập job** lần nữa: "Không có job mới nào để nhập".
 
 ## Bước 4 — Nạp credit (tuỳ chọn, 10.000đ)
 

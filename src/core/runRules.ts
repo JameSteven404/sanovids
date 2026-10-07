@@ -1,5 +1,8 @@
 // Why a scene cannot run yet: ONE rule list shared by the queue engine (store/runs check(), which RunConfirm shows),
-// the scene card's ▶, the inspector's "Chạy", the scene table and the storyboard. Pure (no store, no provider).
+// the scene card's ▶, the inspector's "Chạy" (head + Take section), the scene table and the storyboard. Pure (no
+// store, no provider): callers pass the gateway's @video cap, how to read a take's status and the gateway's sure
+// refusal of the settings. core/runGate.ts only keeps the positional call shapes of the one-scene Run buttons
+// (components/runs/shared useSceneRunBlock) over this same list.
 //
 // Order = the engine's; the first reason wins:
 //   1. model of a newer SanoVids build (scene.foreignModel, kept by migrate), or values of a newer build for a model
@@ -7,10 +10,14 @@
 //   2. empty prompt                      3. prompt over the model's limit
 //   4. i2v without any image             5. transform without both frames     6. a frame without an image
 //   7. tokens with no media in the request (compiled.unsentTokens: 3 shown + "…")
-//   8. a reference video that no longer exists   9. a reference video that is not finished
-//  10. more reference videos than the gateway of new takes accepts (providerVideoCap; canvasapp and development mode: 0)
-// Rules 8–9 look at every @video of the scene (as the engine always did); rule 10 only at the videos really sent
-// (compiled.videos: none in a mode that sends no video).
+//   8. more reference videos than the gateway of new takes accepts (providerVideoCap — canvasapp and development
+//      mode: 0; refused, never sent with fewer videos). Before readiness: waiting for a video would not help.
+//   9. a SENT reference video that no longer exists   10. a SENT reference video that is not finished
+//  11. settings the gateway surely refuses now (settingsBlock = providers/limits settingsRunBlock, a firm
+//      /api/video-profiles read; last, like the profile checks of the submit's validateRequest)
+// Rules 8–10 only look at the videos the request really carries (compiled.videos: none in a mode that sends no video,
+// at most the model's cap): a leftover reference of an H3 t2v / transform scene never blocks it — a @video TOKEN in
+// such a mode still does (rule 7, character sync).
 import { compileScene } from './compile'
 import { lostConfigValues, type ConfigKey } from './foreignMark'
 import { MODELS, type ModelSpec } from './models'
@@ -28,20 +35,22 @@ export interface RunRuleInput {
   spec?: ModelSpec
   /** Reference videos per request accepted by the gateway of new takes (capabilities().maxRefVideos); null = no limit. */
   providerVideoCap: number | null
+  /** The gateway's sure refusal of the scene's settings (providers/limits settingsRunBlock); null / omitted = none. */
+  settingsBlock?: string | null
 }
 
 /**
  * Why @video blocks a run: the canvasapp gateway — and development mode, which runs the same gateway code against the
- * simulation — takes no reference video yet. (components/sidebar/shared.ts keeps the same text; runRules.test.ts
- * checks they match.)
+ * simulation — takes no reference video yet. Removing the token alone does not unblock the scene (the reference is
+ * still sent): the reference itself must go. (One constant: core/runGate re-exports it.)
  */
-export const NO_VIDEO_REFS_REASON = 'Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ @video để chạy'
+export const NO_VIDEO_REFS_REASON = 'Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy'
 export const EMPTY_PROMPT_REASON = 'Prompt trống'
 export const LONG_PROMPT_REASON = 'Prompt quá dài'
 export const NO_IMAGE_REASON = 'Thiếu ảnh tham chiếu'
 export const NO_FRAMES_REASON = 'Thiếu khung đầu/cuối'
 export const FRAME_IMAGE_REASON = 'Khung đầu/cuối chưa có ảnh'
-export const DELETED_VIDEO_REASON = 'Video tham chiếu đã bị xoá (bỏ @video đó)'
+export const DELETED_VIDEO_REASON = 'Video tham chiếu đã bị xoá — bỏ video đó khỏi cảnh'
 export const PENDING_VIDEO_REASON = 'Video tham chiếu chưa sẵn sàng'
 
 /** The scene uses a model of a newer SanoVids build (scene.foreignModel). */
@@ -70,8 +79,18 @@ export function unsentTokensReason(tokens: readonly string[]): string {
   return `Prompt nhắc ${tokens.slice(0, 3).join(', ')}${tokens.length > 3 ? '…' : ''} nhưng không có ảnh/video đó trong lần gửi — sửa số hoặc nối thêm`
 }
 
+/**
+ * `sent` = the reference videos the request carries (compileScene(...).videos.length); `maxRefVideos` = what the
+ * gateway takes for this model (ProviderCapabilities.maxRefVideos). Null = OK; over the cap = refused, never truncated.
+ */
+export function refVideosProblem(sent: number, maxRefVideos: number): string | null {
+  if (sent <= 0 || sent <= maxRefVideos) return null
+  if (maxRefVideos <= 0) return NO_VIDEO_REFS_REASON
+  return `Cổng canvasapp (cả chế độ Phát triển) nhận tối đa ${maxRefVideos} video tham chiếu (@video) — bỏ bớt video tham chiếu khỏi cảnh để chạy`
+}
+
 /** Why the scene cannot run (the first rule that fails), or null when it can. */
-export function runBlockReason({ scene, assets, compiled, takeStatus, providerVideoCap }: RunRuleInput): string | null {
+export function runBlockReason({ scene, assets, compiled, takeStatus, providerVideoCap, settingsBlock }: RunRuleInput): string | null {
   if (typeof scene.foreignModel === 'string' && scene.foreignModel) return foreignModelReason(scene.foreignModel)
   if (scene.foreignSettings && typeof scene.foreignSettings === 'object') return foreignConfigReason(scene.foreignSettings)
   if (!scene.prompt.trim()) return EMPTY_PROMPT_REASON
@@ -84,13 +103,13 @@ export function runBlockReason({ scene, assets, compiled, takeStatus, providerVi
     if (frames.some((id) => !assets.find((a) => a.id === id)?.imageIds[0])) return FRAME_IMAGE_REASON
   }
   if (compiled.unsentTokens.length) return unsentTokensReason(compiled.unsentTokens)
-  if (scene.videoRefs.length) {
-    const statuses = scene.videoRefs.map(takeStatus)
-    if (statuses.includes(undefined)) return DELETED_VIDEO_REASON
-    if (statuses.some((st) => st !== 'completed')) return PENDING_VIDEO_REASON
-  }
-  if (providerVideoCap !== null && compiled.videos.length > providerVideoCap) return NO_VIDEO_REFS_REASON
-  return null
+  const videos = providerVideoCap === null ? null : refVideosProblem(compiled.videos.length, providerVideoCap)
+  if (videos) return videos
+  // Leftover references a mode without videos never sends (H3 t2v / transform) do not block the run.
+  const statuses = compiled.videos.map((v) => takeStatus(v.takeId))
+  if (statuses.includes(undefined)) return DELETED_VIDEO_REASON
+  if (statuses.some((st) => st !== 'completed')) return PENDING_VIDEO_REASON
+  return settingsBlock || null
 }
 
 // ---------------- helpers for the UI (stable zustand selections) ----------------
@@ -120,14 +139,15 @@ export function compiledOf(assets: readonly Asset[], scene: Scene): CompiledProm
   return result
 }
 
-/** runBlockReason of a scene of the store (cached compile). */
+/** runBlockReason of a scene of the store (cached compile: take statuses only change its warnings, never the reason). */
 export function sceneRunBlockReason(
   assets: readonly Asset[],
   scene: Scene,
   takeStatus: (takeId: string) => string | undefined,
   providerVideoCap: number | null,
+  settingsBlock: string | null = null,
 ): string | null {
-  return runBlockReason({ scene, assets, compiled: compiledOf(assets, scene), takeStatus, providerVideoCap, spec: MODELS[scene.settings.model] })
+  return runBlockReason({ scene, assets, compiled: compiledOf(assets, scene), takeStatus, settingsBlock, providerVideoCap, spec: MODELS[scene.settings.model] })
 }
 
 /**
@@ -149,4 +169,17 @@ export function takeStatusFromKey(key: string): (takeId: string) => string | und
     }
   }
   return (takeId) => map.get(takeId)
+}
+
+/**
+ * A take status lookup from the statuses of `videoRefs` joined by ',' in the same order ('' = no such take) — the
+ * stable string the canvas card and the one-scene Run buttons subscribe to (components/runs/shared useRefVideoStatus):
+ * it only changes when a reference video changes status (not on progress ticks).
+ */
+export function refStatusLookup(videoRefs: readonly string[], joined: string): (takeId: string) => string | undefined {
+  const statuses = joined.split(',')
+  return (takeId) => {
+    const i = videoRefs.indexOf(takeId)
+    return i < 0 ? undefined : statuses[i] || undefined
+  }
 }

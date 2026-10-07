@@ -7,6 +7,8 @@ import { compileScene, sceneCode } from '../../core/compile'
 import { usesVideoRefs } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
 import { formatCredits } from '../../lib/credits'
+import { activeProviderId, providerLimits } from '../../providers'
+import { limitsSite } from '../../providers/limits'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
@@ -17,6 +19,7 @@ import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
 import { TakePicker } from './TakePicker'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
+import { batchSkipText, patchFitsLimits } from './settingsLimits'
 import { AssetPicker, EMPTY_IDS, fmt, KIND_LABEL, Section } from './shared'
 
 /** Commit any prompt being typed before a batch change renumbers tokens. */
@@ -106,6 +109,7 @@ const MultiSettings = memo(function MultiSettings({ scenes, ids }: { scenes: Sce
   const settings = useMemo(() => scenes.map((s) => s.settings), [scenes])
   // Scenes on a newer build's model show it in the model picker (not the stand-in model of their `settings`).
   const foreignModels = useMemo(() => scenes.map((s) => s.foreignModel), [scenes])
+  const codes = useMemo(() => scenes.map((s) => sceneCode(s.order)), [scenes])
   // A preset edited after it was applied no longer describes the scene ("Tuỳ chỉnh"; picking it re-applies it).
   const presetIds = useMemo(() => scenes.map((s) => appliedPresetId(s.presetId, s.settings, presets)), [scenes, presets])
   return (
@@ -115,17 +119,20 @@ const MultiSettings = memo(function MultiSettings({ scenes, ids }: { scenes: Sce
         foreignModels={foreignModels}
         presetIds={presetIds}
         presets={presets}
+        codes={codes}
         onPatch={(patch) => {
           // A value only some of the models offer (480P is Seedance-only, 768P H3-only…) goes to the scenes that
           // support it; the others keep their setting instead of being clamped to another (often pricier) value.
-          const fit = scenes.filter((s) => patchFits(s.settings.model, patch))
+          // Same for a value the gateway surely refuses for some of them now (/api/video-profiles, a firm read).
+          const provider = activeProviderId()
+          const limits = providerLimits(provider)
+          const byModel = scenes.filter((s) => patchFits(s.settings.model, patch))
+          const fit = byModel.filter((s) => patchFitsLimits(s.settings, patch, limits))
           if (fit.length) useProject.getState().updateSettings(fit.map((s) => s.id), patch)
           const skipped = scenes.filter((s) => !fit.includes(s))
           if (skipped.length) {
-            const codes = skipped.slice(0, 4).map((s) => sceneCode(s.order)).join(', ') + (skipped.length > 4 ? '…' : '')
-            toast(`${patchLabel(patch)} chỉ áp dụng cho ${fit.length} cảnh — giữ nguyên ${skipped.length} cảnh có model không hỗ trợ (${codes}).`, {
-              tone: 'warning',
-            })
+            const codes = skipped.map((s) => sceneCode(s.order))
+            toast(batchSkipText(patchLabel(patch), fit.length, codes, scenes.length - byModel.length, limitsSite(provider)), { tone: 'warning' })
           }
         }}
         onPreset={(id) => {

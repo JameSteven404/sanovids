@@ -550,3 +550,26 @@ describe('values of a newer build for a model this build knows (config marker)',
     expect('foreignSettings' in p.scenes[0]).toBe(false)
   })
 })
+
+describe('imported takes ("Nhập job") in saved data', () => {
+  const base = { id: 't', sceneId: 's', number: 2, status: 'processing', provider: 'canvasapp', remoteId: 'proj1:job9', charged: false }
+
+  it('keeps a valid record (also through a JSON save / load), cleans its lists, drops a malformed one', () => {
+    const imported = { at: 1_790_000_000_000, jobName: 'Video 9', unknown: ['resolution', 'refs'], inferred: ['mode'] }
+    const t = migrateTake(JSON.parse(JSON.stringify({ ...base, imported })))
+    expect(t.imported).toEqual(imported)
+    expect(migrateTake(JSON.parse(JSON.stringify(t)))).toEqual(t)
+    expect(migrateTake({ ...base, imported: { at: 5, jobName: 'x'.repeat(201), unknown: ['refs', 'bogus', 'refs', 7], inferred: ['refs', 'ratio'] } }).imported).toEqual({
+      at: 5,
+      jobName: null,
+      unknown: ['refs'],
+      inferred: ['ratio'], // a field both unknown and inferred is unknown
+    })
+    expect(migrateTake({ ...base, imported: { jobName: 'x' } })).not.toHaveProperty('imported')
+    expect(migrateTake({ ...base, imported: 'yes' })).not.toHaveProperty('imported')
+    expect(migrateTake({ ...base, imported: { at: Infinity } })).not.toHaveProperty('imported')
+    expect(migrateTake(base)).not.toHaveProperty('imported')
+    // the remote id and provider stay: the engine polls it again after a reload, never submits it
+    expect(migrateTake({ ...base, imported })).toMatchObject({ provider: 'canvasapp', remoteId: 'proj1:job9', charged: false })
+  })
+})

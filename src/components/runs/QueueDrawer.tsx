@@ -4,6 +4,7 @@ import {
   ChevronUp,
   CircleStop,
   Cloud,
+  CloudDownload,
   Download,
   Eye,
   ListVideo,
@@ -18,21 +19,25 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
+import { cancelTake, deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { MODELS, settingsLabel } from '../../core/models'
+import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
-import { chargedDemo, CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { CREDIT_MARK, formatCredits } from '../../lib/credits'
+import { PROVIDER_LABEL } from '../../providers'
+import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
+import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { sceneMapOf } from '../canvas/canvasModel'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
 import { takeCostLine } from './creditText'
+import { importedChipTitle, takeCostKnown, takeSettingsText } from './importedTake'
+import { openImportJobs } from '../../siteJobActions'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
@@ -225,6 +230,15 @@ function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => openImportJobs()}
+          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
+        >
+          <CloudDownload size={13} />
+          <span className="rq-btn-label">Nhập job</span>
+        </button>
         {provider === 'dev' ? (
           <DevPanelButton />
         ) : (
@@ -325,18 +339,10 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
       setSaving(false)
     }
   }
-  const cancel = () => {
-    const label = `${code} · T${take.number}`
-    const demoPaid = chargedDemo(take)
-    const sentAway = !demoPaid && !!take.remoteId
-    useRuns.getState().cancel(take.id)
-    if (demoPaid) toast(`Đã huỷ ${label} · hoàn ${formatCredits(take.cost, 'demo')}.`)
-    else if (sentAway) toast(`Đã huỷ ${label} trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[providerOf(take)]} vẫn chạy ở đó.`, { tone: 'warning', ms: 7000 })
-    else if (!demoPaid && take.status === 'processing') {
-      // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
-      toast(`Đã huỷ ${label} lúc đang gửi sang ${PROVIDER_LABEL[providerOf(take)]} — nếu job đã được nhận thì có thể đã trừ credit.`, { tone: 'warning', ms: 7000 })
-    } else toast(`Đã huỷ ${label}.`)
-  }
+  // The finished video is downloading: its own progress ("tải 45%"), and "Huỷ" asks first (actions.cancelTake).
+  const downloading = useTakeTransfers((s) => take.id in s.byTake)
+  const downloadPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
+  const shownPct = take.status === 'queued' ? 0 : downloading ? (downloadPct ?? take.progress) : take.progress
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -359,10 +365,15 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         </div>
         <div className="rq-row-sub">
           <ProviderBadge take={take} />
+          {take.imported && (
+            <span className="rq-imported" title={importedChipTitle(take)}>
+              nhập
+            </span>
+          )}
           <span className="rq-row-model" style={{ ['--rq-model-c' as string]: MODELS[take.settings.model]?.color }}>
             {MODELS[take.settings.model]?.short ?? take.settings.model}
           </span>
-          <span>{settingsLabel(take.settings)}</span>
+          <span>{takeSettingsText(take)}</span>
           {take.status === 'failed' && take.error && (
             <span className="rq-row-err" title={take.error}>
               {take.error}
@@ -375,24 +386,36 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         <StatusBadge take={take} showProgress={false} />
         {active && (
           <span className="progress">
-            <i style={{ width: `${take.status === 'queued' ? 0 : take.progress}%` }} />
+            <i style={{ width: `${shownPct}%` }} />
           </span>
         )}
       </div>
 
-      <span className="rq-row-time mono" title={take.status === 'queued' ? 'Thời gian chờ' : 'Thời gian tạo'}>
-        {take.status === 'processing' ? `${take.progress}% · ` : ''}
+      <span
+        className="rq-row-time mono"
+        title={take.status === 'queued' ? 'Thời gian chờ' : downloading ? 'Video đã tạo xong, đang tải về máy · thời gian tạo' : 'Thời gian tạo'}
+      >
+        {take.status === 'processing' ? (downloading ? `tải ${downloadPct === null ? '…' : `${downloadPct}%`} · ` : `${take.progress}% · `) : ''}
         {formatDuration(elapsed)}
       </span>
 
       <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
-        <span className="mono">{formatCredits(take.cost, cost.kind, { short: true })}</span>
+        <span className="mono">{formatCredits(takeCostKnown(take), cost.kind, { short: true })}</span>
         {CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
       </span>
 
       <div className="rq-row-actions">
         {active && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} title={`Huỷ ${code} · T${take.number}`}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => cancelTake(take.id)}
+            title={
+              downloading
+                ? `Huỷ ${code} · T${take.number} — video đã tạo xong (đã trừ ${providerOf(take) === 'dev' ? 'credit dev' : 'credit'}), SanoVids hỏi trước khi bỏ`
+                : `Huỷ ${code} · T${take.number}`
+            }
+          >
             <CircleStop size={13} />
             <span className="rq-act-label">Huỷ</span>
           </button>

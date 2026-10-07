@@ -459,12 +459,6 @@ export function creditTone(kind: CreditKind): 'is-sim' | 'is-real' {
   return isSimulatedCredit(kind) ? 'is-sim' : 'is-real'
 }
 
-/**
- * Why a scene with @video_N cannot run: the canvasapp gateway — and development mode, which runs the same gateway
- * code against the simulation — takes no reference video yet (store/runs check() refuses it too).
- */
-export const NO_VIDEO_REFS_REASON = 'Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ @video để chạy'
-
 /** Per-run cost of several scenes added up (what "Chạy tất cả" / a batch run costs). */
 export function totalCost(scenes: readonly { settings: VideoSettings }[]): number {
   return scenes.reduce((t, s) => t + costOf(s.settings), 0)

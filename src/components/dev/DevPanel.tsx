@@ -1,14 +1,17 @@
 // "Bảng phát triển" — the console of development mode (docs/SPEC-v2.md §11). It drives the in-app simulated
 // canvasapp.io.vn (providers/dev devServer()) that new takes run against while "Phát triển (giả lập)" is chosen:
 //   Trạng thái     login state, balance (set / ±100 / back to 1.000), speed, top-up switch, server behaviour
-//                  (dedupe, client_request_id in the job list, 402/400, latency, random failures), model profiles,
-//                  wipe the simulated server.
+//                  (dedupe, client_request_id in the job list, 402/400, latency, random failures), model profiles
+//                  (can_create, modes, lists left out) with what SanoVids knows of them + "Đọc lại ngay", wipe the
+//                  simulated server.
 //   Gây lỗi        one-click faults (one-shot, "giữ" = sticky), job-level faults, session end, a custom rule builder,
 //                  and the faults armed right now.
 //   Nhật ký        every request the app sent and what it got (fault badges, expandable JSON, filter, copy as JSON for
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
-//   Job & đơn nạp  the server's jobs (finish / fail / expire now, which SanoVids take they belong to), top-up orders
-//                  (decide what canvasapp says), uploaded pictures.
+//   Job & đơn nạp  "Tạo job như trên trang canvasapp" (a job the site's own page makes on a bridge node — to test
+//                  "Nhập job"), the server's jobs (finish / fail / expire now, which SanoVids take and bridge node — a
+//                  scene of the open project, an old node, another one — they belong to; "Nhập" for one without a
+//                  take), top-up orders (decide what canvasapp says), uploaded pictures.
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
 //                  only outside Electron — the desktop app uses the real ones), and "Vị trí chạy" (where the app runs
 //                  from: the Portable / temp-copy reminder of Settings, providers/dev/appPlacement; PlacementCard below).
@@ -36,7 +39,9 @@ import {
   LogOut,
   MapPin,
   Minus,
+  MousePointerClick,
   Plus,
+  RefreshCw,
   RotateCcw,
   ScrollText,
   ShieldAlert,
@@ -53,8 +58,9 @@ import { formatVnd } from '../../core/topup'
 import type { Mode, ModelId } from '../../core/types'
 import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
-import { activeProviderId, PROVIDER_LABEL, providerOf, resetDevMode, useProviderPrefs } from '../../providers'
-import { decodeRemoteId } from '../../providers/canvasapp/mapping'
+import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useProviderPrefs } from '../../providers'
+import { limitsSite } from '../../providers/limits'
+import { canvasNodeId, decodeRemoteId, sceneNodeId } from '../../providers/canvasapp/mapping'
 import { DEV_PLACEMENT_OPTIONS, devPlacement, useDevPlacement } from '../../providers/dev/appPlacement'
 import {
   clearDevLog,
@@ -68,6 +74,7 @@ import {
   useDevLog,
   useDevServer,
   type DevConfig,
+  type DevModelToggle,
   type DevJobView,
   type DevLogEntry,
   type DevServerSnapshot,
@@ -75,6 +82,7 @@ import {
   type DevTopupOutcome,
   type DevTopupView,
 } from '../../providers/dev'
+import { openImportJobs } from '../../siteJobActions'
 import { refreshRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -82,7 +90,8 @@ import { toast, useUI, type DevPanelTab } from '../../store/ui'
 import { MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { Segmented } from '../dialogs/Segmented'
-import { HighlightedPrompt } from '../runs/shared'
+import { refreshToast } from '../inspector/settingsLimits'
+import { HighlightedPrompt, useLimitsOf } from '../runs/shared'
 import {
   activeFaultCount,
   characterCheck,
@@ -93,9 +102,17 @@ import {
   devPanelTabs,
   endpointText,
   faultArmedText,
+  faultKindsFor,
   faultRuleText,
   filterLog,
   isDevEndpoint,
+  jobNodeOwners,
+  jobNodeText,
+  SITE_JOB_HINT,
+  siteJobToast,
+  siteNodeLabel,
+  limitsDifferFromConfig,
+  limitsStatusText,
   logExport,
   logTime,
   statusText,
@@ -347,6 +364,12 @@ function StatusTab({ snap }: { snap: DevServerSnapshot }) {
           label="Danh sách job có client_request_id"
           hint="Trang thật chưa rõ có trả trường này không — tắt là mặc định an toàn."
         />
+        <Switch
+          checked={c.rangeSupport}
+          onChange={(rangeSupport) => setConfig({ rangeSupport })}
+          label="Cho tải tiếp video (HTTP Range)"
+          hint="Trang thật chưa rõ /stream có hỗ trợ — tắt là mặc định: tải hỏng giữa chừng thì tải lại từ đầu (lần thử sau). Bật: tải tiếp từ chỗ dừng (206, ETag)."
+        />
         <div className="dv-field">
           <span className="label">Mã lỗi khi không đủ credit</span>
           <Segmented<400 | 402>
@@ -444,7 +467,15 @@ function AccountCard({ snap }: { snap: DevServerSnapshot }) {
             </button>
           </>
         ) : (
-          <button type="button" className="btn btn-sm btn-primary" onClick={() => act(() => devServer().login(), 'Máy chủ giả lập đã đăng nhập tài khoản.')}>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              act(() => devServer().login(), 'Máy chủ giả lập đã đăng nhập tài khoản.')
+              // what the account may run, read at once — even seconds after the inspector's own 401
+              void refreshProviderLimits('dev', { changed: true })
+            }}
+          >
             <LogIn size={13} /> Đăng nhập ngay
           </button>
         )}
@@ -502,23 +533,74 @@ function BalanceCard({ snap }: { snap: DevServerSnapshot }) {
   )
 }
 
+type ModelList = 'off_durations' | 'off_resolutions' | 'off_ratios'
+
 function ModelsCard({ config }: { config: DevConfig }) {
   const ids = Object.keys(MODELS) as ModelId[]
+  // What SanoVids knows of these toggles (the dev provider's /api/video-profiles cache) — shown, never re-read here:
+  // like the real site, SanoVids re-reads only after 10 minutes (or "Đọc lại ngay").
+  const { limits, info } = useLimitsOf('dev')
+  const [reading, setReading] = useState(false)
+  const setModel = (id: ModelId, patch: Partial<DevModelToggle>) => setConfig({ models: { ...config.models, [id]: { ...config.models[id], ...patch } } })
   const toggleMode = (id: ModelId, mode: Mode) => {
     const cur = config.models[id]
     const off = cur.disabled_modes.includes(mode)
-    setConfig({ models: { ...config.models, [id]: { ...cur, disabled_modes: off ? cur.disabled_modes.filter((m) => m !== mode) : [...cur.disabled_modes, mode] } } })
+    setModel(id, { disabled_modes: off ? cur.disabled_modes.filter((m) => m !== mode) : [...cur.disabled_modes, mode] })
   }
+  const toggleValue = <T extends string | number>(id: ModelId, list: ModelList, value: T) => {
+    const cur = (config.models[id][list] ?? []) as T[]
+    setModel(id, { [list]: cur.includes(value) ? cur.filter((x) => x !== value) : [...cur, value] })
+  }
+  const reread = async () => {
+    if (reading) return
+    setReading(true)
+    try {
+      // every click here follows a change made in this panel: never the few-seconds limit of the inspector's "Đọc lại"
+      const result = await refreshProviderLimits('dev', { changed: true })
+      const t = refreshToast(result, limitsSite('dev'), providerLimitsInfo('dev'))
+      toast(t.text, { tone: t.tone })
+    } finally {
+      setReading(false)
+    }
+  }
+  const differs = limitsDifferFromConfig(limits, config.models)
   return (
     <Card title="Model (video-profiles)" icon={<Cloud size={15} />}>
       {ids.map((id) => {
         const spec = MODELS[id]
         const t = config.models[id]
+        // canvasapp (and SanoVids) replaces MiniMax-H3's lists that are narrower than its built-in ones
+        const ignored = id === 'minimax_h3'
+        const chips = <T extends string | number>(label: string, list: ModelList, values: readonly T[], format: (v: T) => string) => (
+          <div className="dv-chips" role="group" aria-label={`${label} của ${spec.name}`}>
+            <span className="dv-chips-label">{label}</span>
+            {values.map((v) => {
+              const off = ((t[list] ?? []) as T[]).includes(v)
+              return (
+                <button
+                  key={String(v)}
+                  type="button"
+                  className={`dv-chip${off ? ' off' : ''}`}
+                  aria-pressed={!off}
+                  onClick={() => toggleValue(id, list, v)}
+                  title={
+                    off
+                      ? `Đang bỏ khỏi danh sách của /api/video-profiles${ignored ? ' (trang canvasapp bỏ qua danh sách hẹp hơn mặc định của MiniMax-H3: không có tác dụng)' : ''} — bấm để thêm lại`
+                      : 'Có trong danh sách — bấm để bỏ ra'
+                  }
+                >
+                  {off ? <Ban size={11} /> : <Check size={11} />}
+                  {format(v)}
+                </button>
+              )
+            })}
+          </div>
+        )
         return (
           <div key={id} className="dv-model">
             <Switch
               checked={t.can_create}
-              onChange={(can_create) => setConfig({ models: { ...config.models, [id]: { ...t, can_create } } })}
+              onChange={(can_create) => setModel(id, { can_create })}
               label={
                 <span className="dv-model-name">
                   <i style={{ background: spec.color }} />
@@ -546,10 +628,24 @@ function ModelsCard({ config }: { config: DevConfig }) {
                 })}
               </div>
             )}
+            {chips('Thời lượng', 'off_durations', spec.durations, (d) => `${d}s`)}
+            {chips('Độ phân giải', 'off_resolutions', spec.resolutions, (r) => r.toUpperCase())}
+            {chips('Tỉ lệ', 'off_ratios', spec.ratios, (r) => r)}
+            {ignored && <p className="dv-hint">Bỏ bớt thời lượng / độ phân giải / tỉ lệ của MiniMax-H3 không có tác dụng: trang canvasapp (và SanoVids) dùng danh sách mặc định của nó.</p>}
           </div>
         )
       })}
-      <p className="dv-hint">SanoVids đọc lại cấu hình model khoảng mỗi 10 phút hoặc khi mở lại app.</p>
+      <div className={`dv-limits${differs ? ' differs' : ''}`} role="status">
+        <span>{limitsStatusText(info, limits)}</span>
+        {differs && <b>Khác với các lựa chọn ở trên — bấm “Đọc lại ngay” để inspector thấy thay đổi.</b>}
+        <button type="button" className="btn btn-sm" onClick={() => void reread()} disabled={reading} title="Đọc lại /api/video-profiles của máy chủ giả lập ngay (như sau khi đăng nhập)">
+          <RefreshCw size={13} /> Đọc lại ngay
+        </button>
+      </div>
+      <p className="dv-hint">
+        Như canvasapp thật, SanoVids chỉ tự đọc lại sau 10 phút (1 phút nếu lần trước lỗi), khi mở cấu hình video của một cảnh hoặc hộp Chạy — bảng này không tự đọc
+        lại khi bạn bật/tắt. Lần đọc đó cũng là một yêu cầu: lỗi giả “Mọi yêu cầu” có thể rơi vào nó (lỗi khi đọc → cấu hình dự phòng, MiniMax-H3 khoá).
+      </p>
     </Card>
   )
 }
@@ -791,6 +887,7 @@ function CustomRule() {
     setError(null)
   }
   const needsStatus = form.kind === 'response' || form.kind === 'processed-then'
+  const kinds = faultKindsFor(form.endpoint)
   const add = () => {
     const r = customFaultInput(form)
     if (!r.ok) {
@@ -808,7 +905,16 @@ function CustomRule() {
       <div className="dv-custom-form">
         <label className="dv-field">
           <span className="label">Yêu cầu</span>
-          <select className="select" value={form.endpoint} onChange={(e) => isDevEndpoint(e.target.value) && set({ endpoint: e.target.value })}>
+          <select
+            className="select"
+            value={form.endpoint}
+            onChange={(e) => {
+              const endpoint = e.target.value
+              if (!isDevEndpoint(endpoint)) return
+              // the video-download kinds exist only for "Tải video"
+              set(faultKindsFor(endpoint).includes(form.kind) ? { endpoint } : { endpoint, kind: 'response' })
+            }}
+          >
             <option value="*">{endpointText('*')}</option>
             {DEV_ENDPOINTS.map((ep) => (
               <option key={ep} value={ep}>
@@ -820,7 +926,7 @@ function CustomRule() {
         <label className="dv-field">
           <span className="label">Kiểu lỗi</span>
           <select className="select" value={form.kind} onChange={(e) => set({ kind: e.target.value as DevFaultKind })}>
-            {(Object.keys(DEV_FAULT_KIND_LABEL) as DevFaultKind[]).map((k) => (
+            {kinds.map((k) => (
               <option key={k} value={k}>
                 {DEV_FAULT_KIND_LABEL[k]}
               </option>
@@ -837,6 +943,12 @@ function CustomRule() {
           <label className="dv-field dv-field-sm">
             <span className="label">Chậm (ms)</span>
             <input className="input mono" inputMode="numeric" value={form.ms} onChange={(e) => set({ ms: e.target.value })} />
+          </label>
+        )}
+        {form.kind === 'trickle' && (
+          <label className="dv-field dv-field-sm">
+            <span className="label">KB/giây</span>
+            <input className="input mono" inputMode="numeric" value={form.kbps} onChange={(e) => set({ kbps: e.target.value })} />
           </label>
         )}
         {!form.sticky && (
@@ -1054,9 +1166,13 @@ const TOPUP_STATUS: Record<DevTopupView['status'], string> = {
   rejected: 'Bị từ chối',
 }
 
+/** Open "Nhập job" from here — always the simulated site; closing it comes back to this tab. */
+const importHere = () => openImportJobs({ back: { kind: 'dev', tab: 'jobs' }, provider: 'dev' })
+
 function JobsTab({ snap }: { snap: DevServerSnapshot }) {
   return (
     <div className="dv-jobs">
+      <SiteJobCard snap={snap} />
       <JobList jobs={snap.jobs} />
       <TopupList orders={snap.topups} />
       <UploadGrid snap={snap} />
@@ -1067,6 +1183,8 @@ function JobsTab({ snap }: { snap: DevServerSnapshot }) {
 function JobList({ jobs }: { jobs: DevJobView[] }) {
   const takes = useRuns((s) => s.takes)
   const scenes = useProject((s) => s.project.scenes)
+  const projectId = useProject((s) => s.project.id)
+  const nodeOwners = useMemo(() => jobNodeOwners(projectId, scenes), [projectId, scenes])
   const takeOf = useMemo(() => {
     const order = new Map(scenes.map((s) => [s.id, s.order]))
     const m = new Map<string, { id: string; code: string }>()
@@ -1093,6 +1211,7 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
             const st = JOB_STATUS[j.status]
             const running = j.status === 'queued' || j.status === 'processing'
             const take = takeOf.get(j.job_id)
+            const node = jobNodeText(j.canvas_node_id, nodeOwners.get(j.canvas_node_id))
             return (
               <li key={j.job_id} className={`dv-job ${j.status}`}>
                 <div className="dv-job-main">
@@ -1110,6 +1229,11 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                     {formatCredits(j.cost, 'dev', { short: true })}
                   </span>
                   {j.refunded && <span className="dv-hint">đã hoàn</span>}
+                  {j.origin === 'site' && (
+                    <span className="dv-pill" title="Tạo bằng “Tạo job như trên trang canvasapp” — client_request_id ngẫu nhiên, SanoVids chỉ biết khi nhập">
+                      tạo trên trang
+                    </span>
+                  )}
                   {take ? (
                     <button
                       type="button"
@@ -1120,9 +1244,14 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                       {take.code}
                     </button>
                   ) : (
-                    <span className="dv-hint" title="Không có take nào trong dự án đang mở trỏ tới job này">
-                      không có take
-                    </span>
+                    <>
+                      <span className="dv-hint" title="Không có take nào trong dự án đang mở trỏ tới job này">
+                        không có take
+                      </span>
+                      <button type="button" className="btn btn-sm" onClick={importHere} title="Mở “Nhập job”: đưa job tạo trên trang vào dự án thành take (không trừ credit dev)">
+                        <CloudDownload size={13} /> Nhập
+                      </button>
+                    </>
                   )}
                 </div>
                 {running && (
@@ -1133,6 +1262,9 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                 <div className="dv-job-sub">
                   <span className="mono" title={`client_request_id: ${j.client_request_id}\njob_id: ${j.job_id}`}>
                     key {j.client_request_id.slice(0, 8)}… · job {j.job_id.slice(0, 8)}…
+                  </span>
+                  <span className="dv-hint" title={node.title}>
+                    · {node.label}
                   </span>
                   <span className="dv-hint">· {j.upload_ids.length ? `${j.upload_ids.length} ảnh` : j.first_frame_upload_id ? 'khung đầu/cuối' : 'không ảnh'}</span>
                   <span className="dv-hint">· {logTime(j.created_at)}</span>
@@ -1157,6 +1289,92 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
         </ul>
       )}
     </section>
+  )
+}
+
+/**
+ * "Tạo job như trên trang canvasapp": a node of the bridge session → the job the site's own page would make for it
+ * (optionally after editing the node there), billed in credit dev. SanoVids learns of it only through "Nhập job".
+ */
+function SiteJobCard({ snap }: { snap: DevServerSnapshot }) {
+  const scenes = useProject((s) => s.project.scenes)
+  const projectId = useProject((s) => s.project.id)
+  const owners = useMemo(() => jobNodeOwners(projectId, scenes), [projectId, scenes])
+  // the snapshot changes with every change of the simulated account: the saved canvas is read again then
+  const site = useMemo(() => devServer().siteNodes(), [snap])
+  const [picked, setPicked] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [prompt, setPrompt] = useState('')
+  const [resolution, setResolution] = useState('')
+  const node = site?.nodes.find((n) => n.id === picked) ?? site?.nodes[0]
+  /** canvas_node_id → the scene's title (its node in this project, or the old node named by the scene id). */
+  const titles = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const x of scenes) m.set(canvasNodeId(x.id), x.title)
+    for (const x of scenes) m.set(sceneNodeId(projectId, x.id), x.title)
+    return m
+  }, [projectId, scenes])
+  const titleOf = (nodeId: string) => titles.get(nodeId) || undefined
+  useEffect(() => {
+    setPrompt(node?.prompt ?? '')
+    setResolution(node?.resolution ?? '')
+  }, [node?.id])
+  const create = () => {
+    if (!node) return
+    const res = devServer().createSiteJob({ nodeId: node.id, edit: editing ? { prompt, resolution } : undefined })
+    const said = siteJobToast(res)
+    if (said.ok) {
+      toast(said.text, { tone: 'success', action: { label: 'Nhập job', run: importHere } })
+      syncBalance()
+    } else toast(said.text, { tone: 'warning', ms: 7000 })
+  }
+  return (
+    <Card title="Tạo job như trên trang canvasapp" icon={<MousePointerClick size={15} />}>
+      <p className="dv-hint">{SITE_JOB_HINT}</p>
+      {!site || !site.nodes.length ? (
+        <div className="empty">Chưa có phiên “SanoVids bridge” (hoặc canvas của nó chưa có node) — chạy một cảnh ở chế độ Phát triển trước.</div>
+      ) : (
+        <>
+          <label className="dv-field">
+            <span className="dv-label-row">Node (cảnh)</span>
+            <select className="select" value={node?.id ?? ''} onChange={(e) => setPicked(e.target.value)}>
+              {site.nodes.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {siteNodeLabel(n, owners.get(n.id), titleOf(n.id))}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Switch checked={editing} onChange={setEditing} label="Sửa node trước khi tạo (như chỉnh trên trang)" hint="Trang canvasapp lưu canvas rồi mới tạo job — lần chạy cảnh sau của SanoVids ghi đè lại node." />
+          {editing && node && (
+            <div className="dv-site-edit">
+              <label className="dv-field">
+                <span className="dv-label-row">Prompt</span>
+                <textarea className="textarea" rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              </label>
+              <label className="dv-field">
+                <span className="dv-label-row">Độ phân giải</span>
+                <select className="select" value={resolution} onChange={(e) => setResolution(e.target.value)}>
+                  {(node.model ? MODELS[node.model].resolutions : [node.resolution]).map((r) => (
+                    <option key={r} value={r.toLowerCase()}>
+                      {r.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
+          <div className="dv-actions">
+            <button type="button" className="btn btn-sm btn-primary" disabled={!node || (editing && !prompt.trim())} onClick={create}>
+              <MousePointerClick size={13} /> Tạo job trên trang (giả lập)
+            </button>
+            <button type="button" className="btn btn-sm" onClick={importHere}>
+              <CloudDownload size={13} /> Nhập job…
+            </button>
+          </div>
+        </>
+      )}
+    </Card>
   )
 }
 

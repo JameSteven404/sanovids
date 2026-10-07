@@ -5,11 +5,16 @@
 //   - card / inspector: @video blocks only when videos are REALLY sent past the gateway limit (was: any videoRefs),
 //     with NO_VIDEO_REFS_REASON; a mode that sends no video runs (the engine always let it);
 //   - inspector: also "Prompt quá dài", "Thiếu ảnh tham chiếu", "Khung đầu/cuối chưa có ảnh";
-//   - engine: "Video tham chiếu đã bị xoá (bỏ @video đó)" instead of "chưa sẵn sàng" when the take is gone;
+//   - engine: "Video tham chiếu đã bị xoá — bỏ video đó khỏi cảnh" instead of "chưa sẵn sàng" when the take is gone;
 //   - scene table / storyboard Run buttons: the full rule list (was: empty prompt only).
+// Merged with the @video gate of PR #11 (core/runGate.test.ts tests the same list through runGate's call shapes):
+//   - engine: the gateway's @video cap is checked BEFORE readiness (waiting for a video would not help), and readiness
+//     only looks at the SENT videos — a leftover reference of a mode that sends none never blocks (it did before);
+//   - NO_VIDEO_REFS_REASON says to remove the reference, not the token ("bỏ video tham chiếu khỏi cảnh");
+//   - a sure refusal of the settings by the gateway (settingsBlock, /api/video-profiles) comes last.
 import { describe, expect, it } from 'vitest'
-import { NO_VIDEO_REFS_REASON as SIDEBAR_NO_VIDEO_REFS_REASON } from '../../components/sidebar/shared'
 import { compileScene } from '../compile'
+import * as gate from '../runGate'
 import {
   compiledOf,
   DELETED_VIDEO_REASON,
@@ -22,6 +27,7 @@ import {
   NO_IMAGE_REASON,
   NO_VIDEO_REFS_REASON,
   PENDING_VIDEO_REASON,
+  refVideosProblem,
   runBlockReason,
   sceneRunBlockReason,
   takeStatusFromKey,
@@ -68,9 +74,9 @@ const project = (s: Scene): Project => ({
 
 type Statuses = Record<string, string>
 /** Reason the way check() computes it. */
-function reasonOf(s: Scene, statuses: Statuses = {}, cap: number | null = 0): string | null {
+function reasonOf(s: Scene, statuses: Statuses = {}, cap: number | null = 0, settingsBlock: string | null = null): string | null {
   const takeStatus = (id: string) => statuses[id]
-  return runBlockReason({ scene: s, assets: ASSETS, compiled: compileScene(project(s), s, { takeStatus }), takeStatus, providerVideoCap: cap })
+  return runBlockReason({ scene: s, assets: ASSETS, compiled: compileScene(project(s), s, { takeStatus }), takeStatus, providerVideoCap: cap, settingsBlock })
 }
 
 /** The engine's copy before 0.6.0 (store/runs.ts check(), v0.5.0), kept here as the oracle. */
@@ -154,17 +160,19 @@ describe('runBlockReason — each rule', () => {
     expect(reasonOf(scene({ settings: H3('t2v'), prompt: '@video_1', videoRefs: ['t1'] }), { t1: 'completed' })).toBe(unsentTokensReason(['@video_1']))
   })
 
-  it('8–9. reference videos: a deleted take beats a take still rendering', () => {
+  it('9–10. sent reference videos: a deleted take beats a take still rendering', () => {
     const s = scene({ prompt: '@video_1 @video_2', videoRefs: ['t1', 't2'] })
     expect(reasonOf(s, { t1: 'processing' }, null)).toBe(DELETED_VIDEO_REASON)
+    expect(DELETED_VIDEO_REASON).toBe('Video tham chiếu đã bị xoá — bỏ video đó khỏi cảnh')
     expect(reasonOf(s, { t1: 'processing', t2: 'completed' }, null)).toBe(PENDING_VIDEO_REASON)
     expect(reasonOf(s, { t1: 'failed', t2: 'completed' }, null)).toBe('Video tham chiếu chưa sẵn sàng')
     expect(reasonOf(s, { t1: 'completed', t2: 'completed' }, null)).toBeNull()
-    // every @video counts, even in a mode that sends none (as the engine always did)
-    expect(reasonOf(scene({ settings: H3('t2v'), videoRefs: ['t1'] }), { t1: 'queued' })).toBe(PENDING_VIDEO_REASON)
+    // only the videos the request carries count: a leftover reference of a mode that sends none (H3 t2v) never blocks,
+    // whatever its status (before the merge with PR #11 the engine refused it as "chưa sẵn sàng")
+    for (const st of [{ t1: 'queued' }, { t1: 'processing' }, {}] as Statuses[]) expect(reasonOf(scene({ settings: H3('t2v'), videoRefs: ['t1'] }), st)).toBeNull()
   })
 
-  it('10. the gateway limit counts the videos really sent', () => {
+  it('8. the gateway limit counts the videos really sent', () => {
     const s = scene({ prompt: '@video_1', videoRefs: ['t1'] })
     const done = { t1: 'completed' }
     expect(reasonOf(s, done, 0)).toBe(NO_VIDEO_REFS_REASON)
@@ -172,8 +180,23 @@ describe('runBlockReason — each rule', () => {
     expect(reasonOf(s, done, null)).toBeNull() // old demo: no gateway limit
     // H3 Text → Video sends no video: a leftover videoRef no longer blocks the card (the engine let it run)
     expect(reasonOf(scene({ settings: H3('t2v'), videoRefs: ['t1'] }), done, 0)).toBeNull()
-    // the same text as the sidebar constant used by the other @video hints
-    expect(NO_VIDEO_REFS_REASON).toBe(SIDEBAR_NO_VIDEO_REFS_REASON)
+    // removing the token alone does not unblock (the reference is still sent): the text says to remove the reference
+    expect(reasonOf(scene({ prompt: 'không còn token', videoRefs: ['t1'] }), done, 0)).toBe(NO_VIDEO_REFS_REASON)
+    expect(NO_VIDEO_REFS_REASON).toContain('bỏ video tham chiếu khỏi cảnh')
+    // one constant, whichever module a caller imports it from
+    expect(gate.NO_VIDEO_REFS_REASON).toBe(NO_VIDEO_REFS_REASON)
+    // a cap above 0: refused past it, naming the cap; never sent with fewer videos
+    expect(refVideosProblem(2, 1)).toMatch(/tối đa 1 video tham chiếu/)
+    expect(reasonOf(scene({ prompt: '@video_1 @video_2', videoRefs: ['t1', 't1b'] }), { t1: 'completed', t1b: 'completed' }, 1)).toMatch(/tối đa 1/)
+  })
+
+  it('11. a sure refusal of the settings by the gateway comes last; a newer build’s marker still first', () => {
+    const LOCKED = 'MiniMax-H3 hiện không khả dụng trên canvasapp'
+    expect(reasonOf(scene({ settings: H3('t2v') }), {}, 0, LOCKED)).toBe(LOCKED)
+    expect(reasonOf(scene({ settings: H3('t2v') }), {}, 0, null)).toBeNull()
+    expect(reasonOf(scene({ settings: H3('t2v'), prompt: ' ' }), {}, 0, LOCKED)).toBe(EMPTY_PROMPT_REASON)
+    expect(reasonOf(scene({ prompt: '@video_1', videoRefs: ['t1'] }), { t1: 'processing' }, 0, LOCKED)).toBe(NO_VIDEO_REFS_REASON)
+    expect(reasonOf(scene({ foreignModel: 'veo' }), {}, 0, LOCKED)).toBe(foreignModelReason('veo'))
   })
 
   it('the first failing rule wins (engine order)', () => {
@@ -182,11 +205,13 @@ describe('runBlockReason — each rule', () => {
     expect(reasonOf(scene({ prompt: '@image_1', settings: H3('i2v') }))).toBe(NO_IMAGE_REASON)
     expect(reasonOf(scene({ prompt: '@image_5', settings: H3('transform') }))).toBe(NO_FRAMES_REASON)
     expect(reasonOf(scene({ prompt: '@image_5 @video_1', videoRefs: ['gone'] }))).toMatch(/^Prompt nhắc @image_5/)
-    expect(reasonOf(scene({ prompt: '@video_1', videoRefs: ['t1'] }), { t1: 'processing' }, 0)).toBe(PENDING_VIDEO_REASON)
+    // the gateway's cap before readiness: waiting for the video would not help (merged with PR #11)
+    expect(reasonOf(scene({ prompt: '@video_1', videoRefs: ['t1'] }), { t1: 'processing' }, 0)).toBe(NO_VIDEO_REFS_REASON)
+    expect(reasonOf(scene({ prompt: '@video_1', videoRefs: ['t1'] }), { t1: 'processing' }, null)).toBe(PENDING_VIDEO_REASON)
   })
 })
 
-describe('runBlockReason = the v0.5.0 engine, except the two documented sentences', () => {
+describe('runBlockReason = the v0.5.0 engine, except the documented sentences and @video order', () => {
   it('agrees on a matrix of scenes', () => {
     const prompts = ['', 'plain', '@image_1', '@image_3 @image_9', '@video_1', '@video_2', 'a'.repeat(7001), '@image_?1']
     const settings = [SD, H3('t2v'), H3('i2v'), H3('transform')]
@@ -208,9 +233,18 @@ describe('runBlockReason = the v0.5.0 engine, except the two documented sentence
                 const s = scene({ prompt, settings: st, refs, videoRefs, firstFrame, lastFrame })
                 const now = reasonOf(s, statuses, cap)
                 const old = oldEngineReason(s, statuses, cap)
+                // What the request carries (the only videos the merged rules look at).
+                const sent = compileScene(project(s), s).videos.map((v) => v.takeId)
+                const status = (id: string) => (statuses as Statuses)[id]
                 const expected =
-                  old === 'Video tham chiếu chưa sẵn sàng' && videoRefs.includes('gone')
-                    ? DELETED_VIDEO_REASON
+                  old === 'Video tham chiếu chưa sẵn sàng'
+                    ? cap !== null && sent.length > cap
+                      ? NO_VIDEO_REFS_REASON // the gateway's cap comes first now
+                      : sent.some((id) => status(id) === undefined)
+                        ? DELETED_VIDEO_REASON
+                        : sent.some((id) => status(id) !== 'completed')
+                          ? PENDING_VIDEO_REASON
+                          : null // only leftover references of a mode that sends none were not ready
                     : old === 'Cổng canvasapp chưa hỗ trợ video tham chiếu'
                       ? NO_VIDEO_REFS_REASON
                       : old
@@ -239,6 +273,17 @@ describe('UI helpers', () => {
     expect(sceneRunBlockReason(ASSETS, s, status, 0)).toBe(NO_VIDEO_REFS_REASON)
     expect(sceneRunBlockReason(ASSETS, s, status, null)).toBeNull()
     expect(sceneRunBlockReason(ASSETS, scene({ prompt: ' ' }), () => undefined, 0)).toBe(EMPTY_PROMPT_REASON)
+  })
+
+  it('core/runGate (the one-scene Run buttons) answers with this same list, newer-build markers included', () => {
+    const s = scene({ prompt: '', foreignModel: 'veo' })
+    expect(gate.sceneRunBlock(s, ASSETS, '', 0)).toBe(foreignModelReason('veo'))
+    expect(gate.runBlockReason(s, compileScene(project(s), s), ASSETS, { maxRefVideos: 0, takeStatus: () => undefined })).toBe(foreignModelReason('veo'))
+    const v = scene({ prompt: '@video_1', videoRefs: ['t1'] })
+    expect(gate.sceneRunBlock(v, ASSETS, 'completed', 0, 'X')).toBe(NO_VIDEO_REFS_REASON)
+    expect(gate.sceneRunBlock(v, ASSETS, 'completed', 3, 'X')).toBe('X')
+    expect(gate.sceneRunBlock(v, ASSETS, '', 3)).toBe(DELETED_VIDEO_REASON)
+    expect(sceneRunBlockReason(ASSETS, v, () => 'completed', 3, 'X')).toBe('X')
   })
 
   it('videoStatusKey / takeStatusFromKey: one stable string, deleted takes stay deleted', () => {

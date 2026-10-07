@@ -13,7 +13,7 @@ vi.mock('../../../lib/imageStore', () => ({
 
 import type { Take } from '../../../core/types'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
-import { runCostPreview, takeCostLabel, takeCostLine, takeCreditKind } from '../creditText'
+import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
 
 type T = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'>
 const take = (patch: Partial<T>): T => ({ provider: 'mock', charged: true, cost: 20, status: 'completed', remoteId: null, error: null, ...patch })
@@ -125,5 +125,50 @@ describe('runCostPreview', () => {
   it('canvasapp: unknown balance stays unknown', () => {
     expect(runCostPreview('canvasapp', 30, null)).toMatchObject({ before: null, after: null, short: false, mayBeShort: false })
     expect(runCostPreview('canvasapp', 30, Number.NaN)).toMatchObject({ before: null, after: null })
+  })
+})
+
+describe('cancel wording (actions.cancelTake)', () => {
+  const facts = (patch: Partial<CancelFacts>): CancelFacts => ({
+    label: 'S03·T2',
+    provider: 'canvasapp',
+    status: 'processing',
+    cost: 20,
+    demoPaid: false,
+    sentAway: true,
+    videoReady: false,
+    ...patch,
+  })
+
+  it('asks only when the video is already made (paid) and not downloaded yet — in the words of its gateway', () => {
+    expect(cancelQuestion(facts({}))).toBeNull()
+    expect(cancelQuestion(facts({ status: 'queued', sentAway: false }))).toBeNull()
+    expect(cancelQuestion(facts({ provider: 'mock', videoReady: true }))).toBeNull()
+    const real = cancelQuestion(facts({ videoReady: true }))!
+    expect(real).toContain('S03·T2: video đã tạo xong trên canvasapp và đã trừ credit')
+    expect(real).toContain('vẫn tải được trên canvasapp.io.vn')
+    expect(real).toContain('chạy lại cảnh sẽ trừ credit lần nữa')
+    expect(real.endsWith('Vẫn huỷ?')).toBe(true)
+    const dev = cancelQuestion(facts({ provider: 'dev', videoReady: true }))!
+    expect(dev).toContain('canvasapp giả lập và đã trừ credit dev')
+    expect(dev).toContain('Bảng phát triển')
+    expect(dev).not.toContain('canvasapp.io.vn')
+  })
+
+  it('the toast says what the cancel meant: refund, a dropped paid video, a job still running there, or nothing sent', () => {
+    expect(cancelToastText(facts({ provider: 'mock', demoPaid: true, sentAway: false }))).toEqual({ text: 'Đã huỷ S03·T2 · hoàn 20 credit demo.', warning: false })
+    expect(cancelToastText(facts({ videoReady: true }))).toEqual({
+      text: 'Đã huỷ S03·T2 trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.',
+      warning: true,
+    })
+    expect(cancelToastText(facts({ provider: 'dev', videoReady: true })).text).toContain('job vẫn còn trong Bảng phát triển')
+    // never "still running there" once the job is done
+    expect(cancelToastText(facts({ videoReady: true })).text).not.toContain('vẫn chạy ở đó')
+    expect(cancelToastText(facts({}))).toEqual({ text: 'Đã huỷ S03·T2 trong SanoVids — job đã gửi sang canvasapp.io.vn vẫn chạy ở đó.', warning: true })
+    expect(cancelToastText(facts({ sentAway: false }))).toEqual({
+      text: 'Đã huỷ S03·T2 lúc đang gửi sang canvasapp.io.vn — nếu job đã được nhận thì có thể đã trừ credit.',
+      warning: true,
+    })
+    expect(cancelToastText(facts({ sentAway: false, status: 'queued' }))).toEqual({ text: 'Đã huỷ S03·T2.', warning: false })
   })
 })

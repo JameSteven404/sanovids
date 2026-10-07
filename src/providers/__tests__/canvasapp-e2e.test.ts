@@ -1,7 +1,10 @@
 // End-to-end proof of the REAL-credit path, without any network:
 //   the real queue engine (store/runs) → the real canvasapp adapter / api / desktop transport (providers/canvasapp)
 //   → window.bdpDesktop.canvasapp → an in-memory FAKE canvasapp.io.vn that behaves like the server + electron/main.cjs
-//   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request.
+//   (401, 402, network errors, lost answers, job progression, MP4 stream) and records every request. Videos come
+//   through main's OWN streamed downloads (its <canvasapp-downloads> + <canvasapp-lanes> blocks, run as-is: pieces,
+//   slots, idle timeout, 1 GB cap, Range only with the ETag); canvasapp:request refuses the stream like main does
+//   (matchCanvasappRequest), so a video can only come in pieces.
 // The fake is strict where canvasapp is: the canvas must have exactly canvasPayload()'s keys ("Invalid canvas
 // payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — the SAME validators the in-app dev
 // server uses (providers/dev/validate.ts) — and every request must pass the endpoint allowlist of electron/main.cjs
@@ -27,22 +30,41 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { takeFileBase } from '../../actions'
+import { createSceneFromTake, rerunTake, restoreFromTake, runNow, takeFileBase } from '../../actions'
+import { importSiteJobs, scanForImport } from '../../siteJobActions'
+import { defaultPicks } from '../../components/runs/importJobsModel'
+import { restoreBlock, takeSettingsText } from '../../components/runs/importedTake'
+import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
 import { costOf, MODELS } from '../../core/models'
 import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/types'
 import { takeFiles } from '../../lib/downloads'
 import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
+import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
+import { useUI } from '../../store/ui'
 import { takeCostLine } from '../../components/runs/creditText'
 import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
-import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
-import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
-import { getProvider, registerProvider, useProviderPrefs } from '../index'
+import {
+  CANVAS_NOT_SAVED_TEXT,
+  createCanvasappProvider,
+  JOBS_KEY,
+  MAX_CONCURRENCY,
+  memoryStorage,
+  PROFILES_TTL_MS,
+  STATE_KEY,
+  type KeyValueStorage,
+} from '../canvasapp/adapter'
+import { canvasNodeId, clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
+import { createDesktopTransport, type BridgeDownloadOpen, type BridgeDownloadRead, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
+import type * as DownloadsPort from '../dev/downloads'
+import type { ByteReader, ResponseLike } from '../dev/downloads'
+import { getProvider, providerLimits, refreshProviderLimits, registerProvider, useProviderPrefs } from '../index'
+import type { JobRequest } from '../types'
 import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '../dev/validate'
+import { applyNodeEdit, siteJobBody, type SiteNodeEdit } from '../dev/siteClient'
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fake canvasapp.io.vn (server + what electron/main.cjs returns over IPC)
@@ -50,16 +72,39 @@ import { canvasProblem, isObj, jobBodyProblem, jobKeyProblem, sameKeys } from '.
 
 type Json = Record<string, unknown>
 
-/** electron/main.cjs's own endpoint allowlist (the <canvasapp-routes> block, run as-is). */
-function loadMainRoutes(): { match: (method: string, path: string) => unknown; maxJsonBytes: number } {
+/**
+ * electron/main.cjs's own endpoint allowlist (the <canvasapp-routes> block, run as-is): `match` for downloads,
+ * `matchRequest` for canvasapp:request (never the video stream).
+ */
+function loadMainRoutes(): { match: (method: string, path: string) => unknown; matchRequest: (method: string, path: string) => unknown; maxJsonBytes: number } {
   const m = /\/\/ <canvasapp-routes>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-routes>/.exec(mainSource)
   if (!m) throw new Error('canvasapp-routes block not found in electron/main.cjs')
-  const factory = new Function('CANVASAPP_ORIGIN', `${m[1]}\nreturn { match: matchCanvasappRoute, maxJsonBytes: CANVASAPP_MAX_JSON_BYTES }`) as (
-    origin: string,
-  ) => { match: (method: string, path: string) => unknown; maxJsonBytes: number }
+  const factory = new Function(
+    'CANVASAPP_ORIGIN',
+    `${m[1]}\nreturn { match: matchCanvasappRoute, matchRequest: matchCanvasappRequest, maxJsonBytes: CANVASAPP_MAX_JSON_BYTES }`,
+  ) as (origin: string) => { match: (method: string, path: string) => unknown; matchRequest: (method: string, path: string) => unknown; maxJsonBytes: number }
   return factory('https://canvasapp.io.vn')
 }
 const mainRoutes = loadMainRoutes()
+
+function mainBlock(name: string): string {
+  const m = new RegExp(`// <${name}>[^\\n]*\\n([\\s\\S]*?)// </${name}>`).exec(mainSource)
+  if (!m) throw new Error(`${name} block not found in electron/main.cjs`)
+  return m[1]
+}
+/** electron/main.cjs's video downloads (the <canvasapp-downloads> block, run as-is). */
+const mainDownloads = new Function(`${mainBlock('canvasapp-downloads')}\nreturn { createDownloadSessions, CANVASAPP_VIDEO_MAX_BYTES }`)() as Pick<
+  typeof DownloadsPort,
+  'createDownloadSessions' | 'CANVASAPP_VIDEO_MAX_BYTES'
+>
+/** A fresh 'download' lane of main's <canvasapp-lanes> block (as-is). */
+function mainDownloadLane() {
+  const l = new Function(`${mainBlock('canvasapp-lanes')}\nreturn { withSlot: withCanvasappSlot, lanes: canvasappLanes }`)() as {
+    withSlot: (lane: string, fn: () => Promise<unknown>) => Promise<unknown>
+    lanes: { download: { active: number } }
+  }
+  return { withSlot: (fn: () => Promise<unknown>) => l.withSlot('download', fn), active: () => l.lanes.download.active }
+}
 
 interface FakeJob {
   job_id: string
@@ -95,6 +140,12 @@ type Fault =
   | { kind: 'wait'; until: Promise<void> }
   /** Answered with this status/body without being handled. */
   | { kind: 'response'; status: number; json?: unknown }
+  /** Video download: the connection breaks after `after` bytes of the body. */
+  | { kind: 'cut'; after: number }
+  /** Video download: the server stops sending after `after` bytes. */
+  | { kind: 'stall'; after: number }
+  /** Video download: the answer announces more than 1 GB. */
+  | { kind: 'oversize' }
 
 const DEFAULT_SCRIPT: Partial<FakeJob>[] = [
   { status: 'queued', progress: 0 },
@@ -104,11 +155,19 @@ const DEFAULT_SCRIPT: Partial<FakeJob>[] = [
 
 interface Logged extends TransportRequest {
   at: number
+  /** Streamed video download: the Range header sent (continue from that byte). */
+  range?: string
 }
 
 function fakeCanvasapp() {
   const log: Logged[] = []
   const state = {
+    /** Video downloads honour Range + If-Range with an ETag (VERIFY on the live site). */
+    rangeSupport: false,
+    /** Video answers carry Content-Length. */
+    sendLength: true,
+    /** The video bytes of a job. */
+    video: (jobId: string): Uint8Array => new TextEncoder().encode('MP4:' + jobId),
     authenticated: true,
     balance: 100,
     /** Status for "not enough credits" (canvasapp: VERIFY 400 or 402). */
@@ -212,6 +271,12 @@ function fakeCanvasapp() {
       return ok({ project_id: p.project_id })
     }
     const named = /^\/api\/projects\/([^/]+)$/.exec(path)
+    if (named && req.method === 'GET') {
+      // loadProject(): the saved canvas
+      const p = state.projects.find((x) => x.project_id === named[1])
+      if (!p) return refuse(404, 'Project not found', path)
+      return ok({ ...p, canvas: state.canvases.get(p.project_id) ?? { nodes: [], connections: [], viewport: { zoom: 1, scrollLeft: 0, scrollTop: 0 } } })
+    }
     if (named && req.method === 'PATCH') {
       const p = state.projects.find((x) => x.project_id === named[1])
       if (!p) return refuse(404, 'Project not found', path)
@@ -240,12 +305,17 @@ function fakeCanvasapp() {
       const pid = new URLSearchParams(query).get('project_id')
       return ok(state.jobs.filter((j) => j.project_id === pid).map(advance).map(publicJob))
     }
+    const promptOf = /^\/api\/video-jobs\/([^/]+)\/prompt$/.exec(path)
+    if (promptOf && req.method === 'GET') {
+      const job = state.jobs.find((j) => j.job_id === promptOf[1])
+      return job ? ok({ prompt: job.body.prompt }) : refuse(404, 'Job not found', path)
+    }
     const stream = /^\/api\/video-jobs\/([^/]+)\/stream$/.exec(path)
     if (stream && req.method === 'GET') {
       const job = state.jobs.find((j) => j.job_id === stream[1])
       if (!job) return refuse(404, 'Job not found', path)
       if (job.status !== 'completed' || !job.download_available) return refuse(409, 'Video chưa sẵn sàng', path)
-      return { ok: true, status: 200, contentType: 'video/mp4', bytes: new TextEncoder().encode('MP4:' + job.job_id) }
+      return { ok: true, status: 200, contentType: 'video/mp4', bytes: state.video(job.job_id) }
     }
     const one = /^\/api\/video-jobs\/([^/]+)$/.exec(path)
     if (one && req.method === 'DELETE') {
@@ -255,6 +325,81 @@ function fakeCanvasapp() {
     return refuse(404, 'Not found', path)
   }
 
+  // ---- streamed video downloads: main's own sessions in front of the fake server ----
+  const lane = mainDownloadLane()
+  /** canvasapp's answer to one GET …/stream (Range + If-Range when the gateway continues a download). */
+  async function streamFetch(url: string, init: { headers: Record<string, string>; signal: AbortSignal }): Promise<ResponseLike> {
+    const path = new URL(url).pathname
+    const req: TransportRequest = { method: 'GET', path, binary: true }
+    log.push({ ...req, at: Date.now(), ...(init.headers.Range ? { range: init.headers.Range } : {}) })
+    const aborted = new Promise<never>((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))
+    aborted.catch(() => undefined)
+    const fault = state.fault?.(req)
+    const text = (status: number, json: unknown): ResponseLike => {
+      const body = new TextEncoder().encode(JSON.stringify(json ?? {}))
+      const r = reader([body])
+      return { status, headers: { get: (n) => (n === 'content-type' ? 'application/json' : null) }, body: { getReader: () => r } }
+    }
+    if (fault?.kind === 'network') throw new Error('offline')
+    if (fault?.kind === 'response') return text(fault.status, fault.json)
+    if (fault?.kind === 'hang') {
+      if (fault.process) handle(req)
+      return aborted
+    }
+    if (fault?.kind === 'wait') await Promise.race([fault.until, aborted])
+    const res = handle(req)
+    if (fault?.kind === 'lost-response') throw new Error('timeout')
+    if (fault?.kind === 'processed-then') return text(fault.status, fault.json)
+    if (!res.ok) throw new Error(res.message)
+    if (!res.bytes) return text(res.status, res.json)
+    const all = res.bytes
+    const etag = `"fake-${all.byteLength}"`
+    const h: Record<string, string> = { 'content-type': res.contentType }
+    if (state.rangeSupport) {
+      h['accept-ranges'] = 'bytes'
+      h.etag = etag
+    }
+    const m = /^bytes=(\d+)-$/.exec(init.headers.Range ?? '')
+    const from = m && state.rangeSupport && init.headers['If-Range'] === etag ? Number(m[1]) : 0
+    const body = all.slice(from)
+    if (from > 0) h['content-range'] = `bytes ${from}-${all.byteLength - 1}/${all.byteLength}`
+    if (state.sendLength || from > 0) h['content-length'] = String(fault?.kind === 'oversize' ? mainDownloads.CANVASAPP_VIDEO_MAX_BYTES + 1 : body.byteLength)
+    const steps: (Uint8Array | 'error' | 'hang')[] =
+      fault?.kind === 'cut' ? [body.slice(0, fault.after), 'error'] : fault?.kind === 'stall' ? [body.slice(0, fault.after), 'hang'] : [body]
+    const r = reader(steps)
+    return { status: from > 0 ? 206 : 200, headers: { get: (n) => h[n] ?? null }, body: { getReader: () => r } }
+  }
+  /** A body: its pieces, then the end ('error' breaks the connection, 'hang' never sends more until cancelled). */
+  function reader(steps: (Uint8Array | 'error' | 'hang')[]): ByteReader {
+    let wake: (() => void) | null = null
+    return {
+      read: () => {
+        const step = steps.shift()
+        if (step === undefined) return Promise.resolve({ done: true })
+        if (step === 'error') return Promise.reject(new Error('connection reset'))
+        if (step === 'hang') return new Promise((resolve) => (wake = () => resolve({ done: true })))
+        return Promise.resolve({ done: false, value: step })
+      },
+      cancel: () => {
+        wake?.()
+        wake = null
+        return Promise.resolve()
+      },
+    }
+  }
+  const downloads = mainDownloads.createDownloadSessions({
+    fetch: streamFetch,
+    withSlot: lane.withSlot,
+    matchRoute: (p) => {
+      const m = mainRoutes.match('GET', String(p)) as { route: { binary?: boolean }; url: URL } | null
+      return m ? { binary: !!m.route.binary, url: m.url.toString(), key: m.url.pathname } : null
+    },
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+    now: () => Date.now(),
+  })
+  const downloadCalls: string[] = []
+
   const bridge: CanvasappBridge = {
     status: async () => ({ ok: true, authenticated: state.authenticated }),
     login: async () => {
@@ -262,13 +407,28 @@ function fakeCanvasapp() {
       return { ok: true, authenticated: true }
     },
     logout: async () => {
+      downloads.closeAll()
       state.authenticated = false
       return { ok: true }
     },
+    downloadOpen: async (a: { id: string; path: string; from: number }) => {
+      downloadCalls.push(`open ${a.from}`)
+      const res = await downloads.open('page', a)
+      if (!res.ok && res.code === 'not-allowed') state.refusedByMain.push(`GET ${a.path} (download)`)
+      return res as BridgeDownloadOpen
+    },
+    downloadRead: async (a: { id: string }) => {
+      downloadCalls.push('read')
+      return (await downloads.read('page', a)) as BridgeDownloadRead
+    },
+    downloadClose: async (a: { id: string }) => {
+      downloadCalls.push('close')
+      return downloads.close('page', a)
+    },
     request: async (req) => {
       log.push({ ...req, at: Date.now() })
-      // what electron/main.cjs checks before anything leaves the computer
-      if (!mainRoutes.match(req.method, req.path)) {
+      // what electron/main.cjs checks before anything leaves the computer (canvasapp:request: never the video stream)
+      if (!mainRoutes.matchRequest(req.method, req.path)) {
         state.refusedByMain.push(`${req.method} ${req.path}`)
         return { ok: false, code: 'not-allowed', message: `SanoVids không được phép gọi ${req.method} ${req.path}.` }
       }
@@ -291,12 +451,42 @@ function fakeCanvasapp() {
     },
   }
 
+  let siteKeys = 0
+  /**
+   * The user presses "Tạo video" on node `nodeId` of the bridge session on canvasapp's OWN page (after editing it,
+   * which saveCanvas() stores first): the body runVideoNode() builds from the saved node (providers/dev/siteClient —
+   * shared with the dev server), with a random client_request_id. Not a request SanoVids sent: not logged.
+   */
+  function siteJob(nodeId: string, edit?: SiteNodeEdit): FakeJob {
+    const project = state.projects.find((p) => p.name === 'SanoVids bridge')
+    if (!project) throw new Error('no bridge session')
+    let canvas: unknown = state.canvases.get(project.project_id)
+    if (edit) {
+      const r = applyNodeEdit(canvas, nodeId, edit)
+      if ('problem' in r) throw new Error(r.problem)
+      if (canvasProblem(r.canvas)) throw new Error('edited canvas invalid')
+      state.canvases.set(project.project_id, r.canvas as unknown as CanvasPayload)
+      canvas = r.canvas
+    }
+    const key = `0b9d3c55-1d2a-4a6e-9f7e-${String(++siteKeys).padStart(12, '0')}`
+    const built = siteJobBody(canvas, nodeId, project.project_id, key)
+    if ('problem' in built) throw new Error(built.problem)
+    const res = createJob(built.body)
+    if (!res.ok || res.status >= 400) throw new Error(`site job refused: ${JSON.stringify(res.ok ? res.json : res)}`)
+    return state.jobs[state.jobs.length - 1]
+  }
+
   const is = (method: string, path: string | RegExp) => (c: Logged) =>
     c.method === method && (typeof path === 'string' ? c.path.split('?')[0] === path : path.test(c.path))
   return {
     bridge,
     state,
     log,
+    siteJob,
+    /** downloadOpen / downloadRead / downloadClose as the page called them ("open <from>", "read", "close"). */
+    downloadCalls,
+    /** Video downloads holding a slot of main's 'download' lane right now. */
+    downloadSlots: lane.active,
     count: (method: string, path: string | RegExp) => log.filter(is(method, path)).length,
     jobPosts: () => log.filter(is('POST', '/api/video-jobs')).map((c) => c.json as Json),
     listReads: () => log.filter(is('GET', '/api/video-jobs')),
@@ -333,6 +523,27 @@ function fakeLocks() {
     },
   }
   return m
+}
+
+const ENDED = ['completed', 'failed', 'cancelled', 'expired']
+const videosOf = (c: CanvasPayload) => c.nodes.filter((n) => n.type === 'video').map((n) => n.id)
+/**
+ * Checks every canvas PUT against the jobs canvasapp runs at that moment: none may lose its node (whether canvasapp
+ * cancels or loses such a job is not known). `refuse`: answers some requests instead of the fake (Fault).
+ */
+function watchRunningNodes(refuse?: (req: TransportRequest) => Fault | undefined) {
+  const lost: string[] = []
+  const puts: CanvasPayload[] = []
+  fake.state.fault = (req) => {
+    if (req.method === 'PUT' && /\/canvas$/.test(req.path)) {
+      const canvas = req.json as CanvasPayload
+      puts.push(canvas)
+      const videos = new Set(videosOf(canvas))
+      for (const j of fake.state.jobs) if (!ENDED.includes(j.status) && !videos.has(j.canvas_node_id)) lost.push(`${j.job_id} (${j.status})`)
+    }
+    return refuse?.(req)
+  }
+  return { lost, puts }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -388,6 +599,9 @@ const project = (): Project => ({
     }),
   ],
 })
+
+/** Bridge canvas node of a scene of the test project 'p'. */
+const nodeOf = (sceneId: string) => sceneNodeId('p', sceneId)
 
 const OWNER: Record<string, string> = { img_e1: 'Elara', img_l1: 'Lumi', img_l2: 'Lumi', img_v1: 'Village', img_e0: 'Elara' }
 
@@ -500,8 +714,8 @@ describe('gateway e2e: happy path + character sync', () => {
 
     await run(300)
     // order of the submit: video profiles (like canvasapp's page at boot) → bridge project → uploads (sequential) →
-    // canvas → job
-    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 10)).toEqual([
+    // canvas → job list (what is on the node before the POST) → job
+    expect(fake.engineCalls().map((c) => `${c.method} ${c.path.split('?')[0]}`).slice(0, 11)).toEqual([
       'GET /api/video-profiles',
       'GET /api/projects',
       'POST /api/projects',
@@ -511,6 +725,7 @@ describe('gateway e2e: happy path + character sync', () => {
       'POST /api/uploads/images',
       'POST /api/uploads/images',
       'PUT /api/projects/proj1/canvas',
+      'GET /api/video-jobs',
       'POST /api/video-jobs',
     ])
     expect([...fake.state.uploads.values()].map((u) => u.content)).toEqual(['IMG:img_e1', 'IMG:img_l1', 'IMG:img_l2', 'IMG:img_v1'])
@@ -520,7 +735,7 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(body).toMatchObject({
       project_id: 'proj1',
       model_profile: 'seedance_2_5',
-      canvas_node_id: canvasNodeId('s1'),
+      canvas_node_id: nodeOf('s1'),
       prompt: PROMPT, // exactly as written / compiled
       mode: 't2v',
       duration: 15,
@@ -548,7 +763,7 @@ describe('gateway e2e: happy path + character sync', () => {
     expect(sentCharacters(body)).toEqual(['Elara#img_e1', 'Lumi#img_l2', 'Village#img_v1'])
     // the bridge canvas wires the same uploads in the same order onto that node
     const canvas = fake.state.canvases.get('proj1')!
-    const refs = canvas.connections.filter((c) => c.to === canvasNodeId('s1') && c.target_handle === 'reference').sort((a, b) => a.order - b.order)
+    const refs = canvas.connections.filter((c) => c.to === nodeOf('s1') && c.target_handle === 'reference').sort((a, b) => a.order - b.order)
     const uploadOfNode = (id: string) => {
       const n = canvas.nodes.find((x) => x.id === id)
       return n?.type === 'images' ? n.data.upload_ids[0] : undefined
@@ -892,6 +1107,9 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     g1.open()
     await run(300)
     expect(fake.state.jobs).toHaveLength(1) // the request went on: the user did not cancel anything
+    // on its own project's node (the request was built when it was sent), never on one of the project open now
+    expect(fake.jobPosts()[0].canvas_node_id).toBe(nodeOf('s1'))
+    expect(videosOf(fake.state.canvases.get('proj1')!)).toEqual([nodeOf('s1')])
 
     useProject.getState().loadProject(project())
     useRuns.getState().loadRuns({ takes: leftOnDisk, credits: 1000, spent: 0 })
@@ -917,6 +1135,7 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     await run(45_000)
     expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.jobPosts()[0].canvas_node_id).toBe(nodeOf('s1'))
   })
 
   it('a queued take of a deleted scene is never sent; Undo of the delete lets it run (once)', async () => {
@@ -960,7 +1179,7 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     expect(body).not.toHaveProperty('upload_ids')
     expect(body).not.toHaveProperty('aspect_ratio')
     const canvas = fake.state.canvases.get('proj1')!
-    expect(canvas.connections.filter((c) => c.to === canvasNodeId('s4')).map((c) => [c.target_handle, c.order])).toEqual([
+    expect(canvas.connections.filter((c) => c.to === nodeOf('s4')).map((c) => [c.target_handle, c.order])).toEqual([
       ['first_frame', 1],
       ['last_frame', 2],
     ])
@@ -974,17 +1193,149 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
   })
 })
 
+describe('gateway e2e: projects sharing scene ids (Nhân bản dự án, a file imported twice)', () => {
+  /** "Nhân bản dự án": the same scenes (ids included) under a new project id, s1's prompt edited in the copy. */
+  const copy = (): Project => ({
+    ...project(),
+    id: 'p2',
+    name: 'P (bản sao)',
+    scenes: project().scenes.map((s) => (s.id === 's1' ? { ...s, prompt: '@image_1 ôm @image_3 trên bãi biển đêm' } : s)),
+  })
+  /** Bridge state as the build before per-project nodes left it: project proj1, entries / ledger as given. */
+  function seedBridge(entries: Record<string, unknown>, ledger: { jobs?: Record<string, unknown>; sent?: Record<string, unknown> }) {
+    fake.state.projects.push({ project_id: 'proj1', name: 'SanoVids bridge' })
+    storage.set(STATE_KEY, JSON.stringify({ projectId: 'proj1', uploads: {}, entries }))
+    storage.set(JOBS_KEY, JSON.stringify({ jobs: ledger.jobs ?? {}, sent: ledger.sent ?? {} }))
+    installProvider() // the app starts with that state
+  }
+  /** A take of `sceneId` in the open project, as it was saved while "processing" (`remoteId` when known). */
+  function savedProcessing(sceneId: string, remoteId: string | null): Take {
+    const [t] = enqueue(sceneId)
+    const left: Take = { ...JSON.parse(JSON.stringify(t)), status: 'processing', startedAt: Date.now() - 60_000, progress: 5, remoteId }
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    return left
+  }
+
+  it('the original and its copy run the same scene: two nodes, each with its own prompt, two jobs — nothing lost, nothing re-posted', async () => {
+    const watch = watchRunningNodes()
+    const [a] = enqueue('s1')
+    await run(300)
+    const pOnDisk = saved()
+    useProject.getState().loadProject(copy())
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    const [b] = enqueue('s1')
+    await run(300)
+    expect(fake.jobPosts().map((x) => x.canvas_node_id)).toEqual([nodeOf('s1'), sceneNodeId('p2', 's1')])
+    const canvas = fake.state.canvases.get('proj1')!
+    expect(canvas.nodes.flatMap((n) => (n.type === 'video' ? [[n.id, n.data.prompt]] : []))).toEqual([
+      [sceneNodeId('p2', 's1'), copy().scenes[0].prompt],
+      [nodeOf('s1'), PROMPT], // the original's node keeps its prompt while its job runs
+    ])
+    expect(fake.state.uploads.size).toBe(4) // same pictures: uploaded once, one image node each
+    await run(45_000)
+    expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job2' })
+    expect(await media.get(take(b.id).videoId!)!.text()).toBe('MP4:job2')
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: pOnDisk, credits: 1000, spent: 0 })
+    await run(45_000)
+    expect(take(a.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
+    expect(await media.get(take(a.id).videoId!)!.text()).toBe('MP4:job1')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(2)
+    expect(watch.lost).toEqual([])
+    expect(fake.state.balance).toBe(100 - 2 * S1_COST)
+  })
+
+  it('after an update, a take running on its old node keeps it (never re-posted, never lost); new takes use the project’s node', async () => {
+    const legacy = canvasNodeId('s1')
+    const old = savedProcessing('s1', 'proj1:job1')
+    const idle = (i: number) => ({ sceneId: `x${i}`, model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9', prompt: `cũ ${i}`, uploadIds: [], firstFrameUploadId: null, lastFrameUploadId: null, usedAt: 10 + i })
+    const legacyEntry = { ...idle(0), sceneId: 's1', prompt: PROMPT, usedAt: 1 }
+    // what the earlier build left: s1's entry by scene id, 38 idle scenes, its ledger, the job running on canvasapp
+    seedBridge({ s1: legacyEntry, ...Object.fromEntries(Array.from({ length: 38 }, (_, i) => [`x${i}`, idle(i)])) }, {
+      jobs: { [old.id]: { remoteId: 'proj1:job1', at: Date.now() - 60_000, nodeId: legacy } },
+    })
+    fake.state.jobs.push({
+      job_id: 'job1',
+      project_id: 'proj1',
+      canvas_node_id: legacy,
+      client_request_id: clientRequestIdFor(old.id),
+      model_profile: 'seedance_2_5',
+      duration: 15,
+      aspect_ratio: '16:9',
+      status: 'processing',
+      submission_state: 'accepted',
+      progress: 40,
+      download_available: false,
+      error_message: null,
+      created_at: new Date(Date.now() - 60_000).toISOString(),
+      cost: S1_COST,
+      body: {},
+      script: [{ status: 'processing', progress: 60 }, { status: 'processing', progress: 80 }, { status: 'processing', progress: 90 }, { status: 'completed', progress: 100, download_available: true }],
+    })
+    useRuns.getState().loadRuns({ takes: [old], credits: 1000, spent: 0 })
+    const watch = watchRunningNodes()
+    // a new take of the same scene (4 pictures) + two more scenes: room is made from the idle scenes only
+    const fresh = enqueue('s1', 's2', 's3')
+    await run(5_000)
+    expect(fake.jobPosts().map((x) => x.canvas_node_id)).toEqual(['s1', 's2', 's3'].map(nodeOf))
+    expect(videosOf(fake.state.canvases.get('proj1')!)).toContain(legacy)
+    await run(120_000)
+    expect(take(old.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
+    expect(fresh.every((t) => take(t.id).status === 'completed')).toBe(true)
+    expect(fake.jobPosts().map((x) => x.client_request_id)).not.toContain(clientRequestIdFor(old.id))
+    expect(fake.count('POST', '/api/video-jobs')).toBe(3)
+    expect(watch.lost).toEqual([])
+    expect(fake.state.balance).toBe(100 - S1_COST - costOf(project().scenes[1].settings) - costOf(project().scenes[2].settings))
+  })
+
+  it.each([
+    ['its own node, server deduplicates', 'new', true],
+    ['its own node, server does not deduplicate', 'new', false],
+    ['an old node (sent by the build before), server does not deduplicate', 'legacy', false],
+  ])(
+    'a lost answer in the copy is never taken by an unsure take of the original (%s): one job, charged once',
+    async (_label, where, dedupe) => {
+      fake.state.dedupe = dedupe
+      // the original: take A was being sent when the app closed — its POST never reached canvasapp
+      const a = savedProcessing('s1', null)
+      const aNode = where === 'legacy' ? canvasNodeId('s1') : nodeOf('s1')
+      seedBridge({}, { sent: { [a.id]: { projectId: 'proj1', nodeId: aNode, at: Date.now() - 30_000, before: [] } } })
+      // the copy: take B of the same scene, canvasapp creates its job but the answer is lost
+      useProject.getState().loadProject(copy())
+      useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+      let lose = true
+      fake.state.fault = (req) => {
+        if (req.method !== 'POST' || req.path !== '/api/video-jobs' || !lose) return undefined
+        lose = false
+        return { kind: 'lost-response' }
+      }
+      const [b] = enqueue('s1')
+      await run(300)
+      expect(fake.state.jobs).toHaveLength(1)
+      const bOnDisk = saved()
+      // while B waits to look for its job, the original is opened: A is looked up
+      useProject.getState().loadProject(project())
+      useRuns.getState().loadRuns({ takes: [a], credits: 1000, spent: 0 })
+      await run(60_000)
+      expect(take(a.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+      // back to the copy: B has its own job
+      useProject.getState().loadProject(copy())
+      useRuns.getState().loadRuns({ takes: bOnDisk, credits: 1000, spent: 0 })
+      await run(60_000)
+      expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
+      expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+      expect(fake.state.jobs).toHaveLength(1)
+      expect(fake.state.balance).toBe(100 - S1_COST)
+    },
+  )
+})
+
 describe('gateway e2e: gentleness and engine ownership', () => {
   it('at most 10 jobs in flight; one job-list read per poll for all of them, never closer than 15 s', async () => {
     expect(MAX_CONCURRENCY).toBe(10)
     expect(MAX_REMOTE_CONCURRENCY).toBe(10)
-    fake.state.script = [
-      { status: 'queued' },
-      { status: 'processing', progress: 20 },
-      { status: 'processing', progress: 50 },
-      { status: 'processing', progress: 80 },
-      { status: 'completed', progress: 100, download_available: true },
-    ]
+    // still running whatever the number of reads (this fake moves a job one step per job-list read)
+    fake.state.script = [{ status: 'queued' }, ...Array.from({ length: 40 }, () => ({ status: 'processing', progress: 20 }))]
     // 12 scenes (more than the cap): Seedance 2.5 · 5 s · 480p each
     const ids = Array.from({ length: 12 }, (_, i) => `m${i + 1}`)
     useProject.getState().loadProject({ ...project(), scenes: ids.map((id, i) => scene(id, i + 1)) })
@@ -994,17 +1345,25 @@ describe('gateway e2e: gentleness and engine ownership', () => {
     expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all.slice(0, 10)))
     expect(takes().filter((x) => x.status === 'processing')).toHaveLength(10)
     expect(all.slice(10).map((t) => take(t.id).status)).toEqual(['queued', 'queued'])
-    // ten running jobs, still one read of the job list per poll cycle (not one per job)
-    const reads = fake.listReads().length
+    // ten running jobs, still one read of the job list per poll cycle (not one per job) — plus the one right before
+    // each POST (what is on the node before it)
+    const reads = fake.listReads().length - fake.count('POST', '/api/video-jobs')
     expect(reads).toBeGreaterThan(0)
     expect(reads).toBeLessThanOrEqual(4)
-    await run(60_000) // the first ten complete → the last two go
+    // the first ten complete → the last two go
+    for (const j of fake.state.jobs) j.script = [{ status: 'completed', progress: 100, download_available: true }]
+    fake.state.script = DEFAULT_SCRIPT
+    await run(60_000)
     expect(fake.jobPosts().map((x) => x.client_request_id)).toEqual(keys(all))
     await run(120_000)
     expect(takes().every((x) => x.status === 'completed')).toBe(true)
     expect(fake.count('POST', '/api/video-jobs')).toBe(12)
-    const at = fake.listReads().map((x) => x.at)
-    for (let i = 1; i < at.length; i++) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(15_000)
+    // two reads of the job list without a job POST between them are ≥ 15 s apart (after a POST, the list is read again
+    // at once: electron/main.cjs drops its 15 s cache there too)
+    const order = fake.log.filter((c) => c.path.split('?')[0] === '/api/video-jobs' && (c.method === 'GET' || c.method === 'POST'))
+    for (let i = 1; i < order.length; i++) {
+      if (order[i].method === 'GET' && order[i - 1].method === 'GET') expect(order[i].at - order[i - 1].at).toBeGreaterThanOrEqual(15_000)
+    }
   })
 
   it('only the tab holding the engine lock talks to canvasapp', async () => {
@@ -1039,29 +1398,10 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     useProject.getState().loadProject({ ...project(), assets, scenes })
     return scenes.map((s) => s.id)
   }
-  const ENDED = ['completed', 'failed', 'cancelled', 'expired']
-  const videosOf = (c: CanvasPayload) => c.nodes.filter((n) => n.type === 'video').map((n) => n.id)
-  /**
-   * Checks every canvas PUT against the jobs canvasapp runs at that moment: none may lose its node (whether canvasapp
-   * cancels or loses such a job is not known). `refuse`: answers some requests instead of the fake (Fault).
-   */
-  function watchRunningNodes(refuse?: (req: TransportRequest) => Fault | undefined) {
-    const lost: string[] = []
-    const puts: CanvasPayload[] = []
-    fake.state.fault = (req) => {
-      if (req.method === 'PUT' && /\/canvas$/.test(req.path)) {
-        const canvas = req.json as CanvasPayload
-        puts.push(canvas)
-        const videos = new Set(videosOf(canvas))
-        for (const j of fake.state.jobs) if (!ENDED.includes(j.status) && !videos.has(j.canvas_node_id)) lost.push(`${j.job_id} (${j.status})`)
-      }
-      return refuse?.(req)
-    }
-    return { lost, puts }
-  }
 
   it('10 scenes × 4 different characters: a running job never loses its node; the 8th waits in the queue for room', async () => {
-    fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 30 }, { status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    // still running whatever the number of reads (this fake moves a job one step per job-list read)
+    fake.state.script = [{ status: 'queued' }, ...Array.from({ length: 40 }, () => ({ status: 'processing', progress: 30 }))]
     const watch = watchRunningNodes()
     const all = enqueue(...crowd(10, 4))
     await run(5_000)
@@ -1070,7 +1410,10 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     expect(all.slice(0, 7).every((t) => take(t.id).status === 'processing' && !!take(t.id).remoteId)).toBe(true)
     expect(all.slice(7).map((t) => take(t.id).status)).toEqual(['queued', 'queued', 'queued']) // honestly waiting
     expect(fake.count('POST', '/api/uploads/images')).toBe(28) // the waiting scenes uploaded nothing yet
-    await run(300_000) // running jobs end → room → the others go, three more PUTs
+    // running jobs end → room → the others go, three more PUTs
+    for (const j of fake.state.jobs) j.script = [{ status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    fake.state.script = [{ status: 'queued' }, { status: 'processing', progress: 30 }, { status: 'processing', progress: 60 }, { status: 'completed', progress: 100, download_available: true }]
+    await run(300_000)
     expect(takes().every((t) => t.status === 'completed')).toBe(true)
     expect(new Set(fake.jobPosts().map((b) => b.client_request_id)).size).toBe(10)
     expect(fake.jobPosts()).toHaveLength(10)
@@ -1098,11 +1441,11 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
     const [last] = enqueue(ids[10])
     await run(1_000)
     expect(watch.puts).toHaveLength(2)
-    expect(videosOf(watch.puts[0]).sort()).toEqual(ids.map(canvasNodeId).sort()) // refused: every scene
-    expect(videosOf(watch.puts[1]).sort()).toEqual(ids.slice(1).map(canvasNodeId).sort()) // without m1 only
+    expect(videosOf(watch.puts[0]).sort()).toEqual(ids.map(nodeOf).sort()) // refused: every scene
+    expect(videosOf(watch.puts[1]).sort()).toEqual(ids.slice(1).map(nodeOf).sort()) // without m1 only
     expect(watch.lost).toEqual([])
     const onCanvasapp = videosOf(fake.state.canvases.get('proj1')!)
-    for (const id of ids.slice(1, 10)) expect(onCanvasapp).toContain(canvasNodeId(id)) // the 9 running nodes
+    for (const id of ids.slice(1, 10)) expect(onCanvasapp).toContain(nodeOf(id)) // the 9 running nodes
     if (sent) {
       expect(take(last.id).remoteId).toBe('proj1:job11')
     } else {
@@ -1110,7 +1453,7 @@ describe('gateway e2e: up to 10 jobs at once on one bridge canvas', () => {
       expect(take(last.id).status).toBe('failed')
       expect(take(last.id).error!.startsWith(CANVAS_NOT_SAVED_TEXT)).toBe(true)
       expect(fake.jobPosts()).toHaveLength(10)
-      expect(onCanvasapp.sort()).toEqual(ids.slice(0, 10).map(canvasNodeId).sort())
+      expect(onCanvasapp.sort()).toEqual(ids.slice(0, 10).map(nodeOf).sort())
     }
   })
 
@@ -1208,6 +1551,7 @@ describe('gateway e2e: download', () => {
     expect(take(t.id).error).toMatch(/canvasapp\.io\.vn/)
     expect(fake.count('GET', '/api/video-jobs/job1/stream')).toBe(5)
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.downloadCalls.length).toBeGreaterThan(0) // in pieces: never through canvasapp:request
   })
 
   it('a failed download of a finished (paid) video is retried — never turned into a failed take that invites a paid re-run', async () => {
@@ -1219,6 +1563,240 @@ describe('gateway e2e: download', () => {
     await run(10 * 60_000)
     expect(take(t.id).status).toBe('completed')
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+})
+
+describe('gateway e2e: streamed video download (main’s pieces, slots and timeouts)', () => {
+  const streamGets = () => fake.log.filter((c) => c.method === 'GET' && c.path === '/api/video-jobs/job1/stream')
+  /** A video bigger than one piece (4 MiB): 6 MiB. */
+  const BIG = 6 * 1024 * 1024
+  const big = (jobId: string) => {
+    const b = new Uint8Array(BIG)
+    b.fill(jobId.length)
+    b[0] = 77
+    b[BIG - 1] = 88
+    return b
+  }
+
+  it('in pieces of ≤ 4 MiB, with "Đang tải về …%" while it comes; the same bytes end up stored', async () => {
+    fake.state.video = big
+    const seen: (number | null)[] = []
+    const off = useTakeTransfers.subscribe((st) => {
+      const t = Object.values(st.byTake)[0]
+      if (t) seen.push(transferPercent(t))
+    })
+    const [t] = enqueue('s1')
+    await run(45_000)
+    off()
+    expect(take(t.id).status).toBe('completed')
+    const stored = new Uint8Array(await media.get(take(t.id).videoId!)!.arrayBuffer())
+    expect(stored.byteLength).toBe(BIG)
+    expect([stored[0], stored[BIG - 1]]).toEqual([77, 88])
+    expect(media.get(take(t.id).videoId!)!.type).toBe('video/mp4')
+    expect(fake.downloadCalls.filter((c) => c === 'read')).toHaveLength(3) // 4 MiB + 2 MiB + the end
+    expect(seen.length).toBeGreaterThan(0)
+    expect(useTakeTransfers.getState().byTake).toEqual({}) // cleared once done
+    expect(fake.downloadSlots()).toBe(0)
+  })
+
+  it('cut half-way, canvasapp sends an ETag and takes Range → continues where it stopped, in the same attempt', async () => {
+    fake.state.video = big
+    fake.state.rangeSupport = true
+    let cuts = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && cuts-- > 0 ? { kind: 'cut', after: 5 * 1024 * 1024 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(streamGets().map((c) => c.range ?? null)).toEqual([null, 'bytes=5242880-']) // nothing fetched twice
+    const stored = new Uint8Array(await media.get(take(t.id).videoId!)!.arrayBuffer())
+    expect([stored.byteLength, stored[0], stored[BIG - 1]]).toEqual([BIG, 77, 88])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('Wi-Fi drops mid-download for a few seconds (cut, then reopens that cannot connect): continues where it stopped — nothing fetched twice', async () => {
+    fake.state.video = big
+    fake.state.rangeSupport = true
+    const script: ('cut' | 'network')[] = ['cut', 'network', 'network']
+    fake.state.fault = (req) => {
+      if (!req.path.endsWith('/stream')) return undefined
+      const next = script.shift()
+      return next === 'cut' ? { kind: 'cut', after: 5 * 1024 * 1024 } : next === 'network' ? { kind: 'network' } : undefined
+    }
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing') // waiting to reopen: kept at 99 %, the 5 MiB that came are kept
+    await run(10_000) // 2 s + 5 s of waits
+    expect(take(t.id).status).toBe('completed')
+    expect(streamGets().map((c) => c.range ?? null)).toEqual([null, 'bytes=5242880-', 'bytes=5242880-', 'bytes=5242880-'])
+    const stored = new Uint8Array(await media.get(take(t.id).videoId!)!.arrayBuffer())
+    expect([stored.byteLength, stored[0], stored[BIG - 1]]).toEqual([BIG, 77, 88])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.downloadSlots()).toBe(0)
+  })
+
+  it('cut without Range support → no resume; the engine downloads it again later from the start (still one job)', async () => {
+    let cuts = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && cuts-- > 0 ? { kind: 'cut', after: 4 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing') // paid video: kept at 99 %, never "failed"
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('MP4:job1')
+    expect(streamGets().map((c) => c.range ?? null)).toEqual([null, null])
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('a stalled download stops after 60 s without data (its slot comes back), then succeeds on the next try', async () => {
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 2 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBe(1)
+    await run(61_000)
+    expect(fake.downloadSlots()).toBe(0)
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('over 1 GB → the take fails at once (paid, where to get it) — not five tries of the same refusal', async () => {
+    fake.state.fault = (req) => (req.path.endsWith('/stream') ? { kind: 'oversize' } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', remoteId: 'proj1:job1' })
+    expect(take(t.id).error).toMatch(/đã trừ credit/)
+    expect(take(t.id).error).toContain('Video lớn hơn 1 GB')
+    await run(30 * 60_000)
+    expect(streamGets()).toHaveLength(1)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('cancelling a take while its video downloads closes the download (slot freed) — cancelled, not failed', async () => {
+    const g1 = gate()
+    fake.state.fault = (req) => (req.path === '/api/video-jobs/job1/stream' ? { kind: 'wait', until: g1.until } : undefined)
+    const [a, b] = enqueue('s1', 's2')
+    await run(45_000)
+    expect(take(a.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBeGreaterThan(0)
+    useRuns.getState().cancel(a.id)
+    await run(0)
+    expect(fake.downloadCalls).toContain('close')
+    expect(take(a.id)).toMatchObject({ status: 'cancelled' })
+    await run(60_000)
+    expect(take(b.id).status).toBe('completed') // the other take's download had a slot
+    expect(take(a.id).status).toBe('cancelled')
+    expect(events.filter((e) => e.type === 'failed')).toEqual([])
+    g1.open()
+    await run(1_000)
+    expect(fake.downloadSlots()).toBe(0)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(2)
+  })
+
+  it('switching project mid-download stops it; reopening downloads it again and completes — still one POST', async () => {
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 2 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    expect(fake.downloadSlots()).toBe(1)
+    const keep = saved()
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 }) // another project
+    await run(0)
+    expect(fake.downloadSlots()).toBe(0)
+    expect(fake.downloadCalls).toContain('close')
+    restart(keep)
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('MONEY: a video of unknown size cut by a logout is never stored as finished; after logging in it downloads whole', async () => {
+    fake.state.sendLength = false
+    let stalls = 1
+    fake.state.fault = (req) => (req.path.endsWith('/stream') && stalls-- > 0 ? { kind: 'stall', after: 4 } : undefined)
+    const [t] = enqueue('s1')
+    await run(45_000)
+    expect(take(t.id).status).toBe('processing')
+    await fake.bridge.logout() // main ends every download (the half-read body is never "done")
+    await run(1_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', videoId: null })
+    expect(fake.downloadSlots()).toBe(0)
+    await fake.bridge.login()
+    await run(10 * 60_000)
+    expect(take(t.id).status).toBe('completed')
+    expect(await media.get(take(t.id).videoId!)!.text()).toBe('MP4:job1')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+})
+
+describe('gateway e2e: reference videos (@video_N) — nothing on record says canvasapp takes one', () => {
+  /** A finished canvasapp take of s2, ready to be a reference video; the fake's request log is cleared after it. */
+  async function finishedTake(): Promise<Take> {
+    const [t] = enqueue('s2')
+    await run(60_000)
+    expect(take(t.id).status).toBe('completed')
+    fake.log.length = 0
+    return take(t.id)
+  }
+
+  it('a scene that sends a video is skipped with the shared reason: not one request reaches canvasapp, nothing is paid', async () => {
+    const t = await finishedTake()
+    const balance = fake.state.balance
+    useUI.setState({ toasts: [] })
+    const id = createSceneFromTake(t.id)!
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('bỏ video tham chiếu (@video_1) khỏi cảnh') })
+    useProject.getState().updateScene(id, { prompt: 'Continue from @video_1: trời tạnh mưa' })
+    const r = useRuns.getState().enqueue([id])
+    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: NO_VIDEO_REFS_REASON }] })
+    await run(30_000)
+    expect(fake.engineCalls()).toEqual([])
+    expect(fake.state.balance).toBe(balance)
+  })
+
+  it('the adapter refuses a request carrying a video before any upload, canvas save or job POST', async () => {
+    const t = await finishedTake()
+    const req: JobRequest = {
+      key: 'take_video',
+      takeId: 'take_video',
+      sceneId: 's1',
+      sanovidsProjectId: 'p',
+      sceneCode: 'S01',
+      takeNumber: 9,
+      title: '',
+      color: '#fff',
+      model: 'seedance_2_5',
+      mode: 't2v',
+      duration: 5,
+      resolution: '480p',
+      ratio: '16:9',
+      prompt: '@image_1 tiếp nối @video_1',
+      rawPrompt: '@image_1 tiếp nối @video_1',
+      images: [{ n: 1, assetId: 'elara', imageId: 'img_e1' }],
+      videos: [{ n: 1, takeId: t.id, videoId: t.videoId, posterId: t.posterId }],
+      firstFrame: null,
+      lastFrame: null,
+      startedAt: 0,
+    }
+    await expect(getProvider('canvasapp').submit(req)).rejects.toMatchObject({ code: 'unsupported', message: expect.stringContaining('chưa hỗ trợ video tham chiếu') })
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0)
+    expect(fake.count('PUT', /\/canvas$/)).toBe(0)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(0)
+    expect(JSON.parse(storage.get(JOBS_KEY) ?? '{}').sent?.take_video).toBeUndefined()
+  })
+
+  it('MiniMax-H3 t2v with a leftover reference video (no @video token) runs, and its body carries no video', async () => {
+    const t = await finishedTake()
+    const h3 = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s5', 5, { prompt: 'Một con mèo', videoRefs: [t.id], settings: { ...h3 } })] })
+    const [t5] = enqueue('s5')
+    await run(300)
+    const [body] = fake.jobPosts()
+    expect(body).toMatchObject({ model_profile: 'minimax_h3', mode: 't2v', upload_ids: [], client_request_id: clientRequestIdFor(t5.id) })
+    expect(Object.keys(body).filter((k) => /video/i.test(k))).toEqual([])
+    await run(60_000)
+    expect(take(t5.id).status).toBe('completed')
   })
 })
 
@@ -1278,13 +1856,13 @@ describe('gateway e2e: request shapes canvasapp accepts', () => {
     const canvas = fake.state.canvases.get('proj1')!
     expect(canvasProblem(canvas)).toBeNull()
     const video = canvas.nodes.find((n) => n.type === 'video')!
-    expect(video).toMatchObject({ id: canvasNodeId('r1'), w: 390, h: 600 })
+    expect(video).toMatchObject({ id: nodeOf('r1'), w: 390, h: 600 })
     expect(video.data).toEqual({ model_profile: 'seedance_2_5', duration: 30, resolution: '480p', aspect_ratio: '16:9', mode: 't2v', prompt: take(t.id).promptSnapshot })
     const [body] = fake.jobPosts()
     expect(body).toEqual({
       project_id: 'proj1',
       model_profile: 'seedance_2_5',
-      canvas_node_id: canvasNodeId('r1'),
+      canvas_node_id: nodeOf('r1'),
       prompt: take(t.id).promptSnapshot.trim(),
       mode: 't2v',
       duration: 30,
@@ -1313,6 +1891,66 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
     expect(fake.count('GET', '/api/video-profiles')).toBe(1) // read once, then cached
   })
 
+  it('once a run has read that MiniMax-H3 cannot create, the run check skips H3 scenes up front (no take, nothing sent)', async () => {
+    fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
+    const [sd] = enqueue('s2')
+    await run(300)
+    expect(take(sd.id).remoteId).toBe('proj1:job1')
+    expect(providerLimits('canvasapp')).toMatchObject({ source: 'server', firm: true })
+    expect(useRuns.getState().check(['s4'])[0]).toMatchObject({ ok: false, reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp' })
+    expect(useRuns.getState().enqueue(['s4'])).toMatchObject({ queued: 0, error: 'Không có cảnh nào chạy được.', skipped: [{ sceneId: 's4' }] })
+    expect(useRuns.getState().enqueue(['s4', 's3'])).toMatchObject({ queued: 1, skipped: [{ sceneId: 's4' }] })
+    await run(600)
+    expect(takes().map((t) => t.sceneId)).toEqual(['s2', 's3'])
+    expect(fake.count('POST', '/api/uploads/images')).toBe(0) // s4's frames never uploaded
+    expect(fake.jobPosts().map((b) => b.model_profile)).toEqual(['seedance_2_5', 'seedance_2_5'])
+    expect(fake.count('GET', '/api/video-profiles')).toBe(1) // the run check never sends a request
+
+    // older than the cache life: no longer sure — a warning only; the submit reads again and decides (still locked)
+    await run(PROFILES_TTL_MS)
+    const [later] = useRuns.getState().check(['s4'])
+    expect(later.ok).toBe(true)
+    expect(later.warnings.join(' ')).toMatch(/Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng/)
+    const [h3] = enqueue('s4')
+    await run(600)
+    expect(take(h3.id).status).toBe('failed')
+    expect(take(h3.id).error).toMatch(/MiniMax-H3 hiện không khả dụng/)
+    expect(fake.count('GET', '/api/video-profiles')).toBe(2)
+    expect(fake.jobPosts()).toHaveLength(2)
+  })
+
+  it('a take whose POST lost its answer is still found once its model is locked: retry looks the job up, never posts again', async () => {
+    let lost = true
+    const listDown = { on: true }
+    fake.state.fault = (req) => {
+      if (req.method === 'POST' && req.path === '/api/video-jobs' && lost) {
+        lost = false
+        return { kind: 'lost-response' }
+      }
+      if (req.method === 'GET' && req.path.startsWith('/api/video-jobs?') && listDown.on) return { kind: 'network' }
+      return undefined
+    }
+    const [t] = enqueue('s4')
+    await run(3 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
+    const posts = fake.jobPosts().length
+    expect(fake.state.jobs).toHaveLength(1) // canvasapp did create (and bill) it
+
+    // canvasapp locks MiniMax-H3 meanwhile, and SanoVids knows it (a firm read)
+    listDown.on = false
+    fake.state.profiles = fake.state.profiles.map((p) => (p.model_profile === 'minimax_h3' ? { ...p, can_create: false } : p))
+    expect(await refreshProviderLimits('canvasapp', { force: true })).toBe('read')
+    expect(useRuns.getState().check(['s4'])[0].ok).toBe(false)
+    // "Chạy lại" of THIS take is not held back by the lock: the job it made is looked up first
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(2 * 60_000)
+    expect(fake.jobPosts()).toHaveLength(posts)
+    expect(take(t.id).remoteId).toBe(`proj1:${fake.state.jobs[0].job_id}`)
+    // a NEW take of that scene is skipped by the run check
+    expect(useRuns.getState().enqueue(['s4'])).toMatchObject({ queued: 0, error: 'Không có cảnh nào chạy được.' })
+    expect(fake.state.jobs).toHaveLength(1)
+  })
+
   it('video profiles unreadable → canvasapp’s fallbacks, like its page: Seedance runs, MiniMax-H3 locked (and why)', async () => {
     fake.state.fault = (req) => (req.path === '/api/video-profiles' ? { kind: 'response', status: 500, json: { detail: 'boom' } } : undefined)
     const [h3, sd] = enqueue('s4', 's2')
@@ -1338,7 +1976,7 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
     const [good] = enqueue('s4')
     await run(300)
     expect(take(good.id).remoteId).toBe('proj1:job1')
-    const node = fake.state.canvases.get('proj1')!.nodes.find((n) => n.id === canvasNodeId('s4'))!
+    const node = fake.state.canvases.get('proj1')!.nodes.find((n) => n.id === nodeOf('s4'))!
     expect(node.type === 'video' && node.data.aspect_ratio).toBe('9:16')
     expect(fake.jobPosts()[0]).not.toHaveProperty('aspect_ratio')
   })
@@ -1364,6 +2002,277 @@ describe('gateway e2e: what canvasapp’s own page would refuse, and which reque
     const [next] = enqueue('s3')
     await run(300)
     expect(take(next.id).remoteId).toBe('proj1:job1')
-    expect(fake.state.canvases.get('proj1')!.nodes.map((n) => n.id)).toEqual([canvasNodeId('s3')])
+    expect(fake.state.canvases.get('proj1')!.nodes.map((n) => n.id)).toEqual([nodeOf('s3')])
+  })
+})
+
+describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page become takes (read-only, never re-submitted)', () => {
+  /** Let the engine poll (every ≥ 20 s) until take `id` finished. */
+  async function finished(id: string) {
+    for (let i = 0; i < 8 && take(id).status !== 'completed'; i++) await run(15_000)
+    expect(take(id).status).toBe('completed')
+  }
+  /** Run a scene through SanoVids until it is done (the bridge session + its node exist). */
+  async function done(sceneId: string) {
+    const [t] = enqueue(sceneId)
+    await finished(t.id)
+    return t
+  }
+  const importedTakes = () => takes().filter((t) => t.imported)
+  const claims = () => (JSON.parse(storage.get(JOBS_KEY) ?? '{}').imported ?? {}) as Record<string, { remoteId: string }>
+  /** Requests other than GET sent since `from` (an index into the log). */
+  const writesSince = (from: number) => fake.log.slice(from).filter((c) => c.method !== 'GET')
+  const lastToast = () => useUI.getState().toasts.at(-1)
+
+  it('imports a job made on the site: one take of that scene, settings from its node, polled and downloaded — never posted, billed once', async () => {
+    const t1 = await done('s1')
+    const balance = fake.state.balance
+    const site = fake.siteJob(nodeOf('s1'))
+    expect(fake.state.balance).toBe(balance - S1_COST) // the site billed it
+    const mark = fake.log.length
+    const scan = await scanForImport()
+    expect(scan).toMatchObject({ pid: 'canvasapp', simulated: false, projectId: 'p' })
+    expect(scan.scan.candidates.map((c) => [c.jobId, c.sceneId])).toEqual([[site.job_id, 's1']])
+    expect(scan.scan.skipped).toEqual([{ jobId: 'job1', sceneId: 's1', code: 'in-project' }])
+    const res = await importSiteJobs(scan, [site.job_id])
+    expect(res).toMatchObject({ skipped: [] })
+    // only reads: the job list, the saved canvas, the prompt
+    expect(writesSince(mark)).toEqual([])
+    expect(fake.log.slice(mark).map((c) => `${c.method} ${c.path.split('?')[0]}`)).toEqual(['GET /api/video-jobs', 'GET /api/projects/proj1', `GET /api/video-jobs/${site.job_id}/prompt`])
+    const [imp] = importedTakes()
+    expect(imp).toMatchObject({
+      sceneId: 's1',
+      number: 2,
+      status: 'processing',
+      provider: 'canvasapp',
+      charged: false,
+      remoteId: `proj1:${site.job_id}`,
+      promptSnapshot: PROMPT,
+      rawPromptSnapshot: PROMPT,
+      refsSnapshot: ['elara', 'lumi', 'village'],
+      imageKeysSnapshot: ['elara:img_e1', 'lumi:img_l1', 'lumi:img_l2', 'village:img_v1'],
+      settings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
+      cost: S1_COST,
+      imported: { unknown: [], inferred: ['resolution', 'refs'] },
+    })
+    // the claim is in the ledger of the adapter that runs the takes (the registered instance)
+    expect(Object.keys(claims())).toEqual([imp.id])
+    expect(lastToast()).toMatchObject({ text: expect.stringMatching(/^Đã nhập 1 video từ canvasapp\.io\.vn vào S01 — không trừ credit\.$/), action: { label: 'Bỏ nhập' } })
+
+    await finished(imp.id)
+    expect(take(imp.id)).toMatchObject({ status: 'completed', remoteId: `proj1:${site.job_id}` })
+    expect(await media.get(take(imp.id).videoId!)!.text()).toBe(`MP4:${site.job_id}`)
+    expect(events).toContainEqual({ type: 'completed', takeId: imp.id, provider: 'canvasapp' })
+    expect(events.filter((e) => e.takeId === imp.id && e.type === 'submitted')).toEqual([]) // SanoVids billed nothing
+    expect(fake.jobPosts()).toHaveLength(1)
+    expect(fake.state.balance).toBe(balance - S1_COST)
+    expect(take(t1.id).status).toBe('completed')
+    const line = takeCostLine(take(imp.id))
+    expect(line).toMatchObject({ amount: '≈ 20 credit', struck: false })
+    expect(line.note).toBe('trả trên canvasapp khi tạo job (ngoài SanoVids) — nhập không trừ thêm')
+  })
+
+  it('importing again offers nothing new; two clicks at once import once; the same scan used twice adds nothing', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'))
+    const scan = await scanForImport()
+    const [a, b] = await Promise.all([importSiteJobs(scan, [site.job_id]), importSiteJobs(scan, [site.job_id])])
+    expect(a?.takeIds).toHaveLength(1)
+    expect(b).toBeNull() // an import is already running
+    expect(await importSiteJobs(scan, [site.job_id])).toMatchObject({ takeIds: [], skipped: [{ jobId: site.job_id, code: 'in-project' }] })
+    expect(importedTakes()).toHaveLength(1)
+    const again = await scanForImport()
+    expect(again.scan.candidates).toEqual([])
+    expect(again.scan.skipped.map((s) => s.code)).toEqual(['in-project', 'in-project'])
+    expect(fake.jobPosts()).toHaveLength(1)
+  })
+
+  it('the Bảng phát triển’s import reads the simulated site whatever new takes use: nothing reaches canvasapp', async () => {
+    await done('s1')
+    fake.siteJob(nodeOf('s1'))
+    const before = fake.log.length
+    const scan = scanForImport('dev').catch((e: unknown) => e)
+    await run(1_000) // the simulated site's latency (fake timers)
+    expect(await scan).toMatchObject({ code: 'login-required', message: expect.stringContaining('canvasapp giả lập') })
+    expect(fake.log.length).toBe(before)
+  })
+
+  it('“Chạy lại” / retry of an imported take make a NEW take (cost dialog, its own key); the imported one is never sent', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'))
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    expect(isUncertainSubmit(take(imp.id))).toBe(false)
+    rerunTake(imp.id)
+    expect(useUI.getState().dialog).toMatchObject({ kind: 'runConfirm', sceneIds: ['s1'] })
+    useUI.getState().closeDialog()
+    runNow(['s1'])
+    const fresh = takes().at(-1)!
+    expect(fresh.id).not.toBe(imp.id)
+    useRuns.getState().retry(imp.id)
+    const third = takes().at(-1)!
+    expect([fresh.id, imp.id]).not.toContain(third.id)
+    await run(3_000)
+    const keys = fake.jobPosts().map((b) => b.client_request_id)
+    expect(keys).toEqual([keys[0], clientRequestIdFor(fresh.id), clientRequestIdFor(third.id)])
+    expect(keys).not.toContain(clientRequestIdFor(imp.id))
+    expect(take(imp.id).remoteId).toBe(`proj1:${site.job_id}`)
+  })
+
+  it('a node edited on the site (prompt + resolution): those settings, inferred from the saved canvas', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'), { prompt: '@image_2 chạy dưới mưa', resolution: '720p' })
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    expect(imp).toMatchObject({ promptSnapshot: '@image_2 chạy dưới mưa', settings: { resolution: '720p' }, cost: 15, imported: { inferred: ['resolution', 'refs'], unknown: [] } })
+    expect(takeSettingsText(imp)).toBe('15s · ≈720P · 16:9')
+  })
+
+  it('SanoVids runs the scene again (its PUT reverts the node): an older unedited job still matches; an edited one gets “?” and cost “—”, no restore', async () => {
+    await done('s1')
+    const plain = fake.siteJob(nodeOf('s1'))
+    const edited = fake.siteJob(nodeOf('s1'), { prompt: '@image_2 chạy dưới mưa', resolution: '720p' })
+    await done('s1') // the bridge canvas is saved again from SanoVids' scene: the node is PROMPT / 1080p again
+    const scan = await scanForImport()
+    await importSiteJobs(scan, [plain.job_id, edited.job_id])
+    const byJob = (jobId: string) => importedTakes().find((t) => t.remoteId === `proj1:${jobId}`)!
+    expect(byJob(plain.job_id)).toMatchObject({ settings: { resolution: '1080p' }, cost: S1_COST, imported: { inferred: ['resolution', 'refs'] } })
+    const lost = byJob(edited.job_id)
+    expect(lost).toMatchObject({ promptSnapshot: '@image_2 chạy dưới mưa', cost: 0, imported: { unknown: ['resolution', 'refs'], inferred: [] } })
+    expect(takeCostLine(lost).amount).toBe('—')
+    expect(takeSettingsText(lost)).toBe('15s · ? · 16:9')
+    expect(restoreBlock(lost)).toMatch(/không rõ ảnh tham chiếu/)
+    const before = useProject.getState().project.scenes.find((s) => s.id === 's1')!
+    restoreFromTake(lost.id)
+    expect(useProject.getState().project.scenes.find((s) => s.id === 's1')).toEqual(before)
+  })
+
+  it('only the resolution edited on the site, then the node reverted by SanoVids: the guess stays a guess (≈), restore keeps the scene’s resolution', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'), { resolution: '480p' })
+    await done('s2') // its PUT carries s1's node again, from SanoVids' entry: 1080p
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    // canvasapp's list does not tell the resolution: the node's (wrong) 1080p is only ever "inferred"
+    expect(imp.imported).toMatchObject({ inferred: ['resolution', 'refs'], unknown: [] })
+    expect(takeSettingsText(imp)).toBe('15s · ≈1080P · 16:9')
+    expect(takeCostLine(imp).amount).toBe('≈ 20 credit')
+    useProject.getState().updateSettings(['s1'], { resolution: '720p' })
+    restoreFromTake(imp.id)
+    const s1 = useProject.getState().project.scenes.find((s) => s.id === 's1')!
+    expect(s1.settings.resolution).toBe('720p') // kept: never restored from a guess
+    expect(s1.prompt).toBe(PROMPT)
+    expect(lastToast()?.text).toMatch(/giữ độ phân giải của cảnh/)
+  })
+
+  it('MiniMax-H3 Text → Video (mode only guessed from the node), scene switched to Ảnh → Video since: restore keeps the scene’s mode, references and @video', async () => {
+    useProject.getState().updateSettings(['s2'], { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' })
+    const t2 = await done('s2')
+    const site = fake.siteJob(nodeOf('s2'))
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    expect(imp).toMatchObject({ settings: { model: 'minimax_h3', mode: 't2v' }, refsSnapshot: [], imported: { inferred: expect.arrayContaining(['mode', 'refs']) } })
+    // the user moves the scene on: Ảnh → Video with a character and a reference video
+    useProject.getState().updateSettings(['s2'], { mode: 'i2v' })
+    useProject.getState().restoreScene('s2', { prompt: '@image_1 đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { ...project().scenes[1].settings, model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } })
+    restoreFromTake(imp.id)
+    const s2 = useProject.getState().project.scenes.find((s) => s.id === 's2')!
+    expect(s2).toMatchObject({ prompt: 'Hai người đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { mode: 'i2v' } })
+    expect(lastToast()?.text).toMatch(/giữ ảnh tham chiếu của cảnh \(job ≈Text → Video không gửi ảnh tham chiếu\)/)
+  })
+
+  it('a job an unanswered POST on that node may have made is never offered; that take’s retry never posts twice', async () => {
+    await done('s1')
+    fake.state.dedupe = false // a second POST would be billed
+    let lose = true
+    fake.state.fault = (req) => {
+      if (req.method === 'POST' && req.path === '/api/video-jobs' && lose) {
+        lose = false
+        return { kind: 'lost-response' }
+      }
+    }
+    const [a] = enqueue('s1')
+    await run(300) // posted: job2 made and billed, its answer lost — the adapter waits before looking
+    expect(fake.state.jobs).toHaveLength(2)
+    const site = fake.siteJob(nodeOf('s1'))
+    const scan = await scanForImport()
+    expect(scan.scan.candidates).toEqual([])
+    expect(scan.scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 's1', code: 'maybe-pending', pendingTakeId: a.id })
+    await run(40_000) // its lookups see two jobs it could own → "không rõ", nothing guessed
+    expect(take(a.id)).toMatchObject({ status: 'failed', submitUnknown: true })
+    expect((await scanForImport()).scan.candidates).toEqual([])
+    useRuns.getState().retry(a.id)
+    await run(3_000)
+    expect(fake.jobPosts()).toHaveLength(2)
+    expect(importedTakes()).toEqual([])
+    expect(claims()).toEqual({})
+  })
+
+  it('after an app restart the imported take is polled again and finishes — never posted', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'))
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const [imp] = importedTakes()
+    restart(saved())
+    await finished(imp.id)
+    expect(take(imp.id)).toMatchObject({ status: 'completed', imported: { inferred: ['resolution', 'refs'] } })
+    expect(fake.jobPosts()).toHaveLength(1)
+  })
+
+  it('nothing is imported or claimed: scene deleted meanwhile, a 401 while reading the prompts, another project opened meanwhile', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'))
+    // scene deleted between the scan and the import
+    const scan = await scanForImport()
+    useProject.getState().removeScenes(['s1'])
+    expect(await importSiteJobs(scan, [site.job_id])).toMatchObject({ takeIds: [], skipped: [{ jobId: site.job_id, code: 'scene-gone' }] })
+    undo()
+    // 401 while reading the prompts
+    fake.state.fault = (req) => (req.path.endsWith('/prompt') ? { kind: 'response', status: 401, json: { detail: 'Not authenticated' } } : undefined)
+    await expect(importSiteJobs(await scanForImport(), [site.job_id])).rejects.toMatchObject({ code: 'login-required' })
+    // another project (a copy with the same scene ids) opened while the prompt is read
+    const gateOpen = gate()
+    fake.state.fault = (req) => (req.path.endsWith('/prompt') ? { kind: 'wait', until: gateOpen.until } : undefined)
+    const pending = importSiteJobs(await scanForImport(), [site.job_id])
+    await run(10)
+    useProject.getState().loadProject({ ...project(), id: 'p2', name: 'Bản sao' })
+    useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    gateOpen.open()
+    expect(await pending).toMatchObject({ takeIds: [], skipped: [{ jobId: site.job_id, code: 'project-changed' }] })
+    expect(lastToast()?.text).toBe('Đã mở dự án khác — chưa nhập gì.')
+    expect(takes()).toEqual([])
+    expect(claims()).toEqual({})
+    expect(fake.jobPosts()).toHaveLength(1)
+  })
+
+  it('“Bỏ nhập” deletes the takes just imported (asks nothing); the job stays on the site and is offered again, unticked', async () => {
+    await done('s1')
+    const site = fake.siteJob(nodeOf('s1'))
+    await importSiteJobs(await scanForImport(), [site.job_id])
+    const said = lastToast()!
+    const [imp] = importedTakes()
+    await finished(imp.id) // (the toast timed out meanwhile: its button is still what "Bỏ nhập" runs)
+    said.action!.run() // "Bỏ nhập" (no window.confirm here: it would throw)
+    expect(importedTakes()).toEqual([])
+    expect(lastToast()?.text).toMatch(/^Đã bỏ 1 take vừa nhập — job vẫn còn trên canvasapp\.io\.vn/)
+    const again = await scanForImport()
+    expect(again.scan.candidates.map((c) => [c.jobId, c.reimport])).toEqual([[site.job_id, true]])
+    expect(defaultPicks(again.scan.candidates)).toEqual([])
+    expect((await importSiteJobs(again, [site.job_id]))?.takeIds).toHaveLength(1)
+    expect(fake.jobPosts()).toHaveLength(1)
+  })
+
+  it('imported takes never hold a submit slot: 10 of them running, a new SanoVids take still starts', async () => {
+    await done('s2')
+    fake.state.script = [{ status: 'queued', progress: 0 }, ...Array.from({ length: 40 }, () => ({ status: 'processing', progress: 50 }))]
+    const sites = Array.from({ length: MAX_REMOTE_CONCURRENCY }, () => fake.siteJob(nodeOf('s2')))
+    const scan = await scanForImport()
+    expect((await importSiteJobs(scan, sites.map((j) => j.job_id)))?.takeIds).toHaveLength(MAX_REMOTE_CONCURRENCY)
+    expect(takes().filter((t) => t.status === 'processing')).toHaveLength(MAX_REMOTE_CONCURRENCY)
+    const [t] = enqueue('s3')
+    await run(600)
+    expect(take(t.id).status).toBe('processing')
+    expect(take(t.id).remoteId).toMatch(/^proj1:job/)
+    expect(fake.jobPosts()).toHaveLength(2)
   })
 })

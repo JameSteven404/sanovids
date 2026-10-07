@@ -17,7 +17,16 @@
 // Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
 // provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
-// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
+// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once (only
+// a video over the gateway's size cap, or one whose download outlived the gateway's time limit without being able to
+// continue, is: another try gives the same end). Its download reports progress (store/takeTransfers) and stops when the
+// take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure. remoteVideoReady()
+// tells the UI a running take's video is already made (and paid): "Huỷ" then asks first (actions.cancelTake).
+// Imported takes ("Nhập job", importTakes: jobs made on canvasapp's own page) are born `processing` with their remote
+// id: the engine only polls and downloads them, never submits them, and they do not take a submit slot (concurrency).
+// check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
+// recent /api/video-profiles read) and only warn on a guess or an older read; retry(takeId) of an "unknown" take never
+// goes through check() (it may only find its existing job), and every submit validates again with fresh profiles.
 //
 // Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet of the old demo (play money). Only takes
 // run on the mock provider were charged to it (take.charged) — new takes never are: 'dev' takes bill the simulated
@@ -37,10 +46,16 @@ import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
 import { chargedDemo, DEMO_CREDITS_DEFAULT, formatCreditNumber } from '../lib/credits'
 import { useDownloadPrefs } from '../lib/downloads'
 import { putBlob } from '../lib/imageStore'
-import { activeProviderId, getProvider, providerBlockedReason, registerProvider } from '../providers'
+import { activeProviderId, getProvider, providerBlockedReason, providerLimits, registerProvider } from '../providers'
+import { decodeRemoteId } from '../providers/canvasapp/mapping'
+import type { SiteJobClaim, SiteTakeDraft } from '../providers/canvasapp/siteJobs'
+import { settingsRunBlock, settingsRunWarning } from '../providers/limits'
 import { createMockProvider, DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../providers/mock'
 import { posterFromVideo } from '../providers/poster'
 import {
+  isResultDeferred,
+  isResultTooLarge,
+  isResultTooSlow,
   isSubmitCancelled,
   isSubmitDeferred,
   isSubmitUncertain,
@@ -52,10 +67,26 @@ import {
   type RemoteStatus,
 } from '../providers/types'
 import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
+import { clearTakeTransfer, clearTakeTransfers, reportTakeTransfer } from './takeTransfers'
 import { clampSize, useProject } from './project'
 
 export type { MockSettings, MockSpeed } from '../providers/mock'
 export { DEMO_CREDITS_DEFAULT } from '../lib/credits'
+
+/** importTakes: what was imported, and why the other drafts were not. */
+export interface ImportTakesResult {
+  takeIds: string[]
+  skipped: { jobId: string; code: 'project-changed' | 'scene-gone' | 'in-project' | 'claimed' }[]
+}
+
+export interface ImportTakesInput {
+  /** The project the drafts were made for: another one open now → nothing imported, nothing claimed. */
+  projectId: string
+  provider: 'dev' | 'canvasapp'
+  drafts: SiteTakeDraft[]
+  /** The adapter's claimSiteJobs (checked against its ledger right now); returns the accepted keys (take ids). */
+  claim: (claims: SiteJobClaim[]) => string[]
+}
 
 export interface EnqueueResult {
   queued: number
@@ -106,6 +137,12 @@ export interface RunsState {
    * any other take → a new take of its scene (enqueue).
    */
   retry: (takeId: string) => EnqueueResult | null
+  /**
+   * "Nhập job": takes for jobs made on canvasapp's own page (siteJobActions). Synchronous: drafts whose scene is gone
+   * or whose job a take of this provider already tracks are dropped, the rest claimed (`claim`, the adapter's ledger)
+   * and only the accepted ones added — `processing` with their remote id (polled, downloaded, never submitted).
+   */
+  importTakes: (input: ImportTakesInput) => ImportTakesResult
   toggleStar: (takeId: string) => void
   removeTake: (takeId: string) => void
   /** Delete takes (cancelling running ones) and drop them from every scene's @video refs. */
@@ -190,6 +227,19 @@ const ownedHere = new Set<string>()
 /** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
 const fetchFailures = new Map<string, number>()
 const fetchRetryAt = new Map<string, number>()
+/**
+ * Downloads in flight: take id → the controller of THAT download (cancel / delete / loadRuns abort it). Compared by
+ * identity: an older download's clean-up never touches a newer one of the same take.
+ */
+const fetchAborts = new Map<string, AbortController>()
+
+/**
+ * The remote job of this running take is finished (so paid) and SanoVids is downloading its video, or waits to try
+ * again: cancelling the take now drops a video that exists. Read at click time (not a store value).
+ */
+export function remoteVideoReady(takeId: string): boolean {
+  return fetching.has(takeId) || fetchAborts.has(takeId) || fetchRetryAt.has(takeId) || fetchFailures.has(takeId)
+}
 
 /**
  * Error of a remote take whose submit ended without a job id although the request may have reached the provider
@@ -229,6 +279,8 @@ export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp
 
 /** Download tries of a finished remote video: retried after these delays, then the take fails. */
 const FETCH_RETRY_MS = [30_000, 60_000, 120_000, 300_000]
+/** The gateway had no room for one more download (nothing fetched): asked again after this, not counted as a try. */
+const FETCH_DEFERRED_MS = 15_000
 
 // ---- engine ownership (one tab per project) ----
 let lockManagerOverride: LockManagerLike | null | undefined
@@ -387,6 +439,9 @@ export const useRuns = create<RunsState>()((set, get) => ({
   check: (sceneIds) => {
     const project = useProject.getState().project
     const providerId = activeProviderId()
+    // What the gateway runs right now, as last read (/api/video-profiles) — synchronous, never a request: a sure
+    // refusal skips the scene (nothing sent, no credit), a guess / an older read only warns (the submit reads again).
+    const limits = providerLimits(providerId)
     return sceneIds
       .map((id) => project.scenes.find((s) => s.id === id))
       .filter((s): s is Scene => !!s)
@@ -394,16 +449,20 @@ export const useRuns = create<RunsState>()((set, get) => ({
         const takes = get().takes
         const takeStatus = (id: string) => takes.find((t) => t.id === id)?.status
         const compiled = compileScene(project, scene, { takeStatus })
-        // The one rule list (core/runRules) shared with every Run button.
+        // The one rule list (core/runRules) shared with every Run button: the @video cap is the gateway's own
+        // (capabilities().maxRefVideos), its sure refusal of the settings comes last.
+        const settingsBlock = settingsRunBlock(limits, scene.settings)
         const reason = runBlockReason({
           scene,
           assets: project.assets,
           compiled,
           takeStatus,
+          settingsBlock,
           spec: MODELS[scene.settings.model],
           providerVideoCap: providerVideoCapFor(scene.settings.model, providerId),
         })
-        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: compiled.warnings }
+        const warning = reason ? null : settingsRunWarning(limits, scene.settings)
+        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: warning ? [...compiled.warnings, warning] : compiled.warnings }
       })
   },
 
@@ -471,6 +530,9 @@ export const useRuns = create<RunsState>()((set, get) => ({
   cancel: (takeId) => {
     const take = get().takes.find((t) => t.id === takeId)
     if (!take || (take.status !== 'queued' && take.status !== 'processing')) return
+    fetchAborts.get(takeId)?.abort() // a download of its video stops now (frees the gateway's slot)
+    fetchFailures.delete(takeId)
+    fetchRetryAt.delete(takeId)
     const remoteId = remoteIdOf(take)
     if (remoteId) {
       try {
@@ -503,6 +565,79 @@ export const useRuns = create<RunsState>()((set, get) => ({
       return { queued: 1, cost: take.cost, skipped: [] }
     }
     return get().enqueue([take.sceneId])
+  },
+
+  importTakes: ({ projectId, provider, drafts, claim }) => {
+    const project = useProject.getState().project
+    const skipped: ImportTakesResult['skipped'] = []
+    if (project.id !== projectId) return { takeIds: [], skipped: drafts.map((d) => ({ jobId: d.jobId, code: 'project-changed' })) }
+    const scenes = new Set(project.scenes.map((s) => s.id))
+    const tracked = new Set(
+      get()
+        .takes.filter((t) => providerOf(t) === provider && t.remoteId)
+        .map((t) => decodeRemoteId(t.remoteId!)?.jobId),
+    )
+    const now = Date.now()
+    const when = (d: SiteTakeDraft) => (d.createdAt !== null && Number.isFinite(d.createdAt) && d.createdAt <= now + 60_000 ? d.createdAt : now)
+    const ready: SiteTakeDraft[] = []
+    for (const d of drafts) {
+      if (!scenes.has(d.sceneId)) skipped.push({ jobId: d.jobId, code: 'scene-gone' })
+      else if (tracked.has(d.jobId)) skipped.push({ jobId: d.jobId, code: 'in-project' })
+      else {
+        tracked.add(d.jobId)
+        ready.push(d)
+      }
+    }
+    // in the order canvasapp made them (their numbers, after the scene's takes, follow it)
+    ready.sort((a, b) => when(a) - when(b))
+    const built = ready.map((d): { d: SiteTakeDraft; take: Take } => {
+      const at = when(d)
+      return {
+        d,
+        take: {
+          id: newId('take'),
+          sceneId: d.sceneId,
+          number: 0,
+          status: 'processing',
+          progress: d.progress,
+          createdAt: at,
+          startedAt: at,
+          finishedAt: null,
+          promptSnapshot: d.prompt,
+          rawPromptSnapshot: d.prompt,
+          refsSnapshot: [...d.refs],
+          videoRefsSnapshot: [],
+          imageKeysSnapshot: [...d.imageKeys],
+          settings: { ...d.settings },
+          cost: d.cost,
+          starred: false,
+          posterId: null,
+          videoId: null,
+          error: null,
+          position: null,
+          provider,
+          remoteId: d.remoteId,
+          // paid on canvasapp when the job was made there — never with SanoVids' demo wallet
+          charged: false,
+          framesSnapshot: { ...d.frames },
+          imported: { at: now, jobName: d.jobName, unknown: [...d.unknown], inferred: [...d.inferred] },
+        },
+      }
+    })
+    // the adapter's ledger decides last (a POST in flight on that node, a double click…): only accepted keys become takes
+    const accepted = new Set(built.length ? claim(built.map(({ d, take }) => ({ key: take.id, remoteId: d.remoteId, nodeId: d.nodeId, job: d.job, reimport: d.reimport }))) : [])
+    const added = built.filter(({ take }) => accepted.has(take.id)).map(({ take }) => take)
+    for (const { d, take } of built) if (!accepted.has(take.id)) skipped.push({ jobId: d.jobId, code: 'claimed' })
+    if (added.length) {
+      const next = new Map<string, number>()
+      for (const t of added) {
+        t.number = next.get(t.sceneId) ?? Math.max(0, ...get().takes.filter((x) => x.sceneId === t.sceneId).map((x) => x.number)) + 1
+        next.set(t.sceneId, t.number + 1)
+      }
+      set((s) => ({ takes: [...s.takes, ...added] }))
+      ensureEngine()
+    }
+    return { takeIds: added.map((t) => t.id), skipped }
   },
 
   /** One chosen (starred) take per scene: starring a take un-stars its siblings. */
@@ -596,6 +731,9 @@ function resetEngineState() {
   ownedHere.clear()
   fetchFailures.clear()
   fetchRetryAt.clear()
+  for (const c of fetchAborts.values()) c.abort()
+  fetchAborts.clear()
+  clearTakeTransfers()
   mockProvider.reset?.()
   // The engine restarts for the loaded data (and adopts what was left running). The lock is kept for the same
   // project — persist reloads it right after this tab took over — and let go for another one.
@@ -807,7 +945,8 @@ function tick() {
   // Start queued jobs up to each provider's concurrency cap. A take whose scene was deleted waits (never sent while
   // the scene is gone; Undo of the delete brings the scene back and the take runs).
   const running = new Map<ProviderId, number>()
-  for (const t of active) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
+  // An imported take (its job was made on canvasapp's page) is only polled: it never takes a submit slot.
+  for (const t of active) if (!t.imported) running.set(providerOf(t), (running.get(providerOf(t)) ?? 0) + 1)
   // A remote provider gets ONE new submit at a time: a take is only marked running once the previous one has its
   // remote id (the canvasapp adapter sends them one by one anyway). The takes behind it stay honestly "queued": they
   // cancel cleanly, and a page closed meanwhile leaves at most one take whose submit is unknown — not up to 10.
@@ -908,6 +1047,8 @@ function buildRequest(t: Take): JobRequest {
     key: t.id,
     takeId: t.id,
     sceneId: t.sceneId,
+    // the open project = the take's own (runs are per project); read now, when the request is built — never later
+    sanovidsProjectId: project.id,
     sceneCode: scene ? sceneCode(scene.order) : 'S??',
     takeNumber: t.number,
     title: scene?.title ?? '',
@@ -1100,10 +1241,18 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
 
 async function finishTake(id: string, remoteId: string, gen: number) {
   const t = findTake(id)
+  const ctrl = new AbortController()
+  fetchAborts.get(id)?.abort()
+  fetchAborts.set(id, ctrl)
   try {
     if (!t) return
-    const result = await getProvider(providerOf(t)).fetchResult(remoteId)
-    if (!stillProcessing(id, gen)) return // cancelled meanwhile
+    const result = await getProvider(providerOf(t)).fetchResult(remoteId, {
+      signal: ctrl.signal,
+      onProgress: (p) => {
+        if (fetchAborts.get(id) === ctrl && !ctrl.signal.aborted) reportTakeTransfer(id, p)
+      },
+    })
+    if (!stillProcessing(id, gen) || ctrl.signal.aborted) return // cancelled meanwhile
     const poster = result.poster ?? (result.video ? await posterFromVideo(result.video) : null)
     const posterId = poster ? await putBlob(poster, 'poster') : null
     const videoId = result.video ? await putBlob(result.video, 'video') : null
@@ -1117,8 +1266,14 @@ async function finishTake(id: string, remoteId: string, gen: number) {
       void import('../actions').then(({ downloadTake }) => downloadTake(id, { auto: true }))
     }
   } catch (e) {
-    if (gen !== generation) return
+    // stopped on purpose (cancel / delete / project switch): not a failed download
+    if (gen !== generation || ctrl.signal.aborted) return
     if (t && providerOf(t) !== 'mock') {
+      // Bigger than SanoVids can take, or too slow to come within the time limit from 0: the same end every time —
+      // say so now (paid, where to get it) rather than holding a download slot for five more tries.
+      if (isResultTooLarge(e) || isResultTooSlow(e)) return void failTake(id, downloadFailedError(errorText(e), providerOf(t)))
+      // Nothing fetched (too many downloads at once): ask again in a moment, not one of the tries.
+      if (isResultDeferred(e)) return void fetchRetryAt.set(id, Date.now() + FETCH_DEFERRED_MS)
       // The remote video is finished and paid: a failed download (network, session…) must not end the take — a
       // "failed" take invites a re-run that pays again. Keep it at 99 % and try again later; give up after a while.
       const n = (fetchFailures.get(id) ?? 0) + 1
@@ -1132,6 +1287,10 @@ async function finishTake(id: string, remoteId: string, gen: number) {
     }
     failTake(id, errorText(e))
   } finally {
+    if (fetchAborts.get(id) === ctrl) {
+      fetchAborts.delete(id)
+      clearTakeTransfer(id)
+    }
     if (gen === generation) fetching.delete(id)
   }
 }

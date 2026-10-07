@@ -6,6 +6,7 @@ const req = (over: Partial<JobRequest> = {}): JobRequest => ({
   key: 'take_1',
   takeId: 'take_1',
   sceneId: 's',
+  sanovidsProjectId: 'prj_a',
   sceneCode: 'S01',
   takeNumber: 1,
   title: '',

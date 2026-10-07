@@ -13,6 +13,7 @@ import { useProject, type ProjectState } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { takeDurationText } from '../runs/importedTake'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
 import {
@@ -258,7 +259,7 @@ const TakeRow = memo(function TakeRow({
     >
       <div className="sb-take-media">
         {take.posterId ? <MediaImg id={take.posterId} alt={code} className="media-img sb-take-img" /> : <span className="sb-take-noposter">T{take.number}</span>}
-        <span className="sb-take-dur">{take.settings.duration}s</span>
+        <span className="sb-take-dur">{takeDurationText(take)}</span>
       </div>
       <div className="sb-take-info">
         <div className="sb-take-top">

@@ -7,17 +7,18 @@ import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
 import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, foreignModelBadge, MODELS, settingsLabel } from '../../core/models'
-import { foreignModelReason, runBlockReason } from '../../core/runRules'
+import { foreignModelReason, refStatusLookup, runBlockReason } from '../../core/runRules'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
 import { useCreditKind } from '../../store/credits'
 import { LAYOUT, useProject } from '../../store/project'
-import { providerVideoCapFor, useRuns } from '../../store/runs'
+import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
+import { useGatewayRefVideoCap, useSettingsRunBlock } from '../runs/shared'
 import { costTitle, creditTone } from '../sidebar/shared'
 import {
   assetMapOf,
@@ -285,11 +286,11 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
     return scene.videoRefs.map((t) => byId.get(t)?.status ?? '').join(',')
   })
 
+  const takeStatus = useMemo(() => refStatusLookup(scene.videoRefs, videoStatus), [scene.videoRefs, videoStatus])
   const compiled = useMemo<CompiledPrompt>(() => {
     const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings: { autoRenumber: true }, scenes: [scene] }
-    const statuses = videoStatus.split(',')
-    return compileScene(project, scene, { takeStatus: (id) => statuses[scene.videoRefs.indexOf(id)] || undefined })
-  }, [assets, scene, videoStatus])
+    return compileScene(project, scene, { takeStatus })
+  }, [assets, scene, takeStatus])
 
   const refAssets = useMemo(() => {
     const map = assetMapOf(assets)
@@ -308,16 +309,14 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
   const cost = costOf(scene.settings)
   // Wallet of the next run: simulated credit dev (development mode) or real canvasapp credits (docs/SPEC-v2.md §9, §11).
   const creditKind = useCreditKind()
-  // The engine's rule list (core/runRules). '' in videoStatus = the take no longer exists (e.g. an undo brought back a
-  // reference to a deleted video). useCreditKind() re-renders the card when the provider (its @video limit) changes.
-  const reason = runBlockReason({
-    scene,
-    assets,
-    compiled,
-    takeStatus: (id) => videoStatus.split(',')[scene.videoRefs.indexOf(id)] || undefined,
-    spec,
-    providerVideoCap: providerVideoCapFor(scene.settings.model),
-  })
+  // The engine's rule list (core/runRules, = store/runs check()): a newer build's model / values first; @video against
+  // the gateway's cap (useGatewayRefVideoCap re-renders the card when the provider changes), and only the videos this
+  // model/mode really sends — a leftover reference of an H3 t2v / transform scene does not block it ('' in videoStatus
+  // = the take no longer exists, e.g. an undo brought back a reference to a deleted video); settings the gateway surely
+  // refuses now (/api/video-profiles, selected as a string: this card re-renders only when it changes).
+  const videoCap = useGatewayRefVideoCap(scene.settings.model)
+  const settingsBlock = useSettingsRunBlock(scene.settings)
+  const reason = runBlockReason({ scene, assets, compiled, takeStatus, settingsBlock, spec, providerVideoCap: videoCap })
 
   const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
   const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0

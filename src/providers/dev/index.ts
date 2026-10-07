@@ -9,17 +9,21 @@
 //                                        Settings, faults, balance, login, force a job…: see DevCanvasapp in server.ts.
 //                                        Every tab has its own copy on the SAME saved account: it re-reads it before
 //                                        each request / change, and on the window 'storage' event (another tab saved).
-//   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too).
+//   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too) —
+//                                        streamed video downloads included (downloads.ts: main's own rules, ported).
 //   devVideoRenderer                     the in-page renderer the dev server draws finished videos with (WebM).
 //   useDevServer                         zustand store { snapshot: DevServerSnapshot | null } — refreshed on every
 //                                        server change; startDevSnapshotTicker() also refreshes it every second while
 //                                        jobs run (progress moves with the clock). Select fields of `snapshot`.
 //   startDevSnapshotTicker(): () => void ref-counted; call from an effect of the dev panel, returns stop.
-//   resetDevServer(): Promise<void>      wipe the simulated account (keeps the settings). Prefer providers/index
-//                                        resetDevMode(), which also clears SanoVids' own dev-mode caches.
+//   resetDevServer(): Promise<void>      wipe the simulated account (keeps the settings); the bridge's downloads are
+//                                        stopped first (DevBridge.reset). Prefer providers/index resetDevMode(), which
+//                                        also clears SanoVids' own dev-mode caches.
 //   useDevLog / clearDevLog              request log (log.ts).   useDevPrompts / answerDevLogin / answerDevCheckout
 //                                        the login + SePay sheets (prompts.ts).
 //   devWording / withDevWording          development-mode words for the real gateway's messages (wording.ts).
+//   devServer().createSiteJob / siteNodes "Tạo job như trên trang canvasapp" (siteClient.ts: what the site's page posts)
+//                                        — a job SanoVids does not know until "Nhập job" (siteJobActions).
 //   useDevUpdates / devUpdates / devUpdatesBridge   the simulated app updater (updates.ts; lib/updates uses it only
 //                                        outside Electron, "Bảng phát triển → Cập nhật" drives it).
 // ---- For tests / embedding ----
@@ -45,9 +49,11 @@ import {
 export * from './server'
 export * from './log'
 export * from './prompts'
-export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridgeOptions } from './bridge'
+export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridge, type DevBridgeOptions } from './bridge'
+export * from './downloads'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
+export { applyNodeEdit, siteJobBody, siteNodeList, type SiteNodeEdit, type SiteNodeInfo } from './siteClient'
 export { devError, devResult, devWording, withDevWording } from './wording'
 export * from './updates'
 
@@ -170,6 +176,8 @@ export function devBridge(): CanvasappBridge {
 
 export async function resetDevServer(): Promise<void> {
   closeDevPrompts()
+  // like main's logout: the downloads stop first (a take never completes with the wiped account's video)
+  bridge.reset()
   await devServer().reset({ keepConfig: true })
 }
 
