@@ -28,7 +28,7 @@ import {
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
-import { isUncertainSubmit, useRuns } from './store/runs'
+import { isUncertainSubmit, isUnverifiableSubmit, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -548,8 +548,9 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
 
 /**
  * "Chạy lại" on a take. A canvasapp take whose submit outcome is unknown is re-sent as the SAME take (same key: the
- * job it may already have created is looked up first, so it is never paid twice). Anything else → the cost dialog
- * for a new take of its scene.
+ * job it may already have created is looked up first, so it is never paid twice). One whose earlier request can no
+ * longer be checked (isUnverifiableSubmit) is never re-sent: "Tạo lại" = after a warning, the cost dialog for a NEW
+ * take (new key — the user's explicit choice). Anything else → the cost dialog for a new take of its scene.
  */
 export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
@@ -559,6 +560,19 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     return
   }
   const dev = providerOf(take) === 'dev'
+  if (isUnverifiableSubmit(take)) {
+    const ok = window.confirm(
+      dev
+        ? `${takeLabel(takeId)}: SanoVids không kiểm tra được lần gửi trước — canvasapp giả lập có thể đã nhận và trừ credit dev.\n\n` +
+            'Xem trước: Bảng phát triển › Job & đơn nạp / Lịch sử credit.\n\n' +
+            '“Tạo lại” tạo một take MỚI cho cảnh này (xem chi phí trước khi gửi); nếu lần trước đã bị trừ thì lần này trừ thêm credit dev. Tạo lại?'
+        : `${takeLabel(takeId)}: SanoVids không kiểm tra được lần gửi trước — canvasapp có thể đã nhận và trừ credit.\n\n` +
+            'Xem trước: mở canvasapp.io.vn, xem lịch sử credit và phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\n' +
+            '“Tạo lại” tạo một take MỚI cho cảnh này (xem chi phí trước khi gửi); nếu lần trước đã bị trừ thì lần này trừ thêm. Tạo lại?',
+    )
+    if (ok) requestRun([take.sceneId], opts)
+    return
+  }
   const ok = window.confirm(
     dev
       ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +

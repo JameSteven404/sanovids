@@ -463,7 +463,12 @@ describe('canvasapp adapter', () => {
     const server = fakeServer()
     const { provider, storage } = setup(server)
     await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] })) // bridge project
-    storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_1: { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [] } } }))
+    server.state.jobs[0].status = 'completed'
+    // the job list provably reaches back to that POST (job1 had already ended before it and is still listed): no job
+    // was created → the take may go again, and its PUT is what fails here
+    const warmup = { remoteId: 'proj1:job1', at: 1_000_000, nodeId: canvasNodeId('scene_w') }
+    const lost = { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [], anchors: { ended: ['job1'], open: [] } }
+    storage.set(JOBS_KEY, JSON.stringify({ jobs: { warmup }, sent: { take_1: lost } }))
     server.state.extra = (r) => (isPut(r) ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
     const again = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
     const message = (await again.submit(req()).catch((e: Error) => e.message)) as string
@@ -571,6 +576,146 @@ describe('canvasapp adapter', () => {
     expect(server.state.projects.length).toBe(1)
     expect(server.state.uploads).toBe(2)
     expect(server.state.jobs.length).toBe(2)
+  })
+})
+
+describe('canvasapp adapter: "not in the job list" proves "never created" only when the list reaches back', () => {
+  const NODE_A = canvasNodeId('scene_a')
+  const NODE_W = canvasNodeId('scene_w')
+  const isList = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+  const isPost = (r: TransportRequest) => r.method === 'POST' && r.path === '/api/video-jobs'
+  const posts = (server: ReturnType<typeof fakeServer>) => server.calls.filter(isPost).length
+  /** warmup's job (job1, scene_w) as this computer's ledger holds it. */
+  const warmupJob = { remoteId: 'proj1:job1', at: 1_000_000, nodeId: NODE_W }
+  /** A POST of take_1 (scene_a) whose answer was lost long ago. */
+  const lost = (over: Record<string, unknown> = {}) => ({ projectId: 'proj1', nodeId: NODE_A, at: 1, before: [], ...over })
+  const unverifiable = { code: 'network', uncertain: true, unverifiable: true }
+
+  /** The bridge project exists and job1 (warmup) ran there; then the app restarts with `ledger` persisted. */
+  async function restartWith(ledger: Record<string, unknown>, list?: unknown[]) {
+    const s = setup()
+    await s.provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+    s.server.state.jobs[0].status = 'completed'
+    if (list) s.server.state.extra = (r) => (isList(r) ? json(list) : undefined)
+    s.storage.set(JOBS_KEY, JSON.stringify(ledger))
+    const provider = createCanvasappProvider({
+      api: createCanvasappApi(s.server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage: s.storage,
+      now: () => s.clock.t,
+      sleep: async () => undefined,
+    })
+    return { ...s, provider }
+  }
+
+  it('retry long after: an ended job older than the request is still listed → sent again with the SAME key', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } })
+    expect((await s.provider.submit(req())).remoteId).toBe('proj1:job2')
+    expect(s.server.state.jobs[1].body.client_request_id).toBe(clientRequestIdFor('take_1'))
+  })
+
+  it('retry long after: the list no longer shows anything older than the request (cut) → never posted again', async () => {
+    // job1 had ended before the POST, but the list now shows only newer jobs (cut to its newest)
+    const newer = [{ job_id: 'job7', status: 'completed', canvas_node_id: NODE_W, created_at: new Date(2_000_000).toISOString() }]
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } }, newer)
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1) // warmup only
+    expect(JSON.parse(s.storage.get(JOBS_KEY)!).sent.take_1).toBeTruthy() // still remembered
+  })
+
+  it('a record written before anchors existed (older builds), retried long after → never posted again; damaged anchors count as none', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost() } })
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+    const d = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: 'job1' }) } })
+    await expect(d.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    const e = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: [1, null, 'job1'] } }) } })
+    expect((await e.provider.submit(req())).remoteId).toBe('proj1:job2') // the one valid id is used
+  })
+
+  it('an empty list proves nothing when this computer knows a job of that project', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: [], open: [] } }) } }, [])
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('one of this computer’s jobs made after the request is missing from the list (cut / out of order) → never posted again', async () => {
+    const later = { remoteId: 'proj1:job9', at: 3_000_000, nodeId: NODE_W }
+    const s = await restartWith({ jobs: { warmup: warmupJob, later }, sent: { take_1: lost({ at: 2_000_000, anchors: { ended: ['job1'], open: [] } }) } })
+    s.clock.t = 4_000_000
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('a job the list cannot tell apart (no canvas_node_id, no time) is never read as "not there"', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } }, [
+      { job_id: 'job1', status: 'completed' },
+      { job_id: 'mystery', status: 'queued' }, // could be take_1's: no node, no time
+    ])
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('right after a lost answer: no resend while an unknown job cannot be told apart; ONE resend (same key) when the list reaches back', async () => {
+    for (const listed of [[{ job_id: 'mystery', status: 'queued' }], []]) {
+      const s = setup()
+      const provider = createCanvasappProvider({
+        api: createCanvasappApi(s.server.transport),
+        getBlob: async (id) => blobs[id] ?? null,
+        storage: s.storage,
+        now: () => s.clock.t,
+        sleep: async () => undefined,
+      })
+      await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+      // the next POST is answered 502 without reaching canvasapp; the list shows job1 (this computer's, older) + `listed`
+      s.server.state.extra = (r) =>
+        isPost(r) && posts(s.server) === 2 ? json({ detail: 'Bad gateway' }, 502) : isList(r) ? json([{ job_id: 'job1', status: 'completed' }, ...listed]) : undefined
+      if (listed.length) {
+        await expect(provider.submit(req())).rejects.toMatchObject({ uncertain: true })
+        expect(posts(s.server)).toBe(2)
+      } else {
+        expect((await provider.submit(req())).remoteId).toBe('proj1:job2')
+        expect(posts(s.server)).toBe(3) // the lost one + ONE resend
+        const keys = s.server.calls.filter(isPost).slice(1).map((c) => (c.json as { client_request_id: string }).client_request_id)
+        expect(new Set(keys)).toEqual(new Set([clientRequestIdFor('take_1')]))
+      }
+    }
+  })
+
+  it('a POST records the last list read as anchors: the newest ended / not-ended jobs, at most 6 of each', async () => {
+    const { provider, server, storage } = setup()
+    await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+    const at = (n: number) => new Date(1_000_000 + n * 1000).toISOString()
+    const listed = [
+      ...Array.from({ length: 8 }, (_, i) => ({ job_id: `done${i}`, status: i % 2 ? 'failed' : 'completed', created_at: at(i) })),
+      { job_id: 'run1', status: 'processing', created_at: at(20) },
+      { job_id: 'run0', status: 'queued', created_at: at(10) },
+    ]
+    server.state.extra = (r) => (isList(r) ? json(listed) : undefined)
+    await provider.poll(['proj1:job1']) // a job-list read
+    let sent: Record<string, { anchors?: unknown }> = {}
+    server.state.extra = (r) => {
+      if (isPost(r)) sent = JSON.parse(storage.get(JOBS_KEY)!).sent
+      return undefined
+    }
+    await provider.submit(req({ key: 'take_2', takeId: 'take_2', sceneId: 'scene_b' }))
+    expect(sent.take_2.anchors).toEqual({ ended: ['done7', 'done6', 'done5', 'done4', 'done3', 'done2'], open: ['run1', 'run0'] })
+  })
+
+  it('a key whose ledger record was trimmed is never posted again (also after a restart)', async () => {
+    // 100 newer "sent" records push take_1's out as soon as the ledger is saved again
+    const sent: Record<string, unknown> = { take_1: lost() }
+    for (let i = 0; i < 100; i++) sent[`other_${i}`] = lost({ at: 10 + i })
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent })
+    expect((await s.provider.submit(req({ key: 'take_x', takeId: 'take_x', sceneId: 'scene_x', images: [] }))).remoteId).toBe('proj1:job2')
+    const ledger = JSON.parse(s.storage.get(JOBS_KEY)!)
+    expect(ledger.sent.take_1).toBeUndefined()
+    expect(ledger.dropped).toContain('take_1')
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(2) // warmup + take_x
+    const again = createCanvasappProvider({ api: createCanvasappApi(s.server.transport), getBlob: async (id) => blobs[id] ?? null, storage: s.storage })
+    await expect(again.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(2)
   })
 })
 

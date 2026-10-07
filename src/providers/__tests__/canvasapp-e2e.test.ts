@@ -27,7 +27,7 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { takeFileBase } from '../../actions'
+import { rerunTake, takeFileBase } from '../../actions'
 import { costOf, MODELS } from '../../core/models'
 import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/types'
 import { takeFiles } from '../../lib/downloads'
@@ -35,7 +35,19 @@ import { refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCred
 import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { takeCostLine } from '../../components/runs/creditText'
-import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import {
+  isUncertainSubmit,
+  isUnverifiableSubmit,
+  MAX_REMOTE_CONCURRENCY,
+  onRunEvent,
+  setEngineHooks,
+  setEngineLockManager,
+  UNKNOWN_SUBMIT_ERROR,
+  UNVERIFIABLE_SUBMIT_ERROR,
+  useRuns,
+  type RunEvent,
+} from '../../store/runs'
+import { useUI } from '../../store/ui'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
 import { CANVAS_NOT_SAVED_TEXT, createCanvasappProvider, MAX_CONCURRENCY, memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
@@ -117,6 +129,8 @@ function fakeCanvasapp() {
     dedupe: true,
     /** Job list items carry client_request_id. VERIFY on the live site. */
     exposeKey: false,
+    /** GET /api/video-jobs shows only the newest N jobs of the project (null = all). VERIFY: paging / limit unknown. */
+    listCap: null as number | null,
     /** GET /api/video-profiles answer (`profiles` key, as canvasapp's page reads it). */
     profiles: Object.values(MODELS).map((m) => ({
       model_profile: m.id as string,
@@ -238,7 +252,8 @@ function fakeCanvasapp() {
     if (path === '/api/video-jobs' && req.method === 'POST') return createJob(req.json as Json)
     if (path === '/api/video-jobs' && req.method === 'GET') {
       const pid = new URLSearchParams(query).get('project_id')
-      return ok(state.jobs.filter((j) => j.project_id === pid).map(advance).map(publicJob))
+      const all = state.jobs.filter((j) => j.project_id === pid)
+      return ok((state.listCap === null ? all : all.slice(-state.listCap)).map(advance).map(publicJob))
     }
     const stream = /^\/api\/video-jobs\/([^/]+)\/stream$/.exec(path)
     if (stream && req.method === 'GET') {
@@ -821,6 +836,162 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
     // an explicit retry re-queues THIS take (same key), it never becomes a new one
     expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
     expect(takes()).toHaveLength(1)
+  })
+})
+
+describe('gateway e2e: a "maybe billed" take when the job list is cut to its newest jobs (server without dedupe)', () => {
+  const isPost = (r: TransportRequest) => r.method === 'POST' && r.path === '/api/video-jobs'
+  const isList = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+  const jobsOf = (takeId: string) => fake.state.jobs.filter((j) => j.client_request_id === clientRequestIdFor(takeId))
+  const postsOf = (takeId: string) => fake.jobPosts().filter((b) => b.client_request_id === clientRequestIdFor(takeId)).length
+
+  /** Jobs made on the bridge project after that (another device, canvasapp's own page…): ended, on s3's node. */
+  function laterJobs(n: number) {
+    for (let i = 0; i < n; i++) {
+      const id = 'job' + (fake.state.jobs.length + 1)
+      fake.state.jobs.push({
+        job_id: id,
+        project_id: 'proj1',
+        canvas_node_id: canvasNodeId('s3'),
+        client_request_id: `other-${id}`,
+        model_profile: 'seedance_2_5',
+        duration: 5,
+        aspect_ratio: '16:9',
+        status: 'completed',
+        submission_state: 'accepted',
+        progress: 100,
+        download_available: true,
+        error_message: null,
+        created_at: new Date(Date.now()).toISOString(),
+        cost: 0,
+        body: {},
+        script: [],
+      })
+    }
+  }
+
+  /** s2 ran and ended first; then s1's POST is answered with `fault` while the job list cannot be read → "maybe billed". */
+  async function maybeBilled(fault: Fault) {
+    const [w] = enqueue('s2')
+    await run(2 * 60_000)
+    expect(take(w.id).status).toBe('completed')
+    fake.state.fault = (r) => (isPost(r) ? fault : isList(r) ? { kind: 'network' } : undefined)
+    const [t] = enqueue('s1')
+    await run(3 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(postsOf(t.id)).toBe(1) // never re-posted while unsure
+    fake.state.fault = null
+    return t
+  }
+
+  it.each([
+    ['list without client_request_id', false],
+    ['list with client_request_id', true],
+  ])('processed then 502, then > 200 later jobs push it out of the list (%s): the retry never posts again — one job, one charge', async (_label, exposeKey) => {
+    Object.assign(fake.state, { dedupe: false, exposeKey, listCap: 200 })
+    const t = await maybeBilled({ kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } })
+    expect(jobsOf(t.id)).toHaveLength(1) // canvasapp did create (and bill) it
+    await run(60 * 60_000)
+    laterJobs(250)
+
+    const posts = fake.jobPosts().length
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(2 * 60_000)
+    expect(fake.jobPosts()).toHaveLength(posts) // no second POST of that key
+    expect(jobsOf(t.id)).toHaveLength(1)
+    const after = take(t.id)
+    expect(after).toMatchObject({ status: 'failed', error: UNVERIFIABLE_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUncertainSubmit(after)).toBe(true)
+    expect(isUnverifiableSubmit(after)).toBe(true)
+    expect(takeCostLine(after)).toMatchObject({ struck: false })
+    expect(takeCostLine(after).note).toContain('không rõ')
+
+    // retrying the same take again changes nothing
+    useRuns.getState().retry(t.id)
+    await run(2 * 60_000)
+    expect(fake.jobPosts()).toHaveLength(posts)
+    expect(take(t.id).error).toBe(UNVERIFIABLE_SUBMIT_ERROR)
+  })
+
+  it('"Tạo lại" on such a take: a warning, then the cost dialog for a NEW take of its scene — the old key is never sent again', async () => {
+    Object.assign(fake.state, { dedupe: false, listCap: 200 })
+    const t = await maybeBilled({ kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } })
+    await run(60 * 60_000)
+    laterJobs(250)
+    useRuns.getState().retry(t.id)
+    await run(2 * 60_000)
+    expect(isUnverifiableSubmit(take(t.id))).toBe(true)
+
+    useUI.getState().closeDialog()
+    const confirm = vi.fn((_message: string) => false)
+    ;(g.window as { confirm?: unknown }).confirm = confirm
+    rerunTake(t.id)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0][0]).toContain('“Tạo lại” tạo một take MỚI')
+    expect(useUI.getState().dialog).toEqual({ kind: 'none' }) // declined: nothing
+    confirm.mockReturnValue(true)
+    rerunTake(t.id)
+    expect(useUI.getState().dialog).toMatchObject({ kind: 'runConfirm', sceneIds: ['s1'] })
+    useUI.getState().closeDialog()
+    expect(takes().filter((x) => x.sceneId === 's1')).toHaveLength(1) // the cost dialog decides, nothing queued yet
+
+    // the cost dialog's run: a new take (new key) — the old one stays "maybe billed", its key never sent again
+    const [n] = enqueue('s1')
+    await run(2 * 60_000)
+    expect(jobsOf(n.id)).toHaveLength(1)
+    expect(take(n.id).status).toBe('completed')
+    expect(jobsOf(t.id)).toHaveLength(1)
+    expect(postsOf(t.id)).toBe(1)
+    expect(take(t.id).error).toBe(UNVERIFIABLE_SUBMIT_ERROR)
+  })
+
+  it('retry an hour later while the list still reaches back (an ended job older than the request is listed): sent again with the SAME key — one job', async () => {
+    Object.assign(fake.state, { dedupe: false, listCap: 200 })
+    const t = await maybeBilled({ kind: 'network' }) // nothing reached canvasapp
+    expect(jobsOf(t.id)).toHaveLength(0)
+    await run(60 * 60_000)
+    laterJobs(20)
+    useRuns.getState().retry(t.id)
+    await run(2 * 60_000)
+    expect(jobsOf(t.id)).toHaveLength(1)
+    expect(postsOf(t.id)).toBe(2) // the lost one + the retry, same key
+    expect(take(t.id).remoteId).toBe(`proj1:${jobsOf(t.id)[0].job_id}`)
+    expect(take(t.id).status).toBe('completed')
+  })
+
+  it('answer lost right away, list cut to its 3 newest jobs but still showing older ones: re-sent ONCE with the same key', async () => {
+    Object.assign(fake.state, { dedupe: false, listCap: 3 })
+    for (const id of ['s2', 's3']) {
+      enqueue(id)
+      await run(2 * 60_000)
+    }
+    let first = true
+    fake.state.fault = (r) => {
+      if (isPost(r) && first) {
+        first = false
+        return { kind: 'network' }
+      }
+    }
+    const [t] = enqueue('s1')
+    await run(2 * 60_000)
+    expect(postsOf(t.id)).toBe(2)
+    expect(jobsOf(t.id)).toHaveLength(1)
+    expect(take(t.id).remoteId).toBe(`proj1:${jobsOf(t.id)[0].job_id}`)
+  })
+
+  it('answer lost right away while the list now shows only newer jobs (cut): never re-posted — "không rõ"', async () => {
+    Object.assign(fake.state, { dedupe: false, listCap: 1 })
+    enqueue('s2')
+    await run(2 * 60_000)
+    fake.state.fault = (r) => {
+      if (!isPost(r)) return undefined
+      laterJobs(1) // another device's job lands meanwhile: the only one the list still shows
+      return { kind: 'network' }
+    }
+    const [t] = enqueue('s1')
+    await run(3 * 60_000)
+    expect(postsOf(t.id)).toBe(1)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
   })
 })
 

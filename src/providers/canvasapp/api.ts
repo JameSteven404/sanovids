@@ -53,15 +53,25 @@ export class CanvasappError extends Error {
   readonly detail?: string
   /** A video job may have been created (and billed) although no job id came back — see providers/types isSubmitUncertain. */
   readonly uncertain?: boolean
+  /**
+   * With `uncertain`: the earlier request of this key can no longer be checked at all (see providers/types
+   * isSubmitUnverifiable) — retrying the same key cannot help, only a new take can.
+   */
+  readonly unverifiable?: boolean
   /** Refused for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance): message NOT_ENOUGH_CREDITS_TEXT. */
   readonly noCredit?: boolean
-  constructor(code: CanvasappErrorCode, message: string, opts: { status?: number; detail?: string; uncertain?: boolean; noCredit?: boolean } = {}) {
+  constructor(
+    code: CanvasappErrorCode,
+    message: string,
+    opts: { status?: number; detail?: string; uncertain?: boolean; unverifiable?: boolean; noCredit?: boolean } = {},
+  ) {
     super(message)
     this.name = 'CanvasappError'
     this.code = code
     this.status = opts.status
     this.detail = opts.detail
     if (opts.uncertain) this.uncertain = true
+    if (opts.uncertain && opts.unverifiable) this.unverifiable = true
     if (opts.noCredit) this.noCredit = true
   }
 }

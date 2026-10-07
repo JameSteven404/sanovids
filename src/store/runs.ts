@@ -16,8 +16,10 @@
 //   with UNKNOWN_SUBMIT_ERROR — it is NEVER submitted again by itself (that could pay twice).
 // Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
-// provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
-// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once.
+// provider looks for the job first, and sends again only when it can prove no job was created — otherwise the take
+// fails with UNVERIFIABLE_SUBMIT_ERROR and only a NEW take, "Tạo lại", can run). A take cancelled before its job
+// was created is never billed (submit checks isCancelled before posting). A finished remote video that fails to
+// download is retried, never failed at once.
 //
 // Credits (docs/SPEC-v2.md §9): `credits`/`spent` are the local DEMO wallet of the old demo (play money). Only takes
 // run on the mock provider were charged to it (take.charged) — new takes never are: 'dev' takes bill the simulated
@@ -44,6 +46,7 @@ import {
   isSubmitCancelled,
   isSubmitDeferred,
   isSubmitUncertain,
+  isSubmitUnverifiable,
   providerOf,
   type JobFrame,
   type JobImage,
@@ -203,7 +206,22 @@ export const DEV_UNKNOWN_SUBMIT_ERROR =
 
 /** UNKNOWN_SUBMIT_ERROR in the words of the take's provider ('dev': the Bảng phát triển, not canvasapp.io.vn). */
 export const unknownSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR)
-const isUnknownSubmitError = (error: string) => error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR
+
+/**
+ * Error of a retried "unknown" take whose earlier request can no longer be checked (isSubmitUnverifiable: the job list
+ * no longer reaches back to it, several jobs could be it, or its record is gone): it may have been billed, so the
+ * provider never sends it again — only a NEW take ("Tạo lại", actions.rerunTake) can run, by the user's explicit choice.
+ */
+export const UNVERIFIABLE_SUBMIT_ERROR =
+  'Không kiểm tra được lần gửi trước của take này nữa — canvasapp có thể đã nhận và trừ credit. SanoVids sẽ không gửi lại take này. Xem lịch sử credit và phiên “SanoVids bridge” trên canvasapp.io.vn; muốn thử lại thì bấm “Tạo lại” để tạo một take MỚI (nếu lần trước đã bị trừ thì sẽ trừ thêm một lần).'
+/** The same for a development-mode take (the simulated site; nothing went to canvasapp.io.vn). */
+export const DEV_UNVERIFIABLE_SUBMIT_ERROR =
+  'Không kiểm tra được lần gửi trước của take này nữa — canvasapp giả lập có thể đã nhận và trừ credit dev. SanoVids sẽ không gửi lại take này. Xem tab “Job & đơn nạp” và Lịch sử credit trong Bảng phát triển; muốn thử lại thì bấm “Tạo lại” để tạo một take MỚI (nếu lần trước đã bị trừ thì sẽ trừ thêm credit dev một lần).'
+/** UNVERIFIABLE_SUBMIT_ERROR in the words of the take's provider. */
+export const unverifiableSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNVERIFIABLE_SUBMIT_ERROR : UNVERIFIABLE_SUBMIT_ERROR)
+const UNVERIFIABLE_PREFIX = 'Không kiểm tra được lần gửi trước'
+const isUnknownSubmitError = (error: string) =>
+  error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR || error === UNVERIFIABLE_SUBMIT_ERROR || error === DEV_UNVERIFIABLE_SUBMIT_ERROR
 
 /**
  * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
@@ -216,7 +234,15 @@ export function isUncertainSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'statu
 
 /** Takes saved before `submitUnknown` existed: recognised by their error text (current and earlier wordings). */
 export function hasUncertainSubmitText(error: string | null | undefined): boolean {
-  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error.includes('không trả mã job'))
+  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error.includes('không trả mã job') || error.startsWith(UNVERIFIABLE_PREFIX))
+}
+
+/**
+ * A "maybe billed" take whose earlier request can no longer be checked (UNVERIFIABLE_SUBMIT_ERROR): retrying it as
+ * the same take cannot help — its rerun is "Tạo lại", a NEW take the user chooses explicitly (actions.rerunTake).
+ */
+export function isUnverifiableSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'status' | 'error' | 'submitUnknown'>): boolean {
+  return isUncertainSubmit(t) && !!t.error && t.error.startsWith(UNVERIFIABLE_PREFIX)
 }
 
 /** A finished remote video could not be downloaded after several tries (it is paid: re-running pays again). */
@@ -981,7 +1007,7 @@ async function submitTake(id: string) {
       }
       return
     }
-    if (isSubmitUncertain(e)) return failTake(id, unknownSubmitError(pid))
+    if (isSubmitUncertain(e)) return failTake(id, isSubmitUnverifiable(e) ? unverifiableSubmitError(pid) : unknownSubmitError(pid))
     failTake(id, errorText(e))
     const code = (e as { code?: unknown })?.code
     if (pid !== 'mock' && code === 'login-required') {

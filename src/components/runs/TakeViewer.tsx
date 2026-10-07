@@ -31,7 +31,7 @@ import { playWithSound, snapRate, usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { undoToastAction, useProject } from '../../store/project'
-import { useRuns, useSceneTakes } from '../../store/runs'
+import { isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetChip, MediaImg } from '../common/Media'
 import { Modal } from '../common/Modal'
@@ -535,7 +535,8 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
         {onRerun && (
           <button type="button" className="btn btn-sm" onClick={onRerun}>
             <RotateCcw size={13} />
-            Thử lại
+            {/* the earlier request can no longer be checked: only a NEW take can run (actions.rerunTake) */}
+            {isUnverifiableSubmit(take) ? 'Tạo lại' : 'Thử lại'}
           </button>
         )}
       </div>

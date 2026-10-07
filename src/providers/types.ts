@@ -122,7 +122,8 @@ export interface VideoProvider {
   capabilities(model: ModelId): ProviderCapabilities
   /**
    * Create the job (req.key = idempotency key). Errors: code 'cancelled' (see SubmitOptions, nothing was created);
-   * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back.
+   * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back;
+   * also `unverifiable: true` (isSubmitUnverifiable) when an earlier request of that key can no longer be checked.
    */
   submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
   /**
@@ -164,6 +165,13 @@ export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'ob
  * connection broke after the request was sent. Such a take must never be submitted again under a new key.
  */
 export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { uncertain?: unknown }).uncertain === true
+
+/**
+ * An uncertain submit (isSubmitUncertain) of a key that was sent before, whose earlier request can no longer be
+ * checked — e.g. the provider's job list no longer reaches back to it, or several jobs could be it. It may have been
+ * billed, so the provider never sends that key again; only a NEW take (new key, the user's explicit choice) can run.
+ */
+export const isSubmitUnverifiable = (e: unknown): boolean => isSubmitUncertain(e) && (e as { unverifiable?: unknown }).unverifiable === true
 
 /**
  * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`

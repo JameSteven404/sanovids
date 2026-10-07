@@ -28,7 +28,16 @@ import { costOf } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
-import { DEV_UNKNOWN_SUBMIT_ERROR, isUncertainSubmit, onRunEvent, setEngineHooks, setEngineLockManager, useRuns, type RunEvent } from '../../store/runs'
+import {
+  DEV_UNKNOWN_SUBMIT_ERROR,
+  DEV_UNVERIFIABLE_SUBMIT_ERROR,
+  isUncertainSubmit,
+  onRunEvent,
+  setEngineHooks,
+  setEngineLockManager,
+  useRuns,
+  type RunEvent,
+} from '../../store/runs'
 import { memoryStorage } from '../canvasapp/adapter'
 import { openCheckout } from '../canvasapp/transport'
 import { canvasNodeId, clientRequestIdFor } from '../canvasapp/mapping'
@@ -326,6 +335,36 @@ describe('dev mode e2e: idempotency', () => {
     expect(server.balance()).toBe(1000 - S1_COST)
     expect(take(t.id).remoteId).toBe(`${server.snapshot().jobs[0].project_id}:${server.snapshot().jobs[0].job_id}`)
     expect(['processing', 'completed']).toContain(take(t.id).status)
+  })
+  it('processed then 502 while the list is down, then > 200 later jobs (the simulated canvasapp keeps ~200): the retry never posts again — one charge', async () => {
+    server.login()
+    server.setConfig({ dedupe: false }) // a server that does not dedupe client_request_id: a second POST = a second charge
+    server.setBalance(5000)
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } } })
+    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const [t] = enqueue('s1')
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: DEV_UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    const key = clientRequestIdFor(t.id)
+    expect(server.snapshot().jobs.filter((j) => j.client_request_id === key)).toHaveLength(1) // created and billed
+    server.removeFault(listDown.id)
+
+    // much later: 210 more videos, so the simulated canvasapp no longer keeps (nor lists) that job
+    const S2_COST = costOf(project().scenes[1].settings)
+    for (let i = 0; i < 210; i++) enqueue('s2')
+    await run(30 * 60_000)
+    expect(takes().filter((x) => x.sceneId === 's2' && x.status === 'completed')).toHaveLength(210)
+    expect(server.snapshot().jobs.some((j) => j.client_request_id === key)).toBe(false)
+    const balance = server.balance()
+    expect(balance).toBe(5000 - S1_COST - 210 * S2_COST)
+
+    // the user retries THAT take: the list no longer reaches back to its request → never posted again
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: DEV_UNVERIFIABLE_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(take(t.id).error).not.toContain('canvasapp.io.vn')
+    expect(server.balance()).toBe(balance) // no second charge
+    expect(server.snapshot().jobs.some((j) => j.client_request_id === key)).toBe(false) // no second job either
   })
 })
 
