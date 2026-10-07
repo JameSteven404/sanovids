@@ -565,10 +565,16 @@ describe('imported takes ("Nhập job") in saved data', () => {
       unknown: ['refs'],
       inferred: ['ratio'], // a field both unknown and inferred is unknown
     })
-    expect(migrateTake({ ...base, imported: { jobName: 'x' } })).not.toHaveProperty('imported')
-    expect(migrateTake({ ...base, imported: 'yes' })).not.toHaveProperty('imported')
-    expect(migrateTake({ ...base, imported: { at: Infinity } })).not.toHaveProperty('imported')
+    // present but unreadable: still an imported take, and nothing it may not know is taken as known (never "no marker",
+    // which would show its placeholder settings, empty prompt and cost as facts and let "Khôi phục prompt" write them)
+    const damaged = { at: 0, jobName: null, unknown: ['mode', 'resolution', 'duration', 'ratio', 'prompt', 'refs'], inferred: [] }
+    for (const bad of [{ jobName: 'x' }, 'yes', { at: Infinity }, 7, [], { at: '5' }]) {
+      const m = migrateTake({ ...base, imported: bad })
+      expect(m.imported, JSON.stringify(bad)).toEqual(damaged)
+      expect(migrateTake(JSON.parse(JSON.stringify(m)))).toEqual(m) // stable
+    }
     expect(migrateTake(base)).not.toHaveProperty('imported')
+    expect(migrateTake({ ...base, imported: null })).not.toHaveProperty('imported')
     // the remote id and provider stay: the engine polls it again after a reload, never submits it
     expect(migrateTake({ ...base, imported })).toMatchObject({ provider: 'canvasapp', remoteId: 'proj1:job9', charged: false })
   })

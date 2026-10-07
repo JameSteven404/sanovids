@@ -759,6 +759,24 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     await s.api.listVideoJobs(projectId)
     expect(reads()).toBe(3)
   })
+
+  it('a cached job list is stamped with when its request was SENT (like main.cjs): a slow answer is never "fresh" for longer', async () => {
+    // the server's latency moves the clock
+    const held: { clock?: { t: number } } = {}
+    const s = setup({}, { cacheMs: 3000, sleep: async (ms) => void (held.clock && (held.clock.t += ms)) })
+    held.clock = s.clock
+    const { projectId } = await prepared(s)
+    s.server.setConfig({ latencyMs: 2000 })
+    const reads = () => useDevLog.getState().entries.filter((e) => e.endpoint === 'jobs-list' && e.fault === null).length
+    const before = reads()
+    const sent = s.clock.t
+    await s.api.listVideoJobs(projectId) // sent at `sent`, answered 2 s later
+    expect(s.clock.t).toBe(sent + 2000)
+    expect(reads()).toBe(before + 1)
+    s.clock.t = sent + 3000 // 1 s after the answer, 3 s after the list it shows
+    await s.api.listVideoJobs(projectId)
+    expect(reads()).toBe(before + 2) // read again: that answer may be 3 s old
+  })
 })
 
 describe('dev server: persistence and reset', () => {

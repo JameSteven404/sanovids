@@ -25,6 +25,8 @@ export interface OptionLimit {
 export interface LimitsSiteName {
   short: string
   full: string
+  /** "credit" | "credit dev" (providers/limits limitsSite) */
+  credit: string
 }
 
 const KEY_SEP = '|'
@@ -111,7 +113,7 @@ export function partialNote(lim: OptionLimit, models: readonly ModelId[]): strin
 /** Tooltip of an option / segment. */
 export function optionTitle(label: string, value: string, lim: OptionLimit, site: LimitsSiteName, partial = ''): string {
   if (lim.state === 'off') return `${label}: ${value} — ${site.short} đang tắt: ${lim.reason}`
-  if (lim.state === 'risky') return `${label}: ${value} — có thể bị từ chối khi gửi (không tốn credit): ${lim.reason}`
+  if (lim.state === 'risky') return `${label}: ${value} — có thể bị từ chối khi gửi (không tốn ${site.credit}): ${lim.reason}`
   return `${label}: ${value}${partial}`
 }
 

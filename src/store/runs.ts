@@ -487,7 +487,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
           spec: MODELS[scene.settings.model],
           providerVideoCap: providerVideoCapFor(scene.settings.model, providerId),
         })
-        const warning = reason ? null : settingsRunWarning(limits, scene.settings)
+        const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
         return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: warning ? [...compiled.warnings, warning] : compiled.warnings }
       })
   },

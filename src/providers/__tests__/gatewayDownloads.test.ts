@@ -121,7 +121,8 @@ describe('gateway downloads: constants and pure rules (main.cjs ≡ dev port)', 
     expect(main.CANVASAPP_VIDEO_MAX_BYTES).toBe(1024 ** 3)
     expect(main.CANVASAPP_DOWNLOAD_CHUNK_BYTES).toBe(4 * 1024 ** 2)
     expect(main.CANVASAPP_DOWNLOAD_IDLE_MS).toBe(60_000)
-    expect(main.CANVASAPP_DOWNLOAD_PULL_IDLE_MS).toBe(30_000)
+    // a backstop only (reload / navigation / crash / close end downloads at once): a page blocked by a question keeps them
+    expect(main.CANVASAPP_DOWNLOAD_PULL_IDLE_MS).toBe(10 * 60_000)
     expect(main.CANVASAPP_DOWNLOAD_MAX_MS).toBe(60 * 60_000)
     expect(main.CANVASAPP_DOWNLOAD_HEADERS_MS).toBe(5 * 60_000)
     // a download per job that may finish at once, plus room for abandoned ones still waiting for their slot
@@ -513,7 +514,7 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
     expect(r).toEqual({ before: 2, after: 0, size: 0, read: { ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' }, waiting: ['gone', 'gone', 'gone'], sent: 2, cancelled: [1, 1] })
   })
 
-  it('a page that stops reading (reload / crash) loses its download after pullIdleMs; only the owner reads / closes', async () => {
+  it('a page that stops reading loses its connection after pullIdleMs — told "network" (resumable) once, never "gone"; only the owner reads / closes', async () => {
     const r = await both(async (impl, laneOf) => {
       const lane = laneOf()
       const s = sessionsOf(impl, lane, fakeSite(() => VIDEO).fetch, { pullIdleMs: 30_000 })
@@ -522,15 +523,40 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
       await vi.advanceTimersByTimeAsync(29_000)
       const mid = s.size()
       await vi.advanceTimersByTimeAsync(2_000)
-      return { stranger, mid, size: s.size(), active: lane.active(), late: await s.read('page', { id: ID(1) }) }
+      const size = s.size()
+      const active = lane.active()
+      const strangerLate = await s.read('other', { id: ID(1) })
+      return { stranger, mid, size, active, strangerLate, late: await s.read('page', { id: ID(1) }), again: await s.read('page', { id: ID(1) }) }
     })
     expect(r).toEqual({
       stranger: [{ ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' }, { ok: true }, 1],
       mid: 1,
       size: 0,
       active: 0,
-      late: { ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' },
+      strangerLate: { ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' },
+      late: { ok: false, code: 'network', message: 'Trang không đọc tiếp video quá lâu nên SanoVids đã đóng kết nối — tải tiếp từ chỗ đã nhận.' },
+      again: { ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' },
     })
+  })
+
+  it('a page blocked longer than pullIdleMs (a question open) continues where it was: same validator, Range from what it had', async () => {
+    const ETAG = '"v1-250"'
+    const r = await both(async (impl, laneOf) => {
+      const lane = laneOf()
+      const site = fakeSite((_n, h) =>
+        h.Range === 'bytes=100-' && h['If-Range'] === ETAG
+          ? { status: 206, headers: { 'content-range': 'bytes 100-249/250', etag: ETAG }, body: [bytes(150, 9), 'done'] }
+          : { status: 200, headers: { 'content-length': '250', 'accept-ranges': 'bytes', etag: ETAG }, body: [bytes(100), 'hang'] },
+      )
+      const s = sessionsOf(impl, lane, site.fetch, { pullIdleMs: 30_000 })
+      const opened = await s.open('page', { id: ID(1), path: PATH })
+      const first = await s.read('page', { id: ID(1) })
+      await vi.advanceTimersByTimeAsync(31_000) // the page is busy (window.confirm…)
+      const late = await s.read('page', { id: ID(1) })
+      const again = await s.open('page', { id: ID(2), path: PATH, from: 100 })
+      return { opened: opened.ok && 'resumable' in opened ? opened.resumable : null, first: first.ok && !first.done ? first.bytes.byteLength : first, late: late.ok ? late : late.code, again: again.ok && 'from' in again ? again.from : again, rest: await drain(s, 'page', ID(2)), active: lane.active() }
+    })
+    expect(r).toEqual({ opened: true, first: 100, late: 'network', again: 100, rest: [{ bytes: 100 }, { bytes: 50 }, { ok: true, done: true }], active: 0 })
   })
 
   it('stalls: idle → network with the idle text; headers that never come → timeout; max time → max', async () => {

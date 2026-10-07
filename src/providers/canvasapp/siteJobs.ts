@@ -16,6 +16,7 @@
 //   sentMayOwn(job, key, rec, …)       could an unanswered POST of take `key` (ledger.sent) have made this job?
 //   inPostWindow(t, at)                the creation-time window of that rule (shared with the adapter's lookup)
 //   hintsFor(nodeId, canvas, entries, imageOfUpload)   the node's settings as the bridge canvas / SanoVids' entry hold them
+//   hintsSuperseded(candidate, jobs, sent, projectId)  the node may have been rewritten since the job: no hints for it
 //   canvasHintFor / entryHint / hintMatches            the parts of hintsFor + the match rule
 //   reconstructSiteJob(candidate, prompt, assetOf)     → SiteTakeDraft (settings + what is unknown / inferred)
 //   normalizeImportPrompt(v)           GET …/prompt answer → the prompt, or null (empty, too long, not text = unknown)
@@ -361,6 +362,25 @@ export function entryHint(e: BridgeEntry, imageOfUpload: (uploadId: string) => s
     refImages: shape === 'refs' ? e.uploadIds.map((u) => imageOfUpload(u)) : [],
     frames: shape === 'frames' ? { first: img(e.firstFrameUploadId), last: img(e.lastFrameUploadId) } : null,
   }
+}
+
+/**
+ * May the bridge node have been rewritten since `c`'s job was made? Then neither the saved canvas nor SanoVids' entry
+ * says how the job was made (SanoVids PUTs the node again before each run of the scene — other characters, same
+ * prompt…), and the job gets no hints: references / mode / resolution are "unknown", "Khôi phục prompt" is blocked.
+ * Yes when the job list holds another job on that node made at the same time or later (created_at of the same server,
+ * so a missing time zone shifts both alike; a time missing on either side counts as later), or an unanswered POST on
+ * that node (ledger.sent) was sent after a read that already listed the job (its `before`).
+ */
+export function hintsSuperseded(c: Pick<SiteJobCandidate, 'jobId' | 'nodeId' | 'job'>, jobs: readonly CanvasJob[], sent: Readonly<Record<string, SentLike>>, projectId: string): boolean {
+  const t = createdTime(c.job.created_at)
+  const later = jobs.some((j) => {
+    if (!isObj(j) || j.job_id === c.jobId || j.canvas_node_id !== c.nodeId) return false
+    const u = createdTime(j.created_at)
+    return !Number.isFinite(t) || !Number.isFinite(u) || u >= t
+  })
+  if (later) return true
+  return Object.values(sent).some((r) => !!r && typeof r === 'object' && r.projectId === projectId && r.nodeId === c.nodeId && Array.isArray(r.before) && r.before.includes(c.jobId))
 }
 
 /** The hints of node `nodeId`: the saved canvas first, then SanoVids' entry of that node (if any). */

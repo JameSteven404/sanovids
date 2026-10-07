@@ -16,6 +16,7 @@ import {
   createCanvasappProvider,
   JOBS_KEY,
   LIST_NEEDED_TEXT,
+  RIVAL_SETTLING_TEXT,
   memoryStorage,
   MIN_POLL_MS,
   PROFILES_FALLBACK_TEXT,
@@ -561,6 +562,35 @@ describe('canvasapp adapter', () => {
     await provider.submit(req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_c', images: [], prompt: 'nắng' }))
     expect(reads()).toBe(1)
     expect(videos()).toContain(elsewhere)
+  })
+
+  it('a job running on a node that is NOT on the canvas (deleted on the site, stuck in queued): read back once, never again — not even to fail a take', async () => {
+    const server = fakeServer()
+    const { provider, clock } = setup(server)
+    const a = await provider.submit(req()) // scene A on proj1
+    const gone = canvasNodeId('scene_deleted_on_site')
+    server.state.extra = (r) =>
+      r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+        ? json([
+            { job_id: 'job1', status: 'queued', canvas_node_id: node('scene_a') },
+            { job_id: 'stuck', status: 'queued', canvas_node_id: gone },
+          ])
+        : undefined
+    const reads = () => server.calls.filter((c) => c.method === 'GET' && c.path === '/api/projects/proj1').length
+    clock.t += MIN_POLL_MS
+    await provider.poll([a.remoteId])
+    await provider.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [], prompt: 'mưa' }))
+    expect(reads()).toBe(1) // looked for it once: not there
+    // later polls show it again, and now the canvas cannot be read: the take is still sent (nothing there to keep)
+    const lists = server.state.extra
+    server.state.extra = (r) => (r.method === 'GET' && r.path === '/api/projects/proj1' ? json({ detail: 'boom' }, 503) : lists(r))
+    for (let i = 0; i < 3; i++) {
+      clock.t += MIN_POLL_MS
+      await provider.poll([a.remoteId])
+      await provider.submit(req({ key: `take_n${i}`, takeId: `take_n${i}`, sceneId: `scene_${i}`, images: [], prompt: `cảnh ${i}` }))
+    }
+    expect(reads()).toBe(1)
+    expect(server.state.jobs.map((j) => j.body.client_request_id)).toEqual(['take_1', 'take_b', 'take_n0', 'take_n1', 'take_n2'].map(clientRequestIdFor))
   })
 
   it('logout → login with per-project nodes: the nodes read back of two projects sharing a scene id and a legacy node all stay; each scene replaces only its own', async () => {
@@ -1343,8 +1373,9 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
 
   /**
    * Take A of scene_a: canvasapp creates its job, the answer is lost and the job list cannot be read → "không rõ".
-   * Take B of the same scene 30 s later: the list answers right before its POST (A's job is there), then B's POST never
-   * reaches canvasapp and the list is down again → "không rõ" too. One job on the node, two takes in doubt.
+   * Take B of the same scene 45 s later (sooner it waits: RIVAL_SETTLING_TEXT): the list answers right before its POST
+   * (A's job is there), then B's POST never reaches canvasapp and the list is down again → "không rõ" too. One job on
+   * the node, two takes in doubt.
    */
   async function twoInDoubt() {
     const t = restarted()
@@ -1356,7 +1387,7 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     const a = t.provider.submit(A)
     await t.wakeTwice()
     await expect(a).rejects.toMatchObject({ uncertain: true })
-    t.clock.t += 30_000
+    t.clock.t += 45_000
     down.list = false
     down.afterPost = true
     t.server.state.unreachablePosts = 1
@@ -1408,7 +1439,7 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     const a = provider.submit(A)
     await wakeTwice()
     await expect(a).rejects.toMatchObject({ uncertain: true })
-    clock.t += 30_000
+    clock.t += 45_000
     // B while the list is still down: posting now could leave two takes that never tell their jobs apart → not sent
     const refused = (await provider.submit(B).catch((e: unknown) => e)) as CanvasappError
     expect(refused).toBeInstanceOf(CanvasappError)
@@ -1440,6 +1471,56 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     expect(sentRecords(storage).take_b).toEqual(before) // its first POST is still looked for
     expect(await provider.submit(A)).toEqual({ remoteId: 'proj1:job1' })
     expect(await provider.submit(B)).toEqual({ remoteId: 'proj1:job2' })
+  })
+
+  it('the lookups after a lost answer ask the gateway for a FRESH job list (never main’s cached one of up to 15 s ago); polls do not', async () => {
+    const { provider, server, clock, waiting, wake } = restarted()
+    // canvasapp makes the job but lists it only 20 s after the POST (inside the 30 s the lookups bet on)
+    const T0 = clock.t
+    server.state.extra = (r) =>
+      r.method === 'GET' && r.path.startsWith('/api/video-jobs?') && clock.t < T0 + 20_000
+        ? json(server.state.jobs.filter((j) => j.body.client_request_id !== clientRequestIdFor('take_1')).map(({ body: _b, ...j }) => j))
+        : undefined
+    // main in front: a list cached less than 15 s ago is reused — unless the read is `fresh` and the cache is ≥ 5 s old
+    const cache = new Map<string, { at: number; res: TransportResponse }>()
+    const inner = server.transport.request
+    const lists: { at: number; fresh: boolean; served: 'cache' | 'site' }[] = []
+    server.transport.request = async (r) => {
+      const list = r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+      const post = r.method === 'POST' && r.path === '/api/video-jobs'
+      const hit = list ? cache.get(r.path) : undefined
+      if (hit && clock.t - hit.at < (r.fresh === true ? 5_000 : MIN_POLL_MS)) {
+        lists.push({ at: clock.t, fresh: r.fresh === true, served: 'cache' })
+        return hit.res
+      }
+      if (post) cache.clear()
+      const at = clock.t
+      try {
+        const res = await inner(r)
+        if (list) {
+          lists.push({ at, fresh: r.fresh === true, served: 'site' })
+          if (res.status === 200) cache.set(r.path, { at, res })
+        }
+        return res
+      } finally {
+        if (post) cache.clear()
+      }
+    }
+    server.state.loseAnswers = 1
+    const run = provider.submit(req())
+    await waiting()
+    // the engine's poll right after the lost answer fills main's cache (the job is not listed yet)
+    clock.t = T0 + 16_000
+    await provider.poll(['proj1:other'])
+    clock.t = T0 + 17_000
+    wake() // lookup 1: fresh, but main may still give the poll's answer of a second ago (its fresh floor is 5 s)
+    await waiting()
+    clock.t = T0 + 30_000
+    wake() // lookup 2: main still holds a list < 15 s old, but a fresh read never takes it → the job is there
+    expect(await run).toEqual({ remoteId: 'proj1:job1' })
+    expect(jobPosts(server)).toHaveLength(1) // never posted again
+    expect(lists.filter((l) => l.at >= T0 + 30_000)).toEqual([{ at: T0 + 30_000, fresh: true, served: 'site' }])
+    expect(lists.find((l) => l.at === T0 + 16_000)).toMatchObject({ fresh: false })
   })
 
   it('a POST sent again after nothing was found carries its own time (a take posting next to it later knows when to look)', async () => {
@@ -1488,10 +1569,12 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
   })
 
   /**
-   * electron/main.cjs in front of the fake: GET /api/video-jobs answered from a cache for 15 s (stamped when the answer
-   * arrives), dropped at every POST /api/video-jobs (CANVASAPP_JOBS_MIN_MS, canvasappJobListCache).
+   * electron/main.cjs in front of the fake: GET /api/video-jobs answered from a cache for 15 s (stamped when the request
+   * was SENT — never when its answer arrived), dropped at every POST /api/video-jobs (CANVASAPP_JOBS_MIN_MS,
+   * canvasappJobListCache). `latency()`: how long the next job-list read takes (the clock moves after canvasapp
+   * handled it).
    */
-  function mainListCache(server: ReturnType<typeof fakeServer>, clock: { t: number }) {
+  function mainListCache(server: ReturnType<typeof fakeServer>, clock: { t: number }, latency: () => number = () => 0) {
     const cache = new Map<string, { at: number; res: TransportResponse }>()
     const inner = server.transport.request
     server.transport.request = async (r) => {
@@ -1500,9 +1583,11 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
       const hit = list ? cache.get(r.path) : undefined
       if (hit && clock.t - hit.at < MIN_POLL_MS) return hit.res
       if (post) cache.clear()
+      const sentAt = clock.t
       try {
         const res = await inner(r)
-        if (list && res.status === 200) cache.set(r.path, { at: clock.t, res })
+        if (list) clock.t += latency()
+        if (list && res.status === 200) cache.set(r.path, { at: sentAt, res })
         return res
       } finally {
         if (post) cache.clear()
@@ -1511,7 +1596,7 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
   }
 
   it('a job-list answer main may have cached (15 s) never counts as fresher than it is: a later take never settles on an earlier take’s job', async () => {
-    const { provider, server, clock, waiting, wake, wakeTwice } = restarted()
+    const { provider, server, storage, clock, wakeTwice } = restarted()
     mainListCache(server, clock)
     const T0 = clock.t
     const down = flakyList(server)
@@ -1534,19 +1619,72 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     // 16 s after A's POST: a read (A looked up again) — A's job not listed yet; main caches that answer
     clock.t = T0 + 16_000
     expect(await provider.recover!(A)).toBeNull()
-    // B, same scene, 30.5 s after A's POST: the read before its POST is that cached answer; B's POST never arrives
+    // B, same scene, 30.5 s after A's POST: no read could show yet whether A's POST made a job (that cached answer
+    // least of all) → back to the queue, nothing sent
     clock.t = T0 + 30_500
+    await expect(provider.submit(B)).rejects.toMatchObject({ code: 'deferred', message: RIVAL_SETTLING_TEXT })
+    expect(jobPosts(server)).toHaveLength(1)
+    // sent again 16 s later: the read right before its POST is fresh and shows A's job; B's POST never arrives
+    clock.t = T0 + 46_500
     server.state.unreachablePosts = 1
     const b = provider.submit(B)
-    await waiting()
-    wake()
-    // A's job (listed now) could still be A's: B never takes it — "không rõ", not A's video
-    await expect(b).rejects.toMatchObject({ uncertain: true })
-    // ...and A is never posted again (its job might be "B's"): both in doubt, nothing paid twice
+    await wakeTwice()
+    // nothing of its own on the node (A's job was listed before it) → B posts once more and gets its own job
+    expect(await b).toEqual({ remoteId: 'proj1:job2' })
+    // ...and A finds its own: each take its video, nothing paid twice
     clock.t += 60_000
-    await expect(provider.submit(A)).rejects.toMatchObject({ uncertain: true })
-    expect(jobPosts(server)).toHaveLength(2) // A's, B's (never arrived)
-    expect(server.state.jobs.map((j) => j.body.prompt)).toEqual(['take A'])
+    expect(await provider.submit(A)).toEqual({ remoteId: 'proj1:job1' })
+    expect(jobPosts(server)).toHaveLength(3) // A's, B's (never arrived), B again
+    expect(server.state.jobs.map((j) => j.body.prompt)).toEqual(['take A', 'take B'])
+    expect(sentRecords(storage)).toEqual({})
+  })
+
+  it('a slow job-list answer main cached is never taken for a newer one (the cache is stamped when its request left)', async () => {
+    // the reviewer's case: a lookup sent at T0 + 27 s is answered 5 s later; a read at T0 + 46 s must not be served from
+    // it as if it showed the list of T0 + 32 s
+    const { provider, server, storage, clock, wakeTwice } = restarted()
+    let slow = 0
+    mainListCache(server, clock, () => {
+      const ms = slow
+      slow = 0
+      return ms
+    })
+    const T0 = clock.t
+    const down = flakyList(server)
+    // canvasapp lists take A's job only 28 s after its POST (inside the 30 s the lookups bet on)
+    const flaky = server.state.extra!
+    server.state.extra = (r) =>
+      flaky(r) ??
+      (r.method === 'GET' && r.path.startsWith('/api/video-jobs?') && clock.t < T0 + 28_000
+        ? json(server.state.jobs.filter((j) => j.body.prompt !== 'take A').map(({ body: _b, ...j }) => j))
+        : undefined)
+    const A = req({ key: 'take_a', takeId: 'take_a', prompt: 'take A' })
+    const B = req({ key: 'take_b', takeId: 'take_b', prompt: 'take B' })
+    server.state.loseAnswers = 1
+    down.list = true
+    const a = provider.submit(A)
+    await wakeTwice()
+    await expect(a).rejects.toMatchObject({ uncertain: true })
+    down.list = false
+    // a lookup sent at T0 + 27 s (A's job not listed yet), its answer 5 s later
+    clock.t = T0 + 27_000
+    slow = 5_000
+    expect(await provider.recover!(A)).toBeNull()
+    expect(clock.t).toBe(T0 + 32_000)
+    // B at T0 + 46 s, 19 s after that read was sent: main's cache (stamped at 27 s) is over → a fresh read, which shows
+    // A's job (B's `before`); B's POST never arrives
+    clock.t = T0 + 46_000
+    server.state.unreachablePosts = 1
+    const b = provider.submit(B)
+    await wakeTwice()
+    expect(await b).toEqual({ remoteId: 'proj1:job2' }) // never A's job
+    clock.t += 60_000
+    expect(await provider.submit(A)).toEqual({ remoteId: 'proj1:job1' })
+    expect(server.state.jobs.map((j) => [j.job_id, j.body.prompt])).toEqual([
+      ['job1', 'take A'],
+      ['job2', 'take B'],
+    ])
+    expect(sentRecords(storage)).toEqual({})
   })
 
   it('the job list cannot be read when room is needed: every remembered entry counts as running — nothing taken off, nothing sent', async () => {
@@ -1636,8 +1774,9 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
   })
 
   it('hints come from the saved canvas and SanoVids’ entry: references mapped back to SanoVids pictures', async () => {
-    const { provider, server } = setup()
+    const { provider, server, clock } = setup()
     await provider.submit(req()) // scene_a on the bridge canvas with img_a / img_b
+    clock.t += 60_000 // the site job is the newest run of that node
     siteJob(server, { body: { prompt: '@image_1 and @image_2' } })
     const scan = await provider.scanSiteJobs(input({ takeIds: new Set(['take_1']) }))
     expect(scan.skipped).toEqual([{ jobId: 'job1', sceneId: 'scene_a', code: 'sanovids' }])
@@ -1647,6 +1786,30 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       ['entry', ['img_a', 'img_b']],
     ])
     expect(c.hints[0]).toMatchObject({ resolution: '1080p', duration: 15, prompt: '@image_1 and @image_2' })
+  })
+
+  it('no hints for a job whose node SanoVids rewrote since (a later run of the scene, or a POST sent after it was listed)', async () => {
+    const { provider, server, clock } = setup()
+    await provider.submit(req()) // scene_a: img_a / img_b
+    clock.t += 60_000
+    const site = siteJob(server, { body: { prompt: '@image_1 and @image_2' } }) // made on the site from that node
+    clock.t += 60_000
+    // the user swaps a character and runs the scene again in SanoVids, same prompt: the node now holds img_a / img_x
+    blobs.img_x = new Blob(['x'], { type: 'image/png' })
+    await provider.submit(req({ key: 'take_2', takeId: 'take_2', images: [{ n: 1, imageId: 'img_a' }, { n: 2, imageId: 'img_x' }] as JobRequest['images'] }))
+    const scan = await provider.scanSiteJobs(input({ takeIds: new Set(['take_1', 'take_2']) }))
+    expect(scan.candidates.map((c) => [c.jobId, c.hints])).toEqual([[site.job_id, []]])
+    // a POST whose answer is unknown, sent after a read that listed the job, rewrote the node too
+    const s2 = setup()
+    await s2.provider.submit(req())
+    s2.clock.t += 60_000
+    const later = siteJob(s2.server, { body: { prompt: '@image_1 and @image_2' } })
+    const ledger = JSON.parse(s2.storage.get(JOBS_KEY)!)
+    ledger.sent.take_9 = { projectId: 'proj1', nodeId: node('scene_a'), at: s2.clock.t, before: [later.job_id] }
+    s2.storage.set(JOBS_KEY, JSON.stringify(ledger))
+    const again = createCanvasappProvider({ api: createCanvasappApi(s2.server.transport), getBlob: async (id) => blobs[id] ?? null, storage: s2.storage, now: () => s2.clock.t })
+    const scan2 = await again.scanSiteJobs(input({ takeIds: new Set(['take_1']) }))
+    expect(scan2.candidates.map((c) => [c.jobId, c.hints])).toEqual([[later.job_id, []]])
   })
 
   it('401 → login-required (nothing claimed); a list error other than 404 is thrown; an unreadable prompt is unknown', async () => {

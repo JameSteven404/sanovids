@@ -392,11 +392,11 @@ function LimitsNote({
   const who = multi ? `${issues.count} cảnh${issues.codes.length ? ` (${codeList(issues.codes)})` : ''}` : 'Cảnh này'
   const head = issues.sure
     ? multi
-      ? `${site.short} đang tắt lựa chọn của ${who} — các cảnh này chưa chạy được: khi chạy nhiều cảnh, chúng được bỏ qua (không tốn credit).`
-      : `${site.short} đang tắt lựa chọn này — cảnh chưa chạy được cho tới khi đổi (không gửi gì, không tốn credit).`
+      ? `${site.short} đang tắt lựa chọn của ${who} — các cảnh này chưa chạy được: khi chạy nhiều cảnh, chúng được bỏ qua (không tốn ${site.credit}).`
+      : `${site.short} đang tắt lựa chọn này — cảnh chưa chạy được cho tới khi đổi (không gửi gì, không tốn ${site.credit}).`
     : limits.source === 'fallback'
-      ? `Chưa đọc được cấu hình model từ ${site.short} — đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá). ${who} có thể bị từ chối khi gửi (không tốn credit).`
-      : `Theo lần đọc cấu hình model${info.at !== null ? ` lúc ${clockTime(info.at)}` : ''}, ${who.charAt(0).toLowerCase() + who.slice(1)} có thể bị ${site.short} từ chối khi gửi (không tốn credit) — SanoVids đọc lại trước khi gửi.`
+      ? `Chưa đọc được cấu hình model từ ${site.short} — đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá). ${who} có thể bị từ chối khi gửi (không tốn ${site.credit}).`
+      : `Theo lần đọc cấu hình model${info.at !== null ? ` lúc ${clockTime(info.at)}` : ''}, ${who.charAt(0).toLowerCase() + who.slice(1)} có thể bị ${site.short} từ chối khi gửi (không tốn ${site.credit}) — SanoVids đọc lại trước khi gửi.`
   return (
     <div className={`in-note in-limits-note ${issues.sure ? 'danger' : 'is-warn'}`} role="status">
       <TriangleAlert size={13} />

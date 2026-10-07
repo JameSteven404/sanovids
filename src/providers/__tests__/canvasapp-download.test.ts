@@ -147,6 +147,36 @@ afterEach(() => {
 })
 
 describe('desktop transport: streamed video download', () => {
+  it('a connection cut every 100 bytes (resumable) still finishes: only opens that bring nothing count against the limit', async () => {
+    const video = bytes(3300)
+    const d = desktop((_n, h) => {
+      const from = h.Range ? Number(h.Range.slice(6, -1)) : 0
+      const piece = video.slice(from, from + 100)
+      return from === 0
+        ? { status: 200, headers: { 'content-length': '3300', 'accept-ranges': 'bytes', etag: ETAG }, body: [piece, 'error'] }
+        : { status: 206, headers: { 'content-range': `bytes ${from}-3299/3300`, etag: ETAG }, body: from + 100 >= 3300 ? [piece, 'done'] : [piece, 'error'] }
+    })
+    const blob = await d.api.fetchVideo('job1')
+    expect(await blobBytes(blob)).toEqual(video)
+    expect(d.fetches).toHaveLength(33) // > 32 opens, every one of them brought 100 bytes
+  })
+
+  it('a 200 that is a page or a message (login page, JSON "not ready") is never taken for the video: bad-response, tried again later', async () => {
+    for (const type of ['text/html; charset=utf-8', 'application/json', 'application/problem+json', 'text/plain']) {
+      const body = new TextEncoder().encode(type.startsWith('text/html') ? '<html>Đăng nhập</html>' : '{"detail":"not ready"}')
+      const d = desktop(() => ({ status: 200, headers: { 'content-type': type, 'content-length': String(body.byteLength) }, body: [body, 'done'] }))
+      const e = await d.api.fetchVideo('job1').catch((x: unknown) => x)
+      expect(e, type).toBeInstanceOf(CanvasappError)
+      expect(e, type).toMatchObject({ code: 'bad-response' })
+      expect((e as Error).message).toContain('thay cho video')
+    }
+    // a video served as video/* or a plain binary type is still a video
+    for (const type of ['video/webm', 'application/octet-stream', 'application/mp4', '']) {
+      const d = desktop(() => ({ status: 200, headers: { 'content-type': type || undefined, 'content-length': '50' }, body: [bytes(50), 'done'] }))
+      expect((await d.api.fetchVideo('job1')).size, type).toBe(50)
+    }
+  })
+
   it('pieces become one Blob, byte for byte; typed video/mp4 even for octet-stream; progress monotonic, throttled, final', async () => {
     const video = bytes(1000)
     const d = desktop(() => ({ status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': '1000' }, body: [video.slice(0, 600), video.slice(600), 'done'] }))

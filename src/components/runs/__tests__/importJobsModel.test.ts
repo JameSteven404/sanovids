@@ -111,7 +111,10 @@ describe('importJobsModel: rules', () => {
     }
     const lines = skipLines(scan, dev, (id) => (id === 'take_1' ? 'S01·T2' : null))
     expect(lines.map((l) => l.code)).toEqual(['maybe-pending', 'in-project', 'sanovids', 'no-scene', 'no-download'])
-    expect(lines[0].text).toMatch(/^Có thể là job của take “không rõ đã gửi” \(S01·T2, take đã xoá hoặc ở dự án khác\): 2 job — tạm chưa nhập được/)
+    expect(lines[0].text).toMatch(/^Có thể là job của take “không rõ đã gửi” \(S01·T2, take đã xoá hoặc ở dự án khác\): 2 job — chưa nhập được chừng nào take đó chưa tìm ra job của nó/)
+    // no time limit (the block lifts only when that take finds its job) and no "never paid twice" promise
+    expect(lines[0].text).not.toMatch(/14 giờ|không trả hai lần/)
+    expect(lines[0].text).toContain('job vẫn còn trên canvasapp giả lập')
     expect(lines[1].text).toBe('Đã có trong dự án: 2 job')
     expect(lines[4].text).toBe('Đã xong nhưng canvasapp giả lập không cho tải nữa: 1 job')
   })

@@ -447,6 +447,11 @@ function registerAppBridge() {
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
 const CANVASAPP_JOBS_MIN_MS = 15_000
+/**
+ * A job-list read the page asks for `fresh` (the lookups after a lost answer: is the job there?) is served from the
+ * cache only while the cached answer was sent this recently — never one of up to 15 s ago.
+ */
+const CANVASAPP_JOBS_FRESH_MS = 5_000
 
 // <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it)
 const CANVASAPP_MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -579,7 +584,12 @@ const CANVASAPP_DOWNLOAD_FLUSH_MS = 1000
 /** Until the answer's headers (from when the slot is held): generous, /stream may fetch the file before answering (VERIFY). */
 const CANVASAPP_DOWNLOAD_HEADERS_MS = 5 * 60_000
 const CANVASAPP_DOWNLOAD_IDLE_MS = 60_000
-const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 30_000
+/**
+ * A page that stops reading a download this long loses its connection (a backstop: reload, navigation, crash and close
+ * end it at once through webContents events). Long on purpose — a page blocked by a question (confirm) or busy must not
+ * lose its downloads — and reported 'network' (resumable: the page continues from what it has), never 'gone'.
+ */
+const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 10 * 60_000
 const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
 /**
  * Open + waiting for a slot. ≥ the jobs SanoVids itself runs at once (src/providers/canvasapp/adapter.ts
@@ -940,6 +950,8 @@ function createDownloadSessions(deps) {
   )
   const sessions = new Map()
   const tags = new Map() // path → { validator, at }
+  // downloads ended because their page stopped reading (id → owner): the next read says 'network', so the page continues
+  const idled = new Map()
   const refusal = (code, message) => ({ ok: false, code, message })
   const failure = (reason) => {
     const f = downloadFailure(reason, lim)
@@ -988,7 +1000,17 @@ function createDownloadSessions(deps) {
     s.pullTimer = deps.setTimer(() => {
       s.pullTimer = null
       end(s)
+      idled.set(s.id, s.owner)
+      while (idled.size > lim.maxSessions) idled.delete(idled.keys().next().value)
     }, lim.pullIdleMs)
+  }
+
+  /** The page's read of a download main ended for not being read: once, a resumable 'network' failure. */
+  function idledRead(owner, args) {
+    const id = args && typeof args === 'object' && typeof args.id === 'string' ? args.id : ''
+    if (!idled.has(id) || idled.get(id) !== owner) return null
+    idled.delete(id)
+    return refusal('network', 'Trang không đọc tiếp video quá lâu nên SanoVids đã đóng kết nối — tải tiếp từ chỗ đã nhận.')
   }
 
   function owned(owner, args) {
@@ -1131,7 +1153,7 @@ function createDownloadSessions(deps) {
 
   async function read(owner, args) {
     const s = owned(owner, args)
-    if (!s) return failure('closed')
+    if (!s) return idledRead(owner, args) || failure('closed')
     if (!s.pump || s.reading) return refusal('busy', 'Lượt tải video này đang mở hoặc đang được đọc.')
     s.reading = true
     if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
@@ -1154,11 +1176,13 @@ function createDownloadSessions(deps) {
   function close(owner, args) {
     const s = owned(owner, args)
     if (s) end(s)
+    else idledRead(owner, args)
     return { ok: true }
   }
 
   function closeAll(owner) {
     for (const s of [...sessions.values()]) if (owner === undefined || s.owner === owner) end(s)
+    for (const [id, o] of [...idled]) if (owner === undefined || o === owner) idled.delete(id)
   }
 
   return { open, read, close, closeAll, size: () => sessions.size }
@@ -1196,7 +1220,7 @@ async function canvasappRequest(req) {
   const cacheKey = method === 'GET' && url.pathname === '/api/video-jobs' ? url.search : null
   if (cacheKey !== null) {
     const hit = canvasappJobListCache.get(cacheKey)
-    if (hit && Date.now() - hit.at < CANVASAPP_JOBS_MIN_MS) return hit.result
+    if (hit && Date.now() - hit.at < (req.fresh === true ? CANVASAPP_JOBS_FRESH_MS : CANVASAPP_JOBS_MIN_MS)) return hit.result
   }
 
   const headers = { Accept: 'application/json' }
@@ -1228,11 +1252,16 @@ async function canvasappRequest(req) {
   const epoch = canvasappJobsEpoch
   const controller = new AbortController()
   let timer = null
+  // When the request really left (after waiting for a slot). A cached job list is stamped with it, not with the time
+  // its answer arrived: canvasapp's answer shows the list as it was at that moment or later, so a cache hit is never
+  // taken for a newer list than it is (the adapter trusts a read to show what existed 15 s before it was sent).
+  let sentAt = 0
   try {
     const result = await withCanvasappSlot('api', async () => {
       // The clock starts when the request is really sent, not while it waits for a slot: a timeout then means
       // canvasapp did not answer, never "not sent yet".
       timer = setTimeout(() => controller.abort(), 60_000)
+      sentAt = Date.now()
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
@@ -1256,7 +1285,7 @@ async function canvasappRequest(req) {
       }
       return out
     })
-    if (cacheKey !== null && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: Date.now(), result })
+    if (cacheKey !== null && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: sentAt, result })
     return result
   } catch (e) {
     const aborted = e && e.name === 'AbortError'
@@ -1371,12 +1400,10 @@ function watchDownloadOwner(wc) {
   const closeAll = () => canvasappDownloads.closeAll(owner)
   wc.once('destroyed', closeAll)
   wc.on('render-process-gone', closeAll)
-  // Electron ≥ 25 puts the details on the event object; older builds pass them as arguments.
-  wc.on('did-start-navigation', (details, _url, isInPlace, isMainFrame) => {
-    const main = details && typeof details.isMainFrame === 'boolean' ? details.isMainFrame : isMainFrame !== false
-    const sameDocument = details && typeof details.isSameDocument === 'boolean' ? details.isSameDocument : isInPlace === true
-    if (main && !sameDocument) closeAll()
-  })
+  // A navigation that really happened: did-navigate = the main frame committed a new document (reload included; never
+  // an in-page one). Not when a navigation only starts — that event fires before will-navigate can cancel it (a link
+  // dropped on the window, opened in the browser instead), and the page that stays would lose every download.
+  wc.on('did-navigate', closeAll)
 }
 
 async function canvasappStatus() {
@@ -1455,15 +1482,30 @@ function canvasappLogin(parent) {
   return canvasappLoginPromise
 }
 
+/**
+ * Set while Đăng xuất wipes the canvasapp session: no video download may start then (its request would carry the old
+ * cookies, and its answer could write them back after the wipe) — canvasapp:downloadOpen answers 'busy' (the engine asks
+ * again later, not a failed try). Kept apart from canvasapp:request's own logout guard (keep-login branch): a merge
+ * must keep both, and drain download requests together with the API ones.
+ */
+let canvasappDownloadsBlocked = false
+
 async function canvasappLogout() {
-  canvasappDownloads.closeAll()
-  if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
-  if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
-  const ses = canvasappSession()
-  await ses.clearStorageData()
-  await ses.clearCache()
-  canvasappJobListCache.clear()
-  return { ok: true }
+  canvasappDownloadsBlocked = true
+  try {
+    canvasappDownloads.closeAll()
+    if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
+    if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
+    const ses = canvasappSession()
+    await ses.clearStorageData()
+    await ses.clearCache()
+    canvasappJobListCache.clear()
+    // anything that slipped in while the session was being wiped ends too
+    canvasappDownloads.closeAll()
+    return { ok: true }
+  } finally {
+    canvasappDownloadsBlocked = false
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1754,6 +1796,7 @@ function registerCanvasappGateway() {
   ipcMain.handle(
     'canvasapp:downloadOpen',
     guard((event, args) => {
+      if (canvasappDownloadsBlocked) return { ok: false, code: 'busy', message: 'Đang đăng xuất khỏi canvasapp.io.vn — SanoVids tải video này sau.' }
       watchDownloadOwner(event.sender)
       return canvasappDownloads.open(event.sender.id, args)
     }),

@@ -116,7 +116,9 @@ export function skipLines(scan: Pick<SiteJobScan, 'skipped'>, w: ImportWords, pe
         const labels = [...new Set(items.map((s) => (s.pendingTakeId ? pendingLabel(s.pendingTakeId) : null) ?? 'take đã xoá hoặc ở dự án khác'))]
         out.push({
           code,
-          text: `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${n} job — tạm chưa nhập được (tới khi take đó tìm ra job của nó, tối đa khoảng 14 giờ quanh lần gửi đó); dùng “Chạy lại” trên take đó nếu còn — SanoVids tìm job trước, không trả hai lần.`,
+          // never a time limit, never "không trả hai lần": the job stays held back until that take's own retry finds it
+          // (a deleted take never does) — and whether canvasapp refuses a second request of the same take is not known
+          text: `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${n} job — chưa nhập được chừng nào take đó chưa tìm ra job của nó. Còn take đó thì bấm “Thử lại” trên nó (SanoVids tìm job trước, chỉ gửi lại khi chắc chắn chưa có job); take đã xoá thì job vẫn còn trên ${w.site} — xem và tải ở đó.`,
         })
         break
       }

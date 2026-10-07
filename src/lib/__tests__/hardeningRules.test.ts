@@ -574,18 +574,27 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))")
     // the page that opened a download is watched before it opens: reload / navigation, crash, close end its downloads
     const open = idx("'canvasapp:downloadOpen'")
-    expect(mainSource.slice(open, open + 200).indexOf('watchDownloadOwner(event.sender)')).toBeGreaterThan(-1)
+    expect(mainSource.slice(open, open + 400).indexOf('watchDownloadOwner(event.sender)')).toBeGreaterThan(-1)
     const [ws, we] = blockAt(idx('function watchDownloadOwner(wc)'))
     const watch = mainSource.slice(ws, we)
     expect(watch).toContain("wc.once('destroyed', closeAll)")
     expect(watch).toContain("wc.on('render-process-gone', closeAll)")
-    expect(watch).toContain("wc.on('did-start-navigation'")
-    expect(watch).toContain("typeof details.isMainFrame === 'boolean' ? details.isMainFrame")
-    expect(watch).toContain("typeof details.isSameDocument === 'boolean' ? details.isSameDocument")
-    expect(watch).toContain('if (main && !sameDocument) closeAll()')
-    // logout ends every download first
+    // a navigation that happened (committed), never one main may still cancel (did-start-navigation fires before
+    // will-navigate: a dropped link that opens in the browser would end every download of a page that stays)
+    expect(watch).toContain("wc.on('did-navigate', closeAll)")
+    expect(watch).not.toContain('did-start-navigation')
+    // logout: no download may start from its first line (before anything awaits) until it is done; every download is
+    // ended before the session is wiped and again after (properties, not line positions: the keep-login branch rewrites
+    // this function)
     const [ls, le] = blockAt(idx('async function canvasappLogout()'))
-    expect(mainSource.slice(ls, le).trim().split('\n')[1].trim()).toBe('canvasappDownloads.closeAll()')
+    const logout = mainSource.slice(ls, le)
+    expect(logout.trim().split('\n')[1].trim()).toBe('canvasappDownloadsBlocked = true')
+    const wipe = logout.indexOf('await ses.clearStorageData()')
+    expect(logout.indexOf('canvasappDownloads.closeAll()')).toBeGreaterThan(-1)
+    expect(logout.indexOf('canvasappDownloads.closeAll()')).toBeLessThan(wipe)
+    expect(logout.lastIndexOf('canvasappDownloads.closeAll()')).toBeGreaterThan(wipe)
+    expect(logout).toMatch(/finally \{\s+canvasappDownloadsBlocked = false/)
+    expect(mainSource.slice(open, open + 300)).toMatch(/if \(canvasappDownloadsBlocked\) return \{ ok: false, code: 'busy'/)
     // the sessions use the allowlist, the 'download' lane and the canvasapp partition (no other session, no URL from the page)
     const [cs, ce] = blockAt(idx('const canvasappDownloads = createDownloadSessions('))
     const wiring = mainSource.slice(cs, ce)
@@ -609,6 +618,14 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     const request = mainSource.slice(rs, re)
     expect(request).toContain('const match = matchCanvasappRequest(method, req.path)')
     expect(request).not.toMatch(/route\.binary|arrayBuffer|'download'/)
+    // a cached job list is stamped with when its request LEFT (not when the answer came): a cache hit is never taken
+    // for a newer list than it is (the adapter trusts a read to show what existed 15 s before it was sent)
+    expect(request).toContain('canvasappJobListCache.set(cacheKey, { at: sentAt, result })')
+    expect(request).toMatch(/sentAt = Date\.now\(\)\s+const res = await canvasappSession\(\)\.fetch\(/)
+    expect(request).not.toContain('canvasappJobListCache.set(cacheKey, { at: Date.now()')
+    // a lookup after a lost answer (`fresh`) never gets a cached list older than CANVASAPP_JOBS_FRESH_MS (5 s)
+    expect(request).toContain('Date.now() - hit.at < (req.fresh === true ? CANVASAPP_JOBS_FRESH_MS : CANVASAPP_JOBS_MIN_MS)')
+    expect(mainSource).toContain('const CANVASAPP_JOBS_FRESH_MS = 5_000')
   })
 
   it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {

@@ -14,7 +14,8 @@ export const CANVASAPP_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 export const CANVASAPP_DOWNLOAD_FLUSH_MS = 1000
 export const CANVASAPP_DOWNLOAD_HEADERS_MS = 5 * 60_000
 export const CANVASAPP_DOWNLOAD_IDLE_MS = 60_000
-export const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 30_000
+/** main.cjs: a backstop (reload / navigation / crash / close end a download at once); its end is reported 'network'. */
+export const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 10 * 60_000
 export const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
 export const CANVASAPP_DOWNLOAD_MAX_SESSIONS = 16
 export const CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES = 64 * 1024
@@ -458,6 +459,8 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
   )
   const sessions = new Map<string, Session>()
   const tags = new Map<string, { validator: string; at: number }>()
+  // downloads ended because their page stopped reading (id → owner): the next read says 'network', so the page continues
+  const idled = new Map<string, unknown>()
   const refusal = (code: string, message: string): Refusal => ({ ok: false, code, message })
   const failure = (reason: unknown): Refusal => {
     const f = downloadFailure(reason, lim)
@@ -505,7 +508,18 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
     s.pullTimer = deps.setTimer(() => {
       s.pullTimer = null
       end(s)
+      idled.set(s.id, s.owner)
+      while (idled.size > lim.maxSessions) idled.delete(idled.keys().next().value as string)
     }, lim.pullIdleMs)
+  }
+
+  /** The page's read of a download main ended for not being read: once, a resumable 'network' failure. */
+  function idledRead(owner: unknown, args: unknown): Refusal | null {
+    const a = args as { id?: unknown } | null
+    const id = a && typeof a === 'object' && typeof a.id === 'string' ? a.id : ''
+    if (!idled.has(id) || idled.get(id) !== owner) return null
+    idled.delete(id)
+    return refusal('network', 'Trang không đọc tiếp video quá lâu nên SanoVids đã đóng kết nối — tải tiếp từ chỗ đã nhận.')
   }
 
   function owned(owner: unknown, args: unknown): Session | null {
@@ -665,7 +679,7 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
 
   async function read(owner: unknown, args: unknown): Promise<ReadAnswer> {
     const s = owned(owner, args)
-    if (!s) return failure('closed')
+    if (!s) return idledRead(owner, args) || failure('closed')
     if (!s.pump || s.reading) return refusal('busy', 'Lượt tải video này đang mở hoặc đang được đọc.')
     s.reading = true
     if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
@@ -688,11 +702,13 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
   function close(owner: unknown, args: unknown): { ok: true } {
     const s = owned(owner, args)
     if (s) end(s)
+    else idledRead(owner, args)
     return { ok: true }
   }
 
   function closeAll(owner?: unknown) {
     for (const s of [...sessions.values()]) if (owner === undefined || s.owner === owner) end(s)
+    for (const [id, o] of [...idled]) if (owner === undefined || o === owner) idled.delete(id)
   }
 
   return { open, read, close, closeAll, size: () => sessions.size }

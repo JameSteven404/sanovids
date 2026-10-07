@@ -141,6 +141,8 @@ export function importedFieldsNote(t: ImportInfo): string | null {
 }
 
 const clock = (ms: number) => {
+  // a damaged saved marker (migrate keeps it with at 0): when it was imported is not known
+  if (!(ms > 0)) return '(không rõ)'
   const d = new Date(ms)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}/${p(d.getMonth() + 1)}`

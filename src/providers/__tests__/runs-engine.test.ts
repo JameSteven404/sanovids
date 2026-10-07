@@ -351,7 +351,7 @@ describe('runs engine with a provider', () => {
       const [h3, sd] = useRuns.getState().check(['s1', 's2'])
       expect(h3.ok).toBe(true)
       expect(h3.warnings).toHaveLength(1)
-      expect(h3.warnings[0]).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng trên canvasapp — /)
+      expect(h3.warnings[0]).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit dev\): MiniMax-H3 hiện không khả dụng trên canvasapp — /)
       expect(h3.warnings[0]).toMatch(why)
       expect(sd.warnings).toEqual([])
       expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)

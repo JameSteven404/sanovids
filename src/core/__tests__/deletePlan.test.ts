@@ -39,6 +39,26 @@ describe('checkTakeDelete', () => {
     expect(c.question).toContain('2 video (1 video đã tạo xong)')
   })
 
+  it('asks before deleting a running take whose paid video is still downloading (like "Huỷ"), in the words of its gateway', () => {
+    const running = [
+      { id: 'r1', status: 'processing' as const, videoReady: true, provider: 'canvasapp' },
+      { id: 'r2', status: 'processing' as const, videoReady: false, provider: 'canvasapp' },
+      { id: 'd1', status: 'processing' as const, videoReady: true, provider: 'dev' },
+      { id: 'm1', status: 'processing' as const, videoReady: true, provider: 'mock' },
+    ]
+    const c = checkTakeDelete(['r1'], running, [], { label: 'S01·T2' })
+    expect(c.paidPending).toBe(1)
+    expect(c.question).toContain('Xoá vĩnh viễn S01·T2?')
+    expect(c.question).toContain('S01·T2 đã tạo xong trên canvasapp và đã trừ credit')
+    expect(c.question).toContain('vẫn tải được trên canvasapp.io.vn')
+    const dev = checkTakeDelete(['d1'], running, []).question!
+    expect(dev).toContain('credit dev')
+    expect(dev).not.toContain('canvasapp.io.vn')
+    // still being made (nothing paid yet known), or the old demo: nothing to ask
+    expect(checkTakeDelete(['r2', 'm1'], running, []).question).toBeNull()
+    expect(checkTakeDelete(['r1'], running, [], { confirm: 'usedOnly' }).question).toBeNull()
+  })
+
   it("'usedOnly' asks only for @video users; scenes deleted together do not count", () => {
     expect(checkTakeDelete(['t3'], takes, scenes, { confirm: 'usedOnly', ignoreScenes: new Set(['s3']) }).question).toBeNull()
     expect(checkTakeDelete(['t3'], takes, scenes, { confirm: 'usedOnly' }).question).toContain('S03')

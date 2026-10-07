@@ -36,21 +36,24 @@
 //     (connection broke, page closed / reloaded), the job may exist and be billed: it is looked for in the bridge
 //     project's job list (findJob: same client_request_id when the list carries it, else the one new job on the
 //     canvas node the POST named — never one another take's unanswered POST on that node may have made: next to
-//     such a take the list is read right before posting, so their jobs can be told apart; unreadable → not sent)
+//     such a take the list is read right before posting, once it can show that take's job (till then back to the
+//     queue: RIVAL_SETTLING_TEXT), so their jobs can be told apart; unreadable → not sent)
 //     — by recover() after a reload, and before any new POST of that key.
 //   - "Not in the list" proves nothing by itself: canvasapp's job list may be cut to its newest jobs and whether it
 //     dedupes client_request_id is unknown (docs/GATEWAY-CANVASAPP.md, VERIFY). It counts as "never created" only
 //     when the list provably reaches back to the request (listCovers: a job that had already ended in a read made
 //     before the POST — `sent[key].anchors` — is still listed; right after the POST, a job older than it; or an empty
 //     list of a project with no known job). Otherwise findJob says 'unlisted' and that key is never posted again.
-//   - POST answered with a network error / 5xx / no job id → wait, look for the job (2 reads, 15 s apart); provably
+//   - POST answered with a network error / 5xx / no job id → wait, look for the job (2 `fresh` reads — never the
+//     gateway's cached list —, 15 s apart); provably
 //     not there → post again ONCE with the same body and key; still nothing, or not provable → error flagged
 //     `uncertain` (the engine then shows "không rõ đã trả chưa" and never resubmits that take under a new key by
 //     itself). An explicit retry of that take looks again first; not provable then (or its earlier POST went to
 //     another bridge project: another account, a bridge deleted since) → `uncertain` + `unverifiable`: the engine
 //     says it may have been billed and that only a NEW take ("Tạo lại") can run.
 //   - A key whose ledger record was trimmed (MAX_SENT_RECORDS / MAX_JOB_RECORDS / MAX_IMPORTED_RECORDS) is
-//     remembered in `dropped`: it is never posted again either (nothing left to check it against).
+//     remembered in `dropped`: it is never posted again either (nothing left to check it against) — nor is a retry of
+//     an "unknown" take that has no record here at all (opts.retryOfUnknown: another computer, cleared storage).
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
 //   - `imported[key]`: a job made on canvasapp's own page that became the take `key` ("Nhập job": scanSiteJobs →
 //     siteJobPrompts → claimSiteJobs, rules in siteJobs.ts). Such a key is never posted either; the import itself
@@ -79,6 +82,7 @@ import {
   classifySiteJobs,
   createdTime,
   hintsFor,
+  hintsSuperseded,
   inPostWindow,
   MAX_IMPORT_BATCH,
   normalizeImportPrompt,
@@ -190,6 +194,13 @@ const CANVAS_NOT_SAVED_AFTER_LOST_TEXT =
  */
 export const CANVAS_FULL_TEXT = 'Canvas cầu nối trên canvasapp đang kín chỗ bởi các cảnh còn đang chạy — chờ một video xong rồi tự gửi (chưa gửi, không bị trừ credit).'
 /**
+ * Another take's POST on this node lost its answer less than SETTLE_MS (+ the gateway's list cache) ago: the list read
+ * right before this POST could not yet show whether that POST made a job, and the two takes could never tell their jobs
+ * apart. The take goes back to the queue (code 'deferred') and is sent a little later; nothing was sent.
+ */
+export const RIVAL_SETTLING_TEXT =
+  'Một take khác của cảnh này vừa gửi mà chưa rõ canvasapp đã nhận chưa — chờ vài giây để phân biệt được job của hai take rồi tự gửi (chưa gửi, không bị trừ credit).'
+/**
  * The bridge project was found by name (after a logout, …) and its canvas could not be read: without it a PUT could take
  * a running job's node off, so none is sent. Followed by the cause; prefixed with CANVAS_NOT_SAVED_TEXT in the error.
  */
@@ -259,6 +270,11 @@ export interface CanvasappProviderDeps {
    * only trusted to show what existed this long before it was sent (SentRecord.beforeAt).
    */
   gatewayListCacheMs?: number
+  /**
+   * ...and for a `fresh` read (the lookups after a lost answer, findJob): main.cjs CANVASAPP_JOBS_FRESH_MS (5 s, the
+   * default here), the dev bridge DEV_JOB_LIST_FRESH_MS.
+   */
+  gatewayFreshListMs?: number
   /** Media-store lookup (lib/imageStore getBlob). */
   getBlob: (imageId: string) => Promise<Blob | null>
   storage?: KeyValueStorage
@@ -457,6 +473,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const pollMs = Math.max(minPollMs, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
   const listCacheMs = Math.max(0, Math.min(minPollMs, deps.listCacheMs ?? minPollMs))
   const gatewayListCacheMs = Math.max(0, deps.gatewayListCacheMs ?? MIN_POLL_MS)
+  const gatewayFreshListMs = Math.min(gatewayListCacheMs, Math.max(0, deps.gatewayFreshListMs ?? 5_000))
 
   let state: GatewayState = load()
   let ledger: JobLedger = loadLedger()
@@ -490,6 +507,12 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   let postsSent = 0
   /** When the bridge canvas of a project was last read back (GET /api/projects/{id}). */
   const readBack = new Map<string, number>()
+  /**
+   * Per bridge project: nodes a job still runs on that a read-back showed NOT on the canvas (deleted on the site, or a
+   * job stuck in 'queued'…): nothing to keep, never a reason to read the canvas again (nor to fail a take when it cannot
+   * be read). This session's: forgotten with it (reset).
+   */
+  const absentNodes = new Map<string, Set<string>>()
   /** A job of the ledger that a job-list read does not show (yet): still treated as running this long after it was made. */
   const unlistedGraceMs = (MAX_MISSES + 1) * pollMs
   const misses = new Map<string, number>()
@@ -558,12 +581,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   /**
    * Read the job list of a bridge project (poll, lookup, room check, the read before a POST, the scan) and remember it.
    * `shows` is stamped from when the request was SENT, less how long the gateway may answer from its own cache.
+   * `fresh` (the lookups after a lost answer): never the gateway's cached list of up to 15 s ago (only one of its fresh
+   * floor) — the bet that a POST's job is listed within SETTLE_MS, or never, is decided on lists that recent.
    */
-  async function readJobs(projectId: string): Promise<CanvasJob[]> {
+  async function readJobs(projectId: string, fresh = false): Promise<CanvasJob[]> {
     const sent = now()
     const posts = postsSent
-    const jobs = await api.listVideoJobs(projectId)
-    const read: ListRead = { at: now(), shows: sent - gatewayListCacheMs, posts, jobs }
+    const jobs = await (fresh ? api.listVideoJobs(projectId, { fresh: true }) : api.listVideoJobs(projectId))
+    const read: ListRead = { at: now(), shows: sent - (fresh ? gatewayFreshListMs : gatewayListCacheMs), posts, jobs }
     lists.set(projectId, read)
     lastLists.set(projectId, read)
     return jobs
@@ -718,12 +743,17 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    */
   async function keepRunningNodes(projectId: string) {
     const held = new Set(Object.values(state.entries).map(entryNodeId))
+    const absent = absentNodes.get(projectId)
     const list = lastLists.get(projectId)
-    const unheld = [...runningIn(projectId, list)].filter((n) => !held.has(n))
+    const unheld = [...runningIn(projectId, list)].filter((n) => !held.has(n) && !absent?.has(n))
     if (!unheld.length) return
     const read = readBack.get(projectId)
     if (read !== undefined && read >= (list?.at ?? -Infinity)) return
-    const back = Object.values(await canvasEntries(projectId)).filter((e) => unheld.includes(entryNodeId(e)))
+    const all = Object.values(await canvasEntries(projectId))
+    const back = all.filter((e) => unheld.includes(entryNodeId(e)))
+    const onCanvas = new Set(all.map(entryNodeId))
+    const missing = unheld.filter((n) => !onCanvas.has(n))
+    if (missing.length) absentNodes.set(projectId, new Set([...(absent ?? []), ...missing]))
     if (!back.length) return
     state = { ...state, entries: { ...Object.fromEntries(back.map((e) => [e.sceneId, e])), ...state.entries } }
     save()
@@ -1003,7 +1033,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    */
   async function findJob(req: JobRequest, rec: SentRecord): Promise<{ remoteId: string } | 'none' | 'unlisted' | 'ambiguous'> {
     lists.delete(rec.projectId)
-    const jobs = await readJobs(rec.projectId)
+    const jobs = await readJobs(rec.projectId, true)
     const remote = (j: CanvasJob) => ({ remoteId: encodeRemoteId(rec.projectId, j.job_id) })
     if (jobs.some((j) => typeof j.client_request_id === 'string')) {
       // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
@@ -1192,6 +1222,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // key every step below uses: the entry, the canvas, the job body. An entry read back from canvasapp's canvas for
     // that same node id (after a logout…) is replaced by it (withEntry), never doubled.
     const nodeKey = nodeKeyFor(req)
+    // Next to another take's unanswered POST on this node, the list read right before this POST must show what existed
+    // SETTLE_MS after it (findJob's rule between two takes in doubt: otherwise each could own the other's job, for good).
+    // Too early for that → back to the queue, nothing sent (a rival time in the future — a damaged record — never holds
+    // a take back).
+    const rivalAt = Math.max(-Infinity, ...rivalsOf(req.key, projectId, canvasNodeId(nodeKey)).map((r) => r.at))
+    const needShows = rivalAt + SETTLE_MS
+    const settling = needShows + gatewayListCacheMs - now()
+    if (settling > 0 && settling <= SETTLE_MS + gatewayListCacheMs) throw new CanvasappError('deferred', RIVAL_SETTLING_TEXT)
     // The bridge canvas holds one video node per entry. A node whose job may still run stays — whether canvasapp
     // cancels or loses a job whose node leaves the canvas is not known — so only the other entries may be left out to
     // make room. Which nodes run is only looked up when something has to be left out.
@@ -1263,10 +1301,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // canvasapp's own page since the last read ("Tạo video" on a bridge node, not imported yet). Next to another take
     // whose POST on this node has no answer yet it MUST be read — unreadable → not sent: posting now could leave two
     // takes that can never tell their jobs apart. Otherwise unreadable → sent with the last read as `before` (a site
-    // job made since then may leave a lost answer "không rõ", never paid twice). A read that the gateway would answer
-    // from its own cache anyway (younger than gatewayListCacheMs, no POST since) is used as it is.
+    // job made since then may leave a lost answer "không rõ", never re-posted for it). A read that the gateway would answer
+    // from its own cache anyway (younger than gatewayListCacheMs, no POST since) is used as it is — unless it is older than
+    // what a take in doubt next to it needs (needShows).
     const last = lastLists.get(projectId)
-    if (!last || last.posts !== postsSent || now() - last.at >= gatewayListCacheMs) {
+    if (!last || last.posts !== postsSent || now() - last.at >= gatewayListCacheMs || last.shows < needShows) {
       checkCancelled()
       lists.delete(projectId)
       try {
@@ -1429,6 +1468,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       lists.clear()
       lastLists.clear()
       readBack.clear()
+      absentNodes.clear()
       misses.clear()
       // what the account could run is not known any more (logout): back to 'none'; a read in flight is ignored
       profilesEpoch++
@@ -1477,7 +1517,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         }
         const byUpload = new Map(Object.entries(state.uploads).map(([imageId, uploadId]) => [uploadId, imageId]))
         const imageOfUpload = (uploadId: string) => byUpload.get(uploadId) ?? null
-        for (const c of found.candidates) c.hints = hintsFor(c.nodeId, canvas, state.entries, imageOfUpload)
+        // ...only for the newest run of its node: a node rewritten since the job (a later job on it, a POST sent after
+        // the job was listed) says nothing about how the job was made
+        for (const c of found.candidates) c.hints = hintsSuperseded(c, jobs, ledger.sent, projectId) ? [] : hintsFor(c.nodeId, canvas, state.entries, imageOfUpload)
       }
       return { projectId, ...found }
     },

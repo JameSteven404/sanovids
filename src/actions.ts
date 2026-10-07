@@ -14,7 +14,7 @@ import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
-import type { AssetKind, XY } from './core/types'
+import type { AssetKind, Take, XY } from './core/types'
 import {
   prepareFolderAccess,
   prepareSaveAs,
@@ -384,7 +384,7 @@ export function deleteSelection() {
   const savePairs = folderLinks.filter((l) => l.kind === 'save' && folderById.get(l.folderId)?.takes?.includes(l.from)).map((l) => ({ folderId: l.folderId, takeId: l.from }))
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
-    const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
+    const check = checkTakeDelete(takeIds, deleteFacts(takes), project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
     if (check.question && !window.confirm(check.question)) return
   }
   // Decided now, once (the question below is about it): what happens to the cut wires' files.
@@ -455,6 +455,14 @@ export interface DeleteTakesOptions {
  * browser's quota), drops them from the selection and says so in a toast.
  * Returns how many takes were deleted, or null when the user cancelled the question.
  */
+/**
+ * Takes as checkTakeDelete sees them: a running take whose video is already made and paid (remoteVideoReady:
+ * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video.
+ */
+function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; provider: string }[] {
+  return takes.map((t) => ({ id: t.id, status: t.status, videoReady: t.status === 'processing' && remoteVideoReady(t.id), provider: providerOf(t) }))
+}
+
 export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
   const project = useProject.getState().project
   const all = useRuns.getState().takes
@@ -465,7 +473,7 @@ export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions
     toast(trashBusyDeleteText(busy.length === 1 ? takeLabel(busy[0]) : `${busy.length} video`), { tone: 'warning' })
     takeIds = takeIds.filter((id) => !busy.includes(id))
   }
-  const check = checkTakeDelete(takeIds, all, project.scenes, {
+  const check = checkTakeDelete(takeIds, deleteFacts(all), project.scenes, {
     confirm: opts.confirm ?? true,
     ignoreScenes: opts.ignoreScenes,
     label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
@@ -580,9 +588,9 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const ok = window.confirm(
     dev
       ? `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp giả lập (chế độ Phát triển) hay chưa.\n\n` +
-          'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
+          'SanoVids sẽ tìm job đó trên máy chủ giả lập trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Muốn xem trước: Bảng phát triển › Job & đơn nạp / Nhật ký.\n\nGửi lại?'
       : `${takeLabel(takeId)}: không rõ lần gửi trước đã tới canvasapp hay chưa.\n\n` +
-          'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi không thấy. Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
+          'SanoVids sẽ tìm job đó trên canvasapp trước và chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có job; không chắc thì không gửi (take chuyển sang “Tạo lại”). Chắc ăn nhất: mở canvasapp.io.vn, xem phiên “SanoVids bridge” — nếu job đã có ở đó thì bấm Huỷ và tải video trên canvasapp.\n\nGửi lại?',
   )
   if (!ok) return
   const res = useRuns.getState().retry(takeId)

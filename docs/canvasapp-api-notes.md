@@ -170,7 +170,8 @@ carry the validator If-Range named (a server ignoring If-Range could send the re
 resume (`bad-range` → the page starts over once). A `Content-Encoding` body has no usable length or offsets: no length
 check, no resume. Limits: pieces ≤ 4 MiB, 60 s without a byte, 5 min until the headers, 60 min per connection
 (`too-slow`: continued on a new connection when it can resume, else the take fails at once — paid, where to get it),
-30 s without a read from the page, 16 downloads open or waiting, one slot of the 'download' lane (2) per connection
+10 min without a read from the page (a backstop: reload / navigation / crash / close end it at once; reported
+`network`, so the page continues from what it has), 16 downloads open or waiting, one slot of the 'download' lane (2) per connection
 from open to end. `download-token` is not used (still refused by the allowlist).
 VERIFY on the live site: Content-Length, Accept-Ranges, ETag / Last-Modified, compression, redirects of `/stream`.
 

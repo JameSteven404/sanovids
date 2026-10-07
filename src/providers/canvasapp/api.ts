@@ -17,6 +17,12 @@ export interface TransportRequest {
   form?: { field: string; filename: string; contentType: string; bytes: Uint8Array }
   /** Return the body as bytes (video stream). */
   binary?: boolean
+  /**
+   * GET /api/video-jobs only: an answer read now, not the gateway's cached one (main / the dev bridge reuse a cached list
+   * for such a read only while it is younger than their fresh floor, CANVASAPP_JOBS_FRESH_MS). For the lookups after a
+   * lost answer: whether the job exists must not be decided on a list older than the bet it serves.
+   */
+  fresh?: boolean
 }
 
 export interface TransportResponse {
@@ -476,6 +482,9 @@ function asArray<T>(raw: unknown, key: string): T[] {
   throw new CanvasappError('bad-response', CODE_TEXT['bad-response'])
 }
 
+/** Content types of a /stream answer that cannot be the video: a page, JSON / XML data, a script, a form. */
+const NOT_A_VIDEO_TYPE = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)$)|\+(json|xml)$/i
+
 export function createCanvasappApi(transport: Transport) {
   async function call(req: TransportRequest): Promise<TransportResponse> {
     let res: TransportResponse
@@ -532,8 +541,11 @@ export function createCanvasappApi(transport: Transport) {
     },
 
     createVideoJob: async (body: VideoJobBody) => json<unknown>({ method: 'POST', path: '/api/video-jobs', json: body }),
-    listVideoJobs: async (projectId: string) =>
-      asArray<CanvasJob>(await json<unknown>({ method: 'GET', path: `/api/video-jobs?project_id=${enc(safeId(projectId, 'phiên'))}` }), 'jobs'),
+    listVideoJobs: async (projectId: string, opts: { fresh?: boolean } = {}) =>
+      asArray<CanvasJob>(
+        await json<unknown>({ method: 'GET', path: `/api/video-jobs?project_id=${enc(safeId(projectId, 'phiên'))}`, ...(opts.fresh ? { fresh: true } : {}) }),
+        'jobs',
+      ),
     jobPrompt: async (jobId: string) => (await json<{ prompt?: string }>({ method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/prompt` }))?.prompt ?? '',
     streamPath: (jobId: string) => `/api/video-jobs/${safeId(jobId, 'job')}/stream`,
     /**
@@ -562,6 +574,11 @@ export function createCanvasappApi(transport: Transport) {
       }
       if (!video?.size) throw new CanvasappError('bad-response', 'canvasapp.io.vn trả về video rỗng.')
       const type = (contentType || '').split(';')[0].trim() || 'video/mp4'
+      // A page or a message, not a video (a login page an https redirect led to, a JSON "not ready"…): never kept as
+      // the take's video — 'bad-response' goes through the engine's download retries (the take stays at 99 %).
+      if (NOT_A_VIDEO_TYPE.test(type)) {
+        throw new CanvasappError('bad-response', `canvasapp.io.vn trả về ${type.slice(0, 60)} thay cho video (trang đăng nhập hoặc thông báo?) — chưa nhận được video, SanoVids sẽ thử tải lại.`)
+      }
       return new Blob([video], { type: type.startsWith('video/') ? type : 'video/mp4' })
     },
     deleteJob: async (jobId: string) => {

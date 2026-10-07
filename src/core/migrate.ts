@@ -374,7 +374,9 @@ export function migrateTake(raw: unknown): Take {
     if (Array.isArray(t.imageKeysSnapshot) && t.imageKeysSnapshot.every((k) => typeof k === 'string')) out.imageKeysSnapshot = [...t.imageKeysSnapshot]
     else delete out.imageKeysSnapshot
   }
-  const imported = takeImportFrom(t.imported)
+  // A damaged marker never turns an imported take's placeholders into facts: everything it may not know stays "?"
+  // (cost "—", "Khôi phục prompt" blocked) — only a missing one means "not imported".
+  const imported = t.imported === undefined || t.imported === null ? null : (takeImportFrom(t.imported) ?? damagedImport())
   if (imported) out.imported = imported
   else delete out.imported
   return parkForeignTake(out)
@@ -384,12 +386,16 @@ export function migrateTake(raw: unknown): Take {
 export const IMPORTED_FIELDS: readonly ImportedField[] = ['mode', 'resolution', 'duration', 'ratio', 'prompt', 'refs']
 const MAX_JOB_NAME = 200
 
+/** The marker of an imported take whose saved one is unreadable: nothing it may not know is taken as known. */
+const damagedImport = (): TakeImport => ({ at: 0, jobName: null, unknown: [...IMPORTED_FIELDS], inferred: [] })
+
 /** The fields of `v` that are ImportedField values, each once, in IMPORTED_FIELDS order. */
 const importedFields = (v: unknown): ImportedField[] => (Array.isArray(v) ? IMPORTED_FIELDS.filter((f) => v.includes(f)) : [])
 
 /**
  * Take.imported as saved (or from a file): kept only as an object with a finite `at`; `jobName` a string ≤ 200 chars
- * (else null); `unknown` / `inferred` only ImportedField values (a field in both counts as unknown). Null = drop it.
+ * (else null); `unknown` / `inferred` only ImportedField values (a field in both counts as unknown). Null = unreadable
+ * (migrateTake then keeps a marker with every field unknown, never none).
  */
 export function takeImportFrom(raw: unknown): TakeImport | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null

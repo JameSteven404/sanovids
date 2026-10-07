@@ -108,8 +108,14 @@ export const MAX_STALLED_RESUMES = 2
  * new try, keeping what came; after the last one it fails (the engine then starts again from 0 later).
  */
 export const RESUME_RETRY_MS = [2_000, 5_000, 10_000, 20_000, 30_000]
-/** Opens of one download in all (resumes, pieces of a 206, one restart): a server that answers in crumbs is given up. */
+/**
+ * Opens of one download in a row that brought no new byte (resumes, pieces of a 206, one restart): then it is given up.
+ * An open that brought bytes starts the count again — a connection cut every few MB still finishes, never dropping
+ * what came.
+ */
 export const MAX_DOWNLOAD_OPENS = 32
+/** ...and opens in all, whatever each brought: a server that answers in crumbs is given up, never an endless loop. */
+export const MAX_DOWNLOAD_OPENS_TOTAL = 1024
 /** onProgress at most this often. */
 export const DOWNLOAD_PROGRESS_MS = 250
 
@@ -198,6 +204,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
       let stalled = 0
       let reopenFailures = 0
       let opens = 0
+      let fruitless = 0
       let lastReport = -Infinity
       const report = (force = false) => {
         if (!onProgress) return
@@ -220,7 +227,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
       }
 
       for (;;) {
-        if (++opens > MAX_DOWNLOAD_OPENS) throw new CanvasappError('network', DOWNLOAD_SHORT_TEXT)
+        if (++opens > MAX_DOWNLOAD_OPENS_TOTAL || ++fruitless > MAX_DOWNLOAD_OPENS) throw new CanvasappError('network', DOWNLOAD_SHORT_TEXT)
         const id = makeId()
         current = id
         const opened = await guarded(b.downloadOpen({ id, path: req.path, from }))
@@ -300,6 +307,7 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
           received += bytes.byteLength
           stalled = 0
           reopenFailures = 0
+          fruitless = 0
           report()
         }
         if (more) continue

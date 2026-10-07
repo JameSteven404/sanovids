@@ -53,6 +53,8 @@ import { devWording } from './wording'
  * 3 s and the answer is stamped when it arrives (after the simulated latency): 2 s, so no poll is served stale.
  */
 export const DEV_JOB_LIST_CACHE_MS = 2_000
+/** main.cjs CANVASAPP_JOBS_FRESH_MS: a `fresh` job-list read reuses a cached answer only this young. */
+export const DEV_JOB_LIST_FRESH_MS = 5_000
 /** The checkout window closes by itself after this long (main.cjs CHECKOUT_TIMEOUT_MS). */
 export const DEV_CHECKOUT_TIMEOUT_MS = 15 * 60_000
 
@@ -225,7 +227,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     const cacheKey = method === 'GET' && match.pathname === '/api/video-jobs' ? match.query.toString() : null
     if (cacheKey !== null && cacheMs > 0) {
       const hit = listCache.get(cacheKey)
-      if (hit && now() - hit.at < cacheMs) {
+      if (hit && now() - hit.at < (req.fresh === true ? Math.min(cacheMs, DEV_JOB_LIST_FRESH_MS) : cacheMs)) {
         logGateway(req, hit.result, 'gateway-cache')
         return clone(hit.result)
       }
@@ -236,10 +238,13 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
       listCache.clear()
     }
     const epoch = jobsEpoch
+    // like electron/main.cjs: a cached job list is stamped with when its request was sent (the simulated latency comes
+    // after), never when the answer arrived — a cache hit is never newer than the list it holds
+    const sentAt = now()
     try {
       const res = await server().request(out)
       const copy: BridgeResponse = res.ok && res.json !== undefined ? { ...res, json: clone(res.json) } : res
-      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: now(), result: clone(copy) })
+      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: sentAt, result: clone(copy) })
       return copy
     } catch (e) {
       return gatewayError('network', `Không kết nối được tới canvasapp giả lập (${e instanceof Error ? e.message : String(e)}).`)

@@ -305,7 +305,7 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
   {
     id: 'profiles-500',
     label: 'Cấu hình model lỗi 500 (giữ)',
-    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): inspector và hộp Chạy chỉ cảnh báo “có thể bị từ chối”, take MiniMax-H3 bị từ chối khi gửi (không tốn credit).',
+    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): inspector và hộp Chạy chỉ cảnh báo “có thể bị từ chối”, take MiniMax-H3 bị từ chối khi gửi (không tốn credit dev).',
     rule: { endpoint: 'video-profiles', fault: { kind: 'response', status: 500, json: { detail: 'boom' } }, sticky: true },
   },
   {

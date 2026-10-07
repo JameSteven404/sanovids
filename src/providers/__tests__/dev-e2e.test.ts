@@ -840,7 +840,7 @@ describe('dev mode e2e: what the simulated site runs now (inspector, run check, 
     expect(providerLimits('dev')).toMatchObject({ source: 'fallback', firm: false })
     const [c] = check('s3')
     expect(c.ok).toBe(true)
-    expect(c.warnings.join(' ')).toMatch(/Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng trên canvasapp/)
+    expect(c.warnings.join(' ')).toMatch(/Có thể bị từ chối khi gửi \(không tốn credit dev\): MiniMax-H3 hiện không khả dụng trên canvasapp/)
     const [t] = enqueue('s3')
     await run(1000)
     expect(take(t.id).status).toBe('failed')

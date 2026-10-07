@@ -22,7 +22,7 @@ import {
 } from '../settingsLimits'
 import { profileIssues } from '../../../providers/canvasapp/mapping'
 import type { VideoProfile } from '../../../providers/canvasapp/api'
-import { limitsSite } from '../../../providers/limits'
+import { limitsSite, settingsRunWarning } from '../../../providers/limits'
 import { NO_LIMITS, type SettingsLimits } from '../../../providers/types'
 import {
   imageOptsFor,
@@ -350,6 +350,17 @@ describe('settings fields follow what the gateway runs now (settingsLimits.ts)',
       expect(optionTag(lim, site)).toBe(' · có thể bị từ chối')
       expect(optionTitle('Model', 'MiniMax-H3', lim, site)).toMatch(/có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng/)
     }
+  })
+
+  it('development mode words its credits "credit dev" (option tooltips, the Run dialog warning)', () => {
+    const limits = limitsOf([], 'fallback')
+    const lim = optionLimit(limits, [H3], 'model', 'minimax_h3')
+    expect(limitsSite('dev').credit).toBe('credit dev')
+    expect(limitsSite('canvasapp').credit).toBe('credit')
+    expect(optionTitle('Model', 'MiniMax-H3', lim, limitsSite('dev'))).toContain('(không tốn credit dev)')
+    const settings: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+    expect(settingsRunWarning(limits, settings, 'dev')).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit dev\): /)
+    expect(settingsRunWarning(limits, settings, 'canvasapp')).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit\): /)
   })
 
   it('a refused segment is shown but not pickable; the tag names the site (a native select shows no tooltip)', () => {

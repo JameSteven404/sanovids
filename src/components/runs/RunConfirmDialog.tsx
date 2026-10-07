@@ -248,7 +248,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
               <LoaderCircle size={11} className="rq-spin" /> Đang đọc cấu hình model từ {site.short}…
             </span>
           ) : limits.source === 'fallback' ? (
-            <span className="badge warn" title={`Chưa đọc được cấu hình model từ ${site.full}: đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá): cảnh có cảnh báo có thể bị từ chối khi gửi (không tốn credit). SanoVids đọc lại trước khi gửi (sau 1 phút nếu chính một lần gửi vừa đọc hỏng) hoặc khi mở lại hộp Chạy (sau 1 phút)`}>
+            <span className="badge warn" title={`Chưa đọc được cấu hình model từ ${site.full}: đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá): cảnh có cảnh báo có thể bị từ chối khi gửi (không tốn ${site.credit}). SanoVids đọc lại trước khi gửi (sau 1 phút nếu chính một lần gửi vừa đọc hỏng) hoặc khi mở lại hộp Chạy (sau 1 phút)`}>
               <TriangleAlert size={11} /> Chưa đọc được cấu hình model
             </span>
           ) : null}

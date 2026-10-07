@@ -139,9 +139,14 @@ không phải UUID. Canvas tối thiểu giờ dựng **đúng từng khoá** nh
   tự `order`) — trong đó có node của các job còn chạy, nên `PUT` sau đó không gỡ chúng. Phiên đã nhớ cũng được đọc lại
   khi lần đọc danh sách job gần nhất (hoặc sổ job) cho thấy một job còn chạy trên một node mà danh sách cảnh không có (vd.
   job tạo từ máy khác cùng tài khoản): node đó được giữ; không có node như vậy (bình thường) → không thêm yêu cầu nào.
+  Node như vậy mà lần đọc lại cho thấy **không** có trên canvas (đã xoá trên trang, job kẹt ở `queued`…) được nhớ trong
+  phiên (`absentNodes`): không đọc lại canvas vì nó nữa, và canvas không đọc được cũng không làm hỏng take vì nó.
   Node đọc lại được nhớ theo chính id của nó (máy này không biết nó thuộc cảnh nào) và cũ hơn mọi cảnh gửi từ máy này
   (bị bỏ trước tiên khi cần chỗ, nếu job của nó đã xong); chạy lại đúng cảnh đó (của đúng dự án, hoặc node cũ theo id cảnh) thì node của
-  cảnh thay chỗ, không bao giờ thành hai node trùng id. Node khác (`result`, node làm bằng tay trên canvasapp) không được giữ. Không đọc được (mạng,
+  cảnh thay chỗ, không bao giờ thành hai node trùng id. Mục của node đọc lại có khoá `adopted:<id node>` (không bao giờ
+  trùng khoá `node:` của một cảnh) và trường `nodeId`; quay về một bản trước 0.6.0 (không biết `nodeId`) thì bản đó suy ra
+  id node khác từ khoá này — các node đọc lại bị mất ở lần `PUT` kế của bản cũ (kể cả node của job còn chạy, nếu có);
+  node của các cảnh gửi từ máy này không ảnh hưởng. Node khác (`result`, node làm bằng tay trên canvasapp) không được giữ. Không đọc được (mạng,
   5xx, dạng lạ) → **không** `PUT`, không gửi job (phiên tìm theo tên: chưa nhớ id phiên): take báo "Lưu canvas cầu nối …
   không thành công — chưa gửi yêu cầu tạo video, không bị trừ credit. Không đọc được canvas cầu nối hiện có…" (401 → lời
   nhắc đăng nhập như cũ); lần gửi sau đọc lại. Canvas đọc lại luôn là của tài khoản **đang** đăng nhập, nên ảnh / node
@@ -248,9 +253,14 @@ thể sở hữu job mà lần đọc trước `POST` của take đang tìm chư
 (`SETTLE_MS` = tổng hai lần đợi) sau `POST` kia — job của một `POST` có trong danh sách trong 30 s hoặc không bao giờ,
 đúng như điều adapter đã dựa vào khi gửi lại. `beforeAt` vì thế là lúc **gửi** lần đọc đó trừ đi thời gian cổng có thể
 trả danh sách từ cache của nó (main: 15 s; giả lập: 2 s — `gatewayListCacheMs`), không phải lúc nhận câu trả lời: một
-câu trả lời cache cũ không bao giờ được coi là mới hơn thực tế. Không chắc (ví dụ hai bản ghi của bản trước 0.6.0, không ghi giờ đọc) → **không take nào nhận** job đó,
-cả hai "không rõ", không gửi lại — kiểm tra trên canvasapp.io.vn. Lần gửi lại (sau 2 lần đọc không thấy) ghi lại giờ
-`at` của chính nó.
+câu trả lời cache cũ không bao giờ được coi là mới hơn thực tế — điều đó đúng vì cache danh sách job của main và của
+cầu nối giả lập cũng đóng dấu lúc **gửi** yêu cầu đọc (không phải lúc nhận: một câu trả lời chậm 5 s mà đóng dấu lúc
+nhận sẽ được dùng lại như thể mới hơn 5 s). Take gửi cạnh một take còn chưa rõ mà `POST` của take kia chưa đủ 30 s +
+thời gian cache của cổng (lần đọc trước `POST` chưa thể thấy job của nó) → quay lại hàng đợi (`deferred`,
+`RIVAL_SETTLING_TEXT`, chưa gửi gì, không bị trừ credit) và tự gửi sau một chu kỳ poll; lần đọc mà cổng còn trả từ cache
+nhưng cũ hơn mốc đó không bao giờ được dùng lại — nên hai take như vậy luôn phân biệt được job của nhau. Không chắc (ví dụ
+hai bản ghi của bản trước 0.6.0, không ghi giờ đọc) → **không take nào nhận** job đó, cả hai "không rõ", không gửi lại —
+kiểm tra trên canvasapp.io.vn. Lần gửi lại (sau 2 lần đọc không thấy) ghi lại giờ `at` của chính nó.
 
 **Cấu hình model trong inspector và hộp Chạy** — cùng một luật với bước 1 (`mapping.profileIssues`, không viết lại
 luật), trên cùng bộ nhớ đệm `/api/video-profiles` của adapter (`settingsLimits()`; tín hiệu `useProviderLimits` trong
@@ -273,7 +283,9 @@ bước đọc; (3) `reset()` (đăng xuất) bỏ mọi câu trả lời đến
 nó lúc render). `retry(takeId)` của take "không rõ" không đi qua `check()`.
 
 **Theo dõi (poll)** — mỗi nhà cung cấp một lời gọi: canvasapp gom mọi take đang chạy thành **1** `GET /api/video-jobs?project_id=…`,
-không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main cache 15 s, bỏ cache mỗi lần `POST /api/video-jobs`).
+không sớm hơn 20 s (engine ép tối thiểu 15 s; adapter cache 15 s; main cache 15 s, bỏ cache mỗi lần `POST /api/video-jobs`;
+lần tìm job sau một câu trả lời bị mất đọc `fresh`: main chỉ dùng lại danh sách đã gửi đọc chưa quá 5 s —
+`CANVASAPP_JOBS_FRESH_MS`, giả lập `DEV_JOB_LIST_FRESH_MS`).
 Lỗi khi poll (mạng, 401, 429…) **không** làm hỏng take: engine giữ take đang chạy, nghỉ 1 → 2 → 4 → … tối đa 10 phút, và
 đặt `useRuns.providerIssue` để UI báo. Sau 401, đăng nhập lại (đọc được số dư) → hết nghỉ, poll lại ở lượt kế.
 
@@ -288,8 +300,10 @@ Mỗi kết nối giữ **một** chỗ của làn tải video (2 chỗ) từ l�
 Content-Length → từ chối ngay, không đọc; vượt khi đang đọc → dừng); 60 giây không nhận thêm byte nào → dừng; 5 phút chờ
 phần đầu câu trả lời; **60 phút cho một kết nối** (`too-slow`: tải tiếp được → nối tiếp trên kết nối mới, chỗ trong làn
 nhường cho lượt đang chờ; không tải tiếp được → take `failed` ngay với lời nhắn đã trừ credit, không tải lại từ đầu 5 lần);
-trang ngừng đọc 30 giây (tải lại / treo) → dừng. Trang tải lại / chuyển trang / renderer sập / cửa sổ đóng / đăng xuất →
-mọi lượt tải của trang đó dừng ngay, trả chỗ trong làn. Mã lượt tải (UUID) do trang chọn nên huỷ được cả khi lượt tải
+trang ngừng đọc 10 phút (bị chặn bởi một hộp hỏi, treo — chỉ là lưới an toàn) → main đóng kết nối, lần đọc sau báo lỗi
+**mạng** (tải tiếp được từ phần đã nhận), không bao giờ "đã kết thúc". Trang tải lại / chuyển trang (đã chuyển thật:
+`did-navigate`; một lần chuyển trang bị chặn — vd. thả một liên kết vào cửa sổ — không dừng gì) / renderer sập / cửa sổ
+đóng / đăng xuất → mọi lượt tải của trang đó dừng ngay, trả chỗ trong làn. Mã lượt tải (UUID) do trang chọn nên huỷ được cả khi lượt tải
 còn **chờ chỗ**. Trang chỉ gửi một đường dẫn trong allowlist (không URL, không header, không validator). Main gửi GET
 qua `net.request` (khối `<canvasapp-net-get>`, `redirect: 'manual'`): chuyển hướng chỉ được theo tới **https** — yêu cầu
 tới một địa chỉ http **không bao giờ được gửi** (lỗi `not-allowed`, lần thử sau như mọi lượt tải hỏng). `session.fetch`
@@ -299,11 +313,15 @@ khi kết nối cuối của video đó kết thúc (lượt tải dài hơn 10 
 `If-Range`; trả 206 đúng chỗ **và** mang đúng validator đã gửi → ghép tiếp (206 mang validator khác / không có: máy chủ bỏ
 qua If-Range, có thể là phần sau của một file khác cùng cỡ → `bad-range`); trả 200 (video đã đổi) → bỏ phần cũ, tải từ đầu;
 416 / 206 lệch chỗ / validator khác → tải lại từ đầu. Một lượt tải chỉ được bắt đầu lại từ đầu **một** lần (kể cả 200 cho
-yêu cầu tải tiếp: máy chủ luôn trả từ đầu thì lượt đó hỏng, không vòng lặp). Mở lại để tải tiếp mà chưa tới được canvasapp
+yêu cầu tải tiếp: máy chủ luôn trả từ đầu thì lượt đó hỏng, không vòng lặp). Mở lại liên tiếp mà không nhận thêm byte
+nào tối đa 32 lần (`MAX_DOWNLOAD_OPENS`; lần mở có nhận dữ liệu thì đếm lại từ đầu — kết nối bị cắt mỗi vài MB vẫn tải
+xong, không bỏ phần đã nhận), tổng cộng tối đa 1024 lần. Mở lại để tải tiếp mà chưa tới được canvasapp
 (Wi-Fi chưa có lại, `ERR_NETWORK_CHANGED`…) → giữ phần đã nhận, chờ 2, 5, 10, 20, 30 giây rồi mở lại (`RESUME_RETRY_MS`);
 sau đó mới hỏng. Không có validator, hoặc thân bị nén (Content-Encoding) → không bao giờ ghép: lượt tải hỏng, engine tải
 lại từ đầu ở lần thử sau. Kích thước cuối phải đúng kích thước canvasapp báo; không báo kích thước thì chỉ nhận khi thân
-kết thúc tự nhiên — một lượt tải bị cắt (đăng xuất, đóng) **không bao giờ** thành video "xong".
+kết thúc tự nhiên — một lượt tải bị cắt (đăng xuất, đóng) **không bao giờ** thành video "xong". Câu trả lời 200 mà là
+một trang / dữ liệu (`text/*`, `application/json`, `*+json`, `*xml`… — trang đăng nhập sau chuyển hướng, "chưa sẵn
+sàng") → `bad-response`, không bao giờ thành video của take; thử tải lại như mọi lần tải hỏng.
 Tiến độ: take hiện "Đang tải về 45%" (hoặc "Đang tải về 12,3 MB" khi không biết kích thước) thay vì "Đang tạo 99%"
 (`store/takeTransfers.ts`) — trên node, trong Xem take (vòng tiến độ + "Video đã tạo xong — đang tải về …") và ở hàng
 đợi ("tải 45%").
@@ -314,7 +332,8 @@ nhiều video cùng lúc" (16 lượt mở / chờ) → thử lại sau 15 giây
 tải dừng ngay (không tính là hỏng). **Huỷ** khi job đã xong trên canvasapp (đang tải về, hoặc chờ thử tải lại —
 `runs.remoteVideoReady`) → `actions.cancelTake` **hỏi trước**: video đã tạo xong và đã trừ credit, huỷ sẽ bỏ video này
 trong SanoVids (vẫn tải được trên canvasapp.io.vn), chạy lại cảnh sẽ trừ thêm; không đồng ý → tải tiếp như cũ. Thông báo
-sau khi huỷ nói đúng điều đó (không còn "job vẫn chạy ở đó").
+sau khi huỷ nói đúng điều đó (không còn "job vẫn chạy ở đó"). **Xoá** take đó (phím Delete, menu node) cũng hỏi trước
+như vậy (`deletePlan.checkTakeDelete` → `paidPending`).
 `download-token` **không** dùng: main đã gửi cookie phiên canvasapp với `GET /stream`; token chỉ là phương án dự phòng
 nếu `/stream` không tải trọn được (khi đó: allowlist riêng, che token trong `requestLabel` và nhật ký).
 
@@ -357,10 +376,16 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    bị nhận là job của nó; job tạo sau khi lần gửi đã quá khoảng `inPostWindow` cũng không (`findJob` dùng đúng khoảng của
    `sentMayOwn`) — vẫn nhập được. Trường hợp còn lại (hiếm): job tạo trên trang cùng node chỉ vài giây trước `POST`
    (cổng còn trả danh sách từ cache ≤ 15 s) hoặc lúc danh sách không đọc được ngay trước `POST`, rồi câu trả lời bị mất →
-   take có thể "không rõ" (hai job cùng có thể là của nó) hoặc, nếu `POST` không tới canvasapp, nhận job đó. Không bao giờ
-   trả tiền hai lần.
+   take có thể "không rõ" (hai job cùng có thể là của nó) hoặc, nếu `POST` không tới canvasapp, nhận job đó. Không trường
+   hợp nào ở đây làm SanoVids gửi lại take đó khi chưa chứng minh được là chưa có job (dòng "Trả tiền hai lần" ở §6 — một
+   lớp bảo vệ, chưa phải bảo đảm chừng nào máy chủ chưa được kiểm chứng).
 5. Danh sách job **không** cho biết độ phân giải, chế độ (trừ Seedance chỉ có t2v), prompt, ảnh. Prompt lấy từ
-   `/prompt` (trống / không đọc được / dài hơn 20.000 ký tự → **không rõ**). Phần còn lại chỉ được **đoán** (`inferred`,
+   `/prompt` (trống / không đọc được / dài hơn 20.000 ký tự → **không rõ**). Chỉ job là lần chạy **mới nhất** của node mới
+   được đoán (`siteJobs.hintsSuperseded`): danh sách có job khác trên cùng node tạo cùng lúc hoặc sau nó (so `created_at`
+   của cùng máy chủ; thiếu giờ → coi như sau), hoặc một lần `POST` chưa rõ trên node đó gửi sau khi đã thấy job → node đã
+   có thể bị SanoVids ghi lại (vd. đổi nhân vật, giữ prompt) → không đoán gì (ảnh / chế độ / độ phân giải "không rõ",
+   "Khôi phục prompt" tắt). Take nhập mà dấu `imported` đã lưu bị hỏng → giữ dấu với mọi trường "không rõ" (không bao giờ
+   bỏ dấu, kẻo giá trị giữ chỗ thành sự thật). Phần còn lại chỉ được **đoán** (`inferred`,
    hiện "≈") khi node trên canvas đã lưu (hoặc mục SanoVids đã nhớ của node đó) có cùng prompt, model, thời lượng, tỷ lệ
    với job; ảnh tham chiếu đoán được khi mọi upload của node ứng với ảnh trong máy (cache upload) và một nhân vật của dự
    án. Không đoán được → **không rõ** (`unknown`, giá trị giữ chỗ, hiện "?"). Node có thể đã đổi từ lúc tạo job (ví dụ chỉ
@@ -588,17 +613,17 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
     Ghi lại: khi chưa đăng nhập, `/api/video-profiles` trả 401 hay vẫn đọc được; model `visible: false` / `enabled: false`
     trên trang canvasapp có bị ẩn / làm mờ không. Thử trước trong chế độ Phát triển: Bảng phát triển › Trạng thái › Model.
 
-16. **Rút mạng giữa lúc tải video** (không tốn thêm credit) — cảnh dài / độ phân giải cao để video lớn; khi take hiện "Đang tải về …%", tắt Wi-Fi ~20 giây rồi bật lại → take vẫn "đang tạo/tải", không bị đánh lỗi, rồi xong (tải tiếp hoặc tải lại từ đầu); trên canvasapp vẫn chỉ **1** job. Ghi lại kích thước file, thời gian tải và (nếu xem được) tiêu đề trả lời của `/stream` (`Content-Length`, `Accept-Ranges`, `ETag`, `Content-Encoding`, có chuyển hướng không).
+16. **Rút mạng giữa lúc tải video** (không tốn thêm credit) — cảnh dài / độ phân giải cao để video lớn; khi take hiện "Đang tải về …%", tắt Wi-Fi ~20 giây rồi bật lại → take vẫn "đang tạo/tải", không bị đánh lỗi, rồi xong (tải tiếp hoặc tải lại từ đầu); trên canvasapp vẫn chỉ **1** job. Ghi lại kích thước file, thời gian tải, và take tải tiếp hay tải lại từ đầu (% có tụt về 0 không). Tiêu đề trả lời của `/stream` (`Content-Length`, `Accept-Ranges`, `ETag`, `Content-Encoding`, chuyển hướng) **không** xem được trong bản cài: mọi yêu cầu do main gửi (không hiện trong DevTools của trang) và DevTools tắt trong bản phát hành — cần bên vận hành xác nhận.
 17. **Mạng chậm / huỷ khi đang tải** — trong lúc "Đang tải về …%": bấm Huỷ → SanoVids **hỏi trước** (video đã tạo xong, đã trừ credit, huỷ sẽ bỏ video trong SanoVids); không đồng ý → vẫn tải tiếp tới xong; đồng ý → take "Đã huỷ" ngay, thông báo nói video vẫn tải được trên canvasapp.io.vn (tải về ở đó để không mất), take khác tải được ngay sau. Mở Task Manager xem RAM của SanoVids khi tải một video lớn (≥ 300 MB nếu có) — ghi lại (kiểm tra main có đệm cả video không). Sau đó lưu video đó bằng nút Thư mục và "Hỏi nơi lưu" — ghi lại nếu lỗi (lưu vẫn gửi cả file qua IPC một lần).
 
 18. **Nhập job** (4 credit, tuỳ chọn) — sau bước 5: trên canvasapp.io.vn mở phiên "SanoVids bridge", bấm **Tạo video** trên node
     của cảnh đó (không sửa gì). Trong SanoVids: Hàng đợi › **Nhập job** → job hiện dưới đúng cảnh (đợi ~15 giây rồi "Quét
     lại" nếu chưa thấy) → **Nhập 1 job** → take mới có chip "nhập", cấu hình "≈480P", tự tải video khi xong; credit canvasapp
     chỉ giảm một lần (lúc tạo trên trang). Quét lại → "Không có job mới nào". Bấm **Chạy lại** trên take nhập → hộp xác nhận
-    chi phí (take mới). Ghi lại: danh sách job có `canvas_node_id` / `client_request_id` không, `created_at` có múi giờ không
-    (DevTools › Network nếu xem được).
+    chi phí (take mới). Các trường của danh sách job (`canvas_node_id`, `client_request_id`, múi giờ của `created_at`)
+    không xem được trong bản cài (yêu cầu do main gửi, DevTools tắt) — hỏi bên vận hành.
 
 Tự động (không mạng, không tốn tiền): `npx vitest run src/providers/__tests__/canvasapp-e2e.test.ts` chạy toàn bộ luồng thật
 (engine → adapter → transport → cầu nối giả lập canvasapp) cho các trường hợp trên.
 
-Ghi lại mọi lỗi kèm thông báo hiển thị (và, nếu có, mã lỗi trong DevTools: `Ctrl+Shift+I` → Console).
+Ghi lại mọi lỗi kèm thông báo hiển thị (chụp màn hình; bản cài không có DevTools).

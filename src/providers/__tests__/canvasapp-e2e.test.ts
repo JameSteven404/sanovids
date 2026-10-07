@@ -2472,15 +2472,17 @@ describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page beco
     expect(takeSettingsText(imp)).toBe('15s · ≈720P · 16:9')
   })
 
-  it('SanoVids runs the scene again (its PUT reverts the node): an older unedited job still matches; an edited one gets “?” and cost “—”, no restore', async () => {
+  it('SanoVids runs the scene again after site jobs (its PUT rewrites the node): no guess for either — “?” and cost “—”, no restore', async () => {
     await done('s1')
     const plain = fake.siteJob(nodeOf('s1'))
     const edited = fake.siteJob(nodeOf('s1'), { prompt: '@image_2 chạy dưới mưa', resolution: '720p' })
-    await done('s1') // the bridge canvas is saved again from SanoVids' scene: the node is PROMPT / 1080p again
+    await done('s1') // the bridge canvas is saved again from SanoVids' scene (its characters may differ now)
     const scan = await scanForImport()
     await importSiteJobs(scan, [plain.job_id, edited.job_id])
     const byJob = (jobId: string) => importedTakes().find((t) => t.remoteId === `proj1:${jobId}`)!
-    expect(byJob(plain.job_id)).toMatchObject({ settings: { resolution: '1080p' }, cost: S1_COST, imported: { inferred: ['resolution', 'refs'] } })
+    // a later run of that node: the node says nothing sure about how either job was made — never the later run's pictures
+    expect(byJob(plain.job_id)).toMatchObject({ cost: 0, imported: { unknown: ['resolution', 'refs'], inferred: [] } })
+    expect(restoreBlock(byJob(plain.job_id))).toMatch(/không rõ ảnh tham chiếu/)
     const lost = byJob(edited.job_id)
     expect(lost).toMatchObject({ promptSnapshot: '@image_2 chạy dưới mưa', cost: 0, imported: { unknown: ['resolution', 'refs'], inferred: [] } })
     expect(takeCostLine(lost).amount).toBe('—')

@@ -10,6 +10,7 @@ import {
   entryHint,
   hintMatches,
   hintsFor,
+  hintsSuperseded,
   MAX_IMPORT_PROMPT,
   NO_DOWNLOAD_AFTER_MS,
   normalizeImportPrompt,
@@ -266,6 +267,28 @@ describe('hints: the node the job was likely made from', () => {
     expect(hintMatches(h, job({ model_profile: 'minimax_h3' }), '@image_1 đi dạo')).toBe(false)
     expect(hintMatches(h, job({ resolution: '720p' }), '@image_1 đi dạo')).toBe(false)
     expect(hintMatches(h, job({ resolution: '1080P' }), '@image_1 đi dạo')).toBe(true)
+  })
+})
+
+describe('hintsSuperseded: hints only for the newest run of a node', () => {
+  const NODE = canvasNodeId('scene_a')
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 7, 10, 0, s)).toISOString().replace('Z', '') // no time zone, like canvasapp may send
+  const job = (id: string, created: string | undefined, node = NODE): CanvasJob => ({ job_id: id, status: 'processing', canvas_node_id: node, created_at: created })
+  const c = (j: CanvasJob) => ({ jobId: j.job_id, nodeId: NODE, job: j })
+  it('a later job on the same node (SanoVids’ or the site’s), same-time or unknown times count as later; other nodes never', () => {
+    const old = job('site1', at(10))
+    expect(hintsSuperseded(c(old), [old, job('job2', at(20))], {}, 'proj1')).toBe(true)
+    expect(hintsSuperseded(c(old), [old, job('job2', at(10))], {}, 'proj1')).toBe(true)
+    expect(hintsSuperseded(c(old), [old, job('job2', undefined)], {}, 'proj1')).toBe(true)
+    expect(hintsSuperseded(c(job('site1', undefined)), [job('site1', undefined), job('job0', at(1))], {}, 'proj1')).toBe(true)
+    expect(hintsSuperseded(c(old), [job('job0', at(1)), old, job('job9', at(30), canvasNodeId('scene_b'))], {}, 'proj1')).toBe(false)
+  })
+  it('an unanswered POST on that node sent after a read that listed the job (its `before`)', () => {
+    const old = job('site1', at(10))
+    const sent = { take_9: { projectId: 'proj1', nodeId: NODE, at: 5, before: ['site1'] } }
+    expect(hintsSuperseded(c(old), [old], sent, 'proj1')).toBe(true)
+    expect(hintsSuperseded(c(old), [old], sent, 'projX')).toBe(false)
+    expect(hintsSuperseded(c(old), [old], { take_9: { ...sent.take_9, before: [] } }, 'proj1')).toBe(false)
   })
 })
 

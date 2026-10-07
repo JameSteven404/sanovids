@@ -17,8 +17,11 @@ export function settingsRunBlock(limits: SettingsLimits, s: VideoSettings): stri
   return issue ? bare(issue.reason) : null
 }
 
-/** What the submit may still refuse in `s` when SanoVids is not sure (a guess or an older read): one line, else null. */
-export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings): string | null {
+/**
+ * What the submit may still refuse in `s` when SanoVids is not sure (a guess or an older read): one line, else null.
+ * `id` names the gateway's credits (development mode: "credit dev").
+ */
+export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id: ProviderId = 'canvasapp'): string | null {
   if (limits.source === 'none' || (limits.source === 'server' && limits.firm)) return null
   const issues = limits.issues(s)
   if (!issues.length) return null
@@ -26,10 +29,15 @@ export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings): st
     limits.source === 'fallback'
       ? 'chưa đọc được cấu hình model nên đang theo cấu hình mặc định như trang canvasapp'
       : 'theo lần đọc cấu hình model trước, SanoVids đọc lại trước khi gửi'
-  return `Có thể bị từ chối khi gửi (không tốn credit): ${issues.map((i) => bare(i.reason)).join('; ')} — ${why}`
+  return `Có thể bị từ chối khi gửi (không tốn ${limitsSite(id).credit}): ${issues.map((i) => bare(i.reason)).join('; ')} — ${why}`
 }
 
-/** How the UI names the site whose limits these are: the real canvasapp, or its simulation in development mode. */
-export function limitsSite(id: ProviderId): { short: string; full: string } {
-  return id === 'dev' ? { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)' } : { short: 'canvasapp', full: 'canvasapp.io.vn' }
+/**
+ * How the UI names the site whose limits these are — the real canvasapp, or its simulation in development mode — and
+ * its credits ("credit dev" in development mode, CLAUDE.md).
+ */
+export function limitsSite(id: ProviderId): { short: string; full: string; credit: string } {
+  return id === 'dev'
+    ? { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)', credit: 'credit dev' }
+    : { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' }
 }
