@@ -3,15 +3,23 @@
 // The signature state comes from lib/appSignature.ts. The author is the main developer; Sano Group is credited only as
 // a partner ("Đồng hành"). The strings match package.json author.name / build.copyright / sanovids.signers (tested).
 //
+// The Mac build (phase 1) is signed ad hoc: anyone can re-sign an app that way, so it proves nothing about the author.
+// On a Mac the block never claims a verified signature and never shows the Windows certificate thumbprints: every
+// packaged answer reads "Bản cho Mac — chưa có chữ ký của Apple" (main sends { status: 'unknown', packaged: true }
+// there), with the same SHA-256 advice as the licence and the release notes.
+//
 // ---- API ----
 //   ABOUT_*                         titles, search keywords, author / partner / copyright / licence / open-source lines.
 //   ABOUT_OFFICIAL_THUMBPRINT       the pinned certificate of official builds (package.json sanovids.signers[0]).
 //   formatThumbprint(t)             '7489ABFA…' → '7489 ABFA …' (groups of 4).
 //   thumbprintLine(t)               'Dấu vân tay chứng chỉ: …'.
 //   officialThumbprintLine()        'Bản chính thức — dấu vân tay chứng chỉ: …'.
-//   thumbprintRows(sig)             the thumbprint line(s) under the signature row, as { label, value }.
-//   versionLine(version, kind, desktop)   'Phiên bản 0.5.0 · Bản cài'.
-//   signatureView(sig)              tone, title and detail of the signature row.
+//   thumbprintRows(sig, platform?)  the thumbprint line(s) under the signature row, as { label, value } ([] on a Mac).
+//   versionLine(version, kind, desktop)   'Phiên bản 0.5.0 · Bản cài' ('… · Bản cho Mac' for kind 'mac-manual').
+//   signatureView(sig, platform?)   tone, title and detail of the signature row (platform: lib/platform, default this
+//                                   device's; tests and the development-mode simulation pass it).
+//   aboutOpenSource(platform?)      where the open-source licences are (install folder / inside SanoVids.app).
+//   MAC_SIGNATURE_TITLE / _DETAIL   the Mac build's signature row (not Apple-signed, ad hoc: no author verification).
 //   borrowsAuthorName(signer)       a certificate name that copies the author's (an impostor when not pinned).
 //   placementNote(kind, updateKind) the reminder of a Portable build / a copy left in Windows' temp folder (no Desktop /
 //                                   Start icon, no auto-update): shown in "Ứng dụng" and "Giới thiệu" (null = none).
@@ -20,6 +28,7 @@
 import { sanovids } from '../../package.json'
 import type { AppPlacementKind } from './appPlacement'
 import type { AppSignature } from './appSignature'
+import { PLATFORM, type Platform } from './platform'
 import { UPDATE_RELEASES_PAGE_LABEL, type UpdateKind } from './updateTypes'
 
 export const ABOUT_TITLE = 'Giới thiệu'
@@ -35,6 +44,14 @@ export const ABOUT_LICENSE_NOTE =
   'Chỉ dùng khi được tác giả cho phép (ví dụ: trong nội bộ nhóm). Không sao chép, chỉnh sửa, dịch ngược hay phân phối lại khi chưa có đồng ý bằng văn bản của tác giả.'
 export const ABOUT_OPEN_SOURCE =
   'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong thư mục cài đặt (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).'
+/** The Mac build keeps them inside the app bundle (package.json build.mac.extraResources → Contents/Resources). */
+export const ABOUT_OPEN_SOURCE_MAC =
+  'SanoVids dùng các thành phần mã nguồn mở (Electron, Chromium, React…). Giấy phép của chúng nằm trong gói ứng dụng: chuột phải SanoVids → Hiển thị nội dung gói (Show Package Contents) → Contents/Resources (LICENSE.electron.txt, LICENSES.chromium.html, THIRD-PARTY-NOTICES.txt).'
+
+/** Where the open-source licences are on this platform (lib/platform; default: this device). */
+export function aboutOpenSource(platform: Platform = PLATFORM): string {
+  return platform === 'mac' ? ABOUT_OPEN_SOURCE_MAC : ABOUT_OPEN_SOURCE
+}
 export const ABOUT_DOWNLOAD_LINE = 'Trang tải về chính thức: ' + UPDATE_RELEASES_PAGE_LABEL
 export const ABOUT_OPEN_PAGE = 'Mở trang tải về'
 export const ABOUT_OPEN_PAGE_TITLE = `Mở ${UPDATE_RELEASES_PAGE_LABEL} trong trình duyệt`
@@ -68,9 +85,11 @@ export interface ThumbprintRow {
 
 /**
  * The line(s) under the signature row: the running file's certificate when known, else the official one. A file signed
- * by someone else shows both, so the two can be compared.
+ * by someone else shows both, so the two can be compared. On a Mac: none (those are the Windows certificate's; the Mac
+ * build carries no author signature to compare with).
  */
-export function thumbprintRows(sig: AppSignature | null): ThumbprintRow[] {
+export function thumbprintRows(sig: AppSignature | null, platform: Platform = PLATFORM): ThumbprintRow[] {
+  if (platform === 'mac') return []
   const official: ThumbprintRow = { label: OFFICIAL_THUMB_LABEL, value: formatThumbprint(ABOUT_OFFICIAL_THUMBPRINT) }
   if (!sig?.thumbprint) return [official]
   const own: ThumbprintRow = { label: THUMB_LABEL, value: formatThumbprint(sig.thumbprint) }
@@ -81,6 +100,7 @@ export function thumbprintRows(sig: AppSignature | null): ThumbprintRow[] {
 export function buildLabel(kind: UpdateKind, desktop: boolean): string {
   if (kind === 'installer') return 'Bản cài'
   if (kind === 'portable') return 'Bản portable'
+  if (kind === 'mac-manual') return 'Bản cho Mac'
   return desktop ? 'Bản phát triển' : 'Bản web'
 }
 
@@ -120,9 +140,21 @@ export function borrowsAuthorName(signer: string | undefined): boolean {
   return AUTHOR_NAME_PARTS.some((part) => name.includes(part))
 }
 
-/** The signature row: null = still checking. */
-export function signatureView(sig: AppSignature | null): SignatureView {
+/** The Mac build's signature row: never "signed" — an ad-hoc signature does not tell who made the app. */
+export const MAC_SIGNATURE_TITLE = 'Bản cho Mac — chưa có chữ ký của Apple'
+export const MAC_SIGNATURE_DETAIL =
+  'Bản Mac hiện chưa được Apple ký và công chứng, nên lần đầu mở (và mỗi bản mới) macOS sẽ cảnh báo. Chỉ tải SanoVids ở trang tải về chính thức và đối chiếu mã SHA-256 với tác giả qua một nguồn khác trang tải về.'
+
+const DEV_SIGNATURE_VIEW: SignatureView = { tone: 'neutral', title: 'Bản phát triển (chưa ký số)', detail: 'Chạy từ mã nguồn nên không có chữ ký số — bình thường khi phát triển.' }
+
+/**
+ * The signature row: null = still checking. `platform` (lib/platform): on a Mac a packaged build always reads
+ * MAC_SIGNATURE_* (phase 1: ad hoc, main does not check anything there), the sources read as a development build; the
+ * Windows texts (PowerShell, DLLs, certificate) never show there.
+ */
+export function signatureView(sig: AppSignature | null, platform: Platform = PLATFORM): SignatureView {
   if (!sig) return { tone: 'neutral', title: 'Đang kiểm tra chữ ký số…', detail: '' }
+  if (platform === 'mac') return sig.packaged ? { tone: 'neutral', title: MAC_SIGNATURE_TITLE, detail: MAC_SIGNATURE_DETAIL } : { ...DEV_SIGNATURE_VIEW }
   switch (sig.status) {
     case 'signed':
       return { tone: 'ok', title: `Đã ký số bởi ${sig.signer || ABOUT_AUTHOR} ✓`, detail: 'Bản gốc — file chương trình và các thư viện DLL chính còn nguyên chữ ký số của tác giả.' }
@@ -153,7 +185,7 @@ export function signatureView(sig: AppSignature | null): SignatureView {
             title: 'Bản này không có chữ ký số',
             detail: 'Bản cài chính thức luôn được ký số bởi Nguyễn Giang Minh (Jame Steven). Hãy tải bản chính thức ở trang tải về.',
           }
-        : { tone: 'neutral', title: 'Bản phát triển (chưa ký số)', detail: 'Chạy từ mã nguồn nên không có chữ ký số — bình thường khi phát triển.' }
+        : { ...DEV_SIGNATURE_VIEW }
     default:
       return {
         tone: 'neutral',

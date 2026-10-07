@@ -7,9 +7,17 @@
 // with a timestamp: check (j) runs scripts/buildInspect.mjs (signatures of every code file, VersionInfo, fuses, the
 // exe's asar integrity hash, licences shipped next to the exe) and the "ghim trước, ký sau" rotation check (the
 // certificate must already be pinned by the newest public release), and blocks on any ✗.
+// The Mac build (check (k) "Bản Mac", files in release/mac with fixed names — anything else there is ignored): the
+// .dmg (+ .zip, its blockmap, latest-mac.yml) goes into the same draft releases ONLY when mac-check.json (written on
+// the Mac by scripts/mac-inspect.mjs) says this version, the tag's commit, a clean tree and every check passed, and —
+// for a GitHub Actions build — mac-fetch.json (scripts/fetch-mac-build.mjs) says the files are the very bytes of an RC
+// run (workflow_dispatch, rc, main) of the tag's commit; latest-mac.yml must match the zip and the zip is inspected
+// independently here (releaseLib.inspectMacZip). The newest public release had a Mac build but this one has none → ✗,
+// unless --khong-mac (an urgent Windows-only release: ⚠).
 // Usage:
 //   npm run release:check    (= --dry-run)  read-only: every check, both release notes, the exact plan (gh argv)
 //   npm run release:publish                 checks, then draft → upload → verify → publish (private first, public LAST)
+//   … -- --khong-mac                         allow a release without the Mac build although the previous one had it
 // Idempotent: run it again after any failure. It never deletes a release or an asset, never overwrites a published
 // file and only uses --clobber on drafts. Pure logic lives in scripts/releaseLib.mjs (tested); git / gh run through
 // spawnSync with an args array (no shell). See docs/UPDATES.md.
@@ -21,6 +29,7 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { load as loadYaml } from 'js-yaml'
+import JSZip from 'jszip'
 import { inspectAppUpdateYml, inspectWindowsBuild } from './buildInspect.mjs'
 import { NOTICES_SHIPPED, NOTICES_SOURCE } from './third-party-notices.mjs'
 import {
@@ -29,6 +38,7 @@ import {
   PRIVATE_REPO,
   PUBLIC_REPO,
   PUBLISH_ENTRY,
+  REQUIRED_ASAR_FILES,
   SIGNER_THUMBPRINT,
   SIGNING_CERT_FILE,
   asarDataOffset,
@@ -39,7 +49,10 @@ import {
   assetsFor,
   buildReleaseNotes,
   checkCertFile,
+  checkLatestMacYml,
   checkLatestYml,
+  checkMacCheck,
+  checkMacFetch,
   checkPackagedIdentity,
   checkRotation,
   compareAssets,
@@ -51,6 +64,9 @@ import {
   ghListReleasesArgs,
   ghPublishArgs,
   ghUploadArgs,
+  inspectMacZip,
+  macBuildFiles,
+  macReleaseRule,
   newestPublishedVersion,
   offlineEnvSet,
   peeledTagSha,
@@ -61,9 +77,13 @@ import {
 } from './releaseLib.mjs'
 
 const DRY = process.argv.includes('--dry-run')
+/** --khong-mac: an urgent Windows-only release although the newest public release had a Mac build (⚠ instead of ✗). */
+const WINDOWS_ONLY = process.argv.includes('--khong-mac')
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const releaseDir = path.join(root, 'release')
 const buildDir = path.join(releaseDir, '_build')
+/** The Mac build: fixed names only (releaseLib.releaseFiles); ._* / .DS_Store / mac-arm64 / builder-*.yml are ignored. */
+const macDir = path.join(releaseDir, 'mac')
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const V = String(pkg.version)
 const TAG = `v${V}`
@@ -90,7 +110,7 @@ const EXPECT = {
   publisherName: pkg.build?.win?.signtoolOptions?.publisherName,
   // every file of this build is signed by exactly this pinned certificate (checkRotation relies on it)
   signer: SIGNER_THUMBPRINT,
-  // LICENSE.txt clause 6 promises these next to the exe (package.json build.extraFiles)
+  // LICENSE.txt clause 6 promises these next to the exe (package.json build.win.extraFiles)
   shippedFiles: [
     { name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') },
     { name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split('/')) },
@@ -215,9 +235,15 @@ for (const [name, p] of Object.entries(paths)) {
   else if (name === SIGNING_CERT_FILE) fail('File', `Thiếu ${rel(certPath)} (chứng chỉ công khai, đăng kèm mỗi bản; xem docs/SIGNING.md).`)
   else fail('File', `Thiếu ${name} trong release/ (hoặc release/_build/). Chạy npm run dist:win.`)
 }
+// The Mac build in release/mac: the four packaged files + mac-check.json (uploaded), mac-fetch.json (checked only).
+const MAC_FILES = [...macBuildFiles(V), FILES.macCheck]
+const macPaths = Object.fromEntries([...MAC_FILES, FILES.macFetch].map((n) => [n, exists(path.join(macDir, n)) ? path.join(macDir, n) : null]))
+const macPresent = MAC_FILES.filter((n) => macPaths[n])
+const hasMacFiles = macPresent.length === MAC_FILES.length
 console.log(`Đang tính mã kiểm tra các file ${V}…`)
 const hashes = {}
 for (const [name, p] of Object.entries(paths)) if (p) hashes[name] = await hashFile(p)
+for (const [name, p] of Object.entries(macPaths)) if (p) hashes[name] = await hashFile(p)
 const setupHash = hashes[FILES.setup]
 
 // ───────────────────────────── (d) latest.yml ─────────────────────────────
@@ -280,16 +306,7 @@ if (asarPath && exists(asarPath)) {
     const headBuf = Buffer.alloc(asarHeaderBytes(prefix))
     fs.readSync(fd, headBuf, 0, headBuf.length, 0)
     const header = readAsarHeader(headBuf)
-    const required = [
-      'electron/main.cjs',
-      'electron/preload.cjs',
-      'electron/updater.cjs',
-      'electron/updater-rules.cjs',
-      'electron/signature.cjs',
-      'electron/hardening-rules.cjs',
-      'node_modules/electron-updater/package.json',
-    ]
-    for (const p of required) {
+    for (const p of REQUIRED_ASAR_FILES) {
       if (asarHas(header, p)) ok('app.asar', `Có ${p}`)
       else fail('app.asar', `Thiếu ${p}: bản build này không chạy / không tự cập nhật / không kiểm tra chữ ký số được.`)
     }
@@ -428,6 +445,62 @@ if (!publicReleases) {
   results.push({ level: rotation.level, group: 'Chữ ký số', text: rotation.text })
 }
 
+// ───────────────────────────── (k) Bản Mac ─────────────────────────────
+
+/** The Mac build passed every check of (k): it is uploaded with the release (and named in the notes). */
+let macOk = false
+{
+  const group = 'Bản Mac'
+  const newest = publicReleases ? newestPublishedVersion(publicReleases) : null
+  const newestRelease = newest ? publicReleases.find((r) => r && r.tag_name === `v${newest}`) : null
+  const newestPublicHasMac = !!newestRelease && Array.isArray(newestRelease.assets) && newestRelease.assets.some((a) => a && a.name === FILES.macYml)
+  const rule = macReleaseRule({ hasMac: hasMacFiles, partial: macPresent.length > 0 && !hasMacFiles, newestPublicHasMac, windowsOnly: WINDOWS_ONLY })
+  if (rule) results.push({ level: rule.level, group, text: rule.text })
+  if (hasMacFiles) {
+    const problems = []
+    const readJson = (p) => {
+      try {
+        return p ? JSON.parse(fs.readFileSync(p, 'utf8')) : null
+      } catch {
+        return null
+      }
+    }
+    const local = Object.fromEntries(Object.keys(macPaths).filter((n) => hashes[n]).map((n) => [n, { sha512: hashes[n].sha512, size: hashes[n].size }]))
+    const tagCommit = tagLocal.code === 0 && tagLocal.out ? tagLocal.out : null
+    if (!tagCommit) problems.push(`Chưa có tag ${TAG}: không đối chiếu được commit của bản Mac.`)
+    const check = readJson(macPaths[FILES.macCheck])
+    problems.push(...checkMacCheck(check, { version: V, commit: tagCommit, files: local }))
+    // The bytes tested on the Mac are the bytes released: a GitHub Actions build needs the record of the RC run it came from.
+    if (check && check.source === 'ci') problems.push(...checkMacFetch(readJson(macPaths[FILES.macFetch]), { version: V, commit: tagCommit, check, files: local }))
+    let macYml = null
+    try {
+      macYml = loadYaml(fs.readFileSync(macPaths[FILES.macYml], 'utf8'))
+    } catch {
+      macYml = null
+    }
+    problems.push(...checkLatestMacYml(macYml, { version: V, zipName: FILES.macZip, sha512: hashes[FILES.macZip].sha512, size: hashes[FILES.macZip].size, notBefore: commitDate }))
+    console.log('Đang kiểm tra file zip của bản Mac…')
+    const read = (p) => {
+      try {
+        return fs.readFileSync(p)
+      } catch {
+        return null
+      }
+    }
+    // Ours are byte-identical to the repo; Electron's / Chromium's licences are the darwin ones (only their presence here).
+    const licenses = { 'LICENSE.txt': read(path.join(root, 'LICENSE.txt')), [NOTICES_SHIPPED]: read(path.join(root, ...NOTICES_SOURCE.split('/'))) }
+    const zipCheck = await inspectMacZip(fs.readFileSync(macPaths[FILES.macZip]), { loadZip: (b) => JSZip.loadAsync(b), parseYaml: loadYaml, version: V, repoPkg: pkg, licenses })
+    problems.push(...zipCheck.problems.map((p) => `zip: ${p}`))
+    for (const p of problems) fail(group, p)
+    if (!problems.length) {
+      macOk = true
+      const source = check.source === 'ci' ? `GitHub Actions, lần chạy RC ${check.ci.runNumber ?? check.ci.runId}` : 'dựng trên máy Mac'
+      ok(group, `${FILES.macDmg} (${size(hashes[FILES.macDmg].size)}), ${FILES.macZip}: bản ${V}, commit ${short(check.commit)} (${source}), mọi phép kiểm trên Mac đạt, zip kiểm lại ở đây đạt`)
+      ok(group, `SHA-256 của ${FILES.macDmg}: ${hashes[FILES.macDmg].sha256}`)
+    }
+  }
+}
+
 // ───────────────────────────── public repo files (pushed by hand, warn only) ─────────────────────────────
 
 {
@@ -462,13 +535,17 @@ if (!publicReleases) {
 
 const notesDir = DRY ? path.join(os.tmpdir(), 'sanovids-release-check') : path.join(buildDir, 'publish')
 const notesFiles = { private: path.join(notesDir, 'notes-private.md'), public: path.join(notesDir, 'notes-public.md') }
+const notesText = { private: null, public: null }
 const title = releaseTitle(V, section?.subtitle ?? null)
 const haveSums = Boolean(hashes[FILES.setup] && hashes[FILES.portable])
+// The Mac files are uploaded (and named in the notes) only when check (k) passed.
+if (macOk) for (const name of MAC_FILES) paths[name] = macPaths[name]
 if (section?.body && haveSums) {
   const sha256 = Object.fromEntries(Object.entries(hashes).map(([n, h]) => [n, h.sha256]))
   fs.mkdirSync(notesDir, { recursive: true })
   for (const audience of ['private', 'public']) {
-    fs.writeFileSync(notesFiles[audience], buildReleaseNotes({ version: V, body: section.body, sha256, audience }), 'utf8')
+    notesText[audience] = buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk })
+    fs.writeFileSync(notesFiles[audience], notesText[audience], 'utf8')
   }
   ok('Ghi chú GitHub', `${DRY ? notesFiles.private : rel(notesFiles.private)} · ${DRY ? notesFiles.public : rel(notesFiles.public)}`)
 } else fail('Ghi chú GitHub', 'Chưa tạo được ghi chú GitHub (thiếu mục CHANGELOG hoặc file cài đặt).')
@@ -477,9 +554,9 @@ const targets = [
   { audience: 'private', repo: PRIVATE_REPO, releases: privateReleases, target: 'main' },
   { audience: 'public', repo: PUBLIC_REPO, releases: publicReleases, target: publicBranch },
 ].map((t) => {
-  const expected = assetsFor(t.audience, V).map((name) => ({ name, path: paths[name], size: hashes[name]?.size ?? -1, sha256: hashes[name]?.sha256 ?? '' }))
+  const expected = assetsFor(t.audience, V, { mac: macOk }).map((name) => ({ name, path: paths[name], size: hashes[name]?.size ?? -1, sha256: hashes[name]?.sha256 ?? '' }))
   const matching = (t.releases ?? []).filter((r) => r && r.tag_name === TAG)
-  const plan = planTarget({ repo: t.repo, tag: TAG, releases: matching, expected })
+  const plan = planTarget({ repo: t.repo, tag: TAG, releases: matching, expected, notes: notesText[t.audience] ?? undefined })
   return { ...t, expected, plan, known: Array.isArray(t.releases), notesFile: DRY ? notesFiles[t.audience] : rel(notesFiles[t.audience]) }
 })
 for (const t of targets) if (t.plan.action === 'stop') fail('Kế hoạch', t.plan.message)
@@ -516,7 +593,7 @@ function stepArgv(t, step) {
 const ACTION_TEXT = {
   create: 'chưa có bản → tạo bản nháp, tải file lên, kiểm tra, đăng',
   'update-draft': 'đã có bản nháp → cập nhật ghi chú, tải file còn thiếu / khác, kiểm tra, đăng',
-  repair: 'đã đăng nhưng thiếu file → tải bổ sung, kiểm tra',
+  repair: 'đã đăng nhưng thiếu file → tải bổ sung (cập nhật ghi chú khi khác), kiểm tra',
   'verify-only': 'đã đăng → chỉ kiểm tra lại file',
   skip: 'đã đăng đủ và khớp → bỏ qua',
   stop: 'DỪNG',
@@ -535,7 +612,9 @@ for (const t of toPublish) {
   console.log(`    ${++n}. Đăng ${t.audience === 'public' ? 'bản CÔNG KHAI (cuối cùng — từ lúc này máy người dùng thấy bản mới)' : 'bản riêng'}:`)
   console.log(`         ${formatArgv('gh', ghPublishArgs({ repo: t.repo, tag: TAG }))}`)
 }
-console.log(`    ${++n}. Kiểm tra như máy người dùng (không đăng nhập): /releases/latest = ${TAG}, latest.yml giống hệt file trên máy, releases.atom có ${TAG}`)
+console.log(
+  `    ${++n}. Kiểm tra như máy người dùng (không đăng nhập): /releases/latest = ${TAG}, latest.yml${macOk ? ' và latest-mac.yml' : ''} giống hệt file trên máy, releases.atom có ${TAG}`,
+)
 
 const failures = results.filter((r) => r.level === 'fail').length
 const warnings = results.filter((r) => r.level === 'warn').length
@@ -643,13 +722,20 @@ async function anonymousCheck() {
       const tag = latest.ok ? (await latest.json())?.tag_name : null
       const yml = await fetch(`${base}/latest/download/latest.yml`)
       const ymlBytes = yml.ok ? Buffer.from(await yml.arrayBuffer()) : null
+      // The Mac feed too, when this release carries the Mac build.
+      let okMacYml = true
+      if (macOk) {
+        const macYml = await fetch(`${base}/latest/download/latest-mac.yml`)
+        const macBytes = macYml.ok ? Buffer.from(await macYml.arrayBuffer()) : null
+        okMacYml = Boolean(macBytes && macBytes.equals(fs.readFileSync(macPaths[FILES.macYml])))
+      }
       const atom = await fetch(`${base}.atom`)
       const atomText = atom.ok ? await atom.text() : ''
       const okTag = tag === TAG
       const okYml = Boolean(ymlBytes && latestBytes && ymlBytes.equals(latestBytes))
       const okAtom = atomText.includes(`/releases/tag/${TAG}`)
-      if (okTag && okYml && okAtom) return { ok: true }
-      last = `latest=${tag ?? '—'} latest.yml=${okYml ? 'khớp' : 'khác'} atom=${okAtom ? 'có' : 'chưa có'} ${TAG}`
+      if (okTag && okYml && okMacYml && okAtom) return { ok: true }
+      last = `latest=${tag ?? '—'} latest.yml=${okYml ? 'khớp' : 'khác'}${macOk ? ` latest-mac.yml=${okMacYml ? 'khớp' : 'khác'}` : ''} atom=${okAtom ? 'có' : 'chưa có'} ${TAG}`
     } catch (e) {
       last = String(e?.message ?? e)
     }

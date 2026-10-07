@@ -45,6 +45,18 @@ interface Hardening {
   SELF_CHECK_FILES: readonly { name: string; kind: 'author' | 'microsoft' }[]
   selfCheckFileState(kind: unknown, result: unknown, pins: unknown): 'ok' | 'bad' | 'unknown'
   combineSelfCheck(exeVerdict: unknown, fileStates: unknown): Record<string, unknown>
+  MAC_MENU_REFUSED_ROLES: readonly string[]
+  macMenuTemplate(o: unknown): MenuItem[]
+  TEXT_MENU_ROLES: readonly string[]
+  textContextMenu(params: unknown): MenuItem[] | null
+  mainWindowCloseHides(o: unknown): boolean
+}
+interface MenuItem {
+  label?: string
+  role?: string
+  type?: string
+  enabled?: boolean
+  submenu?: MenuItem[]
 }
 
 const h = createRequire(import.meta.url)('../../../electron/hardening-rules.cjs') as Hardening
@@ -441,6 +453,91 @@ describe('hardening rules: self-check of the DLLs next to the exe', () => {
   })
 })
 
+describe('hardening rules: macOS application menu, text menu, close button', () => {
+  /** Every item of a template, submenus included. */
+  const flat = (items: MenuItem[]): MenuItem[] => items.flatMap((i) => [i, ...(i.submenu ? flat(i.submenu) : [])])
+  const roles = (items: MenuItem[]) => flat(items).map((i) => i.role).filter(Boolean)
+
+  it('macMenuTemplate: SanoVids / Sửa / Cửa sổ, roles only, Vietnamese labels', () => {
+    const t = h.macMenuTemplate({ appName: 'SanoVids' })
+    expect(t.map((m) => m.label)).toEqual(['SanoVids', 'Sửa', 'Cửa sổ'])
+    const labelled = (m: MenuItem) => (m.submenu ?? []).map((i) => (i.type === 'separator' ? '─' : `${i.role}=${i.label}`))
+    expect(labelled(t[0])).toEqual(['about=Giới thiệu SanoVids', '─', 'hide=Ẩn SanoVids', 'hideOthers=Ẩn các ứng dụng khác', 'unhide=Hiện tất cả', '─', 'quit=Thoát SanoVids'])
+    expect(labelled(t[1])).toEqual(['undo=Hoàn tác', 'redo=Làm lại', '─', 'cut=Cắt', 'copy=Sao chép', 'paste=Dán', 'selectAll=Chọn tất cả'])
+    expect(t[2].role).toBe('window')
+    expect(labelled(t[2])).toEqual(['minimize=Thu nhỏ', 'zoom=Phóng to', 'close=Đóng cửa sổ', '─', 'front=Đưa tất cả ra trước'])
+    // roles only: no click handlers, no accelerators of our own, every item is a role, a separator or a submenu
+    for (const item of flat(t)) {
+      expect(Object.keys(item).every((k) => ['label', 'role', 'type', 'submenu'].includes(k)), JSON.stringify(item)).toBe(true)
+      expect(item.role || item.type === 'separator' || item.submenu, JSON.stringify(item)).toBeTruthy()
+    }
+  })
+
+  it('macMenuTemplate: never reload / DevTools / zoom / View / Help (⌘R would drop the undo history)', () => {
+    const all = roles(h.macMenuTemplate({ appName: 'SanoVids' }))
+    for (const r of ['reload', 'forceReload', 'toggleDevTools', 'zoomIn', 'zoomOut', 'resetZoom', 'viewMenu', 'help']) {
+      expect(h.MAC_MENU_REFUSED_ROLES).toContain(r)
+      expect(all, r).not.toContain(r)
+    }
+    expect(all.some((r) => /devtools|inspect/i.test(String(r)))).toBe(false)
+  })
+
+  it('macMenuTemplate: the app name is cleaned (controls dropped, capped), SanoVids when missing', () => {
+    expect(h.macMenuTemplate({ appName: 'SanoVidsMacTest' })[0].submenu![6].label).toBe('Thoát SanoVidsMacTest')
+    expect(h.macMenuTemplate({ appName: 'Sano\u0000Vids\n' })[0].label).toBe('SanoVids')
+    expect(h.macMenuTemplate({ appName: '' })[0].label).toBe('SanoVids')
+    expect(h.macMenuTemplate(null)[0].label).toBe('SanoVids')
+    expect(h.macMenuTemplate({ appName: 42 })[0].label).toBe('SanoVids')
+    expect(h.macMenuTemplate({ appName: 'x'.repeat(100) })[0].label).toHaveLength(40)
+  })
+
+  it('textContextMenu: in a text field, Cắt / Sao chép / Dán / Chọn tất cả enabled by editFlags', () => {
+    const all = { canCut: true, canCopy: true, canPaste: true, canSelectAll: true, canUndo: true, canRedo: true, canDelete: true }
+    const t = h.textContextMenu({ isEditable: true, selectionText: '', editFlags: all })!
+    expect(t.map((i) => (i.type === 'separator' ? '─' : `${i.role}=${i.label}`))).toEqual(['cut=Cắt', 'copy=Sao chép', 'paste=Dán', '─', 'selectAll=Chọn tất cả'])
+    expect(t.filter((i) => i.role).every((i) => i.enabled === true)).toBe(true)
+    const none = h.textContextMenu({ isEditable: true, editFlags: { canCut: false, canCopy: false, canPaste: true, canSelectAll: false } })!
+    expect(none.filter((i) => i.role).map((i) => `${i.role}:${i.enabled}`)).toEqual(['cut:false', 'copy:false', 'paste:true', 'selectAll:false'])
+    // flags missing or odd: everything disabled (never enabled by default)
+    const odd = h.textContextMenu({ isEditable: true, editFlags: { canCut: 'yes' } })!
+    expect(odd.filter((i) => i.role).every((i) => i.enabled === false)).toBe(true)
+    expect(h.textContextMenu({ isEditable: true })!.filter((i) => i.role).every((i) => i.enabled === false)).toBe(true)
+  })
+
+  it('textContextMenu: selected text elsewhere → Sao chép only; nothing → no menu', () => {
+    expect(h.textContextMenu({ isEditable: false, selectionText: 'canvasapp', editFlags: { canCopy: true } })).toEqual([{ role: 'copy', label: 'Sao chép', enabled: true }])
+    expect(h.textContextMenu({ isEditable: false, selectionText: 'x', editFlags: {} })).toEqual([{ role: 'copy', label: 'Sao chép', enabled: true }])
+    expect(h.textContextMenu({ isEditable: false, selectionText: 'x', editFlags: { canCopy: false } })![0].enabled).toBe(false)
+    for (const p of [{ isEditable: false, selectionText: '' }, { isEditable: false, selectionText: '   \n' }, { isEditable: 'true' }, {}, null, undefined, 'x', 42]) {
+      expect(h.textContextMenu(p), JSON.stringify(p)).toBeNull()
+    }
+  })
+
+  it('textContextMenu: roles only, from the fixed list — never inspect / DevTools / spelling / navigation', () => {
+    expect([...h.TEXT_MENU_ROLES]).toEqual(['cut', 'copy', 'paste', 'selectAll'])
+    const cases = [
+      h.textContextMenu({ isEditable: true, selectionText: 'a', editFlags: { canCut: true, canCopy: true, canPaste: true, canSelectAll: true } }),
+      h.textContextMenu({ isEditable: false, selectionText: 'a', misspelledWord: 'teh', dictionarySuggestions: ['the'], linkURL: 'https://x', editFlags: { canCopy: true } }),
+    ]
+    for (const t of cases) {
+      for (const item of t!) {
+        expect(Object.keys(item).every((k) => ['label', 'role', 'type', 'enabled'].includes(k)), JSON.stringify(item)).toBe(true)
+        if (item.type !== 'separator') expect(h.TEXT_MENU_ROLES).toContain(item.role)
+      }
+    }
+    expect(hardeningSource).not.toMatch(/inspectElement|\bclick\s*:/)
+  })
+
+  it('mainWindowCloseHides: macOS hides unless quitting (⌘Q) or an update quits; Windows always closes', () => {
+    expect(h.mainWindowCloseHides({ platform: 'darwin', quitting: false, quittingForUpdate: false })).toBe(true)
+    expect(h.mainWindowCloseHides({ platform: 'darwin' })).toBe(true)
+    expect(h.mainWindowCloseHides({ platform: 'darwin', quitting: true, quittingForUpdate: false })).toBe(false)
+    expect(h.mainWindowCloseHides({ platform: 'darwin', quitting: false, quittingForUpdate: true })).toBe(false)
+    for (const platform of ['win32', 'linux', '', undefined]) expect(h.mainWindowCloseHides({ platform, quitting: false }), String(platform)).toBe(false)
+    expect(h.mainWindowCloseHides(null)).toBe(false)
+  })
+})
+
 describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   const idx = (s: string) => {
     const i = mainSource.indexOf(s)
@@ -698,6 +795,152 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(count("'canvasapp:keepLogin'") + count("'canvasapp:setKeepLogin'")).toBe(2) // main: one handler each
     // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
     expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
-    expect(mainSource).not.toMatch(/'before-quit'|'will-quit'/)
+    // no quit hook for the keep-login copy: the only 'before-quit' is macOS's window flag (tested below)
+    expect(mainSource).not.toMatch(/'will-quit'/)
+    expect(count("app.on('before-quit'")).toBe(1)
+  })
+
+  /** [start, end) of every `if (process.platform === 'darwin') {` block. */
+  const darwinBlocks = () => [...mainSource.matchAll(/if \(process\.platform === 'darwin'\) \{/g)].map((m) => blockAt(m.index!))
+  const inDarwinBlock = (at: number) => darwinBlocks().some(([s, e]) => at > s && at < e)
+  /** Body of `function name(` (the block after its parameter list). */
+  const fnBody = (name: string) => {
+    const at = mainSource.search(new RegExp(`(async )?function ${name}\\(`))
+    expect(at, name).toBeGreaterThan(-1)
+    const [s, e] = blockAt(mainSource.indexOf(')', at))
+    return mainSource.slice(s, e)
+  }
+
+  it('macOS: the taskbar identity is Windows-only; the application menu is the role-only Mac menu, null elsewhere', () => {
+    expect(count('setAppUserModelId(')).toBe(1)
+    expect(mainSource).toContain("if (process.platform === 'win32') app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))")
+    expect(count('Menu.setApplicationMenu(')).toBe(1)
+    expect(mainSource).toContain(
+      "Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate(hardening.macMenuTemplate({ appName: app.getName() })) : null)",
+    )
+    // inside app.whenReady (a menu needs a ready app)
+    const [rs, re] = blockAt(idx('app.whenReady().then(() => {'))
+    expect(idx('Menu.setApplicationMenu(')).toBeGreaterThan(rs)
+    expect(idx('Menu.setApplicationMenu(')).toBeLessThan(re)
+  })
+
+  it('text menu: exactly one context-menu listener, in web-contents-created (every page, login popups too), roles from hardening-rules', () => {
+    expect(count("'context-menu'")).toBe(1)
+    const [ws, we] = blockAt(idx("app.on('web-contents-created'"))
+    const at = idx("wc.on('context-menu'")
+    expect(at > ws && at < we).toBe(true)
+    const [cs, ce] = blockAt(at)
+    const body = mainSource.slice(cs, ce)
+    expect(body).toContain('const template = hardening.textContextMenu(params)')
+    expect(body).toContain('if (!template) return')
+    expect(body).toContain('Menu.buildFromTemplate(template).popup(win ? { window: win } : {})')
+    expect(mainSource).not.toMatch(/inspectElement|openDevTools/)
+    // not added per window (createWindow, the canvasapp login / checkout windows keep no listener of their own)
+    for (const fn of ['createWindow', 'canvasappLogin', 'canvasappCheckout']) expect(fnBody(fn), fn).not.toContain('context-menu')
+  })
+
+  it('macOS-only Electron APIs sit behind a darwin guard; isInApplicationsFolder is asked OUTSIDE appPlacement’s try', () => {
+    const code = mainSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code).not.toContain('moveToApplicationsFolder')
+    // isInApplicationsFolder: one call, in macInApplications, after its guard
+    expect(code.split('isInApplicationsFolder()').length - 1).toBe(1)
+    const inApps = fnBody('macInApplications')
+    const guard = inApps.indexOf("if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {")
+    expect(guard).toBeGreaterThan(-1)
+    expect(inApps.indexOf('app.isInApplicationsFolder()')).toBeGreaterThan(guard)
+    const placement = fnBody('appPlacement')
+    const asked = placement.indexOf('const inApplications = macInApplications()')
+    expect(asked).toBeGreaterThan(-1)
+    expect(asked).toBeLessThan(placement.indexOf('try {'))
+    expect(placement).toContain('        inApplications,\n      })')
+    expect(placement).not.toContain('isInApplicationsFolder')
+    // app.dock: only in setDevDockIcon, after its own darwin test, called from a darwin block (sources only)
+    const dockUses = [...code.matchAll(/app\.dock\b/g)]
+    expect(dockUses.length).toBeGreaterThan(0)
+    const dock = fnBody('setDevDockIcon')
+    expect(dock.trim().split('\n')[1].trim()).toBe("if (process.platform !== 'darwin' || !app.dock || typeof app.dock.setIcon !== 'function') return")
+    expect(mainSource.split('app.dock').length - 1).toBe(dock.split('app.dock').length - 1)
+    expect(inDarwinBlock(idx('if (!PACKAGED) setDevDockIcon()'))).toBe(true)
+    // Electron's own autoUpdater (Squirrel) is touched on macOS only
+    expect(count("require('electron').autoUpdater")).toBe(1)
+    expect(inDarwinBlock(idx("require('electron').autoUpdater"))).toBe(true)
+  })
+
+  it('downloads: one will-download listener on the default session, registered at ready (never per window); the page is not told', () => {
+    expect(count("'will-download'")).toBe(1)
+    expect(fnBody('registerDownloads')).toContain("session.defaultSession.on('will-download', (_event, item) => {")
+    expect(fnBody('createWindow')).not.toContain('will-download')
+    const [rs, re] = blockAt(idx('app.whenReady().then(() => {'))
+    const call = idx('    registerDownloads()')
+    expect(call > rs && call < re).toBe(true)
+    expect(mainSource).not.toContain('bdp:downloaded')
+    // macOS only: a refused download is said (Windows stays silent as before)
+    const body = fnBody('registerDownloads')
+    expect(inDarwinBlock(idx("if (state === 'interrupted') void showDownloadFailed()"))).toBe(true)
+    expect(body.indexOf('hardening.downloadAllowed(')).toBeLessThan(body.indexOf('item.setSavePath('))
+  })
+
+  it('macOS close button / ⌘W: hides (out of full screen first), keeps working hidden in pairs, ⌘Q and an update quit for real', () => {
+    const create = fnBody('createWindow')
+    const closeAt = create.indexOf("win.on('close', (event) => {")
+    expect(closeAt).toBeGreaterThan(-1)
+    expect(inDarwinBlock(mainSource.indexOf("win.on('close', (event) => {"))).toBe(true)
+    expect(create).toContain('hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })')
+    expect(create).toContain('const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())')
+    expect(create).toMatch(/return\s+event\.preventDefault\(\)\s+hideMainWindow\(win\)/)
+    expect(create).toContain("win.on('show', () => keepWorkingHidden(win, false))")
+    expect(create).toMatch(/win\.on\('closed', \(\) => \{\s+if \(mainWindow === win\) mainWindow = null\s+if \(process\.platform === 'darwin'\) stopHiddenWork\(\)/)
+    const hide = fnBody('hideMainWindow')
+    for (const s of ['win.isFullScreen()', "win.once('leave-full-screen', hide)", 'win.setFullScreen(false)', 'keepWorkingHidden(win, true)', 'win.hide()']) expect(hide, s).toContain(s)
+    expect(hide.indexOf('keepWorkingHidden(win, true)')).toBeLessThan(hide.indexOf('win.hide()'))
+    // throttling and the power-save blocker always in pairs
+    const keep = fnBody('keepWorkingHidden')
+    expect(keep).toContain('page.setBackgroundThrottling(false)')
+    expect(keep).toContain('page.setBackgroundThrottling(true)')
+    expect(keep).toContain("powerSaveBlocker.start('prevent-app-suspension')")
+    expect(keep).toContain('if (hiddenWorkBlocker === null) hiddenWorkBlocker =')
+    expect(fnBody('stopHiddenWork')).toContain('powerSaveBlocker.stop(hiddenWorkBlocker)')
+    expect(count('setBackgroundThrottling(')).toBe(2)
+    expect(count('powerSaveBlocker.start(')).toBe(1)
+    expect(count('powerSaveBlocker.stop(')).toBe(1)
+    // quit flags: ⌘Q (before-quit, macOS only) and an update (before-quit-for-update)
+    const quitAt = idx("app.on('before-quit', () => {")
+    expect(inDarwinBlock(quitAt)).toBe(true)
+    const [qs, qe] = blockAt(quitAt)
+    expect(mainSource.slice(qs, qe)).toMatch(/^\{\s+quitting = true\s+stopHiddenWork\(\)\s+\}$/)
+    const updAt = idx("autoUpdater.on('before-quit-for-update', () => {")
+    const [us, ue] = blockAt(updAt)
+    expect(mainSource.slice(us, ue)).toMatch(/^\{\s+macQuitForUpdate = true\s+\}$/)
+    // the Dock icon and a second launch bring THE main window back (never the first window found)
+    expect(mainSource).toContain("app.on('activate', () => showMainWindow())")
+    expect(mainSource).toContain("app.on('second-instance', () => showMainWindow())")
+    expect(mainSource).not.toContain('getAllWindows()')
+    const show = fnBody('showMainWindow')
+    expect(show).toContain('if (!mainWindowShown) return')
+    expect(show).toContain("if (process.platform === 'darwin' && app.isReady() && !macQuitForUpdate) {")
+    // Windows: the app still quits with its last window
+    expect(mainSource).toMatch(/app\.on\('window-all-closed', \(\) => \{\s+if \(process\.platform !== 'darwin'\) app\.quit\(\)/)
+  })
+
+  it('checkout window: never modal on macOS (a sheet has no close button), setMenu on Windows only', () => {
+    expect(mainSource).toContain("modal: process.platform !== 'darwin' && !!parent,")
+    expect(count('setMenu(')).toBe(1)
+    expect(mainSource).toContain("if (process.platform !== 'darwin') win.setMenu(null)")
+  })
+
+  it('DevTools ⌘⌥I (macOS) stays inside if (DEVTOOLS)', () => {
+    const [start, end] = blockAt(idx('if (DEVTOOLS) {'))
+    const at = idx("input.meta && input.alt && input.code === 'KeyI'")
+    expect(at > start && at < end).toBe(true)
+  })
+
+  it('folder / save panels carry a message (macOS shows it instead of the title); EPERM text comes from save-rules', () => {
+    expect(fnBody('filesPickFolder')).toContain("message: 'Chọn thư mục lưu video',")
+    const saveAs = fnBody('filesSaveAs')
+    expect(saveAs).toContain('message: checked.title,')
+    expect(saveAs).toContain('showsTagField: false,')
+    // the overwrite rule is unchanged (the panel itself confirms a replace on both systems)
+    expect(saveAs).toContain("properties: ['createDirectory', 'showOverwriteConfirmation'],")
+    expect(fnBody('fsErrorText')).toContain('return saveErrorText(e, process.platform)')
   })
 })

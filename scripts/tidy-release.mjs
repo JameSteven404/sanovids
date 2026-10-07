@@ -8,11 +8,14 @@
 // Warns loudly when the packaged app-update.yml does not point at the public feed (installs would never update) or has
 // no publisherName (electron-updater's own publisher check, the second lock behind the app's pinned verifier: without
 // it the build did not use the release configuration).
+// release/mac (the Mac build, fetched by scripts/fetch-mac-build.mjs) is never touched by the Windows rules: only an
+// older version's Mac files (SanoVids-Mac-<v>-arm64.*, and the latest-mac.yml / mac-check.json / mac-fetch.json that
+// belong to it) move to release/ban-cu/<v>/mac/.
 // Safe to run any time; files that are locked (e.g. the unpacked app still running) are left where they are.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AUTHOR, SIGNER_THUMBPRINT } from './releaseLib.mjs'
+import { AUTHOR, SIGNER_THUMBPRINT, releaseFiles } from './releaseLib.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const releaseDir = path.join(root, 'release')
@@ -64,6 +67,30 @@ if (fs.existsSync(buildDir)) {
   }
 }
 
+// The Mac build of an older version: its packaged files (by name) and the reports that belong to it (by mac-check.json).
+const macDir = path.join(releaseDir, 'mac')
+const MAC_ARTIFACT = /^SanoVids-Mac-(\d+\.\d+\.\d+)-arm64\.(dmg|zip|zip\.blockmap)$/
+const macNow = releaseFiles(version)
+if (fs.existsSync(macDir)) {
+  let reportVersion = null
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(macDir, macNow.macCheck), 'utf8')).version
+    reportVersion = typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : null
+  } catch {
+    reportVersion = null
+  }
+  for (const name of fs.readdirSync(macDir)) {
+    const m = MAC_ARTIFACT.exec(name)
+    if (m && m[1] !== version) moved += move(path.join(macDir, name), path.join(releaseDir, OLD_DIR, m[1], 'mac', name)) ? 1 : 0
+  }
+  if (reportVersion && reportVersion !== version) {
+    for (const name of [macNow.macYml, macNow.macCheck, macNow.macFetch]) {
+      if (fs.existsSync(path.join(macDir, name))) moved += move(path.join(macDir, name), path.join(releaseDir, OLD_DIR, reportVersion, 'mac', name)) ? 1 : 0
+    }
+  }
+}
+const hasMacDmg = fs.existsSync(path.join(macDir, macNow.macDmg))
+
 fs.writeFileSync(
   path.join(releaseDir, 'DOC-TOI.txt'),
   [
@@ -71,6 +98,7 @@ fs.writeFileSync(
     '',
     `SanoVids-Setup-${version}.exe     Bộ cài (khuyên dùng): tạo icon ở Desktop / Start Menu, cài đè bản cũ được, TỰ CẬP NHẬT các bản sau.`,
     `SanoVids-Portable-${version}.exe  Bấm là chạy, không cần cài (hợp chép USB). Bản này không tự cập nhật.`,
+    ...(hasMacDmg ? [`mac\\${macNow.macDmg}  Bản cho Mac chip Apple (thử nghiệm, chưa có chữ ký Apple, không tự cập nhật).`] : []),
     '',
     `Bộ cài được ký số bởi ${AUTHOR} — vân tay chứng chỉ ${SIGNER_THUMBPRINT}.`,
     '',

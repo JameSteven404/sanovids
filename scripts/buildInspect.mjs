@@ -235,7 +235,7 @@ export function asarHeaderSha256(asarPath) {
 }
 
 /**
- * Files electron-builder copies next to the exe (package.json build.extraFiles): each must exist in win-unpacked and be
+ * Files electron-builder copies next to the exe (package.json build.win.extraFiles): each must exist in win-unpacked and be
  * byte-identical to its repo source. files = [{ name, source }]. → results in group 'Giấy phép'.
  */
 export function inspectShippedFiles(unpackedDir, files) {
@@ -243,7 +243,7 @@ export function inspectShippedFiles(unpackedDir, files) {
   return (Array.isArray(files) ? files : []).map(({ name, source }) => {
     const shipped = unpackedDir ? path.join(unpackedDir, name) : null
     if (!isFile(source)) return { level: 'fail', group, text: `Thiếu file nguồn ${source} trong repo.` }
-    if (!isFile(shipped)) return { level: 'fail', group, text: `Thiếu ${name} cạnh file exe (package.json build.extraFiles phải chép ${path.basename(source)} thành ${name}).` }
+    if (!isFile(shipped)) return { level: 'fail', group, text: `Thiếu ${name} cạnh file exe (package.json build.win.extraFiles phải chép ${path.basename(source)} thành ${name}).` }
     if (!fs.readFileSync(shipped).equals(fs.readFileSync(source))) return { level: 'fail', group, text: `${name} trong bản build khác ${path.basename(source)} của repo: build lại.` }
     return { level: 'ok', group, text: `${name} có trong thư mục cài, giống hệt bản trong repo` }
   })

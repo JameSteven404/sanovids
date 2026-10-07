@@ -386,7 +386,7 @@ describe('code files, integrity resource, shipped files (helpers)', () => {
     ])
     fs.writeFileSync(path.join(d, 'LICENSE.txt'), 'licence\n')
     expect(inspectShippedFiles(d, [{ name: 'LICENSE.txt', source: src }])[0].text).toMatch(/khác/)
-    expect(inspectShippedFiles(d, [{ name: 'THIRD-PARTY-NOTICES.txt', source: src }])[0].text).toMatch(/^Thiếu THIRD-PARTY-NOTICES\.txt cạnh file exe \(package\.json build\.extraFiles/)
+    expect(inspectShippedFiles(d, [{ name: 'THIRD-PARTY-NOTICES.txt', source: src }])[0].text).toMatch(/^Thiếu THIRD-PARTY-NOTICES\.txt cạnh file exe \(package\.json build\.win\.extraFiles/)
     expect(inspectShippedFiles(d, [{ name: 'X.txt', source: path.join(dir, 'nope.txt') }])[0].text).toMatch(/^Thiếu file nguồn/)
     expect(inspectShippedFiles(d, undefined)).toEqual([])
   })

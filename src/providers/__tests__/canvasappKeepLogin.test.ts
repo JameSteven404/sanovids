@@ -1357,13 +1357,15 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind())')
     // the start-up sweep only stats the copy (after the object exists)
     order(start, ['canvasappKeep = keepLoginRules.createCanvasappKeepLogin({', 'void canvasappKeep.sweep()'])
-    // macOS "installed" = in Applications: asked behind the darwin guard, in its own try, never inside appPlacement
-    const kind = fnBody('keepLoginPlacementKind')
-    order(kind, [
+    // macOS "installed" = in Applications: asked once behind the darwin guard, in its own try (macInApplications, shared
+    // with appPlacement, which asks it OUTSIDE its own try), never inside appPlacement's try
+    order(fnBody('macInApplications'), [
       "if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {",
       'inApplications = app.isInApplicationsFolder() === true',
-      'keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications })',
     ])
+    expect(fnBody('keepLoginPlacementKind')).toContain(
+      'keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications: macInApplications() })',
+    )
     expect(fnBody('appPlacement')).not.toContain('isInApplicationsFolder')
     expect(count(mainCode, 'isInApplicationsFolder()')).toBe(1)
     expect(start).toContain('canvasappKeepPrefs = readCanvasappKeepPrefs()')
@@ -1432,7 +1434,16 @@ describe('keep-login wiring (electron/main.cjs)', () => {
   })
 
   it('no quit hooks, no cookie made persistent, no cookie value logged', () => {
-    expect(mainCode).not.toMatch(/before-quit|will-quit|beforeunload/)
+    expect(mainCode).not.toMatch(/will-quit|beforeunload/)
+    // The only quit hooks are macOS's window ones (⌘Q / an update's quit lets the main window really close instead of
+    // hiding): they never touch the keep-login copy, which is saved when the cookies change.
+    expect((mainCode.match(/before-quit[\w-]*/g) ?? []).sort()).toEqual(['before-quit', 'before-quit-for-update'])
+    for (const hook of ["app.on('before-quit'", "autoUpdater.on('before-quit-for-update'"]) {
+      const at = mainCode.indexOf(hook)
+      expect(at, hook).toBeGreaterThan(-1)
+      const [s, e] = blockAt(mainCode, at)
+      expect(mainCode.slice(s, e), hook).not.toMatch(/canvasapp|keepLogin|cookie/i)
+    }
     expect(mainCode).not.toMatch(/expirationDate\s*:/)
     const shape = fnBody('logCanvasappCookieShape')
     expect(shape).toContain('keepLoginRules.cookieShapeLine(c, Date.now())')

@@ -1,10 +1,12 @@
 // Unit tests of the pure release helpers (scripts/releaseLib.mjs). Fixtures: the real CHANGELOG.md, the latest.yml
 // of the published 0.4.2 build, a hand-made asar header and the public signing certificate (build/signing/*.cer).
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { load as loadYaml } from 'js-yaml'
+import JSZip from 'jszip'
 import {
   AUTHOR,
   COPYRIGHT_BUILD,
@@ -60,6 +62,7 @@ import {
   stripLinkRefs,
   updateNotesText,
 } from '../releaseLib.mjs'
+import * as lib from '../releaseLib.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CHANGELOG = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
@@ -227,6 +230,12 @@ describe('release names and notes', () => {
       portable: 'SanoVids-Portable-0.5.0.exe',
       blockmap: 'SanoVids-Setup-0.5.0.exe.blockmap',
       latestYml: 'latest.yml',
+      macDmg: 'SanoVids-Mac-0.5.0-arm64.dmg',
+      macZip: 'SanoVids-Mac-0.5.0-arm64.zip',
+      macZipBlockmap: 'SanoVids-Mac-0.5.0-arm64.zip.blockmap',
+      macYml: 'latest-mac.yml',
+      macCheck: 'mac-check.json',
+      macFetch: 'mac-fetch.json',
     })
     // the public certificate (no key) goes with every release, in both repos
     expect(SIGNING_CERT_FILE).toBe('SanoVids-NguyenGiangMinh.cer')
@@ -568,9 +577,11 @@ describe('release scripts (source guarantees)', () => {
   })
   it('publish-release checks the signed build before anything is published', () => {
     const src = read('publish-release.mjs')
-    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs']) {
-      expect(src).toContain(`'${f}'`)
+    // the files app.asar must hold: one shared list (the Windows group (g) and the Mac zip check use it)
+    for (const f of ['electron/main.cjs', 'electron/preload.cjs', 'electron/updater.cjs', 'electron/updater-rules.cjs', 'electron/signature.cjs', 'electron/hardening-rules.cjs', 'electron/keeplogin-rules.cjs']) {
+      expect(lib.REQUIRED_ASAR_FILES).toContain(f)
     }
+    expect(src).toContain('for (const p of REQUIRED_ASAR_FILES) {')
     expect(src).toContain('checkPackagedIdentity(inner, pkg)')
     expect(src).toContain("inspectAppUpdateYml(path.join(resourcesDir, 'app-update.yml'), EXPECT.publisherName)")
     expect(src).toContain('await inspectWindowsBuild(')
@@ -586,6 +597,29 @@ describe('release scripts (source guarantees)', () => {
     expect(src.indexOf('checkRotation({')).toBeLessThan(src.indexOf("console.log('\\nĐang thực hiện…')"))
     expect(src).toContain("{ name: 'LICENSE.txt', source: path.join(root, 'LICENSE.txt') }")
     expect(src).toContain('{ name: NOTICES_SHIPPED, source: path.join(root, ...NOTICES_SOURCE.split(\'/\')) }')
+  })
+
+  it('publish-release (k): the Mac files by fixed names only, checked before any gh write, uploaded only when every check passed', () => {
+    const src = read('publish-release.mjs')
+    const execute = src.indexOf("console.log('\\nĐang thực hiện…')")
+    expect(src).toContain('const MAC_FILES = [...macBuildFiles(V), FILES.macCheck]')
+    expect(src).not.toMatch(/readdirSync\(macDir/) // never a listing: ._*, .DS_Store, mac-arm64/ are ignored
+    for (const s of [
+      'checkMacCheck(check, { version: V, commit: tagCommit, files: local })',
+      "if (check && check.source === 'ci') problems.push(...checkMacFetch(",
+      'checkLatestMacYml(macYml, { version: V, zipName: FILES.macZip,',
+      'await inspectMacZip(',
+      'macReleaseRule({ hasMac: hasMacFiles,',
+    ]) {
+      expect(src, s).toContain(s)
+      expect(src.indexOf(s), s).toBeLessThan(execute)
+    }
+    expect(src).toContain("const WINDOWS_ONLY = process.argv.includes('--khong-mac')")
+    expect(src).toContain('assetsFor(t.audience, V, { mac: macOk })')
+    expect(src).toContain('buildReleaseNotes({ version: V, body: section.body, sha256, audience, mac: macOk })')
+    expect(src).toContain('if (macOk) for (const name of MAC_FILES) paths[name] = macPaths[name]')
+    // the public feed of the Mac build is checked anonymously too
+    expect(src).toContain('${base}/latest/download/latest-mac.yml')
   })
 })
 
@@ -784,5 +818,371 @@ describe('gh argv', () => {
     expect(formatArgv('gh', ['release', 'edit', 'v0.5.0', '--title', 'SanoVids 0.5.0 — x', 'release\\a.exe'])).toBe(
       'gh release edit v0.5.0 --title "SanoVids 0.5.0 — x" release\\a.exe',
     )
+  })
+})
+
+// ───────────────────────────── macOS build ─────────────────────────────
+
+const V6 = '0.6.0'
+const COMMIT_A = 'a'.repeat(40)
+const COMMIT_B = 'b'.repeat(40)
+const sha512 = (s) => createHash('sha512').update(s).digest('base64')
+const MAC_FILES = lib.macBuildFiles(V6)
+/** Local hashes of the five release/mac files. */
+const macLocal = () => ({
+  ...Object.fromEntries(MAC_FILES.map((n, i) => [n, { sha512: sha512(n), size: 1000 + i }])),
+  'mac-check.json': { sha512: sha512('check'), size: 900 },
+})
+const goodCheck = (over = {}) => ({
+  v: 1,
+  version: V6,
+  commit: COMMIT_A,
+  dirty: false,
+  source: 'ci',
+  ci: { runId: 4242, runNumber: 12, runAttempt: 1, event: 'workflow_dispatch', ref: 'refs/heads/main', rc: true },
+  files: MAC_FILES.map((name) => ({ name, sha512: macLocal()[name].sha512, size: macLocal()[name].size })),
+  checks: Object.fromEntries(lib.MAC_CHECKS.map((k) => [k, true])),
+  problems: [],
+  ...over,
+})
+const goodFetch = (over = {}) => ({
+  v: 1,
+  runId: 4242,
+  runNumber: 12,
+  runAttempt: 1,
+  event: 'workflow_dispatch',
+  rc: true,
+  headBranch: 'main',
+  headSha: COMMIT_A,
+  conclusion: 'success',
+  files: [...MAC_FILES, 'mac-check.json'].map((name) => ({ name, sha512: macLocal()[name].sha512, size: macLocal()[name].size })),
+  ...over,
+})
+
+describe('macOS build: file names, assets, notes', () => {
+  it('fixed Mac names; the assets only with { mac: true } (never the .dmg blockmap)', () => {
+    expect(MAC_FILES).toEqual(['SanoVids-Mac-0.6.0-arm64.dmg', 'SanoVids-Mac-0.6.0-arm64.zip', 'SanoVids-Mac-0.6.0-arm64.zip.blockmap', 'latest-mac.yml'])
+    expect(assetsFor('private', V6)).toEqual(['SanoVids-Setup-0.6.0.exe', 'SanoVids-Portable-0.6.0.exe', 'SanoVids-NguyenGiangMinh.cer'])
+    expect(assetsFor('private', V6, { mac: true })).toEqual([
+      'SanoVids-Setup-0.6.0.exe',
+      'SanoVids-Portable-0.6.0.exe',
+      'SanoVids-Mac-0.6.0-arm64.dmg',
+      'mac-check.json',
+      'SanoVids-NguyenGiangMinh.cer',
+    ])
+    expect(assetsFor('public', V6, { mac: true })).toEqual([
+      'SanoVids-Setup-0.6.0.exe',
+      'SanoVids-Setup-0.6.0.exe.blockmap',
+      'latest.yml',
+      'SanoVids-Portable-0.6.0.exe',
+      'SanoVids-Mac-0.6.0-arm64.dmg',
+      'SanoVids-Mac-0.6.0-arm64.zip',
+      'SanoVids-Mac-0.6.0-arm64.zip.blockmap',
+      'latest-mac.yml',
+      'SanoVids-NguyenGiangMinh.cer',
+    ])
+    expect(assetsFor('public', V6, { mac: true }).some((n) => n.endsWith('.dmg.blockmap'))).toBe(false)
+    expect(lib.macArtifactName(V6, 12)).toBe('sanovids-mac-0.6.0-12')
+  })
+
+  it('release notes: the Mac row (experimental, Open Anyway, check-only) and the SHA-256 sentence only with mac', () => {
+    const sha256 = { 'SanoVids-Setup-0.6.0.exe': SHA_A, 'SanoVids-Portable-0.6.0.exe': SHA_B, 'SanoVids-Mac-0.6.0-arm64.dmg': 'c'.repeat(64) }
+    const win = buildReleaseNotes({ version: V6, body: 'x', sha256, audience: 'public' })
+    expect(win).not.toMatch(/Mac|macOS|Apple/)
+    for (const audience of ['private', 'public']) {
+      const notes = buildReleaseNotes({ version: V6, body: 'x', sha256, audience, mac: true })
+      expect(notes).toContain(`| **SanoVids-Mac-0.6.0-arm64.dmg** | ${lib.MAC_USE} | \`${'c'.repeat(64)}\` |`)
+      expect(notes).toContain(SIGNING_NOTE)
+      expect(notes).toContain(lib.MAC_SIGNING_NOTE)
+      // never "signed" / tamper claims for the Mac build
+      expect(notes.split(lib.MAC_SIGNING_NOTE)[1]).not.toMatch(/ký số bởi|chống can thiệp/)
+    }
+    expect(lib.MAC_USE).toMatch(/^\*\*Thử nghiệm\.\*\* Máy Mac chip Apple \(M1 trở lên\), macOS 13 trở lên\./)
+    expect(lib.MAC_USE).toContain('Vẫn mở (Open Anyway)')
+    expect(lib.MAC_USE).toContain('Không tự cập nhật — app chỉ báo có bản mới.')
+    expect(lib.MAC_SIGNING_NOTE).toBe('Bản Mac chưa có chữ ký Apple; đối chiếu mã SHA-256 với tác giả qua một nguồn khác trang tải về.')
+    expect(buildReleaseNotes({ version: V6, body: 'x', sha256, audience: 'public', mac: true })).toContain('`latest-mac.yml`')
+    expect(() => buildReleaseNotes({ version: V6, body: 'x', sha256: { ...sha256, 'SanoVids-Mac-0.6.0-arm64.dmg': undefined }, audience: 'public', mac: true })).toThrow(/SHA-256/)
+  })
+
+  it('planTarget: a published release missing files is repaired, and its notes edited when they differ (never a clobber)', () => {
+    const expected = [{ name: 'a.exe', size: 1, sha256: SHA_A }, { name: 'SanoVids-Mac-0.6.0-arm64.dmg', size: 2, sha256: SHA_B }]
+    const published = { draft: false, body: 'old notes', assets: [{ name: 'a.exe', size: 1, digest: `sha256:${SHA_A}`, state: 'uploaded' }] }
+    expect(planTarget({ repo: 'r', tag: 'v0.6.0', releases: [published], expected, notes: 'new notes' })).toMatchObject({
+      action: 'repair',
+      steps: ['upload', 'edit-notes', 'verify'],
+      upload: ['SanoVids-Mac-0.6.0-arm64.dmg'],
+      clobber: [],
+    })
+    expect(planTarget({ repo: 'r', tag: 'v0.6.0', releases: [{ ...published, body: 'same\r\n' }], expected, notes: '\nsame\n' }).steps).toEqual(['upload', 'verify'])
+    expect(planTarget({ repo: 'r', tag: 'v0.6.0', releases: [published], expected }).steps).toEqual(['upload', 'verify'])
+  })
+})
+
+describe('macOS build: plist, entitlements, fuses, Mach-O, Info.plist', () => {
+  const PLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.sanovids.app</string>
+  <key>CFBundleExecutable</key><string>SanoVids</string>
+  <key>CFBundleShortVersionString</key><string>0.6.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHumanReadableCopyright</key><string>© 2026 Nguyễn Giang Minh (Jame Steven) · Đồng hành: Sano Group</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
+  <key>CFBundleDocumentTypes</key><array/>
+  <key>Count</key><integer>3</integer>
+  <key>Ratio</key><real>1.5</real>
+  <key>Note</key><string>a &amp; b &lt;c&gt; &#x1F3AC;</string>
+  <key>ElectronAsarIntegrity</key>
+  <dict>
+    <key>Resources/app.asar</key>
+    <dict><key>algorithm</key><string>SHA256</string><key>hash</key><string>${'d'.repeat(64)}</string></dict>
+  </dict>
+</dict>
+</plist>
+`
+  it('parsePlistXml: dict / array / string / integer / real / booleans, entities; refuses binary or broken input', () => {
+    const p = lib.parsePlistXml(PLIST)
+    expect(p.CFBundleIdentifier).toBe('com.sanovids.app')
+    expect(p.NSHighResolutionCapable).toBe(true)
+    expect(p.CFBundleDocumentTypes).toEqual([])
+    expect(p.Count).toBe(3)
+    expect(p.Ratio).toBe(1.5)
+    expect(p.Note).toBe('a & b <c> 🎬')
+    expect(p.ElectronAsarIntegrity['Resources/app.asar']).toEqual({ algorithm: 'SHA256', hash: 'd'.repeat(64) })
+    for (const bad of ['bplist00…', '<plist><dict><string>x</string></dict></plist>', '<plist><dict><key>a</key><foo/></dict></plist>', '<plist><string>a</plist>', '<plist><true/><true/></plist>', '']) {
+      expect(() => lib.parsePlistXml(bad), bad).toThrow()
+    }
+  })
+
+  it('entitlements are compared by meaning: the repo file (with comments) and the signed copy agree; an extra key or false fails', () => {
+    const repo = lib.parsePlistXml(fs.readFileSync(path.join(root, 'build', 'entitlements.mac.plist'), 'utf8'))
+    expect(lib.checkMacEntitlements(repo)).toEqual([])
+    const signed = lib.parsePlistXml(
+      '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.cs.disable-library-validation</key><true/><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>',
+    )
+    expect(lib.checkMacEntitlements(signed)).toEqual([])
+    expect(lib.checkMacEntitlements({ ...signed, 'com.apple.security.get-task-allow': true })).toHaveLength(1)
+    expect(lib.checkMacEntitlements({ ...signed, 'com.apple.security.cs.allow-jit': false })).toHaveLength(1)
+    expect(lib.checkMacEntitlements({ 'com.apple.security.cs.allow-jit': true })).toHaveLength(1)
+    expect(lib.checkMacEntitlements(null)).toHaveLength(1)
+  })
+
+  it('readFuseWire finds the wire after the sentinel (same shape as @electron/fuses); machOArch tells arm64 / x86_64 / universal', () => {
+    const wire = Buffer.from([1, 8, 48, 48, 48, 48, 49, 49, 48, 48])
+    const bin = Buffer.concat([Buffer.from('garbage'), Buffer.from(lib.FUSE_SENTINEL, 'latin1'), wire, Buffer.from('tail')])
+    expect(lib.readFuseWire(bin)).toEqual({ version: '1', 0: 48, 1: 48, 2: 48, 3: 48, 4: 49, 5: 49, 6: 48, 7: 48 })
+    expect(checkFuseWire(lib.readFuseWire(bin))).toEqual([])
+    expect(lib.readFuseWire(Buffer.from('no sentinel here'))).toBeNull()
+    expect(lib.readFuseWire(Buffer.concat([Buffer.from(lib.FUSE_SENTINEL, 'latin1'), Buffer.from([1, 8, 48])]))).toBeNull() // truncated
+    const macho = (cpu) => {
+      const b = Buffer.alloc(32)
+      b.writeUInt32LE(0xfeedfacf, 0)
+      b.writeUInt32LE(cpu, 4)
+      return b
+    }
+    expect(lib.machOArch(macho(0x0100000c))).toBe('arm64')
+    expect(lib.machOArch(macho(0x01000007))).toBe('x86_64')
+    const fat = Buffer.alloc(32)
+    fat.writeUInt32BE(0xcafebabe, 0)
+    expect(lib.machOArch(fat)).toBe('universal')
+    expect(lib.machOArch(Buffer.from('MZ not a mach-o'))).toBeNull()
+  })
+
+  it('checkMacInfoPlist / checkMacAsarIntegrity', () => {
+    const info = lib.parsePlistXml(PLIST)
+    expect(lib.checkMacInfoPlist(info, { version: V6 })).toEqual([])
+    expect(lib.checkMacInfoPlist({ ...info, NSHumanReadableCopyright: info.NSHumanReadableCopyright.normalize('NFD') }, { version: V6 })).toEqual([])
+    expect(lib.checkMacInfoPlist(info, { version: '0.6.1' })).toHaveLength(1)
+    expect(lib.checkMacInfoPlist({ ...info, CFBundleIdentifier: 'com.sanovids.test.mac', LSMinimumSystemVersion: '12.0' }, { version: V6 })).toHaveLength(2)
+    expect(lib.checkMacInfoPlist({ ...info, ElectronAsarIntegrity: undefined }, { version: V6 })[0]).toMatch(/ElectronAsarIntegrity/)
+    expect(lib.checkMacInfoPlist(null, { version: V6 })).toHaveLength(1)
+    expect(lib.checkMacAsarIntegrity(info, 'd'.repeat(64))).toEqual([])
+    expect(lib.checkMacAsarIntegrity(info, 'e'.repeat(64))[0]).toMatch(/app sẽ không mở/)
+    expect(lib.checkMacAsarIntegrity({}, 'd'.repeat(64))).toHaveLength(1)
+  })
+})
+
+describe('macOS build: latest-mac.yml, app-update.yml', () => {
+  const zipName = 'SanoVids-Mac-0.6.0-arm64.zip'
+  const zipSha = sha512('zip')
+  const yml = (extra = '') => `version: 0.6.0
+files:
+  - url: ${zipName}
+    sha512: ${zipSha}
+    size: 123456789
+    blockMapSize: 130000
+path: ${zipName}
+sha512: ${zipSha}
+releaseDate: '2026-10-10T08:00:00.000Z'
+${extra}`
+  const want = { version: V6, zipName, sha512: zipSha, size: 123456789, notBefore: '2026-10-10T07:00:00+07:00' }
+
+  it('only the zip, its sha512 / size, a release date after the commit, no minimumSystemVersion', () => {
+    expect(lib.checkLatestMacYml(loadYaml(yml()), want)).toEqual([])
+    expect(lib.checkLatestMacYml(loadYaml(yml('minimumSystemVersion: 13.0\n')), want)[0]).toMatch(/minimumSystemVersion/)
+    expect(lib.checkLatestMacYml(loadYaml(yml()), { ...want, sha512: sha512('other') }).length).toBeGreaterThanOrEqual(2)
+    expect(lib.checkLatestMacYml(loadYaml(yml()), { ...want, size: 1 })).toHaveLength(1)
+    expect(lib.checkLatestMacYml(loadYaml(yml()), { ...want, version: '0.6.1' })).toHaveLength(1)
+    expect(lib.checkLatestMacYml(loadYaml(yml()), { ...want, notBefore: '2026-10-11T00:00:00Z' })[0]).toMatch(/cũ hơn commit/)
+    const withDmg = loadYaml(yml())
+    withDmg.files.push({ url: 'SanoVids-Mac-0.6.0-arm64.dmg', sha512: sha512('dmg'), size: 1 })
+    expect(lib.checkLatestMacYml(withDmg, want)[0]).toMatch(/chỉ được có file zip/)
+    const dmgFirst = loadYaml(yml())
+    dmgFirst.files[0].url = 'SanoVids-Mac-0.6.0-arm64.dmg'
+    expect(lib.checkLatestMacYml(dmgFirst, want).join(' ')).toMatch(/zip đứng đầu/)
+    expect(lib.checkLatestMacYml(null, want)).toHaveLength(1)
+  })
+
+  it('app-update.yml in mac mode: the public anonymous feed, no publisherName required; Windows mode unchanged', () => {
+    const feed = { provider: 'github', owner: 'JameSteven404', repo: 'sanovids-releases', updaterCacheDirName: 'sanovids-updater' }
+    expect(checkAppUpdateYml(feed, { platform: 'mac' })).toEqual([])
+    expect(checkAppUpdateYml(feed, { publisherName: AUTHOR })).toEqual([PUBLISHER_NAME_MISSING])
+    expect(checkAppUpdateYml({ ...feed, token: 'x' }, { platform: 'mac' })).toHaveLength(1)
+    expect(checkAppUpdateYml({ ...feed, repo: 'sanovids' }, { platform: 'mac' })).toHaveLength(1)
+    expect(checkAppUpdateYml({ ...feed, channel: 'beta', private: true }, { platform: 'mac' })).toHaveLength(2)
+  })
+})
+
+describe('macOS build: mac-check.json, mac-fetch.json, the run, the missing-Mac rule', () => {
+  it('mac-check.json: this version, the tag commit, clean, every check, the very bytes', () => {
+    expect(lib.checkMacCheck(goodCheck(), { version: V6, commit: COMMIT_A, files: macLocal() })).toEqual([])
+    expect(lib.checkMacCheck(goodCheck({ source: 'local', ci: null }), { version: V6, commit: COMMIT_A, files: macLocal() })).toEqual([])
+    const bad = (over, extra = {}) => lib.checkMacCheck(goodCheck(over), { version: V6, commit: COMMIT_A, files: macLocal(), ...extra })
+    expect(bad({ version: '0.5.9' })).toHaveLength(1)
+    expect(bad({ commit: COMMIT_B })[0]).toMatch(/không phải commit phát hành/)
+    expect(bad({ dirty: true })).toHaveLength(1)
+    expect(bad({ dirty: null })).toHaveLength(1)
+    expect(bad({ source: 'laptop' })).toHaveLength(1)
+    expect(bad({ ci: null })).toHaveLength(1)
+    expect(bad({ checks: { ...goodCheck().checks, fuses: false } })[0]).toMatch(/fuses/)
+    expect(bad({ problems: ['dmg: x'] })).toHaveLength(1)
+    expect(bad({ files: goodCheck().files.slice(0, 3) })).toHaveLength(1)
+    // a file that changed after the check (sha512 of the local copy differs)
+    const changed = { ...macLocal(), 'SanoVids-Mac-0.6.0-arm64.dmg': { sha512: sha512('tampered'), size: 1000 } }
+    expect(bad({}, { files: changed })[0]).toMatch(/SHA-512 của SanoVids-Mac-0\.6\.0-arm64\.dmg khác file trên máy/)
+    expect(lib.checkMacCheck(null, { version: V6 })).toHaveLength(1)
+  })
+
+  it('mac-fetch.json: an RC run (workflow_dispatch, rc, main, success) of the tag commit, the same run as mac-check.json, same bytes', () => {
+    const ctx = { version: V6, commit: COMMIT_A, check: goodCheck(), files: macLocal() }
+    expect(lib.checkMacFetch(goodFetch(), ctx)).toEqual([])
+    expect(lib.checkMacFetch(null, ctx)[0]).toMatch(/npm run mac:fetch/)
+    expect(lib.checkMacFetch(goodFetch({ event: 'push' }), ctx)[0]).toMatch(/không phải bản RC/)
+    expect(lib.checkMacFetch(goodFetch({ rc: false }), ctx)[0]).toMatch(/không phải bản RC/)
+    expect(lib.checkMacFetch(goodFetch({ headBranch: 'mac-ci/x' }), ctx)).toHaveLength(1)
+    expect(lib.checkMacFetch(goodFetch({ headSha: COMMIT_B }), ctx)).toHaveLength(1)
+    expect(lib.checkMacFetch(goodFetch({ conclusion: 'failure' }), ctx)).toHaveLength(1)
+    expect(lib.checkMacFetch(goodFetch({ runId: 9999 }), ctx)[0]).toMatch(/không cùng một lần chạy/)
+    // the fetched record names other bytes than the files on disk (swapped after the fetch)
+    const swapped = goodFetch()
+    swapped.files[1] = { ...swapped.files[1], sha512: sha512('other zip') }
+    expect(lib.checkMacFetch(swapped, ctx)[0]).toMatch(/SHA-512 của SanoVids-Mac-0\.6\.0-arm64\.zip khác file trên máy/)
+    expect(lib.checkMacFetch(goodFetch({ files: [] }), ctx)).toHaveLength(1)
+  })
+
+  it('checkMacRun: only the requested, successful, manual RC run on main at the expected commit', () => {
+    const run = { databaseId: 4242, number: 12, attempt: 1, event: 'workflow_dispatch', status: 'completed', conclusion: 'success', headBranch: 'main', headSha: COMMIT_A, displayTitle: 'mac-build RC · main', workflowName: 'mac-build' }
+    const want = { runNumber: 12, headSha: COMMIT_A }
+    expect(lib.checkMacRun(run, want)).toEqual([])
+    expect(lib.checkMacRun(undefined, want)[0]).toMatch(/#12/)
+    expect(lib.checkMacRun({ ...run, event: 'push', displayTitle: 'mac-build thử · mac-ci/x' }, want)).toHaveLength(2)
+    expect(lib.checkMacRun({ ...run, displayTitle: 'mac-build thử · main' }, want)[0]).toMatch(/không phải bản RC/)
+    expect(lib.checkMacRun({ ...run, headSha: COMMIT_B }, want)[0]).toMatch(/git pull/)
+    expect(lib.checkMacRun({ ...run, conclusion: 'failure' }, want)).toHaveLength(1)
+    expect(lib.checkMacRun({ ...run, status: 'in_progress', conclusion: '' }, want)).toHaveLength(1)
+    expect(lib.checkMacRun({ ...run, headBranch: 'release/0.6.0' }, want)).toHaveLength(1)
+    expect(lib.checkMacRun({ ...run, number: 13 }, want)).toHaveLength(1)
+    expect(lib.checkMacRun({ ...run, workflowName: 'Claude' }, want)).toHaveLength(1)
+    expect(lib.checkMacRun(run, { runNumber: 12, headSha: '' })).toHaveLength(1)
+  })
+
+  it('macReleaseRule: partial ✗; missing after a release that had one ✗ unless --khong-mac; never had one ⚠', () => {
+    expect(lib.macReleaseRule({ hasMac: true, partial: false, newestPublicHasMac: true, windowsOnly: false })).toBeNull()
+    expect(lib.macReleaseRule({ hasMac: false, partial: true, newestPublicHasMac: false, windowsOnly: true }).level).toBe('fail')
+    expect(lib.macReleaseRule({ hasMac: false, partial: false, newestPublicHasMac: true, windowsOnly: false }).level).toBe('fail')
+    const urgent = lib.macReleaseRule({ hasMac: false, partial: false, newestPublicHasMac: true, windowsOnly: true })
+    expect(urgent.level).toBe('warn')
+    expect(urgent.text).toMatch(/chỉ có Windows/)
+    expect(lib.macReleaseRule({ hasMac: false, partial: false, newestPublicHasMac: false, windowsOnly: false }).level).toBe('warn')
+  })
+})
+
+describe('macOS build: inspectMacZip (independent look inside the zip, on Windows)', () => {
+  const REPO_PKG = { name: 'sanovids', productName: 'SanoVids', version: V6, author: { name: AUTHOR }, sanovids: { signers: [PIN] } }
+  const LIC = { 'LICENSE.txt': Buffer.from('licence'), 'THIRD-PARTY-NOTICES.txt': Buffer.from('notices') }
+
+  /** A SanoVids.app zip like electron-builder's (zip -y: the framework symlinks kept), with overrides per path. */
+  async function macZip(over = {}) {
+    const inner = Buffer.from(JSON.stringify(REPO_PKG))
+    const files = { 'package.json': { size: inner.length, offset: '0' }, electron: { files: {} }, node_modules: { files: { 'electron-updater': { files: { 'package.json': { size: 0, offset: '0' } } } } } }
+    for (const f of lib.REQUIRED_ASAR_FILES.filter((x) => x.startsWith('electron/'))) files.electron.files[f.slice(9)] = { size: 0, offset: '0' }
+    const asar = over.asar ?? fakeAsar(files, inner)
+    const headerSha = lib.asarHeaderSha256Of(asar)
+    const plist = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.sanovids.app</string><key>CFBundleExecutable</key><string>SanoVids</string>
+<key>CFBundleShortVersionString</key><string>${over.plistVersion ?? V6}</string><key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSHumanReadableCopyright</key><string>${COPYRIGHT_BUILD}</string>
+<key>ElectronAsarIntegrity</key><dict><key>Resources/app.asar</key><dict><key>algorithm</key><string>SHA256</string><key>hash</key><string>${over.integrity ?? headerSha}</string></dict></dict>
+</dict></plist>`
+    const exe = Buffer.alloc(64)
+    exe.writeUInt32LE(0xfeedfacf, 0)
+    exe.writeUInt32LE(over.cpu ?? 0x0100000c, 4)
+    const wire = Buffer.from([1, 8, 48, 48, 48, 48, 49, 49, 48, over.grantFileProtocol ?? 48])
+    const framework = Buffer.concat([Buffer.from('mach-o…'), Buffer.from(lib.FUSE_SENTINEL, 'latin1'), wire])
+    const zip = new JSZip()
+    const C = 'SanoVids.app/Contents/'
+    const put = (rel, data, opts = {}) => {
+      if (over.drop?.includes(rel)) return
+      zip.file(C + rel, data, { unixPermissions: 0o100644, ...opts })
+    }
+    put('Info.plist', plist)
+    put('PkgInfo', 'APPL????')
+    put('MacOS/SanoVids', exe, { unixPermissions: 0o100755 })
+    put('Resources/app.asar', asar)
+    put('Resources/app-update.yml', over.feed ?? 'owner: JameSteven404\nrepo: sanovids-releases\nprovider: github\nupdaterCacheDirName: sanovids-updater\n')
+    put('Resources/LICENSE.txt', over.licence ?? LIC['LICENSE.txt'])
+    put('Resources/THIRD-PARTY-NOTICES.txt', LIC['THIRD-PARTY-NOTICES.txt'])
+    put('Resources/LICENSE.electron.txt', 'electron licence')
+    put('Resources/LICENSES.chromium.html', '<html>chromium</html>')
+    put('Frameworks/Electron Framework.framework/Versions/A/Electron Framework', framework, { unixPermissions: 0o100755 })
+    const link = over.noLinks ? { unixPermissions: 0o100644 } : { unixPermissions: 0o120755 }
+    put('Frameworks/Electron Framework.framework/Electron Framework', 'Versions/Current/Electron Framework', link)
+    put('Frameworks/Electron Framework.framework/Versions/Current', 'A', link)
+    put('_CodeSignature/CodeResources', '<plist/>')
+    for (const [rel, data] of Object.entries(over.extra ?? {})) zip.file(rel, data)
+    return zip.generateAsync({ type: 'nodebuffer', platform: 'UNIX' })
+  }
+  const inspect = async (over) =>
+    lib.inspectMacZip(await macZip(over), { loadZip: (b) => JSZip.loadAsync(b), parseYaml: loadYaml, version: V6, repoPkg: REPO_PKG, licenses: LIC })
+
+  it('a good zip passes', async () => {
+    const r = await inspect({})
+    expect(r.problems).toEqual([])
+    expect(r.info).toMatchObject({ bundleId: 'com.sanovids.app', arch: 'arm64' })
+    expect(r.info.asarHeaderSha256).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('every kind of broken build is reported', async () => {
+    const one = async (over, re) => {
+      const r = await inspect(over)
+      expect(r.problems.join(' | '), JSON.stringify(Object.keys(over))).toMatch(re)
+    }
+    await one({ integrity: 'e'.repeat(64) }, /app sẽ không mở/)
+    await one({ plistVersion: '0.5.9' }, /CFBundleShortVersionString/)
+    await one({ cpu: 0x01000007 }, /x86_64, cần arm64/)
+    await one({ grantFileProtocol: 49 }, /GrantFileProtocolExtraPrivileges/)
+    await one({ noLinks: true }, /không còn là symlink/)
+    await one({ licence: Buffer.from('edited') }, /LICENSE\.txt khác bản trong repo/)
+    await one({ drop: ['Resources/LICENSES.chromium.html'] }, /Thiếu Contents\/Resources\/LICENSES\.chromium\.html/)
+    await one({ feed: 'owner: JameSteven404\nrepo: sanovids\nprovider: github\ntoken: x\n' }, /token/)
+    await one({ extra: { 'SanoVids.app/Contents/LICENSE.txt': 'x' } }, /Contents có mục lạ: LICENSE\.txt/)
+    await one({ extra: { 'SanoVids.app/Contents/Resources/app.asar.unpacked/x.node': 'x' } }, /app\.asar\.unpacked/)
+    await one({ extra: { 'README.txt': 'x' } }, /file ngoài SanoVids\.app/)
+    const testPkg = Buffer.from(JSON.stringify({ ...REPO_PKG, sanovids: { signers: [PIN, TEST_PIN] }, sanovidsTestProfileDir: '/tmp/x' }))
+    await one({ asar: fakeAsar({ 'package.json': { size: testPkg.length, offset: '0' } }, testPkg) }, /app\.asar thiếu electron\/main\.cjs[\s\S]*bản build thử nghiệm/)
+    expect((await lib.inspectMacZip(Buffer.from('not a zip'), { loadZip: (b) => JSZip.loadAsync(b), parseYaml: loadYaml, version: V6, repoPkg: REPO_PKG })).problems[0]).toMatch(/Không đọc được file zip/)
   })
 })

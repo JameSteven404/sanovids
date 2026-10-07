@@ -101,13 +101,17 @@ interface SaveRules {
   savedStatOf(st: unknown): StatLike | null
   saveDriveRoot(realDir: string, pathMod: PathMod): string | null
   saveTrashDriveAllowed(driveType: unknown, pathMod: PathMod): boolean
+  saveNameFits(s: string, budget: number): boolean
+  fitSaveText(s: string, budget: number): string
+  saveErrorText(e: unknown, platform: string): string
+  SAVE_MAX_NAME_BYTES: number
 }
 
 function loadSaveRules(): SaveRules {
   const m = /\/\/ <save-rules>[^\n]*\n([\s\S]*?)\/\/ <\/save-rules>/.exec(mainSource)
   if (!m) throw new Error('save-rules block not found in electron/main.cjs')
   return new Function(
-    `${m[1]}\nreturn { sanitizeSaveName, numberedSaveName, folderKey, isAllowedFolder, addAllowedFolder, parseSaveLocations, checkSaveFiles, checkSaveAsArgs, saveDialogFilters, withSaveExtension, companionSaveName, isDirectChild, writeGroupExclusive, writeSaveReplacing, SAVE_MAX_FILE_BYTES, SAVE_MAX_FOLDERS, checkSaveOwner, checkTrashArgs, parseSaveLedger, ledgerGroup, ledgerWith, selectTrashGroups, judgeSavedFile, savedFileOnlineOnly, saveHashTimeoutMs, saveTrashSupported, trashSavedGroups, SAVE_LEDGER_MAX_GROUPS, SAVE_TRASH_MAX_ITEMS, SAVE_TRASH_MAX_GROUPS, isLedgerName, checkLedgerGroup, savedFileStatProblem, sameSavedStat, withSaveAbort, ledgerWithout, savedFileIdentity, sameSavedIdentity, savedStatOf, saveDriveRoot, saveTrashDriveAllowed }`,
+    `${m[1]}\nreturn { sanitizeSaveName, numberedSaveName, folderKey, isAllowedFolder, addAllowedFolder, parseSaveLocations, checkSaveFiles, checkSaveAsArgs, saveDialogFilters, withSaveExtension, companionSaveName, isDirectChild, writeGroupExclusive, writeSaveReplacing, SAVE_MAX_FILE_BYTES, SAVE_MAX_FOLDERS, checkSaveOwner, checkTrashArgs, parseSaveLedger, ledgerGroup, ledgerWith, selectTrashGroups, judgeSavedFile, savedFileOnlineOnly, saveHashTimeoutMs, saveTrashSupported, trashSavedGroups, SAVE_LEDGER_MAX_GROUPS, SAVE_TRASH_MAX_ITEMS, SAVE_TRASH_MAX_GROUPS, isLedgerName, checkLedgerGroup, savedFileStatProblem, sameSavedStat, withSaveAbort, ledgerWithout, savedFileIdentity, sameSavedIdentity, savedStatOf, saveDriveRoot, saveTrashDriveAllowed, saveNameFits, fitSaveText, saveErrorText, SAVE_MAX_NAME_BYTES }`,
   )() as SaveRules
 }
 
@@ -148,6 +152,78 @@ describe('electron main: file names written into folders', () => {
     expect(rules.numberedSaveName('clip.mp4', 1)).toBe('clip.mp4')
     expect(rules.numberedSaveName('clip.mp4', 2)).toBe('clip (2).mp4')
     expect(rules.numberedSaveName('README', 3)).toBe('README (3)')
+  })
+
+  /** UTF-8 bytes / decomposed UTF-16 units: what APFS and HFS+ / exFAT count (255 each). */
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8')
+  const nfd = (s: string) => s.normalize('NFD').length
+
+  it('long accented names fit macOS / USB file systems: ≤ 224 UTF-8 bytes and ≤ 224 decomposed units, extension kept', () => {
+    expect(rules.SAVE_MAX_NAME_BYTES).toBe(224)
+    const title = 'Cảnh mở đầu: Ngưỡng cửa thiên đường, những người lữ khách ướt đẫm mưa đêm '.repeat(3) // 120+ accented chars
+    for (const ext of ['mp4', 'txt', 'jpeg']) {
+      const out = rules.sanitizeSaveName(`S01_T1 - ${title}.${ext}`)!
+      expect(out.endsWith(`.${ext}`), ext).toBe(true)
+      expect(bytes(out), ext).toBeLessThanOrEqual(224)
+      expect(nfd(out), ext).toBeLessThanOrEqual(224)
+      expect(out.length).toBeLessThanOrEqual(180)
+      // still the start of the title, NFC, no dangling dot / space before the extension
+      expect(out.startsWith('S01_T1 - Cảnh mở đầu')).toBe(true)
+      expect(out).toBe(out.normalize('NFC'))
+      expect(out).not.toMatch(/[.\s]\.[a-z0-9]+$/)
+      // stable: a second pass changes nothing (isLedgerName relies on it)
+      expect(rules.sanitizeSaveName(out)).toBe(out)
+    }
+    // with " (999)" added by writeGroupExclusive it is still far below 255
+    const numbered = rules.numberedSaveName(rules.sanitizeSaveName(`${title}.mp4`)!, 999)
+    expect(bytes(numbered)).toBeLessThanOrEqual(240)
+    expect(rules.isLedgerName(numbered)).toBe(true)
+  })
+
+  it('the budget never cuts inside a character: surrogate pairs and letters with combining marks stay whole', () => {
+    const emoji = rules.sanitizeSaveName('🎬'.repeat(120) + '.mp4')!
+    expect(emoji.endsWith('.mp4')).toBe(true)
+    expect(bytes(emoji)).toBeLessThanOrEqual(224)
+    expect(emoji).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/)
+    expect([...emoji.slice(0, -4)].every((c) => c === '🎬')).toBe(true)
+    // NFC has no precomposed form for these: a base letter with marks after it, cut only between whole clusters
+    const marked = rules.sanitizeSaveName('q̣̂'.repeat(100) + '.txt')!
+    expect(bytes(marked)).toBeLessThanOrEqual(224)
+    expect(marked.slice(0, -4)).toMatch(/^(q̣̂)+$/)
+    expect(rules.fitSaveText('ab́c', 4)).toBe('ab́') // the mark (2 bytes) goes with its letter
+    expect(rules.fitSaveText('ab́c', 3)).toBe('a') // never "ab" without its mark
+    expect(rules.saveNameFits('ệ'.repeat(74), 222)).toBe(true) // 3 bytes, 3 decomposed units each
+    expect(rules.saveNameFits('ệ'.repeat(75), 224)).toBe(false)
+  })
+
+  it('short and ASCII names are unchanged by the budget (Windows names stay what they were)', () => {
+    for (const name of ['S01_T1 - Ôm nhau.mp4', 'x'.repeat(170) + '.webm', 'Dự án phim ngắn.zip', 'S03_T2 - Hoàng hôn trên biển.txt']) {
+      expect(rules.sanitizeSaveName(name), name).toBe(name)
+    }
+    const ascii = rules.sanitizeSaveName('x'.repeat(400) + '.webm')!
+    expect(ascii).toBe('x'.repeat(175) + '.webm') // the 180-unit cut decides, as before
+  })
+})
+
+describe('electron main: file-system error texts', () => {
+  it('Windows texts are unchanged; macOS explains how to allow SanoVids into a refused folder (EPERM)', () => {
+    expect(rules.saveErrorText({ code: 'EPERM' }, 'win32')).toBe('Không có quyền ghi vào thư mục này.')
+    expect(rules.saveErrorText({ code: 'EACCES' }, 'win32')).toBe('Không có quyền ghi vào thư mục này.')
+    expect(rules.saveErrorText({ code: 'EACCES' }, 'darwin')).toBe('Không có quyền ghi vào thư mục này.')
+    const mac = rules.saveErrorText({ code: 'EPERM' }, 'darwin')
+    expect(mac).toBe(
+      'macOS chưa cho SanoVids ghi vào thư mục này — mở Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Tệp và Thư mục (hoặc Ổ đĩa ngoài / Ổ mạng), bật SanoVids rồi thử lại.',
+    )
+    expect(mac).not.toMatch(/Windows/)
+    for (const platform of ['win32', 'darwin']) {
+      expect(rules.saveErrorText({ code: 'ENOSPC' }, platform)).toBe('Ổ đĩa đã đầy.')
+      expect(rules.saveErrorText({ code: 'EBUSY' }, platform)).toBe('File đang bị chương trình khác mở hoặc khoá.')
+      expect(rules.saveErrorText({ code: 'ENOENT' }, platform)).toBe('Không tìm thấy thư mục.')
+      expect(rules.saveErrorText({ code: 'ENOTDIR' }, platform)).toBe('Không tìm thấy thư mục.')
+      expect(rules.saveErrorText({ code: 'EROFS' }, platform)).toBe('Ổ đĩa chỉ cho đọc.')
+      expect(rules.saveErrorText({ code: 'EIO' }, platform)).toBe('Không ghi được file (EIO).')
+      expect(rules.saveErrorText(new Error('boom'), platform)).toBe('Không ghi được file (boom).')
+    }
   })
 })
 

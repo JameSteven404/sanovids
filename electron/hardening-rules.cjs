@@ -1,4 +1,5 @@
-// SanoVids — pure hardening rules of the desktop shell (electron/main.cjs). Unit-tested by
+// SanoVids — pure hardening rules of the desktop shell (electron/main.cjs), plus its menus (the macOS application
+// menu, the right-click menu of text) and the macOS close-button rule. Unit-tested by
 // src/lib/__tests__/hardeningRules.test.ts. See docs/SIGNING.md "Bảo mật".
 //
 // No require at all (not 'electron', not node:crypto): plain data in, plain data out. Only language / runtime globals
@@ -383,6 +384,118 @@ function combineSelfCheck(exeVerdict, fileStates) {
   return exe
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Menus and the main window on macOS (main.cjs: Menu.setApplicationMenu, the text context menu, the close button)
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * Roles the macOS application menu never has: reload (⌘R would reload the page and drop the undo history),
+ * DevTools, page zoom, the View / Help menus. Windows has no application menu at all (the page owns every key).
+ */
+const MAC_MENU_REFUSED_ROLES = Object.freeze([
+  'reload',
+  'forceReload',
+  'toggleDevTools',
+  'zoomIn',
+  'zoomOut',
+  'resetZoom',
+  'viewMenu',
+  'help',
+  'togglefullscreen',
+])
+
+const MENU_APP_NAME_MAX = 40
+
+/** The app name as menu labels show it: controls dropped, trimmed, at most 40 chars; 'SanoVids' when empty. */
+function menuAppName(raw) {
+  const s = typeof raw === 'string' ? raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, MENU_APP_NAME_MAX) : ''
+  return s || 'SanoVids'
+}
+
+/**
+ * The macOS application menu (Menu.buildFromTemplate), roles only, Vietnamese labels. Without an Edit menu ⌘C / ⌘V /
+ * ⌘X / ⌘A / ⌘Z never reach the prompt fields or canvasapp's login page, and ⌘Q / ⌘H / ⌘M do nothing. "Giới thiệu"
+ * opens macOS's own About panel (it reads NSHumanReadableCopyright = package.json build.copyright).
+ */
+function macMenuTemplate(o) {
+  const name = menuAppName(o && typeof o === 'object' ? o.appName : undefined)
+  const sep = { type: 'separator' }
+  return [
+    {
+      label: name,
+      submenu: [
+        { role: 'about', label: `Giới thiệu ${name}` },
+        sep,
+        { role: 'hide', label: `Ẩn ${name}` },
+        { role: 'hideOthers', label: 'Ẩn các ứng dụng khác' },
+        { role: 'unhide', label: 'Hiện tất cả' },
+        sep,
+        { role: 'quit', label: `Thoát ${name}` },
+      ],
+    },
+    {
+      label: 'Sửa',
+      submenu: [
+        { role: 'undo', label: 'Hoàn tác' },
+        { role: 'redo', label: 'Làm lại' },
+        sep,
+        { role: 'cut', label: 'Cắt' },
+        { role: 'copy', label: 'Sao chép' },
+        { role: 'paste', label: 'Dán' },
+        { role: 'selectAll', label: 'Chọn tất cả' },
+      ],
+    },
+    {
+      label: 'Cửa sổ',
+      role: 'window',
+      submenu: [
+        { role: 'minimize', label: 'Thu nhỏ' },
+        { role: 'zoom', label: 'Phóng to' },
+        { role: 'close', label: 'Đóng cửa sổ' },
+        sep,
+        { role: 'front', label: 'Đưa tất cả ra trước' },
+      ],
+    },
+  ]
+}
+
+/** The only roles of the right-click menu of text (Windows and macOS). */
+const TEXT_MENU_ROLES = Object.freeze(['cut', 'copy', 'paste', 'selectAll'])
+
+/**
+ * The right-click menu of text for Electron's 'context-menu' params (every webContents: the SanoVids window, canvasapp's
+ * login window and its popups, checkout), roles only — no "Inspect", no spelling or navigation items:
+ *   in a text field (params.isEditable)  Cắt · Sao chép · Dán · ─ · Chọn tất cả, each enabled by params.editFlags;
+ *   on selected text elsewhere           Sao chép;
+ *   anything else                        null (no menu: Electron only asks when the page did not handle it).
+ * Role 'paste' uses webContents.paste(): no clipboard-read permission is involved.
+ */
+function textContextMenu(params) {
+  const p = params && typeof params === 'object' ? params : {}
+  const flags = p.editFlags && typeof p.editFlags === 'object' ? p.editFlags : {}
+  if (p.isEditable === true) {
+    return [
+      { role: 'cut', label: 'Cắt', enabled: flags.canCut === true },
+      { role: 'copy', label: 'Sao chép', enabled: flags.canCopy === true },
+      { role: 'paste', label: 'Dán', enabled: flags.canPaste === true },
+      { type: 'separator' },
+      { role: 'selectAll', label: 'Chọn tất cả', enabled: flags.canSelectAll === true },
+    ]
+  }
+  const selected = typeof p.selectionText === 'string' && p.selectionText.trim() !== ''
+  if (selected) return [{ role: 'copy', label: 'Sao chép', enabled: flags.canCopy !== false }]
+  return null
+}
+
+/**
+ * The main window's close button / ⌘W on macOS only hides it (the app keeps running and the takes being made go on;
+ * the Dock icon brings it back), except while the app quits (⌘Q, app.quit) or an update quits it. Windows: closes.
+ */
+function mainWindowCloseHides(o) {
+  const { platform, quitting, quittingForUpdate } = o && typeof o === 'object' ? o : {}
+  return platform === 'darwin' && quitting !== true && quittingForUpdate !== true
+}
+
 module.exports = {
   ALWAYS_REFUSED,
   REMOTE_DEBUG,
@@ -410,4 +523,9 @@ module.exports = {
   SELF_CHECK_FILES,
   selfCheckFileState,
   combineSelfCheck,
+  MAC_MENU_REFUSED_ROLES,
+  macMenuTemplate,
+  TEXT_MENU_ROLES,
+  textContextMenu,
+  mainWindowCloseHides,
 }

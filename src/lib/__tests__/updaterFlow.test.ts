@@ -40,9 +40,11 @@ interface FeedInfo {
   releaseDate: string
 }
 interface UpdState {
+  kind?: string
   status: string
   version?: string
   error?: { code: string; message: string }
+  noMacBuild?: true
 }
 type Handler = (event: unknown, arg?: unknown) => Promise<{ ok: boolean; code?: string; message?: string } & Partial<UpdState>>
 interface Updater {
@@ -119,6 +121,8 @@ class FakeUpdater extends EventEmitter {
   downloadCalls = 0
   cleared = 0
   served: { info: FeedInfo; bytes: Buffer } | null = null
+  /** A check that fails (like a missing latest-mac.yml): emitted as 'error', then thrown (AppUpdater.checkForUpdates). */
+  checkError: Error | null = null
   private hook: ((names: string[], file: string) => Promise<string | null>) | null = null
   declare verifySignature: (file: string) => Promise<string | null>
 
@@ -152,6 +156,10 @@ class FakeUpdater extends EventEmitter {
   }
   async checkForUpdates() {
     this.emit('checking-for-update')
+    if (this.checkError) {
+      this.emit('error', this.checkError)
+      throw this.checkError
+    }
     if (!this.served) this.emit('update-not-available', {})
     else this.emit('update-available', this.served.info)
     return { isUpdateAvailable: !!this.served }
@@ -251,7 +259,7 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
   })
 
   let n = 0
-  function boot(o: { userData?: string; updaterJson?: unknown; version?: string; failingClears?: number; pendingClearRetryMs?: number[] } = {}) {
+  function boot(o: { userData?: string; updaterJson?: unknown; version?: string; failingClears?: number; pendingClearRetryMs?: number[]; platform?: string } = {}) {
     const userData = o.userData ?? nodeFs.mkdtempSync(nodePath.join(root, `p${++n}-`))
     if (o.updaterJson !== undefined) nodeFs.writeFileSync(nodePath.join(userData, 'updater.json'), JSON.stringify(o.updaterJson))
     appState.userData = userData
@@ -259,12 +267,20 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     const au = new FakeUpdater(nodePath.join(userData, 'cache'))
     au.failingClears = o.failingClears ?? 0
     fakeUpdaterModule.autoUpdater = au
-    const updater = setupUpdater({
-      isAppSender: () => true,
-      getMainWindow: () => null,
-      profileSource: 'env',
-      ...(o.pendingClearRetryMs ? { pendingClearRetryMs: o.pendingClearRetryMs } : {}),
-    })
+    // updater.cjs reads process.platform once, in setupUpdater (the build kind): a Mac run is simulated around that call.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    if (o.platform) Object.defineProperty(process, 'platform', { ...platform, value: o.platform })
+    let updater: Updater
+    try {
+      updater = setupUpdater({
+        isAppSender: () => true,
+        getMainWindow: () => null,
+        profileSource: 'env',
+        ...(o.pendingClearRetryMs ? { pendingClearRetryMs: o.pendingClearRetryMs } : {}),
+      })
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+    }
     const invoke = (ch: string, arg?: unknown) => handlers.get(ch)!({ sender: {} }, arg)
     const state = async () => (await invoke('updates:getState')) as UpdState
     const file = (): Record<string, unknown> => {
@@ -519,5 +535,73 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     expect(s.error?.code).toBe('signature-unverified')
     expect(b.au.downloadCalls).toBe(0)
     expect(await b.invoke('updates:download')).toMatchObject({ ok: false, code: 'signature-unverified' })
+  })
+
+  const missingMacFeed = () =>
+    Object.assign(new Error('Cannot find latest-mac.yml in the latest release artifacts (https://github.com/x/y/releases/download/v0.5.1/latest-mac.yml): HttpError: 404'), {
+      code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+    })
+
+  it('mac-manual: check only — no NSIS hooks, never a download, an install or an install on quit', async () => {
+    const b = boot({ platform: 'darwin' })
+    expect((await b.state()).kind).toBe('mac-manual')
+    expect(b.log()).toContain('kind=mac-manual')
+    expect(b.log()).toContain('mac: check only (no download, no install)')
+    expect(b.au.verifyUpdateCodeSignature).toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(b.au, 'verifySignature')).toBe(false)
+    expect(b.au.autoInstallOnAppQuit).toBe(false)
+    expect(b.au.autoDownload).toBe(false)
+    const bytes = installer(signed('0.5.1'), 'genuine 0.5.1')
+    b.au.served = { info: feed('0.5.1', bytes), bytes }
+    expect((await b.invoke('updates:check')).ok).toBe(true)
+    await b.settle(['available'])
+    expect(await b.state()).toMatchObject({ kind: 'mac-manual', status: 'available', version: '0.5.1' })
+    // the device pref "auto download" changes nothing: check only
+    expect((await b.invoke('updates:setPrefs', { autoDownload: true })).ok).toBe(true)
+    expect(await b.invoke('updates:download')).toMatchObject({ ok: false, code: 'unsupported' })
+    expect(await b.invoke('updates:install')).toMatchObject({ ok: false, code: 'unsupported' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(b.au.downloadCalls).toBe(0)
+    expect(b.au.quitAndInstallCalls).toBe(0)
+    expect(sigState.calls).toEqual([])
+    b.updater.onQuit(0)
+    expect(b.au.autoInstallOnAppQuit).toBe(false)
+    expect(b.file().attempt).toBeUndefined()
+  })
+
+  it('mac-manual: a newest release without latest-mac.yml → none + noMacBuild (no error), and a known update stays', async () => {
+    const b = boot({ platform: 'darwin' })
+    b.au.checkError = missingMacFeed()
+    expect(await b.invoke('updates:check')).toEqual({ ok: true })
+    const none = await b.state()
+    expect(none).toMatchObject({ kind: 'mac-manual', status: 'none', noMacBuild: true })
+    expect(none.error).toBeUndefined()
+    expect(b.log()).toContain('check: the newest release has no Mac build (latest-mac.yml missing)')
+    // a Mac build appears in a newer release: announced
+    b.au.checkError = null
+    const bytes = installer(signed('0.5.1'), 'genuine 0.5.1')
+    b.au.served = { info: feed('0.5.1', bytes), bytes }
+    expect((await b.invoke('updates:check')).ok).toBe(true)
+    await b.settle(['available'])
+    expect((await b.state()).noMacBuild).toBeUndefined()
+    // then a Windows-only release becomes the newest: the Mac update found before is still offered
+    b.au.checkError = missingMacFeed()
+    expect(await b.invoke('updates:check')).toEqual({ ok: true })
+    const kept = await b.state()
+    expect(kept).toMatchObject({ status: 'available', version: '0.5.1' })
+    expect(kept.noMacBuild).toBeUndefined()
+    expect(b.au.downloadCalls).toBe(0)
+  })
+
+  it('mac-manual: a real failure stays an error (offline), and Windows still calls a missing feed "no release"', async () => {
+    const mac = boot({ platform: 'darwin' })
+    mac.au.checkError = Object.assign(new Error('Cannot find latest-mac.yml: Error: net::ERR_INTERNET_DISCONNECTED'), { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })
+    expect(await mac.invoke('updates:check')).toMatchObject({ ok: false, code: 'offline' })
+    expect(await mac.state()).toMatchObject({ status: 'error', error: { code: 'offline' } })
+    const w = boot()
+    expect((await w.state()).kind).toBe('installer')
+    w.au.checkError = missingMacFeed()
+    expect(await w.invoke('updates:check')).toMatchObject({ ok: false, code: 'no-release' })
+    expect((await w.state()).noMacBuild).toBeUndefined()
   })
 })
