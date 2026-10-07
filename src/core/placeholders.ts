@@ -125,22 +125,21 @@ const ownerOf = (key: string) => key.slice(0, key.indexOf(':'))
  *  - still linked after the change (one of its pictures was removed): "Tên · ảnh k" for every k, 1 included — it must
  *    not read as "Elara was unlinked" while Elara is still there.
  * Tên = characterLabel (the tag when another character has the same name or the name is blank), sanitized ≤ 40 code
- * points. An unknown character (deleted earlier, a missing id): null = a bare "@image_?N".
+ * points. An unknown character (deleted earlier, a missing id): null = a bare "@image_?N". `glued` = the text of a
+ * "(…)" glued right after the token (remapTokens passes it): null when it already fits the removed picture.
  */
 export function removalLabels(
   assetsBefore: readonly Asset[],
   ctx: { beforeKeys: readonly string[]; refsAfter: readonly string[]; assetsAfter: readonly Asset[] },
-): (key: string) => string | null {
+): (key: string, n?: number, glued?: string) => string | null {
   let byId: Map<string, Asset> | null = null
   let alive: Set<string> | null = null
-  return (key) => {
+  return (key, _n, glued) => {
     byId ??= new Map(assetsBefore.map((a) => [a.id, a]))
     alive ??= new Set(ctx.assetsAfter.map((a) => a.id))
     const id = ownerOf(key)
     const asset = byId.get(id)
     if (!asset) return null
-    const name = characterLabel(asset, assetsBefore)
-    if (!name) return null
     let k = 0
     let seen = 0
     for (const other of ctx.beforeKeys) {
@@ -152,6 +151,12 @@ export function removalLabels(
       }
     }
     if (k < 1) k = asset.imageIds.indexOf(key.slice(id.length + 1)) + 1
+    // A "(…)" already glued to the token stays the label only when it describes this very picture ("@image_2(Lumi)"
+    // cut from Lumi). Any other text there ("@image_2(cười)", a description) stays as plain text after the new label,
+    // so the prompt still says who was removed: "@image_?2(Lumi)(cười)" (remapTokens' `placeholder` contract).
+    if (glued !== undefined && labelFitsSlot(glued, asset, Math.max(0, k - 1), assetsBefore)) return null
+    const name = characterLabel(asset, assetsBefore)
+    if (!name) return null
     if (k < 1) return name
     const stillLinked = ctx.refsAfter.includes(id) && alive.has(id)
     return stillLinked || k > 1 ? `${name} · ảnh ${k}` : name
@@ -248,7 +253,19 @@ export function removeMembers(prompt: string, members: readonly GroupMember[]): 
   return editMembers(prompt, members, (text, m) => removeTokenAt(text, m.start, m.end))
 }
 
-/** "Giữ @image_2 = Làng (xoá chữ “(Lumi)”)": a labelled token keeps its number, its label goes. */
+/**
+ * "Giữ @image_1 = Elara, giữ chữ “(cô gái)”": a labelled token keeps its number AND its text — one space goes between
+ * the token and the "(" so the brackets stop being a label and are sent as plain text ("@image_1 (cô gái)"). Nothing
+ * is deleted (prompts of 0.5 often glue a description to a token).
+ */
+export function splitTokenLabel(prompt: string, members: readonly GroupMember[]): string {
+  return editMembers(prompt, members, (text, m) => {
+    const cut = m.text.indexOf('(')
+    return cut > 0 ? text.slice(0, m.start) + m.text.slice(0, cut) + ' ' + m.text.slice(cut) + text.slice(m.end) : text
+  })
+}
+
+/** "Giữ @image_2 = Làng, xoá chữ “(Lumi)”": a labelled token keeps its number, its label goes. */
 export function keepTokenOnly(prompt: string, members: readonly GroupMember[]): string {
   return editMembers(prompt, members, (text, m) => {
     const cut = m.text.indexOf('(')
@@ -283,7 +300,7 @@ function imageCount(assets: readonly Asset[], refs: readonly string[]): number {
   return refs.reduce((t, id) => t + Math.max(1, byId.get(id)?.imageIds.length ?? 0), 0)
 }
 
-export type FillRefusal = 'gone' | 'no-asset' | 'no-image' | 'few-images' | 'over-limit'
+export type FillRefusal = 'gone' | 'no-asset' | 'no-image' | 'few-images' | 'over-limit' | 'number-taken'
 
 export interface FillOk {
   ok: true
@@ -295,7 +312,9 @@ export interface FillOk {
   /** Members of the group left (the new character has fewer pictures). */
   left: number
 }
-export type FillPlan = FillOk | { ok: false; why: FillRefusal }
+/** A refused fill. `token` ('number-taken'): the real token already written with a number the character would take. */
+export type FillRefused = { ok: false; why: FillRefusal; token?: string }
+export type FillPlan = FillOk | FillRefused
 
 export interface FillOptions {
   /** project.settings.autoRenumber: with it off the character is appended and only the placeholders' text changes. */
@@ -347,6 +366,16 @@ export function planFill(scene: Pick<Scene, 'prompt' | 'refs'>, assets: readonly
     refs = [...without.slice(0, at), assetId, ...without.slice(at)]
   } else if (!linked) refs = [...scene.refs, assetId]
   if (refs.length === scene.refs.length && refs.every((r, i) => r === scene.refs[i])) refs = scene.refs
+
+  // Renumbering off: nothing moves, the character is appended and takes the numbers after the last picture. A real
+  // token outside the group already written with one of those numbers pointed at nothing (typically left over by the
+  // cut: "@image_3" while two pictures are left) — it would silently start sending the new character. Refused until
+  // that number is fixed (the stale-token warnings name it); with renumbering on such a token became "@image_?N".
+  if (!opts.renumber && !linked) {
+    const fresh = new Set(imageSlotsFor(assets as Asset[], refs).filter((s) => s.assetId === assetId).map((s) => s.n))
+    const taken = parseTokens(scene.prompt).find((t) => t.kind === 'image' && !inGroup(t.start) && fresh.has(t.n))
+    if (taken) return { ok: false, why: 'number-taken', token: `@image_${taken.n}` }
+  }
 
   // Members out of the way while the other tokens renumber (a labelled token is a real token to remapTokens).
   const members = [...group.members].sort((a, b) => a.start - b.start)

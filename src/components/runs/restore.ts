@@ -122,7 +122,7 @@ export function restoredFromTake(
   const labels = removalLabels(assets, { beforeKeys: beforeImages, refsAfter: refs, assetsAfter: assets })
   const res = remapTokens(raw, { images: beforeImages }, after, () => '', {
     keepNumbers: !opts.renumber,
-    placeholder: (key) => (isMissingKey(key) || key.startsWith('\u0000') ? null : labels(key)),
+    placeholder: (key, n, glued) => (isMissingKey(key) || key.startsWith('\u0000') ? null : labels(key, n, glued)),
   })
   const placeholders = imagePlaceholders(res.text).length - imagePlaceholders(raw).length
   // Past the unknown slots a typed-ahead number of the old prompt has no picture either (out of range: blocked).

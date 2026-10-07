@@ -427,12 +427,12 @@ export interface DeleteItems {
   folderLinks?: { folderId: string; kind: FolderLinkKind; from: string }[]
 }
 
-export type FillResult = { ok: true; token: string; filled: number; left: number } | { ok: false; why: FillRefusal }
+export type FillResult = { ok: true; token: string; filled: number; left: number } | { ok: false; why: FillRefusal; token?: string }
 
 export interface FillManyResult {
   /** Scenes filled (in the order given). */
   filled: string[]
-  refused: { sceneId: string; why: FillRefusal }[]
+  refused: { sceneId: string; why: FillRefusal; token?: string }[]
 }
 
 /** A new folder node (addFolder): the id may be given (its browser folder handle is stored under it first). */
@@ -964,7 +964,7 @@ export const useProject = create<ProjectState>()(
             if (!scene) continue
             const plan = planFill(scene, p.assets, 'L:' + base, assetId, fillOpts(p, scene))
             if (!plan.ok) {
-              result.refused.push({ sceneId: id, why: plan.why })
+              result.refused.push({ sceneId: id, why: plan.why, ...(plan.token ? { token: plan.token } : {}) })
               continue
             }
             next.set(id, { prompt: plan.prompt, refs: plan.refs })

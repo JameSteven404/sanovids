@@ -178,11 +178,17 @@ describe('red placeholders in compile (GT1)', () => {
       '@image_1 @image_?3(Bé An) @image_4 @image_9',
     )
   })
-  it('placeholder mode: never a name, the label is optional, a glued label stays the label', () => {
+  it('placeholder mode: never a name, the label is optional, glued "(…)" text is passed on and never touched', () => {
     const before = mediaKeys(project([]).assets, ['b', 'c'])
     const after = mediaKeys(project([]).assets, ['c'])
     expect(remapTokens('@image_1 x', before, after, () => 'NAME', { placeholder: () => null }).text).toBe('@image_?1 x')
-    expect(remapTokens('@Image 1(Lumi) x', before, after, () => 'NAME', { placeholder: () => 'Bé An' }).text).toBe('@image_?1(Lumi) x')
+    const seen: (string | undefined)[] = []
+    const label = (_k: string, _n: number, glued?: string) => (seen.push(glued), glued === 'Lumi' ? null : 'Bé An')
+    // null: the glued text stays the label; a label: it goes in front, the glued text stays as plain text after it
+    expect(remapTokens('@Image 1(Lumi) x', before, after, () => 'NAME', { placeholder: label }).text).toBe('@image_?1(Lumi) x')
+    expect(remapTokens('@image_1(cười) x', before, after, () => 'NAME', { placeholder: label }).text).toBe('@image_?1(Bé An)(cười) x')
+    expect(remapTokens('@image_1 (cười) x', before, after, () => 'NAME', { placeholder: label }).text).toBe('@image_?1(Bé An) (cười) x')
+    expect(seen).toEqual(['Lumi', 'cười', undefined])
   })
   it('unsentTokens holds placeholders verbatim, label included, with the bar sentence', () => {
     const s = scene({ prompt: '@image_1 hugs @image_?2(Bé An) and @image_?3', refs: ['c'] })

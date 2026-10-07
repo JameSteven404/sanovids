@@ -311,10 +311,12 @@ export interface RemapOptions {
   /**
    * A token whose picture is gone becomes a red placeholder "@image_?N(label)" (N = its number as written, label =
    * `placeholder(key, N)`, null = a bare "@image_?N") instead of `fallback`'s text: no prompt text is ever lost and the
-   * scene cannot run until the user fills it (core/placeholders). A token that already has a label glued to it
-   * ("@image_2(Lumi)") keeps that label: it becomes "@image_?2" followed by its own "(Lumi)".
+   * scene cannot run until the user fills it (core/placeholders). `glued` = the text of a "(…)" glued right after the
+   * token (undefined without one), kept byte for byte either way: with a null label it stays the placeholder's label
+   * ("@image_2(Lumi)" → "@image_?2(Lumi)"), with a label it stays after it as plain text ("@image_2(cười)" →
+   * "@image_?2(Lumi)(cười)"; core/placeholders removalLabels returns null only when it fits the removed picture).
    */
-  placeholder?: (key: string, n: number) => string | null
+  placeholder?: (key: string, n: number, glued?: string) => string | null
 }
 
 /**
@@ -368,9 +370,10 @@ export function remapTokens(
     if (idx >= 0) next = opts.keepNumbers ? whole : withTokenNumber(whole, idx + 1)
     else if (opts.placeholder) {
       dropped++
-      // a label already glued after the token stays (it is what the user / an earlier removal wrote)
-      const glued = GLUED_LABEL.test(text.slice(last))
-      next = placeholderToken('image', n, glued ? null : opts.placeholder(key, n))
+      // a "(…)" already glued after the token is never touched (what the user / an earlier removal wrote): the
+      // callback decides whether it stays the label (null) or a new label goes in front of it
+      const glued = GLUED_LABEL.exec(text.slice(last))?.[0].slice(1, -1)
+      next = placeholderToken('image', n, opts.placeholder(key, n, glued))
     } else {
       dropped++
       // never an "@" in it (a name like "@Lumi" / "@image_1" would point at another picture), never glued to an open
@@ -510,7 +513,9 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
     const now = asset.name || asset.tag
     const base = splitLabel(label).base
     unsent.add(m[0])
-    warnings.push(`@image_${n} bây giờ là “${now}”, không phải “${label}” — nối ảnh thay thế rồi bấm “Gắn vào chỗ ${base}”, hoặc xoá chữ “(${label})” nếu đúng là ${now}.`)
+    warnings.push(
+      `@image_${n} bây giờ là “${now}”, không phải “${label}” — nối ảnh thay thế rồi bấm “Gắn vào chỗ ${base}”; nếu đúng là ${now}, thêm một dấu cách trước “(${label})” (chữ được giữ) hoặc xoá chữ đó.`,
+    )
   }
   const unusedImages = images.filter((i) => !usedImages.has(i.n)).map((i) => `@image_${i.n}`)
   if (unusedImages.length) notes.push(`${unusedImages.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)

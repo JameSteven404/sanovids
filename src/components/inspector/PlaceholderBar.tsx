@@ -2,7 +2,8 @@
 // scene's prompt ("@image_?2(Lumi)", core/placeholders) — under the prompt editor of the inspector (and, from E2, of the
 // scene card editor: variant 'node'). One chip per group; its menu fills it with a linked picture ("Gắn ảnh đã nối"),
 // turns it into plain text ("Đổi thành chữ “Lumi”") or removes it ("Xoá chữ đỏ"); a labelled token whose label does
-// not fit its slot ("@image_2(Lumi)" while 2 is Làng) offers "Giữ @image_2 = Làng". Every command is an explicit click
+// not fit its slot ("@image_2(Lumi)" while 2 is Làng) offers "Giữ @image_2 = Làng", keeping the bracket text as plain
+// text (one space before the "(", first: nothing deleted) or deleting it. Every command is an explicit click
 // and ONE undo step (src/placeholderActions.ts); nothing is filled by itself.
 import { ChevronDown, TriangleAlert } from 'lucide-react'
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
@@ -16,6 +17,7 @@ import {
   keepTokenAction,
   placeholderToTextAction,
   removePlaceholderAction,
+  splitTokenAction,
 } from '../../placeholderActions'
 import { useProject } from '../../store/project'
 import { AssetAvatar } from '../common/Media'
@@ -143,13 +145,29 @@ function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets, onClos
       <div className="in-picker-title">{menuTitle(group)}</div>
       <div className="in-picker-list">
         {group.kind === 'mismatch' && (
-          <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => keepTokenAction(sceneId, group.key, `@image_${group.n}`))}>
-            <span className="in-picker-text">
-              <span className="in-picker-label">
-                Giữ @image_{group.n} = {group.slotName} (xoá chữ “({gluedLabel(group.text)})”)
+          <>
+            <button
+              type="button"
+              role="menuitem"
+              className="in-picker-item"
+              onClick={() => run(() => splitTokenAction(sceneId, group.key, `@image_${group.n}`))}
+              title="Chữ trong ngoặc được giữ và gửi như chữ thường: chỉ thêm một dấu cách trước “(” (Ctrl+Z để hoàn tác)"
+            >
+              <span className="in-picker-text">
+                <span className="in-picker-label">
+                  Giữ @image_{group.n} = {group.slotName}, giữ chữ “({gluedLabel(group.text)})”
+                </span>
+                <span className="in-picker-sub">thêm dấu cách trước “(”</span>
               </span>
-            </span>
-          </button>
+            </button>
+            <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => keepTokenAction(sceneId, group.key, `@image_${group.n}`))} title="Ctrl+Z để hoàn tác">
+              <span className="in-picker-text">
+                <span className="in-picker-label">
+                  Giữ @image_{group.n} = {group.slotName}, xoá chữ “({gluedLabel(group.text)})”
+                </span>
+              </span>
+            </button>
+          </>
         )}
         {plans.length > 0 && <div className="in-ph-sub">{group.kind === 'mismatch' ? 'Gắn ảnh khác…' : 'Gắn ảnh đã nối'}</div>}
         {plans.map(({ asset, named, plan }) => {
@@ -161,7 +179,7 @@ function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets, onClos
               key={asset.id}
               className="in-picker-item"
               disabled={!plan.ok}
-              title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (Ctrl+Z để hoàn tác)` : fillRefusalText(plan.why, name)}
+              title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (Ctrl+Z để hoàn tác)` : fillRefusalText(plan.why, name, plan.token)}
               onClick={() => run(() => fillPlaceholderAction(sceneId, group.key, asset.id))}
             >
               <AssetAvatar asset={asset} size={22} />

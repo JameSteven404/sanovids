@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset } from '../../../core/types'
 import { findMention } from '../mentions'
+import { fillRefusalText } from '../../../placeholderActions'
 import { chipLabel, gluedLabel, menuTitle } from '../PlaceholderBar'
 import { invalidTokenTitle, labelChecker, segmentForScene, segmentPrompt } from '../tokens'
 
@@ -64,7 +65,9 @@ describe('segmentPrompt / segmentForScene', () => {
     const [ph] = segmentPrompt('@image_?2(Lumi)', 0)
     expect(invalidTokenTitle(ph)).toBe('Ảnh @image_2 (Lumi) đã bị bỏ nối — nối ảnh thay thế rồi chọn ở dải dưới ô prompt')
     const mismatch = segmentForScene('@image_3(Lumi)', ASSETS, ['e', 'v'])[0]
-    expect(invalidTokenTitle(mismatch)).toBe('@image_3 bây giờ là “Làng”, không phải “Lumi” — gắn ảnh đúng ở dải “Chữ đỏ chờ ảnh” dưới ô prompt, hoặc xoá chữ “(Lumi)”.')
+    expect(invalidTokenTitle(mismatch)).toBe(
+      '@image_3 bây giờ là “Làng”, không phải “Lumi” — gắn ảnh đúng ở dải “Chữ đỏ chờ ảnh” dưới ô prompt; nếu đúng là “Làng”, thêm một dấu cách trước “(Lumi)” (chữ được giữ) hoặc xoá chữ đó.',
+    )
   })
   it('labelChecker uses the tag when two characters share a name', () => {
     const twins = [asset('a', 'Lumi'), asset('b', 'Lumi', 1, 'LumiNho')]
@@ -92,5 +95,11 @@ describe('bar texts', () => {
     expect(menuTitle({ kind: 'mismatch', n: 2, base: 'Lumi', text: '@image_2(Lumi)', slotName: 'Làng' })).toBe('@image_2 đang là “Làng”, không phải “Lumi”')
     expect(gluedLabel('@image_2(Lumi · ảnh 2)')).toBe('Lumi · ảnh 2')
     expect(gluedLabel('@image_?3')).toBe('')
+  })
+  it('a refused fill names the number already taken (renumbering off)', () => {
+    expect(fillRefusalText('number-taken', 'Mira', '@image_3')).toBe(
+      'Không gắn được “Mira”: @image_3 đã có trong prompt nhưng chưa trỏ tới ảnh nào — gắn vào sẽ biến nó thành Mira. Sửa số đó trước, hoặc bật “Tự đánh lại số @image” trong Cài đặt.',
+    )
+    expect(fillRefusalText('number-taken', 'Mira')).toContain('số mới của nhân vật đã có trong prompt')
   })
 })

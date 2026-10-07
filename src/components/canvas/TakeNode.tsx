@@ -328,7 +328,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           style={handleStyle}
           isConnectableStart={done}
           isConnectableEnd={false}
-          title={done ? 'Kéo vào cảnh để dùng làm @video · vào Thư mục để lưu · thả ra nền để tạo cảnh tiếp nối' : 'Video chưa tạo xong'}
+          title={done ? 'Kéo vào Thư mục để lưu · thả ra nền để tạo cảnh tiếp theo' : 'Video chưa tạo xong'}
         />
       </div>
       <NodeSizer id={id} kind="take" selected={!!selected} sized={!!box} />

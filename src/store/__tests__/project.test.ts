@@ -423,10 +423,14 @@ describe('removed images leave a labelled placeholder', () => {
     expect(p).toMatch(/^@image_\?1\(Bé An nhà rất dài[^()@?]*…\) cười$/u)
     expect([...p.slice(p.indexOf('(') + 1, p.indexOf(')'))].length).toBeLessThanOrEqual(41)
   })
-  it('a label glued to a removed token stays its label ("@image_2(Lumi)" → "@image_?2(Lumi)")', () => {
+  it('text glued to a removed token is kept; it stays the label only when it describes that picture', () => {
+    st().loadProject({ ...project(1), scenes: [scene(0, { refs: ['b', 'c'], prompt: '@image_1 @image_2(Cave) end' })] })
+    st().removeRef('s1', 'c')
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Cave) end')
+    // "(Lumi)" does not describe Cave's picture: the label says Cave, "(Lumi)" stays as plain text after it
     st().loadProject({ ...project(1), scenes: [scene(0, { refs: ['b', 'c'], prompt: '@image_1 @image_2(Lumi) end' })] })
     st().removeRef('s1', 'c')
-    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Lumi) end')
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Cave)(Lumi) end')
   })
 })
 

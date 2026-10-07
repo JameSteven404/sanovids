@@ -336,6 +336,42 @@ describe('character sync: a removed picture leaves a red placeholder that never 
     expect(compileScene(st().project, s1()).unsentTokens.sort()).toEqual(['@image_3', '@image_?2(Lumi)'])
   })
 
+  it('renumbering off: a fill never lets a number left over by the cut start sending the new character', () => {
+    load(base(), {}, false)
+    st().removeRef('s1', 'lumi')
+    st().addAsset({ id: 'mira', name: 'Mira', imageIds: ['m1'] })
+    const before = st().project
+    const steps = useProject.temporal.getState().pastStates.length
+    // Mira would be appended as 3, and "in front of @image_3" (meant Village) would send Mira: refused, nothing changes
+    expect(st().fillPlaceholder('s1', 'L:Lumi', 'mira')).toEqual({ ok: false, why: 'number-taken', token: '@image_3' })
+    expect(st().project).toBe(before)
+    expect(useProject.temporal.getState().pastStates.length).toBe(steps)
+    expect(st().fillPlaceholders(['s1'], 'Lumi', 'mira').refused).toEqual([{ sceneId: 's1', why: 'number-taken', token: '@image_3' }])
+    expect(blockOf(st().project, s1())).not.toBeNull()
+    // the user fixes the number (the stale warning names it), then fills: every token sends its own character
+    st().setScenePrompt('s1', '@image_1 hugs @image_?2(Lumi) in front of @image_2')
+    expect(st().fillPlaceholder('s1', 'L:Lumi', 'mira').ok).toBe(true)
+    const p = st().project
+    expect([s1().prompt, s1().refs]).toEqual(['@image_1 hugs @image_3 in front of @image_2', ['elara', 'village', 'mira']])
+    expect(blockOf(p, s1())).toBeNull()
+    const snap = enqueueSnapshot(p, s1())
+    expect(charactersSent(snap.promptSnapshot, requestImages(snap, p.assets, 30), p.assets)).toEqual(['Elara', 'Mira', 'Village'])
+  })
+
+  it('a description glued to a token stays as text after the cut; the placeholder still names who was removed', () => {
+    load(base(), { prompt: '@image_1 hugs @image_2(cười) in front of @image_3' })
+    st().removeRef('s1', 'lumi')
+    expect(s1().prompt).toBe('@image_1 hugs @image_?2(Lumi)(cười) in front of @image_2')
+    expect(compileScene(st().project, s1()).unsentTokens).toEqual(['@image_?2(Lumi)'])
+    expect(blockOf(st().project, s1())).toContain('Lumi (@image_?2)')
+    undo()
+    expect(s1().prompt).toBe('@image_1 hugs @image_2(cười) in front of @image_3')
+    // the picture's own label glued to the token stays the label (never "(Lumi)(Lumi)")
+    load(base(), { prompt: '@image_1 hugs @image_2(Lumi) in front of @image_3' })
+    st().removeAssets(['lumi'])
+    expect(s1().prompt).toBe('@image_1 hugs @image_?2(Lumi) in front of @image_2')
+  })
+
   it('restore from an older take: a character deleted since and everything after it come back as bare placeholders', () => {
     const take = { rawPromptSnapshot: '@image_1 hugs @image_2 in front of @image_3', refsSnapshot: ['elara', 'lumi', 'village'] }
     st().removeAssets(['lumi'])
@@ -343,6 +379,12 @@ describe('character sync: a removed picture leaves a red placeholder that never 
     expect(r.prompt).toBe('@image_1 hugs @image_?2 in front of @image_?3')
     const exact = restoredFromTake({ ...take, imageKeysSnapshot: ['elara:e1', 'lumi:l1', 'village:v1'] }, st().project.assets, { renumber: true })
     expect(exact.prompt).toBe('@image_1 hugs @image_?2 in front of @image_2')
+  })
+
+  it('restore: text glued to a token whose picture is gone stays as text after the label', () => {
+    st().updateAsset('lumi', { imageIds: ['l9'] }) // Lumi still exists, the picture the take sent is gone
+    const take = { rawPromptSnapshot: '@image_1 hugs @image_2(cười) in front of @image_3', refsSnapshot: ['elara', 'lumi', 'village'], imageKeysSnapshot: ['elara:e1', 'lumi:l1', 'village:v1'] }
+    expect(restoredFromTake(take, st().project.assets, { renumber: true }).prompt).toBe('@image_1 hugs @image_?2(Lumi · ảnh 1)(cười) in front of @image_3')
   })
 
   it('a take queued before the cut still sends its own snapshot (imageKeysSnapshot), never the live refs', () => {

@@ -43,7 +43,8 @@ export interface Seg {
 export function invalidTokenTitle(seg: Seg): string {
   if (seg.reason === 'retired') return `${seg.text}: video tham chiếu không còn được hỗ trợ — xoá hoặc viết lại bằng lời để chạy cảnh này.`
   if (seg.reason === 'unbound') return placeholderTitle({ kind: 'image', n: seg.n ?? 0, text: seg.text, ...(seg.label ? { label: seg.label } : {}) })
-  if (seg.reason === 'mismatch') return `@image_${seg.n} bây giờ là “${seg.now ?? '?'}”, không phải “${seg.label ?? ''}” — gắn ảnh đúng ở dải “Chữ đỏ chờ ảnh” dưới ô prompt, hoặc xoá chữ “(${seg.label ?? ''})”.`
+  if (seg.reason === 'mismatch')
+    return `@image_${seg.n} bây giờ là “${seg.now ?? '?'}”, không phải “${seg.label ?? ''}” — gắn ảnh đúng ở dải “Chữ đỏ chờ ảnh” dưới ô prompt; nếu đúng là “${seg.now ?? '?'}”, thêm một dấu cách trước “(${seg.label ?? ''})” (chữ được giữ) hoặc xoá chữ đó.`
   if (seg.reason === 'unsent') return `${seg.text}: sẽ không được gửi (vượt giới hạn của model, hoặc chế độ này không gửi tham chiếu)`
   return `${seg.text} không tồn tại`
 }

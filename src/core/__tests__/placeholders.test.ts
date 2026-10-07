@@ -22,6 +22,7 @@ import {
   planReplace,
   removalLabels,
   removeMembers,
+  splitTokenLabel,
 } from '../placeholders'
 import { mediaChangeNote, scenesWithStaleTokens } from '../staleTokens'
 import { characterLabel, labelFitsSlot, sanitizeLabel, splitLabel } from '../tokenLabels'
@@ -133,6 +134,22 @@ describe('the rule of the user: cutting a reference never deletes prompt text', 
     expect(out).toBe('Đêm, @image_?2(Lumi) khóc. (@image_1)')
     expect([...out.matchAll(/@(image|video)_\?(\d+)/gi)].map((m) => m[0])).toEqual(['@image_?2'])
   })
+  it('text already glued to the token: kept byte for byte; it stays the label only when it describes the removed picture', () => {
+    const three = [asset('e', 'Elara'), lumi, village]
+    // a description glued to the token (prompts of 0.5): the label still says who was removed, the text follows it
+    const desc = cut('@image_2(cười) and @image_1', three, ['e', 'l', 'v'], ['e', 'v'])
+    expect(desc).toBe('@image_?2(Lumi)(cười) and @image_1')
+    expect(placeholderGroups(desc, three, ['e', 'v']).map((g) => g.key)).toEqual(['L:Lumi'])
+    expect(membersToText(desc, placeholderGroups(desc, three, ['e', 'v'])[0].members)).toBe('Lumi(cười) and @image_1')
+    // the picture's own label: stays the label (no doubled "(Lumi)(Lumi)")
+    expect(cut('@image_2(Lumi) and @image_1', three, ['e', 'l', 'v'], ['e', 'v'])).toBe('@image_?2(Lumi) and @image_1')
+    expect(cut('@image_1(Elara · ảnh 2) x', ALL, ['e'], [])).toBe('@image_?1(Elara)(Elara · ảnh 2) x') // picture 1, not 2
+    expect(cut('@image_2(Elara · ảnh 2) x', ALL, ['e'], [])).toBe('@image_?2(Elara · ảnh 2) x')
+    // a character nobody knows any more: the glued text stays as it was (bare placeholder in front of it)
+    expect(remapTokens('@image_1(cười)', mediaKeys(three, ['l']), mediaKeys(three, []), () => 'NAME', { placeholder: removalLabels([], { beforeKeys: ['l:l1'], refsAfter: [], assetsAfter: [] }) }).text).toBe(
+      '@image_?1(cười)',
+    )
+  })
   it('placeholders are never renumbered by later changes', () => {
     const once = cut('@image_1 @image_2 @image_3', [asset('e', 'Elara'), lumi, village], ['e', 'l', 'v'], ['e', 'v'])
     expect(cut(once, [asset('e', 'Elara'), lumi, village], ['e', 'v'], ['v', 'e'])).toBe('@image_2 @image_?2(Lumi) @image_1')
@@ -229,6 +246,21 @@ describe('groups', () => {
     // never glued into a mention / token: "@" + "Lumi" would read as @Lumi
     expect(membersToText('@@image_?2(Lumi)', placeholderGroups('@@image_?2(Lumi)', ALL, [])[0].members)).toBe('@ Lumi')
   })
+  it('a 0.5 prompt with a description glued to a token: blocked; "Giữ …, giữ chữ" keeps every character and unblocks', () => {
+    const p = project([scene({ prompt: '@image_1(cô gái) walks with @image_2(cô gái) and @image_2', refs: ['l', 'v'] })])
+    const s = p.scenes[0]
+    expect(compileScene(p, s).unsentTokens).toEqual(['@image_1(cô gái)', '@image_2(cô gái)'])
+    const [g1] = placeholderGroups(s.prompt, ALL, s.refs)
+    expect(g1.key).toBe('M:@image_1(cô gái)')
+    const split = splitTokenLabel(s.prompt, g1.members)
+    expect(split).toBe('@image_1 (cô gái) walks with @image_2(cô gái) and @image_2') // only that group, one space added
+    const both = splitTokenLabel(split, placeholderGroups(split, ALL, s.refs)[0].members)
+    expect(both).toBe('@image_1 (cô gái) walks with @image_2 (cô gái) and @image_2')
+    expect(compileScene(p, { ...s, prompt: both }).unsentTokens).toEqual([])
+    expect(placeholderGroups(both, ALL, s.refs)).toEqual([])
+    // the deleting variant stays available (explicit)
+    expect(keepTokenOnly(s.prompt, g1.members)).toBe('@image_1 walks with @image_2(cô gái) and @image_2')
+  })
 })
 
 describe('planFill (always an explicit click)', () => {
@@ -253,6 +285,26 @@ describe('planFill (always an explicit click)', () => {
   it('renumbering off → appended, only the placeholder text changes', () => {
     const plan = planFill(afterCut, assets, 'L:Lumi', 'm', { ...base, renumber: false })
     expect(plan.ok && [plan.prompt, plan.refs]).toEqual(['@image_1 hugs @image_3 in front of @image_2', ['e', 'v', 'm']])
+  })
+  it('renumbering off, the real sequence: a leftover number the appended character would take → refused (number-taken)', () => {
+    // [Elara, Lumi, Làng] "@image_1 hugs @image_2 in front of @image_3", cut Lumi with renumbering off
+    const offCut = { prompt: cut('@image_1 hugs @image_2 in front of @image_3', assets, ['e', 'l', 'v'], ['e', 'v'], true), refs: ['e', 'v'] }
+    expect(offCut.prompt).toBe('@image_1 hugs @image_?2(Lumi) in front of @image_3')
+    // Mira would be appended as 3: the leftover "@image_3" (meant Làng) would silently send Mira
+    expect(planFill(offCut, assets, 'L:Lumi', 'm', { ...base, renumber: false })).toEqual({ ok: false, why: 'number-taken', token: '@image_3' })
+    // a 2-picture character takes 3 and 4: a leftover "@image_4" counts too
+    const ty = asset('t', 'Tý', 2)
+    const four = { prompt: '@image_?2(Lumi) and @image_4', refs: ['e', 'v'] }
+    expect(planFill(four, [...assets, ty], 'L:Lumi', 't', { ...base, renumber: false })).toEqual({ ok: false, why: 'number-taken', token: '@image_4' })
+    // a member of the group itself is no leftover; a number past the new pictures is not taken either
+    expect(planFill({ prompt: '@image_?2(Lumi) and @image_5', refs: ['e', 'v'] }, [...assets, ty], 'L:Lumi', 't', { ...base, renumber: false }).ok).toBe(true)
+    // once the user fixed the number: filled, nothing else changes
+    const fixed = { ...offCut, prompt: offCut.prompt.replace('@image_3', '@image_2') }
+    const plan = planFill(fixed, assets, 'L:Lumi', 'm', { ...base, renumber: false })
+    expect(plan.ok && [plan.prompt, plan.refs]).toEqual(['@image_1 hugs @image_3 in front of @image_2', ['e', 'v', 'm']])
+    // with renumbering on Mira goes to Lumi's place; the leftover cannot follow that insert → a visible "@image_?3"
+    const on = planFill(offCut, assets, 'L:Lumi', 'm', base)
+    expect(on.ok && [on.prompt, on.refs]).toEqual(['@image_1 hugs @image_2 in front of @image_?3', ['e', 'm', 'v']])
   })
   it('a character with fewer pictures fills what it can; the rest stays red', () => {
     const plan = planFill({ prompt: '@image_?1(Elara) @image_?2(Elara · ảnh 2) + @image_1', refs: ['l'] }, [elara, lumi, mira], 'L:Elara', 'm', base)

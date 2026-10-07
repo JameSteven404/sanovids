@@ -12,6 +12,7 @@ import {
   linkFillOffer,
   membersToText,
   removeMembers,
+  splitTokenLabel,
   type FillRefusal,
 } from './core/placeholders'
 import { mediaChangeNote } from './core/staleTokens'
@@ -36,9 +37,13 @@ const assetName = (project: Project, id: string) => {
   return a ? a.name || a.tag : 'nhân vật'
 }
 
-/** Why a fill was refused (toast). */
-export function fillRefusalText(why: FillRefusal, name: string): string {
+/** Why a fill was refused (toast, disabled menu item). `token`: the number already taken ('number-taken'). */
+export function fillRefusalText(why: FillRefusal, name: string, token?: string): string {
   switch (why) {
+    case 'number-taken': {
+      const tok = token ?? 'số mới của nhân vật'
+      return `Không gắn được “${name}”: ${tok} đã có trong prompt nhưng chưa trỏ tới ảnh nào — gắn vào sẽ biến nó thành ${name}. Sửa số đó trước, hoặc bật “Tự đánh lại số @image” trong Cài đặt.`
+    }
     case 'over-limit':
       return `Không gắn được “${name}”: vượt giới hạn ảnh của model.`
     case 'no-image':
@@ -74,7 +79,7 @@ export function fillPlaceholderAction(sceneId: string, groupKey: string, assetId
   const name = assetName(before, assetId)
   const res = st.fillPlaceholder(sceneId, groupKey, assetId)
   if (!res.ok) {
-    toast(fillRefusalText(res.why, name), { tone: 'warning' })
+    toast(fillRefusalText(res.why, name, res.token), { tone: 'warning', ...(res.why === 'number-taken' ? { ms: 10000 } : {}) })
     return false
   }
   const after = useProject.getState().project
@@ -96,7 +101,7 @@ export function fillPlaceholdersAction(sceneIds: readonly string[], base: string
   const res = st.fillPlaceholders([...sceneIds], base, assetId)
   const after = useProject.getState().project
   if (!res.filled.length) {
-    toast(res.refused.length ? fillRefusalText(res.refused[0].why, name) : 'Chữ đỏ này không còn trong prompt.', { tone: 'warning' })
+    toast(res.refused.length ? fillRefusalText(res.refused[0].why, name, res.refused[0].token) : 'Chữ đỏ này không còn trong prompt.', { tone: 'warning' })
     return
   }
   const refused = res.refused.length
@@ -132,7 +137,12 @@ export function removePlaceholderAction(sceneId: string, groupKey: string): void
   editGroup(sceneId, groupKey, removeMembers, 'Đã xoá chữ đỏ khỏi prompt.')
 }
 
-/** "Giữ @image_2 = Làng (xoá chữ “(Lumi)”)": a labelled token keeps its number, its label goes. */
+/** "Giữ @image_1 = Elara, giữ chữ “(cô gái)”": the token keeps its number, the brackets stay as plain text after a space. */
+export function splitTokenAction(sceneId: string, groupKey: string, token: string): void {
+  editGroup(sceneId, groupKey, splitTokenLabel, `Đã giữ ${token}; chữ trong ngoặc giữ nguyên, tách ra bằng một dấu cách.`)
+}
+
+/** "Giữ @image_2 = Làng, xoá chữ “(Lumi)”": a labelled token keeps its number, its label goes. */
 export function keepTokenAction(sceneId: string, groupKey: string, token: string): void {
   editGroup(sceneId, groupKey, keepTokenOnly, `Đã giữ ${token}, bỏ chữ trong ngoặc.`)
 }
