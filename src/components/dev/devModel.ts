@@ -3,7 +3,8 @@
 //
 // ---- API ----
 //   DEV_PANEL_TABS / DevPanelTab              the panel's tabs (Trạng thái · Gây lỗi · Nhật ký · Job & đơn nạp · Cập nhật —
-//                                             the simulated updater and the simulated signature of Cài đặt → Giới thiệu).
+//                                             the simulated updater and the simulated signature of Cài đặt → Giới thiệu ·
+//                                             Test giới hạn — the stress tester, src/devtools/stress, lazy chunk).
 //   devPanelTabs({ simulatedUpdates })        the tabs to show ('Cập nhật' only where the updater is simulated).
 //   activeFaultCount(snapshot)                faults armed on the simulated server (rules + job faults + session ended).
 //   DEV_UI_FAULTS                             one-click faults of the "Gây lỗi" tab (Vietnamese label / hint / action).
@@ -61,6 +62,7 @@ export const DEV_PANEL_TABS: { id: DevPanelTab; label: string }[] = [
   { id: 'log', label: 'Nhật ký' },
   { id: 'jobs', label: 'Job & đơn nạp' },
   { id: 'updates', label: 'Cập nhật' },
+  { id: 'stress', label: 'Test giới hạn' },
 ]
 
 /**

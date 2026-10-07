@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { CanvasView } from './components/canvas/CanvasView'
 import { SectionBoundary } from './components/common/ErrorBoundary'
 import { errorSummary, isChunkLoadError } from './components/common/errorInfo'
@@ -11,6 +11,7 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { useFileDropGuard } from './components/sidebar/shared'
 import { TopBar } from './components/topbar/TopBar'
 import { useShortcuts } from './hooks/useShortcuts'
+import { activeProviderId, useProviderPrefs } from './providers'
 import { closeDevPrompts, useDevPrompts } from './providers/dev/prompts'
 import { bootstrap, useSave } from './store/persist'
 import { toast, useUI, type DialogState } from './store/ui'
@@ -52,6 +53,12 @@ const DevPanel = lazy(() => chunks.devPanel().then((m) => ({ default: m.DevPanel
 const DevSheets = lazy(() => chunks.devSheets().then((m) => ({ default: m.DevSheets })))
 const UpdateDialog = lazy(() => chunks.updateDialog().then((m) => ({ default: m.UpdateDialog })))
 const ImportJobsDialog = lazy(() => chunks.importJobsDialog().then((m) => ({ default: m.ImportJobsDialog })))
+// "Test giới hạn" pill (src/devtools/stress): development mode only, never prefetched; a chunk that cannot load shows
+// nothing (the tester itself is a separate chunk, loaded by its dev-panel tab).
+const StressHud = lazy(
+  (): Promise<{ default: ComponentType }> =>
+    import('./devtools/stress/StressHud').then((m) => ({ default: m.StressHud })).catch(() => ({ default: () => null })),
+)
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -156,8 +163,20 @@ function Shell() {
       </div>
       <Dialogs />
       <DevPrompts />
+      <StressHudSlot />
       <Toasts />
     </div>
+  )
+}
+
+/** The stress tester's pill + clean-up after an interrupted run: only while development mode runs new takes. */
+function StressHudSlot() {
+  useProviderPrefs((s) => s.provider)
+  if (activeProviderId() !== 'dev') return null
+  return (
+    <Suspense fallback={null}>
+      <StressHud />
+    </Suspense>
   )
 }
 

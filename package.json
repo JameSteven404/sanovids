@@ -23,6 +23,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run",
+    "stress": "node scripts/stress/run-stress.mjs",
     "preview": "vite preview",
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",

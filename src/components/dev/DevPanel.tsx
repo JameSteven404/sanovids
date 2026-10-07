@@ -15,6 +15,7 @@
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
 //                  only outside Electron — the desktop app uses the real ones), and "Vị trí chạy" (where the app runs
 //                  from: the Portable / temp-copy reminder of Settings, providers/dev/appPlacement; PlacementCard below).
+//   Test giới hạn  the stress tester (src/devtools/stress, its own lazy chunk: runs on a temporary project).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
 // Every texts/rule decision lives in devModel.ts (pure, tested).
 import {
@@ -30,6 +31,7 @@ import {
   Cloud,
   CloudDownload,
   Eraser,
+  Flame,
   FlaskConical,
   Gauge,
   Hourglass,
@@ -127,6 +129,8 @@ import { DevUpdatesTab } from './DevUpdatesTab'
 
 let DevPerfTab: React.ComponentType | null = null
 if (__SANOVIDS_PERF__) DevPerfTab = lazy(() => import('./DevPerfTab').then((m) => ({ default: m.DevPerfTab })))
+// "Test giới hạn": the whole stress tester is its own chunk, loaded when the tab opens.
+const StressTab = lazy(() => import('../../devtools/stress').then((m) => ({ default: m.StressTab })))
 
 /** After a change of the simulated account: the pill / dialogs read the balance again (only while dev is active). */
 function syncBalance() {
@@ -215,7 +219,11 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
           ))}
         </div>
         <div role="tabpanel" id={`dv-panel-${tab}`} aria-labelledby={`dv-tab-${tab}`} className="dv-tabpanel">
-          {tab === 'perf' && DevPerfTab ? <Suspense fallback={<p>Đang tải bộ đo…</p>}><DevPerfTab /></Suspense> : tab === 'updates' ? (
+          {tab === 'perf' && DevPerfTab ? <Suspense fallback={<p>Đang tải bộ đo…</p>}><DevPerfTab /></Suspense> : tab === 'stress' ? (
+            <Suspense fallback={<p>Đang tải bộ Test giới hạn…</p>}>
+              <StressTab />
+            </Suspense>
+          ) : tab === 'updates' ? (
             <div className="dv-upd">
               <DevUpdatesTab />
               <div className="dv-grid">
@@ -245,6 +253,7 @@ const TAB_ICON: Record<DevPanelTab, ReactNode> = {
   log: <ScrollText size={14} />,
   jobs: <ListChecks size={14} />,
   updates: <CloudDownload size={14} />,
+  stress: <Flame size={14} />,
   // Not listed by devPanelTabs yet (the perf build's tab, src/perf): pick() falls back to 'status' for it.
   perf: <Gauge size={14} />,
 }

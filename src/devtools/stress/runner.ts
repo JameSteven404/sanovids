@@ -134,9 +134,13 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   const seenLog = new Set<number>()
   let offLog: () => void = () => undefined
   let stopping = false
-  /** The project open before the run, and the one the run opened once its load was done (null until then). */
+  // The project this run loaded (the app: the sandbox's temporary project) — once the load is done, or the first project
+  // opened while it loads (a load that opened it and then failed: its takes are still stopped). Nothing is done to any
+  // other one: a load that failed before opening its project leaves the open one (the user's) alone, and if another
+  // project gets opened meanwhile, the run stops and leaves that project's data and queue alone.
   const projectBefore = useProject.getState().project.id
-  let runProject: string | null = null
+  let loadedId: string | null = null
+  const ownProjectOpen = () => loadedId !== null && useProject.getState().project.id === loadedId
 
   const note = (text: string) => {
     if (report.notes.length < 200) report.notes.push(text)
@@ -152,13 +156,21 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     const gen = generateProject(rng.fork('project'), seed, plan.tier, plan.project)
     const good = goodImage()
     for (const id of gen.imageIds) s.media.set(id, good)
-    if (hooks.load) await hooks.load(gen)
-    else {
-      useProject.getState().loadProject(gen.project)
-      clearHistory()
-      useRuns.getState().loadRuns({ takes: gen.takes, credits: 1000, spent: 0 })
+    // The first project opened while loading is the run's own, also when the load throws right after opening it.
+    const offLoad = useProject.subscribe((st) => {
+      if (loadedId === null && st.project.id !== projectBefore) loadedId = st.project.id
+    })
+    try {
+      if (hooks.load) await hooks.load(gen)
+      else {
+        useProject.getState().loadProject(gen.project)
+        clearHistory()
+        useRuns.getState().loadRuns({ takes: gen.takes, credits: 1000, spent: 0 })
+      }
+    } finally {
+      offLoad()
     }
-    runProject = useProject.getState().project.id
+    loadedId = useProject.getState().project.id
     note(`Dự án thử nghiệm: ${gen.project.scenes.length} cảnh, ${gen.project.assets.length} nhân vật, ${gen.takes.length} video${scenesWithVideoTokens(gen.project) ? `, ${scenesWithVideoTokens(gen.project)} cảnh còn @video cũ` : ''}.`)
 
     // Requests the simulated gateway refused (outside its allowlist) — must never happen. Not one: the gateway refusing
@@ -210,6 +222,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
 
     /** Faults off, logged in, money back; wait for the queue to drain (E2), then audit the jobs. */
     const quiesce = async () => {
+      if (!ownProjectOpen()) return
       s.server.clearFaults()
       s.server.setJobFaults({ failNext: null, expireNext: false, streamFailures: 0 })
       s.server.login()
@@ -225,7 +238,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         const w = currentRestartWork()
         const now = w.queued + w.processing
         if (now === 0) break
-        if (opts.shouldStop?.()) return
+        if (opts.shouldStop?.() || !ownProjectOpen()) return
         const before = env.kind === 'headless' ? waited : env.clock() - start
         if (now < left) {
           left = now
@@ -313,6 +326,12 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         stopping = true
         break
       }
+      if (!ownProjectOpen()) {
+        note(`Dự án thử nghiệm không còn mở (đã mở dự án khác) sau ${n - 1} bước — dừng, dự án kia không bị đụng tới.`)
+        report.result = report.result === 'fail' ? 'fail' : 'stopped'
+        stopping = true
+        break
+      }
       ctx.step = n
       // Choose the action (and its args) — or take it from the replayed log.
       let action: StressAction | undefined
@@ -387,7 +406,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     }
 
     // The end: everything must settle once the network is healthy again.
-    if (!stopping && (report.result === 'pass' || !opts.stopOnFirst)) {
+    if (!stopping && ownProjectOpen() && (report.result === 'pass' || !opts.stopOnFirst)) {
       await quiesce()
       fullChecks()
       settle(report.steps + 1, 'end', {})
@@ -399,15 +418,12 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   } finally {
     offLog()
     // Stop the engine before the session's provider goes away (in-flight work of this generation is then ignored) —
-    // only on the run's own project. A load that failed before opening it leaves the project that was open before
-    // (the user's, in the app) open: emptying ITS takes would be autosaved over the user's videos.
-    const open = useProject.getState().project.id
-    if (open === runProject || open !== projectBefore) {
-      try {
-        useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
-      } catch {
-        /* nothing running */
-      }
+    // only while the project this run loaded is the open one: emptying the takes of any other project (the user's,
+    // when loading failed or another project was opened meanwhile) would be saved and lose its videos.
+    try {
+      if (ownProjectOpen()) useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+    } catch {
+      /* the caller restores the user's data anyway */
     }
     session?.stop()
   }

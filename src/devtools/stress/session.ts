@@ -42,6 +42,12 @@ let active: Session | null = null
 /** Whether a stress session currently replaces the app's dev server / providers. */
 export const sessionActive = () => active !== null
 
+/**
+ * Put the app's dev server and providers back now (idempotent). The sandbox calls it the moment another project is
+ * opened during a run, so that project's queue never meets the session's private server or the trap.
+ */
+export const stopActiveSession = () => active?.stop()
+
 export interface SessionOptions {
   rng: Rng
   /** 'app': the app's own dev server exists and must come back; 'headless': none (tests). */

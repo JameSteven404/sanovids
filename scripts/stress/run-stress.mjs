@@ -8,6 +8,7 @@
 // Options map to the STRESS_* env variables read by src/devtools/stress/__tests__/soak.stress.ts (env variables
 // set by the caller work too). Exit code: 0 = every run passed, ≠ 0 = a failure (see the report files).
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -50,6 +51,18 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const vitest = resolve(root, 'node_modules/vitest/vitest.mjs')
+// node_modules may live in a parent folder (a git worktree nested in the main checkout): look upwards like Node does.
+function findVitest(from) {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const candidate = resolve(dir, 'node_modules/vitest/vitest.mjs')
+    if (existsSync(candidate)) return candidate
+    if (dirname(dir) === dir) return null
+  }
+}
+const vitest = findVitest(root)
+if (!vitest) {
+  console.error('Không tìm thấy vitest (chạy `npm install` trước).')
+  process.exit(2)
+}
 const child = spawn(process.execPath, [vitest, 'run', '--config', resolve(here, 'vitest.stress.config.mts')], { cwd: root, env, stdio: 'inherit' })
 child.on('exit', (code, signal) => process.exit(signal ? 1 : (code ?? 1)))
