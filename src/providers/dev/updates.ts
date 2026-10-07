@@ -7,8 +7,9 @@
 // for an installer build with status 'available' (or 'error' after a failed download), install only when 'ready', no
 // check at all for the 'dev' kind. The Portable and Mac ('mac-manual') builds only check: they never download or
 // install, and no state of theirs is ever 'downloading' / 'ready'. `noMacBuild` (the newest release has no Mac build)
-// exists only on a 'mac-manual' + 'none' state and is dropped by every other state. Driven from "Bảng phát triển →
-// Cập nhật" (components/dev/DevUpdatesTab.tsx).
+// exists only on a 'mac-manual' + 'none' state and is dropped by every other state; such a check never hides an update
+// the Mac build already found ('available' stays). Driven from "Bảng phát triển → Cập nhật"
+// (components/dev/DevUpdatesTab.tsx).
 //
 // ---- API ----
 //   useDevUpdates                     zustand store { state, nextCheck, draft } (select fields).
@@ -16,8 +17,8 @@
 //   devUpdates.simulate(patch)        set state fields directly. Another kind is another launch: status 'idle' ('dev' ⇒
 //                                     'unsupported'), release / progress / error / last check / notice dropped.
 //   devUpdates.setNextCheck(o)        what the next check finds: 'none' | 'available' | 'windows-only' (the newest
-//                                     release has no Mac build: a Mac build gets 'none' + noMacBuild, Windows builds see
-//                                     the update) | 'offline' | 'no-release'.
+//                                     release has no Mac build: a Mac build gets 'none' + noMacBuild — or keeps an update
+//                                     it already found —, Windows builds see the update) | 'offline' | 'no-release'.
 //   devUpdates.setDraft(d)            running version / new version / release notes used by the next "available".
 //   devUpdates.announce() / runDownload() / markReady() / failNetwork() / failSignature(code?) / markNone() /
 //   markNoMacBuild()                  one-click states ('dev' becomes the installer; downloading / ready / a signature
@@ -158,6 +159,10 @@ function reduceEvent(s: UpdateState, e: SimEvent, now: number): UpdateState {
       return busy || s.status === 'available' ? s : { ...without(s, ['error']), status: 'checking' }
     case 'not-available': {
       if (busy) return { ...s, lastCheck: now }
+      // The Mac build reads only the newest release: one without a Mac build says nothing about the update already
+      // found (an older release can still hold a Mac build newer than this one), so a known update stays — like a
+      // failed re-check.
+      if (e.noMacBuild === true && s.kind === 'mac-manual' && s.status === 'available') return { ...s, lastCheck: now }
       const none: UpdateState = { ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error', 'noMacBuild']), status: 'none', lastCheck: now }
       return e.noMacBuild === true && s.kind === 'mac-manual' ? { ...none, noMacBuild: true } : none
     }
@@ -305,8 +310,8 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
       return OK
     }
     if (nextCheck === 'windows-only') {
-      // The newest release only has Windows files: the Mac build finds no newer Mac build (main maps the missing
-      // latest-mac.yml to not-available + noMacBuild), the Windows builds see that release as usual.
+      // The newest release only has Windows files: the Mac build learns nothing about Mac builds (main maps the missing
+      // latest-mac.yml to not-available + noMacBuild; a known update stays), the Windows builds see that release as usual.
       if (get().state.kind === 'mac-manual') dispatch({ type: 'not-available', noMacBuild: true })
       else announceInfo(draftInfo())
       return OK

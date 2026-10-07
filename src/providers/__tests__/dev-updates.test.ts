@@ -269,6 +269,27 @@ describe('simulated updater: the Mac build (mac-manual) only checks', () => {
     expect(state()).not.toHaveProperty('noMacBuild')
   })
 
+  it('a known update survives a check of a newest release without a Mac build (a Windows-only hotfix after it)', async () => {
+    const { sim, state, pushes } = setup()
+    sim.simulate({ kind: 'mac-manual' })
+    expect(await check(sim)).toEqual({ ok: true })
+    const found = state()
+    expect(found).toMatchObject({ kind: 'mac-manual', status: 'available', version: NEW })
+    // the author posts a Windows-only release: the newest release has no Mac build, the Mac update found stays
+    sim.setNextCheck('windows-only')
+    vi.setSystemTime(Date.now() + 60_000)
+    const n = pushes.length
+    expect(await check(sim)).toEqual({ ok: true })
+    expect(state()).toEqual({ ...found, lastCheck: expect.any(Number) })
+    expect(state().lastCheck).toBeGreaterThan(found.lastCheck ?? 0)
+    expect(state()).not.toHaveProperty('noMacBuild')
+    expect(pushes.slice(n).map((x) => x.status)).toEqual(['available'])
+    // a plain "nothing newer" (the Mac feed answers) still ends it
+    sim.setNextCheck('none')
+    await check(sim)
+    expect(state()).toEqual({ kind: 'mac-manual', current: CUR, status: 'none', autoDownload: true, lastCheck: expect.any(Number) })
+  })
+
   it('the noMacBuild flag is reset by every other state (check, error, another kind, markNone)', async () => {
     const { sim, state, pushes } = setup()
     sim.markNoMacBuild()
@@ -370,6 +391,12 @@ describe('simulated updater: the Mac build (mac-manual) only checks', () => {
     expect(reduceDevUpdateState(none, { type: 'prefs', autoDownload: false }, 5)).toEqual({ ...none, autoDownload: false })
     expect(reduceDevUpdateState(none, { type: 'checking' }, 5)).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'checking', autoDownload: true })
     expect(reduceDevUpdateState(none, { type: 'not-available' }, 6)).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: 6 })
+    // a known update stays (only the time of the check changes); a Windows build ignores the flag
+    const available: UpdateState = { kind: 'mac-manual', current: '0.6.0', status: 'available', version: '0.6.1', notes: '- x', autoDownload: true, lastCheck: 1 }
+    expect(reduceDevUpdateState(available, { type: 'not-available', noMacBuild: true }, 8)).toEqual({ ...available, lastCheck: 8 })
+    expect(reduceDevUpdateState(available, { type: 'not-available' }, 8)).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: 8 })
+    const portable: UpdateState = { ...available, kind: 'portable' }
+    expect(reduceDevUpdateState(portable, { type: 'not-available', noMacBuild: true }, 8)).toEqual({ kind: 'portable', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: 8 })
     const win: UpdateState = { kind: 'installer', current: '0.6.0', status: 'checking', autoDownload: true }
     expect(reduceDevUpdateState(win, { type: 'not-available', noMacBuild: true }, 7)).toEqual({ ...win, status: 'none', lastCheck: 7 })
     expect(keepMacFlag({ ...win, status: 'none', noMacBuild: true })).toEqual({ ...win, status: 'none' })

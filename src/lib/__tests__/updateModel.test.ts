@@ -1,11 +1,13 @@
 // Auto-update UI model (lib/updateModel): received states are validated, release notes never render HTML, numbers and
 // dates read in Vietnamese, and the pill / dialog / toasts say exactly what the spec says for every state.
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 import {
   autoDownloadNote,
   dialogView,
   isCheckOnly,
+  isUpToDate,
   KIND_LABEL,
   MAC_MANUAL_UPDATE_TEXT,
   NO_MAC_BUILD_LABEL,
@@ -587,7 +589,7 @@ describe('Mac build (kind mac-manual): check only, never download or install', (
     expect(parseUpdateState(st({ status: 'ready', version: '0.6.1' }), fallback).status).toBe('ready')
   })
 
-  it('no newer Mac build: never "Bản mới nhất" — dialog, Settings, status word, manual check', () => {
+  it('no Mac build in the newest release: never "Bản mới nhất" — dialog, Settings, status word, no toast', () => {
     const none = mac({ status: 'none', noMacBuild: true })
     expect(NO_MAC_BUILD_LABEL).toBe('Chưa có bản cho Mac mới hơn bản đang dùng')
     expect(statusLabel(none)).toBe(NO_MAC_BUILD_LABEL)
@@ -600,11 +602,12 @@ describe('Mac build (kind mac-manual): check only, never download or install', (
     expect(v.showNotes).toBe(false)
     expect(settingsStatusLine(none, { web: false, autoDownload: true })).toBe('Chưa có bản cho Mac mới hơn bản đang dùng.')
     expect(settingsStatusNote(none)).toBe('Bản mới nhất trên trang tải về chưa có file cho Mac. Bạn vẫn đang dùng được bản hiện tại.')
-    // the answer to "Kiểm tra ngay" (the only toast; automatic checks never toast)
-    expect(manualCheckToast(none, { ok: true })).toEqual({ text: 'Chưa có bản cho Mac mới hơn bản đang dùng (0.5.0).', tone: 'info' })
+    // "Kiểm tra ngay" gives no toast (plan §3.5.1): Settings → Cập nhật shows the status line and its note
+    expect(manualCheckToast(none, { ok: true })).toBeNull()
+    expect(manualCheckToast(mac({ status: 'none' }), { ok: true })).toEqual({ text: 'Bạn đang dùng bản mới nhất (0.5.0).', tone: 'success' })
     expect(pillView(none, { installWhenIdle: false, activeJobs: 0 })).toBeNull()
     expect(hasUpdateDetails(none)).toBe(false)
-    for (const text of [v.statusText, settingsStatusLine(none, { web: false, autoDownload: true }), manualCheckToast(none, { ok: true })?.text]) {
+    for (const text of [v.statusText, settingsStatusLine(none, { web: false, autoDownload: true })]) {
       expect(text).not.toContain('mới nhất (')
       expect(text).not.toBe('Bạn đang dùng bản mới nhất.')
     }
@@ -612,6 +615,20 @@ describe('Mac build (kind mac-manual): check only, never download or install', (
     expect(dialogView(mac({ status: 'none' }), ctx).statusText).toBe('Bạn đang dùng bản mới nhất (0.5.0).')
     expect(settingsStatusNote(mac({ status: 'none' }))).toBeNull()
     expect(settingsStatusNote(st({ status: 'none' }))).toBeNull()
+  })
+
+  it('isUpToDate: only a plain "none" is up to date (the green check), never the Mac build without a newer Mac build', () => {
+    expect(isUpToDate(mac({ status: 'none', noMacBuild: true }))).toBe(false)
+    expect(isUpToDate(mac({ status: 'none' }))).toBe(true)
+    expect(isUpToDate(st({ status: 'none' }))).toBe(true)
+    expect(isUpToDate(st({ kind: 'portable', status: 'none' }))).toBe(true)
+    for (const status of UPDATE_STATUSES.filter((x) => x !== 'none')) expect(isUpToDate(st({ status })), status).toBe(false)
+  })
+
+  it('the dialog icon follows isUpToDate (no green check for a Mac build without a newer Mac build)', () => {
+    const src = readFileSync(new URL('../../components/dialogs/UpdateDialog.tsx', import.meta.url), 'utf8')
+    expect(src).toMatch(/const good = state\.status === 'ready' \|\| isUpToDate\(state\)/)
+    expect(src).not.toMatch(/status === 'none'\s*(\|\||&&|\)|$)/m)
   })
 
   it('an available update: the manual steps, "Tải bản mới" opens the download page, nothing to download', () => {

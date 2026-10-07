@@ -4,6 +4,7 @@
 // ---- API ----
 //   KIND_LABEL / STATUS_LABEL                 'Bản cài' / 'Bản portable' / 'Bản cho Mac' / 'Bản phát triển'; short status words.
 //   statusLabel(state)                        the short status word of a state (no Mac build ≠ "Bản mới nhất").
+//   isUpToDate(state)                         the check says this IS the newest version (the "good" check icon).
 //   isCheckOnly(kind)                         'portable' / 'mac-manual': finds updates, never downloads or installs them.
 //   UPDATE_ERROR_TEXT                         the fixed Vietnamese error texts (same as electron/updater-rules.cjs).
 //   parseUpdateState(raw, fallback)           untrusted state (IPC / dev bridge) → a valid UpdateState.
@@ -15,7 +16,8 @@
 //   settingsStatusLine / settingsStatusNote / settingsIntroTitle / autoDownloadNote   Settings → Cập nhật texts.
 //   NO_MAC_BUILD_LABEL / NO_MAC_BUILD_NOTE    what a Mac build says when the newest release has no Mac build.
 //   MAC_MANUAL_UPDATE_TEXT                    how a Mac build is updated by hand (the dialog of an available update).
-//   manualCheckToast(state, result)           the toast after "Kiểm tra ngay" (automatic checks never toast).
+//   manualCheckToast(state, result)           the toast after "Kiểm tra ngay" (automatic checks never toast; no toast
+//                                             when the newest release has no Mac build: Settings shows it).
 //   noticeToast(notice)                       the toast after a restart that installed (or failed to install) an update.
 //   isSignatureError(error) / signatureToastKey(state)   an update refused / not verifiable for its code signature.
 import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, formatThumbprint } from './aboutModel'
@@ -65,13 +67,24 @@ export const STATUS_LABEL: Record<UpdateStatus, string> = {
   unsupported: 'Không tự cập nhật',
 }
 
-/** A Mac build whose newest release has no Mac build: never "Bản mới nhất" (a newer Windows-only release may exist). */
+/**
+ * A Mac build whose newest release has no Mac build: never "Bản mới nhất" (a newer Windows-only release may exist). The
+ * wording is the plan's (§3.5.1); NO_MAC_BUILD_NOTE says exactly what was found.
+ */
 export const NO_MAC_BUILD_LABEL = 'Chưa có bản cho Mac mới hơn bản đang dùng'
 export const NO_MAC_BUILD_NOTE = 'Bản mới nhất trên trang tải về chưa có file cho Mac. Bạn vẫn đang dùng được bản hiện tại.'
 
-/** The short status word of a state (STATUS_LABEL, except a Mac build with no newer Mac build). */
+/** The short status word of a state (STATUS_LABEL, except a Mac build whose newest release has no Mac build). */
 export function statusLabel(state: Pick<UpdateState, 'status' | 'noMacBuild'>): string {
   return state.status === 'none' && state.noMacBuild === true ? NO_MAC_BUILD_LABEL : STATUS_LABEL[state.status]
+}
+
+/**
+ * The last check found this IS the newest version (the dialog / Settings show the "good" check icon). Not for a Mac
+ * build whose newest release has no Mac build: that check proves nothing about being up to date.
+ */
+export function isUpToDate(state: Pick<UpdateState, 'status' | 'noMacBuild'>): boolean {
+  return state.status === 'none' && state.noMacBuild !== true
 }
 
 /** Fixed error texts (main sends the same ones; the development-mode simulation uses these). */
@@ -631,8 +644,9 @@ export function manualCheckToast(state: UpdateState, result: UpdateResult): Manu
   const v = state.version ?? ''
   switch (state.status) {
     case 'none':
-      // A Mac build whose newest release has no Mac build: never "bản mới nhất" (this answers the click; no notice).
-      if (state.noMacBuild === true) return { text: `${NO_MAC_BUILD_LABEL} (${state.current}).`, tone: 'info' }
+      // A Mac build whose newest release has no Mac build: no toast (plan §3.5.1) — Settings → Cập nhật shows the
+      // status line and its note, never "bản mới nhất".
+      if (state.noMacBuild === true) return null
       return { text: `Bạn đang dùng bản mới nhất (${state.current}).`, tone: 'success' }
     case 'available':
     case 'downloading':

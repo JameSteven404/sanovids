@@ -53,7 +53,9 @@ export interface UpdateState {
   notice?: UpdateNotice
   /**
    * Only with kind 'mac-manual' + status 'none': the newest release has no Mac build (a Windows-only release, or its
-   * latest-mac.yml is missing). It does NOT mean this is the newest version — just that no newer Mac build exists.
+   * latest-mac.yml is missing). It says nothing else: NOT that this is the newest version, and NOT that no newer Mac
+   * build exists (the updater reads only the newest release; an older one may still hold a newer Mac build). Such a
+   * check therefore never replaces a known 'available' update (it stays, like after a failed re-check).
    * Exactly `true` or absent; main drops it on every other state, the renderer drops anything else (parseUpdateState).
    */
   noMacBuild?: true
