@@ -30,6 +30,7 @@
 //   DEV_LOGIN_COOKIE_OPTIONS / DEV_ENCRYPTION_OPTIONS / devRestartText(outcome) / devRestartTone(outcome)
 //                                             "Giữ đăng nhập (giả lập)": the two settings and the toast of
 //                                             "Giả lập tắt app rồi mở lại" (providers/dev/keepLogin.ts).
+import { platformText } from '../../lib/platformText'
 import { parseTokens, sceneCode } from '../../core/compile'
 import { MODELS, normalizeSettings } from '../../core/models'
 import type { Asset, ModelId, Scene } from '../../core/types'
@@ -669,7 +670,7 @@ export const DEV_LOGIN_COOKIE_OPTIONS: { id: DevLoginCookie; label: string; titl
 export const DEV_ENCRYPTION_OPTIONS: { id: DevEncryption; label: string; title: string }[] = [
   { id: 'ok', label: 'Có', title: 'Máy mã hoá được bản sao đăng nhập (safeStorage / DPAPI)' },
   { id: 'unavailable', label: 'Không có', title: 'Máy không mã hoá được: SanoVids không giữ đăng nhập (công tắc bị khoá)' },
-  { id: 'decrypt-fails', label: 'Giải mã lỗi', title: 'Bản sao không giải mã được khi mở lại (tài khoản Windows khác, Local State bị đặt lại…): bị xoá, cần đăng nhập lại' },
+  { id: 'decrypt-fails', label: 'Giải mã lỗi', title: `Bản sao không giải mã được khi mở lại (${platformText.account} khác, dữ liệu mã hoá bị đặt lại…): bị xoá, cần đăng nhập lại` },
 ]
 
 const RESTART_TEXT: Record<DevRestartOutcome, string> = {

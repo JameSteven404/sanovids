@@ -1,4 +1,5 @@
 // Floating toolbar (bottom-center of the canvas) + selection hint (top-left).
+import { shortcutText } from '../../lib/platformText'
 import { useReactFlow, useStore } from '@xyflow/react'
 import { Film, FolderPlus, Hand, LayoutGrid, Link2, Map as MapIcon, Maximize, Minus, MousePointer2, Play, Plus, Spline } from 'lucide-react'
 import { useMemo, type WheelEvent } from 'react'
@@ -173,7 +174,7 @@ export function CanvasToolbar({ density = 'full', big = false }: { density?: Too
         className="cv-tb-btn run"
         onClick={() => requestRun(selectedSceneIds())}
         disabled={!sceneCount}
-        title="Chạy các cảnh đang chọn (Ctrl+Enter)"
+        title={shortcutText('Chạy các cảnh đang chọn (Ctrl+Enter)')}
         aria-label="Chạy các cảnh đang chọn"
       >
         <Play size={13} strokeWidth={2} fill="currentColor" />

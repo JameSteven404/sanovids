@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanFileBase, cleanTakeFileName, companionFor, cutText, freeNames, numberedName, safeFileName, splitExt, uniqueInSet } from '../fileNames'
+import { cleanFileBase, cleanTakeFileName, companionFor, cutText, freeNames, MAX_BASE_BYTES, MAX_BASE_LENGTH, MAX_BASE_NFD, numberedName, safeFileName, splitExt, uniqueInSet } from '../fileNames'
 
 describe('file names are safe on every OS', () => {
   it('keeps ordinary Vietnamese names as they are', () => {
@@ -88,6 +88,37 @@ describe('"Tên file" of a take', () => {
     expect(cleanTakeFileName('.mp4')).toBeNull()
     expect(cleanTakeFileName(null)).toBeNull()
     expect(cleanTakeFileName({})).toBeNull()
+  })
+})
+
+describe('Windows and Mac filename budgets (same project, same name)', () => {
+  it.each(['NFC', 'NFD'] as const)('keeps short %s names and limits long Vietnamese / emoji names without splitting a grapheme', (form) => {
+    expect(cleanFileBase('S01_T1 - Cảnh ở Huế'.normalize(form))).toBe('S01_T1 - Cảnh ở Huế')
+    for (const raw of ['ệ'.repeat(120), '😀'.repeat(120), '漢'.repeat(120), 'q\u0301'.repeat(120), 'a'.repeat(119) + 'q\u0301']) {
+      const out = cleanFileBase(raw.normalize(form))
+      expect(out).toBe(cleanFileBase(raw))
+      expect(out).toBe(out.normalize('NFC'))
+      expect(out.length).toBeLessThanOrEqual(MAX_BASE_LENGTH)
+      expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(MAX_BASE_BYTES)
+      expect(out.normalize('NFD').length).toBeLessThanOrEqual(MAX_BASE_NFD)
+      const segments = [...new Intl.Segmenter('vi', { granularity: 'grapheme' }).segment(raw.normalize('NFC'))].map((s) => s.segment)
+      expect(segments.slice(0, [...new Intl.Segmenter('vi', { granularity: 'grapheme' }).segment(out)].length).join('')).toBe(out)
+      const final = numberedName(`${out}.jpeg`, 1799999999999)
+      expect(new TextEncoder().encode(final).length).toBeLessThanOrEqual(240)
+      expect(final.normalize('NFD').length).toBeLessThanOrEqual(240)
+    }
+  })
+
+  it('uses the exact byte boundary, trims trailing spaces and keeps reserved names within every budget', () => {
+    expect(cleanFileBase('ệ'.repeat(120))).toBe('ệ'.repeat(66))
+    // This Greek letter is three UTF-8 bytes but four NFD units: NFD is the limiting budget.
+    expect(cleanFileBase('\u1f82'.repeat(120))).toBe('\u1f82'.repeat(50))
+    expect(cleanFileBase('a'.repeat(119) + 'q\u0301')).toBe('a'.repeat(119))
+    expect(cleanFileBase('x'.repeat(119) + ' .more')).toBe('x'.repeat(119))
+    const reserved = cleanFileBase('CON.' + 'ệ'.repeat(120))
+    expect(reserved.startsWith('_CON.')).toBe(true)
+    expect(new TextEncoder().encode(reserved).length).toBeLessThanOrEqual(MAX_BASE_BYTES)
+    expect(cleanTakeFileName('ệ'.repeat(120) + '.mp4')).toBe(cleanFileBase('ệ'.repeat(120)))
   })
 })
 

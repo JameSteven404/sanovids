@@ -17,6 +17,7 @@
 //   mergeHistoryItems(prev, next)  append a page, dropping rows already shown (pages can shift as new rows arrive).
 //   historyReducer                 paging state of the history tab (stale answers ignored by request id).
 //   historyEmptyText(kind)         empty-state text per filter.
+import { platformText } from '../../lib/platformText'
 import { creditsForAmount, formatVnd, mapTopupStatus, TOPUP_MAX_VND, TOPUP_MIN_VND, TOPUP_STEP_VND, validateTopupAmount, type TopupHistoryKind } from '../../core/topup'
 import { formatCreditNumber } from '../../lib/credits'
 import type { CreditHistoryItem, CreditHistoryPage } from '../../providers/canvasapp/api'
@@ -70,7 +71,7 @@ const gate = (state: GateState, title: string, message: string, action: GateActi
 })
 
 export const GATE_WEB_TEXT =
-  'Nạp credit canvasapp chỉ dùng được trong bản desktop SanoVids (.exe): trang thanh toán mở trong một cửa sổ riêng của app, bằng phiên đăng nhập canvasapp của bạn. Trên trình duyệt, hãy nạp trực tiếp trên canvasapp.io.vn.'
+  `Nạp credit canvasapp chỉ dùng được trong ${platformText.desktopApp} (Windows / Mac): trang thanh toán mở trong một cửa sổ riêng của app, bằng phiên đăng nhập canvasapp của bạn. Trên trình duyệt, hãy nạp trực tiếp trên canvasapp.io.vn.`
 
 /** Can this tab be used here? `scope` 'history' does not need checkout() nor topup_enabled. */
 export function topupGate(input: GateInput, scope: 'topup' | 'history' = 'topup'): GateView {

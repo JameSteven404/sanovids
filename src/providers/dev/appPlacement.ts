@@ -14,13 +14,17 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import type { AppPlacement, AppPlacementKind, DesktopPlacementBridge } from '../../lib/appPlacement'
 
-const KINDS: readonly AppPlacementKind[] = ['installer', 'portable', 'temp-copy', 'dev']
+const KINDS: readonly AppPlacementKind[] = ['installer', 'portable', 'temp-copy', 'dev', 'mac-applications', 'mac-translocated', 'mac-volume', 'mac-other']
 
 /** "Vị trí chạy" (Segmented). */
 export const DEV_PLACEMENT_OPTIONS: { id: AppPlacementKind; label: string; title: string }[] = [
   { id: 'installer', label: 'Bản cài', title: 'Cài bằng SanoVids-Setup: có icon Desktop / Start, tự cập nhật' },
   { id: 'portable', label: 'Bản Portable', title: 'SanoVids-Portable: không icon, không tự cập nhật — hiện lời nhắc cài bản Setup' },
   { id: 'temp-copy', label: 'Thư mục tạm', title: 'Bản sao chạy thẳng từ thư mục tạm của Windows — hiện lời nhắc cài bản Setup' },
+  { id: 'mac-applications', label: 'Applications', title: 'Bản Mac trong Applications: không nhắc' },
+  { id: 'mac-translocated', label: 'Mac tạm', title: 'macOS chạy bản từ DMG / Tải về ở chỗ tạm, chỉ đọc' },
+  { id: 'mac-volume', label: 'DMG / ổ ngoài', title: 'Bản Mac trên ổ ngoài: nhắc chuyển vào Applications' },
+  { id: 'mac-other', label: 'Mac chỗ khác', title: 'Bản Mac ngoài Applications: nhắc trong Cài đặt' },
   { id: 'dev', label: 'Bản phát triển', title: 'Chạy từ mã nguồn: không có lời nhắc' },
 ]
 

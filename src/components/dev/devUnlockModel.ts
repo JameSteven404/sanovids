@@ -88,7 +88,7 @@ export function unlockErrorText(r: ErrorInput, opts: { now?: number; device?: st
     case 'totp-old':
       return `Mã này cũ hơn mã đã dùng lần trước — có thể đồng hồ điện thoại từng chạy nhanh rồi được chỉnh lại. Chờ khoảng ${r.minutes ?? 1} phút rồi thử lại, hoặc dùng mã mở khoá (SV1-…).`
     case 'totp-lost':
-      return `Liên kết app xác thực trên máy này không đọc được nữa (dữ liệu Windows đã đổi). Mở khoá bằng mã mở khoá (SV1-…) tạo cho mã máy ${y}, rồi liên kết lại.`
+      return `Liên kết app xác thực trên máy này không đọc được nữa (dữ liệu mã hoá trên máy đã đổi). Mở khoá bằng mã mở khoá (SV1-…) tạo cho mã máy ${y}, rồi liên kết lại.`
     case 'totp-skew':
       return `Mã đúng nhưng đồng hồ máy này lệch khoảng ${r.minutes ?? 1} phút. Vào ${clock}, rồi thử lại.`
     case 'wait':

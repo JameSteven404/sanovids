@@ -3,6 +3,9 @@
 // whole) and applies at once; the stores save and validate the values (lib/theme, lib/downloads, lib/playback,
 // lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature;
 // the Portable / temp-copy reminder (AppBlock, AboutBlock): lib/appPlacement + aboutModel placementNote.
+import { platformText, MAC_EXPERIMENTAL, MAC_AD_HOC_NOTE } from '../../lib/platformText'
+import { PLATFORM } from '../../lib/platform'
+import { useDevSignaturePlatform } from '../../providers/dev/appSignature'
 import {
   AppWindow,
   CircleArrowUp,
@@ -40,7 +43,7 @@ import {
   ABOUT_LICENSE_NOTE,
   ABOUT_OPEN_PAGE,
   ABOUT_OPEN_PAGE_TITLE,
-  ABOUT_OPEN_SOURCE,
+  aboutOpenSource,
   ABOUT_PARTNER_LINE,
   ABOUT_TITLE,
   placementNote,
@@ -48,15 +51,15 @@ import {
   thumbprintRows,
   versionLine,
 } from '../../lib/aboutModel'
-import { loadAppPlacement, useAppPlacement } from '../../lib/appPlacement'
-import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
+import { loadAppPlacement, macPlacementNote, useAppPlacement } from '../../lib/appPlacement'
+import { appSignatureSource, loadAppSignature, useAppSignature } from '../../lib/appSignature'
 import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, type BigProjectMode, type NodeEditorMode } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
-import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
+import { autoDownloadNote, hasUpdateDetails, isUpToDate, lastCheckText, settingsIntroTitle, settingsStatusLine, settingsStatusNote } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { openReleasePage, useUpdates } from '../../lib/updates'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
@@ -102,10 +105,10 @@ export function AskWhereSetting({ label, hint }: RowProps) {
   const askWhere = useDownloadPrefs((s) => s.askWhere)
   const set = useDownloadPrefs((s) => s.set)
   const where = desktopFiles()
-    ? 'Bản desktop: hộp thoại Lưu của Windows, file .txt lưu cạnh video với cùng tên.'
+    ? `Bản desktop: ${platformText.saveDialog}, file .txt lưu cạnh video với cùng tên.`
     : canSaveAs()
-      ? 'Chrome / Edge: hộp thoại Lưu cho video; file .txt tải về thư mục Tải xuống.'
-      : 'Trình duyệt này không có hộp thoại Lưu: video vẫn tải về thư mục Tải xuống (Downloads).'
+      ? `Chrome / Edge: hộp thoại Lưu cho video; file .txt tải về ${platformText.downloads}.`
+      : `Trình duyệt này không có hộp thoại Lưu: video vẫn tải về ${platformText.downloads}.`
   return (
     <Toggle
       checked={askWhere}
@@ -192,7 +195,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
     setBusy(true)
     try {
       await clearDownloadFolder()
-      toast('Video sẽ được lưu vào thư mục Downloads.', { tone: 'success' })
+      toast(`Video sẽ được lưu vào ${platformText.downloads}.`, { tone: 'success' })
     } finally {
       setBusy(false)
     }
@@ -205,7 +208,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
       const res = await savePendingDownloads()
       if (!res) toast('Không còn video nào đang chờ lưu.')
       else if (res.to === 'folder') toast(`Đã lưu ${res.names.length} file vào thư mục “${res.folder}”.`, { tone: 'success' })
-      else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về Downloads.`, { tone: 'warning' })
+      else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về ${platformText.downloads}.`, { tone: 'warning' })
     } catch (e) {
       toast(`Không lưu được: ${(e as Error).message}`, { tone: 'error' })
     } finally {
@@ -219,11 +222,11 @@ export function DownloadFolderSetting({ label }: RowProps) {
   if (folderName) {
     hint = `${used}: ghi thẳng vào “${folderName}”. Sau khi mở lại app, ${desktop ? 'app' : 'trình duyệt'} có thể hỏi lại quyền ghi vào thư mục.`
   } else if (desktop) {
-    hint = `${used}: chưa chọn thư mục nên lưu vào thư mục Downloads của máy (không hỏi).`
+    hint = `${used}: chưa chọn thư mục nên lưu vào ${platformText.downloads} của máy (không hỏi).`
   } else if (canPick) {
-    hint = `${used}: chưa chọn thư mục nên trình duyệt tải về Downloads.`
+    hint = `${used}: chưa chọn thư mục nên trình duyệt tải về ${platformText.downloads}.`
   } else {
-    hint = 'Trình duyệt này không cho chọn thư mục — video được tải về thư mục Downloads. Dùng Chrome / Edge / Brave hoặc bản desktop để lưu thẳng vào một thư mục.'
+    hint = `Trình duyệt này không cho chọn thư mục — video được tải về ${platformText.downloads}. Dùng Chrome / Edge / Brave hoặc bản desktop để lưu thẳng vào một thư mục.`
   }
 
   return (
@@ -233,7 +236,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
         <span className={`dg-folder-icon${folderName ? ' on' : ''}`}>{folderName ? <FolderOpen size={16} /> : <FolderDown size={16} />}</span>
         <span className="dg-folder-text">
           <small>Thư mục lưu:</small>
-          <b title={folderName ?? 'Thư mục Downloads mặc định'}>{folderName ?? 'Downloads mặc định'}</b>
+          <b title={folderName ?? `Mặc định: ${platformText.downloads}`}>{folderName ?? 'Downloads mặc định'}</b>
         </span>
         {canPick && (
           <button className="btn btn-sm" disabled={busy} onClick={() => void pick()} title="Chọn một thư mục trên máy để lưu video vào đó">
@@ -241,7 +244,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
           </button>
         )}
         {folderName && (
-          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void resetToDownloads()} title="Bỏ thư mục đã chọn, lưu vào Downloads">
+          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void resetToDownloads()} title={`Bỏ thư mục đã chọn, lưu vào ${platformText.downloads}`}>
             Dùng Downloads
           </button>
         )}
@@ -252,7 +255,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
           <Clock size={15} />
           <div>
             <b>{pending.count} file tự tải đang chờ lưu</b>
-            {folderName ? ` vào “${folderName}”` : ''} — trình duyệt cần bạn cho phép ghi vào thư mục lần nữa (sau khi mở lại app). File không bị tải nhầm về Downloads.
+            {folderName ? ` vào “${folderName}”` : ''} — trình duyệt cần bạn cho phép ghi vào thư mục lần nữa (sau khi mở lại app). File không bị tải nhầm về {platformText.downloads}.
           </div>
           <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => void savePending()}>
             {saving ? <LoaderCircle size={13} className="dg-spin" /> : <FolderOpen size={13} />} Cho phép & lưu
@@ -262,7 +265,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
         folderName &&
         autoDownload && (
           <div className="dg-field-hint">
-            Khi chưa có quyền ghi vào thư mục, video tự tải được giữ lại chờ (không tải nhầm về Downloads): bấm “Cho phép & lưu” trên thông báo hoặc ở đây.
+            Khi chưa có quyền ghi vào thư mục, video tự tải được giữ lại chờ (không tải nhầm về {platformText.downloads}): bấm “Cho phép & lưu” trên thông báo hoặc ở đây.
           </div>
         )
       )}
@@ -444,7 +447,7 @@ export function UpdateStatusIntro() {
       <CloudDownload size={17} />
     ) : s === 'available' || s === 'ready' ? (
       <CircleArrowUp size={17} />
-    ) : s === 'none' ? (
+    ) : isUpToDate(state) ? (
       <CircleCheck size={17} />
     ) : s === 'error' ? (
       <TriangleAlert size={17} />
@@ -456,12 +459,13 @@ export function UpdateStatusIntro() {
   return (
     <div className="dg-app">
       <div className="dg-app-status">
-        <span className={`dg-app-icon${s === 'none' || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
+        <span className={`dg-app-icon${isUpToDate(state) || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
           {icon}
         </span>
         <span role="status">
           <b>{settingsIntroTitle(state, web)}</b>
           <small>{settingsStatusLine(state, { web, autoDownload })}</small>
+          {settingsStatusNote(state) && <small>{settingsStatusNote(state)}</small>}
           {state.lastCheck ? <small>Kiểm tra lần cuối: {lastCheckText(state.lastCheck, Math.max(now, state.lastCheck))}</small> : null}
         </span>
       </div>
@@ -490,7 +494,7 @@ export function UpdateAutoDownloadSetting({ label, hint }: RowProps) {
       hint={
         note ? (
           <>
-            {hint} {note}
+            {kind === 'mac-manual' ? note : <>{hint} {note}</>}
           </>
         ) : (
           hint
@@ -536,7 +540,14 @@ function PlacementNoteView() {
   useEffect(() => {
     void loadAppPlacement()
   }, [])
+  const macNote = macPlacementNote(placement?.kind)
   const note = placementNote(placement?.kind ?? null, updateKind)
+  if (macNote) return (
+    <div className="dg-callout warn dg-pending" role="note">
+      <TriangleAlert size={15} />
+      <div>{macNote}</div>
+    </div>
+  )
   if (!note) return null
   const openPage = async () => {
     if (opening) return
@@ -617,11 +628,8 @@ export function AppBlock() {
         <div className="dg-app-exe">
           <MonitorDown size={16} />
           <div>
-            <b>Bản cài Windows (.exe)</b>
-            <p>
-              Trong thư mục dự án chạy <code>npm run dist:win</code> → thư mục <code>release/</code> có bộ cài <code>SanoVids-Setup-…exe</code> và bản portable <code>SanoVids-Portable-…exe</code> (chạy
-              không cần cài). Chép sang máy khác để cài; nếu Windows SmartScreen cảnh báo, chọn “More info → Run anyway”.
-            </p>
+            <b>{platformText.installTitle}</b>
+            <p>{platformText.installHint}</p>
           </div>
         </div>
       )}
@@ -653,7 +661,9 @@ export function AboutBlock() {
   }, [])
 
   const version = desktopInfo()?.version || APP_VERSION
-  const view = signatureView(sig)
+  const simulatedPlatform = useDevSignaturePlatform((s) => s.platform)
+  const platform = appSignatureSource() === 'sim' ? simulatedPlatform ?? PLATFORM : PLATFORM
+  const view = signatureView(sig, platform)
 
   const openPage = async () => {
     if (opening) return
@@ -674,7 +684,7 @@ export function AboutBlock() {
         </span>
         <span className="dg-about-name">
           <b>SanoVids</b>
-          <small onClick={onVersionTap}>{versionLine(version, kind, desktop)}</small>
+          <small onClick={onVersionTap}>{versionLine(version, platform === 'mac' && sig?.packaged ? 'mac-manual' : kind, desktop)}{platform === 'mac' && sig?.packaged ? ` · ${MAC_EXPERIMENTAL}` : ''}</small>
         </span>
       </div>
       {unlockOpen && <DevUnlock onClose={() => setUnlockOpen(false)} />}
@@ -705,7 +715,8 @@ export function AboutBlock() {
             </span>
           </div>
         )}
-        {thumbprintRows(sig).map((row) => (
+        {platform === 'mac' && sig?.packaged && <p>{MAC_AD_HOC_NOTE}</p>}
+        {thumbprintRows(sig, platform).map((row) => (
           <p key={row.label} className="dg-about-thumb">
             {row.label}: <span className="mono">{row.value}</span>
           </p>
@@ -717,7 +728,7 @@ export function AboutBlock() {
           {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {ABOUT_OPEN_PAGE}
         </button>
       </div>
-      <div className="dg-field-hint">{ABOUT_OPEN_SOURCE}</div>
+      <div className="dg-field-hint">{aboutOpenSource(platform)}</div>
     </Section>
   )
 }

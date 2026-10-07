@@ -87,7 +87,7 @@ describe('the hidden gesture: 5 taps within 3 seconds', () => {
   })
 
   it('wired on the version line of Giới thiệu only while locked, with no pointer / title hint', () => {
-    expect(aboutSource).toContain('<small onClick={onVersionTap}>{versionLine(version, kind, desktop)}</small>')
+    expect(aboutSource).toContain('<small onClick={onVersionTap}>{versionLine(version,')
     expect(aboutSource).toContain("const locked = useDevAccess((s) => s.state.access === 'locked')")
     expect(aboutSource).toMatch(/const onVersionTap = \(\) => \{\s+if \(!locked\) return/)
     const line = aboutSource.slice(aboutSource.indexOf('<small onClick={onVersionTap}>'), aboutSource.indexOf('</small>', aboutSource.indexOf('<small onClick={onVersionTap}>')))

@@ -2,6 +2,7 @@
 // (components/inspector/PlaceholderBar), the link toast's "Gắn vào chỗ…" and the toasts of every change that removes a
 // reference picture. Every command is an explicit click and ONE undo step; a refused one changes nothing. Nothing is
 // ever filled automatically (not even when a character with the same name is linked).
+import { platformText } from './lib/platformText'
 import { sceneCode } from './core/compile'
 import {
   allGroupsToText,
@@ -170,7 +171,7 @@ export function linkToastWithFill(before: Project, after: Project, assetIds: rea
   if (offer) {
     const many = offer.sceneIds.length > 1
     const where = many ? `${offer.sceneIds.length} cảnh` : codesOf(after, offer.sceneIds)
-    toast(`${text}. ${where} còn chữ đỏ ${offer.example}. Ctrl+Z để bỏ nối.`, {
+    toast(`${text}. ${where} còn chữ đỏ ${offer.example}. ${platformText.mod}+Z để bỏ nối.`, {
       tone: 'success',
       ms: 12000,
       action: { label: `Gắn vào chỗ ${offer.base}${many ? ` (${offer.sceneIds.length} cảnh)` : ''}`, run: () => fillPlaceholdersAction(offer.sceneIds, offer.base, offer.assetId) },

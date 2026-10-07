@@ -1,5 +1,6 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
+import { platformText } from './lib/platformText'
 import { compileScene, retiredTokenList, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { TRASH_CONFIRM_MIN, trashBusyDeleteText, trashConfirmText } from './core/folderTrash'
@@ -911,12 +912,12 @@ function reportSavedAs(res: SaveAsResult, what: string) {
   if (res.to === 'canceled') return
   if (res.to === 'chosen') {
     const where = res.path ? ` → ${res.path}` : ` → “${res.names[0]}”`
-    const extra = res.names.length > 1 ? ` (kèm “${res.names.slice(1).join('”, “')}”${res.path ? ' cùng chỗ' : ' trong Tải xuống'})` : ''
+    const extra = res.names.length > 1 ? ` (kèm “${res.names.slice(1).join('”, “')}”${res.path ? ' cùng chỗ' : ` trong ${platformText.downloads}`})` : ''
     toast(`Đã lưu ${what}${where}${extra}.`, { tone: 'success', ms: 6000 })
     return
   }
   toast(
-    `Trình duyệt này không cho chọn nơi lưu nên đã tải ${what} về thư mục Tải xuống (Downloads). Dùng Chrome / Edge hoặc app SanoVids desktop để chọn nơi lưu và đặt tên.`,
+    `Trình duyệt này không cho chọn nơi lưu nên đã tải ${what} về ${platformText.downloads}. Dùng Chrome / Edge hoặc app SanoVids desktop để chọn nơi lưu và đặt tên.`,
     { tone: 'info', ms: 9000 },
   )
 }

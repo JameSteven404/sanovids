@@ -1,3 +1,4 @@
+import { platformText } from '../../lib/platformText'
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AssetLibrary } from './AssetLibrary'
@@ -84,7 +85,7 @@ export function Sidebar() {
               <X size={10} strokeWidth={3} />
             </button>
           ) : (
-            <span className="kbd sb-search-kbd">Ctrl K</span>
+            <span className="kbd sb-search-kbd">{platformText.mod} K</span>
           )}
         </label>
       </div>

@@ -1,3 +1,4 @@
+import { platformText } from '../../lib/platformText'
 import {
   Bug,
   ChevronDown,
@@ -292,7 +293,7 @@ function QueuePanel() {
             <ListVideo size={22} />
             <div>Chưa có job nào.</div>
             <div className="faint">
-              Chọn cảnh rồi bấm <span className="kbd">Ctrl</span> + <span className="kbd">Enter</span> hoặc nút ▶ trên thẻ cảnh.
+              Chọn cảnh rồi bấm <span className="kbd">{platformText.mod}</span> + <span className="kbd">Enter</span> hoặc nút ▶ trên thẻ cảnh.
             </div>
           </div>
         )}

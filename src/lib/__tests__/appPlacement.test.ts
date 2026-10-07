@@ -10,6 +10,7 @@ import {
   createAppPlacementLoader,
   isMacPlacementKind,
   MAC_PLACEMENT_KINDS,
+  macPlacementNote,
   parseAppPlacement,
   placementToastsOnLaunch,
   type AppPlacementKind,
@@ -46,6 +47,17 @@ describe('parseAppPlacement', () => {
 })
 
 describe('Mac placement helpers', () => {
+  it('asks to quit and move manually for DMG, Downloads and other locations; no reminder in Applications', () => {
+    for (const kind of ['mac-translocated', 'mac-volume', 'mac-other'] as const) {
+      const note = macPlacementNote(kind)
+      expect(note).toContain('⌘Q')
+      expect(note).toContain('kéo SanoVids vào thư mục Applications')
+      expect(note).not.toMatch(/Windows|Setup|tự chuyển/)
+    }
+    expect(macPlacementNote('mac-translocated')).toContain('Tải về')
+    expect(macPlacementNote('mac-volume')).toContain('Eject')
+    for (const kind of ['mac-applications', 'installer', 'portable', 'temp-copy', 'dev', 'unknown', null, undefined] as const) expect(macPlacementNote(kind)).toBeNull()
+  })
   it('isMacPlacementKind: exactly the four Mac kinds', () => {
     expect(MAC_PLACEMENT_KINDS).toEqual(['mac-applications', 'mac-translocated', 'mac-volume', 'mac-other'])
     expect(APP_PLACEMENT_KINDS.filter(isMacPlacementKind)).toEqual(MAC_PLACEMENT_KINDS)
@@ -133,7 +145,7 @@ describe('providers/dev/appPlacement', () => {
     // Mac placement texts)
     const ids = DEV_PLACEMENT_OPTIONS.map((o) => o.id)
     expect(APP_PLACEMENT_KINDS).toEqual(expect.arrayContaining(ids))
-    expect(ids).toEqual(expect.arrayContaining(APP_PLACEMENT_KINDS.filter((k) => !isMacPlacementKind(k))))
+    expect(ids).toEqual(expect.arrayContaining([...APP_PLACEMENT_KINDS]))
     expect(useDevPlacement.getState().kind).toBe('dev')
     devPlacement.simulate('portable')
     expect(useDevPlacement.getState()).toEqual({ kind: 'portable' })

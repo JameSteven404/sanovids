@@ -15,6 +15,7 @@
 //   trashConfirmText(n, folderNames)         the question before a Delete that would move files of ≥ 5 videos.
 //   restoreToastText(…) / trashFlushText(…) / notLinkedText(…) / trashingToastText(…)   other sentences.
 //   FOLDER_UNLINK_TRASH_ROW, …               Settings row, wire tooltips, folder node status.
+import { platformText } from '../lib/platformText'
 import type { TrashFileResult, TrashSavedFile, TrashSavedTakeResult } from '../lib/desktopFiles'
 import { isTargeted } from './folders'
 import type { SaveFolder } from './types'
@@ -280,7 +281,7 @@ export function unlinkToast(o: UnlinkOutcome): TrashToast | null {
       return { text: `${unlinked(o)}. File đã lưu nằm ở thư mục cũ của node này nên SanoVids không xoá.`, tone: 'info' }
     case 'failed':
       return {
-        text: `${unlinked(o)} nhưng không chuyển được “${o.name ?? 'file đã lưu'}” vào Thùng rác (file đang mở trong chương trình khác, hoặc Thùng rác của ổ này đang tắt / đầy / không có). File vẫn còn.`,
+        text: `${unlinked(o)} nhưng không chuyển được “${o.name ?? 'file đã lưu'}” vào Thùng rác ${platformText.trashFailReason}. File vẫn còn.`,
         tone: 'warning',
         ms: 12000,
         retry: true,
@@ -363,7 +364,7 @@ export function trashSummaryText(outcomes: readonly UnlinkOutcome[]): TrashToast
 export function trashConfirmText(videos: number, folderNames: readonly string[]): string {
   const names = [...new Set(folderNames)]
   const from = names.length === 1 ? `thư mục “${names[0]}”` : `${names.length} thư mục`
-  return `Bỏ nối ${videos} video khỏi ${from} và chuyển các file SanoVids đã lưu của chúng vào Thùng rác của Windows?`
+  return `Bỏ nối ${videos} video khỏi ${from} và chuyển các file SanoVids đã lưu của chúng vào ${platformText.trash}?`
 }
 
 /** "Huỷ" at that question after an undo / redo: the jump stays, every saved file stays where it is. */
@@ -380,7 +381,7 @@ export function trashBusyDeleteText(what: string): string {
 export function restoreToastText(ok: boolean, code: string, folder: string, reason?: string): string {
   return ok
     ? `Đã lưu lại ${code} vào “${folder}” (bản cũ vẫn nằm trong Thùng rác).`
-    : `Không lưu lại được ${code} vào “${folder}”: ${reason || 'lỗi không rõ'}. Bản cũ vẫn nằm trong Thùng rác của Windows — mở Thùng rác để khôi phục.`
+    : `Không lưu lại được ${code} vào “${folder}”: ${reason || 'lỗi không rõ'}. Bản cũ vẫn nằm trong ${platformText.trash} — ${platformText.trashRestore}.`
 }
 
 /** The folder came back: what waited for it went to the Recycle Bin. */
@@ -397,7 +398,7 @@ export function notLinkedText(code: string, folder: string): string {
 /** Cài đặt → Cơ bản → Tải video, after "Kèm file .txt chứa prompt" (SettingsDialog GROUPS; also the search tests). */
 export const FOLDER_UNLINK_TRASH_ROW = {
   label: 'Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác',
-  hint: 'Cắt dây video → Thư mục trên canvas sẽ chuyển file video (và file .txt prompt đi kèm) mà SanoVids đã lưu ở đó vào Thùng rác của Windows. Chỉ file mà chính dây đó đã chép (từ bản này) và chưa bị sửa; bấm Hoàn tác để lưu lại. Xoá video, xoá cảnh, bỏ node Thư mục hay cắt dây tự lưu của cảnh không xoá file nào.',
+  hint: `Cắt dây video → Thư mục trên canvas sẽ chuyển file video (và file .txt prompt đi kèm) mà SanoVids đã lưu ở đó vào ${platformText.trash}. Chỉ file mà chính dây đó đã chép (từ bản này) và chưa bị sửa; bấm Hoàn tác để lưu lại. Xoá video, xoá cảnh, bỏ node Thư mục hay cắt dây tự lưu của cảnh không xoá file nào.`,
   keywords: 'xoá xóa file thùng rác recycle bin bỏ nối cắt dây thư mục gỡ đồng bộ',
 } as const
 
@@ -409,9 +410,9 @@ export const CLICK_TO_CUT_TRASH_NOTE = 'Dây video → Thư mục còn chuyển 
 
 /** Tooltip of a take → folder wire (`trash`: the setting is on, in the desktop app). */
 export function saveWireTitle(clickToCut: boolean, trash: boolean): string {
-  if (!trash) return clickToCut ? 'Bấm để bỏ nối · Ctrl/Shift + bấm: chọn dây' : 'Bấm để chọn dây · Delete: bỏ nối'
+  if (!trash) return clickToCut ? `Bấm để bỏ nối · ${platformText.modShiftClick}: chọn dây` : 'Bấm để chọn dây · Delete: bỏ nối'
   return clickToCut
-    ? 'Bấm để bỏ nối và chuyển file đã lưu vào Thùng rác · Ctrl/Shift + bấm: chọn dây'
+    ? `Bấm để bỏ nối và chuyển file đã lưu vào Thùng rác · ${platformText.modShiftClick}: chọn dây`
     : 'Bấm để chọn dây · Delete: bỏ nối và chuyển file đã lưu vào Thùng rác'
 }
 

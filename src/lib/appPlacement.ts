@@ -54,6 +54,20 @@ export function placementToastsOnLaunch(kind: AppPlacementKind | 'unknown' | nul
   return kind === 'mac-translocated' || kind === 'mac-volume'
 }
 
+/** Instructions only: the app never moves itself or asks for filesystem access here. */
+export function macPlacementNote(kind: AppPlacement['kind'] | null | undefined): string | null {
+  switch (kind) {
+    case 'mac-translocated':
+      return 'SanoVids đang chạy thẳng từ file .dmg hoặc từ thư mục Tải về, nên macOS chạy nó từ một chỗ tạm, chỉ đọc. Hãy thoát SanoVids (⌘Q), kéo SanoVids vào thư mục Applications, đẩy ổ “SanoVids” ra (Eject) nếu có, rồi mở lại từ Applications hoặc Launchpad.'
+    case 'mac-volume':
+      return 'SanoVids đang chạy thẳng từ một ổ ngoài hoặc từ file .dmg. Hãy thoát SanoVids (⌘Q), kéo SanoVids vào thư mục Applications, đẩy ổ ra (Eject) rồi mở lại từ Applications.'
+    case 'mac-other':
+      return 'SanoVids đang chạy ngoài thư mục Applications. Hãy thoát SanoVids (⌘Q), kéo SanoVids vào thư mục Applications rồi mở lại từ Applications hoặc Launchpad.'
+    default:
+      return null
+  }
+}
+
 const unknownPlacement = (): AppPlacement => ({ kind: 'unknown' })
 
 /**

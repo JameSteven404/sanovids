@@ -1,3 +1,4 @@
+import { platformText, shortcutText } from '../../lib/platformText'
 import {
   Bug,
   CirclePlay,
@@ -182,7 +183,7 @@ function SaveStatus() {
   const title =
     status === 'error'
       ? 'Không ghi được vào bộ nhớ của trình duyệt. Bấm để thử lưu lại, hoặc xuất dự án ra file trong Cài đặt.'
-      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — bấm để lưu ngay (Ctrl+S)`
+      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — bấm để lưu ngay (${platformText.mod}+S)`
 
   const save = async () => {
     if (busy) return
@@ -283,10 +284,10 @@ function HistoryButtons() {
   const future = useStore(useProject.temporal, (s) => s.futureStates.length)
   return (
     <div className="tb-history">
-      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (Ctrl+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
+      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (${platformText.mod}+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
         <Undo2 size={16} />
       </button>
-      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? 'Làm lại (Ctrl+Shift+Z)' : 'Không có gì để làm lại'} aria-label="Làm lại">
+      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? shortcutText('Làm lại (Ctrl+Shift+Z)') : 'Không có gì để làm lại'} aria-label="Làm lại">
         <Redo2 size={16} />
       </button>
     </div>

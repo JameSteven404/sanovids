@@ -11,6 +11,7 @@
 //   in one undo step. Keys stay inside (Delete, Backspace, arrows, N / C / F never reach the canvas); Esc leaves the
 //   field (the node stays selected), Ctrl+Enter runs this scene (the cost confirmation), Ctrl+S commits then saves.
 // Class `nodrag nowheel nokey`: dragging selects text, the wheel scrolls the text, React Flow ignores the keys.
+import { platformText } from '../../lib/platformText'
 import { useStore } from '@xyflow/react'
 import { AtSign, Image as ImageIcon, Link2 } from 'lucide-react'
 import {
@@ -144,7 +145,7 @@ export function planNodeLinks(sceneId: string, ids: string[]): LinkPlan | null {
   return {
     tokens,
     refs: plan.linked.length ? plan.refs : null,
-    done: plan.linked.length ? `Đã nối ${names.join(', ')} → ${sceneCode(scene.order)} (${tokens.join(' ')}). Ctrl+Z để bỏ nối.` : null,
+    done: plan.linked.length ? `Đã nối ${names.join(', ')} → ${sceneCode(scene.order)} (${tokens.join(' ')}). ${platformText.mod}+Z để bỏ nối.` : null,
   }
 }
 

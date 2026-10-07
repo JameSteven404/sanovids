@@ -11,6 +11,11 @@ const FORMAT_CHARS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
 /** Longest base name kept (the extension and a " (12)" suffix are added after it). */
 export const MAX_BASE_LENGTH = 120
+/** Leave room for extensions and collision suffixes on APFS, HFS+ and removable drives. */
+export const MAX_BASE_BYTES = 200
+export const MAX_BASE_NFD = 200
+const encoder = new TextEncoder()
+const graphemes = new Intl.Segmenter('vi', { granularity: 'grapheme' })
 /** Extensions SanoVids adds itself: typed at the end of a new name they are dropped ("Cảnh mở đầu.mp4" → "Cảnh mở đầu"). */
 const OWN_EXT = /\.(mp4|webm|mov|mkv|m4v|txt|jpe?g|png|webp|zip)$/i
 
@@ -23,9 +28,18 @@ export function cleanFileBase(raw: unknown): string {
   if (typeof raw !== 'string') return ''
   let s = raw.replace(LONE_SURROGATE, '').normalize('NFC').replace(FORMAT_CHARS, '')
   s = s.replace(BAD_CHARS, '-').replace(/\s+/g, ' ').trim()
-  s = cutText(s, MAX_BASE_LENGTH).replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+  s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (RESERVED.test(s)) s = '_' + s
-  return s
+  let out = ''
+  let bytes = 0
+  let nfd = 0
+  for (const { segment } of graphemes.segment(s)) {
+    bytes += encoder.encode(segment).length
+    nfd += segment.normalize('NFD').length
+    if (out.length + segment.length > MAX_BASE_LENGTH || bytes > MAX_BASE_BYTES || nfd > MAX_BASE_NFD) break
+    out += segment
+  }
+  return out.replace(/[.\s]+$/, '')
 }
 
 /** The first `max` UTF-16 units of `s`, never ending on half of an emoji (a surrogate pair). */

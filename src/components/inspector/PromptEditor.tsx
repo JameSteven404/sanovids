@@ -11,6 +11,7 @@
 //   videos were retired in 0.6.0): only a hint.
 // - Retired @video text (older projects) is struck through in red — exactly where core/compile retiredVideoTokens
 //   finds what blocks the run — and offered explicit, undoable quick fixes (RetiredFix, src/videoRetired.ts).
+import { platformText, shortcutText } from '../../lib/platformText'
 import { AtSign, Ban, CircleAlert, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
 import {
   memo,
@@ -709,7 +710,7 @@ const RetiredFix = memo(function RetiredFix({ sceneId, tokens, starter }: { scen
       </span>
       <span className="in-retired-actions">
         {starter && (
-          <button type="button" className="in-hint-btn" onMouseDown={keep} onClick={() => removeContinueStarter(sceneId)} title="Chỉ xoá câu mở đầu mà bản cũ tự chèn (Ctrl+Z để hoàn tác)">
+          <button type="button" className="in-hint-btn" onMouseDown={keep} onClick={() => removeContinueStarter(sceneId)} title={shortcutText('Chỉ xoá câu mở đầu mà bản cũ tự chèn (Ctrl+Z để hoàn tác)')}>
             Xoá câu “{starter}”
           </button>
         )}
@@ -720,7 +721,7 @@ const RetiredFix = memo(function RetiredFix({ sceneId, tokens, starter }: { scen
             className="in-hint-btn"
             onMouseDown={keep}
             onClick={() => removeRetiredTokenFromScene(sceneId, t.text)}
-            title={`Xoá ${t.text}${t.count > 1 ? ` (${t.count} chỗ)` : ''} khỏi prompt — chữ khác giữ nguyên (Ctrl+Z để hoàn tác)`}
+            title={`Xoá ${t.text}${t.count > 1 ? ` (${t.count} chỗ)` : ''} khỏi prompt — chữ khác giữ nguyên (${platformText.mod}+Z để hoàn tác)`}
           >
             Xoá {t.text}
             {t.count > 1 ? ` (${t.count})` : ''}

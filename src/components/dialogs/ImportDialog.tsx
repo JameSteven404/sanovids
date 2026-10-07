@@ -1,3 +1,4 @@
+import { platformText } from '../../lib/platformText'
 import { ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Images, Info, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { fitNodes, placementHint } from '../../actions'
@@ -536,7 +537,7 @@ function StepPreview({
           </div>
         )}
         <OutOfRangeNote numbers={outOfRange} />
-        <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng Ctrl+Z.</p>
+        <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng {platformText.mod}+Z.</p>
       </aside>
     </div>
   )

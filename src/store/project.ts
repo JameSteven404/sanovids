@@ -7,6 +7,7 @@
 // becomes a red placeholder "@image_?N(label)" — no prompt text is ever deleted (withMedia, core/placeholders). Filling
 // a placeholder is always an explicit click (fillPlaceholder…). Reference videos were retired (0.6.0): no action links
 // a take to a scene any more, Scene.videoRefs stays [] and @video text is never rewritten.
+import { platformText } from '../lib/platformText'
 import { temporal } from 'zundo'
 import { create } from 'zustand'
 import { assetByTag, extractMentions, HAS_TOKEN_RE, imageSlotsFor, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
@@ -1334,7 +1335,7 @@ export function undoToastAction(label = 'Hoàn tác'): { label: string; run: () 
     label,
     run: () => {
       if (useProject.getState().project !== after) {
-        toast('Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng Ctrl+Z để lùi từng bước.', { tone: 'warning' })
+        toast(`Không hoàn tác được từ đây: đã có thay đổi mới hơn. Dùng ${platformText.mod}+Z để lùi từng bước.`, { tone: 'warning' })
         return
       }
       undo()

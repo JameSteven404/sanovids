@@ -7,7 +7,7 @@ import { MODELS } from '../../core/models'
 import { normalizeAssetName } from '../../core/names'
 import type { Asset, AssetKind } from '../../core/types'
 import { aspectOf, useImageSize } from '../../lib/imageMeta'
-import { IS_MAC } from '../../lib/platform'
+import { shortcutText } from '../../lib/platformText'
 import { flushScenes } from '../../lib/promptDrafts'
 import { deleteLibraryAssets } from '../../libraryActions'
 import { useProject } from '../../store/project'
@@ -84,7 +84,7 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
             Xoá khỏi thư viện
           </button>
           <span className="sb-spacer" />
-          <span className="faint sb-live-note">Thay đổi được lưu ngay · {IS_MAC ? '⌘Z' : 'Ctrl+Z'} để hoàn tác</span>
+          <span className="faint sb-live-note">Thay đổi được lưu ngay · {shortcutText('Ctrl+Z')} để hoàn tác</span>
           <button className="btn btn-primary" onClick={onClose}>
             Xong
           </button>

@@ -1,6 +1,7 @@
 // The scene code chip at the top of the scene inspector, with the scene-order controls (the Storyboard that used to
 // reorder scenes is hidden): ▲▼ move the scene one place (also Alt + ↑ / ↓ on the canvas), a click on the code opens
 // "Dời S05 tới vị trí [n] / N". Moves go through sceneOrderActions (one undo step and one toast per burst).
+import { platformText } from '../../lib/platformText'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { sceneCode } from '../../core/compile'
@@ -125,7 +126,7 @@ function MoveToBox({ sceneId, code, place, count, onClose }: { sceneId: string; 
           Dời
         </button>
       </div>
-      <p className="in-moveto-hint">Các cảnh khác đánh số lại. Ctrl+Z để hoàn tác.</p>
+      <p className="in-moveto-hint">Các cảnh khác đánh số lại. {platformText.mod}+Z để hoàn tác.</p>
     </div>
   )
 }
