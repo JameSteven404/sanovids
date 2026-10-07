@@ -166,7 +166,8 @@ function Shell() {
 
 /** The stress tester's pill + clean-up after an interrupted run: only while development mode runs new takes. */
 function StressHudSlot() {
-  useProviderPrefs((s) => s.provider)
+  // `active`: also re-renders when the development-mode lock flips (locked → never 'dev').
+  useProviderPrefs((s) => s.active)
   if (activeProviderId() !== 'dev') return null
   return (
     <Suspense fallback={null}>

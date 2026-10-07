@@ -71,6 +71,26 @@ export function matchSettings<G extends SearchGroup>(groups: readonly G[], level
   return out
 }
 
+/**
+ * The groups Settings shows (search and deep links included): development mode open → all of them; locked (release
+ * builds) → no 'dev' group, and the canvasapp gateway ('gateway', "Nhà cung cấp video") moves to "Cơ bản" in its place —
+ * so "phát triển" / "dev" / "giả lập" find nothing and openSettings('dev') is an unknown id.
+ */
+export function visibleGroups<G extends SearchGroup>(groups: readonly G[], devOpen: boolean): G[] {
+  if (devOpen) return [...groups]
+  const gateway = groups.find((g) => g.id === 'gateway')
+  const out: G[] = []
+  for (const g of groups) {
+    if (g.id === 'gateway') continue
+    if (g.id === 'dev') {
+      if (gateway) out.push({ ...gateway, level: 'basic' })
+      continue
+    }
+    out.push(g)
+  }
+  return out
+}
+
 /** Number of results (a block group counts as one). */
 export function resultCount(matches: readonly GroupMatch<SearchGroup>[]): number {
   return matches.reduce((n, m) => n + (m.group.rows ? m.rows.length : 1), 0)

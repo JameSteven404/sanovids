@@ -17,7 +17,7 @@
 import { deleteTakes, takeLabel } from './actions'
 import { sceneCode } from './core/compile'
 import { importToastText, importWords, dropToastText, type ImportWords } from './components/runs/importJobsModel'
-import { activeGateway, gatewayFor, gatewayProvider, providerOf, type Gateway } from './providers'
+import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, canvasappOff, DEV_LOCKED_REASON, devAllowed, gatewayFor, gatewayProvider, providerOf, type Gateway } from './providers'
 import { canvasNodeId, decodeRemoteId, sceneNodeId } from './providers/canvasapp/mapping'
 import { MAX_IMPORT_BATCH, reconstructSiteJob, type SiteJobScan } from './providers/canvasapp/siteJobs'
 import { useProject } from './store/project'
@@ -33,8 +33,21 @@ export interface ImportScan {
   scan: SiteJobScan
 }
 
+/** Why "Nhập job" may not read `provider` now: development mode locked, or the canvasapp gateway turned off. */
+function importLocked(provider?: 'dev' | 'canvasapp'): string | null {
+  const id = provider ?? activeProviderId()
+  if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
+  if (id === 'canvasapp' && canvasappOff()) return CANVASAPP_OFF_REASON
+  return null
+}
+
 export function openImportJobs(opts: { back?: DialogState; provider?: 'dev' | 'canvasapp' } = {}): void {
   const { back, provider } = opts
+  const locked = importLocked(provider)
+  if (locked) {
+    toast(locked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => useUI.getState().openDialog({ kind: 'settings', section: 'gateway' }) } })
+    return
+  }
   useUI.getState().openDialog({
     kind: 'importJobs',
     ...(back && back.kind !== 'none' && back.kind !== 'importJobs' ? { back } : {}),
@@ -47,6 +60,8 @@ export const importGateway = (provider?: 'dev' | 'canvasapp'): Gateway => (provi
 
 /** The jobs of a gateway's bridge session (default: the active one), sorted against the open project. Throws like the adapter (401…). */
 export async function scanForImport(provider?: 'dev' | 'canvasapp'): Promise<ImportScan> {
+  const locked = importLocked(provider)
+  if (locked) throw new Error(locked)
   const gw = importGateway(provider)
   const project = useProject.getState().project
   const sceneByNode = new Map<string, string>()

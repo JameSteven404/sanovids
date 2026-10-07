@@ -25,9 +25,9 @@ import { useRuns } from '../../store/runs'
 
 // ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
 
-/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings change it. */
+/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings or the lock change it. */
 export function useActiveProvider(): ProviderId {
-  useProviderPrefs((s) => s.provider)
+  useProviderPrefs((s) => s.active)
   return activeProviderId()
 }
 

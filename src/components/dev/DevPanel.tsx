@@ -63,7 +63,7 @@ import { formatVnd } from '../../core/topup'
 import type { Mode, ModelId } from '../../core/types'
 import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
-import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useProviderPrefs } from '../../providers'
+import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useDevAllowed, useProviderPrefs } from '../../providers'
 import { limitsSite } from '../../providers/limits'
 import { canvasNodeId, decodeRemoteId, sceneNodeId } from '../../providers/canvasapp/mapping'
 import { DEV_PLACEMENT_OPTIONS, devPlacement, useDevPlacement } from '../../providers/dev/appPlacement'
@@ -149,6 +149,12 @@ function syncBalance() {
 
 export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
   const close = () => useUI.getState().closeDialog()
+  // Development mode locked (release build): this panel — and "Test giới hạn" in it — never shows; it closes if the
+  // lock flips while it is open (devAccessActions closes it too).
+  const allowed = useDevAllowed()
+  useEffect(() => {
+    if (!allowed) useUI.getState().closeDialog()
+  }, [allowed])
   const tabs = useMemo(() => devPanelTabs({ simulatedUpdates: updatesSource() === 'sim', perf: __SANOVIDS_PERF__ }), [])
   // A requested tab that is not offered here (Cập nhật inside Electron) falls back to the first one.
   const pick = (t: DevPanelTab | undefined): DevPanelTab => (t && tabs.some((x) => x.id === t) ? t : 'status')
@@ -157,11 +163,12 @@ export function DevPanel({ tab: requested }: { tab?: DevPanelTab }) {
     if (requested) setTab(pick(requested))
   }, [requested])
   // Creates the dev server if needed and keeps the snapshot moving with the clock while jobs run.
-  useEffect(() => startDevSnapshotTicker(), [])
+  useEffect(() => (allowed ? startDevSnapshotTicker() : undefined), [allowed])
   const snap = useDevServer((s) => s.snapshot)
   const logCount = useDevLog((s) => s.entries.length)
   const chosen = useProviderPrefs((s) => s.provider)
   const active = chosen === 'dev' || activeProviderId() === 'dev'
+  if (!allowed) return null
 
   const counts: Partial<Record<DevPanelTab, number>> = {
     faults: activeFaultCount(snap),

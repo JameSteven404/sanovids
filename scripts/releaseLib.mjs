@@ -9,6 +9,11 @@
 //                                                  the auto-update feed the app reads anonymously
 //                                                  (package.json build.publish → app-update.yml)
 import { X509Certificate } from 'node:crypto'
+import { createRequire } from 'node:module'
+
+// The development-mode lock's pure rules (electron/devaccess-rules.cjs: no require, no I/O) — the same pin rules as
+// the app.
+const devAccessRules = createRequire(import.meta.url)('../electron/devaccess-rules.cjs')
 
 export const OWNER = 'JameSteven404'
 export const PRIVATE_REPO = `${OWNER}/sanovids`
@@ -501,7 +506,37 @@ export function checkPackagedIdentity(inner, repoPkg) {
     bad.push(`sanovids.signers ${JSON.stringify(got)} (cần ${JSON.stringify(want)}: bản build thử nghiệm có thêm vân tay?)`)
   }
   if ('sanovidsTestProfileDir' in inner) bad.push('có sanovidsTestProfileDir (bản build thử nghiệm!)')
+  // The owner's unlock keys of development mode: exactly the repo's (a test build's extraMetadata keys are UNIONED in),
+  // and never the test-build lock switch.
+  const wantKeys = repo.sanovids && typeof repo.sanovids === 'object' ? repo.sanovids.devUnlockKeys : undefined
+  const gotKeys = inner.sanovids && typeof inner.sanovids === 'object' ? inner.sanovids.devUnlockKeys : undefined
+  if (JSON.stringify(gotKeys ?? null) !== JSON.stringify(wantKeys ?? null)) {
+    bad.push(`sanovids.devUnlockKeys ${JSON.stringify(gotKeys ?? null)} (cần ${JSON.stringify(wantKeys ?? null)}: bản build thử nghiệm có thêm khoá mở khoá?)`)
+  }
+  const wantService = repo.sanovids && typeof repo.sanovids === 'object' ? repo.sanovids.devUnlockService : undefined
+  const gotService = inner.sanovids && typeof inner.sanovids === 'object' ? inner.sanovids.devUnlockService : undefined
+  if (gotService !== wantService) bad.push(`sanovids.devUnlockService ${JSON.stringify(gotService ?? null)} (cần ${JSON.stringify(wantService ?? null)})`)
+  if ('sanovidsTestDevLock' in inner) bad.push('có sanovidsTestDevLock (bản build thử nghiệm!)')
   return bad
+}
+
+/**
+ * Release gate of the development-mode lock: the repo's package.json must pin the OWNER's unlock key(s) —
+ * sanovids.devUnlockKeys, strict { kid 1–15, alg 'ed25519', key = 32-byte base64url }, no duplicate kid, never a
+ * published test key (RFC 8032). Without one, a release build could never be unlocked (development mode lost for the
+ * owner too): the owner runs scripts\owner\Tao khoa mo khoa.bat and sends the pin line. → Vietnamese problems ([] = ok).
+ */
+export function checkDevUnlockPins(repoPkg) {
+  const sv = repoPkg && typeof repoPkg === 'object' && repoPkg.sanovids && typeof repoPkg.sanovids === 'object' ? repoPkg.sanovids : {}
+  const raw = sv.devUnlockKeys
+  if (raw === undefined || (Array.isArray(raw) && raw.length === 0)) {
+    return ['Chưa ghim khoá mở khoá — chủ ứng dụng chạy scripts\\owner\\Tao khoa mo khoa.bat rồi gửi dòng ghim và mã kiểm tra (package.json sanovids.devUnlockKeys).']
+  }
+  const out = devAccessRules.pinProblems(raw)
+  const extra = Object.keys(sv).filter((k) => !['signers', 'devUnlockKeys', 'devUnlockService'].includes(k))
+  if (extra.length) out.push(`package.json sanovids có trường lạ: ${extra.join(', ')}.`)
+  if (repoPkg && 'sanovidsTestDevLock' in repoPkg) out.push('package.json có sanovidsTestDevLock (chỉ dành cho bản build thử nghiệm).')
+  return out
 }
 
 /**

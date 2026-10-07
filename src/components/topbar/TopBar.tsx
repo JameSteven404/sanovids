@@ -33,7 +33,7 @@ import type { Scene, Take, ViewMode } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
-import { activeProviderId, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
+import { activeProviderId, devAllowed, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
 import { useDevServer } from '../../providers/dev'
 import { startRealCreditsSync } from '../../store/credits'
 import { flush, useSave } from '../../store/persist'
@@ -97,7 +97,7 @@ export function TopBar() {
         <DownloadAllButton />
         <span className="tb-divider" />
         <AppearanceButton />
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video, chế độ Phát triển)" aria-label="Cài đặt">
+        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video)" aria-label="Cài đặt">
           <Settings size={16} />
         </button>
         <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
@@ -326,8 +326,8 @@ function RunningIndicator() {
  * ("DEV 1.000 credit" / "canvasapp · 1.234 credit") already names the provider, so nothing extra is shown.
  */
 function ProviderBadge() {
-  // Subscribed so the badge follows the Settings choice; the bridge check inside activeProviderId() is static.
-  useProviderPrefs((s) => s.provider)
+  // Subscribed so the badge follows the Settings choice and the development-mode lock; the bridge check is static.
+  useProviderPrefs((s) => s.active)
   const issue = useRuns((s) => s.providerIssue)
   const openDialog = useUI((s) => s.openDialog)
   const id = activeProviderId()
@@ -348,9 +348,10 @@ function ProviderBadge() {
  * count shows how many faults are armed on the simulated server, so a forgotten one never looks like a real bug.
  */
 function DevButton() {
-  useProviderPrefs((s) => s.provider)
+  // `active` is never 'dev' while development mode is locked (release builds): the button is gone then.
+  useProviderPrefs((s) => s.active)
   const armed = useDevServer((s) => activeFaultCount(s.snapshot))
-  if (activeProviderId() !== 'dev') return null
+  if (activeProviderId() !== 'dev' || !devAllowed()) return null
   const title = armed
     ? `Bảng phát triển — đang bật ${armed} lỗi giả trên canvasapp giả lập. Bấm để xem / tắt.`
     : 'Bảng phát triển (chế độ Phát triển): trạng thái máy chủ giả lập, gây lỗi, nhật ký yêu cầu, job'

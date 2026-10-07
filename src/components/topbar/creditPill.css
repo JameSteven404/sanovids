@@ -123,6 +123,18 @@
 .tb-cp.problem:hover {
   background: color-mix(in srgb, var(--warn) 24%, transparent);
 }
+/* the canvasapp gateway is turned off (development mode locked, not turned on): quiet neutral, solid outline */
+.tb-cp.off {
+  border-color: var(--border-strong);
+}
+.tb-cp.off:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tb-cp.off .tb-cp-num {
+  color: var(--text-dim);
+  font-weight: 500;
+}
 /* Light appearance: tinted text on a pale fill of the same tint is too faint for small labels; mixing in the text
    color brings it to about 4:1 and keeps the hue (same rule as the top bar's provider / running pills). */
 :root[data-theme='light'] .tb-cp.real,

@@ -5,7 +5,7 @@ import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
 import { KEEP_LOGIN_KEYWORDS } from '../keepLoginModel'
 import settingsDialogSource from '../SettingsDialog.tsx?raw'
-import { foldText, matchSettings, resultCount, searchWords, type SearchGroup } from '../settingsSearch'
+import { foldText, matchSettings, resultCount, searchWords, visibleGroups, type SearchGroup } from '../settingsSearch'
 
 const groups: SearchGroup[] = [
   {
@@ -156,5 +156,35 @@ describe('foldText / searchWords', () => {
     expect(foldText('Đổi Tên Âm Thanh')).toBe('doi ten am thanh')
     expect(searchWords('  Hỏi   nơi lưu ')).toEqual(['hoi', 'noi', 'luu'])
     expect(searchWords('')).toEqual([])
+  })
+})
+
+describe('development mode locked: visibleGroups', () => {
+  const all: SearchGroup[] = [
+    { id: 'appearance', level: 'basic', title: 'Giao diện', rows: [{ id: 'theme', label: 'Chế độ giao diện' }] },
+    { id: 'gateway', level: 'advanced', title: 'Cổng canvasapp.io.vn', desc: 'Nhà cung cấp video cho take mới', keywords: 'canvasapp cổng nhà cung cấp' },
+    { id: 'dev', level: 'basic', title: 'Chế độ Phát triển', desc: 'canvasapp giả lập', keywords: 'dev phát triển giả lập debug credit dev' },
+    { id: 'about', level: 'basic', title: 'Giới thiệu' },
+  ]
+  it('open: everything as declared', () => {
+    expect(visibleGroups(all, true)).toEqual(all)
+  })
+  it('locked: no "dev" group at either level or in search; "gateway" in Cơ bản at its place; deep link "dev" unknown', () => {
+    const v = visibleGroups(all, false)
+    expect(v.map((g) => `${g.id}:${g.level}`)).toEqual(['appearance:basic', 'gateway:basic', 'about:basic'])
+    for (const q of ['phát triển', 'phat trien', 'dev', 'giả lập', 'debug']) {
+      for (const level of ['basic', 'advanced'] as const) expect(matchSettings(v, level, q).map((m) => m.group.id)).not.toContain('dev')
+    }
+    expect(matchSettings(v, 'basic', '').map((m) => m.group.id)).toContain('gateway')
+    expect(matchSettings(v, 'advanced', '').map((m) => m.group.id)).not.toContain('gateway')
+    expect(v.find((g) => g.id === 'dev')).toBeUndefined()
+    // the declared list is untouched
+    expect(all.find((g) => g.id === 'gateway')?.level).toBe('advanced')
+  })
+  it('SettingsDialog filters its GROUPS through visibleGroups with the lock (search and deep link)', () => {
+    expect(settingsDialogSource).toContain('const groups = useMemo(() => visibleGroups(GROUPS, devOpen), [devOpen])')
+    expect(settingsDialogSource).toContain('const target = section ? groups.find((g) => g.id === section) : undefined')
+    expect(settingsDialogSource).toContain('matchSettings(groups, level, query)')
+    expect(settingsDialogSource).not.toContain('matchSettings(GROUPS')
   })
 })

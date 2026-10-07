@@ -27,7 +27,7 @@ interface Pkg {
   description: string
   author: Author
   homepage: string
-  sanovids: { signers: string[] }
+  sanovids: { signers: string[]; devUnlockKeys?: unknown }
   scripts: Record<string, string>
   build: Record<string, unknown> & {
     copyright: string
@@ -186,10 +186,25 @@ describe('icons, installer pages and license', () => {
 
 describe('signer pins and metadata', () => {
   it('sanovids.signers is top-level (build is stripped from the packaged package.json) and holds the pin', () => {
-    expect(pkg.sanovids).toEqual({ signers: [PIN] })
+    expect(pkg.sanovids.signers).toEqual([PIN])
+    // Only the signer pins and (once the owner made it) the development-mode unlock key pins (DV2a pins the real one).
+    expect(Object.keys(pkg.sanovids).every((k) => k === 'signers' || k === 'devUnlockKeys')).toBe(true)
     expect(pkg.build.sanovids).toBeUndefined()
     expect(pkg.build.extraMetadata.sanovids).toBeUndefined()
     expect(pkg.homepage).toBe('https://github.com/JameSteven404/sanovids-releases')
+  })
+
+  it('development-mode unlock pins: strict shape when present, never a test key, never the test-build lock switch', () => {
+    const rules = nodeRequire('../../../electron/devaccess-rules.cjs') as { pinProblems: (raw: unknown) => string[] }
+    if (pkg.sanovids.devUnlockKeys !== undefined) expect(rules.pinProblems(pkg.sanovids.devUnlockKeys)).toEqual([])
+    const top = pkg as unknown as Record<string, unknown>
+    expect('sanovidsTestDevLock' in top).toBe(false)
+    expect('sanovidsTestDevLock' in pkg.build.extraMetadata).toBe(false)
+    expect('sanovidsTestProfileDir' in top).toBe(false)
+    // the lock modules ship (build.files: electron/**) and the owner tool never does (no scripts/ in build.files)
+    const files = pkg.build.files as string[]
+    expect(files).toContain('electron/**/*')
+    expect(files.some((f) => f.startsWith('scripts'))).toBe(false)
   })
 
   it('name, product name and description are unchanged', () => {

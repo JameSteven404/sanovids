@@ -65,6 +65,9 @@ import { toast, useUI, type InteractionMode, type TakeDisplay } from '../../stor
 import { checkNow, openUpdateDialog, useInstallUi } from '../../updateActions'
 import { rateLabel } from '../canvas/playerModel'
 import { Logo } from '../common/Logo'
+import { DevUnlock } from '../dev/DevUnlock'
+import { nextTaps } from '../dev/devUnlockModel'
+import { useDevAccess } from '../../providers/devAccess'
 import './dialogs.css'
 import { Segmented } from './Segmented'
 import { Field, Section, Toggle, useSettingsCtx, type RowProps } from './settingsUi'
@@ -634,6 +637,16 @@ export function AboutBlock() {
   const kind = useUpdates((s) => s.state.kind)
   const { desktop } = usePwaInstall()
   const [opening, setOpening] = useState(false)
+  // Development mode, locked: five taps on the version line within 3 s open the unlock box (no visible hint).
+  const locked = useDevAccess((s) => s.state.access === 'locked')
+  const [unlockOpen, setUnlockOpen] = useState(false)
+  const taps = useRef<number[]>([])
+  const onVersionTap = () => {
+    if (!locked) return
+    const next = nextTaps(taps.current, Date.now())
+    taps.current = next.times
+    if (next.fire) setUnlockOpen(true)
+  }
 
   useEffect(() => {
     void loadAppSignature()
@@ -661,9 +674,10 @@ export function AboutBlock() {
         </span>
         <span className="dg-about-name">
           <b>SanoVids</b>
-          <small>{versionLine(version, kind, desktop)}</small>
+          <small onClick={onVersionTap}>{versionLine(version, kind, desktop)}</small>
         </span>
       </div>
+      {unlockOpen && <DevUnlock onClose={() => setUnlockOpen(false)} />}
       <PlacementNoteView />
       <div className="dg-about-lines">
         <p className="dg-about-author">{ABOUT_AUTHOR_LINE}</p>

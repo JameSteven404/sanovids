@@ -15,6 +15,7 @@ import '@xyflow/react/dist/style.css'
 import './styles/base.css'
 import './styles/app.css'
 import { App } from './App'
+import { initDevAccess } from './devAccessActions'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
@@ -29,6 +30,8 @@ initMotion()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()
+// Development mode lock (release builds hide it): follow the main process / the browser simulation.
+initDevAccess()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

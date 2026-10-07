@@ -10,6 +10,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Componen
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../lib/canvasPrefs'
+import { useDevAllowed } from '../../providers'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -51,7 +52,7 @@ import {
   VolumeSetting,
   WithPromptSetting,
 } from './SettingsBasic'
-import { matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
+import { matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, visibleGroups, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
 import { Section, SectionAnchorCtx, SettingsCtx, type RowProps } from './settingsUi'
 
 interface Row extends SearchRow {
@@ -346,7 +347,10 @@ const LEVEL_HINT: Record<SettingsLevel, string> = { basic: 'Dùng hằng ngày',
 /** `section`: id of a group to show (deep link, see the top of this file); unknown ids are ignored. */
 export function SettingsDialog({ section }: { section?: string } = {}) {
   const closeDialog = useUI((s) => s.closeDialog)
-  const target = section ? GROUPS.find((g) => g.id === section) : undefined
+  // Development mode locked (release builds): no "Chế độ Phát triển" group, "Nhà cung cấp video" in "Cơ bản".
+  const devOpen = useDevAllowed()
+  const groups = useMemo(() => visibleGroups(GROUPS, devOpen), [devOpen])
+  const target = section ? groups.find((g) => g.id === section) : undefined
   const [level, setLevel] = useState<SettingsLevel>(() => target?.level ?? readLevel())
   const [query, setQuery] = useState('')
   const [epoch, setEpoch] = useState(0)
@@ -357,7 +361,7 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
   const resultsId = useId()
   const resync = useCallback(() => setEpoch((e) => e + 1), [])
   const ctx = useMemo(() => ({ close: closeDialog, resync, epoch }), [closeDialog, resync, epoch])
-  const matches = useMemo(() => matchSettings(GROUPS, level, query), [level, query])
+  const matches = useMemo(() => matchSettings(groups, level, query), [groups, level, query])
   const searching = searchWords(query).length > 0
   const count = searching ? resultCount(matches) : 0
 

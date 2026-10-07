@@ -6,9 +6,11 @@
 //   canvasapp  solid tinted "canvasapp · 1.234 credit" (≈ đồng + last update in the tooltip); click → re-read.
 //              A small "+" next to it opens "Nạp credit canvasapp" (SePay QR, components/topup).
 //              Not logged in → "canvasapp · Đăng nhập" (opens canvasapp's own login window). Unknown → "—".
+//   off        "canvasapp · Chưa bật": development mode is locked and the canvasapp gateway is not turned on; click →
+//              Cài đặt → Nhà cung cấp video (nothing is read from canvasapp meanwhile).
 //   demo       (legacy) dashed "… credit DEMO" — only for callers passing the old demo wallet.
 // What it shows for each state: creditPillModel.ts (pure, tested).
-import { FlaskConical, LoaderCircle, LogIn, Plus, TriangleAlert, Wallet } from 'lucide-react'
+import { FlaskConical, LoaderCircle, LogIn, Plus, Power, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
 import { openSettings, openTopUp } from '../../actions'
 import { activeGateway, refreshProviderLimits, type Gateway } from '../../providers'
@@ -87,6 +89,7 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
 
   const onClick = () => {
     if (v.action === 'settings') useUI.getState().openDialog({ kind: 'settings' })
+    else if (v.action === 'gateway') openSettings(GATEWAY_SETTINGS_GROUP)
     else if (v.action === 'login') {
       if (loggingIn) return
       setLoggingIn(true)
@@ -102,6 +105,8 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
     <LogIn size={13} />
   ) : v.tone === 'problem' ? (
     <TriangleAlert size={13} />
+  ) : v.tone === 'off' ? (
+    <Power size={13} />
   ) : (
     <Wallet size={13} />
   )
