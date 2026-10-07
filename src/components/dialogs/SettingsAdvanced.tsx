@@ -16,12 +16,13 @@ import {
   settingsFileText,
   SETTINGS_FILE_NAME,
 } from '../../lib/settings'
-import { PROVIDER_LABEL } from '../../providers'
+import { PROVIDER_LABEL, useDevAllowed } from '../../providers'
 import { DEV_SPEED_LABEL, devServer, startDevSnapshotTicker, useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
 import { TOAST_BASE_MS, TOAST_SCALE, TOAST_TIME_LABEL, TOAST_TIMES, toast, useUI } from '../../store/ui'
 import { resetPanelLayout, restorePanelLayout } from '../common/PanelResizer'
 import { useActiveProvider } from '../runs/shared'
+import { DevAccessRows } from '../dev/DevAccessRows'
 import { activeFaultCount } from '../dev/devModel'
 import './dialogs.css'
 import { Segmented } from './Segmented'
@@ -344,6 +345,8 @@ export function BackupSetting({ label, hint }: RowProps) {
 /** "Khôi phục cài đặt mặc định" with an inline confirmation (Huỷ has the focus) and Hoàn tác afterwards. */
 export function ResetAllSetting({ label, hint }: RowProps) {
   const { resync } = useSettingsCtx()
+  // Locked development mode: the saved provider back to its default means "the canvasapp gateway off".
+  const devOpen = useDevAllowed()
   const [confirm, setConfirm] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -390,8 +393,9 @@ export function ResetAllSetting({ label, hint }: RowProps) {
         <div className="dg-callout warn dg-confirm" role="group" aria-label="Xác nhận khôi phục cài đặt mặc định">
           <TriangleAlert size={15} />
           <div>
-            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật; nhà cung cấp
-            video về {PROVIDER_LABEL.dev}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và đăng nhập canvasapp giữ nguyên.
+            <b>Đặt mọi cài đặt trên máy này về mặc định?</b> Giao diện, tải video, âm thanh, dây nối, chuyển động, thông báo, tên file, tự động tải bản cập nhật;{' '}
+            {devOpen ? `nhà cung cấp video về ${PROVIDER_LABEL.dev}` : 'cổng canvasapp.io.vn về Tắt'}; khung bên về như mới; các mẹo hiện lại. Dự án, video, thư mục đã chọn và
+            đăng nhập canvasapp giữ nguyên.
           </div>
           <div className="dg-confirm-actions">
             <button ref={cancelRef} type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>
@@ -424,6 +428,7 @@ export function DevBlock() {
       badge={<span className="badge dg-dev-badge">DEV</span>}
       desc="canvasapp.io.vn giả lập ngay trong SanoVids để tìm và sửa lỗi: cùng mã với chế độ thật, không gọi mạng, credit dev không phải tiền thật."
     >
+      <DevAccessRows />
       {provider !== 'dev' && (
         <div className="dg-field-hint">Take mới đang dùng {PROVIDER_LABEL[provider]} — các cài đặt dưới đây chỉ áp dụng khi chọn {PROVIDER_LABEL.dev}.</div>
       )}

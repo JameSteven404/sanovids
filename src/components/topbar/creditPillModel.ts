@@ -9,6 +9,8 @@
 //               (dev: [log-in] DEV Đăng nhập → the simulated login sheet)
 //   loading     tinted, spinner      canvasapp · —                    (never a made-up number)
 //   problem     warning tint         canvasapp · 1.234 | —            click → try again (or Cài đặt when unavailable)
+//   off         neutral pill         [power] canvasapp · Chưa bật     click → Cài đặt → Nhà cung cấp video (development
+//               mode locked and the canvasapp gateway not turned on: nothing is read, nothing is sent).
 //   demo        neutral dashed pill  [flask] 1.000 credit DEMO        legacy: the old demo's local wallet (only when a
 //               caller passes kind 'demo' — new takes never use it).
 import { CREDIT_HINT, creditUnitLabel, formatCreditNumber, formatCredits, formatVnd, type CreditKind } from '../../lib/credits'
@@ -20,8 +22,9 @@ export const LOW_CREDITS = 20
 /** The word after the number: plain "credit" — the source ("canvasapp" / "DEV") or the "DEMO" tag names the wallet. */
 const UNIT = creditUnitLabel('canvasapp')
 
-export type CreditPillTone = 'demo' | 'dev' | 'real' | 'login' | 'loading' | 'problem'
-export type CreditPillAction = 'settings' | 'refresh' | 'login'
+export type CreditPillTone = 'demo' | 'dev' | 'real' | 'login' | 'loading' | 'problem' | 'off'
+/** 'gateway' = Cài đặt opened on "Nhà cung cấp video". */
+export type CreditPillAction = 'settings' | 'refresh' | 'login' | 'gateway'
 
 export interface CreditPillView {
   tone: CreditPillTone
@@ -121,6 +124,17 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
   const base = { sim, source, tag: null, unit: null, low: false, busy: false, topUp: false }
 
   switch (info.status) {
+    case 'off':
+      return {
+        ...base,
+        sim: false,
+        source: 'canvasapp',
+        tone: 'off',
+        value: 'Chưa bật',
+        action: 'gateway',
+        title: 'Cổng canvasapp.io.vn đang tắt. Bấm để mở Cài đặt.',
+        ariaLabel: 'canvasapp: cổng đang tắt — mở Cài đặt nhà cung cấp video',
+      }
     case 'login-required':
       return {
         ...base,

@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest'
 import hardeningSource from '../../../electron/hardening-rules.cjs?raw'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import devAccessSource from '../../../electron/devaccess.cjs?raw'
+import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
 
 type ProfileSource = 'env' | 'baked' | 'default'
@@ -699,5 +701,103 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
     expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
     expect(mainSource).not.toMatch(/'before-quit'|'will-quit'/)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// Development-mode lock (electron/devaccess.cjs + devaccess-rules.cjs): wired without touching any protection.
+// ---------------------------------------------------------------------------------------------------------------
+describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs sources)', () => {
+  const idx = (src: string, s: string) => {
+    const i = src.indexOf(s)
+    expect(i, s).toBeGreaterThan(-1)
+    return i
+  }
+  const devOpenBuild = (createRequire(import.meta.url)('../../../electron/devaccess-rules.cjs') as { devOpenBuild: (o: { devToolsAllowed: boolean; testDevLock?: boolean }) => boolean }).devOpenBuild
+
+  it('preload: a devAccess block right after app and before canvasapp; updates still last; app block unchanged; plain data only', () => {
+    const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
+    expect(topKeys.indexOf('devAccess')).toBe(topKeys.indexOf('app') + 1)
+    expect(topKeys.indexOf('devAccess')).toBe(topKeys.indexOf('canvasapp') - 1)
+    expect(topKeys.at(-1)).toBe('updates')
+    const block = /\n {2}devAccess: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
+    expect(block).not.toBeNull()
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['initial', 'getState', 'unlock', 'lock', 'setKeep', 'totpBegin', 'totpConfirm', 'linkCancel', 'totpRemove', 'onState'])
+    expect(block![1]).toContain("unlock: (code) => ipcRenderer.invoke('devAccess:unlock', { code: str(code).slice(0, 300) })")
+    expect(block![1]).toContain("totpConfirm: (code) => ipcRenderer.invoke('devAccess:totpConfirm', { code: str(code).slice(0, 300) })")
+    expect(block![1]).toContain("setKeep: (days) => ipcRenderer.invoke('devAccess:setKeep', { days: Number(days) })")
+    expect(block![1]).toContain("ipcRenderer.on('devAccess:state', listener)")
+    expect(block![1]).not.toMatch(/ipcRenderer\.send/)
+    expect(preloadSource).toContain("const devAccessArg = process.argv.find((a) => a.startsWith('--bdp-dev-access='))")
+  })
+
+  it('main: lock computed after DEVTOOLS from it (never the other way), set up after ready and before the first window', () => {
+    const devtools = idx(mainSource, 'const DEVTOOLS = hardening.allowDevTools(')
+    const open = idx(mainSource, "const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })")
+    expect(open).toBeGreaterThan(devtools)
+    const ready = idx(mainSource, 'app.whenReady().then(() => {')
+    const setup = idx(mainSource, "devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })")
+    expect(setup).toBeGreaterThan(ready)
+    expect(setup).toBeLessThan(mainSource.indexOf('createWindow()', ready))
+    expect(mainSource).toContain("additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`]")
+    expect(mainSource).toContain('if (devAccess) devAccess.attachWindow(win)')
+    // only one place builds the unlock module, and nothing else in main touches its channels
+    expect(mainSource.split('setupDevAccess(').length - 1).toBe(1)
+    expect(mainSource).not.toContain("'devAccess:")
+    // DEVTOOLS is never derived from the lock
+    expect(mainSource.slice(devtools, mainSource.indexOf('\n', devtools))).not.toContain('DEV_OPEN_BUILD')
+  })
+
+  it('the build-opened rule equals the DevTools rule on every case (SANOVIDS_PROFILE_DIR alone stays locked; asar = packaged)', () => {
+    const cases: { isPackaged: boolean; profileSource: ProfileSource; testBuild?: boolean }[] = []
+    for (const isPackaged of [true, false]) for (const profileSource of ['env', 'baked', 'default'] as ProfileSource[]) for (const testBuild of [true, false, undefined]) cases.push({ isPackaged, profileSource, testBuild })
+    for (const c of cases) {
+      const tools = h.allowDevTools(c)
+      expect(devOpenBuild({ devToolsAllowed: tools, testDevLock: false }), JSON.stringify(c)).toBe(tools)
+      expect(devOpenBuild({ devToolsAllowed: tools, testDevLock: true }), JSON.stringify(c)).toBe(false)
+    }
+    expect(devOpenBuild({ devToolsAllowed: h.allowDevTools({ isPackaged: true, profileSource: 'env', testBuild: false }) })).toBe(false)
+    const asar = h.isPackagedApp({ isPackaged: false, appPath: 'C:\\x\\resources\\app.asar' })
+    expect(devOpenBuild({ devToolsAllowed: h.allowDevTools({ isPackaged: asar, profileSource: 'default' }) })).toBe(false)
+  })
+
+  it('devaccess.cjs: every channel is ipcMain.handle behind fromApp, state-changing handlers check opAllowed first, only unlock opens the link window', () => {
+    expect(devAccessSource).not.toMatch(/ipcMain\.on\(/)
+    expect(devAccessSource).toContain("if (!isAppSender(event)) return fail('not-allowed')")
+    for (const ch of ['getState', 'unlock', 'lock', 'setKeep', 'totpBegin', 'totpConfirm', 'linkCancel', 'totpRemove']) expect(devAccessSource).toContain(`handle('devAccess:${ch}'`)
+    const bodyOf = (name: string) => {
+      const start = idx(devAccessSource, `function ${name}(`)
+      return devAccessSource.slice(start, devAccessSource.indexOf('\n  }\n', start))
+    }
+    for (const op of ['setKeep', 'totpBegin', 'totpConfirm', 'totpRemove']) {
+      const body = bodyOf(op)
+      const check = body.indexOf(`rules.opAllowed('${op}'`)
+      expect(check, op).toBeGreaterThan(-1)
+      for (const write of ['writeRecord()', 'record.keepDays', 'record.totp', 'record.unlock', 'crypto.randomBytes', 'link.started']) {
+        const at = body.indexOf(write)
+        if (at > -1) expect(at, `${op}: ${write}`).toBeGreaterThan(check)
+      }
+    }
+    expect(devAccessSource.split('openLink(').length - 1).toBe(2) // its definition + the one call, in unlock
+    expect(bodyOf('unlock')).toContain('openLink(t)')
+  })
+
+  it('devaccess.cjs: no network, nothing about the debugging tools, the TOTP secret wrapped with safeStorage on Windows only and never logged', () => {
+    for (const src of [devAccessSource, devAccessRulesSource]) {
+      expect(src).not.toMatch(/\bfetch\(|\bnet\.|require\('node:https?'\)|require\('https?'\)|\bsession\./)
+    }
+    expect(devAccessSource).not.toMatch(/DEVTOOLS|devTools|webContents\.(open|toggle)/)
+    expect(devAccessRulesSource).not.toMatch(/require\(/)
+    expect(devAccessSource).toMatch(/if \(platform === 'win32'\) \{\s+try \{\s+if \(safeStorage\.isEncryptionAvailable\(\)\)/)
+    expect(devAccessSource.split('safeStorage.encryptString(').length - 1).toBe(1)
+    // log lines never take a code, a secret or a full device code
+    for (const m of devAccessSource.matchAll(/log\(`([^`]*)`\)/g)) expect(m[1], m[1]).not.toMatch(/\$\{(code|secret|digits|b32|input|deviceCode|link\.pending)[^}]*\}/)
+    expect(devAccessSource).not.toMatch(/console\./)
+  })
+
+  it('the unlock never touches the hardening: no switch / CSP / permission / fuse code in the lock modules', () => {
+    for (const src of [devAccessSource, devAccessRulesSource]) {
+      expect(src).not.toMatch(/refusedSwitches|contentSecurityPolicy|setPermission|electronFuses|commandLine|allowDevTools/)
+    }
   })
 })

@@ -4,7 +4,7 @@ import { openDevPanel, runNow } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
-import { PROVIDER_LABEL } from '../../providers'
+import { devAllowed, PROVIDER_LABEL, providerOf } from '../../providers'
 import { limitsSite } from '../../providers/limits'
 import {
   CREDIT_HINT,
@@ -97,6 +97,13 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
   const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
   const site = limitsSite(provider)
+
+  // Development mode locked: a scene that had simulated (DEV) takes now runs for real — say so next to the cost.
+  const hadDevTakes = useMemo(() => {
+    if (kind !== 'canvasapp' || devAllowed()) return false
+    const ids = new Set(sceneIds)
+    return takes.some((t) => ids.has(t.sceneId) && providerOf(t) === 'dev')
+  }, [kind, sceneIds, takes])
 
   const stats = useMemo(() => {
     const m = new Map<string, TakeStat>()
@@ -312,8 +319,9 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
         <div className="rq-confirm-note real">
           <TriangleAlert size={13} />
           <span>
-            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận (số dư DEV không liên quan). Huỷ
+            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận{devAllowed() ? ' (số dư DEV không liên quan)' : ''}. Huỷ
             take trong SanoVids không dừng job đã gửi sang canvasapp.
+            {hadDevTakes && ' Take cũ của cảnh là take giả lập (DEV) — lần này chạy thật trên canvasapp.io.vn (credit thật).'}
           </span>
         </div>
       )}

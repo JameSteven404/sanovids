@@ -1,5 +1,6 @@
 // Unit tests of the pure release helpers (scripts/releaseLib.mjs). Fixtures: the real CHANGELOG.md, the latest.yml
 // of the published 0.4.2 build, a hand-made asar header and the public signing certificate (build/signing/*.cer).
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +34,7 @@ import {
   checkAsarIntegrity,
   checkBuildFreshness,
   checkCertFile,
+  checkDevUnlockPins,
   checkFuseWire,
   checkInstallerIdentity,
   checkLatestYml,
@@ -505,6 +507,55 @@ describe('signed build checks', () => {
     expect(checkPackagedIdentity({ ...inner, name: 'sanovids-sigt1', productName: 'SanoVidsSigT1', version: '0.5.80' }, repo)).toHaveLength(3)
     expect(checkPackagedIdentity(inner, { ...repo, sanovids: {} })[0]).toMatch(/không có sanovids\.signers/)
     expect(checkPackagedIdentity(null, repo)).toHaveLength(1)
+  })
+
+  it('checkPackagedIdentity: the development-mode unlock keys are exactly those of the repo; no test-build lock switch', () => {
+    const key = (kid) => ({ kid, alg: 'ed25519', key: crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x })
+    const owner = key(1)
+    const test = key(2)
+    const repo = { name: 'sanovids', productName: 'SanoVids', version: '0.6.0', author: { name: AUTHOR }, sanovids: { signers: [PIN], devUnlockKeys: [owner] } }
+    const inner = { ...repo, sanovids: { signers: [PIN], devUnlockKeys: [{ ...owner }] } }
+    expect(checkPackagedIdentity(inner, repo)).toEqual([])
+    // a test build: extraMetadata keys are unioned in → [OWNER, TEST]
+    const unioned = checkPackagedIdentity({ ...inner, sanovids: { signers: [PIN], devUnlockKeys: [owner, test] } }, repo)
+    expect(unioned).toHaveLength(1)
+    expect(unioned[0]).toMatch(/devUnlockKeys.*thử nghiệm/)
+    expect(checkPackagedIdentity({ ...inner, sanovids: { signers: [PIN] } }, repo)[0]).toMatch(/devUnlockKeys/)
+    expect(checkPackagedIdentity({ ...inner, sanovids: { signers: [PIN], devUnlockKeys: [test] } }, repo)).toHaveLength(1)
+    expect(checkPackagedIdentity({ ...inner, sanovidsTestDevLock: true }, repo)[0]).toMatch(/sanovidsTestDevLock/)
+    expect(checkPackagedIdentity({ ...inner, sanovids: { ...inner.sanovids, devUnlockService: 'https://x' } }, repo)[0]).toMatch(/devUnlockService/)
+    // neither side has keys yet: equal (the separate release gate refuses that)
+    const bare = { ...repo, sanovids: { signers: [PIN] } }
+    expect(checkPackagedIdentity({ ...bare }, bare)).toEqual([])
+  })
+
+  it('checkDevUnlockPins: refuses a missing pin, a published test key, duplicates, odd shapes and the test-build switch', () => {
+    const key = (kid) => ({ kid, alg: 'ed25519', key: crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x })
+    const rfc1 = Buffer.from('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a', 'hex').toString('base64url')
+    const pkg = (sanovids, extra = {}) => ({ name: 'sanovids', sanovids: { signers: [PIN], ...sanovids }, ...extra })
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [key(1)] }))).toEqual([])
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [key(1), key(2)] }))).toEqual([])
+    const missing = checkDevUnlockPins(pkg({}))
+    expect(missing).toHaveLength(1)
+    expect(missing[0]).toContain('scripts\\owner\\Tao khoa mo khoa.bat')
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [] }))).toHaveLength(1)
+    expect(checkDevUnlockPins({})).toHaveLength(1)
+    expect(checkDevUnlockPins(null)).toHaveLength(1)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [{ kid: 1, alg: 'ed25519', key: rfc1 }] })).join(' ')).toMatch(/RFC 8032/)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [key(1), key(1)] })).join(' ')).toMatch(/trùng/)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [{ ...key(1), test: true }] })).join(' ')).toMatch(/kid, alg, key/)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [{ kid: 1, alg: 'rsa', key: 'x' }] }))).toHaveLength(2)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: 'abc' }))).toHaveLength(1)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [key(1)], extra: 1 })).join(' ')).toMatch(/trường lạ/)
+    expect(checkDevUnlockPins(pkg({ devUnlockKeys: [key(1)] }, { sanovidsTestDevLock: true })).join(' ')).toMatch(/sanovidsTestDevLock/)
+  })
+
+  it('publish-release runs the pin gate and requires the lock modules inside app.asar', () => {
+    const src = fs.readFileSync(path.join(root, 'scripts', 'publish-release.mjs'), 'utf8')
+    expect(src).toContain('const pinProblems = checkDevUnlockPins(pkg)')
+    expect(src).toContain("for (const p of pinProblems) fail('package.json', p)")
+    expect(src).toContain("'electron/devaccess.cjs',")
+    expect(src).toContain("'electron/devaccess-rules.cjs',")
   })
 
   it('checkVersionInfo: CompanyName = author (with "(Jame Steven)"), LegalCopyright = build.copyright', () => {

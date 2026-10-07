@@ -17,7 +17,7 @@
 // Crash safety (manifest.ts): RUN_LOCK + the manifest 'bdp:stress:session'; 'bdp:active' stays on the user's project,
 // and the next start removes what a run that never finished left behind.
 import { useDownloadPrefs } from '../../lib/downloads'
-import { activeProviderId, useProviderPrefs } from '../../providers'
+import { activeProviderId, devAllowed, useProviderPrefs } from '../../providers'
 import { refreshRealCredits } from '../../store/credits'
 import { flush, importProjectFile, useSave } from '../../store/persist'
 import { clearHistory, useProject } from '../../store/project'
@@ -63,6 +63,7 @@ export function startBlockedReason(): string | null {
 
 /** `locked`: asked by the run itself, which holds RUN_LOCK and wrote its manifest. */
 function blockedReason(locked: boolean): string | null {
+  if (!devAllowed()) return 'Chế độ Phát triển đang khoá.'
   if (activeProviderId() !== 'dev') return 'Chỉ chạy ở chế độ Phát triển (giả lập). Đang chọn canvasapp.io.vn thật trong Cài đặt — đổi về Phát triển rồi thử lại.'
   if (!locked && (running || sessionActive())) return 'Đang có một lần thử nghiệm chạy.'
   const save = useSave.getState()
@@ -92,7 +93,7 @@ export function subscribeStartBlocked(onChange: () => void): () => void {
       if (s.ready !== prev.ready || s.stale !== prev.stale) onChange()
     }),
     useProviderPrefs.subscribe((s, prev) => {
-      if (s.provider !== prev.provider) onChange()
+      if (s.provider !== prev.provider || s.active !== prev.active) onChange()
     }),
   ]
   const onStorage = (e: StorageEvent) => {
@@ -371,6 +372,12 @@ async function runLocked(options: StressOptions, hooks: SandboxHooks): Promise<S
     offs.push(
       useProviderPrefs.subscribe(() => {
         if (restoring || activeProviderId() === 'dev') return
+        // Development mode was locked: choosing 'dev' again would not bring it back — stop at once (no loop).
+        if (!devAllowed()) {
+          stopWith('Chế độ Phát triển đã khoá trong lúc thử nghiệm: dừng ngay.')
+          stopActiveSession()
+          return
+        }
         useProviderPrefs.getState().setProvider('dev')
         bump('Đổi sang canvasapp.io.vn (đã giữ Phát triển)')
         stopWith('Đã chọn canvasapp.io.vn thật trong lúc thử nghiệm: giữ chế độ Phát triển và dừng thử nghiệm.')

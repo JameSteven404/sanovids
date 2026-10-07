@@ -7,11 +7,14 @@
 // never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
 // app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses),
 // and where the app runs from (installer / portable / temp-copy / dev — a kind, never a path).
+// devAccess: the development-mode lock (electron/devaccess.cjs). Main decides; the page only reads the state and asks
+// to unlock (the typed code, ≤ 300 characters), lock, keep, link / unlink the authenticator.
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
 
 const arg = process.argv.find((a) => a.startsWith('--bdp-version='))
+const devAccessArg = process.argv.find((a) => a.startsWith('--bdp-dev-access='))
 
 /** Plain data only: a string (or '') — the main process validates everything again. */
 const str = (v) => (typeof v === 'string' ? v : '')
@@ -42,6 +45,26 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     signature: () => ipcRenderer.invoke('app:signature'),
     /** → { kind: 'installer'|'portable'|'temp-copy'|'dev' } — where this SanoVids runs from (no path). */
     placement: () => ipcRenderer.invoke('app:placement'),
+  },
+  /** Development-mode lock: every call → DevAccessState or { ok, state } | { ok: false, error, … } (src/providers/devAccess.ts). */
+  devAccess: {
+    /** 'build' | 'unlocked' | 'locked' when this window was created ('' = unknown: the page treats it as locked). */
+    initial: devAccessArg ? devAccessArg.slice('--bdp-dev-access='.length) : '',
+    getState: () => ipcRenderer.invoke('devAccess:getState'),
+    unlock: (code) => ipcRenderer.invoke('devAccess:unlock', { code: str(code).slice(0, 300) }),
+    lock: () => ipcRenderer.invoke('devAccess:lock'),
+    setKeep: (days) => ipcRenderer.invoke('devAccess:setKeep', { days: Number(days) }),
+    totpBegin: () => ipcRenderer.invoke('devAccess:totpBegin'),
+    totpConfirm: (code) => ipcRenderer.invoke('devAccess:totpConfirm', { code: str(code).slice(0, 300) }),
+    linkCancel: () => ipcRenderer.invoke('devAccess:linkCancel'),
+    totpRemove: () => ipcRenderer.invoke('devAccess:totpRemove'),
+    /** cb(state) on every change main pushes; returns an unsubscribe function. */
+    onState: (cb) => {
+      if (typeof cb !== 'function') return () => undefined
+      const listener = (_event, state) => cb(state)
+      ipcRenderer.on('devAccess:state', listener)
+      return () => ipcRenderer.removeListener('devAccess:state', listener)
+    },
   },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */

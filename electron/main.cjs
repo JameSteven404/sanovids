@@ -9,6 +9,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { Readable } = require('node:stream')
 const { setupUpdater } = require('./updater.cjs')
+const { setupDevAccess, readTestDevLock } = require('./devaccess.cjs')
 
 const SCHEME = 'app'
 const HOST = 'bdp'
@@ -79,6 +80,12 @@ for (const name of updaterRules.PORTABLE_ENV) delete process.env[name]
 app.enableSandbox()
 /** DevTools only from source or in a test build on its isolated test profile — never in the official packaged app. */
 const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })
+/**
+ * Development mode opens by the kind of build exactly where DevTools do (from source, a test build on its test profile)
+ * unless a test build bakes `sanovidsTestDevLock`; the release build stays locked until the owner unlocks it with a code
+ * (electron/devaccess.cjs). Computed after DEVTOOLS and never feeds back into it: unlocking changes no protection.
+ */
+const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
 app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
@@ -125,6 +132,8 @@ function portableFile() {
 /** The main SanoVids window (set in createWindow, cleared when it closes) and the auto-updater (electron/updater.cjs). */
 let mainWindow = null
 let updater = null
+/** The development-mode lock (electron/devaccess.cjs), set up on ready before the first window. */
+let devAccess = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -164,6 +173,11 @@ if (!app.requestSingleInstanceLock()) {
       updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
     } catch (e) {
       console.error('[SanoVids] auto-updater disabled:', e)
+    }
+    try {
+      devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })
+    } catch (e) {
+      console.error('[SanoVids] development-mode lock unavailable:', e)
     }
     createWindow()
     app.on('activate', () => {
@@ -269,11 +283,12 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`],
     },
   })
 
   mainWindow = win
+  if (devAccess) devAccess.attachWindow(win)
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
   })

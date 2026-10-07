@@ -39,6 +39,7 @@ import {
   assetsFor,
   buildReleaseNotes,
   checkCertFile,
+  checkDevUnlockPins,
   checkLatestYml,
   checkPackagedIdentity,
   checkRotation,
@@ -287,6 +288,8 @@ if (asarPath && exists(asarPath)) {
       'electron/updater-rules.cjs',
       'electron/signature.cjs',
       'electron/hardening-rules.cjs',
+      'electron/devaccess.cjs',
+      'electron/devaccess-rules.cjs',
       'node_modules/electron-updater/package.json',
     ]
     for (const p of required) {
@@ -347,6 +350,12 @@ else if (certSha1 !== SIGNER_THUMBPRINT || !pinsUpper.includes(SIGNER_THUMBPRINT
     `Chứng chỉ ký (build.win.signtoolOptions.certificateSha1 = ${certSha1 || '—'}) phải là ${SIGNER_THUMBPRINT} (SIGNER_THUMBPRINT trong scripts/releaseLib.mjs, ghi trong ghi chú phát hành) và nằm trong sanovids.signers.`,
   )
 } else ok('package.json', `Ký bằng chứng chỉ ${SIGNER_THUMBPRINT.slice(0, 8)}…, có trong sanovids.signers (${EXPECT.pins.length} vân tay)`)
+// Development mode is hidden in release builds: only the owner's pinned unlock key opens it (never a test key).
+{
+  const pinProblems = checkDevUnlockPins(pkg)
+  for (const p of pinProblems) fail('package.json', p)
+  if (!pinProblems.length) ok('package.json', `Đã ghim ${pkg.sanovids.devUnlockKeys.length} khoá mở khoá chế độ Phát triển (sanovids.devUnlockKeys)`)
+}
 
 // ───────────────────────────── (i) GitHub ─────────────────────────────
 

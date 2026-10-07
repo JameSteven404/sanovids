@@ -4,6 +4,9 @@
 // the ACTIVE gateway (providers/index activeGateway()): login state, balance, Nạp credit / Lịch sử credit, log in /
 // out. In development mode the row is tagged DEV, everything is simulated (no network) and "Bảng phát triển" opens the
 // dev console (faults, request log, simulated jobs).
+// Development mode LOCKED (release builds, providers/devAccess): no provider choice, no DEV — only canvasapp.io.vn, with
+// a switch "Dùng canvasapp.io.vn cho take mới" that is off until the user confirms the real-money warning
+// (CANVASAPP_NEEDS_OPT_IN). While it is off, nothing here talks to canvasapp (no balance read, no login block).
 // Login state and balance come from the shared gateway-credit store (store/credits useRealCredits: GET /api/me of the
 // active gateway) — the same numbers as the top bar pill, no separate request here.
 import { Bug, Cable, Cloud, CloudDownload, FlaskConical, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, TriangleAlert, Wallet } from 'lucide-react'
@@ -11,11 +14,21 @@ import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { openDevPanel, openTopUp } from '../../actions'
 import { openImportJobs } from '../../siteJobActions'
-import { activeGateway, activeProviderId, PROVIDER_LABEL, SELECTABLE_PROVIDERS, useProviderPrefs, type ProviderId } from '../../providers'
+import { activeGateway, activeProviderId, PROVIDER_LABEL, selectableProviders, useDevAllowed, useProviderPrefs, type ProviderId } from '../../providers'
 import { canvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from '../../providers/canvasapp/transport'
 import { DEV_CREDIT_HINT, formatCredits, formatVnd, refreshRealCredits, resetRealCredits, useRealCredits } from '../../store/credits'
 import { activeCount, useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
+import {
+  CANVASAPP_ENABLE_CONFIRM,
+  CANVASAPP_LOCKED_INTRO,
+  CANVASAPP_LOGOUT_LOCKED,
+  CANVASAPP_OFF_TOAST,
+  CANVASAPP_ON_TOAST,
+  CANVASAPP_SWITCH_HINT_OFF,
+  CANVASAPP_SWITCH_HINT_ON,
+  CANVASAPP_SWITCH_LABEL,
+} from '../dev/devUnlockModel'
 import { clockText } from '../topbar/creditPillModel'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import './dialogs.css'
@@ -112,10 +125,66 @@ function KeepLoginRow({ bridge, dev, loginState }: { bridge: CanvasappBridge; de
   )
 }
 
+/**
+ * Development mode locked: the canvasapp gateway is turned on here, after the real-money warning (inline
+ * confirmation, Huỷ has the focus). Off = the saved choice 'dev' (nothing is sent to canvasapp).
+ */
+function CanvasappSwitch({ desktop }: { desktop: boolean }) {
+  const on = useProviderPrefs((s) => s.provider === 'canvasapp')
+  const setProvider = useProviderPrefs((s) => s.setProvider)
+  const [confirm, setConfirm] = useState(false)
+  const change = (next: boolean) => {
+    if (next) {
+      setConfirm(true)
+      return
+    }
+    setProvider('dev')
+    toast(CANVASAPP_OFF_TOAST, { tone: 'info' })
+  }
+  return (
+    <div className="dg-field">
+      <Toggle
+        checked={on}
+        disabled={!desktop}
+        onChange={change}
+        label={CANVASAPP_SWITCH_LABEL}
+        hint={!desktop ? WEB_UNAVAILABLE : on ? CANVASAPP_SWITCH_HINT_ON : CANVASAPP_SWITCH_HINT_OFF}
+      />
+      {confirm && !on && (
+        <div className="dg-callout warn dg-confirm" role="group" aria-label="Xác nhận bật cổng canvasapp.io.vn">
+          <TriangleAlert size={15} />
+          <div>{CANVASAPP_ENABLE_CONFIRM}</div>
+          <div className="dg-confirm-actions">
+            <button type="button" className="btn btn-sm" autoFocus onClick={() => setConfirm(false)}>
+              Huỷ
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => {
+                setConfirm(false)
+                setProvider('canvasapp')
+                toast(CANVASAPP_ON_TOAST, { tone: 'warning' })
+              }}
+            >
+              Bật cổng
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function GatewaySection() {
   const desktop = !!canvasappBridge()
+  const devOpen = useDevAllowed()
   const provider = useProviderPrefs((s) => s.provider)
   const setProvider = useProviderPrefs((s) => s.setProvider)
+  // Re-renders when the development-mode lock flips (the gateway below follows it).
+  useProviderPrefs((s) => s.active)
+  /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
+  const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
   const gw = activeGateway()
   const dev = gw.simulated
@@ -132,8 +201,8 @@ export function GatewaySection() {
   // Opening Settings (or switching provider) reads the login state / balance (throttled: nothing is sent when read
   // < 15 s ago).
   useEffect(() => {
-    if (hasBridge) void refreshRealCredits()
-  }, [hasBridge, gw.id])
+    if (hasBridge && !off) void refreshRealCredits()
+  }, [hasBridge, gw.id, off])
 
   const refresh = () => {
     void refreshRealCredits({ force: true })
@@ -161,9 +230,11 @@ export function GatewaySection() {
       gw.provider().reset()
       // Forget the balance of the account that just logged out, then confirm the logged-out state (→ 401).
       resetRealCredits()
-      if (!gw.simulated) setProvider('dev')
+      // Open development mode: back to the simulation. Locked: the gateway stays on (never development mode).
+      if (!gw.simulated && devOpen) setProvider('dev')
+      const done = gw.simulated ? 'Đã đăng xuất tài khoản giả lập (chế độ Phát triển).' : devOpen ? 'Đã đăng xuất canvasapp và chuyển về chế độ Phát triển (giả lập).' : CANVASAPP_LOGOUT_LOCKED
       if (!outcome.ok) showLogoutProblem(outcome, bridge)
-      else toast(gw.simulated ? 'Đã đăng xuất tài khoản giả lập (chế độ Phát triển).' : 'Đã đăng xuất canvasapp và chuyển về chế độ Phát triển (giả lập).', { tone: 'success' })
+      else toast(done, { tone: 'success' })
       await refreshRealCredits({ force: true })
     } finally {
       setBusy(null)
@@ -199,31 +270,39 @@ export function GatewaySection() {
             <span className="badge warn">thử nghiệm</span>
           )}
         </h3>
-        <p>
-          <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả lập
-          ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản desktop).
-        </p>
+        {devOpen ? (
+          <p>
+            <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả
+            lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản
+            desktop).
+          </p>
+        ) : (
+          <p>{CANVASAPP_LOCKED_INTRO}</p>
+        )}
       </header>
 
-      <div className="dg-field">
-        <span className="label">Nhà cung cấp video cho take mới</span>
-        <Segmented
-          label="Nhà cung cấp video cho take mới"
-          size="lg"
-          value={provider}
-          onChange={choose}
-          options={(SELECTABLE_PROVIDERS as readonly ProviderId[]).map((p) => ({
-            id: p,
-            label: PROVIDER_LABEL[p],
-            icon: p === 'dev' ? <Bug size={13} /> : <Cloud size={13} />,
-            hint: p === 'dev' ? 'canvasapp giả lập, credit dev — không tốn tiền' : desktop ? 'Video thật, trừ credit canvasapp' : 'Chỉ có trong bản desktop',
-            disabled: p === 'canvasapp' && !desktop,
-            title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
-          }))}
-        />
-        {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
-        {running > 0 && <div className="dg-field-hint">Đổi nhà cung cấp chỉ áp dụng cho take mới; {running} take đang chạy giữ nguyên nơi đã gửi.</div>}
-      </div>
+      {!devOpen && <CanvasappSwitch desktop={desktop} />}
+      {devOpen && (
+        <div className="dg-field">
+          <span className="label">Nhà cung cấp video cho take mới</span>
+          <Segmented
+            label="Nhà cung cấp video cho take mới"
+            size="lg"
+            value={provider}
+            onChange={choose}
+            options={(selectableProviders() as readonly ProviderId[]).map((p) => ({
+              id: p,
+              label: PROVIDER_LABEL[p],
+              icon: p === 'dev' ? <Bug size={13} /> : <Cloud size={13} />,
+              hint: p === 'dev' ? 'canvasapp giả lập, credit dev — không tốn tiền' : desktop ? 'Video thật, trừ credit canvasapp' : 'Chỉ có trong bản desktop',
+              disabled: p === 'canvasapp' && !desktop,
+              title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
+            }))}
+          />
+          {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
+          {running > 0 && <div className="dg-field-hint">Đổi nhà cung cấp chỉ áp dụng cho take mới; {running} take đang chạy giữ nguyên nơi đã gửi.</div>}
+        </div>
+      )}
 
       {dev ? (
         <div className="dg-callout dg-dev-callout">
@@ -243,7 +322,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {hasBridge && (
+      {hasBridge && !off && (
         <div className={`dg-app dg-gw-login${dev ? ' dev' : ''}`}>
           <div className="dg-app-status">
             <span className={`dg-app-icon${loggedIn ? ' on' : ''}`}>{login.state === 'checking' ? <LoaderCircle size={17} className="dg-spin" /> : dev ? <Bug size={17} /> : <Cable size={17} />}</span>
@@ -336,7 +415,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {gwBridge && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
+      {gwBridge && !off && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
 
       {issue && (
         <div className="dg-callout warn">

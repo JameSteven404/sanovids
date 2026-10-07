@@ -9,7 +9,7 @@ import { linkToastWithFill } from './placeholderActions'
 import { isModelId, MODELS, normalizeSettings } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, providerOf } from './providers'
+import { activeProviderId, devAllowed, providerBlockedReason, providerOf } from './providers'
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
@@ -591,10 +591,20 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
     toast('Chọn cảnh cần chạy trước.', { tone: 'warning' })
     return
   }
+  // The provider new takes use cannot take them now (canvasapp turned off while development mode is locked, the web
+  // build…): say why, with the way to Cài đặt, instead of a cost dialog that could only fail.
+  const blocked = providerBlockedReason(activeProviderId())
+  if (blocked) {
+    toast(blocked, { tone: 'warning', action: { label: 'Mở Cài đặt', run: () => openSettings('gateway') } })
+    return
+  }
   // The cost dialog checks and sends the prompt in the store: commit the text being typed first.
   flushScenes(sceneIds)
   useUI.getState().openDialog({ kind: 'runConfirm', sceneIds, follow: opts.follow })
 }
+
+/** "Thử lại" of a development-mode take while development mode is locked (actions.rerunTake). */
+export const DEV_LOCKED_RETRY = 'Take giả lập chỉ gửi lại được khi chế độ Phát triển đang mở. Bấm “Chạy lại” để tạo take mới trên canvasapp.io.vn (xem chi phí trước khi gửi).'
 
 /**
  * "Chạy lại" on a take. A canvasapp take whose submit outcome is unknown is re-sent as the SAME take (same key: the
@@ -610,6 +620,11 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
     return
   }
   const dev = providerOf(take) === 'dev'
+  // A DEV take can only go back to the simulated server while development mode is open: never ask about it then.
+  if (dev && !devAllowed()) {
+    toast(DEV_LOCKED_RETRY, { tone: 'warning', ms: 9000, action: { label: 'Chạy lại', run: () => requestRun([take.sceneId], opts) } })
+    return
+  }
   if (isUnverifiableSubmit(take)) {
     const ok = window.confirm(
       dev
@@ -1000,6 +1015,8 @@ export function openTopUp(tab: TopUpTab = 'topup') {
  * orders — components/dev/DevPanel). From the top bar bug button, Settings and the queue drawer.
  */
 export function openDevPanel(tab?: DevPanelTab) {
+  // The one way in (top bar, Settings, queue, take viewer, run dialog): nothing at all while development mode is locked.
+  if (!devAllowed()) return
   useUI.getState().openDialog({ kind: 'dev', tab })
 }
 

@@ -1,0 +1,189 @@
+/* Development-mode lock UI (dv-ul-*): the hidden unlock box of Cài đặt → Giới thiệu (DevUnlock.tsx), linking an
+   authenticator (DevTotpLink.tsx) and the access rows on top of "Chế độ Phát triển" (DevAccessRows.tsx). Tokens only,
+   both appearances. */
+.dv-ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+.dv-ul-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.dv-ul-head > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-dim);
+}
+.dv-ul-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dv-ul-title b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dv-ul-title small,
+.dv-ul-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dv-ul-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dv-ul-device .mono {
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.dv-ul-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dv-ul-form label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dv-ul-input {
+  width: 100%;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+.dv-ul-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.dv-ul-actions .dv-ul-spacer {
+  flex: 1 1 auto;
+}
+.dv-ul-error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--danger-text);
+}
+.dv-ul-wait {
+  font-size: 12px;
+  color: var(--warn);
+  font-variant-numeric: tabular-nums;
+}
+:root[data-theme='light'] .dv-ul-wait {
+  color: color-mix(in srgb, var(--warn) 70%, var(--text));
+}
+.dv-ul-invite {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.dv-ul-invite > span {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* linking an authenticator */
+.dv-ul-link {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.dv-ul-secret {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.dv-ul-secret code {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  user-select: all;
+}
+.dv-ul-warn {
+  color: var(--warn);
+}
+:root[data-theme='light'] .dv-ul-warn {
+  color: color-mix(in srgb, var(--warn) 70%, var(--text));
+}
+.dv-ul-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.dv-ul-totp {
+  width: 110px;
+  font-family: var(--mono);
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+/* access rows on top of "Chế độ Phát triển" */
+.dv-ul-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.dv-ul-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+.dv-ul-status > svg {
+  flex: none;
+  color: var(--ok);
+}
+.dv-ul-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  font-size: 12px;
+}
+.dv-ul-row > span {
+  min-width: 0;
+  color: var(--text-dim);
+}
+.dv-ul-row b {
+  color: var(--text);
+  font-weight: 500;
+}

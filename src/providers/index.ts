@@ -1,15 +1,26 @@
 // Provider registry + the "which provider runs new takes" setting + the gateway accessor.
 //
 // ---- For the UI (verified to exist) ----
-//   activeProviderId(): ProviderId          provider that NEW takes will use: 'canvasapp' when chosen in Settings AND
-//                                          the desktop bridge exists; otherwise 'dev' (development mode). Never 'mock'.
+//   activeProviderId(): ProviderId          provider that NEW takes will use (effectiveProvider): development mode open
+//                                          (providers/devAccess devAllowed()) → 'canvasapp' when chosen in Settings AND
+//                                          the desktop bridge exists, else 'dev'; development mode LOCKED (release
+//                                          builds) → always 'canvasapp' (blocked until the user turns the gateway on).
+//                                          Never 'mock'.
 //   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ".
-//   SELECTABLE_PROVIDERS                    ['dev', 'canvasapp'] — the Settings choices ('canvasapp' needs the desktop app).
-//   useProviderPrefs                        { provider, setProvider } — the Settings choice (persisted). setProvider
-//                                          and the saved value only ever hold 'dev' | 'canvasapp' ('mock' or anything
-//                                          unknown becomes 'dev').
-//   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null.
+//   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
+//                                          (SELECTABLE_PROVIDERS: the open list, deprecated).
+//   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
+//                                          (persisted, never rewritten by locking / unlocking: unlocking again brings it
+//                                          back); `active` = activeProviderId() kept in the store so selectors re-render
+//                                          when the lock flips (select `s.active`, then call activeProviderId()).
+//                                          setProvider and the saved value only ever hold 'dev' | 'canvasapp' ('mock' or
+//                                          anything unknown becomes 'dev'). While locked, a saved 'dev' means "the
+//                                          canvasapp gateway is off" (CANVASAPP_NEEDS_OPT_IN: nothing is sent to it).
+//   canvasappEnabled()                      the canvasapp gateway may be used for new takes now.
+//   providerBlockedReason(id)               Vietnamese reason new takes cannot use `id` right now, or null: 'dev' while
+//                                          locked (DEV_LOCKED_REASON — also blocks "Thử lại" of a DEV take), 'canvasapp'
+//                                          outside the desktop app (WEB_UNAVAILABLE) or turned off (CANVASAPP_OFF_REASON).
 //   gatewayFor(id) / activeGateway()        { id, label, simulated, api, bridge(), provider() } of the dev or the real
 //                                          canvasapp gateway (null for 'mock'). EVERYTHING that talks to "canvasapp"
 //                                          (balance, login, top-up, credit history) goes through activeGateway(): in
@@ -47,16 +58,43 @@ import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
 import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
+import { devAllowed, useDevAccess, type DevAccessKind } from './devAccess'
 import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
 export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
 export { NO_LIMITS, NO_LIMITS_INFO, providerOf } from './types'
+export { devAllowed, useDevAllowed } from './devAccess'
 
 const PREF_KEY = 'bdp:pref:provider'
 
 /** Providers the user can choose for new takes. */
 export type SelectableProviderId = 'dev' | 'canvasapp'
+/** @deprecated the choices while development mode is open — use selectableProviders(). */
 export const SELECTABLE_PROVIDERS: readonly SelectableProviderId[] = ['dev', 'canvasapp']
+const LOCKED_PROVIDERS: readonly SelectableProviderId[] = ['canvasapp']
+
+/** The Settings choices now: development mode is offered only while it is open (devAllowed()). */
+export function selectableProviders(): readonly SelectableProviderId[] {
+  return devAllowed() ? SELECTABLE_PROVIDERS : LOCKED_PROVIDERS
+}
+
+/**
+ * While development mode is locked, the canvasapp gateway (unofficial, real credits) must be turned on by the user
+ * first (Cài đặt → Nhà cung cấp video): a saved 'dev' choice then means "off" and nothing is sent to canvasapp.
+ */
+export const CANVASAPP_NEEDS_OPT_IN = true
+
+export const DEV_LOCKED_REASON = 'Take giả lập chỉ gửi được khi chế độ Phát triển đang mở.'
+export const CANVASAPP_OFF_REASON = 'Chưa bật cổng canvasapp.io.vn — mở Cài đặt → Nhà cung cấp video để bật.'
+
+/**
+ * Pure: the provider new takes use. Open (build / unlocked): the saved choice, 'canvasapp' only with the desktop
+ * bridge (else development mode, like before the lock existed). Locked: always 'canvasapp' — never development mode.
+ */
+export function effectiveProvider({ access, saved, bridge }: { access: DevAccessKind; saved: ProviderId; bridge: boolean }): SelectableProviderId {
+  if (access === 'locked') return 'canvasapp'
+  return saved === 'canvasapp' && bridge ? 'canvasapp' : 'dev'
+}
 
 /** A saved / requested choice → a selectable provider: 'canvasapp' stays, anything else (old 'mock' included) is 'dev'. */
 export const normalizeProviderChoice = (v: unknown): SelectableProviderId => (v === 'canvasapp' ? 'canvasapp' : 'dev')
@@ -76,21 +114,42 @@ function savedProvider(): SelectableProviderId {
 interface ProviderPrefs {
   /** Provider chosen in Settings ('dev' | 'canvasapp'). Effective provider: see activeProviderId(). */
   provider: ProviderId
+  /** activeProviderId() as of the last change of the choice or of the development-mode lock (for selectors). */
+  active: ProviderId
   setProvider: (p: ProviderId) => void
 }
 
-export const useProviderPrefs = create<ProviderPrefs>()((set) => ({
-  provider: savedProvider(),
-  setProvider: (choice) => {
-    const provider = normalizeProviderChoice(choice)
-    try {
-      localStorage.setItem(PREF_KEY, provider)
-    } catch {
-      /* ignore */
-    }
-    set({ provider })
-  },
-}))
+const effectiveNow = (saved: ProviderId): ProviderId => effectiveProvider({ access: useDevAccess.getState().state.access, saved, bridge: hasCanvasappBridge() })
+
+export const useProviderPrefs = create<ProviderPrefs>()((set) => {
+  const provider = savedProvider()
+  return {
+    provider,
+    active: effectiveNow(provider),
+    setProvider: (choice) => {
+      const next = normalizeProviderChoice(choice)
+      try {
+        localStorage.setItem(PREF_KEY, next)
+      } catch {
+        /* ignore */
+      }
+      set({ provider: next, active: effectiveNow(next) })
+    },
+  }
+})
+
+// Locking / unlocking changes the provider new takes use (never the saved choice): every subscriber of the prefs
+// (credits, top-up, the stress tester's guard, selectors on `active`) hears it.
+useDevAccess.subscribe((s, prev) => {
+  if (s.state.access === prev.state.access) return
+  const { provider } = useProviderPrefs.getState()
+  useProviderPrefs.setState({ active: effectiveNow(provider) })
+})
+
+/** The canvasapp gateway may be used for new takes now (open development mode, or turned on while locked). */
+export function canvasappEnabled(): boolean {
+  return devAllowed() || !CANVASAPP_NEEDS_OPT_IN || useProviderPrefs.getState().provider === 'canvasapp'
+}
 
 const registry = new Map<ProviderId, VideoProvider>()
 let canvasapp: CanvasappProvider | null = null
@@ -194,15 +253,24 @@ export function gatewayProvider(id: 'dev' | 'canvasapp'): CanvasappProvider {
   return p as CanvasappProvider
 }
 
-/** Provider used for NEW takes: the real gateway when chosen and possible, else development mode. */
+/** Provider used for NEW takes (effectiveProvider: the lock, the saved choice, the desktop bridge — read now). */
 export function activeProviderId(): ProviderId {
-  return useProviderPrefs.getState().provider === 'canvasapp' && hasCanvasappBridge() ? 'canvasapp' : 'dev'
+  return effectiveNow(useProviderPrefs.getState().provider)
 }
 
 /** Synchronous pre-check used by enqueue / retry (login is checked when the job is submitted). Null = OK. */
 export function providerBlockedReason(id: ProviderId): string | null {
-  if (id === 'canvasapp' && !hasCanvasappBridge()) return WEB_UNAVAILABLE
+  if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
+  if (id === 'canvasapp') {
+    if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
+    if (!canvasappEnabled()) return CANVASAPP_OFF_REASON
+  }
   return null
+}
+
+/** The canvasapp gateway is turned off (locked build, not chosen): nothing may be sent to canvasapp. */
+export function canvasappOff(): boolean {
+  return hasCanvasappBridge() && !canvasappEnabled()
 }
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = { dev: DEV_PROVIDER_LABEL, canvasapp: 'canvasapp.io.vn', mock: 'Demo cũ' }
@@ -230,9 +298,12 @@ export function gatewayFor(id: ProviderId): Gateway | null {
   return null
 }
 
-/** The gateway of the provider new takes use (activeProviderId() is never 'mock', so never null). */
+/**
+ * The gateway of the provider new takes use (activeProviderId() is never 'mock', so never null). Locked: always the
+ * real canvasapp gateway — development mode is never the fallback.
+ */
 export function activeGateway(): Gateway {
-  return gatewayFor(activeProviderId()) ?? gatewayFor('dev')!
+  return gatewayFor(activeProviderId())!
 }
 
 /**
@@ -337,6 +408,8 @@ export function providerLimitsInfo(id: ProviderId): LimitsInfo {
 /** Read `id`'s limits again (see VideoProvider.refreshLimits). Never throws. */
 export async function refreshProviderLimits(id: ProviderId, opts: RefreshLimitsOptions = {}): Promise<RefreshLimitsResult> {
   if (id === 'mock') return 'fresh'
+  // The gateway is turned off (locked build, canvasapp not chosen): never a request to canvasapp.
+  if (id === 'canvasapp' && canvasappOff()) return 'unavailable'
   try {
     const p = getProvider(id)
     return p.refreshLimits ? await p.refreshLimits(opts) : 'fresh'
