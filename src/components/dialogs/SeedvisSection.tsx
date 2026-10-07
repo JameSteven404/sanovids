@@ -1,12 +1,13 @@
 import { memo, useEffect, useId, useRef, useState } from 'react'
-import { ClipboardPaste, ExternalLink, KeyRound, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
+import { ClipboardPaste, ExternalLink, KeyRound, RefreshCw, Save, Trash2, TriangleAlert } from 'lucide-react'
 import { SERVICES } from '../../core/services'
-import type { SeedvisAccountInfo, SeedvisBridgeErrorCode, SeedvisKeyStatus } from '../../providers/seedvis/contract'
+import type { SeedvisAccountInfo, SeedvisKeyStatus } from '../../providers/seedvis/contract'
 import { ProviderTag } from '../common/ProviderTag'
 import {
-  DEFAULT_SEEDVIS_GUARD, SEEDVIS_CLIPBOARD_NOTE, SEEDVIS_PRIVACY_NOTE, seedvisAccountRows, seedvisActionBlock,
-  seedvisErrorText, seedvisGuardValue, seedvisKeyLabel, seedvisKeyWarning,
-  type SeedvisKeyAction, type SeedvisPlatform, type SeedvisSectionAction, type SeedvisSpendingGuard,
+  DEFAULT_SEEDVIS_GUARD, SEEDVIS_PRIVACY_NOTE, seedvisAccountRows, seedvisActionBlock, seedvisCanSaveUnverified,
+  seedvisClipboardNote, seedvisErrorText, seedvisGuardCommit, seedvisKeyLabel, seedvisKeyWarning, seedvisRestoreNote,
+  type SeedvisKeyAction, type SeedvisPlatform, type SeedvisSectionAction, type SeedvisSectionError,
+  type SeedvisSectionErrorCode, type SeedvisSpendingGuard,
 } from './seedvisSectionModel'
 import './seedvisSection.css'
 
@@ -17,7 +18,8 @@ export interface SeedvisSectionProps {
   // Caller supplies the deduplicated live + ledger count across all projects for this key.
   activeTakes: number
   busy?: SeedvisSectionAction | null
-  error?: SeedvisBridgeErrorCode | null
+  /** A code, or main's failure (code + fixed message) and the action that failed. */
+  error?: SeedvisSectionErrorCode | SeedvisSectionError | null
   clipboardCleared?: boolean
   linkRetention?: string
   showPrivacyNote?: boolean
@@ -30,6 +32,25 @@ export interface SeedvisSectionProps {
   // Optional host-owned entry flow: this component never accepts or returns a key string.
   canEnterKey?: boolean
 }
+
+const isKeyAction = (action: SeedvisSectionAction): action is SeedvisKeyAction =>
+  action === 'paste' || action === 'enter' || action === 'save-unverified' || action === 'clear'
+
+/** A spending-guard number: keystrokes edit a local draft, blur / Enter commit it (or bring the last value back). */
+const GuardField = memo(function GuardField({ label, value, onCommit }: { label: string; value: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+  const commit = () => {
+    const next = seedvisGuardCommit(draft, value)
+    setDraft(next.draft)
+    if (next.value !== value) onCommit(next.value)
+  }
+  return (
+    <label>{label}<input className="input" type="number" inputMode="numeric" min={1} step={1} value={draft}
+      onChange={event => setDraft(event.target.value)} onBlur={commit}
+      onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit() } }} /></label>
+  )
+})
 
 export const SeedvisSection = memo(function SeedvisSection({
   keyStatus, account, platform, activeTakes, busy = null, error, clipboardCleared = false, linkRetention,
@@ -44,11 +65,12 @@ export const SeedvisSection = memo(function SeedvisSection({
     if (pending) keepKey.current?.focus()
     else actionButton.current?.focus()
   }, [pending])
-  const warning = pending ? seedvisKeyWarning(pending, activeTakes, keyStatus.hint) : null
+  const warning = pending ? seedvisKeyWarning(pending, activeTakes, keyStatus) : null
+  const restoreNote = seedvisRestoreNote(keyStatus, activeTakes, platform)
   const block = (action: SeedvisSectionAction) => seedvisActionBlock(action, keyStatus, platform, !!busy)
   const request = (action: SeedvisSectionAction, button: HTMLButtonElement) => {
     if (block(action)) return
-    if ((action === 'paste' || action === 'enter' || action === 'clear') && seedvisKeyWarning(action, activeTakes, keyStatus.hint)) {
+    if (isKeyAction(action) && seedvisKeyWarning(action, activeTakes, keyStatus)) {
       actionButton.current = button
       setPending(action)
       return
@@ -64,6 +86,7 @@ export const SeedvisSection = memo(function SeedvisSection({
   const actions = [
     { action: 'paste', label: 'Dán key', Icon: ClipboardPaste },
     ...(canEnterKey ? [{ action: 'enter' as const, label: 'Nhập key', Icon: KeyRound }] : []),
+    ...(seedvisCanSaveUnverified(error) ? [{ action: 'save-unverified' as const, label: 'Lưu mà chưa kiểm tra', Icon: Save }] : []),
     { action: 'check', label: 'Kiểm tra', Icon: RefreshCw },
     { action: 'clear', label: 'Xoá key', Icon: Trash2 },
   ] as const
@@ -72,6 +95,7 @@ export const SeedvisSection = memo(function SeedvisSection({
     <section className="dg-section dg-seedvis" aria-labelledby={`${id}-title`} aria-busy={!!busy}>
       <header><h3 id={`${id}-title`}>{SERVICES.seedvis.site} <ProviderTag service="seedvis" simulated={mode === 'seedvis-dev'} /></h3></header>
       <p role="status">{seedvisKeyLabel(keyStatus, platform)}</p>
+      {restoreNote && <p className="dg-seedvis-note">{restoreNote}</p>}
       {error && <p className="dg-seedvis-warning" role="alert"><TriangleAlert size={16} aria-hidden="true" />{seedvisErrorText(error)}</p>}
       <div className="dg-seedvis-actions">
         {actions.map(({ action, label, Icon }) => <button key={action} type="button" className="btn"
@@ -88,17 +112,14 @@ export const SeedvisSection = memo(function SeedvisSection({
           </button>
         </div>
       </div>}
-      <p className="dg-seedvis-note">{clipboardCleared && 'Đã xoá key khỏi clipboard hiện tại. '}{platform === 'windows'
-        ? SEEDVIS_CLIPBOARD_NOTE : 'Nếu dùng ứng dụng lưu hoặc đồng bộ clipboard, hãy xoá dòng chứa key ở đó sau khi dán.'}</p>
+      <p className="dg-seedvis-note">{seedvisClipboardNote(platform, clipboardCleared)}</p>
       <dl className="dg-seedvis-account">
         {seedvisAccountRows(account, linkRetention).map(row => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}
       </dl>
       <fieldset className="dg-seedvis-guard">
         <legend>Hỏi thêm trước khi chạy nhiều cảnh seedvis</legend>
-        <label>Hơn số cảnh<input className="input" type="number" min={1} step={1} value={guard.takes}
-          onChange={event => { const value = seedvisGuardValue(event.target.value); if (value !== null) onGuardChange({ ...guard, takes: value }) }} /></label>
-        <label>Hơn thời lượng (giây)<input className="input" type="number" min={1} step={1} value={guard.seconds}
-          onChange={event => { const value = seedvisGuardValue(event.target.value); if (value !== null) onGuardChange({ ...guard, seconds: value }) }} /></label>
+        <GuardField label="Hơn số cảnh" value={guard.takes} onCommit={takes => onGuardChange({ ...guard, takes })} />
+        <GuardField label="Hơn thời lượng (giây)" value={guard.seconds} onCommit={seconds => onGuardChange({ ...guard, seconds })} />
         <p className="dg-seedvis-note">Cũng hỏi thêm khi ước tính vượt số dư hoặc số dư bằng 0. Đây là lời xác nhận thêm; seedvis quyết định có đủ credit để chạy.</p>
       </fieldset>
       {showPrivacyNote && <p className="dg-seedvis-note">{SEEDVIS_PRIVACY_NOTE}</p>}

@@ -4,16 +4,60 @@ import { MODELS } from '../../../core/models'
 
 type Triple = [number, number, number]
 type Tokens = Record<string, string>
-const css = readFileSync(new URL('../../../styles/base.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
-const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
-  selector: selector.trim(), tokens: Object.fromEntries([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, key, value]) => [key, value.trim()])),
-}))
+type Theme = 'dark' | 'light'
+interface Rule { selector: string; tokens: Tokens }
+
+function parseRules(source: string): Rule[] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
+    selector: selector.trim(), tokens: Object.fromEntries([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, key, value]) => [key, value.trim()])),
+  }))
+}
+
+/**
+ * What one `:root…` selector means: the themes it applies to (no data-theme = dark, the default), its `data-bg`
+ * surface variant (null = every surface) and its specificity. Read from the meaning, never from a substring: design D
+ * writes its dark-only surfaces as `:root[data-bg='deep']:not([data-theme='light'])`. null = not a `:root` rule; a
+ * `:root` rule this cannot read throws instead of being silently dropped.
+ */
+function rootScope(part: string): { themes: Theme[]; bg: string | null; specificity: number } | null {
+  if (!part.startsWith(':root')) return null
+  let rest = part.slice(':root'.length)
+  let themes: Theme[] = ['dark', 'light']
+  let bg: string | null = null
+  let specificity = 1
+  while (rest) {
+    const match = /^(:not\()?\[data-(theme|bg)=(['"]?)([\w-]+)\3\](\))?/.exec(rest)
+    if (!match || !match[1] !== !match[5] || (match[2] === 'theme' && match[4] !== 'dark' && match[4] !== 'light')
+      || (match[2] === 'bg' && match[1])) throw new Error(`Unsupported :root selector: ${part}`)
+    const [, not, name, , value] = match
+    if (name === 'theme') themes = themes.filter(theme => not ? theme !== value : theme === value)
+    else bg = value
+    specificity++
+    rest = rest.slice(match[0].length)
+  }
+  return { themes, bg, specificity }
+}
+
+/** The theme's tokens and one merged token set per `data-bg` variant, in cascade order (specificity, then source). */
+function themeTokens(rules: readonly Rule[], theme: Theme): { base: Tokens; variants: { bg: string; tokens: Tokens }[] } {
+  const applied = rules.flatMap((rule, order) => {
+    if (!Object.keys(rule.tokens).length) return []
+    const scopes = rule.selector.split(',').map(part => rootScope(part.trim())).filter(scope => scope?.themes.includes(theme))
+    // One entry per surface the rule reaches, with the specificity of its best-matching selector.
+    return [...new Set(scopes.map(scope => scope!.bg))].map(bg => ({
+      bg, order, tokens: rule.tokens, specificity: Math.max(...scopes.filter(scope => scope!.bg === bg).map(scope => scope!.specificity)),
+    }))
+  })
+  const merge = (bg: string | null) => Object.assign({}, ...applied.filter(entry => entry.bg === null || entry.bg === bg)
+    .sort((a, b) => a.specificity - b.specificity || a.order - b.order).map(entry => entry.tokens)) as Tokens
+  const bgs = [...new Set(applied.flatMap(entry => entry.bg === null ? [] : [entry.bg]))]
+  return { base: merge(null), variants: bgs.map(bg => ({ bg, tokens: merge(bg) })) }
+}
+
+const rules = parseRules(readFileSync(new URL('../../../styles/base.css', import.meta.url), 'utf8'))
 const providerNames = ['--provider-canvasapp', '--provider-seedvis']
-const missing = providerNames.flatMap(name => [name, `${name}-soft`]).filter(name => !rules.some(rule => rule.tokens[name]))
-const skipReason = `Chờ Claude thêm token provider vào base.css (H3): ${missing.join(', ')}. Chưa xác minh màu/CVD.`
-const tokensFor = (theme: 'dark' | 'light'): Tokens => Object.assign({}, ...rules.filter(rule =>
-  rule.selector.split(',').some(selector => selector.trim() === ':root' || selector.trim() === `:root[data-theme='${theme}']`),
-).map(rule => rule.tokens))
+const softNames = providerNames.map(name => `${name}-soft`)
 const linear = (c: number) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
 const srgb = (c: number) => c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055
 const dot = (a: readonly number[], b: readonly number[]) => a.reduce((sum, value, i) => sum + value * b[i], 0)
@@ -82,6 +126,8 @@ const simulate = (rgb: Triple, matrix: number[][]) => matrix.map(row => srgb(Mat
 const distance = (a: Triple, b: Triple) => deltaE(lab(a), lab(b))
 const luminance = (rgb: Triple) => dot(rgb.map(linear), [0.2126, 0.7152, 0.0722])
 const contrast = (a: Triple, b: Triple) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05)
+/** Surfaces a provider tag sits on: window, fields (the picker trigger), panels. */
+const SURFACES = ['--bg', '--bg-elev', '--panel', '--panel-2']
 
 describe('provider colour measurement', () => {
   it('checks CIEDE2000 reference pairs, contrast and linear-RGB simulation before testing tokens', () => {
@@ -93,30 +139,70 @@ describe('provider colour measurement', () => {
     expect(color('rgba(0, 0, 0, 0.5)', {})).toEqual([0.5, 0.5, 0.5])
   })
 
+  it("picks each theme's tokens and data-bg variants from what the selectors mean (design D's dark-only surfaces)", () => {
+    const fixture = parseRules(`
+      :root, :root[data-theme='dark'] { --bg: #111111; --ink: #222222; }
+      :root[data-theme='light'] { --bg: #eeeeee; --ink: #333333; }
+      /* a later plain :root must not beat the light block (lower specificity) */
+      :root { --ink: var(--bg); --media: #000000; }
+      :root[data-bg='deep']:not([data-theme='light']) { --bg: #000000; }
+      :root[data-bg="slate"]:not([data-theme='light']) { --bg: #101820; }
+      :root:not([data-theme='dark']) { --paper: #ffffff; }
+      :root[data-bg='paper'][data-theme='light'] { --bg: #fafafa; }
+      .btn { --bg: #ff0000; }
+    `)
+    const dark = themeTokens(fixture, 'dark'), light = themeTokens(fixture, 'light')
+    expect(dark.base).toEqual({ '--bg': '#111111', '--ink': '#222222', '--media': '#000000' })
+    expect(dark.variants.map(variant => [variant.bg, variant.tokens['--bg'], variant.tokens['--ink']])).toEqual([
+      ['deep', '#000000', '#222222'], ['slate', '#101820', '#222222'],
+    ])
+    expect(light.base).toEqual({ '--bg': '#eeeeee', '--ink': '#333333', '--media': '#000000', '--paper': '#ffffff' })
+    expect(light.variants.map(variant => [variant.bg, variant.tokens['--bg']])).toEqual([['paper', '#fafafa']])
+    expect(() => themeTokens(parseRules(":root[data-motion='off'] { --x: #000000; }"), 'dark')).toThrow('Unsupported :root selector')
+    expect(() => themeTokens(parseRules(":root:not([data-bg='deep']) { --x: #000000; }"), 'dark')).toThrow('Unsupported :root selector')
+    expect(themeTokens(parseRules(":root[data-motion='off'] .x { animation: none; }"), 'dark').base).toEqual({})
+  })
+
   for (const theme of ['dark', 'light'] as const) {
     describe(theme, () => {
-      const tokens = tokensFor(theme)
-      const check = missing.length ? it.skip : it
-      check(missing.length ? skipReason : 'separates providers in normal vision and CVD', () => {
+      const { base: tokens, variants } = themeTokens(rules, theme)
+      const surfaces = [{ bg: theme, tokens }, ...variants]
+      // Each check waits only for the tokens it needs (H3 adds them): the provider colours are measured as soon as
+      // they exist, even before the soft fills do.
+      const mainMissing = providerNames.filter(name => !tokens[name])
+      const softMissing = [...mainMissing, ...softNames.filter(name => !tokens[name])]
+      const waiting = (missing: string[], title: string) => missing.length
+        ? `${title} — chờ Claude thêm token provider vào base.css (H3): ${missing.join(', ')}. Chưa xác minh màu/CVD.`
+        : title
+      const main = mainMissing.length ? it.skip : it
+      const soft = softMissing.length ? it.skip : it
+
+      main(waiting(mainMissing, 'separates providers in normal vision and CVD'), () => {
         const [a, b] = providerNames.map(name => color(tokens[name], tokens))
         expect(distance(a, b)).toBeGreaterThanOrEqual(40)
         for (const matrix of matrices) expect(distance(simulate(a, matrix), simulate(b, matrix))).toBeGreaterThanOrEqual(15)
       })
-      check(missing.length ? skipReason : 'keeps contrast >= 4.5 on panels and every data-bg surface', () => {
-        const variants = [tokens, ...rules.filter(rule => rule.selector.includes('data-bg')
-          && !rule.selector.includes(`data-theme='${theme === 'dark' ? 'light' : 'dark'}'`))
-          .map(rule => ({ ...tokens, ...rule.tokens }))]
-        for (const variant of variants) for (const surface of ['--bg', '--panel', '--panel-2']) {
-          const background = color(variant[surface], variant)
-          for (const name of providerNames) {
-            const foreground = color(variant[name], variant, background)
-            expect(contrast(foreground, background), `${name} on ${surface}`).toBeGreaterThanOrEqual(4.5)
-            // Tags actually paint their soft fill, so check it too.
-            expect(contrast(foreground, color(variant[`${name}-soft`], variant, background)), `${name} on its soft fill`).toBeGreaterThanOrEqual(4.5)
+      main(waiting(mainMissing, 'keeps text contrast >= 4.5 on every surface of every data-bg variant'), () => {
+        for (const surface of surfaces) for (const name of SURFACES) {
+          const background = color(surface.tokens[name], surface.tokens)
+          for (const provider of providerNames) {
+            const foreground = color(surface.tokens[provider], surface.tokens, background)
+            expect(contrast(foreground, background), `${provider} on ${name} (${surface.bg})`).toBeGreaterThanOrEqual(4.5)
           }
         }
       })
-      check(missing.length ? skipReason : 'separates chromatic tokens and model dots, including summary neighbours', () => {
+      // Tags actually paint their soft fill, so check it too.
+      soft(waiting(softMissing, 'keeps text contrast >= 4.5 on its own soft fill on every surface'), () => {
+        for (const surface of surfaces) for (const name of SURFACES) {
+          const background = color(surface.tokens[name], surface.tokens)
+          for (const provider of providerNames) {
+            const fill = color(surface.tokens[`${provider}-soft`], surface.tokens, background)
+            const foreground = color(surface.tokens[provider], surface.tokens, fill)
+            expect(contrast(foreground, fill), `${provider} on its soft fill over ${name} (${surface.bg})`).toBeGreaterThanOrEqual(4.5)
+          }
+        }
+      })
+      main(waiting(mainMissing, 'separates chromatic tokens and model dots, including summary neighbours'), () => {
         const neighbours = new Set(['--accent', '--danger', ...Object.keys(tokens).filter(name => /model.*(?:dot|color)|(?:veo|seedance|minimax)/.test(name))])
         const names = ['--accent', '--accent-strong', '--accent-ink', '--ref', '--ref-ink', '--video', '--video-ink', '--save', '--info', '--first', '--ok', '--warn', '--danger', '--danger-text', '--selection', '--brand-plate-top', '--brand-plate-bottom', '--text-dim', ...neighbours]
         const panel = color(tokens['--panel'], tokens)
