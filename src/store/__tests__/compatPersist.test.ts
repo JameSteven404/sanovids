@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { compatFixtures, jsonCopy } from '../../core/__tests__/fixtures/compat'
-import { compileScene, imageKey } from '../../core/compile'
+import { compileScene, imageKey, imageSlots } from '../../core/compile'
 import { migrateProject, migrateTake } from '../../core/migrate'
 import type { Project, Take } from '../../core/types'
 
@@ -51,7 +51,7 @@ vi.mock('../../lib/imageStore', async (importOriginal) => {
   } }
 })
 
-import { maybeSpaceRows, showsOldLayout } from '../../components/canvas/rowSpacing'
+import { maybeSpaceRows, planRowSpacing, showsOldLayout } from '../../components/canvas/rowSpacing'
 import { bootstrap, flush, importedProject, importProjectFile, projectForExport, switchProject } from '../persist'
 import { clearHistory, LAYOUT, redo, ROW_H, undo, useProject } from '../project'
 import { stopEngine, useRuns } from '../runs'
@@ -151,11 +151,19 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     project.scenes.forEach((scene, index) => {
       expect(scene.videoRefs).toEqual([])
       expect(scene).not.toHaveProperty('legacyVideoRefs')
-      expect(compileScene(project, scene).images.map(imageKey)).toEqual(fixture.expected.imageKeys[index].map((key) => {
+      const remapped = (keys: string[]) => keys.map((key) => {
         const [asset, image] = key.split(':')
         return `${asset}:${remap.get(image)}`
-      }))
+      })
+      expect(imageSlots(project, scene).map(imageKey)).toEqual(remapped(fixture.expected.imageKeys[index]))
+      expect(compileScene(project, scene).images.map(imageKey)).toEqual(remapped(fixture.expected.sentImageKeys[index]))
     })
+    // presets (factory ones included) and the scenes' links to them travel with the file
+    const migratedFile = migrateProject(jsonCopy(file.project))
+    expect(project.presets).toEqual(migratedFile.presets)
+    expect(project.scenes.map((s) => s.presetId)).toEqual(file.project.scenes.map((s) => s.presetId))
+    expect(project.scenes[0].presetId).toBe('preset_draft')
+    expect(project).not.toHaveProperty('presetNames')
     for (const folder of project.folders ?? []) {
       expect(folder.id).not.toBe('folder-output')
       expect(folder.path).toBeNull()
@@ -168,6 +176,8 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     const importedAgain = importedProject(jsonCopy(portable))
     expect(importedAgain.scenes).toEqual(project.scenes)
     expect(importedAgain.assets).toEqual(project.assets)
+    expect(importedAgain.presets).toEqual(project.presets)
+    expect(importedAgain).not.toHaveProperty('presetNames')
     expect(JSON.stringify(file)).toBe(before)
     expect(db.values.get(`project:${project.id}`)).toEqual(project)
     await switchProject(fixture.autosave.project.id)
@@ -189,7 +199,10 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     }
     expect(projectForExport(migrateProject(jsonCopy(portable)))).toEqual(portable)
   })
+})
 
+// 0.1.0 – 0.5.0 laid scenes out in one column, rows 248px apart (v1's grid is below).
+describe.each(compatFixtures.slice(1))('$source.version canvas spacing', (fixture) => {
   it('spaces old rows once, saves the result, and undoes/redoes the complete project and take positions', async () => {
     const before = migrateProject(fixture.autosave.project)
     before.id += '-spacing'
@@ -228,5 +241,31 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     expect(maybeSpaceRows()).toBe(false)
     expect(useProject.getState().project).toBe(copy)
     expect(useProject.temporal.getState().pastStates).toHaveLength(0)
+  })
+})
+
+describe('v1 grid layout (ae04bea: 5 scenes per row, 328px apart, rows 266px apart)', () => {
+  const v1Grid = [{ x: 420, y: 60 }, { x: 748, y: 60 }, { x: 1076, y: 60 }, { x: 1404, y: 60 }]
+  const boxesAfter = (project: Project, plan: ReturnType<typeof planRowSpacing>) =>
+    project.scenes.map((s) => ({ ...(plan.scenes[s.id] ?? s.position), w: LAYOUT.sceneW, h: LAYOUT.sceneH }))
+  const overlap = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+
+  it('keeps the v1 grid through migrate, autosave and export, and sees it as an old layout', () => {
+    const project = migrateProject(jsonCopy(compatFixtures[0].autosave.project))
+    expect(project.scenes.map((s) => s.position)).toEqual(v1Grid)
+    expect(migrateProject(jsonCopy(compatFixtures[0].file.project)).scenes.map((s) => s.position)).toEqual(v1Grid)
+    expect(showsOldLayout(project)).toBe(true)
+  })
+
+  // KNOWN ISSUE, outside the compat boundary (components/canvas/rowSpacing.ts): v1 cards 328px apart no longer fit the
+  // 352px node side by side (24px overlap), and the one-time spacing only moves rows DOWN — pushDown turns a v1 row
+  // into a zig-zag (420,60 / 748,420 / 1076,60 / 1404,420). Flip to `it` when rowSpacing handles side-by-side cards.
+  it.fails('spaces a v1 grid row without overlapping cards and keeps it level', () => {
+    const project = migrateProject(jsonCopy(compatFixtures[0].autosave.project))
+    const plan = planRowSpacing({ scenes: project.scenes, assets: project.assets, takes: [], folders: project.folders })
+    expect(plan.changed).toBe(true)
+    const boxes = boxesAfter(project, plan)
+    expect(new Set(boxes.map((b) => b.y)).size).toBe(1)
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) expect(overlap(boxes[i], boxes[j]), `${i}/${j}`).toBe(false)
   })
 })

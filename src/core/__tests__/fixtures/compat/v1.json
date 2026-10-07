@@ -49,9 +49,58 @@
             "x": 40,
             "y": 298
           }
+        },
+        {
+          "id": "moodboard",
+          "kind": "style",
+          "name": "Bảng màu",
+          "tag": "BangMau",
+          "description": "Tông xanh lá, tám ảnh.",
+          "imageIds": [
+            "mood-1",
+            "mood-2",
+            "mood-3",
+            "mood-4",
+            "mood-5",
+            "mood-6",
+            "mood-7",
+            "mood-8"
+          ],
+          "color": "#e8894a",
+          "position": {
+            "x": 40,
+            "y": 536
+          }
         }
       ],
       "presets": [
+        {
+          "id": "preset_draft",
+          "name": "Nháp",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 30,
+          "resolution": "480p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_final",
+          "name": "Final",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 10,
+          "resolution": "1080p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_h3",
+          "name": "H3 nháp",
+          "model": "minimax_h3",
+          "mode": "i2v",
+          "duration": 5,
+          "resolution": "768p",
+          "ratio": "16:9"
+        },
         {
           "id": "preset-wide",
           "name": "Toàn cảnh",
@@ -83,11 +132,11 @@
           ],
           "blockOverrides": {},
           "continueFrom": null,
-          "presetId": "preset-wide",
+          "presetId": "preset_draft",
           "settings": {
             "model": "seedance_2_5",
             "mode": "t2v",
-            "duration": 5,
+            "duration": 30,
             "resolution": "480p",
             "ratio": "16:9"
           },
@@ -126,8 +175,8 @@
           "lastFrame": null,
           "color": null,
           "position": {
-            "x": 420,
-            "y": 308
+            "x": 748,
+            "y": 60
           },
           "note": "Ghi chú 2 — giữ nguyên."
         },
@@ -135,8 +184,11 @@
           "id": "s3",
           "order": 3,
           "title": "Khung đầu và cuối",
-          "prompt": "Chuyển từ cận cảnh sang toàn cảnh.",
-          "refs": [],
+          "prompt": "Chuyển từ cận cảnh @Lumi sang toàn cảnh @Lang.",
+          "refs": [
+            "lumi",
+            "village"
+          ],
           "blockOverrides": {
             "before": false,
             "after": false
@@ -154,16 +206,45 @@
           "lastFrame": "village",
           "color": null,
           "position": {
-            "x": 420,
-            "y": 556
+            "x": 1076,
+            "y": 60
           },
           "note": "Ghi chú 3 — giữ nguyên."
+        },
+        {
+          "id": "s4",
+          "order": 4,
+          "title": "Bảng màu",
+          "prompt": "@BangMau cho @Lang, @Lumi đứng giữa.",
+          "refs": [
+            "moodboard",
+            "village",
+            "lumi"
+          ],
+          "blockOverrides": {},
+          "continueFrom": "s3",
+          "presetId": "preset_h3",
+          "settings": {
+            "model": "minimax_h3",
+            "mode": "i2v",
+            "duration": 5,
+            "resolution": "768p",
+            "ratio": "16:9"
+          },
+          "firstFrame": null,
+          "lastFrame": null,
+          "color": null,
+          "position": {
+            "x": 1404,
+            "y": 60
+          },
+          "note": "Ghi chú 4 — giữ nguyên."
         }
       ],
       "settings": {
-        "referencesTemplate": "References: {list}.",
-        "autoReferences": false,
-        "autoContinuity": false
+        "referencesTemplate": "References (upload in this order; use each image only for that character's or place's look): {list}.",
+        "autoReferences": true,
+        "autoContinuity": true
       },
       "blocks": [
         {
@@ -203,7 +284,7 @@
           "createdAt": 1790812800000,
           "startedAt": null,
           "finishedAt": null,
-          "promptSnapshot": "@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nMáy quay đứng yên.\n\nSương mỏng.",
+          "promptSnapshot": "Continue directly from the previous scene (S01: Bến sông).\n\n@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.).\n\nMáy quay đứng yên.\n\nSương mỏng.",
           "rawPromptSnapshot": "@Lang đón @Lumi.\r\nGiữ @image_3; ghi chú @video_1.",
           "refsSnapshot": [
             "village",
@@ -231,7 +312,7 @@
           "createdAt": 1790812801000,
           "startedAt": 1790812811000,
           "finishedAt": null,
-          "promptSnapshot": "@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nMáy quay đứng yên.\n\nSương mỏng.",
+          "promptSnapshot": "Continue directly from the previous scene (S01: Bến sông).\n\n@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.).\n\nMáy quay đứng yên.\n\nSương mỏng.",
           "rawPromptSnapshot": "@Lang đón @Lumi.\r\nGiữ @image_3; ghi chú @video_1.",
           "refsSnapshot": [
             "village",
@@ -259,7 +340,7 @@
           "createdAt": 1790812802000,
           "startedAt": 1790812812000,
           "finishedAt": 1790812892000,
-          "promptSnapshot": "Ánh sáng dịu trên @image_1.\n\n@image_1 nhìn @image_2 ở @image_3.\n\nMáy quay đứng yên.",
+          "promptSnapshot": "Ánh sáng dịu trên @image_1.\n\n@image_1 nhìn @image_2 ở @image_3.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1, @image_2 = Lumi (Áo xanh, hai góc nhìn.); @image_3 = Làng bên sông (Mái ngói dưới mưa.).\n\nMáy quay đứng yên.",
           "rawPromptSnapshot": "  @Lumi nhìn @image_2 ở @Lang.  ",
           "refsSnapshot": [
             "lumi",
@@ -287,7 +368,7 @@
           "createdAt": 1790812803000,
           "startedAt": 1790812813000,
           "finishedAt": 1790812893000,
-          "promptSnapshot": "@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nMáy quay đứng yên.\n\nSương mỏng.",
+          "promptSnapshot": "Continue directly from the previous scene (S01: Bến sông).\n\n@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.).\n\nMáy quay đứng yên.\n\nSương mỏng.",
           "rawPromptSnapshot": "@Lang đón @Lumi.\r\nGiữ @image_3; ghi chú @video_1.",
           "refsSnapshot": [
             "village",
@@ -315,7 +396,7 @@
           "createdAt": 1790812804000,
           "startedAt": 1790812814000,
           "finishedAt": 1790812894000,
-          "promptSnapshot": "@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nMáy quay đứng yên.\n\nSương mỏng.",
+          "promptSnapshot": "Continue directly from the previous scene (S01: Bến sông).\n\n@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.).\n\nMáy quay đứng yên.\n\nSương mỏng.",
           "rawPromptSnapshot": "@Lang đón @Lumi.\r\nGiữ @image_3; ghi chú @video_1.",
           "refsSnapshot": [
             "village",
@@ -379,9 +460,58 @@
             "x": 40,
             "y": 298
           }
+        },
+        {
+          "id": "moodboard",
+          "kind": "style",
+          "name": "Bảng màu",
+          "tag": "BangMau",
+          "description": "Tông xanh lá, tám ảnh.",
+          "imageIds": [
+            "mood-1",
+            "mood-2",
+            "mood-3",
+            "mood-4",
+            "mood-5",
+            "mood-6",
+            "mood-7",
+            "mood-8"
+          ],
+          "color": "#e8894a",
+          "position": {
+            "x": 40,
+            "y": 536
+          }
         }
       ],
       "presets": [
+        {
+          "id": "preset_draft",
+          "name": "Nháp",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 30,
+          "resolution": "480p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_final",
+          "name": "Final",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 10,
+          "resolution": "1080p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_h3",
+          "name": "H3 nháp",
+          "model": "minimax_h3",
+          "mode": "i2v",
+          "duration": 5,
+          "resolution": "768p",
+          "ratio": "16:9"
+        },
         {
           "id": "preset-wide",
           "name": "Toàn cảnh",
@@ -413,11 +543,11 @@
           ],
           "blockOverrides": {},
           "continueFrom": null,
-          "presetId": "preset-wide",
+          "presetId": "preset_draft",
           "settings": {
             "model": "seedance_2_5",
             "mode": "t2v",
-            "duration": 5,
+            "duration": 30,
             "resolution": "480p",
             "ratio": "16:9"
           },
@@ -456,8 +586,8 @@
           "lastFrame": null,
           "color": null,
           "position": {
-            "x": 420,
-            "y": 308
+            "x": 748,
+            "y": 60
           },
           "note": "Ghi chú 2 — giữ nguyên."
         },
@@ -465,8 +595,11 @@
           "id": "s3",
           "order": 3,
           "title": "Khung đầu và cuối",
-          "prompt": "Chuyển từ cận cảnh sang toàn cảnh.",
-          "refs": [],
+          "prompt": "Chuyển từ cận cảnh @Lumi sang toàn cảnh @Lang.",
+          "refs": [
+            "lumi",
+            "village"
+          ],
           "blockOverrides": {
             "before": false,
             "after": false
@@ -484,16 +617,45 @@
           "lastFrame": "village",
           "color": null,
           "position": {
-            "x": 420,
-            "y": 556
+            "x": 1076,
+            "y": 60
           },
           "note": "Ghi chú 3 — giữ nguyên."
+        },
+        {
+          "id": "s4",
+          "order": 4,
+          "title": "Bảng màu",
+          "prompt": "@BangMau cho @Lang, @Lumi đứng giữa.",
+          "refs": [
+            "moodboard",
+            "village",
+            "lumi"
+          ],
+          "blockOverrides": {},
+          "continueFrom": "s3",
+          "presetId": "preset_h3",
+          "settings": {
+            "model": "minimax_h3",
+            "mode": "i2v",
+            "duration": 5,
+            "resolution": "768p",
+            "ratio": "16:9"
+          },
+          "firstFrame": null,
+          "lastFrame": null,
+          "color": null,
+          "position": {
+            "x": 1404,
+            "y": 60
+          },
+          "note": "Ghi chú 4 — giữ nguyên."
         }
       ],
       "settings": {
-        "referencesTemplate": "References: {list}.",
-        "autoReferences": false,
-        "autoContinuity": false
+        "referencesTemplate": "References (upload in this order; use each image only for that character's or place's look): {list}.",
+        "autoReferences": true,
+        "autoContinuity": true
       },
       "blocks": [
         {
@@ -525,14 +687,23 @@
     "media": {
       "lumi-front": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
       "lumi-side": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
-      "village-wide": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+      "village-wide": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-1": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-2": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-3": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-4": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-5": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-6": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-7": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "mood-8": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
     }
   },
   "expected": {
     "prompts": [
       "Ánh sáng dịu trên @image_1.\n\n@image_1 nhìn @image_2 ở @image_3.\n\nMáy quay đứng yên.",
       "@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nMáy quay đứng yên.\n\nSương mỏng.",
-      "Chuyển từ cận cảnh sang toàn cảnh."
+      "Chuyển từ cận cảnh Lumi sang toàn cảnh Làng bên sông.",
+      "Ánh sáng dịu trên Lumi.\n\n@image_1 cho @image_9, Lumi đứng giữa.\n\nMáy quay đứng yên."
     ],
     "imageKeys": [
       [
@@ -545,7 +716,82 @@
         "lumi:lumi-front",
         "lumi:lumi-side"
       ],
+      [
+        "lumi:lumi-front",
+        "lumi:lumi-side",
+        "village:village-wide"
+      ],
+      [
+        "moodboard:mood-1",
+        "moodboard:mood-2",
+        "moodboard:mood-3",
+        "moodboard:mood-4",
+        "moodboard:mood-5",
+        "moodboard:mood-6",
+        "moodboard:mood-7",
+        "moodboard:mood-8",
+        "village:village-wide",
+        "lumi:lumi-front",
+        "lumi:lumi-side"
+      ]
+    ],
+    "sentImageKeys": [
+      [
+        "lumi:lumi-front",
+        "lumi:lumi-side",
+        "village:village-wide"
+      ],
+      [
+        "village:village-wide",
+        "lumi:lumi-front",
+        "lumi:lumi-side"
+      ],
+      [],
+      [
+        "moodboard:mood-1",
+        "moodboard:mood-2",
+        "moodboard:mood-3",
+        "moodboard:mood-4",
+        "moodboard:mood-5",
+        "moodboard:mood-6",
+        "moodboard:mood-7",
+        "moodboard:mood-8",
+        "village:village-wide"
+      ]
+    ],
+    "unsent": [
+      [],
+      [
+        "@video_1"
+      ],
+      [],
       []
+    ],
+    "blocks": [
+      null,
+      "retired",
+      null,
+      null
+    ],
+    "v1Sent": [
+      "Ánh sáng dịu trên @image_1.\n\n@image_1 nhìn @image_2 ở @image_3.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1, @image_2 = Lumi (Áo xanh, hai góc nhìn.); @image_3 = Làng bên sông (Mái ngói dưới mưa.).\n\nMáy quay đứng yên.",
+      "Continue directly from the previous scene (S01: Bến sông).\n\n@image_1 đón @image_2.\r\nGiữ @image_3; ghi chú @video_1.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.).\n\nMáy quay đứng yên.\n\nSương mỏng.",
+      "Chuyển từ cận cảnh Lumi sang toàn cảnh Làng bên sông.",
+      "Ánh sáng dịu trên Lumi.\n\nContinue directly from the previous scene (S03: Khung đầu và cuối).\n\n@image_1 cho @image_9, Lumi đứng giữa.\n\nReferences (upload in this order; use each image only for that character's or place's look): @image_1, @image_2, @image_3, @image_4, @image_5, @image_6, @image_7, @image_8 = Bảng màu (Tông xanh lá, tám ảnh.); @image_9 = Làng bên sông (Mái ngói dưới mưa.).\n\nMáy quay đứng yên."
+    ],
+    "v1Generated": [
+      [
+        "References (upload in this order; use each image only for that character's or place's look): @image_1, @image_2 = Lumi (Áo xanh, hai góc nhìn.); @image_3 = Làng bên sông (Mái ngói dưới mưa.)."
+      ],
+      [
+        "Continue directly from the previous scene (S01: Bến sông).",
+        "References (upload in this order; use each image only for that character's or place's look): @image_1 = Làng bên sông (Mái ngói dưới mưa.); @image_2, @image_3 = Lumi (Áo xanh, hai góc nhìn.)."
+      ],
+      [],
+      [
+        "Continue directly from the previous scene (S03: Khung đầu và cuối).",
+        "References (upload in this order; use each image only for that character's or place's look): @image_1, @image_2, @image_3, @image_4, @image_5, @image_6, @image_7, @image_8 = Bảng màu (Tông xanh lá, tám ảnh.); @image_9 = Làng bên sông (Mái ngói dưới mưa.)."
+      ]
     ]
   }
 }

@@ -53,6 +53,33 @@
       ],
       "presets": [
         {
+          "id": "preset_draft",
+          "name": "Nháp",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 30,
+          "resolution": "480p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_final",
+          "name": "Bản cuối 1080p",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 15,
+          "resolution": "1080p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_h3",
+          "name": "H3 nháp",
+          "model": "minimax_h3",
+          "mode": "i2v",
+          "duration": 5,
+          "resolution": "768p",
+          "ratio": "16:9"
+        },
+        {
           "id": "preset-wide",
           "name": "Toàn cảnh",
           "model": "seedance_2_5",
@@ -82,11 +109,11 @@
             "village"
           ],
           "videoRefs": [],
-          "presetId": "preset-wide",
+          "presetId": "preset_draft",
           "settings": {
             "model": "seedance_2_5",
             "mode": "t2v",
-            "duration": 5,
+            "duration": 30,
             "resolution": "480p",
             "ratio": "16:9"
           },
@@ -107,7 +134,7 @@
           "id": "s2",
           "order": 2,
           "title": "Trở về",
-          "prompt": "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.",
+          "prompt": "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.\nNhịp như @Video 2, màu như @video3; cảnh cũ @video_?4.",
           "refs": [
             "village",
             "lumi"
@@ -434,6 +461,33 @@
       ],
       "presets": [
         {
+          "id": "preset_draft",
+          "name": "Nháp",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 30,
+          "resolution": "480p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_final",
+          "name": "Bản cuối 1080p",
+          "model": "seedance_2_5",
+          "mode": "t2v",
+          "duration": 15,
+          "resolution": "1080p",
+          "ratio": "16:9"
+        },
+        {
+          "id": "preset_h3",
+          "name": "H3 nháp",
+          "model": "minimax_h3",
+          "mode": "i2v",
+          "duration": 5,
+          "resolution": "768p",
+          "ratio": "16:9"
+        },
+        {
           "id": "preset-wide",
           "name": "Toàn cảnh",
           "model": "seedance_2_5",
@@ -463,11 +517,11 @@
             "village"
           ],
           "videoRefs": [],
-          "presetId": "preset-wide",
+          "presetId": "preset_draft",
           "settings": {
             "model": "seedance_2_5",
             "mode": "t2v",
-            "duration": 5,
+            "duration": 30,
             "resolution": "480p",
             "ratio": "16:9"
           },
@@ -488,7 +542,7 @@
           "id": "s2",
           "order": 2,
           "title": "Trở về",
-          "prompt": "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.",
+          "prompt": "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.\nNhịp như @Video 2, màu như @video3; cảnh cũ @video_?4.",
           "refs": [
             "village",
             "lumi"
@@ -558,7 +612,7 @@
   "expected": {
     "prompts": [
       "  @image_1 nhìn @image_2 ở @image_3.\r\nGiữ màu áo — đừng đổi người.  ",
-      "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.",
+      "Continue from @video_1: @image_2 và @image_3 ở @image_1.\nGiữ nét mặt.\nNhịp như @Video 2, màu như @video3; cảnh cũ @video_?4.",
       "Chuyển từ cận cảnh sang toàn cảnh."
     ],
     "imageKeys": [
@@ -573,6 +627,34 @@
         "lumi:lumi-side"
       ],
       []
+    ],
+    "sentImageKeys": [
+      [
+        "lumi:lumi-front",
+        "lumi:lumi-side",
+        "village:village-wide"
+      ],
+      [
+        "village:village-wide",
+        "lumi:lumi-front",
+        "lumi:lumi-side"
+      ],
+      []
+    ],
+    "unsent": [
+      [],
+      [
+        "@video_1",
+        "@Video 2",
+        "@video3",
+        "@video_?4"
+      ],
+      []
+    ],
+    "blocks": [
+      null,
+      "retired",
+      null
     ]
   }
 }
