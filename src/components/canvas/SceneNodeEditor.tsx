@@ -27,10 +27,10 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { canvasEvents, createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
-import { assetByTag, sceneCode } from '../../core/compile'
+import { assetByTag, removeTokenAt, sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
-import { groupAtOffset, placeholderGroups } from '../../core/placeholders'
-import { fillPlaceholderAction } from '../../placeholderActions'
+import { placeholderGroups } from '../../core/placeholders'
+import { fillAtOffsetAction, fillPlaceholderAction, linkInsertToastWithFill } from '../../placeholderActions'
 import type { Asset, Scene } from '../../core/types'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
@@ -40,6 +40,7 @@ import { toast } from '../../store/ui'
 import { MediaImg, AssetAvatar } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from '../inspector/caret'
 import { findMention, popupPlacement, sameToken, type MentionToken } from '../inspector/mentions'
+import { usePlaceholderPicker } from '../inspector/PlaceholderBar'
 import {
   imageOptsFor,
   insertAt,
@@ -210,7 +211,9 @@ export function fillFromDrop(sceneId: string, groupKey: string | null, assetId: 
   const scene = project.scenes.find((s) => s.id === sceneId)
   if (!scene) return false
   const groups = placeholderGroups(scene.prompt, project.assets, scene.refs)
-  const key = groupKey && groups.some((g) => g.key === groupKey) ? groupKey : groups.length === 1 ? groups[0].key : null
+  // A chip that went stale (its group filled / edited away meanwhile) is refused by the fill — never redirected to
+  // another group; only a drop on the strip itself (null) means its only group.
+  const key = groupKey ?? (groups.length === 1 ? groups[0].key : null)
   if (!key) return false
   // The tile goes in the fill's own undo step, before its toast: that toast's "Hoàn tác" takes back both.
   fillPlaceholderAction(sceneId, key, assetId, () => placeLinkedTiles(sceneId, [assetId]))
@@ -218,16 +221,13 @@ export function fillFromDrop(sceneId: string, groupKey: string | null, assetId: 
 }
 
 /**
- * ONE library card / tile dropped right on red text (offset `at` strictly inside a placeholder or a label that does not
- * fit: core/placeholders groupAtOffset) fills that group like a drop on its chip (fillFromDrop). false = not on red
- * text, or several pictures: the caller inserts (never inside the red text: snapToWordEnd).
+ * ONE library card / tile / image file dropped right on red text (offset `at` strictly inside a placeholder or a label
+ * that does not fit: core/placeholders groupAtOffset) fills that group like a drop on its chip — the shared path of
+ * both prompt editors (placeholderActions fillAtOffsetAction), plus the card's tile in the same undo step. false = not
+ * on red text, or several pictures: the caller inserts (never inside the red text: snapToWordEnd).
  */
 export function fillAtOffset(sceneId: string, at: number, ids: readonly string[]): boolean {
-  if (ids.length !== 1) return false
-  const { project } = useProject.getState()
-  const scene = project.scenes.find((s) => s.id === sceneId)
-  const group = scene && groupAtOffset(scene.prompt, project.assets, scene.refs, at)
-  return !!group && fillFromDrop(sceneId, group.key, ids[0])
+  return fillAtOffsetAction(sceneId, at, ids, () => placeLinkedTiles(sceneId, ids))
 }
 
 /**
@@ -242,6 +242,7 @@ export function insertLinksAtExcerpt(sceneId: string, textBefore: string | null,
   if (at0 === null) return false
   flushScenes([sceneId])
   if (fillAtOffset(sceneId, at0, ids)) return true
+  const projectBefore = useProject.getState().project
   const plan = planNodeLinks(sceneId, ids)
   const cur = useProject.getState().project.scenes.find((s) => s.id === sceneId)
   if (!plan || !cur || !plan.tokens.length) return true
@@ -251,7 +252,7 @@ export function insertLinksAtExcerpt(sceneId: string, textBefore: string | null,
     useProject.getState().setPromptAndRefs(sceneId, next, plan.refs ?? cur.refs)
     placeLinkedTiles(sceneId, ids)
   })
-  toast(plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`, { tone: 'success', action: undoToastAction() })
+  linkInsertToastWithFill(projectBefore, sceneId, ids, plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`)
   return true
 }
 
@@ -319,6 +320,8 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
   const dismissedAt = useRef<number | null>(null)
   const mentionRef = useRef<MentionToken | null>(null)
   const lastInputAt = useRef(0)
+  // Red text under the caret: its own picker (PlaceholderBar's commands), never the "@" list.
+  const picker = usePlaceholderPicker(sceneId, text, assets, scene.refs, taRef)
 
   // ---------- commit ----------
   const commit = useCallback((): void => {
@@ -434,6 +437,10 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
   const updateMention = useCallback(
     (value: string, selStart: number, selEnd: number, typing: boolean) => {
       lastSel.current = { start: selStart, end: selEnd }
+      if (picker.update(value, selStart, selEnd, typing ? 'type' : 'move')) {
+        setToken(null) // inside red text: the picker's place, never the "@" list
+        return
+      }
       const raw = selStart === selEnd ? findMention(value, selStart, isTagWord) : null
       if (!typing && raw && raw.start !== mentionRef.current?.start) {
         setToken(null)
@@ -446,7 +453,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
       dismissedAt.current = null
       setToken(raw)
     },
-    [setToken],
+    [setToken, picker.update],
   )
   const imageOpts = useMemo(() => imageOptsFor(assets, scene.refs), [assets, scene.refs])
   const suggestions = useMemo<MediaSuggestion[]>(() => {
@@ -494,11 +501,14 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
       setToken(null)
       dismissedAt.current = tok.start
       if (s.type === 'link') {
+        // "Nối & chèn": one undo step; when red text waits for this character, "Gắn vào chỗ …" turns it into a fill.
+        const before = useProject.getState().project
+        const draft = removeTokenAt(textRef.current, tok.start, tok.end)
         const plan = planNodeLinks(sceneId, [s.assetId])
         const token = plan?.tokens[0]
         if (!plan || !token) return
         replaceRange(tok.start, tok.end, token, plan.refs)
-        if (plan.done) toast(plan.done, { tone: 'success', action: undoToastAction() })
+        if (plan.done) linkInsertToastWithFill(before, sceneId, [s.assetId], plan.done, draft)
         return
       }
       const token = suggestionToken(s)
@@ -541,8 +551,11 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     const point = pointOffset(e.clientX, e.clientY)
     const at = snapToWordEnd(textRef.current, point)
     commit()
-    // Link + insert the tags where dropped, and a tile for each card not on the canvas yet: one undo step.
+    const dropped = textRef.current
+    // Link + insert the tags where dropped, and a tile for each card not on the canvas yet: one undo step (image
+    // files: inside the new tiles' step, so their toast never offers "Gắn vào chỗ …" — linkInsertToastWithFill).
     const insertLinks = (ids: string[]) => {
+      const before = useProject.getState().project
       const plan = planNodeLinks(sceneId, ids)
       if (!plan?.tokens.length) return
       const pos = Math.min(at, textRef.current.length)
@@ -550,7 +563,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
         replaceRange(pos, pos, plan.tokens.join(' '), plan.refs)
         placeLinkedTiles(sceneId, ids)
       })
-      if (plan.done) toast(plan.done, { tone: 'success', action: undoToastAction() })
+      if (plan.done) linkInsertToastWithFill(before, sceneId, ids, plan.done)
     }
     const ids = readIds(e.dataTransfer, ASSETS_MIME)
     if (ids.length) {
@@ -560,9 +573,12 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     }
     const files = imageFiles(e.dataTransfer)
     if (files.length) {
-      // New tiles + (still the field of this scene) link and insert where dropped, else link only (the field was
-      // closed meanwhile) — all in the tiles' undo step.
-      void filesToSceneTiles(sceneId, files, (created) => (taRef.current ? insertLinks(created) : linkNewTiles([sceneId], created)))
+      // New tiles + (still the field of this scene) ONE image right on red text fills it, else link and insert where
+      // dropped (the text changed meanwhile: no fill), else link only (the field was closed) — all in the tiles' step.
+      void filesToSceneTiles(sceneId, files, (created) => {
+        if (!taRef.current) linkNewTiles([sceneId], created)
+        else if (textRef.current !== dropped || !fillAtOffset(sceneId, point, created)) insertLinks(created)
+      })
     }
   }
 
@@ -573,6 +589,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
       e.stopPropagation()
       return
     }
+    if (picker.onKeyDown(e)) return
     if (mention && suggestions.length) {
       const n = suggestions.length
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -636,6 +653,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
         className="cv-sn-ta nodrag nowheel nokey nopan"
         value={text}
         spellCheck={false}
+        aria-controls={picker.open ? picker.menuId : undefined}
         placeholder={placeholder}
         aria-label={`Prompt cảnh ${sceneCode(scene.order)}`}
         aria-autocomplete="list"
@@ -657,16 +675,23 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
         onDragOver={onDragOver}
         onDragLeave={() => setDrop(null)}
         onDrop={onDrop}
-        // Clicks in the text place the caret / select text: never a node (de)selection by React Flow.
-        onClick={(e) => e.stopPropagation()}
+        // Clicks in the text place the caret / select text: never a node (de)selection by React Flow. A click inside
+        // red text opens its picker, even right where Esc closed it.
+        onClick={(e) => {
+          e.stopPropagation()
+          const ta = e.currentTarget
+          if (picker.update(ta.value, ta.selectionStart, ta.selectionEnd, 'click')) setToken(null)
+        }}
         onBlur={(e) => {
           lastSel.current = { start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd }
           commit()
           setToken(null)
+          picker.onBlur(e.relatedTarget)
         }}
       />
       {drop && <span className="cv-sn-dropcaret" style={{ left: drop.left, top: drop.top, height: drop.height }} aria-hidden="true" />}
-      {mention && suggestions.length > 0 && (
+      {picker.popup}
+      {!picker.open && mention && suggestions.length > 0 && (
         <NodeMentionList taRef={taRef} anchor={mention.start} query={mention.query} items={suggestions} active={Math.min(active, suggestions.length - 1)} onHover={setActive} onPick={pick} />
       )}
     </>
