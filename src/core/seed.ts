@@ -3,6 +3,7 @@
 import { avatarPng, putBlob } from '../lib/imageStore'
 import { defaultPresets, defaultProjectSettings, LAYOUT, scenePosition } from '../store/project'
 import { newId } from './ids'
+import { PRESET_NAMES_VERSION } from './factoryPresets'
 import type { Asset, Project, Scene } from './types'
 
 const ASSETS: { name: string; tag: string; kind: Asset['kind']; description: string; color: string; onCanvas: boolean }[] = [
@@ -113,6 +114,7 @@ export async function createDemoProject(): Promise<Project> {
     updatedAt: now,
     assets,
     presets,
+    presetNames: PRESET_NAMES_VERSION,
     scenes,
     settings: defaultProjectSettings(),
   }

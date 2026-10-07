@@ -15,6 +15,7 @@ import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } fr
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
 import { MODELS, normalizeSettings } from '../core/models'
+import { factoryPresets, PRESET_NAMES_VERSION } from '../core/factoryPresets'
 import { normalizeAssetName, normalizeFolderName, normalizePresetName } from '../core/names'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
@@ -101,17 +102,14 @@ export function emptyProject(name = 'Dự án mới'): Project {
     updatedAt: now,
     assets: [],
     presets: defaultPresets(),
+    presetNames: PRESET_NAMES_VERSION,
     scenes: [],
     settings: defaultProjectSettings(),
   }
 }
 
 export function defaultPresets(): Preset[] {
-  return [
-    { id: 'preset_draft', name: 'Nháp', model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' },
-    { id: 'preset_final', name: 'Final', model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
-    { id: 'preset_h3', name: 'H3 nháp', model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' },
-  ]
+  return factoryPresets()
 }
 
 export function scenePosition(index: number): XY {

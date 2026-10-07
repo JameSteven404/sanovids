@@ -156,6 +156,8 @@ export interface Project {
   updatedAt: number
   assets: Asset[]
   presets: Preset[]
+  /** Factory name migration applied (>= 2); retain higher versions and subsequent user renames. */
+  presetNames?: number
   scenes: Scene[]
   settings: ProjectSettings
   /** "Thư mục" nodes (missing in projects made before folders existed = none). */

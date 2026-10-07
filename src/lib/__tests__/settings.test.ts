@@ -48,6 +48,7 @@ const CUSTOM = {
   downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}', folderUnlinkTrash: false },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
   canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' },
+  arrange: { style: 'grid', gridCols: 4, spacing: 'tight', refs: 'byKind', folders: 'top', placedTakes: 'follow', videoBy: { rows: 'all', grid: 'all', strip: 'chosen' } },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
   updates: { autoDownload: false },

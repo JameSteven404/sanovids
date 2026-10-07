@@ -1,4 +1,5 @@
 // Schema migrations for saved projects and takes. Pure functions (unit-tested).
+import { presetNamesMark, PRESET_NAMES_VERSION, renameFactoryPresets } from './factoryPresets'
 import { scenePosition } from '../store/project'
 import { assetByTag, imageSlotsFor, MENTION_RE, uniqueTag } from './compile'
 import { cleanTakeFileName } from './fileNames'
@@ -178,7 +179,10 @@ export function migrateProject(raw: unknown): Project {
   const assets = normalizeAssets(p.assets)
   // A newer build's schema number, kept (a sane integer only); its values this build does not offer are kept as markers.
   const newerSchema = typeof p.schemaVersion === 'number' && Number.isInteger(p.schemaVersion) && p.schemaVersion > 2 && p.schemaVersion < 1000 ? p.schemaVersion : null
-  const presets = normalizePresets(p.presets, newerSchema !== null)
+  const normalized = normalizePresets(p.presets, newerSchema !== null)
+  const alreadyNamed = typeof p.presetNames === 'number' && Number.isInteger(p.presetNames) && p.presetNames >= PRESET_NAMES_VERSION
+  const presets = alreadyNamed ? normalized : renameFactoryPresets(normalized)
+  const presetNames = presetNamesMark(p.presetNames, presets)
   const presetIds = new Set(presets.map((x) => x.id))
   const blocks = ((p as { blocks?: V1Block[] }).blocks ?? []) as V1Block[]
   // Only versions before 2 are v1: a file of a newer build (schemaVersion 3…) must not get its @image_N / @Tag text
@@ -235,7 +239,7 @@ export function migrateProject(raw: unknown): Project {
     }
   })
 
-  const { blocks: _b, folders: rawFolders, ...restProject } = p as Record<string, unknown>
+  const { blocks: _b, folders: rawFolders, presetNames: _pn, ...restProject } = p as Record<string, unknown>
   const now = Date.now()
   const out: Project = {
     ...(restProject as unknown as Project),
@@ -246,6 +250,7 @@ export function migrateProject(raw: unknown): Project {
     updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt! : now,
     assets,
     presets,
+    ...(presetNames === undefined ? {} : { presetNames }),
     scenes,
     settings: { autoRenumber: (p.settings as { autoRenumber?: boolean } | undefined)?.autoRenumber ?? true },
   }
