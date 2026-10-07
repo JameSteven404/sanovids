@@ -25,9 +25,19 @@
 // 'lost-response' (handled, answer lost), 'processed-then' {status, json} (handled, then e.g. a 502 or a 200 without
 // job_id), 'response' {status, json} (answered without handling: 402, 422, 400 Invalid canvas payload, 429…),
 // 'slow' {ms}; and job-level ones: the next job fails / expires, the next N downloads fail, the session expires.
+// Video downloads (openStream, what the streaming gateway of the dev bridge calls) also meet 'cut' {fraction} (the
+// connection breaks part-way), 'stall' {fraction} (stops sending), 'trickle' {bytesPerSec} (slow body; adds up with
+// other faults like 'slow'), 'oversize' (announces more than 1 GB) and 'insecure-redirect' (the answer would move to
+// an http URL: the gateway never sends that request). config.rangeSupport: 206 + Content-Range, Accept-Ranges and an
+// ETag (off by default: the live site is not known to). The gateway never asks /stream through request().
+//
+// "Tạo job như trên trang canvasapp" (createSiteJob): the job canvasapp's OWN page makes when the user presses
+// "Tạo video" on a bridge node (siteClient.ts: the node's saved data, a random client_request_id) — through the same
+// validation, billing and history as any job, marked origin 'site'; SanoVids does not know it until "Nhập job".
+// It is the site acting, not SanoVids: no fault, no latency, no request-log line, logged in or not.
 //
 // ---- API ----
-//   createDevCanvasapp(deps?): DevCanvasapp      see the interface below (request() is what the bridge calls).
+//   createDevCanvasapp(deps?): DevCanvasapp      see the interface below (request() / openStream() are what the bridge calls).
 //   DEV_CONFIG_DEFAULT, DEV_SPEED_LABEL, DEV_FAULT_PRESETS, imageIdFromUploadFilename(filename)
 import { costOf, MODELS } from '../../core/models'
 import { creditsForAmount, formatVnd, isTopupHistoryKind, TOPUP_MAX_VND, TOPUP_MIN_VND, TOPUP_ORDER_TTL_MS, TOPUP_STEP_VND } from '../../core/topup'
@@ -35,10 +45,12 @@ import type { Mode, ModelId } from '../../core/types'
 import { memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
-import { ALLOWED_IMAGE_TYPES, uuidFromKey } from '../canvasapp/mapping'
+import { ALLOWED_IMAGE_TYPES, BRIDGE_PROJECT_NAME, uuidFromKey } from '../canvasapp/mapping'
+import { CANVASAPP_VIDEO_MAX_BYTES } from './downloads'
 import { pushDevLog, summarizeForLog } from './log'
 import type { DevTopupOutcome } from './prompts'
 import { matchDevRoute, MAX_UPLOAD_BYTES, type DevEndpoint } from './routes'
+import { applyNodeEdit, siteJobBody, siteNodeList, type SiteNodeEdit, type SiteNodeInfo } from './siteClient'
 import { canvasProblem, canvasUploadIds, isFramesJob, isObj, jobBodyProblem, jobKeyProblem, profileProblem, sameKeys } from './validate'
 
 // ---------------------------------------------------------------------------------------------
@@ -60,6 +72,15 @@ export interface DevModelToggle {
   can_create: boolean
   /** Modes switched off (/api/video-profiles disabled_modes). */
   disabled_modes: Mode[]
+  /**
+   * Values left out of the profile's lists (durations / resolutions / aspect_ratios), like canvasapp narrowing what a
+   * model offers. canvasapp's page (and SanoVids) uses Seedance's lists as sent, but replaces MiniMax-H3's lists that are
+   * narrower than its built-in ones — so for H3 these change nothing (mapping.profileSpecOf). Only values of the model
+   * are kept; missing = none.
+   */
+  off_durations?: number[]
+  off_resolutions?: string[]
+  off_ratios?: string[]
 }
 
 export interface DevConfig {
@@ -70,12 +91,23 @@ export interface DevConfig {
   dedupe: boolean
   /** Job list items carry client_request_id (unknown on the live site: off by default). */
   exposeKey: boolean
+  /**
+   * Job list times (created_at, finished_at) WITHOUT a time zone, the way a FastAPI naive UTC datetime prints
+   * ("2026-10-07T12:00:00.123000"): unknown on the live site (VERIFY), off by default. On: the lost-answer lookup and
+   * "Nhập job" take their ±27 h branch (siteJobs.createdSkewOf), the dialog shows "(giờ canvasapp)".
+   */
+  naiveTimes: boolean
   /** HTTP status of "not enough credits". */
   insufficientStatus: 400 | 402
   /** Latency added to every request (ms). */
   latencyMs: number
   /** Probability (0..1) that a job fails by itself. */
   failRate: number
+  /**
+   * Video downloads honour Range + If-Range (206, Content-Range, Accept-Ranges: bytes, an ETag): a cut download
+   * continues where it stopped. Unknown on the live site: off by default (a cut download starts again later).
+   */
+  rangeSupport: boolean
   models: Record<ModelId, DevModelToggle>
 }
 
@@ -84,12 +116,14 @@ export const DEV_CONFIG_DEFAULT: DevConfig = {
   topupEnabled: true,
   dedupe: true,
   exposeKey: false,
+  naiveTimes: false,
   insufficientStatus: 402,
   latencyMs: 150,
   failRate: 0,
+  rangeSupport: false,
   models: {
-    seedance_2_5: { can_create: true, disabled_modes: [] },
-    minimax_h3: { can_create: true, disabled_modes: [] },
+    seedance_2_5: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
+    minimax_h3: { can_create: true, disabled_modes: [], off_durations: [], off_resolutions: [], off_ratios: [] },
   },
 }
 
@@ -104,6 +138,21 @@ export type DevFault =
   | { kind: 'response'; status: number; json?: unknown }
   /** Extra latency before the request is handled. */
   | { kind: 'slow'; ms: number }
+  /** Video download only: the connection breaks after this share of the body (0–1, default ½). */
+  | { kind: 'cut'; fraction?: number }
+  /** Video download only: the server stops sending after this share of the body (0–1, default ½) and never ends. */
+  | { kind: 'stall'; fraction?: number }
+  /** Video download only: the body comes at this many bytes per second (adds up with other faults, like 'slow'). */
+  | { kind: 'trickle'; bytesPerSec: number }
+  /** Video download only: the answer announces a size over 1 GB (the gateway refuses it before reading). */
+  | { kind: 'oversize' }
+  /** Video download only: /stream redirects to an http URL (the gateway refuses to follow: nothing is sent there). */
+  | { kind: 'insecure-redirect' }
+
+/** Fault kinds that only mean something for a video download ('job-stream'). */
+export const DEV_STREAM_FAULT_KINDS = ['cut', 'stall', 'trickle', 'oversize', 'insecure-redirect'] as const
+/** Kinds that add up with the one fault deciding the answer (every matching rule fires). */
+const MODIFIER_KINDS: readonly DevFault['kind'][] = ['slow', 'trickle']
 
 export interface DevFaultRule {
   id: string
@@ -138,6 +187,71 @@ export interface DevJobFaults {
 }
 
 const NO_JOB_FAULTS: DevJobFaults = { failNext: null, expireNext: false, streamFailures: 0 }
+
+/** A video download as the streaming gateway asks for it: Range + If-Range only to continue (the bridge decides). */
+export interface DevStreamRequest {
+  path: string
+  range?: { from: number; ifRange: string | null } | null
+}
+
+/** The body of a streamed answer (a web ReadableStream reader's shape). */
+export interface DevStreamReader {
+  read(): Promise<{ done: true; value?: undefined } | { done: false; value: Uint8Array }>
+  cancel(): Promise<void>
+}
+
+/** What the simulated site answers to a streamed download (headers lower-case), or no answer at all (network). */
+export type DevStreamAnswer =
+  | { ok: false; code: string; message: string }
+  | { ok: true; status: number; contentType: string; headers: Record<string, string>; json?: unknown; text?: string; body?: DevStreamReader }
+
+/** Pieces the simulated body hands out (a real connection's are smaller; the gateway regroups them). */
+const DEV_STREAM_PIECE_BYTES = 64 * 1024
+/** A paced body hands out a piece about this often (a slow link sends small packets all the time, never one a minute). */
+const DEV_STREAM_TICK_MS = 250
+
+/**
+ * The body of a video answer, piece by piece: 'cut' throws after its share, 'stall' stops sending (until cancelled),
+ * `bytesPerSec` paces it with `sleep` — pieces of about a quarter of a second each, so even 1 KB/s delivers bytes well
+ * inside the gateway's idle limit (10 s in development mode). cancel() ends a pending read with done (as a web stream
+ * does).
+ */
+export function devStreamReader(bytes: Uint8Array, opts: { fault?: DevFault | null; bytesPerSec?: number | null; sleep: (ms: number) => Promise<void> }): DevStreamReader {
+  const f = opts.fault ?? null
+  const share = (x: number | undefined) => (typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.5)
+  const cutAt = f?.kind === 'cut' ? Math.floor(bytes.byteLength * share(f.fraction)) : null
+  const stallAt = f?.kind === 'stall' ? Math.floor(bytes.byteLength * share(f.fraction)) : null
+  const rate = opts.bytesPerSec && opts.bytesPerSec > 0 ? opts.bytesPerSec : null
+  let off = 0
+  let cancelled = false
+  let wake: (() => void) | null = null
+  return {
+    read: async () => {
+      if (cancelled) return { done: true }
+      if (cutAt !== null && off >= cutAt) throw new Error('kết nối bị ngắt (lỗi giả)')
+      if (stallAt !== null && off >= stallAt) {
+        await new Promise<void>((resolve) => (wake = resolve))
+        return { done: true }
+      }
+      if (off >= bytes.byteLength) return { done: true }
+      const piece = rate ? Math.max(1, Math.min(DEV_STREAM_PIECE_BYTES, Math.floor((rate * DEV_STREAM_TICK_MS) / 1000))) : DEV_STREAM_PIECE_BYTES
+      let n = Math.min(piece, bytes.byteLength - off)
+      if (cutAt !== null) n = Math.min(n, cutAt - off)
+      if (stallAt !== null) n = Math.min(n, stallAt - off)
+      if (rate) await opts.sleep(Math.max(1, Math.round((n * 1000) / rate)))
+      if (cancelled) return { done: true }
+      const value = bytes.slice(off, off + n)
+      off += n
+      return { done: false, value }
+    },
+    cancel: async () => {
+      cancelled = true
+      const w = wake
+      wake = null
+      w?.()
+    },
+  }
+}
 
 /** Ready-made faults for the dev UI (label / hint in Vietnamese). */
 export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule: DevFaultInput }[] = [
@@ -198,13 +312,13 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
   {
     id: 'profiles-500',
     label: 'Cấu hình model lỗi 500 (giữ)',
-    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá).',
+    hint: 'Không đọc được /api/video-profiles — SanoVids dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): inspector và hộp Chạy chỉ cảnh báo “có thể bị từ chối”, take MiniMax-H3 bị từ chối khi gửi (không tốn credit).',
     rule: { endpoint: 'video-profiles', fault: { kind: 'response', status: 500, json: { detail: 'boom' } }, sticky: true },
   },
   {
     id: 'list-network',
     label: 'Mất mạng khi đọc danh sách job (giữ)',
-    hint: 'Tiến độ không cập nhật được; take vẫn chạy, SanoVids lùi thời gian thử lại.',
+    hint: 'Tiến độ không cập nhật được; take vẫn chạy, SanoVids lùi thời gian thử lại. Cũng là lần đọc ngay trước mỗi lần gửi (cạnh một take “không rõ” trên cùng node: take mới chưa được gửi, không tốn credit dev) và lần quét của Nhập job (báo lỗi).',
     rule: { endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true },
   },
   {
@@ -212,6 +326,42 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
     label: 'Mất mạng khi tải video (3 lần)',
     hint: 'Video đã xong (đã trừ credit) nhưng tải về lỗi — SanoVids phải thử lại, không coi là take lỗi ngay.',
     rule: { endpoint: 'job-stream', fault: { kind: 'network' }, times: 3 },
+  },
+  {
+    id: 'stream-cut',
+    label: 'Mất mạng giữa chừng khi tải video (1 lần)',
+    hint: 'Kết nối đứt khi mới nhận khoảng một nửa video — SanoVids tải tiếp từ chỗ dừng nếu máy chủ cho (bật “Cho tải tiếp video (HTTP Range)”), nếu không thì tải lại sau; take không bị đánh lỗi.',
+    rule: { endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 } },
+  },
+  {
+    id: 'stream-stall',
+    label: 'Tải video bị treo (1 lần)',
+    hint: 'Máy chủ ngừng gửi dữ liệu giữa chừng — SanoVids tự dừng lượt tải sau 10 giây không nhận thêm gì (bản thật: 60 giây) rồi tải tiếp / tải lại; take không bị đánh lỗi.',
+    rule: { endpoint: 'job-stream', fault: { kind: 'stall', fraction: 0.5 } },
+  },
+  {
+    id: 'stream-slow',
+    label: 'Tải video chậm (100 KB/giây, giữ)',
+    hint: 'Video về từng chút một — để xem tiến độ “Đang tải về …%” trên take.',
+    rule: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 100 * 1024 }, sticky: true },
+  },
+  {
+    id: 'stream-crawl',
+    label: 'Tải video rất chậm (2 KB/giây, giữ)',
+    hint: 'Mỗi kết nối tải video bị dừng sau 2 phút (bản thật: 60 phút). Bật “Cho tải tiếp video (HTTP Range)” → tải tiếp trên kết nối mới cho tới khi xong; tắt → take báo lỗi ngay, ghi rõ đã trừ credit dev (không tải lại từ đầu 5 lần).',
+    rule: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 2 * 1024 }, sticky: true },
+  },
+  {
+    id: 'stream-http',
+    label: 'Tải video bị chuyển sang http (1 lần)',
+    hint: 'Máy chủ chuyển việc tải video sang một địa chỉ http không mã hoá — SanoVids không gửi yêu cầu đó, lượt tải hỏng và được thử lại sau; take không bị đánh lỗi.',
+    rule: { endpoint: 'job-stream', fault: { kind: 'insecure-redirect' } },
+  },
+  {
+    id: 'stream-oversize',
+    label: 'Video quá lớn (> 1 GB, 1 lần)',
+    hint: 'Máy chủ báo dung lượng vượt giới hạn — SanoVids không tải, take báo lỗi ngay kèm lời nhắn đã trừ credit dev (không thử lại 5 lần).',
+    rule: { endpoint: 'job-stream', fault: { kind: 'oversize' } },
   },
   {
     id: 'slow-all',
@@ -285,6 +435,8 @@ interface DevJob {
   error_message: string | null
   download_available: boolean
   refunded: boolean
+  /** 'site': made by canvasapp's own page (createSiteJob), not by SanoVids. */
+  origin: 'app' | 'site'
 }
 
 interface DevHistoryItem {
@@ -423,6 +575,24 @@ export interface DevJobView {
   refunded: boolean
   /** Planned to fail / expire (fault or random failure) — shown in the dev UI. */
   planned: 'fail' | 'expire' | null
+  /** 'site': made "on canvasapp's page" (createSiteJob) — SanoVids knows it only once imported. */
+  origin: 'app' | 'site'
+}
+
+/** createSiteJob input: the bridge project (default: the newest "SanoVids bridge"), the node, an edit made first. */
+export interface DevSiteJobInput {
+  projectId?: string
+  nodeId: string
+  edit?: SiteNodeEdit
+}
+
+export type DevSiteJobResult = { ok: true; jobId: string; number: number; cost: number } | { ok: false; detail: string }
+
+/** The video nodes of a bridge session's saved canvas (dev panel). */
+export interface DevSiteNodes {
+  projectId: string
+  name: string
+  nodes: SiteNodeInfo[]
 }
 
 export interface DevUploadView {
@@ -469,6 +639,11 @@ export interface DevServerSnapshot {
 export interface DevCanvasapp {
   /** One request as it reaches canvasapp (after the gateway): faults, latency, handling, request log. */
   request(req: TransportRequest): Promise<BridgeResponse>
+  /**
+   * GET /api/video-jobs/{id}/stream as the streaming gateway sends it: the same faults, latency and log as request(),
+   * the body as a reader (stream faults apply to it), Range when config.rangeSupport and If-Range matches the ETag.
+   */
+  openStream(req: DevStreamRequest): Promise<DevStreamAnswer>
   // ---- account ----
   isAuthenticated(): boolean
   login(): void
@@ -495,6 +670,14 @@ export interface DevCanvasapp {
   simulatePayment(orderId: string, outcome: DevTopupOutcome, delayMs?: number): boolean
   /** An uploaded picture (dev UI previews). */
   uploadBlob(uploadId: string): Promise<Blob | null>
+  /**
+   * "Tạo job như trên trang canvasapp": the job canvasapp's own page makes for a node of the bridge session (after an
+   * optional edit of that node, saved like saveCanvas()), with a random client_request_id — validated, billed and
+   * written to the history like any job, origin 'site'. No fault / latency / log line (the site, not SanoVids).
+   */
+  createSiteJob(input: DevSiteJobInput): DevSiteJobResult
+  /** The video nodes of a bridge session (default: the newest "SanoVids bridge"); null = none. Read-only. */
+  siteNodes(projectId?: string): DevSiteNodes | null
   // ---- inspection / lifecycle ----
   /** Current state for the dev UI (job statuses brought up to now). */
   snapshot(): DevServerSnapshot
@@ -515,6 +698,8 @@ export function imageIdFromUploadFilename(filename: string): string | null {
 // ---------------------------------------------------------------------------------------------
 
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString())
+/** A UTC time with no time zone, microseconds like Python prints them (DevConfig.naiveTimes). */
+const naiveUtc = (ms: number | null) => (ms === null ? null : `${new Date(ms).toISOString().slice(0, 23)}000`)
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n))
 const json = (body: unknown, status = 200): BridgeResponse => ({ ok: true, status, contentType: 'application/json', json: body })
 const detail = (status: number, text: unknown): BridgeResponse => json({ detail: text }, status)
@@ -527,9 +712,15 @@ function mergeConfig(raw: unknown): DevConfig {
     for (const id of Object.keys(d.models) as ModelId[]) {
       const m = c.models[id]
       if (!isObj(m)) continue
+      const spec = MODELS[id]
+      /** The items of `v` that the model has (anything else is dropped), each once. */
+      const only = <T,>(v: unknown, values: readonly T[]): T[] => (Array.isArray(v) ? values.filter((x) => v.includes(x)) : [])
       models[id] = {
         can_create: typeof m.can_create === 'boolean' ? m.can_create : d.models[id].can_create,
         disabled_modes: Array.isArray(m.disabled_modes) ? (m.disabled_modes.filter((x) => typeof x === 'string') as Mode[]) : [],
+        off_durations: only(m.off_durations, spec.durations),
+        off_resolutions: only(m.off_resolutions, spec.resolutions),
+        off_ratios: only(m.off_ratios, spec.ratios),
       }
     }
   }
@@ -539,11 +730,35 @@ function mergeConfig(raw: unknown): DevConfig {
     topupEnabled: typeof c.topupEnabled === 'boolean' ? c.topupEnabled : d.topupEnabled,
     dedupe: typeof c.dedupe === 'boolean' ? c.dedupe : d.dedupe,
     exposeKey: typeof c.exposeKey === 'boolean' ? c.exposeKey : d.exposeKey,
+    naiveTimes: typeof c.naiveTimes === 'boolean' ? c.naiveTimes : d.naiveTimes,
     insufficientStatus: c.insufficientStatus === 400 ? 400 : 402,
     latencyMs: num(c.latencyMs, d.latencyMs, 0, 60_000),
     failRate: num(c.failRate, d.failRate, 0, 1),
+    rangeSupport: typeof c.rangeSupport === 'boolean' ? c.rangeSupport : d.rangeSupport,
     models,
   }
+}
+
+/** /api/video-profiles of the simulated site for these model toggles (every model of SanoVids' table). */
+export function devVideoProfiles(models: DevConfig['models']): VideoProfile[] {
+  return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
+    const t = models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
+    return {
+      model_profile: m.id,
+      display_name: m.name,
+      visible: true,
+      enabled: t.can_create,
+      can_create: t.can_create,
+      options: {
+        modes: [...m.modes],
+        disabled_modes: [...t.disabled_modes],
+        durations: m.durations.filter((x) => !(t.off_durations ?? []).includes(x)),
+        resolutions: m.resolutions.filter((x) => !(t.off_resolutions ?? []).includes(x)),
+        aspect_ratios: m.ratios.filter((x) => !(t.off_ratios ?? []).includes(x)),
+        pricing: m.pricing,
+      },
+    }
+  })
 }
 
 function faultLabel(f: DevFault): string {
@@ -556,6 +771,15 @@ function faultLabel(f: DevFault): string {
       return `${f.kind} ${f.status}`
     case 'slow':
       return `slow ${f.ms}ms`
+    case 'cut':
+    case 'stall':
+      return `stream-${f.kind}`
+    case 'trickle':
+      return `trickle ${Math.round(f.bytesPerSec / 1024)}KB/s`
+    case 'oversize':
+      return 'oversize'
+    case 'insecure-redirect':
+      return 'http-redirect'
   }
 }
 
@@ -653,6 +877,7 @@ function readJob(x: Record<string, unknown>): DevJob | null {
     error_message: strOrNull(x.error_message),
     download_available: x.download_available === true,
     refunded: x.refunded === true,
+    origin: x.origin === 'site' ? 'site' : 'app',
   }
 }
 
@@ -1016,37 +1241,18 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       error_message: j.error_message,
       duration: j.duration,
       aspect_ratio: j.aspect_ratio,
-      created_at: iso(j.created_at),
-      finished_at: iso(j.finished_at),
+      created_at: config.naiveTimes ? naiveUtc(j.created_at) : iso(j.created_at),
+      finished_at: config.naiveTimes ? naiveUtc(j.finished_at) : iso(j.finished_at),
       creation_mode: 'canvas',
       ...(config.exposeKey ? { client_request_id: j.client_request_id } : {}),
     }
   }
 
-  function profilesNow(): VideoProfile[] {
-    return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
-      const t = config.models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
-      return {
-        model_profile: m.id,
-        display_name: m.name,
-        visible: true,
-        enabled: t.can_create,
-        can_create: t.can_create,
-        options: {
-          modes: [...m.modes],
-          disabled_modes: [...t.disabled_modes],
-          durations: [...m.durations],
-          resolutions: [...m.resolutions],
-          aspect_ratios: [...m.ratios],
-          pricing: m.pricing,
-        },
-      }
-    })
-  }
+  const profilesNow = (): VideoProfile[] => devVideoProfiles(config.models)
 
   const hasUpload = (id: string) => state.uploads.some((u) => u.upload_id === id)
 
-  function createJob(body: unknown): BridgeResponse {
+  function createJob(body: unknown, origin: DevJob['origin'] = 'app'): BridgeResponse {
     const keyProblem = jobKeyProblem(body)
     if (keyProblem) return detail(keyProblem.status, keyProblem.detail)
     const b = body as Record<string, unknown>
@@ -1109,6 +1315,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       error_message: null,
       download_available: false,
       refunded: false,
+      origin,
     }
     state.jobs.push(job)
     addHistory({
@@ -1231,6 +1438,21 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
     return json({ balance: state.balance, items: page, next_offset: offset + limit < all.length ? offset + limit : null })
   }
 
+  /** The finished video of GET …/stream, or canvasapp's refusal (404, 409, the "next N downloads fail" 503, 500). */
+  async function streamVideo(path: string): Promise<{ refused: BridgeResponse } | { job: DevJob; bytes: Uint8Array; type: string }> {
+    const j = state.jobs.find((x) => x.job_id === (/^\/api\/video-jobs\/([^/]+)\/stream$/.exec(path)?.[1] ?? ''))
+    if (!j) return { refused: detail(404, 'Job not found') }
+    if (j.status !== 'completed' || !j.download_available) return { refused: detail(409, 'Video chưa sẵn sàng') }
+    if (jobFaults.streamFailures > 0) {
+      jobFaults = { ...jobFaults, streamFailures: jobFaults.streamFailures - 1 }
+      notify()
+      return { refused: detail(503, 'Không tải được video lúc này (giả lập lỗi tải).') }
+    }
+    const video = await videoOf(j)
+    if (!video) return { refused: detail(500, 'Không tạo được video giả lập: trình duyệt này không ghi được video (MediaRecorder).') }
+    return { job: j, bytes: new Uint8Array(await video.arrayBuffer()), type: video.type || 'video/webm' }
+  }
+
   // ---- dispatch ----
 
   async function handle(req: TransportRequest, endpoint: DevEndpoint | null, path: string, query: URLSearchParams): Promise<BridgeResponse> {
@@ -1319,17 +1541,8 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
         return j ? json({ prompt: j.prompt }) : detail(404, 'Job not found')
       }
       case 'job-stream': {
-        const j = state.jobs.find((x) => x.job_id === idIn(/^\/api\/video-jobs\/([^/]+)\/stream$/))
-        if (!j) return detail(404, 'Job not found')
-        if (j.status !== 'completed' || !j.download_available) return detail(409, 'Video chưa sẵn sàng')
-        if (jobFaults.streamFailures > 0) {
-          jobFaults = { ...jobFaults, streamFailures: jobFaults.streamFailures - 1 }
-          notify()
-          return detail(503, 'Không tải được video lúc này (giả lập lỗi tải).')
-        }
-        const video = await videoOf(j)
-        if (!video) return detail(500, 'Không tạo được video giả lập: trình duyệt này không ghi được video (MediaRecorder).')
-        return { ok: true, status: 200, contentType: video.type || 'video/webm', bytes: new Uint8Array(await video.arrayBuffer()) }
+        const v = await streamVideo(path)
+        return 'refused' in v ? v.refused : { ok: true, status: 200, contentType: v.type, bytes: v.bytes }
       }
       case 'job-delete': {
         const id = idIn(/^\/api\/video-jobs\/([^/]+)$/)
@@ -1357,14 +1570,15 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
    * happens — a rule for this endpoint before a '*' rule, then the oldest — so a sticky "slow" or "429 everywhere"
    * never hides a fault armed for this endpoint. One-shot rules count down when they fire.
    */
-  function takeFaults(endpoint: DevEndpoint | null): { delayMs: number; rule: DevFaultRule | null; label: string | null } {
-    if (!endpoint) return { delayMs: 0, rule: null, label: null }
+  function takeFaults(endpoint: DevEndpoint | null): { delayMs: number; bytesPerSec: number | null; rule: DevFaultRule | null; label: string | null } {
+    if (!endpoint) return { delayMs: 0, bytesPerSec: null, rule: null, label: null }
     const matches = (r: DevFaultRule) => r.endpoint === '*' || r.endpoint === endpoint
-    const outcome =
-      faultRules.find((r) => r.endpoint === endpoint && r.fault.kind !== 'slow') ?? faultRules.find((r) => r.endpoint === '*' && r.fault.kind !== 'slow') ?? null
-    const fires = (r: DevFaultRule) => r === outcome || (matches(r) && r.fault.kind === 'slow')
-    if (!faultRules.some(fires)) return { delayMs: 0, rule: null, label: null }
+    const modifier = (r: DevFaultRule) => MODIFIER_KINDS.includes(r.fault.kind)
+    const outcome = faultRules.find((r) => r.endpoint === endpoint && !modifier(r)) ?? faultRules.find((r) => r.endpoint === '*' && !modifier(r)) ?? null
+    const fires = (r: DevFaultRule) => r === outcome || (matches(r) && modifier(r))
+    if (!faultRules.some(fires)) return { delayMs: 0, bytesPerSec: null, rule: null, label: null }
     let delayMs = 0
+    let bytesPerSec: number | null = null
     let rule: DevFaultRule | null = null
     const labels: string[] = []
     const after: DevFaultRule[] = []
@@ -1376,12 +1590,13 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       const fired: DevFaultRule = { ...r, hits: r.hits + 1, remaining: r.sticky ? r.remaining : r.remaining - 1 }
       if (fired.sticky || fired.remaining > 0) after.push(fired)
       if (r.fault.kind === 'slow') delayMs += r.fault.ms
+      if (r.fault.kind === 'trickle') bytesPerSec = Math.min(bytesPerSec ?? Infinity, Math.max(1, r.fault.bytesPerSec))
       if (r === outcome) rule = fired
       labels.push(faultLabel(r.fault))
     }
     faultRules = after
     notify()
-    return { delayMs, rule, label: labels.join(' + ') }
+    return { delayMs, bytesPerSec, rule, label: labels.join(' + ') }
   }
 
   function logEntry(req: TransportRequest, endpoint: DevEndpoint | null, started: number, res: BridgeResponse, fault: string | null, processed: boolean) {
@@ -1444,6 +1659,107 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
     return res
   }
 
+  function logStream(req: DevStreamRequest, endpoint: DevEndpoint | null, started: number, res: DevStreamAnswer, fault: string | null, processed: boolean, sent?: { from: number; bytes: number }) {
+    if (!logging) return
+    const resBody = !res.ok
+      ? { code: res.code, message: res.message }
+      : res.body
+        ? { bytes: sent?.bytes ?? null, from: sent?.from ?? 0, contentType: res.contentType, ...(res.headers['content-range'] ? { range: res.headers['content-range'] } : {}) }
+        : (res.json ?? res.text ?? null)
+    pushDevLog({
+      at: started,
+      method: 'GET',
+      path: req.path,
+      endpoint,
+      status: res.ok ? res.status : null,
+      ms: Math.max(0, now() - started),
+      req: summarizeForLog(req.range ? { range: `bytes=${req.range.from}-`, ifRange: req.range.ifRange } : null),
+      res: summarizeForLog(resBody),
+      fault,
+      processed,
+      ...(res.ok && res.status === 206 ? { note: `tải tiếp từ byte ${sent?.from ?? 0}` } : {}),
+    })
+  }
+
+  async function openStream(req: DevStreamRequest): Promise<DevStreamAnswer> {
+    const started = now()
+    const match = matchDevRoute('GET', req.path)
+    const endpoint = match?.endpoint ?? null
+    pull()
+    const fired = takeFaults(endpoint)
+    const rule = fired.rule
+    const wait = config.latencyMs + fired.delayMs
+    if (wait > 0) await sleep(wait)
+    const fault = fired.label
+    const kind = rule?.fault.kind
+    if (kind === 'network' || kind === 'lost-response') {
+      const res: DevStreamAnswer = {
+        ok: false,
+        code: 'network',
+        message: kind === 'network' ? 'lỗi giả: mất mạng' : 'lỗi giả: mất câu trả lời',
+      }
+      logStream(req, endpoint, started, res, fault, kind === 'lost-response')
+      return res
+    }
+    if (kind === 'insecure-redirect' && endpoint === 'job-stream') {
+      // the 302 to http:// is all the gateway sees: it refuses to follow, so the request never reaches that address
+      const res: DevStreamAnswer = { ok: false, code: 'insecure-redirect', message: 'lỗi giả: chuyển hướng sang http://' }
+      logStream(req, endpoint, started, res, fault, false)
+      return res
+    }
+    if (rule && (rule.fault.kind === 'response' || rule.fault.kind === 'processed-then')) {
+      const res: DevStreamAnswer = { ok: true, status: rule.fault.status, contentType: 'application/json', headers: { 'content-type': 'application/json' }, json: rule.fault.json ?? {} }
+      logStream(req, endpoint, started, res, fault, rule.fault.kind === 'processed-then')
+      return res
+    }
+    const asAnswer = (r: BridgeResponse): DevStreamAnswer =>
+      r.ok ? { ok: true, status: r.status, contentType: r.contentType, headers: { 'content-type': r.contentType }, json: r.json, text: r.text } : r
+    let res: DevStreamAnswer
+    let sent: { from: number; bytes: number } | undefined
+    try {
+      pull()
+      settleAll()
+      if (endpoint !== 'job-stream' || !match) res = asAnswer(detail(404, 'Not found'))
+      else if (!state.authenticated) res = asAnswer(detail(401, 'Not authenticated'))
+      else {
+        const v = await streamVideo(match.pathname)
+        if ('refused' in v) res = asAnswer(v.refused)
+        else {
+          const size = v.bytes.byteLength
+          const etag = `"dev-${v.job.job_id}-${size}"`
+          const headers: Record<string, string> = { 'content-type': v.type }
+          if (config.rangeSupport) {
+            headers['accept-ranges'] = 'bytes'
+            headers.etag = etag
+          }
+          const oversize = rule?.fault.kind === 'oversize'
+          const r = req.range
+          if (!oversize && r && r.from > 0 && config.rangeSupport && r.ifRange === etag && r.from >= size) {
+            res = { ok: true, status: 416, contentType: 'text/plain', headers: { 'content-type': 'text/plain', 'content-range': `bytes */${size}` }, text: 'Range Not Satisfiable' }
+          } else {
+            const ranged = !oversize && !!r && r.from > 0 && config.rangeSupport && r.ifRange === etag
+            const from = ranged ? r!.from : 0
+            const body = v.bytes.subarray(from)
+            if (ranged) headers['content-range'] = `bytes ${from}-${size - 1}/${size}`
+            headers['content-length'] = String(oversize ? CANVASAPP_VIDEO_MAX_BYTES + 1 : body.byteLength)
+            sent = { from, bytes: body.byteLength }
+            res = {
+              ok: true,
+              status: ranged ? 206 : 200,
+              contentType: v.type,
+              headers,
+              body: devStreamReader(body, { fault: rule?.fault ?? null, bytesPerSec: fired.bytesPerSec, sleep }),
+            }
+          }
+        }
+      }
+    } catch (e) {
+      res = asAnswer(detail(500, `Lỗi máy chủ giả lập: ${e instanceof Error ? e.message : String(e)}`))
+    }
+    logStream(req, endpoint, started, res, fault, true, sent)
+    return res
+  }
+
   // ---- views ----
 
   function jobView(j: DevJob): DevJobView {
@@ -1471,7 +1787,45 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       download_available: j.download_available,
       refunded: j.refunded,
       planned: j.plan.failMessage !== null ? 'fail' : j.plan.expire ? 'expire' : null,
+      origin: j.origin,
     }
+  }
+
+  /** The bridge session `projectId`, or the newest one named "SanoVids bridge". */
+  const bridgeProject = (projectId?: string): DevProject | undefined =>
+    projectId ? state.projects.find((p) => p.project_id === projectId) : [...state.projects].reverse().find((p) => p.name === BRIDGE_PROJECT_NAME)
+
+  function createSiteJob(input: DevSiteJobInput): DevSiteJobResult {
+    pull()
+    settleAll()
+    const project = bridgeProject(input.projectId)
+    if (!project) return { ok: false, detail: 'Chưa có phiên “SanoVids bridge” trên canvasapp giả lập — chạy một cảnh ở chế độ Phát triển trước.' }
+    let canvas = project.canvas
+    const edited = !!input.edit && Object.values(input.edit).some((v) => v !== undefined)
+    if (edited) {
+      // the user edits the node on the page; saveCanvas() stores it right before the job is sent
+      const r = applyNodeEdit(canvas, input.nodeId, input.edit!)
+      if ('problem' in r) return { ok: false, detail: r.problem }
+      const problem = canvasProblem(r.canvas)
+      if (problem) return { ok: false, detail: `Canvas không hợp lệ (${problem}).` }
+      canvas = r.canvas
+    }
+    // what the page checks before anything is sent (a node it would not run: nothing saved, nothing sent)
+    const built = siteJobBody(canvas, input.nodeId, project.project_id, newUuid('site-request'))
+    if ('problem' in built) return { ok: false, detail: built.problem }
+    if (edited) {
+      project.canvas = canvas
+      project.canvas_saved_at = now()
+    }
+    const res = createJob(built.body, 'site')
+    if (!res.ok || res.status >= 400) {
+      if (edited) save() // the canvas was saved before the job was refused
+      const body = res.ok ? (res.json as { detail?: unknown } | undefined) : undefined
+      return { ok: false, detail: typeof body?.detail === 'string' ? body.detail : 'canvasapp giả lập không nhận job này.' }
+    }
+    const jobId = String((res.json as { job_id?: unknown }).job_id)
+    const job = state.jobs.find((j) => j.job_id === jobId)
+    return { ok: true, jobId, number: job?.number ?? 0, cost: job?.cost ?? 0 }
   }
 
   function snapshot(): DevServerSnapshot {
@@ -1511,6 +1865,7 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
 
   return {
     request,
+    openStream,
     isAuthenticated: () => {
       pull()
       return state.authenticated
@@ -1615,6 +1970,12 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       return true
     },
     uploadBlob: (uploadId) => blobs.get(`dev:upload:${uploadId}`),
+    createSiteJob,
+    siteNodes: (projectId) => {
+      pull()
+      const p = bridgeProject(projectId)
+      return p ? { projectId: p.project_id, name: p.name, nodes: siteNodeList(p.canvas) } : null
+    },
     snapshot,
     subscribe: (listener) => {
       listeners.add(listener)

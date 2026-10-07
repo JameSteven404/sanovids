@@ -5,17 +5,23 @@
 // failure / cancel by SanoVids itself).
 import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
-import { providerOf } from '../../providers/types'
+import { PROVIDER_LABEL } from '../../providers'
+import { providerOf, type ProviderId } from '../../providers/types'
 import { isUncertainSubmit } from '../../store/runs'
+import { takeCostInferred, takeCostKnown } from './importedTake'
 
 /** Wallet a take was paid from: its provider decides, never the provider chosen now. */
 export const takeCreditKind = (t: Pick<Take, 'provider'>): CreditKind => creditKindOf(providerOf(t))
 
-/** "20 credit dev" | "20 credit demo" | "20 credit canvasapp" — a take's cost naming its wallet (tooltips, toasts). */
-export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'>): string {
+/**
+ * "20 credit dev" | "20 credit demo" | "20 credit canvasapp" — a take's cost naming its wallet (tooltips, toasts).
+ * "—" when it is not known (an imported take whose resolution / duration canvasapp did not say); "≈ …" on a guess.
+ */
+export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'> & Partial<Pick<Take, 'imported'>>): string {
   const kind = takeCreditKind(t)
-  const amount = formatCredits(t.cost, kind)
-  return kind === 'canvasapp' && amount !== '—' ? `${amount} canvasapp` : amount
+  const amount = formatCredits(takeCostKnown(t), kind)
+  const said = kind === 'canvasapp' && amount !== '—' ? `${amount} canvasapp` : amount
+  return said !== '—' && takeCostInferred(t) ? `≈ ${said}` : said
 }
 
 /** How a gateway (the real canvasapp or its development-mode simulation) is named in the cost notes. */
@@ -30,11 +36,20 @@ export interface GatewayWords {
   approx: boolean
   /** Extra words after "đã trả bằng …" ("" for real credits). */
   paidNote: string
+  /** The site by name: "canvasapp" | "canvasapp giả lập". */
+  siteName: string
 }
 
 export const GATEWAY_WORDS: Record<'canvasapp' | 'dev', GatewayWords> = {
-  canvasapp: { credit: 'credit canvasapp', site: 'canvasapp', check: 'kiểm tra trên canvasapp.io.vn', approx: true, paidNote: '' },
-  dev: { credit: 'credit dev', site: 'máy chủ giả lập', check: 'kiểm tra trong Bảng phát triển', approx: false, paidNote: ' (giả lập, không phải tiền thật)' },
+  canvasapp: { credit: 'credit canvasapp', site: 'canvasapp', check: 'kiểm tra trên canvasapp.io.vn', approx: true, paidNote: '', siteName: 'canvasapp' },
+  dev: {
+    credit: 'credit dev',
+    site: 'máy chủ giả lập',
+    check: 'kiểm tra trong Bảng phát triển',
+    approx: false,
+    paidNote: ' (giả lập, không phải tiền thật)',
+    siteName: 'canvasapp giả lập',
+  },
 }
 
 export interface TakeCostLine {
@@ -47,7 +62,7 @@ export interface TakeCostLine {
   struck: boolean
 }
 
-type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> & Partial<Pick<Take, 'startedAt' | 'submitUnknown'>>
+type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> & Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
@@ -60,6 +75,16 @@ export function takeCostLine(t: CostTake): TakeCostLine {
     return { kind, amount, note: 'đã trả bằng credit demo (giả lập, không phải tiền thật)', struck: false }
   }
   const w = GATEWAY_WORDS[kind]
+  if (t.imported) {
+    // made on the site, outside SanoVids: paid there when it was made; importing it costs nothing
+    const known = formatCredits(takeCostKnown(t), kind)
+    return {
+      kind,
+      amount: known === '—' || !(w.approx || takeCostInferred(t)) ? known : `≈ ${known}`,
+      note: `trả trên ${w.siteName} khi tạo job (ngoài SanoVids) — nhập không trừ thêm`,
+      struck: false,
+    }
+  }
   const est = formatCredits(t.cost, kind)
   const amount = est === '—' || !w.approx ? est : `≈ ${est}`
   if (t.remoteId) {
@@ -106,4 +131,56 @@ export function runCostPreview(kind: CreditKind, total: number, balance: number 
   const after = before === null ? null : before - total
   const below = after !== null && after < 0
   return { kind, total, before, after, short: kind === 'demo' && below, mayBeShort: kind !== 'demo' && below }
+}
+
+// ---- "Huỷ" of a running take (actions.cancelTake: queue row, Xem take) ----
+
+/** What "Huỷ" concerns, read at click time. */
+export interface CancelFacts {
+  /** "S03·T2" */
+  label: string
+  provider: ProviderId
+  status: 'queued' | 'processing'
+  cost: number
+  /** Paid with old demo credits (SanoVids refunds them). */
+  demoPaid: boolean
+  /** The site has the job (it runs there, or is done). */
+  sentAway: boolean
+  /** The site's job is finished (paid) and SanoVids is downloading its video, or waits to try again (runs.remoteVideoReady). */
+  videoReady: boolean
+  /** Imported ("Nhập job"): the job was made on the site's own page, not sent by SanoVids. */
+  imported?: boolean
+}
+
+/**
+ * The question before "Huỷ" drops a video that is already made and paid (null = nothing to ask): cancelling only
+ * stops SanoVids tracking the take — the video stays on the site, re-running the scene pays again.
+ */
+export function cancelQuestion(f: CancelFacts): string | null {
+  if (!f.videoReady || f.status !== 'processing' || f.provider === 'mock') return null
+  return f.provider === 'dev'
+    ? `${f.label}: video đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.\nVẫn huỷ?`
+    : `${f.label}: video đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.\nVẫn huỷ?`
+}
+
+/** The toast once "Huỷ" went through. */
+export function cancelToastText(f: CancelFacts): { text: string; warning: boolean } {
+  // development mode: "canvasapp giả lập" / "credit dev" (never the mode's own label)
+  const site = f.provider === 'dev' ? GATEWAY_WORDS.dev.siteName : PROVIDER_LABEL[f.provider]
+  const credit = f.provider === 'dev' ? GATEWAY_WORDS.dev.credit : 'credit'
+  if (f.demoPaid) return { text: `Đã huỷ ${f.label} · hoàn ${formatCredits(f.cost, 'demo')}.`, warning: false }
+  if (f.videoReady && f.status === 'processing' && f.provider !== 'mock') {
+    return {
+      text:
+        f.provider === 'dev'
+          ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển.`
+          : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
+      warning: true,
+    }
+  }
+  if (f.sentAway && f.imported) return { text: `Đã ngừng theo dõi ${f.label} trong SanoVids — job tạo trên ${site} vẫn chạy ở đó.`, warning: true }
+  if (f.sentAway) return { text: `Đã huỷ ${f.label} trong SanoVids — job đã gửi sang ${site} vẫn chạy ở đó.`, warning: true }
+  // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
+  if (f.status === 'processing') return { text: `Đã huỷ ${f.label} lúc đang gửi sang ${site} — nếu job đã được nhận thì có thể đã trừ ${credit}.`, warning: true }
+  return { text: `Đã huỷ ${f.label}.`, warning: false }
 }

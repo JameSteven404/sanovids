@@ -44,4 +44,29 @@ describe('checkTakeDelete', () => {
     expect(checkTakeDelete(['t3'], takes, scenes, { confirm: 'usedOnly' }).question).toContain('S03')
     expect(checkTakeDelete(['t1'], takes, scenes, { confirm: false }).question).toBeNull()
   })
+
+  it('MONEY: a running take whose paid video is still downloading asks first (also after a two-click button), like “Huỷ”', () => {
+    const running = [
+      { id: 'r1', status: 'processing' as const, provider: 'canvasapp' as const },
+      { id: 'r2', status: 'processing' as const, provider: 'canvasapp' as const },
+      { id: 'r3', status: 'processing' as const, provider: 'dev' as const },
+      { id: 'r4', status: 'processing' as const, provider: 'canvasapp' as const, imported: { at: 1 } },
+    ]
+    const ready = (id: string) => id !== 'r2'
+    const one = checkTakeDelete(['r1'], running, [], { label: 'S03·T2', videoReady: ready })
+    expect(one.paidPending).toBe(1)
+    expect(one.question).toContain('Xoá vĩnh viễn S03·T2?')
+    expect(one.question).toContain('video đã tạo xong trên canvasapp và đã trừ credit')
+    expect(one.question).toContain('canvasapp.io.vn')
+    expect(checkTakeDelete(['r1'], running, [], { confirm: 'usedOnly', videoReady: ready }).question).toContain('đã trừ credit')
+    expect(checkTakeDelete(['r1'], running, [], { confirm: false, videoReady: ready }).question).toBeNull()
+    // still being made (nothing paid lost yet): no question, as before
+    expect(checkTakeDelete(['r2'], running, [], { videoReady: ready })).toMatchObject({ paidPending: 0, question: null })
+    // development mode words
+    expect(checkTakeDelete(['r3'], running, [], { label: 'S01·T1', videoReady: ready }).question).toContain('canvasapp giả lập và đã trừ credit dev')
+    // an imported take loses nothing paid: "Nhập job" brings its job back
+    expect(checkTakeDelete(['r4'], running, [], { confirm: 'usedOnly', videoReady: ready })).toMatchObject({ paidPending: 0, question: null })
+    // several
+    expect(checkTakeDelete(['r1', 'r2', 'r3'], running, [], { videoReady: ready }).question).toContain('2 video đã tạo xong')
+  })
 })

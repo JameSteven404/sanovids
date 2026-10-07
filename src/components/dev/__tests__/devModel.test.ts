@@ -1,7 +1,10 @@
 // Development-mode UI model (Bảng phát triển): fault catalog, rule texts, custom rules, request log, character check.
 import { describe, expect, it } from 'vitest'
+import { canvasNodeId, sceneNodeId } from '../../../providers/canvasapp/mapping'
 import type { DevLogEntry } from '../../../providers/dev/log'
-import { DEV_CONFIG_DEFAULT, type DevServerSnapshot } from '../../../providers/dev/server'
+import { DEV_CONFIG_DEFAULT, devVideoProfiles, type DevConfig, type DevServerSnapshot } from '../../../providers/dev/server'
+import { profileIssues } from '../../../providers/canvasapp/mapping'
+import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type SettingsLimits } from '../../../providers/types'
 import {
   activeFaultCount,
   characterCheck,
@@ -11,9 +14,17 @@ import {
   DEV_UI_FAULTS,
   devPanelTabs,
   faultArmedText,
+  faultKindsFor,
   faultKindText,
   faultRuleText,
   filterLog,
+  jobNodeOwners,
+  jobNodeText,
+  mayOfferImport,
+  siteJobToast,
+  siteNodeLabel,
+  limitsDifferFromConfig,
+  limitsStatusText,
   logExport,
   minutesLeft,
   placeholderQr,
@@ -85,6 +96,10 @@ describe('DEV_UI_FAULTS', () => {
       'Tải video lỗi N lần',
       'Tải ảnh lên lỗi',
       'Chậm 3 giây',
+      'Mất mạng giữa chừng khi tải video',
+      'Tải video bị treo',
+      'Tải video chậm (100 KB/giây)',
+      'Video quá lớn (> 1 GB)',
     ]) {
       expect(labels).toContain(want)
     }
@@ -117,6 +132,22 @@ describe('DEV_UI_FAULTS', () => {
     expect(faultArmedText(item('canvas-400'), false)).toBe('Đã bật lỗi giả: Invalid canvas payload (400) (2 lần).')
     expect(faultArmedText(item('stream-failures'), false, 4)).toBe('Đã bật lỗi giả: Tải video lỗi N lần (N = 4).')
     expect(faultArmedText(item('fail-next'), false)).toBe('Đã bật lỗi giả: Job tiếp theo lỗi.')
+    // video downloads: one-shot cut / stall / oversize, a sticky slow body (it only shows while it lasts)
+    expect(faultArmedText(item('stream-cut'), false)).toBe('Đã bật lỗi giả: Mất mạng giữa chừng khi tải video (1 lần).')
+    expect(['stream-slow', 'stream-crawl'].map((id) => item(id).stickyByDefault)).toEqual([true, true])
+    expect(['stream-cut', 'stream-stall', 'stream-http', 'stream-oversize'].map((id) => item(id).stickyByDefault)).toEqual([false, false, false, false])
+    expect(faultArmedText(item('stream-http'), false)).toBe('Đã bật lỗi giả: Tải video bị chuyển sang http (1 lần).')
+    // they come right after "Mất mạng khi tải video"
+    const ids = DEV_UI_FAULTS.map((f) => f.id)
+    expect(ids.slice(ids.indexOf('stream-network'), ids.indexOf('stream-network') + 7)).toEqual([
+      'stream-network',
+      'stream-cut',
+      'stream-stall',
+      'stream-slow',
+      'stream-crawl',
+      'stream-http',
+      'stream-oversize',
+    ])
     for (const f of DEV_UI_FAULTS) expect(faultArmedText(f, false)).not.toMatch(/\(\d+ lần\) \(/)
   })
 })
@@ -127,6 +158,14 @@ describe('fault texts', () => {
     expect(faultKindText({ kind: 'processed-then', status: 502 })).toBe('xử lý xong rồi trả 502')
     expect(faultKindText({ kind: 'slow', ms: 3000 })).toBe('chậm 3 giây')
     expect(faultKindText({ kind: 'slow', ms: 1500 })).toBe('chậm 1,5 giây')
+    expect(faultKindText({ kind: 'cut', fraction: 0.5 })).toBe('ngắt giữa chừng (sau 50% video)')
+    expect(faultKindText({ kind: 'stall' })).toBe('đứng, không gửi tiếp (sau 50% video)')
+    expect(faultKindText({ kind: 'trickle', bytesPerSec: 100 * 1024 })).toBe('chậm 100 KB/giây')
+    expect(faultKindText({ kind: 'oversize' })).toBe('báo dung lượng > 1 GB')
+    expect(faultKindText({ kind: 'insecure-redirect' })).toBe('chuyển hướng sang http (không được theo)')
+    expect(faultRuleText({ endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 }, sticky: false, remaining: 1, hits: 0 })).toBe(
+      'Tải video · ngắt giữa chừng (sau 50% video) · còn 1 lần',
+    )
     expect(faultRuleText({ endpoint: 'job-create', fault: { kind: 'response', status: 402 }, sticky: false, remaining: 1, hits: 0 })).toBe(
       'Tạo job video · trả 402 (không xử lý) · còn 1 lần',
     )
@@ -142,6 +181,24 @@ describe('customFaultInput', () => {
     const slow = customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: '*', kind: 'slow', ms: '500', sticky: true })
     expect(slow).toEqual({ ok: true, input: { endpoint: '*', fault: { kind: 'slow', ms: 500 }, sticky: true } })
     expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, kind: 'network' })).toMatchObject({ ok: true, input: { fault: { kind: 'network' } } })
+    // video-download kinds, for "Tải video" only
+    const stream = { ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream' as const }
+    expect(customFaultInput({ ...stream, kind: 'cut' })).toEqual({ ok: true, input: { endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 }, sticky: false, times: 1 } })
+    expect(customFaultInput({ ...stream, kind: 'stall' })).toMatchObject({ ok: true, input: { fault: { kind: 'stall', fraction: 0.5 } } })
+    expect(customFaultInput({ ...stream, kind: 'trickle', kbps: '50', sticky: true })).toEqual({ ok: true, input: { endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 51_200 }, sticky: true } })
+    expect(customFaultInput({ ...stream, kind: 'oversize' })).toMatchObject({ ok: true, input: { fault: { kind: 'oversize' } } })
+  })
+
+  it('offers the video-download kinds only for "Tải video" (and refuses them elsewhere)', () => {
+    expect(faultKindsFor('job-stream')).toEqual(['network', 'lost-response', 'processed-then', 'response', 'slow', 'cut', 'stall', 'trickle', 'oversize', 'insecure-redirect'])
+    expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream', kind: 'insecure-redirect' })).toMatchObject({ ok: true, input: { endpoint: 'job-stream', fault: { kind: 'insecure-redirect' } } })
+    for (const ep of ['job-create', '*', 'jobs-list'] as const) {
+      expect(faultKindsFor(ep)).toEqual(['network', 'lost-response', 'processed-then', 'response', 'slow'])
+      for (const kind of ['cut', 'stall', 'trickle', 'oversize', 'insecure-redirect'] as const) {
+        expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: ep, kind })).toEqual({ ok: false, error: 'Kiểu lỗi này chỉ dùng cho “Tải video”.' })
+      }
+    }
+    expect(customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream', kind: 'trickle', kbps: '0' })).toMatchObject({ ok: false, error: expect.stringContaining('KB/giây') })
   })
 
   it('refuses bad input with a Vietnamese reason', () => {
@@ -271,5 +328,112 @@ describe('devPanelTabs', () => {
     expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')
     expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
     expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs'])
+  })
+})
+
+describe('jobNodeOwners / jobNodeText (Job & đơn nạp)', () => {
+  const scenes = [
+    { id: 'scn_a', order: 3 },
+    { id: 'scn_b', order: 12 },
+  ]
+  const owners = jobNodeOwners('prj_1', scenes)
+
+  it('"Nhập" only on a job "Nhập job" could offer: made on the site, not ended badly, on a node of the open project', () => {
+    const node = owners.get(sceneNodeId('prj_1', 'scn_a'))
+    expect(mayOfferImport({ origin: 'site', status: 'processing' }, node)).toBe(true)
+    expect(mayOfferImport({ origin: 'site', status: 'completed' }, owners.get(canvasNodeId('scn_a')))).toBe(true)
+    expect(mayOfferImport({ origin: 'app', status: 'processing' }, node)).toBe(false) // SanoVids' own (a deleted take's)
+    for (const status of ['failed', 'cancelled', 'expired']) expect(mayOfferImport({ origin: 'site', status }, node)).toBe(false)
+    expect(mayOfferImport({ origin: 'site', status: 'queued' }, owners.get(sceneNodeId('prj_2', 'scn_a')))).toBe(false)
+  })
+
+  it('a scene of the open project, its old node (scene id alone), or anything else', () => {
+    expect(owners.get(sceneNodeId('prj_1', 'scn_a'))).toEqual({ kind: 'scene', code: 'S03' })
+    expect(owners.get(sceneNodeId('prj_1', 'scn_b'))).toEqual({ kind: 'scene', code: 'S12' })
+    expect(owners.get(canvasNodeId('scn_a'))).toEqual({ kind: 'legacy', code: 'S03' })
+    // the same scene in a duplicated project, a deleted scene: not the open project's
+    expect(owners.get(sceneNodeId('prj_2', 'scn_a'))).toBeUndefined()
+    expect(owners.get(sceneNodeId('prj_1', 'scn_gone'))).toBeUndefined()
+    expect(owners.size).toBe(4)
+  })
+
+  it('labels and tooltips (Vietnamese, the full node id first, no version numbers)', () => {
+    const id = sceneNodeId('prj_1', 'scn_a')
+    expect(jobNodeText(id, owners.get(id))).toEqual({ label: 'node S03', title: `canvas_node_id: ${id}\nNode của cảnh S03 trong dự án đang mở.` })
+    const old = canvasNodeId('scn_a')
+    expect(jobNodeText(old, owners.get(old))).toEqual({
+      label: 'node cũ S03',
+      title: `canvas_node_id: ${old}\nNode đặt theo riêng id cảnh (bản SanoVids cũ): dự án nhân bản hoặc nhập lại từ cùng tệp có thể dùng chung node này.`,
+    })
+    const gone = sceneNodeId('prj_1', 'scn_gone')
+    expect(jobNodeText(gone, owners.get(gone))).toEqual({
+      label: 'node khác',
+      title: `canvas_node_id: ${gone}\nKhông thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).`,
+    })
+    for (const o of [...owners.values(), undefined]) expect(jobNodeText('x', o).title).not.toMatch(/\d+\.\d+\.\d+/)
+  })
+})
+
+describe('Model (video-profiles): what SanoVids knows of the simulated site', () => {
+  const at = new Date(2026, 9, 6, 14, 5, 9).getTime()
+  const info = (patch: Partial<LimitsInfo>): LimitsInfo => ({ ...NO_LIMITS_INFO, ...patch })
+  /** What the adapter makes of a read of the simulated site with these toggles. */
+  const known = (models: DevConfig['models'], firm = true): SettingsLimits => {
+    const profiles = devVideoProfiles(models)
+    return { source: 'server', firm, issues: (s) => profileIssues(s, profiles) }
+  }
+  const models = (patch: Partial<Record<keyof DevConfig['models'], Partial<DevConfig['models'][keyof DevConfig['models']]>>>): DevConfig['models'] => ({
+    seedance_2_5: { ...DEV_CONFIG_DEFAULT.models.seedance_2_5, ...patch.seedance_2_5 },
+    minimax_h3: { ...DEV_CONFIG_DEFAULT.models.minimax_h3, ...patch.minimax_h3 },
+  })
+
+  it('status line for each state', () => {
+    expect(limitsStatusText(NO_LIMITS_INFO, NO_LIMITS)).toMatch(/^SanoVids chưa đọc cấu hình model — đọc khi mở cấu hình video/)
+    expect(limitsStatusText(info({ reading: true }), NO_LIMITS)).toBe('SanoVids đang đọc cấu hình model…')
+    expect(limitsStatusText(info({ lastAttempt: { at, result: 'login' } }), NO_LIMITS)).toMatch(/Lần thử lúc 14:05:09: chưa đăng nhập \(401\)\.$/)
+    const server = info({ source: 'server', at, firmUntil: at + 600_000, lastAttempt: { at, result: 'read' } })
+    expect(limitsStatusText(server, { source: 'server', firm: true })).toBe('SanoVids đọc lúc 14:05:09 — inspector, nút Chạy và hộp Chạy khoá đúng những gì đang tắt ở đây lúc đó.')
+    expect(limitsStatusText(server, { source: 'server', firm: false })).toMatch(/đã quá 10 phút: inspector chỉ còn cảnh báo/)
+    expect(limitsStatusText({ ...server, lastAttempt: { at: at + 1000, result: 'kept' } }, { source: 'server', firm: true })).toMatch(/Lần đọc lại lúc 14:05:10 lỗi — vẫn dùng lần đọc trước\.$/)
+    expect(limitsStatusText({ ...server, lastAttempt: { at: at + 1000, result: 'login' } }, { source: 'server', firm: true })).toMatch(/chưa đăng nhập \(401\) — vẫn dùng lần đọc trước\.$/)
+    const fallback = info({ source: 'fallback', at, lastAttempt: { at, result: 'failed' } })
+    expect(limitsStatusText(fallback, { source: 'fallback', firm: false })).toMatch(/^SanoVids không đọc được lúc 14:05:09 — đang dùng cấu hình dự phòng .*MiniMax-H3 khoá/)
+    // nothing re-reads on a timer: it says what does (showing the settings / run dialog, a submit, the button)
+    expect(limitsStatusText(fallback, { source: 'fallback', firm: false })).toMatch(/Không tự đọc lại theo giờ: đọc lại khi mở cấu hình video .*“Đọc lại ngay”\.$/)
+  })
+
+  it('says when what SanoVids knows differs from the toggles now ("Đọc lại ngay")', () => {
+    const now = DEV_CONFIG_DEFAULT.models
+    expect(limitsDifferFromConfig(known(now), now)).toBe(false)
+    expect(limitsDifferFromConfig(NO_LIMITS, models({ minimax_h3: { can_create: false } }))).toBe(false) // nothing read: nothing to compare
+    const locked = models({ minimax_h3: { can_create: false } })
+    expect(limitsDifferFromConfig(known(now), locked)).toBe(true)
+    expect(limitsDifferFromConfig(known(locked), locked)).toBe(false)
+    const noTransform = models({ minimax_h3: { disabled_modes: ['transform'] } })
+    expect(limitsDifferFromConfig(known(now), noTransform)).toBe(true)
+    expect(limitsDifferFromConfig(known(noTransform), noTransform)).toBe(false)
+    // Seedance's lists narrow (used as sent); MiniMax-H3's narrower lists are ignored by canvasapp's page, so no change
+    const short = models({ seedance_2_5: { off_durations: [30], off_resolutions: ['480p'], off_ratios: ['1:1'] } })
+    expect(limitsDifferFromConfig(known(now), short)).toBe(true)
+    expect(limitsDifferFromConfig(known(short), short)).toBe(false)
+    const h3Short = models({ minimax_h3: { off_durations: [15], off_resolutions: ['2k'] } })
+    expect(limitsDifferFromConfig(known(now), h3Short)).toBe(false)
+    expect(limitsDifferFromConfig(known(h3Short), h3Short)).toBe(false)
+  })
+})
+
+describe('"Tạo job như trên trang canvasapp" (Job & đơn nạp)', () => {
+  const node = { id: 'n1', model: 'seedance_2_5' as const, mode: 't2v', duration: 15, resolution: '1080p', aspectRatio: '16:9', prompt: 'x', pictures: 2 }
+  it('names a bridge node after its scene of the open project (old node / another one too)', () => {
+    expect(siteNodeLabel(node, { kind: 'scene', code: 'S01' }, 'Ôm nhau')).toBe('S01 · Ôm nhau — Seedance 2.5 · 15s · 1080P')
+    expect(siteNodeLabel(node, { kind: 'legacy', code: 'S02' })).toBe('node cũ S02 — Seedance 2.5 · 15s · 1080P')
+    expect(siteNodeLabel({ ...node, model: null, duration: null }, undefined)).toBe('node lạ — model lạ · 1080P')
+  })
+  it('says what was made and billed — or why the simulated site refused', () => {
+    expect(siteJobToast({ ok: true, jobId: 'j', number: 4, cost: 20 })).toEqual({
+      text: 'Đã tạo job #4 trên canvasapp giả lập (như trên trang) — đã trừ 20 credit dev. Dùng “Nhập job” để đưa vào dự án.',
+      ok: true,
+    })
+    expect(siteJobToast({ ok: false, detail: 'Số dư không đủ' })).toEqual({ text: 'canvasapp giả lập không tạo job: Số dư không đủ', ok: false })
   })
 })

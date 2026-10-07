@@ -60,7 +60,7 @@ interface Group extends SearchGroup<Row> {
   Block?: ComponentType
 }
 
-const GROUPS: Group[] = [
+export const GROUPS: Group[] = [
   // ------------------------------------------------ Cơ bản ------------------------------------------------
   {
     id: 'appearance',
@@ -287,7 +287,7 @@ const GROUPS: Group[] = [
     col: 1,
     title: 'Cổng canvasapp.io.vn',
     desc: 'Nhà cung cấp video cho take mới, đăng nhập canvasapp và credit thật.',
-    keywords: 'canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền',
+    keywords: 'canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền nhập job import job tạo trên trang canvasapp',
     Block: GatewaySection,
   },
   {
@@ -296,7 +296,7 @@ const GROUPS: Group[] = [
     col: 1,
     title: 'Chế độ Phát triển',
     desc: 'canvasapp giả lập ngay trong app để tìm và sửa lỗi: đăng nhập, credit dev, gây lỗi, nhật ký yêu cầu.',
-    keywords: 'dev phát triển giả lập debug bug lỗi nhật ký log tốc độ credit dev',
+    keywords: 'dev phát triển giả lập debug bug lỗi nhật ký log tốc độ credit dev nhập job tạo job trên trang',
     Block: DevBlock,
   },
   // Version, author, copyright and the app's code signature (texts: lib/aboutModel.ts).

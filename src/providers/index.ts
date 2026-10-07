@@ -15,12 +15,26 @@
 //                                          (balance, login, top-up, credit history) goes through activeGateway(): in
 //                                          development mode it is the in-app simulation, never the network.
 //   canvasappApi() / devApi()               the API clients of the real / simulated gateway (prefer activeGateway().api).
+//   gatewayProvider(id)                     the adapter that RUNS id's takes (the registry's: what the queue submits and
+//                                          polls with) — "Nhập job" scans and claims on it, never on another instance.
 //   resetDevMode()                          wipe the simulated canvasapp account AND SanoVids' dev-mode caches
 //                                          (bridge project, upload cache, job ledger). Running dev takes then fail as
 //                                          "job not found" — warn first. Refresh the balance afterwards
 //                                          (store/credits refreshRealCredits({ force: true })).
 //   useRuns(s => s.providerIssue)           (store/runs) last polling problem { provider, code, message, at } | null.
 //   useRuns(s => s.engineElsewhere)         (store/runs) another tab/window of the project runs the queue.
+//   What a gateway runs right now (/api/video-profiles, docs/GATEWAY-CANVASAPP.md §4):
+//   useProviderLimits(s => s.rev[id])       revision signal: bumped whenever providerLimits(id) / providerLimitsInfo(id)
+//                                          may have changed (a read started / ended, logout, provider replaced, a firm
+//                                          read expiring). Select the number, then read the accessors below.
+//   providerLimits(id): SettingsLimits      synchronous, never a request ('mock' / no method → NO_LIMITS); stable object
+//                                          while what it refuses is unchanged.
+//   providerLimitsInfo(id): LimitsInfo      when / how it was read (Bảng phát triển, the inspector note, toasts).
+//   refreshProviderLimits(id, opts?)        read again (TTL-gated; { force } = "Đọc lại", at most every 5 s; { changed }
+//                                          = after a login / a change of the site: at once, never held back); never throws.
+//   watchProviderLimits(id): () => void     while watched (inspector settings, run dialog), a firm read is renewed
+//                                          shortly before it expires, so what they show never lapses into a guess.
+//   providers/limits settingsRunBlock / settingsRunWarning   what the run check makes of it (store/runs, core/runGate).
 //   Take fields (core/types): provider, remoteId, charged (false = not paid with demo credits), framesSnapshot,
 //   imageKeysSnapshot, submitUnknown. A 'dev' / 'canvasapp' take failed with UNKNOWN_SUBMIT_ERROR (store/runs) was
 //   never resubmitted: retry(takeId) re-sends THE SAME take (same key; the job is looked up first).
@@ -32,11 +46,11 @@ import { getBlob } from '../lib/imageStore'
 import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
 import { canvasappBridge, createDesktopTransport, hasCanvasappBridge, WEB_UNAVAILABLE, type CanvasappBridge } from './canvasapp/transport'
-import { devBridge, devResult, resetDevServer, withDevWording } from './dev'
-import type { ProviderId, VideoProvider } from './types'
+import { DEV_JOB_LIST_CACHE_MS, devBridge, devResult, resetDevServer, withDevWording } from './dev'
+import { NO_LIMITS, NO_LIMITS_INFO, type LimitsInfo, type ProviderId, type RefreshLimitsOptions, type RefreshLimitsResult, type SettingsLimits, type VideoProvider } from './types'
 
-export type { ProviderId, VideoProvider } from './types'
-export { providerOf } from './types'
+export type { LimitsInfo, ProviderId, RefreshLimitsOptions, RefreshLimitsResult, SettingsLimits, VideoProvider } from './types'
+export { NO_LIMITS, NO_LIMITS_INFO, providerOf } from './types'
 
 const PREF_KEY = 'bdp:pref:provider'
 
@@ -86,6 +100,8 @@ let devClient: CanvasappApi | null = null
 
 export function registerProvider(p: VideoProvider): void {
   registry.set(p.id, p)
+  // another instance (tests, rebuilt providers): what it knows may differ
+  bumpProviderLimits(p.id)
 }
 
 /** The canvasapp API client over the desktop transport (created on first use, shared with the provider). */
@@ -97,7 +113,7 @@ export function canvasappApi(): CanvasappApi {
 /** The canvasapp gateway provider (created on first use). */
 export function canvasappProvider(): CanvasappProvider {
   if (!canvasapp) {
-    canvasapp = createCanvasappProvider({ api: canvasappApi(), getBlob, storage: browserStorage() })
+    canvasapp = createCanvasappProvider({ api: canvasappApi(), getBlob, storage: browserStorage(), onLimitsChange: () => bumpProviderLimits('canvasapp') })
   }
   return canvasapp
 }
@@ -108,7 +124,8 @@ export function canvasappProvider(): CanvasappProvider {
 export const DEV_POLL_MS = 3_000
 /**
  * The dev provider reuses a job-list answer this long. Below DEV_POLL_MS minus the simulated latency (150 ms by
- * default, + "Chậm" faults): the cache is stamped when the answer arrives, so a 3 s cache would skip every other poll.
+ * default, + "Chậm" faults): the adapter's own cache is stamped when the answer arrives, so a 3 s cache would skip
+ * every other poll. (The dev bridge's cache, like main's, is timed from when the request was sent.)
  */
 export const DEV_LIST_CACHE_MS = 2_000
 /** localStorage prefix of the dev provider's own records (bridge project, upload cache, job ledger). */
@@ -137,12 +154,19 @@ export function devProvider(): CanvasappProvider {
       minPollMs: DEV_POLL_MS,
       pollIntervalMs: DEV_POLL_MS,
       listCacheMs: DEV_LIST_CACHE_MS,
+      // the dev bridge's own job-list cache (main.cjs: 15 s, the adapter's default)
+      gatewayListCacheMs: DEV_JOB_LIST_CACHE_MS,
+      onLimitsChange: () => bumpProviderLimits('dev'),
     })
     dev = withDevWording(adapter, { poll: devResult, available: devResult })
   }
   return dev
 }
 
+/**
+ * The provider of `id` (built on first use). Never bumps the limits signal (registry.set, not registerProvider): the
+ * accessors below call it while rendering.
+ */
 export function getProvider(id: ProviderId): VideoProvider {
   const hit = registry.get(id)
   if (hit) return hit
@@ -157,6 +181,18 @@ export function getProvider(id: ProviderId): VideoProvider {
     return p
   }
   throw new Error(`Chưa đăng ký nhà cung cấp video “${id}”.`)
+}
+
+/**
+ * The canvasapp adapter that runs `id`'s takes: getProvider(id), i.e. the very instance the queue submits and polls
+ * with (its job ledger is the one that must hold an import's claims). Throws when that provider is not one.
+ */
+export function gatewayProvider(id: 'dev' | 'canvasapp'): CanvasappProvider {
+  const p = getProvider(id) as Partial<CanvasappProvider>
+  if (typeof p.scanSiteJobs !== 'function' || typeof p.siteJobPrompts !== 'function' || typeof p.claimSiteJobs !== 'function') {
+    throw new Error(`Nhà cung cấp “${id}” không hỗ trợ nhập job.`)
+  }
+  return p as CanvasappProvider
 }
 
 /** Provider used for NEW takes: the real gateway when chosen and possible, else development mode. */
@@ -212,4 +248,100 @@ export async function resetDevMode(): Promise<void> {
   storage.remove(JOBS_KEY)
   dev = null
   if (registry.has('dev')) registry.set('dev', devProvider())
+  bumpProviderLimits('dev') // a new provider: nothing read yet
+}
+
+// ---- what the gateways run right now (/api/video-profiles) ----
+
+/** Revision of what each provider's limits are (see the API notes at the top). Select `s.rev[id]` — a number. */
+export const useProviderLimits = create<{ rev: Record<ProviderId, number> }>()(() => ({ rev: { dev: 0, canvasapp: 0, mock: 0 } }))
+
+/** While watched, a firm read is renewed this long before it expires (no moment where it reads as a guess). */
+export const LIMITS_RENEW_EARLY_MS = 30_000
+
+const limitsTimers = new Map<ProviderId, ReturnType<typeof setTimeout>>()
+const limitsWatchers = new Map<ProviderId, number>()
+
+/** What providerLimits(id) / providerLimitsInfo(id) return may have changed: tell the UI, re-arm the expiry timer. */
+export function bumpProviderLimits(id: ProviderId): void {
+  useProviderLimits.setState((s) => ({ rev: { ...s.rev, [id]: (s.rev[id] ?? 0) + 1 } }))
+  armLimitsTimer(id)
+}
+
+/**
+ * One timer per provider, for the moment a firm read stops being firm: watched → read again a little before
+ * (refreshProviderLimits force); not watched → just bump at expiry, so the run gate stops treating it as sure.
+ */
+function armLimitsTimer(id: ProviderId) {
+  const old = limitsTimers.get(id)
+  if (old !== undefined) clearTimeout(old)
+  limitsTimers.delete(id)
+  // the provider in use (it may be built through gatewayFor(…).provider() without being registered yet)
+  const p = registry.get(id) ?? (id === 'dev' ? dev : id === 'canvasapp' ? canvasapp : null)
+  let until: number | null = null
+  try {
+    until = p?.limitsInfo?.().firmUntil ?? null
+  } catch {
+    until = null
+  }
+  if (until === null) return
+  const now = Date.now()
+  if (now > until) return
+  const watched = (limitsWatchers.get(id) ?? 0) > 0
+  const renewAt = until - LIMITS_RENEW_EARLY_MS
+  const early = watched && now < renewAt
+  const timer = setTimeout(
+    () => {
+      limitsTimers.delete(id)
+      if (!early) bumpProviderLimits(id)
+      else if ((limitsWatchers.get(id) ?? 0) > 0) void refreshProviderLimits(id, { force: true }).finally(() => armLimitsTimer(id))
+      else armLimitsTimer(id)
+    },
+    Math.max(0, (early ? renewAt : until) - now) + 50,
+  )
+  ;(timer as { unref?: () => void }).unref?.()
+  limitsTimers.set(id, timer)
+}
+
+/** Keep `id`'s limits renewed while something shows them (returns unwatch). */
+export function watchProviderLimits(id: ProviderId): () => void {
+  limitsWatchers.set(id, (limitsWatchers.get(id) ?? 0) + 1)
+  armLimitsTimer(id)
+  let done = false
+  return () => {
+    if (done) return
+    done = true
+    limitsWatchers.set(id, Math.max(0, (limitsWatchers.get(id) ?? 1) - 1))
+  }
+}
+
+/** What `id` refuses now (NO_LIMITS for the old demo or a provider without the method). Never a request, never throws. */
+export function providerLimits(id: ProviderId): SettingsLimits {
+  if (id === 'mock') return NO_LIMITS
+  try {
+    return getProvider(id).settingsLimits?.() ?? NO_LIMITS
+  } catch {
+    return NO_LIMITS
+  }
+}
+
+/** How `id`'s limits were read. */
+export function providerLimitsInfo(id: ProviderId): LimitsInfo {
+  if (id === 'mock') return NO_LIMITS_INFO
+  try {
+    return getProvider(id).limitsInfo?.() ?? NO_LIMITS_INFO
+  } catch {
+    return NO_LIMITS_INFO
+  }
+}
+
+/** Read `id`'s limits again (see VideoProvider.refreshLimits). Never throws. */
+export async function refreshProviderLimits(id: ProviderId, opts: RefreshLimitsOptions = {}): Promise<RefreshLimitsResult> {
+  if (id === 'mock') return 'fresh'
+  try {
+    const p = getProvider(id)
+    return p.refreshLimits ? await p.refreshLimits(opts) : 'fresh'
+  } catch {
+    return 'failed'
+  }
 }

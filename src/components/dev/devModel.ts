@@ -11,24 +11,41 @@
 //   faultArmedText(item, sticky, n)           the toast after "Bật": "Đã bật lỗi giả: … (2 lần)" / "(giữ)".
 //   faultKindText(fault) / faultRuleText(rule) Vietnamese description of a fault / an armed rule.
 //   customFaultInput(form)                    the custom-rule form → DevFaultInput, or a Vietnamese error.
+//   faultKindsFor(endpoint)                   the kinds the custom-rule form offers for that request (the video
+//                                             download ones — ngắt / treo / chậm / quá lớn — only for "Tải video").
 //   statusTone(entry) / statusText(entry)     request-log status chip.
 //   filterLog(entries, query, onlyProblems)   newest first, filtered.
 //   logExport(entries, snapshot, now)         "Copy nhật ký" text (JSON) for bug reports.
 //   characterCheck(body, ctx)                 "Kiểm tra nhân vật" of a POST /api/video-jobs body: each upload in order
 //                                             as @image_N → SanoVids image → asset; @image_N of the prompt without an
 //                                             upload are flagged.
-import { parseTokens } from '../../core/compile'
-import type { Asset } from '../../core/types'
+//   jobNodeOwners(projectId, scenes)          canvas_node_id → which scene of the open project a job ran on (its node,
+//   jobNodeText(nodeId, owner)                or the old one named by the scene id alone) + the job's label / tooltip.
+//   siteNodeLabel(node, owner, title)         "Tạo job như trên trang canvasapp": a bridge node's option label;
+//   siteJobToast(result) / SITE_JOB_HINT      what the card says.
+//   limitsStatusText(info, limits)            "Model (video-profiles)": whether / when SanoVids read the simulated
+//                                             site's model settings and what the inspector does with them.
+//   limitsDifferFromConfig(limits, models)    what SanoVids knows ≠ the toggles now → suggest "Đọc lại ngay".
+import { parseTokens, sceneCode } from '../../core/compile'
+import { MODELS, normalizeSettings } from '../../core/models'
+import type { Asset, ModelId, Scene } from '../../core/types'
+import { canvasNodeId, sceneNodeId } from '../../providers/canvasapp/mapping'
+import type { LimitField, LimitsInfo, SettingsLimits } from '../../providers/types'
+import { fieldBlock } from '../inspector/settingsLimits'
 import type { DevPanelTab } from '../../store/ui'
 import type { DevLogEntry } from '../../providers/dev/log'
 import { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, type DevEndpoint } from '../../providers/dev/routes'
+import type { SiteNodeInfo } from '../../providers/dev/siteClient'
 import {
   DEV_FAULT_PRESETS,
+  DEV_STREAM_FAULT_KINDS,
+  type DevConfig,
   type DevFault,
   type DevFaultInput,
   type DevFaultRule,
   type DevJobView,
   type DevServerSnapshot,
+  type DevSiteJobResult,
   type DevUploadView,
 } from '../../providers/dev/server'
 
@@ -161,6 +178,12 @@ export const DEV_UI_FAULTS: DevUiFault[] = [
   rule('profiles-500', 'Cấu hình model lỗi (500)'),
   rule('list-network', 'Mất mạng khi đọc danh sách job'),
   rule('stream-network', 'Mất mạng khi tải video'),
+  rule('stream-cut', 'Mất mạng giữa chừng khi tải video'),
+  rule('stream-stall', 'Tải video bị treo'),
+  rule('stream-slow', 'Tải video chậm (100 KB/giây)'),
+  rule('stream-crawl', 'Tải video rất chậm (quá giới hạn mỗi kết nối)'),
+  rule('stream-http', 'Tải video bị chuyển sang http'),
+  rule('stream-oversize', 'Video quá lớn (> 1 GB)'),
   rule('offline', 'Mất mạng hoàn toàn'),
 ]
 
@@ -194,8 +217,20 @@ export function faultKindText(f: DevFault): string {
       return `trả ${f.status} (không xử lý)`
     case 'slow':
       return `chậm ${formatSeconds(f.ms)}`
+    case 'cut':
+      return `ngắt giữa chừng (sau ${formatShare(f.fraction)} video)`
+    case 'stall':
+      return `đứng, không gửi tiếp (sau ${formatShare(f.fraction)} video)`
+    case 'trickle':
+      return `chậm ${Math.round(f.bytesPerSec / 1024)} KB/giây`
+    case 'oversize':
+      return 'báo dung lượng > 1 GB'
+    case 'insecure-redirect':
+      return 'chuyển hướng sang http (không được theo)'
   }
 }
+
+const formatShare = (x: number | undefined) => `${Math.round((typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.5) * 100)}%`
 
 const formatSeconds = (ms: number) => `${Math.round((ms / 1000) * 10) / 10} giây`.replace('.', ',')
 
@@ -220,6 +255,18 @@ export const DEV_FAULT_KIND_LABEL: Record<DevFaultKind, string> = {
   'processed-then': 'Xử lý rồi trả mã khác',
   response: 'Trả mã lỗi (không xử lý)',
   slow: 'Chậm',
+  cut: 'Ngắt giữa chừng (tải video)',
+  stall: 'Treo giữa chừng (tải video)',
+  trickle: 'Tải chậm (KB/giây)',
+  oversize: 'Báo video > 1 GB',
+  'insecure-redirect': 'Chuyển hướng sang http (tải video)',
+}
+
+const isStreamKind = (k: DevFaultKind) => (DEV_STREAM_FAULT_KINDS as readonly string[]).includes(k)
+
+/** Kinds the custom-rule form offers for a request: the video-download ones only for 'job-stream'. */
+export function faultKindsFor(endpoint: DevEndpoint | '*'): DevFaultKind[] {
+  return (Object.keys(DEV_FAULT_KIND_LABEL) as DevFaultKind[]).filter((k) => endpoint === 'job-stream' || !isStreamKind(k))
 }
 
 export interface CustomFaultForm {
@@ -231,21 +278,30 @@ export interface CustomFaultForm {
   json: string
   /** Delay for 'slow'. */
   ms: string
+  /** KB per second for 'trickle'. */
+  kbps: string
   /** One-shot count. */
   times: string
   sticky: boolean
 }
 
-export const CUSTOM_FAULT_DEFAULT: CustomFaultForm = { endpoint: 'job-create', kind: 'response', status: '500', json: '', ms: '3000', times: '1', sticky: false }
+export const CUSTOM_FAULT_DEFAULT: CustomFaultForm = { endpoint: 'job-create', kind: 'response', status: '500', json: '', ms: '3000', kbps: '100', times: '1', sticky: false }
 
 export const isDevEndpoint = (v: string): v is DevEndpoint | '*' => v === '*' || (DEV_ENDPOINTS as string[]).includes(v)
 
 /** The custom-rule form as a server rule, or why it cannot be one (Vietnamese). */
 export function customFaultInput(f: CustomFaultForm): { ok: true; input: DevFaultInput } | { ok: false; error: string } {
   if (!isDevEndpoint(f.endpoint)) return { ok: false, error: 'Chọn một yêu cầu.' }
+  if (!(f.kind in DEV_FAULT_KIND_LABEL)) return { ok: false, error: 'Chọn một kiểu lỗi.' }
+  if (isStreamKind(f.kind) && f.endpoint !== 'job-stream') return { ok: false, error: 'Kiểu lỗi này chỉ dùng cho “Tải video”.' }
   let fault: DevFault
-  if (f.kind === 'network' || f.kind === 'lost-response') fault = { kind: f.kind }
-  else if (f.kind === 'slow') {
+  if (f.kind === 'network' || f.kind === 'lost-response' || f.kind === 'oversize' || f.kind === 'insecure-redirect') fault = { kind: f.kind }
+  else if (f.kind === 'cut' || f.kind === 'stall') fault = { kind: f.kind, fraction: 0.5 }
+  else if (f.kind === 'trickle') {
+    const kbps = Number(f.kbps)
+    if (!Number.isInteger(kbps) || kbps < 1 || kbps > 100_000) return { ok: false, error: 'Tốc độ phải là số nguyên 1–100000 KB/giây.' }
+    fault = { kind: 'trickle', bytesPerSec: kbps * 1024 }
+  } else if (f.kind === 'slow') {
     const ms = Number(f.ms)
     if (!Number.isInteger(ms) || ms < 0 || ms > 120_000) return { ok: false, error: 'Thời gian chậm phải là số nguyên 0–120000 ms.' }
     fault = { kind: 'slow', ms }
@@ -472,4 +528,123 @@ export function characterCheck(body: unknown, ctx: CharacterCheckContext): Chara
     missing.push({ n: t.n, token: prompt.slice(t.start, t.end) })
   }
   return { kind: frames ? 'frames' : 'images', slots, missing, prompt, promptTruncated, promptFromJob: !!job }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Job → bridge canvas node (Job & đơn nạp)
+// ---------------------------------------------------------------------------------------------
+
+/** Which bridge canvas node a job ran on, seen from the open project. */
+export type JobNodeOwner = { kind: 'scene' | 'legacy'; code: string } | { kind: 'other' }
+
+/**
+ * canvas_node_id → owner, for the open project: the node of each of its scenes ('scene', "S03") and the node builds
+ * before per-project nodes named by the scene id alone ('legacy': a duplicated / re-imported project may share it).
+ * Any other id — another project's, a deleted scene's — is not in the map ('other').
+ */
+export function jobNodeOwners(projectId: string, scenes: readonly Pick<Scene, 'id' | 'order'>[]): Map<string, JobNodeOwner> {
+  const m = new Map<string, JobNodeOwner>()
+  for (const s of scenes) m.set(canvasNodeId(s.id), { kind: 'legacy', code: sceneCode(s.order) })
+  for (const s of scenes) m.set(sceneNodeId(projectId, s.id), { kind: 'scene', code: sceneCode(s.order) })
+  return m
+}
+
+/**
+ * Does the job line offer "Nhập" (open "Nhập job")? Only for a job that dialog could offer: made on the site's page
+ * (origin 'site' — SanoVids' own jobs are never imported), not ended in failure / cancel / expiry, on a node of a scene
+ * of the open project. Anything else says "không có take" only (the dialog would list it under "Không nhập được").
+ */
+export function mayOfferImport(job: { origin: 'app' | 'site'; status: string }, owner: JobNodeOwner | undefined): boolean {
+  return job.origin === 'site' && !['failed', 'cancelled', 'expired'].includes(job.status) && (owner?.kind === 'scene' || owner?.kind === 'legacy')
+}
+
+/** The job line's node label and its tooltip (which starts with the full canvas_node_id). */
+export function jobNodeText(nodeId: string, owner: JobNodeOwner | undefined): { label: string; title: string } {
+  const head = `canvas_node_id: ${nodeId}\n`
+  if (owner?.kind === 'scene') return { label: `node ${owner.code}`, title: `${head}Node của cảnh ${owner.code} trong dự án đang mở.` }
+  if (owner?.kind === 'legacy') {
+    return {
+      label: `node cũ ${owner.code}`,
+      title: `${head}Node đặt theo riêng id cảnh (bản SanoVids cũ): dự án nhân bản hoặc nhập lại từ cùng tệp có thể dùng chung node này.`,
+    }
+  }
+  return { label: 'node khác', title: `${head}Không thuộc cảnh nào đang có trong dự án đang mở (dự án khác, hoặc cảnh đã xoá).` }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Tạo job như trên trang canvasapp" (Job & đơn nạp)
+// ---------------------------------------------------------------------------------------------
+
+export const SITE_JOB_HINT =
+  'Giống bấm “Tạo video” trên node của phiên “SanoVids bridge” ở canvasapp: lưu canvas, tạo job với client_request_id ngẫu nhiên (không phải của take nào), trừ credit dev. SanoVids không biết job này cho tới khi bạn dùng “Nhập job” (Hàng đợi, Cài đặt hoặc nút “Nhập” ở dòng job).'
+
+/** "S01 · Ôm nhau — Seedance 2.5 · 15s · 1080P" — a video node of the bridge session, named after its scene. */
+export function siteNodeLabel(node: SiteNodeInfo, owner: JobNodeOwner | undefined, title?: string): string {
+  const who =
+    owner?.kind === 'scene' ? `${owner.code}${title ? ` · ${title}` : ''}` : owner?.kind === 'legacy' ? `node cũ ${owner.code}${title ? ` · ${title}` : ''}` : 'node lạ'
+  const model = node.model ? MODELS[node.model].name : 'model lạ'
+  const what = [model, node.duration !== null ? `${node.duration}s` : null, node.resolution ? node.resolution.toUpperCase() : null].filter(Boolean).join(' · ')
+  return `${who} — ${what}`
+}
+
+/** The toast after "Tạo job trên trang (giả lập)". */
+export function siteJobToast(res: DevSiteJobResult): { text: string; ok: boolean } {
+  if (!res.ok) return { text: `canvasapp giả lập không tạo job: ${res.detail}`, ok: false }
+  return { text: `Đã tạo job #${res.number} trên canvasapp giả lập (như trên trang) — đã trừ ${res.cost} credit dev. Dùng “Nhập job” để đưa vào dự án.`, ok: true }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Model (video-profiles): what SanoVids knows (Trạng thái › Model)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The line under the model toggles: whether SanoVids has read /api/video-profiles of the simulated site, when, and
+ * what it does with it (providers limitsInfo / settingsLimits of 'dev').
+ */
+export function limitsStatusText(info: LimitsInfo, limits: Pick<SettingsLimits, 'source' | 'firm'>): string {
+  const last = info.lastAttempt
+  const lastNote =
+    last && info.source !== 'none' && last.result !== 'read'
+      ? last.result === 'login'
+        ? ` Lần đọc lại lúc ${logTime(last.at)}: chưa đăng nhập (401) — vẫn dùng lần đọc trước.`
+        : last.result === 'kept'
+          ? ` Lần đọc lại lúc ${logTime(last.at)} lỗi — vẫn dùng lần đọc trước.`
+          : ''
+      : ''
+  if (info.source === 'none') {
+    if (info.reading) return 'SanoVids đang đọc cấu hình model…'
+    const tried = last?.result === 'login' ? ` Lần thử lúc ${logTime(last.at)}: chưa đăng nhập (401).` : ''
+    return `SanoVids chưa đọc cấu hình model — đọc khi mở cấu hình video của một cảnh, hộp Chạy, hoặc trước lần gửi đầu (cần đăng nhập tài khoản giả lập).${tried}`
+  }
+  const at = info.at !== null ? logTime(info.at) : '—'
+  if (info.source === 'fallback') {
+    return `SanoVids không đọc được lúc ${at} — đang dùng cấu hình dự phòng như trang canvasapp (MiniMax-H3 khoá): chỉ cảnh báo, chưa khoá lựa chọn nào. Không tự đọc lại theo giờ: đọc lại khi mở cấu hình video của một cảnh / hộp Chạy (sau 1 phút), trước lần gửi tiếp theo (sau 1 phút nếu chính một lần gửi đọc hỏng) hoặc khi bấm “Đọc lại ngay”.${lastNote}`
+  }
+  if (!limits.firm) {
+    return `SanoVids đọc lúc ${at} — đã quá 10 phút: inspector chỉ còn cảnh báo, lần gửi sau đọc lại trước.${lastNote}`
+  }
+  return `SanoVids đọc lúc ${at} — inspector, nút Chạy và hộp Chạy khoá đúng những gì đang tắt ở đây lúc đó.${lastNote}`
+}
+
+/**
+ * Does what SanoVids knows (a 'server' read) differ from the toggles set here now? Then "Đọc lại ngay" shows the
+ * change (SanoVids re-reads by itself only after 10 minutes, like the real site's cache). Mirrors canvasapp's own
+ * rules: MiniMax-H3's narrowed lists are ignored (its built-in lists win), Seedance's are used as sent.
+ */
+export function limitsDifferFromConfig(limits: SettingsLimits, models: DevConfig['models']): boolean {
+  if (limits.source !== 'server') return false
+  for (const id of Object.keys(MODELS) as ModelId[]) {
+    const spec = MODELS[id]
+    const t = models[id]
+    if (!t) continue
+    const base = normalizeSettings({ model: id })
+    const refused = (field: LimitField, v: string | number) => fieldBlock(limits, base, field, v) !== null
+    const narrows = id !== 'minimax_h3'
+    if (refused('model', id) !== !t.can_create) return true
+    for (const m of spec.modes) if (refused('mode', m) !== t.disabled_modes.includes(m)) return true
+    for (const d of spec.durations) if (refused('duration', d) !== (narrows && (t.off_durations ?? []).includes(d))) return true
+    for (const r of spec.resolutions) if (refused('resolution', r) !== (narrows && (t.off_resolutions ?? []).includes(r))) return true
+    for (const r of spec.ratios) if (refused('ratio', r) !== (narrows && (t.off_ratios ?? []).includes(r))) return true
+  }
+  return false
 }

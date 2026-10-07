@@ -5,16 +5,18 @@ import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, Penci
 import { memo, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
-import { settingsLabel } from '../../core/models'
 import type { JobStatus, Take } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
 import { usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { rerunTitle, useRuns } from '../../store/runs'
+import { transferLabel, transferPercent, useTakeTransfers } from '../../store/takeTransfers'
+import { useTakeWaits, waitLabel, waitText } from '../../store/takeWaits'
 import { useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { importedChipTitle, takeSettingsText } from '../runs/importedTake'
 import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { TakePlayer } from './TakePlayer'
@@ -32,9 +34,10 @@ function openTake(takeId: string) {
 }
 
 /**
- * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video — the
- * node's trash button already needed a second click (TakeDeleteButton), like the viewer's. deleteTakes also removes
- * its media blobs, drops it from the selection and says so in a toast.
+ * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video, or when its
+ * paid video is still downloading (like "Huỷ") — the node's trash button already needed a second click
+ * (TakeDeleteButton), like the viewer's. deleteTakes also removes its media blobs, drops it from the selection and says
+ * so in a toast.
  */
 export function deleteTake(takeId: string) {
   deleteTakes([takeId], { confirm: 'usedOnly' })
@@ -193,7 +196,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
         <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
           {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster is-empty" />}
           {videoUrl && <TakePlayer takeId={id} url={videoUrl} />}
-          <TakeStatusOverlay status={take.status} progress={take.progress} error={take.error} />
+          <TakeStatusOverlay takeId={id} status={take.status} progress={take.progress} error={take.error} />
 
           <span className="cv-take-code">{code}</span>
           {provider !== 'mock' && !far && (
@@ -253,14 +256,19 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           <div className="cv-take-foot">
             <span
               className={`cv-take-settings${take.fileName ? ' is-name' : ''}`}
-              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${settingsLabel(take.settings)}` : settingsLabel(take.settings)}\nBấm đúp để đổi tên file video`}
+              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${takeSettingsText(take)}` : takeSettingsText(take)}\nBấm đúp để đổi tên file video`}
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 setRenaming(true)
               }}
             >
-              {take.fileName ?? settingsLabel(take.settings)}
+              {take.fileName ?? takeSettingsText(take)}
             </span>
+            {take.imported && (
+              <span className="cv-take-imported" title={importedChipTitle(take)}>
+                nhập
+              </span>
+            )}
             {order === undefined && (
               <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
                 cảnh đã xoá
@@ -289,7 +297,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
               </button>
               <button
                 className="cv-take-btn"
-                title={`Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`}
+                title={rerunTitle(take, `Chạy lại ${order ? sceneCode(order) : 'cảnh'} (tạo take mới)`)}
                 aria-label="Chạy lại"
                 disabled={order === undefined}
                 onClick={(e) => {
@@ -360,21 +368,16 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
         <span>{saving ? 'Đang lưu…' : askWhere ? 'Tải video…' : 'Tải video'}</span>
       </button>
     )
-  } else if (take.status === 'processing' || take.status === 'queued') {
-    const processing = take.status === 'processing'
-    button = (
-      <button className="cv-take-main is-busy" disabled aria-label={processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}>
-        {processing && <i className="cv-take-main-fill" style={{ width: `${Math.max(3, take.progress)}%` }} />}
-        {processing ? <LoaderCircle size={14} className="cv-spin" /> : <Clock size={14} />}
-        <span>{processing ? `Đang tạo ${take.progress}%` : 'Đang chờ'}</span>
-      </button>
-    )
+  } else if (take.status === 'processing') {
+    button = <TakeBusyButton takeId={take.id} progress={take.progress} />
+  } else if (take.status === 'queued') {
+    button = <TakeQueuedButton takeId={take.id} />
   } else {
     button = (
       <button
         className="cv-take-main is-retry"
         disabled={order === undefined}
-        title={order === undefined ? 'Cảnh của take này đã bị xoá' : `Chạy lại ${sceneCode(order)} (tạo take mới)`}
+        title={order === undefined ? 'Cảnh của take này đã bị xoá' : rerunTitle(take, `Chạy lại ${sceneCode(order)} (tạo take mới)`)}
         aria-label="Chạy lại"
         onClick={(e) => {
           e.stopPropagation()
@@ -393,20 +396,55 @@ function TakeMainButton({ take, code, order }: { take: Take; code: string; order
   )
 }
 
-function TakeStatusOverlay({ status, progress, error }: { status: string; progress: number; error: string | null }) {
+/** "Đang chờ" — or "Chờ tới 14:32" when its provider deferred it (store/takeWaits), the reason in the tooltip. */
+function TakeQueuedButton({ takeId }: { takeId: string }) {
+  const wait = useTakeWaits((s) => s.byTake[takeId])
+  const label = waitLabel(wait) ?? 'Đang chờ'
+  return (
+    <button className="cv-take-main is-busy" disabled aria-label={waitText(wait) ?? label} title={waitText(wait) ?? undefined}>
+      <Clock size={14} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+/** "Đang tạo 40%", then "Đang tải về 45%" (or "… 12,3 MB") while the finished video downloads. */
+function TakeBusyButton({ takeId, progress }: { takeId: string; progress: number }) {
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[takeId]))
+  const pct = useTakeTransfers((s) => transferPercent(s.byTake[takeId]))
+  const label = transfer ?? `Đang tạo ${progress}%`
+  return (
+    <button className="cv-take-main is-busy" disabled aria-label={label}>
+      <i className="cv-take-main-fill" style={{ width: `${Math.max(3, transfer ? (pct ?? progress) : progress)}%` }} />
+      <LoaderCircle size={14} className="cv-spin" />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function TakeTransferText({ takeId, progress }: { takeId: string; progress: number }) {
+  const transfer = useTakeTransfers((s) => transferLabel(s.byTake[takeId]))
+  return <span>{transfer ?? `${progress}%`}</span>
+}
+
+function TakeQueuedState({ takeId }: { takeId: string }) {
+  const wait = useTakeWaits((s) => s.byTake[takeId])
+  return (
+    <div className="cv-take-state" title={waitText(wait) ?? undefined}>
+      <Clock size={16} />
+      <span>{waitLabel(wait) ?? STATUS_LABEL.queued}</span>
+    </div>
+  )
+}
+
+function TakeStatusOverlay({ takeId, status, progress, error }: { takeId: string; status: string; progress: number; error: string | null }) {
   if (status === 'completed') return null
-  if (status === 'queued')
-    return (
-      <div className="cv-take-state">
-        <Clock size={16} />
-        <span>{STATUS_LABEL.queued}</span>
-      </div>
-    )
+  if (status === 'queued') return <TakeQueuedState takeId={takeId} />
   if (status === 'processing')
     return (
       <div className="cv-take-state">
         <LoaderCircle size={16} className="cv-spin" />
-        <span>{progress}%</span>
+        <TakeTransferText takeId={takeId} progress={progress} />
       </div>
     )
   if (status === 'failed')

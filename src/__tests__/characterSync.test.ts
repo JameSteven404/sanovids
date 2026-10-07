@@ -45,7 +45,7 @@ function enqueueSnapshot(p: Project, s: Scene) {
 }
 
 const request = (prompt: string, images: JobRequest['images']): JobRequest => ({
-  key: 't1', takeId: 't1', sceneId: 's1', sceneCode: 'S01', takeNumber: 1, title: '', color: '#fff',
+  key: 't1', takeId: 't1', sceneId: 's1', sanovidsProjectId: 'p', sceneCode: 'S01', takeNumber: 1, title: '', color: '#fff',
   model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9',
   prompt, rawPrompt: prompt, images, videos: [], firstFrame: null, lastFrame: null, startedAt: 0,
 })

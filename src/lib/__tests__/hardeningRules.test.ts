@@ -561,6 +561,68 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(mainSource).toMatch(/contextIsolation: true,\s+nodeIntegration: false,\s+sandbox: true,/)
   })
 
+  it('video downloads: three IPC calls behind guard (fromApp), owner-keyed, closed on navigation / crash / close / logout', () => {
+    for (const ch of ['canvasapp:downloadOpen', 'canvasapp:downloadRead', 'canvasapp:downloadClose']) {
+      expect(count(`'${ch}'`), ch).toBe(1)
+      const at = idx(`'${ch}'`)
+      expect(mainSource.slice(at - 30, at)).toMatch(/ipcMain\.handle\(\s*$/)
+      expect(mainSource.slice(at, at + 60)).toMatch(/^'[\w:]+',\s+guard\(\(event, args\) =>/)
+    }
+    expect(mainSource).toContain('return canvasappDownloads.open(event.sender.id, args)')
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))")
+    expect(mainSource).toContain("ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))")
+    // the page that opened a download is watched before it opens: reload / navigation, crash, close end its downloads
+    const open = idx("'canvasapp:downloadOpen'")
+    expect(mainSource.slice(open, open + 200).indexOf('watchDownloadOwner(event.sender)')).toBeGreaterThan(-1)
+    const [ws, we] = blockAt(idx('function watchDownloadOwner(wc)'))
+    const watch = mainSource.slice(ws, we)
+    expect(watch).toContain("wc.once('destroyed', closeAll)")
+    expect(watch).toContain("wc.on('render-process-gone', closeAll)")
+    expect(watch).toContain("wc.on('did-start-navigation'")
+    expect(watch).toContain("typeof details.isMainFrame === 'boolean' ? details.isMainFrame")
+    expect(watch).toContain("typeof details.isSameDocument === 'boolean' ? details.isSameDocument")
+    expect(watch).toContain('if (main && !sameDocument) closeAll()')
+    // logout ends every download first
+    const [ls, le] = blockAt(idx('async function canvasappLogout()'))
+    expect(mainSource.slice(ls, le).trim().split('\n')[1].trim()).toBe('canvasappDownloads.closeAll()')
+    // the sessions use the allowlist, the 'download' lane and the canvasapp partition (no other session, no URL from the page)
+    const [cs, ce] = blockAt(idx('const canvasappDownloads = createDownloadSessions('))
+    const wiring = mainSource.slice(cs, ce)
+    expect(wiring).toContain("withSlot: (fn, signal) => withCanvasappSlot('download', fn, signal)")
+    expect(wiring).toContain("const m = matchCanvasappRoute('GET', rawPath)")
+    // the GET goes through <canvasapp-net-get> (net.request, redirect 'manual', https only), never session.fetch
+    // (which follows https → http and cannot even tell where it ended)
+    expect(wiring).toContain('fetch: (url, init) => canvasappNetGet({ request: (opts) => net.request(opts), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),')
+    expect(wiring).not.toContain('.fetch(')
+    const netGet = /\/\/ <canvasapp-net-get>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-net-get>/.exec(mainSource)![1]
+    expect(netGet).toContain("credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true")
+    expect(netGet).toContain("new URL(String(url)).protocol === 'https:'")
+    // the pure blocks: no require, no Buffer, no Electron
+    for (const name of ['canvasapp-downloads', 'canvasapp-net-get']) {
+      const block = new RegExp(`// <${name}>[^\\n]*\\n([\\s\\S]*?)// </${name}>`).exec(mainSource)![1]
+      const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      expect(code, name).not.toMatch(/\brequire\s*\(|\bBuffer\b|\bsession\.|\bnet\.|\bipcMain\b|\bwebContents\b|\bprocess\./)
+    }
+    // canvasapp:request never carries a video (only the pieces above do): no binary branch, no 'download' lane there
+    const [rs, re] = blockAt(idx('async function canvasappRequest(req)'))
+    const request = mainSource.slice(rs, re)
+    expect(request).toContain('const match = matchCanvasappRequest(method, req.path)')
+    expect(request).not.toMatch(/route\.binary|arrayBuffer|'download'/)
+    // the API lane (X-CSRF-Token, prompts, upload ids, top-up orders) never follows a redirect — https → http included:
+    // session.fetch would, and could not even say where it ended. Nothing in main follows one blindly.
+    expect(request).toContain("credentials: 'include',\n        redirect: 'error',")
+    expect(mainSource).not.toMatch(/redirect:\s*'follow'/)
+  })
+
+  it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {
+    const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
+    expect(block).not.toBeNull()
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['status', 'login', 'logout', 'request', 'downloadOpen', 'downloadRead', 'downloadClose', 'checkout'])
+    expect(block![1]).toContain("ipcRenderer.invoke('canvasapp:downloadOpen', {\n        id: str(a && a.id),\n        path: str(a && a.path),\n        from: a && Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0,\n      })")
+    expect(block![1]).toContain("downloadRead: (a) => ipcRenderer.invoke('canvasapp:downloadRead', { id: str(a && a.id) })")
+    expect(block![1]).toContain("downloadClose: (a) => ipcRenderer.invoke('canvasapp:downloadClose', { id: str(a && a.id) })")
+  })
+
   it('hardening-rules.cjs requires nothing', () => {
     expect(hardeningSource).not.toMatch(/\brequire\s*\(/)
   })

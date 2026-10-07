@@ -20,11 +20,16 @@ import {
   MAX_BRIDGE_NODES,
   MAX_BRIDGE_PROMPT_CHARS,
   ORDER_BASE,
+  parseSceneNodeKey,
   planBridgeCanvas,
   PROFILE_FALLBACKS,
+  profileIssues,
+  profilesSignature,
   profileSpecOf,
   promptLimitOf,
   ratioFromDimensions,
+  sceneNodeId,
+  sceneNodeKey,
   toVideoJobBody,
   transformFrameRatio,
   uuidFromKey,
@@ -34,11 +39,13 @@ import {
   type BridgeEntry,
 } from '../canvasapp/mapping'
 import type { JobRequest } from '../types'
+import { canvasProblem } from '../dev/validate'
 
 const req = (over: Partial<JobRequest> = {}): JobRequest => ({
   key: 'take_1',
   takeId: 'take_1',
   sceneId: 'scene_a',
+  sanovidsProjectId: 'prj_a',
   sceneCode: 'S01',
   takeNumber: 1,
   title: 'Mở đầu',
@@ -75,6 +82,9 @@ const h3Transform = (over: Partial<JobRequest> = {}) =>
 
 const uploads: Record<string, string> = { img_a: 'up_a', img_b: 'up_b', img_f: 'up_f', img_l: 'up_l' }
 const uploadIdFor = (id: string) => uploads[id]
+/** Node key / canvas node id of a scene of req()'s project ('prj_a'). */
+const key = (sceneId: string) => sceneNodeKey('prj_a', sceneId)
+const node = (sceneId: string) => sceneNodeId('prj_a', sceneId)
 
 // Key sets of canvasapp's own client (/static/canvas.js), in its order.
 const JOB_BASE_KEYS = ['project_id', 'model_profile', 'canvas_node_id', 'prompt', 'mode', 'duration', 'resolution', 'generate_audio']
@@ -135,7 +145,8 @@ describe('canvasapp mapping: ids', () => {
     expect(new Set(many).size).toBe(many.length)
   })
 
-  it('canvas node ids: a UUID per scene, stable; image node ids per (upload, occurrence); request ids per take', () => {
+  it('canvas node ids: a UUID per node key, stable; image node ids per (upload, occurrence); request ids per take', () => {
+    // pinned: nodes named by older builds (legacy key = the bare scene id) must keep their id — running jobs sit on them
     expect(canvasNodeId('scene_a')).toBe('9a920dad-11ec-4ca1-a90e-f2aa21a28ab5')
     expect(canvasNodeId('scene_a')).toBe(canvasNodeId('scene_a'))
     expect(canvasNodeId('scene_b')).not.toBe(canvasNodeId('scene_a'))
@@ -149,6 +160,33 @@ describe('canvasapp mapping: ids', () => {
     // separate namespaces: a scene and a take with the same id never share a UUID
     expect(clientRequestIdFor('x')).not.toBe(canvasNodeId('x'))
   })
+
+  it('node keys: one video node per scene OF A PROJECT (injective, parseable); no project → the legacy bare scene id', () => {
+    expect(sceneNodeKey('prj_a', 'scn_1')).toBe('node:5:prj_a:scn_1')
+    expect(sceneNodeId('prj_a', 'scn_1')).toBe(canvasNodeId('node:5:prj_a:scn_1'))
+    expect(sceneNodeId('prj_a', 'scn_1')).toMatch(UUID_RE)
+    // a duplicated / re-imported project keeps its scene ids: its own nodes all the same
+    expect(sceneNodeId('prj_a', 'scn_1')).not.toBe(sceneNodeId('prj_b', 'scn_1'))
+    expect(sceneNodeId('prj_a', 'scn_1')).not.toBe(sceneNodeId('prj_a', 'scn_2'))
+    // never the node an older build named by the scene id alone
+    expect(sceneNodeId('prj_a', 'scn_1')).not.toBe(canvasNodeId('scn_1'))
+    expect(sceneNodeKey('', 'scn_1')).toBe('scn_1')
+    // injective, whatever the ids contain (':' or '/scene:' in a project id cannot make two pairs meet)
+    const pairs: [string, string][] = [
+      ['a:x', 'c'],
+      ['a', 'x:c'],
+      ['a/scene:b', 'c'],
+      ['a', 'b/scene:c'],
+      ['1:a', 'b'],
+      ['1', 'a:b'],
+      ['prj_a', 'node:5:prj_a:s'],
+    ]
+    expect(new Set(pairs.map(([p, sc]) => sceneNodeKey(p, sc))).size).toBe(pairs.length)
+    for (const [projectId, sceneId] of pairs) expect(parseSceneNodeKey(sceneNodeKey(projectId, sceneId))).toEqual({ projectId, sceneId })
+    // generated scene ids are never read as a project's key
+    for (const legacy of ['scn_0b1c2d3e-aaaa-4bbb-8ccc-123456789abc', 's1', 'scene_a', '', 'node:', 'node:0::s', 'node:01:a:b', 'node:5:prj_a', 'node:5:prj_ab'])
+      expect(parseSceneNodeKey(legacy)).toBeNull()
+  })
 })
 
 describe('canvasapp mapping: job body (runVideoNode shape)', () => {
@@ -157,7 +195,7 @@ describe('canvasapp mapping: job body (runVideoNode shape)', () => {
     expect(body).toEqual({
       project_id: 'proj1',
       model_profile: 'seedance_2_5',
-      canvas_node_id: canvasNodeId('scene_a'),
+      canvas_node_id: node('scene_a'),
       prompt: '@image_1 walks to @image_2',
       mode: 't2v',
       duration: 15,
@@ -173,6 +211,18 @@ describe('canvasapp mapping: job body (runVideoNode shape)', () => {
     // same take → same key (a retry never looks like a new request)
     expect(toVideoJobBody(req(), { projectId: 'proj1', uploadIdFor })).toEqual(body)
     expect(toVideoJobBody(req({ key: 'take_2', takeId: 'take_2' }), { projectId: 'proj1', uploadIdFor }).client_request_id).not.toBe(body.client_request_id)
+  })
+
+  it('canvas_node_id: the take’s project + scene node — or the node key the adapter names (a legacy re-send)', () => {
+    const body = (r: JobRequest, nodeKey?: string) => toVideoJobBody(r, { projectId: 'proj1', uploadIdFor, ...(nodeKey ? { nodeKey } : {}) }).canvas_node_id
+    expect(body(req())).toBe(sceneNodeId('prj_a', 'scene_a'))
+    expect(body(req({ sanovidsProjectId: 'prj_b' }))).toBe(sceneNodeId('prj_b', 'scene_a'))
+    expect(body(req({ sanovidsProjectId: 'prj_b' }))).not.toBe(body(req()))
+    expect(body(req(), 'scene_a')).toBe(canvasNodeId('scene_a'))
+    // the bridge entry stands for the same node
+    expect(entryFromRequest(req(), uploadIdFor, 1).sceneId).toBe(key('scene_a'))
+    expect(entryFromRequest(req(), uploadIdFor, 1, undefined, 'scene_a').sceneId).toBe('scene_a')
+    expect(videoNodes(bridgeCanvas([entryFromRequest(req(), uploadIdFor, 1)]))[0].id).toBe(body(req()))
   })
 
   it('the first real test (Seedance 2.5 · t2v · 30 s · 480p · 16:9 · one reference): body and canvas in the client’s shape', () => {
@@ -313,6 +363,75 @@ describe('canvasapp mapping: validation', () => {
   })
 })
 
+describe('canvasapp mapping: profileIssues — the ONE rule of the submit, the inspector and the run check', () => {
+  const h3 = (over: Record<string, unknown> = {}, options: Record<string, unknown> = {}) => ({
+    model_profile: 'minimax_h3',
+    display_name: 'MiniMax-H3',
+    enabled: true,
+    can_create: true,
+    ...over,
+    options: { disabled_modes: [], ...options },
+  })
+  const sd = (options: Record<string, unknown> = {}, over: Record<string, unknown> = {}) => ({ model_profile: 'seedance_2_5', display_name: 'Seedance 2.5', can_create: true, ...over, options })
+  const H3_I2V = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
+  const SD = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' } as const
+
+  it('tags each refusal with its field, in the submit order', () => {
+    expect(profileIssues(H3_I2V, [h3()])).toEqual([])
+    expect(profileIssues(H3_I2V, [h3({ can_create: false })])).toEqual([{ field: 'model', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' }])
+    expect(profileIssues(H3_I2V, [h3({}, { disabled_modes: ['i2v'] })])).toEqual([{ field: 'mode', reason: 'Chế độ Ảnh → Video hiện tạm ngừng trên canvasapp.' }])
+    expect(profileIssues(SD, [sd({ modes: ['i2v'] })]).map((i) => i.field)).toEqual(['mode'])
+    const all = profileIssues({ ...SD, ratio: '9:16' }, [sd({ durations: [5], resolutions: ['720P'], aspect_ratios: ['16:9'] }, { can_create: false })])
+    expect(all.map((i) => i.field)).toEqual(['model', 'duration', 'resolution', 'ratio'])
+    expect(all.map((i) => i.reason)).toEqual([
+      'Seedance 2.5 hiện không khả dụng trên canvasapp.',
+      'canvasapp không có thời lượng 15s cho Seedance 2.5.',
+      'canvasapp không có độ phân giải 1080p cho Seedance 2.5.',
+      'canvasapp không có tỉ lệ khung 9:16 cho Seedance 2.5.',
+    ])
+    // resolutions in any case; H3 transform: no ratio check (it comes from the frames)
+    expect(profileIssues({ ...SD, resolution: '720p', duration: 5, ratio: '16:9' }, [sd({ durations: [5], resolutions: ['720P'], aspect_ratios: ['16:9'] })])).toEqual([])
+    expect(profileIssues({ ...H3_I2V, mode: 'transform', ratio: '21:9' }, [h3({}, { aspect_ratios: ['16:9'] })])).toEqual([])
+    expect(profileIssues({ ...H3_I2V, ratio: '21:9' }, [h3()]).map((i) => i.field)).toEqual(['ratio'])
+    // unreadable ([]) → the client's fallbacks: H3 locked, transform off
+    expect(profileIssues({ ...H3_I2V, mode: 'transform' }, []).map((i) => i.field)).toEqual(['model', 'mode'])
+    expect(profileIssues(SD, [])).toEqual([])
+  })
+
+  it.each([
+    ['Seedance as read', req(), [sd({ durations: [5, 10], resolutions: ['720p'], aspect_ratios: ['16:9'] })]],
+    ['Seedance locked', req({ duration: 30 }), [sd({}, { can_create: false })]],
+    ['H3 missing → fallback', req({ model: 'minimax_h3', images: [] }), [sd()]],
+    ['H3 i2v off', req({ model: 'minimax_h3', mode: 'i2v', resolution: '768p', duration: 5 }), [h3({}, { disabled_modes: ['i2v'] })]],
+    ['H3 transform', h3Transform({ duration: 5, ratio: '21:9' }), [h3({ can_create: false }, { disabled_modes: ['transform'] })]],
+    ['unreadable', h3Transform(), []],
+    ['malformed', req({ resolution: '480p' }), [null, sd({ durations: 'all', modes: 5, resolutions: ['1080p', 7] })] as never],
+  ])('parity with validateRequest: %s', (_name, r, profiles) => {
+    // the profile part of the submit check is exactly profileIssues' texts, in its order
+    expect(validateRequest(r, profiles)).toEqual([...validateRequest(r, null), ...profileIssues(r, profiles).map((i) => i.reason)])
+  })
+
+  it('names a profile by its display_name, clamped (server text in the UI), else the built-in name', () => {
+    const long = 'Mô hình '.repeat(30)
+    const [issue] = profileIssues(SD, [sd({}, { can_create: false, display_name: long })])
+    expect(issue.reason.length).toBeLessThan(80)
+    expect(issue.reason).toMatch(/^Mô hình .*… hiện không khả dụng trên canvasapp\.$/)
+    expect(profileIssues(SD, [sd({}, { can_create: false, display_name: 42 })])[0].reason).toBe('Seedance 2.5 hiện không khả dụng trên canvasapp.')
+    expect(profileIssues(SD, [sd({}, { can_create: false, display_name: '   ' })])[0].reason).toBe('Seedance 2.5 hiện không khả dụng trên canvasapp.')
+  })
+
+  it('profilesSignature: the same refusals → the same string; a change of what is refused → another', () => {
+    const a = [sd({ durations: [5, 10] }), h3()]
+    const b = JSON.parse(JSON.stringify(a)) as typeof a
+    expect(profilesSignature(a, true)).toBe(profilesSignature(b, true))
+    // pricing / visible / enabled do not change what is refused
+    expect(profilesSignature([{ ...a[0], visible: false, options: { ...a[0].options, pricing: { x: 1 } } }, a[1]], true)).toBe(profilesSignature(a, true))
+    expect(profilesSignature([a[0], h3({ can_create: false })], true)).not.toBe(profilesSignature(a, true))
+    expect(profilesSignature([sd({ durations: [5] }), a[1]], true)).not.toBe(profilesSignature(a, true))
+    expect(profilesSignature([], false)).not.toBe(profilesSignature([], true))
+  })
+})
+
 describe('canvasapp mapping: transform frame ratio (ratioFromDimensions / transformInputState)', () => {
   it('nearest supported ratio within 2 %, else null', () => {
     expect(ratioFromDimensions(1920, 1080)).toBe('16:9')
@@ -369,7 +488,7 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
   it('one video node per scene, image nodes wired 1..N in @image order, no key the client would not send', () => {
     const canvas = bridgeCanvas([entryFromRequest(req(), uploadIdFor, 10)])
     expectClientCanvasShape(canvas)
-    const vid = canvasNodeId('scene_a')
+    const vid = node('scene_a')
     expect(videoNodes(canvas).map((n) => n.id)).toEqual([vid])
     const video = videoNodes(canvas)[0]
     expect(video.data).toEqual({ model_profile: 'seedance_2_5', duration: 15, resolution: '1080p', aspect_ratio: '16:9', mode: 't2v', prompt: '@image_1 walks to @image_2' })
@@ -433,8 +552,8 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     const canvas = bridgeCanvas(Array.from({ length: 45 }, (_, i) => entry(i + 1)))
     expectClientCanvasShape(canvas)
     expect(canvas.nodes).toHaveLength(MAX_BRIDGE_NODES)
-    expect(videoNodes(canvas)[0].id).toBe(canvasNodeId('s45'))
-    expect(videoNodes(canvas).at(-1)!.id).toBe(canvasNodeId('s6'))
+    expect(videoNodes(canvas)[0].id).toBe(node('s45'))
+    expect(videoNodes(canvas).at(-1)!.id).toBe(node('s6'))
   })
 
   /** Image uploads on a canvas, counted like the client's imageIds() (every image node's upload_ids, duplicates too). */
@@ -449,17 +568,17 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     expectClientCanvasShape(canvas)
     expect(MAX_BRIDGE_IMAGES).toBe(30)
     expect(imageUploads(canvas)).toHaveLength(28) // s8…s2; s1 would make 32
-    expect(videoNodes(canvas).map((n) => n.id)).toEqual(['s8', 's7', 's6', 's5', 's4', 's3', 's2'].map(canvasNodeId))
+    expect(videoNodes(canvas).map((n) => n.id)).toEqual(['s8', 's7', 's6', 's5', 's4', 's3', 's2'].map(node))
     // an older scene that still fits is kept (only the one that does not fit is left out)
     const small: BridgeEntry = { ...entry(0), uploadIds: ['u0_0', 'u0_1'] }
     const withSmall = bridgeCanvas([...Array.from({ length: 8 }, (_, i) => entry(i + 1)), small])
     expect(imageUploads(withSmall)).toHaveLength(30)
-    expect(videoNodes(withSmall).map((n) => n.id)).toContain(canvasNodeId('s0'))
+    expect(videoNodes(withSmall).map((n) => n.id)).toContain(node('s0'))
     // 30 references in the newest scene: kept alone with every reference
     const full: BridgeEntry = { ...entry(99), uploadIds: Array.from({ length: 30 }, (_, k) => `f${k}`) }
     const alone = bridgeCanvas([entry(1), full])
     expect(imageUploads(alone)).toHaveLength(30)
-    expect(videoNodes(alone).map((n) => n.id)).toEqual([canvasNodeId('s99')])
+    expect(videoNodes(alone).map((n) => n.id)).toEqual([node('s99')])
   })
 
   it('the scene being submitted is always first and kept, even with an equal or older usedAt (clock moved back)', () => {
@@ -469,10 +588,10 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     })
     // 8 newer scenes × 4 pictures fill the canvas; s0 (submitted now, saved with an older clock) used to be left out
     const entries = [...Array.from({ length: 8 }, (_, i) => entry(i + 1, 100 + i)), entry(0, 5)]
-    expect(videoNodes(bridgeCanvas(entries)).map((n) => n.id)).not.toContain(canvasNodeId('s0'))
-    const plan = planBridgeCanvas(entries, { current: 's0' })
-    expect(videoNodes(plan.canvas)[0].id).toBe(canvasNodeId('s0'))
-    expect(plan.dropped).toEqual(['s2', 's1'])
+    expect(videoNodes(bridgeCanvas(entries)).map((n) => n.id)).not.toContain(node('s0'))
+    const plan = planBridgeCanvas(entries, { current: key('s0') })
+    expect(videoNodes(plan.canvas)[0].id).toBe(node('s0'))
+    expect(plan.dropped).toEqual(['s2', 's1'].map(key))
     expect(plan.missing).toEqual([])
     expectClientCanvasShape(plan.canvas)
   })
@@ -484,13 +603,13 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     })
     const entries = Array.from({ length: 8 }, (_, i) => entry(i + 1, 100 + i))
     // s1 and s2 (the oldest) still run: s3, the oldest scene that does not run, is left out instead of s1
-    const plan = planBridgeCanvas(entries, { current: 's8', keep: new Set(['s1', 's2']) })
-    expect(videoNodes(plan.canvas).map((n) => n.id).slice(0, 3)).toEqual(['s8', 's2', 's1'].map(canvasNodeId))
-    expect(plan.dropped).toEqual(['s3'])
+    const plan = planBridgeCanvas(entries, { current: key('s8'), keep: new Set([key('s1'), key('s2')]) })
+    expect(videoNodes(plan.canvas).map((n) => n.id).slice(0, 3)).toEqual(['s8', 's2', 's1'].map(node))
+    expect(plan.dropped).toEqual([key('s3')])
     expect(plan.missing).toEqual([])
     // every scene runs: the 8th does not fit next to them → reported, never silently left out
-    const full = planBridgeCanvas(entries, { current: 's8', keep: new Set(entries.map((e) => e.sceneId)) })
-    expect(full.missing).toEqual(['s1'])
+    const full = planBridgeCanvas(entries, { current: key('s8'), keep: new Set(entries.map((e) => e.sceneId)) })
+    expect(full.missing).toEqual([key('s1')])
     expect(full.dropped).toEqual([])
   })
 
@@ -524,10 +643,26 @@ describe('canvasapp mapping: bridge canvas (canvasPayload shape)', () => {
     expect(imageNodes(sameFrames).map((n) => n.data.upload_ids)).toEqual([['up_f'], ['up_f']])
   })
 
+  it('the same scene in two projects (Nhân bản dự án), or with a legacy node next to the new one: two video nodes, shared image nodes', () => {
+    const a = entryFromRequest(req({ prompt: '@image_1 walks to @image_2' }), uploadIdFor, 2)
+    const b = entryFromRequest(req({ sanovidsProjectId: 'prj_b', prompt: '@image_1 runs from @image_2' }), uploadIdFor, 1)
+    const legacy = entryFromRequest(req({ prompt: 'older build' }), uploadIdFor, 0, undefined, 'scene_a')
+    const canvas = bridgeCanvas([a, b, legacy])
+    expectClientCanvasShape(canvas)
+    expect(canvasProblem(canvas)).toBeNull() // the strict fakes' own check (no duplicate node id…)
+    expect(videoNodes(canvas).map((n) => [n.id, n.data.prompt])).toEqual([
+      [sceneNodeId('prj_a', 'scene_a'), '@image_1 walks to @image_2'],
+      [sceneNodeId('prj_b', 'scene_a'), '@image_1 runs from @image_2'],
+      [canvasNodeId('scene_a'), 'older build'],
+    ])
+    expect(imageNodes(canvas).map((n) => n.id)).toEqual([imageNodeId('up_a'), imageNodeId('up_b')]) // no extra picture budget
+    for (const v of videoNodes(canvas)) expect(canvas.connections.filter((c) => c.to === v.id)).toHaveLength(2)
+  })
+
   it('keeps the prompts of one canvas within budget (newest entry always kept)', () => {
     const long = (i: number, usedAt: number): BridgeEntry => ({ ...entryFromRequest(req({ sceneId: 'L' + i, images: [] }), uploadIdFor, usedAt), prompt: 'x'.repeat(150_000) })
     const canvas = bridgeCanvas([long(1, 1), long(2, 2), long(3, 3), long(4, 4)])
-    expect(videoNodes(canvas).map((n) => n.id)).toEqual(['L4', 'L3'].map(canvasNodeId))
+    expect(videoNodes(canvas).map((n) => n.id)).toEqual(['L4', 'L3'].map(node))
     expect(videoNodes(canvas).reduce((s, n) => s + n.data.prompt.length, 0)).toBeLessThanOrEqual(MAX_BRIDGE_PROMPT_CHARS)
     const huge = bridgeCanvas([{ ...long(9, 9), prompt: 'y'.repeat(MAX_BRIDGE_PROMPT_CHARS + 1) }])
     expect(videoNodes(huge)).toHaveLength(1)
@@ -564,5 +699,17 @@ describe('canvasapp mapping: persisted bridge entries', () => {
     expect(bridgeEntriesFrom(null)).toEqual({})
     expect(bridgeEntriesFrom([v020])).toEqual({})
     expect(bridgeEntriesFrom('x')).toEqual({})
+  })
+
+  it('entries keyed by node key and legacy entries (bare scene id) read back side by side — and the old rule keeps both', () => {
+    const fresh = entryFromRequest(req(), uploadIdFor, 2)
+    const legacy = entryFromRequest(req(), uploadIdFor, 1, undefined, 'scene_a')
+    const stored = JSON.parse(JSON.stringify({ [fresh.sceneId]: fresh, [legacy.sceneId]: legacy }))
+    const out = bridgeEntriesFrom(stored)
+    expect(Object.keys(out)).toEqual([key('scene_a'), 'scene_a'])
+    expect(out).toEqual({ [key('scene_a')]: fresh, scene_a: legacy })
+    // what an older build checks (key === sceneId) and derives (canvasNodeId(sceneId)) still names the same nodes
+    for (const [k, e] of Object.entries(stored) as [string, BridgeEntry][]) expect(e.sceneId).toBe(k)
+    expect(videoNodes(bridgeCanvas(Object.values(out))).map((n) => n.id)).toEqual([node('scene_a'), canvasNodeId('scene_a')])
   })
 })

@@ -1,15 +1,16 @@
 // PURE mapping between SanoVids and canvasapp.io.vn (no I/O). Unit-tested in providers/__tests__/canvasapp-mapping.test.ts.
 //
 //   SanoVids JobRequest ──toVideoJobBody──▶ POST /api/video-jobs body
-//   SanoVids scenes     ──bridgeCanvas────▶ PUT /api/projects/{id}/canvas (one video node per scene, so canvas_node_id exists)
+//   SanoVids scenes     ──bridgeCanvas────▶ PUT /api/projects/{id}/canvas (one video node per scene of a project —
+//                                           sceneNodeKey — so canvas_node_id exists)
 //   canvasapp job       ──mapJobStatus────▶ provider status (queued/processing/completed/failed/cancelled)
 //
 // Every request shape mirrors canvasapp's own client (/static/canvas.js: canvasPayload(), runVideoNode(),
 // normalizeConnections(), createVideoNode(), newId()) key for key — the server refuses anything else
 // ("Invalid canvas payload"). See docs/canvasapp-api-notes.md.
 import { modeLabel } from '../../core/models'
-import type { Mode, ModelId } from '../../core/types'
-import type { JobRequest, RemoteStatus } from '../types'
+import type { Mode, ModelId, VideoSettings } from '../../core/types'
+import type { JobRequest, RemoteStatus, SettingsIssue } from '../types'
 import type { CanvasConnection, CanvasImageNode, CanvasJob, CanvasNode, CanvasPayload, CanvasVideoNode, VideoJobBody, VideoProfile } from './api'
 
 export const BRIDGE_PROJECT_NAME = 'SanoVids bridge'
@@ -76,6 +77,16 @@ export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID
  * server sees the same format; ours are stable so a scene keeps its node and a retried take keeps its key.
  */
 export function uuidFromKey(text: string): string {
+  // (pure: computed once per text — node ids and request keys are asked for on every engine tick)
+  const hit = uuidMemo.get(text)
+  if (hit !== undefined) return hit
+  const id = uuidOf(text)
+  if (uuidMemo.size >= 4096) uuidMemo.clear()
+  uuidMemo.set(text, id)
+  return id
+}
+const uuidMemo = new Map<string, string>()
+function uuidOf(text: string): string {
   let h1 = 1779033703
   let h2 = 3144134277
   let h3 = 1013904242
@@ -100,10 +111,40 @@ export function uuidFromKey(text: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
-/** canvas_node_id of the bridge video node for a SanoVids scene: a UUID, stable per scene. */
-export function canvasNodeId(sceneId: string): string {
-  return uuidFromKey(`sanovids:video-node:${sceneId}`)
+const NODE_KEY_PREFIX = 'node:'
+
+/**
+ * Key of the bridge video node of one scene of one SanoVids project (`projectId` = the SanoVids project, never
+ * canvasapp's bridge project_id): `node:<length of projectId>:<projectId>:<sceneId>` — injective, and never a scene id
+ * SanoVids generates (core/ids: "scn_<uuid>"). Projects sharing scene ids (Nhân bản dự án, a file imported twice) get
+ * different nodes. It is what the bridge entries are keyed by (BridgeEntry.sceneId) and what canvasNodeId hashes.
+ * An empty project id gives the bare scene id: the LEGACY key, the one builds before per-project nodes used for every
+ * project (jobs they sent may still run on canvasNodeId(sceneId)).
+ */
+export function sceneNodeKey(projectId: string, sceneId: string): string {
+  return projectId ? `${NODE_KEY_PREFIX}${projectId.length}:${projectId}:${sceneId}` : sceneId
 }
+
+/** The project + scene of a sceneNodeKey; null for a legacy key (a bare scene id) or anything else. */
+export function parseSceneNodeKey(key: string): { projectId: string; sceneId: string } | null {
+  const m = /^node:([1-9]\d{0,5}):/.exec(key)
+  if (!m) return null
+  const len = Number(m[1])
+  const rest = key.slice(m[0].length)
+  if (rest.length < len + 2 || rest[len] !== ':') return null
+  return { projectId: rest.slice(0, len), sceneId: rest.slice(len + 1) }
+}
+
+/**
+ * canvas_node_id of the bridge video node with key `nodeKey` (sceneNodeKey, or a legacy bare scene id): a UUID, stable
+ * per key. The formula never changes: node ids recorded by older builds (ledger, running jobs) must stay valid.
+ */
+export function canvasNodeId(nodeKey: string): string {
+  return uuidFromKey(`sanovids:video-node:${nodeKey}`)
+}
+
+/** canvas_node_id of the video node of scene `sceneId` of SanoVids project `projectId`. */
+export const sceneNodeId = (projectId: string, sceneId: string): string => canvasNodeId(sceneNodeKey(projectId, sceneId))
 
 /**
  * Id of a bridge image node: a UUID, stable per (upload, occurrence). One image node per upload feeds every video
@@ -226,6 +267,61 @@ export function profileSpecOf(model: ModelId, profiles: readonly VideoProfile[])
 
 const listOf = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
 
+/** A profile name shown in a message: canvasapp's display_name (trimmed, at most this long), else the built-in one. */
+const MAX_PROFILE_NAME = 40
+
+function profileName(model: ModelId, profile: VideoProfile): string {
+  const raw = typeof profile.display_name === 'string' ? profile.display_name.trim() : ''
+  if (raw) return raw.length > MAX_PROFILE_NAME ? `${raw.slice(0, MAX_PROFILE_NAME - 1)}…` : raw
+  return PROFILE_FALLBACKS[model]?.display_name || model
+}
+
+/**
+ * What canvasapp's page would refuse in these settings, per /api/video-profiles (`profiles` as read; [] = unreadable →
+ * its fallbacks), each tagged with its field — in this order, with the texts of the submit refusal (validateRequest):
+ * can_create → 'model'; a mode not offered or in disabled_modes → 'mode'; durations → 'duration'; resolutions (any
+ * case) → 'resolution'; aspect_ratios → 'ratio' (not for H3 transform, whose ratio comes from its frames).
+ * ONE rule for the submit, the inspector and the run check. Pure; defensive about malformed lists.
+ */
+export function profileIssues(s: Pick<VideoSettings, 'model' | 'mode' | 'duration' | 'resolution' | 'ratio'>, profiles: readonly VideoProfile[]): SettingsIssue[] {
+  const out: SettingsIssue[] = []
+  const profile = profileSpecOf(s.model, profiles)
+  const name = profileName(s.model, profile)
+  const mode = modeLabel(s.mode, s.model)
+  // runVideoNode() refuses a profile that cannot create and a disabled mode (it only looks at can_create)
+  if (profile.can_create === false) out.push({ field: 'model', reason: `${name} hiện không khả dụng trên canvasapp.` })
+  const o: Record<string, unknown> = isPlainObject(profile.options) ? profile.options : {}
+  const modes = listOf(o.modes)
+  if (modes && !modes.includes(s.mode)) out.push({ field: 'mode', reason: `canvasapp không có chế độ ${mode} cho ${name}.` })
+  if (listOf(o.disabled_modes)?.includes(s.mode)) out.push({ field: 'mode', reason: `Chế độ ${mode} hiện tạm ngừng trên canvasapp.` })
+  const durations = listOf(o.durations)
+  if (durations && !durations.map(Number).includes(s.duration)) out.push({ field: 'duration', reason: `canvasapp không có thời lượng ${s.duration}s cho ${name}.` })
+  const resolutions = listOf(o.resolutions)
+  if (resolutions && !resolutions.map((r) => resolutionOf(String(r))).includes(resolutionOf(s.resolution))) {
+    out.push({ field: 'resolution', reason: `canvasapp không có độ phân giải ${s.resolution} cho ${name}.` })
+  }
+  // H3 transform takes its ratio from the two frames (no aspect_ratio is sent): checked by transformFrameRatio
+  const ratios = listOf(o.aspect_ratios)
+  if (ratios && inputShapeOf(s.model, s.mode) !== 'frames' && !ratios.includes(s.ratio)) out.push({ field: 'ratio', reason: `canvasapp không có tỉ lệ khung ${s.ratio} cho ${name}.` })
+  return out
+}
+
+/**
+ * What profileIssues reads of each model's profile, as one string: two reads with the same signature refuse exactly
+ * the same settings (the adapter keeps its SettingsLimits object then). `ok` false = canvasapp's fallbacks.
+ */
+export function profilesSignature(profiles: readonly VideoProfile[], ok: boolean): string {
+  const models = Object.keys(PROFILE_FALLBACKS) as ModelId[]
+  return JSON.stringify([
+    ok,
+    models.map((m) => {
+      const p = profileSpecOf(m, profiles)
+      const o: Record<string, unknown> = isPlainObject(p.options) ? p.options : {}
+      return [profileName(m, p), p.can_create === false, o.modes ?? null, o.disabled_modes ?? null, o.durations ?? null, o.resolutions ?? null, o.aspect_ratios ?? null]
+    }),
+  ])
+}
+
 // ---------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------
@@ -242,28 +338,15 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   const limit = promptLimitOf(req.model, req.mode)
   // runVideoNode() / promptLength(): the trimmed prompt, counted in code points
   if ([...prompt].length > limit) out.push(`Prompt dài hơn giới hạn ${limit.toLocaleString('vi-VN')} ký tự của canvasapp.`)
+  // Not tied to capabilities().maxRefVideos: toVideoJobBody / the bridge canvas carry no video, so a request with
+  // videos must never reach a POST (it would be billed without them). Opened only with a captured request shape.
   if (req.videos.length) out.push('Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu khỏi cảnh.')
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')
-  if (profiles) {
-    const profile = profileSpecOf(req.model, profiles)
-    const name = profile.display_name || PROFILE_FALLBACKS[req.model]?.display_name || req.model
-    const mode = modeLabel(req.mode, req.model)
-    // runVideoNode() refuses a profile that cannot create and a disabled mode (it only looks at can_create)
-    if (profile.can_create === false) out.push(`${name} hiện không khả dụng trên canvasapp.`)
-    const o: Record<string, unknown> = isPlainObject(profile.options) ? profile.options : {}
-    const modes = listOf(o.modes)
-    if (modes && !modes.includes(req.mode)) out.push(`canvasapp không có chế độ ${mode} cho ${name}.`)
-    if (listOf(o.disabled_modes)?.includes(req.mode)) out.push(`Chế độ ${mode} hiện tạm ngừng trên canvasapp.`)
-    const durations = listOf(o.durations)
-    if (durations && !durations.map(Number).includes(req.duration)) out.push(`canvasapp không có thời lượng ${req.duration}s cho ${name}.`)
-    const resolutions = listOf(o.resolutions)
-    if (resolutions && !resolutions.map((r) => resolutionOf(String(r))).includes(resolutionOf(req.resolution))) out.push(`canvasapp không có độ phân giải ${req.resolution} cho ${name}.`)
-    // H3 transform takes its ratio from the two frames (no aspect_ratio is sent): checked by transformFrameRatio
-    const ratios = listOf(o.aspect_ratios)
-    if (ratios && inputShapeOf(req.model, req.mode) !== 'frames' && !ratios.includes(req.ratio)) out.push(`canvasapp không có tỉ lệ khung ${req.ratio} cho ${name}.`)
-  }
+  // canvasapp's page refuses (runVideoNode) what /api/video-profiles says it cannot run — the SAME rule the inspector
+  // and the run check use (profileIssues), so they never disagree with this.
+  if (profiles) out.push(...profileIssues(req, profiles).map((i) => i.reason))
   return out
 }
 
@@ -304,7 +387,10 @@ export function uploadFilename(imageId: string, mime: string): string {
 // ---------------------------------------------------------------------------------------------
 
 export interface JobBodyContext {
+  /** canvasapp's bridge project_id. */
   projectId: string
+  /** Key of the video node the job is sent on (default: sceneNodeKey of the request's project and scene). */
+  nodeKey?: string
   /** upload_id for a SanoVids media-store image id (images + frames must already be uploaded). */
   uploadIdFor: (imageId: string) => string
   generateAudio?: boolean
@@ -332,7 +418,7 @@ export function toVideoJobBody(req: JobRequest, ctx: JobBodyContext): VideoJobBo
   return {
     project_id: ctx.projectId,
     model_profile: modelProfileOf(req.model),
-    canvas_node_id: canvasNodeId(req.sceneId),
+    canvas_node_id: canvasNodeId(ctx.nodeKey ?? sceneNodeKey(req.sanovidsProjectId, req.sceneId)),
     prompt: req.prompt.trim(),
     mode: req.mode,
     duration: req.duration,
@@ -383,8 +469,13 @@ export function mapJobStatus(remoteId: string, job: CanvasJob, source = 'canvasa
 // Bridge canvas
 // ---------------------------------------------------------------------------------------------
 
-/** What the bridge canvas remembers about one SanoVids scene (persisted: read back with bridgeEntriesFrom). */
+/** What the bridge canvas remembers about one video node (persisted: read back with bridgeEntriesFrom). */
 export interface BridgeEntry {
+  /**
+   * The node key (sceneNodeKey of the scene's project + scene; a bare scene id for entries saved by older builds —
+   * their jobs may still run on that node). Named `sceneId` and equal to the entry's storage key on purpose: older
+   * builds read the same field, keep the entry and derive the same node id (downgrade keeps running nodes).
+   */
   sceneId: string
   model: ModelId
   mode: Mode
@@ -403,11 +494,18 @@ export interface BridgeEntry {
 /**
  * `frameRatio` (H3 transform): the ratio both frames share (transformFrameRatio), which canvasapp's client stores as
  * the transform node's aspect_ratio (setTransformFrame()); null = none. Omitted: the scene's ratio is kept.
+ * `nodeKey`: the node the entry stands for (default: sceneNodeKey of the request's project and scene).
  */
-export function entryFromRequest(req: JobRequest, uploadIdFor: (imageId: string) => string, usedAt: number, frameRatio?: string | null): BridgeEntry {
+export function entryFromRequest(
+  req: JobRequest,
+  uploadIdFor: (imageId: string) => string,
+  usedAt: number,
+  frameRatio?: string | null,
+  nodeKey: string = sceneNodeKey(req.sanovidsProjectId, req.sceneId),
+): BridgeEntry {
   const shape = inputShapeOf(req.model, req.mode)
   return {
-    sceneId: req.sceneId,
+    sceneId: nodeKey,
     model: req.model,
     mode: req.mode,
     duration: req.duration,
@@ -429,8 +527,9 @@ const isIdOrNull = (v: unknown): v is string | null => v === null || (isStr(v) &
 
 /**
  * Bridge entries read back from storage, keeping only well-formed ones (anything else is dropped, and simply rebuilt
- * by the next submit of that scene). Entries saved by older builds (v0.2.0: extra `label`) stay valid: canvas ids
- * are derived from the scene id each time the canvas is built — never stored — and unknown fields are dropped here.
+ * by the next submit of that scene). Entries saved by older builds (v0.2.0: extra `label`; keyed by the bare scene id
+ * before per-project nodes) stay valid: canvas ids are derived from the node key each time the canvas is built —
+ * never stored — and unknown fields are dropped here.
  */
 export function bridgeEntriesFrom(raw: unknown): Record<string, BridgeEntry> {
   const out: Record<string, BridgeEntry> = {}
@@ -504,35 +603,37 @@ const ROW_GAP = 80
  *   video node  { id, type:'video', x, y, w, h, data:{ model_profile, duration, resolution, aspect_ratio, mode, prompt } }
  *   image node  { id, type:'images', x, y, data:{ upload_ids:[one] } }
  *   connection  { from, to, target_handle, order }  (references 1..N in @image order, first_frame 1, last_frame 2)
- * One video node per scene (id = canvasNodeId(sceneId)); one image node per upload, shared by every video node that
- * uses it (a second one only when one video node takes the same upload twice). Ids are UUIDs, coordinates integers.
- * Within canvasapp's client limits: 40 nodes, 30 image uploads on the canvas — plus a prompt budget. Newest entries
- * first; an older entry that would go past a limit is left out — the newest entry is always kept (validateRequest
- * caps it at 30 references). See planBridgeCanvas for the scene being submitted and the scenes still running.
+ * One video node per entry (id = canvasNodeId(entry key) — a scene of a project); one image node per upload, shared by
+ * every video node that uses it (a second one only when one video node takes the same upload twice). Ids are UUIDs,
+ * coordinates integers. Within canvasapp's client limits: 40 nodes, 30 image uploads on the canvas — plus a prompt
+ * budget. Newest entries first; an older entry that would go past a limit is left out — the newest entry is always
+ * kept (validateRequest caps it at 30 references). See planBridgeCanvas for the entry being submitted and the entries
+ * whose jobs still run.
  */
 export function bridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptions = {}): CanvasPayload {
   return planBridgeCanvas(entries, opts).canvas
 }
 
+/** Entries are named by their key (BridgeEntry.sceneId = the node key). */
 export interface BridgeCanvasOptions {
-  /** Scene being submitted: placed first whatever its usedAt (equal or older timestamps never leave it out). */
+  /** Entry being submitted: placed first whatever its usedAt (equal or older timestamps never leave it out). */
   current?: string
-  /** Scenes whose job may still be running: placed right after `current` and never left out to make room. */
+  /** Entries whose job may still be running: placed right after `current` and never left out to make room. */
   keep?: ReadonlySet<string>
 }
 
 export interface BridgePlan {
   canvas: CanvasPayload
-  /** Scenes left off the canvas for lack of room (entries that may go). */
+  /** Entries (keys) left off the canvas for lack of room (entries that may go). */
   dropped: string[]
-  /** `keep` scenes that do not fit: such a canvas must not be saved (a running job would lose its node). */
+  /** `keep` entries that do not fit: such a canvas must not be saved (a running job would lose its node). */
   missing: string[]
 }
 
 /**
- * bridgeCanvas, saying what did not fit. Order: `current`, then the `keep` scenes, then the others — newest first in
+ * bridgeCanvas, saying what did not fit. Order: `current`, then the `keep` entries, then the others — newest first in
  * each group. The first entry is always on the canvas; a later one past a limit is left out (`dropped`, or `missing`
- * for a `keep` scene).
+ * for a `keep` entry).
  */
 export function planBridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptions = {}): BridgePlan {
   const rank = (e: BridgeEntry) => (e.sceneId === opts.current ? 0 : opts.keep?.has(e.sceneId) ? 1 : 2)

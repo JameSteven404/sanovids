@@ -46,8 +46,10 @@
 - **Preset** (ví dụ *Nháp 30s · 480p*, *Final 15s · 1080p*), áp dụng cho nhiều cảnh một lần.
 - **Chạy hàng loạt** với bảng xác nhận chi phí (ghi rõ trừ **credit dev** (giả lập) hay **credit canvasapp** (thật)), hàng đợi chạy song song, cập nhật tiến độ trực tiếp. Mọi nút Chạy / Chạy lại / Thử lại đều qua bảng chi phí, bấm đúp không bị chạy hai lần.
 - Nút Chạy bị khoá kèm lý do khi cảnh chưa chạy được (prompt trống, thiếu ảnh, `@image_N` không có ảnh thật…).
+- **Cấu hình video theo canvasapp**: model / chế độ / thời lượng / độ phân giải / tỉ lệ mà canvasapp đang tắt hiện mờ kèm lý do và không chọn được; cảnh đang dùng chúng chưa chạy được (bị bỏ qua khi chạy nhiều cảnh, không tốn credit). Cấu hình đã lưu của cảnh không bị đổi. Chưa đọc được cấu hình từ canvasapp thì chỉ cảnh báo "có thể bị từ chối"; bấm **Đọc lại** để cập nhật ngay.
 - Đánh dấu ★ take chọn, khôi phục prompt của take cũ.
 - **Tải video**: một nút cho từng video (kèm file `.txt` chứa prompt), **"Tải tất cả video chọn (.zip)"**, hoặc bật **Tự tải video khi tạo xong** vào thư mục bạn chọn.
+- Video đã tạo xong được kéo về app từng phần: take hiện **"Đang tải về …%"**. Bấm **Huỷ** (hoặc **Xoá**) lúc này thì app **hỏi trước** (video đã xong và đã trừ credit; huỷ / xoá chỉ bỏ nó trong SanoVids, chạy lại cảnh sẽ trừ credit lần nữa).
 
 ### Lưu video
 - **Tải video…** mở hộp **Save As** của Windows để chọn nơi lưu và **đổi tên**. File `.txt` prompt được lưu cạnh video (tắt được trong Cài đặt).
@@ -105,14 +107,20 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 **An toàn tiền & đúng nhân vật**
 - `@image_N` luôn là đúng tấm ảnh thứ N gửi đi (thứ tự tải lên = thứ tự `@image`). Mỗi ảnh chỉ tải lên canvasapp một lần.
-- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. Take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng **cùng mã yêu cầu**.
-- Video đã tạo xong (đã trả tiền) mà tải về lỗi thì app tự thử tải lại, không đánh "thất bại".
-- Đóng app khi đang tạo: mở lại, app tiếp tục theo dõi job cũ, không gửi lại.
+- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. App chờ khoảng 45 giây để chắc danh sách job của canvasapp đã hiện job đó (nếu có) — trong lúc ấy các cảnh khác trong hàng đợi chờ theo; không thấy thì gửi lại **một lần** bằng **cùng mã yêu cầu**, vẫn không rõ thì take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng cùng mã yêu cầu — nếu lần gửi trước có thể vẫn đang tới canvasapp (vd. trang vừa tải lại đúng lúc gửi), app chưa gửi lại: take chờ tới lúc chắc chắn rồi tự tìm lại.
+- **Huỷ** một take đang gửi: take vẫn "có thể đã bị trừ" cho tới khi biết chắc; **Thử lại** khi đó gửi lại **chính take đó** (tìm job cũ trước), không bao giờ thành take mới trả thêm.
+- Video đã tạo xong (đã trả tiền) mà tải về lỗi thì app tự thử tải lại (tải tiếp từ chỗ dừng khi canvasapp cho), không đánh "thất bại". Trừ hai trường hợp không bao giờ tải được: video **lớn hơn 1 GB**, hoặc một kết nối quá **60 phút** mà không tải tiếp được — take báo lỗi ngay, ghi rõ **đã trừ credit** và tải video trực tiếp trên canvasapp.io.vn (phiên "SanoVids bridge").
+- Đóng app khi đang tạo: mở lại, app tìm lại job cũ và tiếp tục theo dõi. Chắc chắn lần gửi đó chưa tạo job (mở lại ngay sau đó) → app gửi lại bằng cùng mã yêu cầu; mở lại lâu sau (job có thể đã bị xoá trên canvasapp) → take hiện "không rõ", app không tự gửi lại — kiểm tra trên canvasapp rồi bấm Chạy lại.
+
+**Nhập job (video tạo trực tiếp trên canvasapp)**
+- Đã bấm "Tạo video" trên node của một cảnh trong phiên **"SanoVids bridge"** trên canvasapp.io.vn? Bấm **Nhập job** (thanh trên của **Hàng đợi**, hoặc **Cài đặt › Nhà cung cấp video** khi đã đăng nhập) → các job đó hiện dưới đúng cảnh → **Nhập N job**: mỗi job thành một take của cảnh, video tự về khi xong.
+- **Chỉ đọc, không trừ credit** (video đã trả khi tạo trên trang). Take nhập có chip **nhập**; điều canvasapp không cho biết hiện **"?"**, điều chỉ đoán theo node hiện **"≈"**. **Chạy lại** một take nhập tạo **take mới** và trừ credit như thường.
+- Ở chế độ Phát triển: **Bảng phát triển › Job & đơn nạp › Tạo job như trên trang canvasapp**, rồi Nhập job như trên.
 
 **Giới hạn hiện tại**
 - Tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), cập nhật tiến độ khoảng 20 giây/lần.
-- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy): bỏ `@video_N` để chạy cảnh tiếp nối.
-- App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Đừng sửa phiên này bằng tay.**
+- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy; chưa thấy canvasapp nhận video): bỏ video tham chiếu khỏi cảnh (nút × trong inspector hoặc cắt dây) để chạy cảnh tiếp nối — chỉ xoá chữ `@video_N` thì chưa đủ. Cảnh MiniMax-H3 ở chế độ không gửi video (Text → Video, Khung đầu → cuối) vẫn chạy dù còn nối video, miễn là prompt không còn chữ `@video_N` (cảnh tiếp nối bắt đầu bằng `Continue from @video_1:`: xoá chữ đó đi).
+- App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Chạy** một node ở đó (bấm "Tạo video") thì được — đưa video đó vào dự án bằng **Nhập job** (xem trên). **Sửa** node ở đó thì bị ghi đè ở lần gửi sau của SanoVids: nhập job trước khi chạy lại cảnh đó trong SanoVids, và đóng tab phiên này trước khi chạy cảnh trong SanoVids.
 - Huỷ trong SanoVids chỉ ngừng theo dõi: job đã gửi vẫn chạy và tính tiền trên canvasapp.
 
 👉 Lần đầu dùng credit thật: tập dượt miễn phí bằng chế độ Phát triển trước, rồi làm theo danh sách tự kiểm tra (tốn khoảng 8 credit): [docs/TEST-REAL-CREDITS.md](docs/TEST-REAL-CREDITS.md).
@@ -290,7 +298,8 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
 - [x] Tự cập nhật phiên bản (0.5.0)
 - [x] Ký số file .exe (0.5.0): bản cập nhật chỉ nhận chữ ký của tác giả, app tự kiểm tra chữ ký, chống can thiệp, icon mới
-- [ ] Video tham chiếu `@video_N` qua cổng canvasapp
+- [x] Nhập job từ canvasapp, cấu hình model theo canvasapp, tải video theo từng phần, chống trả tiền hai lần chặt hơn (0.6.0)
+- [ ] Video tham chiếu `@video_N` qua cổng canvasapp (chờ ghi lại cách trang canvasapp gửi video, nếu có: [docs/canvasapp-api-notes.md](docs/canvasapp-api-notes.md))
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
 

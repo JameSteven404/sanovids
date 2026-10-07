@@ -2,12 +2,15 @@
 // Keep UI components thin: they call these, these call the stores.
 import { compileScene, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
+import { refVideosProblem } from './core/runGate'
 import { staleNoteSince } from './core/staleTokens'
 import { MODELS, usesVideoRefs } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
-import { creditKindOf, formatCredits } from './lib/credits'
-import { activeProviderId, providerOf } from './providers'
+import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
+import { activeProviderId, getProvider, providerOf } from './providers'
+import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
+import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
 import type { AssetKind, XY } from './core/types'
@@ -26,7 +29,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { freeSpotFrom, LAYOUT, redo, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
-import { isUncertainSubmit, useRuns } from './store/runs'
+import { isUncertainSubmit, remoteVideoReady, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -305,9 +308,10 @@ export function createSceneFromTake(takeId: string, position?: XY) {
   const id = useProject.getState().createNextScene(source.id, at, { videoRefs: [takeId], prompt: 'Continue from @video_1: ' })
   useUI.getState().select([id])
   revealNodes([id])
-  // canvasapp (and its simulation in development mode) takes no reference video yet
-  if (creditKindOf(activeProviderId()) !== 'demo')
-    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này.`, {
+  // The gateway of the next run refuses the new scene's @video_1 (canvasapp and development mode take none yet):
+  // the same cap store/runs check() reads (core/runGate).
+  if (refVideosProblem(1, getProvider(activeProviderId()).capabilities(source.settings.model).maxRefVideos))
+    toast(`Đã tạo cảnh tiếp nối từ ${takeLabel(takeId)} (@video_1). Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ video tham chiếu (@video_1) khỏi cảnh để chạy cảnh này.`, {
       tone: 'warning',
       action: undoToastAction(),
       ms: 9000,
@@ -371,7 +375,11 @@ export function deleteSelection() {
   const links = refs.length + videoRefs.length + frames.length + folderLinks.length
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
-    const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
+    const check = checkTakeDelete(takeIds, takes, project.scenes, {
+      ignoreScenes: deadScenes,
+      label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+      videoReady: remoteVideoReady,
+    })
     if (check.question && !window.confirm(check.question)) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
@@ -415,8 +423,9 @@ export const TAKES_GONE_NOTE = '(Video đã xoá không hoàn tác được.)'
 
 export interface DeleteTakesOptions {
   /**
-   * Ask first (window.confirm). true (default) = when a finished video would be lost or a scene uses one as @video;
-   * 'usedOnly' = only for @video users (the caller already confirmed, e.g. a two-click button); false = never.
+   * Ask first (window.confirm). true (default) = when a finished video would be lost, a paid video is still
+   * downloading or a scene uses one as @video; 'usedOnly' = only for @video users and paid videos still downloading
+   * (the caller already confirmed the take's loss, e.g. a two-click button); false = never.
    */
   confirm?: TakeDeleteConfirm
   /** Show the result toast (default true). */
@@ -439,6 +448,8 @@ export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions
     confirm: opts.confirm ?? true,
     ignoreScenes: opts.ignoreScenes,
     label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+    // a paid video still downloading is dropped like "Huỷ" drops it (cancelTake asks too)
+    videoReady: remoteVideoReady,
   })
   if (!check.ids.length) return 0
   if (check.question && !window.confirm(check.question)) return null
@@ -542,7 +553,35 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const res = useRuns.getState().retry(takeId)
   if (!res) return
   if (res.error) toast(res.error, { tone: 'error' })
-  else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
+  // Not "đang gửi lại": the provider may find the job, or hold the request back (the take then says why and when).
+  else toast(`Đang kiểm tra lại ${takeLabel(takeId)}: tìm job cũ trước, chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có.`, { tone: 'success' })
+}
+
+/**
+ * "Huỷ" of a queued / running take (queue row, Xem take). When its video is already made and paid (the site's job is
+ * finished, SanoVids is downloading it or waits to try again) it asks first: cancelling drops that video in SanoVids.
+ * Then cancels and says what it means for the credits. Returns false when nothing was cancelled.
+ */
+export function cancelTake(takeId: string): boolean {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take || (take.status !== 'queued' && take.status !== 'processing')) return false
+  const demoPaid = chargedDemo(take)
+  const facts: CancelFacts = {
+    label: takeLabel(takeId),
+    provider: providerOf(take),
+    status: take.status,
+    cost: take.cost,
+    demoPaid,
+    sentAway: !demoPaid && !!take.remoteId,
+    videoReady: remoteVideoReady(takeId),
+    imported: !!take.imported,
+  }
+  const question = cancelQuestion(facts)
+  if (question && !window.confirm(question)) return false
+  useRuns.getState().cancel(takeId)
+  const said = cancelToastText(facts)
+  toast(said.text, said.warning ? { tone: 'warning', ms: 7000 } : {})
+  return true
 }
 
 /** Enqueue immediately (used by the confirm dialog). */
@@ -564,26 +603,48 @@ export function runNow(sceneIds: string[]) {
   return res
 }
 
+/**
+ * "Khôi phục prompt này" (take viewer): the scene's prompt, references and settings as they were when the take ran, in
+ * ONE undo step (the toast's "Hoàn tác"). References deleted since are dropped and the old prompt's @image_N /
+ * @video_N tokens renumbered to match (components/runs/restore.ts). An imported take ("Nhập job") is refused when
+ * canvasapp did not tell its prompt or references (restoreBlock); otherwise only its known settings are restored, the
+ * references read from the bridge node with the mode they need, the scene's own references when its job sent none,
+ * the scene's @video references always (importedTake.restorePlan).
+ */
 export function restoreFromTake(takeId: string) {
   const runs = useRuns.getState()
   const take = runs.takes.find((t) => t.id === takeId)
   if (!take) return
   const project = useProject.getState().project
-  if (!project.scenes.some((s) => s.id === take.sceneId)) {
+  const scene = project.scenes.find((s) => s.id === take.sceneId)
+  if (!scene) {
     toast('Cảnh của take này đã bị xoá.', { tone: 'warning' })
+    return
+  }
+  const blocked = restoreBlock(take)
+  if (blocked) {
+    toast(blocked, { tone: 'warning' })
     return
   }
   const live = new Set(runs.takes.map((t) => t.id))
   // Tokens of references that no longer exist are renumbered / replaced, like removing a reference by hand.
-  const r = restoredFromTake(take, project.assets, live, { renumber: project.settings.autoRenumber, videoLabel })
+  const plan = restorePlan(take, scene)
+  const r = restoredFromTake(plan.source, project.assets, live, { renumber: project.settings.autoRenumber, videoLabel })
   // One store mutation = one undo step, so the toast's "Hoàn tác" reverts everything together.
-  useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: take.settings }, live)
-  const extra = r.gone ? ` (bỏ ${r.gone} tham chiếu không còn tồn tại${r.renumbered ? ', đã đánh lại số @image/@video' : ''})` : ''
-  const stale = r.stale ? ' Tự đánh lại số đang tắt — số @image/@video trong prompt có thể không còn đúng ảnh/video, hãy kiểm tra.' : ''
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${extra}.${stale}`, {
-    tone: stale ? 'warning' : 'success',
+  useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, videoRefs: r.videoRefs, settings: plan.settings }, live)
+  const importNotes = restoreNotes(take, plan)
+  const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image/@video', ...importNotes].filter(Boolean)
+  // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
+  const check = r.uncertain
+    ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.`
+    : r.stale
+      ? ' Tự đánh lại số đang tắt — số @image/@video trong prompt có thể không còn đúng ảnh/video, hãy kiểm tra.'
+      : ''
+  const warn = !!check || importNotes.length > 0
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.${check}`, {
+    tone: warn ? 'warning' : 'success',
     action: undoToastAction(),
-    ms: stale ? 9000 : undefined,
+    ms: warn ? 9000 : undefined,
   })
 }
 

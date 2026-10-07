@@ -1574,6 +1574,17 @@ button.cv-asset-count:hover {
   font-weight: 600;
   line-height: 16px;
 }
+/* Imported take ("Nhập job": its job was made on canvasapp's own page). */
+.cv-take-imported {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--ref-soft);
+  color: var(--ref);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
 /* Take whose scene was deleted (kept because a scene still uses it as @video). */
 .cv-take-orphan {
   /* may shrink (narrow resized take) so the action buttons stay inside the node */

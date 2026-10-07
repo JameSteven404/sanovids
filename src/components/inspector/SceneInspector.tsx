@@ -4,7 +4,8 @@ import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Downl
 import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
+import { sceneCode } from '../../core/compile'
+import { refVideosProblem } from '../../core/runGate'
 import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
@@ -15,7 +16,8 @@ import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, costTitle, creditTone, NO_VIDEO_REFS_REASON, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { useGatewayRefVideoCap, useSceneRunBlock } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
@@ -111,6 +113,8 @@ function goTo(id: string) {
 const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) {
   const order = useSceneField(sceneId, (s) => s.order) ?? 0
   const title = useSceneField(sceneId, (s) => s.title) ?? ''
+  // Same gate as the Run button of the Take section below (core/runGate = store/runs check()).
+  const reason = useSceneRunBlock(useSceneField(sceneId, (s) => s))
   const options = useSceneOptions()
   const idx = options.findIndex((o) => o.id === sceneId)
   const prev = idx > 0 ? options[idx - 1] : undefined
@@ -162,7 +166,13 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
           <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title="Xoá cảnh (Delete)">
             <Trash size={14} />
           </button>
-          <button type="button" className="btn btn-primary btn-sm in-head-run" onClick={() => requestRun([sceneId])} title="Chạy cảnh này (Ctrl+Enter)">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm in-head-run"
+            onClick={() => requestRun([sceneId])}
+            disabled={!!reason}
+            title={reason ? `Chưa chạy được: ${reason}` : 'Chạy cảnh này (Ctrl+Enter)'}
+          >
             <Play size={12} fill="currentColor" /> Chạy
           </button>
         </div>
@@ -631,14 +641,10 @@ const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: 
 const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }) {
   const takes = useSceneTakes(sceneId)
   const settings = useSceneField(sceneId, (s) => s.settings)
-  const promptEmpty = useSceneField(sceneId, (s) => !s.prompt.trim()) ?? true
-  const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
-  const hasVideoRefs = useSceneField(sceneId, (s) => s.videoRefs.length > 0) ?? false
-  // Tokens with no picture/video in the request (character sync): a string, so the selector result is stable.
-  const unsent = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    return sc ? compileScene(s.project, sc).unsentTokens.slice(0, 2).join(', ') : ''
-  })
+  // Hooks stay above the early return below (a deleted scene renders nothing).
+  const videoCap = useGatewayRefVideoCap(settings?.model ?? 'seedance_2_5')
+  // Why Run is off: the queue's own rules (core/runGate, = store/runs check()), same as the head's Run button.
+  const reason = useSceneRunBlock(useSceneField(sceneId, (s) => s))
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
   const creditKind = useCreditKind()
   if (!settings) return null
@@ -646,16 +652,9 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
   const acceptsVideo = usesVideoRefs(settings)
   const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
+  // The continuing scene sends one video (@video_1) through the gateway of the next run: refused there?
+  const continueNote = refVideosProblem(1, videoCap) ? ' · Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ video tham chiếu (@video_1) khỏi cảnh để chạy cảnh này' : ''
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
-  const reason = promptEmpty
-    ? 'Prompt trống'
-    : framesMissing
-      ? 'Thiếu khung đầu/cuối'
-      : unsent
-        ? `Prompt nhắc ${unsent} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-        : hasVideoRefs && creditKind !== 'demo'
-          ? NO_VIDEO_REFS_REASON
-          : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
   const shown = completed.slice(-6)
   if (chosen && !shown.includes(chosen)) shown.splice(0, 1, chosen)
@@ -700,7 +699,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
               title={
                 !acceptsVideo
                   ? noVideoTitle
-                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${creditKind !== 'demo' ? ' · Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này' : ''}`
+                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${continueNote}`
               }
             >
               T{t.number}
@@ -719,7 +718,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
         <Play size={14} fill="currentColor" />
         Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
       </button>
-      {reason && <div className="in-run-reason">{reason} — chưa thể chạy.</div>}
+      {reason && <div className="in-run-reason">Chưa chạy được: {reason}</div>}
     </Section>
   )
 })

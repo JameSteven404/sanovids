@@ -9,9 +9,18 @@
 //   withDevWording(obj, results?) a copy of `obj` whose methods throw devError(…) and (for the listed ones) return
 //                                 their result through `results[name]`.
 
-/** "Kiểm tra trên canvasapp.io.vn" → "Kiểm tra trong Bảng phát triển"; any other "canvasapp.io.vn" → "canvasapp giả lập". */
+/**
+ * "Kiểm tra trên canvasapp.io.vn" → "Kiểm tra trong Bảng phát triển"; any other "canvasapp.io.vn" — and a bare
+ * "canvasapp" ("trên canvasapp", "Tài khoản canvasapp") — → "canvasapp giả lập"; "credit" → "credit dev". By rule, not
+ * by sentence: every message of the real gateway reads right for a dev take (e.g. the reasons a "Chạy lại" was held
+ * back, shown right after the dev "không rõ" text — runs.heldBackSubmitError), never mixed with the real site's words.
+ */
 export function devWording(text: string): string {
-  return text.replace(/([Kk])iểm tra trên canvasapp\.io\.vn/g, '$1iểm tra trong Bảng phát triển').replace(/canvasapp\.io\.vn/g, 'canvasapp giả lập')
+  return text
+    .replace(/([Kk])iểm tra trên canvasapp\.io\.vn/g, '$1iểm tra trong Bảng phát triển')
+    .replace(/canvasapp\.io\.vn/g, 'canvasapp giả lập')
+    .replace(/\bcanvasapp(?![\w-]| giả lập)/g, 'canvasapp giả lập')
+    .replace(/\b([Cc]redit)(?![\w-]| dev)/g, '$1 dev')
 }
 
 /** The error with a development-mode message (same object: its code, status and flags stay). */

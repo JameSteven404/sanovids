@@ -16,11 +16,26 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { getProvider, registerProvider, useProviderPrefs } from '../index'
-import type { JobRequest, RemoteStatus, RunTake, VideoProvider } from '../types'
+import type { FetchResultOptions, JobRequest, RemoteStatus, RunTake, SettingsLimits, VideoProvider } from '../types'
+import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
+import { clearTakeWaits, useTakeWaits, waitLabel, waitText } from '../../store/takeWaits'
+import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
-import { setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
+import {
+  holdNewSubmits,
+  isUncertainSubmit,
+  lateRemoteIds,
+  remoteVideoReady,
+  setEngineHooks,
+  setEngineLockManager,
+  setLateRemoteIdStorage,
+  UNKNOWN_SUBMIT_ERROR,
+  useRuns,
+} from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
+import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
+import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -113,6 +128,29 @@ const legacyTake = (id: string, sceneId: string, over: Partial<Take> = {}): Take
   ...over,
 })
 
+/** A finished take of scene s1 (usable as a reference video). */
+const finishedTake = (id: string): Take => ({
+  id,
+  sceneId: 's1',
+  number: 1,
+  status: 'completed',
+  progress: 100,
+  createdAt: 0,
+  startedAt: 0,
+  finishedAt: 0,
+  promptSnapshot: '',
+  rawPromptSnapshot: '',
+  refsSnapshot: [],
+  videoRefsSnapshot: [],
+  settings: project().scenes[0].settings,
+  cost: 0,
+  starred: false,
+  posterId: null,
+  videoId: 'v',
+  error: null,
+  position: null,
+})
+
 /** Web Locks stand-in shared by "tabs": `otherTab(name)` holds a lock until the returned function is called. */
 function fakeLocks() {
   const held = new Set<string>()
@@ -145,6 +183,7 @@ beforeEach(() => {
   useRuns.getState().loadRuns({ takes: [], credits: 100, spent: 0 })
 })
 afterEach(() => {
+  holdNewSubmits(false)
   useRuns.getState().loadRuns({ takes: [], credits: 377, spent: 0 })
   // let the (fake-timer) engine see the empty queue and stop, so the next test starts a fresh one
   vi.advanceTimersByTime(250)
@@ -177,6 +216,8 @@ describe('runs engine with a provider', () => {
     expect(take(id).provider).toBe('dev')
     // request built from the snapshot: @image order, compiled prompt, idempotency key
     expect(f.submitted[0]).toMatchObject({ key: id, prompt: '@image_1 runs', sceneCode: 'S01', images: [{ n: 1, imageId: 'i1' }, { n: 2, imageId: 'i2' }] })
+    // the take's own project + scene (the canvasapp gateway names its bridge node after them)
+    expect(f.submitted[0]).toMatchObject({ sceneId: 's1', sanovidsProjectId: 'p' })
 
     f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'processing', progress: 40 })
     await vi.advanceTimersByTimeAsync(250)
@@ -275,32 +316,126 @@ describe('runs engine with a provider', () => {
     ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
     registerProvider(fakeProvider('canvasapp', 20_000).p)
     useProviderPrefs.setState({ provider: 'canvasapp' })
-    const done: Take = {
-      id: 'tk',
-      sceneId: 's1',
-      number: 1,
-      status: 'completed',
-      progress: 100,
-      createdAt: 0,
-      startedAt: 0,
-      finishedAt: 0,
-      promptSnapshot: '',
-      rawPromptSnapshot: '',
-      refsSnapshot: [],
-      videoRefsSnapshot: [],
-      settings: project().scenes[0].settings,
-      cost: 0,
-      starred: false,
-      posterId: null,
-      videoId: 'v',
-      error: null,
-      position: null,
-    }
-    useRuns.setState({ takes: [done] })
+    useRuns.setState({ takes: [finishedTake('tk')] })
     useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1), scene('s2', 2, { videoRefs: ['tk'], prompt: '@video_1 again' })] })
     const [c] = useRuns.getState().check(['s2'])
     expect(c.ok).toBe(false)
-    expect(c.reason).toMatch(/video tham chiếu/)
+    expect(c.reason).toBe(NO_VIDEO_REFS_REASON)
+  })
+
+  describe('what the gateway runs now (settingsLimits): a sure refusal skips, a guess only warns', () => {
+    const H3: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+    const LOCKED = 'MiniMax-H3 hiện không khả dụng trên canvasapp.'
+    const limitsOf = (source: SettingsLimits['source'], firm: boolean): SettingsLimits => ({
+      source,
+      firm,
+      issues: (s) => (source !== 'none' && s.model === 'minimax_h3' ? [{ field: 'model', reason: LOCKED }] : []),
+    })
+    const withLimits = (limits: SettingsLimits) => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, settingsLimits: () => limits })
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { refs: ['a'], prompt: '@image_1 runs', settings: H3 }), scene('s2', 2)] })
+      return f
+    }
+
+    it('a firm read: the scene is skipped with the reason (no final period), nothing is sent; all refused → error', async () => {
+      const f = withLimits(limitsOf('server', true))
+      const [h3, sd] = useRuns.getState().check(['s1', 's2'])
+      expect(h3).toMatchObject({ ok: false, reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp', warnings: [] })
+      expect(sd).toMatchObject({ ok: true, reason: null })
+      expect(useRuns.getState().enqueue(['s1'])).toEqual({ queued: 0, cost: 0, skipped: [{ sceneId: 's1', reason: h3.reason }], error: 'Không có cảnh nào chạy được.' })
+      expect(useRuns.getState().enqueue(['s1', 's2'])).toMatchObject({ queued: 1, skipped: [{ sceneId: 's1' }] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted.map((r) => r.sceneId)).toEqual(['s2'])
+    })
+
+    it('the scene’s own problems come first (an empty prompt says so, not the gateway)', () => {
+      withLimits(limitsOf('server', true))
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { prompt: '  ', settings: H3 })] })
+      expect(useRuns.getState().check(['s1'])[0].reason).toBe('Prompt trống')
+    })
+
+    it.each([
+      ['an older read (not firm)', limitsOf('server', false), /theo lần đọc cấu hình model trước/],
+      ['canvasapp’s fallbacks (unreadable)', limitsOf('fallback', false), /chưa đọc được cấu hình model/],
+    ])('%s: runnable, with a "Có thể bị từ chối" warning (the submit reads again and decides)', async (_name, limits, why) => {
+      const f = withLimits(limits)
+      const [h3, sd] = useRuns.getState().check(['s1', 's2'])
+      expect(h3.ok).toBe(true)
+      expect(h3.warnings).toHaveLength(1)
+      expect(h3.warnings[0]).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng trên canvasapp — /)
+      expect(h3.warnings[0]).toMatch(why)
+      expect(sd.warnings).toEqual([])
+      expect(useRuns.getState().enqueue(['s1']).queued).toBe(1)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toHaveLength(1)
+    })
+
+    it('nothing known ("none") or a provider without settingsLimits: as before', () => {
+      withLimits(limitsOf('none', false))
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, warnings: [] })
+      registerProvider(fakeProvider('dev').p)
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, warnings: [] })
+    })
+
+    it('retry() of an "unknown" take is never held back (it may only find the job it already has)', () => {
+      withLimits(limitsOf('server', true))
+      const unknown: Take = { ...finishedTake('u1'), sceneId: 's1', status: 'failed', videoId: null, error: UNKNOWN_SUBMIT_ERROR, provider: 'dev', remoteId: null, submitUnknown: true, settings: H3 }
+      useRuns.setState({ takes: [unknown] })
+      expect(useRuns.getState().retry('u1')).toMatchObject({ queued: 1, skipped: [] })
+      expect(useRuns.getState().takes).toHaveLength(1)
+      expect(useRuns.getState().takes[0]).toMatchObject({ id: 'u1', status: 'queued' })
+    })
+  })
+
+  describe('@video: one gate (the gateway’s capabilities().maxRefVideos), only for videos really sent', () => {
+    const load = (...scenes: Scene[]) => {
+      useRuns.setState({ takes: [finishedTake('tk')] })
+      useProject.getState().loadProject({ ...project(), scenes })
+    }
+
+    it('development mode: the reason names development mode (never "Cổng canvasapp chưa…" alone); nothing is submitted', async () => {
+      const f = fakeProvider('dev')
+      registerProvider(f.p)
+      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }), scene('s2', 2, { videoRefs: ['tk'], prompt: 'token removed' }))
+      const checks = useRuns.getState().check(['s1', 's2'])
+      // removing the @video token alone does not unblock: the reference itself is what would be sent
+      expect(checks.map((c) => c.reason)).toEqual([NO_VIDEO_REFS_REASON, NO_VIDEO_REFS_REASON])
+      expect(checks[0].reason).not.toMatch(/^Cổng canvasapp chưa/)
+      const r = useRuns.getState().enqueue(['s1', 's2'])
+      expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: 's1', reason: NO_VIDEO_REFS_REASON }, { sceneId: 's2', reason: NO_VIDEO_REFS_REASON }] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toEqual([])
+    })
+
+    it('a gateway that takes videos (cap from capabilities) lets the same scene through', () => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0, maxRefVideos: 1 }) })
+      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }))
+      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, reason: null })
+    })
+
+    it('H3 t2v / transform with leftover references and no @video token run, and send no video', async () => {
+      const f = fakeProvider('dev')
+      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0, maxRefVideos: 0 }) })
+      load(
+        scene('s1', 1, { videoRefs: ['tk'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+        scene('s2', 2, {
+          videoRefs: ['tk'],
+          settings: { model: 'minimax_h3', mode: 'transform', duration: 5, resolution: '768p', ratio: '16:9' },
+          firstFrame: 'a',
+          lastFrame: 'a',
+        }),
+        // a leftover reference to a deleted take is not sent either: pinned as runnable
+        scene('s3', 3, { videoRefs: ['deleted'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+      )
+      expect(useRuns.getState().check(['s1', 's2', 's3']).map((c) => c.reason)).toEqual([null, null, null])
+      const r = useRuns.getState().enqueue(['s1', 's2', 's3'])
+      expect(r.queued).toBe(3)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(f.submitted).toHaveLength(3)
+      for (const req of f.submitted) expect(req.videos).toEqual([])
+    })
   })
 
   it('loadRuns puts demo jobs that were processing back in the queue', () => {
@@ -338,6 +473,171 @@ describe('runs engine with a provider', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(f.submitted.length).toBe(1)
     expect(useRuns.getState().credits).toBe(100)
+  })
+
+  it.each([
+    ['its submit', 'submit'],
+    ['its recovery after a reload', 'recover'],
+  ] as const)('a take cancelled while %s may have been billed keeps that doubt: "Chạy lại" re-sends THE SAME take, never a new one', async (_label, path) => {
+    const f = fakeProvider('dev')
+    let settle: (e: unknown) => void = () => undefined
+    const pending = () => new Promise<never>((_, reject) => (settle = reject))
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return pending()
+    }
+    if (path === 'recover') f.p.recover = () => pending()
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: null })
+    if (path === 'recover') {
+      // the page reloaded while it was being sent: the new engine looks for its job
+      useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    // the answer is slow (lost-answer lookups): the user presses "Huỷ" meanwhile
+    useRuns.getState().cancel(id)
+    // ...then the provider cannot tell whether the job was made (and billed)
+    if (path === 'submit') settle(Object.assign(new Error('mất kết nối'), { uncertain: true }))
+    else settle(Object.assign(new Error('không tìm được'), { code: 'network' }))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: null, submitUnknown: true })
+    expect(isUncertainSubmit(take(id))).toBe(true)
+    // "Chạy lại": the same take (same key: its job is looked for first), never a new paid take
+    f.p.submit = async (req) => {
+      f.submitted.push(req)
+      return { remoteId: 'r_' + req.key }
+    }
+    expect(useRuns.getState().retry(id)).toMatchObject({ queued: 1 })
+    expect(useRuns.getState().takes).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
+    expect(new Set(f.submitted.map((r) => r.key))).toEqual(new Set([id]))
+  })
+
+  it.each([
+    ['its submit', 'submit'],
+    ['its recovery after a reload', 'recover'],
+  ] as const)('review: a take cancelled while %s is in doubt AT ONCE — "Thử lại" before that settles re-sends THE SAME take, never a new key', async (_label, path) => {
+    const f = fakeProvider('dev')
+    let settle: (e: unknown) => void = () => undefined
+    const pending = () => new Promise<never>((_, reject) => (settle = reject))
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return pending()
+    }
+    if (path === 'recover') f.p.recover = () => pending()
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    if (path === 'recover') {
+      useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    // canvasapp hangs (or main still sends the POST of the page that reloaded): "Huỷ", then "Thử lại" at once
+    useRuns.getState().cancel(id)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: null, submitUnknown: true })
+    expect(isUncertainSubmit(take(id))).toBe(true)
+    expect(useRuns.getState().retry(id)).toMatchObject({ queued: 1 })
+    expect(useRuns.getState().takes).toHaveLength(1)
+    // the first one ends without an answer; the take goes again as itself — one key ever sent
+    settle(Object.assign(new Error('mất kết nối'), { uncertain: true }))
+    f.p.submit = async (req) => {
+      f.submitted.push(req)
+      return { remoteId: 'r_' + req.key }
+    }
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
+    expect(new Set(f.submitted.map((r) => r.key))).toEqual(new Set([id]))
+    // (sent again on purpose: the provider looks for its job first, however long after — JobRequest.resend)
+    expect(f.submitted[f.submitted.length - 1].resend).toBe(true)
+  })
+
+  it('review: the doubt of a cancel goes when that submit shows nothing billable was sent — "Thử lại" is then a new take, as before', async () => {
+    const f = fakeProvider('dev')
+    let settle: (e: unknown) => void = () => undefined
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return new Promise<never>((_, reject) => (settle = reject))
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(id)
+    expect(take(id).submitUnknown).toBe(true)
+    // the provider stopped before its request (isCancelled): nothing sent
+    settle(Object.assign(new Error('Đã huỷ trước khi gửi'), { code: 'cancelled' }))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: null })
+    expect(take(id).submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(take(id))).toBe(false)
+  })
+
+  it('review: a provider that may have had a request of the take keeps the doubt, whatever the submit said; a queued take it knows a request of is in doubt when cancelled', async () => {
+    const f = fakeProvider('dev')
+    const billed = new Set<string>()
+    let settle: (e: unknown) => void = () => undefined
+    f.p.mayHaveBilled = (key) => billed.has(key)
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      billed.add(req.key) // its request went out
+      return new Promise<never>((_, reject) => (settle = reject))
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(id)
+    // (a deferred answer that says nothing of the request already out)
+    settle(Object.assign(new Error('chờ'), { code: 'deferred' }))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    // a take a reload left queued although its request went out (its state was not saved yet): cancelled → in doubt
+    useRuns.getState().enqueue(['s1'])
+    const q = useRuns.getState().takes[1]
+    billed.add(q.id)
+    useRuns.getState().cancel(q.id)
+    expect(take(q.id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    expect(isUncertainSubmit(take(q.id))).toBe(true)
+  })
+
+  it('review: a remote id that comes back after the take\'s project was closed is given back when it is opened again (lateRemoteIds) — never "không rõ", never sent again', async () => {
+    const store = new Map<string, string>()
+    setLateRemoteIdStorage({ get: (k) => store.get(k) ?? null, set: (k, v) => void store.set(k, v) })
+    try {
+      const f = fakeProvider('dev')
+      let answer: (v: { remoteId: string }) => void = () => undefined
+      f.p.submit = (req) => {
+        f.submitted.push(req)
+        return new Promise((resolve) => (answer = resolve))
+      }
+      // the provider forgot the job (its own records are capped): recovering finds nothing
+      f.p.recover = async () => null
+      registerProvider(f.p)
+      useRuns.getState().enqueue(['s2'])
+      const id = useRuns.getState().takes[0].id
+      await vi.advanceTimersByTimeAsync(250)
+      const onDisk = JSON.parse(JSON.stringify(useRuns.getState().takes)) as Take[]
+      // another project is opened; the answer comes back meanwhile
+      useRuns.getState().loadRuns(null)
+      answer({ remoteId: 'r_' + id })
+      await vi.advanceTimersByTimeAsync(250)
+      // the project again: the take resumes with its job
+      useRuns.getState().loadRuns({ takes: onDisk, credits: 100, spent: 0 })
+      expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(take(id).remoteId).toBe('r_' + id)
+      expect(f.submitted).toHaveLength(1)
+      // once loaded (and saved) with it, the entry goes
+      useRuns.getState().loadRuns({ takes: JSON.parse(JSON.stringify(useRuns.getState().takes)), credits: 100, spent: 0 })
+      expect(lateRemoteIds()).toEqual({})
+    } finally {
+      setLateRemoteIdStorage(undefined)
+    }
   })
 
   it('only the tab holding the engine lock runs jobs; another tab takes over when it is released', async () => {
@@ -395,5 +695,359 @@ describe('runs engine with a provider', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(f.submitted.length).toBe(0)
     expect(locks.held.size).toBe(0)
+  })
+})
+
+describe('runs engine: downloading a finished video (abort, progress, refusals)', () => {
+  /** A dev take that is processing on the fake provider, its job finished: the engine downloads it on the next tick. */
+  async function finished(f: ReturnType<typeof fakeProvider>) {
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'completed', progress: 100 })
+    return id
+  }
+  /** fetchResult that waits until settled by hand (and records the options it got). */
+  function manualFetch(f: ReturnType<typeof fakeProvider>) {
+    const calls: { opts: FetchResultOptions | undefined; resolve: () => void; reject: (e: unknown) => void }[] = []
+    f.p.fetchResult = (_rid, opts) =>
+      new Promise((resolve, reject) => calls.push({ opts, resolve: () => resolve({ video: new Blob(['v'], { type: 'video/mp4' }), poster: new Blob(['p']) }), reject }))
+    return calls
+  }
+
+  it('passes a signal and a progress callback; progress shows as "Đang tải về …" and is cleared when it completes', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].opts?.signal).toBeInstanceOf(AbortSignal)
+    calls[0].opts!.onProgress!({ received: 45, total: 100 })
+    expect(transferLabel(useTakeTransfers.getState().byTake[id])).toBe('Đang tải về 45%')
+    calls[0].resolve()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('completed')
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+  })
+
+  it('cancel() aborts the download; the aborted fetch is not a failure (no retry counted, take stays cancelled)', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    calls[0].opts!.onProgress!({ received: 10, total: null })
+    useRuns.getState().cancel(id)
+    expect(calls[0].opts!.signal!.aborted).toBe(true)
+    calls[0].reject(Object.assign(new Error('Đã dừng tải video.'), { code: 'aborted' }))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(take(id)).toMatchObject({ status: 'cancelled', error: 'Đã huỷ' })
+    expect(calls).toHaveLength(1)
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+  })
+
+  it('a video over the size cap fails the take at once (paid wording), never five tries', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      throw Object.assign(new Error('Video lớn hơn 1 GB — SanoVids không tải về máy được.'), { code: 'too-large' })
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(take(id).status).toBe('failed')
+    expect(take(id).error).toContain('đã trừ credit dev')
+    expect(take(id).error).toContain('Video lớn hơn 1 GB')
+    expect(tries).toBe(1)
+  })
+
+  it('a download that outlived the gateway’s time limit and could not continue (too-slow) fails at once — no new try from 0', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      throw Object.assign(new Error('Tải video quá 60 phút nên SanoVids dừng lại.'), { code: 'too-slow' })
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(take(id).status).toBe('failed')
+    expect(take(id).error).toContain('đã trừ credit dev')
+    expect(take(id).error).toContain('Tải video quá 60 phút')
+    expect(tries).toBe(1)
+  })
+
+  it('remoteVideoReady: only once the job is finished — while it downloads and while it waits for the next try', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    expect(remoteVideoReady(id)).toBe(false) // queued
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('processing')
+    expect(remoteVideoReady(id)).toBe(false) // the job still runs on the site
+    f.statuses.set('r_' + id, { remoteId: 'r_' + id, state: 'completed', progress: 100 })
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    expect(remoteVideoReady(id)).toBe(true) // downloading
+    calls[0].reject(Object.assign(new Error('Mất kết nối khi đang tải video.'), { code: 'network' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(take(id).status).toBe('processing')
+    expect(remoteVideoReady(id)).toBe(true) // waiting for the next try: the video exists all the same
+    await vi.advanceTimersByTimeAsync(31_000)
+    expect(calls).toHaveLength(2)
+    calls[1].resolve()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id).status).toBe('completed')
+    expect(remoteVideoReady(id)).toBe(false)
+  })
+
+  it('a submit deferred for that take alone (retryAfterMs): it waits back in the queue, the takes behind it start meanwhile', async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    let deferS1 = true
+    f.p.submit = async (req, opts) => {
+      if (deferS1 && req.sceneId === 's1') {
+        deferS1 = false
+        // e.g. another take of s1 was just sent without a known answer (canvasapp adapter: RIVAL_PENDING_TEXT)
+        throw Object.assign(new Error('chờ take khác của cảnh này'), { code: 'deferred', retryAfterMs: 5_000 })
+      }
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1)
+    useRuns.getState().enqueue(['s2'])
+    const idOf = (sceneId: string) => useRuns.getState().takes.find((t) => t.sceneId === sceneId)!.id
+    await vi.advanceTimersByTimeAsync(1_000)
+    // s1 went back to the queue (nothing sent, never failed); s2, queued after it, was sent at once
+    expect(take(idOf('s1'))).toMatchObject({ status: 'queued', remoteId: null, error: null })
+    expect(take(idOf('s2'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s2') })
+    // ...and says why it waits, and until when (the take node, the queue, Xem take)
+    const wait = useTakeWaits.getState().byTake[idOf('s1')]
+    expect(wait).toMatchObject({ why: 'chờ take khác của cảnh này', provider: 'dev' })
+    expect(waitText(wait)).toMatch(/^Chờ tới \d\d:\d\d — chờ take khác của cảnh này$/)
+    await vi.advanceTimersByTimeAsync(3_500)
+    expect(take(idOf('s1')).status).toBe('queued')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(take(idOf('s1'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s1') })
+    expect(useTakeWaits.getState().byTake[idOf('s1')]).toBeUndefined() // tried again: the reason is gone
+    expect(f.submitted.map((r) => r.sceneId)).toEqual(['s2', 's1'])
+  })
+
+  it('a deferred take’s wait ends with its provider’s reset (Xoá dữ liệu máy chủ giả lập) and with a cancel; a wait without a time says why too', async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    let defer: 'take' | 'provider' | null = 'take'
+    f.p.submit = async (req, opts) => {
+      if (defer === 'take') throw Object.assign(new Error('chờ take khác của cảnh này'), { code: 'deferred', retryAfterMs: 5 * 60_000 })
+      if (defer === 'provider') throw Object.assign(new Error('Canvas cầu nối đang kín chỗ'), { code: 'deferred' })
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1_000)
+    const id = useRuns.getState().takes[0].id
+    expect(useTakeWaits.getState().byTake[id]).toMatchObject({ provider: 'dev' })
+    // the dev records were wiped (resetDevMode): what it waited for is gone → tried again at once
+    defer = 'provider'
+    clearTakeWaits('dev')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(useTakeWaits.getState().byTake[id]).toMatchObject({ why: 'Canvas cầu nối đang kín chỗ', provider: 'dev' })
+    expect(take(id).status).toBe('queued')
+    useRuns.getState().cancel(id)
+    expect(useTakeWaits.getState().byTake[id]).toBeUndefined()
+    // a new take of the scene is not held by the cancelled one's wait
+    defer = null
+    await vi.advanceTimersByTimeAsync(60_000)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(250)
+    expect(useRuns.getState().takes.at(-1)).toMatchObject({ status: 'processing' })
+  })
+
+  it('a submit deferred without a time (no room on the bridge canvas): that take alone waits — no clock shown — and the takes behind it start', async () => {
+    const f = fakeProvider('dev', 3_000)
+    const submit = f.p.submit
+    let full = 0
+    f.p.submit = async (req, opts) => {
+      if (req.sceneId === 's1') {
+        full++
+        throw Object.assign(new Error('Canvas cầu nối đang kín chỗ — chờ một video xong rồi tự gửi'), { code: 'deferred' })
+      }
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1)
+    useRuns.getState().enqueue(['s2'])
+    const idOf = (sceneId: string) => useRuns.getState().takes.find((t) => t.sceneId === sceneId)!.id
+    await vi.advanceTimersByTimeAsync(1_000)
+    // s2 (it fits) was sent at once; s1 waits back in the queue, saying why — with no time that would never come
+    expect(take(idOf('s2'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s2') })
+    expect(take(idOf('s1'))).toMatchObject({ status: 'queued', remoteId: null, error: null })
+    const wait = useTakeWaits.getState().byTake[idOf('s1')]
+    expect(wait).toMatchObject({ why: 'Canvas cầu nối đang kín chỗ — chờ một video xong rồi tự gửi', provider: 'dev' })
+    expect(waitLabel(wait)).toBeNull()
+    expect(waitText(wait)).toBe('Canvas cầu nối đang kín chỗ — chờ một video xong rồi tự gửi')
+    // looked at again once per poll interval (3 s), not at every tick
+    full = 0
+    await vi.advanceTimersByTimeAsync(9_000)
+    expect(full).toBe(3)
+  })
+
+  it('a deferred take that cannot start at its time (an update holds new submits, its scene deleted) loses the stale reason then', async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    let defer = true
+    f.p.submit = async (req, opts) => {
+      if (defer) throw Object.assign(new Error('chờ take khác của cảnh này'), { code: 'deferred', retryAfterMs: 5_000 })
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1', 's2'])
+    await vi.advanceTimersByTimeAsync(1_000)
+    const [a, b] = useRuns.getState().takes.map((t) => t.id)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(useTakeWaits.getState().byTake[a]).toMatchObject({ why: 'chờ take khác của cảnh này', timed: true })
+    expect(useTakeWaits.getState().byTake[b]).toMatchObject({ why: 'chờ take khác của cảnh này', timed: true })
+    defer = false
+    holdNewSubmits(true)
+    useProject.getState().loadProject({ ...project(), scenes: project().scenes.filter((s) => s.id !== 's2') })
+    await vi.advanceTimersByTimeAsync(6_000)
+    // past their time: no "Chờ tới …" any more — they wait for the update / an Undo of the delete
+    expect(useTakeWaits.getState().byTake[a]).toBeUndefined()
+    expect(useTakeWaits.getState().byTake[b]).toBeUndefined()
+    expect([take(a).status, take(b).status]).toEqual(['queued', 'queued'])
+    holdNewSubmits(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(take(a)).toMatchObject({ status: 'processing', remoteId: 'r_' + a })
+    expect(take(b).status).toBe('queued')
+  })
+
+  it('"too many downloads at once" (deferred) is never counted as a failed try: five of them never fail the take', async () => {
+    const f = fakeProvider('dev')
+    let tries = 0
+    f.p.fetchResult = async () => {
+      tries++
+      if (tries <= 6) throw Object.assign(new Error('Đang tải quá nhiều video cùng lúc — SanoVids tải video này sau.'), { code: 'deferred' })
+      return { video: new Blob(['v'], { type: 'video/mp4' }), poster: new Blob(['p']) }
+    }
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(6 * 16_000)
+    expect(tries).toBe(7)
+    expect(take(id).status).toBe('completed')
+  })
+
+  it('reloading the same project mid-download: the old download is aborted, and its late end never touches the new one', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(1)
+    useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 }) // persist reload, same project
+    expect(calls[0].opts!.signal!.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(calls).toHaveLength(2) // downloaded again by the restarted engine
+    calls[1].opts!.onProgress!({ received: 30, total: 100 })
+    calls[0].reject(Object.assign(new Error('Đã dừng tải video.'), { code: 'aborted' })) // the old one ends late
+    await vi.advanceTimersByTimeAsync(0)
+    expect(transferLabel(useTakeTransfers.getState().byTake[id])).toBe('Đang tải về 30%') // not cleared by the old one
+    useRuns.getState().cancel(id)
+    expect(calls[1].opts!.signal!.aborted).toBe(true) // its controller is still the one cancel() reaches
+    calls[1].reject(new Error('aborted'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(take(id).status).toBe('cancelled')
+  })
+
+  it('a failed download clears its progress; the take keeps waiting at 99 % for the next try', async () => {
+    const f = fakeProvider('dev')
+    const calls = manualFetch(f)
+    const id = await finished(f)
+    await vi.advanceTimersByTimeAsync(250)
+    calls[0].opts!.onProgress!({ received: 10, total: 100 })
+    calls[0].reject(Object.assign(new Error('Mất kết nối khi đang tải video.'), { code: 'network' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useTakeTransfers.getState().byTake).toEqual({})
+    expect(take(id)).toMatchObject({ status: 'processing', progress: 99 })
+  })
+})
+
+describe('runs engine: imported takes ("Nhập job" — the job was made on canvasapp’s page)', () => {
+  const draft = (jobId: string, sceneId: string, createdAt: number | null): SiteTakeDraft => ({
+    jobId,
+    remoteId: `proj:${jobId}`,
+    nodeId: 'node',
+    sceneId,
+    job: { job_id: jobId, status: 'processing' },
+    jobName: `Video ${jobId}`,
+    createdAt,
+    progress: 30,
+    reimport: false,
+    settings: { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: '16:9' },
+    unknown: ['resolution'],
+    inferred: [],
+    prompt: 'A hero walks',
+    refs: [],
+    imageKeys: [],
+    frames: { first: null, last: null },
+    cost: 0,
+    hint: null,
+  })
+
+  it('only claimed drafts become takes — processing with their remote id, numbered in creation order; polled and finished, never submitted', async () => {
+    const f = fakeProvider('dev')
+    registerProvider(f.p)
+    useRuns.setState({ takes: [{ ...finishedTake('old'), sceneId: 's2', number: 3 }] })
+    const asked: SiteJobClaim[] = []
+    const res = useRuns.getState().importTakes({
+      projectId: 'p',
+      provider: 'dev',
+      drafts: [draft('job_b', 's2', 2000), draft('job_a', 's2', 1000), draft('job_x', 's2', 1500), draft('gone', 's9', 1)],
+      claim: (c) => {
+        asked.push(...c)
+        return c.filter((x) => x.job.job_id !== 'job_x').map((x) => x.key)
+      },
+    })
+    expect(asked.map((c) => c.job.job_id)).toEqual(['job_a', 'job_x', 'job_b'])
+    expect(res.skipped).toEqual([
+      { jobId: 'gone', code: 'scene-gone' },
+      { jobId: 'job_x', code: 'claimed' },
+    ])
+    const [a, b] = res.takeIds.map(take)
+    expect([a.number, b.number]).toEqual([4, 5])
+    expect(a).toMatchObject({ status: 'processing', remoteId: 'proj:job_a', provider: 'dev', charged: false, progress: 30, createdAt: 1000, startedAt: 1000, imported: { jobName: 'Video job_a', unknown: ['resolution'], inferred: [] } })
+    // the same job again (a second scan / click) is never a second take
+    expect(useRuns.getState().importTakes({ projectId: 'p', provider: 'dev', drafts: [draft('job_a', 's2', 1000)], claim: (c) => c.map((x) => x.key) })).toEqual({
+      takeIds: [],
+      skipped: [{ jobId: 'job_a', code: 'in-project' }],
+    })
+    f.statuses.set('proj:job_a', { remoteId: 'proj:job_a', state: 'completed' })
+    f.statuses.set('proj:job_b', { remoteId: 'proj:job_b', state: 'processing', progress: 60 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take(a.id).status).toBe('completed')
+    expect(take(b.id).progress).toBe(60)
+    expect(f.submitted).toEqual([])
+    // "Chạy lại" (retry) of an imported take: a NEW take of its scene, never the imported one sent
+    const r = useRuns.getState().retry(a.id)
+    expect(r?.queued).toBe(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(f.submitted.map((s) => s.key)).not.toContain(a.id)
+    expect(f.submitted).toHaveLength(1)
+  })
+
+  it('another project open now: nothing imported, the ledger never asked', () => {
+    let asked = false
+    const res = useRuns.getState().importTakes({
+      projectId: 'other',
+      provider: 'dev',
+      drafts: [draft('job_a', 's2', 1000)],
+      claim: (c) => {
+        asked = true
+        return c.map((x) => x.key)
+      },
+    })
+    expect(res).toEqual({ takeIds: [], skipped: [{ jobId: 'job_a', code: 'project-changed' }] })
+    expect(asked).toBe(false)
+    expect(useRuns.getState().takes).toEqual([])
   })
 })

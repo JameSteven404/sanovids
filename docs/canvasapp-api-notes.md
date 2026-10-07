@@ -19,7 +19,7 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `input`) and appends which request was refused and its status, ids and query left out:
   `… [PUT /api/projects/{id}/canvas · HTTP 422]` (`errorFromResponse` / `requestLabel` in `api.ts`).
 - `GET /api/auth/state` → `{ authenticated: boolean, topup_enabled, google_login_enabled, simple_mode: {...} }`.
-- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency (SanoVids: up to 10 jobs, but one job-list read per poll for all of them, submits one at a time, at most 2 API requests + 2 video downloads in flight), polling ≥ 15 s.
+- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency (SanoVids: up to 10 jobs, but one job-list read per poll for all of them — plus one right before each job POST, which drops the gateway's 15 s cache —, submits one at a time, at most 2 API requests + 2 video downloads in flight), polling ≥ 15 s.
 
 ## Account
 - `GET /api/me` → `{ credits_balance: number, ... }` (1 credit ≈ 1.000đ).
@@ -30,7 +30,14 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   fallback (a list narrower than the fallback's → the fallback's; `enabled` / `can_create` not a boolean → false).
   `runVideoNode()` refuses `can_create === false` and a mode in `disabled_modes` (it ignores `enabled`).
   SanoVids reads it before submitting (cached 10 min; after a failed read the fallbacks apply and it is read again a
-  minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`).
+  minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`). The inspector, the
+  Run buttons and the run dialog use that same cache and the same rule (`profileIssues`, adapter `settingsLimits()`):
+  a read < 10 min old disables what it refuses; fallbacks / an older read only warn. The UI reads it too (TTL-gated,
+  "Đọc lại" ≤ every 5 s, a read after a login at once, sharing one request with a submit). VERIFY: whether the endpoint needs a login (SanoVids
+  assumes 401 when logged out, like the dev server), whether `visible: false` / `enabled: false` hide or grey a model in
+  canvasapp's picker (SanoVids ignores both, like `runVideoNode()`), whether the server itself refuses a duration /
+  resolution / ratio outside the lists (only the client is known to), and whether the lists can hold values SanoVids'
+  model table lacks (they would not be offered until `core/models.ts` and its pricing learn them).
 - `GET /api/credits/history?kind=all&offset=0&limit=20`.
 
 ## Images
@@ -45,14 +52,18 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `client_request_id`. Project / upload / job ids come from the server.
 - SanoVids (`mapping.ts`) derives them deterministically with `uuidFromKey(text)` (128-bit cyrb128 hash printed as an
   RFC 4122 v4 UUID: lowercase, version nibble 4, variant 8–b):
-  - video node id = `canvasNodeId(sceneId)` — stable per scene (the `canvas_node_id` of that scene's jobs);
+  - video node id = `canvasNodeId(sceneNodeKey(projectId, sceneId))` (`sceneNodeId`) — stable per scene OF A SanoVids
+    PROJECT (the `canvas_node_id` of that scene's jobs): projects sharing scene ids (a duplicated / re-imported
+    project) get their own nodes. Key = `node:<length of projectId>:<projectId>:<sceneId>`; builds before that used
+    the bare scene id (`canvasNodeId(sceneId)`, same hash): those "legacy" nodes stay valid for the jobs sent on them;
   - image node id = `imageNodeId(uploadId, occurrence)` — one image node per upload, shared by every video node that
     uses it; occurrence > 0 only when one video node takes the same upload twice (the client keeps one edge per image
     node and target; first and last frame must be two different image nodes);
   - `client_request_id` = `clientRequestIdFor(take id)` — stable per take, so a retry of the same take always sends
     the same key. The local job ledger (`bdp:canvasapp:jobs`) stays keyed by the take id. A lost answer is matched in
     the job list by the UUID, or by the bare take id that v0.2.0 sent.
-  - Node ids are never stored: bridge entries saved by v0.2.0 (`sv_<sceneId>` era) are rebuilt with UUIDs.
+  - Node ids are never stored: bridge entries are keyed by the node key (a bare scene id for older entries) and the
+    id is derived each time; entries saved by v0.2.0 (`sv_<sceneId>` era) are rebuilt with UUIDs.
 
 ## Canvas projects ("Phiên")
 - `GET /api/projects` → `[{ project_id, name }]` (`refreshProjectPicker()`).
@@ -60,7 +71,10 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `PATCH /api/projects/{id} { name }` (`#renameProject`). SanoVids does the same for "SanoVids bridge" (a failed
   rename is ignored: the id is remembered locally).
 - `DELETE /api/projects/{id}` (not used by SanoVids).
-- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`).
+- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`). SanoVids reads it only for
+  "Nhập job" (reverse sync, `scanSiteJobs`): the bridge node a site-made job ran from hints its resolution / mode /
+  pictures — only when that node's prompt, model, duration and ratio match the job (VERIFY: is node data kept exactly as
+  PUT?).
 - `PUT /api/projects/{id}/canvas` — body exactly as `canvasPayload()` builds it, **no other key anywhere**:
   ```json
   { "nodes": [
@@ -90,10 +104,11 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
     `transformInputState()`; `ratioFromDimensions()`: nearest of 16:9, 9:16, 1:1, 4:3, 3:4 within 2 %); the client
     will not run it when the frames differ in ratio or have an unsupported one. SanoVids reads both pictures' sizes
     before uploading and refuses the same cases.
-  - SanoVids' bridge canvas (`bridgeCanvas()`): one video node per scene, one image node per upload (shared), newest
-    scenes first, older ones left out past 40 nodes, 30 image uploads or 400.000 prompt characters (keeps the PUT far
-    below the desktop gateway's 2 MB JSON cap). Its scene entries are remembered only once canvasapp accepted the
-    PUT; a refused PUT is tried once more with the current scene alone (an older scene may be what is refused).
+  - SanoVids' bridge canvas (`bridgeCanvas()`): one video node per scene of a project, one image node per upload
+    (shared), newest scenes first, older ones left out past 40 nodes, 30 image uploads or 400.000 prompt characters
+    (keeps the PUT far below the desktop gateway's 2 MB JSON cap); nodes of running jobs are never left out. Its scene
+    entries are remembered only once canvasapp accepted the PUT, and only those on that canvas; a refused PUT is tried
+    once more without the scenes whose jobs have ended (an older scene may be what is refused).
 
 ## Video jobs (canvas mode)
 - `POST /api/video-jobs` — body as `runVideoNode()` builds it. Always, in this order:
@@ -121,9 +136,19 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `creation_mode` or with `creation_mode === 'canvas'`). Job fields: `job_id, job_name, canvas_node_id, model_profile,
   status ('queued'|'processing'|'completed'|'failed'|'cancelled'|'expired'), submission_state ('not_submitted'|
   'submitting'|'accepted'), progress (0–100), download_available, error_message, duration, aspect_ratio, created_at,
-  finished_at, provider_started_at, provider_finished_at, creation_mode`.
+  finished_at, provider_started_at, provider_finished_at, creation_mode`. VERIFY the format of `created_at` /
+  `finished_at` (ISO 8601 with or without a time zone, or a Unix number) and of `duration`: SanoVids reads only an
+  ISO 8601 date-time or a number (below 1e11 = seconds) as a time and a number / numeric string as a duration;
+  anything else is unknown, and an unknown value never rules a job out of a lost answer's lookup. VERIFY that every
+  job carries `canvas_node_id`: one without a string node counts as possibly on any node (in every POST's `before`, a
+  candidate of every lookup — at worst "không rõ", never a second POST).
 - `GET /api/video-jobs/{job_id}/stream` → the MP4; `GET /api/video-jobs/{job_id}/prompt` → `{ prompt }`
-  (`runDownloadTask()`, both plain GETs).
+  (`runDownloadTask()`, both plain GETs). SanoVids reads `/prompt` for "Nhập job" only (one job at a time, ≤ 20 per
+  import; empty / unreadable / over 20.000 chars = unknown). VERIFY: the trimmed prompt as posted, also for jobs made on
+  the site and expired ones.
+- Jobs made on canvasapp's own page (a node of "SanoVids bridge", random `client_request_id`) are imported as takes by
+  "Nhập job" — read-only (GETs above + the job list); the job list must carry `canvas_node_id` for that (VERIFY), and
+  `client_request_id` / `mode` / `resolution` there would make it exact (see docs/GATEWAY-CANVASAPP.md §4).
 - `POST /api/video-jobs/{job_id}/download-token` → `{ download_token }`, then `GET /api/download/{token}`.
 - `DELETE /api/video-jobs/{job_id}`. The site polls the job list every 60 s.
 
@@ -134,11 +159,71 @@ e2e test so a request outside it fails the tests): `GET/POST /api/projects`, `GE
 (`?project_id=` only), `GET /api/video-jobs/{id}/prompt|stream`, `DELETE /api/video-jobs/{id}`, plus `/api/me`,
 `/api/auth/state`, `/api/video-profiles`, top-up and credit history. JSON bodies ≤ 2 MB, uploads ≤ 20 MB, path ids
 `[A-Za-z0-9_-]{1,80}` (UUIDs fit).
+API calls (`canvasapp:request`) go through the partition's `session.fetch` with `redirect: 'error'`: no redirect is
+followed, https → http included (the X-CSRF-Token never goes elsewhere); a 3xx answer fails as `network`
+("canvasapp.io.vn chuyển hướng yêu cầu…"), not as 401. VERIFY on the live site: whether any API route answers 3xx (an
+expired session, not logged in, a canonical host or trailing-slash rule) — the login prompt keys on 401.
+Videos (`GET /api/video-jobs/{id}/stream`, the only `binary` route) are pulled by the page in pieces through
+`canvasapp:downloadOpen / downloadRead / downloadClose` (block `<canvasapp-downloads>`) — `canvasapp:request` refuses
+that route (`matchCanvasappRequest`): no video ever comes in one IPC message. The page sends a download id it chose
+(UUID), the allowlisted path and a byte to continue from — never a URL, header or validator. Main sends the GET through
+`net.request` (block `<canvasapp-net-get>`, canvasapp partition, `redirect: 'manual'`): a redirect is followed only to
+an https URL — a request to http is never sent (`session.fetch` would follow it and never say where it ended). Headers:
+`Accept: video/mp4,*/*`, and `Range: bytes=N-` + `If-Range: <ETag | Last-Modified>` only to continue a video whose
+strong validator it got from canvasapp (kept 10 min after the last connection for that path ended). It refuses an
+announced size over 1 GB, a 206 that does not start where asked (or of unknown size), a 206 to a resume that does not
+carry the validator If-Range named (a server ignoring If-Range could send the rest of another file) and a 416 to a
+resume (`bad-range` → the page starts over once). A `Content-Encoding` body has no usable length or offsets: no length
+check, no resume. Limits: pieces ≤ 4 MiB, 60 s without a byte, 5 min until the headers, 60 min per connection
+(`too-slow`: continued on a new connection when it can resume, else the take fails at once — paid, where to get it),
+30 s without a read from the page, 16 downloads open or waiting, one slot of the 'download' lane (2) per connection
+from open to end. `download-token` is not used (still refused by the allowlist).
+VERIFY on the live site: Content-Length, Accept-Ranges, ETag / Last-Modified, compression, redirects of `/stream`.
 
 ## Simple mode (pilot, only for eligible accounts)
 - `GET/POST /api/simple-projects`, `GET/PUT /api/simple-projects/{id}/state` `{ prompt, images:[{slot, upload_id}] }`.
 - `POST /api/simple-video-jobs` (prompt references images by `@image_<slot>` tags — same idea as SanoVids tokens).
 - `GET /api/simple-video-jobs?simple_project_id=…&limit=50`.
+
+## Reference videos (@video_N) — not observed
+The client code these notes come from has **no video input anywhere**. These notes are a summary, not a copy (no
+`canvas.js` is kept in the repo), so this is strong evidence, not proof — "not observed", not "impossible":
+- the only upload is `POST /api/uploads/images` (JPG/PNG/WEBP); no other `/api/uploads/` path is recorded;
+- saved node types are `video` and `images` (`result` nodes are client-only and never saved, so no saved edge can
+  start from a finished job);
+- connections start at an image node, with `target_handle` `reference` / `first_frame` / `last_frame` only;
+- job bodies carry `upload_ids` or the two `*_frame_upload_id` keys, nothing else per node kind;
+- `/api/video-profiles` options (`modes, disabled_modes, durations, resolutions, aspect_ratios, pricing`) have no
+  video key; the only per-node media cap is `MAX_REFERENCE_IMAGES`;
+- simple mode stores `images:[{slot, upload_id}]` and tags `@image_<slot>` only.
+
+The server refuses unknown keys, so guessing is not an option: a wrong key is a 422 (no charge), but a key the server
+accepts and ignores would bill a video made without its reference. SanoVids therefore sends no video and refuses a
+scene that would send one **before uploading or billing anything**, at three layers: `capabilities().maxRefVideos`
+= `CANVASAPP_MAX_REF_VIDEOS` = 0 (`providers/capabilities.ts`, read by store/runs `check()` and every one-scene
+Run button through `core/runGate.ts`), `validateRequest` in `mapping.ts` (refuses any `req.videos`, whatever the cap),
+and the strict dev / e2e validators (`providers/dev/validate.ts`: node types, handles and job keys). Development mode
+refuses it the same way (same adapter); it simulates no video endpoint, so no test passes against an invented shape.
+
+**What to capture before opening it** (functions of `canvas.js` / `simple-mode.js`, exact names and key order):
+1. `uploadCanvasFile()` and every `/api/uploads/` path: any video upload — path, multipart field, `accept=` / MIME
+   list, size and duration limits, response key.
+2. Node factories besides `createVideoNode()` and the image upload handler: a node type holding a video, its exact
+   `data` keys, `w` / `h`. Can a `result` node (a finished job) be the `from` end of an edge into a video node?
+3. `normalizeConnections()`: every `target_handle` value, how `order` is numbered for a video handle, any cap next to
+   `MAX_REFERENCE_IMAGES` (per node and per canvas), and where video edges sit relative to reference / frame edges.
+4. `runVideoNode()`: every body key per model / mode, in order. Is a reference video sent as an upload id or as a job
+   id, and for which `model_profile` / `mode`?
+5. `canvasPayload()`: is such a node / edge saved, and in what shape?
+6. `loadVideoProfiles()` / `PROFILE_FALLBACKS` / `profileSpec()`: any reference-video option (limit, modes) and
+   whether `pricing` changes when videos are attached.
+7. The tag the client inserts for a video (`@video_N` or another form SanoVids would have to map).
+8. `simple-mode.js` `PUT /api/simple-projects/{id}/state`: any `videos` array.
+9. If videos go by job id: must the job be in the same project / account, and what happens when it is `expired` or
+   deleted (`DELETE /api/video-jobs/{id}`)?
+10. The operator: do Seedance 2.5 / MiniMax-H3 on canvasapp take reference videos at all, and may SanoVids use them?
+
+What changes once the shape is known is listed in `docs/GATEWAY-CANVASAPP.md` §8.
 
 ## Pricing (credits) — identical to SanoVids' `core/models.ts`
 - Seedance 2.5: 480p {5:4,10:5,15:10,30:15} · 720p {5:5,10:10,15:15,30:20} · 1080p {5:10,10:15,15:20,30:25}

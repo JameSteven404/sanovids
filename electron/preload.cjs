@@ -40,8 +40,27 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     login: () => ipcRenderer.invoke('canvasapp:login'),
     /** Clears the canvasapp session (cookies, storage, cache) of the gateway partition. */
     logout: () => ipcRenderer.invoke('canvasapp:logout'),
-    /** { method, path, json?, form?, binary? } → { ok: true, status, contentType, json?, text?, bytes? } | { ok: false, code, message } */
+    /**
+     * { method, path, json?, form? } → { ok: true, status, contentType, json?, text? } | { ok: false, code, message }
+     * — never the video stream (main refuses it here: downloadOpen / downloadRead / downloadClose).
+     */
     request: (req) => ipcRenderer.invoke('canvasapp:request', req),
+    /**
+     * Finished videos, pulled in pieces (main reads the HTTP body; nothing big crosses in one message).
+     * { id (a UUID the page picks), path (allowlisted GET …/stream), from (continue at this byte; main decides whether
+     * it can) } → { ok: true, id, status, contentType, from, total, resumable } | { ok: true, status, contentType,
+     * json?, text? } (not 200 / 206) | { ok: false, code, message }
+     */
+    downloadOpen: (a) =>
+      ipcRenderer.invoke('canvasapp:downloadOpen', {
+        id: str(a && a.id),
+        path: str(a && a.path),
+        from: a && Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0,
+      }),
+    /** { id } → the next piece: { ok: true, done: false, bytes } | { ok: true, done: true } | { ok: false, code, message } */
+    downloadRead: (a) => ipcRenderer.invoke('canvasapp:downloadRead', { id: str(a && a.id) }),
+    /** { id } → stops that download (also while it waits for its turn) → { ok: true } */
+    downloadClose: (a) => ipcRenderer.invoke('canvasapp:downloadClose', { id: str(a && a.id) }),
     /**
      * Top-up: { checkoutUrl, fields } (from POST /api/payments/topups) → opens the REAL checkout page (SePay) in a
      * modal window; main re-validates the URL. → { ok: true, result: 'success'|'cancel'|'error'|'closed'|'timeout',
