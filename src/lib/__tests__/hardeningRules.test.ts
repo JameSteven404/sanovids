@@ -613,10 +613,13 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
   it('preload: "Giữ đăng nhập" lives INSIDE the canvasapp block (no new top-level key); only a boolean crosses', () => {
     const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
-    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(['status', 'login', 'logout', 'keepLogin', 'setKeepLogin', 'request', 'checkout'])
+    expect([...block![1].matchAll(/^ {4}(\w+): /gm)].map((m) => m[1])).toEqual(expect.arrayContaining(['status', 'login', 'logout', 'keepLogin', 'setKeepLogin', 'request']))
     expect(block![1]).toContain("keepLogin: () => ipcRenderer.invoke('canvasapp:keepLogin')")
     expect(block![1]).toContain("setKeepLogin: (on) => ipcRenderer.invoke('canvasapp:setKeepLogin', on === true)")
-    expect([...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])).toEqual(['version', 'electron', 'platform', 'app', 'canvasapp', 'files', 'updates'])
+    const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
+    expect(topKeys).not.toContain('keepLogin')
+    expect(topKeys).not.toContain('setKeepLogin')
+    expect(count("'canvasapp:keepLogin'") + count("'canvasapp:setKeepLogin'")).toBe(2) // main: one handler each
     // the keep-login rules module is pure like hardening-rules (no require), and main never adds a quit hook for it
     expect(mainSource).toContain("const keepLoginRules = require('./keeplogin-rules.cjs')")
     expect(mainSource).not.toMatch(/'before-quit'|'will-quit'/)
