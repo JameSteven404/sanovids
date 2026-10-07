@@ -712,17 +712,6 @@
   font-size: 10.5px;
   cursor: text;
 }
-.cv-take-used {
-  flex: none;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--video-soft);
-  color: var(--video);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-}
 /* Imported take ("Nhập job": its job was made on canvasapp's own page). */
 .cv-take-imported {
   flex: none;
@@ -733,22 +722,6 @@
   font-size: 10px;
   font-weight: 600;
   line-height: 16px;
-}
-/* Take whose scene was deleted (kept because a scene still uses it as @video). */
-.cv-take-orphan {
-  /* may shrink (narrow resized take) so the action buttons stay inside the node */
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  white-space: nowrap;
 }
 .cv-take-actions {
   display: inline-flex;

@@ -127,7 +127,7 @@ describe('every one-scene Run button is gated by core/runGate (no drift to a pro
     [...src.matchAll(/requestRun\(\[/g)].map((m) => src.slice(src.lastIndexOf('<button', m.index), src.indexOf('</button>', m.index)))
   it.each(FILES)('%s', (file) => {
     const src = read(file)
-    expect(src).toMatch(/useSceneRunBlock\(|runBlockReason\(/)
+    expect(src).toMatch(/useSceneRunBlock\(|runBlockReason\(|runBlock\(\{/)
     const buttons = runButtons(src)
     expect(buttons.length).toBeGreaterThan(0)
     for (const b of buttons) {
@@ -138,10 +138,10 @@ describe('every one-scene Run button is gated by core/runGate (no drift to a pro
   it('the inspector gates its Run button (head; the costed one moved onto the scene node in 0.6.0)', () => {
     expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(1)
   })
-  it('the places that call runBlockReason themselves pass the gateway’s refusal of the settings too', () => {
-    for (const file of ['../../components/canvas/SceneNode.tsx', '../../store/runs.ts']) {
-      expect(read(file)).toMatch(/runBlockReason\([^)]*settingsBlock/)
-    }
+  it('the places that call runBlockReason / runBlock themselves pass the gateway’s refusal of the settings too', () => {
+    // the scene node: core/runRules runBlock (the reason + which rule, for "Chưa chạy · còn chữ đỏ")
+    expect(read('../../components/canvas/SceneNode.tsx')).toMatch(/runBlock\(\{[^)]*settingsBlock/)
+    expect(read('../../store/runs.ts')).toMatch(/runBlockReason\([^)]*settingsBlock/)
     expect(read('../../components/runs/shared.tsx')).toMatch(/sceneRunBlock\(scene, assets, settingsBlock\)/)
   })
 })

@@ -129,9 +129,9 @@ import {
   type ToolbarDensity,
 } from './canvasModel'
 import { maybeSpaceRows } from './rowSpacing'
-import { SceneNode, type SceneFlowNode, type SceneNodeData } from './SceneNode'
+import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
-import { isWireClick, markFreshWires, newWireIds, refDotTones, setWireReconnecting, wireClickAction, wireZ, type RefDotTone, type WirePress } from './wireFx'
+import { isWireClick, markFreshWires, newWireIds, setWireReconnecting, wireClickAction, wireZ, type WirePress } from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
 import './wires.css'
@@ -150,8 +150,6 @@ const TOOLBAR_ROOM = 56
 const MENU_ROOM = 154
 const EMPTY_DATA: Record<string, unknown> = {}
 const minimapNotified = new Set<string>()
-/** Scene node data per reference-dot color: constant objects, so a scene node only re-renders when its color changes. */
-const SCENE_DATA: Record<RefDotTone | 'image', SceneNodeData> = { image: {}, video: { refDot: 'video' }, mixed: { refDot: 'mixed' } }
 
 interface RawEdge {
   id: string
@@ -280,8 +278,6 @@ function CanvasInner() {
     wireIds.current = new Set(ids)
     return list
   }, [scenes, assets, takeLayout, folders])
-  // Each scene's reference dot takes the color of the wires drawn into it.
-  const refTones = useMemo(() => refDotTones(rawEdges), [rawEdges])
 
   // ---------------- stored layout (unaffected by drag, selection and measurement frames) ----------------
   const nodeCache = useRef(new Map<string, CanvasNode>())
@@ -323,7 +319,8 @@ function CanvasInner() {
     }
     for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA, a.size)
     for (const f of folders) push(f.id, 'folder', f.position, EMPTY_DATA, null)
-    for (const s of scenes) push(s.id, 'scene', s.position, SCENE_DATA[refTones.get(s.id) ?? 'image'], sceneNodeSize(s.size))
+    // Every wire into a scene's reference dot is an image wire (reference videos were retired in 0.6.0): constant data.
+    for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA, sceneNodeSize(s.size))
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
     // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes in the row before it
@@ -362,7 +359,7 @@ function CanvasInner() {
     takeData.current = dataNext
     nodeCache.current = next
     return out
-  }, [scenes, assets, folders, takeLayout, refTones])
+  }, [scenes, assets, folders, takeLayout])
 
   const liveCache = useRef(new Map<string, CanvasNode>())
   const nodes = useMemo(() => {

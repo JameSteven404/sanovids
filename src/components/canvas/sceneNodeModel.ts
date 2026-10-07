@@ -175,8 +175,9 @@ export interface RunView {
 }
 
 /**
- * What the node's Run button says. `reason` = core/runRules runBlockReason (null = can run); `placeholders` = the
- * prompt still holds red "@image_?N" placeholders (Run blocked by them: "Chưa chạy · còn chữ đỏ"). The label never
+ * What the node's Run button says. `reason` = core/runRules runBlockReason (null = can run); `placeholders` = text
+ * drawn red in the prompt blocks it (core/runRules isRedTextBlock: retired @video text, red placeholders
+ * "@image_?N(…)", labels that do not fit, numbers with no picture): "Chưa chạy · còn chữ đỏ". The label never
  * repeats the duration (it is in the title and the run confirmation).
  */
 export function runButtonView(

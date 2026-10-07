@@ -1,5 +1,6 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
-// Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
+// Wired from its scene ('out' edge); once completed its right dot drags into a Thư mục (save) or onto empty canvas
+// (the next scene from this video). Videos are never references of a scene any more (retired in 0.6.0).
 //
 // Layout (near): a title line ABOVE the card's top-left (code, "+N", custom file name, DEV, ★, and the rename input),
 // then the card: the clean picture (nothing drawn over a finished take; the whole frame, letterboxed), the 30px player
@@ -37,7 +38,6 @@ import {
   TAKE_POSTER_H,
   takeDotTop,
   takeIndexOf,
-  videoUsageOf,
 } from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RENAME_TAKE_EVENT, takePendingRename, type RenameTakeDetail } from './takeEvents'
@@ -58,9 +58,9 @@ function openTake(takeId: string) {
 }
 
 /**
- * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video — the
- * node's trash button already needed a second click (TakeDeleteButton), like the viewer's. deleteTakes also removes
- * its media blobs, drops it from the selection and says so in a toast.
+ * Delete one take (not undoable) through actions.deleteTakes, never asking again: the node's trash button already
+ * needed a second click (TakeDeleteButton), like the viewer's (no scene uses a video as a reference any more).
+ * deleteTakes also removes its media blobs, drops it from the selection and says so in a toast.
  */
 export function deleteTake(takeId: string) {
   deleteTakes([takeId], { confirm: 'usedOnly' })
@@ -72,9 +72,9 @@ const ARM_MS = 3500
 /**
  * Trash button of a take node. Deleting a video cannot be undone and the button sits next to "Chạy lại", so the
  * first click only arms it ("Xoá?", red) and the second one deletes; it disarms after a few seconds or when the
- * pointer leaves. A take used as @video goes straight to deleteTake's confirm dialog instead.
+ * pointer leaves.
  */
-function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
+function TakeDeleteButton({ takeId }: { takeId: string }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
     if (!armed) return
@@ -89,7 +89,7 @@ function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
       onMouseLeave={() => setArmed(false)}
       onClick={(e) => {
         e.stopPropagation()
-        if (!armed && !used) {
+        if (!armed) {
           setArmed(true)
           return
         }
@@ -254,7 +254,6 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   perfCount('TakeNodeView')
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
   const order = useProject((s) => (take ? sceneMapOf(s.project.scenes).get(take.sceneId)?.order : undefined))
-  const usage = useProject((s) => videoUsageOf(s.project.scenes).get(id) ?? 0)
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const [hover, setHover] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
@@ -412,16 +411,6 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
                 nhập
               </span>
             )}
-            {order === undefined && (
-              <span className="cv-take-orphan" title="Cảnh gốc của video này đã bị xoá. Video vẫn ở đây vì còn cảnh dùng nó làm @video.">
-                cảnh đã xoá
-              </span>
-            )}
-            {usage > 0 && (
-              <span className="cv-take-used" title={`Đang dùng làm @video ở ${usage} cảnh`}>
-                @v·{usage}
-              </span>
-            )}
             <span className="cv-spacer" />
             <span className="cv-take-actions nodrag nopan" onPointerDown={stop} onDoubleClick={stop}>
               <button className="cv-take-btn" title="Xem" aria-label="Xem take" onClick={(e) => (e.stopPropagation(), openTake(id))}>
@@ -450,7 +439,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
               >
                 <RotateCcw size={14} strokeWidth={1.75} />
               </button>
-              <TakeDeleteButton takeId={id} used={usage > 0} />
+              <TakeDeleteButton takeId={id} />
             </span>
           </div>
         )}

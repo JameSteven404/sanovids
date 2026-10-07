@@ -4,7 +4,8 @@
 // - Local text state, committed to the store through a short throttle (and on blur, Esc, Ctrl shortcuts, structural
 //   changes via lib/promptDrafts) — the same engine rules as the right panel's PromptEditor.
 // - Tokens are coloured by the backdrop mirror behind the transparent textarea, through the shared helpers of
-//   components/inspector/tokens.ts (segmentPrompt) — never a token regex of its own.
+//   components/inspector/tokens.ts (segmentForScene: red placeholders, labels that do not fit, missing / unsent numbers,
+//   retired @video text, each with its invalidTokenTitle) — never a token regex of its own.
 // - "@" opens a caret-anchored list (linked images, library assets "Nối & chèn"); positions follow the canvas zoom.
 // - Library cards / image tiles / image files dropped on the text: linked and their @image_N inserted where dropped,
 //   in one undo step. Keys stay inside (Delete, Backspace, arrows, N / C / F never reach the canvas); Esc leaves the
@@ -28,6 +29,8 @@ import { createPortal } from 'react-dom'
 import { canvasEvents, createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
 import { assetByTag, sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
+import { placeholderGroups } from '../../core/placeholders'
+import { fillPlaceholderAction } from '../../placeholderActions'
 import type { Asset, Scene } from '../../core/types'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
@@ -43,7 +46,7 @@ import {
   invalidTokenTitle,
   planImageLinks,
   remapOffset,
-  segmentPrompt,
+  segmentForScene,
   snapToWordEnd,
   suggestionToken,
   suggestMedia,
@@ -200,6 +203,27 @@ export function linkCardsToNode(sceneId: string, targets: string[], ids: string[
 }
 
 /**
+ * One library card / image tile dropped on a node's "Chữ đỏ chờ ảnh" strip: it fills the group `groupKey` (the chip
+ * it landed on; null = the strip's only group) through GT1's explicit fill path (placeholderActions
+ * fillPlaceholderAction: linked when it was not, numbers kept, a refusal says why) — and a card with no tile on the
+ * canvas gets one (4A) — in ONE undo step; the prompt being typed is committed first, as its own step. false = no
+ * group to fill (several groups and no chip under the pointer): the caller links the picture like any drop.
+ */
+export function fillFromDrop(sceneId: string, groupKey: string | null, assetId: string): boolean {
+  flushScenes([sceneId])
+  const { project } = useProject.getState()
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  if (!scene) return false
+  const groups = placeholderGroups(scene.prompt, project.assets, scene.refs)
+  const key = groupKey && groups.some((g) => g.key === groupKey) ? groupKey : groups.length === 1 ? groups[0].key : null
+  if (!key) return false
+  oneUndoStep(() => {
+    if (fillPlaceholderAction(sceneId, key, assetId)) placeLinkedTiles(sceneId, [assetId])
+  })
+  return true
+}
+
+/**
  * Library cards / tiles dropped on the STATIC prompt text of a node: link them and insert their @image_N where they
  * were dropped (`textBefore` = the static text up to the drop point: staticTextBefore) — the link, the tags and the
  * tiles of cards not on the canvas yet in ONE undo step. false = the point is not on the text (the caller links only).
@@ -262,14 +286,13 @@ export interface NodePromptFieldProps {
   scene: Scene
   /** Inputs of the scene's compile (refs, frames, legacy tags): useProject(useShallow(sceneAssetsOf)). */
   assets: Asset[]
-  /** Images the request really carries (model limit, mode): tokens past them are shown invalid. */
-  sent: { images: number }
-  imageCount: number
+  /** Images the request really carries (compileScene: model limit, mode): tokens past them are shown invalid. */
+  sentImages: number
   /** Placeholder of an empty prompt. */
   placeholder: string
 }
 
-export const NodePromptField = memo(function NodePromptField({ scene, assets, sent, imageCount, placeholder }: NodePromptFieldProps) {
+export const NodePromptField = memo(function NodePromptField({ scene, assets, sentImages, placeholder }: NodePromptFieldProps) {
   const sceneId = scene.id
   const storePrompt = scene.prompt
   const focusReq = useSceneEditor((s) => (s.sceneId === sceneId ? s.focus : null))
@@ -582,7 +605,11 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     if (!nodeEditorKeyBubbles(native, legacyTypingChord)) e.stopPropagation()
   }
 
-  const segs = useMemo(() => segmentPrompt(text, imageCount, legacyTagsOf(assets), sent), [text, imageCount, assets, sent])
+  // The shared highlighter (tokens.ts segmentForScene): the same red marks and titles as the static text and the panel.
+  const segs = useMemo(
+    () => segmentForScene(text, assets, scene.refs, { sentImages, legacyTags: legacyTagsOf(assets) }),
+    [text, assets, scene.refs, sentImages],
+  )
 
   return (
     <>

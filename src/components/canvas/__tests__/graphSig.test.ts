@@ -83,13 +83,22 @@ describe('asset graph / selective scene inputs', () => {
   })
 
   it('includes refs, unlinked frame assets and legacy mentions while ignoring unrelated edits', () => {
-    const frame = { ...asset, id: 'frame', tag: 'Frame' }
-    const legacy = { ...asset, id: 'legacy', tag: 'Legacy' }
-    const unused = { ...asset, id: 'unused', tag: 'Unused' }
+    const frame = { ...asset, id: 'frame', name: 'Khung', tag: 'Frame' }
+    const legacy = { ...asset, id: 'legacy', name: 'Cũ', tag: 'Legacy' }
+    const unused = { ...asset, id: 'unused', name: 'Không dùng', tag: 'Unused' }
     const s = { ...scene, refs: ['a1'], firstFrame: 'frame', prompt: '@Legacy @image_1' }
     const inputs = sceneAssetsOf([asset, frame, legacy, unused], s)
     expect(inputs).toEqual([asset, frame, legacy])
     expect(sceneAssetsOf([asset, frame, legacy, { ...unused, name: 'Đổi' }], s)).toEqual(inputs)
     expect(sceneAssetsOf([asset, { ...frame, imageIds: [] }, legacy, unused], s)).not.toEqual(inputs)
+  })
+
+  it('includes an unlinked character named like a linked one (labels: nameShared), so the node compiles like the engine', () => {
+    const twin = { ...asset, id: 'twin', name: ` ${asset.name.toUpperCase()} `, tag: 'Twin' }
+    const other = { ...asset, id: 'other', name: 'Khác', tag: 'Other' }
+    const s = { ...scene, refs: ['a1'], prompt: '@image_1' }
+    expect(sceneAssetsOf([asset, twin, other], s)).toEqual([asset, twin])
+    // renamed away, the twin is not an input any more
+    expect(sceneAssetsOf([asset, { ...twin, name: 'Riêng' }, other], s)).toEqual([asset])
   })
 })

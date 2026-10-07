@@ -6,13 +6,14 @@
 // Below LOD_ZOOM the far view: big code and name, two prompt lines, pictures, ▶.
 // Its takes are separate Take nodes to the right (wired from the 'take' handle at 62px = the middle of their poster).
 import { Handle, Position, useReactFlow, useStore, type Node, type NodeProps } from '@xyflow/react'
-import { ChevronDown, ImagePlus, Link2, Lock, Play, Plus, TriangleAlert, X } from 'lucide-react'
+import { ChevronDown, ImagePlus, Link2, Lock, Play, Plus, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { edgeId, linkAssets, requestRun, viewImages } from '../../actions'
 import { compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
-import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
-import { foreignModelReason, refStatusLookup, runBlockReason, unsentTokensReason } from '../../core/runRules'
+import { costOf, foreignModelBadge, modeLabel, MODELS } from '../../core/models'
+import { foreignModelReason, isRedTextBlock, runBlock } from '../../core/runRules'
+import { placeholderGroups } from '../../core/placeholders'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
@@ -26,9 +27,10 @@ import { useInPanel, useIsEditing, useSceneEditor, useSettingsOpen } from '../..
 import { useUI } from '../../store/ui'
 import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
-import { segmentPrompt } from '../inspector/tokens'
+import { PlaceholderBar } from '../inspector/PlaceholderBar'
+import { segmentForScene } from '../inspector/tokens'
 import { AssetPicker } from '../inspector/shared'
-import { useGatewayRefVideoCap, useSettingsRunBlock } from '../runs/shared'
+import { useSettingsRunBlock } from '../runs/shared'
 import { appliedPresetId } from '../sidebar/shared'
 import {
   countScenes,
@@ -43,7 +45,6 @@ import {
   sceneMapOf,
   sceneAssetsOf,
   sceneNodeSize,
-  takeIndexOf,
   takeSummary,
   targetScenesFor,
   type TakeSummary,
@@ -53,6 +54,7 @@ import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
   filesToSceneTiles,
+  fillFromDrop,
   insertLinksAtExcerpt,
   legacyTagsOf,
   linkCardsToNode,
@@ -79,12 +81,11 @@ import {
   settingsSummary,
   staticExcerpt,
 } from './sceneNodeModel'
-import type { RefDotTone } from './wireFx'
 import './canvas.css'
 import './sceneNode.css'
 
-/** `refDot`: what the wires drawn into the reference dot carry (CanvasView, wireFx.refDotTones); absent = images only / none. */
-export type SceneNodeData = { refDot?: RefDotTone }
+/** No data: the node reads its scene from the store by id (every wire into its reference dot is an image wire). */
+export type SceneNodeData = Record<string, unknown>
 export type SceneFlowNode = Node<SceneNodeData, 'scene'>
 
 const EMPTY_ASSETS: Asset[] = []
@@ -93,7 +94,7 @@ const PLACEHOLDER = 'Bấm để viết prompt… Gõ @ để chèn ảnh tham c
 /** The scene's two dots sit at 62px: the top of the prompt box = the middle of an unresized take's poster. */
 const DOT_STYLE = { top: DOT_TOP }
 
-function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
+function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   perfCount('SceneNodeView')
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
   const far = useStore((s) => s.transform[2] < LOD_ZOOM)
@@ -133,6 +134,8 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   const hintFor = (e: DragEvent): DropHint => {
     const n = targetScenesFor(id).length
     if (!hasAssetDrag(e.dataTransfer)) return { kind: 'file', text: n > 1 ? `Thêm ô ảnh & nối vào ${n} cảnh` : 'Thả ảnh: thêm ô ảnh & nối vào cảnh' }
+    // onto the red placeholder strip: that picture goes in the red text's place (the fill path, one undo step)
+    if ((e.target as Element | null)?.closest?.('.cv-sn-ph')) return { kind: 'fill', text: 'Thả để gắn vào chỗ chữ đỏ' }
     if (n === 1 && (e.target as Element | null)?.closest?.('.cv-sn-text')) return { kind: 'text', text: '' }
     return { kind: 'asset', text: n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối' }
   }
@@ -179,6 +182,10 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
     const ids = readAssetIds(e.dataTransfer)
     useUI.getState().setDraggingAssets(null)
     if (ids && ids.length) {
+      // One picture on the red placeholder strip: it fills the chip it lands on (or the strip's only group) — linked
+      // when it was not, its tile placed (4A), in one undo step. Several pictures: linked like anywhere on the node.
+      const strip = (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-ph')
+      if (strip && ids.length === 1 && fillFromDrop(id, (e.target as Element).closest<HTMLElement>('[data-ph-group]')?.dataset.phGroup ?? null, ids[0])) return
       // On the static text of this one node: link + insert the @image_N where it was dropped (one undo step).
       const text = targets.length === 1 ? (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-text') : null
       if (text && insertLinksAtExcerpt(id, staticTextBefore(text, e.clientX, e.clientY), ids)) return
@@ -194,14 +201,14 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
 
   if (!scene) return null
   const running = status === 'processing'
-  // The reference dot takes the color of the wires drawn into it.
-  const refDot = data?.refDot ? ` is-${data.refDot}` : ''
   const cls = [
     'cv-scene',
     'cv-sn',
     selected && 'is-selected',
-    dropHint && dropHint.kind !== 'text' && 'is-drop',
+    // onto the text / the red strip: no veil over the node, the text box / strip lights up instead
+    dropHint && dropHint.kind !== 'text' && dropHint.kind !== 'fill' && 'is-drop',
     dropHint?.kind === 'text' && 'is-drop-text',
+    dropHint?.kind === 'fill' && 'is-drop-fill',
     libraryDrag && 'is-drop-target',
     running && 'is-running',
     far && 'is-far',
@@ -234,7 +241,7 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
           type="target"
           position={Position.Left}
           id="ref"
-          className={`cv-h cv-h-ref${refDot}`}
+          className="cv-h cv-h-ref"
           style={DOT_STYLE}
           isConnectableStart={false}
           title="Ảnh tham chiếu: kéo chấm phải của ô ảnh vào bất kỳ đâu trên node"
@@ -272,35 +279,32 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
 export const SceneNode = memo(SceneNodeView)
 
 interface DropHint {
-  /** asset: library cards / tiles (link) · file: new image files (tiles + link) · text: onto the static text (insert). */
-  kind: 'asset' | 'file' | 'text'
+  /**
+   * asset: library cards / tiles (link) · file: new image files (tiles + link) · text: onto the static text (insert) ·
+   * fill: onto the red placeholder strip (the picture takes the red text's place).
+   */
+  kind: 'asset' | 'file' | 'text' | 'fill'
   text: string
 }
 
 // ---------------------------------------------------------------------------------------------
 /**
- * What the scene would send and why it cannot run yet: the engine's rule list (core/runRules = store/runs check()):
- * @video against the gateway's cap, only for the videos this model / mode really sends ('' in the status string = the
- * take no longer exists); settings the gateway surely refuses now (/api/video-profiles, a string selection).
+ * What the scene would send and why it cannot run yet: the engine's rule list (core/runRules = store/runs check()) on
+ * the scene's compile inputs (sceneAssetsOf: refs, frames, legacy tags and characters named like a linked one — so the
+ * labels of "@image_2(Lumi)" are judged like the engine does, with the project's names) and the settings the gateway
+ * surely refuses now (/api/video-profiles, a string selection). `red`: the block is text drawn red in the prompt
+ * (retired @video text, red placeholders, labels that do not fit, numbers with no picture: "Chưa chạy · còn chữ đỏ").
  */
 function useSceneRun(scene: Scene) {
   const assets = useProject(useShallow((s) => sceneAssetsOf(s.project.assets, scene)))
-  // Status of each @video ref as one string: stable while takes only make progress.
-  const videoStatus = useRuns((s) => {
-    if (!scene.videoRefs.length) return ''
-    const byId = takeIndexOf(s.takes).byId
-    return scene.videoRefs.map((t) => byId.get(t)?.status ?? '').join(',')
-  })
-  const takeStatus = useMemo(() => refStatusLookup(scene.videoRefs, videoStatus), [scene.videoRefs, videoStatus])
   const compiled = useMemo<CompiledPrompt>(() => {
     const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings: { autoRenumber: true }, scenes: [scene] }
-    return compileScene(project, scene, { takeStatus })
-  }, [assets, scene, takeStatus])
+    return compileScene(project, scene)
+  }, [assets, scene])
   const spec = MODELS[scene.settings.model]
-  const videoCap = useGatewayRefVideoCap(scene.settings.model)
   const settingsBlock = useSettingsRunBlock(scene.settings)
-  const reason = runBlockReason({ scene, assets, compiled, takeStatus, settingsBlock, spec, providerVideoCap: videoCap })
-  return { assets, compiled, reason, spec }
+  const block = runBlock({ scene, assets, compiled, settingsBlock, spec })
+  return { assets, compiled, reason: block?.reason ?? null, red: isRedTextBlock(block), spec }
 }
 
 /** Linked assets in refs order, the first @image number of each and the image count. */
@@ -318,10 +322,9 @@ function useRefSlots(assets: Asset[], refs: string[]) {
 // ---------------------------------------------------------------------------------------------
 /** Zoomed out (< 55%): code ≈ 18px on screen, the name in 2 lines, 2 prompt lines, pictures and ▶ (grey when blocked). */
 function SceneFar({ scene, status, progress, w }: { scene: Scene; status: TakeSummary['status']; progress: number; w: number }) {
-  const { assets, compiled, reason, spec } = useSceneRun(scene)
+  const { assets, reason, red, spec } = useSceneRun(scene)
   const slots = useRefSlots(assets, scene.refs)
-  // the red label "Chữ đỏ" when red placeholders block it (like the node's strip), else "Chưa chạy"
-  const red = !!reason && reason === unsentTokensReason(compiled.unsentTokens) && compiled.unsentTokens.some((t) => t.includes('?'))
+  // the red label "Chữ đỏ" when text drawn red in the prompt blocks it (like the near node's Run label), else "Chưa chạy"
   const pill = status === 'processing' || !!reason
   const hasVideo = useRuns((s) => takeSummary(s.takes, scene.id).posterId !== null)
   const creditKind = useCreditKind()
@@ -395,7 +398,7 @@ function SceneFar({ scene, status, progress, w }: { scene: Scene; status: TakeSu
 // ---------------------------------------------------------------------------------------------
 /** `box`: size of a resized node (null = default 352 × 304). */
 function SceneFull({ scene, status, box, editing }: { scene: Scene; status: TakeSummary['status']; box: Size | null; editing: boolean }) {
-  const { assets, compiled, reason, spec } = useSceneRun(scene)
+  const { assets, compiled, reason, red, spec } = useSceneRun(scene)
   const slots = useRefSlots(assets, scene.refs)
   const inPanel = useInPanel(scene.id)
   const nodeEditor = useCanvasPrefs((s) => s.nodeEditor)
@@ -419,23 +422,27 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
   const code = sceneCode(scene.order)
   const cost = costOf(scene.settings)
   const off = nodeEditor === 'off'
-  const placeholders = compiled.unsentTokens.filter((t) => t.includes('?'))
-  const red = placeholders.length > 0 && reason === unsentTokensReason(compiled.unsentTokens)
+  // The "Chữ đỏ chờ ảnh" strip (PlaceholderBar, variant 'node'): red placeholders or labels that do not fit their
+  // picture — the groups core/placeholders makes, only looked for when the compile already found such a token.
+  const strip = useMemo(
+    () => compiled.unsentTokens.some((t) => t.includes('?') || t.endsWith(')')) && placeholderGroups(scene.prompt, assets, scene.refs).length > 0,
+    [compiled, scene.prompt, assets, scene.refs],
+  )
   const w = box?.w ?? LAYOUT.sceneW
   const h = box?.h ?? LAYOUT.sceneH
   const full = runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, placeholders: red })
   const foot = footLayout(w, slots.list.map((a) => a.name), full.label)
   const run = foot.compact && !full.blocked ? runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, compact: true }) : full
-  const lines = promptLinesFor(promptBoxHeight(h, { strip: placeholders.length > 0, why: !!run.why, settingsOpen }))
-  // What the request really carries: tokens past it are invalid like a missing one (the model would never see them).
-  const sent = useMemo(
-    () => ({
-      images: usesRefs(scene.settings) ? Math.min(slots.total, spec.maxRefImages) : 0,
-    }),
-    [scene.settings, slots.total, spec],
-  )
+  const lines = promptLinesFor(promptBoxHeight(h, { strip, why: !!run.why, settingsOpen }))
+  // What the request really carries (compileScene: model limit, mode): tokens past it are invalid like a missing one.
+  const sentImages = compiled.images.length
   const excerpt = staticExcerpt(scene.prompt, lines, promptTextWidth(w))
-  const segs = useMemo(() => segmentPrompt(excerpt, slots.total, legacyTagsOf(assets), sent), [excerpt, slots.total, assets, sent])
+  // Token marks through the shared highlighter only (tokens.ts segmentForScene): red placeholders, labels that do not
+  // fit, numbers with no picture, retired @video text — each with its invalidTokenTitle (PromptSegments).
+  const segs = useMemo(
+    () => segmentForScene(excerpt, assets, scene.refs, { sentImages, legacyTags: legacyTagsOf(assets) }),
+    [excerpt, assets, scene.refs, sentImages],
+  )
   const counter = nodeCounter(scene.prompt, compiled.limit)
   const live = editing && !inPanel
   const modelShort = scene.foreignModel ? foreignModelBadge(scene.foreignModel) : spec.short
@@ -504,7 +511,7 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
         }
       >
         {live ? (
-          <NodePromptField scene={scene} assets={assets} sent={sent} imageCount={slots.total} placeholder={PLACEHOLDER} />
+          <NodePromptField scene={scene} assets={assets} sentImages={sentImages} placeholder={PLACEHOLDER} />
         ) : (
           <div className="cv-sn-text" style={{ WebkitLineClamp: lines }}>
             {scene.prompt ? <PromptSegments segs={segs} /> : <span className="cv-sn-ph">{off ? 'Chưa có prompt' : PLACEHOLDER}</span>}
@@ -515,16 +522,12 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
         </span>
       </div>
 
-      {placeholders.length > 0 && (
-        <div className="cv-sn-hole" title="Ảnh của các chữ đỏ này đã bị cắt dây: nối lại ảnh vào cảnh rồi sửa thành số đúng (vd. @image_1)">
-          <TriangleAlert size={12} />
-          <span className="cv-sn-hole-l">Chữ đỏ chờ ảnh:</span>
-          {placeholders.slice(0, 3).map((t) => (
-            <span key={t} className="cv-sn-hole-c">
-              {t}
-            </span>
-          ))}
-          {placeholders.length > 3 && <span className="cv-sn-hole-more">+{placeholders.length - 3}</span>}
+      {strip && (
+        // The same bar as under the panel's prompt (one chip per group, its menu fills / turns into text / removes:
+        // each one undo step). A library card or image tile dropped on it fills the chip it lands on (SceneNodeView
+        // onDrop → fillFromDrop). `nodrag nopan nowheel`: clicks and the menu never move or zoom the canvas.
+        <div className="cv-sn-ph nodrag nopan nowheel">
+          <PlaceholderBar sceneId={scene.id} variant="node" />
         </div>
       )}
 

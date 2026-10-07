@@ -90,20 +90,41 @@ export function mismatchReason(n: number, now: string, label: string): string {
   return `@image_${n} đang là “${now}”, không phải “${label}” — kiểm tra ở dải “Chữ đỏ chờ ảnh” dưới ô prompt`
 }
 
-/** Why the scene cannot run (the first rule that fails), or null when it can. */
-export function runBlockReason({ scene, assets, compiled, settingsBlock }: RunRuleInput): string | null {
-  if (typeof scene.foreignModel === 'string' && scene.foreignModel) return foreignModelReason(scene.foreignModel)
-  if (scene.foreignSettings && typeof scene.foreignSettings === 'object') return foreignConfigReason(scene.foreignSettings)
-  if (!scene.prompt.trim()) return EMPTY_PROMPT_REASON
-  if (compiled.charCount > compiled.limit) return LONG_PROMPT_REASON
+/**
+ * Which rule blocked a run (runBlock): newer-build markers, the prompt, images / frames, retired @video text, red
+ * placeholders, labels that do not fit, other tokens with no picture, the gateway's settings refusal.
+ */
+export type RunBlockKind = 'foreign' | 'empty' | 'long' | 'no-image' | 'frames' | 'retired' | 'waiting' | 'mismatch' | 'unsent' | 'settings'
+
+export interface RunBlock {
+  reason: string
+  kind: RunBlockKind
+}
+
+/**
+ * Blocks caused by text in the prompt that every highlighter draws red (tokens.ts segmentPrompt): retired @video text,
+ * red placeholders "@image_?N(…)", labelled tokens that do not fit their picture, numbers with no picture in the
+ * request — the scene card says "Chưa chạy · còn chữ đỏ" for these.
+ */
+export function isRedTextBlock(block: RunBlock | null | undefined): boolean {
+  return !!block && (block.kind === 'retired' || block.kind === 'waiting' || block.kind === 'mismatch' || block.kind === 'unsent')
+}
+
+/** The first rule that fails, with its kind (runBlockReason = its reason), or null when the scene can run. */
+export function runBlock({ scene, assets, compiled, settingsBlock }: RunRuleInput): RunBlock | null {
+  const block = (kind: RunBlockKind, reason: string): RunBlock => ({ kind, reason })
+  if (typeof scene.foreignModel === 'string' && scene.foreignModel) return block('foreign', foreignModelReason(scene.foreignModel))
+  if (scene.foreignSettings && typeof scene.foreignSettings === 'object') return block('foreign', foreignConfigReason(scene.foreignSettings))
+  if (!scene.prompt.trim()) return block('empty', EMPTY_PROMPT_REASON)
+  if (compiled.charCount > compiled.limit) return block('long', LONG_PROMPT_REASON)
   const mode = scene.settings.mode
-  if (mode === 'i2v' && compiled.images.length === 0) return NO_IMAGE_REASON
+  if (mode === 'i2v' && compiled.images.length === 0) return block('no-image', NO_IMAGE_REASON)
   if (mode === 'transform') {
-    if (!scene.firstFrame || !scene.lastFrame) return NO_FRAMES_REASON
+    if (!scene.firstFrame || !scene.lastFrame) return block('frames', NO_FRAMES_REASON)
     const frames = [scene.firstFrame, scene.lastFrame]
-    if (frames.some((id) => !assets.find((a) => a.id === id)?.imageIds[0])) return FRAME_IMAGE_REASON
+    if (frames.some((id) => !assets.find((a) => a.id === id)?.imageIds[0])) return block('frames', FRAME_IMAGE_REASON)
   }
-  if (compiled.retiredTokens.length) return retiredVideoReason(compiled.retiredTokens)
+  if (compiled.retiredTokens.length) return block('retired', retiredVideoReason(compiled.retiredTokens))
   const retired = new Set(compiled.retiredTokens)
   const unsent = compiled.unsentTokens.filter((t) => !retired.has(t))
   if (unsent.length) {
@@ -112,15 +133,20 @@ export function runBlockReason({ scene, assets, compiled, settingsBlock }: RunRu
     for (const t of unsent) {
       for (const m of t.matchAll(PLACEHOLDER_RE)) if (m.index === 0 && m[0] === t && m[3] && m[1].toLowerCase() === 'image') waiting.push({ name: m[3], token: `@image_?${m[2]}` })
     }
-    if (waiting.length) return waitingReason(waiting)
+    if (waiting.length) return block('waiting', waitingReason(waiting))
     const labelled = new Set(unsent.filter((t) => t.endsWith(')')))
     if (labelled.size) {
       const bad = labelledTokens(compiled.text, assets, scene.refs).find((x) => !x.fits && x.slotName !== undefined && labelled.has(x.text))
-      if (bad) return mismatchReason(bad.n, bad.slotName!, bad.label)
+      if (bad) return block('mismatch', mismatchReason(bad.n, bad.slotName!, bad.label))
     }
-    return unsentTokensReason(unsent)
+    return block('unsent', unsentTokensReason(unsent))
   }
-  return settingsBlock || null
+  return settingsBlock ? block('settings', settingsBlock) : null
+}
+
+/** Why the scene cannot run (the first rule that fails), or null when it can. */
+export function runBlockReason(input: RunRuleInput): string | null {
+  return runBlock(input)?.reason ?? null
 }
 
 // ---------------- helpers for the UI (stable zustand selections) ----------------

@@ -52,8 +52,16 @@ export const PlaceholderBar = memo(function PlaceholderBar({ sceneId, variant = 
   const choices = useMemo(() => (groups.length ? fillChoices(prompt, assets, refs) : []), [groups.length, prompt, assets, refs])
   if (!groups.length) return null
   const labelled = groups.filter((g) => g.kind !== 'bare').length
+  const node = variant === 'node'
+  const emptyHint = 'Nối ảnh thay thế vào cảnh trước (kéo dây), rồi chọn ở đây'
+  // The node's strip is one 22px line (the node never grows): the hints go into titles there.
   return (
-    <div className={`in-ph is-${variant}`} role="group" aria-label="Chữ đỏ chờ ảnh">
+    <div
+      className={`in-ph is-${variant}`}
+      role="group"
+      aria-label="Chữ đỏ chờ ảnh"
+      title={node ? `Bấm một chữ đỏ để gắn ảnh, đổi thành chữ hoặc xoá — hoặc kéo ảnh / nhân vật thả lên nó${choices.length ? '' : `. ${emptyHint}`}` : undefined}
+    >
       <span className="in-ph-title">
         <TriangleAlert size={12} aria-hidden="true" />
         Chữ đỏ chờ ảnh:
@@ -61,12 +69,12 @@ export const PlaceholderBar = memo(function PlaceholderBar({ sceneId, variant = 
       {groups.map((g) => (
         <PlaceholderChip key={g.key} sceneId={sceneId} group={g} choices={choices} prompt={prompt} refs={refs} assets={assets} />
       ))}
-      {labelled > 1 && (
+      {labelled > 1 && !node && (
         <button type="button" className="in-hint-btn" onClick={() => allPlaceholdersToTextAction(sceneId)} title="Mọi chữ đỏ có tên thành chữ thường (Ctrl+Z để hoàn tác)">
           Đổi tất cả thành chữ
         </button>
       )}
-      {!choices.length && <span className="in-ph-empty">Nối ảnh thay thế vào cảnh trước (kéo dây), rồi chọn ở đây</span>}
+      {!choices.length && !node && <span className="in-ph-empty">{emptyHint}</span>}
     </div>
   )
 })
@@ -91,6 +99,8 @@ function PlaceholderChip(props: ChipProps) {
         ref={btn}
         type="button"
         className={`in-ph-chip is-${group.kind}`}
+        // the scene node's strip: a picture dropped on this chip fills this group (SceneNodeEditor fillFromDrop)
+        data-ph-group={group.key}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}

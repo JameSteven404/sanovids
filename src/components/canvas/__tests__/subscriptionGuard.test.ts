@@ -35,14 +35,27 @@ describe('canvas subscription boundaries', () => {
     expect(scene).toMatch(/const live = editing && !inPanel/)
     expect(scene).toMatch(/\{live \? \(\s*<NodePromptField /)
     expect(scene.match(/<NodePromptField /g)).toHaveLength(1)
-    // static text and the field's backdrop render tokens through the shared helpers (tokens.ts) and .in-tk marks
-    expect(scene).toMatch(/segmentPrompt\(/)
+    // static text and the field's backdrop render tokens ONLY through the shared helper (tokens.ts segmentForScene:
+    // red placeholders, labels that do not fit, missing / unsent numbers, retired @video text) and .in-tk marks
+    expect(scene).toMatch(/segmentForScene\(excerpt, assets, scene\.refs, \{ sentImages/)
+    expect(scene).not.toMatch(/segmentPrompt\(/)
     expect(scene).not.toMatch(/cv-m\b/)
     expect(scene).not.toMatch(/new RegExp|\/@\(\?:image/)
     const field = readFileSync(new URL('SceneNodeEditor.tsx', canvas), 'utf8')
     expect(field).toMatch(/className="cv-sn-ta nodrag nowheel nokey/)
     expect(field).toMatch(/className=\{`in-tk is-\$\{s\.kind\}/)
+    expect(field).toMatch(/segmentForScene\(text, assets, scene\.refs, \{ sentImages/)
+    expect(field).not.toMatch(/segmentPrompt\(/)
     expect(field).not.toMatch(/import[^\n]*\bPromptEditor\b/)
+  })
+
+  it('the red placeholder strip is the panel\'s PlaceholderBar (variant node), mounted only when the compile found such a token', () => {
+    const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
+    expect(scene).toContain('<PlaceholderBar sceneId={scene.id} variant="node" />')
+    expect(scene).toMatch(/compiled\.unsentTokens\.some\(\(t\) => t\.includes\('\?'\) \|\| t\.endsWith\('\)'\)\) && placeholderGroups\(/)
+    expect(scene).not.toContain('cv-sn-hole')
+    // no video-reference UI on the node (reference videos were retired in 0.6.0)
+    expect(scene).not.toMatch(/làm @video|videoRefs|refDot|useGatewayRefVideoCap|refStatusLookup|takeStatus/)
   })
 
   it('the far view lays out a bounded excerpt (never a whole paragraph per far node)', () => {

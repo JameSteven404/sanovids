@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
+import { foldLabel } from '../../core/tokenLabels'
 import { chooseTake, videoUsageOf } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
@@ -81,7 +82,29 @@ export const sceneGraphOf = graphCache<Scene>((s) => GRAPH_FIELDS.map((key) => k
 export const assetGraphOf = graphCache<Asset>((a) => [a.id, a.position, a.size, a.color, a.kind])
 
 const sceneAssetInputs = new WeakMap<Scene, WeakMap<Asset[], Asset[]>>()
-/** Compile/excerpt inputs include frames and legacy tags, even when those assets are not linked as refs. */
+const namesakeIndex = new WeakMap<Asset[], Map<string, Asset[]>>()
+/** The assets of an assets array by their folded name (core/tokenLabels foldLabel), built once per array. */
+function namesakesOf(assets: Asset[]): Map<string, Asset[]> {
+  let index = namesakeIndex.get(assets)
+  if (index) return index
+  index = new Map()
+  for (const a of assets) {
+    const key = foldLabel(a.name)
+    if (!key) continue
+    const list = index.get(key)
+    if (list) list.push(a)
+    else index.set(key, [a])
+  }
+  namesakeIndex.set(assets, index)
+  return index
+}
+
+/**
+ * Compile/excerpt inputs include frames and legacy tags, even when those assets are not linked as refs — and every
+ * character NAMED like a linked one: whether a label glued to a token fits its picture depends on whether another
+ * character of the project shares that name (core/tokenLabels nameShared), so the node's compile, red marks and Run
+ * reason match the engine's (store/runs check() compiles with all the project's assets).
+ */
 export function sceneAssetsOf(assets: Asset[], scene: Scene): Asset[] {
   let byAssets = sceneAssetInputs.get(scene)
   if (!byAssets) sceneAssetInputs.set(scene, byAssets = new WeakMap())
@@ -90,6 +113,12 @@ export function sceneAssetsOf(assets: Asset[], scene: Scene): Asset[] {
   const map = assetMapOf(assets)
   const ids = new Set([...scene.refs, scene.firstFrame, scene.lastFrame])
   for (const tag of extractMentions(scene.prompt)) ids.add(assetByTag(assets, tag)?.id ?? null)
+  const names = namesakesOf(assets)
+  for (const id of scene.refs) {
+    const key = foldLabel(map.get(id)?.name ?? '')
+    const same = key ? names.get(key) : undefined
+    if (same && same.length > 1) for (const a of same) ids.add(a.id)
+  }
   const inputs = [...ids].flatMap((id) => id && map.has(id) ? [map.get(id)!] : [])
   byAssets.set(assets, inputs)
   return inputs
