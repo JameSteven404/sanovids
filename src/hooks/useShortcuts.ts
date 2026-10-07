@@ -2,7 +2,7 @@
 import { useEffect } from 'react'
 import { decideShortcut } from '../core/keymap'
 import { eventLike, isImeKey, isTypingTarget, IS_MAC } from '../lib/keyEvents'
-import { matchesAction, useKeymap } from '../lib/keymapPrefs'
+import { matchesAction, shortcutLabel, useKeymap } from '../lib/keymapPrefs'
 import { escapeForFullscreen, trackFullscreen } from '../lib/fullscreenGuard'
 import { KEY_COMMANDS, openSelectedTake } from '../keyCommands'
 import { cancelLibraryKey, handleLibraryKey, noteCanvasCommand, showBackspaceHint } from '../libraryActions'
@@ -18,17 +18,40 @@ export function deleteKeyAction(key: string, mac: boolean): 'now' | 'deferred' |
 }
 export { keyboardDeletePlan } from '../core/deletePlan'
 
+/** Once per device (plan Premiere §3.7): the notice that the default keys changed. */
+export const PREMIERE_NOTICE_KEY = 'bdp:notice:premiere-keys'
+/**
+ * Read when this module loads, before App's bootstrap opens or creates a project: a profile that never opened one
+ * (store/persist `bdp:active`) is a new install, whose user never knew the 0.5 keys.
+ */
+const FRESH_PROFILE = (() => {
+  try {
+    return localStorage.getItem('bdp:active') === null
+  } catch {
+    return false
+  }
+})()
+
+/** The one-time "keys now follow Premiere" toast, with the live labels; never on a new install. */
+export function premiereKeysNotice(fresh = FRESH_PROFILE): void {
+  try {
+    if (localStorage.getItem(PREMIERE_NOTICE_KEY)) return
+    localStorage.setItem(PREMIERE_NOTICE_KEY, '1')
+  } catch {
+    return // storage unavailable: never repeat the notice on every start
+  }
+  if (fresh) return
+  const keys = ([['selection.connect', 'nối'], ['take.star', '★'], ['take.download', 'tải'], ['canvas.fit', 'vừa màn hình']] as const)
+    .flatMap(([id, what]) => { const label = shortcutLabel(id); return label ? [`${label} ${what}`] : [] })
+  toast(`Phím tắt nay giống Premiere Pro${keys.length ? ` (${keys.join(', ')}…)` : ''}. Phím cũ vẫn dùng được.`, {
+    ms: 9000, action: { label: 'Xem', run: () => useUI.getState().openDialog({ kind: 'shortcuts' }) },
+  })
+}
+
 export function useShortcuts(): void {
   useEffect(() => {
     const stopFullscreen = trackFullscreen()
-    try {
-      if (!localStorage.getItem('bdp:keys:premiere-notice')) {
-        localStorage.setItem('bdp:keys:premiere-notice', '1')
-        toast('Phím tắt nay giống Premiere Pro: M chọn ★, Shift+M bật bản đồ nhỏ. Phím đã tự đổi được giữ nguyên.', {
-          ms: 9000, action: { label: 'Đổi phím', run: () => useUI.getState().openDialog({ kind: 'settings', section: 'keys' }) },
-        })
-      }
-    } catch { /* storage unavailable: do not repeat the notice on every mount */ }
+    premiereKeysNotice()
     let pendingDelete: ReturnType<typeof setTimeout> | null = null
     const cancelPendingDelete = () => {
       if (pendingDelete) clearTimeout(pendingDelete)

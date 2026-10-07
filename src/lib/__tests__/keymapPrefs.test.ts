@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_KEYMAP_BYTES, validateBindings } from '../../core/keymap'
 import { isTypingChord, KEYMAP_PREFS_KEY, matchesAction, parseKeymapPrefs, shortcutLabel, useKeymap, withShortcut } from '../keymapPrefs'
-import { changeKeys, useKeyCapture, useKeyCaptureHost } from '../../components/dialogs/SettingsShortcuts'
+import { assignKeys, changeKeys, heldModifiers, useKeyCapture, useKeyCaptureHost } from '../../components/dialogs/SettingsShortcuts'
 import { useUI } from '../../store/ui'
+import { premiereNote } from '../../components/dialogs/ShortcutsDialog'
 
 const effects = vi.hoisted(() => ({ cleanup: undefined as (() => void) | undefined }))
 vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useLayoutEffect: (fn: () => () => void) => { effects.cleanup = fn() } }))
@@ -10,9 +11,10 @@ vi.mock('react', async (original) => ({ ...await original<typeof import('react')
 afterEach(() => { useKeymap.getState().resetAll(); vi.unstubAllGlobals() })
 
 it('captures keys before modal/global handlers, rejects IME, and resolves conflicts only explicitly', () => {
-  let keydown: (e: KeyboardEvent) => void = () => undefined
-  vi.stubGlobal('window', { addEventListener: (type: string, fn: typeof keydown) => { if (type === 'keydown') keydown = fn }, removeEventListener: vi.fn() })
+  const listeners: Record<string, (e: Event) => void> = {}
+  vi.stubGlobal('window', { addEventListener: (type: string, fn: (e: Event) => void) => { listeners[type] = fn }, removeEventListener: vi.fn() })
   useKeyCaptureHost()
+  const keydown = listeners.keydown as unknown as (e: KeyboardEvent) => void
   const start = () => useKeyCapture.setState({ capture: { id: 'scene.next', index: 0, message: '' } })
   const press = (key: string, code = key, extra = {}) => {
     const e = { key, code, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn(), ...extra }
@@ -23,21 +25,61 @@ it('captures keys before modal/global handlers, rejects IME, and resolves confli
   expect(press('Process', 'KeyF', { isComposing: true }).stopImmediatePropagation).toHaveBeenCalled()
   expect(shortcutLabel('scene.next')).toBe('N')
   expect(useKeyCapture.getState().capture?.message).toContain('Bộ gõ')
+  // Modifiers alone: a preview in key-cap names, never the raw e.key ("Control…").
+  press('Control', 'ControlLeft', { ctrlKey: true })
+  expect(useKeyCapture.getState().capture?.message).toBe('Ctrl+… Bấm thêm một phím.')
+  press('Shift', 'ShiftLeft', { ctrlKey: true, shiftKey: true })
+  expect(useKeyCapture.getState().capture?.message).toBe('Ctrl+Shift+… Bấm thêm một phím.')
+  expect(heldModifiers({ metaKey: true, shiftKey: true }, true)).toBe('⇧⌘')
   press('f', 'KeyF')
-  expect(useKeyCapture.getState().capture?.chords).toEqual(['KeyF'])
+  expect(useKeyCapture.getState().capture).toMatchObject({ chords: ['KeyF'], paused: true })
   expect(shortcutLabel('scene.next')).toBe('N')
+  // The conflict waits for Thay thế / Chọn phím khác / Huỷ: Tab, Enter and Space reach those buttons, nothing is recorded.
+  for (const [key, code] of [['Tab', 'Tab'], ['Enter', 'Enter'], [' ', 'Space']]) {
+    const e = press(key, code)
+    expect(e.preventDefault, key).not.toHaveBeenCalled()
+    expect(e.stopImmediatePropagation, key).not.toHaveBeenCalled()
+  }
+  expect(useKeyCapture.getState().capture).toMatchObject({ chords: ['KeyF'], paused: true })
+  // …and Esc cancels the choice, not the Settings dialog.
+  expect(press('Escape').stopImmediatePropagation).toHaveBeenCalled()
+  expect(useKeyCapture.getState().capture).toBeNull()
+  start()
   const tab = press('Tab')
   expect(tab.preventDefault).not.toHaveBeenCalled()
   expect(useKeyCapture.getState().capture).toBeNull()
   start(); press('F2')
   expect(shortcutLabel('scene.next')).toBe('F2')
   expect(useKeyCapture.getState().capture).toBeNull()
+  expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gán F2 cho “Cảnh tiếp theo”.')
   useUI.getState().toasts.at(-1)?.action?.run()
   expect(shortcutLabel('scene.next')).toBe('N')
   start(); const esc = press('Escape')
   expect(esc.stopImmediatePropagation).toHaveBeenCalled()
   expect(useKeyCapture.getState().capture).toBeNull()
+  // A click or focus outside the recording row ends it (a key typed into the search box is never assigned).
+  start()
+  listeners.pointerdown({ target: { closest: (sel: string) => (sel === '[data-key-row="scene.next"]' ? {} : null) } } as unknown as Event)
+  expect(useKeyCapture.getState().capture).not.toBeNull()
+  listeners.pointerdown({ target: { closest: () => null } } as unknown as Event)
+  expect(useKeyCapture.getState().capture).toBeNull()
+  start()
+  listeners.focusin({ target: { tagName: 'INPUT', closest: () => null } } as unknown as Event)
+  expect(useKeyCapture.getState().capture).toBeNull()
   effects.cleanup?.()
+})
+
+it('Thay thế takes the chord from the other command and says what is left of it', () => {
+  const capture = { id: 'scene.next' as const, index: 0, message: '' }
+  assignKeys(capture, ['KeyF'], true)
+  expect(shortcutLabel('scene.next')).toBe('F')
+  expect(shortcutLabel('canvas.fit')).toBe('\\')
+  expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gán F cho “Cảnh tiếp theo”. “Vừa màn hình” còn \\.')
+  assignKeys(capture, ['KeyE'], true)
+  expect(shortcutLabel('canvas.cycleEdges')).toBe('')
+  expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gán E cho “Cảnh tiếp theo”. “Đổi cách hiện dây” không còn phím tắt.')
+  useUI.getState().toasts.at(-1)?.action?.run()
+  expect(shortcutLabel('canvas.cycleEdges')).toBe('E')
 })
 
 it('switches presets without retired views and Undo restores custom and foreign bindings', () => {
@@ -52,6 +94,22 @@ it('switches presets without retired views and Undo restores custom and foreign 
   changeKeys(() => useKeymap.getState().preset('premiere'), 'Premiere')
   expect(shortcutLabel('canvas.minimap')).toBe('Shift+M')
   expect(shortcutLabel('take.star')).toBe('M')
+})
+
+it('"Bản 0.5" replaces only the 0.5 commands: new commands keep their keys, 0.5 chords always win', () => {
+  // scene.next: a custom key of a 0.5 command (replaced); folder.new: a custom key of a new command (kept);
+  // scene.new took C, a 0.5 chord (back to its default).
+  useKeymap.getState().replace({ 'scene.next': ['F2'], 'folder.new': ['F4'], 'scene.new': ['KeyC'] })
+  const before = { ...useKeymap.getState().bindings }
+  changeKeys(() => useKeymap.getState().preset('legacy05'), 'Đã dùng bộ phím kiểu SanoVids 0.5.')
+  const labels = useKeymap.getState().resolved.labels
+  expect([labels['scene.next'], labels['selection.connect'], labels['canvas.fit'], labels['library.search'], labels['canvas.minimap'], labels['take.star']])
+    .toEqual(['N', 'C', 'F', 'Ctrl+K', 'M', ''])
+  expect([labels['take.download'], labels['scene.new'], labels['unlinkSelection'], labels['canvas.zoomIn'], labels['folder.new'], labels['panels.library'], labels['canvas.zoomOut']])
+    .toEqual(['Ctrl+M', 'Ctrl+N', 'Ctrl+Shift+L', '=', 'F4', 'Shift+1', '-'])
+  expect(useKeymap.getState().resolved.dropped).toEqual([])
+  useUI.getState().toasts.at(-1)?.action?.run()
+  expect(useKeymap.getState().bindings).toEqual(before)
 })
 
 describe('bounded, validated keymap preferences', () => {
@@ -129,4 +187,12 @@ it('still updates session preferences if localStorage is unavailable', () => {
   vi.stubGlobal('localStorage', { setItem: () => { throw new Error('blocked') } })
   expect(() => useKeymap.getState().assign('scene.next', ['Alt+KeyN'])).not.toThrow()
   expect(shortcutLabel('scene.next')).toBe('Alt+N')
+})
+
+it('the shortcuts table says where SanoVids differs from Premiere, with the keys in use', () => {
+  expect(premiereNote(useKeymap.getState().resolved.labels, false)).toBe(
+    'Phím mặc định giống Adobe Premiere Pro. Khác Premiere: Enter mở khung sửa cảnh, chạy cảnh là Ctrl+Enter · Backspace không xoá trên Windows (dành cho bộ gõ tiếng Việt), dùng Delete · Ctrl+B mở hộp chọn thư mục.',
+  )
+  useKeymap.getState().assign('folder.new', [])
+  expect(premiereNote(useKeymap.getState().resolved.labels, true)).toBe('Phím mặc định giống Adobe Premiere Pro. Khác Premiere: Enter mở khung sửa cảnh, chạy cảnh là Ctrl+Enter.')
 })

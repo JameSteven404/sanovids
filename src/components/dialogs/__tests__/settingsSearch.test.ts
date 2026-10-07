@@ -4,6 +4,8 @@ import { FOLDER_UNLINK_TRASH_ROW } from '../../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../../lib/canvasPrefs'
 import { KEEP_LOGIN_KEYWORDS } from '../keepLoginModel'
+import { resolveKeymap } from '../../../core/keymap'
+import { SHORTCUT_ROWS } from '../SettingsShortcuts'
 import settingsDialogSource from '../SettingsDialog.tsx?raw'
 import { deepLinkStep, foldText, matchSettings, resultCount, searchWords, visibleGroups, type SearchGroup } from '../settingsSearch'
 
@@ -216,5 +218,16 @@ describe('development mode locked: visibleGroups', () => {
     expect(settingsDialogSource).toContain('followedSection.current = section')
     expect(settingsDialogSource).toContain('}, [section, groups])')
     expect(settingsDialogSource).not.toContain('}, [target])')
+  })
+})
+
+describe('Phím tắt rows', () => {
+  it('are found by command name and by the key in use (SettingsDialog adds the live labels to the keywords)', () => {
+    const labels = resolveKeymap().allLabels
+    const keys: SearchGroup = { id: 'keys', level: 'advanced', title: 'Phím tắt', rows: SHORTCUT_ROWS.map((r) => ({ ...r, keywords: `${r.keywords} ${labels[r.id]}` })) }
+    expect(ids(matchSettings([keys], 'basic', 'ctrl+z'))).toEqual(['keys:history.undo'])
+    for (const q of ['hoan tac', 'Hoàn tác', 'undo']) expect(matchSettings([keys], 'basic', q)[0]?.rows.map((r) => r.id), q).toContain('history.undo')
+    expect(ids(matchSettings([keys], 'basic', 'ctrl+m'))).toEqual(['keys:take.download'])
+    expect(settingsDialogSource).toContain('keywords: `${r.keywords} ${keyLabels[r.id as ActionId]}`')
   })
 })

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import {
-  actionById, defaultsFor, legacy05, chordFromEvent, chordLabel, contextsOverlap, KEY_ACTIONS, MAX_KEYMAP_BYTES, parseChord,
+  actionById, defaultsFor, withLegacy05, chordFromEvent, chordLabel, contextsOverlap, KEY_ACTIONS, MAX_KEYMAP_BYTES, parseChord,
   resolveKeymap, validateBindings, type ActionId, type BindingOverrides, type ResolvedKeymap, type ValidatedBindings,
 } from '../core/keymap'
 import { eventLike, IS_MAC } from './keyEvents'
@@ -71,7 +71,8 @@ export const useKeymap = create<KeymapState>()((set, get) => {
     removeChord: (id, chord) => { replace({ ...snapshot(), [id]: get().resolved.byAction[id].filter((c) => c !== parseChord(chord)) }) },
     resetAction: (id) => { const next = snapshot(); delete next[id]; replace(next) },
     resetAll: () => { replace(get().foreign) },
-    preset: (name) => { replace({ ...get().foreign, ...(name === 'legacy05' ? legacy05() : {}) }) },
+    // 'premiere' = every default; 'legacy05' = the 0.5 keys over the current custom keys (core/keymap withLegacy05).
+    preset: (name) => { replace({ ...get().foreign, ...(name === 'legacy05' ? withLegacy05(get().bindings) : {}) }) },
   }
 })
 

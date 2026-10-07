@@ -31,6 +31,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
+import { shortcutLabel } from './lib/keymapPrefs'
 import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
@@ -223,7 +224,7 @@ export function connectSelection() {
   const scenes = selectedSceneIds()
   const assets = selectedAssetIds()
   if (!scenes.length || !assets.length) {
-    toast('Chọn ít nhất 1 nhân vật/bối cảnh và 1 cảnh, rồi bấm C.', { tone: 'warning' })
+    toast(`Chọn ít nhất 1 nhân vật/bối cảnh và 1 cảnh, rồi bấm ${shortcutLabel('selection.connect') || 'Nối'}.`, { tone: 'warning' })
     return
   }
   linkAssets(scenes, assets)

@@ -36,6 +36,8 @@ it('retires the hidden views’ commands (1 / 2 / 3) and keeps Alt + ↑ / ↓ a
   const old = validateBindings({ 'view.table': ['Digit2'], 'scene.next': ['KeyQ'] })
   expect(old.foreign).toEqual({ 'view.table': ['Digit2'] })
   expect(old.bindings).toEqual({ 'scene.next': ['KeyQ'] })
+  // J / K / L belong to the video players (core/transportKeys): never a command key.
+  expect(validateBindings({ 'scene.next': ['KeyJ'] }).issues[0]).toMatchObject({ reason: 'refused', message: 'J là phím của trình phát video — chọn phím khác.' })
   expect(resolveKeymap({ 'view.table': ['Digit2'] }).lookup.Digit2).toBeUndefined()
   // Scene order: a fixed row, never a command (refusalFor keeps Alt + arrows away from every command).
   const order = FIXED_KEYS.find((k) => k.label.startsWith('Thứ tự cảnh'))
@@ -138,6 +140,19 @@ it('dispatches context, exact modifiers, repeats, unassigned chords and Mac dele
   expect(decideShortcut(event('N', 'KeyN', { shiftKey: true }), ctx, false).action).toBeNull()
   expect(decideShortcut(event('n', 'KeyN', { repeat: true }), ctx, false).action).toBeNull()
   expect(decideShortcut(event('z', 'KeyZ', { ctrlKey: true, repeat: true }), ctx, false).action).toBe('history.undo')
+  // Held keys repeat only for commands that opt in: undo / redo / duplicate / zoom. A held one-shot or toggle runs
+  // once (Ctrl+L would flip link → unlink → link, Ctrl+N make a run of scenes); its Ctrl chord is still swallowed.
+  for (const [key, code] of [['l', 'KeyL'], ['n', 'KeyN'], ['m', 'KeyM'], ['b', 'KeyB'], ['i', 'KeyI'], ['o', 'KeyO'], ['s', 'KeyS'], ['Enter', 'Enter'], ['a', 'KeyA']]) {
+    expect(decideShortcut(event(key, code, { ctrlKey: true }), ctx, false).action, code).not.toBeNull()
+    expect(decideShortcut(event(key, code, { ctrlKey: true, repeat: true }), ctx, false), code).toEqual({ action: null, handled: true })
+  }
+  expect(decideShortcut(event('L', 'KeyL', { ctrlKey: true, shiftKey: true, repeat: true }), ctx, false)).toEqual({ action: null, handled: true })
+  expect(decideShortcut(event('d', 'KeyD', { ctrlKey: true, repeat: true }), ctx, false).action).toBe('selection.duplicate')
+  expect(decideShortcut(event('y', 'KeyY', { ctrlKey: true, repeat: true }), ctx, false).action).toBe('history.redo')
+  expect(decideShortcut(event('=', 'Equal', { repeat: true }), ctx, false).action).toBe('canvas.zoomIn')
+  expect(decideShortcut(event('-', 'Minus', { repeat: true }), ctx, false).action).toBe('canvas.zoomOut')
+  expect(decideShortcut(event('m', 'KeyM', { repeat: true }), ctx, false)).toEqual({ action: null, handled: false })
+  expect(decideShortcut(event('c', 'KeyC', { repeat: true }), ctx, false)).toEqual({ action: null, handled: false })
   expect(decideShortcut(event('Delete', 'Delete', { repeat: true }), ctx, false)).toEqual({ action: null, handled: true })
   expect(decideShortcut(event('Escape', 'Escape', { keyCode: 229 }), ctx, false).handled).toBe(false)
   expect(decideShortcut(event('Escape', 'Escape', { defaultPrevented: true }), ctx, false).handled).toBe(false)

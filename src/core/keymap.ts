@@ -69,6 +69,22 @@ export const LEGACY_DEFAULTS: Readonly<Record<string, readonly string[]>> = {
 }
 export const RETIRED_ACTIONS = ['view.canvas', 'view.table', 'view.storyboard'] as const
 
+/**
+ * Every default that differs from 0.5 (the CHANGELOG list). Chord rows must equal the diff between LEGACY_DEFAULTS
+ * and the defaults (keymapDefaults.test); `note` = what else changed for someone used to 0.5.
+ */
+export const CHANGED_FROM_0_5: readonly { id: ActionId; before: readonly string[]; after: readonly string[]; note?: string }[] = [
+  { id: 'project.save', before: ['Ctrl+KeyS'], after: ['Ctrl+KeyS', 'Ctrl+Shift+KeyS'] },
+  { id: 'library.search', before: ['Ctrl+KeyK'], after: ['Ctrl+KeyF', 'Ctrl+KeyK'] },
+  { id: 'help.shortcuts', before: ['Shift+Slash'], after: ['Shift+Slash', 'Ctrl+Alt+KeyK'] },
+  { id: 'selection.duplicate', before: ['Ctrl+KeyD'], after: ['Ctrl+KeyD', 'Ctrl+Shift+Slash'] },
+  { id: 'selection.delete', before: ['Delete'], after: ['Delete', 'Shift+Delete'] },
+  { id: 'selection.connect', before: ['KeyC'], after: ['Ctrl+KeyL', 'KeyC'], note: 'Bấm lần nữa khi mọi cặp đã nối thì bỏ nối (0.5: chỉ báo “đã nối sẵn”).' },
+  { id: 'canvas.fit', before: ['KeyF'], after: ['Backslash', 'KeyF'] },
+  { id: 'canvas.minimap', before: ['KeyM'], after: ['Shift+KeyM'], note: 'M nay là ★ chọn video.' },
+  { id: 'selection.deselectAll', before: [], after: ['Ctrl+Shift+KeyA'], note: '0.5 vô tình chọn tất cả với Ctrl+Shift+A; nay là bỏ chọn tất cả.' },
+]
+
 const ACTION_DEFAULTS: Omit<KeyAction, 'label' | 'help' | 'group' | 'hint' | 'keywords'>[] = [
   // ---- General (group 'keys') ----
   { id: 'project.save', defaults: ['Ctrl+KeyS', 'Ctrl+Shift+KeyS'], whileTyping: true, alsoInDialogs: 'all', premiere: { name: 'Save · Save As', chord: 'Ctrl+KeyS' } },
@@ -88,7 +104,7 @@ const ACTION_DEFAULTS: Omit<KeyAction, 'label' | 'help' | 'group' | 'hint' | 'ke
   { id: 'scene.next', defaults: ['KeyN'] },
   { id: 'scene.new', defaults: ['Ctrl+KeyN'], premiere: { name: 'New Sequence', chord: 'Ctrl+KeyN' } },
   { id: 'folder.new', defaults: ['Ctrl+KeyB'], premiere: { name: 'New Bin', chord: 'Ctrl+KeyB' } },
-  { id: 'selection.duplicate', defaults: ['Ctrl+KeyD', 'Ctrl+Shift+Slash'], premiere: { name: 'Duplicate', chord: 'Ctrl+Shift+Slash' } },
+  { id: 'selection.duplicate', defaults: ['Ctrl+KeyD', 'Ctrl+Shift+Slash'], repeat: true, premiere: { name: 'Duplicate', chord: 'Ctrl+Shift+Slash' } },
   { id: 'selection.delete', defaults: ['Delete', 'Shift+Delete'], premiere: { name: 'Clear (Delete) · Ripple Delete (Shift+Delete)', chord: 'Delete' } },
   { id: 'selection.selectAll', defaults: ['Ctrl+KeyA'], premiere: { name: 'Select All', chord: 'Ctrl+KeyA' } },
   { id: 'selection.deselectAll', defaults: ['Ctrl+Shift+KeyA'], premiere: { name: 'Deselect All', chord: 'Ctrl+Shift+KeyA' } },
@@ -246,8 +262,33 @@ export function activeIn(a: KeyAction, ctx: Ctx): boolean {
 export type Bindings = Record<ActionId, string[]>
 export const defaultsFor = (a: KeyAction, mac = false): string[] => mac ? a.macDefaults ?? a.defaults : a.defaults
 export const defaultBindings = (mac = false): Bindings => Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, [...defaultsFor(a, mac)]])) as Bindings
-export const legacy05 = (): BindingOverrides => Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, [...(LEGACY_DEFAULTS[a.id] ?? [])]]))
+/**
+ * The "Bản 0.5" preset (plan Premiere §3.7): the 0.5 chords of the commands 0.5 had (never the retired views) and no
+ * ★ key (M is the minimap again). Commands 0.5 did not have keep their own keys: none of their defaults is a 0.5 chord.
+ */
+export const legacy05 = (): BindingOverrides => ({
+  ...Object.fromEntries(KEY_ACTIONS.filter((a) => LEGACY_DEFAULTS[a.id]).map((a) => [a.id, [...LEGACY_DEFAULTS[a.id]]])),
+  'take.star': [],
+})
 
+/**
+ * `overrides` with the 0.5 preset applied on top: the 0.5 commands get their 0.5 chords (custom keys of those commands
+ * are replaced); a custom key another command had taken from a 0.5 chord is dropped from it (back to its default when
+ * nothing is left), so the 0.5 chord always wins. Every other custom key is kept.
+ */
+export function withLegacy05(overrides: BindingOverrides): BindingOverrides {
+  const legacy = legacy05()
+  const next: BindingOverrides = { ...overrides, ...legacy }
+  for (const a of KEY_ACTIONS) {
+    const own = overrides[a.id]
+    if (Object.hasOwn(legacy, a.id) || !own?.length) continue
+    const kept = own.filter((c) => !KEY_ACTIONS.some((b) => legacy[b.id]?.includes(c) && contextsOverlap(a, b)))
+    if (kept.length === own.length) continue
+    if (kept.length) next[a.id] = kept
+    else delete next[a.id]
+  }
+  return next
+}
 
 const KEY_NAMES: Record<string, string> = {
   Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', IntlBackslash: '\\',
@@ -290,8 +331,7 @@ export function refusalFor(chord: string, action: KeyAction | ActionId, mac = fa
   const id = c.split('+').at(-1)!
   const ctrl = c.includes('Ctrl+'), alt = c.includes('Alt+')
   const fixed = transportKey({ key: id === 'Space' ? ' ' : id.startsWith('Key') ? id.slice(3).toLowerCase() : id, code: id, ctrlKey: !mac && ctrl, metaKey: mac && ctrl, altKey: alt, shiftKey: c.includes('Shift+') }, { player: 'canvas', mac, starChords: [], downloadChords: [] })
-  if (fixed) return 'Phím này dành cho điều khiển video — chọn phím khác.'
-  if ((a.alsoInDialogs === 'all' || a.alsoInDialogs?.includes('take')) && (c === 'Backquote' || c === 'Ctrl+Backquote')) return 'Phím này dành cho toàn màn hình video — chọn phím khác.'
+  if (fixed || ((a.alsoInDialogs === 'all' || a.alsoInDialogs?.includes('take')) && (c === 'Backquote' || c === 'Ctrl+Backquote'))) return `${chordLabel(c, mac)} là phím của trình phát video — chọn phím khác.`
   if (a.id === 'take.star' && c === 'KeyF') return 'F dành cho thoát video phóng to — chọn phím khác.'
   if (mac && MAC_SYSTEM[c]) return `${chordLabel(c, true)} là phím của macOS (${MAC_SYSTEM[c]}) — chọn phím khác.`
   if (id === 'Backspace') return mac ? '⌫ và ⌘⌫ là phím xoá cố định trên Mac — không thể gán lại.' : 'Bộ gõ tiếng Việt (Unikey, EVKey…) tự gửi Backspace khi bỏ dấu, nên Backspace không dùng làm phím tắt được.'
@@ -447,9 +487,10 @@ export function decideShortcut(e: KeyEventLike, ctx: Ctx, mac: boolean, resolved
     if (!b[a.id].includes(chord)) continue
     // selectAll: the global handler acts on the canvas only (the hidden views had their own handlers)
     if (a.id === 'selection.selectAll' && ctx.view !== 'canvas') return { action: null, handled: false }
-    // Key repeat: like today, chords with Ctrl / Alt repeat (undo held = many steps), single keys do not;
-    // the delete command never repeats.
-    if (e.repeat && (a.id === 'selection.delete' || (!/^(Ctrl|Alt)\+/.test(chord) && !a.repeat))) return { action: null, handled: a.id === 'selection.delete' }
+    // Key repeat: only commands that opt in (`repeat`: undo / redo / duplicate held = many steps, zoom). A held one-shot
+    // or toggle (Ctrl+L link, Ctrl+N, Ctrl+M, Ctrl+B…) runs once; its held Ctrl / Alt chord is still swallowed so the
+    // browser does not act on it. The delete command never repeats.
+    if (e.repeat && !a.repeat) return { action: null, handled: a.id === 'selection.delete' || /^(Ctrl|Alt)\+/.test(chord) }
     return { action: a.id, handled: true }
   }
   if (mac && (chord === 'Backspace' || chord === 'Ctrl+Backspace') && !ctx.typing && ctx.dialog === 'none' && b['selection.delete'].length) {

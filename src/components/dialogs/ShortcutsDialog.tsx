@@ -2,7 +2,7 @@ import { type ReactNode } from 'react'
 import { useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
-import { KEY_ACTIONS, FIXED_KEYS, chordLabel } from '../../core/keymap'
+import { KEY_ACTIONS, FIXED_KEYS, chordLabel, defaultsFor, type ActionId, type KeyAction } from '../../core/keymap'
 import { IS_MAC } from '../../lib/keyEvents'
 import { useKeymap } from '../../lib/keymapPrefs'
 
@@ -73,6 +73,19 @@ const GESTURES: Group[] = [
   },
 ]
 
+/** The Premiere chord of a command on this platform (a Mac default replaces it when the Mac table differs). */
+const premiereChord = (a: KeyAction): string => (IS_MAC && a.macDefaults ? defaultsFor(a, true)[0] : a.premiere?.chord) ?? ''
+
+/** First line (plan Premiere §3.9): where SanoVids differs from Premiere, with the keys in use. */
+export function premiereNote(labels: Readonly<Record<ActionId, string>>, mac = IS_MAC): string {
+  const diffs = [
+    `Enter mở khung sửa cảnh${labels['scene.run'] ? `, chạy cảnh là ${labels['scene.run']}` : ''}`,
+    ...(mac ? [] : [`Backspace không xoá trên Windows (dành cho bộ gõ tiếng Việt)${labels['selection.delete'] ? `, dùng ${labels['selection.delete']}` : ''}`]),
+    ...(labels['folder.new'] ? [`${labels['folder.new']} mở hộp chọn thư mục`] : []),
+  ]
+  return `Phím mặc định giống Adobe Premiere Pro. Khác Premiere: ${diffs.join(' · ')}.`
+}
+
 export function ShortcutsDialog() {
   const resolved = useKeymap((s) => s.resolved)
   const closeDialog = useUI((s) => s.closeDialog)
@@ -80,14 +93,14 @@ export function ShortcutsDialog() {
     <Modal title="Phím tắt & thao tác" onClose={closeDialog} size="xwide">
       <div className="dg-shortcuts">
         <div className="dg-sc-col">
-          <p className="dg-note">Phím mặc định giống Adobe Premiere Pro. Dưới đây là bộ phím đang dùng trên máy này.</p>
+          <p className="dg-note">{premiereNote(resolved.labels)} Dưới đây là bộ phím đang dùng trên máy này.</p>
           <button className="btn" onClick={() => useUI.getState().openDialog({ kind: 'settings', section: 'keys' })}>Đổi phím tắt…</button>
           {(['keys', 'keysScene', 'keysTake', 'keysCanvas'] as const).map((group) => (
             <section key={group} className="dg-sc-group">
               <h4>{GROUP_TITLES[group]}</h4>
               <div className="dg-sc-list">{KEY_ACTIONS.filter((a) => a.group === group).map((a) => (
                 <div key={a.id} className="dg-sc-row">
-                  <span className="dg-sc-label" title={a.help}>{a.label}</span>
+                  <span className="dg-sc-label" title={a.help}>{a.label}{a.premiere && resolved.byAction[a.id].includes(premiereChord(a)) && <> <span className="badge" title={`Giống Premiere: ${a.premiere.name}`}>Premiere</span></>}</span>
                   <span>{resolved.byAction[a.id].map((c) => <span className="kbd" key={c}>{chordLabel(c, IS_MAC)}</span>)}{!resolved.byAction[a.id].length && UNBOUND}</span>
                 </div>
               ))}</div>
