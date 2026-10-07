@@ -277,6 +277,11 @@
   line-height: 17px;
   border-radius: 5px;
 }
+/* H3 "Đầu→cuối": the ratio comes from the frames — one read-only segment "theo ảnh" */
+.cv-sn-setx-row .in-seg-btn.is-fixed {
+  text-align: center;
+  cursor: help;
+}
 
 /* ---- prompt box: one box, same insets static or live ---- */
 .cv-sn-pr {

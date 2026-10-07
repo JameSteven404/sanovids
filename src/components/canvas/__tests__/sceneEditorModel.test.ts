@@ -137,7 +137,7 @@ describe('ephemeral scene editor store', () => {
   afterEach(() => {
     unregister.splice(0).forEach((off) => off())
     useSceneEditor.getState().close()
-    useSceneEditor.setState({ panelSceneId: null })
+    useSceneEditor.setState({ panelSceneId: null, settingsSceneId: null })
     useProject.setState({ project: originalProject })
     useUI.setState(originalUI)
     useCanvasPrefs.setState(originalPrefs)
@@ -249,6 +249,38 @@ describe('ephemeral scene editor store', () => {
     const before = useUI.getState().selectedIds
     editor.open('s1')
     expect(useUI.getState().selectedIds).toBe(before)
+  })
+  it('settings line: opening it selects that node alone, at most one node has it open, it closes with the selection', () => {
+    const editor = setup()
+    // a click on the summary line of an UNSELECTED node selects it (React Flow never sees that click)
+    editor.openSettings('s1')
+    expect(useUI.getState().selectedIds).toEqual(['s1'])
+    expect(useSceneEditor.getState().settingsSceneId).toBe('s1')
+    // another node's line: the first one closes (never several open lines on nodes at rest)
+    editor.openSettings('s2')
+    expect(useUI.getState().selectedIds).toEqual(['s2'])
+    expect(useSceneEditor.getState().settingsSceneId).toBe('s2')
+    // typing in the same node keeps it open; selecting another node, or adding one to the selection, closes it
+    editor.open('s2', 'prompt', 0)
+    expect(useSceneEditor.getState().settingsSceneId).toBe('s2')
+    useUI.getState().select(['s2', 's1'])
+    expect(useSceneEditor.getState().settingsSceneId).toBeNull()
+    editor.openSettings('s1')
+    useUI.getState().select([])
+    expect(useSceneEditor.getState().settingsSceneId).toBeNull()
+    editor.closeSettings()
+    expect(useSceneEditor.getState().settingsSceneId).toBeNull()
+  })
+  it.each(['deleted', 'pref', 'view'])('settings line closes when the node is %s', (reason) => {
+    const editor = setup()
+    editor.openSettings('s1')
+    if (reason === 'deleted') useProject.setState((s) => ({ project: { ...s.project, scenes: s.project.scenes.filter((x) => x.id !== 's1') } }))
+    if (reason === 'pref') useCanvasPrefs.setState({ nodeEditor: 'off' })
+    if (reason === 'view') useUI.setState({ view: 'table' })
+    expect(useSceneEditor.getState().settingsSceneId).toBeNull()
+    // and it does not open in those states
+    editor.openSettings(reason === 'deleted' ? 's1' : 's2')
+    expect(useSceneEditor.getState().settingsSceneId).toBeNull()
   })
   it('does not open missing scenes, off mode or a non-canvas view', () => {
     const editor = setup()

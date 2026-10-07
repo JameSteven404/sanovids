@@ -334,6 +334,15 @@ describe('take rows (what counts in a scene row)', () => {
     const rows = computeTakeRows([take('t1', 's1', 1, { position: { x: 420 + LAYOUT.sceneW + LAYOUT.takeOffsetX, y: 90 } }), take('t2', 's1', 2)], [s1], 'all')
     expect(rows.rows.get('s1')).toEqual({ h: 200, w: 64 + 224 + 16 + 224 })
   })
+  it('an old stored card size (below the 0.6.0 minimum) counts as the width the node is drawn at (352)', () => {
+    // After "Hoàn tác" of the one-time row spacing the 280 × 200 sizes come back; the canvas draws them as the default
+    // node, so the row's slots start at x + 352 + 64 — a take nudged 160px right of that slot still keeps it.
+    const old = scene('s1', 1, { x: 420, y: 60 }, { size: { w: 280, h: 200 } })
+    const slot = 420 + LAYOUT.sceneW + LAYOUT.takeOffsetX
+    const rows = computeTakeRows([take('t1', 's1', 1, { position: { x: slot + 160, y: 60 } })], [old], 'all')
+    expect(rows.offRow.has('t1')).toBe(false)
+    expect(rows.rows.get('s1')).toEqual({ h: 200, w: 64 + 224 })
+  })
   it('"Chỉ take chọn": hidden takes are nothing', () => {
     const rows = computeTakeRows([take('t1', 's1', 1, { size: { w: 600, h: 560 } }), take('t2', 's1', 2)], [s1], 'chosen')
     expect(rows.rows.get('s1')).toEqual({ h: 200, w: 64 + 224 })

@@ -19,15 +19,14 @@ import { CREDIT_MARK, formatCredits } from '../../lib/credits'
 import { ASSETS_MIME } from '../../lib/dnd'
 import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
-import { flushScenes } from '../../lib/promptDrafts'
 import { useCreditKind } from '../../store/credits'
-import { LAYOUT, undoToastAction, useProject } from '../../store/project'
+import { LAYOUT, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { useInPanel, useIsEditing, useSceneEditor } from '../../store/sceneEditor'
-import { toast, useUI } from '../../store/ui'
+import { useInPanel, useIsEditing, useSceneEditor, useSettingsOpen } from '../../store/sceneEditor'
+import { useUI } from '../../store/ui'
 import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
-import { insertAt, segmentPrompt, snapToWordEnd } from '../inspector/tokens'
+import { segmentPrompt } from '../inspector/tokens'
 import { AssetPicker } from '../inspector/shared'
 import { useGatewayRefVideoCap, useSettingsRunBlock } from '../runs/shared'
 import { appliedPresetId } from '../sidebar/shared'
@@ -52,11 +51,22 @@ import {
 import { cutEdge } from './edges'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
-import { filesToSceneTiles, legacyTagsOf, NodePromptField, planNodeLinks, PromptSegments, staticTextBefore } from './SceneNodeEditor'
+import {
+  filesToSceneTiles,
+  insertLinksAtExcerpt,
+  legacyTagsOf,
+  linkCardsToNode,
+  linkNewTiles,
+  NodePromptField,
+  PromptSegments,
+  staticTextBefore,
+  typeOnNode,
+} from './SceneNodeEditor'
 import { SceneNodeSettings } from './SceneNodeSettings'
 import { caretFromExcerptHit, enterOpensEditor } from './sceneEditorModel'
 import {
   compactStatus,
+  farExcerpt,
   farSummary,
   farTone,
   footLayout,
@@ -100,15 +110,17 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
 
   // Enter on the only selected node (canvas focused, nothing being typed, no dialog): type in its prompt, caret at the end.
   // Also when its field is already mounted but not focused (pref "Tự mở khi chọn 1 cảnh"); Enter inside the field is a newline.
+  // A far node (zoomed out) is brought near first: its field only exists in the near view.
   useEffect(() => {
-    if (!single || far) return
+    if (!single) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Enter' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.defaultPrevented || e.isComposing) return
       if (useUI.getState().dialog.kind !== 'none' || useCanvasPrefs.getState().nodeEditor === 'off') return
       if (!enterOpensEditor(e.target instanceof Element ? e.target : null)) return
       e.preventDefault()
       const cur = sceneMapOf(useProject.getState().project.scenes).get(id)
-      useSceneEditor.getState().open(id, 'prompt', cur?.prompt.length ?? null)
+      if (far) typeOnNode(id, cur?.prompt.length ?? null)
+      else useSceneEditor.getState().open(id, 'prompt', cur?.prompt.length ?? null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -169,13 +181,15 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
     if (ids && ids.length) {
       // On the static text of this one node: link + insert the @image_N where it was dropped (one undo step).
       const text = targets.length === 1 ? (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-text') : null
-      if (text && insertAtStaticPoint(id, text, e.clientX, e.clientY, ids)) return
-      linkAssets(targets, ids)
+      if (text && insertLinksAtExcerpt(id, staticTextBefore(text, e.clientX, e.clientY), ids)) return
+      // Elsewhere on the node: linked; a card not on the canvas yet also gets its tile (choice 4A) — one undo step.
+      linkCardsToNode(id, targets, ids)
       return
     }
     const files = imageFiles(e.dataTransfer)
-    // New image files: tiles in the image column next to this row, wired (= linked as @image_N) to the scene(s).
-    if (files.length) void filesToSceneTiles(id, files).then((created) => created.length && linkAssets(targets, created))
+    // New image files: tiles in the image column next to this row, wired (= linked as @image_N) to the scene(s), in
+    // one undo step.
+    if (files.length) void filesToSceneTiles(id, files, (created) => linkNewTiles(targets, created), targets)
   }
 
   if (!scene) return null
@@ -205,7 +219,7 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
             <i style={{ width: `${Math.max(3, progress)}%` }} />
           </div>
         )}
-        {far ? <SceneFar scene={scene} status={status} progress={progress} /> : <SceneFull scene={scene} status={status} box={box} editing={editing} selected={!!selected} />}
+        {far ? <SceneFar scene={scene} status={status} progress={progress} w={box?.w ?? LAYOUT.sceneW} /> : <SceneFull scene={scene} status={status} box={box} editing={editing} />}
 
         <div className="cv-drop-hint">
           {dropHint?.kind === 'file' ? <ImagePlus size={14} /> : <Link2 size={14} />}
@@ -263,23 +277,6 @@ interface DropHint {
   text: string
 }
 
-/** Link `ids` and insert their @image_N into the prompt at the static text's point (x, y). false = not on the text. */
-function insertAtStaticPoint(sceneId: string, el: HTMLElement, x: number, y: number, ids: string[]): boolean {
-  const before = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
-  const at0 = before ? caretFromExcerptHit(before.prompt, staticTextBefore(el, x, y)) : null
-  if (at0 === null) return false
-  flushScenes([sceneId])
-  const plan = planNodeLinks(sceneId, ids)
-  const cur = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
-  if (!plan || !cur) return true
-  if (!plan.tokens.length) return true
-  const at = snapToWordEnd(cur.prompt, Math.min(at0, cur.prompt.length))
-  const { next } = insertAt(cur.prompt, at, at, plan.tokens.join(' '))
-  useProject.getState().restoreScene(sceneId, { prompt: next, refs: plan.refs ?? cur.refs, videoRefs: cur.videoRefs, settings: cur.settings })
-  toast(plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`, { tone: 'success', action: undoToastAction() })
-  return true
-}
-
 // ---------------------------------------------------------------------------------------------
 /**
  * What the scene would send and why it cannot run yet: the engine's rule list (core/runRules = store/runs check()):
@@ -320,7 +317,7 @@ function useRefSlots(assets: Asset[], refs: string[]) {
 
 // ---------------------------------------------------------------------------------------------
 /** Zoomed out (< 55%): code ≈ 18px on screen, the name in 2 lines, 2 prompt lines, pictures and ▶ (grey when blocked). */
-function SceneFar({ scene, status, progress }: { scene: Scene; status: TakeSummary['status']; progress: number }) {
+function SceneFar({ scene, status, progress, w }: { scene: Scene; status: TakeSummary['status']; progress: number; w: number }) {
   const { assets, compiled, reason, spec } = useSceneRun(scene)
   const slots = useRefSlots(assets, scene.refs)
   // the red label "Chữ đỏ" when red placeholders block it (like the node's strip), else "Chưa chạy"
@@ -331,7 +328,8 @@ function SceneFar({ scene, status, progress }: { scene: Scene; status: TakeSumma
   const rf = useReactFlow()
   const tone = farTone(status, hasVideo, !!reason)
   const cost = costOf(scene.settings)
-  const lines = scene.prompt.trim().split('\n').slice(0, 2).join('\n')
+  // Bounded: 100+ far nodes are on screen at once, each must not lay out a whole 20,000-character paragraph.
+  const lines = farExcerpt(scene.prompt, w)
   return (
     <div
       className="cv-snf"
@@ -396,7 +394,7 @@ function SceneFar({ scene, status, progress }: { scene: Scene; status: TakeSumma
 
 // ---------------------------------------------------------------------------------------------
 /** `box`: size of a resized node (null = default 352 × 304). */
-function SceneFull({ scene, status, box, editing, selected }: { scene: Scene; status: TakeSummary['status']; box: Size | null; editing: boolean; selected: boolean }) {
+function SceneFull({ scene, status, box, editing }: { scene: Scene; status: TakeSummary['status']; box: Size | null; editing: boolean }) {
   const { assets, compiled, reason, spec } = useSceneRun(scene)
   const slots = useRefSlots(assets, scene.refs)
   const inPanel = useInPanel(scene.id)
@@ -410,11 +408,13 @@ function SceneFull({ scene, status, box, editing, selected }: { scene: Scene; st
     return { count: t.count, status: t.status, progress: t.status === 'processing' ? t.progress : 0, starredNumber: t.starredNumber, active: t.active }
   }))
   const creditKind = useCreditKind()
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  // The opened settings line belongs to the selected node: it closes with the selection.
-  useEffect(() => {
-    if (!selected) setSettingsOpen(false)
-  }, [selected])
+  // The opened settings line belongs to the only selected node (store/sceneEditor: opening it selects the node alone,
+  // it closes with that selection) — never several open lines on nodes at rest.
+  const settingsOpen = useSettingsOpen(scene.id)
+  const frames = useMemo(() => {
+    const first = (id: string | null) => (id ? (assets.find((a) => a.id === id)?.imageIds[0] ?? null) : null)
+    return { first: first(scene.firstFrame), last: first(scene.lastFrame) }
+  }, [assets, scene.firstFrame, scene.lastFrame])
 
   const code = sceneCode(scene.order)
   const cost = costOf(scene.settings)
@@ -455,7 +455,14 @@ function SceneFull({ scene, status, box, editing, selected }: { scene: Scene; st
       </div>
 
       {settingsOpen && !off ? (
-        <SceneNodeSettings sceneId={scene.id} settings={scene.settings} storedPresetId={scene.presetId} foreignModel={scene.foreignModel} onClose={() => setSettingsOpen(false)} />
+        <SceneNodeSettings
+          sceneId={scene.id}
+          settings={scene.settings}
+          storedPresetId={scene.presetId}
+          foreignModel={scene.foreignModel}
+          frames={frames}
+          onClose={() => useSceneEditor.getState().closeSettings()}
+        />
       ) : (
         <button
           type="button"
@@ -469,7 +476,7 @@ function SceneFull({ scene, status, box, editing, selected }: { scene: Scene; st
           }
           onClick={(e) => {
             e.stopPropagation()
-            setSettingsOpen(true)
+            useSceneEditor.getState().openSettings(scene.id)
           }}
         >
           <span className={`cv-sn-sum-m${scene.foreignModel ? ' is-foreign' : ''}`} style={{ ['--model-c' as string]: scene.foreignModel ? 'var(--warn)' : spec.color } as CSSProperties}>

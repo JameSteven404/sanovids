@@ -25,13 +25,13 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { createAssetsFromFiles, requestRun } from '../../actions'
+import { canvasEvents, createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
 import { assetByTag, sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
-import { register as registerDraft } from '../../lib/promptDrafts'
-import { canvasObstacles, undoToastAction, useProject } from '../../store/project'
+import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
+import { canvasObstacles, oneUndoStep, undoToastAction, useProject } from '../../store/project'
 import { useSceneEditor } from '../../store/sceneEditor'
 import { toast } from '../../store/ui'
 import { MediaImg, AssetAvatar } from '../common/Media'
@@ -51,8 +51,8 @@ import {
   type MediaSuggestion,
   type Seg,
 } from '../inspector/tokens'
-import { imageFiles, legacyTypingChord, sceneRowImageSpots } from './canvasModel'
-import { nodeEditorKeyBubbles } from './sceneEditorModel'
+import { imageFiles, legacyTypingChord, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
+import { caretFromExcerptHit, nodeEditorKeyBubbles } from './sceneEditorModel'
 import '../inspector/inspector.css'
 
 const COMMIT_MS = 160
@@ -145,14 +145,116 @@ export function planNodeLinks(sceneId: string, ids: string[]): LinkPlan | null {
   }
 }
 
-/** Image files dropped on a scene node: tiles in the image column next to its row (one step), returned ids. */
-export async function filesToSceneTiles(sceneId: string, files: File[]): Promise<string[]> {
+/**
+ * Image files dropped on a scene node (choice 4A): tiles in the image column next to its row, and `link(ids)` (wire
+ * them to the scene, insert their tags) in the SAME undo step — one "Hoàn tác" takes back tiles and link. The prompts
+ * being typed in `flush` are committed first, as their own step. Returns the new ids.
+ */
+export async function filesToSceneTiles(sceneId: string, files: File[], link: (ids: string[]) => void, flush: readonly string[] = [sceneId]): Promise<string[]> {
   const images = files.filter((f) => /^image\//.test(f.type))
   if (!images.length) return createAssetsFromFiles(files)
   const project = useProject.getState().project
   const scene = project.scenes.find((s) => s.id === sceneId)
   const spots = scene ? sceneRowImageSpots(scene, images.length, project.scenes, canvasObstacles(project)) : undefined
-  return createAssetsFromFiles(images, { spots, select: false, quiet: true })
+  return createAssetsFromFiles(images, { spots, select: false, quiet: true, flush, inSameStep: link })
+}
+
+/**
+ * Wire new tiles (image files dropped on a node) to the target scenes and say what happened; call it inside the tiles'
+ * undo step (filesToSceneTiles), so "Hoàn tác" takes back both. Over the model's image limit the tiles stay on the
+ * canvas unwired (the files are not lost) and the toast says so.
+ */
+export function linkNewTiles(sceneIds: string[], ids: string[]): void {
+  const st = useProject.getState()
+  const res = st.addRefs(sceneIds, ids)
+  const scenes = st.project.scenes.filter((s) => sceneIds.includes(s.id))
+  const where = scenes.length === 1 ? sceneCode(scenes[0].order) : `${res.scenes} cảnh`
+  if (res.added) {
+    toast(`Đã thêm ${ids.length} ô ảnh và nối vào ${where}${res.skipped ? ` (bỏ qua ${res.skipped} vì vượt giới hạn ảnh)` : ''}.`, { tone: 'success', action: undoToastAction() })
+  } else {
+    toast(`Đã thêm ${ids.length} ô ảnh lên canvas nhưng chưa nối được: vượt giới hạn ảnh của model.`, { tone: 'warning', action: undoToastAction() })
+  }
+}
+
+/**
+ * Choice 4A for library cards: the dropped images now linked to `targets` that have no tile on the canvas yet get one
+ * in the image column next to the row of `sceneId` (an image already on the canvas only got its wire). Call it inside
+ * the link's undo step. Returns the ids placed.
+ */
+export function placeLinkedTiles(sceneId: string, ids: readonly string[], targets: readonly string[] = [sceneId]): string[] {
+  const project = useProject.getState().project
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  if (!scene) return []
+  const linked = new Set(project.scenes.filter((s) => targets.includes(s.id)).flatMap((s) => s.refs))
+  const byId = new Map(project.assets.map((a) => [a.id, a]))
+  const fresh = [...new Set(ids)].filter((id) => linked.has(id) && byId.has(id) && !byId.get(id)!.position)
+  if (!fresh.length) return []
+  const spots = sceneRowImageSpots(scene, fresh.length, project.scenes, canvasObstacles(project))
+  useProject.getState().setAssetsOnCanvas(Object.fromEntries(fresh.map((id, i) => [id, spots[i]])))
+  return fresh
+}
+
+/** Library cards / tiles dropped on a node (not on its text): linked to `targets`, cards without a tile get one — one undo step. */
+export function linkCardsToNode(sceneId: string, targets: string[], ids: string[]): void {
+  linkAssets(targets, ids, () => placeLinkedTiles(sceneId, ids, targets))
+}
+
+/**
+ * Library cards / tiles dropped on the STATIC prompt text of a node: link them and insert their @image_N where they
+ * were dropped (`textBefore` = the static text up to the drop point: staticTextBefore) — the link, the tags and the
+ * tiles of cards not on the canvas yet in ONE undo step. false = the point is not on the text (the caller links only).
+ */
+export function insertLinksAtExcerpt(sceneId: string, textBefore: string | null, ids: string[]): boolean {
+  const before = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+  const at0 = before ? caretFromExcerptHit(before.prompt, textBefore) : null
+  if (at0 === null) return false
+  flushScenes([sceneId])
+  const plan = planNodeLinks(sceneId, ids)
+  const cur = useProject.getState().project.scenes.find((s) => s.id === sceneId)
+  if (!plan || !cur || !plan.tokens.length) return true
+  const at = snapToWordEnd(cur.prompt, Math.min(at0, cur.prompt.length))
+  const { next } = insertAt(cur.prompt, at, at, plan.tokens.join(' '))
+  oneUndoStep(() => {
+    useProject.getState().restoreScene(sceneId, { prompt: next, refs: plan.refs ?? cur.refs, videoRefs: cur.videoRefs, settings: cur.settings })
+    placeLinkedTiles(sceneId, ids)
+  })
+  toast(plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`, { tone: 'success', action: undoToastAction() })
+  return true
+}
+
+/**
+ * Type in a scene's prompt on its node from anywhere (the right panel's "Gõ trên node", Enter on a far node): the
+ * canvas first brings the node on screen and near (canvasModel typingViewport) — the field only exists there — then
+ * the field opens with the caret at `caret` (null = the end).
+ */
+export function typeOnNode(sceneId: string, caret: number | null = null): void {
+  canvasEvents.dispatchEvent(new CustomEvent(TYPE_EVENT, { detail: [sceneId] }))
+  useSceneEditor.getState().open(sceneId, 'prompt', caret)
+}
+
+/**
+ * The draft contract of a mounted node field: its commit is registered for structural changes (lib/promptDrafts), runs
+ * when the window is hidden or closed (capture phase: before persist.ts writes the project on the same events), and
+ * once more when the field goes away — unmounted by the far view, culling, or another node opening. Returns the disposer.
+ */
+export function bindNodeDraft(
+  sceneId: string,
+  commit: () => void,
+  win: EventTarget = window,
+  doc: EventTarget & { visibilityState: string } = document,
+): () => void {
+  const unregister = registerDraft(sceneId, commit)
+  const onHidden = () => {
+    if (doc.visibilityState === 'hidden') commit()
+  }
+  win.addEventListener('pagehide', commit, true)
+  win.addEventListener('visibilitychange', onHidden, true)
+  return () => {
+    win.removeEventListener('pagehide', commit, true)
+    win.removeEventListener('visibilitychange', onHidden, true)
+    commit()
+    unregister()
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -234,22 +336,8 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     timerRef.current = setTimeout(tick, COMMIT_MS)
   }, [commit])
 
-  useEffect(() => {
-    const flush = () => commit()
-    const unregister = registerDraft(sceneId, flush)
-    // Closing the window / hiding the app does not blur the field: commit before the autosave (capture phase).
-    const onHidden = () => {
-      if (document.visibilityState === 'hidden') flush()
-    }
-    window.addEventListener('pagehide', flush, true)
-    window.addEventListener('visibilitychange', onHidden, true)
-    return () => {
-      window.removeEventListener('pagehide', flush, true)
-      window.removeEventListener('visibilitychange', onHidden, true)
-      flush()
-      unregister()
-    }
-  }, [sceneId, commit])
+  // Structural changes, closing the window / hiding the app (no blur) and unmounting commit the text (bindNodeDraft).
+  useEffect(() => bindNodeDraft(sceneId, () => commit()), [sceneId, commit])
 
   // ---------- external changes (undo, renumbering…) ----------
   useLayoutEffect(() => {
@@ -418,11 +506,15 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     setDrop(null)
     const at = dropOffset(e.clientX, e.clientY)
     commit()
+    // Link + insert the tags where dropped, and a tile for each card not on the canvas yet: one undo step.
     const insertLinks = (ids: string[]) => {
       const plan = planNodeLinks(sceneId, ids)
       if (!plan?.tokens.length) return
       const pos = Math.min(at, textRef.current.length)
-      replaceRange(pos, pos, plan.tokens.join(' '), plan.refs)
+      oneUndoStep(() => {
+        replaceRange(pos, pos, plan.tokens.join(' '), plan.refs)
+        placeLinkedTiles(sceneId, ids)
+      })
       if (plan.done) toast(plan.done, { tone: 'success', action: undoToastAction() })
     }
     const ids = readIds(e.dataTransfer, ASSETS_MIME)
@@ -432,18 +524,9 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     }
     const files = imageFiles(e.dataTransfer)
     if (files.length) {
-      void filesToSceneTiles(sceneId, files).then((created) => {
-        if (!created.length) return
-        // Still the field of this scene: link + insert where dropped; else link only (the field was closed meanwhile).
-        if (taRef.current) insertLinks(created)
-        else {
-          const plan = planNodeLinks(sceneId, created)
-          if (plan?.refs) {
-            const cur = useProject.getState().project.scenes.find((s) => s.id === sceneId)
-            if (cur) useProject.getState().restoreScene(sceneId, { prompt: cur.prompt, refs: plan.refs, videoRefs: cur.videoRefs, settings: cur.settings })
-          }
-        }
-      })
+      // New tiles + (still the field of this scene) link and insert where dropped, else link only (the field was
+      // closed meanwhile) — all in the tiles' undo step.
+      void filesToSceneTiles(sceneId, files, (created) => (taRef.current ? insertLinks(created) : linkNewTiles([sceneId], created)))
     }
   }
 

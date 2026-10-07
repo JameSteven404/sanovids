@@ -4,7 +4,7 @@
 // ones only nudged on their slot (core/takes keepsSlot). Takes dragged away are separate boxes; hidden ones are nothing.
 import { chooseTake, keepsSlot, videoUsageOf } from '../core/takes'
 import type { Scene, Take } from '../core/types'
-import { LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
+import { drawnSceneSize, LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
 import { useRuns } from './runs'
 import { useUI, type TakeDisplay } from './ui'
 
@@ -39,7 +39,8 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
     list.sort((a, b) => a.number - b.number)
     const chosen = mode === 'chosen' ? chooseTake(list) : undefined
     const shown = mode === 'chosen' ? list.filter((t) => t === chosen || used.has(t.id)) : list
-    const cardW = s.size?.w ?? LAYOUT.sceneW
+    // The width the canvas draws the node at: a stored size from before 0.6.0 (below today's minimum) reads as the default.
+    const cardW = drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW
     let acc = 0
     let h = 0
     for (const t of shown) {

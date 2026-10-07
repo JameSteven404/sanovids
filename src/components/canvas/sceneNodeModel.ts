@@ -2,6 +2,7 @@
 // Sizes are flow px at zoom 100%. No React / DOM / store imports (unit-tested in __tests__/sceneNodeModel.test.ts).
 import { formatCredits, type CreditKind } from '../../lib/credits'
 import type { JobStatus, Mode, VideoSettings } from '../../core/types'
+import { transformFrameRatio } from '../../providers/canvasapp/mapping'
 
 /**
  * Vertical recipe of a node (inside its 1px border): head 32 · settings line 24 + gap 6 · prompt (flexible, 194 at
@@ -130,16 +131,31 @@ export function compactStatus(s: StatusInput): { text: string; title: string; to
 /** Short mode names on the node (the full name is the title: modeLabel). */
 export const MODE_SHORT: Record<Mode, string> = { t2v: 'Chữ→Video', i2v: 'Ảnh→Video', transform: 'Đầu→cuối' }
 
+/** The ratio of an H3 "Đầu→cuối" scene: none is picked, canvasapp takes it from the two frames. */
+export const FRAME_RATIO_LABEL = 'theo ảnh'
+
 /**
  * "SD 2.5 · 30s · 480P · 16:9 · Nháp". `modelShort` = MODELS[model].short (or a newer build's model badge);
  * `modes` = how many modes the model has (the mode is named only when there is a choice, MiniMax-H3);
- * `preset` = the applied preset's name, null = "Tuỳ chỉnh".
+ * `preset` = the applied preset's name, null = "Tuỳ chỉnh". H3 "Đầu→cuối" sends no ratio (mapping: the frames give
+ * it): "theo ảnh" instead of the stored one.
  */
 export function settingsSummary(s: VideoSettings, modelShort: string, modes: number, preset: string | null): string {
   const parts = [modelShort]
   if (modes > 1) parts.push(MODE_SHORT[s.mode] ?? String(s.mode))
-  parts.push(`${s.duration}s`, String(s.resolution).toUpperCase(), s.ratio, preset ?? 'Tuỳ chỉnh')
+  parts.push(`${s.duration}s`, String(s.resolution).toUpperCase(), s.mode === 'transform' ? FRAME_RATIO_LABEL : s.ratio, preset ?? 'Tuỳ chỉnh')
   return parts.join(' · ')
+}
+
+/**
+ * Hover text of the read-only "theo ảnh" ratio (H3 "Đầu→cuối"): the ratio both frames share, or why canvasapp would
+ * refuse them (providers/canvasapp transformFrameRatio). `first` / `last` = each frame's ratio (ratioFromDimensions:
+ * null = not a supported ratio); undefined = no such frame, or not measured yet.
+ */
+export function frameRatioTitle(first: string | null | undefined, last: string | null | undefined): string {
+  if (first === undefined || last === undefined) return 'Tỉ lệ lấy theo khung đầu / khung cuối — nối đủ hai khung để biết tỉ lệ.'
+  const r = transformFrameRatio(first, last)
+  return 'ratio' in r ? `Tỉ lệ lấy theo khung đầu / khung cuối: ${r.ratio}.` : r.problem
 }
 
 // ---------------- Run button ----------------
@@ -240,6 +256,29 @@ export function farTone(status: JobStatus | null, hasVideo: boolean, blocked: bo
   if (status === 'processing' || status === 'queued') return 'going'
   if (blocked) return 'bad'
   return hasVideo ? 'ok' : 'none'
+}
+
+/** Far node text: 24px (≈ 11px a character), 20px side padding. */
+const FAR_CHAR_W = 11
+const FAR_PAD_X = 20
+
+/**
+ * The far node's two prompt lines (line-clamp 2): the first two lines of the prompt, leading blanks dropped, cut to
+ * what two lines of a node `w` px wide can show (+40% slack) — never a whole 20,000-character paragraph laid out in
+ * every far node (the far view is where 100+ nodes are on screen at once).
+ */
+export function farExcerpt(prompt: string, w: number): string {
+  const perLine = Math.max(8, Math.floor((w - 2 * NODE.border - 2 * FAR_PAD_X) / FAR_CHAR_W))
+  const cap = Math.ceil(2 * perLine * 1.4) + 8
+  let start = 0
+  while (start < prompt.length && start < 4096 && /\s/.test(prompt[start])) start++
+  let end = Math.min(prompt.length, start + cap)
+  const first = prompt.indexOf('\n', start)
+  if (first !== -1 && first < end) {
+    const second = prompt.indexOf('\n', first + 1)
+    if (second !== -1 && second < end) end = second
+  }
+  return prompt.slice(start, end).trimEnd()
 }
 
 /** "SD 2.5 · 15s" in the far node's corner. */

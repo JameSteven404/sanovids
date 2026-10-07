@@ -22,6 +22,7 @@ import {
   TILE_STEP,
   WIRE_GAP,
   takeSlots,
+  typingViewport,
   unionBox,
   visibleFlowRect,
   type StageSize,
@@ -184,6 +185,23 @@ describe('viewport moves', () => {
     }
     expect(unionBox([{ x: 420, y: 1300, ...fallbackNodeSize('scene') }])).toEqual({ x: 420, y: 1300, w: LAYOUT.sceneW, h: LAYOUT.sceneH })
     expect(unionBox([])).toBeNull()
+  })
+  it('typing on a node far away / off-screen ("Gõ trên node", Enter on a far node): on screen AND near, where its field exists', () => {
+    const node = { x: 464, y: 3000, w: LAYOUT.sceneW, h: LAYOUT.sceneH }
+    // drawn far (zoom 0.4) though on screen: centred at 100% (like the far node's double-click)
+    const onScreenFar = { x: -100, y: -1150, zoom: 0.4 }
+    expect(boxOnScreen(node, onScreenFar, stage)).toBe(true)
+    const near = typingViewport(node, onScreenFar, stage)!
+    expect(near.zoom).toBe(1)
+    expect(boxOnScreen(node, near, stage)).toBe(true)
+    // near enough but off-screen: centred, the zoom kept
+    const off = typingViewport(node, { x: 0, y: 0, zoom: 0.8 }, stage)!
+    expect(off.zoom).toBe(0.8)
+    expect(boxOnScreen(node, off, stage)).toBe(true)
+    // already on screen and near: no move
+    expect(typingViewport(node, off, stage)).toBeNull()
+    // a tiny window: as large as fits, never below the far view's threshold
+    expect(typingViewport(node, onScreenFar, { w: 300, h: 260, bottom: 92 })!.zoom).toBe(0.55)
   })
   it('visible area in flow coordinates (for placing new scenes)', () => {
     expect(visibleFlowRect({ x: -200, y: 100, zoom: 0.5 }, stage)).toEqual({ x: 400, y: -200, w: 2000, h: 1216 })

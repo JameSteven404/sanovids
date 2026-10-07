@@ -1,10 +1,11 @@
 // One-time "giãn hàng" of projects laid out for the 0.5.x cards (280 × 200, rows 248 apart; tiles 180 wide in 238px
 // steps): rows spread to 352 (one undo step, toast), gaps the user left stay, old too-small sizes read as the default.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Asset, Project, Scene, Take, XY } from '../../../core/types'
+import type { Asset, Project, SaveFolder, Scene, Take, XY } from '../../../core/types'
 import { LAYOUT, ROW_H, undo, redo, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
-import { maybeSpaceRows, OLD_LAYOUT, planRowSpacing, ROW_SPACING_KEY, type RowSpacingInput, type RowSpacingPlan } from '../rowSpacing'
+import { useUI } from '../../../store/ui'
+import { maybeSpaceRows, OLD_LAYOUT, planRowSpacing, ROW_SPACING_KEY, showsOldLayout, spacingToast, type RowSpacingInput, type RowSpacingPlan } from '../rowSpacing'
 
 const scene = (id: string, position: XY, over: Partial<Scene> = {}): Scene => ({
   id, order: 1, title: '', prompt: '', refs: [], videoRefs: [], presetId: null,
@@ -20,6 +21,7 @@ const take = (id: string, sceneId: string, position: XY | null): Take => ({
   settings: { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
   cost: 1, starred: false, posterId: null, videoId: null, error: null, position,
 })
+const folder = (id: string, position: XY): SaveFolder => ({ id, name: id, path: null, position, mode: 'copy' })
 /** A 0.5.x layout: scenes at x 420 every 248px, tiles at x 40 every 238px. */
 const oldRow = (i: number): XY => ({ x: 420, y: 60 + i * 248 })
 const oldTile = (i: number): XY => ({ x: 40, y: 60 + i * 238 })
@@ -107,6 +109,43 @@ describe('planRowSpacing', () => {
     expect(again.changed).toBe(false)
     expect(planRowSpacing({ scenes: [], assets: [asset('a', oldTile(0))], takes: [] }).changed).toBe(false)
   })
+
+  it('a 0.6.0 layout (imported / duplicated under a new id) never moves — not even nodes that touch or tiles pulled closer', () => {
+    const fresh: RowSpacingInput = {
+      scenes: [
+        // resized taller in 0.6.0: now 22px above the next row (touching)
+        scene('s1', { x: LAYOUT.scenesX, y: 60 }, { size: { w: 352, h: 330 } }),
+        scene('s2', { x: LAYOUT.scenesX, y: 60 + ROW_H }),
+        // dropped half over another node on purpose (150px apart: never a 0.5.x row)
+        scene('s3', { x: LAYOUT.scenesX, y: 60 + 2 * ROW_H }),
+        scene('s4', { x: LAYOUT.scenesX, y: 60 + 2 * ROW_H + 150 }),
+      ],
+      // the image column dragged to 144px from the scenes
+      assets: [0, 1].map((i) => asset('a' + i, { x: 100, y: 60 + i * (LAYOUT.assetH + LAYOUT.assetGapY) })),
+      takes: [{ id: 't', sceneId: 's1', position: { x: 2000, y: 60 } }],
+      folders: [folder('f', { x: 1500, y: 400 })],
+    }
+    expect(showsOldLayout(fresh)).toBe(false)
+    expect(planRowSpacing(fresh)).toMatchObject({ changed: false, scenes: {}, assets: {}, takes: {}, folders: {} })
+  })
+
+  it('folder nodes and tiles elsewhere follow the scene row they sit beside; one above every row stays', () => {
+    const plan = planRowSpacing({
+      ...old,
+      assets: [...old.assets, asset('right', { x: 1800, y: 308 + 30 })],
+      folders: [folder('f3', { x: 1500, y: 556 - 10 }), folder('top', { x: 1500, y: -400 })],
+    })
+    expect(plan.folders.f3).toEqual({ x: 1500, y: 546 + (60 + 2 * ROW_H - 556) })
+    expect(plan.folders.top).toBeUndefined()
+    expect(plan.assets.right).toEqual({ x: 1800, y: 338 + (60 + ROW_H - 308) })
+  })
+
+  it('only the image column shows the old layout: the tiles are re-spaced and the toast says so', () => {
+    const plan = planRowSpacing({ scenes: [scene('s1', oldRow(0))], assets: [0, 1, 2].map((i) => asset('a' + i, oldTile(i))), takes: [] })
+    expect(plan).toMatchObject({ changed: true, rows: false, scenes: {} })
+    expect(spacingToast(plan)).toBe('Ô ảnh giờ lớn hơn: cột ảnh đã được giãn ra một lần cho khỏi chồng lên nhau.')
+    expect(spacingToast(planRowSpacing(old))).toBe('Node cảnh giờ lớn hơn: các hàng cảnh đã được giãn ra một lần cho khỏi chồng lên nhau.')
+  })
 })
 
 describe('maybeSpaceRows (opening an old project on the canvas)', () => {
@@ -154,6 +193,28 @@ describe('maybeSpaceRows (opening an old project on the canvas)', () => {
     undo()
     expect(maybeSpaceRows()).toBe(false)
     expect(useProject.getState().project).toBe(before)
+  })
+
+  it('folder nodes move with their row in the same undo step', () => {
+    const p = useProject.getState().project
+    useProject.getState().loadProject({ ...p, folders: [folder('f', { x: 1500, y: 60 + 2 * 248 })] })
+    useProject.temporal.getState().clear()
+    expect(maybeSpaceRows()).toBe(true)
+    expect(useProject.getState().project.folders![0].position).toEqual({ x: 1500, y: 60 + 2 * ROW_H })
+    expect(useProject.temporal.getState().pastStates).toHaveLength(1)
+    undo()
+    expect(useProject.getState().project.folders![0].position).toEqual({ x: 1500, y: 60 + 2 * 248 })
+  })
+
+  it('a 0.6.0 project under a new id (import / duplicate) whose nodes touch is left alone: no move, no toast', () => {
+    useUI.setState({ toasts: [] })
+    const touching = [scene('s0', { x: 464, y: 60 }, { size: { w: 352, h: 330 } }), scene('s1', { x: 464, y: 60 + ROW_H })]
+    useProject.getState().loadProject({ ...useProject.getState().project, id: 'imported-copy', scenes: touching, assets: [] })
+    useProject.temporal.getState().clear()
+    expect(maybeSpaceRows()).toBe(false)
+    expect(useProject.getState().project.scenes.map((s) => s.position.y)).toEqual([60, 60 + ROW_H])
+    expect(useProject.temporal.getState().pastStates).toHaveLength(0)
+    expect(useUI.getState().toasts).toHaveLength(0)
   })
 
   it('a project that needs nothing is only remembered (no undo step, no toast)', () => {

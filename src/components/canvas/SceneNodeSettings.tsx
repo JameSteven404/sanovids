@@ -3,29 +3,35 @@
 // never grows. Mounted only while a node's line is open (one at a time in practice). Every pick is one undo step
 // (store updateSettings / applyPreset), the price on the Run button follows at once. What the gateway refuses now
 // (/api/video-profiles) is shown like the right panel: struck through, not pickable (settingsLimits).
+// H3 "Đầu→cuối" picks no ratio (canvasapp takes it from the two frames): a read-only "theo ảnh" in the ratio row.
 import { ChevronUp } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { memo, useMemo, type CSSProperties } from 'react'
 import { foreignModelOption, modeLabel, MODELS } from '../../core/models'
 import type { ModelId, Mode, VideoSettings } from '../../core/types'
+import { useImageSize, type ImageSize } from '../../lib/imageMeta'
+import { ratioFromDimensions } from '../../providers/canvasapp/mapping'
 import { limitsSite } from '../../providers/limits'
 import { useProject } from '../../store/project'
 import { useActiveLimits } from '../runs/shared'
 import { appliedPresetId } from '../sidebar/shared'
 import { Segmented } from '../inspector/SettingsFields'
 import { optionLimit, optionTag, optionTitle } from '../inspector/settingsLimits'
-import { MODE_SHORT } from './sceneNodeModel'
+import { FRAME_RATIO_LABEL, frameRatioTitle, MODE_SHORT } from './sceneNodeModel'
 import '../inspector/inspector.css'
 
 const fmtDuration = (d: number) => `${d}s`
 const fmtResolution = (r: string) => r.toUpperCase()
 const FOREIGN = '__foreign'
 const CUSTOM = ''
+/** A frame's ratio for frameRatioTitle: undefined = no frame / not measured yet, null = not a supported ratio. */
+const frameRatio = (imageId: string | null, size: ImageSize | null) => (!imageId || !size ? undefined : ratioFromDimensions(size.w, size.h))
 
 export const SceneNodeSettings = memo(function SceneNodeSettings({
   sceneId,
   settings,
   storedPresetId,
   foreignModel,
+  frames,
   onClose,
 }: {
   sceneId: string
@@ -33,6 +39,8 @@ export const SceneNodeSettings = memo(function SceneNodeSettings({
   /** Scene.presetId (the picker shows "Tuỳ chỉnh" when the preset was edited since: appliedPresetId). */
   storedPresetId: string | null
   foreignModel?: string
+  /** First picture of the H3 frames (image ids; null = no frame): their shared ratio is the one canvasapp uses. */
+  frames: { first: string | null; last: string | null }
   onClose: () => void
 }) {
   const presets = useProject((s) => s.project.presets)
@@ -44,6 +52,9 @@ export const SceneNodeSettings = memo(function SceneNodeSettings({
   const spec = MODELS[settings.model]
   const lim = (field: 'model' | 'mode' | 'duration' | 'resolution' | 'ratio', v: string | number) => optionLimit(limits, list, field, v)
   const patch = (p: Partial<VideoSettings>) => useProject.getState().updateSettings([sceneId], p)
+  const byFrames = settings.mode === 'transform'
+  const firstSize = useImageSize(byFrames ? frames.first : null)
+  const lastSize = useImageSize(byFrames ? frames.last : null)
   return (
     <div className="cv-sn-setx nodrag nopan" role="group" aria-label="Cấu hình video của cảnh">
       <div className="cv-sn-setx-line">
@@ -131,9 +142,18 @@ export const SceneNodeSettings = memo(function SceneNodeSettings({
           onPick={(r) => patch({ resolution: r })}
         />
       </div>
-      <div className="cv-sn-setx-row" data-settings-field="ratio">
-        <Segmented label="Tỉ lệ" value={settings.ratio} options={spec.ratios} format={(r) => r} limit={(r) => lim('ratio', r)} models={models} site={site} onPick={(r) => patch({ ratio: r })} />
-      </div>
+      {byFrames ? (
+        <div className="cv-sn-setx-row" data-settings-field="ratio" title={frameRatioTitle(frameRatio(frames.first, firstSize), frameRatio(frames.last, lastSize))}>
+          <span className="in-seg is-fixed" role="note" aria-label={`Tỉ lệ: ${FRAME_RATIO_LABEL}`} style={{ '--n': 1, '--i': 0 } as CSSProperties}>
+            <span className="in-seg-thumb" aria-hidden="true" />
+            <span className="in-seg-btn on is-fixed">{FRAME_RATIO_LABEL}</span>
+          </span>
+        </div>
+      ) : (
+        <div className="cv-sn-setx-row" data-settings-field="ratio">
+          <Segmented label="Tỉ lệ" value={settings.ratio} options={spec.ratios} format={(r) => r} limit={(r) => lim('ratio', r)} models={models} site={site} onPick={(r) => patch({ ratio: r })} />
+        </div>
+      )}
     </div>
   )
 })

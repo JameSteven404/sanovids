@@ -19,6 +19,10 @@ import { toast } from './ui'
 let coalesceKey: string | null = null
 let lastKey: string | null = null
 let lastTime = 0
+/** oneUndoStep is running: its actions are recorded once, as one step, when it ends. */
+let grouping = 0
+/** Undo steps kept (zundo `limit`). */
+const HISTORY_LIMIT = 200
 /** Call right before a set() that should merge with the previous one of the same key (e.g. 'prompt:<sceneId>'). */
 function coalesce(key: string) {
   coalesceKey = key
@@ -527,7 +531,10 @@ export interface ProjectState {
 
   // layout
   setPositions: (positions: Record<string, XY>) => void
-  /** Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too (resizing from the left/top edge). */
+  /**
+   * Resize scene cards / asset nodes (one undo step). null = back to the default size. Optional positions move them too
+   * (resizing from the left/top edge) — and folder nodes (the one-time row spacing moves them with their row).
+   */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
   /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards). */
   autoLayout: (rowHeights?: Record<string, number>) => void
@@ -1127,6 +1134,7 @@ export const useProject = create<ProjectState>()(
                   }
                 : a,
             ),
+            ...(p.folders?.some((f) => positions[f.id]) ? { folders: p.folders.map((f) => (positions[f.id] ? { ...f, position: positions[f.id] } : f)) } : {}),
           })),
         autoLayout: (rowHeights = {}) =>
           mutate((p) => {
@@ -1172,10 +1180,11 @@ export const useProject = create<ProjectState>()(
     {
       partialize: (s) => ({ project: s.project }),
       equality: (a, b) => a.project === b.project,
-      limit: 200,
+      limit: HISTORY_LIMIT,
       handleSet: (handleSet) => (pastState, replace, currentState, deltaState) => {
         const key = coalesceKey
         coalesceKey = null
+        if (grouping) return // oneUndoStep records the whole group as one step when it ends
         const now = Date.now()
         if (key && key === lastKey && now - lastTime < 1500) {
           lastTime = now
@@ -1259,6 +1268,29 @@ export function dropBurstStep(key: string, unchanged: (before: Project, now: Pro
   useProject.temporal.setState({ pastStates: history.pastStates.slice(0, -1) })
   lastKey = null
   return true
+}
+
+/**
+ * Run several store actions as ONE undo step: an image drop that adds tiles, links them and inserts their tags is
+ * taken back by one Ctrl+Z / "Hoàn tác". The actions inside are not recorded one by one; when they changed the
+ * project, the project from before them becomes the newest undo step (the redo stack goes, like after any edit).
+ * A nested call joins the outer step; a burst of typing never merges into it. Returns what `fn` returns.
+ */
+export function oneUndoStep<T>(fn: () => T): T {
+  if (grouping) return fn()
+  const before = useProject.getState().project
+  grouping++
+  try {
+    return fn()
+  } finally {
+    grouping--
+    coalesceKey = null
+    lastKey = null
+    if (useProject.getState().project !== before) {
+      const past = [...useProject.temporal.getState().pastStates, { project: before }]
+      useProject.temporal.setState({ pastStates: past.slice(-HISTORY_LIMIT), futureStates: [] })
+    }
+  }
 }
 
 /**

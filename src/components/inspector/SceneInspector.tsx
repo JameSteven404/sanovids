@@ -17,6 +17,7 @@ import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { useInPanel, useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
+import { typeOnNode } from '../canvas/SceneNodeEditor'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
 import { useGatewayRefVideoCap, useSceneRunBlock } from '../runs/shared'
@@ -258,7 +259,8 @@ const PromptSection = memo(function PromptSection({ sceneId }: { sceneId: string
         title="Prompt"
         extra={
           !always && (
-            <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => useSceneEditor.getState().open(sceneId)} title="Đóng khung soạn rộng và gõ tiếp trên node cảnh">
+            // typeOnNode: the canvas first brings the node on screen and near (its field exists only there).
+            <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => typeOnNode(sceneId)} title="Đóng khung soạn rộng và gõ tiếp trên node cảnh">
               Gõ trên node
             </button>
           )

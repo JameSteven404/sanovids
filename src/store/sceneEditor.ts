@@ -3,6 +3,8 @@
 // in `sceneId` mounts the live text field (SceneNodeEditor). The right panel's wide composer ("Khung soạn rộng",
 // SceneInspector) is the other place to type a prompt: `panelSceneId`. A scene never has both at once — opening one
 // commits (flushes) and closes the other, so each scene has at most one place where text is being typed.
+// `settingsSceneId`: the node whose settings line is opened in place (choice 2B) — one node at a time, always the only
+// selected one: opening it selects that node alone, and it closes as soon as that node is no longer the selection.
 import { create } from 'zustand'
 import { editorShouldStayOpen, type EditorFocus } from '../components/canvas/sceneEditorModel'
 import { useCanvasPrefs } from '../lib/canvasPrefs'
@@ -19,10 +21,15 @@ interface SceneEditorState {
   seq: number
   /** Scene whose prompt is open in the right panel's wide composer (null = none). */
   panelSceneId: string | null
+  /** Scene node whose settings line is opened in place (null = none). */
+  settingsSceneId: string | null
   open: (sceneId: string, focus?: EditorFocus | null, caret?: number | null) => void
   close: () => void
   openPanel: (sceneId: string) => void
   closePanel: () => void
+  /** Open a node's settings line: selects that node alone (another node's line closes). */
+  openSettings: (sceneId: string) => void
+  closeSettings: () => void
 }
 
 let projectId: string | null = null
@@ -36,6 +43,7 @@ export const useSceneEditor = create<SceneEditorState>()((set, get) => ({
   caret: null,
   seq: 0,
   panelSceneId: null,
+  settingsSceneId: null,
   open: (sceneId, focus = 'prompt', caret = null) => {
     if (closing || useUI.getState().view !== 'canvas' || useCanvasPrefs.getState().nodeEditor === 'off') return
     const project = useProject.getState().project
@@ -79,7 +87,22 @@ export const useSceneEditor = create<SceneEditorState>()((set, get) => ({
     if (useProject.getState().project.scenes.some((s) => s.id === id)) flushScenes([id])
     set({ panelSceneId: null })
   },
+  openSettings: (sceneId) => {
+    if (useUI.getState().view !== 'canvas' || useCanvasPrefs.getState().nodeEditor === 'off') return
+    if (!useProject.getState().project.scenes.some((s) => s.id === sceneId)) return
+    const ui = useUI.getState()
+    if (ui.selectedIds.length !== 1 || ui.selectedIds[0] !== sceneId) ui.select([sceneId])
+    if (get().settingsSceneId !== sceneId) set({ settingsSceneId: sceneId })
+  },
+  closeSettings: () => {
+    if (get().settingsSceneId !== null) set({ settingsSceneId: null })
+  },
 }))
+
+/** Is this node's settings line opened in place? */
+export function useSettingsOpen(id: string): boolean {
+  return useSceneEditor((s) => s.settingsSceneId === id)
+}
 
 /** The only editor subscription a card needs; other cards keep the same boolean snapshot. */
 export function useIsEditing(id: string): boolean {
@@ -111,6 +134,20 @@ function checkPanel() {
   else if (!useUI.getState().selectedIds.includes(panelSceneId)) closePanel()
 }
 
+/** The opened settings line belongs to the only selected node: it closes with that selection (or the node, the view, the pref). */
+function checkSettings() {
+  const id = useSceneEditor.getState().settingsSceneId
+  if (id === null) return
+  const ui = useUI.getState()
+  const keep =
+    ui.view === 'canvas' &&
+    ui.selectedIds.length === 1 &&
+    ui.selectedIds[0] === id &&
+    useCanvasPrefs.getState().nodeEditor !== 'off' &&
+    useProject.getState().project.scenes.some((s) => s.id === id)
+  if (!keep) useSceneEditor.setState({ settingsSceneId: null })
+}
+
 /**
  * Pref 'select' ("Tự mở khi chọn 1 cảnh"): exactly one scene selected on the canvas mounts its node's text field,
  * without moving the focus there (typing still needs a click or Enter).
@@ -132,6 +169,7 @@ const unsubscribe = [
     if (s.view !== prev.view || s.selectedIds !== prev.selectedIds) {
       checkEditor()
       checkPanel()
+      checkSettings()
       autoOpen()
     }
   }),
@@ -139,11 +177,13 @@ const unsubscribe = [
     if (s.project.id !== prev.project.id || s.project.scenes !== prev.project.scenes) {
       checkEditor()
       checkPanel()
+      checkSettings()
     }
   }),
   useCanvasPrefs.subscribe((s, prev) => {
     if (s.nodeEditor !== prev.nodeEditor) {
       checkEditor()
+      checkSettings()
       autoOpen()
     }
   }),

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { SIZES, synthProject } from '../synth'
+import { planRowSpacing, showsOldLayout } from '../../components/canvas/rowSpacing'
+import { LAYOUT, ROW_H } from '../../store/project'
+import { SIZES, SYNTH_LAYOUT, synthProject } from '../synth'
 
 describe('deterministic synthetic projects', () => {
   it('repeats byte-for-byte, changes with the seed, and matches all tiers', () => {
@@ -24,6 +26,17 @@ describe('deterministic synthetic projects', () => {
         expect(scene.prompt.includes('@video_1')).toBe(scene.order % 10 === 0)
       }
       expect(runs.takes.every((t) => t.id.startsWith('prf_') && t.provider === 'dev' && t.status === 'completed')).toBe(true)
+    }
+  })
+  it('is laid out for the 0.6.0 node: the canvas never runs its one-time row spacing on it (no undo step / toast in a run)', () => {
+    expect(SYNTH_LAYOUT).toEqual({
+      scenesX: LAYOUT.scenesX, scenesY: LAYOUT.scenesY, rowH: ROW_H, sceneW: LAYOUT.sceneW, assetX: LAYOUT.assetX,
+      tileStep: LAYOUT.assetH + LAYOUT.assetGapY, takeOffsetX: LAYOUT.takeOffsetX, takeStep: LAYOUT.takeW + LAYOUT.takeGapX,
+    })
+    for (const spec of [{ scenes: 20, takes: 40 }, SIZES.M]) {
+      const { project } = synthProject(spec)
+      expect(showsOldLayout(project)).toBe(false)
+      expect(planRowSpacing({ scenes: project.scenes, assets: project.assets, folders: project.folders, takes: [] }).changed).toBe(false)
     }
   })
   it('bounds custom input before allocating', () => {

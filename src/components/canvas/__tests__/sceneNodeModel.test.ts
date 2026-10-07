@@ -8,7 +8,10 @@ import { DOT_TOP, lodOf, LOD_ZOOM } from '../canvasModel'
 import { caretFromExcerptHit } from '../sceneEditorModel'
 import {
   compactStatus,
+  farExcerpt,
   farSummary,
+  FRAME_RATIO_LABEL,
+  frameRatioTitle,
   farTone,
   footLayout,
   imageBadge,
@@ -100,6 +103,14 @@ describe('head and settings line', () => {
     expect(settingsSummary(H3, 'H3', 3, null)).toBe('H3 · Ảnh→Video · 10s · 2K · 16:9 · Tuỳ chỉnh')
     expect(settingsSummary({ ...H3, mode: 'transform' }, 'H3', 3, null)).toContain('Đầu→cuối')
   })
+  it('H3 "Đầu→cuối" sends no ratio (the frames give it): "theo ảnh", never the stored ratio', () => {
+    expect(FRAME_RATIO_LABEL).toBe('theo ảnh')
+    expect(settingsSummary({ ...H3, mode: 'transform', ratio: '9:16' }, 'H3', 3, null)).toBe('H3 · Đầu→cuối · 10s · 2K · theo ảnh · Tuỳ chỉnh')
+    expect(frameRatioTitle('16:9', '16:9')).toBe('Tỉ lệ lấy theo khung đầu / khung cuối: 16:9.')
+    expect(frameRatioTitle('16:9', '9:16')).toContain('khác tỷ lệ (16:9 / 9:16)')
+    expect(frameRatioTitle(null, '1:1')).toContain('chưa thuộc danh sách')
+    expect(frameRatioTitle(undefined, '1:1')).toContain('nối đủ hai khung')
+  })
 })
 
 describe('Run button', () => {
@@ -175,5 +186,17 @@ describe('far view (zoom < 0.55)', () => {
     expect(farTone('completed', true, false)).toBe('ok')
     expect(farTone(null, false, false)).toBe('none')
     expect(farSummary('SD 2.5', 15)).toBe('SD 2.5 · 15s')
+  })
+  it('two prompt lines, cut to what two lines can show: never a whole 20,000-character paragraph in every far node', () => {
+    const paragraph = 'Ánh nắng xuyên qua rừng, nhân vật bước chậm. '.repeat(500).slice(0, 20000)
+    const far = farExcerpt(paragraph, LAYOUT.sceneW)
+    expect(far.length).toBeLessThan(120)
+    expect(far.length).toBeGreaterThan(40) // still fills the two lines (24px text, 310px wide)
+    expect(paragraph.startsWith(far)).toBe(true)
+    // the first two lines, leading blanks dropped (the old far node: trimmed, line breaks kept)
+    expect(farExcerpt('\n  Dòng một\nDòng hai\nDòng ba', LAYOUT.sceneW)).toBe('Dòng một\nDòng hai')
+    expect(farExcerpt('', LAYOUT.sceneW)).toBe('')
+    // a wider (resized) node shows more
+    expect(farExcerpt(paragraph, 720).length).toBeGreaterThan(far.length)
   })
 })

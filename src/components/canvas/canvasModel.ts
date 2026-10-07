@@ -792,6 +792,23 @@ export function focusViewport(box: Box, vp: Viewport, stage: StageSize, readable
   return centred(box, stage, Math.max(minZoom, Math.min(Math.max(vp.zoom, readable), fit)))
 }
 
+/** Canvas event of SceneNodeEditor.typeOnNode: bring these scene nodes near enough to type in (typingViewport). */
+export const TYPE_EVENT = 'type'
+
+/**
+ * Typing on a scene node that is off-screen or drawn in the far view ("Gõ trên node" in the right panel, Enter on a far
+ * node): its prompt field only exists while the node is rendered AND near (zoom ≥ LOD_ZOOM). Centred, at the current
+ * zoom when it is already near enough, else at 100% (like the far node's double-click) — less only when the node
+ * cannot fit, never below LOD_ZOOM. null = it is on screen and near already (no move).
+ */
+export function typingViewport(box: Box, vp: Viewport, stage: StageSize): Viewport | null {
+  const near = vp.zoom >= LOD_ZOOM
+  if (near && boxOnScreen(box, vp, stage)) return null
+  const a = stageArea(stage)
+  const fit = Math.min((a.right - a.left) / Math.max(1, box.w), (a.bottom - a.top) / Math.max(1, box.h))
+  return centred(box, stage, Math.max(LOD_ZOOM, Math.min(near ? vp.zoom : 1, fit)))
+}
+
 /** Size a node is drawn at before React Flow measured it (new or never rendered): the default card sizes. */
 export function fallbackNodeSize(type: string | undefined): { w: number; h: number } {
   if (type === 'take') return { w: LAYOUT.takeW, h: LAYOUT.takeH }

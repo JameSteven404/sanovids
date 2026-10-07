@@ -105,6 +105,8 @@ import {
   readTakeIds,
   resetNodeSize,
   revealViewport,
+  typingViewport,
+  TYPE_EVENT,
   sceneMapOf,
   sceneNodeSize,
   scheduleHoverEnd,
@@ -887,7 +889,7 @@ function CanvasInner() {
       const p = n.internals.positionAbsolute
       return { x: p.x, y: p.y, w: n.measured?.width || n.width || fb.w, h: n.measured?.height || n.height || fb.h }
     }
-    type Mode = 'focus' | 'reveal' | 'fit'
+    type Mode = 'focus' | 'reveal' | 'fit' | 'type'
     const run = (ids: string[], mode: Mode, attempt = 0) => {
       if (!ids.length) {
         if (mode === 'fit') void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
@@ -909,6 +911,7 @@ function CanvasInner() {
         const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(size.bottom + size.h * 0.1)}px` as const }
         next = getViewportForBounds({ x: box.x, y: box.y, width: box.w, height: box.h }, size.w, size.h, 0.1, 1.2, padding)
       } else if (mode === 'reveal') next = revealViewport(box, vp, size)
+      else if (mode === 'type') next = typingViewport(box, vp, size)
       else next = focusViewport(box, vp, size)
       if (next) void rf.setViewport(next, { duration: 300 })
     }
@@ -920,7 +923,7 @@ function CanvasInner() {
       canvasEvents.addEventListener(type, handler)
       return () => canvasEvents.removeEventListener(type, handler)
     }
-    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30)]
+    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
     return () => offs.forEach((off) => off())
   }, [rf, stageSize])
 
@@ -1145,6 +1148,9 @@ function CanvasInner() {
         connectionRadius={28}
         connectionLineComponent={WireConnectionLine}
         nodeDragThreshold={2}
+        // Same 2px as the drag threshold: a click that jittered 1px (pressed mouse, pen) is still a click — the static
+        // prompt text opens the field there. React Flow's default (0) swallowed it without moving the node.
+        nodeClickDistance={2}
         elevateEdgesOnSelect={false}
         defaultViewport={savedViewport}
         fitView={!savedViewport}
