@@ -6,6 +6,10 @@
 // Deep link: `{ kind: 'settings', section: <group id> }` (actions.openSettings(section)) opens on that group's level and
 // scrolls the group into view (its <Section> carries data-set-anchor, settingsUi.tsx).
 import { Search, X } from 'lucide-react'
+import { KEY_ACTIONS, type ActionId } from '../../core/keymap'
+import { isImeKey } from '../../lib/keyEvents'
+import { matchesAction, useKeymap } from '../../lib/keymapPrefs'
+import { KeysIntro, SHORTCUT_ROWS, useKeyCaptureHost } from './SettingsShortcuts'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
@@ -311,6 +315,12 @@ const GROUPS: Group[] = [
     keywords: `canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền ${KEEP_LOGIN_KEYWORDS}`,
     Block: GatewaySection,
   },
+  ...(['keys', 'keysScene', 'keysTake', 'keysCanvas'] as const).map((id): Group => ({
+    id, level: 'advanced', col: 1,
+    title: { keys: 'Phím tắt', keysScene: 'Phím tắt · Cảnh & chọn', keysTake: 'Phím tắt · Video', keysCanvas: 'Phím tắt · Canvas' }[id],
+    ...(id === 'keys' ? { Intro: KeysIntro } : {}),
+    rows: SHORTCUT_ROWS.filter((row) => KEY_ACTIONS.find((a) => a.id === row.id)?.group === id),
+  })),
   {
     id: 'dev',
     level: 'basic',
@@ -346,10 +356,13 @@ const LEVEL_HINT: Record<SettingsLevel, string> = { basic: 'Dùng hằng ngày',
 
 /** `section`: id of a group to show (deep link, see the top of this file); unknown ids are ignored. */
 export function SettingsDialog({ section }: { section?: string } = {}) {
+  useKeyCaptureHost()
   const closeDialog = useUI((s) => s.closeDialog)
   // Development mode locked (release builds): no "Chế độ Phát triển" group, "Nhà cung cấp video" in "Cơ bản".
   const devOpen = useDevAllowed()
-  const groups = useMemo(() => visibleGroups(GROUPS, devOpen), [devOpen])
+  const keyLabels = useKeymap((s) => s.resolved.allLabels)
+  const groups = useMemo(() => visibleGroups(GROUPS, devOpen).map((g) => g.id.startsWith('keys')
+    ? { ...g, rows: g.rows?.map((r) => ({ ...r, keywords: `${r.keywords} ${keyLabels[r.id as ActionId]}` })) } : g), [devOpen, keyLabels])
   const target = section ? groups.find((g) => g.id === section) : undefined
   const [level, setLevel] = useState<SettingsLevel>(() => target?.level ?? readLevel())
   const [query, setQuery] = useState('')
@@ -368,7 +381,7 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
   // Ctrl+F / ⌘F: the settings search (instead of the page's find bar) while the dialog is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+      if (!e.defaultPrevented && !isImeKey(e) && matchesAction(e, 'settings.search')) {
         e.preventDefault()
         searchRef.current?.focus()
         searchRef.current?.select()

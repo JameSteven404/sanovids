@@ -1,6 +1,6 @@
 // Parity of the proposed dispatcher with today's useShortcuts.ts (+ AssetDialog undo keys), with defaults.
 import { expect, it } from 'vitest'
-import { chordFromEvent, decideShortcut as decide, parseChord, type Ctx, type DialogKind, type KeyEventLike, type View } from '../keymap'
+import { legacy05, resolveKeymap, chordFromEvent, decideShortcut as decide, parseChord, type Ctx, type DialogKind, type KeyEventLike, type View } from '../keymap'
 
 // Oracle: today's decision, transcribed from src/hooks/useShortcuts.ts (onKey) and sidebar/shared.ts:395-411 (no side
 // effects). Since 0.6.0 there are no 1 / 2 / 3 keys (the canvas is the only view, core/shownViews), and Alt + ↑ / ↓
@@ -52,6 +52,7 @@ const US: [code: string, plain: string, shifted: string][] = [
 type Diff = { ev: KeyEventLike; ctx: Ctx; mac: boolean; legacy: string | null; next: string | null }
 
 it('defaults behave like today, except the intended differences', () => {
+  const legacyMaps = [resolveKeymap(legacy05()), resolveKeymap(legacy05(), true)]
   const diffs: Diff[] = []
   let cases = 0
   const dialogs: DialogKind[] = ['none', 'settings', 'asset', 'import', 'take', 'shortcuts']
@@ -69,7 +70,7 @@ it('defaults behave like today, except the intended differences', () => {
                 const ev: KeyEventLike = { code, key: shiftKey ? shifted : plain, ctrlKey, altKey, shiftKey, metaKey, repeat }
                 const ctx = { typing, dialog, view }
                 const l = legacy(ev, ctx, mac)
-                const n = decide(ev, ctx, mac).action
+                const n = decide(ev, ctx, mac, legacyMaps[mac ? 1 : 0]).action
                 if (l !== n) diffs.push({ ev, ctx, mac, legacy: l, next: n })
               }
       }

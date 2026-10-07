@@ -1,3 +1,4 @@
+import { transportKey } from './transportKeys'
 // Pure shortcut engine, based on the Wave C prototype. Ctrl is the portable Mod token (Command on Mac).
 export type DialogKind = string
 /** ui.view. Only 'canvas' is ever shown (core/shownViews); the others remain for old stored prefs. */
@@ -22,15 +23,20 @@ export type ActionId =
   | 'scene.next' | 'selection.duplicate' | 'selection.delete' | 'selection.selectAll' | 'selection.connect'
   | 'canvas.fit' | 'canvas.cycleEdges' | 'canvas.hand' | 'canvas.select' | 'canvas.minimap'
   | 'settings.search'
+  | 'scene.new' | 'folder.new' | 'selection.deselectAll' | 'unlinkSelection' | 'take.star' | 'take.download'
+  | 'library.addImages' | 'project.open' | 'panels.library' | 'panels.inspector' | 'panels.canvasOnly'
+  | 'canvas.zoomIn' | 'canvas.zoomOut'
 
 export interface KeyAction {
   id: ActionId
   label: string
   help: string
-  group: 'keys' | 'keysScene' | 'keysCanvas'
+  group: 'keys' | 'keysScene' | 'keysTake' | 'keysCanvas'
   hint: string
   keywords: string
   defaults: string[]
+  macDefaults?: string[]
+  premiere?: { name: string; chord?: string }
   whileTyping?: boolean
   /** Also active while these dialogs are open ('all' = any dialog). */
   alsoInDialogs?: 'all' | DialogKind[]
@@ -42,27 +48,80 @@ export interface KeyAction {
 // The only default-chord table. A later preset change belongs here, not in dispatchers or components.
 // No view.* commands (1 / 2 / 3): Bảng cảnh and Storyboard are hidden since 0.6.0; stored bindings of them are kept as
 // foreign values (validateBindings) and do nothing. Scene order keys (Alt + ↑ / ↓) are FIXED_KEYS, not commands.
+export const LEGACY_DEFAULTS: Readonly<Record<string, readonly string[]>> = {
+  'project.save': ['Ctrl+KeyS'],
+  'scene.run': ['Ctrl+Enter'],
+  'history.undo': ['Ctrl+KeyZ'],
+  'history.redo': ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'],
+  'library.search': ['Ctrl+KeyK'],
+  'help.shortcuts': ['Shift+Slash'],
+  'scene.next': ['KeyN'],
+  'selection.duplicate': ['Ctrl+KeyD'],
+  'selection.delete': ['Delete'],
+  'selection.selectAll': ['Ctrl+KeyA'],
+  'selection.connect': ['KeyC'],
+  'canvas.fit': ['KeyF'],
+  'canvas.cycleEdges': ['KeyE'],
+  'canvas.hand': ['KeyH'],
+  'canvas.select': ['KeyV'],
+  'canvas.minimap': ['KeyM'],
+  'settings.search': ['Ctrl+KeyF'],
+}
+export const RETIRED_ACTIONS = ['view.canvas', 'view.table', 'view.storyboard'] as const
+
 const ACTION_DEFAULTS: Omit<KeyAction, 'label' | 'help' | 'group' | 'hint' | 'keywords'>[] = [
-  { id: 'project.save', defaults: ['Ctrl+KeyS'], whileTyping: true, alsoInDialogs: 'all' },
-  { id: 'scene.run', defaults: ['Ctrl+Enter'], whileTyping: true },
-  { id: 'history.undo', defaults: ['Ctrl+KeyZ'], repeat: true, alsoInDialogs: ['asset'] },
-  { id: 'history.redo', defaults: ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'], repeat: true, alsoInDialogs: ['asset'] },
-  { id: 'library.search', defaults: ['Ctrl+KeyK'] },
-  { id: 'help.shortcuts', defaults: ['Shift+Slash'], repeat: true },
-  { id: 'scene.next', defaults: ['KeyN'] },
-  { id: 'selection.duplicate', defaults: ['Ctrl+KeyD'] },
-  { id: 'selection.delete', defaults: ['Delete'] },
-  { id: 'selection.selectAll', defaults: ['Ctrl+KeyA'] },
-  { id: 'selection.connect', defaults: ['KeyC'] },
-  { id: 'canvas.fit', defaults: ['KeyF'] },
-  { id: 'canvas.cycleEdges', defaults: ['KeyE'] },
-  { id: 'canvas.hand', defaults: ['KeyH'] },
-  { id: 'canvas.select', defaults: ['KeyV'] },
-  { id: 'canvas.minimap', defaults: ['KeyM'] },
+  // ---- General (group 'keys') ----
+  { id: 'project.save', defaults: ['Ctrl+KeyS', 'Ctrl+Shift+KeyS'], whileTyping: true, alsoInDialogs: 'all', premiere: { name: 'Save · Save As', chord: 'Ctrl+KeyS' } },
+  { id: 'history.undo', defaults: ['Ctrl+KeyZ'], repeat: true, alsoInDialogs: ['asset'], premiere: { name: 'Undo', chord: 'Ctrl+KeyZ' } },
+  { id: 'history.redo', defaults: ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'], repeat: true, alsoInDialogs: ['asset'], premiere: { name: 'Redo', chord: 'Ctrl+Shift+KeyZ' } },
+  { id: 'library.search', defaults: ['Ctrl+KeyF', 'Ctrl+KeyK'], premiere: { name: 'Find', chord: 'Ctrl+KeyF' } },
+  { id: 'library.addImages', defaults: ['Ctrl+KeyI'], premiere: { name: 'Import', chord: 'Ctrl+KeyI' } },
+  { id: 'project.open', defaults: ['Ctrl+KeyO'], premiere: { name: 'Open Project', chord: 'Ctrl+KeyO' } },
+  { id: 'help.shortcuts', defaults: ['Shift+Slash', 'Ctrl+Alt+KeyK'], repeat: true, premiere: { name: 'Keyboard Shortcuts', chord: 'Ctrl+Alt+KeyK' } },
+  { id: 'panels.library', defaults: ['Shift+Digit1'], premiere: { name: 'Window › Projects', chord: 'Shift+Digit1' } },
+  { id: 'panels.inspector', defaults: ['Shift+Digit5'], premiere: { name: 'Window › Effect Controls', chord: 'Shift+Digit5' } },
+  { id: 'panels.canvasOnly', defaults: ['Backquote', 'Shift+Backquote'],
+    premiere: { name: 'Maximize or Restore Frame Under Cursor (`) · Maximize Frame (Shift+`)', chord: 'Backquote' } },
   { id: 'settings.search', defaults: ['Ctrl+KeyF'], whileTyping: true, onlyInDialog: 'settings' },
+  // ---- Scenes and selection (group 'keysScene') ----
+  { id: 'scene.run', defaults: ['Ctrl+Enter'], whileTyping: true },
+  { id: 'scene.next', defaults: ['KeyN'] },
+  { id: 'scene.new', defaults: ['Ctrl+KeyN'], premiere: { name: 'New Sequence', chord: 'Ctrl+KeyN' } },
+  { id: 'folder.new', defaults: ['Ctrl+KeyB'], premiere: { name: 'New Bin', chord: 'Ctrl+KeyB' } },
+  { id: 'selection.duplicate', defaults: ['Ctrl+KeyD', 'Ctrl+Shift+Slash'], premiere: { name: 'Duplicate', chord: 'Ctrl+Shift+Slash' } },
+  { id: 'selection.delete', defaults: ['Delete', 'Shift+Delete'], premiere: { name: 'Clear (Delete) · Ripple Delete (Shift+Delete)', chord: 'Delete' } },
+  { id: 'selection.selectAll', defaults: ['Ctrl+KeyA'], premiere: { name: 'Select All', chord: 'Ctrl+KeyA' } },
+  { id: 'selection.deselectAll', defaults: ['Ctrl+Shift+KeyA'], premiere: { name: 'Deselect All', chord: 'Ctrl+Shift+KeyA' } },
+  { id: 'selection.connect', defaults: ['Ctrl+KeyL', 'KeyC'], premiere: { name: 'Link (bật / tắt)', chord: 'Ctrl+KeyL' } },
+  { id: 'unlinkSelection', defaults: ['Ctrl+Shift+KeyL'] },
+  // ---- Video ----
+  { id: 'take.star', defaults: ['KeyM'], alsoInDialogs: ['take'], premiere: { name: 'Add Marker', chord: 'KeyM' } },
+  { id: 'take.download', defaults: ['Ctrl+KeyM'], macDefaults: ['Ctrl+KeyE'], alsoInDialogs: ['take'], premiere: { name: 'Export Media', chord: 'Ctrl+KeyM' } },
+  // ---- Canvas (group 'keysCanvas') ----
+  { id: 'canvas.fit', defaults: ['Backslash', 'KeyF'], premiere: { name: 'Zoom to Sequence', chord: 'Backslash' } },
+  { id: 'canvas.zoomIn', defaults: ['Equal', 'Shift+Equal'], repeat: true, premiere: { name: 'Zoom In', chord: 'Equal' } },
+  { id: 'canvas.zoomOut', defaults: ['Minus'], repeat: true, premiere: { name: 'Zoom Out', chord: 'Minus' } },
+  { id: 'canvas.select', defaults: ['KeyV'], premiere: { name: 'Selection Tool', chord: 'KeyV' } },
+  { id: 'canvas.hand', defaults: ['KeyH'], premiere: { name: 'Hand Tool', chord: 'KeyH' } },
+  { id: 'canvas.cycleEdges', defaults: ['KeyE'] },
+  { id: 'canvas.minimap', defaults: ['Shift+KeyM'] },
 ]
 
 const ACTION_TEXT: Record<ActionId, [label: string, help: string]> = {
+  'scene.new': ['Cảnh mới (trống)', 'Tạo một cảnh trống, không chép ảnh hay cấu hình của cảnh đang chọn.'],
+  'folder.new': ['Thư mục lưu video mới', 'Chọn một thư mục trên máy rồi thêm thẻ Thư mục lên canvas.'],
+  'selection.deselectAll': ['Bỏ chọn tất cả', 'Như Esc khi không có hộp thoại nào mở.'],
+  'unlinkSelection': ['Bỏ nối', 'Bỏ nối ảnh đang chọn khỏi cảnh đang chọn (cả khung đầu / cuối). Không có cặp nào thì cắt dây đang chọn.'],
+  'take.star': ['★ Chọn / bỏ chọn video', 'Đánh dấu video tốt nhất của cảnh (mỗi cảnh một video). Trong cửa sổ xem: video đang xem.'],
+  'take.download': ['Tải video', '1 video → file video; nhiều video hoặc cảnh → .zip; không chọn gì → .zip video chọn của mọi cảnh. Trong cửa sổ xem: video đang xem.'],
+  'library.addImages': ['Thêm ảnh vào Thư viện', 'Mở hộp chọn file ảnh (chọn nhiều được).'],
+  'project.open': ['Danh sách dự án', 'Mở hộp Dự án.'],
+  'panels.library': ['Mở Thư viện', 'Mở bảng bên trái và đưa con trỏ vào đó.'],
+  'panels.inspector': ['Mở bảng thuộc tính', 'Mở bảng bên phải và đưa con trỏ vào đó.'],
+  'panels.canvasOnly': ['Chỉ canvas (ẩn / hiện hai khung bên)', 'Bấm lại để hiện hai khung như cũ.'],
+  'canvas.zoomIn': ['Phóng to', 'Giữ phím để phóng to liên tục.'],
+  'canvas.zoomOut': ['Thu nhỏ', 'Giữ phím để thu nhỏ liên tục.'],
+
   'project.save': ['Lưu ngay', 'Lưu dự án, kể cả khi đang gõ hoặc mở hộp thoại.'],
   'scene.run': ['Chạy các cảnh đang chọn', 'Tạo video cho các cảnh đang chọn.'],
   'history.undo': ['Hoàn tác', 'Hoàn tác thay đổi gần nhất.'],
@@ -73,7 +132,7 @@ const ACTION_TEXT: Record<ActionId, [label: string, help: string]> = {
   'selection.duplicate': ['Nhân bản cảnh', 'Nhân bản các cảnh đang chọn.'],
   'selection.delete': ['Xoá lựa chọn', 'Xoá cảnh và video, ẩn thẻ hoặc cắt dây đang chọn.'],
   'selection.selectAll': ['Chọn tất cả cảnh', 'Chọn mọi cảnh trên canvas.'],
-  'selection.connect': ['Nối lựa chọn', 'Nối nhân vật và video đang chọn vào các cảnh đang chọn.'],
+  'selection.connect': ['Nối / bỏ nối lựa chọn', 'Nối ảnh vào cảnh; nếu mọi cặp đã nối thì bỏ nối (cả khung đầu / cuối).'],
   'canvas.fit': ['Vừa màn hình', 'Hiện vừa vùng chọn hoặc toàn bộ canvas.'],
   'canvas.cycleEdges': ['Đổi cách hiện dây', 'Ẩn → Đang chọn → Tất cả.'],
   'canvas.hand': ['Chế độ Tay', 'Kéo nền để di chuyển khung nhìn.'],
@@ -84,7 +143,7 @@ const ACTION_TEXT: Record<ActionId, [label: string, help: string]> = {
 
 export const KEY_ACTIONS: KeyAction[] = ACTION_DEFAULTS.map((a) => ({
   ...a, label: ACTION_TEXT[a.id][0], help: ACTION_TEXT[a.id][1],
-  group: a.id.startsWith('canvas.') ? 'keysCanvas' : /^(scene|selection)\./.test(a.id) ? 'keysScene' : 'keys',
+  group: a.id.startsWith('canvas.') ? 'keysCanvas' : a.id.startsWith('take.') ? 'keysTake' : /^(scene|selection|folder)\./.test(a.id) || a.id === 'unlinkSelection' ? 'keysScene' : 'keys',
   hint: a.whileTyping ? 'Dùng được cả khi đang gõ.' : 'Không chạy khi đang gõ trong ô nhập.',
   keywords: `phím tắt bàn phím shortcut hotkey gán đổi phím tổ hợp ${a.id}`,
 }))
@@ -103,7 +162,6 @@ export const FIXED_KEYS: FixedKey[] = [
   { keys: ['ArrowLeft', 'ArrowRight', 'Shift+ArrowLeft', 'Shift+ArrowRight'], label: 'Trình phát video: ← → từng khung hình (Shift: 5 khung)' },
   { keys: ['ArrowUp', 'ArrowDown', 'Home', 'End'], label: 'Trình phát video: ↑ ↓ take trước / sau (Phát liền: cảnh; video phóng to: âm lượng) · Home / End về đầu / cuối' },
   { keys: ['Backquote', 'Escape'], label: 'Trình phát video: ` bật / tắt toàn màn hình (Windows: cả Ctrl+`) · Esc chỉ thoát toàn màn hình' },
-  { keys: ['KeyM'], label: 'Xem take, video phóng to: M chọn ★ · Ctrl+M (Mac: ⌘E) tải video đang xem' },
   { keys: ['KeyF', 'Escape'], label: 'Video phóng to: thoát (mọi phím khác của app không chạy khi đang phóng to)' },
   { keys: ['Escape'], label: 'Phát liền: đóng' },
   { keys: ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'], label: 'Popup @: chọn · chèn · đóng' },
@@ -186,7 +244,10 @@ export function activeIn(a: KeyAction, ctx: Ctx): boolean {
 }
 
 export type Bindings = Record<ActionId, string[]>
-export const defaultBindings = (): Bindings => Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, [...a.defaults]])) as Bindings
+export const defaultsFor = (a: KeyAction, mac = false): string[] => mac ? a.macDefaults ?? a.defaults : a.defaults
+export const defaultBindings = (mac = false): Bindings => Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, [...defaultsFor(a, mac)]])) as Bindings
+export const legacy05 = (): BindingOverrides => Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, [...(LEGACY_DEFAULTS[a.id] ?? [])]]))
+
 
 const KEY_NAMES: Record<string, string> = {
   Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', IntlBackslash: '\\',
@@ -199,6 +260,7 @@ const MAC_NAMES: Record<string, string> = { Ctrl: '⌘', Control: '⌃', Alt: '�
 /** Parts are for rendering key caps; never split a formatted Mac label on '+'. Control is display-only. */
 export function chordParts(chord: string, mac = false): string[] {
   if (chord === 'Shift+Slash') return ['?']
+  if (chord === 'Shift+Equal') return ['+']
   const parts = chord.split('+')
   const id = parts.pop()!
   const mods = mac ? ['Control', 'Alt', 'Shift', 'Ctrl'].filter((m) => parts.includes(m)) : parts
@@ -227,6 +289,10 @@ export function refusalFor(chord: string, action: KeyAction | ActionId, mac = fa
   if (!a) return 'Lệnh không được hỗ trợ.'
   const id = c.split('+').at(-1)!
   const ctrl = c.includes('Ctrl+'), alt = c.includes('Alt+')
+  const fixed = transportKey({ key: id === 'Space' ? ' ' : id.startsWith('Key') ? id.slice(3).toLowerCase() : id, code: id, ctrlKey: !mac && ctrl, metaKey: mac && ctrl, altKey: alt, shiftKey: c.includes('Shift+') }, { player: 'canvas', mac, starChords: [], downloadChords: [] })
+  if (fixed) return 'Phím này dành cho điều khiển video — chọn phím khác.'
+  if ((a.alsoInDialogs === 'all' || a.alsoInDialogs?.includes('take')) && (c === 'Backquote' || c === 'Ctrl+Backquote')) return 'Phím này dành cho toàn màn hình video — chọn phím khác.'
+  if (a.id === 'take.star' && c === 'KeyF') return 'F dành cho thoát video phóng to — chọn phím khác.'
   if (mac && MAC_SYSTEM[c]) return `${chordLabel(c, true)} là phím của macOS (${MAC_SYSTEM[c]}) — chọn phím khác.`
   if (id === 'Backspace') return mac ? '⌫ và ⌘⌫ là phím xoá cố định trên Mac — không thể gán lại.' : 'Bộ gõ tiếng Việt (Unikey, EVKey…) tự gửi Backspace khi bỏ dấu, nên Backspace không dùng làm phím tắt được.'
   if (['Escape', 'Tab'].includes(id)) return 'Esc và Tab dành cho đóng và chuyển điều khiển — chọn phím khác.'
@@ -249,7 +315,7 @@ export function warningsFor(chord: string, mac = false, web = false): string[] {
   if (!c) return []
   const warnings: string[] = []
   const id = c.split('+').at(-1)!
-  if (/^Key[A-Z]$/.test(c)) warnings.push(mac ? 'EVKey / OpenKey có thể nuốt phím này khi bấm ngay sau một chữ khác.' : 'Bộ gõ tiếng Việt có thể nuốt phím này khi bấm ngay sau một chữ khác (E rồi F thành “è”).')
+  if (PRINTABLE.has(c) || ['Shift+Digit6', 'Shift+Digit8', 'Shift+Digit9', 'Shift+Equal', 'Shift+Slash', 'Shift+Backquote'].includes(c)) warnings.push(mac ? 'EVKey / OpenKey có thể nuốt phím này khi bấm ngay sau một chữ khác.' : 'Bộ gõ tiếng Việt có thể nuốt phím này khi bấm ngay sau một chữ khác (E rồi F thành “è”).')
   if (c.startsWith('Ctrl+Alt+') && PRINTABLE.has(id) && !mac) warnings.push('Ctrl+Alt có thể là AltGr để gõ ký tự trên bàn phím này.')
   if (c === 'Alt+KeyZ' || c === 'Ctrl+Space') warnings.push('Phím này có thể bật / tắt bộ gõ tiếng Việt.')
   if (mac && /^F([1-9]|1[0-2])$/.test(id)) warnings.push('Trên bàn phím Mac, F1–F12 mặc định là phím độ sáng / âm lượng: phải giữ fn.')
@@ -278,7 +344,7 @@ export interface ValidatedBindings {
 /** Counts changed known commands; foreign values are preserved but cannot affect this version. */
 export function changedBindingsCount(overrides: unknown, mac = false): number {
   const { bindings } = validateBindings(overrides, mac)
-  return KEY_ACTIONS.filter((a) => bindings[a.id] !== undefined && JSON.stringify(bindings[a.id]) !== JSON.stringify(a.defaults)).length
+  return KEY_ACTIONS.filter((a) => bindings[a.id] !== undefined && JSON.stringify(bindings[a.id]) !== JSON.stringify(defaultsFor(a, mac))).length
 }
 
 /** The same bounded trust boundary is used by capture, local prefs and settings import.
@@ -342,11 +408,11 @@ export interface ResolvedKeymap {
 
 export function resolveKeymap(overrides: unknown = {}, mac = false): ResolvedKeymap {
   const { bindings } = validateBindings(overrides, mac)
-  const byAction = defaultBindings(), dropped: DroppedBinding[] = []
+  const byAction = defaultBindings(mac), dropped: DroppedBinding[] = []
   for (const a of KEY_ACTIONS) {
     const own = bindings[a.id]
     if (own !== undefined) { byAction[a.id] = [...own]; continue }
-    byAction[a.id] = a.defaults.filter((c) => {
+    byAction[a.id] = defaultsFor(a, mac).filter((c) => {
       const winner = KEY_ACTIONS.find((other) => bindings[other.id]?.includes(c) && contextsOverlap(a, other))
       if (!winner) return true
       dropped.push({ action: a.id, chord: c, by: winner.id })

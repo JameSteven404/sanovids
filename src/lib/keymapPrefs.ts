@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import {
-  actionById, chordFromEvent, contextsOverlap, KEY_ACTIONS, MAX_KEYMAP_BYTES, parseChord,
+  actionById, defaultsFor, legacy05, chordFromEvent, chordLabel, contextsOverlap, KEY_ACTIONS, MAX_KEYMAP_BYTES, parseChord,
   resolveKeymap, validateBindings, type ActionId, type BindingOverrides, type ResolvedKeymap, type ValidatedBindings,
 } from '../core/keymap'
 import { eventLike, IS_MAC } from './keyEvents'
@@ -31,6 +31,7 @@ export interface KeymapState extends KeymapPrefs {
   removeChord: (id: ActionId, chord: string) => void
   resetAction: (id: ActionId) => void
   resetAll: () => void
+  preset: (name: 'premiere' | 'legacy05') => void
   /** Whole group, as used by settings import and undo. */
   replace: (bindings: unknown) => ValidatedBindings
 }
@@ -41,7 +42,7 @@ export const useKeymap = create<KeymapState>()((set, get) => {
     const result = validateBindings(input, IS_MAC)
     // Store only overrides, not copies of unchanged defaults.
     const bindings = { ...result.bindings }
-    for (const a of KEY_ACTIONS) if (JSON.stringify(bindings[a.id]) === JSON.stringify(a.defaults)) delete bindings[a.id]
+    for (const a of KEY_ACTIONS) if (JSON.stringify(bindings[a.id]) === JSON.stringify(defaultsFor(a, IS_MAC))) delete bindings[a.id]
     set({ bindings, foreign: result.foreign, resolved: resolveKeymap(bindings, IS_MAC) })
     try { localStorage.setItem(KEYMAP_PREFS_KEY, JSON.stringify({ v: 1, bindings: { ...result.foreign, ...bindings } })) }
     catch { /* storage unavailable: the choice lasts for this session */ }
@@ -60,7 +61,7 @@ export const useKeymap = create<KeymapState>()((set, get) => {
         const clashes = get().resolved.byAction[other.id].filter((c) => normalized.includes(c))
         if (!clashes.length) continue
         if (!replaceConflicts) {
-          checked.issues.push(...clashes.map((chord) => ({ path: `keys.${id}`, reason: 'conflict' as const, chord, with: other.id, message: `${get().resolved.labels[other.id]} đang dùng cho “${other.label}”.` })))
+          checked.issues.push(...clashes.map((chord) => ({ path: `keys.${id}`, reason: 'conflict' as const, chord, with: other.id, message: `${chordLabel(chord, IS_MAC)} đang dùng cho “${other.label}”.` })))
         } else next[other.id] = get().resolved.byAction[other.id].filter((c) => !clashes.includes(c))
       }
       if (checked.issues.length) return { ...checked, rejected: [`keys.${id}`] }
@@ -69,7 +70,8 @@ export const useKeymap = create<KeymapState>()((set, get) => {
     },
     removeChord: (id, chord) => { replace({ ...snapshot(), [id]: get().resolved.byAction[id].filter((c) => c !== parseChord(chord)) }) },
     resetAction: (id) => { const next = snapshot(); delete next[id]; replace(next) },
-    resetAll: () => { replace({}) },
+    resetAll: () => { replace(get().foreign) },
+    preset: (name) => { replace({ ...get().foreign, ...(name === 'legacy05' ? legacy05() : {}) }) },
   }
 })
 
@@ -95,3 +97,4 @@ export function matchesAction(e: Parameters<typeof eventLike>[0], id: ActionId, 
 export function isTypingChord(e: Parameters<typeof eventLike>[0]): boolean {
   return KEY_ACTIONS.some((a) => a.whileTyping && matchesAction(e, a.id))
 }
+export const isSaveChord = (e: Parameters<typeof eventLike>[0]): boolean => matchesAction(e, 'project.save')

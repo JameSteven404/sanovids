@@ -54,7 +54,8 @@ import {
   type MediaSuggestion,
   type Seg,
 } from '../inspector/tokens'
-import { imageFiles, legacyTypingChord, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
+import { imageFiles, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
+import { isTypingChord } from '../../lib/keymapPrefs'
 import { caretFromExcerptHit, nodeEditorKeyBubbles } from './sceneEditorModel'
 import '../inspector/inspector.css'
 
@@ -601,8 +602,8 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
       return
     }
     // Global shortcuts that run while typing (Ctrl+S…) must see the latest text; every other key stays in here.
-    if (e.ctrlKey || e.metaKey) commit()
-    if (!nodeEditorKeyBubbles(native, legacyTypingChord)) e.stopPropagation()
+    if (isTypingChord(native)) commit()
+    if (!nodeEditorKeyBubbles(native, isTypingChord)) e.stopPropagation()
   }
 
   // The shared highlighter (tokens.ts segmentForScene): the same red marks and titles as the static text and the panel.

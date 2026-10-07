@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeIn, actionById, chordAria, chordFromEvent, chordLabel, chordParts, contextsOverlap, decideShortcut,
-  defaultBindings, FIXED_KEYS, formatChord, KEY_ACTIONS, parseChord, refusalFor, resolveKeymap, validateBindings, warningsFor,
+  LEGACY_DEFAULTS, defaultsFor, FIXED_KEYS, formatChord, KEY_ACTIONS, parseChord, refusalFor, resolveKeymap, validateBindings, warningsFor,
   type Ctx, type KeyEventLike,
 } from '../keymap'
 import { eventLike, isImeKey, isTypingTarget } from '../../lib/keyEvents'
@@ -10,7 +10,7 @@ const ctx: Ctx = { typing: false, dialog: 'none', view: 'canvas' }
 const event = (key: string, code: string, rest: Partial<KeyEventLike> = {}): KeyEventLike => ({ key, code, ...rest })
 
 it('keeps today’s single default table and supplies Vietnamese registry metadata', () => {
-  expect(defaultBindings()).toEqual({
+  expect(LEGACY_DEFAULTS).toEqual({
     'project.save': ['Ctrl+KeyS'], 'scene.run': ['Ctrl+Enter'], 'history.undo': ['Ctrl+KeyZ'],
     'history.redo': ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'], 'library.search': ['Ctrl+KeyK'], 'help.shortcuts': ['Shift+Slash'],
     'scene.next': ['KeyN'],
@@ -20,22 +20,22 @@ it('keeps today’s single default table and supplies Vietnamese registry metada
   })
   for (const a of KEY_ACTIONS) {
     expect([a.label, a.help, a.hint, a.keywords].every(Boolean)).toBe(true)
-    for (const mac of [false, true]) for (const c of a.defaults) expect(refusalFor(c, a, mac), `${a.id} ${c}`).toBeNull()
+    for (const mac of [false, true]) for (const c of defaultsFor(a, mac)) expect(refusalFor(c, a, mac), `${a.id} ${c}`).toBeNull()
   }
 })
 
 it('retires the hidden views’ commands (1 / 2 / 3) and keeps Alt + ↑ / ↓ as fixed scene-order keys', () => {
-  // 0.6.0 shows the canvas only (core/shownViews): 17 commands, none of them view.*.
-  expect(KEY_ACTIONS).toHaveLength(17)
+  // 0.6.0 shows the canvas only (core/shownViews): 30 commands, none of them view.*.
+  expect(KEY_ACTIONS).toHaveLength(30)
   expect(KEY_ACTIONS.filter((a) => a.id.startsWith('view.'))).toEqual([])
   for (const digit of ['Digit1', 'Digit2', 'Digit3']) {
     expect(resolveKeymap().lookup[digit]).toBeUndefined()
     expect(decideShortcut(event(digit.slice(-1), digit), ctx, false)).toEqual({ action: null, handled: false })
   }
   // A stored binding of a retired command is kept as a foreign value and does nothing.
-  const old = validateBindings({ 'view.table': ['Digit2'], 'scene.next': ['KeyJ'] })
+  const old = validateBindings({ 'view.table': ['Digit2'], 'scene.next': ['KeyQ'] })
   expect(old.foreign).toEqual({ 'view.table': ['Digit2'] })
-  expect(old.bindings).toEqual({ 'scene.next': ['KeyJ'] })
+  expect(old.bindings).toEqual({ 'scene.next': ['KeyQ'] })
   expect(resolveKeymap({ 'view.table': ['Digit2'] }).lookup.Digit2).toBeUndefined()
   // Scene order: a fixed row, never a command (refusalFor keeps Alt + arrows away from every command).
   const order = FIXED_KEYS.find((k) => k.label.startsWith('Thứ tự cảnh'))
@@ -120,10 +120,10 @@ it('resolves context-aware overrides ahead of defaults and reports every displac
   expect(activeIn(actionById('history.undo')!, { ...ctx, dialog: 'asset' })).toBe(true)
   expect(activeIn(actionById('history.undo')!, { ...ctx, typing: true })).toBe(false)
   const resolved = resolveKeymap({ 'scene.next': ['Ctrl+KeyF'], 'canvas.fit': ['Ctrl+KeyS'], 'history.redo': [] })
-  expect(resolved.lookup['Ctrl+KeyF']).toEqual(['scene.next', 'settings.search'])
-  expect(resolved.byAction['project.save']).toEqual([])
-  expect(resolved.dropped).toEqual([{ action: 'project.save', chord: 'Ctrl+KeyS', by: 'canvas.fit' }])
-  expect(resolved.labels['project.save']).toBe('')
+  expect(resolved.lookup['Ctrl+KeyF']).toEqual(['settings.search', 'scene.next'])
+  expect(resolved.byAction['project.save']).toEqual(['Ctrl+Shift+KeyS'])
+  expect(resolved.dropped).toEqual([{ action: 'project.save', chord: 'Ctrl+KeyS', by: 'canvas.fit' }, { action: 'library.search', chord: 'Ctrl+KeyF', by: 'scene.next' }])
+  expect(resolved.labels['project.save']).toBe('Ctrl+Shift+S')
   expect(resolved.byAction['history.redo']).toEqual([])
   const invalid = validateBindings({ 'scene.next': ['Alt+KeyJ'], 'canvas.fit': ['Alt+KeyJ'] })
   expect(invalid.bindings).toEqual({ 'scene.next': ['Alt+KeyJ'], 'canvas.fit': [] })
