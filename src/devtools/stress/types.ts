@@ -78,7 +78,10 @@ export interface StressOptions {
   /** Full invariants every N steps (cheap ones run every step). */
   checkEvery: number
   stopOnFirst: boolean
-  /** After "Đợt V" (video references retired): @video tokens must stay byte-for-byte (X2 is an error, not a warning). */
+  /**
+   * Video references are retired ("Đợt V"): @video tokens must stay byte-for-byte (X2 is an error). Default true;
+   * false only replays a report of an older build (X2 a warning).
+   */
   expectVideoRetired?: boolean
   /** After the "giữ token" track: image tokens keep their count (X3). */
   tokenKeep?: boolean

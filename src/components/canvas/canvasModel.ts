@@ -54,7 +54,7 @@ export function assetMapOf(assets: Asset[]): Map<string, Asset> {
 
 /** Every Scene field is classified, including individual settings fields (guarded by graphSig.test). */
 export const GRAPH_FIELDS = ['id', 'order', 'position', 'size', 'refs', 'videoRefs', 'settings.mode', 'firstFrame', 'lastFrame', 'color'] as const
-export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings'] as const
+export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings', 'legacyVideoRefs'] as const
 
 /** Array identities are weakly cached; only the most recent graph is retained for comparison. */
 function graphCache<T extends object>(fieldsOf: (item: T) => unknown[]) {
@@ -803,15 +803,11 @@ export const readTakeIds = (dt: DataTransfer | null): string[] => (dt && hasTake
 export const imageFiles = (dt: DataTransfer | null) => (dt ? Array.from(dt.files).filter((f) => /^image\//.test(f.type)) : [])
 
 /**
- * Can these dragged takes become @video of `sceneId`? At least one must be finished and come from another scene.
- * Safe inside a ui selector (returns a boolean).
+ * @deprecated Always false: a dragged video never becomes @video of a scene any more (reference videos were retired
+ * in 0.6.0). Kept so older callers still compile (a scene card no longer lights up for a dragged video).
  */
-export function takesUsableFor(takeIds: string[], sceneId: string): boolean {
-  const byId = takeIndexOf(useRuns.getState().takes).byId
-  return takeIds.some((id) => {
-    const t = byId.get(id)
-    return !!t && t.status === 'completed' && t.sceneId !== sceneId
-  })
+export function takesUsableFor(_takeIds: string[], _sceneId: string): boolean {
+  return false
 }
 
 /** A drag over this element would land on empty canvas (not on a node, the minimap or another overlay). */

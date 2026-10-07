@@ -23,13 +23,13 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { cancelTake, createSceneFromTake } from '../../actions'
+import { cancelTake, createSceneFromVideo } from '../../actions'
 import { importSiteJobs, scanForImport } from '../../siteJobActions'
 import { importWords } from '../../components/runs/importJobsModel'
 import { takeCostLine } from '../../components/runs/creditText'
 import { logoutOutcome } from '../../components/dialogs/keepLoginModel'
 import { createTopupFlow } from '../../components/topup/topupFlow'
-import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
+import { retiredVideoReason } from '../../core/runRules'
 import { costOf } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { getCreditInfo, refreshRealCredits, resetRealCredits, startRealCreditsSync, useRealCredits } from '../../store/credits'
@@ -322,11 +322,11 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
   })
 })
 
-describe('dev mode e2e: reference videos (@video_N) — refused like the real gateway, nothing sent, nothing paid', () => {
+describe('dev mode e2e: reference videos (@video_N) were retired — old @video text never reaches the site, nothing paid', () => {
   const engineCalls = () => useDevLog.getState().entries.filter((e) => ['upload', 'canvas-put', 'job-create', 'project-create'].includes(String(e.endpoint)))
   const H3_T2V = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
 
-  /** A finished dev take of s2 (a real run on the simulated site), ready to be a reference video. */
+  /** A finished dev take of s2 (a real run on the simulated site). */
   async function finishedTake(): Promise<Take> {
     server.login()
     const [t] = enqueue('s2')
@@ -336,24 +336,39 @@ describe('dev mode e2e: reference videos (@video_N) — refused like the real ga
     return take(t.id)
   }
 
-  it('"Tạo cảnh tiếp nối" warns in development mode; the new scene is skipped with the shared reason before any request', async () => {
+  it('"Tạo cảnh tiếp theo từ video này": the take’s references and settings, an empty prompt; @video text typed there is skipped before any request', async () => {
     const t = await finishedTake()
     const balance = server.balance()
     useUI.setState({ toasts: [] })
-    const id = createSceneFromTake(t.id)!
+    const id = createSceneFromVideo(t.id)!
     const sc = useProject.getState().project.scenes.find((x) => x.id === id)!
-    expect(sc).toMatchObject({ videoRefs: [t.id], prompt: 'Continue from @video_1: ' })
-    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('cả chế độ Phát triển') })
+    expect(sc).toMatchObject({ videoRefs: [], prompt: '', refs: t.refsSnapshot, settings: t.settings })
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'success', text: expect.stringContaining('cùng ảnh tham chiếu và cấu hình của video đó') })
     useProject.getState().updateScene(id, { prompt: 'Continue from @video_1: trời mưa' })
     const r = useRuns.getState().enqueue([id])
-    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: NO_VIDEO_REFS_REASON }] })
+    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: retiredVideoReason(['@video_1']) }] })
     await run(10_000)
     expect(engineCalls()).toEqual([])
-    expect(server.snapshot().jobs).toHaveLength(1) // only the reference take's own job
+    expect(server.snapshot().jobs).toHaveLength(1) // only the take's own job
     expect(server.balance()).toBe(balance)
   })
 
-  it('the dev adapter itself refuses a request with a video (development-mode words) before uploading, saving the canvas or posting', async () => {
+  it('a take queued before the update with @video text in its prompt fails at the submit: no upload, no job, no credit', async () => {
+    await finishedTake()
+    const balance = server.balance()
+    const [t] = enqueue('s1')
+    // as an older build queued it: the prompt snapshot still names a reference video
+    useRuns.setState({ takes: takes().map((x) => (x.id === t.id ? { ...x, promptSnapshot: 'Continue from @video_1: trời mưa' } : x)) })
+    await run(20_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', remoteId: null })
+    expect(take(t.id).error).toContain('không bị trừ credit')
+    expect(take(t.id).charged).toBe(false)
+    expect(logOf('job-create')).toEqual([])
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(balance)
+  })
+
+  it('the dev adapter itself refuses a request whose prompt holds @video text before uploading, saving the canvas or posting', async () => {
     const t = await finishedTake()
     const balance = server.balance()
     const req: JobRequest = {
@@ -369,7 +384,6 @@ describe('dev mode e2e: reference videos (@video_N) — refused like the real ga
       prompt: '@image_1 tiếp nối @video_1',
       rawPrompt: '@image_1 tiếp nối @video_1',
       images: [{ n: 1, assetId: 'elara', imageId: 'img_e1' }],
-      videos: [{ n: 1, takeId: t.id, videoId: t.videoId, posterId: t.posterId }],
       firstFrame: null,
       lastFrame: null,
       startedAt: 0,
@@ -380,8 +394,10 @@ describe('dev mode e2e: reference videos (@video_N) — refused like the real ga
         () => null,
         (e: unknown) => e as { code?: string; message: string },
       )
-    expect(err).toMatchObject({ code: 'unsupported', message: expect.stringContaining('cả chế độ Phát triển') })
+    expect(err).toMatchObject({ code: 'unsupported', message: expect.stringContaining('Prompt còn @video_1') })
+    expect(err!.message).toContain('không bị trừ credit')
     expect(err!.message).not.toContain('canvasapp.io.vn')
+    void t
     expect(engineCalls()).toEqual([])
     const ledger = JSON.parse(browserStorage(DEV_CLIENT_STORAGE_PREFIX).get(JOBS_KEY) ?? '{}') as { jobs?: object; sent?: object }
     expect(Object.keys(ledger.jobs ?? {})).not.toContain('take_video')
@@ -390,9 +406,9 @@ describe('dev mode e2e: reference videos (@video_N) — refused like the real ga
     expect(server.balance()).toBe(balance)
   })
 
-  it('MiniMax-H3 t2v with a leftover reference video and no @video token runs: the strict simulated site gets no video', async () => {
+  it('MiniMax-H3 t2v that once used a reference video, with no @video token, runs: the strict simulated site gets no video', async () => {
     const t = await finishedTake()
-    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s3', 3, { prompt: 'Một con mèo', videoRefs: [t.id], settings: { ...H3_T2V } })] })
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s3', 3, { prompt: 'Một con mèo', legacyVideoRefs: [t.id], settings: { ...H3_T2V } })] })
     expect(useRuns.getState().check(['s3'])).toMatchObject([{ ok: true, reason: null }])
     const [t3] = enqueue('s3')
     await run(20_000)

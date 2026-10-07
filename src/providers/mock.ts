@@ -62,10 +62,9 @@ export interface MockProviderOptions {
 
 const defaultRender: MockRenderer = async (req, settings) => {
   // Each thumbnail carries the token it really is in the sent request, so the demo clip shows which picture
-  // @image_N / @video_N are (images first: they matter most for character consistency).
+  // @image_N is (they matter most for character consistency).
   const items = [
     ...[...req.images].sort((a, b) => a.n - b.n).map((i) => ({ id: i.imageId, label: `@image_${i.n}` })),
-    ...req.videos.filter((v) => !!v.posterId).map((v) => ({ id: v.posterId as string, label: `@video_${v.n}` })),
     ...(req.firstFrame ? [{ id: req.firstFrame.imageId, label: 'khung đầu' }] : []),
     ...(req.lastFrame ? [{ id: req.lastFrame.imageId, label: 'khung cuối' }] : []),
   ]

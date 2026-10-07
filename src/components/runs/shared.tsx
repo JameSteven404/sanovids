@@ -1,12 +1,12 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
 import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
 import type { JobStatus, ModelId, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
 import {
   activeProviderId,
-  getProvider,
   PROVIDER_LABEL,
   providerLimits,
   providerLimitsInfo,
@@ -32,13 +32,11 @@ export function useActiveProvider(): ProviderId {
 }
 
 /**
- * Reference videos (@video_N) the gateway of new takes takes for `model`: its capabilities().maxRefVideos — the one
- * source store/runs check() reads too (0 for canvasapp and development mode). Feeds core/runGate on every one-scene
- * Run button. A number; read once per provider × model (not from /api/video-profiles, so nothing to re-read).
+ * @deprecated Reference videos were retired (0.6.0): no gateway takes a video, nothing asks for its cap. Always 0 (no
+ * store subscription); kept so code written before the retirement still compiles.
  */
-export function useGatewayRefVideoCap(model: ModelId): number {
-  const provider = useActiveProvider()
-  return useMemo(() => getProvider(provider).capabilities(model).maxRefVideos, [provider, model])
+export function useGatewayRefVideoCap(_model: ModelId): number {
+  return 0
 }
 
 // ---- what the gateway runs right now (/api/video-profiles; providers/index useProviderLimits) ----
@@ -82,32 +80,17 @@ export function useSettingsRunBlock(settings: VideoSettings | undefined): string
   })
 }
 
-const NO_IDS: readonly string[] = []
-
-/**
- * Status of each of `videoRefs` joined by ',' ('' = no such take): the stable string core/runGate refStatusLookup /
- * sceneRunBlock read. It only changes when a reference video changes status (not on progress ticks).
- */
-export function useRefVideoStatus(videoRefs: readonly string[]): string {
-  return useRuns((s) => (videoRefs.length ? videoRefs.map((id) => s.takes.find((t) => t.id === id)?.status ?? '').join(',') : ''))
-}
-
 /**
  * Why a scene's Run button is off — the engine's rule list (core/runRules through core/runGate sceneRunBlock = store/
  * runs check()); null = it can run (or no scene). Pass the scene (a card that already holds it) or its id (the
  * inspector: the answer is selected as a string, so typing in the scene's prompt re-renders the caller only when the
  * answer changes). The compile is cached per scene object + assets array (core/runRules compiledOf), so a card per
- * scene stays cheap with 100+ scenes; a reference video's status or the gateway (its @video cap, its sure refusal of
- * the settings) changing re-reads it.
+ * scene stays cheap with 100+ scenes; the gateway's sure refusal of the settings changing re-reads it.
  */
 export function useSceneRunBlock(target: Scene | string | undefined): string | null {
   const id = typeof target === 'string' ? target : undefined
   const given = typeof target === 'string' ? undefined : target
   const pick = (scenes: readonly Scene[]) => (id === undefined ? given : scenes.find((x) => x.id === id))
-  const videoRefs = useProject((s) => pick(s.project.scenes)?.videoRefs ?? NO_IDS)
-  const model = useProject((s) => pick(s.project.scenes)?.settings.model ?? 'seedance_2_5')
-  const videoStatus = useRefVideoStatus(videoRefs)
-  const videoCap = useGatewayRefVideoCap(model)
   const provider = useActiveProvider()
   // re-renders (and so re-selects below) when what the gateway refuses was read again
   useProviderLimits((s) => s.rev[provider] ?? 0)
@@ -116,7 +99,7 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
     if (!scene) return null
     const assets = s.project.assets
     const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings)
-    return sceneRunBlock(scene, assets, videoStatus, videoCap, settingsBlock)
+    return sceneRunBlock(scene, assets, settingsBlock)
   })
 }
 
@@ -288,18 +271,25 @@ export function StatusBadge({ take, showProgress = true }: { take: Pick<Take, 's
   )
 }
 
-/** Prompt text with @image_N (teal) and @video_N (purple) tokens highlighted. */
+/**
+ * Prompt text with @image_N tokens highlighted (teal) and retired @video text marked (red, struck through: reference
+ * videos were retired — such a prompt does not run; core/compile promptParts = retiredVideoTokens).
+ */
 export function HighlightedPrompt({ text }: { text: string }) {
-  const parts = text.split(/(@(?:image|video)[ _]?\d+)\b/gi)
+  const parts = useMemo(() => promptParts(text), [text])
   return (
     <>
       {parts.map((p, i) =>
-        i % 2 === 1 ? (
-          <mark key={i} className={/^@video/i.test(p) ? 'rq-tok video' : 'rq-tok'}>
-            {p}
+        p.kind === 'text' ? (
+          p.text
+        ) : p.kind === 'retired' ? (
+          <mark key={i} className="rq-tok is-retired" title={`${p.text}: video tham chiếu không còn được hỗ trợ — prompt này không chạy được cho tới khi sửa`}>
+            {p.text}
           </mark>
         ) : (
-          p
+          <mark key={i} className="rq-tok">
+            {p.text}
+          </mark>
         ),
       )}
     </>

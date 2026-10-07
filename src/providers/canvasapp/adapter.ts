@@ -66,7 +66,7 @@
 //     only reads (GET), and never offers a job an unanswered POST may own (sentMayOwn, checked again at claim time).
 import { normalizeSettings } from '../../core/models'
 import type { ModelId, VideoSettings } from '../../core/types'
-import { CANVASAPP_MAX_REF_VIDEOS, capabilitiesFromModels } from '../capabilities'
+import { capabilitiesFromModels } from '../capabilities'
 import {
   NO_LIMITS,
   type JobRequest,
@@ -1520,7 +1520,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
     capabilities: (model: ModelId): ProviderCapabilities => {
       // never from the profile: a key canvasapp may add there does not say how a video is sent
-      const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: CANVASAPP_MAX_REF_VIDEOS })
+      const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs })
       const list = profiles
       if (!list) return base
       // The values of SanoVids' model table that the submit would not refuse on that field (profileIssues — the very

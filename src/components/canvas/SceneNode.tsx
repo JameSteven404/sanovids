@@ -352,7 +352,6 @@ function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['
                 +{refAssets.length - maxAvatars}
               </span>
             )}
-            {scene.videoRefs.length > 0 && <VideoRefs sceneId={scene.id} videoRefs={scene.videoRefs} />}
           </>
         ) : (
           <span className="cv-refs-empty">
@@ -424,41 +423,6 @@ function TakeLine({ sceneId }: { sceneId: string }) {
       {starred !== null && <span className="cv-take-line-star">★ T{starred}</span>}
       {active > 0 && <span className="cv-take-line-run">{progress >= 0 ? `đang chạy ${progress}%` : `${active} đang chờ`}</span>}
     </div>
-  )
-}
-
-/**
- * Small purple thumbs of the scene's @video refs: v1, v2… × removes the reference like cutting its wire (tokens are
- * renumbered, toast with Undo).
- */
-function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[] }) {
-  const posters = useRuns(
-    useShallow((s) => {
-      const byId = takeIndexOf(s.takes).byId
-      return videoRefs.map((id) => byId.get(id)?.posterId ?? null)
-    }),
-  )
-  return (
-    <span className="cv-vrefs">
-      {videoRefs.slice(0, MAX_VIDEO_THUMBS).map((takeId, i) => (
-        <span key={takeId} className="cv-vref" title={`@video_${i + 1} · ${takeLabel(takeId)}`}>
-          <MediaImg id={posters[i]} className="cv-vref-img" />
-          <span className="cv-vref-n">v{i + 1}</span>
-          <button
-            className="cv-av-x nodrag"
-            title={`Bỏ @video_${i + 1}`}
-            aria-label={`Bỏ video tham chiếu ${i + 1}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              cutEdge(edgeId('vref', takeId, sceneId))
-            }}
-          >
-            <X size={9} strokeWidth={3} />
-          </button>
-        </span>
-      ))}
-      {videoRefs.length > MAX_VIDEO_THUMBS && <span className="cv-av-more">+{videoRefs.length - MAX_VIDEO_THUMBS}</span>}
-    </span>
   )
 }
 

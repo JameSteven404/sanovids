@@ -18,6 +18,7 @@ import { App } from './App'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
+import { initRetiredVideoNotice } from './videoRetired'
 
 // Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
 // follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
@@ -29,6 +30,9 @@ initMotion()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()
+
+// Reference videos were retired (0.6.0): once per project, say what happened to its old @video data.
+initRetiredVideoNotice()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

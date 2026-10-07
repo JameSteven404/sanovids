@@ -1,9 +1,10 @@
-// Pure helpers for the @image_N / @video_N prompt editor (no React / DOM / store imports — unit-tested).
-// - segmentPrompt: split a prompt into plain text and token runs for the highlight backdrop.
-// - suggestMedia: what the "@" popup lists for a typed query (linked images, linked videos, library assets).
+// Pure helpers for the @image_N prompt editor (no React / DOM / store imports — unit-tested).
+// - segmentPrompt: split a prompt into plain text and token runs for the highlight backdrop (retired @video text is
+//   marked wherever core/compile retiredVideoTokens finds it — exactly what blocks the run).
+// - suggestMedia: what the "@" popup lists for a typed query (linked images, library assets).
 // - insertAt: insert a token at a selection with sensible spacing.
 // - legacy @Tag helpers for the "Đổi @Tên → @image_N" quick fix.
-import { imageSlotsFor, mediaKeys, remapTokens } from '../../core/compile'
+import { imageSlotsFor, mediaKeys, remapTokens, retiredVideoTokens } from '../../core/compile'
 import type { Asset, AssetKind } from '../../core/types'
 import { fold } from './mentions'
 
@@ -14,42 +15,66 @@ import { fold } from './mentions'
 export type SegKind = 'text' | 'image' | 'video' | 'legacy'
 
 export interface Seg {
+  /** 'video' = retired @video text (always invalid, reason 'retired'). */
   kind: SegKind
   text: string
-  /** N of @image_N / @video_N. */
+  /** N of @image_N. */
   n?: number
-  /** No picture/video behind this token in the request (see `reason`). */
+  /** No picture behind this token in the request (see `reason`). */
   invalid?: boolean
   /**
-   * Why it is invalid: 'missing' = number outside the scene's media, 'unsent' = linked but not sent (over the model's
-   * limit, or a mode that sends no images), 'unbound' = an "@image_?N" placeholder waiting for the right number.
+   * Why it is invalid: 'missing' = number outside the scene's images, 'unsent' = linked but not sent (over the model's
+   * limit, or a mode that sends no images), 'unbound' = an "@image_?N" placeholder waiting for the right number,
+   * 'retired' = @video text (reference videos were retired: kept as written, never sent, the scene does not run).
    */
-  reason?: 'missing' | 'unsent' | 'unbound'
+  reason?: 'missing' | 'unsent' | 'unbound' | 'retired'
 }
 
 /** Tooltip for an invalid token. */
 export function invalidTokenTitle(seg: Seg): string {
-  if (seg.reason === 'unbound') return `${seg.text}: chưa gắn ảnh/video nào — nối vào cảnh rồi sửa thành số đúng`
+  if (seg.reason === 'retired') return `${seg.text}: video tham chiếu không còn được hỗ trợ — xoá hoặc viết lại bằng lời để chạy cảnh này.`
+  if (seg.reason === 'unbound') return `${seg.text}: chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng`
   if (seg.reason === 'unsent') return `${seg.text}: sẽ không được gửi (vượt giới hạn của model, hoặc chế độ này không gửi tham chiếu)`
   return `${seg.text} không tồn tại`
 }
 
-/** One pass: numbered tokens (or "@image_?N" placeholders) first, otherwise any @Word (legacy tag in `legacyTags`). */
+/**
+ * One pass: numbered tokens (or "@image_?N" placeholders) first, otherwise any @Word (legacy tag in `legacyTags`).
+ * `video` stays in it so "@video1" is never read as a @Tag; the @video segments themselves come from
+ * retiredVideoTokens (any match overlapping one of those is left to it).
+ */
 const SEG_RE = /@(?:(image|video)(?:_(\?)|[ _])?(\d+)\b|([\p{L}\p{N}_]+))/giu
 
 /**
  * Split `text` into segments for the backdrop highlighter. Concatenating every `seg.text` gives back `text`.
  * `legacyTags` holds lower-cased asset tags; other @words stay plain text.
- * `sent`: how many images / videos the request really carries (model limit, mode) — tokens past it are invalid too,
- * because the model would never see that picture (wrong character in the video).
+ * `sent`: how many images the request really carries (model limit, mode) — tokens past it are invalid too, because
+ * the model would never see that picture (wrong character in the video). Retired @video text is a 'video' segment
+ * (invalid, 'retired') exactly where core/compile retiredVideoTokens finds it — labels of "@video_?N(…)" included.
  */
-export function segmentPrompt(
-  text: string,
-  imageCount: number,
-  videoCount: number,
-  legacyTags?: ReadonlySet<string>,
-  sent?: { images: number; videos: number },
-): Seg[] {
+export function segmentPrompt(text: string, imageCount: number, legacyTags?: ReadonlySet<string>, sent?: { images: number }): Seg[] {
+  const marks: { start: number; seg: Seg }[] = retiredVideoTokens(text).map((t) => ({
+    start: t.start,
+    seg: { kind: 'video', text: t.text, invalid: true, reason: 'retired' },
+  }))
+  const retired = marks.map((m) => [m.start, m.start + m.seg.text.length] as const)
+  const overlapsRetired = (start: number, end: number) => retired.some(([a, b]) => start < b && end > a)
+  for (const m of text.matchAll(SEG_RE)) {
+    const idx = m.index ?? 0
+    const whole = m[0]
+    if (overlapsRetired(idx, idx + whole.length)) continue
+    let seg: Seg | null = null
+    if (m[1] && m[1].toLowerCase() === 'image') {
+      const n = Number(m[3])
+      const sentMax = sent ? sent.images : imageCount
+      const reason = m[2] ? 'unbound' : n < 1 || n > imageCount ? 'missing' : n > sentMax ? 'unsent' : undefined
+      seg = reason ? { kind: 'image', text: whole, n, invalid: true, reason } : { kind: 'image', text: whole, n, invalid: false }
+    } else if (!m[1] && legacyTags && m[4] && legacyTags.has(m[4].toLowerCase())) {
+      seg = { kind: 'legacy', text: whole }
+    }
+    if (seg) marks.push({ start: idx, seg })
+  }
+  marks.sort((a, b) => a.start - b.start)
   const out: Seg[] = []
   let last = 0
   const push = (seg: Seg) => {
@@ -57,24 +82,11 @@ export function segmentPrompt(
     if (seg.kind === 'text' && prev?.kind === 'text') prev.text += seg.text
     else out.push(seg)
   }
-  for (const m of text.matchAll(SEG_RE)) {
-    const idx = m.index ?? 0
-    const whole = m[0]
-    let seg: Seg | null = null
-    if (m[1]) {
-      const kind = m[1].toLowerCase() as 'image' | 'video'
-      const n = Number(m[3])
-      const max = kind === 'image' ? imageCount : videoCount
-      const sentMax = sent ? (kind === 'image' ? sent.images : sent.videos) : max
-      const reason = m[2] ? 'unbound' : n < 1 || n > max ? 'missing' : n > sentMax ? 'unsent' : undefined
-      seg = reason ? { kind, text: whole, n, invalid: true, reason } : { kind, text: whole, n, invalid: false }
-    } else if (legacyTags && m[4] && legacyTags.has(m[4].toLowerCase())) {
-      seg = { kind: 'legacy', text: whole }
-    }
-    if (!seg) continue
-    if (idx > last) push({ kind: 'text', text: text.slice(last, idx) })
+  for (const { start, seg } of marks) {
+    if (start < last) continue
+    if (start > last) push({ kind: 'text', text: text.slice(last, start) })
     push(seg)
-    last = idx + whole.length
+    last = start + seg.text.length
   }
   if (last < text.length) push({ kind: 'text', text: text.slice(last) })
   return out
@@ -106,15 +118,6 @@ export function imageOptsFor(assets: Asset[], refs: string[]): ImageOpt[] {
   })
 }
 
-export interface VideoOpt {
-  n: number
-  takeId: string
-  /** "S03·T2" */
-  label: string
-  posterId: string | null
-  status: string
-}
-
 export interface LibraryOpt {
   assetId: string
   name: string
@@ -122,10 +125,7 @@ export interface LibraryOpt {
   kind: AssetKind
 }
 
-export type MediaSuggestion =
-  | ({ type: 'image' } & ImageOpt)
-  | ({ type: 'video' } & VideoOpt)
-  | ({ type: 'link' } & LibraryOpt)
+export type MediaSuggestion = ({ type: 'image' } & ImageOpt) | ({ type: 'link' } & LibraryOpt)
 
 export const MAX_MEDIA_SUGGESTIONS = 40
 const LIBRARY_WHEN_EMPTY = 8
@@ -145,10 +145,10 @@ function textScore(q: string, ...fields: string[]): number {
 }
 
 /** Score of a numbered token ("image_3") against the query: "3", "ima", "image_3". */
-function tokenScore(q: string, kind: 'image' | 'video', n: number): number {
+function tokenScore(q: string, n: number): number {
   const num = String(n)
   if (/^\d+$/.test(q)) return num === q ? 0 : num.startsWith(q) ? 1.2 : -1
-  const tok = `${kind}_${n}`
+  const tok = `image_${n}`
   if (tok === q) return 0
   if (tok.startsWith(q)) return 0.5
   return -1
@@ -156,40 +156,24 @@ function tokenScore(q: string, kind: 'image' | 'video', n: number): number {
 
 /**
  * Items for the "@" popup. `query` is what was typed after "@" (may be empty).
- * Order: best match first; on ties linked images, then linked videos, then library assets ("Nối & chèn").
+ * Order: best match first; on ties linked images, then library assets ("Nối & chèn").
  * Library assets that are already linked, or have no image, are not offered.
  */
-export function suggestMedia(
-  query: string,
-  images: ImageOpt[],
-  videos: VideoOpt[],
-  library: LibraryOpt[],
-  max = MAX_MEDIA_SUGGESTIONS,
-): MediaSuggestion[] {
+export function suggestMedia(query: string, images: ImageOpt[], library: LibraryOpt[], max = MAX_MEDIA_SUGGESTIONS): MediaSuggestion[] {
   const q = fold(query.trim())
   if (!q) {
-    return [
-      ...images.map((i) => ({ type: 'image' as const, ...i })),
-      ...videos.map((v) => ({ type: 'video' as const, ...v })),
-      ...library.slice(0, LIBRARY_WHEN_EMPTY).map((a) => ({ type: 'link' as const, ...a })),
-    ].slice(0, max)
+    return [...images.map((i) => ({ type: 'image' as const, ...i })), ...library.slice(0, LIBRARY_WHEN_EMPTY).map((a) => ({ type: 'link' as const, ...a }))].slice(0, max)
   }
   const scored: { item: MediaSuggestion; s: number; group: number; order: number }[] = []
   const add = (item: MediaSuggestion, s: number, group: number, order: number) => {
     if (s >= 0) scored.push({ item, s, group, order })
   }
-  // "@2" means a number: only numbered media match it (not "S03·T2" or a name containing 2).
+  // "@2" means a number: only numbered images match it (not a name containing 2).
   const numeric = /^\d+$/.test(q)
   for (const i of images) {
-    const t = tokenScore(q, 'image', i.n)
+    const t = tokenScore(q, i.n)
     const s = t >= 0 || numeric ? t : textScore(q, i.name, i.tag)
     add({ type: 'image', ...i }, s, 0, i.n)
-  }
-  for (const v of videos) {
-    const t = tokenScore(q, 'video', v.n)
-    const compact = v.label.replace(/[^\p{L}\p{N}]/gu, '')
-    const s = t >= 0 || numeric ? t : textScore(q, v.label, compact)
-    add({ type: 'video', ...v }, s, 1, v.n)
   }
   for (const [i, a] of library.entries()) {
     // Not linked yet: rank just below an equally good linked image. A number never offers them ("@5" + Enter must
@@ -203,13 +187,11 @@ export function suggestMedia(
 
 /** Token text a suggestion inserts (library items get theirs after linking). */
 export function suggestionToken(s: MediaSuggestion): string | null {
-  if (s.type === 'image') return `@image_${s.n}`
-  if (s.type === 'video') return `@video_${s.n}`
-  return null
+  return s.type === 'image' ? `@image_${s.n}` : null
 }
 
 // ---------------------------------------------------------------------------------------------
-// Linking media from the editor (drop, "Nối & chèn", legacy fix) — planned first, applied in one store step
+// Linking images from the editor (drop, "Nối & chèn", legacy fix) — planned first, applied in one store step
 // ---------------------------------------------------------------------------------------------
 
 export interface ImageLinkPlan {
@@ -263,65 +245,15 @@ export function planImageLinks(assets: Asset[], refs: string[], ids: string[], m
   return { refs: next, tokens, linked, noImage, overLimit }
 }
 
-export interface VideoLinkPlan {
-  videoRefs: string[]
-  /** "@video_N" of each requested take that is (or gets) linked, in request order. */
-  tokens: string[]
-  linked: string[]
-  /** Not finished yet (only completed takes can be used). */
-  notReady: number
-  /** Takes of this very scene (a scene cannot reference its own video). */
-  own: number
-  /** Not linked: over the model / mode's video limit (0 when the mode takes no video). */
-  overLimit: number
-}
-
-/** Link takes to a scene as reference videos, like the store's addVideoRefs + actions.linkTakes' rules. */
-export function planVideoLinks(
-  sceneId: string,
-  videoRefs: string[],
-  ids: string[],
-  takes: { id: string; sceneId: string; status: string }[],
-  maxVideos: number,
-): VideoLinkPlan {
-  let next = videoRefs
-  const linked: string[] = []
-  const wanted: string[] = []
-  let notReady = 0
-  let own = 0
-  let overLimit = 0
-  for (const id of new Set(ids)) {
-    if (!next.includes(id)) {
-      const t = takes.find((x) => x.id === id)
-      if (!t || t.status !== 'completed') {
-        notReady++
-        continue
-      }
-      if (t.sceneId === sceneId) {
-        own++
-        continue
-      }
-      if (next.length >= maxVideos) {
-        overLimit++
-        continue
-      }
-      next = [...next, id]
-      linked.push(id)
-    }
-    wanted.push(id)
-  }
-  return { videoRefs: next, tokens: wanted.map((id) => `@video_${next.indexOf(id) + 1}`), linked, notReady, own, overLimit }
-}
-
 /**
- * `prompt` after a scene's image refs changed from `before` to `after` (same video refs): each @image_N keeps its
- * picture; tokens of images no longer referenced become the asset's name (its tag when the name is empty).
+ * `prompt` after a scene's image refs changed from `before` to `after`: each @image_N keeps its picture; tokens of
+ * images no longer referenced become the asset's name (its tag when the name is empty). @video text is kept as is.
  */
-export function renumberImageTokens(prompt: string, assets: Asset[], before: string[], after: string[], videoRefs: string[]): string {
+export function renumberImageTokens(prompt: string, assets: Asset[], before: string[], after: string[]): string {
   if (!/@image_\d/i.test(prompt)) return prompt
   const names = new Map(assets.map((a) => [a.id, a.name.trim() || a.tag]))
-  const fallback = (kind: 'image' | 'video', key: string) => (kind === 'image' ? names.get(key.split(':')[0]) || 'ảnh' : 'video')
-  return remapTokens(prompt, mediaKeys(assets, before, videoRefs), mediaKeys(assets, after, videoRefs), fallback).text
+  const fallback = (key: string) => names.get(key.split(':')[0]) || 'ảnh'
+  return remapTokens(prompt, mediaKeys(assets, before), mediaKeys(assets, after), fallback).text
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -420,7 +352,7 @@ export function replaceLegacyTags(text: string, tokens: ReadonlyMap<string, stri
 // Labels
 // ---------------------------------------------------------------------------------------------
 
-/** "3 ảnh · 1 video" */
-export function mediaCountLabel(images: number, videos: number): string {
-  return `${images} ảnh · ${videos} video`
+/** "3 ảnh" */
+export function mediaCountLabel(images: number): string {
+  return `${images} ảnh`
 }

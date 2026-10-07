@@ -42,22 +42,20 @@ import {
 import {
   canvasEvents,
   createAssetsFromFiles,
-  createSceneFromTake,
+  createSceneFromVideo,
   edgeId,
   linkAssets,
-  linkTakes,
   newScene,
   nextScene,
   parseEdgeId,
+  refuseTakesAsReference,
   REVEAL_EVENT,
   setCanvasViewSource,
-  takeLabel,
-  videoLabel,
   type EdgeKind,
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { folderMapOf } from '../../core/folders'
-import { MODELS, usesVideoRefs } from '../../core/models'
+import { MODELS } from '../../core/models'
 import { keepsSlot } from '../../core/takes'
 import type { Asset, SaveFolder, Scene, Size, XY } from '../../core/types'
 import { linkScenesToFolder, linkTakesToFolder } from '../../folderActions'
@@ -70,7 +68,7 @@ import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
-import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } from './edges'
+import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
 import { FolderNode, type FolderFlowNode } from './FolderNode'
 import {
   assetMapOf,
@@ -157,7 +155,7 @@ interface RawEdge {
   target: string
   sourceHandle: string
   targetHandle: string
-  /** Reference wires (ref / vref): other reference wires end at the same dot (only a wire alone there can be dragged by its end unselected). */
+  /** Reference wires (ref): other reference wires end at the same dot (only a wire alone there can be dragged by its end unselected). */
   shared?: boolean
   color: string
 }
@@ -448,7 +446,7 @@ function CanvasInner() {
       // Every wire into one dot ends at its center, so React Flow puts their reconnect grips at the same spot (one
       // reconnect radius out from the dot): with several wires at one dot the last-drawn one would always be the one
       // moved. Only a wire that is alone at its dot, or selected (clicked first), can be dragged by its end.
-      const isRef = r.kind === 'ref' || r.kind === 'vref'
+      const isRef = r.kind === 'ref'
       const reconnectable = isRef && (isSel || !r.shared)
       // Where wires share a dot, the one in focus is drawn on top (and stays under the cards).
       const zIndex = wireZ({ selected: isSel, hovered: false, highlight })
@@ -765,7 +763,7 @@ function CanvasInner() {
     if (c.source === c.target) return false
     const p = useProject.getState().project
     if (folderMapOf(p.folders).has(c.target)) {
-      // Moving the scene end of an image / @video wire: it only goes to another scene (moveEdge), never into a folder.
+      // Moving the scene end of an image wire: it only goes to another scene (moveEdge), never into a folder.
       if (reconnecting.current) return false
       // Into a folder: a video from its purple dot, or a scene from its right dot (auto-save).
       if (sceneMapOf(p.scenes).has(c.source)) return c.sourceHandle === 'take'
@@ -773,10 +771,8 @@ function CanvasInner() {
     }
     if (!sceneMapOf(p.scenes).has(c.target)) return false
     const th = c.targetHandle ?? 'ref'
-    if (assetMapOf(p.assets).has(c.source)) return th === 'ref' || th === 'first' || th === 'last'
-    const take = takeIndexOf(useRuns.getState().takes).byId.get(c.source)
-    if (take) return th === 'ref' && take.status === 'completed' && take.sceneId !== c.target
-    return false
+    // A video never wires into a scene (reference videos were retired in 0.6.0): only into a folder (above).
+    return assetMapOf(p.assets).has(c.source) && (th === 'ref' || th === 'first' || th === 'last')
   }, [])
 
   const onReconnectStart = useCallback((_e: ReactMouseEvent, _edge: LinkEdge, _h: HandleType) => {
@@ -802,12 +798,7 @@ function CanvasInner() {
         if (hit.id !== edge.target && sceneMapOf(project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
         else if (folderMapOf(project.folders).has(hit.id)) {
           // Released on a folder: the wire stays where it was (and says why, instead of doing nothing).
-          toast(
-            edge.type === 'vref'
-              ? 'Dây @video chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ. Để lưu video vào thư mục, kéo dây từ chấm tím của video vào thư mục.'
-              : 'Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.',
-            { tone: 'info', ms: 7000 },
-          )
+          toast('Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.', { tone: 'info', ms: 7000 })
         }
         return
       }
@@ -1009,11 +1000,11 @@ function CanvasInner() {
       if (!isEmptyCanvasTarget(e.target)) return
       const ids = readTakeIds(e.dataTransfer)
       if (ids.length === 1) {
-        // Continuation scene (take as @video_1) with its card's top-left corner near the drop point.
+        // "Tạo cảnh tiếp theo từ video này" with its card's top-left corner near the drop point.
         const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-        createSceneFromTake(ids[0], { x: snap(p.x - 140), y: snap(p.y - 40) })
+        createSceneFromVideo(ids[0], { x: snap(p.x - 140), y: snap(p.y - 40) })
       } else if (ids.length > 1) {
-        toast('Thả từng video ra nền để tạo cảnh tiếp nối — hoặc thả vào một cảnh để dùng làm @video.', { tone: 'info' })
+        toast('Thả từng video ra nền để tạo cảnh tiếp theo từ video đó.', { tone: 'info' })
       }
       return
     }
@@ -1211,16 +1202,12 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
   for (const a of assets) if (a.position) onCanvas.set(a.id, a)
   const out: RawEdge[] = []
   for (const s of scenes) {
-    // Image refs and video refs both arrive at the left 'ref' dot.
+    // Image refs arrive at the left 'ref' dot.
     const incoming: RawEdge[] = []
     for (const r of s.refs) {
       const a = onCanvas.get(r)
       if (!a) continue
       incoming.push({ id: edgeId('ref', r, s.id), kind: 'ref', source: r, target: s.id, sourceHandle: 'out', targetHandle: 'ref', color: a.color })
-    }
-    for (const t of s.videoRefs) {
-      if (!takes.byId.has(t)) continue
-      incoming.push({ id: edgeId('vref', t, s.id), kind: 'vref', source: t, target: s.id, sourceHandle: 'out', targetHandle: 'ref', color: VIDEO_COLOR })
     }
     for (const e of incoming) {
       e.shared = incoming.length > 1
@@ -1310,7 +1297,7 @@ function commitResize(id: string, autos: Map<string, XY>) {
   if (pos && !samePos(shown ?? undefined, pos)) runs.setTakePositions({ [id]: pos })
 }
 
-/** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. Take: @video ref. */
+/** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. A take links nothing (hint). */
 function connectNodes(source: string, target: string, targetHandle: string | null | undefined) {
   const project = useProject.getState().project
   if (folderMapOf(project.folders).has(target)) {
@@ -1332,22 +1319,15 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
     linkAssets(targetScenesFor(target), sourceAssetsFor(source))
     return
   }
-  const take = takeIndexOf(useRuns.getState().takes).byId.get(source)
-  if (!take) return
-  if (take.status !== 'completed') {
-    toast('Video chưa tạo xong.', { tone: 'warning' })
-    return
-  }
-  // linkTakes checks readiness, own-scene loops and model limits, and reports.
-  linkTakes(targetScenesFor(target), sourceTakesFor(source))
+  // A video onto a scene: reference videos were retired (0.6.0) — nothing is linked, the user is told where it goes.
+  if (takeIndexOf(useRuns.getState().takes).byId.has(source)) refuseTakesAsReference()
 }
 
-/** Reconnect gesture: move an image or video reference wire to another scene. */
+/** Reconnect gesture: move an image reference wire to another scene. */
 function moveEdge(id: string, newTarget: string) {
   const e = parseEdgeId(id)
   if (!e || e.to === newTarget) return
   if (e.kind === 'ref') moveRefEdge(e.from, e.to, newTarget)
-  else if (e.kind === 'vref') moveVideoEdge(e.from, e.to, newTarget)
 }
 
 function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
@@ -1373,30 +1353,6 @@ function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
         : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
     { tone: added || already ? 'success' : 'warning', action: undoToastAction() },
   )
-}
-
-/** Move a @video reference to another scene in one undo step; refused (original link kept) when the target is full. */
-function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
-  const take = takeIndexOf(useRuns.getState().takes).byId.get(takeId)
-  const target = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
-  if (!take || !target) return
-  const label = takeLabel(takeId)
-  if (take.sceneId === newTarget) {
-    toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó — giữ nguyên nối cũ.', { tone: 'warning' })
-    return
-  }
-  const already = target.videoRefs.includes(takeId)
-  if (!useProject.getState().moveVideoRefToScene(takeId, fromSceneId, newTarget, videoLabel(takeId))) {
-    const spec = MODELS[target.settings.model]
-    const why = usesVideoRefs(target.settings) ? `đã đủ ${spec.maxRefVideos} video của ${spec.name}` : `chế độ hiện tại của ${spec.name} không nhận video`
-    toast(`${sceneCode(target.order)} không nhận thêm video tham chiếu (${why}) — giữ nguyên nối cũ.`, { tone: 'warning' })
-    return
-  }
-  useUI.getState().setSelectedEdges([])
-  toast(already ? `${sceneCode(target.order)} đã có ${label} — bỏ nối ở cảnh cũ.` : `Đã chuyển ${label} sang ${sceneCode(target.order)}.`, {
-    tone: 'success',
-    action: undoToastAction(),
-  })
 }
 
 /** Minimap fill (React Flow sets it as an inline style, so theme tokens work). */

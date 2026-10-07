@@ -30,11 +30,11 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { createSceneFromTake, rerunTake, restoreFromTake, runNow, takeFileBase } from '../../actions'
+import { createSceneFromVideo, rerunTake, restoreFromTake, runNow, takeFileBase } from '../../actions'
 import { importSiteJobs, scanForImport } from '../../siteJobActions'
 import { defaultPicks } from '../../components/runs/importJobsModel'
 import { restoreBlock, takeSettingsText } from '../../components/runs/importedTake'
-import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
+import { retiredVideoReason } from '../../core/runRules'
 import { costOf, MODELS } from '../../core/models'
 import type { Asset, Mode, ModelId, Project, Scene, Take } from '../../core/types'
 import { takeFiles } from '../../lib/downloads'
@@ -2134,8 +2134,8 @@ describe('gateway e2e: streamed video download (main’s pieces, slots and timeo
   })
 })
 
-describe('gateway e2e: reference videos (@video_N) — nothing on record says canvasapp takes one', () => {
-  /** A finished canvasapp take of s2, ready to be a reference video; the fake's request log is cleared after it. */
+describe('gateway e2e: reference videos (@video_N) were retired — @video text never reaches canvasapp', () => {
+  /** A finished canvasapp take of s2; the fake's request log is cleared after it. */
   async function finishedTake(): Promise<Take> {
     const [t] = enqueue('s2')
     await run(60_000)
@@ -2144,22 +2144,22 @@ describe('gateway e2e: reference videos (@video_N) — nothing on record says ca
     return take(t.id)
   }
 
-  it('a scene that sends a video is skipped with the shared reason: not one request reaches canvasapp, nothing is paid', async () => {
+  it('a scene whose prompt holds @video text is skipped with the shared reason: not one request reaches canvasapp, nothing is paid', async () => {
     const t = await finishedTake()
     const balance = fake.state.balance
     useUI.setState({ toasts: [] })
-    const id = createSceneFromTake(t.id)!
-    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'warning', text: expect.stringContaining('bỏ video tham chiếu (@video_1) khỏi cảnh') })
+    const id = createSceneFromVideo(t.id)!
+    expect(useUI.getState().toasts.at(-1)).toMatchObject({ tone: 'success', text: expect.stringContaining('prompt để trống') })
     useProject.getState().updateScene(id, { prompt: 'Continue from @video_1: trời tạnh mưa' })
     const r = useRuns.getState().enqueue([id])
-    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: NO_VIDEO_REFS_REASON }] })
+    expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: id, reason: retiredVideoReason(['@video_1']) }] })
     await run(30_000)
     expect(fake.engineCalls()).toEqual([])
     expect(fake.state.balance).toBe(balance)
   })
 
-  it('the adapter refuses a request carrying a video before any upload, canvas save or job POST', async () => {
-    const t = await finishedTake()
+  it('the adapter refuses a request whose prompt holds @video text before any upload, canvas save or job POST', async () => {
+    await finishedTake()
     const req: JobRequest = {
       key: 'take_video',
       takeId: 'take_video',
@@ -2177,22 +2177,21 @@ describe('gateway e2e: reference videos (@video_N) — nothing on record says ca
       prompt: '@image_1 tiếp nối @video_1',
       rawPrompt: '@image_1 tiếp nối @video_1',
       images: [{ n: 1, assetId: 'elara', imageId: 'img_e1' }],
-      videos: [{ n: 1, takeId: t.id, videoId: t.videoId, posterId: t.posterId }],
       firstFrame: null,
       lastFrame: null,
       startedAt: 0,
     }
-    await expect(getProvider('canvasapp').submit(req)).rejects.toMatchObject({ code: 'unsupported', message: expect.stringContaining('chưa hỗ trợ video tham chiếu') })
+    await expect(getProvider('canvasapp').submit(req)).rejects.toMatchObject({ code: 'unsupported', message: expect.stringContaining('không còn gửi video tham chiếu') })
     expect(fake.count('POST', '/api/uploads/images')).toBe(0)
     expect(fake.count('PUT', /\/canvas$/)).toBe(0)
     expect(fake.count('POST', '/api/video-jobs')).toBe(0)
     expect(JSON.parse(storage.get(JOBS_KEY) ?? '{}').sent?.take_video).toBeUndefined()
   })
 
-  it('MiniMax-H3 t2v with a leftover reference video (no @video token) runs, and its body carries no video', async () => {
+  it('MiniMax-H3 t2v that once used a reference video (no @video token) runs, and its body carries no video', async () => {
     const t = await finishedTake()
     const h3 = { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } as const
-    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s5', 5, { prompt: 'Một con mèo', videoRefs: [t.id], settings: { ...h3 } })] })
+    useProject.getState().loadProject({ ...project(), scenes: [...project().scenes, scene('s5', 5, { prompt: 'Một con mèo', legacyVideoRefs: [t.id], settings: { ...h3 } })] })
     const [t5] = enqueue('s5')
     await run(300)
     const [body] = fake.jobPosts()
@@ -2570,19 +2569,19 @@ describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page beco
     expect(lastToast()?.text).toMatch(/giữ độ phân giải của cảnh/)
   })
 
-  it('MiniMax-H3 Text → Video (mode only guessed from the node), scene switched to Ảnh → Video since: restore keeps the scene’s mode, references and @video', async () => {
+  it('MiniMax-H3 Text → Video (mode only guessed from the node), scene switched to Ảnh → Video since: restore keeps the scene’s mode and references', async () => {
     useProject.getState().updateSettings(['s2'], { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' })
-    const t2 = await done('s2')
+    await done('s2')
     const site = fake.siteJob(nodeOf('s2'))
     await importSiteJobs(await scanForImport(), [site.job_id])
     const [imp] = importedTakes()
     expect(imp).toMatchObject({ settings: { model: 'minimax_h3', mode: 't2v' }, refsSnapshot: [], imported: { inferred: expect.arrayContaining(['mode', 'refs']) } })
-    // the user moves the scene on: Ảnh → Video with a character and a reference video
+    // the user moves the scene on: Ảnh → Video with a character
     useProject.getState().updateSettings(['s2'], { mode: 'i2v' })
-    useProject.getState().restoreScene('s2', { prompt: '@image_1 đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { ...project().scenes[1].settings, model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } })
+    useProject.getState().restoreScene('s2', { prompt: '@image_1 đi dạo', refs: ['elara'], settings: { ...project().scenes[1].settings, model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' } })
     restoreFromTake(imp.id)
     const s2 = useProject.getState().project.scenes.find((s) => s.id === 's2')!
-    expect(s2).toMatchObject({ prompt: 'Hai người đi dạo', refs: ['elara'], videoRefs: [t2.id], settings: { mode: 'i2v' } })
+    expect(s2).toMatchObject({ prompt: 'Hai người đi dạo', refs: ['elara'], videoRefs: [], settings: { mode: 'i2v' } })
     expect(lastToast()?.text).toMatch(/giữ ảnh tham chiếu của cảnh \(job ≈Text → Video không gửi ảnh tham chiếu\)/)
   })
 

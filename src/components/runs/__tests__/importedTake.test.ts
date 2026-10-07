@@ -117,7 +117,7 @@ describe('"Khôi phục prompt này" of an imported take', () => {
 
   /** The take's snapshot fields as importTakes writes them (no @video references: canvasapp sends none). */
   const snap = { rawPromptSnapshot: '@image_1 đi dạo', refsSnapshot: ['a_node'], videoRefsSnapshot: [] as string[], imageKeysSnapshot: ['a_node:img_n'] }
-  const sceneOf = (settings: VideoSettings) => ({ settings, refs: ['a_scene', 'b_scene'], videoRefs: ['take_v'] })
+  const sceneOf = (settings: VideoSettings) => ({ settings, refs: ['a_scene', 'b_scene'], videoRefs: [] as string[] })
   const H3 = (mode: VideoSettings['mode']): VideoSettings => ({ model: 'minimax_h3', mode, duration: 5, resolution: '768p', ratio: '16:9' })
 
   it('settings: only the known ones; the scene keeps its own for unknown or inferred fields (said in the toast)', () => {
@@ -127,7 +127,8 @@ describe('"Khôi phục prompt này" of an imported take', () => {
     const r = restorePlan(t, sceneOf(scene))
     expect(r).toMatchObject({ settings: { ...SETTINGS, resolution: '720p', ratio: '9:16' }, kept: ['resolution', 'ratio'], guessed: [], keepRefs: false })
     // the node's references (exact keys) — the scene's @video references stay
-    expect(r.source).toEqual({ ...snap, videoRefsSnapshot: ['take_v'] })
+    const { videoRefsSnapshot: _v, ...exact } = snap
+    expect(r.source).toEqual(exact)
     expect(restoreNotes(t, r)).toEqual([
       'giữ độ phân giải của cảnh (không rõ lúc tạo)',
       'giữ tỉ lệ khung của cảnh (chỉ đoán được lúc tạo)',
@@ -146,7 +147,7 @@ describe('"Khôi phục prompt này" of an imported take', () => {
       const r = restorePlan(t, i2vScene)
       expect(r).toMatchObject({ settings: H3('i2v'), kept: ['mode', 'resolution'], guessed: [], keepRefs: true })
       // the scene's own lists, unchanged — never emptied (and no renumbering against the take's empty list)
-      expect(r.source).toEqual({ rawPromptSnapshot: snap.rawPromptSnapshot, refsSnapshot: ['a_scene', 'b_scene'], videoRefsSnapshot: ['take_v'] })
+      expect(r.source).toEqual({ rawPromptSnapshot: snap.rawPromptSnapshot, refsSnapshot: ['a_scene', 'b_scene'] })
       const label = mode === 't2v' ? '≈Text → Video' : '≈Khung đầu → cuối'
       expect(restoreNotes(t, r)).toEqual(['giữ chế độ, độ phân giải của cảnh (chỉ đoán được lúc tạo)', `giữ ảnh tham chiếu của cảnh (job ${label} không gửi ảnh tham chiếu)`])
     }

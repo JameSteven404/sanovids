@@ -8,6 +8,7 @@
 // Every request shape mirrors canvasapp's own client (/static/canvas.js: canvasPayload(), runVideoNode(),
 // normalizeConnections(), createVideoNode(), newId()) key for key — the server refuses anything else
 // ("Invalid canvas payload"). See docs/canvasapp-api-notes.md.
+import { retiredTokenList, retiredVideoTokens } from '../../core/compile'
 import { isModelId, modeLabel } from '../../core/models'
 import type { Mode, ModelId, VideoSettings } from '../../core/types'
 import type { JobRequest, RemoteStatus, SettingsIssue } from '../types'
@@ -324,6 +325,11 @@ export function profilesSignature(profiles: readonly VideoProfile[], ok: boolean
 // Validation
 // ---------------------------------------------------------------------------------------------
 
+/** validateRequest's refusal of a prompt that still holds retired @video text (nothing is sent, nothing billed). */
+export function retiredVideoRequestText(tokens: readonly string[]): string {
+  return `Prompt còn ${retiredTokenList(tokens)} — SanoVids không còn gửi video tham chiếu nên chưa gửi lần này (không bị trừ credit). Sửa prompt rồi bấm ▶ ở cảnh; “Thử lại” sẽ gửi lại đúng prompt cũ.`
+}
+
 /**
  * Problems that make a request impossible through the gateway (Vietnamese). Empty = OK.
  * `profiles`: /api/video-profiles as read ([] = could not be read → canvasapp's fallbacks, like its client);
@@ -338,9 +344,11 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   const limit = promptLimitOf(req.model, req.mode)
   // runVideoNode() / promptLength(): the trimmed prompt, counted in code points
   if ([...prompt].length > limit) out.push(`Prompt dài hơn giới hạn ${limit.toLocaleString('vi-VN')} ký tự của canvasapp.`)
-  // Not tied to capabilities().maxRefVideos: toVideoJobBody / the bridge canvas carry no video, so a request with
-  // videos must never reach a POST (it would be billed without them). Opened only with a captured request shape.
-  if (req.videos.length) out.push('Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video_N) — bỏ video tham chiếu khỏi cảnh.')
+  // Reference videos were retired (0.6.0): @video text would reach canvasapp as plain words and the job would be
+  // billed for a wrong video. The same test as the run check (core/compile retiredVideoTokens); it runs after the
+  // ledger lookups of the adapter's submit, so an earlier uncertain send of this key is still looked for first.
+  const retired = [...new Set(retiredVideoTokens(req.prompt).map((t) => t.text))]
+  if (retired.length) out.push(retiredVideoRequestText(retired))
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')

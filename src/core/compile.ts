@@ -1,5 +1,5 @@
-import { MODELS, usesRefs, usesVideoRefs } from './models'
-import type { Asset, CompiledImage, CompiledPrompt, CompiledVideo, Project, Scene } from './types'
+import { MODELS, usesRefs } from './models'
+import type { Asset, CompiledImage, CompiledPrompt, Project, Scene } from './types'
 
 /**
  * Legacy @Tag mention: letters (incl. Vietnamese), digits, underscore. Never a numbered token: "@image_1", "@Image 1",
@@ -8,7 +8,10 @@ import type { Asset, CompiledImage, CompiledPrompt, CompiledVideo, Project, Scen
 export const MENTION_RE = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])[ _]?\d)([\p{L}\p{N}_]+)/gu
 /**
  * Numbered media token. Group 1 = kind, group 2 = number. Any case, and "_", a space or nothing before the number:
- * "@image_1", "@Image 1", "@IMAGE1" all name image 1 (prompts written elsewhere use all of these).
+ * "@image_1", "@Image 1", "@IMAGE1" all name image 1 (prompts written elsewhere use all of these). `video` stays in
+ * every token pattern although reference videos were retired: "@video1" must never read as a legacy @Tag, and no
+ * asset may take the tag "video_1" (an old @video token is recognised, kept verbatim and blocks the run — see
+ * retiredVideoTokens).
  */
 export const TOKEN_RE = /@(image|video)[ _]?(\d+)\b/gi
 /** Quick test: does a text contain any numbered media token? */
@@ -16,9 +19,118 @@ export const HAS_TOKEN_RE = /@(image|video)[ _]?\d/i
 const RAW_TOKEN = /^(image|video)_?\d+$/i
 /** The same token with another number, keeping how the user wrote it ("@Image 1" → "@Image 3"). */
 export const withTokenNumber = (token: string, n: number) => token.replace(/\d+$/, String(n))
-/** Placeholder for a number that has no image/video yet (e.g. left over by an edit or an import): "@image_?3". */
+/** Placeholder for a number that has no image yet (e.g. left over by an edit or an import): "@image_?3". */
 export const UNBOUND_RE = /@(image|video)_\?(\d+)/gi
 export const unboundToken = (kind: 'image' | 'video', n: number | string) => `@${kind}_?${n}`
+
+// ---------------------------------------------------------------------------------------------
+// Retired reference videos (@video_N)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every spelling of a @video token, exactly as the token parser reads it — TOKEN_RE's "@video_1", "@Video 2",
+ * "@VIDEO3" (ASCII word boundary after the number: "@video_1ạ" is a token) — plus UNBOUND_RE's waiting placeholder
+ * with an optional label ("@video_?2", "@video_?2(S01·T1)"). "@video2go" / "@video1abc" are plain text everywhere.
+ */
+const RETIRED_VIDEO_RE = /@video(?:_\?\d+(?:\([^()\n]{1,60}\))?|[ _]?\d+\b)/gi
+const HAS_RETIRED_VIDEO_RE = /@video(?:_\?\d|[ _]?\d+\b)/i
+
+export interface RetiredToken {
+  /** As written ("@Video 2", "@video_?3(S01·T1)"). */
+  text: string
+  start: number
+  end: number
+}
+
+/**
+ * The @video tokens of `text`, in order. Reference videos were retired (0.6.0): such text is kept verbatim (never
+ * rewritten or deleted by the app) but never sent — the ONE source of every layer that blocks or marks it: compiled
+ * `retiredTokens` / `unsentTokens`, core/runRules, the gateway's validateRequest, the red marking in the prompt
+ * editor and the open-project notice (src/videoRetired.ts). A superset of what TOKEN_RE / UNBOUND_RE read as video.
+ */
+export function retiredVideoTokens(text: string): RetiredToken[] {
+  if (!/@video/i.test(text)) return []
+  const out: RetiredToken[] = []
+  for (const m of text.matchAll(RETIRED_VIDEO_RE)) out.push({ text: m[0], start: m.index, end: m.index + m[0].length })
+  return out
+}
+
+/** Does `text` hold any retired @video token (retiredVideoTokens(text).length > 0, without building the list)? */
+export function hasRetiredVideoToken(text: string): boolean {
+  return HAS_RETIRED_VIDEO_RE.test(text)
+}
+
+export interface PromptPart {
+  text: string
+  /** 'image' = an @image_N token, 'retired' = retired @video text (retiredVideoTokens). */
+  kind: 'text' | 'image' | 'retired'
+}
+
+/**
+ * `text` cut into plain text, @image_N tokens and retired @video text, for the read-only highlighters (queue, take
+ * viewer, dev panel). Concatenating every part gives back `text`; the retired parts are exactly retiredVideoTokens.
+ */
+export function promptParts(text: string): PromptPart[] {
+  const marks: { start: number; end: number; kind: 'image' | 'retired' }[] = retiredVideoTokens(text).map((t) => ({ start: t.start, end: t.end, kind: 'retired' }))
+  for (const m of text.matchAll(TOKEN_RE)) {
+    if (m[1].toLowerCase() !== 'image') continue
+    marks.push({ start: m.index, end: m.index + m[0].length, kind: 'image' })
+  }
+  marks.sort((a, b) => a.start - b.start)
+  const out: PromptPart[] = []
+  let last = 0
+  for (const m of marks) {
+    if (m.start < last) continue
+    if (m.start > last) out.push({ text: text.slice(last, m.start), kind: 'text' })
+    out.push({ text: text.slice(m.start, m.end), kind: m.kind })
+    last = m.end
+  }
+  if (last < text.length) out.push({ text: text.slice(last), kind: 'text' })
+  return out
+}
+
+/** "@video_1, @video_2, @Video 3…": the first 3 tokens, then "…". */
+export function retiredTokenList(tokens: readonly string[]): string {
+  return `${tokens.slice(0, 3).join(', ')}${tokens.length > 3 ? '…' : ''}`
+}
+
+/** The prompt starter older builds wrote into a scene made from a video ("Tạo cảnh tiếp nối"). */
+const CONTINUE_STARTER_RE = /^Continue from @video_\d+: /
+
+/** "Continue from @video_1:" when `text` starts exactly with the starter older builds wrote, else null. */
+export function continueStarterOf(text: string): string | null {
+  const m = CONTINUE_STARTER_RE.exec(text)
+  return m ? m[0].trimEnd() : null
+}
+
+/**
+ * Quick fix "Xoá câu “Continue from @video_1:”" (only when the user clicks it): `text` without the starter older
+ * builds wrote, only when it starts EXACTLY with it (one character off: unchanged).
+ */
+export function stripContinueStarter(text: string): string {
+  const m = CONTINUE_STARTER_RE.exec(text)
+  return m ? text.slice(m[0].length) : text
+}
+
+/**
+ * Quick fix "Xoá @video_1" (only when the user clicks it): `text` without text[start, end) — a token found by
+ * retiredVideoTokens, label included. When that leaves two spaces side by side (or a space at the very start), one
+ * goes; nothing else changes.
+ */
+export function removeTokenAt(text: string, start: number, end: number): string {
+  const before = text.slice(0, start)
+  let after = text.slice(end)
+  if ((!before || before.endsWith(' ')) && after.startsWith(' ')) after = after.slice(1)
+  return before + after
+}
+
+/** Every retired @video token of `text` removed (removeTokenAt from the last one back: earlier offsets stay valid). */
+export function removeRetiredVideoTokens(text: string): string {
+  let out = text
+  const found = retiredVideoTokens(text)
+  for (let i = found.length - 1; i >= 0; i--) out = removeTokenAt(out, found[i].start, found[i].end)
+  return out
+}
 
 export function sceneCode(order: number): string {
   return 'S' + String(order).padStart(2, '0')
@@ -141,11 +253,6 @@ export function tokenForAsset(project: Project, scene: Scene, assetId: string): 
   return slot ? `@image_${slot.n}` : null
 }
 
-export function tokenForVideo(scene: Scene, takeId: string): string | null {
-  const i = scene.videoRefs.indexOf(takeId)
-  return i >= 0 ? `@video_${i + 1}` : null
-}
-
 /**
  * Text that a word glued after it would extend into a mention / token / placeholder: an "@" followed only by word
  * characters or "?" ("@", "@Lu", "@image", "@image_", "@image_1", "@image_?9"), or a token written with a space,
@@ -171,22 +278,23 @@ function fallbackGap(before: string, fallback: string): string {
 
 /** `after` starts with every key of `before`, in the same order (only new media added at the end). */
 const isAppend = (before: string[], after: string[]) => after.length >= before.length && before.every((k, i) => after[i] === k)
-/** Asset id of an image key ("assetId:imageId"); a video key is the take id itself. */
-const ownerOfKey = (kind: 'image' | 'video', key: string) => (kind === 'image' ? key.slice(0, key.indexOf(':')) : key)
+/** Asset id of an image key ("assetId:imageId"). */
+const ownerOfKey = (key: string) => key.slice(0, key.indexOf(':'))
 
 /**
- * Rewrite @image_N / @video_N tokens after the references changed so every token keeps pointing at the same
- * image/video. Tokens whose image/video disappeared are replaced with `fallback(kind, key)` (e.g. the asset name).
- * A token that pointed at nothing before (typed ahead: "write the prompt first, link the pictures later") keeps its
- * number only when the change is a pure append of NEW assets/takes: it then names the newly linked one by position,
- * or still waits for one. Any other change (insert, removal, reorder, a character getting more pictures) would
- * shift it onto a picture it never meant — wrong character — so it becomes a visible "@image_?N" placeholder.
+ * Rewrite @image_N tokens after the references changed so every token keeps pointing at the same image. Tokens whose
+ * image disappeared are replaced with `fallback(key)` (e.g. the asset name). A token that pointed at nothing before
+ * (typed ahead: "write the prompt first, link the pictures later") keeps its number only when the change is a pure
+ * append of NEW assets: it then names the newly linked one by position, or still waits for one. Any other change
+ * (insert, removal, reorder, a character getting more pictures) would shift it onto a picture it never meant — wrong
+ * character — so it becomes a visible "@image_?N" placeholder. Retired @video tokens are never touched (kept byte for
+ * byte, see retiredVideoTokens).
  */
 export function remapTokens(
   text: string,
-  before: { images: string[]; videos: string[] },
-  after: { images: string[]; videos: string[] },
-  fallback: (kind: 'image' | 'video', key: string) => string,
+  before: { images: string[] },
+  after: { images: string[] },
+  fallback: (key: string) => string,
 ): { text: string; dropped: number; changed: boolean } {
   let dropped = 0
   let changed = false
@@ -198,18 +306,22 @@ export function remapTokens(
     const [whole, rawKind, rawN] = m
     out += text.slice(last, m.index)
     last = m.index + whole.length
-    const kind = rawKind.toLowerCase() as 'image' | 'video'
-    const oldKeys = kind === 'image' ? before.images : before.videos
-    const newKeys = kind === 'image' ? after.images : after.videos
+    // A retired @video token: kept exactly as written (the app never rewrites or deletes it).
+    if (rawKind.toLowerCase() !== 'image') {
+      out += whole
+      continue
+    }
+    const oldKeys = before.images
+    const newKeys = after.images
     const key = oldKeys[Number(rawN) - 1]
     if (key === undefined) {
       const target = newKeys[Number(rawN) - 1]
-      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(kind, k) === ownerOfKey(kind, target)))) {
+      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(k) === ownerOfKey(target)))) {
         out += whole
         continue
       }
       changed = true
-      out += unboundToken(kind, rawN)
+      out += unboundToken('image', rawN)
       continue
     }
     const idx = newKeys.indexOf(key)
@@ -219,7 +331,7 @@ export function remapTokens(
       dropped++
       // never an "@" in it (a name like "@Lumi" / "@image_1" would point at another picture), never glued to an open
       // "@…" before it (fallbackGap)
-      const plain = fallback(kind, key).replace(/@/g, '')
+      const plain = fallback(key).replace(/@/g, '')
       next = fallbackGap(out, plain) + plain
     }
     if (next !== whole) changed = true
@@ -229,9 +341,9 @@ export function remapTokens(
   return { text: out, dropped, changed }
 }
 
-/** Keys of a scene's media before/after a change — input for remapTokens. */
-export function mediaKeys(assets: Asset[], refs: string[], videoRefs: string[]) {
-  return { images: imageSlotsFor(assets, refs).map(imageKey), videos: [...videoRefs] }
+/** Keys of a scene's reference images before/after a change — input for remapTokens. */
+export function mediaKeys(assets: Asset[], refs: string[]): { images: string[] } {
+  return { images: imageSlotsFor(assets, refs).map(imageKey) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -239,7 +351,7 @@ export function mediaKeys(assets: Asset[], refs: string[], videoRefs: string[]) 
 // ---------------------------------------------------------------------------------------------
 
 export interface CompileOptions {
-  /** Status of takes by id, to warn about reference videos that are not usable. */
+  /** @deprecated Ignored: reference videos were retired (0.6.0). Kept so older callers still compile. */
   takeStatus?: (takeId: string) => string | undefined
 }
 
@@ -247,13 +359,12 @@ export interface CompileOptions {
  * Compile the prompt that would be sent for one scene. Pure function.
  * The text is the scene prompt as written; legacy @Tag mentions are converted to @image_N.
  */
-export function compileScene(project: Project, scene: Scene, opts: CompileOptions = {}): CompiledPrompt {
+export function compileScene(project: Project, scene: Scene, _opts: CompileOptions = {}): CompiledPrompt {
   const spec = MODELS[scene.settings.model]
   const limit = spec.promptLimit(scene.settings.mode)
   const warnings: string[] = []
   const notes: string[] = []
   const sendsImages = usesRefs(scene.settings)
-  const sendsVideos = usesVideoRefs(scene.settings)
   const assetMap = new Map(project.assets.map((a) => [a.id, a]))
 
   // Images
@@ -268,20 +379,6 @@ export function compileScene(project: Project, scene: Scene, opts: CompileOption
   }
   if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (!sendsImages && scene.refs.length) notes.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh tham chiếu.`)
-
-  // Videos
-  const videos: CompiledVideo[] = sendsVideos ? scene.videoRefs.slice(0, spec.maxRefVideos).map((takeId, i) => ({ n: i + 1, takeId })) : []
-  if (sendsVideos && scene.videoRefs.length > spec.maxRefVideos) {
-    warnings.push(`${spec.name} nhận tối đa ${spec.maxRefVideos} video tham chiếu; ${scene.videoRefs.length - spec.maxRefVideos} video cuối sẽ không được gửi.`)
-  }
-  if (!sendsVideos && scene.videoRefs.length) warnings.push(`Chế độ này của ${spec.name} không nhận video tham chiếu.`)
-  if (opts.takeStatus) {
-    scene.videoRefs.forEach((id, i) => {
-      const st = opts.takeStatus!(id)
-      if (st === undefined) warnings.push(`@video_${i + 1} trỏ tới một take đã bị xoá.`)
-      else if (st !== 'completed') warnings.push(`@video_${i + 1} chưa tạo xong.`)
-    })
-  }
 
   if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) {
     warnings.push('Chế độ Khung đầu → cuối cần đủ Khung đầu và Khung cuối.')
@@ -309,51 +406,42 @@ export function compileScene(project: Project, scene: Scene, opts: CompileOption
   // Token validation
   const tokens = parseTokens(text)
   const usedImages = new Set<number>()
-  const usedVideos = new Set<number>()
   if (!sendsImages && tokens.some((t) => t.kind === 'image')) {
     warnings.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh: các @image_N sẽ chỉ là chữ trong prompt.`)
   }
-  if (!sendsVideos && tokens.some((t) => t.kind === 'video')) {
-    warnings.push(`Chế độ này của ${spec.name} không gửi video: các @video_N sẽ chỉ là chữ trong prompt.`)
-  }
   const unsent = new Set<string>()
+  // Retired @video tokens (kept as written, never sent): blocked by name, and as tokens with no media (two layers).
+  const retired = [...new Set(retiredVideoTokens(text).map((t) => t.text))]
+  if (retired.length) {
+    warnings.push(`Prompt còn ${retiredTokenList(retired)}: SanoVids đã bỏ video tham chiếu, chữ này sẽ không kèm video nào — xoá hoặc viết lại bằng lời.`)
+    for (const tok of retired) unsent.add(tok)
+  }
   for (const t of tokens) {
-    const tok = `@${t.kind}_${t.n}`
-    if (t.kind === 'image') {
-      usedImages.add(t.n)
-      if (t.n < 1 || t.n > allSlots.length) {
-        warnings.push(`${tok} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
-        unsent.add(tok)
-      } else if (sendsImages && t.n > images.length) {
-        warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefImages} ảnh) — nhân vật đó không có trong video.`)
-        unsent.add(tok)
-      } else if (!sendsImages) unsent.add(tok)
-    } else {
-      usedVideos.add(t.n)
-      if (t.n < 1 || t.n > scene.videoRefs.length) {
-        warnings.push(`${tok} không tồn tại (cảnh có ${scene.videoRefs.length} video).`)
-        unsent.add(tok)
-      } else if (sendsVideos && t.n > videos.length) {
-        warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefVideos} video).`)
-        unsent.add(tok)
-      } else if (!sendsVideos) unsent.add(tok)
-    }
+    if (t.kind !== 'image') continue
+    const tok = `@image_${t.n}`
+    usedImages.add(t.n)
+    if (t.n < 1 || t.n > allSlots.length) {
+      warnings.push(`${tok} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
+      unsent.add(tok)
+    } else if (sendsImages && t.n > images.length) {
+      warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefImages} ảnh) — nhân vật đó không có trong video.`)
+      unsent.add(tok)
+    } else if (!sendsImages) unsent.add(tok)
   }
   for (const m of text.matchAll(UNBOUND_RE)) {
+    if (m[1].toLowerCase() !== 'image') continue // a waiting @video_?N is a retired token (above)
     const tok = m[0]
     if (unsent.has(tok)) continue
     unsent.add(tok)
-    warnings.push(`${tok} chưa gắn ${m[1].toLowerCase() === 'image' ? 'ảnh' : 'video'} nào — nối vào cảnh rồi sửa thành số đúng (vd. @${m[1].toLowerCase()}_1).`)
+    warnings.push(`${tok} chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng (vd. @image_1).`)
   }
   const unusedImages = images.filter((i) => !usedImages.has(i.n)).map((i) => `@image_${i.n}`)
   if (unusedImages.length) notes.push(`${unusedImages.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)
-  const unusedVideos = videos.filter((v) => !usedVideos.has(v.n)).map((v) => `@video_${v.n}`)
-  if (unusedVideos.length) notes.push(`${unusedVideos.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)
 
   if (!text) warnings.push('Prompt của cảnh đang trống.')
   const charCount = [...text].length
   if (charCount > limit) warnings.push(`Prompt dài ${charCount.toLocaleString('vi-VN')} ký tự, vượt giới hạn ${limit.toLocaleString('vi-VN')}.`)
 
   const assetIds = [...new Set(images.map((i) => i.assetId))]
-  return { text, images, videos, assetIds, charCount, limit, warnings: [...new Set(warnings)], notes, unsentTokens: [...unsent] }
+  return { text, images, assetIds, charCount, limit, warnings: [...new Set(warnings)], notes, unsentTokens: [...unsent], retiredTokens: retired }
 }

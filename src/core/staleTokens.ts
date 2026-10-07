@@ -1,24 +1,26 @@
-// Prompts left as written while their @image_N / @video_N tokens now point at another picture or video: what
-// happens with automatic renumbering off (Settings) after a refs / asset-image change. Pure (no stores, no React):
-// shared by the sidebar, the inspector, canvas wire edits and the action layer, so every such change can warn.
+// Prompts left as written while their @image_N tokens now point at another picture: what happens with automatic
+// renumbering off (Settings) after a refs / asset-image change. Pure (no stores, no React): shared by the sidebar, the
+// inspector, canvas wire edits and the action layer, so every such change can warn. (Retired @video text never
+// points at anything: it is never counted here.)
 import { HAS_TOKEN_RE, mediaKeys, parseTokens, sceneCode } from './compile'
 import type { Project } from './types'
 
 /**
- * Does an @image_N / @video_N token of `prompt` point at another image / video after a media change? `before` /
- * `after` are mediaKeys() of the scene. A token that pointed at nothing before (number too high) is not counted.
+ * Does an @image_N token of `prompt` point at another image after a media change? `before` / `after` are mediaKeys()
+ * of the scene. A token that pointed at nothing before (number too high) is not counted.
  */
-export function tokensShifted(prompt: string, before: { images: string[]; videos: string[] }, after: { images: string[]; videos: string[] }): boolean {
+export function tokensShifted(prompt: string, before: { images: string[] }, after: { images: string[] }): boolean {
   return parseTokens(prompt).some((t) => {
-    const was = (t.kind === 'image' ? before.images : before.videos)[t.n - 1]
-    return was !== undefined && (t.kind === 'image' ? after.images : after.videos)[t.n - 1] !== was
+    if (t.kind !== 'image') return false
+    const was = before.images[t.n - 1]
+    return was !== undefined && after.images[t.n - 1] !== was
   })
 }
 
 /**
- * Scenes whose prompt was left as written although its @image_N / @video_N tokens now point at another picture or
- * video (automatic renumbering off, Settings), comparing the project before and after a refs / asset-image change.
- * Rewritten prompts are the store's renumbering at work and are not listed.
+ * Scenes whose prompt was left as written although its @image_N tokens now point at another picture (automatic
+ * renumbering off, Settings), comparing the project before and after a refs / asset-image change. Rewritten prompts
+ * are the store's renumbering at work and are not listed.
  */
 export function scenesWithStaleTokens(before: Project, after: Project): string[] {
   const old = new Map(before.scenes.map((s) => [s.id, s]))
@@ -26,8 +28,8 @@ export function scenesWithStaleTokens(before: Project, after: Project): string[]
   for (const sc of after.scenes) {
     const prev = old.get(sc.id)
     if (!prev || prev.prompt !== sc.prompt || !HAS_TOKEN_RE.test(sc.prompt)) continue
-    if (prev.refs === sc.refs && prev.videoRefs === sc.videoRefs && before.assets === after.assets) continue
-    if (tokensShifted(sc.prompt, mediaKeys(before.assets, prev.refs, prev.videoRefs), mediaKeys(after.assets, sc.refs, sc.videoRefs))) out.push(sc.id)
+    if (prev.refs === sc.refs && before.assets === after.assets) continue
+    if (tokensShifted(sc.prompt, mediaKeys(before.assets, prev.refs), mediaKeys(after.assets, sc.refs))) out.push(sc.id)
   }
   return out
 }
@@ -45,7 +47,7 @@ export function staleTokenNote(project: Project, sceneIds: string[], what = '@im
 }
 
 /** staleTokenNote for a change from `before` to `after`, or '' when every prompt still points at the same media. */
-export function staleNoteSince(before: Project, after: Project, what = '@image/@video'): string {
+export function staleNoteSince(before: Project, after: Project, what = '@image'): string {
   const stale = scenesWithStaleTokens(before, after)
   return stale.length ? staleTokenNote(after, stale, what) : ''
 }

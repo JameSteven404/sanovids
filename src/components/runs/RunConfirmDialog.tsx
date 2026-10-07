@@ -32,9 +32,6 @@ interface Row {
   check: SceneRunCheck
   assets: Asset[]
   images: number
-  /** Reference videos (@video_N) and how many of them are finished takes. */
-  videos: number
-  videosReady: number
 }
 
 interface TakeStat {
@@ -76,21 +73,12 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   useEffect(() => {
     if (!demo) void refreshRealCredits()
   }, [demo])
-  // Status of every reference video of these scenes, as one string: re-check only when one of them changes.
-  const videoKey = useRuns((s) => {
-    const ids = new Set(sceneIds)
-    const refs = project.scenes.filter((sc) => ids.has(sc.id) && sc.videoRefs.length)
-    if (!refs.length) return ''
-    const status = new Map(s.takes.map((t) => [t.id, t.status]))
-    return refs.map((sc) => sc.videoRefs.map((t) => status.get(t) ?? '-').join(',')).join('|')
-  })
   const [onlyNew, setOnlyNew] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
 
   const rows = useMemo<Row[]>(() => {
     const checks = new Map(useRuns.getState().check(sceneIds).map((c) => [c.sceneId, c]))
     const assetMap = new Map(project.assets.map((a) => [a.id, a]))
-    const status = new Map(useRuns.getState().takes.map((t) => [t.id, t.status]))
     return project.scenes
       .filter((s) => checks.has(s.id))
       .sort((a, b) => a.order - b.order)
@@ -101,15 +89,11 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           check: checks.get(scene.id)!,
           assets: scene.refs.map((id) => assetMap.get(id)).filter((a): a is Asset => !!a),
           images: compiled.images.length,
-          // the videos this run sends: none when the model/mode takes no video (leftover references stay unsent)
-          videos: compiled.videos.length,
-          videosReady: compiled.videos.filter((v) => status.get(v.takeId) === 'completed').length,
         }
       })
-    // videoKey: re-run the check when a reference video finishes (or is deleted). provider / limits: the checks depend
-    // on what the provider accepts (canvasapp has no @video yet; /api/video-profiles) — `limits` keeps its identity
-    // while what it refuses is unchanged, so a re-read with the same answer re-checks nothing.
-  }, [project, sceneIds, videoKey, provider, limits])
+    // provider / limits: the checks depend on what the provider accepts (/api/video-profiles) — `limits` keeps its
+    // identity while what it refuses is unchanged, so a re-read with the same answer re-checks nothing.
+  }, [project, sceneIds, provider, limits])
   // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
   const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
   const site = limitsSite(provider)
@@ -272,7 +256,6 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
               <col className="rq-w-title" />
               <col className="rq-w-settings" />
               <col className="rq-w-refs" />
-              <col className="rq-w-videos" />
               <col className="rq-w-warn" />
               <col className="rq-w-credit" />
               <col className="rq-w-status" />
@@ -286,7 +269,6 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                 <th>Tên</th>
                 <th>Cấu hình</th>
                 <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
-                <th title="Video tham chiếu (@video_N)">Video</th>
                 <th>Cảnh báo</th>
                 <th className="num" title={sim ? `${unit} (giả lập, không phải tiền thật)` : 'Credit canvasapp (ước tính, tiền thật)'}>
                   Credit
@@ -340,7 +322,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
 }
 
 function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeStat | undefined; included: boolean; onToggle: () => void }) {
-  const { scene, check, assets, images, videos, videosReady } = row
+  const { scene, check, assets, images } = row
   const spec = MODELS[scene.settings.model]
   const warnings = check.warnings
   return (
@@ -370,19 +352,6 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
               ))}
             </span>
             <span className="faint mono">{images}</span>
-          </span>
-        ) : (
-          <span className="faint">—</span>
-        )}
-      </td>
-      <td className="mono">
-        {videos ? (
-          <span
-            className={videosReady < videos ? 'rq-vcount pending' : 'rq-vcount'}
-            title={videosReady < videos ? `${videos - videosReady}/${videos} video tham chiếu chưa tạo xong` : `${videos} video tham chiếu (@video_1…)`}
-          >
-            {videos}
-            {videosReady < videos && <TriangleAlert size={11} />}
           </span>
         ) : (
           <span className="faint">—</span>

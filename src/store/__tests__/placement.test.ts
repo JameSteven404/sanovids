@@ -2,7 +2,7 @@
 // chuyển ra xa một cách bất thường"). Each case reproduces a probe of the investigation with its numbers
 // (old → new).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createSceneFromTake, newScene, nextScene, noteRecentScene, setCanvasViewSource } from '../../actions'
+import { createSceneFromVideo, newScene, nextScene, noteRecentScene, setCanvasViewSource } from '../../actions'
 import type { Asset, Project, Scene, Take, XY } from '../../core/types'
 import { LAYOUT, newScenePosition, rowHeightOf, undo, useProject, type Box } from '../project'
 import { useRuns } from '../runs'
@@ -220,7 +220,7 @@ describe('new scene without a selected scene ("+ Cảnh", N, "Cảnh mới")', (
   })
 })
 
-describe('next scene below its source (N with a scene selected, "Tạo cảnh tiếp nối")', () => {
+describe('next scene below its source (N with a scene selected, "Tạo cảnh tiếp theo từ video này")', () => {
   it('[P2a] goes right below the source', () => {
     load([scene('s1', 1, { x: 900, y: 300 })])
     useUI.getState().select(['s1'])
@@ -279,29 +279,31 @@ describe('next scene below its source (N with a scene selected, "Tạo cảnh ti
 
   it('[P2h] continuation of a video the user moved goes right of that video, not 2000px away below the source', () => {
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 2600, y: 1800 } })])
-    const id = createSceneFromTake('t1')!
+    const id = createSceneFromVideo('t1')!
     expect(pos(id)).toEqual({ x: 2600 + 224 + 64, y: 1800 }) // was (900, 548)
-    expect(st().project.scenes.find((s) => s.id === id)!.videoRefs).toEqual(['t1'])
+    // reference videos were retired: never a @video link, an empty prompt
+    expect(st().project.scenes.find((s) => s.id === id)!.videoRefs).toEqual([])
+    expect(st().project.scenes.find((s) => s.id === id)!.prompt).toBe('')
     // a video still in its row: below the source as before
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1)])
-    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 })
+    expect(pos(createSceneFromVideo('t1')!)).toEqual({ x: 900, y: 548 })
   })
 
   it('continuation of a video only nudged or resized in its row: below the source, not in the lane of the next take', () => {
     // t1's slot is (1244, 300); nudged 32px down it keeps the slot. Right of it (1532, 332) is where the scene's next
     // take t2 goes (1484..1708 × 300..500): the new card would sit under it.
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 332 } })])
-    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 }) // was (1532, 332)
+    expect(pos(createSceneFromVideo('t1')!)).toEqual({ x: 900, y: 548 }) // was (1532, 332)
     // resized from its top-left handle (explicit position on its slot), 400px tall: below its row
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 300 }, size: { w: 300, h: 400 } })])
-    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 300 + 400 + 48 })
+    expect(pos(createSceneFromVideo('t1')!)).toEqual({ x: 900, y: 300 + 400 + 48 })
   })
 
   it('continuation right of a moved video, with nothing free near it: stays right of it (no slide down)', () => {
     // a column of 12 scenes right where the new card would go
     const column = Array.from({ length: 12 }, (_, i) => scene('c' + i, i + 2, { x: 2888, y: 1000 + i * 248 }))
     load([scene('s1', 1, { x: 900, y: 300 }), ...column], [], [take('t1', 's1', 1, { position: { x: 2600, y: 1800 } })])
-    const at = pos(createSceneFromTake('t1')!)
+    const at = pos(createSceneFromVideo('t1')!)
     expect(Math.hypot(at.x - 2888, at.y - 1800)).toBeLessThanOrEqual(296)
   })
 })

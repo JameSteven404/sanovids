@@ -600,7 +600,7 @@
   text-overflow: ellipsis;
 }
 
-/* @image / @video number of the single selected scene, and the "+ Nối" button */
+/* @image number of the single selected scene, and the "+ Nối" button */
 .sb-token,
 .sb-connect {
   flex: none;
@@ -652,41 +652,14 @@
   background: var(--sb-ref-fill);
   color: var(--on-accent);
 }
-.sb-token.video {
-  border-color: var(--video);
-  background: var(--video);
-  color: var(--on-accent);
-}
-.sb-token.video:hover {
-  background: color-mix(in srgb, var(--video) 85%, var(--text));
-}
-.sb-connect.video {
-  border-color: color-mix(in srgb, var(--video) 70%, transparent);
-  background: transparent;
-  color: var(--sb-video-ink);
-}
-.sb-connect.video:hover {
-  border-color: var(--video);
-  background: var(--video);
-  color: var(--on-accent);
-}
-/* the selected scene's model / mode does not send this media: number shown muted (not copyable), "+ Nối" off */
-.sb-token.off,
-.sb-token.video.off {
+/* the selected scene's model / mode does not send this media: number shown muted (not copyable) */
+.sb-token.off {
   border-style: dashed;
   border-color: var(--border-strong);
   background: var(--material-strong);
   color: var(--text-faint);
   text-decoration: line-through;
   cursor: help;
-}
-.sb-connect.video.off,
-.sb-connect.video.off:hover {
-  border-style: dashed;
-  border-color: var(--border-strong);
-  background: transparent;
-  color: var(--text-faint);
-  cursor: not-allowed;
 }
 .sb-card-token {
   position: absolute;
@@ -989,32 +962,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-take-used {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--sb-video-ink);
-  font-size: 10.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-/* 2nd line: @video number / "+ Nối" of the selected scene, then the scene title (takes what is left) */
+/* 2nd line: the scene title */
 .sb-take-sub {
   display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
   margin-top: 1px;
-}
-.sb-take-sub .sb-token,
-.sb-take-sub .sb-connect {
-  flex: 0 1 auto;
-  min-width: 0;
-  height: 17px;
-  line-height: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .sb-take-title {
   flex: 1 1 0;
@@ -1512,9 +1466,6 @@
   font-family: var(--mono);
   color: var(--sb-ref-ink);
   font-weight: 600;
-}
-.sb-tok.video {
-  color: var(--sb-video-ink);
 }
 .sb-tok.off {
   color: var(--text-faint);

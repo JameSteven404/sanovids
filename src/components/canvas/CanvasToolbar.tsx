@@ -38,7 +38,7 @@ const TAKE_DISPLAYS: { id: TakeDisplay; label: string; short: string; title: str
     id: 'chosen',
     label: 'Chỉ take chọn',
     short: 'Take chọn',
-    title: 'Mỗi cảnh chỉ hiện take được chọn (★, nếu không thì take xong mới nhất) và các video đang làm @video',
+    title: 'Mỗi cảnh chỉ hiện take được chọn (★, nếu không thì take xong mới nhất)',
   },
 ]
 

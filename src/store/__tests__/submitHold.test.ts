@@ -59,7 +59,7 @@ function fakeDevProvider() {
     label: 'dev',
     minPollIntervalMs: 0,
     available: async () => ({ ok: true }),
-    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0, maxRefVideos: 0 }),
+    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0 }),
     submit: async (req) => {
       submitted.push(req)
       const remoteId = 'r_' + req.key

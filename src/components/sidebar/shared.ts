@@ -3,7 +3,7 @@ import { Mountain, Package, Palette, UserRound, type LucideIcon } from 'lucide-r
 import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, uniqueTag } from '../../core/compile'
-import { costOf, MODELS, normalizeSettings, usesRefs, usesVideoRefs, type ModelSpec } from '../../core/models'
+import { costOf, MODELS, normalizeSettings, usesRefs, type ModelSpec } from '../../core/models'
 import { CREDIT_HINT, CREDIT_SOURCE_LABEL, formatCreditNumber, formatCredits, formatVnd, isSimulatedCredit, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
@@ -162,17 +162,15 @@ export function newAssetKind(filter: 'all' | AssetKind, assetCount: number): Ass
 export interface SceneMediaFlags {
   /** Reference images (@image_N) are sent. */
   images: boolean
-  /** Reference videos (@video_N) are accepted. */
-  videos: boolean
   /** Model name, e.g. "MiniMax-H3" ('' when no scene). */
   model: string
 }
 
-const ALL_MEDIA: SceneMediaFlags = { images: true, videos: true, model: '' }
+const ALL_MEDIA: SceneMediaFlags = { images: true, model: '' }
 
 export function sceneMediaFlags(settings: VideoSettings | undefined): SceneMediaFlags {
   if (!settings) return ALL_MEDIA
-  return { images: usesRefs(settings), videos: usesVideoRefs(settings), model: MODELS[settings.model]?.name ?? settings.model }
+  return { images: usesRefs(settings), model: MODELS[settings.model]?.name ?? settings.model }
 }
 
 /** sceneMediaFlags of one scene (primitive fields: no re-render while its prompt is typed). */
@@ -197,7 +195,7 @@ export function finishedTakesOf(takes: Take[], sceneIds: ReadonlySet<string>): T
 
 /**
  * Is this take's video node hidden on the canvas? Only in the "Chỉ take chọn" display, which shows the chosen take of
- * each scene plus takes used as @video (same rule as the canvas layout). Selecting a hidden take would select
+ * each scene (same rule as the canvas layout). Selecting a hidden take would select
  * something invisible, so the takes list selects its scene instead (like the queue's "Đi tới").
  */
 export function takeHiddenOnCanvas(takeId: string, takes: Take[], scenes: Scene[], display: TakeDisplay): boolean {

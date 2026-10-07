@@ -65,7 +65,6 @@ const req = (over: Partial<JobRequest> = {}): JobRequest => ({
     { n: 2, assetId: 'b', imageId: 'img_b' },
     { n: 1, assetId: 'a', imageId: 'img_a' },
   ],
-  videos: [],
   firstFrame: null,
   lastFrame: null,
   startedAt: 0,
@@ -293,9 +292,12 @@ describe('canvasapp mapping: job body (runVideoNode shape)', () => {
 })
 
 describe('canvasapp mapping: validation', () => {
-  it('rejects reference videos, empty prompts and missing frames', () => {
+  it('rejects retired @video text, empty prompts and missing frames', () => {
     expect(validateRequest(req())).toEqual([])
-    expect(validateRequest(req({ videos: [{ n: 1, takeId: 't', videoId: 'v', posterId: null }] })).join(' ')).toMatch(/video tham chiếu/)
+    expect(validateRequest(req({ prompt: 'Continue from @video_1: x' }))).toEqual([
+      'Prompt còn @video_1 — SanoVids không còn gửi video tham chiếu nên chưa gửi lần này (không bị trừ credit). Sửa prompt rồi bấm ▶ ở cảnh; “Thử lại” sẽ gửi lại đúng prompt cũ.',
+    ])
+    expect(validateRequest(req({ prompt: 'a @video2go and @video1abc' }))).toEqual([])
     expect(validateRequest(req({ prompt: '  ' })).join(' ')).toMatch(/Prompt trống/)
     expect(validateRequest(req({ model: 'minimax_h3', mode: 'transform', images: [] })).join(' ')).toMatch(/khung đầu/)
     expect(validateRequest(req({ model: 'minimax_h3', mode: 'i2v', images: [] })).join(' ')).toMatch(/ít nhất 1 ảnh/)

@@ -14,7 +14,7 @@ export interface MockRenderInput {
   color: string
   /** Image-store keys of the reference images, in @image order. */
   imageIds: string[]
-  /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "@video_1"); defaults to @image_<index>. */
+  /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "khung đầu"); defaults to @image_<index>. */
   labels?: string[]
   /**
    * The pictures themselves, parallel to imageIds (dev mode: the files the simulated canvasapp received). A blob here

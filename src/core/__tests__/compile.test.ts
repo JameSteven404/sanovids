@@ -60,14 +60,14 @@ describe('compileScene', () => {
     expect(out.warnings.some((w) => w.includes('@image_5'))).toBe(true)
     expect(out.warnings.some((w) => w.includes('@video_1'))).toBe(true)
   })
-  it('numbers reference videos and checks their status', () => {
-    const s = scene({ prompt: 'Continue from @video_1 then @video_2', videoRefs: ['t1', 't2'] })
-    const out = compileScene(project([s]), s, { takeStatus: (id) => (id === 't1' ? 'completed' : 'processing') })
-    expect(out.videos).toEqual([
-      { n: 1, takeId: 't1' },
-      { n: 2, takeId: 't2' },
-    ])
-    expect(out.warnings).toEqual(['@video_2 chưa tạo xong.'])
+  it('retired @video tokens: kept in the text, never sent, named in retiredTokens AND unsentTokens with one warning', () => {
+    const s = scene({ prompt: 'Continue from @video_1 then @video_2 and @video_1', legacyVideoRefs: ['t1', 't2'] })
+    const out = compileScene(project([s]), s, { takeStatus: () => 'completed' })
+    expect(out.text).toBe('Continue from @video_1 then @video_2 and @video_1')
+    expect(out).not.toHaveProperty('videos')
+    expect(out.retiredTokens).toEqual(['@video_1', '@video_2'])
+    expect(out.unsentTokens).toEqual(['@video_1', '@video_2'])
+    expect(out.warnings).toEqual(['Prompt còn @video_1, @video_2: SanoVids đã bỏ video tham chiếu, chữ này sẽ không kèm video nào — xoá hoặc viết lại bằng lời.'])
   })
   it('h3 t2v sends no images and uses the H3 prompt limit', () => {
     const s = scene({ prompt: 'walks', refs: ['a'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } })
@@ -86,29 +86,31 @@ describe('tokens', () => {
   })
   it('remaps tokens after a reorder and a removal', () => {
     const p = project([])
-    const before = mediaKeys(p.assets, ['a', 'b', 'c'], ['t1', 't2'])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'])
     // a has 2 images: a=1,2  b=3  c=4. Remove a, move c first: c=1 b=2
-    const after = mediaKeys(p.assets, ['c', 'b'], ['t2'])
-    const out = remapTokens('@image_1 @image_3 @image_4 @image_9 @video_2 @video_1', before, after, (k, key) => `[${k}:${key}]`)
-    // @image_9 pointed at nothing before: it becomes a placeholder instead of silently binding to a new image
-    expect(out.text).toBe('[image:a:i1] @image_2 @image_1 @image_?9 @video_1 [video:t1]')
-    expect(out.dropped).toBe(2)
+    const after = mediaKeys(p.assets, ['c', 'b'])
+    const out = remapTokens('@image_1 @image_3 @image_4 @image_9 @video_2 @video_1', before, after, (key) => `[${key}]`)
+    // @image_9 pointed at nothing before: it becomes a placeholder instead of silently binding to a new image;
+    // retired @video tokens are kept byte for byte
+    expect(out.text).toBe('[a:i1] @image_2 @image_1 @image_?9 @video_2 @video_1')
+    expect(out.dropped).toBe(1)
   })
   it('a removed token right after an "@" ("@@image_2") never glues its fallback to it (no new token / mention)', () => {
     const p = project([])
-    const before = mediaKeys(p.assets, ['a', 'b', 'c'], ['t1'])
-    const after = mediaKeys(p.assets, ['b', 'c'], [])
-    const out = remapTokens('x @@image_1 y @@video_1 z @@image_3', before, after, (k) => (k === 'image' ? 'image 3' : 'Lumi'))
-    expect(out.text).toBe('x @ image 3 y @ Lumi z @@image_1')
-    // what is left points exactly where it did: one token, b's image (now @image_1)
-    expect(parseTokens(out.text)).toEqual([{ kind: 'image', n: 1, start: 24, end: 32 }])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'])
+    const after = mediaKeys(p.assets, ['b', 'c'])
+    const out = remapTokens('x @@image_1 y @@video_1 z @@image_3', before, after, () => 'image 3')
+    expect(out.text).toBe('x @ image 3 y @@video_1 z @@image_1')
+    // what is left points exactly where it did: b's image (now @image_1); the retired @video text is untouched
+    const at = out.text.lastIndexOf('@image_1')
+    expect(parseTokens(out.text).filter((t) => t.kind === 'image')).toEqual([{ kind: 'image', n: 1, start: at, end: at + 8 }])
     expect(extractMentions(out.text)).toEqual([])
   })
   it('a fallback never glues onto an open "@…" before it: no new token / mention / placeholder (and never an "@" of its own)', () => {
     const p = project([])
     // a = @image_1, @image_2 · b = @image_3 (cut) · c = @image_4 → @image_3
-    const before = mediaKeys(p.assets, ['a', 'b', 'c'], [])
-    const after = mediaKeys(p.assets, ['a', 'c'], [])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'])
+    const after = mediaKeys(p.assets, ['a', 'c'])
     const cut = (text: string, name: string) => remapTokens(text, before, after, () => name).text
     // "@image " / "@image" + "3 chị em" would read "@image 3": a token of another picture
     expect(cut('ảnh @image @image_3 đi', '3 chị em')).toBe('ảnh @image  3 chị em đi')
@@ -130,8 +132,8 @@ describe('tokens', () => {
   })
   it('the join of a fallback with the text before it never forms a match of its own (every token / mention / placeholder)', () => {
     const p = project([])
-    const before = mediaKeys(p.assets, ['a', 'b', 'c'], [])
-    const after = mediaKeys(p.assets, ['a', 'c'], [])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'])
+    const after = mediaKeys(p.assets, ['a', 'c'])
     const cut = (text: string, name: string) => remapTokens(text, before, after, () => name).text
     const found = (text: string) => [TOKEN_RE, MENTION_RE, UNBOUND_RE].map((re) => [...text.matchAll(re)].map((m) => m[0]))
     const lefts = ['', 'x ', '@', '@@', 'ảnh @image ', 'ảnh @image', 'a @image_', '@Image_', '@VIDEO ', '@video', '@imag', '@Lu', 'cô @Lu', 'e@mail']

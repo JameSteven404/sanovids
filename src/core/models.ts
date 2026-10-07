@@ -9,8 +9,6 @@ export interface ModelSpec {
   resolutions: string[]
   ratios: string[]
   maxRefImages: number
-  /** Reference videos (@video_N) accepted per request. */
-  maxRefVideos: number
   promptLimit: (mode: Mode) => number
   /**
    * credits[resolution][duration] per video, 1 credit ≈ 1.000đ — the same table as canvasapp. The demo provider
@@ -31,7 +29,6 @@ export const MODELS: Record<ModelId, ModelSpec> = {
     resolutions: ['480p', '720p', '1080p'],
     ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
     maxRefImages: 30,
-    maxRefVideos: 10,
     promptLimit: () => 20000,
     pricing: {
       '480p': { 5: 4, 10: 5, 15: 10, 30: 15 },
@@ -49,7 +46,6 @@ export const MODELS: Record<ModelId, ModelSpec> = {
     resolutions: ['768p', '2k'],
     ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
     maxRefImages: 9,
-    maxRefVideos: 3,
     promptLimit: (mode) => (mode === 'transform' ? 20000 : 7000),
     pricing: {
       '768p': { 5: 4, 10: 6, 15: 8 },
@@ -117,9 +113,4 @@ export function settingsLabel(s: VideoSettings): string {
 /** Whether this mode sends reference images. */
 export function usesRefs(s: VideoSettings): boolean {
   return s.model === 'seedance_2_5' || s.mode === 'i2v'
-}
-
-/** Whether this mode accepts reference videos (@video_N). Same modes as reference images. */
-export function usesVideoRefs(s: VideoSettings): boolean {
-  return usesRefs(s)
 }

@@ -17,8 +17,6 @@ import {
 import { useEffect, useState, type CSSProperties } from 'react'
 import { canvasEvents, WIRES_CUT_EVENT, type WireCutDetail } from '../../actions'
 import { motionLevel, useCanvasPrefs, useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
-import { useRuns } from '../../store/runs'
-import { takeIndexOf } from './canvasModel'
 import { isWireReconnecting, pickNodeAt, snapHandleFor, splitWirePath, wireDragColor, wirePath, wireVerdict, type Pt, type WireSource, type WireSourceType } from './wireFx'
 
 const SOURCE_TYPES: readonly string[] = ['asset', 'take', 'scene', 'folder']
@@ -48,11 +46,6 @@ export function WireConnectionLine({
     // Released anywhere on a card also links (onConnectEnd hit-tests the card): judge the card under the pointer.
     const over = pickNodeAt(store.getState().nodeLookup.values(), end, fromNode.id)
     const src: WireSource = { type, id: fromNode.id, reconnect: isWireReconnecting() }
-    if (type === 'take') {
-      const take = takeIndexOf(useRuns.getState().takes).byId.get(fromNode.id)
-      src.takeReady = take?.status === 'completed'
-      src.takeSceneId = take?.sceneId ?? null
-    }
     state = wireVerdict(src, over)
     // Valid: the end jumps to the dot the wire will be drawn to — a magnet that shows where it lands (handles are 0×0
     // anchors at the dot centers, so this is where the dropped wire ends too).

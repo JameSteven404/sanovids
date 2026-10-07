@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   cleanForeignSettings,
-  dropVideoRefs,
+  dropLegacyVideoRefs,
   FOREIGN_ID_MAX,
   FOREIGN_RUNNING_ERROR,
   FOREIGN_SETTINGS_MAX_BYTES,
@@ -102,18 +102,20 @@ describe('migrateProject repairs files from other sources', () => {
   })
 })
 
-describe('dropVideoRefs (copy / import without the takes)', () => {
-  it('clears video refs and turns their tokens into text, image tokens unchanged', () => {
+describe('dropLegacyVideoRefs (copy / import without the takes)', () => {
+  it('drops the archived video links; prompts stay byte for byte (@video text included)', () => {
     const p = migrateProject(v1)
-    const scene = { ...p.scenes[0], refs: ['a'], videoRefs: ['t1', 't2'], prompt: '@image_1 after @video_2 and @video_1, @video_3' }
-    const out = dropVideoRefs({ ...p, scenes: [scene] }, (t) => (t === 't1' ? 'video S01·T1' : 'video'))
+    const prompt = '@image_1 after @video_2 and @video_1, @video_3 · Continue from @video_1: @Video 2 @video_?3(S01·T1)'
+    const scene = { ...p.scenes[0], refs: ['a'], legacyVideoRefs: ['t1', 't2'], prompt }
+    const out = dropLegacyVideoRefs({ ...p, scenes: [scene, p.scenes[0]] })
+    expect(out.scenes[0]).not.toHaveProperty('legacyVideoRefs')
     expect(out.scenes[0].videoRefs).toEqual([])
-    // @video_3 was already invalid: it becomes a visible placeholder (blocked from running by the compile check)
-    expect(out.scenes[0].prompt).toBe('@image_1 after video and video S01·T1, @video_?3')
+    expect(out.scenes[0].prompt).toBe(prompt)
+    expect(out.scenes[1]).toBe(p.scenes[0])
   })
   it('returns the same project when there is nothing to drop', () => {
     const p = migrateProject(v1)
-    expect(dropVideoRefs(p)).toBe(p)
+    expect(dropLegacyVideoRefs(p)).toBe(p)
   })
 })
 

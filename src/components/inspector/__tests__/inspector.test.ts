@@ -29,9 +29,9 @@ import {
   insertAt,
   legacyAssets,
   legacyFixMessage,
+  invalidTokenTitle,
   mediaCountLabel,
   planImageLinks,
-  planVideoLinks,
   remapOffset,
   renumberImageTokens,
   replaceLegacyTags,
@@ -41,8 +41,8 @@ import {
   suggestionToken,
   type ImageOpt,
   type LibraryOpt,
-  type VideoOpt,
 } from '../tokens'
+import { retiredVideoTokens } from '../../../core/compile'
 
 const asset = (id: string, name: string, tag: string, over: Partial<Asset> = {}): Asset => ({
   id, kind: 'character', name, tag, description: '', imageIds: ['img_' + id], color: '#fff', position: null, ...over,
@@ -90,41 +90,52 @@ describe('findMention', () => {
 })
 
 describe('segmentPrompt', () => {
-  it('splits tokens and keeps the exact text', () => {
+  it('splits tokens and keeps the exact text; @video text is always a retired (invalid) segment', () => {
     const text = '@image_1 hugs @image_2 near @video_1, then @image_5 and @video_2.'
-    const segs = segmentPrompt(text, 3, 1)
+    const segs = segmentPrompt(text, 3)
     expect(segs.map((s) => s.text).join('')).toBe(text)
     const marks = segs.filter((s) => s.kind !== 'text')
-    expect(marks.map((s) => [s.kind, s.n, !!s.invalid])).toEqual([
-      ['image', 1, false],
-      ['image', 2, false],
-      ['video', 1, false],
-      ['image', 5, true],
-      ['video', 2, true],
+    expect(marks.map((s) => [s.kind, s.text, !!s.invalid, s.reason ?? null])).toEqual([
+      ['image', '@image_1', false, null],
+      ['image', '@image_2', false, null],
+      ['video', '@video_1', true, 'retired'],
+      ['image', '@image_5', true, 'missing'],
+      ['video', '@video_2', true, 'retired'],
     ])
+    expect(invalidTokenTitle(marks[2])).toBe('@video_1: video tham chiếu không còn được hỗ trợ — xoá hoặc viết lại bằng lời để chạy cảnh này.')
+  })
+  it('marks exactly what blocks the run (retiredVideoTokens), spellings a narrower highlighter missed included', () => {
+    const text = 'a @Video 2 b @VIDEO3 c @video_?4(S01·T1) d @video_?5go e @video_1ạ f @video2go @video1abc email@video_6.com'
+    const segs = segmentPrompt(text, 0)
+    expect(segs.map((s) => s.text).join('')).toBe(text)
+    const red = segs.filter((s) => s.reason === 'retired').map((s) => s.text)
+    expect(red).toEqual(retiredVideoTokens(text).map((t) => t.text))
+    expect(red).toEqual(['@Video 2', '@VIDEO3', '@video_?4(S01·T1)', '@video_?5', '@video_1', '@video_6'])
+    // plain words, not tokens: never marked as retired
+    expect(segmentPrompt('@video2go @video1abc', 0, new Set(['video2go', 'video1abc'])).every((s) => s.kind !== 'video')).toBe(true)
   })
   it('marks legacy asset tags only when known, merges plain text', () => {
-    const segs = segmentPrompt('@Elara meets @Bob at @image_0', 2, 0, new Set(['elara']))
+    const segs = segmentPrompt('@Elara meets @Bob at @image_0', 2, new Set(['elara']))
     expect(segs.map((s) => s.kind)).toEqual(['legacy', 'text', 'image'])
     expect(segs[1].text).toBe(' meets @Bob at ')
     expect(segs[2].invalid).toBe(true)
   })
   it('marks tokens past what is really sent, and "@image_?N" placeholders, as invalid', () => {
     const text = '@image_1 and @image_10, @video_2 then @image_?3'
-    const segs = segmentPrompt(text, 12, 2, undefined, { images: 9, videos: 1 })
+    const segs = segmentPrompt(text, 12, undefined, { images: 9 })
     expect(segs.map((s) => s.text).join('')).toBe(text)
     expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.text, s.reason ?? null])).toEqual([
       ['@image_1', null],
       ['@image_10', 'unsent'],
-      ['@video_2', 'unsent'],
+      ['@video_2', 'retired'],
       ['@image_?3', 'unbound'],
     ])
     // a mode that sends no images: every image token is unsent
-    expect(segmentPrompt('@image_1', 3, 0, undefined, { images: 0, videos: 0 })[0].reason).toBe('unsent')
+    expect(segmentPrompt('@image_1', 3, undefined, { images: 0 })[0].reason).toBe('unsent')
   })
   it('highlights tokens written as "@Image 1", "@image2", "@IMAGE_3" like "@image_1"', () => {
     const text = 'References: @Image 1 = Elara, @image2 = Lumi, @IMAGE_3 = Village, @Image 9.'
-    const segs = segmentPrompt(text, 3, 0, new Set(['image']))
+    const segs = segmentPrompt(text, 3, new Set(['image']))
     expect(segs.map((s) => s.text).join('')).toBe(text)
     expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.kind, s.text, s.n, !!s.invalid])).toEqual([
       ['image', '@Image 1', 1, false],
@@ -134,25 +145,22 @@ describe('segmentPrompt', () => {
     ])
   })
   it('does not treat longer words as tokens and handles empty text', () => {
-    expect(segmentPrompt('@image_12abc', 20, 0).map((s) => s.kind)).toEqual(['text'])
-    expect(segmentPrompt('', 1, 1)).toEqual([])
+    expect(segmentPrompt('@image_12abc', 20).map((s) => s.kind)).toEqual(['text'])
+    expect(segmentPrompt('', 1)).toEqual([])
   })
   it('stays linear on long prompts', () => {
     const text = 'A long line with @image_1 and @video_1. '.repeat(400) // ~16k chars
     const t0 = performance.now()
-    const segs = segmentPrompt(text, 1, 1, new Set(['elara']))
+    const segs = segmentPrompt(text, 1, new Set(['elara']))
     expect(performance.now() - t0).toBeLessThan(100)
     expect(segs.filter((s) => s.kind === 'image')).toHaveLength(400)
+    expect(segs.filter((s) => s.kind === 'video')).toHaveLength(400)
     expect(segs.map((s) => s.text).join('')).toBe(text)
   })
 })
 
 describe('suggestMedia', () => {
   const images: ImageOpt[] = imageOptsFor(ASSETS, ['a', 'c']) // Elara ×2 → 1,2 · Làng núi → 3
-  const videos: VideoOpt[] = [
-    { n: 1, takeId: 't1', label: 'S03·T2', posterId: null, status: 'completed' },
-    { n: 2, takeId: 't2', label: 'S04·T1', posterId: null, status: 'completed' },
-  ]
   const library: LibraryOpt[] = ASSETS.filter((a) => !['a', 'c'].includes(a.id)).map((a) => ({ assetId: a.id, name: a.name, tag: a.tag, kind: a.kind }))
   const key = (s: ReturnType<typeof suggestMedia>[number]) => (s.type === 'link' ? 'link:' + s.tag : suggestionToken(s))
 
@@ -163,37 +171,24 @@ describe('suggestMedia', () => {
       [3, 'c', 0],
     ])
   })
-  it('lists images, videos, then library for an empty query', () => {
-    expect(suggestMedia('', images, videos, library).map(key)).toEqual([
-      '@image_1',
-      '@image_2',
-      '@image_3',
-      '@video_1',
-      '@video_2',
-      'link:BeAn',
-      'link:Aurelian',
-      'link:Elaine',
-    ])
+  it('lists images, then library for an empty query (never a video: reference videos were retired)', () => {
+    expect(suggestMedia('', images, library).map(key)).toEqual(['@image_1', '@image_2', '@image_3', 'link:BeAn', 'link:Aurelian', 'link:Elaine'])
   })
   it('filters by name: linked images before library assets', () => {
-    expect(suggestMedia('ela', images, videos, library).map(key)).toEqual(['@image_1', '@image_2', 'link:Elaine'])
-    expect(suggestMedia('lang', images, videos, library).map(key)).toEqual(['@image_3'])
-    expect(suggestMedia('nui', images, videos, library).map(key)).toEqual(['@image_3'])
+    expect(suggestMedia('ela', images, library).map(key)).toEqual(['@image_1', '@image_2', 'link:Elaine'])
+    expect(suggestMedia('lang', images, library).map(key)).toEqual(['@image_3'])
+    expect(suggestMedia('nui', images, library).map(key)).toEqual(['@image_3'])
   })
   it('filters by number and token prefix', () => {
-    expect(suggestMedia('2', images, videos, library).map(key)).toEqual(['@image_2', '@video_2'])
-    expect(suggestMedia('vid', images, videos, library).map(key)).toEqual(['@video_1', '@video_2'])
-    expect(suggestMedia('image_3', images, videos, library).map(key)).toEqual(['@image_3'])
-  })
-  it('matches video labels loosely', () => {
-    expect(suggestMedia('s03', images, videos, library).map(key)).toEqual(['@video_1'])
-    expect(suggestMedia('s04t1', images, videos, library).map(key)).toEqual(['@video_2'])
+    expect(suggestMedia('2', images, library).map(key)).toEqual(['@image_2'])
+    expect(suggestMedia('vid', images, library).map(key)).toEqual([])
+    expect(suggestMedia('image_3', images, library).map(key)).toEqual(['@image_3'])
   })
   it('never offers library assets for a number ("@5" + Enter must not link "Lính 5")', () => {
     const lib: LibraryOpt[] = [...library, { assetId: 'l5', name: 'Lính 5', tag: 'Linh5', kind: 'character' }]
-    expect(suggestMedia('5', images, videos, lib)).toEqual([])
-    expect(suggestMedia('2', images, videos, lib).map(key)).toEqual(['@image_2', '@video_2'])
-    expect(suggestMedia('linh', images, videos, lib).map(key)).toEqual(['link:Linh5'])
+    expect(suggestMedia('5', images, lib)).toEqual([])
+    expect(suggestMedia('2', images, lib).map(key)).toEqual(['@image_2'])
+    expect(suggestMedia('linh', images, lib).map(key)).toEqual(['link:Linh5'])
   })
 })
 
@@ -213,33 +208,15 @@ describe('linking from the prompt editor (one store step)', () => {
     expect(plan.refs).toEqual(['a', 'b', 'c'])
     expect([...plan.tokens.keys()]).toEqual(['b', 'c'])
   })
-  it('links only finished takes of other scenes, within the video limit', () => {
-    const takes = [
-      { id: 't1', sceneId: 's2', status: 'completed' },
-      { id: 't2', sceneId: 's1', status: 'completed' },
-      { id: 't3', sceneId: 's2', status: 'processing' },
-      { id: 't4', sceneId: 's3', status: 'completed' },
-      { id: 't5', sceneId: 's3', status: 'completed' },
-    ]
-    const plan = planVideoLinks('s1', ['t9'], ['t1', 't2', 't3', 't9', 't4', 't5'], takes, 3)
-    expect(plan).toEqual({
-      videoRefs: ['t9', 't1', 't4'],
-      tokens: ['@video_2', '@video_1', '@video_3'],
-      linked: ['t1', 't4'],
-      notReady: 1,
-      own: 1,
-      overLimit: 1,
-    })
-    expect(planVideoLinks('s1', [], ['t1'], takes, 0).overLimit).toBe(1) // mode without reference videos
-  })
-  it('renumbers image tokens when refs are dropped (auto-link undo)', () => {
+  it('renumbers image tokens when refs are dropped (auto-link undo); @video text is kept as is', () => {
     // refs [Bé An, Elara(2), Aurelian]: @image_4 = Aurelian; unlinking Elara → Aurelian becomes @image_2
     const before = ['b', 'a', 'd']
-    expect(renumberImageTokens('@image_1 and @image_4 meet @image_2', ASSETS, before, ['b', 'd'], [])).toBe('@image_1 and @image_2 meet Elara')
+    expect(renumberImageTokens('@image_1 and @image_4 meet @image_2', ASSETS, before, ['b', 'd'])).toBe('@image_1 and @image_2 meet Elara')
+    expect(renumberImageTokens('@video_1 then @image_4', ASSETS, before, ['b', 'd'])).toBe('@video_1 then @image_2')
     // an empty name never deletes the token: the tag is used
     const unnamed = ASSETS.map((x) => (x.id === 'a' ? { ...x, name: '  ' } : x))
-    expect(renumberImageTokens('@image_2 waves', unnamed, before, ['b', 'd'], [])).toBe('Elara waves')
-    expect(renumberImageTokens('no tokens', ASSETS, before, [], [])).toBe('no tokens')
+    expect(renumberImageTokens('@image_2 waves', unnamed, before, ['b', 'd'])).toBe('Elara waves')
+    expect(renumberImageTokens('no tokens', ASSETS, before, [])).toBe('no tokens')
   })
 })
 
@@ -273,7 +250,7 @@ describe('legacy @Tag helpers', () => {
     expect(r.replaced).toBe(2)
   })
   it('labels counts', () => {
-    expect(mediaCountLabel(3, 1)).toBe('3 ảnh · 1 video')
+    expect(mediaCountLabel(3)).toBe('3 ảnh')
   })
 })
 

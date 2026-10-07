@@ -232,12 +232,11 @@ describe('layoutTakes', () => {
     expect(l.items.every((i) => i.hidden === 0)).toBe(true)
   })
 
-  it('chosen: the chosen take + takes used as @video, with the hidden count on the chosen one', () => {
+  it('chosen: only the chosen take, with the hidden count on it (an old @video link keeps nothing: reference videos were retired)', () => {
     const l = layoutTakes(takes, scenes, 'chosen')
-    // s1: chosen = a2 (latest completed); a1 stays because s2 uses it as @video.
+    // s1: chosen = a2 (latest completed); a1 and a3 are hidden even though s2 once used a1 as @video.
     expect(l.items.map((i) => [i.id, i.index, i.hidden])).toEqual([
-      ['a1', 0, 0],
-      ['a2', 1, 1],
+      ['a2', 0, 2],
       ['b1', 0, 0],
     ])
   })
@@ -248,23 +247,17 @@ describe('layoutTakes', () => {
     expect(l.items[0]).toMatchObject({ orphan: false, anchorId: 's1' })
   })
 
-  it('keeps takes of a deleted scene while a scene uses them as @video (anchored at the first user by order)', () => {
-    // Array order is not scene order: s3 (order 3) comes first but s2 (order 2) is the anchor.
-    const withOrphans = [
-      scene('s3', { order: 3, videoRefs: ['o1'] }),
+  it('takes of a deleted scene are never on the canvas, whatever old @video links name them (they stay in the queue)', () => {
+    const withOldLinks = [
+      scene('s3', { order: 3, videoRefs: ['o1'], legacyVideoRefs: ['o1'] }),
       scene('s1', { order: 1 }),
-      scene('s2', { order: 2, videoRefs: ['o2', 'o1'] }),
+      scene('s2', { order: 2, legacyVideoRefs: ['o2', 'o1'] }),
     ]
     const list = [take('a1', 's1', 1), take('o1', 'gone', 1, { position: { x: 7, y: 8 } }), take('o2', 'gone', 2), take('o3', 'gone', 3)]
     for (const mode of ['all', 'chosen'] as const) {
-      const l = layoutTakes(list, withOrphans, mode)
-      expect(l.items.map((i) => [i.id, i.orphan, i.anchorId, i.index, i.hidden])).toEqual([
-        ['a1', false, 's1', 0, 0],
-        ['o1', true, 's2', 0, 0],
-        ['o2', true, 's2', 1, 0],
-      ])
-      expect(l.byId.get('o1')).toMatchObject({ sceneId: 'gone', explicit: { x: 7, y: 8 } })
-      expect(l.byId.has('o3')).toBe(false) // not used by any scene
+      const l = layoutTakes(list, withOldLinks, mode)
+      expect(l.items.map((i) => [i.id, i.orphan, i.anchorId, i.index, i.hidden])).toEqual([['a1', false, 's1', 0, 0]])
+      for (const id of ['o1', 'o2', 'o3']) expect(l.byId.has(id)).toBe(false)
     }
   })
 })
@@ -353,12 +346,12 @@ describe('inlineKeyBubbles (keymap predicate injected)', () => {
   })
 })
 
-describe('videoUsageOf', () => {
-  it('counts scenes per referenced take', () => {
-    const m = videoUsageOf([scene('a', { videoRefs: ['t1', 't2'] }), scene('b', { videoRefs: ['t1'] })])
-    expect(m.get('t1')).toBe(2)
-    expect(m.get('t2')).toBe(1)
-    expect(m.get('t3')).toBeUndefined()
+describe('videoUsageOf (deprecated)', () => {
+  it('is always empty, and one shared object (reference videos were retired)', () => {
+    const m = videoUsageOf([scene('a', { videoRefs: ['t1', 't2'], legacyVideoRefs: ['t1'] }), scene('b')])
+    expect(m.size).toBe(0)
+    expect(m.get('t1')).toBeUndefined()
+    expect(videoUsageOf([])).toBe(m)
   })
 })
 
@@ -389,12 +382,9 @@ describe('takesUsableFor', () => {
   const initial = useRuns.getState().takes
   afterEach(() => useRuns.setState({ takes: initial }))
 
-  it('needs a finished take from another scene', () => {
+  it('is always false: a dragged video never becomes @video of a scene (reference videos were retired)', () => {
     useRuns.setState({ takes: [take('done', 's1', 1), take('busy', 's1', 2, { status: 'processing', progress: 30 })] })
-    expect(takesUsableFor(['done'], 's2')).toBe(true)
-    expect(takesUsableFor(['done'], 's1')).toBe(false) // own scene
-    expect(takesUsableFor(['busy'], 's2')).toBe(false) // not finished
-    expect(takesUsableFor(['busy', 'done'], 's2')).toBe(true)
-    expect(takesUsableFor(['gone'], 's2')).toBe(false)
+    expect(takesUsableFor(['done'], 's2')).toBe(false)
+    expect(takesUsableFor(['busy', 'done'], 's2')).toBe(false)
   })
 })
