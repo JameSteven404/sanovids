@@ -1,11 +1,14 @@
 // "Phát liền": plays every scene's chosen take in scene order (the video, else its poster, else a slate). Opened from
 // the top bar (filmActions.openFilmPlayer → dialog kind 'player', FilmPlayerDialog); items from core/filmItems.
 // Styles: player.css (its own media tokens, so it looks the same wherever it is mounted).
-import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, SquareMousePointer, Star, Volume2, VolumeX, X } from 'lucide-react'
+import { Download, LoaderCircle, Maximize2, Minimize2, Pause, Play, RotateCcw, SkipBack, SkipForward, SquareMousePointer, Star, Volume2, VolumeX, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
 import { filmRuntimeOf, runtimeText, type PlayerItem } from '../../core/filmItems'
+import { escapeDecision, frameDelta, transportKey, type TransportOp } from '../../core/transportKeys'
+import { useTransport } from '../../hooks/useTransport'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
 import { keyForTopOverlay, trapTabWithin, useOverlayFocus } from '../common/focus'
@@ -25,6 +28,8 @@ const TICK = 100
 const STALL_MS = 6000
 
 const stillMs = (item: PlayerItem) => Math.max(1500, (item.duration / 5) * 1000)
+/** Held keys repeat only for frame steps; the shuttle, toggles and switching scenes act once per press. */
+const FILM_REPEATS = new Set<TransportOp>(['frame-back', 'frame-fwd', 'frame-back5', 'frame-fwd5'])
 
 type VideoState = { id: string; url: string | null; failed: boolean } | null
 
@@ -164,35 +169,107 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
     return () => window.clearInterval(id)
   }, [mode, paused, ended, index, next])
 
-  // Keyboard: Space pause, ←/→ prev/next, Esc close. Captured so global shortcuts don't fire: every
-  // other key is stopped too (F / N / Delete / Ctrl+Z / Alt+↑ would act on the canvas or the project behind
-  // the overlay) — only Ctrl/Cmd+S still reaches useShortcuts. Default actions (Tab, Enter) still work.
+  // ---- transport keys (core/transportKeys, player 'film'): Space / K play–pause, L faster forward, J backwards in the
+  // current clip, ← / → frames (a clip with video), ↑ / ↓ previous / next scene, Home / End first / last scene,
+  // Ctrl+` / ` fullscreen, Esc leaves fullscreen, else closes. Captured so global shortcuts don't fire: every other key
+  // is stopped too (F / N / Delete / Ctrl+Z / Alt+↑ / M would act on the canvas or the project behind the overlay; ★
+  // would change the film's list mid-play) — only Ctrl/Cmd+S still reaches useShortcuts. Default actions (Tab, Enter)
+  // still work. "Phát liền" always plays at normal speed: the J / L shuttle gives 1× back.
+  const transport = useTransport(videoRef, { userRate: () => 1 })
+  const [full, setFull] = useState(false)
+  /** When fullscreen last ended (performance.now()): the Escape that ended it must not close the player too. */
+  const exitedAt = useRef(-Infinity)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // A sheet above every overlay (development mode's login / SePay) gets its own keys.
-      if (keyForTopOverlay(e)) return
-      const handled = e.key === 'Escape' || e.key === ' ' || e.key === 'ArrowLeft' || e.key === 'ArrowRight'
-      if (!handled) {
-        if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')) e.stopPropagation()
-        // The event never reaches the player's own handlers (stopped here): keep Tab inside the player.
-        if (rootRef.current) trapTabWithin(rootRef.current, e)
+    const onFull = () => {
+      const on = !!rootRef.current && document.fullscreenElement === rootRef.current
+      if (!on) exitedAt.current = performance.now()
+      setFull(on)
+    }
+    document.addEventListener('fullscreenchange', onFull)
+    return () => {
+      document.removeEventListener('fullscreenchange', onFull)
+      if (rootRef.current && document.fullscreenElement === rootRef.current) void document.exitFullscreen().catch(() => undefined)
+    }
+  }, [])
+  const toggleFull = useCallback(() => {
+    const root = rootRef.current
+    if (!root) return
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+    else if (document.fullscreenEnabled) void root.requestFullscreen({ navigationUI: 'hide' }).catch(() => undefined)
+  }, [])
+  // A new clip is a new <video> (normal speed): no shuttle carries over.
+  const { release } = transport
+  useEffect(() => {
+    release()
+  }, [index, release])
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => undefined)
+  keyRef.current = (e) => {
+    // A sheet above every overlay (development mode's login / SePay) gets its own keys.
+    if (keyForTopOverlay(e)) return
+    const op = transportKey(eventLike(e), { player: 'film', mac: IS_MAC })
+    if (!op) {
+      if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')) e.stopPropagation()
+      // The event never reaches the player's own handlers (stopped here): keep Tab inside the player.
+      if (rootRef.current) trapTabWithin(rootRef.current, e)
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.repeat && !FILM_REPEATS.has(op)) return
+    runOp(op)
+  }
+  const runOp = (op: TransportOp) => {
+    const isVideo = mode === 'video'
+    switch (op) {
+      case 'exit': {
+        const d = escapeDecision({ fullscreen: !!document.fullscreenElement, exitedAt: exitedAt.current, now: performance.now() })
+        if (d === 'exit-fullscreen') void document.exitFullscreen().catch(() => undefined)
+        else if (d === 'normal') onClose()
         return
       }
-      e.preventDefault()
-      e.stopPropagation()
-      if (e.key === 'Escape') onClose()
-      else if (e.key === ' ') {
-        if (ended) {
-          jump(0)
+      case 'toggle':
+        if (ended) return jump(0)
+        if (transport.shuttling()) {
+          transport.stop()
+          setPaused(true)
           return
         }
-        setPaused((p) => !p)
-      } else if (e.key === 'ArrowLeft') prev()
-      else next()
+        return setPaused((p) => !p)
+      case 'stop':
+        transport.stop()
+        return setPaused(true)
+      case 'forward':
+        if (ended) return
+        setPaused(false)
+        if (isVideo) transport.shuttleOp('forward')
+        return
+      case 'reverse':
+        if (!isVideo || ended) return
+        setPaused(true)
+        return transport.shuttleOp('reverse')
+      case 'clip-prev':
+        return prev()
+      case 'clip-next':
+        return next()
+      case 'start':
+        return jump(0)
+      case 'end':
+        return jump(items.length - 1)
+      case 'fullscreen':
+        return toggleFull()
+      default: {
+        const n = frameDelta(op)
+        if (!n || !isVideo || ended) return
+        setPaused(true)
+        transport.frame(n)
+      }
     }
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e)
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose, prev, next, jump, ended])
+  }, [])
 
   if (!item) return null
 
@@ -269,6 +346,14 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
         <span className="vw-player-note">{hasFake ? 'Phát triển: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
         {missing('sm')}
         <SoundButton videoRef={videoRef} />
+        <button
+          className="icon-btn"
+          onClick={toggleFull}
+          title={full ? 'Thoát toàn màn hình (Esc)' : 'Toàn màn hình (`)'}
+          aria-label={full ? 'Thoát toàn màn hình' : 'Toàn màn hình'}
+        >
+          {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+        </button>
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
         </button>
@@ -322,13 +407,21 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
 
       <div className="vw-player-controls">
         <div className="vw-player-buttons">
-          <button className="icon-btn" onClick={prev} disabled={index === 0} title="Cảnh trước (←)" aria-label="Cảnh trước">
+          <button className="icon-btn" onClick={prev} disabled={index === 0} title="Cảnh trước (↑)" aria-label="Cảnh trước">
             <SkipBack size={16} />
           </button>
-          <button className="vw-player-pp" onClick={() => (ended ? jump(0) : setPaused((p) => !p))} title="Phát / tạm dừng (Space)" aria-label="Phát / tạm dừng">
+          <button
+            className="vw-player-pp"
+            onClick={() => {
+              // a click leaves the J / L shuttle (back to normal speed) before playing / pausing
+              transport.release()
+              if (ended) jump(0)
+              else setPaused((p) => !p)
+            }}
+            title="Phát / tạm dừng (Space, K) · L nhanh dần, J lùi · ← → từng khung" aria-label="Phát / tạm dừng">
             {paused || ended ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
           </button>
-          <button className="icon-btn" onClick={next} disabled={ended} title="Cảnh sau (→)" aria-label="Cảnh sau">
+          <button className="icon-btn" onClick={next} disabled={ended} title="Cảnh sau (↓)" aria-label="Cảnh sau">
             <SkipForward size={16} />
           </button>
         </div>

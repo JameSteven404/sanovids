@@ -1,13 +1,21 @@
 // Take (video) node on the canvas: one generation attempt of a scene. Memoized; reads its take from the runs store.
 // Wired from its scene ('out' edge) and, once completed, usable as @video_N by other scenes (drag its right handle).
+//
+// Layout (near): a title line ABOVE the card's top-left (code, "+N", custom file name, DEV, ★, and the rename input),
+// then the card: the clean picture (nothing drawn over a finished take; the whole frame, letterboxed), the 30px player
+// bar under it (TakePlayer / TakeBarRest), the footer (settings, always shown) and the big button. Nothing sits inside
+// the card above the picture: that would move DOT_TOP for the take AND scene dots. Far (zoomed out): the poster with
+// a big code chip and "+N", as before. The <video> lives in the picture box and the controls in the bar: one shared
+// ref, mounted in the same commit, never re-parented (the video would restart). Styles: takeNode.css.
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, PencilLine, RotateCcw, Star, Trash2 } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
-import { defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react'
+import { canvasEvents, defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
-import type { JobStatus, Take } from '../../core/types'
+import type { JobStatus, Take, TakeProvider } from '../../core/types'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useMediaUrl } from '../../lib/imageStore'
+import { isTypingChord } from '../../lib/keymapPrefs'
 import { usePlayback } from '../../lib/playback'
 import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useProject } from '../../store/project'
@@ -17,10 +25,26 @@ import { useUI } from '../../store/ui'
 import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
 import { importedChipTitle, takeSettingsText } from '../runs/importedTake'
-import { fitMedia, inlineEditKeyBubbles, LOD_ZOOM, PREVIEW_DELAY_MS, sceneMapOf, STATUS_LABEL, TAKE_CHROME, takeDotTop, takeIndexOf, videoUsageOf } from './canvasModel'
+import {
+  fitMedia,
+  inlineKeyBubbles,
+  LOD_ZOOM,
+  PREVIEW_DELAY_MS,
+  sceneMapOf,
+  STATUS_LABEL,
+  TAKE_BAR_H,
+  TAKE_CHROME,
+  TAKE_POSTER_H,
+  takeDotTop,
+  takeIndexOf,
+  videoUsageOf,
+} from './canvasModel'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
-import { TakePlayer } from './TakePlayer'
+import { RENAME_TAKE_EVENT, takePendingRename, type RenameTakeDetail } from './takeEvents'
+import { footerTitle, starTitle, titleLine, TITLE_LINE_SELECTOR } from './takeNodeModel'
+import { TakeBarRest, TakePlayer } from './TakePlayer'
 import './canvas.css'
+import './takeNode.css'
 import './saving.css'
 
 /** `status` is only carried so the node object changes with it (minimap color); the node reads its take itself. */
@@ -80,9 +104,9 @@ function TakeDeleteButton({ takeId, used }: { takeId: string; used: boolean }) {
 }
 
 /**
- * "Tên file" editor in the take node's footer (double-click the label, or the pencil): Enter or a click elsewhere
- * saves, Escape cancels, an empty field goes back to the default name. Saved too when the node unmounts mid-edit
- * (zoomed out to the small card, scrolled off-screen).
+ * "Tên file" editor in the take's title line, above the card (pencil in the footer, double-click on the code / name /
+ * settings, or RENAME_TAKE_EVENT): Enter or a click elsewhere saves, Escape cancels, an empty field goes back to the
+ * default name. Saved too when the node unmounts mid-edit (zoomed out to the small card, scrolled off-screen).
  */
 function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void }) {
   const [draft, setDraft] = useState(() => takeFileBase(takeId))
@@ -105,7 +129,7 @@ function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void 
   }, [takeId])
   return (
     <input
-      className="cv-take-name-input nodrag nopan"
+      className="cv-take-name-input nodrag nopan nokey"
       autoFocus
       value={draft}
       maxLength={140}
@@ -119,8 +143,9 @@ function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void 
       onPointerDown={stop}
       onDoubleClick={stop}
       onKeyDown={(e) => {
-        // Typing keys (Delete, Backspace, Enter, Escape…) never reach the canvas / global shortcuts.
-        if (!inlineEditKeyBubbles(e)) e.stopPropagation()
+        // Only the chords of commands that run while typing (keymap: Ctrl+S, Ctrl+Enter…) reach the global shortcuts;
+        // typing keys (Delete, Backspace, Enter, Escape…) never reach the canvas.
+        if (!inlineKeyBubbles(e, (ev) => isTypingChord(ev.nativeEvent))) e.stopPropagation()
         if (e.key === 'Enter') {
           e.preventDefault()
           finish(true)
@@ -133,6 +158,98 @@ function TakeNameInput({ takeId, onDone }: { takeId: string; onDone: () => void 
   )
 }
 
+/**
+ * The title line above the card's top-left: code chip, "+N", the custom file name, DEV / canvasapp, ★ — or the rename
+ * input. Primitive props only (memo). Dragging the line drags the node; its buttons do not. The pointer over it never
+ * starts the hover preview (TakeNode's onMouseOver ignores it).
+ */
+const TakeTitle = memo(function TakeTitle({
+  takeId,
+  code,
+  hidden,
+  fileName,
+  provider,
+  starred,
+  canStar,
+  renaming,
+  onRename,
+  onRenameDone,
+}: {
+  takeId: string
+  code: string
+  hidden: number
+  fileName: string | null
+  provider: TakeProvider
+  starred: boolean
+  canStar: boolean
+  renaming: boolean
+  onRename: () => void
+  onRenameDone: () => void
+}) {
+  const line = titleLine({ code, fileName, hidden, provider, renaming })
+  const rename = (e: SyntheticEvent) => {
+    e.stopPropagation()
+    onRename()
+  }
+  return (
+    <div className={`cv-take-label${renaming ? ' is-renaming' : ''}`}>
+      <span className="cv-take-chip" title={line.chipTitle} onDoubleClick={rename}>
+        {code}
+      </span>
+      {line.moreTitle && (
+        <button
+          className="cv-take-more nodrag nopan"
+          title={line.moreTitle}
+          onPointerDown={stop}
+          onDoubleClick={stop}
+          onClick={(e) => {
+            e.stopPropagation()
+            openTake(takeId)
+          }}
+        >
+          +{hidden}
+        </button>
+      )}
+      {renaming ? (
+        <TakeNameInput takeId={takeId} onDone={onRenameDone} />
+      ) : (
+        line.name && (
+          <span className="cv-take-name" title={line.nameTitle ?? undefined} onDoubleClick={rename}>
+            {line.name}
+          </span>
+        )
+      )}
+      <span className="cv-take-label-sp" />
+      {line.showProvider && (
+        <span
+          className={`cv-take-provider${provider === 'dev' ? ' dev' : ''}`}
+          title={provider === 'dev' ? 'Video giả của chế độ Phát triển (canvasapp giả lập, credit dev)' : `Video tạo trên ${PROVIDER_LABEL[provider] ?? provider}`}
+        >
+          {provider === 'dev' ? <Bug size={9} strokeWidth={2.2} aria-hidden /> : <Cloud size={11} strokeWidth={2.2} aria-hidden />}
+          {provider === 'dev' ? 'DEV' : null}
+        </span>
+      )}
+      {line.showStar && (
+        <button
+          className={`cv-take-star nodrag nopan ${starred ? 'on' : ''}`}
+          disabled={!canStar}
+          title={starTitle(canStar, starred)}
+          aria-label={starred ? 'Bỏ chọn take' : 'Chọn take'}
+          aria-pressed={starred}
+          onPointerDown={stop}
+          onDoubleClick={stop}
+          onClick={(e) => {
+            e.stopPropagation()
+            useRuns.getState().toggleStar(takeId)
+          }}
+        >
+          <Star size={12} fill={starred ? 'currentColor' : 'none'} />
+        </button>
+      )}
+    </div>
+  )
+})
+
 function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   perfCount('TakeNodeView')
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
@@ -142,6 +259,10 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const [hover, setHover] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  /** The stage (picture + bar) is fullscreen ("Phóng to", TakePlayer). */
+  const [full, setFull] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
   const done = take?.status === 'completed'
   // The player stays open after the mouse leaves once one of its controls was used (pinned, see TakePlayer).
   const pinned = usePlayback((s) => s.pinned === id)
@@ -161,8 +282,29 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
     usePlayback.getState().setHoverId(id)
     return () => usePlayback.getState().clearHoverId(id)
   }, [claimsHover, id])
+
+  // "Đổi tên file" from elsewhere (takeEvents.requestTakeRename): only a near node has the title line to edit in.
+  const farRef = useRef(far)
+  farRef.current = far
+  useEffect(() => {
+    const onRename = (ev: Event) => {
+      const d = (ev as CustomEvent<RenameTakeDetail>).detail
+      if (!d || d.takeId !== id || d.handled || farRef.current) return
+      d.handled = true
+      setRenaming(true)
+    }
+    canvasEvents.addEventListener(RENAME_TAKE_EVENT, onRename)
+    return () => canvasEvents.removeEventListener(RENAME_TAKE_EVENT, onRename)
+  }, [id])
+  // A rename that waited for this node (it was off-screen): it mounted, or came near.
+  useEffect(() => {
+    if (!far && takePendingRename(id)) setRenaming(true)
+  }, [far, id])
+  const startRename = useCallback(() => setRenaming(true), [])
+  const endRename = useCallback(() => setRenaming(false), [])
+
   const box = useNodeBox(id, take?.size)
-  // Resized node: the poster keeps 16:9 and grows with the node; footer + big button stay pinned at the bottom.
+  // Resized node: the poster keeps 16:9 and grows with the node; bar + footer + big button stay pinned at the bottom.
   const media = box ? fitMedia(box.w, box.h, far ? 0 : TAKE_CHROME) : null
   // Both dots sit at the middle of the poster, default or resized (`top` counts from inside the card's border, like the
   // poster), so a resize never makes them jump.
@@ -170,6 +312,8 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   const handleStyle = useMemo(() => ({ top: dotTop }), [dotTop])
   // The dots can move while the node box stays the same (zooming across the LOD level changes a resized poster's height).
   useRemeasureOn(id, dotTop)
+  // While the stage is fullscreen it leaves the card: this keeps its place (picture + bar) so nothing below moves.
+  const fullStyle = useMemo(() => (full ? ({ ['--stage-h' as string]: `${(media ? media.h : TAKE_POSTER_H) + TAKE_BAR_H}px` } as CSSProperties) : undefined), [full, media])
   if (!take) return null
 
   const code = takeCode(order, take.number)
@@ -184,6 +328,8 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
     far && 'is-far',
     box && 'is-sized',
     videoUrl && 'is-playing',
+    renaming && 'is-renaming',
+    full && 'is-full',
   ]
     .filter(Boolean)
     .join(' ')
@@ -192,83 +338,74 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
     <>
       <div
         className={cls}
-        onMouseEnter={() => setHover(true)}
+        style={fullStyle}
+        // The title line (★, "+N", the rename input) never starts the hover preview.
+        onMouseOver={(e) => setHover(!(e.target as Element).closest?.(TITLE_LINE_SELECTOR))}
         onMouseLeave={() => setHover(false)}
         onDoubleClick={(e) => {
           e.stopPropagation()
-          openTake(id)
+          // fullscreen: a double-click on the bar must not open the viewer behind it (the picture's leaves fullscreen)
+          if (!full) openTake(id)
         }}
       >
-        <div className="cv-take-media" style={media ? { width: media.w, height: media.h } : undefined}>
-          {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster is-empty" />}
-          {videoUrl && <TakePlayer takeId={id} url={videoUrl} />}
-          <TakeStatusOverlay takeId={id} status={take.status} progress={take.progress} error={take.error} />
-
-          <span className="cv-take-code">{code}</span>
-          {provider !== 'mock' && !far && (
-            <span
-              className={`cv-take-provider${provider === 'dev' ? ' dev' : ''}`}
-              title={provider === 'dev' ? 'Video giả của chế độ Phát triển (canvasapp giả lập, credit dev)' : `Video tạo trên ${PROVIDER_LABEL[provider] ?? provider}`}
-            >
-              {provider === 'dev' ? <Bug size={10} strokeWidth={2.2} aria-hidden /> : <Cloud size={10} strokeWidth={2.2} aria-hidden />}
-              {provider === 'dev' ? 'DEV' : (PROVIDER_LABEL[provider] ?? provider)}
-            </span>
-          )}
+        {!far && (
+          <TakeTitle
+            takeId={id}
+            code={code}
+            hidden={hidden}
+            fileName={take.fileName ?? null}
+            provider={provider}
+            starred={!!take.starred}
+            canStar={canStar}
+            renaming={renaming}
+            onRename={startRename}
+            onRenameDone={endRename}
+          />
+        )}
+        <div ref={stageRef} className={`cv-take-stage${full ? ' is-full nowheel nodrag nopan nokey' : ''}`}>
+          <div className="cv-take-media" style={media && !full ? { width: media.w, height: media.h } : undefined}>
+            {take.posterId ? <MediaImg id={take.posterId} className="cv-take-poster" /> : <div className="cv-take-poster is-empty" />}
+            {videoUrl && <video ref={videoRef} className="cv-take-video" src={videoUrl} loop playsInline muted preload="auto" />}
+            <TakeStatusOverlay takeId={id} status={take.status} progress={take.progress} error={take.error} />
+            {far && <span className="cv-take-code">{code}</span>}
+            {far && hidden > 0 && (
+              <button
+                className="cv-take-more nodrag nopan"
+                title={`${hidden} take khác của cảnh này đang ẩn — bấm để xem tất cả`}
+                onPointerDown={stop}
+                onDoubleClick={stop}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openTake(id)
+                }}
+              >
+                +{hidden}
+              </button>
+            )}
+          </div>
           {!far && (
-            <button
-              className={`cv-take-star nodrag nopan ${take.starred ? 'on' : ''}`}
-              disabled={!canStar}
-              title={canStar ? (take.starred ? 'Bỏ chọn take này' : 'Chọn take này cho cảnh (★)') : 'Chỉ chọn được take đã tạo xong'}
-              aria-label={take.starred ? 'Bỏ chọn take' : 'Chọn take'}
-              aria-pressed={take.starred}
-              onPointerDown={stop}
-              onDoubleClick={stop}
-              onClick={(e) => {
-                e.stopPropagation()
-                useRuns.getState().toggleStar(id)
-              }}
-            >
-              <Star size={13} fill={take.starred ? 'currentColor' : 'none'} />
-            </button>
-          )}
-          {hidden > 0 && (
-            <button
-              className="cv-take-more nodrag nopan"
-              title={`${hidden} take khác của cảnh này đang ẩn — bấm để xem tất cả`}
-              onPointerDown={stop}
-              onDoubleClick={stop}
-              onClick={(e) => {
-                e.stopPropagation()
-                openTake(id)
-              }}
-            >
-              +{hidden}
-            </button>
-          )}
-          {(take.status === 'processing' || take.status === 'queued') && (
-            <div className="cv-take-bar">
-              <i style={{ width: `${take.status === 'processing' ? Math.max(3, take.progress) : 0}%` }} />
+            <div className="cv-take-pbar">
+              {videoUrl ? (
+                <TakePlayer takeId={id} url={videoUrl} videoRef={videoRef} stageRef={stageRef} code={code} onFullChange={setFull} />
+              ) : (
+                <TakeBarRest takeId={id} code={code} status={take.status} progress={take.progress} videoId={take.videoId} />
+              )}
             </div>
           )}
         </div>
 
         {box && <div className="cv-take-fill" />}
-        {!far && renaming && (
-          <div className="cv-take-foot is-renaming">
-            <TakeNameInput takeId={id} onDone={() => setRenaming(false)} />
-          </div>
-        )}
-        {!far && !renaming && (
+        {!far && (
           <div className="cv-take-foot">
             <span
-              className={`cv-take-settings${take.fileName ? ' is-name' : ''}`}
-              title={`${take.fileName ? `Tên file: ${take.fileName}.\n${takeSettingsText(take)}` : takeSettingsText(take)}\nBấm đúp để đổi tên file video`}
+              className="cv-take-settings"
+              title={footerTitle(takeSettingsText(take), take.fileName)}
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 setRenaming(true)
               }}
             >
-              {take.fileName ?? takeSettingsText(take)}
+              {takeSettingsText(take)}
             </span>
             {take.imported && (
               <span className="cv-take-imported" title={importedChipTitle(take)}>

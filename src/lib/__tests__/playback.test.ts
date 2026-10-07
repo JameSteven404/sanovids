@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  knownLength,
+  livePlayRequest,
   MIN_UNMUTE_VOLUME,
+  PLAY_REQUEST_TTL_MS,
+  saveLength,
   parseRate,
   parseVolume,
   PLAYBACK_RATES,
@@ -258,5 +262,60 @@ describe('resume position', () => {
     savePosition('take-b', 3)
     savePosition('take-b', 0)
     expect(savedPosition('take-b')).toBeUndefined()
+  })
+})
+
+describe('known length (resting bar of a take card)', () => {
+  it('remembers the measured length; never a zero / unknown one', () => {
+    expect(knownLength('len-a')).toBeUndefined()
+    saveLength('len-a', 0)
+    saveLength('len-a', Number.NaN)
+    saveLength('len-a', Infinity)
+    expect(knownLength('len-a')).toBeUndefined()
+    saveLength('len-a', 4.96)
+    expect(knownLength('len-a')).toBe(4.96)
+    saveLength('len-a', 0)
+    expect(knownLength('len-a')).toBe(4.96)
+  })
+})
+
+describe('fullscreen take ("Phóng to")', () => {
+  it('one fullscreen take at a time; leaving clears it only for that take', () => {
+    const p = usePlayback.getState()
+    p.setFullscreen('t1')
+    expect(usePlayback.getState().fullscreenId).toBe('t1')
+    // another player's late "left" must not clear t1
+    p.setFullscreen(null, 't2')
+    expect(usePlayback.getState().fullscreenId).toBe('t1')
+    p.setFullscreen(null, 't1')
+    expect(usePlayback.getState().fullscreenId).toBeNull()
+    p.setFullscreen('t3')
+    p.setFullscreen(null)
+    expect(usePlayback.getState().fullscreenId).toBeNull()
+  })
+})
+
+describe('play requests (a card player that may mount after the request)', () => {
+  it('pins the take and waits for its player, which takes it once', () => {
+    usePlayback.setState({ pinned: null, playRequest: null })
+    const p = usePlayback.getState()
+    p.requestPlay('t1', 'forward', { focus: true, at: 1000 })
+    expect(usePlayback.getState().pinned).toBe('t1')
+    expect(p.consumePlayRequest('t2', 1100)).toBeNull()
+    // another take's player leaves it alone
+    expect(usePlayback.getState().playRequest?.takeId).toBe('t1')
+    expect(p.consumePlayRequest('t1', 1100)).toEqual({ takeId: 't1', op: 'forward', at: 1000, focus: true })
+    expect(p.consumePlayRequest('t1', 1100)).toBeNull()
+    expect(usePlayback.getState().playRequest).toBeNull()
+  })
+  it('expires after PLAY_REQUEST_TTL_MS (the card was off-screen, zoomed out or hidden)', () => {
+    const p = usePlayback.getState()
+    p.requestPlay('t1', 'toggle', { at: 1000 })
+    expect(p.consumePlayRequest('t1', 1000 + PLAY_REQUEST_TTL_MS + 1)).toBeNull()
+    expect(usePlayback.getState().playRequest).toBeNull()
+    expect(livePlayRequest({ takeId: 't1', op: 'stop', at: 1000, focus: false }, 't1', 1000 + PLAY_REQUEST_TTL_MS)).not.toBeNull()
+    expect(livePlayRequest({ takeId: 't1', op: 'stop', at: 1000, focus: false }, 't1', 999)).toBeNull()
+    expect(livePlayRequest(null, 't1', 1000)).toBeNull()
+    expect(PLAY_REQUEST_TTL_MS).toBe(1000)
   })
 })

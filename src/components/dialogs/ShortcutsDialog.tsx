@@ -55,11 +55,18 @@ const KEY_GROUPS: Group[] = [
     rows: [['Alt+↑ / Alt+↓', 'Dời cảnh đang chọn lên trước / ra sau một chỗ. Giữ phím để dời nhiều chỗ, Ctrl+Z trả lại cả lượt']],
   },
   {
-    title: 'Phát liền',
+    // One table for every player (core/transportKeys): the take viewer, a take's "Phóng to" and Phát liền.
+    title: 'Trình phát video (xem take, video phóng to, Phát liền)',
     rows: [
-      ['Space', 'Phát / tạm dừng'],
-      ['← / →', 'Cảnh trước / sau'],
-      ['Esc', 'Đóng trình phát'],
+      ['Space / K', 'Phát – dừng (K luôn dừng)'],
+      ['L / J', 'Tua tới / tua lùi — bấm thêm: 2×, 4×'],
+      ['← / →', 'Từng khung hình (Shift: 5 khung)'],
+      ['↑ / ↓', 'Take trước / sau (Phát liền: cảnh trước / sau · video phóng to: âm lượng)'],
+      ['Home / End', 'Về đầu / về cuối (Phát liền: cảnh đầu / cuối)'],
+      [IS_MAC ? '`' : 'Ctrl+` / `', 'Bật / tắt toàn màn hình · Esc chỉ thoát toàn màn hình (lần nữa: đóng)'],
+      ['M', 'Chọn ★ take đang xem (cửa sổ xem take, video phóng to)'],
+      [IS_MAC ? '⌘E' : 'Ctrl+M', 'Tải video đang xem (cửa sổ xem take)'],
+      ['F / Esc', 'Thoát video phóng to (lúc đó các phím khác của app không chạy)'],
     ],
   },
 ]

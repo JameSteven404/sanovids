@@ -1,0 +1,895 @@
+/*
+ * Take (video) node (TakeNode.tsx) and its player bar (TakePlayer.tsx). Canvas tokens come from canvas.css (.cv-stage),
+ * theme tokens from styles/base.css. Anatomy (near, 224px wide, y from the card's outer top):
+ *   title line   −17 … −4   OUTSIDE the card (13px + 4px gap), never changes the node box React Flow measures
+ *   picture        1 … 126  the whole frame, letterboxed; nothing drawn over a finished take
+ *   player bar   126 … 156  TAKE_BAR_H (canvasModel): 8px track + 22px row
+ *   footer       156 … 186  settings (always shown) + actions
+ *   big button   186 … 228  34 + 8
+ * Nothing goes inside the card above the picture: it would move DOT_TOP (take AND scene dots).
+ */
+
+/* ============================== card ============================== */
+.cv-take {
+  position: relative;
+  width: 224px;
+  background: var(--panel);
+  border: 1px solid var(--cv-card-border);
+  border-radius: var(--cv-radius);
+  box-shadow: var(--cv-card-shadow);
+  color: var(--text);
+  transition:
+    border-color 0.15s var(--cv-ease),
+    box-shadow 0.18s var(--cv-ease);
+}
+.cv-take:hover {
+  border-color: var(--cv-hover-border);
+  box-shadow: var(--cv-lift-shadow);
+}
+.cv-take.is-starred {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--cv-card-border));
+}
+.cv-take.is-selected {
+  border-color: var(--accent);
+  box-shadow: var(--cv-ring), var(--cv-lift-shadow);
+}
+
+/* ============================== picture ============================== */
+.cv-take-stage {
+  position: relative;
+}
+.cv-take-media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  /* card radius − 1px border: the poster meets the card edge flush */
+  border-radius: calc(var(--cv-radius) - 1px) calc(var(--cv-radius) - 1px) 0 0;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+.cv-take.is-far .cv-take-media {
+  border-radius: calc(var(--cv-radius) - 1px);
+}
+/* the whole frame (9:16, 1:1, 4:3, 3:4 too), on a dark letterbox like every video player */
+.cv-take-poster,
+.cv-take-video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--media-bg);
+}
+.cv-take-poster.is-empty {
+  background: repeating-linear-gradient(135deg, var(--panel-2) 0 10px, var(--panel) 10px 20px);
+}
+.cv-take-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.st-processing .cv-take-state {
+  color: var(--accent);
+}
+.cv-take-state.failed {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger) 16%, color-mix(in srgb, var(--panel) 72%, transparent));
+}
+.cv-take-err {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+.cv-take-state.cancelled {
+  color: var(--text-faint);
+}
+
+/* zoomed out (far card = only the poster): a big code chip and "+N" on it, as before */
+.cv-take-code {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: var(--cv-chip-solid);
+  color: var(--cv-on-media);
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.cv-take-media .cv-take-more {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--video) 50%, transparent);
+  border-radius: 999px;
+  background: var(--cv-chip-solid);
+  color: var(--cv-on-media-video);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cv-take-media .cv-take-more:hover {
+  background: var(--video);
+  color: var(--cv-on-tint);
+}
+
+/* ============================== title line (above the card) ============================== */
+/*
+ * left 9px: clear of the top-left resize grab area; bottom: clear of the top resize edge (−4 … +4). Only its children
+ * take presses (dragging the chip / name drags the node; ★ and "+N" are nodrag). The hover preview ignores it.
+ */
+.cv-take-label {
+  position: absolute;
+  left: 9px;
+  right: 0;
+  bottom: calc(100% + 4px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 13px;
+  min-width: 0;
+  pointer-events: none;
+}
+.cv-take-label > * {
+  pointer-events: auto;
+}
+/* the ↺ "default size" button of a selected resized node sits up there on the right */
+.cv-take.is-selected.is-sized .cv-take-label {
+  right: 30px;
+}
+.cv-take-label.is-renaming {
+  height: 20px;
+}
+.cv-take-label-sp {
+  flex: 1 1 auto;
+  min-width: 0;
+  pointer-events: none;
+}
+.cv-take-chip {
+  flex: none;
+  height: 13px;
+  padding: 0 4px;
+  border: 1px solid var(--cv-card-border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 11px;
+  white-space: nowrap;
+  cursor: default;
+}
+.cv-take.is-selected .cv-take-chip {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.cv-take-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.cv-take-label .cv-take-more {
+  flex: none;
+  height: 13px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--video) 45%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--video-ink);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 11px;
+  cursor: pointer;
+}
+.cv-take-label .cv-take-more:hover {
+  background: var(--video-soft);
+}
+/* which service generated the video: development mode "DEV" (dashed, like the simulated credit pill) or a cloud */
+.cv-take-provider {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  height: 13px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+}
+.cv-take-provider.dev {
+  border: 1px dashed color-mix(in srgb, var(--text) 30%, transparent);
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.cv-take-star {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 13px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.15s var(--cv-ease);
+}
+/* a bigger hit area than the 12px icon */
+.cv-take-star::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.cv-take-star:hover:not(:disabled),
+.cv-take-star.on {
+  color: var(--warn);
+}
+.cv-take-star:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* "Tên file" input: grows upward from the line (y −24 … −4); ★ and DEV make room for it */
+.cv-take-name-input {
+  flex: 1 1 auto;
+  min-width: 120px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--accent);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-take-name-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ============================== player bar (TakePlayer / TakeBarRest) ============================== */
+/*
+ * Under the picture, theme colors (light / dark), no gradient. The resting bar and the player put the rail, the play
+ * button and the time at exactly the same places; the player only adds the controls at the end of the row (fade in).
+ */
+.cv-take-pbar {
+  container: cv-tp / inline-size;
+  position: relative;
+  flex: none;
+  height: 30px;
+  /* a hairline under the picture that takes no room (the bar is exactly TAKE_BAR_H) */
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent);
+}
+.cv-tp {
+  position: absolute;
+  inset: 0;
+  color: var(--text-dim);
+  /*
+   * only the controls take presses (track, buttons, volume): the time text, the spacer and the gaps let them
+   * through to the node (drag / select)
+   */
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cv-tp-track {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 0;
+  height: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+  pointer-events: auto;
+  outline: none;
+}
+.cv-tp.is-rest .cv-tp-track,
+.cv-tp:not(.has-length) .cv-tp-track {
+  cursor: default;
+}
+.cv-tp.is-rest .cv-tp-track {
+  pointer-events: none;
+}
+.cv-tp-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+  transition:
+    height 0.12s var(--cv-ease),
+    margin-top 0.12s var(--cv-ease);
+}
+.cv-tp-track:hover .cv-tp-rail,
+.cv-tp-track:focus-visible .cv-tp-rail,
+.cv-tp.is-scrub .cv-tp-rail {
+  height: 5px;
+  margin-top: -2.5px;
+}
+.cv-tp.is-rest .cv-tp-rail {
+  height: 3px;
+  margin-top: -1.5px;
+}
+.cv-tp-buf,
+.cv-tp-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+}
+.cv-tp-buf {
+  transform: scaleX(var(--tp-buf, 0));
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+/* painted every frame from requestAnimationFrame (--tp-played on the track): transform only, no layout */
+.cv-tp-fill {
+  transform: scaleX(var(--tp-played, 0));
+  background: var(--video);
+}
+/* generating: the rail is the progress (it replaced the 3px bar that sat on the picture) */
+.cv-tp.is-rest.is-busy .cv-tp-fill {
+  background: var(--accent);
+  transition: transform 0.25s linear;
+}
+.cv-tp-knob {
+  position: absolute;
+  inset: 0;
+  transform: translateX(calc(var(--tp-played, 0) * 100%));
+  pointer-events: none;
+}
+.cv-tp-knob > i {
+  position: absolute;
+  left: -4.5px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--video);
+  transform: scale(0);
+  transition: transform 0.12s var(--cv-ease);
+}
+.cv-tp.has-length .cv-tp-track:hover .cv-tp-knob > i,
+.cv-tp.has-length .cv-tp-track:focus-visible .cv-tp-knob > i,
+.cv-tp.is-scrub .cv-tp-knob > i {
+  transform: scale(1);
+}
+/* time under the pointer (hover / drag): BELOW the rail, never over the picture; kept inside the bar near the edges */
+.cv-tp-tip {
+  position: absolute;
+  top: 100%;
+  left: clamp(18px, calc(var(--tp-at, 0) * 100%), calc(100% - 18px));
+  z-index: 1;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--cv-chip-solid);
+  color: var(--cv-on-media);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s var(--cv-ease);
+}
+.cv-tp.has-length .cv-tp-track:hover .cv-tp-tip,
+.cv-tp.is-scrub .cv-tp-tip {
+  opacity: 1;
+}
+.cv-tp-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 22px;
+  padding: 0 4px;
+  pointer-events: none;
+}
+.cv-tp-btn {
+  pointer-events: auto;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background-color 0.12s var(--cv-ease),
+    color 0.12s var(--cv-ease);
+}
+.cv-tp-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.cv-tp-btn:active:not(:disabled) {
+  background: var(--pressed);
+}
+.cv-tp-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cv-tp-time {
+  flex: none;
+  padding: 0 3px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cv-tp-dur {
+  color: var(--text-faint);
+}
+.cv-tp-sp {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* the player's own controls, at the end of the row: they fade in when the player mounts (nothing else moves) */
+.cv-tp-end {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  animation: cv-tp-in 0.18s var(--cv-ease) both;
+}
+@keyframes cv-tp-in {
+  from {
+    opacity: 0;
+  }
+}
+.cv-tp-rate {
+  padding: 0 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cv-tp.is-shuttle .cv-tp-rate {
+  color: var(--video-ink);
+}
+/* the whole volume group takes the wheel (button, slider and the space between them) */
+.cv-tp-vol {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  pointer-events: auto;
+}
+.cv-tp-vslider {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 16px;
+  margin: 0 5px 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+.cv-tp-vslider::before,
+.cv-tp-vfill {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 999px;
+}
+.cv-tp-vslider::before {
+  right: 0;
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+.cv-tp-vfill {
+  width: calc(var(--tp-vol, 1) * 100%);
+  background: var(--text-dim);
+}
+.cv-tp-vknob {
+  position: absolute;
+  left: calc(var(--tp-vol, 1) * 100%);
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--text);
+}
+/* fullscreen only: what is playing, and how to leave */
+.cv-tp-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cv-tp-hint {
+  flex: none;
+  padding: 0 10px;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+/* narrow bar (default node ≈ 222 px): the volume slider goes (mute button + wheel still set the volume); narrower: no length */
+@container cv-tp (max-width: 269px) {
+  .cv-tp-vslider {
+    display: none;
+  }
+}
+@container cv-tp (max-width: 199px) {
+  .cv-tp-dur {
+    display: none;
+  }
+}
+
+/* ---- while the player shows: the dots and resize handles step back (they stay usable: hover / wiring brings them back) ---- */
+.cv-take.is-playing .react-flow__handle:not(:hover):not(.connectingfrom):not(.connectingto),
+.cv-take.is-playing ~ .react-flow__resize-control.handle:not(:hover) {
+  opacity: 0.35;
+}
+
+/* ============================== fullscreen ("Phóng to") ============================== */
+/* the stage left the card (top layer): this keeps its place, so nothing on the board moves meanwhile */
+.cv-take.is-full::before {
+  content: '';
+  display: block;
+  flex: none;
+  height: var(--stage-h);
+}
+.cv-take-stage:fullscreen {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--media-bg);
+  color: var(--on-media);
+}
+.cv-take-stage:fullscreen .cv-take-media {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: var(--media-bg);
+}
+.cv-take-stage:fullscreen .cv-take-video {
+  cursor: pointer;
+}
+.cv-take-stage:fullscreen .cv-take-pbar {
+  height: 56px;
+  box-shadow: none;
+  background: var(--media-bg);
+}
+.cv-take-stage:fullscreen .cv-tp {
+  color: color-mix(in srgb, var(--on-media) 78%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-track {
+  left: 12px;
+  right: 12px;
+  height: 12px;
+}
+.cv-take-stage:fullscreen .cv-tp-rail,
+.cv-take-stage:fullscreen .cv-tp-vslider::before {
+  background: color-mix(in srgb, var(--on-media) 22%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-buf {
+  background: color-mix(in srgb, var(--on-media) 18%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-row {
+  top: 12px;
+  height: 44px;
+  gap: 4px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+.cv-take-stage:fullscreen .cv-tp-btn {
+  min-width: 36px;
+  height: 36px;
+  color: var(--on-media);
+}
+.cv-take-stage:fullscreen .cv-tp-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.cv-take-stage:fullscreen .cv-tp-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--on-media) 14%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--on-media) 24%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-time,
+.cv-take-stage:fullscreen .cv-tp-rate {
+  color: var(--on-media);
+  font-size: 13px;
+}
+.cv-take-stage:fullscreen .cv-tp-dur {
+  color: color-mix(in srgb, var(--on-media) 60%, transparent);
+}
+.cv-take-stage:fullscreen .cv-tp-vfill,
+.cv-take-stage:fullscreen .cv-tp-vknob {
+  background: var(--on-media);
+}
+.cv-take-stage:fullscreen .cv-tp-btn:focus-visible,
+.cv-take-stage:fullscreen .cv-tp-track:focus-visible,
+.cv-take-stage:fullscreen .cv-tp-vslider:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--on-media),
+    0 0 0 4px var(--cv-media-shade);
+}
+
+/* ============================== footer ============================== */
+.cv-take-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px 0 9px;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+/* the settings, always (a custom file name lives in the title line now) */
+.cv-take-settings {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: text;
+}
+.cv-take-used {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--video-soft);
+  color: var(--video);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+/* Imported take ("Nhập job": its job was made on canvasapp's own page). */
+.cv-take-imported {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--ref-soft);
+  color: var(--ref);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+/* Take whose scene was deleted (kept because a scene still uses it as @video). */
+.cv-take-orphan {
+  /* may shrink (narrow resized take) so the action buttons stay inside the node */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.cv-take-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+}
+.cv-take-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s var(--cv-ease),
+    color 0.15s var(--cv-ease);
+}
+.cv-take-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.cv-take-btn:active:not(:disabled) {
+  background: var(--pressed);
+}
+.cv-take-btn.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+/* a little apart from "Chạy lại"; first click arms it ("Xoá?"), the second deletes (TakeDeleteButton) */
+.cv-take-btn.danger {
+  margin-left: 5px;
+}
+.cv-take-btn.danger.is-armed,
+.cv-take-btn.danger.is-armed:hover:not(:disabled) {
+  gap: 3px;
+  width: auto;
+  padding: 0 7px 0 6px;
+  background: var(--danger);
+  color: var(--cv-on-solid);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  animation: cv-pop 0.15s var(--cv-ease);
+}
+.cv-take-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================== big button ============================== */
+/* the node's main action (like canvasapp's "Tải MP4"): full width at the bottom */
+.cv-take-main-wrap {
+  padding: 0 8px 8px;
+}
+.cv-take-main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--cv-ease),
+    border-color 0.15s var(--cv-ease),
+    color 0.15s var(--cv-ease),
+    box-shadow 0.15s var(--cv-ease),
+    transform 0.12s var(--cv-ease);
+}
+.cv-take-main > span,
+.cv-take-main > svg {
+  position: relative;
+}
+.cv-take-main:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.cv-take-main:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.cv-take-main:focus-visible:not(:disabled) {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.cv-take-main:disabled {
+  cursor: progress;
+}
+.cv-take-main.is-busy {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+.st-processing .cv-take-main.is-busy {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+.cv-take-main-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-soft);
+  transition: width 0.25s linear;
+}
+.cv-take-main.is-retry {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.cv-take-main.is-retry:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.cv-take-main.is-retry:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ============================== resized take (NodeSizer) ============================== */
+/* (.cv-take.is-sized itself — flex column filling the wrapper — is shared with the other nodes in canvas.css) */
+.cv-take.is-sized .cv-take-stage {
+  flex: none;
+}
+.cv-take.is-sized .cv-take-media {
+  flex: none;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cv-take-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.cv-take.is-sized .cv-take-foot,
+.cv-take.is-sized .cv-take-main-wrap {
+  flex: none;
+}
+
+/* ============================== focus (keyboard) ============================== */
+.cv-take-btn:focus-visible,
+.cv-take-star:focus-visible,
+.cv-take-more:focus-visible,
+.cv-tp-btn:focus-visible,
+.cv-tp-track:focus-visible,
+.cv-tp-vslider:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ============================== reduced motion ============================== */
+@media (prefers-reduced-motion: reduce) {
+  .cv-take-main:active:not(:disabled) {
+    transform: none;
+  }
+}
