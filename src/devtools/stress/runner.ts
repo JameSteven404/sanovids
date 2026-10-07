@@ -190,13 +190,16 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     /**
      * Pauses an action asks for itself (env.advance: "Gõ nhanh" waits 40 ms every 10 keys, "Chờ" waits on purpose) —
      * not counted in its time: metrics.perAction measures the app's work (before, scene.type's p95 was mostly sleep).
+     * What is taken out is the clock time the pause took, at most what was asked for: in the app a sleep's overrun (the
+     * page rendering meanwhile, timer slack) still counts; headless, simulated time passes in no real time at all.
      */
     let waited = 0
     const actionEnv: StressEnv = {
       ...env,
-      advance: (ms: number) => {
-        waited += Math.max(0, ms)
-        return env.advance(ms)
+      advance: async (ms: number) => {
+        const t = env.clock()
+        await env.advance(ms)
+        waited += Math.max(0, Math.min(ms, env.clock() - t))
       },
     }
     const ctx: StressContext = {
