@@ -568,7 +568,11 @@ export interface ProjectState {
    * (resizing from the left/top edge) — and folder nodes (the one-time row spacing moves them with their row).
    */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
-  /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards). */
+  /**
+   * Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards).
+   * The 0.5 "Sắp xếp", kept only as the reference the arrange engine's LEGACY_ROWS is checked against (src/__tests__/arrangeActions.test.ts):
+   * the app arranges through arrangeActions.arrangeCanvas.
+   */
   autoLayout: (rowHeights?: Record<string, number>) => void
 
   // bulk

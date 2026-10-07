@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { arrangeCanvas, autoLayoutCanvas, buildArrangeInput } from '../arrangeActions'
-import { useCanvasLocal } from '../components/canvas/canvasModel'
-import { LEGACY_ROWS } from '../core/arrange'
-import type { Take } from '../core/types'
+import { arrangeCanvas, arrangeTakesKey, autoLayoutCanvas, buildArrangeInput, useArrangeMenu } from '../arrangeActions'
+import { REVEALED_OVERLAP } from '../components/canvas/arrangeModel'
+import { assetNodeHeight, autoTakePosition, layoutRowHeights, layoutTakes, measuredOf, takeSlots, useCanvasLocal } from '../components/canvas/canvasModel'
+import { LEGACY_ROWS, overlaps, type Box } from '../core/arrange'
+import type { Project, Scene, Take, XY } from '../core/types'
 import { useArrangePrefs } from '../lib/arrangePrefs'
-import { emptyProject, LAYOUT, redo, undo, useProject } from '../store/project'
+import { drawnSceneSize, emptyProject, LAYOUT, NODE_SIZE, redo, undo, useProject } from '../store/project'
 import { useRuns } from '../store/runs'
 import { useUI } from '../store/ui'
 
@@ -17,6 +18,18 @@ const take = (id: string, sceneId = sceneIds[0], number = 1, extra: Partial<Take
 const project = () => useProject.getState().project
 const takePos = (id = 't') => useRuns.getState().takes.find((t) => t.id === id)?.position
 const depth = () => useProject.temporal.getState().pastStates.length
+/** mulberry32: seeded, so a failing random case replays. */
+function seeded(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+const nodePositions = (p: Project): Record<string, XY | null> =>
+  Object.fromEntries([...p.scenes, ...p.assets, ...(p.folders ?? [])].map((n) => [n.id, n.position]))
+const cardBox = (s: Scene): Box => ({ ...s.position, w: drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, h: drawnSceneSize(s.size)?.h ?? LAYOUT.sceneH })
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -37,6 +50,8 @@ describe('arrange command history', () => {
     try {
       autoLayoutCanvas()
       expect(p).toHaveBeenCalledTimes(1); expect(r).toHaveBeenCalledTimes(1); expect(depth()).toBe(1)
+      // The 0.5 sentence, kept word for word.
+      expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã sắp xếp lại canvas (1 video về cạnh cảnh của nó).')
       const arranged = project()
       autoLayoutCanvas()
       expect(project()).toBe(arranged); expect(depth()).toBe(1)
@@ -123,6 +138,7 @@ describe('arrange command history', () => {
     const initial = project()
     useUI.setState({ selectedIds: [sceneIds[1], sceneIds[2], 't'] })
     const res = arrangeCanvas({ style: 'grid', video: 'chosen', scope: 'selection' })
+    expect(useUI.getState().toasts.at(-1)?.text).toMatch(/^Đã sắp xếp 2 cảnh đang chọn\. Đã bật “Chỉ take chọn” \(mọi dự án\)/)
     expect(project().scenes[0]).toBe(initial.scenes[0]); expect(project().scenes[3]).toBe(initial.scenes[3])
     expect(takePos()).toEqual({ x: 9000, y: 9000 })
     expect(res.fitIds).not.toContain('t')
@@ -145,6 +161,118 @@ describe('arrange command history', () => {
     arrangeCanvas({ style: 'strip', video: 'chosen' })
     useUI.setState({ toasts: [] }); undo()
     expect(useUI.getState().toasts).toHaveLength(0)
+  })
+  it('an unrelated undo keeps the reminders of the last arrange; undoing the arrange ends them, redoing it brings them back', () => {
+    arrangeCanvas({ style: 'grid', video: 'chosen' })
+    useProject.getState().setPositions({ [sceneIds[0]]: { x: -5000, y: -5000 } })
+    undo()
+    useUI.setState({ toasts: [] })
+    useUI.getState().setTakeDisplay('all')
+    expect(useUI.getState().toasts.map((t) => t.text)).toEqual([REVEALED_OVERLAP])
+    // Undo the arrange itself: it shows the hidden videos again without announcing them; a redo arms the reminder again.
+    useUI.getState().setTakeDisplay('chosen')
+    undo(); expect(useUI.getState().takeDisplay).toBe('all')
+    redo(); expect(useUI.getState().takeDisplay).toBe('chosen')
+    useUI.setState({ toasts: [] })
+    useUI.getState().setTakeDisplay('all')
+    expect(useUI.getState().toasts.map((t) => t.text)).toEqual([REVEALED_OVERLAP])
+  })
+  it('Theo hàng with "Chỉ take chọn" still keeps room for the takes it hides', () => {
+    useRuns.setState({ takes: [take('tall', sceneIds[0], 1, { size: { w: 224, h: 560 } }), take('star', sceneIds[0], 2, { starred: true })] })
+    arrangeCanvas({ style: 'rows', video: 'chosen' })
+    expect(useUI.getState().takeDisplay).toBe('chosen')
+    expect(project().scenes.find((s) => s.id === sceneIds[1])!.position).toEqual({ x: LAYOUT.scenesX, y: LAYOUT.scenesY + 560 + LAYOUT.gapY })
+  })
+  it('the popover closes when a dialog opens, the view changes or another project is opened', () => {
+    useArrangeMenu.getState().toggle(); expect(useArrangeMenu.getState().open).toBe(true)
+    useUI.getState().openDialog({ kind: 'shortcuts' }); expect(useArrangeMenu.getState().open).toBe(false)
+    useUI.getState().closeDialog()
+    useArrangeMenu.getState().toggle()
+    useUI.setState({ view: 'storyboard' }); expect(useArrangeMenu.getState().open).toBe(false)
+    useUI.setState({ view: 'canvas' })
+    useArrangeMenu.getState().toggle()
+    useProject.setState({ project: emptyProject() }); expect(useArrangeMenu.getState().open).toBe(false)
+  })
+  it('the preview key ignores progress ticks but follows what moves the layout', () => {
+    const takes = useRuns.getState().takes, key = arrangeTakesKey(takes)
+    expect(arrangeTakesKey(takes.map((t) => ({ ...t, progress: 42, status: 'processing' as const })))).not.toBe(key)
+    expect(arrangeTakesKey(takes.map((t) => ({ ...t, progress: 42 })))).toBe(key)
+    expect(arrangeTakesKey(takes.map((t) => ({ ...t, position: null })))).not.toBe(key)
+    expect(arrangeTakesKey(takes.map((t) => ({ ...t, size: { w: 300, h: 300 } })))).not.toBe(key)
+    expect(arrangeTakesKey(takes.map((t) => ({ ...t, starred: true })))).not.toBe(key)
+  })
+  it('LEGACY_ROWS puts scenes and images exactly where the 0.5 store autoLayout does, on random projects (seeded)', () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      const r = seeded(seed), int = (a: number, b: number) => a + Math.floor(r() * (b - a + 1))
+      useProject.setState({ project: emptyProject() })
+      useRuns.setState({ takes: [] })
+      const measured: Record<string, { width: number; height: number }> = {}
+      const ids = Array.from({ length: int(1, 12) }, () => useProject.getState().addScene({ position: { x: int(-3000, 3000), y: int(-3000, 3000) } }))
+      const order = ids.map((_, i) => i + 1).sort(() => r() - 0.5)
+      useProject.setState((st) => ({ project: { ...st.project, scenes: st.project.scenes.map((sc, i) => ({ ...sc, order: order[i] })) } }))
+      const takes: Take[] = []
+      for (const id of ids) {
+        // Stored size (resized card), or none: then sometimes a measured height (fractional, as the browser reports it).
+        if (r() < 0.3) useProject.getState().setNodeSizes({ [id]: { w: int(NODE_SIZE.scene.minW, NODE_SIZE.scene.maxW), h: int(NODE_SIZE.scene.minH, NODE_SIZE.scene.maxH) } })
+        else if (r() < 0.5) measured[id] = { width: LAYOUT.sceneW, height: int(200, 700) + 0.4 }
+        for (let n = int(0, 3); n > 0; n--) {
+          const tid = `${id}:${n}`
+          const size = r() < 0.3 ? { w: int(NODE_SIZE.take.minW, NODE_SIZE.take.maxW), h: int(NODE_SIZE.take.minH, NODE_SIZE.take.maxH) } : null
+          if (!size && r() < 0.4) measured[tid] = { width: LAYOUT.takeW, height: int(180, 560) + 0.6 }
+          takes.push(take(tid, id, n, { size, position: r() < 0.4 ? { x: int(-3000, 3000), y: int(-3000, 3000) } : null, starred: r() < 0.2 }))
+        }
+      }
+      // Images narrow enough not to reach the scene column (wider ones are what the engine fixes), a folder far away.
+      for (let n = int(0, 5); n > 0; n--) {
+        useProject.getState().addAsset({ name: `Ảnh ${n}`, position: { x: int(-2000, 2000), y: int(-2000, 2000) }, size: r() < 0.5 ? { w: int(NODE_SIZE.asset.minW, 376), h: int(NODE_SIZE.asset.minH, NODE_SIZE.asset.maxH) } : null })
+      }
+      if (r() < 0.5) useProject.getState().addFolder({ name: 'Xa', path: null, position: { x: -9000, y: -9000 } })
+      useRuns.setState({ takes })
+      useCanvasLocal.setState({ measured })
+      const start = project()
+      autoLayoutCanvas()
+      const got = nodePositions(project()), gotTakes = useRuns.getState().takes.map((t) => t.position)
+      // The 0.5 command: row heights from layoutRowHeights over every take, image heights from assetNodeHeight.
+      useProject.setState({ project: start })
+      useRuns.setState({ takes })
+      const measuredH = (id: string) => measuredOf(id)?.height
+      const heights = layoutRowHeights(start.scenes, layoutTakes(takes, start.scenes, 'all'), measuredH)
+      for (const a of start.assets) if (a.position) heights[a.id] = assetNodeHeight(a, measuredH(a.id))
+      useProject.getState().autoLayout(heights)
+      expect(got, `seed ${seed}`).toEqual(nodePositions(project()))
+      expect(gotTakes, `seed ${seed}`).toEqual(takes.map(() => null))
+    }
+  })
+  it.each(['all', 'chosen'] as const)('after a Lưới arrange in "%s" display, one new video per scene never covers another scene', (video) => {
+    const r = seeded(video === 'all' ? 7 : 11), int = (a: number, b: number) => a + Math.floor(r() * (b - a + 1))
+    useRuns.setState({ takes: [] })
+    for (let i = 0; i < 8; i++) sceneIds.push(useProject.getState().addScene({ position: { x: int(-2000, 2000), y: int(-2000, 2000) } }))
+    const takes: Take[] = []
+    for (const id of sceneIds) {
+      if (r() < 0.3) useProject.getState().setNodeSizes({ [id]: { w: int(NODE_SIZE.scene.minW, NODE_SIZE.scene.maxW), h: int(NODE_SIZE.scene.minH, NODE_SIZE.scene.maxH) } })
+      // 0–2 finished takes (some starred, some resized): scenes without videos too, a new video lands on their first slot.
+      for (let n = int(0, 2); n > 0; n--) takes.push(take(`${id}:${n}`, id, n, { starred: r() < 0.3, size: r() < 0.3 ? { w: int(180, 400), h: int(180, 400) } : null }))
+    }
+    useRuns.setState({ takes })
+    arrangeCanvas({ style: 'grid', video, gridCols: 'auto' })
+    const mode = useUI.getState().takeDisplay
+    expect(mode).toBe(video)
+    const p = project()
+    useRuns.setState({ takes: [...useRuns.getState().takes, ...p.scenes.map((s, i) => take(`new${i}`, s.id, 9, { status: 'processing', position: null }))] })
+    const all = useRuns.getState().takes, byId = new Map(all.map((t) => [t.id, t])), scenes = new Map(p.scenes.map((s) => [s.id, s]))
+    // Drawn exactly as the canvas does: layoutTakes for the display, takeSlots, autoTakePosition.
+    const layout = layoutTakes(all, p.scenes, mode)
+    const slots = takeSlots(layout.items, (id) => byId.get(id)?.size?.w ?? LAYOUT.takeW)
+    const drawn = layout.items.map((item) => {
+      const s = scenes.get(item.anchorId)!, t = byId.get(item.id)!
+      const at = item.explicit ?? autoTakePosition(s.position, drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, slots.get(item.id)!)
+      return { id: item.id, sceneId: s.id, box: { ...at, w: t.size?.w ?? LAYOUT.takeW, h: t.size?.h ?? LAYOUT.takeH } }
+    })
+    expect(drawn.filter((d) => d.id.startsWith('new')).length).toBeGreaterThan(0)
+    for (const d of drawn) {
+      for (const s of p.scenes) if (s.id !== d.sceneId && overlaps(d.box, cardBox(s))) expect.fail(`${d.id} covers the card of ${s.id}`)
+      for (const o of drawn) if (o.sceneId !== d.sceneId && overlaps(d.box, o.box)) expect.fail(`${d.id} covers ${o.id}`)
+    }
   })
   it('warns once when videos outgrow the reserved slot in an all-takes grid', () => {
     useRuns.setState({ takes: [] })

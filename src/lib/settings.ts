@@ -4,7 +4,7 @@
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
 //   theme (lib/theme) · downloads (lib/downloads, incl. the Recycle Bin on unlinking a folder wire) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
-//   animations, the editor on a scene card + its width, big-project optimisations) ·
+//   animations, the editor on a scene card + its width, big-project optimisations) · arrange (lib/arrangePrefs: last "Sắp xếp" style + options) ·
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
 //   updates (lib/updatePrefs: auto-download of app updates).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download

@@ -130,7 +130,10 @@ export function arrange(input: ArrangeInput, opts: ArrangeOptions): ArrangeResul
   const xs = offsets(widths, gap.x), ys = offsets(heights, gap.y)
   const gridW = widths.reduce((a, w) => a + w, 0) + Math.max(0, cols - 1) * gap.x
   const gridH = heights.reduce((a, h) => a + h, 0) + Math.max(0, heights.length - 1) * gap.y
-  const oldBoxes = [...scenes.map((s) => ({ ...s.pos, w: s.cardW, h: s.cardH })), ...assets.map((a) => ({ ...a.pos, w: a.w, h: a.h })), ...folders.map((f) => ({ ...f.pos, w: f.w, h: f.h }))]
+  // Selected images left in place ("Để nguyên chỗ") are obstacles of the selection block, never part of it: they neither
+  // anchor the block (it would start on top of them) nor move when the block slides around other cards.
+  const fixedRefs = opts.scope === 'selection' && opts.refs === 'keep'
+  const oldBoxes = [...scenes.map((s) => ({ ...s.pos, w: s.cardW, h: s.cardH })), ...(fixedRefs ? [] : assets.map((a) => ({ ...a.pos, w: a.w, h: a.h }))), ...folders.map((f) => ({ ...f.pos, w: f.w, h: f.h }))]
   const anchor = opts.scope === 'selection' ? bounds(oldBoxes) : { x: l.assetX, y: l.scenesY }
   let x0 = opts.scope === 'all' ? l.scenesX : anchor.x, y0 = anchor.y
   const next = new Map<string, XY>(), boxes: PreviewBox[] = [], occupied: Box[] = []
@@ -164,7 +167,9 @@ export function arrange(input: ArrangeInput, opts: ArrangeOptions): ArrangeResul
   }
   occupied.push(...boxes.filter((b) => b.kind === 'asset'))
   const index = new BoxIndex(occupied)
-  if (opts.refs === 'keep') {
+  const fixed = new Set<string>()
+  if (fixedRefs) for (const a of assets) { place(a, a.pos, 'asset'); fixed.add(a.id) }
+  else if (opts.refs === 'keep') {
     const still = new BoxIndex(assets.map((a) => ({ ...a.pos, w: a.w, h: a.h })))
     let left = x0 - gap.ref - Math.max(l.assetW, ...assets.map((a) => a.w)), y = y0
     for (const a of assets) {
@@ -185,7 +190,8 @@ export function arrange(input: ArrangeInput, opts: ArrangeOptions): ArrangeResul
   }
   lifted.sort((a, b) => (a.firstSceneOrder ?? Infinity) - (b.firstSceneOrder ?? Infinity) || a.pos.x - b.pos.x)
   let folderX = x0
-  const top = Math.min(y0, ...boxes.filter((b) => b.kind === 'asset').map((b) => b.y)) - gap.top
+  // The band sits above the arranged block: its image row (strip) counts, images left where they are never do.
+  const top = Math.min(y0, ...(opts.refs === 'keep' ? [] : boxes.filter((b) => b.kind === 'asset').map((b) => b.y))) - gap.top
   for (const f of lifted) {
     let box = { x: folderX, y: top - f.h, w: f.w, h: f.h }, hits = index.hits(box)
     while (hits.length) { box.x = Math.max(...hits.map((b) => b.x + b.w)) + gap.asset; hits = index.hits(box) }
@@ -204,10 +210,11 @@ export function arrange(input: ArrangeInput, opts: ArrangeOptions): ArrangeResul
     boxes.push({ id: t.id, kind: 'take', ...pos, w: t.w, h: t.h })
   }
   if (opts.scope === 'selection') {
-    const d = placeBlock([...occupied, ...boxes], input.obstacles, anchor)
+    const kept = boxes.filter((b) => fixed.has(b.id))
+    const d = placeBlock([...occupied, ...boxes.filter((b) => !fixed.has(b.id))], [...input.obstacles, ...kept], anchor)
     stats.movedAway = d.movedAway
-    for (const [id, pos] of next) next.set(id, { x: pos.x + d.dx, y: pos.y + d.dy })
-    for (const box of boxes) { box.x += d.dx; box.y += d.dy }
+    for (const [id, pos] of next) if (!fixed.has(id)) next.set(id, { x: pos.x + d.dx, y: pos.y + d.dy })
+    for (const box of boxes) if (!fixed.has(box.id)) { box.x += d.dx; box.y += d.dy }
   }
   const positions: Record<string, XY> = {}, takes: Record<string, XY | null> = {}
   for (const item of [...scenes, ...assets, ...folders]) {

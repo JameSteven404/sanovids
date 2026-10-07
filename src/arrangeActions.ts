@@ -2,8 +2,9 @@ import { create } from 'zustand'
 import { fitNodes, placementHint } from './actions'
 import { arrange, LEGACY_ROWS, overlaps, samePosition, type ArrangeInput, type ArrangeOptions, type Box } from './core/arrange'
 import { FOLDER_H, FOLDER_W } from './core/folders'
-import type { Project, XY } from './core/types'
+import type { Project, Take, XY } from './core/types'
 import { assetNodeHeight, measuredOf, takeIndexOf } from './components/canvas/canvasModel'
+import { ALREADY_TIDY, arrangeToast, newVideoOverlap, REARRANGE_LABEL, REVEALED_OVERLAP, scopeCounts, scopeLabel } from './components/canvas/arrangeModel'
 import { resolveArrange, useArrangePrefs } from './lib/arrangePrefs'
 import { drawnSceneSize, LAYOUT, onHistoryJump, undoToastAction, useProject } from './store/project'
 import { computeTakeRows } from './store/takeRows'
@@ -14,27 +15,63 @@ export const useArrangeMenu = create<{ open: boolean; toggle: () => void; close:
   open: false, toggle: () => set((s) => ({ open: !s.open })), close: () => set({ open: false }),
 }))
 
+/** Size of the canvas stage on screen (1440 × 900 without one, e.g. in tests). Reading it forces a layout. */
+export function stageSize(): { w: number; h: number } {
+  const r = typeof document === 'undefined' ? null : document.querySelector('.cv-stage')?.getBoundingClientRect()
+  return { w: r?.width || 1440, h: r?.height || 900 }
+}
+
+const takesKeys = new WeakMap<readonly Take[], number>()
+/**
+ * Hash of what buildArrangeInput reads from the takes (id, scene, number, position, size, star, completed): the
+ * popover's preview depends on it instead of the takes array, which changes on every progress tick of a running job.
+ */
+export function arrangeTakesKey(takes: readonly Take[]): number {
+  const known = takesKeys.get(takes)
+  if (known !== undefined) return known
+  let h = 0x811c9dc5
+  const mix = (v: string) => {
+    for (let i = 0; i < v.length; i++) h = Math.imul(h ^ v.charCodeAt(i), 0x01000193)
+    h = Math.imul(h ^ 0x7c, 0x01000193)
+  }
+  for (const t of takes) {
+    mix(t.id); mix(t.sceneId); mix(String(t.number))
+    mix(t.position ? `${t.position.x},${t.position.y}` : '-')
+    mix(t.size ? `${t.size.w}x${t.size.h}` : '-')
+    mix(`${t.starred ? 1 : 0}${t.status === 'completed' ? 1 : 0}`)
+  }
+  const key = h >>> 0
+  takesKeys.set(takes, key)
+  return key
+}
+
 /** Read-only snapshot shared by the preview and the command. No canvas or project mutations. */
-export function buildArrangeInput(opts: ArrangeOptions): ArrangeInput {
+export function buildArrangeInput(opts: ArrangeOptions, env: { stage?: { w: number; h: number } } = {}): ArrangeInput {
   const p = useProject.getState().project, takes = useRuns.getState().takes
   const selected = new Set(useUI.getState().selectedIds), idx = takeIndexOf(takes)
   const allRows = computeTakeRows(takes, p.scenes, 'all')
   const shownRows = computeTakeRows(takes, p.scenes, opts.video)
-  const size = (id: string, w: number, h: number) => ({ w: Math.max(w, measuredOf(id)?.width ?? 0), h: Math.max(h, measuredOf(id)?.height ?? 0) })
+  // Measured sizes are rounded up like the row heights of 0.5 (layoutRowHeights), so "Theo hàng" lands on whole pixels.
+  const size = (id: string, w: number, h: number) => ({ w: Math.max(w, Math.ceil(measuredOf(id)?.width ?? 0)), h: Math.max(h, Math.ceil(measuredOf(id)?.height ?? 0)) })
   const firstUse = new Map<string, number>()
   for (const s of p.scenes) for (const id of [...s.refs, s.firstFrame, s.lastFrame]) if (id) firstUse.set(id, Math.min(firstUse.get(id) ?? Infinity, s.order))
   const takeInputs: ArrangeInput['takes'] = []
   const clusters = p.scenes.map((s) => {
     const card = size(s.id, drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, drawnSceneSize(s.size)?.h ?? LAYOUT.sceneH)
-    let width = 0, height = 0
+    let width = 0, height = 0, allHeight = 0
     for (const t of idx.byScene.get(s.id) ?? []) {
       const shown = opts.video === 'all' || idx.chosen.get(s.id) === t
       const offRow = (shown ? shownRows : allRows).offRow.has(t.id)
       const box = size(t.id, t.size?.w ?? LAYOUT.takeW, t.size?.h ?? LAYOUT.takeH)
       takeInputs.push({ id: t.id, sceneId: s.id, pos: t.position, offRow, shown, ...box, slot: width })
-      if (shown && !(opts.placedTakes === 'follow' && offRow)) { width += box.w + LAYOUT.takeGapX; height = Math.max(height, box.h) }
+      const inRow = !(opts.placedTakes === 'follow' && offRow)
+      if (shown && inRow) { width += box.w + LAYOUT.takeGapX; height = Math.max(height, box.h) }
+      if (inRow) allHeight = Math.max(allHeight, box.h)
     }
-    return { id: s.id, order: s.order, pos: s.position, cardW: card.w, cardH: card.h, rowW: width ? LAYOUT.takeOffsetX + width - LAYOUT.takeGapX : 0, rowH: height, inScope: selected.has(s.id) }
+    // "Theo hàng" keeps room for the takes "Chỉ take chọn" hides: back on "Tất cả" they return to this row and must not
+    // cover the next scene. Grid / strip clusters sit side by side, so their compact rows count the shown takes only.
+    const rowH = opts.style === 'rows' ? allHeight : height
+    return { id: s.id, order: s.order, pos: s.position, cardW: card.w, cardH: card.h, rowW: width ? LAYOUT.takeOffsetX + width - LAYOUT.takeGapX : 0, rowH, inScope: selected.has(s.id) }
   })
   const assets = p.assets.flatMap((a, libIndex) => a.position ? [{
     id: a.id, kind: a.kind, pos: a.position, ...size(a.id, a.size?.w ?? LAYOUT.assetW, Math.max(LAYOUT.assetH, assetNodeHeight(a))),
@@ -54,8 +91,7 @@ export function buildArrangeInput(opts: ArrangeOptions): ArrangeInput {
     for (const a of [...assets, ...folders]) if (!a.inScope) obstacles.push({ ...a.pos, w: a.w, h: a.h })
     for (const t of takeInputs) if (t.pos && !sceneMap.get(t.sceneId)?.inScope) obstacles.push({ ...t.pos, w: t.w, h: t.h })
   }
-  const stage = typeof document === 'undefined' ? null : document.querySelector('.cv-stage')?.getBoundingClientRect()
-  return { clusters, assets, folders, takes: takeInputs, obstacles, stage: { w: stage?.width || 1440, h: stage?.height || 900 }, focusId: placementHint().anchorId ?? null, layout: LAYOUT }
+  return { clusters, assets, folders, takes: takeInputs, obstacles, stage: env.stage ?? stageSize(), focusId: placementHint().anchorId ?? null, layout: LAYOUT }
 }
 
 export function previewArrange(opts: ArrangeOptions) { return arrange(buildArrangeInput(opts), opts) }
@@ -63,7 +99,7 @@ export const autoLayoutCanvas = () => arrangeCanvas(LEGACY_ROWS)
 
 type Change<T> = { from: T; to: T }
 interface ArrangeRecord {
-  projectId: string; before: Project; after: Project; pastDepth: number
+  projectId: string; before: Project; after: Project; pastDepth: number; opts: ArrangeOptions
   nodes: Record<string, Change<XY>>; takes: Record<string, Change<XY | null>>; display?: Change<TakeDisplay>
 }
 let records: ArrangeRecord[] = []
@@ -71,7 +107,6 @@ let lastLayout: { projectId: string; opts: ArrangeOptions; warned: boolean } | n
 const positionsOf = (p: Project) => new Map([...p.scenes, ...p.assets, ...(p.folders ?? [])].map((s) => [s.id, s.position]))
 
 onHistoryJump((before, after, kind) => {
-  lastLayout = null
   const depth = useProject.temporal.getState().pastStates.length
   const target = positionsOf(after)
   // Depth disambiguates repeated layouts with identical positions and millisecond timestamps. Node matching survives
@@ -83,11 +118,15 @@ onHistoryJump((before, after, kind) => {
     const matches = nodeChanges.length ? nodeChanges.every(([id, c]) => !!target.get(id) && samePosition(target.get(id)!, kind === 'undo' ? c.from : c.to))
       : kind === 'undo' ? after.updatedAt === r.before.updatedAt : before.updatedAt === r.before.updatedAt
     if (!direct && !matches) continue
+    // This jump undoes / redoes an arrange. Its reminders end with an undo (which must not announce the videos it shows
+    // again) and come back with a redo; any other undo step leaves the reminders of the last arrange alone.
+    if (kind === 'undo') lastLayout = null
     const from = kind === 'undo' ? 'to' : 'from', to = kind === 'undo' ? 'from' : 'to'
     const patch: Record<string, XY | null> = {}
     for (const t of useRuns.getState().takes) { const c = r.takes[t.id]; if (c && samePosition(t.position, c[from])) patch[t.id] = c[to] }
     if (Object.keys(patch).length) useRuns.getState().setTakePositions(patch)
     if (r.display && useUI.getState().takeDisplay === r.display[from]) useUI.getState().setTakeDisplay(r.display[to])
+    if (kind === 'redo') lastLayout = { projectId: r.projectId, opts: r.opts, warned: false }
   }
 })
 // zundo mutates its arrays with shift/splice before notifying subscribers, so keep shallow copies for comparison.
@@ -116,7 +155,7 @@ export function arrangeCanvas(override: Partial<ArrangeOptions> = {}) {
   const display = useUI.getState().takeDisplay
   const displayChange = opts.video === 'chosen' && display !== 'chosen' && input.clusters.some((s) => opts.scope === 'all' || s.inScope)
   lastLayout = null // Applying / undoing a layout must not emit the visibility warning.
-  if (!res.stats.moved && !Object.keys(res.takes).length && !displayChange) toast('Canvas đã gọn sẵn.')
+  if (!res.stats.moved && !Object.keys(res.takes).length && !displayChange) toast(ALREADY_TIDY)
   else {
     const old = positionsOf(before), pastDepth = useProject.temporal.getState().pastStates.length
     records = records.filter((r) => r.pastDepth < pastDepth)
@@ -125,16 +164,10 @@ export function arrangeCanvas(override: Partial<ArrangeOptions> = {}) {
     const changes = Object.fromEntries(runs.takes.filter((t) => t.id in res.takes).map((t) => [t.id, { from: t.position, to: res.takes[t.id] }]))
     if (Object.keys(res.takes).length) runs.setTakePositions(res.takes)
     if (displayChange) useUI.getState().setTakeDisplay('chosen')
-    records.push({ projectId: before.id, before, after, pastDepth: useProject.temporal.getState().pastStates.length - 1, nodes: Object.fromEntries(Object.entries(res.positions).map(([id, to]) => [id, { from: old.get(id)!, to }])), takes: changes, ...(displayChange ? { display: { from: display, to: 'chosen' as const } } : {}) })
+    records.push({ projectId: before.id, before, after, pastDepth: useProject.temporal.getState().pastStates.length - 1, opts, nodes: Object.fromEntries(Object.entries(res.positions).map(([id, to]) => [id, { from: old.get(id)!, to }])), takes: changes, ...(displayChange ? { display: { from: display, to: 'chosen' as const } } : {}) })
     records = records.slice(-20)
-    let message = opts.scope === 'selection' ? 'Đã sắp xếp các mục đang chọn.' : opts.style === 'grid' ? `Đã xếp canvas thành lưới ${res.cols} cột.` : opts.style === 'strip' ? 'Đã xếp các cảnh thành một dải ngang.' : 'Đã sắp xếp lại canvas.'
-    if (res.stats.takesBack) message += ` ${res.stats.takesBack} video về cạnh cảnh của nó.`
-    if (res.stats.takesFollow) message += ` ${res.stats.takesFollow} video đi theo cảnh của nó.`
-    if (displayChange) message += ' Đã bật “Chỉ take chọn” (mọi dự án): video khác và video đang tạo tạm ẩn.'
-    if (res.stats.foldersMoved) message += ` ${res.stats.foldersMoved} thư mục đã lên hàng phía trên.`
-    if (res.stats.assetsMoved) message += ` ${res.stats.assetsMoved} thẻ tham chiếu bị đè đã vào cột bên trái.`
-    if (res.stats.movedAway) message += ' Chỗ cũ không đủ, đã đặt sang chỗ trống bên phải.'
-    toast(message, { action: undoToastAction() })
+    const scope = opts.scope === 'selection' ? scopeLabel(scopeCounts(input, opts.refs)) : ''
+    toast(arrangeToast(res, opts, displayChange, scope), { action: undoToastAction() })
   }
   lastLayout = { projectId: before.id, opts, warned: false }
   setTimeout(() => { if (useProject.getState().project.id === before.id) fitNodes(res.fitIds) }, 60)
@@ -145,14 +178,16 @@ function warnOverlap(message: string) {
   if (!lastLayout || lastLayout.warned) return
   lastLayout.warned = true
   const projectId = lastLayout.projectId
-  toast(message, { action: { label: 'Sắp xếp lại', run: () => {
+  toast(message, { action: { label: REARRANGE_LABEL, run: () => {
     if (useProject.getState().project.id !== projectId) return
     useUI.getState().setView('canvas')
     setTimeout(() => { if (useProject.getState().project.id === projectId) arrangeCanvas({ video: 'all' }) }, 120)
   } } })
 }
 useUI.subscribe((s, prev) => {
-  if (s.takeDisplay === 'all' && prev.takeDisplay === 'chosen' && lastLayout?.opts.style !== 'rows' && lastLayout?.opts.video === 'chosen') warnOverlap('Video ẩn đã hiện lại và có thể đè lên cảnh bên cạnh.')
+  // A dialog (or another view) takes over: the popover would otherwise sit above it and keep its keys.
+  if ((s.dialog !== prev.dialog && s.dialog.kind !== 'none') || s.view !== prev.view) useArrangeMenu.getState().close()
+  if (s.takeDisplay === 'all' && prev.takeDisplay === 'chosen' && lastLayout?.opts.style !== 'rows' && lastLayout?.opts.video === 'chosen') warnOverlap(REVEALED_OVERLAP)
 })
 useRuns.subscribe((s, prev) => {
   if (s.takes.length <= prev.takes.length || !lastLayout || lastLayout.warned || lastLayout.opts.style === 'rows' || lastLayout.opts.video !== 'all') return
@@ -165,7 +200,7 @@ useRuns.subscribe((s, prev) => {
     const w = drawnSceneSize(scene.size)?.w ?? LAYOUT.sceneW
     const box = { ...scene.position, w: w + (rows.rows.get(scene.id)?.w ?? 0), h: Math.max(LAYOUT.sceneH, rows.rows.get(scene.id)?.h ?? 0) }
     if (p.scenes.some((other) => other.id !== scene.id && overlaps(box, { ...other.position, w: drawnSceneSize(other.size)?.w ?? LAYOUT.sceneW, h: drawnSceneSize(other.size)?.h ?? LAYOUT.sceneH }))) {
-      warnOverlap(`Video mới của S${String(scene.order).padStart(2, '0')} đè lên cảnh bên cạnh.`)
+      warnOverlap(newVideoOverlap(scene.order))
       break
     }
   }

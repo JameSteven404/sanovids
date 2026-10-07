@@ -26,7 +26,8 @@
 - **Dây ẩn mặc định**, chỉ hiện dây của cảnh đang chọn hoặc đang trỏ chuột vào (đổi được: Ẩn / Đang chọn / Tất cả).
 - **Bấm vào dây là cắt** (có Hoàn tác), hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại. Hoạt ảnh kéo và cắt dây mượt, giảm được trong Cài đặt.
 - **Dây luôn chạm đúng tâm chấm tròn**: nhiều dây vào một cảnh thì chụm gọn vào một chấm, không xoè rộng. Chấm tham chiếu của cảnh mang màu của dây nối vào (xanh ngọc = ảnh, tím = video, hai màu khi có cả hai).
-- **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ, sắp xếp tự động.
+- **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ.
+- **Sắp xếp canvas** theo ba kiểu: **Theo hàng** (mỗi cảnh một hàng, video bên phải), **Lưới** (nhiều cảnh mỗi hàng, đọc trái sang phải như bảng phân cảnh) và **Dải ngang**. Bấm nút là xếp theo kiểu bạn dùng lần trước; mũi tên ▾ cạnh nút mở bảng tuỳ chỉnh có xem trước (khoảng cách, chỉ take chọn, chỉ các thẻ đang chọn…). Một lần `Ctrl+Z` trả lại tất cả, kể cả video bạn đã kéo tay.
 - **Node mới hiện ngay cạnh chỗ bạn đang làm**: cảnh mới nằm ngay dưới cảnh bạn vừa chọn (hoặc trong vùng đang nhìn), không đè lên thẻ khác; khung nhìn chỉ trượt vừa đủ để thấy node mới, **giữ nguyên mức zoom**. Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, không che thanh công cụ canvas.
 - Chế độ "Chỉ take chọn" chỉ hiện video ★ của mỗi cảnh cho gọn.
 - Kéo đổi độ rộng hai thanh bên (bấm đúp để về mặc định).
@@ -43,7 +44,7 @@
 - **Nhập prompt cũ**: dán nhiều prompt hoặc thả các file `.txt` để tạo cảnh hàng loạt. Có thể gán ảnh thư viện cho từng số `@image_N`.
 
 ### Chạy video & tải về
-- **Preset** (ví dụ *Nháp 30s · 480p*, *Final 15s · 1080p*), áp dụng cho nhiều cảnh một lần.
+- **Preset** (ví dụ *Bản nháp* 30s · 480p, *Bản chốt* 15s · 1080p), áp dụng cho nhiều cảnh một lần.
 - **Chạy hàng loạt** với bảng xác nhận chi phí (ghi rõ trừ **credit dev** (giả lập) hay **credit canvasapp** (thật)), hàng đợi chạy song song, cập nhật tiến độ trực tiếp. Mọi nút Chạy / Chạy lại / Thử lại đều qua bảng chi phí, bấm đúp không bị chạy hai lần.
 - Nút Chạy bị khoá kèm lý do khi cảnh chưa chạy được (prompt trống, thiếu ảnh, `@image_N` không có ảnh thật…).
 - **Cấu hình video theo canvasapp**: model / chế độ / thời lượng / độ phân giải / tỉ lệ mà canvasapp đang tắt hiện mờ kèm lý do và không chọn được; cảnh đang dùng chúng chưa chạy được (bị bỏ qua khi chạy nhiều cảnh, không tốn credit). Cấu hình đã lưu của cảnh không bị đổi. Chưa đọc được cấu hình từ canvasapp thì chỉ cảnh báo "có thể bị từ chối"; bấm **Đọc lại** để cập nhật ngay.

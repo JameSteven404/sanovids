@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { arrange, bounds, LEGACY_ROWS, overlaps, placeBlock, resolveCols, spacingOf, type ArrangeInput, type ArrangeOptions, type ClusterIn } from '../arrange'
-import { LAYOUT, ROW_H } from '../../store/project'
+import { arrange, bounds, LEGACY_ROWS, overlaps, placeBlock, resolveCols, spacingOf, type ArrangeInput, type ArrangeOptions, type ArrangeResult, type Box, type ClusterIn, type TakeIn } from '../arrange'
+import { FOLDER_H, FOLDER_W } from '../folders'
+import type { AssetKind } from '../types'
+import { LAYOUT, NODE_SIZE, ROW_H } from '../../store/project'
 
 const cluster = (i: number, patch: Partial<ClusterIn> = {}): ClusterIn => ({ id: `s${i}`, order: i + 1, pos: { x: -i * 17, y: i * 3 }, cardW: LAYOUT.sceneW, cardH: LAYOUT.sceneH, rowW: 0, rowH: 0, inScope: true, ...patch })
 const input = (n = 3): ArrangeInput => ({ clusters: Array.from({ length: n }, (_, i) => cluster(i)), assets: [], folders: [], takes: [], obstacles: [], stage: { w: 1440, h: 900 }, focusId: null, layout: LAYOUT })
@@ -10,6 +12,64 @@ const folder = (id: string, x: number, y: number) => ({ id, pos: { x, y }, w: 24
 function apply(i: ArrangeInput, r: ReturnType<typeof arrange>): ArrangeInput {
   return { ...i, clusters: i.clusters.map((s) => ({ ...s, pos: r.positions[s.id] ?? s.pos })), assets: i.assets.map((s) => ({ ...s, pos: r.positions[s.id] ?? s.pos })), folders: i.folders.map((s) => ({ ...s, pos: r.positions[s.id] ?? s.pos })), takes: i.takes.map((t) => ({ ...t, pos: t.id in r.takes ? r.takes[t.id] : t.pos })) }
 }
+
+/** mulberry32: a small seeded generator, so a failing sweep case replays. */
+function seeded(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+/**
+ * A random canvas: scenes of random card / take sizes and positions; images and folders on distinct 1000px cells (they
+ * never overlap one another before the arrange), many of them inside the area the scenes are arranged into.
+ */
+function randomInput(seed: number): ArrangeInput {
+  const r = seeded(seed), int = (a: number, b: number) => a + Math.floor(r() * (b - a + 1))
+  const takes: TakeIn[] = []
+  const clusters = Array.from({ length: int(1, 14) }, (_, i): ClusterIn => {
+    const cardW = r() < 0.3 ? int(NODE_SIZE.scene.minW, NODE_SIZE.scene.maxW) : LAYOUT.sceneW
+    const cardH = r() < 0.3 ? int(NODE_SIZE.scene.minH, NODE_SIZE.scene.maxH) : LAYOUT.sceneH
+    let slot = 0, rowH = 0
+    for (let k = int(0, 4); k > 0; k--) {
+      const w = r() < 0.3 ? int(NODE_SIZE.take.minW, NODE_SIZE.take.maxW) : LAYOUT.takeW
+      const h = r() < 0.3 ? int(NODE_SIZE.take.minH, NODE_SIZE.take.maxH) : LAYOUT.takeH
+      const pos = r() < 0.3 ? { x: int(-3000, 3000), y: int(-3000, 3000) } : null
+      takes.push({ id: `s${i}:t${k}`, sceneId: `s${i}`, pos, offRow: !!pos && r() < 0.5, shown: true, w, h, slot })
+      slot += w + LAYOUT.takeGapX
+      rowH = Math.max(rowH, h)
+    }
+    return { ...cluster(i), order: int(1, 40), pos: { x: int(-3000, 3000), y: int(-3000, 3000) }, cardW, cardH, rowW: slot ? LAYOUT.takeOffsetX + slot - LAYOUT.takeGapX : 0, rowH }
+  })
+  const cells = new Set<string>()
+  const cell = (): { x: number; y: number } => {
+    for (;;) {
+      const cx = int(-6, 8), cy = int(-6, 8), key = `${cx}:${cy}`
+      if (!cells.has(key)) { cells.add(key); return { x: cx * 1000, y: cy * 1000 } }
+    }
+  }
+  const kinds: AssetKind[] = ['character', 'location', 'prop', 'style']
+  const assets = Array.from({ length: int(0, 8) }, (_, n) => ({
+    id: `a${n}`, kind: kinds[int(0, 3)], pos: cell(), w: int(NODE_SIZE.asset.minW, NODE_SIZE.asset.maxW), h: int(NODE_SIZE.asset.minH, NODE_SIZE.asset.maxH),
+    libIndex: n, firstUse: r() < 0.3 ? Infinity : int(1, 40), inScope: true,
+  }))
+  const folders = Array.from({ length: int(0, 4) }, (_, n) => ({ id: `f${n}`, pos: cell(), w: FOLDER_W, h: FOLDER_H, firstSceneOrder: r() < 0.5 ? null : int(1, 40), inScope: true }))
+  return { clusters, assets, folders, takes, obstacles: [], stage: { w: 1256, h: 960 }, focusId: null, layout: LAYOUT }
+}
+/** What must never overlap after an arrange: each cluster (card + its take row / reserved slot), image and folder. */
+function occupiedBoxes(i: ArrangeInput, r: ArrangeResult): { id: string; box: Box }[] {
+  const byId = new Map(r.boxes.map((b) => [b.id, b]))
+  return [
+    ...i.clusters.map((s) => ({ id: s.id, box: bounds([byId.get(s.id)!, ...(byId.has(`slot:${s.id}`) ? [byId.get(`slot:${s.id}`)!] : [])]) })),
+    ...r.boxes.filter((b) => b.kind === 'asset' || b.kind === 'folder').map((b) => ({ id: b.id, box: b as Box })),
+  ]
+}
+const OPTION_SWEEP: ArrangeOptions[] = (['rows', 'grid', 'strip'] as const).flatMap((style) =>
+  (['tight', 'normal', 'roomy'] as const).flatMap((spacing) => (['column', 'byKind', 'keep'] as const).flatMap((refs) => (['keep', 'top'] as const).flatMap((folders) =>
+    (['all', 'chosen'] as const).flatMap((video) => (['reset', 'follow'] as const).map((placedTakes): ArrangeOptions =>
+      ({ ...LEGACY_ROWS, style, spacing, refs, folders, video, placedTakes, gridCols: style === 'grid' && refs === 'byKind' ? 3 : 'auto' })))))))
 
 describe('pure arrange engine', () => {
   it('matches current rows and is idempotent, without mutating its snapshot', () => {
@@ -106,6 +166,48 @@ describe('pure arrange engine', () => {
     expect(r.fitIds.length).toBeLessThan(30)
     expect(elapsed).toBeLessThan(60)
     expect(arrange(i, { ...grid, gridCols: 'auto' })).toEqual(r)
+  })
+  it('never overlaps clusters, images or folders and is idempotent, for every option on random canvases (seeded)', () => {
+    expect(OPTION_SWEEP).toHaveLength(216)
+    for (let seed = 1; seed <= 24; seed++) {
+      const i = randomInput(seed)
+      for (const opts of OPTION_SWEEP) {
+        const r = arrange(i, opts), list = occupiedBoxes(i, r)
+        for (let a = 0; a < list.length; a++) for (let b = a + 1; b < list.length; b++) {
+          if (overlaps(list[a].box, list[b].box)) expect.fail(`seed ${seed} ${JSON.stringify(opts)}: ${list[a].id} overlaps ${list[b].id}`)
+        }
+        const again = arrange(apply(i, r), opts)
+        if (Object.keys(again.positions).length || Object.keys(again.takes).length) {
+          expect.fail(`seed ${seed} ${JSON.stringify(opts)}: second run moved ${JSON.stringify(again.positions)} ${JSON.stringify(again.takes)}`)
+        }
+      }
+    }
+  })
+  it('selection with images left in place: they neither anchor nor ride along with the block, which avoids them', () => {
+    const i = input(2)
+    i.clusters[0].pos = { x: 1000, y: 1000 }; i.clusters[1].pos = { x: 1000, y: 1500 }
+    // The selected image sits above-left of the scenes (it would anchor the block on itself); an obstacle covers the anchor.
+    i.assets = [asset('kept', 300, 400)]
+    i.obstacles = [{ x: 900, y: 900, w: 2400, h: 900 }]
+    const r = arrange(i, { ...grid, scope: 'selection', refs: 'keep' })
+    expect(r.positions.kept).toBeUndefined()
+    expect(r.stats.assetsMoved).toBe(0)
+    const kept = { x: 300, y: 400, w: LAYOUT.assetW, h: LAYOUT.assetH }
+    for (const b of r.boxes.filter((x) => x.id !== 'kept')) {
+      expect(overlaps(b, kept)).toBe(false)
+      expect(overlaps(b, i.obstacles[0])).toBe(false)
+    }
+    // Without the obstacle the block starts where the scenes were, not at the image.
+    const free = arrange({ ...i, obstacles: [] }, { ...grid, scope: 'selection', refs: 'keep' })
+    expect(free.positions.s0 ?? i.clusters[0].pos).toEqual({ x: 1000, y: 1000 })
+    expect(free.positions.kept).toBeUndefined()
+  })
+  it('the folder band sits right above the block, whatever images are left far above it', () => {
+    const i = input(); i.assets = [asset('high', -4000, -9000)]; i.folders = [folder('hit', LAYOUT.scenesX, LAYOUT.scenesY)]
+    const r = arrange(i, { ...grid, refs: 'keep' })
+    expect(r.positions.high).toBeUndefined()
+    const f = r.boxes.find((b) => b.id === 'hit')!
+    expect(f.y + f.h).toBe(r.positions.s0.y - spacingOf('normal', LAYOUT).top)
   })
   it('handles XL geometry (1000 scenes, 3000 videos, 60 images, 20 folders) within the pure-engine budget', () => {
     const i = input(1000)
