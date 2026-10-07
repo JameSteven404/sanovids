@@ -2345,7 +2345,15 @@ describe('canvasapp adapter: "not in the job list" proves "never created" only w
     let full = false
     const storage: KeyValueStorage = { get: backing.get, set: (k, v) => void (full && k === JOBS_KEY ? undefined : backing.set(k, v)), remove: backing.remove }
     const server = fakeServer()
-    const provider = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage, sleep: async () => {} })
+    // the waits after the lost answer pass on this clock (the second record then differs from the first by its time)
+    const clock = { t: 5_000_000 }
+    const provider = createCanvasappProvider({
+      api: createCanvasappApi(server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage,
+      now: () => clock.t,
+      sleep: async (ms) => void (clock.t += ms),
+    })
     await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
     // take_1's first POST never reaches canvasapp (its record was stored before it); the storage fills up right then
     server.state.unreachablePosts = 1
