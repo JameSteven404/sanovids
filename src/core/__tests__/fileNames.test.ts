@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanFileBase, cleanTakeFileName, companionFor, cutText, freeNames, MAX_BASE_BYTES, MAX_BASE_LENGTH, MAX_BASE_NFD, numberedName, safeFileName, splitExt, uniqueInSet } from '../fileNames'
 
 describe('file names are safe on every OS', () => {
@@ -119,6 +119,86 @@ describe('Windows and Mac filename budgets (same project, same name)', () => {
     expect(reserved.startsWith('_CON.')).toBe(true)
     expect(new TextEncoder().encode(reserved).length).toBeLessThanOrEqual(MAX_BASE_BYTES)
     expect(cleanTakeFileName('ệ'.repeat(120) + '.mp4')).toBe(cleanFileBase('ệ'.repeat(120)))
+  })
+
+  it('a cut that leaves a bare device name still gets the "_" (the check runs after the cut)', () => {
+    // One grapheme ("á" + 299 marks) is over every budget, so the cut drops it and leaves "NUL " → "NUL".
+    expect(cleanFileBase('NUL ' + 'a' + '́'.repeat(300))).toBe('_NUL')
+    expect(cleanFileBase('CON x' + '́'.repeat(300))).toBe('_CON')
+    // The "_" itself needs room: a reserved name at the exact length budget is cut once more, never over it.
+    const atLimit = cleanFileBase('com1.' + 'x'.repeat(MAX_BASE_LENGTH - 5))
+    expect(atLimit).toBe('_com1.' + 'x'.repeat(MAX_BASE_LENGTH - 6))
+    expect(atLimit.length).toBe(MAX_BASE_LENGTH)
+  })
+
+  it('is idempotent: cleaning a cleaned name changes nothing (migrate re-cleans Take.fileName on every load)', () => {
+    const pool = ['a', 'Z', ' ', '.', '-', 'ệ', 'ở', 'đ', '́', '̣', 'q', '😀', '👨‍👩‍👧', '🇻🇳', '漢', 'ᾂ', 'é', '‍', 'NUL', 'CON', 'com1', 'lpt²', '\t', '/']
+    let seed = 0x5a17c0de
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0
+      return seed % n
+    }
+    const cases = ['NUL ' + 'a' + '́'.repeat(300), 'CON x' + '́'.repeat(300), 'com1.' + 'x'.repeat(200), 'ệ'.repeat(120), '😀'.repeat(120)]
+    for (let i = 0; i < 3000; i++) {
+      let s = ''
+      for (let n = next(4) === 0 ? next(300) : next(50); n > 0; n--) s += pool[next(pool.length)]
+      cases.push(s)
+    }
+    for (const raw of cases) {
+      const once = cleanFileBase(raw)
+      expect(cleanFileBase(once), JSON.stringify(raw)).toBe(once)
+      expect(once.length).toBeLessThanOrEqual(MAX_BASE_LENGTH)
+      expect(new TextEncoder().encode(once).length).toBeLessThanOrEqual(MAX_BASE_BYTES)
+      expect(once.normalize('NFD').length).toBeLessThanOrEqual(MAX_BASE_NFD)
+      expect(once).not.toMatch(/^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])\s*(\..*)?$/i)
+    }
+  })
+})
+
+describe('cutting without slowing down every render (cleanFileBase runs in TakeNode titles and per-take saves)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.resetModules()
+  })
+
+  /** A fresh fileNames module whose Intl.Segmenter is `Segmenter` (undefined = an engine without it). */
+  async function withSegmenter(Segmenter: unknown) {
+    vi.resetModules()
+    vi.stubGlobal('Intl', Object.create(Intl, { Segmenter: { value: Segmenter } }))
+    return import('../fileNames')
+  }
+
+  it('segments only names over a budget, and loads without touching Intl.Segmenter', async () => {
+    let created = 0
+    let segmented = 0
+    const Real = Intl.Segmenter
+    class Counting extends Real {
+      constructor(...args: ConstructorParameters<typeof Intl.Segmenter>) {
+        super(...args)
+        created++
+      }
+      segment(input: string) {
+        segmented++
+        return super.segment(input)
+      }
+    }
+    const m = await withSegmenter(Counting)
+    expect(created).toBe(0)
+    for (const name of ['S01_T1 - Cảnh mở đầu ở Huế', 'ệ'.repeat(66), 'x'.repeat(MAX_BASE_LENGTH), 'NUL']) m.cleanFileBase(name)
+    expect(segmented).toBe(0)
+    expect(m.cleanFileBase('ệ'.repeat(120))).toBe('ệ'.repeat(66))
+    expect(segmented).toBe(1)
+    expect(created).toBe(1)
+  })
+
+  it('an engine without Intl.Segmenter still loads and cuts between code points (never half of an emoji)', async () => {
+    const m = await withSegmenter(undefined)
+    expect(m.cleanFileBase('S01_T1 - Cảnh ở Huế')).toBe('S01_T1 - Cảnh ở Huế')
+    expect(m.cleanFileBase('ệ'.repeat(120))).toBe('ệ'.repeat(66))
+    expect(m.cleanFileBase('😀'.repeat(120))).toBe('😀'.repeat(50))
+    expect(m.cleanFileBase('a'.repeat(119) + 'q́')).toBe('a'.repeat(119) + 'q')
+    // By code point the marks are kept up to the byte budget (4 + 2 + 97 × 2 = 200): not a device name, no "_".
+    expect(m.cleanFileBase('NUL ' + 'a' + '́'.repeat(300))).toBe('NUL á' + '́'.repeat(97))
   })
 })
 

@@ -20,9 +20,7 @@ import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
 import { initRetiredVideoNotice } from './videoRetired'
-import { loadAppPlacement, macPlacementNote, placementToastsOnLaunch } from './lib/appPlacement'
-import { openSettings } from './actions'
-import { toast } from './store/ui'
+import { showPlacementNoticeOnLaunch } from './placementNotice'
 
 // Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
 // follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
@@ -40,11 +38,9 @@ initDevAccess()
 // Reference videos were retired (0.6.0): once per project, say what happened to its old @video data.
 initRetiredVideoNotice()
 
-// Once per launch, outside React StrictMode's repeated effects; no automatic move.
-void loadAppPlacement().then(({ kind }) => {
-  const text = macPlacementNote(kind)
-  if (text && placementToastsOnLaunch(kind)) toast(text, { tone: 'warning', ms: 12000, action: { label: 'Xem', run: () => openSettings('app') } })
-})
+// A Mac run from a .dmg / Tải về / an external drive: once per launch, how to move the app into Applications (never
+// moved automatically).
+void showPlacementNoticeOnLaunch()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

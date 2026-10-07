@@ -1,6 +1,6 @@
 // The canvasapp gateway section reads its login state from the shared real-credit store (no own /api/me call);
 // "Giữ đăng nhập canvasapp trên máy này", the logout result and the login toast (keepLoginModel.ts).
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import settingsSource from '../../../lib/settings.ts?raw'
 import gatewaySource from '../GatewaySection.tsx?raw'
 import creditPillSource from '../../topbar/CreditPill.tsx?raw'
@@ -19,6 +19,10 @@ import {
   parseKeepLoginState,
 } from '../keepLoginModel'
 import { gatewayLoginFromCredits, type GatewayCreditsView } from '../shared'
+
+// These expectations are the Windows texts (lib/platformText): pin the platform whatever OS runs the suite (the Mac CI
+// runner reports navigator.platform 'MacIntel'). Both platforms: lib/__tests__/rendererPlatformCopy.test.ts.
+vi.mock('../../../lib/platform', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../../lib/platform')>()), PLATFORM: 'win', IS_MAC: false }))
 
 const view = (patch: Partial<GatewayCreditsView>): GatewayCreditsView => ({
   balance: null,

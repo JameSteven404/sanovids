@@ -6,6 +6,7 @@
 import { platformText, MAC_EXPERIMENTAL, MAC_AD_HOC_NOTE } from '../../lib/platformText'
 import { PLATFORM } from '../../lib/platform'
 import { useDevSignaturePlatform } from '../../providers/dev/appSignature'
+import { isUpToDate, settingsStatusNote } from '../../lib/updateModel'
 import {
   AppWindow,
   CircleArrowUp,
@@ -59,7 +60,7 @@ import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pi
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
-import { autoDownloadNote, hasUpdateDetails, isUpToDate, lastCheckText, settingsIntroTitle, settingsStatusLine, settingsStatusNote } from '../../lib/updateModel'
+import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { openReleasePage, useUpdates } from '../../lib/updates'
 import { createDemo, exportProjectFile, importProjectFile } from '../../store/persist'
@@ -664,6 +665,8 @@ export function AboutBlock() {
   const simulatedPlatform = useDevSignaturePlatform((s) => s.platform)
   const platform = appSignatureSource() === 'sim' ? simulatedPlatform ?? PLATFORM : PLATFORM
   const view = signatureView(sig, platform)
+  // A packaged Mac build: check-only updates, labelled "thử nghiệm", ad-hoc signature (lib/platformText).
+  const macBuild = platform === 'mac' && !!sig?.packaged
 
   const openPage = async () => {
     if (opening) return
@@ -684,7 +687,7 @@ export function AboutBlock() {
         </span>
         <span className="dg-about-name">
           <b>SanoVids</b>
-          <small onClick={onVersionTap}>{versionLine(version, platform === 'mac' && sig?.packaged ? 'mac-manual' : kind, desktop)}{platform === 'mac' && sig?.packaged ? ` · ${MAC_EXPERIMENTAL}` : ''}</small>
+          <small onClick={onVersionTap}>{versionLine(version, macBuild ? 'mac-manual' : kind, desktop)}{macBuild ? ` · ${MAC_EXPERIMENTAL}` : ''}</small>
         </span>
       </div>
       {unlockOpen && <DevUnlock onClose={() => setUnlockOpen(false)} />}
@@ -715,7 +718,7 @@ export function AboutBlock() {
             </span>
           </div>
         )}
-        {platform === 'mac' && sig?.packaged && <p>{MAC_AD_HOC_NOTE}</p>}
+        {macBuild && <p className="dg-about-note">{MAC_AD_HOC_NOTE}</p>}
         {thumbprintRows(sig, platform).map((row) => (
           <p key={row.label} className="dg-about-thumb">
             {row.label}: <span className="mono">{row.value}</span>

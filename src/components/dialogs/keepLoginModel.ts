@@ -15,6 +15,8 @@ export const GATEWAY_SETTINGS_GROUP = 'gateway'
 export const KEEP_LOGIN_HINT_ON = `Tắt rồi mở lại SanoVids không phải đăng nhập lại (tối đa ${KEEP_LOGIN_DAYS} ngày, hoặc đến khi canvasapp kết thúc phiên). Phiên được mã hoá bằng ${platformText.encryptedWith}; Đăng xuất xoá ngay.`
 export const KEEP_LOGIN_HINT_OFF = `Mỗi lần mở SanoVids cần đăng nhập canvasapp lại. Nên tắt khi dùng máy chung, hoặc khi nhiều người dùng chung một ${platformText.account}.`
 export const KEEP_LOGIN_HINT_PORTABLE = 'Bản Portable (hoặc chạy từ thư mục tạm) mặc định không giữ đăng nhập — hay được chạy trên máy người khác.'
+/** Mac: the default is on only in Applications (electron/keeplogin-rules); every other packaged run starts off. */
+export const KEEP_LOGIN_HINT_MAC_OUTSIDE = 'Bản chạy ngoài thư mục Applications (thẳng từ file .dmg, thư mục Tải về, ổ ngoài…) mặc định không giữ đăng nhập.'
 export const KEEP_LOGIN_UNAVAILABLE = 'Máy này không mã hoá được phiên đăng nhập nên SanoVids không giữ — mỗi lần mở app cần đăng nhập lại.'
 /** Added while the choice stays on: SanoVids tries again (the switch can still be turned off). */
 export const KEEP_LOGIN_UNAVAILABLE_ON = 'SanoVids sẽ thử lại ở lần đăng nhập sau; tắt nếu không muốn giữ đăng nhập trên máy này.'
@@ -38,11 +40,15 @@ export function parseKeepLoginState(raw: unknown): KeepLoginState {
   return { ok: false, code: 'bad-response', message: BAD_STATE }
 }
 
-/** The hint under the switch: why it is on / off / disabled (the Portable default when the user never chose). */
+/**
+ * The hint under the switch: why it is on / off / disabled (when the user never chose, off is the placement default:
+ * Portable / temp copy on Windows, a run outside Applications on a Mac).
+ */
 export function keepLoginHint(v: KeepLoginView): string {
   if (!v.available) return v.keepLogin ? `${KEEP_LOGIN_UNAVAILABLE} ${KEEP_LOGIN_UNAVAILABLE_ON}` : KEEP_LOGIN_UNAVAILABLE
   if (v.keepLogin) return KEEP_LOGIN_HINT_ON
-  return v.chosen || PLATFORM === 'mac' ? KEEP_LOGIN_HINT_OFF : `${KEEP_LOGIN_HINT_OFF} ${KEEP_LOGIN_HINT_PORTABLE}`
+  if (v.chosen) return KEEP_LOGIN_HINT_OFF
+  return `${KEEP_LOGIN_HINT_OFF} ${PLATFORM === 'mac' ? KEEP_LOGIN_HINT_MAC_OUTSIDE : KEEP_LOGIN_HINT_PORTABLE}`
 }
 
 /**

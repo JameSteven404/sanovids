@@ -48,8 +48,14 @@ export interface PlatformTexts {
   clockSync: string
   /** The desktop app (the same on both: there is one app). */
   desktopApp: string
+  /** Cài đặt → Ứng dụng: the desktop build of this platform (title of the AppBlock row). */
   installTitle: string
+  /** …and how to install it. */
   installHint: string
+  /**
+   * The delete-key note of the shortcuts dialog. ShortcutsDialog.tsx belongs to the keymap task (cx/keys rewrites it):
+   * the integrator uses this text for its note after that merge.
+   */
   deleteHint: string
 }
 
