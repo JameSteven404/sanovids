@@ -305,10 +305,20 @@ export async function runInSandbox(options: StressOptions, hooks: SandboxHooks =
     // A stored project of its own: an empty stub through the normal import path (new id, list entry), then the
     // generated content under that id (the autosave writes it like any edit).
     const stub = { format: 'sanovids', version: 2, project: { name: gen.project.name, schemaVersion: 2, scenes: [], assets: [], presets: [] }, media: {} }
-    await importProjectFile(new File([JSON.stringify(stub)], 'stress.sanovids.json', { type: 'application/json' }))
-    tempId = useProject.getState().project.id
-    writeManifest({ originalId, tempId, startedAt: Date.now(), seed })
-    useProject.getState().loadProject({ ...gen.project, id: tempId })
+    try {
+      await importProjectFile(new File([JSON.stringify(stub)], 'stress.sanovids.json', { type: 'application/json' }))
+    } finally {
+      // Another project is open now (even if the import threw after opening it): the temporary one. Still the
+      // user's (the import failed before switching): nothing of the run may touch it.
+      const open = useProject.getState().project.id
+      if (open !== originalId) {
+        tempId = open
+        writeManifest({ originalId, tempId: open, startedAt: Date.now(), seed })
+      }
+    }
+    const id = useProject.getState().project.id
+    if (id === originalId) throw new Error('Không mở được dự án thử nghiệm riêng — chưa chạy gì.')
+    useProject.getState().loadProject({ ...gen.project, id })
     clearHistory()
     useRuns.getState().loadRuns({ takes: gen.takes, credits: 1000, spent: 0 })
   }
@@ -318,10 +328,14 @@ export async function runInSandbox(options: StressOptions, hooks: SandboxHooks =
   } finally {
     hooks.onPhase?.('Đang trả lại dự án của bạn…')
     holdNewSubmits(true)
-    try {
-      useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
-    } catch {
-      /* nothing running */
+    // Stop the engine — on the temporary project only: when the run never got to open it, the open project is the
+    // user's, and emptying its takes would be autosaved over the user's videos.
+    if (tempId && useProject.getState().project.id === tempId) {
+      try {
+        useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+      } catch {
+        /* nothing running */
+      }
     }
     env.dispose()
     guards.remove()

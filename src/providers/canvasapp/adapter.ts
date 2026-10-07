@@ -32,7 +32,8 @@
 // Paying at most once per take (key = req.key = the take id; sent as clientRequestIdFor(key)). Persisted under
 // JOBS_KEY (keyed by the take id), written synchronously:
 //   - `jobs[key]`: the job canvasapp created for the key. A key with a known job is never posted again.
-//   - `sent[key]`: written right BEFORE the POST, removed once its answer is known. If the answer never arrives
+//   - `sent[key]`: written right BEFORE the POST and read back (not stored — storage full… — → nothing is posted),
+//     removed once its answer is known. If the answer never arrives
 //     (connection broke, page closed / reloaded), the job may exist and be billed: it is looked for in the bridge
 //     project's job list (findJob: same client_request_id when the list carries it, else the one new job on the
 //     canvas node the POST named — never one another take's unanswered POST on that node may have made: next to
@@ -42,18 +43,23 @@
 //   - "Not in the list" proves nothing by itself: canvasapp's job list may be cut to its newest jobs and whether it
 //     dedupes client_request_id is unknown (docs/GATEWAY-CANVASAPP.md, VERIFY). It counts as "never created" only
 //     when the list provably reaches back to the request (listCovers: a job that had already ended in a read made
-//     before the POST — `sent[key].anchors` — is still listed; right after the POST, a job older than it; or an empty
-//     list of a project with no known job). Otherwise findJob says 'unlisted' and that key is never posted again.
+//     before the POST — `sent[key].anchors` — is still listed with the same status / finished_at; right after the
+//     POST, a job older than it; or an empty list of a project with no known job). Otherwise findJob says 'unlisted'
+//     and that key is never posted again. Several jobs with this take's exact client_request_id (a server that does
+//     not dedupe got it twice): all are this take's — one is followed, never "unknown" (that would invite a new take).
 //   - POST answered with a network error / 5xx / no job id → wait, look for the job (2 `fresh` reads — never the
 //     gateway's cached list —, 15 s apart); provably
-//     not there → post again ONCE with the same body and key; still nothing, or not provable → error flagged
+//     not there → post again ONCE with the same body and key (its record stored again first — not stored → not
+//     posted); still nothing, or not provable → error flagged
 //     `uncertain` (the engine then shows "không rõ đã trả chưa" and never resubmits that take under a new key by
 //     itself). An explicit retry of that take looks again first; not provable then (or its earlier POST went to
 //     another bridge project: another account, a bridge deleted since) → `uncertain` + `unverifiable`: the engine
 //     says it may have been billed and that only a NEW take ("Tạo lại") can run.
 //   - A key whose ledger record was trimmed (MAX_SENT_RECORDS / MAX_JOB_RECORDS / MAX_IMPORTED_RECORDS) is
-//     remembered in `dropped`: it is never posted again either (nothing left to check it against) — nor is a retry of
-//     an "unknown" take that has no record here at all (opts.retryOfUnknown: another computer, cleared storage).
+//     remembered in `dropped`: it is never posted again either (nothing left to check it against). Nor is a key the
+//     engine says was sent before (opts.retryOfUnknown: an explicit retry of a "maybe billed" take) that has no record
+//     here at all — another computer, lost with the storage, written over by another build, or forgotten from
+//     `dropped`: no evidence never means "never sent".
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
 //   - `imported[key]`: a job made on canvasapp's own page that became the take `key` ("Nhập job": scanSiteJobs →
 //     siteJobPrompts → claimSiteJobs, rules in siteJobs.ts). Such a key is never posted either; the import itself
@@ -183,6 +189,9 @@ export const LIST_NEEDED_TEXT =
 /** ...for a take whose earlier POST lost its answer (that one may still have been billed). */
 const LIST_NEEDED_AFTER_LOST_TEXT =
   'Không đọc được danh sách job trên canvasapp — cần đọc ngay trước khi gửi vì một take khác của cảnh này chưa rõ đã được canvasapp nhận chưa. Lần này chưa gửi lại yêu cầu tạo video (lần gửi trước vẫn chưa rõ đã bị trừ credit chưa).'
+/** The "about to post" record could not be stored (storage full?): the POST is never sent without it. */
+export const LEDGER_NOT_SAVED_TEXT =
+  'Không ghi được sổ theo dõi yêu cầu tạo video trên máy này (bộ nhớ có thể đã đầy) nên SanoVids chưa gửi yêu cầu tạo video — không bị trừ credit. Xoá bớt dự án / video cũ rồi thử lại.'
 /** Prefixed to a failed canvas PUT: the job POST is only ever sent after the canvas was accepted. */
 export const CANVAS_NOT_SAVED_TEXT = 'Lưu canvas cầu nối trên canvasapp không thành công — chưa gửi yêu cầu tạo video, không bị trừ credit.'
 /** ...for a take whose earlier POST lost its answer (that one may still have been billed). */
@@ -323,10 +332,18 @@ interface SentRecord {
   beforeAt?: number
   /**
    * v0.6.0+: jobs of the last job-list read made before the POST (any age), newest first — `ended`: already ended
-   * then, `open`: not ended. What a later list is checked against before "not listed" may mean "never created"
-   * (listCovers). Missing = no list had been read.
+   * then (with the status / finished_at they had), `open`: not ended (ids). What a later list is checked against
+   * before "not listed" may mean "never created" (listCovers). Missing = no list had been read.
    */
-  anchors?: { ended: string[]; open: string[] }
+  anchors?: { ended: EndedAnchor[]; open: string[] }
+}
+
+/** A job that had already ended in the job-list read made before a POST, as that read showed it. */
+interface EndedAnchor {
+  id: string
+  status: string
+  /** Its finished_at then (absent when the list did not carry one). */
+  finished?: string
 }
 
 /** One job-list read. */
@@ -370,11 +387,26 @@ function recordsFrom<T extends { remoteId: string; at: number }>(raw: unknown, k
 
 const idList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [])
 
-/** A persisted record's anchors, keeping only lists of ids (older builds wrote none, a damaged one may be anything). */
-function anchorsIn(rec: SentRecord): { ended: string[]; open: string[] } {
+function endedAnchor(v: unknown): EndedAnchor | null {
+  if (!v || typeof v !== 'object') return null
+  const { id, status, finished } = v as Record<string, unknown>
+  if (typeof id !== 'string' || !id || typeof status !== 'string' || !status) return null
+  if (finished !== undefined && typeof finished !== 'string') return null
+  return { id, status, ...(typeof finished === 'string' ? { finished } : {}) }
+}
+
+/**
+ * A persisted record's anchors, keeping only well-formed entries (older builds wrote none, a damaged one may be
+ * anything; an ended anchor without its status cannot be checked for changes, so it does not count).
+ */
+function anchorsIn(rec: SentRecord): { ended: EndedAnchor[]; open: string[] } {
   const a: unknown = rec.anchors
   if (!a || typeof a !== 'object') return { ended: [], open: [] }
-  return { ended: idList((a as Record<string, unknown>).ended), open: idList((a as Record<string, unknown>).open) }
+  const ended = (a as Record<string, unknown>).ended
+  return {
+    ended: Array.isArray(ended) ? ended.map(endedAnchor).filter((x): x is EndedAnchor => x !== null) : [],
+    open: idList((a as Record<string, unknown>).open),
+  }
 }
 
 export const STATE_KEY = 'bdp:canvasapp:gateway'
@@ -443,6 +475,27 @@ function mayBeJobOf(j: CanvasJob, r: SentRecord): boolean {
   if (j.canvas_node_id !== r.nodeId || r.before?.includes(j.job_id)) return false
   const t = createdTime(j.created_at)
   return !Number.isFinite(t) || inPostWindow(t, r.at)
+}
+
+/** Creation time for sorting (a job without a readable one sorts last). */
+const sortTime = (j: CanvasJob) => {
+  const t = createdTime(j.created_at)
+  return Number.isFinite(t) ? t : -Infinity
+}
+/** Newest created first; equal / unknown times keep the list's order (stable sort). */
+const newestFirst = (a: CanvasJob, b: CanvasJob) => (sortTime(a) === sortTime(b) ? 0 : sortTime(b) > sortTime(a) ? 1 : -1)
+
+/**
+ * Several listed jobs carry this take's exact client_request_id (a server that does not dedupe got the request twice:
+ * every one of them is this take's, and billed). The one followed: a completed one first, then one still running,
+ * then an expired one, then the rest — the newest of those.
+ */
+function sameKeyJob(jobs: CanvasJob[]): CanvasJob {
+  const rank = (j: CanvasJob) => {
+    const s = String(j.status)
+    return s === 'completed' ? 0 : !ENDED_JOB_STATUSES.has(s) ? 1 : s === 'expired' ? 2 : 3
+  }
+  return [...jobs].sort((a, b) => rank(a) - rank(b) || newestFirst(a, b))[0]
 }
 
 /** Persisted upload cache (imageId → upload_id), keeping only string → non-empty string pairs. */
@@ -559,7 +612,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     entries.sort((a, b) => b[1].at - a[1].at)
     return { kept: Object.fromEntries(entries.slice(0, max)), gone: entries.slice(max).map(([k]) => k) }
   }
-  function saveLedger(next: JobLedger) {
+  /** Write the ledger. False when the storage does not hold it afterwards (full / unavailable: set() never throws). */
+  function saveLedger(next: JobLedger): boolean {
     const jobs = newest(next.jobs, MAX_JOB_RECORDS)
     const sent = newest(next.sent, MAX_SENT_RECORDS)
     const imported = newest(next.imported, MAX_IMPORTED_RECORDS)
@@ -567,7 +621,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const gone = [...jobs.gone, ...sent.gone, ...imported.gone]
     const dropped = gone.length ? [...next.dropped.filter((k) => !gone.includes(k)), ...gone].slice(-MAX_DROPPED_KEYS) : next.dropped
     ledger = { jobs: jobs.kept, sent: sent.kept, imported: imported.kept, dropped }
-    storage.set(JOBS_KEY, JSON.stringify(ledger))
+    const text = JSON.stringify(ledger)
+    storage.set(JOBS_KEY, text)
+    return storage.get(JOBS_KEY) === text
   }
   /**
    * The key got its job (on canvas node `nodeId`): remember it (never posted again) with its node — kept on the bridge
@@ -650,8 +706,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const sentOn = ledger.sent[req.key]?.nodeId
     return sentOn !== undefined && sentOn === canvasNodeId(req.sceneId) ? req.sceneId : sceneNodeKey(req.sanovidsProjectId, req.sceneId)
   }
-  function markSent(key: string, rec: SentRecord) {
-    saveLedger({ ...ledger, sent: { ...ledger.sent, [key]: rec } })
+  /**
+   * Remember (persisted) that `key` is about to be posted. False when the record could not be stored: then nothing may
+   * be posted — a lost answer could not be checked after a restart, and a retry would look like a first send.
+   */
+  function markSent(key: string, rec: SentRecord): boolean {
+    const before = ledger
+    if (saveLedger({ ...ledger, sent: { ...ledger.sent, [key]: rec } })) return true
+    ledger = before // as stored
+    return false
   }
   /** Other takes' POSTs on that node of that bridge project whose answer is not known: their job may be there, unclaimed. */
   function rivalsOf(key: string, projectId: string, nodeId: string): SentRecord[] {
@@ -664,19 +727,17 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   function anchorsOf(projectId: string): SentRecord['anchors'] {
     const read = lastLists.get(projectId)
     if (!read) return undefined
-    const time = (j: CanvasJob) => {
-      const t = createdTime(j.created_at)
-      return Number.isFinite(t) ? t : -Infinity
-    }
     // newest first (a cut list keeps those longest); without times, in the list's order (stable sort)
-    const byAge = read.jobs
-      .filter((j) => typeof j.job_id === 'string' && j.job_id.length > 0)
-      .sort((a, b) => (time(a) === time(b) ? 0 : time(b) > time(a) ? 1 : -1))
-    const ended: string[] = []
+    const byAge = read.jobs.filter((j) => typeof j.job_id === 'string' && j.job_id.length > 0).sort(newestFirst)
+    const ended: EndedAnchor[] = []
     const open: string[] = []
     for (const j of byAge) {
-      const into = ENDED_JOB_STATUSES.has(String(j.status)) ? ended : open
-      if (into.length < MAX_ANCHORS) into.push(j.job_id)
+      const status = String(j.status)
+      if (!ENDED_JOB_STATUSES.has(status)) {
+        if (open.length < MAX_ANCHORS) open.push(j.job_id)
+      } else if (ended.length < MAX_ANCHORS) {
+        ended.push({ id: j.job_id, status, ...(typeof j.finished_at === 'string' ? { finished: j.finished_at } : {}) })
+      }
     }
     return { ended, open }
   }
@@ -685,8 +746,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    * Does `jobs` (a job-list read of rec.projectId) provably reach back to when rec's POST was sent — so that the job
    * it may have created would be in it, and "not listed" means "never created"? canvasapp's list may be cut to its
    * newest jobs (VERIFY: paging / limit unknown), so only evidence counts:
-   *   - a job that had ALREADY ENDED in a read made before the POST (rec.anchors.ended) is still listed: whatever a cut
-   *     keeps (newest created, newest updated, running first), it keeps every job made after that one;
+   *   - a job that had ALREADY ENDED in a read made before the POST (rec.anchors.ended) is still listed, UNCHANGED (same
+   *     status, and the same finished_at when one was recorded): whatever a cut keeps (newest created, newest updated,
+   *     running first), it keeps every job made after that one. One updated since (e.g. 'completed' → 'expired')
+   *     proves nothing: it may have moved up a list cut by update time, ahead of jobs made after the POST;
    *   - within FRESH_LOOK_MS of the POST (the looks right after a lost answer): a job made before it is still listed
    *     (anchors, `before`, this computer's jobs recorded before it) — a cut that fast would also break the poll;
    *   - the list is empty and no job of that project is known (nothing to cut).
@@ -695,6 +758,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   function listCovers(jobs: CanvasJob[], rec: SentRecord): boolean {
     if (typeof rec.at !== 'number' || !Number.isFinite(rec.at)) return false
     const listed = new Set(jobs.map((j) => j.job_id))
+    const byId = new Map(jobs.map((j) => [j.job_id, j]))
     const ours: { jobId: string; at: number }[] = []
     for (const r of Object.values(ledger.jobs)) {
       const d = decodeRemoteId(r.remoteId)
@@ -704,7 +768,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const anchors = anchorsIn(rec)
     const before = idList(rec.before)
     if (!jobs.length) return !ours.length && !anchors.ended.length && !anchors.open.length && !before.length
-    if (anchors.ended.some((id) => listed.has(id))) return true
+    const unchanged = (a: EndedAnchor) => {
+      const j = byId.get(a.id)
+      return !!j && String(j.status) === a.status && (a.finished === undefined || j.finished_at === a.finished)
+    }
+    if (anchors.ended.some(unchanged)) return true
     const age = now() - rec.at
     if (!(age >= 0 && age <= FRESH_LOOK_MS)) return false
     const older = [...anchors.open, ...before, ...ours.filter((o) => o.at <= rec.at).map((o) => o.jobId)]
@@ -1028,8 +1096,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   /**
    * One read of the job list: the job a lost answer of `key` created. 'none' = provably never created (not listed,
    * and the list reaches back to the request: listCovers); 'unlisted' = not listed, but the list may be cut — it may
-   * exist; 'ambiguous' = more than one could be it, or another take could own it (never guessed). Throws when the list
-   * cannot be read.
+   * exist; 'ambiguous' = more than one job could be it by node / time, or another take could own it (never guessed).
+   * Several jobs with this take's exact client_request_id are all this take's: one of them is the answer (sameKeyJob).
+   * Throws when the list cannot be read.
    */
   async function findJob(req: JobRequest, rec: SentRecord): Promise<{ remoteId: string } | 'none' | 'unlisted' | 'ambiguous'> {
     lists.delete(rec.projectId)
@@ -1039,8 +1108,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
       const keys = new Set([clientRequestIdFor(req.key), req.key])
       const same = jobs.filter((j) => typeof j.client_request_id === 'string' && keys.has(j.client_request_id))
-      if (same.length === 1) return remote(same[0])
-      if (same.length) return 'ambiguous'
+      if (same.length) return remote(same.length === 1 ? same[0] : sameKeyJob(same))
     } else {
       // The list does not carry client_request_id: the job is the ONE canvas job on the canvas node the POST named
       // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
@@ -1130,7 +1198,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       ...(known ? { before: known.jobs.filter((j) => j.canvas_node_id === body.canvas_node_id).map((j) => j.job_id), beforeAt: known.shows } : {}),
       ...(anchors ? { anchors } : {}),
     }
-    markSent(req.key, rec)
+    if (!markSent(req.key, rec)) throw new CanvasappError('storage', LEDGER_NOT_SAVED_TEXT)
     let reposted = false
     for (;;) {
       try {
@@ -1163,7 +1231,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         reposted = true
         // its time is now this POST's (a take posting next to it later reads the list SETTLE_MS after THIS one)
         rec = { ...rec, at: now() }
-        markSent(req.key, rec)
+        // Not stored → not posted again (the earlier record, with its own time, stays): provably nothing was created by
+        // the first one (findJob 'none'), and a second POST nobody could look for after a restart is never sent.
+        if (!markSent(req.key, rec)) throw new CanvasappError('storage', LEDGER_NOT_SAVED_TEXT)
         continue
       }
       throw uncertainError()
@@ -1189,12 +1259,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         throw new CanvasappError('network', `${UNCERTAIN_SUBMIT_TEXT} (${canvasappErrorText(e)})`, { uncertain: true })
       }
       if (typeof found === 'object') return settle(req.key, found.remoteId, earlier.nodeId)
-      // Only a list that provably reaches back to that request lets it go again (same key). Several jobs could be it,
-      // or the list no longer reaches back (cut to its newest jobs): it may have been billed — never posted again.
+      // Only a list that provably reaches back to that request lets it go again (same key). Several jobs could be it
+      // (by node / time), or the list no longer reaches back (cut to its newest jobs): it may have been billed — never
+      // posted again.
       if (found !== 'none') throw unverifiableError()
     } else if (ledger.dropped.includes(req.key) || opts.retryOfUnknown) {
-      // Its ledger record was trimmed, or a retry of an "unknown" take finds none here (the project was opened on
-      // another computer, this computer's storage was cleared): whether (and how) it was sent can no longer be checked.
+      // Sent before — its record was trimmed (`dropped`), or the engine says so (an explicit retry of a "maybe billed"
+      // take) — yet no record of that request is left here (the project was opened on another computer, storage
+      // cleared, written over by another build, forgotten from `dropped`): whether it was billed can no longer be
+      // checked. No evidence never means "never sent".
       throw unverifiableError()
     }
     // canvasapp's page never posts for a model that cannot create or a disabled mode: neither do we

@@ -83,6 +83,8 @@ export type CanvasappErrorCode =
   | 'aborted'
   | 'too-large'
   | 'too-slow'
+  /** Something could not be stored on this computer (the gateway's job ledger): nothing was sent. */
+  | 'storage'
 
 export class CanvasappError extends Error {
   readonly code: CanvasappErrorCode
@@ -132,6 +134,7 @@ const CODE_TEXT: Record<CanvasappErrorCode, string> = {
   aborted: 'Đã dừng tải video.',
   'too-large': 'Video quá lớn để SanoVids tải về.',
   'too-slow': 'Tải video quá lâu nên SanoVids dừng lại.',
+  storage: 'Không ghi được dữ liệu trên máy này (bộ nhớ có thể đã đầy) — chưa gửi gì sang canvasapp, không bị trừ credit.',
 }
 
 /** Shown when canvasapp refuses a job for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance). */

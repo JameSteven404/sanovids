@@ -1116,6 +1116,7 @@ async function submitTake(id: string) {
   }
   try {
     const provider = getProvider(pid)
+    // retryOfUnknown: a retried "maybe billed" take (retry() marks it) — the provider never sends it again without proof
     const { remoteId } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
     // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
     if (gen !== generation) return void emitRun('submitted', t)

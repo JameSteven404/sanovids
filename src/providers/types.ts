@@ -196,8 +196,9 @@ export interface SubmitOptions {
   isCancelled?: () => boolean
   /**
    * An explicit retry of a take whose earlier submit ended "unknown" (Take.submitUnknown): its first request may have
-   * been billed. A paying provider that has no record left to check it against (another computer, cleared storage)
-   * never sends it again — it fails `uncertain` + `unverifiable` (isSubmitUnverifiable).
+   * been billed. A paying provider that has no record left to check it against (another computer, cleared storage,
+   * written over by another build, trimmed) never sends it again — no record is no proof it was never sent. It fails
+   * `uncertain` + `unverifiable` (isSubmitUnverifiable).
    */
   retryOfUnknown?: boolean
 }

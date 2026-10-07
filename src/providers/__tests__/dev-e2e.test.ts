@@ -142,7 +142,26 @@ const enqueue = (...ids: string[]): Take[] => {
 }
 const logOf = (endpoint: string) => useDevLog.getState().entries.filter((e) => e.endpoint === endpoint)
 
+/**
+ * The renderer's localStorage, as the app has it (node has none): the dev provider keeps its job ledger there and reads
+ * its "about to post" record back before every POST — without a working storage it never posts.
+ */
+function memoryLocalStorage(): Storage {
+  const m = new Map<string, string>()
+  return {
+    get length() {
+      return m.size
+    },
+    clear: () => m.clear(),
+    getItem: (k: string) => m.get(k) ?? null,
+    key: (i: number) => [...m.keys()][i] ?? null,
+    removeItem: (k: string) => void m.delete(k),
+    setItem: (k: string, v: string) => void m.set(k, String(v)),
+  }
+}
+
 beforeEach(async () => {
+  vi.stubGlobal('localStorage', memoryLocalStorage())
   vi.useFakeTimers()
   setEngineLockManager(null)
   setEngineHooks({})
@@ -182,6 +201,7 @@ afterEach(async () => {
   vi.useRealTimers()
   resetRealCredits()
   setDevServer(null)
+  vi.unstubAllGlobals()
   // no request ever left the gateway's allowlist
   expect(useDevLog.getState().entries.filter((e) => e.fault === 'not-allowed')).toEqual([])
 })

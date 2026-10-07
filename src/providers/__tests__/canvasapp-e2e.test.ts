@@ -1177,6 +1177,29 @@ describe('gateway e2e: a "maybe billed" take when the job list is cut to its new
     expect(take(t.id).error).toBe(UNVERIFIABLE_SUBMIT_ERROR)
   })
 
+  it.each([
+    ['list without client_request_id', false],
+    ['list with client_request_id', true],
+  ])('processed then 502, then the app restarts without its job ledger (localStorage cleared / written over, %s): the retry never posts again — one job', async (_label, exposeKey) => {
+    Object.assign(fake.state, { dedupe: false, exposeKey })
+    const t = await maybeBilled({ kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } })
+    expect(jobsOf(t.id)).toHaveLength(1)
+    // restart: the takes (IndexedDB) survive, the adapter's localStorage records do not
+    storage = memoryStorage()
+    restart(saved())
+    const posts = fake.jobPosts().length
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(2 * 60_000)
+    expect(fake.jobPosts()).toHaveLength(posts) // no evidence of that request is never "it was never sent"
+    expect(jobsOf(t.id)).toHaveLength(1)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNVERIFIABLE_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUnverifiableSubmit(take(t.id))).toBe(true)
+    // a new take still runs
+    const [n] = enqueue('s2')
+    await run(2 * 60_000)
+    expect(take(n.id).status).toBe('completed')
+  })
+
   it('retry an hour later while the list still reaches back (an ended job older than the request is listed): sent again with the SAME key — one job', async () => {
     Object.assign(fake.state, { dedupe: false, listCap: 200 })
     const t = await maybeBilled({ kind: 'network' }) // nothing reached canvasapp
