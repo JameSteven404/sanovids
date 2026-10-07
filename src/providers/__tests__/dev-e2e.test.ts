@@ -765,11 +765,7 @@ describe('dev mode e2e: a lost answer next to a duplicated project', () => {
         }),
       )
     boot()
-    // (a take of another scene ran before: the job list says on which node each job is — an empty one does not, and B
-    // would then wait for A's POST like a take of its own scene)
-    const [z] = enqueue('s2')
-    await run(300)
-    expect(take(z.id).remoteId).not.toBeNull()
+    // (a new bridge session, its job list empty: that never makes B, on the copy's node, wait for A's POST)
     // the original: take A's POST never gets through, the app closes while A is still "processing"
     const down = server.addFault({ endpoint: 'job-create', fault: { kind: 'network' }, sticky: true })
     const [a] = enqueue('s1')
@@ -777,7 +773,7 @@ describe('dev mode e2e: a lost answer next to a duplicated project', () => {
     const pOnDisk = JSON.parse(JSON.stringify(takes())) as Take[]
     await run(60_000) // (the closed app's last attempts: still nothing reaches the simulated canvasapp)
     server.removeFault(down.id)
-    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.snapshot().jobs).toHaveLength(0)
     boot() // restart
     // the copy: take B of the same scene; the simulated canvasapp creates its job, the answer is lost
     useProject.getState().loadProject(copyProject())
@@ -785,7 +781,7 @@ describe('dev mode e2e: a lost answer next to a duplicated project', () => {
     server.addFault({ endpoint: 'job-create', fault: { kind: 'lost-response' } })
     const [b] = enqueue('s1')
     await run(300)
-    expect(server.snapshot().jobs).toHaveLength(2)
+    expect(server.snapshot().jobs).toHaveLength(1)
     const p2OnDisk = JSON.parse(JSON.stringify(takes())) as Take[]
     // while B waits to look for its job, the original is opened: A is looked up — B's job is on another node, never A's:
     // nothing of A's in a read that surely shows its job → its POST made nothing → A is sent again (same key): its own job
@@ -801,8 +797,8 @@ describe('dev mode e2e: a lost answer next to a duplicated project', () => {
     const job = jobOf(b.id)!
     expect(job.canvas_node_id).toBe(sceneNodeId('p2', 's1'))
     expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: `${job.project_id}:${job.job_id}` })
-    expect(server.snapshot().jobs).toHaveLength(3) // Z's, B's, A's: one each, nothing paid twice
-    expect(server.balance()).toBe(1000 - costOf(project().scenes[1].settings) - 2 * S1_COST)
+    expect(server.snapshot().jobs).toHaveLength(2) // B's, A's: one each, nothing paid twice
+    expect(server.balance()).toBe(1000 - 2 * S1_COST)
   })
 })
 

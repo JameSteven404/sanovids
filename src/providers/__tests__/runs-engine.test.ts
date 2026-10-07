@@ -21,7 +21,17 @@ import { transferLabel, useTakeTransfers } from '../../store/takeTransfers'
 import { clearTakeWaits, useTakeWaits, waitLabel, waitText } from '../../store/takeWaits'
 import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
-import { holdNewSubmits, isUncertainSubmit, remoteVideoReady, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
+import {
+  holdNewSubmits,
+  isUncertainSubmit,
+  lateRemoteIds,
+  remoteVideoReady,
+  setEngineHooks,
+  setEngineLockManager,
+  setLateRemoteIdStorage,
+  UNKNOWN_SUBMIT_ERROR,
+  useRuns,
+} from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
 import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
@@ -505,6 +515,129 @@ describe('runs engine with a provider', () => {
     await vi.advanceTimersByTimeAsync(250)
     expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
     expect(new Set(f.submitted.map((r) => r.key))).toEqual(new Set([id]))
+  })
+
+  it.each([
+    ['its submit', 'submit'],
+    ['its recovery after a reload', 'recover'],
+  ] as const)('review: a take cancelled while %s is in doubt AT ONCE — "Thử lại" before that settles re-sends THE SAME take, never a new key', async (_label, path) => {
+    const f = fakeProvider('dev')
+    let settle: (e: unknown) => void = () => undefined
+    const pending = () => new Promise<never>((_, reject) => (settle = reject))
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return pending()
+    }
+    if (path === 'recover') f.p.recover = () => pending()
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    if (path === 'recover') {
+      useRuns.getState().loadRuns({ takes: useRuns.getState().takes, credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    // canvasapp hangs (or main still sends the POST of the page that reloaded): "Huỷ", then "Thử lại" at once
+    useRuns.getState().cancel(id)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: null, submitUnknown: true })
+    expect(isUncertainSubmit(take(id))).toBe(true)
+    expect(useRuns.getState().retry(id)).toMatchObject({ queued: 1 })
+    expect(useRuns.getState().takes).toHaveLength(1)
+    // the first one ends without an answer; the take goes again as itself — one key ever sent
+    settle(Object.assign(new Error('mất kết nối'), { uncertain: true }))
+    f.p.submit = async (req) => {
+      f.submitted.push(req)
+      return { remoteId: 'r_' + req.key }
+    }
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
+    expect(new Set(f.submitted.map((r) => r.key))).toEqual(new Set([id]))
+    // (sent again on purpose: the provider looks for its job first, however long after — JobRequest.resend)
+    expect(f.submitted[f.submitted.length - 1].resend).toBe(true)
+  })
+
+  it('review: the doubt of a cancel goes when that submit shows nothing billable was sent — "Thử lại" is then a new take, as before', async () => {
+    const f = fakeProvider('dev')
+    let settle: (e: unknown) => void = () => undefined
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      return new Promise<never>((_, reject) => (settle = reject))
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(id)
+    expect(take(id).submitUnknown).toBe(true)
+    // the provider stopped before its request (isCancelled): nothing sent
+    settle(Object.assign(new Error('Đã huỷ trước khi gửi'), { code: 'cancelled' }))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: null })
+    expect(take(id).submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(take(id))).toBe(false)
+  })
+
+  it('review: a provider that may have had a request of the take keeps the doubt, whatever the submit said; a queued take it knows a request of is in doubt when cancelled', async () => {
+    const f = fakeProvider('dev')
+    const billed = new Set<string>()
+    let settle: (e: unknown) => void = () => undefined
+    f.p.mayHaveBilled = (key) => billed.has(key)
+    f.p.submit = (req) => {
+      f.submitted.push(req)
+      billed.add(req.key) // its request went out
+      return new Promise<never>((_, reject) => (settle = reject))
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(id)
+    // (a deferred answer that says nothing of the request already out)
+    settle(Object.assign(new Error('chờ'), { code: 'deferred' }))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    // a take a reload left queued although its request went out (its state was not saved yet): cancelled → in doubt
+    useRuns.getState().enqueue(['s1'])
+    const q = useRuns.getState().takes[1]
+    billed.add(q.id)
+    useRuns.getState().cancel(q.id)
+    expect(take(q.id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    expect(isUncertainSubmit(take(q.id))).toBe(true)
+  })
+
+  it('review: a remote id that comes back after the take\'s project was closed is given back when it is opened again (lateRemoteIds) — never "không rõ", never sent again', async () => {
+    const store = new Map<string, string>()
+    setLateRemoteIdStorage({ get: (k) => store.get(k) ?? null, set: (k, v) => void store.set(k, v) })
+    try {
+      const f = fakeProvider('dev')
+      let answer: (v: { remoteId: string }) => void = () => undefined
+      f.p.submit = (req) => {
+        f.submitted.push(req)
+        return new Promise((resolve) => (answer = resolve))
+      }
+      // the provider forgot the job (its own records are capped): recovering finds nothing
+      f.p.recover = async () => null
+      registerProvider(f.p)
+      useRuns.getState().enqueue(['s2'])
+      const id = useRuns.getState().takes[0].id
+      await vi.advanceTimersByTimeAsync(250)
+      const onDisk = JSON.parse(JSON.stringify(useRuns.getState().takes)) as Take[]
+      // another project is opened; the answer comes back meanwhile
+      useRuns.getState().loadRuns(null)
+      answer({ remoteId: 'r_' + id })
+      await vi.advanceTimersByTimeAsync(250)
+      // the project again: the take resumes with its job
+      useRuns.getState().loadRuns({ takes: onDisk, credits: 100, spent: 0 })
+      expect(take(id)).toMatchObject({ status: 'processing', remoteId: 'r_' + id })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(take(id).remoteId).toBe('r_' + id)
+      expect(f.submitted).toHaveLength(1)
+      // once loaded (and saved) with it, the entry goes
+      useRuns.getState().loadRuns({ takes: JSON.parse(JSON.stringify(useRuns.getState().takes)), credits: 100, spent: 0 })
+      expect(lateRemoteIds()).toEqual({})
+    } finally {
+      setLateRemoteIdStorage(undefined)
+    }
   })
 
   it('only the tab holding the engine lock runs jobs; another tab takes over when it is released', async () => {

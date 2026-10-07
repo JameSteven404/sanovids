@@ -205,12 +205,14 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
   const rec = { projectId: P, nodeId: node('s2'), at: T }
   const may = (over: Partial<CanvasJob>, r: typeof rec & { before?: string[] } = rec) => sentMayOwn(job(over), 'take_lost', r, P, false)
 
-  it('same node, around the POST → reserved; far before / after, another node, listed before, another project → not', () => {
+  it('same node → reserved, whatever canvasapp says of its creation time; another node, listed before, another project → not', () => {
     expect(may({ created_at: new Date(T + 5000).toISOString() })).toBe(true)
     expect(may({ created_at: new Date(T - CREATED_SKEW_MS + 1000).toISOString() })).toBe(true)
     expect(may({ created_at: new Date(T + CREATED_SKEW_MS + POST_WINDOW_MS - 1000).toISOString() })).toBe(true)
-    expect(may({ created_at: new Date(T - 20 * 3600_000).toISOString() })).toBe(false)
-    expect(may({ created_at: new Date(T + 20 * 3600_000).toISOString() })).toBe(false)
+    // MONEY (review: this computer's clock a day or more off canvasapp's): created_at far from the POST says nothing —
+    // the POST's own job imported as another take would make the take post again
+    expect(may({ created_at: new Date(T - 20 * 3600_000).toISOString() })).toBe(true)
+    expect(may({ created_at: new Date(T + 3 * 86_400_000).toISOString() })).toBe(true)
     expect(may({ canvas_node_id: node('s1') })).toBe(false)
     expect(may({}, { ...rec, before: ['job1'] })).toBe(false)
     expect(sentMayOwn(job(), 'take_lost', rec, 'proj2', false)).toBe(false)
@@ -222,7 +224,7 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
   })
 
   it('a list that keys only some jobs (VERIFY): a job shown WITHOUT its key is judged by node and time — never offered while it may be that POST’s', () => {
-    // fuzz root cause (canvasapp-fuzz.test.ts, partial keys): "the list has keys" made every job without one importable
+    // fuzz root cause (canvasappFuzz.ts, partial keys): "the list has keys" made every job without one importable
     expect(sentMayOwn(job({ created_at: new Date(T + 5000).toISOString() }), 'take_lost', rec, P, true)).toBe(true)
     expect(sentMayOwn(job({ canvas_node_id: node('s1') }), 'take_lost', rec, P, true)).toBe(false)
     // a job shown with another key is never that POST's; one with its key always is
@@ -303,13 +305,11 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
     const { skipped, r } = codes([job()], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
     expect(skipped).toEqual({ job1: 'maybe-pending' })
     expect(r.skipped[0].pendingTakeId).toBe('take_lost')
-    // how long around that POST a job is held (the dialog says it): 14 h with a time zone, 27 h without, none by key
-    expect(r.skipped[0].windowHours).toBe(CREATED_SKEW_MS / 3600_000)
-    const naiveMade = codes([job({ created_at: naive(T + 5_000, 0) })], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
-    expect(naiveMade.r.skipped[0]).toMatchObject({ code: 'maybe-pending', windowHours: NAIVE_CREATED_SKEW_MS / 3600_000 })
+    // held whenever canvasapp says it was made (no window of hours: its clock is never trusted for this)
+    const naiveMade = codes([job({ created_at: naive(T + 30 * 3600_000, 0) })], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
+    expect(naiveMade.r.skipped[0]).toEqual({ jobId: 'job1', sceneId: 's2', code: 'maybe-pending', pendingTakeId: 'take_lost' })
     const noTime = codes([job({ created_at: undefined })], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
     expect(noTime.r.skipped[0].code).toBe('maybe-pending')
-    expect(noTime.r.skipped[0].windowHours).toBeUndefined()
     const settled = codes([job()], ctx({ ledger: { jobs: { take_lost: { remoteId: encodeRemoteId(P, 'other') } }, sent: { take_lost: rec }, imported: {} } }))
     expect(settled.ok).toEqual(['job1'])
   })

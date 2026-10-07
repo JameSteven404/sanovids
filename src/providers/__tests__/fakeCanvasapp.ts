@@ -1,5 +1,5 @@
 // The strict fake canvasapp.io.vn + electron/main.cjs over IPC, shared by the gateway's end-to-end tests
-// (canvasapp-e2e.test.ts) and its seeded fault-injection simulation (canvasapp-fuzz.test.ts). Not a test file itself.
+// (canvasapp-e2e.test.ts) and its seeded fault-injection simulation (canvasappFuzz.ts). Not a test file itself.
 // The fake is strict where canvasapp is: the canvas must have exactly canvasPayload()'s keys ("Invalid canvas
 // payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — the SAME validators the in-app dev
 // server uses (providers/dev/validate.ts) — and every request must pass the endpoint allowlist of electron/main.cjs
@@ -141,6 +141,13 @@ export function fakeCanvasapp() {
     dedupeConflict: false,
     /** Job list items omit model_profile and duration (VERIFY): never a reason to rule a job out. */
     hideSettings: false,
+    /**
+     * How the job list writes a job beyond the fields above (VERIFY: creation_mode of SanoVids' own jobs, the clip
+     * length as duration, a model's display name…): gets the item as built, returns the item listed.
+     */
+    listItem: null as null | ((item: Json, job: FakeJob) => Json),
+    /** The job list holds only the newest N jobs of the project (a list that pages: VERIFY); null = all. */
+    listLimit: null as number | null,
     /** created_at of a new job, from the time it is made (default ISO 8601 UTC; undefined = not listed). */
     createdAt: (ms: number): unknown => new Date(ms).toISOString(),
     /** GET /api/video-profiles answer (`profiles` key, as canvasapp's page reads it). */
@@ -179,13 +186,19 @@ export function fakeCanvasapp() {
   function publicJob(j: FakeJob): Json {
     const { body: _b, script: _s, cost: _c, project_id: _p, madeAt: _m, client_request_id, canvas_node_id, created_at, ...pub } = j
     const { model_profile, duration, ...rest } = pub
-    return {
+    const item = {
       ...rest,
       ...(state.hideSettings ? {} : { model_profile, duration }),
       ...(state.hideNode ? {} : { canvas_node_id }),
       ...(created_at === undefined ? {} : { created_at }),
       ...(state.exposeKey || state.listKeyOf?.(j) ? { client_request_id } : {}),
     }
+    return state.listItem ? state.listItem(item, j) : item
+  }
+  /** The jobs of project `pid` the job list shows (the newest `listLimit`, oldest first). */
+  const listedJobs = (pid: string | null) => {
+    const all = state.jobs.filter((j) => j.project_id === pid)
+    return state.listLimit === null ? all : all.slice(-state.listLimit)
   }
 
   function createJob(b: Json): BridgeResponse {
@@ -279,7 +292,7 @@ export function fakeCanvasapp() {
     if (path === '/api/video-jobs' && req.method === 'POST') return createJob(req.json as Json)
     if (path === '/api/video-jobs' && req.method === 'GET') {
       const pid = new URLSearchParams(query).get('project_id')
-      return ok(state.jobs.filter((j) => j.project_id === pid).map(advance).map(publicJob))
+      return ok(listedJobs(pid).map(advance).map(publicJob))
     }
     const promptOf = /^\/api\/video-jobs\/([^/]+)\/prompt$/.exec(path)
     if (promptOf && req.method === 'GET') {
@@ -463,6 +476,8 @@ export function fakeCanvasapp() {
     handle,
     /** A job as the job list shows it (what a client can know of it). */
     listView: (j: FakeJob) => publicJob(j),
+    /** Whether the job list shows job `j` now (listLimit). */
+    isListed: (j: FakeJob) => listedJobs(j.project_id).includes(j),
     /** Stop every video download of the page (main does so when the page reloads, navigates or logs out). */
     closeDownloads: () => downloads.closeAll(),
     /** A client_request_id siteJob() made (canvasapp's own page), never one SanoVids sends. */

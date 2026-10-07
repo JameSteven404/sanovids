@@ -3,82 +3,64 @@
 // <canvasapp-lanes> and <canvasapp-job-list-cache> blocks run as-is, the 60 s request timeout, requests that go on
 // after the page that sent them went away) → the strict fake canvasapp.io.vn of the e2e tests (./fakeCanvasapp.ts).
 // No network, fake clock (vitest fake timers), own PRNG (mulberry32), numbered ids: a seed replays exactly.
+// Not a test file itself: canvasapp-fuzz-1…4.test.ts each run a share of the seeds (vitest runs them in parallel) with
+// this file's defineFuzz, after mocking the media store and the take ids (./canvasappFuzzMocks.ts).
 //
 // Each seed draws a server (client_request_id dedupe off — the worst case — or on, a repeated key answered 409 or with
 // its job; the job list with client_request_id on all / some / no jobs, with or without canvas_node_id, model_profile
-// and duration; created_at zoned, with an offset, naive in another time zone, epoch seconds / ms, unreadable,
-// missing; a server clock off by up to hours) and a scenario: 1–3 SanoVids projects (one may be a copy with the same
-// scene ids), 1–4 scenes each, takes queued at random times, jobs made on the bridge nodes on canvasapp's own page
-// (sometimes edited there), "Nhập job" scans + claims, and faults at random points — a request that never reaches
-// canvasapp, a POST processed whose answer is lost, an answer slower than main's 60 s timeout, 5xx / 429 / 402,
-// job-list reads that fail, are slow or come from main's 15 s cache, a page reload (the page's state and in-flight
-// answers gone, storage and main's requests kept; the takes as last saved) right now or at any await point, cancel,
-// "Chạy lại" of uncertain takes, a new take for a failed one, project switches, logout / login, this computer's clock
-// set back, storage that refuses writes for a while. Then the network heals and a diligent user presses "Chạy lại" on
-// every take still "không rõ", in every project, until nothing changes.
+// and duration — or with values SanoVids does not expect for its own jobs: creation_mode 'api', the clip length as
+// duration, a model's display name (VERIFY); a list that holds only the newest few jobs (pages); created_at zoned, with
+// an offset, naive in another time zone, epoch seconds / ms, unreadable, missing; a server clock off by up to three
+// days) and a scenario: 1–3 SanoVids projects (one may be a copy with the same scene ids), 1–4 scenes each, takes queued
+// at random times, jobs made on the bridge nodes on canvasapp's own page (sometimes edited there) and jobs deleted
+// there, "Nhập job" scans + claims, and faults at random points — a request that never reaches canvasapp, a POST
+// processed whose answer is lost, an answer slower than main's 60 s timeout, 5xx / 429 / 402, job-list reads that fail,
+// are slow or come from main's 15 s cache, a page reload (the page's state and in-flight answers gone, storage and
+// main's requests kept; the takes as last saved) right now or at any await point, cancel (also of a take being sent,
+// then "Thử lại" at once), "Chạy lại" of uncertain takes, a new take for a failed / cancelled one, project switches,
+// logout / login, this computer's clock set back, storage that refuses writes for a while, a ledger that keeps only a
+// few job records. Then the network heals and a diligent user presses "Chạy lại" on every take still "không rõ", in
+// every project, until nothing changes.
 //
 // Invariants (docs/GATEWAY-CANVASAPP.md §4 / §6), checked after every step and at the end:
-//   I1 money     with dedupe off, canvasapp holds at most ONE job per SanoVids take key (client_request_id).
+//   I1 money     with dedupe off, canvasapp made at most ONE job per SanoVids take key (client_request_id), deleted
+//                jobs included; and no SanoVids job exists for a take that says it was not billed (failed / cancelled
+//                without its remote id and without "không rõ" — "Thử lại" would make a NEW take, a second charge).
 //   I2 one owner no job is the remoteId (or the ledger's job) of two takes; an imported take's job is never a SanoVids
 //                take's job.
 //   I3 own job   a SanoVids take's remoteId / ledger job carries its own client_request_id; an imported take's job was
 //                made on canvasapp's page. The one exception is the documented residual risk without client_request_id
 //                in the list (VERIFY): a job made on the site from the take's node with the take's prompt (model,
 //                duration — as far as the list says them), listed by the first read that surely showed the take's own
-//                job, while the take's own POST made nothing (counted: residualSameRequest).
+//                job and by no read the page got before the take's last POST, while the take's own POST made nothing
+//                (counted: residualSameRequest).
 //   I4 liveness  after the healthy period no take is queued / processing (deferred, sending); a take left "không rõ"
 //                is allowed only when its job genuinely cannot be told apart from what the page can know (another
-//                candidate the page cannot rule out, or a job another unanswered POST may own: counted, reported).
+//                candidate the page cannot rule out, its own job listed as differing from the request, a job that
+//                could be its own deleted / paged off the list, or a job another unanswered POST may own: counted).
 //   I5 hygiene   no unhandled rejection; no timer left once the engine is reset; nothing electron/main.cjs would refuse,
 //                no malformed body (422).
 // Fault model (what the adapter is allowed to bet on, docs §4): a POST's job, if it makes one, exists by the time its
 // answer / error reaches the page + SETTLE_MS (30 s) — here at most 20 s after main gave up on it — and a POST of a page
-// that went away ends within POST_IN_FLIGHT_MS; the clock never jumps forward.
+// that went away ends within POST_IN_FLIGHT_MS; the clock never jumps forward; a job is deleted on canvasapp's page
+// only after a read SanoVids kept listed it (one deleted unseen cannot be told from none: docs §6).
 //
-// `npm test` runs seeds 1…150. More: SANOVIDS_FUZZ_SEEDS=5000 [SANOVIDS_FUZZ_FROM=1] npx vitest run canvasapp-fuzz;
-// one seed with its whole trace: SANOVIDS_FUZZ_SEED=1234; every residual / excused case: SANOVIDS_FUZZ_NOTES=1.
+// `npm test` runs seeds 1…80 (20 per spec file, ~2 s each). More: SANOVIDS_FUZZ_SEEDS=5000 [SANOVIDS_FUZZ_FROM=1] npx vitest run
+// canvasapp-fuzz; one seed with its whole trace: SANOVIDS_FUZZ_SEED=1234; every residual / excused case:
+// SANOVIDS_FUZZ_NOTES=1. The summary line is printed only when seeds were asked for (or on a violation).
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-
-const media = vi.hoisted(() => new Map<string, Blob>())
-const ids = vi.hoisted(() => ({ n: 0 }))
-vi.mock('../../lib/imageStore', () => {
-  let n = 0
-  return {
-    putBlob: vi.fn(async (b: Blob, prefix = 'img') => {
-      const id = `${prefix}_${++n}`
-      media.set(id, b)
-      return id
-    }),
-    getBlob: vi.fn(async (id: string) => media.get(id) ?? null),
-    getUrl: vi.fn(async () => null),
-    cachedUrl: () => null,
-    deleteMedia: vi.fn(async (id: string) => void media.delete(id)),
-    dataUrlToBlob: () => new Blob(),
-    useMediaUrl: () => null,
-  }
-})
-// Take ids, download ids…: numbered per seed (a seed must replay exactly).
-vi.mock('../../core/ids', async (importOriginal) => {
-  const orig = await importOriginal<typeof import('../../core/ids')>()
-  return {
-    ...orig,
-    newId: (prefix = '') => {
-      const id = `00000000-0000-4000-8000-${(++ids.n).toString(16).padStart(12, '0')}`
-      return prefix ? `${prefix}_${id}` : id
-    },
-  }
-})
+import { ids, media } from './canvasappFuzzMocks'
 
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { reconstructSiteJob } from '../canvasapp/siteJobs'
 import { scanForImport } from '../../siteJobActions'
 import { useProject } from '../../store/project'
-import { isUncertainSubmit, resumeProviderPolling, setEngineHooks, setEngineLockManager, useRuns } from '../../store/runs'
+import { isUncertainSubmit, resumeProviderPolling, setEngineHooks, setEngineLockManager, setLateRemoteIdStorage, useRuns } from '../../store/runs'
 import { useTakeWaits } from '../../store/takeWaits'
 import { createCanvasappApi, type CanvasJob, type TransportRequest } from '../canvasapp/api'
 import { createCanvasappProvider, JOBS_KEY, type CanvasappProvider, type KeyValueStorage } from '../canvasapp/adapter'
 import { clientRequestIdFor, decodeRemoteId, modelProfileOf, sceneNodeId } from '../canvasapp/mapping'
-import { inPostWindow, listedDuration } from '../canvasapp/siteJobs'
+import { listedDuration } from '../canvasapp/siteJobs'
 import { createDesktopTransport, type BridgeResponse, type CanvasappBridge } from '../canvasapp/transport'
 import { gatewayProvider, getProvider, registerProvider, useProviderPrefs } from '../index'
 import { fakeCanvasapp, mainBlock, mainRoutes, mainSource, type FakeJob } from './fakeCanvasapp'
@@ -181,6 +163,18 @@ interface Cfg {
   hideSettings: boolean
   /** SanoVids' storage refuses writes now and then (full). */
   storageFaults: boolean
+  /** creation_mode in the list: absent, 'canvas' for every job, null, or 'api' for the jobs SanoVids posted (VERIFY). */
+  creationMode: 'absent' | 'canvas' | 'null' | 'api-for-sanovids'
+  /** duration in the list: as posted, the clip length (+0.04 s), a numeric string, or "5s" (unreadable). */
+  listDuration: 'exact' | 'clip' | 'string' | 'suffix'
+  /** model_profile in the list: as posted, or the model's display name. */
+  listModel: 'exact' | 'display'
+  /** The list holds only the newest N jobs (null = all). */
+  listLimit: number | null
+  /** Jobs are deleted on canvasapp's page now and then. */
+  deletions: boolean
+  /** The adapter's ledger keeps only this many job records (null = its default). */
+  maxJobRecords: number | null
 }
 
 interface Violation {
@@ -209,7 +203,8 @@ function drawCfg(rng: Rng, seed: number): Cfg {
     hideNode: rng.chance(0.2),
     created,
     zoneH: rng.int(-12, 14),
-    skewMs: rng.chance(0.7) ? rng.int(-120_000, 120_000) : rng.int(-10, 10) * 3600_000 + rng.int(-600_000, 600_000),
+    // (review: a clock a day or more off canvasapp's; nothing may rule a POST's own job out by its created_at)
+    skewMs: rng.chance(0.6) ? rng.int(-120_000, 120_000) : rng.chance(0.5) ? rng.int(-10, 10) * 3600_000 + rng.int(-600_000, 600_000) : rng.int(-72, 72) * 3600_000 + rng.int(-600_000, 600_000),
     projects: rng.int(1, 3),
     duplicate: rng.chance(0.5),
     intensity: 0.3 + rng.float() * 1.2,
@@ -219,6 +214,14 @@ function drawCfg(rng: Rng, seed: number): Cfg {
     dedupeConflict: rng.chance(0.5),
     hideSettings: rng.chance(0.2),
     storageFaults: rng.chance(0.25),
+    creationMode: rng.weighted({ absent: 6, canvas: 1, null: 0.5, 'api-for-sanovids': 1 }),
+    listDuration: rng.weighted({ exact: 6, clip: 1, string: 1, suffix: 0.5 }),
+    listModel: rng.weighted({ exact: 6, display: 1 }),
+    listLimit: rng.chance(0.15) ? rng.int(6, 30) : null,
+    deletions: rng.chance(0.3),
+    // (a few dozen: what a take of a project closed for long — the ledger alone would lose it — needs; a reload a
+    // second after a job was found never has thousands of jobs settle in between)
+    maxJobRecords: rng.chance(0.15) ? rng.int(12, 30) : null,
   }
 }
 
@@ -302,7 +305,7 @@ function seedMedia() {
 
 type Ledger = {
   jobs: Record<string, { remoteId: string; nodeId?: string; before?: string[]; beforeAt?: number }>
-  sent: Record<string, { projectId: string; nodeId: string; at: number; before?: string[]; beforeAt?: number; endedAt?: number; covered?: string[] }>
+  sent: Record<string, { projectId: string; nodeId: string; at: number; before?: string[]; beforeAt?: number; endedAt?: number; covered?: string[]; seen?: string[]; taken?: string[] }>
   imported: Record<string, { remoteId: string; nodeId: string }>
 }
 
@@ -338,7 +341,29 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
     hideSettings: cfg.hideSettings,
     balance: 1e9,
     createdAt: createdFormatter(cfg),
+    listLimit: cfg.listLimit,
+    listItem: (item: Record<string, unknown>, j: FakeJob) => {
+      const out = { ...item }
+      if (cfg.creationMode === 'canvas') out.creation_mode = 'canvas'
+      else if (cfg.creationMode === 'null') out.creation_mode = null
+      else if (cfg.creationMode === 'api-for-sanovids') out.creation_mode = fake.isSiteKey(j.client_request_id) ? 'canvas' : 'api'
+      if ('duration' in out) {
+        if (cfg.listDuration === 'clip') out.duration = j.duration + 0.04
+        else if (cfg.listDuration === 'string') out.duration = String(j.duration)
+        else if (cfg.listDuration === 'suffix') out.duration = `${j.duration}s`
+      }
+      if ('model_profile' in out && cfg.listModel === 'display') out.model_profile = j.model_profile === 'seedance_2_5' ? 'Seedance 2.5' : 'MiniMax-H3'
+      return out
+    },
   })
+  /** Jobs deleted on canvasapp's page (gone from the list, still paid for): I1 counts them. */
+  const deleted: FakeJob[] = []
+  /** job id → when (real time) a read of a live page first got it listed. */
+  const firstListed = new Map<string, number>()
+  /** job ids a read of a live page got listed while storage kept what the page noted (deletable: docs §6). */
+  const durablyListed = new Set<string>()
+  const lateStore = new Map<string, string>()
+  setLateRemoteIdStorage({ get: (k) => lateStore.get(k) ?? null, set: (k, v) => void lateStore.set(k, v) })
   const drawScript = (): Partial<FakeJob>[] => {
     const steps: Partial<FakeJob>[] = [{ status: 'queued', progress: 0 }]
     for (let i = rng.int(0, 3); i > 0; i--) steps.push({ status: 'processing', progress: 10 + i * 20 })
@@ -564,7 +589,9 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
       try {
         const jobs = await list(projectId)
         if (verbose) log(`  p${me.n} list ${projectId} sent@${((sentAt - T0) / 1000).toFixed(1)} → ${jobs.map((j) => j.job_id).join(',')}`)
-        noteCovering(projectId, sentAt, jobs, me.n)
+        // (the clock set back while it was on its way: when it was sent is unknown on the clock now — the adapter
+        // never counts such a read as one that surely shows anything: readList)
+        noteCovering(projectId, localNow() < sentAt ? -Infinity : sentAt, jobs, me.n)
         return jobs
       } catch (e) {
         if (verbose) log(`  p${me.n} list failed: ${(e as Error).message.slice(0, 40)}`)
@@ -578,6 +605,7 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
       sleep: (ms) => new Promise<void>((resolve) => setTimeout(() => me.alive && resolve(), ms)),
       imageSize: async () => ({ width: 1920, height: 1080 }),
       now: localNow,
+      ...(cfg.maxJobRecords !== null ? { maxJobRecords: cfg.maxJobRecords } : {}),
     })
     registerProvider(me.provider)
     ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: me.bridge } }
@@ -622,6 +650,10 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
   /** key → `at` of its unanswered POST as last seen in the ledger. */
   const lastPostAt = new Map<string, number>()
   function noteCovering(projectId: string, sentLocal: number, jobs: CanvasJob[], pageN: number) {
+    for (const j of jobs) {
+      if (!firstListed.has(j.job_id)) firstListed.set(j.job_id, Date.now())
+      if (!storageFull) durablyListed.add(j.job_id)
+    }
     const l = ledger()
     for (const [k, r] of Object.entries(l.sent)) {
       if (k in l.jobs || r.projectId !== projectId || !Number.isFinite(r.at)) continue
@@ -642,13 +674,18 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
    */
   function sameRequestSiteJob(key: string, job: FakeJob): boolean {
     if (!fake.isSiteKey(job.client_request_id) || typeof fake.listView(job).client_request_id === 'string') return false
-    if (fake.state.jobs.some((j) => j.client_request_id === clientRequestIdFor(key))) return false
+    if ([...fake.state.jobs, ...deleted].some((j) => j.client_request_id === clientRequestIdFor(key))) return false
     const own = fake.jobPosts().find((b) => b.client_request_id === clientRequestIdFor(key))
     if (!own) return false
     // not listed by a read that surely showed the take's own job, if any: the page knew it was not its own
     const at = lastPostAt.get(key)
     const covering = at === undefined ? undefined : firstCovering.get(`${key}@${at}`)
     if (covering && !covering.jobs.has(job.job_id) && (covering.durable || covering.page === page?.n)) return false
+    // listed by a read the page got before the take's last POST went out: the page knew it was there before (review:
+    // a POST sent again after a lost answer keeps every job known so far out of its lookups)
+    const posts = fake.log.filter((c) => c.method === 'POST' && c.path === '/api/video-jobs' && (c.json as { client_request_id?: string })?.client_request_id === clientRequestIdFor(key))
+    const known = firstListed.get(job.job_id)
+    if (posts.length && known !== undefined && known < posts[posts.length - 1].at) return false
     return (
       // (a list without canvas_node_id cannot tell the node either: VERIFY)
       (cfg.hideNode || job.canvas_node_id === own.canvas_node_id) &&
@@ -667,11 +704,19 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
   }
   const siteKeys = () => new Set(fake.state.jobs.filter((j) => fake.isSiteKey(j.client_request_id)).map((j) => j.job_id))
   function checkMoneyAndOwners(when: string) {
-    // I1: one job per SanoVids key
+    // I1: one job per SanoVids key (deleted ones too: they were paid)
+    const madeJobs = [...fake.state.jobs, ...deleted]
     if (!cfg.dedupe) {
       const per = new Map<string, number>()
-      for (const j of fake.state.jobs) if (!fake.isSiteKey(j.client_request_id)) per.set(j.client_request_id, (per.get(j.client_request_id) ?? 0) + 1)
+      for (const j of madeJobs) if (!fake.isSiteKey(j.client_request_id)) per.set(j.client_request_id, (per.get(j.client_request_id) ?? 0) + 1)
       for (const [key, n] of per) if (n > 1) fail('I1', `${n} jobs carry key …${key.slice(-6)} (${when})`)
+    }
+    // ...and no take that says it was not billed has a job: "Thử lại" on it makes a NEW take (another key, a second
+    // charge) — review: "Huỷ" while it was being sent, then "Thử lại"
+    const keysMade = new Set(madeJobs.map((j) => j.client_request_id))
+    for (const tk of allTakes()) {
+      if (tk.imported || tk.remoteId || (tk.status !== 'failed' && tk.status !== 'cancelled') || isUncertainSubmit(tk)) continue
+      if (keysMade.has(clientRequestIdFor(tk.id))) fail('I1', `take ${tk.id.slice(-4)} is ${tk.status}, not "không rõ", without its job, but canvasapp made one (${when})`)
     }
     const jobById = new Map(fake.state.jobs.map((j) => [j.job_id, j]))
     const site = siteKeys()
@@ -760,6 +805,8 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
       reload: 0.5,
       reloadSoon: 0.6,
       cancelSoon: 0.3,
+      cancelRerun: 0.35,
+      deleteJob: cfg.deletions ? 0.3 : 0,
       switch: cfg.projects > 1 ? 0.5 : 0,
       logout: 0.15,
       site: cfg.siteJobs ? 0.6 : 0,
@@ -796,10 +843,41 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
         break
       }
       case 'rerun': {
-        const x = pickTake((y) => y.status === 'failed' && !isUncertainSubmit(y))
+        const x = pickTake((y) => (y.status === 'failed' || y.status === 'cancelled') && !isUncertainSubmit(y))
         if (x) {
           log(`rerun ${x.id.slice(-4)} (new take)`)
           useRuns.getState().retry(x.id)
+        }
+        break
+      }
+      case 'cancelRerun': {
+        // "Huỷ" on a take being sent (its POST may be on its way, or in a recovery after a reload), then "Thử lại"
+        // at once or a little later — what the queue's buttons do (retry: the same take when in doubt, else a new one)
+        const x = pickTake((y) => y.status === 'processing' && !y.remoteId)
+        if (x) {
+          log(`cancel ${x.id.slice(-4)} while sending`)
+          useRuns.getState().cancel(x.id)
+          const again = () => {
+            if (useProject.getState().project.id !== openId) return
+            const cur = takes().find((y) => y.id === x.id)
+            if (!cur || cur.status !== 'cancelled') return
+            log(`“Thử lại” ${x.id.slice(-4)}${isUncertainSubmit(cur) ? ' (same take)' : ' (new take)'}`)
+            useRuns.getState().retry(x.id)
+          }
+          if (rng.chance(0.5)) again()
+          else later(rng.int(0, 120_000), again)
+        }
+        break
+      }
+      case 'deleteJob': {
+        // the user deletes a job on canvasapp's page — one SanoVids' page has listed (and noted) already
+        const xs = fake.state.jobs.filter((j) => durablyListed.has(j.job_id))
+        if (xs.length) {
+          const j = rng.pick(xs)
+          fake.state.jobs = fake.state.jobs.filter((y) => y !== j)
+          deleted.push(j)
+          log(`SITE deletes ${j.job_id}${fake.isSiteKey(j.client_request_id) ? ' (site job)' : ` (key …${j.client_request_id.slice(-6)})`}`)
+          count('deleted')
         }
         break
       }
@@ -894,6 +972,19 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
   // ---- run ----
   // every change of a take's state, for the trace
   const seen = new Map<string, string>()
+  // A ledger that keeps only a few job records (cfg.maxJobRecords): the takes are saved like store/persist does (≤ 0.8 s
+  // after a change) — a take's remote id is then on disk long before a few dozen jobs settle (the ledger alone would
+  // lose it only for a take left "sending" on disk that long: a project closed meanwhile, store/runs lateRemoteIds).
+  let autosave: ReturnType<typeof setTimeout> | null = null
+  const offAutosave =
+    cfg.maxJobRecords === null
+      ? () => undefined
+      : useRuns.subscribe(() => {
+          autosave ??= setTimeout(() => {
+            autosave = null
+            if (page?.alive) saveRuns()
+          }, 800)
+        })
   const offTrace = useRuns.subscribe((st) => {
     for (const x of st.takes) {
       const sig = `${x.status}|${x.remoteId ?? ''}|${x.submitUnknown ? 'U' : ''}|${(x.error ?? '').slice(0, 50)}`
@@ -971,6 +1062,8 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
 
   // ---- I5: hygiene ----
   offTrace()
+  offAutosave()
+  if (autosave) clearTimeout(autosave)
   page!.alive = false
   useRuns.getState().loadRuns(null)
   await advance(15 * 60_000)
@@ -992,13 +1085,25 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
   function excuse(x: Take, l: Ledger): string | null {
     const rec = l.sent[x.id]
     if (!rec) return null
-    if (cfg.keys === 'all') return null
     const key = clientRequestIdFor(x.id)
     const view = (j: FakeJob) => fake.listView(j) as unknown as CanvasJob
+    const listed = fake.state.jobs.filter((j) => j.project_id === rec.projectId && fake.isListed(j))
+    const taken = new Set([
+      ...[...Object.entries(l.jobs).filter(([k]) => k !== x.id), ...Object.entries(l.imported)].map(([, r]) => decodeRemoteId(r.remoteId)?.jobId),
+      ...(rec.taken ?? []),
+    ])
+    // a job a read listed as possibly its own is gone from the list (deleted on the site, paged off): no read can say
+    // "never made" any more, nor which job is its own
+    const listedIds = new Set(listed.map((j) => j.job_id))
+    const gone = (rec.seen ?? []).filter((id) => !listedIds.has(id) && !taken.has(id) && !rec.before?.includes(id))
+    if (gone.length) {
+      count('excusedGone')
+      return `job(s) ${gone.join(',')} that could be its own are gone from the list`
+    }
+    if (cfg.keys === 'all') return null
     // its own job listed with its key: found exactly, never "không rõ"
-    const ownJob = fake.state.jobs.find((j) => j.client_request_id === key)
+    const ownJob = listed.find((j) => j.client_request_id === key)
     if (ownJob && typeof view(ownJob).client_request_id === 'string') return null
-    const taken = new Set([...Object.entries(l.jobs).filter(([k]) => k !== x.id), ...Object.entries(l.imported)].map(([, r]) => decodeRemoteId(r.remoteId)?.jobId))
     const listedBy = (r: Ledger['sent'][string]) => (r.endedAt ?? r.at + POST_IN_FLIGHT_MS) + SETTLE_MS
     const covering = [
       ...Object.entries(l.sent).filter(([k, r]) => k !== x.id && !(k in l.jobs) && r.projectId === rec.projectId && r.nodeId === rec.nodeId),
@@ -1007,21 +1112,30 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
       .map(([, r]) => r as { before?: string[]; beforeAt?: number })
       .filter((r) => r.beforeAt !== undefined && r.beforeAt >= listedBy(rec))
       .map((r) => new Set(r.before ?? []))
-    const others = fake.state.jobs.filter((j) => {
-      if (j.project_id !== rec.projectId || j.client_request_id === key) return false
+    // what the adapter cannot rule out by what the list says for sure (never by created_at, model, duration,
+    // creation_mode: those only keep a job from being taken)
+    const others = listed.filter((j) => {
+      if (j.client_request_id === key) return false
       const v = view(j)
       if (typeof v.client_request_id === 'string') return false // listed with another key: never its own
       if (typeof v.canvas_node_id === 'string' && v.canvas_node_id !== rec.nodeId) return false
       if (rec.before?.includes(j.job_id) || taken.has(j.job_id)) return false
       if (rec.covered && !rec.covered.includes(j.job_id)) return false
-      if (covering.some((b) => !b.has(j.job_id))) return false
-      if (typeof v.model_profile === 'string' && v.model_profile !== modelProfileOf(x.settings.model)) return false
-      const d = listedDuration(v.duration)
-      if (d !== null && d !== x.settings.duration) return false
-      return inPostWindow(v.created_at, rec.at) ?? true
+      return !covering.some((b) => !b.has(j.job_id))
     })
+    // its own job, listed as something else than the request (VERIFY values): never taken — "không rõ", never posted
+    const differs = (v: CanvasJob) => {
+      if (v.creation_mode !== undefined && v.creation_mode !== null && v.creation_mode !== 'canvas') return true
+      if (typeof v.model_profile === 'string' && v.model_profile !== modelProfileOf(x.settings.model)) return true
+      const d = listedDuration(v.duration)
+      return d !== null && d !== x.settings.duration
+    }
+    const own = ownJob
+    if (own && differs(view(own))) {
+      count('excusedDiffers')
+      return `its job ${own.job_id} is listed as another request (${JSON.stringify(view(own)).slice(0, 120)})`
+    }
     // with its own job there, a job canvasapp gives another prompt for is told apart (the prompt check before settling)
-    const own = fake.state.jobs.find((j) => j.client_request_id === key)
     const posted = fake.jobPosts().find((b) => b.client_request_id === key)
     const confusable = own && posted ? others.filter((j) => String(j.body.prompt).trim() === String(posted.prompt).trim()) : others
     if (others.length && !(own && !confusable.length && others.length <= 3)) {
@@ -1036,7 +1150,6 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
         if (k === x.id || k in l.jobs || r.projectId !== rec.projectId) return false
         if (!(typeof v.canvas_node_id !== 'string' || v.canvas_node_id === r.nodeId) || r.before?.includes(own.job_id)) return false
         if (r.covered && !r.covered.includes(own.job_id)) return false
-        if (!(inPostWindow(v.created_at, r.at) ?? true)) return false
         return r.at >= rec.at || rec.beforeAt === undefined || rec.beforeAt < listedBy(r)
       })
       if (rival) {
@@ -1050,71 +1163,82 @@ async function runSeed(seed: number, verbose: boolean): Promise<{ violations: Vi
 
 // ---------------------------------------------------------------------------------------------------------------
 
-const realMock = getProvider('mock')
-const realDev = getProvider('dev')
-const unhandled: string[] = []
-let currentSeed = 0
-const onUnhandled = (e: unknown) => {
-  unhandled.push(`seed ${currentSeed}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`)
-}
-
-beforeAll(() => {
-  process.on('unhandledRejection', onUnhandled)
-  setEngineLockManager(null)
-  setEngineHooks({})
-})
-afterEach(() => {
-  vi.useRealTimers()
-})
-afterAll(() => {
-  process.off('unhandledRejection', onUnhandled)
-  registerProvider(realMock)
-  registerProvider(realDev)
-  useProviderPrefs.setState({ provider: 'dev' })
-  setEngineLockManager(undefined)
-  delete (globalThis as { window?: unknown }).window
-})
-
 const env = (k: string) => (typeof process !== 'undefined' ? process.env[k] : undefined)
-const ONE = env('SANOVIDS_FUZZ_SEED')
-/** The default run (`npm test`): seeds 1…150, ~15–20 s. */
-const COUNT = Number(env('SANOVIDS_FUZZ_SEEDS') ?? 150)
-const FROM = Number(env('SANOVIDS_FUZZ_FROM') ?? 1)
-/** Print every residual / excused "không rõ" line (SANOVIDS_FUZZ_NOTES=1). */
-const NOTES = !!env('SANOVIDS_FUZZ_NOTES')
+/** Seeds run by `npm test`, split over the spec files. */
+export const DEFAULT_SEEDS = 80
 
-describe('canvasapp gateway: seeded fault-injection simulation', () => {
-  it(
-    ONE ? `seed ${ONE}` : `${COUNT} seeds from ${FROM}: money, owners, liveness, hygiene`,
-    async () => {
-      const seeds = ONE ? [Number(ONE)] : Array.from({ length: COUNT }, (_, i) => FROM + i)
-      const failures: Violation[] = []
-      const realNow = globalThis.performance.now.bind(globalThis.performance)
-      const started = realNow()
-      let excused = 0
-      const totals: Record<string, number> = {}
-      for (const seed of seeds) {
-        currentSeed = seed
-        vi.useFakeTimers()
-        const r = await runSeed(seed, !!ONE)
-        vi.useRealTimers()
-        excused += r.unknownExcused
-        for (const [k, v] of Object.entries(r.stats)) totals[k] = (totals[k] ?? 0) + v
-        if (NOTES) for (const line of r.trace.filter((l) => /RESIDUAL|excused/.test(l))) process.stderr.write(`seed ${seed} ${line}\n`)
-        if (r.violations.length || ONE) {
-          failures.push(...r.violations)
-          const out = ONE ? r.trace : r.trace.slice(-150)
-          process.stderr.write(`\n---- seed ${seed}: ${r.violations.map((v) => `${v.invariant} ${v.message}`).join(' | ') || 'ok'}\n${out.join('\n')}\n`)
+/**
+ * The simulation as one test of spec file `part` of `parts` (canvasapp-fuzz-<part>.test.ts): seeds FROM + i for every
+ * i with i % parts === part - 1 — of DEFAULT_SEEDS, or of SANOVIDS_FUZZ_SEEDS; SANOVIDS_FUZZ_SEED = that one seed, with
+ * its whole trace, in part 1 only. The summary line is printed only when seeds were asked for, or on a violation.
+ */
+export function defineFuzz(part: number, parts: number): void {
+  const ONE = env('SANOVIDS_FUZZ_SEED')
+  const ASKED = env('SANOVIDS_FUZZ_SEEDS')
+  const COUNT = Number(ASKED ?? DEFAULT_SEEDS)
+  const FROM = Number(env('SANOVIDS_FUZZ_FROM') ?? 1)
+  /** Print every residual / excused "không rõ" line (SANOVIDS_FUZZ_NOTES=1). */
+  const NOTES = !!env('SANOVIDS_FUZZ_NOTES')
+  const seeds = ONE ? (part === 1 ? [Number(ONE)] : []) : Array.from({ length: COUNT }, (_, i) => FROM + i).filter((_, i) => i % parts === part - 1)
+
+  const realMock = getProvider('mock')
+  const realDev = getProvider('dev')
+  const unhandled: string[] = []
+  let currentSeed = 0
+  const onUnhandled = (e: unknown) => {
+    unhandled.push(`seed ${currentSeed}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`)
+  }
+
+  beforeAll(() => {
+    process.on('unhandledRejection', onUnhandled)
+    setEngineLockManager(null)
+    setEngineHooks({})
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  afterAll(() => {
+    process.off('unhandledRejection', onUnhandled)
+    registerProvider(realMock)
+    registerProvider(realDev)
+    useProviderPrefs.setState({ provider: 'dev' })
+    setEngineLockManager(undefined)
+    setLateRemoteIdStorage(undefined)
+    delete (globalThis as { window?: unknown }).window
+  })
+
+  describe(`canvasapp gateway: seeded fault-injection simulation (part ${part}/${parts})`, () => {
+    it.skipIf(!seeds.length)(
+      ONE ? `seed ${ONE}` : `${seeds.length} seeds (${FROM}+${part - 1}, every ${parts}th): money, owners, liveness, hygiene`,
+      async () => {
+        const failures: Violation[] = []
+        const realNow = globalThis.performance.now.bind(globalThis.performance)
+        const started = realNow()
+        let excused = 0
+        const totals: Record<string, number> = {}
+        for (const seed of seeds) {
+          currentSeed = seed
+          vi.useFakeTimers()
+          const r = await runSeed(seed, !!ONE)
+          vi.useRealTimers()
+          excused += r.unknownExcused
+          for (const [k, v] of Object.entries(r.stats)) totals[k] = (totals[k] ?? 0) + v
+          if (NOTES) for (const line of r.trace.filter((l) => /RESIDUAL|excused/.test(l))) process.stderr.write(`seed ${seed} ${line}\n`)
+          if (r.violations.length || ONE) {
+            failures.push(...r.violations)
+            const out = ONE ? r.trace : r.trace.slice(-150)
+            process.stderr.write(`\n---- seed ${seed}: ${r.violations.map((v) => `${v.invariant} ${v.message}`).join(' | ') || 'ok'}\n${out.join('\n')}\n`)
+          }
         }
-      }
-      if (seeds.length > 1 || ONE) {
-        process.stderr.write(
-          `\nfuzz: ${seeds.length} seeds in ${Math.round(realNow() - started)} ms — ${failures.length} violation(s) in ${new Set(failures.map((f) => f.seed)).size} seed(s); ${excused} "không rõ" excused; ${JSON.stringify(totals)}\n`,
-        )
-      }
-      expect(unhandled).toEqual([])
-      expect(failures.map((f) => `seed ${f.seed} ${f.invariant}: ${f.message}`)).toEqual([])
-    },
-    30 * 60_000,
-  )
-})
+        if (ASKED || ONE || failures.length) {
+          process.stderr.write(
+            `\nfuzz part ${part}/${parts}: ${seeds.length} seeds in ${Math.round(realNow() - started)} ms — ${failures.length} violation(s) in ${new Set(failures.map((f) => f.seed)).size} seed(s); ${excused} "không rõ" excused; ${JSON.stringify(totals)}\n`,
+          )
+        }
+        expect(unhandled).toEqual([])
+        expect(failures.map((f) => `seed ${f.seed} ${f.invariant}: ${f.message}`)).toEqual([])
+      },
+      30 * 60_000,
+    )
+  })
+}

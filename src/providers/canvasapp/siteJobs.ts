@@ -14,8 +14,10 @@
 // ---- API ----
 //   classifySiteJobs(jobs, ctx)        → { listHasKeys, candidates, skipped } (candidates sorted by scene, then time)
 //   sentMayOwn(job, key, rec, …)       could an unanswered POST of take `key` (ledger.sent) have made this job?
-//   inPostWindow(createdAt, at)        the creation-time window of that rule (shared with the adapter's lookup;
-//                                      createdSkewOf: ±14 h with a time zone, ±27 h without one; null = unknown time)
+//   inPostWindow(createdAt, at)        a creation-time window around a POST (createdSkewOf: ±14 h with a time zone,
+//                                      ±27 h without one; null = unknown time) — only for records of builds before
+//                                      every POST had a `before` (adapter differsFromRequest): never a rule that lets a
+//                                      job go, this computer's clock may be days off canvasapp's
 //   createdTime(v) / zonedTime(v)      a listed time in ms (ISO 8601 or a number in s / ms only, else unknown)
 //   listedDuration(v)                  a listed duration, or null when it is not a number
 //   hintsFor(nodeId, canvas, entries, imageOfUpload)   the node's settings as the bridge canvas / SanoVids' entry hold them
@@ -52,8 +54,9 @@ export function createdSkewOf(v: unknown): number {
 /**
  * Could a job whose created_at is `createdAt` be the job of a POST sent at `at` (local time)? Created within its skew
  * (createdSkewOf) before it, or within that skew + POST_WINDOW_MS after it; null = no usable creation time (each caller
- * decides). The ONE window of the lost-answer lookup (adapter findJob), its rival test and the import's reservation
- * (sentMayOwn): a job is either a POST's to find or importable, never both.
+ * decides). Used only to keep the lost-answer lookup from TAKING a job for a record of an older build without
+ * `before` (adapter differsFromRequest) — never to rule a job out of a POST's (a "none", an import): created_at is on
+ * canvasapp's clock, and this computer's may be days off.
  */
 export function inPostWindow(createdAt: unknown, at: number): boolean | null {
   const t = createdTime(createdAt)
@@ -188,12 +191,6 @@ export interface SiteJobSkipped {
   code: SiteJobSkip
   /** 'maybe-pending': the take whose unanswered POST may have made it. */
   pendingTakeId?: string
-  /**
-   * 'maybe-pending', matched by node and time (no client_request_id in the list) with a readable created_at: how many
-   * hours around that POST a job is held for it (createdSkewOf: 14 with a time zone, 27 without). Absent = held
-   * whenever it was made (its key in the list, or no creation time).
-   */
-  windowHours?: number
 }
 
 export interface SiteJobScan {
@@ -280,18 +277,20 @@ const jobIdsOf = (records: Readonly<Record<string, { remoteId: string }>>): Set<
 /**
  * Could the unanswered POST of take `key` (ledger.sent record `rec`) have made `job`? With client_request_id in the
  * list: exactly when it carries that take's key. Without: a job on the node the POST named, not listed before it, not
- * made after a read that surely showed that POST's job (rec.covered: such a job is listed there, if it exists), created
- * within the window of it (inPostWindow) — an unknown creation time: it could.
- * Broader than the lookup itself (adapter findJob) on purpose inside the window: a job it could own is never imported.
- * The lookup uses the same window and also skips every imported job: a job claimed here is never that POST's.
+ * made after a read that surely showed that POST's job (rec.covered: such a job is listed there, if it exists) —
+ * whenever canvasapp says it was created: created_at is on canvasapp's clock (in a zone it may not say), this
+ * computer's may be days off, and a job of that POST imported as another take would make the take post again (a
+ * second charge). `before` and `covered` bound it in time already (the read right before the POST, the first read
+ * that surely showed its job: every record has them once the list was read after it).
+ * Broader than the lookup itself (adapter findJob) on purpose: a job it could own is never imported. The lookup also
+ * skips every imported job: a job claimed here is never that POST's.
  */
 export function sentMayOwn(job: CanvasJob, key: string, rec: SentLike, projectId: string, listHasKeys: boolean): boolean {
-  // (a job the list shows without its key, next to others with theirs — VERIFY — is judged by node and time like in a
-  // list without keys: it could be that POST's)
+  // (a job the list shows without its key, next to others with theirs — VERIFY — is judged by node like in a list
+  // without keys: it could be that POST's)
   if (listHasKeys && typeof job.client_request_id === 'string') return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key
   if (rec.projectId !== projectId || job.canvas_node_id !== rec.nodeId || rec.before?.includes(job.job_id)) return false
-  if (Array.isArray(rec.covered) && !rec.covered.includes(job.job_id)) return false
-  return inPostWindow(job.created_at, rec.at) ?? true
+  return !(Array.isArray(rec.covered) && !rec.covered.includes(job.job_id))
 }
 
 /** The first unanswered POST that may own `job` (its take id), or null. */
@@ -330,8 +329,7 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     const jobId = typeof job.job_id === 'string' ? job.job_id : ''
     const nodeId = typeof job.canvas_node_id === 'string' ? job.canvas_node_id : null
     const sceneId = nodeId ? (ctx.sceneByNode.get(nodeId) ?? null) : null
-    const skip = (code: SiteJobSkip, pendingTakeId?: string, windowHours?: number) =>
-      skipped.push({ jobId, sceneId, code, ...(pendingTakeId ? { pendingTakeId } : {}), ...(windowHours !== undefined ? { windowHours } : {}) })
+    const skip = (code: SiteJobSkip, pendingTakeId?: string) => skipped.push({ jobId, sceneId, code, ...(pendingTakeId ? { pendingTakeId } : {}) })
     if (!JOB_ID_RE.test(jobId) || seen.has(jobId)) {
       skip('bad-id')
       continue
@@ -343,8 +341,7 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     else if (made.has(jobId)) skip('sanovids')
     else {
       const pending = pendingOwnerOf(job, ctx.ledger, ctx.projectId, listHasKeys)
-      const keyed = listHasKeys && typeof job.client_request_id === 'string'
-      if (pending) skip('maybe-pending', pending, keyed || !Number.isFinite(createdTime(job.created_at)) ? undefined : Math.round(createdSkewOf(job.created_at) / 3600_000))
+      if (pending) skip('maybe-pending', pending)
       else if (listHasKeys && typeof job.client_request_id === 'string' && ownKeys.has(job.client_request_id)) skip('sanovids')
       else if (!nodeId || !sceneId) skip('no-scene')
       else if (ENDED.has(String(job.status))) skip('ended')

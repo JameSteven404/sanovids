@@ -161,7 +161,7 @@ describe('canvasapp job-list cache (electron/main.cjs)', () => {
   })
 
   it('the clock set back: an entry stamped later than now is never served (its age is unknown) — not for the minutes or hours the jump spans', () => {
-    // fuzz root cause (canvasapp-fuzz.test.ts, clock set back): served while `now - at < ttl`, a read from before the
+    // fuzz root cause (canvasappFuzz.ts, clock set back): served while `now - at < ttl`, a read from before the
     // jump looked fresh until the clock caught up — a lookup after a lost answer then took it for a read that surely
     // shows the POST's job, found nothing and posted it again (a second charge)
     const clock = { t: 10_000_000 }
@@ -173,6 +173,21 @@ describe('canvasapp job-list cache (electron/main.cjs)', () => {
     expect(cache.get('a')).toBe(1)
     clock.t -= 1 // a second ago, 1 ms earlier: still not from the future
     expect(cache.get('a')).toBe(1)
+  })
+
+  it('review: a slow answer never replaces the answer of a request sent after it (that one may list a job the page already knows) — unless that one is stamped in the future', () => {
+    const clock = { t: 100_000 }
+    const cache = loadListCache(clock)
+    const slow = { ticket: cache.ticket(), sentAt: clock.t }
+    clock.t += 5_000
+    cache.put('a', cache.ticket(), clock.t, 'newer') // sent 5 s later, answered first
+    clock.t += 3_000
+    cache.put('a', slow.ticket, slow.sentAt, 'older') // the slow one comes back: kept out
+    expect(cache.get('a')).toBe('newer')
+    // the clock set back since the newer one was stamped: it is from the "future" — an answer now replaces it
+    clock.t -= 3600_000
+    cache.put('a', cache.ticket(), clock.t, 'now')
+    expect(cache.get('a')).toBe('now')
   })
 
   it('canvasappRequest times an entry from the moment its request goes out (inside its slot), not from the answer', () => {

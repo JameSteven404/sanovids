@@ -77,6 +77,16 @@ export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID
  * server sees the same format; ours are stable so a scene keeps its node and a retried take keeps its key.
  */
 export function uuidFromKey(text: string): string {
+  // (pure: computed once per text — node ids and request keys are asked for on every engine tick)
+  const hit = uuidMemo.get(text)
+  if (hit !== undefined) return hit
+  const id = uuidOf(text)
+  if (uuidMemo.size >= 4096) uuidMemo.clear()
+  uuidMemo.set(text, id)
+  return id
+}
+const uuidMemo = new Map<string, string>()
+function uuidOf(text: string): string {
   let h1 = 1779033703
   let h2 = 3144134277
   let h3 = 1013904242

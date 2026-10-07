@@ -797,6 +797,41 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     expect(reads()).toBe(before + 2)
   })
 
+  it('review: a slow answer never replaces the kept answer of a read sent after it (like main.cjs)', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    const real = s.server
+    let release = () => undefined as void
+    let hold = true
+    const held = {
+      ...real,
+      request: async (r: TransportRequest) => {
+        if (hold && r.method === 'GET' && r.path.startsWith('/api/video-jobs?')) {
+          hold = false
+          const res = await real.request(r)
+          await new Promise<void>((resolve) => (release = resolve))
+          return res
+        }
+        return real.request(r)
+      },
+    }
+    const bridge = createDevBridge(() => held, { now: () => s.clock.t, jobListCacheMs: 2_000 })
+    const api = createCanvasappApi(createDesktopTransport(() => bridge))
+    const reads = () => useDevLog.getState().entries.filter((e) => e.endpoint === 'jobs-list' && e.fault === null).length
+    const before = reads()
+    const t0 = s.clock.t
+    const slow = api.listVideoJobs(projectId) // sent at t0, its answer held
+    await until(() => !hold)
+    s.clock.t = t0 + 500
+    await api.listVideoJobs(projectId) // sent 0.5 s later, answered at once: kept
+    s.clock.t = t0 + 1_500
+    release()
+    await slow // the slow one's answer comes back: it never replaces the newer one
+    s.clock.t = t0 + 2_400 // 1.9 s after the newer one was sent: served from it
+    await api.listVideoJobs(projectId)
+    expect(reads()).toBe(before + 2)
+  })
+
   it('the clock set back: a kept answer stamped later than now is never served again (like main.cjs)', async () => {
     const s = setup()
     const { projectId } = await prepared(s)

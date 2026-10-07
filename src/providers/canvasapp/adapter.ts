@@ -32,38 +32,50 @@
 //
 // Paying at most once per take (key = req.key = the take id; sent as clientRequestIdFor(key)). Persisted under
 // JOBS_KEY (keyed by the take id), written synchronously:
-//   - `jobs[key]`: the job canvasapp created for the key. A key with a known job is never posted again. (It keeps the
-//     read its POST went out with while another take's unanswered POST on that node relies on it: JobRecord.before.)
-//   - `sent[key]`: written right BEFORE the POST (with that read's `before` / `beforeAt`; `endedAt` once its outcome
-//     came back), removed once its answer is known (never capped: each is a take that may have been billed). Storage
-//     did not keep it (full; site data blocked altogether → memoryStorage, see browserStorage) → not sent at all
-//     (LEDGER_NOT_SAVED_TEXT; a POST sent again after a lost answer: "không rõ" instead). If the answer never arrives
-//     (connection broke, page closed / reloaded), the job may exist and be billed: it is looked for in the bridge
-//     project's job list (findJob: same client_request_id when the list carries it, else the one new job on the
-//     canvas node the POST named, created within inPostWindow (a node or time it cannot surely read: it could be) —
-//     taken only from a read that surely shows the POST's own job (listedBy: an earlier one may show only a job made
-//     on canvasapp's page meanwhile), only when canvasapp gives the request's own prompt for it (samePrompt), never one
-//     made after the first such read (SentRecord.covered), never one another take's unanswered POST may have made (on
-//     that node — on any node while the list does not say: nodesListed): the read before each POST (no POST is sent
-//     without one) tells their jobs apart, a POST without a known end may still be on its way (listedBy)) — by
-//     recover() after a reload (at once, and once more when a read can surely show it — for a POST main may still
-//     have been sending, up to POST_IN_FLIGHT_MS + the settle and cache times later; none then → it made nothing: the
-//     take goes back to the queue, NOT_MADE_TEXT), and before any new POST of that key (not re-posted while that
-//     earlier POST may still make its job: the take waits — 'deferred', STILL_SENDING_TEXT — until a read can surely
-//     show it). Records stamped later than now (the clock was set back) or without a readable time are rewritten to
-//     now once (unskewed), and so is the read a settled job keeps (JobRecord.before); a cached job list stamped later
-//     than now is never used. The rules are checked by a seeded fault-injection simulation:
-//     providers/__tests__/canvasapp-fuzz.test.ts.
+//   - `jobs[key]`: the job canvasapp created for the key. A key with a known job is never posted again — nor one the
+//     read right before a POST lists a job with the key of (a list that carries client_request_id: the record may be
+//     gone — capped at MAX_JOB_RECORDS, site data cleared). (It keeps the read its POST went out with while another
+//     take's unanswered POST on that node relies on it: JobRecord.before.)
+//   - `sent[key]`: written right BEFORE the POST (with its `before` — every job this page has seen listed that may be
+//     on its node, the read right before it and any other: knownOn — and that read's `beforeAt`; `endedAt` once its
+//     outcome came back), removed once its answer is known (never capped: each is a take that may have been billed).
+//     Storage did not keep it (full; site data blocked altogether → memoryStorage, see browserStorage) → not sent at
+//     all (LEDGER_NOT_SAVED_TEXT; a POST sent again after a lost answer: "không rõ" instead). If the answer never
+//     arrives (connection broke, page closed / reloaded), the job may exist and be billed: it is looked for in the
+//     bridge project's job list (findJob: same client_request_id when the list carries it, else the one new job on the
+//     canvas node the POST named (a node it cannot surely read: it could be) — taken only from a read that surely
+//     shows the POST's own job (listedBy: an earlier one may show only a job made on canvasapp's page meanwhile), only
+//     when canvasapp gives the request's own prompt for it (samePrompt) and the list says nothing of it that differs
+//     from the request (differsFromRequest: model, duration, creation_mode — VERIFY values, so never a reason for
+//     "none"; created_at never rules a job out: this computer's clock may be days off canvasapp's), never one made
+//     after the first such read (SentRecord.covered), never one another take got (its record, or SentRecord.taken once
+//     the capped ledger dropped it), never one another take's unanswered POST may have made (on that
+//     node — on any node while the list does not say: nodesListed): the read before each POST (no POST is sent
+//     without one) tells their jobs apart, a POST without a known end may still be on its way (listedBy). A job a read
+//     listed as possibly its own (SentRecord.seen) and gone since (deleted on canvasapp's page, a list that pages):
+//     never "none" again — "không rõ") — by recover() after a reload (at once, and once more when a read can surely
+//     show it — for a POST main may still have been sending, up to POST_IN_FLIGHT_MS + the settle and cache times
+//     later; none then, the list read soon enough after it (NOT_MADE_FRESH_MS) → it made nothing: the take goes back
+//     to the queue, NOT_MADE_TEXT; read only long after (the app was closed): "không rõ"), and before any new POST of
+//     that key (not re-posted while that earlier POST may still make its job: the take waits — 'deferred',
+//     STILL_SENDING_TEXT — until a read can surely show it; by itself only on a fresh "none" like recover(), on
+//     "Chạy lại" (JobRequest.resend) on any "none"). Records stamped later than now (the clock was set back) or
+//     without a readable time are rewritten to now once (unskewed), and so is the read a settled job keeps
+//     (JobRecord.before); a cached job list stamped later than now is never used. The rules are checked by a seeded
+//     fault-injection simulation: providers/__tests__/canvasappFuzz.ts (canvasapp-fuzz-*.test.ts).
 //   - A submit that ended without any POST that may be billed (deferred, refused, stopped before its request) is
 //     remembered in memory (notSent): recover() then rejects with that error (isRecoverNotSent), never "không rõ".
+//     mayHaveBilled(key) tells the engine whether a request of the key may have reached canvasapp (a take cancelled
+//     without its remote id keeps "không rõ" then: "Thử lại" re-sends the same take, never a new paid one).
 //   - The ledger is read from storage at every use and merged per record (ledgerNow): another tab of the web dev mode
 //     writes it too.
 //   - POST answered with a network error / 5xx / no job id → wait, look for the job (2 reads: 15 s after its outcome,
 //     then once a read surely shows its job — SETTLE_MS + the gateway's cache, 45 s after it); not in that read
-//     → post again ONCE with the same body and key; that read failed, or still nothing → error flagged `uncertain`
-//     (the engine then shows "không rõ đã trả chưa" and never resubmits that take under a new key by itself). A sure
-//     refusal (402, 400, 429…) of a POST sent again after a lost answer made nothing, but the first may be billed:
-//     `uncertain` + `heldBack` with canvasapp's words (RESEND_REFUSED_TEXT), the record kept — no lookups, no repost.
+//     → post again ONCE with the same body and key (its `before`: every job listed so far — the site job made
+//     meanwhile is never taken for it); that read failed, or still nothing → error flagged `uncertain` (the engine
+//     then shows "không rõ đã trả chưa" and never resubmits that take under a new key by itself). A sure refusal
+//     (402, 400, 429…) of a POST sent again after a lost answer made nothing, but the first may be billed: `uncertain`
+//     + `heldBack` with canvasapp's words (RESEND_REFUSED_TEXT), the record kept — no lookups, no repost.
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
 //   - `imported[key]`: a job made on canvasapp's own page that became the take `key` ("Nhập job": scanSiteJobs →
 //     siteJobPrompts → claimSiteJobs, rules in siteJobs.ts). Such a key is never posted either; the import itself
@@ -144,6 +156,14 @@ const MAX_MISSES = 3
  */
 export const SETTLE_MS = 30_000
 /**
+ * A read that surely shows a lost answer's job if it had one, and finds none, lets SanoVids post that take again
+ * (postJob, recover: NOT_MADE_TEXT) only when the job list was first read at most this long after the job would have
+ * been listed (listedBy): a job made then, and deleted on canvasapp's page (or pushed off a list that pages) before
+ * any read of SanoVids listed it, cannot be told from no job at all. Later (the app was closed for a while, the
+ * computer slept): "không rõ" — the user decides ("Chạy lại" looks again, then posts).
+ */
+export const NOT_MADE_FRESH_MS = 5 * 60_000
+/**
  * A job matched by node and time only (the job list has no client_request_id) is taken for a lost answer's job only
  * when canvasapp gives the request's own prompt for it — at most this many jobs' prompts are read per look (more
  * candidates: "không rõ").
@@ -164,9 +184,15 @@ export const RECONCILE_DELAYS_MS = [15_000, 15_000]
  * requests a page has in flight (each ≤ 60 s too). A POST without a known outcome (SentRecord.endedAt) ends by then.
  */
 const POST_IN_FLIGHT_MS = 5 * 60_000
-// CREATED_SKEW_MS / POST_WINDOW_MS (which jobs a POST may have made: inPostWindow): siteJobs.ts, shared with the import's
-// reservation rule.
-const MAX_JOB_RECORDS = 500
+// (created_at never rules a job out of a POST's: siteJobs.inPostWindow only keeps a lookup of an older build's record —
+// one without `before` — from taking a job made far from its POST: differsFromRequest)
+/**
+ * Job records kept (newest first; ~200 bytes each, so ≤ ~400 KB of localStorage). A record is what proves a take was
+ * paid when its own copy of the remote id is missing (a take left "sending" on disk: recover() reads it) — the engine
+ * also keeps the remote id of a take whose project was closed while it was sent (store/runs lateRemoteIds), so the
+ * ledger is not the only proof of that one.
+ */
+export const MAX_JOB_RECORDS = 2000
 // (`sent` records are never capped: each one is a take that may have been billed, kept until its answer is known — one
 // dropped would let "Chạy lại" post at once, and its job be imported as another take)
 const MAX_IMPORTED_RECORDS = 500
@@ -332,6 +358,8 @@ export interface CanvasappProviderDeps {
    * was sent (SentRecord.beforeAt).
    */
   gatewayListCacheMs?: number
+  /** Tests: how many job records the ledger keeps (default MAX_JOB_RECORDS). */
+  maxJobRecords?: number
   /** Media-store lookup (lib/imageStore getBlob). */
   getBlob: (imageId: string) => Promise<Blob | null>
   storage?: KeyValueStorage
@@ -383,6 +411,19 @@ interface SentRecord {
    * before a POST, the scan); dropped when the POST is sent again.
    */
   covered?: string[]
+  /** What that read surely showed (its `shows`, local time): how long after listedBy the list was first read (fresh). */
+  coveredAt?: number
+  /**
+   * Every job (id) a read listed that could be this POST's — its key, or (listed without a key) on its node, not in
+   * `before`, within `covered` — whenever it was listed. One of them missing from a later read was deleted on canvasapp
+   * (or the list pages): that read no longer says "never made" (jobOf: 'ambiguous', never posted again).
+   */
+  seen?: string[]
+  /**
+   * Jobs (ids) that became another take's while this POST's answer was unknown (settle, claimSiteJobs) and could have
+   * been taken for its job — never its own, even once the ledger no longer keeps that take's record (MAX_JOB_RECORDS).
+   */
+  taken?: string[]
 }
 
 /**
@@ -470,6 +511,9 @@ function sentFrom(raw: unknown): Record<string, SentRecord> {
       ...(finiteNumber(r.beforeAt) ? { beforeAt: r.beforeAt } : {}),
       ...(finiteNumber(r.endedAt) ? { endedAt: r.endedAt } : {}),
       ...(Array.isArray(r.covered) ? { covered: r.covered.filter((id): id is string => typeof id === 'string') } : {}),
+      ...(Array.isArray(r.covered) && finiteNumber(r.coveredAt) ? { coveredAt: r.coveredAt } : {}),
+      ...(Array.isArray(r.seen) ? { seen: r.seen.filter((id): id is string => typeof id === 'string') } : {}),
+      ...(Array.isArray(r.taken) ? { taken: r.taken.filter((id): id is string => typeof id === 'string') } : {}),
     }
   }
   return out
@@ -516,6 +560,8 @@ const mergeLedgers = (base: JobLedger, mine: JobLedger, theirs: JobLedger): JobL
 
 export const STATE_KEY = 'bdp:canvasapp:gateway'
 export const JOBS_KEY = 'bdp:canvasapp:jobs'
+/** Whether canvasapp's job list writes canvas_node_id ('nodes' / 'no-nodes'), as the last list with jobs said (nodesListed). */
+export const LIST_SHAPE_KEY = 'bdp:canvasapp:list-shape'
 
 /** What "Nhập job" tells the adapter about the open project (siteJobActions.scanForImport). */
 export interface SiteScanInput {
@@ -579,12 +625,13 @@ async function bitmapSize(blob: Blob): Promise<{ width: number; height: number }
 const mayBeOnNode = (j: CanvasJob, nodeId: string) => typeof j.canvas_node_id !== 'string' || j.canvas_node_id === nodeId
 
 /**
- * Could `j` be the job that the POST recorded as `r` made? On its node, not listed before it, created within its window
- * (inPostWindow: created_at may be off by hours) — unknown node or creation time: it could.
+ * Could `j` be the job that the POST recorded as `r` made? On its node (or a node the list does not say), not listed
+ * before it, not made after the first read that surely showed its job. Never by its creation time (created_at is on
+ * canvasapp's clock, in a zone it may not say: this computer's clock may be days off — what rules a job out here lets
+ * another take take it, and this one then posts again).
  */
 function mayBeJobOf(j: CanvasJob, r: SentRecord): boolean {
-  if (!mayBeOnNode(j, r.nodeId) || r.before?.includes(j.job_id) || (r.covered && !r.covered.includes(j.job_id))) return false
-  return inPostWindow(j.created_at, r.at) ?? true
+  return mayBeOnNode(j, r.nodeId) && !r.before?.includes(j.job_id) && !(r.covered && !r.covered.includes(j.job_id))
 }
 
 /** Persisted upload cache (imageId → upload_id), keeping only string → non-empty string pairs. */
@@ -615,6 +662,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const pollMs = Math.max(minPollMs, deps.pollIntervalMs ?? DEFAULT_POLL_MS)
   const listCacheMs = Math.max(0, Math.min(minPollMs, deps.listCacheMs ?? minPollMs))
   const gatewayListCacheMs = Math.max(0, deps.gatewayListCacheMs ?? MIN_POLL_MS)
+  const maxJobRecords = Math.max(1, deps.maxJobRecords ?? MAX_JOB_RECORDS)
 
   let state: GatewayState = load()
   /**
@@ -660,6 +708,21 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   const lists = new Map<string, ListRead>()
   /** Last job list read per bridge project, kept when the cache above is dropped: which jobs still run. */
   const lastLists = new Map<string, ListRead>()
+  /**
+   * Every job a read of this page listed, per bridge project: job id → its canvas_node_id (null: the list did not say).
+   * A POST's `before` holds every one that may be on its node — whichever read listed it, the one right before the
+   * POST or an earlier one (a slower answer, the gateway's cache, may show fewer): none of them is its job.
+   */
+  const known = new Map<string, Map<string, string | null>>()
+  /** nodesListed when no list with jobs was read since the page loaded (LIST_SHAPE_KEY). */
+  let nodesShape: boolean | null = (() => {
+    try {
+      const v = storage.get(LIST_SHAPE_KEY)
+      return v === 'nodes' ? true : v === 'no-nodes' ? false : null
+    } catch {
+      return null
+    }
+  })()
   /** Job POSTs sent so far (each attempt): the gateway (main.cjs, the dev bridge) drops its cached job list at each. */
   let postsSent = 0
   /** A job of the ledger that a job-list read does not show (yet): still treated as running this long after it was made. */
@@ -713,8 +776,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const t = now()
     let fixed: Record<string, SentRecord> | null = null
     for (const [k, r] of Object.entries(ledgerMine.sent)) {
-      if (!r || typeof r !== 'object' || !(!Number.isFinite(r.at) || r.at > t || (r.endedAt ?? -Infinity) > t || (r.beforeAt ?? -Infinity) > t)) continue
-      const { beforeAt: _skewed, covered: _decided, ...rest } = r
+      if (
+        !r ||
+        typeof r !== 'object' ||
+        !(!Number.isFinite(r.at) || r.at > t || (r.endedAt ?? -Infinity) > t || (r.beforeAt ?? -Infinity) > t || (r.coveredAt ?? -Infinity) > t)
+      ) {
+        continue
+      }
+      // (`seen` stays: those jobs were listed, whatever the clock said)
+      const { beforeAt: _skewed, covered: _decided, coveredAt: _when, ...rest } = r
       fixed ??= { ...ledgerMine.sent }
       fixed[k] = { ...rest, at: Number.isFinite(r.at) ? Math.min(r.at, t) : t, ...(r.endedAt !== undefined ? { endedAt: Math.min(r.endedAt, t) } : {}) }
     }
@@ -734,7 +804,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   }
   /** Write `next` — made from ledgerNow() in the same synchronous step — whole. True when storage kept it. */
   function saveLedger(next: JobLedger): boolean {
-    ledgerMine = { jobs: newest(next.jobs, MAX_JOB_RECORDS), sent: next.sent, imported: newest(next.imported, MAX_IMPORTED_RECORDS) }
+    ledgerMine = { jobs: newest(next.jobs, maxJobRecords), sent: next.sent, imported: newest(next.imported, MAX_IMPORTED_RECORDS) }
     const raw = JSON.stringify(ledgerMine)
     let back: string | null = null
     try {
@@ -754,14 +824,42 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    */
   function settle(key: string, remoteId: string, rec: SentRecord): { remoteId: string } {
     const ledger = ledgerNow()
-    const { [key]: _done, ...sent } = ledger.sent
+    const { [key]: _done, ...others } = ledger.sent
     const relied =
       rec.before !== undefined &&
       rec.beforeAt !== undefined &&
-      Object.entries(sent).some(([k, r]) => !(k in ledger.jobs) && r.projectId === rec.projectId && rec.beforeAt! >= listedBy(r))
+      Object.entries(others).some(([k, r]) => !(k in ledger.jobs) && r.projectId === rec.projectId && rec.beforeAt! >= listedBy(r))
     const job: JobRecord = { remoteId, at: now(), nodeId: rec.nodeId, ...(relied ? { before: rec.before, beforeAt: rec.beforeAt } : {}) }
-    saveLedger({ ...ledger, jobs: { ...ledger.jobs, [key]: job }, sent })
+    saveLedger({ ...ledger, jobs: { ...ledger.jobs, [key]: job }, sent: withTaken(others, ledger.jobs, remoteId) })
     return { remoteId }
+  }
+  /**
+   * The jobs of bridge project `projectId` that are other takes' now and that a read showing what existed at `shows`
+   * may not list (settled / claimed since, or a little before: the ledger stamps a record when its answer came) — the
+   * `taken` a POST going out with that read starts with. (Older ones are listed by it: in its `before`.)
+   */
+  function takenSince(projectId: string, shows: number | undefined): string[] {
+    const ledger = ledgerNow()
+    const from = shows === undefined ? -Infinity : shows - 60_000
+    return [...Object.values(ledger.jobs), ...Object.values(ledger.imported)].flatMap((j) => {
+      const d = decodeRemoteId(j.remoteId)
+      return d && d.projectId === projectId && j.at >= from ? [d.jobId] : []
+    })
+  }
+  /**
+   * `sent` with job `remoteId` noted as another take's (SentRecord.taken) on every unanswered POST of its bridge project
+   * that could otherwise take it for its own job (not listed before it, within what its first covering read listed).
+   */
+  function withTaken(sent: Record<string, SentRecord>, jobs: Record<string, JobRecord>, remoteId: string): Record<string, SentRecord> {
+    const d = decodeRemoteId(remoteId)
+    if (!d) return sent
+    let out: Record<string, SentRecord> | null = null
+    for (const [k, r] of Object.entries(sent)) {
+      if (k in jobs || r.projectId !== d.projectId || r.taken?.includes(d.jobId) || r.before?.includes(d.jobId) || (r.covered && !r.covered.includes(d.jobId))) continue
+      out ??= { ...sent }
+      out[k] = { ...r, taken: [...(r.taken ?? []), d.jobId] }
+    }
+    return out ?? sent
   }
   /**
    * settle() for a job a lookup FOUND (not one canvasapp answered the POST with): null — nothing written — when that job
@@ -788,12 +886,38 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const read: ListRead = { at: now(), sent: back ? -Infinity : sent, shows: back ? -Infinity : sent - gatewayListCacheMs, posts, jobs }
     lists.set(projectId, read)
     lastLists.set(projectId, read)
+    noteKnown(projectId, read)
     noteCovered(projectId, read)
     return read
   }
+  /** `known`: the jobs of this read. Never throws. */
+  function noteKnown(projectId: string, read: ListRead) {
+    try {
+      if (!Array.isArray(read.jobs)) return
+      let ids = known.get(projectId)
+      if (!ids) known.set(projectId, (ids = new Map()))
+      for (const j of read.jobs) {
+        if (j && typeof j.job_id === 'string') ids.set(j.job_id, typeof j.canvas_node_id === 'string' ? j.canvas_node_id : null)
+      }
+      if (read.jobs.length) {
+        const shape = read.jobs.every((j) => j && typeof j.canvas_node_id === 'string')
+        if (shape !== nodesShape) {
+          nodesShape = shape
+          storage.set(LIST_SHAPE_KEY, shape ? 'nodes' : 'no-nodes')
+        }
+      }
+    } catch {
+      /* a malformed list notes nothing */
+    }
+  }
+  /** The jobs this page has seen listed in that bridge project that may be on node `nodeId` (mayBeOnNode). */
+  function knownOn(projectId: string, nodeId: string): string[] {
+    return [...(known.get(projectId) ?? [])].filter(([, node]) => node === null || node === nodeId).map(([id]) => id)
+  }
   /**
-   * SentRecord.covered: the unanswered POSTs of that bridge project whose job, if any, this read surely shows (shows ≥
-   * listedBy) and that have none noted yet get the jobs it lists where theirs could be. Never throws.
+   * The unanswered POSTs of that bridge project: SentRecord.covered (+ coveredAt) for those whose job, if any, this read
+   * surely shows (shows ≥ listedBy) and that have none noted yet — the jobs it lists where theirs could be —, and
+   * SentRecord.seen for the jobs it lists that could be theirs. Never throws.
    */
   function noteCovered(projectId: string, read: ListRead) {
     try {
@@ -801,9 +925,27 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       const ledger = ledgerNow()
       let next: Record<string, SentRecord> | null = null
       for (const [k, r] of Object.entries(ledger.sent)) {
-        if (k in ledger.jobs || r.projectId !== projectId || r.covered || !(read.shows >= listedBy(r))) continue
+        if (k in ledger.jobs || r.projectId !== projectId) continue
+        let rec = r
+        if (!rec.covered && read.shows >= listedBy(rec)) {
+          rec = { ...rec, covered: read.jobs.filter((j) => j && typeof j.job_id === 'string' && mayBeOnNode(j, r.nodeId)).map((j) => j.job_id), coveredAt: read.shows }
+        }
+        const keys = new Set([clientRequestIdFor(k), k])
+        const before = new Set(rec.before ?? [])
+        const covered = rec.covered ? new Set(rec.covered) : null
+        const had = new Set(rec.seen ?? [])
+        const add = read.jobs
+          .filter((j) => j && typeof j.job_id === 'string' && !had.has(j.job_id))
+          .filter((j) =>
+            typeof j.client_request_id === 'string'
+              ? keys.has(j.client_request_id)
+              : mayBeOnNode(j, rec.nodeId) && !before.has(j.job_id) && (!covered || covered.has(j.job_id)),
+          )
+          .map((j) => j.job_id)
+        if (add.length) rec = { ...rec, seen: [...had, ...add] }
+        if (rec === r) continue
         next ??= { ...ledger.sent }
-        next[k] = { ...r, covered: read.jobs.filter((j) => j && typeof j.job_id === 'string' && mayBeOnNode(j, r.nodeId)).map((j) => j.job_id) }
+        next[k] = rec
       }
       if (next) saveLedger({ ...ledger, sent: next })
     } catch {
@@ -865,9 +1007,18 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const sentOn = ledgerNow().sent[req.key]?.nodeId
     return sentOn !== undefined && sentOn === canvasNodeId(req.sceneId) ? req.sceneId : sceneNodeKey(req.sanovidsProjectId, req.sceneId)
   }
+  /**
+   * Write the record of a POST already sent (its outcome came back): what was noted on it meanwhile stays (covered,
+   * coveredAt, seen — a poll may list its job while the answer is on its way —, and the jobs other takes got: taken).
+   */
   function markSent(key: string, rec: SentRecord) {
     const ledger = ledgerNow()
-    saveLedger({ ...ledger, sent: { ...ledger.sent, [key]: rec } })
+    const cur = ledger.sent[key]
+    const same = cur && cur.at === rec.at && cur.nodeId === rec.nodeId ? cur : undefined
+    const taken = [...new Set([...(same?.taken ?? []), ...(rec.taken ?? [])])]
+    const notes = same ? { covered: same.covered, coveredAt: same.coveredAt, seen: same.seen } : {}
+    const kept = Object.fromEntries(Object.entries(notes).filter(([, v]) => v !== undefined)) as Partial<SentRecord>
+    saveLedger({ ...ledger, sent: { ...ledger.sent, [key]: { ...kept, ...rec, ...(taken.length ? { taken } : {}) } } })
   }
   /**
    * The record of a POST about to be sent, written first; false — this tab's copy left as it was, nothing to send —
@@ -889,22 +1040,26 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   }
   /**
    * Does the job list of that bridge project say on which canvas node each job is? false: the last read has a job
-   * without canvas_node_id (VERIFY) — any job may then be on any node (mayBeOnNode); null: not known (no read since
-   * the page loaded, or an empty list).
+   * without canvas_node_id (VERIFY) — any job may then be on any node (mayBeOnNode); true: every job it lists has one.
+   * An empty list (a new bridge session) or none read since the page loaded says nothing: what the last list with jobs
+   * said (nodesShape, kept on this computer — it is how canvasapp's API writes its list, not a property of a session);
+   * null when no list with jobs was ever read here (treated as listed: see rivalsOf).
    */
   function nodesListed(projectId: string): boolean | null {
     const jobs = lastLists.get(projectId)?.jobs
-    if (!jobs?.length) return null
+    if (!jobs?.length) return nodesShape
     return jobs.every((j) => typeof j.canvas_node_id === 'string')
   }
   /**
    * pendingOf whose job may be on node `nodeId`: the POSTs on that node — every one in that project while the job list
-   * does not say where its jobs are (nodesListed false, or `unsure` and not known): a job of a POST on another node then
-   * looks the same as one of this node's.
+   * does not say where its jobs are (nodesListed false): a job of a POST on another node then looks the same as one of
+   * this node's. Not known (null: no list with jobs ever read on this computer) counts as listed: holding every scene
+   * back for another scene's unanswered POST (up to 5 min 45 s after a reload mid-POST) is a sure cost, while the
+   * case it guards against — the list really omits canvas_node_id, both POSTs lose their answer and canvasapp gives
+   * both jobs the same prompt — only ever makes both takes "không rõ" (contested), never pays twice.
    */
-  function rivalsOf(key: string, projectId: string, nodeId: string, unsure = false): SentRecord[] {
-    const listed = nodesListed(projectId)
-    const any = listed === false || (unsure && listed === null)
+  function rivalsOf(key: string, projectId: string, nodeId: string): SentRecord[] {
+    const any = nodesListed(projectId) === false
     return pendingOf(key, projectId).filter((r) => any || r.nodeId === nodeId)
   }
   /**
@@ -913,9 +1068,9 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    * theirs if its answer were lost too — nor could they — so it is not sent until then (submitNow: 'deferred'). Old
    * records (a "không rõ" take never retried, or deleted) are long covered: they never hold a scene back.
    */
-  function rivalWait(key: string, projectId: string, nodeId: string, unsure = false): number {
+  function rivalWait(key: string, projectId: string, nodeId: string): number {
     const t = now()
-    return rivalsOf(key, projectId, nodeId, unsure).reduce((wait, r) => Math.max(wait, coverableAt(r) - t), 0)
+    return rivalsOf(key, projectId, nodeId).reduce((wait, r) => Math.max(wait, coverableAt(r) - t), 0)
   }
   /** The reason a POST on that node waits for rivalWait: a take of its own scene, or (nodes not listed) of any scene. */
   const rivalText = (key: string, projectId: string, nodeId: string) =>
@@ -1189,12 +1344,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
 
   /**
    * One read of the job list: the job a lost answer of `key` created. 'none' = not there; 'ambiguous' = more than
-   * one could be it, another take could own it, or canvasapp gives another prompt for it (never guessed); 'later' = a
-   * job matched by node and time only (the list has no client_request_id) in a read too early to surely show this
-   * POST's own job (shows < listedBy(rec)): such a read may show only ANOTHER job made on that node meanwhile (on
-   * canvasapp's page) while this POST's is not listed yet — a job is only taken from a read that would show both.
-   * `shows`: what that read surely shows (ListRead) — a "none" only means "never made" from a read with shows ≥
-   * listedBy(rec). Throws when the list — or the prompt of a job matched by node and time — cannot be read.
+   * one could be it, another take could own it, canvasapp gives another prompt for it, the list says it differs from
+   * the request (model, duration, creation_mode — values for SanoVids' own jobs that are VERIFY: never a reason for
+   * 'none'), or a job that could be it is not listed any more (deleted on canvasapp, a list that pages: jobOf) — never
+   * guessed; 'later' = a job matched by node and time only (the list has no client_request_id) in a read too early to
+   * surely show this POST's own job (shows < listedBy(rec)): such a read may show only ANOTHER job made on that node
+   * meanwhile (on canvasapp's page) while this POST's is not listed yet — a job is only taken from a read that would
+   * show both. `shows`: what that read surely shows (ListRead) — a "none" only means "never made" from a read with
+   * shows ≥ listedBy(rec). Throws when the list — or the prompt of a job matched by node and time — cannot be read.
    */
   async function findJob(req: JobRequest, rec: SentRecord): Promise<{ found: { remoteId: string } | 'none' | 'ambiguous' | 'later'; shows: number }> {
     lists.delete(rec.projectId)
@@ -1207,13 +1364,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     if (shows < listedBy(rec)) return { found: 'later', shows }
     // Matched by node and time only: a job made on canvasapp's page from that node (not imported yet) looks the same in
     // the list. Taken only when canvasapp gives this request's own prompt for it (GET …/prompt, trimmed like the body)
-    // — a job of an edited node never becomes this take's — and only one such job is there. Reading the prompt never
-    // rules a job out for a "none": what canvasapp does to a prompt is VERIFY, so a job whose prompt differs is still
-    // "could be it" (ambiguous: "không rõ", nothing posted again).
+    // — a job of an edited node never becomes this take's —, only one such job is there, and the list says nothing
+    // else of it that differs from the request (differsFromRequest). Reading the prompt — and what the list says of
+    // the job's model, duration, creation_mode — never rules a job out for a "none": what canvasapp does to a prompt,
+    // and how it lists SanoVids' own jobs, is VERIFY, so such a job is still "could be it" (ambiguous: "không rõ",
+    // nothing posted again).
     if (match.candidates.length > MAX_PROMPT_CHECKS) return { found: 'ambiguous', shows }
     const same: CanvasJob[] = []
     for (const j of match.candidates) if (await samePrompt(req, j.job_id)) same.push(j)
-    if (same.length !== 1 || contested(req, rec, same[0])) return { found: 'ambiguous', shows }
+    if (same.length !== 1 || differsFromRequest(req, rec, same[0]) || contested(req, rec, same[0])) return { found: 'ambiguous', shows }
     return { found: remote(same[0]), shows }
   }
   /** The prompt canvasapp gives for job `jobId` is the request's (both trimmed, NFC). Throws when it cannot be read. */
@@ -1223,40 +1382,54 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     return typeof text === 'string' && plain(text) === plain(req.prompt)
   }
   /**
+   * The list says job `j` is not what `req` asked for: not a canvas job (loadJobs(): the canvas page only shows jobs
+   * without creation_mode or with 'canvas'), another model, another duration — or, for a record of a build before
+   * every POST had a `before` (nothing then bounds its candidates from below), created outside its window
+   * (inPostWindow). What the list does not say clearly (missing, null, not a number, an unreadable time) says nothing.
+   * Never a reason to post again: only a reason not to take the job (findJob: 'ambiguous').
+   */
+  function differsFromRequest(req: JobRequest, rec: SentRecord, j: CanvasJob): boolean {
+    if (j.creation_mode !== undefined && j.creation_mode !== null && j.creation_mode !== 'canvas') return true
+    if (typeof j.model_profile === 'string' && j.model_profile !== modelProfileOf(req.model)) return true
+    const duration = listedDuration(j.duration)
+    if (duration !== null && duration !== req.duration) return true
+    return rec.before === undefined && inPostWindow(j.created_at, rec.at) === false
+  }
+  /**
    * The job of `rec` in one read: by client_request_id when the list carries it (`exact`), else the jobs that could be
-   * it by node and time (`candidates`, none of them another take's) — the caller decides on those.
+   * it by what the list says for sure (`candidates`, none of them another take's) — the caller decides on those.
+   * 'ambiguous' when a job an earlier read listed as possibly its own (SentRecord.seen) is not listed any more: deleted
+   * on canvasapp's page, or pushed off a list that pages (VERIFY) — this read then cannot tell "never made" (a POST
+   * again could pay twice), nor which one is its own.
    */
   function jobOf(req: JobRequest, rec: SentRecord, listed: CanvasJob[]): { exact: CanvasJob } | { candidates: CanvasJob[] } | 'none' | 'ambiguous' {
-    let jobs = listed
     const keyed = (j: CanvasJob) => typeof j.client_request_id === 'string'
-    if (jobs.some(keyed)) {
-      // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
-      const keys = new Set([clientRequestIdFor(req.key), req.key])
-      const same = jobs.filter((j) => keyed(j) && keys.has(j.client_request_id as string))
-      if (same.length) return same.length === 1 ? { exact: same[0] } : 'ambiguous'
-      // not listed with this key: no job listed with another key is its own — but one the list shows WITHOUT a key
-      // (a list that keys only some jobs: VERIFY) could be; node and time decide on those, as below
-      if (jobs.every(keyed)) return 'none'
-      jobs = jobs.filter((j) => !keyed(j))
-    }
-    // The list does not carry client_request_id: the job is the ONE canvas job on the canvas node the POST named
-    // (rec.nodeId, recorded with the request) that is not another take's (known ids), was not there before the POST
-    // and was created after it.
+    // The key on the wire is clientRequestIdFor(take id); v0.2.0 sent the take id itself.
+    const keys = new Set([clientRequestIdFor(req.key), req.key])
+    const same = listed.filter((j) => keyed(j) && keys.has(j.client_request_id as string))
+    if (same.length) return same.length === 1 ? { exact: same[0] } : 'ambiguous'
+    // The list does not carry client_request_id (for some jobs at least: a list that keys only some jobs — VERIFY —
+    // never makes a job listed without a key "not its own"; one listed with another key never is): the job is the ONE
+    // canvas job on the canvas node the POST named (rec.nodeId, recorded with the request) that is not another take's
+    // (known ids), was not there before the POST and was not made after the first read that surely showed it.
     // ...nor a job imported ("Nhập job"), whenever: one claimed before this POST was listed before it; one claimed
     // after it passed sentMayOwn against this very record — either way not this POST's job, and never a second take of
-    // one job. The creation-time window is that rule's too (inPostWindow): a job made on the site long after the POST
-    // (still importable) is never taken for it. Only what the list says clearly rules a job out: an unknown node
-    // (mayBeOnNode: canvas_node_id missing), creation time (createdTime: missing, not ISO 8601 / a number), duration or
-    // model keeps it a candidate — at worst "ambiguous" ("không rõ", nothing posted), never a "none" that would post
-    // this take a second time.
+    // one job. Only what the list says for sure rules a job out here: an unknown node (mayBeOnNode: canvas_node_id
+    // missing) keeps it a candidate, and so does anything it says of the job's creation time, model, duration or
+    // creation_mode (differsFromRequest: at worst "ambiguous" — "không rõ", nothing posted —, never a "none" that would
+    // post this take a second time: the creation time is on canvasapp's clock, this computer's may be days off).
     const ledger = ledgerNow()
-    const taken = new Set([...Object.values(ledger.jobs), ...Object.values(ledger.imported)].map((j) => decodeRemoteId(j.remoteId)?.jobId))
-    const before = new Set(rec.before ?? [])
     // (as the ledger has it now: another read — a poll, a lookup in another tab — may have noted it since `rec` was read)
     const stored = ledger.sent[req.key]
-    const coveredIds = (stored && stored.at === rec.at && stored.nodeId === rec.nodeId ? stored.covered : undefined) ?? rec.covered
+    const current = stored && stored.at === rec.at && stored.nodeId === rec.nodeId ? stored : undefined
+    const taken = new Set<string | undefined>([
+      ...[...Object.values(ledger.jobs), ...Object.values(ledger.imported)].map((j) => decodeRemoteId(j.remoteId)?.jobId),
+      ...(current?.taken ?? []),
+      ...(rec.taken ?? []),
+    ])
+    const before = new Set(rec.before ?? [])
+    const coveredIds = current?.covered ?? rec.covered
     const covered = coveredIds ? new Set(coveredIds) : null
-    const model = modelProfileOf(req.model)
     // Another take's read right before ITS POST — answered or not (JobRecord.before) — that surely showed this POST's
     // job, if any (beforeAt ≥ listedBy(rec): the rule submitNow keeps — rivalWait): this POST's job is in that `before`
     // (it holds every job that read listed on that take's node — every job, when the list says no node), so a job that
@@ -1269,19 +1442,18 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const covering = [...pendingOf(req.key, rec.projectId), ...answered].flatMap((r) =>
       r.beforeAt !== undefined && r.beforeAt >= listedBy(rec) ? [{ nodeId: r.nodeId, before: new Set(r.before ?? []) }] : [],
     )
-    const candidates = jobs.filter((j) => {
-      if (!mayBeOnNode(j, rec.nodeId) || taken.has(j.job_id) || before.has(j.job_id)) return false
+    // A job that could be its own, listed before (seen), not listed now: never "none" (see above). (One another take
+    // has never was its own. Another take's read before its POST that does not list it says nothing here: it may have
+    // been deleted before that read.)
+    const listedIds = new Set(listed.map((j) => j.job_id))
+    const seen = new Set([...(current?.seen ?? []), ...(rec.seen ?? [])])
+    for (const id of seen) if (!listedIds.has(id) && !taken.has(id) && !before.has(id)) return 'ambiguous'
+
+    const candidates = listed.filter((j) => {
+      if (keyed(j) || !mayBeOnNode(j, rec.nodeId) || taken.has(j.job_id) || before.has(j.job_id)) return false
       // made after a read that surely showed this POST's job, if any (SentRecord.covered): never its own
       if (covered && !covered.has(j.job_id)) return false
-      if (covering.some((b) => mayBeOnNode(j, b.nodeId) && !b.before.has(j.job_id))) return false
-      // loadJobs(): the canvas page only shows jobs without creation_mode or with 'canvas'
-      if (j.creation_mode !== undefined && j.creation_mode !== null && j.creation_mode !== 'canvas') return false
-      // what the list does not say clearly (missing, null, not a number, an unreadable time) never rules a job out:
-      // ruling this POST's own job out would post it again (a second charge)
-      if (typeof j.model_profile === 'string' && j.model_profile !== model) return false
-      const duration = listedDuration(j.duration)
-      if (duration !== null && duration !== req.duration) return false
-      return inPostWindow(j.created_at, rec.at) ?? true
+      return !covering.some((b) => mayBeOnNode(j, b.nodeId) && !b.before.has(j.job_id))
     })
     return candidates.length ? { candidates } : 'none'
   }
@@ -1301,18 +1473,22 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   }
 
   /**
-   * Look for the job after an unanswered POST (waits first: canvasapp may still be creating it). 'none' only from a
-   * read that surely shows its job if it had one (shows ≥ listedBy(rec)) — and a job matched by node and time only
-   * from such a read too ('later'): the last look waits until such a read can be sent (coverableAt), at most
-   * `lastMax` from now. A "none" of an earlier read, or a last look that failed, is 'unknown' — posting again on it
-   * could pay twice (the rule "Chạy lại" follows too: STILL_SENDING_TEXT).
+   * Look for the job after an unanswered POST (waits first: canvasapp may still be creating it). 'none' (with what
+   * that read surely shows) only from a read that surely shows its job if it had one (shows ≥ listedBy(rec)), and only
+   * when the list was first read so soon after that (SentRecord.coveredAt within NOT_MADE_FRESH_MS of listedBy) that
+   * the job, had it been made, could not have been deleted on canvasapp's page — or pushed off a list that pages —
+   * before any read listed it (one a read listed and that is gone since: jobOf, 'ambiguous'). A job matched by node
+   * and time only is taken from such a read too ('later'): the last look waits until such a read can be sent
+   * (coverableAt), at most `lastMax` from now. A "none" of an earlier read, of a list first read long after (the app
+   * was closed, the computer asleep), or a last look that failed, is 'unknown' — posting again on it could pay twice
+   * (the rule "Chạy lại" follows too: STILL_SENDING_TEXT).
    */
   async function lookForJob(
     req: JobRequest,
     rec: SentRecord,
     delays: readonly number[] = RECONCILE_DELAYS_MS,
     lastMax = LAST_LOOK_MAX_MS,
-  ): Promise<{ remoteId: string } | 'none' | 'unknown'> {
+  ): Promise<{ remoteId: string } | { none: number } | 'unknown'> {
     for (const [i, ms] of delays.entries()) {
       const last = i === delays.length - 1
       // (never longer than such a read can need from now: a clock set back meanwhile only makes that look too early
@@ -1324,7 +1500,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         if (found === 'ambiguous') return 'unknown'
         if (found === 'later') continue
         if (found !== 'none') return found
-        if (shows >= listedBy(rec)) return 'none'
+        if (!(shows >= listedBy(rec))) continue
+        return freshNone(req.key, rec, shows) ? { none: shows } : 'unknown'
       } catch {
         // the list (or a prompt) unreadable: this look tells nothing
       }
@@ -1333,6 +1510,16 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   }
 
   const uncertainError = () => new CanvasappError('network', UNCERTAIN_SUBMIT_TEXT, { uncertain: true })
+  /**
+   * A "none" for the POST recorded as `rec` (`shows`: what that read surely shows, ≥ listedBy) is one to send it again
+   * on by itself: the job list was first read soon after its job would have been listed (SentRecord.coveredAt, else
+   * that read) — a job made then and deleted on canvasapp's page unseen, in that little time, is not bet on.
+   */
+  function freshNone(key: string, rec: SentRecord, shows: number): boolean {
+    const stored = ledgerNow().sent[key]
+    const first = stored && stored.at === rec.at && stored.nodeId === rec.nodeId ? (stored.coveredAt ?? shows) : shows
+    return first - listedBy(rec) <= NOT_MADE_FRESH_MS
+  }
 
   /** POST the job once; when the answer is lost, find the job or post the SAME body (same key) one more time. */
   /** `afterLost`: this key was posted before and its answer was lost — a refusal now does not mean "not billed". */
@@ -1347,13 +1534,23 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     nodeRunning: () => Promise<boolean>,
   ): Promise<{ remoteId: string }> {
     // Jobs that may be on that node (mayBeOnNode) in the job-list read this POST goes out with (the one right before
-    // it, unless it failed): listed before this POST, so none of them is its job.
+    // it, unless it failed) — and in any other read this page made (knownOn: a slower answer, the gateway's cache, may
+    // show fewer): listed before this POST, so none of them is its job.
+    const beforeOf = (jobs: CanvasJob[]) => [...new Set([...jobs.filter((j) => mayBeOnNode(j, body.canvas_node_id)).map((j) => j.job_id), ...knownOn(body.project_id, body.canvas_node_id)])]
+    const takenOf = (before: string[], beforeAt: number | undefined) => {
+      const ids = takenSince(body.project_id, beforeAt).filter((id) => !before.includes(id))
+      return ids.length ? { taken: ids } : {}
+    }
+    const firstBefore = beforeOf(read.jobs)
+    const firstAt = Number.isFinite(read.shows) ? read.shows : undefined
     let rec: SentRecord = {
       projectId: body.project_id,
       nodeId: body.canvas_node_id,
       at: now(),
-      before: read.jobs.filter((j) => mayBeOnNode(j, body.canvas_node_id)).map((j) => j.job_id),
-      ...(Number.isFinite(read.shows) ? { beforeAt: read.shows } : {}),
+      before: firstBefore,
+      ...(firstAt !== undefined ? { beforeAt: firstAt } : {}),
+      // (jobs other takes got since that read — it may not list them; the ledger may not keep their records for ever)
+      ...takenOf(firstBefore, firstAt),
     }
     if (!markSending(req.key, rec)) {
       throw new CanvasappError('unavailable', afterLost ? LEDGER_NOT_SAVED_AFTER_LOST_TEXT : LEDGER_NOT_SAVED_TEXT, afterLost ? { uncertain: true, heldBack: true } : {})
@@ -1391,17 +1588,28 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       rec = { ...rec, endedAt: now() }
       markSent(req.key, rec)
       const found = await lookForJob(req, rec)
-      if (typeof found === 'object') {
+      if (typeof found === 'object' && 'remoteId' in found) {
         lists.delete(body.project_id)
         const mine = settleFound(req.key, found.remoteId, rec)
         if (!mine) throw uncertainError()
         return mine
       }
-      if (found === 'none' && !reposted && !opts.isCancelled?.()) {
+      if (found !== 'unknown' && !reposted && !opts.isCancelled?.()) {
         reposted = true
-        // its time is now this POST's, its outcome not known yet (a take posting next to it later waits for THIS one)
-        const { endedAt: _ended, covered: _covered, ...again } = rec
-        const next = { ...again, at: now() }
+        // A new POST: its time is now, its outcome not known yet (a take posting next to it later waits for THIS one),
+        // and its `before` every job listed so far — the read that just found nothing of the first one among them (a
+        // job made on canvasapp's page meanwhile is surely not this one's: kept out of its lookups, never taken for
+        // its job), and what that read surely shows its `beforeAt` (other takes' lookups rely on it).
+        const beforeAt = Math.max(rec.beforeAt ?? -Infinity, found.none)
+        const nextBefore = beforeOf(lastLists.get(body.project_id)?.jobs ?? [])
+        const next: SentRecord = {
+          projectId: rec.projectId,
+          nodeId: rec.nodeId,
+          at: now(),
+          before: nextBefore,
+          ...(Number.isFinite(beforeAt) ? { beforeAt } : {}),
+          ...takenOf(nextBefore, Number.isFinite(beforeAt) ? beforeAt : undefined),
+        }
         // (its record not saved → not sent again: the first one stays "không rõ")
         if (!markSending(req.key, next)) throw uncertainError()
         rec = next
@@ -1442,6 +1650,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       // now could bill twice, taking that job could take another's: not yet — the take waits (back to the queue, still
       // "maybe billed") until a read can surely show that job, and is looked for again then.
       if (found === 'later' || lookup.shows < listedBy(earlier)) throw new CanvasappError('deferred', STILL_SENDING_TEXT, { retryAfterMs: Math.max(1_000, coverableAt(earlier) - now()) })
+      // None of its own, surely. Sent again by itself (not "Chạy lại": a take a reload left queued, one recover() sent
+      // back to the queue) only on a list read soon after that POST — else a job it made may have been deleted on the
+      // site (or paged off) unseen: "không rõ", the user decides (lookForJob's rule).
+      if (!req.resend && !freshNone(req.key, earlier, lookup.shows)) throw uncertainError()
     }
     // canvasapp's page never posts for a model that cannot create or a disabled mode: neither do we
     const known = await currentProfiles()
@@ -1539,17 +1751,16 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     // times its cache from the send, a slow answer included — and no POST since) is used as it is, when it covers every
     // such take. Either way a site
     // job made after what the read `before` comes from shows (its `shows`: ≤ gatewayListCacheMs before it was sent,
-    // i.e. ≤ 2 × gatewayListCacheMs before this POST; or since the last good read) is not in it: if this POST's answer
-    // is lost, the take settles on that job when the POST never reached canvasapp (that job's video, no second charge —
-    // and it is no longer importable), or stays "không rõ" for good when it did (both jobs could be its own). Never
-    // paid twice.
+    // i.e. ≤ 2 × gatewayListCacheMs before this POST; or since the last good read) and listed by no read of this page
+    // (`before` holds every job any read listed: knownOn) is not in it: if this POST's answer is lost, the take settles
+    // on that job when the POST never reached canvasapp (that job's video, no second charge — and it is no longer
+    // importable), or stays "không rõ" for good when it did (both jobs could be its own). Never paid twice.
     /**
      * A read this POST may go out with: there is one (every POST has a `before`), and it covers every such take — every
-     * unanswered POST of the project unless the list surely says each job's node (nodesListed: not known after an
-     * empty list or none since the page loaded).
+     * unanswered POST of the project while the list does not say each job's node (rivalsOf: nodesListed false).
      */
     const covers = (read: ListRead | undefined): read is ListRead =>
-      !!read && rivalsOf(req.key, projectId, body.canvas_node_id, true).every((r) => read.shows >= listedBy(r))
+      !!read && rivalsOf(req.key, projectId, body.canvas_node_id).every((r) => read.shows >= listedBy(r))
     const last = lastLists.get(projectId)
     const age = last ? now() - last.sent : NaN
     if (!last || last.posts !== postsSent || !(age >= 0 && age < gatewayListCacheMs) || !covers(last)) {
@@ -1573,13 +1784,50 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const read = lastLists.get(projectId)
     if (!covers(read)) {
       throw new CanvasappError('deferred', rivalText(req.key, projectId, body.canvas_node_id), {
-        retryAfterMs: Math.max(1_000, rivalWait(req.key, projectId, body.canvas_node_id, true)),
+        retryAfterMs: Math.max(1_000, rivalWait(req.key, projectId, body.canvas_node_id)),
       })
+    }
+    // That read lists a job with this take's key (a list that carries client_request_id: VERIFY) although the ledger
+    // knows none — its record dropped (capped: MAX_JOB_RECORDS, site data cleared, another computer): it is this take's
+    // job, never posted again.
+    const keys = new Set([clientRequestIdFor(req.key), req.key])
+    const listedMine = read.jobs.filter((j) => j && typeof j.client_request_id === 'string' && keys.has(j.client_request_id))
+    if (listedMine.length) {
+      const mine = listedMine.length === 1 ? settleFound(req.key, encodeRemoteId(projectId, listedMine[0].job_id), { projectId, nodeId: body.canvas_node_id, at: now() }) : null
+      if (!mine) throw uncertainError()
+      return mine
     }
     // Last chance to stop: the POST below is what canvasapp bills.
     checkCancelled()
     return postJob(req, nodeKey, body, read, opts, !!earlier, async () => (await runningNow()).has(nodeKey))
   }
+
+  /** capabilities() of `model` for the profiles read now (memoized per read: capabilitiesMemo). */
+  function capabilitiesNow(model: ModelId): ProviderCapabilities {
+    // never from the profile: a key canvasapp may add there does not say how a video is sent
+    const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: CANVASAPP_MAX_REF_VIDEOS })
+    const list = profiles
+    if (!list) return base
+    // The values of SanoVids' model table that the submit would not refuse on that field (profileIssues — the very
+    // rule of validateRequest and settingsLimits(); a model that cannot create keeps its lists).
+    const start = normalizeSettings({ model: base.model })
+    const keep = <T extends string | number>(field: LimitField, values: T[]): T[] =>
+      values.filter((v) => {
+        try {
+          return !profileIssues({ ...start, [field]: v }, list).some((i) => i.field === field)
+        } catch {
+          return true
+        }
+      })
+    return {
+      ...base,
+      modes: keep('mode', base.modes),
+      durations: keep('duration', base.durations),
+      resolutions: keep('resolution', base.resolutions),
+      ratios: keep('ratio', base.ratios),
+    }
+  }
+  const capabilitiesMemo = new Map<ModelId, { list: VideoProfile[] | null; value: ProviderCapabilities }>()
 
   async function jobsOf(projectId: string): Promise<CanvasJob[]> {
     const hit = lists.get(projectId)
@@ -1607,29 +1855,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     },
 
     capabilities: (model: ModelId): ProviderCapabilities => {
-      // never from the profile: a key canvasapp may add there does not say how a video is sent
-      const base = capabilitiesFromModels(model, { maxConcurrency: MAX_CONCURRENCY, pollIntervalMs: pollMs, maxRefVideos: CANVASAPP_MAX_REF_VIDEOS })
-      const list = profiles
-      if (!list) return base
-      // The values of SanoVids' model table that the submit would not refuse on that field (profileIssues — the very
-      // rule of validateRequest and settingsLimits(); a model that cannot create keeps its lists).
-      const start = normalizeSettings({ model: base.model })
-      const keep = <T extends string | number>(field: LimitField, values: T[]): T[] =>
-        values.filter((v) => {
-          try {
-            return !profileIssues({ ...start, [field]: v }, list).some((i) => i.field === field)
-          } catch {
-            return true
-          }
-        })
-      return {
-        ...base,
-        modes: keep('mode', base.modes),
-        durations: keep('duration', base.durations),
-        resolutions: keep('resolution', base.resolutions),
-        ratios: keep('ratio', base.ratios),
-      }
+      // (asked on every engine tick: the same object while the profiles read stays the same)
+      const memo = capabilitiesMemo.get(model)
+      if (memo && memo.list === profiles) return memo.value
+      const value = capabilitiesNow(model)
+      capabilitiesMemo.set(model, { list: profiles, value })
+      return value
     },
+
 
     submit: (req, opts = {}) => {
       const same = inflight.get(req.key)
@@ -1683,12 +1916,21 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       // Looked for at once; a look that tells nothing (unreadable, too early for a "none" or for a job matched by node
       // and time: shows < listedBy) is made once more when a read can surely show the job — for a POST main may still
       // have been sending when the page went away, up to POST_IN_FLIGHT_MS + LAST_LOOK_MAX_MS after it (the take stays
-      // "sending" meanwhile; it never holds the other takes back). Never posted here: a read that surely shows that
-      // POST's job finds none → it made nothing (the rule of postJob's resend): the take goes back to the queue, sent
-      // again under the same key (NOT_MADE_TEXT, notSent); nothing told → "không rõ", and "Chạy lại" looks first again.
+      // "sending" meanwhile; it holds back only the takes posted on its node — on any node while the job list does not
+      // say which: rivalsOf). Never posted here: a read that surely shows that POST's job finds none, and the list was
+      // read that soon after the job would have been listed that it cannot have been deleted unseen (lookForJob,
+      // NOT_MADE_FRESH_MS) → it made nothing (the rule of postJob's resend): the take goes back to the queue, sent
+      // again under the same key (NOT_MADE_TEXT, notSent). Nothing told — or that read came long after (the app was
+      // closed for a while: the job may have been made and deleted since) → "không rõ", and "Chạy lại" looks first.
       const found = await lookForJob(req, rec, [0, RECONCILE_DELAYS_MS[RECONCILE_DELAYS_MS.length - 1]], POST_IN_FLIGHT_MS + LAST_LOOK_MAX_MS)
-      if (found === 'none') throw new CanvasappError('deferred', NOT_MADE_TEXT, { retryAfterMs: 0, notSent: true })
-      return typeof found === 'object' ? settleFound(req.key, found.remoteId, rec) : null
+      if (found === 'unknown') return null
+      if ('none' in found) throw new CanvasappError('deferred', NOT_MADE_TEXT, { retryAfterMs: 0, notSent: true })
+      return settleFound(req.key, found.remoteId, rec)
+    },
+
+    mayHaveBilled: (key) => {
+      const ledger = ledgerNow()
+      return key in ledger.sent || key in ledger.jobs || key in ledger.imported
     },
 
     poll: async (remoteIds) => {
@@ -1740,6 +1982,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       storage.remove(STATE_KEY)
       lists.clear()
       lastLists.clear()
+      known.clear()
       misses.clear()
       // what the account could run is not known any more (logout): back to 'none'; a read in flight is ignored
       profilesEpoch++
@@ -1834,7 +2077,10 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         next[c.key] = { remoteId: c.remoteId, at: now(), nodeId: c.nodeId }
       }
       const accepted = Object.keys(next)
-      if (accepted.length) saveLedger({ ...ledger, imported: { ...ledger.imported, ...next } })
+      if (accepted.length) {
+        const sent = Object.values(next).reduce((acc, c) => withTaken(acc, ledger.jobs, c.remoteId), ledger.sent)
+        saveLedger({ ...ledger, imported: { ...ledger.imported, ...next }, sent })
+      }
       return accepted
     },
   }

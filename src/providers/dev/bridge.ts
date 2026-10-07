@@ -249,7 +249,11 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
       const sentAt = now()
       const res = await server().request(out)
       const copy: BridgeResponse = res.ok && res.json !== undefined ? { ...res, json: clone(res.json) } : res
-      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: sentAt, result: clone(copy) })
+      // (never over the answer of a request sent later — it shows more —, unless that one is stamped in the future:
+      // main's <canvasapp-job-list-cache> put())
+      const kept = cacheKey !== null ? listCache.get(cacheKey) : undefined
+      const newer = !!kept && kept.at > sentAt && kept.at <= now()
+      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch && !newer) listCache.set(cacheKey, { at: sentAt, result: clone(copy) })
       return copy
     } catch (e) {
       return gatewayError('network', `Không kết nối được tới canvasapp giả lập (${e instanceof Error ? e.message : String(e)}).`)

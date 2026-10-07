@@ -155,6 +155,14 @@ export interface JobRequest {
   lastFrame: JobFrame | null
   /** Local time the take started processing (the mock uses it for wall-clock progress). */
   startedAt: number
+  /**
+   * The take was "maybe billed" (Take.submitUnknown) and is sent again on purpose ("Chạy lại"): a paying provider looks
+   * for the job of an earlier request of this key first and sends it again once a read surely shows none, however
+   * long after that request. Without it — a take left queued by a reload before its state was saved, one sent again
+   * after recover() found nothing — an earlier request is sent again only on what the provider saw soon after it
+   * (canvasapp: NOT_MADE_FRESH_MS), else the take becomes "unknown".
+   */
+  resend?: boolean
 }
 
 export type RemoteState = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -218,6 +226,13 @@ export interface VideoProvider {
    * "unknown".
    */
   recover?(req: JobRequest): Promise<{ remoteId: string } | null>
+  /**
+   * Could a request of `key` have reached the provider — a job is known for it, or a request whose answer is not known?
+   * Synchronous, never a request. The engine asks when such a take is cancelled without its remote id (it may be
+   * billed: "Thử lại" must re-send THE SAME take, its job looked for first — never a new paid take), and again when its
+   * submit ends. Optional: without it only a take being sent counts, until its submit ends without an "unknown" error.
+   */
+  mayHaveBilled?(key: string): boolean
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
   /**

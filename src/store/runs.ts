@@ -17,8 +17,11 @@
 //   have; otherwise it is marked failed with UNKNOWN_SUBMIT_ERROR — it is NEVER submitted again by itself (that could
 //   pay twice). Such a lookup sends nothing: it never holds the provider's one-new-submit-at-a-time gate.
 // Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
-// "unknown" (UNKNOWN_SUBMIT_ERROR — also one the user cancelled meanwhile: it keeps submitUnknown) is re-sent only by
-// an explicit retry(takeId), as THE SAME take (same key; the provider looks for the job first). A take cancelled before
+// "unknown" (UNKNOWN_SUBMIT_ERROR — also one the user cancelled meanwhile: it keeps submitUnknown; one cancelled while
+// it was being sent, or whose provider may have had a request of it, is in that doubt from the cancel on) is re-sent
+// only by an explicit retry(takeId), as THE SAME take (same key, JobRequest.resend; the provider looks for the job
+// first). A remote id that comes back after the take's project was closed is kept on the device (lateRemoteIds) and
+// given back when that project is opened again. A take cancelled before
 // its job was created is never billed (submit checks isCancelled before posting). A finished remote video that fails
 // to download is retried, never failed at once (only a video over the gateway's size cap, or one whose download
 // outlived the gateway's time limit without being able to continue, is: another try gives the same end). Its download
@@ -237,6 +240,12 @@ const ownedHere = new Set<string>()
  * not hold the provider's one-new-submit-at-a-time gate: the queue goes on while a take left mid-send is looked up.
  */
 const recovering = new Set<string>()
+/**
+ * Takes cancelled while being sent (cancel: isSendingTake) that had no doubt before: their submitUnknown came from the
+ * cancel alone, and goes when that submit shows nothing billable was sent (dropOwnDoubt). A take that was "maybe billed"
+ * before (a retry of an "unknown" take) is never in it: its earlier request may have been billed, whatever this one did.
+ */
+const cancelDoubt = new Set<string>()
 /** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
 const fetchFailures = new Map<string, number>()
 const fetchRetryAt = new Map<string, number>()
@@ -426,7 +435,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
     resetEngineState()
     // Takes are shown as saved. Takes left running are adopted when this tab gets the engine (see adoptOrphans):
     // another tab may still be running them right now.
-    const takes = (data?.takes ?? []).map(migrateTake)
+    const takes = withLateRemoteIds((data?.takes ?? []).map(migrateTake))
     // New runs data start with DEMO_CREDITS_DEFAULT; a saved demo balance is kept as it is.
     const credits = finite(data?.credits) ?? DEMO_CREDITS_DEFAULT
     const spent = finite(data?.spent) ?? 0
@@ -533,8 +542,21 @@ export const useRuns = create<RunsState>()((set, get) => ({
       }
     }
     const refund = isCharged(take) ? take.cost : 0
+    // A remote take being sent (running, no remote id): its request may be on its way to the provider — or answered
+    // already, the answer not back yet (a submit or a recovery in flight, here or in another tab; for minutes after a
+    // reload mid-send) —, so it may be billed. It keeps that doubt (submitUnknown) from now on, not only once its
+    // submit ends: "Thử lại" then re-sends THE SAME take (same key, its job looked for first), never a new paid take
+    // (a new key) while the first request may still make its job. The doubt goes when this tab's submit of it shows
+    // nothing billable was sent (submitFailed), or comes back with its remote id.
+    // The same for a take without its remote id whose provider may have had a request of it (a reload before its
+    // state was saved left it queued, or waiting for an earlier request's job to show: mayHaveBilled).
+    const sendingNow = isSendingTake(take)
+    const doubt = !remoteId && providerOf(take) !== 'mock' && (sendingNow || providerMayHaveBilled(take))
+    if (doubt && sendingNow && !take.submitUnknown) cancelDoubt.add(takeId)
     set((s) => ({
-      takes: s.takes.map((t) => (t.id === takeId ? { ...t, status: 'cancelled', finishedAt: Date.now(), error: 'Đã huỷ' } : t)),
+      takes: s.takes.map((t) =>
+        t.id === takeId ? { ...t, status: 'cancelled', finishedAt: Date.now(), error: 'Đã huỷ', ...(doubt ? { submitUnknown: true } : {}) } : t,
+      ),
       credits: s.credits + refund,
       spent: s.spent - refund,
     }))
@@ -549,6 +571,8 @@ export const useRuns = create<RunsState>()((set, get) => ({
       const blocked = providerBlockedReason(providerOf(take))
       if (blocked) return { queued: 0, cost: 0, skipped: [], error: blocked }
       ownedHere.delete(takeId)
+      // (a doubt that came from a cancel is now the take's own: never dropped by the submit still on its way)
+      cancelDoubt.delete(takeId)
       set((s) => ({
         takes: s.takes.map((t) => (t.id === takeId ? { ...t, status: 'queued', progress: 0, startedAt: null, finishedAt: null, error: null, submitUnknown: true } : t)),
       }))
@@ -707,6 +731,92 @@ export function frameSnapshotKey(assets: Asset[], assetId: string | null): strin
 }
 
 // ---------------------------------------------------------------------------------------------
+// Remote ids of takes whose project was closed while they were sent
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A submit (or a recovery) that ends with a remote id after its project's runs were unloaded (another project opened
+ * meanwhile, or this one reloaded): the take on disk is still "sending", without it. The id is kept here — device
+ * storage, by take id — and given back to the take when its project's runs are loaded again (loadRuns): the take never
+ * depends on the provider's own records (canvasapp's job ledger keeps the newest MAX_JOB_RECORDS) to find a job that
+ * is paid. An entry goes once the take is loaded with that id (it was saved) — or after MAX_LATE newer ones.
+ */
+const LATE_KEY = 'bdp:runs:late-remote-ids'
+const MAX_LATE = 200
+type LateRemoteIds = Record<string, { remoteId: string; provider: ProviderId; at: number }>
+export interface LateRemoteIdStorage {
+  get(key: string): string | null
+  set(key: string, value: string): void
+}
+let lateStorageOverride: LateRemoteIdStorage | null | undefined
+/** Tests: where those ids are kept (null = nowhere; undefined = localStorage). */
+export function setLateRemoteIdStorage(s: LateRemoteIdStorage | null | undefined): void {
+  lateStorageOverride = s
+}
+function lateStorage(): LateRemoteIdStorage | null {
+  if (lateStorageOverride !== undefined) return lateStorageOverride
+  try {
+    return typeof localStorage === 'undefined' || !localStorage ? null : { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) }
+  } catch {
+    return null
+  }
+}
+/** The ids kept (well-formed entries only). */
+export function lateRemoteIds(): LateRemoteIds {
+  try {
+    const raw = lateStorage()?.get(LATE_KEY)
+    const p = raw ? (JSON.parse(raw) as unknown) : null
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return {}
+    const out: LateRemoteIds = {}
+    for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+      const r = v as { remoteId?: unknown; provider?: unknown; at?: unknown } | null
+      if (r && typeof r.remoteId === 'string' && r.remoteId && (r.provider === 'dev' || r.provider === 'canvasapp') && typeof r.at === 'number') {
+        out[k] = { remoteId: r.remoteId, provider: r.provider, at: r.at }
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+function writeLate(ids: LateRemoteIds) {
+  try {
+    const kept = Object.entries(ids).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_LATE)
+    lateStorage()?.set(LATE_KEY, JSON.stringify(Object.fromEntries(kept)))
+  } catch {
+    /* not kept: the provider's own records still find the job (recover) */
+  }
+}
+function rememberLateRemoteId(takeId: string, provider: ProviderId, remoteId: string) {
+  writeLate({ ...lateRemoteIds(), [takeId]: { remoteId, provider, at: Date.now() } })
+}
+/** `takes` (just loaded) with the remote ids kept for them; entries of takes loaded with their id are dropped. */
+function withLateRemoteIds(takes: Take[]): Take[] {
+  const late = lateRemoteIds()
+  if (!Object.keys(late).length) return takes
+  let changed = false
+  const out = takes.map((t): Take => {
+    const l = late[t.id]
+    if (!l || l.provider !== providerOf(t)) return t
+    if (remoteIdOf(t)) {
+      if (remoteIdOf(t) === l.remoteId) {
+        delete late[t.id]
+        changed = true
+      }
+      return t
+    }
+    if (t.status === 'processing' || t.status === 'cancelled') return { ...t, remoteId: l.remoteId }
+    // saved before that submit started (queued), or before its retry ("không rõ"): it has its job — polled from now on
+    if (t.status === 'queued' || isUncertainSubmit(t)) {
+      return { ...t, status: 'processing' as const, remoteId: l.remoteId, error: null, finishedAt: null, startedAt: t.startedAt ?? l.at, progress: Math.max(1, t.progress) }
+    }
+    return t
+  })
+  if (changed) writeLate(late)
+  return out
+}
+
+// ---------------------------------------------------------------------------------------------
 // Queue engine
 // ---------------------------------------------------------------------------------------------
 
@@ -718,6 +828,8 @@ function resetEngineState() {
   lastPoll.clear()
   pollPausedUntil.clear()
   recovering.clear()
+  // (a submit of the project left keeps its doubt: what it did is never known here now)
+  cancelDoubt.clear()
   clearTakeWaits()
   pollFailures.clear()
   ownedHere.clear()
@@ -1070,6 +1182,8 @@ function buildRequest(t: Take): JobRequest {
     firstFrame: frame(frames.first),
     lastFrame: frame(frames.last),
     startedAt: t.startedAt ?? Date.now(),
+    // "Chạy lại" of a take in doubt (retry: submitUnknown): looked for first, sent again once surely not made
+    ...(t.submitUnknown ? { resend: true } : {}),
   }
 }
 
@@ -1093,26 +1207,71 @@ async function submitTake(id: string) {
   try {
     const provider = getProvider(pid)
     const { remoteId } = await provider.submit(buildRequest(t), { isCancelled })
-    // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
-    if (gen !== generation) return void emitRun('submitted', t)
+    // Runs reloaded meanwhile (another project opened, or this one reloaded): the take is "sending" on disk. Its remote
+    // id is kept on this device (lateRemoteIds) and given back when its project's runs are loaded again — and the new
+    // engine of this project, if it is open, asks the provider for this job anyway (recoverTake).
+    if (gen !== generation) {
+      if (pid !== 'mock') rememberLateRemoteId(id, pid, remoteId)
+      return void emitRun('submitted', t)
+    }
     const cur = findTake(id)
     if (cur?.status === 'processing') patchTake(id, { remoteId })
     else {
       // Cancelled / removed while submitting: stop it at the provider when possible. A remote provider has the job
       // anyway (canvasapp may have charged the account): the cancelled take keeps its id so the UI can say so.
-      if (cur && pid !== 'mock') patchTake(id, { remoteId })
+      if (cur && pid !== 'mock') patchTake(id, { remoteId, ...dropOwnDoubt(id) })
       void provider.cancel?.(remoteId)
     }
     emitRun('submitted', t)
   } catch (e) {
     if (gen === generation) submitFailed(id, pid, e)
   } finally {
-    if (gen === generation) submitting.delete(id)
+    if (gen === generation) {
+      submitting.delete(id)
+      cancelDoubt.delete(id)
+    }
   }
+}
+
+/**
+ * The patch that drops the doubt a cancel gave take `id` (cancelDoubt), when there is one — its submit came back with
+ * a remote id (billed for sure: the id says so), or surely sent nothing billable.
+ */
+function dropOwnDoubt(id: string): Partial<Take> {
+  if (!cancelDoubt.delete(id)) return {}
+  return { submitUnknown: undefined }
+}
+
+/** The take's provider may have had a request of it (VideoProvider.mayHaveBilled; false when it cannot say). */
+function providerMayHaveBilled(t: Pick<Take, 'id' | 'provider'>): boolean {
+  try {
+    return getProvider(providerOf(t)).mayHaveBilled?.(t.id) === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The submit of take `t` that just ended with error `e` left nothing that may be billed: its provider knows no request
+ * of it that may have reached it (mayHaveBilled) — or, for a provider that cannot say, the submit waits (deferred),
+ * stopped before its request (cancelled), or ended with an error that is not "unknown" (a sure refusal, a check before
+ * sending…); an error that is not the provider's own (no code) says nothing.
+ */
+function sentNothingBillable(t: Pick<Take, 'id' | 'provider'>, e: unknown): boolean {
+  try {
+    const p = getProvider(providerOf(t))
+    if (p.mayHaveBilled) return !p.mayHaveBilled(t.id)
+  } catch {
+    return false
+  }
+  return isSubmitDeferred(e) || isSubmitCancelled(e) || (typeof (e as { code?: unknown })?.code === 'string' && !isSubmitUncertain(e))
 }
 
 /** What a submit that failed does to its take — also a recovery whose provider knows that submit sent nothing. */
 function submitFailed(id: string, pid: ProviderId, e: unknown) {
+  const was = findTake(id)
+  // cancelled while it was being sent: its doubt goes when this shows nothing billable was sent
+  if (cancelDoubt.delete(id) && was?.status === 'cancelled' && !remoteIdOf(was) && sentNothingBillable(was, e)) patchTake(id, { submitUnknown: undefined })
   const deferred = isSubmitDeferred(e)
   if (deferred) {
     // The provider asks to try later (e.g. another take of its scene was just sent without a known answer, or no room
@@ -1160,20 +1319,30 @@ async function recoverTake(id: string) {
   try {
     const provider = getProvider(pid)
     const found = provider.recover ? await provider.recover(buildRequest(t)) : null
-    if (gen !== generation) return
+    if (gen !== generation) {
+      if (found) rememberLateRemoteId(id, pid, found.remoteId)
+      return
+    }
     const cur = findTake(id)
-    if (!found) return markSubmitUnknown(id, unknownSubmitError(pid))
-    if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
+    if (!found) {
+      cancelDoubt.delete(id)
+      return markSubmitUnknown(id, unknownSubmitError(pid))
+    }
+    if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId, ...(cur.status === 'cancelled' ? dropOwnDoubt(id) : {}) })
     if (cur?.status === 'processing') emitRun('submitted', t)
   } catch (e) {
     if (gen !== generation) return
     // the provider knows that submit sent nothing (deferred, refused…): what that submit's own error would have done
     if (isRecoverNotSent(e)) submitFailed(id, pid, e)
-    else markSubmitUnknown(id, unknownSubmitError(pid))
+    else {
+      cancelDoubt.delete(id)
+      markSubmitUnknown(id, unknownSubmitError(pid))
+    }
   } finally {
     if (gen === generation) {
       submitting.delete(id)
       recovering.delete(id)
+      cancelDoubt.delete(id)
     }
   }
 }

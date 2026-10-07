@@ -457,9 +457,16 @@ function createJobListCache(ttlMs, now) {
     ticket() {
       return epoch
     },
-    /** Its 200 answer, its request sent at `sentAt`: kept unless the cache was dropped after `ticket`. */
+    /**
+     * Its 200 answer, its request sent at `sentAt`: kept unless the cache was dropped after `ticket` — and never over
+     * the answer of a request sent later (a slow answer shows less than a quicker one sent after it: the page may
+     * already know a job that older answer does not list), unless that one is stamped later than now (clock set back).
+     */
     put(key, ticket, sentAt, result) {
-      if (ticket === epoch) entries.set(key, { at: sentAt, result })
+      if (ticket !== epoch) return
+      const kept = entries.get(key)
+      if (kept && kept.at > sentAt && kept.at <= now()) return
+      entries.set(key, { at: sentAt, result })
     },
     /** A job POST starts / ends, a logout: forget every answer (and any read still on its way). */
     drop() {

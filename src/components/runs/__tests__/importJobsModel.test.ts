@@ -1,7 +1,7 @@
 // "Nhập job" dialog texts and rules (importJobsModel.ts), for the real site and development mode.
 import { describe, expect, it } from 'vitest'
 import type { Scene } from '../../../core/types'
-import { CREATED_SKEW_MS, NAIVE_CREATED_SKEW_MS, type SiteJobCandidate, type SiteJobScan } from '../../../providers/canvasapp/siteJobs'
+import type { SiteJobCandidate, SiteJobScan } from '../../../providers/canvasapp/siteJobs'
 import {
   candidateSettingsText,
   candidateStatusText,
@@ -126,18 +126,11 @@ describe('importJobsModel: rules', () => {
     expect(lines[4].text).toBe('Đã xong nhưng canvasapp giả lập không cho tải nữa: 1 job')
   })
 
-  it('MONEY: the maybe-pending line never promises a time limit — only which jobs around that POST are held (14 h / 27 h without a time zone)', () => {
+  it('MONEY: the maybe-pending line never promises a time limit, nor a window of hours (canvasapp\'s clock is never trusted for it)', () => {
     const line = (skipped: SiteJobScan['skipped'], w = real) => skipLines({ skipped }, w, (id) => (id === 'take_1' ? 'S01·T2' : null))[0].text
-    const zoned = line([{ jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: CREATED_SKEW_MS / 3600_000 }])
-    expect(zoned).toContain('chỉ giữ job tạo trong khoảng 14 giờ quanh lần gửi đó')
-    expect(zoned).not.toMatch(/tối đa/)
-    const both = line([
-      { jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: CREATED_SKEW_MS / 3600_000 },
-      { jobId: 'd', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: NAIVE_CREATED_SKEW_MS / 3600_000 },
-    ])
-    expect(both).toContain('trong khoảng 14–27 giờ quanh lần gửi đó')
-    // matched by key, or no creation time: held whenever it was made — no hours at all
-    expect(line([{ jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1' }])).not.toMatch(/giờ/)
+    const one = line([{ jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1' }])
+    expect(one).toContain('chưa nhập được tới khi take đó tìm ra job của nó')
+    expect(one).not.toMatch(/tối đa|giờ/)
     // the real site: where the deleted take's video can still be fetched
     expect(line([{ jobId: 'd', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_gone' }])).toContain('tải video trên canvasapp.io.vn (phiên “SanoVids bridge”)')
   })

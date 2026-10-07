@@ -183,7 +183,9 @@ app đóng giữa chừng thì nhiều nhất một take ở trạng thái "khô
    nó — **gửi** chưa quá 15 s, như cache của cổng tính từ lúc gửi, kể cả khi câu trả lời về chậm; chưa có `POST` nào sau
    đó — thì dùng luôn): mọi job có trong lần đọc đó trên node (của take khác,
    hoặc job người dùng tạo trên trang canvasapp mà chưa nhập) vào `before` của lần gửi, không bao giờ bị nhận nhầm là
-   job của nó. Đọc không được → vẫn gửi với lần đọc được gần nhất (trừ khi cạnh một take còn chưa rõ, xem dưới); chưa
+   job của nó — cùng **mọi** job trên node mà trang đã thấy trong bất kỳ lần đọc nào khác (`knownOn`: một câu trả lời
+   chậm hơn, hay từ cache, có thể thấy ít hơn). Cache của main / cầu nối giả lập cũng không bao giờ thay câu trả lời
+   của một request gửi sau bằng câu trả lời chậm của một request gửi trước (nó thấy ít hơn). Đọc không được → vẫn gửi với lần đọc được gần nhất (trừ khi cạnh một take còn chưa rõ, xem dưới); chưa
    có lần đọc nào từ khi mở app / đăng nhập → **không gửi** (`LIST_FIRST_TEXT`, chưa trừ credit): không `POST` nào đi
    mà không có `before`. Job tạo trên
    trang **sau** lần đọc mà `before` lấy từ đó (≤ 15 s trước khi gửi lần đọc đó vì cache — tức ≤ 30 s trước `POST` —,
@@ -213,20 +215,27 @@ và yêu cầu nào bị từ chối, mã HTTP — không có id, query, cookie 
 đợi 15 s, đọc danh sách job tìm đúng job đó (cùng `client_request_id` nếu danh sách có trường này, nếu không thì job
 **duy nhất** mới xuất hiện trên node mà lần `POST` đó ghi (job mà danh sách không nói ở node nào — `canvas_node_id`
 thiếu / null, VERIFY — coi như có thể ở mọi node: nằm trong `before` của mọi lần gửi, là ứng viên của mọi lần tìm),
-không thuộc take nào khác, không phải job đã nhập, chưa có
-trong lần đọc danh sách trước `POST`, tạo trong khoảng thời gian của lần `POST` đó (`inPostWindow`: từ 14 h trước tới
-14 h 10 phút sau khi `created_at` có múi giờ; **27 h** trước / 27 h 10 phút sau khi không có — trình duyệt đọc giờ không
-múi giờ theo múi giờ của máy, canvasapp ghi theo múi giờ của nó: lệch tới 26 h, vd. giờ Việt Nam đọc ở Hawaii lệch
-+17 h; đúng khoảng mà "Nhập job" giữ cho nó, nên một job không bao giờ vừa là của một lần gửi vừa nhập được. Chỉ
-đọc giờ ISO 8601 hoặc một số — dưới 1e11 là giây Unix (`siteJobs.createdTime`); giờ khác (vd. "07/10/2026 12:00", mà
-`Date.parse` đọc thành 10/7), không có giờ, thời lượng / model không rõ (thiếu, null, không phải số) **không bao giờ**
-loại job: loại nhầm job của chính nó thì lần đọc "không có" sẽ gửi lại — trả hai lần; giữ lại thì tệ nhất là
-"không rõ")
+không thuộc take nào khác, không phải job đã nhập (kể cả khi sổ không còn giữ bản ghi của take đó — giữ 2000 bản ghi
+mới nhất: job take khác nhận trong lúc câu trả lời chưa rõ, hay ngay trước `POST` mà lần đọc của nó chưa thấy, được ghi
+trên bản ghi `sent[key].taken`), chưa có
+trong lần đọc danh sách trước `POST` (hay lần đọc nào khác của trang trước đó), không có sau lần đọc chắc chắn đầu
+tiên (`covered`, xem dưới). **Giờ tạo (`created_at`) không bao giờ loại job** (trước đây: ngoài khoảng ±14 h, ±27 h khi
+không có múi giờ → loại): giờ đó theo đồng hồ của canvasapp, đồng hồ máy có thể lệch cả ngày (tắt giờ tự động, chỉnh
+tay — TLS vẫn chạy) → job của chính nó bị loại, lần đọc "không có" gửi lại → trả hai lần. `before` và `covered` đã
+giới hạn job đó theo thời gian (giữa lần đọc trước `POST` và lần đọc chắc chắn đầu tiên); khoảng `inPostWindow` chỉ
+còn dùng cho bản ghi của bản trước 0.6.0 không có `before`. Model / thời lượng / `creation_mode` mà danh sách ghi khác
+yêu cầu (giá trị của job SanoVids tạo là VERIFY: `creation_mode` khác, thời lượng thật của clip, tên model đã chuẩn
+hoá…) **không bao giờ** là lý do "không có": job đó vẫn "có thể", chỉ không được nhận (`differsFromRequest` →
+"không rõ", không gửi lại); điều danh sách không nói rõ (thiếu, null, không phải số, giờ không đọc được) không nói
+gì. Một job mà một lần đọc đã thấy có thể là của nó (`sent[key].seen`) rồi biến mất khỏi danh sách (xoá trên trang
+canvasapp, danh sách cắt trang — VERIFY) → từ đó không lần đọc nào nói được "không có" (`'ambiguous'`, "không rõ",
+không bao giờ gửi lại)
 — và không thể là job của một take khác trên cùng node còn chưa rõ câu trả lời: khi đó "không rõ", không
 đoán); đọc lần 2 khi một lần đọc **chắc chắn** thấy job đó nếu có (`listedBy` + thời gian cache của cổng, `coverableAt`:
 45 s sau khi câu trả lời / lỗi về qua cache 15 s của main; không bao giờ chờ quá 45 s từ lúc đó — đồng hồ máy bị
 chỉnh lùi giữa chừng chỉ làm lần đọc "quá sớm", tức "không rõ", không bao giờ gửi lại); lần đọc đó không có → gửi lại
-**một lần** với **cùng** body và `client_request_id`; lần đọc đó hỏng (dù lần 1 không thấy), hoặc vẫn không rõ → take `failed` với `UNKNOWN_SUBMIT_ERROR`
+**một lần** với **cùng** body và `client_request_id` (`before` của lần gửi lại: mọi job đã thấy tới lúc đó, kể cả job
+tạo trên trang ngay trước — không bao giờ bị nhận là job của nó; `beforeAt` của lần đọc "không có" đó); lần đọc đó hỏng (dù lần 1 không thấy), hoặc vẫn không rõ → take `failed` với `UNKNOWN_SUBMIT_ERROR`
 ("không rõ đã trừ credit chưa"). Job **chỉ khớp theo node và giờ** (danh sách không có `client_request_id`) chỉ được
 nhận từ một lần đọc **chắc chắn** thấy job của chính `POST` đó nếu có (`shows` ≥ `listedBy`; lần đọc sớm hơn trả
 `'later'` — xem tiếp): lần đọc sớm có thể chỉ thấy một job khác vừa tạo trên node đó ở trang canvasapp trong khi job
@@ -271,9 +280,13 @@ Danh sách job **không ghi `canvas_node_id`** (VERIFY): job nào cũng có th�
 lời trong phiên cầu nối là "take kia" của mọi take — đoạn dưới áp dụng cả cho take **khác cảnh**: chờ (`rivalWait`,
 `RIVAL_PENDING_ANY_TEXT`), lần đọc ngay trước `POST` phải chắc chắn thấy job của chúng, khi tìm job thì xét chúng như
 cùng node (`pendingOf`, `mayBeJobOf`; lần đọc trước `POST` của take khác node cũng loại được job — nó liệt kê mọi job).
-Danh sách **trống** (chưa biết nó có ghi node không — `nodesListed` null, vd. phiên cầu nối mới) → lần đọc ngay trước
-`POST` cũng phải chắc chắn thấy job của mọi `POST` chưa rõ trong phiên (cẩn thận: nếu không, hai take khác cảnh cùng mất
-câu trả lời có thể "không rõ" mãi khi job hiện ra không ghi node); danh sách đã có job ghi node → chỉ take cùng node.
+Danh sách **trống** (phiên cầu nối mới) hay chưa đọc từ khi mở trang → theo điều danh sách có job gần nhất đã cho
+thấy trên máy này (`LIST_SHAPE_KEY`, giữ qua đăng xuất: đó là cách API của canvasapp ghi danh sách, không phải của một
+phiên); chưa bao giờ thấy → coi như có ghi node: chỉ take cùng node phải chờ (trước đây: mọi cảnh chờ `POST` chưa rõ
+của một cảnh khác — tới 5 phút 45 s sau khi tải lại trang lúc đang gửi, với lý do sai "danh sách không ghi job thuộc
+cảnh nào"). Rủi ro còn lại của lựa chọn này chỉ là "không rõ", không bao giờ trả hai lần: danh sách thật sự không ghi
+node, hai take khác cảnh cùng mất câu trả lời và canvasapp cho hai job cùng prompt → mỗi take thấy job kia có thể là
+của take kia (`contested`) → cả hai "không rõ".
 
 Hai take trên **cùng một node** (hai take của một cảnh trong một dự án, hoặc take gửi lại trên node cũ) mà đều chưa rõ
 câu trả lời: job nào cũng có thể là của take kia. Vì thế một take **không được gửi** khi một take khác trên node đó còn
@@ -387,21 +400,36 @@ chậm) → `provider.recover()`: lấy `jobs[take.id]` trong sổ, hoặc đợ
 job trong danh sách như trên — ngay, rồi (lần đọc hỏng, "không có" hay một job chỉ khớp theo node và giờ mà chưa chắc
 thấy job đó: `shows` < `listedBy`) thêm một lần nữa khi một lần đọc chắc chắn thấy job đó nếu có — chờ tới lúc đó, kể cả
 tới 5 phút 45 giây sau `POST` khi trang đóng / tải lại lúc main còn gửi nó (`POST_IN_FLIGHT_MS` + 45 s): take vẫn "đang
-gửi" trong lúc chờ (không giữ lượt gửi của take khác), không bao giờ "không rõ" vì một job còn có thể tới. Tìm thấy →
-poll tiếp. Lần đọc chắc chắn đó **không có** job nào có thể là của nó → lần gửi đó chắc chắn không tạo job (cùng luật
-với lần gửi lại tự động sau khi mất câu trả lời): `recover()` báo `deferred` + `notSent` (`NOT_MADE_TEXT`) → take về hàng
-đợi và được gửi lại như mọi take, **cùng khoá** (bản ghi `sent` còn đó: tìm trước một lần nữa) — không còn "không rõ" cho
-một yêu cầu chắc chắn chưa tạo gì. Không biết được (lần đọc hỏng, nhiều job có thể là của nó) → `failed` với
-`UNKNOWN_SUBMIT_ERROR` (take bị huỷ trong lúc đó — hoặc trong lúc
-lần gửi của nó còn chờ câu trả lời — vẫn "đã huỷ" nhưng giữ "không rõ", `submitUnknown`: "Chạy lại" gửi lại chính take
-đó, tìm job trước, không bao giờ thành take mới trả thêm). Lần gửi đó đã kết thúc trong trang này mà chắc chắn không
+gửi" trong lúc chờ (chỉ giữ lượt gửi của take **cùng node** — mọi node khi danh sách không ghi node, `rivalsOf`), không
+bao giờ "không rõ" vì một job còn có thể tới. Tìm thấy → poll tiếp. Lần đọc chắc chắn đó **không có** job nào có thể là
+của nó **và** danh sách được đọc lần đầu đủ sớm sau mốc job đó phải hiện (`sent[key].coveredAt` ≤ `listedBy` +
+`NOT_MADE_FRESH_MS` = 5 phút: một job tạo ra rồi bị xoá trên trang trước khi SanoVids kịp đọc danh sách trong chừng đó
+thời gian thì không tính tới) → lần gửi đó chắc chắn không tạo job (cùng luật với lần gửi lại tự động sau khi mất câu
+trả lời): `recover()` báo `deferred` + `notSent` (`NOT_MADE_TEXT`) → take về hàng đợi và được gửi lại như mọi take,
+**cùng khoá** (bản ghi `sent` còn đó: tìm trước một lần nữa) — không còn "không rõ" cho một yêu cầu chắc chắn chưa tạo
+gì. Danh sách chỉ được đọc lần đầu lâu sau đó (app đóng nhiều giờ / nhiều ngày, máy ngủ): job của nó có thể đã bị xoá
+trên trang (hoặc trôi khỏi danh sách cắt trang) mà SanoVids chưa từng thấy → **không** tự gửi lại (trước đây: tự gửi lại,
+trả hai lần) → "không rõ"; take mà một lần tải lại để `queued` dù yêu cầu của nó đã đi (lưu chậm) cũng vậy — chỉ
+"Chạy lại" (`JobRequest.resend`, take có `submitUnknown`) gửi lại sau một lần đọc chắc chắn không thấy, dù lâu bao
+nhiêu. Không biết được (lần đọc hỏng, nhiều job có thể là của nó) → `failed` với `UNKNOWN_SUBMIT_ERROR`. Take bị **huỷ**
+khi đang gửi (đang `processing` chưa có `remoteId`: lần gửi hay lần tìm lại còn chạy, ở tab này hay tab khác, có thể tới
+5 phút 45 s sau khi tải lại trang) — hoặc khi adapter còn giữ một yêu cầu của nó (`mayHaveBilled`: vd. take một lần tải
+lại để `queued`) — giữ "không rõ" **ngay lúc huỷ** (`submitUnknown`; trước đây chỉ khi lần gửi kết thúc, nên bấm "Thử
+lại" ngay sau "Huỷ" tạo take mới, khoá mới, trong khi yêu cầu đầu có thể vẫn tạo job: trả hai lần): "Thử lại" / "Chạy
+lại" gửi lại chính take đó, tìm job trước, không bao giờ thành take mới trả thêm. Nỗi ngờ đó mất khi lần gửi của nó kết
+thúc mà adapter không còn yêu cầu nào của khoá đó có thể bị trừ (dừng trước `POST`, bị từ chối chắc chắn), hoặc có
+`remoteId`. Lần gửi đó đã kết thúc trong trang này mà chắc chắn không
 gửi gì tính tiền (bị hoãn, bị từ chối, dừng trước `POST` — vd. trong lúc đang mở dự án khác, hoặc trang tải lại dự án vì
 tab khác lưu): adapter nhớ lỗi đó (`notSent`, chỉ trong bộ nhớ: không có bản ghi `sent` thì không có `POST` nào có thể
 bị trừ) và `recover()` trả lại đúng lỗi đó (`providers/types.isRecoverNotSent`) → take về hàng đợi với phần chờ còn
 lại, hoặc `failed` với đúng lý do (vd. không đủ credit) — không bao giờ "không rõ" cho một yêu cầu chưa từng gửi. Take
 đang được tìm lại không gửi gì nên **không** giữ lượt gửi của nhà cung cấp: take khác (cảnh khác) chạy tiếp ngay, không
 chờ nó. Bản thân `recover()` **không bao giờ** `POST`. Đổi sang dự án khác lúc đang gửi không huỷ lần gửi đó (node của nó vẫn là node của dự án đã gửi —
-`JobRequest` dựng ngay lúc gửi); mở lại dự án → take tìm lại job. Take của một dự án không bao giờ nhận nhầm job của bản
+`JobRequest` dựng ngay lúc gửi); `remoteId` về khi dự án đó đã đóng được engine giữ trên máy (`runs.lateRemoteIds`,
+localStorage `bdp:runs:late-remote-ids`, theo id take, ≤ 200) và trả lại cho take khi dự án được mở lại (`loadRuns`) — take
+không bao giờ chỉ dựa vào sổ `jobs` của adapter (giữ `MAX_JOB_RECORDS` = 2000 bản ghi mới nhất) để tìm lại job đã trả
+tiền; mở lại dự án → take tiếp tục với job đó (hoặc tìm lại job như trên). Lần đọc ngay trước `POST` mà thấy một job
+mang `client_request_id` của chính take (danh sách có trường này) → đó là job của nó dù sổ không còn bản ghi: không gửi. Take của một dự án không bao giờ nhận nhầm job của bản
 sao (node khác nhau), và hai take còn "không rõ" trên cùng một node không bao giờ nhận job của nhau (xem trên).
 
 **Nhập job từ canvasapp (đồng bộ ngược)** — người dùng có thể bấm "Tạo video" ngay trên trang canvasapp.io.vn, trên node
@@ -421,11 +449,11 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    thật — `zonedTime`; dùng cho giờ tạo của take, Xem take và tên file `{date}` / `{time}`). **Không bao giờ** nhập: job đã là take của dự án;
    job SanoVids tạo (sổ `jobs`, hoặc `client_request_id` của một take khi danh sách có trường này); job mà một lần `POST`
    còn chưa rõ câu trả lời (sổ `sent`) **có thể** đã tạo (`sentMayOwn`: cùng `client_request_id` nếu danh sách có, nếu
-   không thì cùng node, không có trong lần đọc trước `POST`, tạo trong khoảng của lần gửi `inPostWindow` (14 giờ trước →
-   14 giờ 10 phút sau; `created_at` không có múi giờ: 27 giờ) — take đó phải tự tìm ra job của nó, không bao giờ thành
-   take mới). Job tạo **sau** lần đọc đầu tiên chắc chắn thấy job của lần gửi đó (`sent[key].covered`, xem "Gửi") thì
+   không thì cùng node, không có trong lần đọc trước `POST` — **dù canvasapp ghi giờ tạo nào** (trước đây: chỉ trong
+   ±14 h / ±27 h quanh lần gửi — đồng hồ máy lệch cả ngày thì job của chính nó nhập được thành take khác, rồi take kia
+   gửi lại: trả hai lần) — take đó phải tự tìm ra job của nó, không bao giờ thành take mới). Job tạo **sau** lần đọc đầu tiên chắc chắn thấy job của lần gửi đó (`sent[key].covered`, xem "Gửi") thì
    không phải của nó: không bị giữ, nhập được ngay. Job như vậy bị giữ **không thời hạn** (tới khi take đó tìm ra job của nó — "Chạy lại"); dòng "Không nhập
-   được" nói khoảng giờ đang áp dụng cho từng job (`SiteJobSkipped.windowHours`), không hứa mốc nào; take đó đã xoá thì
+   được" không hứa mốc hay khoảng giờ nào; take đó đã xoá thì
    không bao giờ tìm lại nữa → job đó không nhập được (tải video trên canvasapp.io.vn) — không tự nhả: một take chưa kịp
    lưu ở tab / cửa sổ khác cũng chưa có trong danh sách take, nhả nhầm thì lần gửi lại của nó có thể trả tiền hai lần. Sổ được đọc lại từ localStorage mỗi lần dùng và gộp theo từng bản ghi (`ledgerNow`): ở bản web chế độ Phát
    triển, một tab khác (dự án khác, hoặc Nhập job) ghi vào cùng sổ không xoá bản ghi của tab này.
@@ -441,13 +469,16 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    `imported`) bị loại — job nhập trước lần `POST` đó đã có trong danh sách trước khi gửi; job nhập sau đó đã qua
    `sentMayOwn` với chính bản ghi `sent` này (bước 2), tức tạo ngoài khoảng của lần gửi, nên không thể là job của nó →
    không bao giờ nhận nhầm (hai take cùng một job), không làm take "không rõ" mãi. Job tạo trên trang mà **chưa nhập**:
-   job có từ trước lần `POST` nằm trong `before` (đọc danh sách ngay trước `POST`, bước 5 của "Gửi") nên không bao giờ
-   bị nhận là job của nó; job tạo sau khi lần gửi đã quá khoảng `inPostWindow` cũng không (`findJob` dùng đúng khoảng của
-   `sentMayOwn`) — vẫn nhập được; job tạo sau lần đọc đầu tiên chắc chắn thấy job của lần gửi đó cũng không
-   (`covered`). Trường hợp còn lại (hiếm, không tránh được khi danh sách không có `client_request_id` — VERIFY): job tạo
-   trên trang cùng node (mọi node, nếu danh sách không ghi `canvas_node_id`) từ lần đọc ngay trước `POST` (cổng còn trả
-   danh sách từ cache: lần đọc gửi ≤ 15 s trước, nên tới 30 s trước `POST`; hoặc lần đọc được gần nhất) tới lần đọc đầu
-   tiên chắc chắn thấy job của nó (≈ 45 s sau câu trả lời / lỗi; tới 5 phút 45 s khi trang tải lại lúc main còn gửi;
+   job có từ trước lần `POST` nằm trong `before` (đọc danh sách ngay trước `POST`, bước 5 của "Gửi", và mọi lần đọc
+   khác của trang) nên không bao giờ bị nhận là job của nó; job tạo sau lần đọc đầu tiên chắc chắn thấy job của lần gửi
+   đó cũng không (`covered`) — vẫn nhập được. Lần đọc đó tới muộn (app đóng lâu sau khi mất câu trả lời) thì job tạo
+   trên node trong khoảng đó bị giữ cho take kia (có thể là của nó) tới khi take đó tìm ra job của mình: cùng prompt →
+   take đó nhận (cùng yêu cầu, trả một lần); prompt khác → take đó "không rõ", job đó không nhập được (tải video trên
+   canvasapp.io.vn) — bất tiện, không bao giờ trả hai lần. Trường hợp còn lại (hiếm, không tránh được khi danh sách không có `client_request_id` — VERIFY): job tạo
+   trên trang cùng node (mọi node, nếu danh sách không ghi `canvas_node_id`) mà chưa lần đọc nào của trang thấy trước
+   `POST` (từ lần đọc ngay trước `POST` — cổng còn trả danh sách từ cache: lần đọc gửi ≤ 15 s trước, nên tới 30 s trước
+   `POST`; hoặc lần đọc được gần nhất; với lần gửi lại sau khi mất câu trả lời: lần đọc "không có" ngay trước nó) tới lần
+   đọc đầu tiên chắc chắn thấy job của nó (≈ 45 s sau câu trả lời / lỗi; tới 5 phút 45 s khi trang tải lại lúc main còn gửi;
    lâu hơn nếu danh sách không đọc được), rồi câu trả lời bị mất → canvasapp cho job đó **đúng prompt** của take (node như
    SanoVids để lại; prompt khác → không bao giờ nhận, xem "Gửi"): take "không rõ" khi `POST` đã tới canvasapp (hai job
    cùng có thể là của nó), hoặc, nếu `POST` không tới, nhận job đó — cùng prompt, cùng node, model / thời lượng như danh
@@ -561,9 +592,9 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request API + ≤ 2 lượt tải video song song, ≤ 10 job, một lần đọc danh sách job mỗi chu kỳ poll (≥ 15 s) cho mọi job + một lần ngay trước mỗi `POST /api/video-jobs`, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie (lời gọi API không theo chuyển hướng nào: token không bao giờ đi sang địa chỉ khác, kể cả http); **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
-| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu) và chỉ sau một lần đọc chắc chắn thấy job đó nếu có (`listedBy` + cache của cổng); giờ / thời lượng / model mà danh sách ghi không rõ không bao giờ loại job (`createdTime`: chỉ ISO 8601 hoặc số, giây hay mili giây); không `POST` nào đi khi chưa có lần đọc danh sách (`before`) hoặc khi bộ nhớ không giữ được bản ghi `sent` của nó; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; đọc danh sách job ngay trước mỗi `POST` (job đã có trên node — của take khác hay tạo trên trang mà chưa nhập — không bao giờ là job của lần gửi đó); job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: chưa có lần đọc nào chắc chắn thấy job của nó → take đó chờ trong hàng đợi, `rivalWait`; đọc không được → không gửi); `POST` có thể còn đang tới canvasapp (trang tải lại khi main còn gửi: `endedAt` / `listedBy`) → "Chạy lại" chưa gửi lại, take khác không nhận job của nó; câu trả lời cache của cổng (tính từ lúc gửi request) không bao giờ được coi là mới hơn thực tế — và không bao giờ được dùng khi ghi giờ muộn hơn hiện tại (đồng hồ bị chỉnh lùi); job chỉ khớp theo node và giờ chỉ được nhận từ lần đọc chắc chắn thấy job của chính lần gửi đó, khi canvasapp trả đúng prompt của nó cho job ấy, và không bao giờ là job có sau lần đọc chắc chắn đầu tiên (`covered`); danh sách không ghi node (hoặc còn trống) → mọi lần gửi chưa rõ trong phiên là "take kia" của nhau; `created_at` không có múi giờ → khoảng ±27 h; sổ đọc lại từ localStorage mỗi lần dùng (nhiều tab). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts`, và mô phỏng lỗi ngẫu nhiên có hạt giống `canvasapp-fuzz.test.ts` (xem dòng dưới) |
-| Bất biến được kiểm bằng mô phỏng (`canvasapp-fuzz.test.ts`) | adapter + engine thật, mô hình main (khối `<canvasapp-routes>` / `<canvasapp-lanes>` / `<canvasapp-job-list-cache>` chạy nguyên văn, hết giờ 60 s, request vẫn đi sau khi trang đã tải lại), máy chủ giả nghiêm ngặt; mỗi hạt giống một kịch bản: dedupe tắt / bật (hoặc 409), danh sách có / không `client_request_id`, `canvas_node_id`, model / thời lượng, `created_at` có múi giờ / không múi giờ ở múi khác / giây Unix / mili giây / không đọc được / thiếu, đồng hồ máy chủ lệch tới hàng giờ; 1–3 dự án (cả bản sao cùng id cảnh), job tạo trên trang + Nhập job, lỗi ngẫu nhiên (không tới máy chủ, đã xử lý nhưng mất câu trả lời, chậm quá 60 s, 5xx / 429 / 402, đọc danh sách hỏng / từ cache, tải lại trang ở bất kỳ lúc nào, huỷ, "Chạy lại", đổi dự án, đăng xuất / đăng nhập, chỉnh lùi đồng hồ, bộ nhớ đầy), rồi mạng lành và "Chạy lại" mọi take "không rõ". Kiểm: không khoá nào có hai job (dedupe tắt); không job nào là của hai take, job nhập không bao giờ là job của take SanoVids; `remoteId` của take SanoVids mang đúng `client_request_id` của nó (ngoài rủi ro còn lại dưới đây); hết hàng đợi / "đang gửi"; "không rõ" chỉ khi thật sự không phân biệt được; không lỗi chưa bắt, không hẹn giờ sót. `npm test` chạy một bộ hạt giống cố định; `SANOVIDS_FUZZ_SEEDS=5000` chạy nhiều hơn, `SANOVIDS_FUZZ_SEED=n` in toàn bộ diễn biến của một hạt giống |
-| Rủi ro còn lại (cần VERIFY trên canvasapp thật) | (1) Danh sách job không có `client_request_id`: một job tạo trên trang từ đúng node đó (mọi node nếu danh sách không ghi `canvas_node_id`) với **cùng prompt** (và model / thời lượng, nếu danh sách ghi) trong khoảng từ lần đọc trước `POST` tới lần đọc chắc chắn đầu tiên, khi `POST` của take không tới canvasapp → take nhận job đó (cùng yêu cầu, trả một lần, không bao giờ trả hai lần); khi `POST` có tới → "không rõ". (2) Cược `SETTLE_MS`: job của một `POST` có trong danh sách chậm nhất 30 s sau khi câu trả lời / lỗi về (hoặc sau 5 phút nếu trang tải lại lúc gửi); canvasapp tạo job muộn hơn thế → lần đọc "không có" có thể gửi lại. (3) Đồng hồ máy bị chỉnh **tới** (nhảy về sau) trong vài chục giây sau khi mất câu trả lời làm các mốc thời gian đến sớm như (2). Chỉnh lùi: an toàn (chờ lâu hơn, hai take cùng node có thể "không rõ"). (4) `GET …/prompt` phải trả prompt như đã gửi (cắt khoảng trắng hai đầu): nếu canvasapp đổi prompt, job tìm theo node và giờ không bao giờ được nhận ("không rõ", không bao giờ gửi lại). (5) Bộ nhớ đầy rồi tải lại trang: điều trang biết mà chưa ghi được (`covered`) bị mất — rơi về (1) |
+| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu) và chỉ sau một lần đọc chắc chắn thấy job đó nếu có (`listedBy` + cache của cổng); giờ tạo (`created_at`, đồng hồ của canvasapp) không bao giờ loại job, model / thời lượng / `creation_mode` danh sách ghi khác yêu cầu chỉ làm job đó không được nhận ("không rõ"), không bao giờ là "không có"; job một lần đọc đã thấy có thể là của nó mà biến mất khỏi danh sách (xoá trên trang, cắt trang) → "không rõ", không gửi lại; tự gửi lại (sau mất câu trả lời, `recover()`, take lưu chậm) chỉ khi danh sách được đọc đủ sớm sau mốc job phải hiện (`NOT_MADE_FRESH_MS`), không thì chỉ "Chạy lại"; không `POST` nào đi khi chưa có lần đọc danh sách (`before`) hoặc khi bộ nhớ không giữ được bản ghi `sent` của nó; vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; đọc danh sách job ngay trước mỗi `POST` (job đã có trên node — của take khác hay tạo trên trang mà chưa nhập —, và mọi job trang đã thấy trong lần đọc khác, không bao giờ là job của lần gửi đó; lần gửi lại sau mất câu trả lời cũng vậy; lần đọc đó thấy job mang khoá của take → không gửi); job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: chưa có lần đọc nào chắc chắn thấy job của nó → take đó chờ trong hàng đợi, `rivalWait`; đọc không được → không gửi); `POST` có thể còn đang tới canvasapp (trang tải lại khi main còn gửi: `endedAt` / `listedBy`) → "Chạy lại" chưa gửi lại, take khác không nhận job của nó; câu trả lời cache của cổng (tính từ lúc gửi request) không bao giờ được coi là mới hơn thực tế — và không bao giờ được dùng khi ghi giờ muộn hơn hiện tại (đồng hồ bị chỉnh lùi); job chỉ khớp theo node và giờ chỉ được nhận từ lần đọc chắc chắn thấy job của chính lần gửi đó, khi canvasapp trả đúng prompt của nó cho job ấy, và không bao giờ là job có sau lần đọc chắc chắn đầu tiên (`covered`); danh sách không ghi node (danh sách trống: theo lần có job gần nhất, giữ trên máy) → mọi lần gửi chưa rõ trong phiên là "take kia" của nhau; huỷ một take đang gửi → giữ "không rõ" ngay ("Thử lại" = chính take đó, không bao giờ take mới); `remoteId` về khi dự án đã đóng → engine giữ và trả lại khi mở dự án; sổ đọc lại từ localStorage mỗi lần dùng (nhiều tab). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts`, và mô phỏng lỗi ngẫu nhiên có hạt giống `canvasappFuzz.ts` (`canvasapp-fuzz-1…4.test.ts`, xem dòng dưới) |
+| Bất biến được kiểm bằng mô phỏng (`canvasappFuzz.ts`, chạy chia 4 tệp `canvasapp-fuzz-1…4.test.ts` song song) | adapter + engine thật, mô hình main (khối `<canvasapp-routes>` / `<canvasapp-lanes>` / `<canvasapp-job-list-cache>` chạy nguyên văn, hết giờ 60 s, request vẫn đi sau khi trang đã tải lại), máy chủ giả nghiêm ngặt; mỗi hạt giống một kịch bản: dedupe tắt / bật (hoặc 409), danh sách có / không `client_request_id`, `canvas_node_id`, model / thời lượng — hay ghi giá trị khác cho job SanoVids tạo (`creation_mode` 'api', thời lượng thật của clip, tên model hiển thị), danh sách chỉ giữ vài job mới nhất (cắt trang), `created_at` có múi giờ / không múi giờ ở múi khác / giây Unix / mili giây / không đọc được / thiếu, đồng hồ máy chủ lệch tới ba ngày; 1–3 dự án (cả bản sao cùng id cảnh), job tạo / xoá trên trang + Nhập job, sổ chỉ giữ vài chục bản ghi job, lỗi ngẫu nhiên (không tới máy chủ, đã xử lý nhưng mất câu trả lời, chậm quá 60 s, 5xx / 429 / 402, đọc danh sách hỏng / từ cache, tải lại trang ở bất kỳ lúc nào, huỷ — cả take đang gửi rồi "Thử lại" ngay —, "Chạy lại", take mới cho take hỏng / đã huỷ, đổi dự án, đăng xuất / đăng nhập, chỉnh lùi đồng hồ, bộ nhớ đầy), rồi mạng lành và "Chạy lại" mọi take "không rõ". Kiểm: không khoá nào có hai job, kể cả job đã xoá (dedupe tắt); không take nào báo "chưa trừ" (hỏng / huỷ, không "không rõ", không `remoteId`) mà canvasapp có job của nó; không job nào là của hai take, job nhập không bao giờ là job của take SanoVids; `remoteId` của take SanoVids mang đúng `client_request_id` của nó (ngoài rủi ro còn lại (1), chỉ khi job đó chưa lần đọc nào trước `POST` cuối thấy); hết hàng đợi / "đang gửi"; "không rõ" chỉ khi thật sự không phân biệt được (job khác không loại được, job của nó bị danh sách ghi khác yêu cầu, job có thể là của nó đã biến mất, take kia có thể sở hữu); không lỗi chưa bắt, không hẹn giờ sót. `npm test` chạy 80 hạt giống (20 mỗi tệp, ~2 s mỗi tệp); `SANOVIDS_FUZZ_SEEDS=5000` chạy nhiều hơn, `SANOVIDS_FUZZ_SEED=n` in toàn bộ diễn biến của một hạt giống; dòng tổng kết chỉ in khi tự chọn hạt giống |
+| Rủi ro còn lại (cần VERIFY trên canvasapp thật) | (1) Danh sách job không có `client_request_id`: một job tạo trên trang từ đúng node đó (mọi node nếu danh sách không ghi `canvas_node_id`) với **cùng prompt** (và model / thời lượng, nếu danh sách ghi) trong khoảng từ lần đọc trước `POST` tới lần đọc chắc chắn đầu tiên, khi `POST` của take không tới canvasapp → take nhận job đó (cùng yêu cầu, trả một lần, không bao giờ trả hai lần); khi `POST` có tới → "không rõ". (2) Cược `SETTLE_MS`: job của một `POST` có trong danh sách chậm nhất 30 s sau khi câu trả lời / lỗi về (hoặc sau 5 phút nếu trang tải lại lúc gửi); canvasapp tạo job muộn hơn thế → lần đọc "không có" có thể gửi lại. (3) Đồng hồ máy bị chỉnh **tới** (nhảy về sau) trong vài chục giây sau khi mất câu trả lời làm các mốc thời gian đến sớm như (2). Chỉnh lùi: an toàn (chờ lâu hơn, hai take cùng node có thể "không rõ"). (4) `GET …/prompt` phải trả prompt như đã gửi (cắt khoảng trắng hai đầu): nếu canvasapp đổi prompt, job tìm theo node và giờ không bao giờ được nhận ("không rõ", không bao giờ gửi lại). (5) Bộ nhớ đầy rồi tải lại trang: điều trang biết mà chưa ghi được (`covered`, `seen`) bị mất — rơi về (1). (6) Job của một lần gửi mất câu trả lời bị xoá trên trang canvasapp (hoặc trôi khỏi danh sách cắt trang) **trước khi** SanoVids kịp đọc danh sách thấy nó, trong `NOT_MADE_FRESH_MS` (5 phút) sau mốc nó phải hiện: không phân biệt được với "không có" → gửi lại. (7) Take "không rõ" mà danh sách chỉ được đọc lần đầu lâu sau lần gửi (app đóng): job tạo trên node trong khoảng đó, prompt khác, bị giữ cho take đó (không nhập được, take vẫn "không rõ") — tải video trên canvasapp.io.vn; không bao giờ trả hai lần. (8) Sổ `jobs` giữ 2000 bản ghi mới nhất: app đóng / sập trong ≤ 3 s sau khi một take vừa có job (take trên đĩa còn "đang gửi"), mở lại vào dự án khác, rồi hơn 2000 job khác trước khi mở lại dự án đó, và danh sách không ghi `client_request_id` → take đó "không rõ", "Chạy lại" khi đó gửi lại (trả hai lần). Đổi dự án lúc đang gửi thì không (engine giữ `remoteId`: `lateRemoteIds`) |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
@@ -596,7 +627,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   theo node và giờ); `GET /api/video-jobs/{id}/prompt` trả **đúng** prompt đã gửi (đã cắt khoảng trắng hai đầu) — từ
   nay job tìm theo node và giờ chỉ được nhận khi prompt khớp; job có trong danh sách chậm nhất 30 s sau khi câu trả lời
   / lỗi của `POST` về (`SETTLE_MS`, mọi quy tắc "không có → gửi lại" dựa vào nó).
-- [x] Mô phỏng lỗi ngẫu nhiên có hạt giống (`providers/__tests__/canvasapp-fuzz.test.ts`, §6): adapter + engine thật,
+- [x] Mô phỏng lỗi ngẫu nhiên có hạt giống (`providers/__tests__/canvasappFuzz.ts`, chạy qua `canvasapp-fuzz-1…4.test.ts`, §6): adapter + engine thật,
   mô hình main, máy chủ giả nghiêm ngặt, hàng nghìn kịch bản. Đã tìm và sửa: (1) job chỉ khớp theo node và giờ được nhận
   từ lần đọc **quá sớm** — trang tải lại lúc main còn gửi, một job tạo trên trang vừa hiện, job của chính take chưa hiện
   → take nhận job của trang (giờ: chỉ từ lần đọc chắc chắn, và chỉ khi prompt khớp); (2) danh sách không ghi
@@ -610,6 +641,21 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   thể bị nhận lần nữa. Thêm: `recover()` chờ tới khi một lần đọc chắc chắn thấy job (không "không rõ" sớm), không có →
   take về hàng đợi, gửi lại cùng khoá. Mỗi lỗi có test riêng (`canvasapp-adapter.test.ts` "what the seeded
   fault-injection simulation found", `gatewayLanes`, `dev-server`, `canvasapp-siteJobs`).
+  Vòng xem xét sau đó (mô phỏng được mở rộng tới đó: đồng hồ lệch tới ba ngày, giá trị lạ trong danh sách, xoá job trên
+  trang, danh sách cắt trang, huỷ khi đang gửi rồi "Thử lại", sổ chỉ giữ vài chục bản ghi, bất biến "take báo chưa trừ
+  mà có job"): (7) giờ tạo ngoài ±14 h / ±27 h loại job của chính nó → "không có" → gửi lại; nay giờ không bao giờ loại
+  job (Nhập job cũng không nhả job đó); (8) `creation_mode` / thời lượng / model khác yêu cầu → "không có" → gửi lại; nay
+  chỉ làm job đó không được nhận; (9) lần gửi lại tự động giữ `before` của lần đầu → job tạo trên trang ngay trước đó
+  bị nhận (hoặc làm job thật "không rõ"); nay `before` là mọi job đã thấy; (10) `recover()` tự gửi lại một bản ghi cũ bao
+  lâu cũng được, cả khi job đã bị xoá → trả hai lần; nay chỉ khi danh sách được đọc đủ sớm (`NOT_MADE_FRESH_MS`), job đã
+  thấy rồi biến mất → "không rõ"; (11) "Huỷ" lúc đang gửi rồi "Thử lại" ngay → take mới, khoá mới → trả hai lần; nay
+  "không rõ" ngay lúc huỷ (`mayHaveBilled`); (12) danh sách trống làm mọi cảnh chờ tới 5 phút 45 s với lý do sai; (13)
+  sổ `jobs` cắt ở 500 → take của dự án đóng lâu "không rõ" rồi gửi lại; nay 2000 + `lateRemoteIds`, và lần đọc trước
+  `POST` thấy job mang khoá của take thì không gửi; (14) cache của main / cầu nối giả lập để câu trả lời chậm của request
+  gửi trước đè câu trả lời của request gửi sau; (15) sổ bỏ bản ghi job của take khác (cắt theo số lượng) → job đó lại
+  thành "có thể" của một lần gửi chưa rõ đi với lần đọc cũ → take nhận job của take khác (một job hai take); nay ghi trên
+  bản ghi `sent` (`taken`). Test: `canvasapp-adapter` "R8…", `runs-engine` "review: …",
+  `canvasapp-e2e` "review: …", `gatewayLanes`, `dev-server`.
 - [x] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá, hỏi xác nhận trước) thay vì tạo take mới: `actions.rerunTake` (take node, hàng đợi, xem take).
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
   - **Chưa mở — chưa có bằng chứng canvasapp nhận video tham chiếu**: mọi dạng yêu cầu đã ghi nhận chỉ có ảnh (xem
@@ -663,7 +709,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 - [x] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take — "Nhập job" (§4): chỉ đọc
   (`GET`), take nhập sinh ra `processing` có `remoteId` (chỉ theo dõi + tải, không bao giờ gửi, "Chạy lại" = take mới),
   sổ `imported` (không bao giờ `POST` khoá đó; `findJob` loại mọi job đã nhập, job chưa nhập có từ trước lần gửi — đọc
-  danh sách ngay trước mỗi `POST` — và job ngoài khoảng `inPostWindow` của lần gửi), không nhập job mà một lần gửi chưa
+  danh sách ngay trước mỗi `POST` — và job tạo sau lần đọc chắc chắn đầu tiên, `covered`), không nhập job mà một lần gửi chưa
   rõ có thể sở hữu (kiểm tra cả lúc quét và lúc ghi), dự án được ghim, tối đa 20 job / lần, cấu hình chỉ "đoán" (≈) theo
   node có prompt khớp, không rõ (?) thì không tính chi phí / không khôi phục. Chế độ Phát triển: Bảng phát triển › Job &
   đơn nạp › "Tạo job như trên trang canvasapp" (sửa node trước nếu muốn) + nút "Nhập" ở job tạo trên trang, chưa lỗi /
@@ -671,9 +717,11 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   `canvasapp-siteJobs`, `canvasapp-adapter`, `canvasapp-e2e`, `dev-server`, `dev-e2e`, `runs-engine`, `importedTake`,
   `importJobsModel`, `migrate`, `devModel`. Còn VERIFY trên máy chủ thật: mọi job trong `GET /api/video-jobs` có
   `canvas_node_id` không (không có → không nhập được gì); danh sách có `client_request_id` / `mode` / `resolution` /
-  `upload_ids` / số credit không (có → nhập chính xác, không cần đoán); danh sách có cắt trang không, `creation_mode` của
-  job canvas / simple là gì; `created_at` có múi giờ không (có: cửa sổ ±14 giờ; không: ±27 giờ — thử trước ở chế độ Phát triển: Hành vi máy chủ ›
-  "Giờ trong danh sách job không có múi giờ", `DevConfig.naiveTimes`); `GET /api/projects/{id}` trả `{ canvas: {
+  `upload_ids` / số credit không (có → nhập chính xác, không cần đoán); danh sách có cắt trang không (cắt trang: job bị đẩy ra trước khi SanoVids kịp thấy không phân biệt được với "không
+  có", §6 (6)), `creation_mode` của job canvas / simple là gì — và của job SanoVids gửi, thời lượng / model ghi đúng như
+  gửi không (khác thì job của chính take không bao giờ được nhận theo node và giờ: "không rõ"); `created_at` có múi giờ không (hộp Nhập job hiện giờ không múi giờ đúng như canvasapp ghi; giờ không bao giờ loại job
+  của một lần gửi — thử trước ở chế độ Phát triển: Hành vi máy chủ › "Giờ trong danh sách job không có múi giờ",
+  `DevConfig.naiveTimes`); `GET /api/projects/{id}` trả `{ canvas: {
   nodes, connections } }` và giữ nguyên dữ liệu node như đã `PUT` không; job H3 transform có `aspect_ratio: null` trong
   danh sách không; `GET …/prompt` trả prompt đã trim như lúc gửi, cho job tạo trên trang và job đã hết hạn không; `GET
   …/stream` có tải được job tạo trên trang không; có thể có nhiều phiên tên "SanoVids bridge" không (nhập chỉ đọc phiên

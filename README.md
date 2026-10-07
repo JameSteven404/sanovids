@@ -107,9 +107,10 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 **An toàn tiền & đúng nhân vật**
 - `@image_N` luôn là đúng tấm ảnh thứ N gửi đi (thứ tự tải lên = thứ tự `@image`). Mỗi ảnh chỉ tải lên canvasapp một lần.
-- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. Take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng **cùng mã yêu cầu** — nếu lần gửi trước có thể vẫn đang tới canvasapp (vd. trang vừa tải lại đúng lúc gửi), app chưa gửi lại: thử lại sau vài phút.
+- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. App chờ khoảng 45 giây để chắc danh sách job của canvasapp đã hiện job đó (nếu có) — trong lúc ấy các cảnh khác trong hàng đợi chờ theo; không thấy thì gửi lại **một lần** bằng **cùng mã yêu cầu**, vẫn không rõ thì take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng cùng mã yêu cầu — nếu lần gửi trước có thể vẫn đang tới canvasapp (vd. trang vừa tải lại đúng lúc gửi), app chưa gửi lại: take chờ tới lúc chắc chắn rồi tự tìm lại.
+- **Huỷ** một take đang gửi: take vẫn "có thể đã bị trừ" cho tới khi biết chắc; **Thử lại** khi đó gửi lại **chính take đó** (tìm job cũ trước), không bao giờ thành take mới trả thêm.
 - Video đã tạo xong (đã trả tiền) mà tải về lỗi thì app tự thử tải lại (tải tiếp từ chỗ dừng khi canvasapp cho), không đánh "thất bại". Trừ hai trường hợp không bao giờ tải được: video **lớn hơn 1 GB**, hoặc một kết nối quá **60 phút** mà không tải tiếp được — take báo lỗi ngay, ghi rõ **đã trừ credit** và tải video trực tiếp trên canvasapp.io.vn (phiên "SanoVids bridge").
-- Đóng app khi đang tạo: mở lại, app tiếp tục theo dõi job cũ, không gửi lại.
+- Đóng app khi đang tạo: mở lại, app tìm lại job cũ và tiếp tục theo dõi. Chắc chắn lần gửi đó chưa tạo job (mở lại ngay sau đó) → app gửi lại bằng cùng mã yêu cầu; mở lại lâu sau (job có thể đã bị xoá trên canvasapp) → take hiện "không rõ", app không tự gửi lại — kiểm tra trên canvasapp rồi bấm Chạy lại.
 
 **Nhập job (video tạo trực tiếp trên canvasapp)**
 - Đã bấm "Tạo video" trên node của một cảnh trong phiên **"SanoVids bridge"** trên canvasapp.io.vn? Bấm **Nhập job** (thanh trên của **Hàng đợi**, hoặc **Cài đặt › Nhà cung cấp video** khi đã đăng nhập) → các job đó hiện dưới đúng cảnh → **Nhập N job**: mỗi job thành một take của cảnh, video tự về khi xong.

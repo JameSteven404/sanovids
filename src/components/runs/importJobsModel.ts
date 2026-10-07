@@ -115,8 +115,8 @@ const SKIP_ORDER: SiteJobSkip[] = ['maybe-pending', 'in-project', 'sanovids', 'n
  * The "Không nhập được (N)" lines, one per reason. `pendingLabel(takeId)` names a take of the open project ("S03·T2")
  * whose unanswered POST may own a job, null when it is not in this project (deleted, or another project).
  * 'maybe-pending' never promises a time: such a job is held for as long as that take has not found its job, whenever
- * that is — only jobs made within `windowHours` around its POST (14 h, 27 h for a created_at without a time zone) are
- * held when the list does not carry client_request_id. A deleted take never looks again: its job is never importable.
+ * that is (never by canvasapp's created_at: this computer's clock may be days off it — siteJobs.sentMayOwn). A
+ * deleted take never looks again: its job is never importable.
  */
 export function skipLines(scan: Pick<SiteJobScan, 'skipped'>, w: ImportWords, pendingLabel: (takeId: string) => string | null): { code: SiteJobSkip; text: string }[] {
   const out: { code: SiteJobSkip; text: string }[] = []
@@ -132,10 +132,8 @@ export function skipLines(scan: Pick<SiteJobScan, 'skipped'>, w: ImportWords, pe
         const parts: string[] = []
         if (mine.length) {
           const labels = [...new Set(mine.map((s) => labelOf(s)!))]
-          const hours = [...new Set(mine.map((s) => s.windowHours).filter((h): h is number => typeof h === 'number'))].sort((a, b) => a - b)
-          const window = hours.length ? ` (chỉ giữ job tạo trong khoảng ${hours.length > 1 ? `${hours[0]}–${hours[hours.length - 1]}` : hours[0]} giờ quanh lần gửi đó)` : ''
           parts.push(
-            `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${mine.length} job — chưa nhập được tới khi take đó tìm ra job của nó${window}. Bấm “Chạy lại” trên take đó: SanoVids tìm job trước, không trả hai lần.`,
+            `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${mine.length} job — chưa nhập được tới khi take đó tìm ra job của nó. Bấm “Chạy lại” trên take đó: SanoVids tìm job trước, không trả hai lần.`,
           )
         }
         if (gone) {

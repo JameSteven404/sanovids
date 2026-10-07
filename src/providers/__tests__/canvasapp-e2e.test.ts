@@ -9,7 +9,7 @@
 // payload" otherwise), a job body exactly runVideoNode()'s, ids must be UUIDs — the SAME validators the in-app dev
 // server uses (providers/dev/validate.ts) — and every request must pass the endpoint allowlist of electron/main.cjs
 // itself (its <canvasapp-routes> block is run as-is) — the fake lives in ./fakeCanvasapp.ts (shared with the seeded
-// fault-injection simulation, canvasapp-fuzz.test.ts).
+// fault-injection simulation, canvasappFuzz.ts).
 // The real-balance store (store/credits) reads /api/me through the same fake bridge.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -67,7 +67,7 @@ import { createDesktopTransport } from '../canvasapp/transport'
 import { getProvider, providerLimits, refreshProviderLimits, registerProvider, useProviderPrefs } from '../index'
 import type { JobRequest } from '../types'
 import { canvasProblem } from '../dev/validate'
-import { DEFAULT_SCRIPT, fakeCanvasapp, gate, mainRoutes, type FakeJob, type Fault, type Json } from './fakeCanvasapp'
+import { DEFAULT_SCRIPT, fakeCanvasapp, gate, mainRoutes, type Fault, type Json } from './fakeCanvasapp'
 
 
 /** Web Locks stand-in: `otherTab(name)` holds a lock until the returned function is called. */
@@ -179,30 +179,6 @@ function seedMedia() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-
-/** A job of long ago on the bridge session (another node, finished): the job list then lists canvas_node_id. */
-const oldJob = (): FakeJob => {
-  const at = Date.now() - 86_400_000
-  return {
-    job_id: 'job0',
-    project_id: 'proj1',
-    canvas_node_id: sceneNodeId('p0', 'x0'),
-    client_request_id: clientRequestIdFor('take_long_ago'),
-    model_profile: 'seedance_2_5',
-    duration: 5,
-    aspect_ratio: '16:9',
-    status: 'completed',
-    submission_state: 'accepted',
-    progress: 100,
-    download_available: true,
-    error_message: null,
-    created_at: new Date(at).toISOString(),
-    cost: 0,
-    body: { prompt: 'cũ' },
-    script: [],
-    madeAt: at,
-  }
-}
 
 const realMock = getProvider('mock')
 const realDev = getProvider('dev')
@@ -678,7 +654,7 @@ describe('gateway e2e: app restart', () => {
   it.each([
     ['canvasapp got the job', true],
     ['canvasapp never got it', false],
-  ])('closed while posting (%s): never re-posted silently', async (_label, processed) => {
+  ])('closed while posting (%s): its job found again — or, surely none in a read soon after, sent again by itself under the same key: one job', async (_label, processed) => {
     fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: processed } : undefined)
     const [t] = enqueue('s1')
     await run(300)
@@ -704,11 +680,7 @@ describe('gateway e2e: app restart', () => {
   })
 
   it('closed while posting: another take of that scene waits — saying why and until when — while other scenes run, then it is posted once; each its own job', async () => {
-    // (the bridge session has a job already: the job list says on which node each job is — an empty one does not, and
-    // every scene would then wait for A's request)
-    const [z] = enqueue('s3')
-    await run(300)
-    expect(take(z.id).remoteId).toBe('proj1:job1')
+    // (review: a new bridge session, its job list still empty — it never makes every scene wait for A's request)
     fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: false } : undefined)
     const [a] = enqueue('s1')
     await run(300)
@@ -718,10 +690,11 @@ describe('gateway e2e: app restart', () => {
     // right after the restart: a new take of the same scene, and one of another scene
     const [b] = enqueue('s1')
     const [c] = enqueue('s2')
-    // C, another scene, is sent at once — A being looked for (it sends nothing) never holds the queue
+    // C, another scene, is sent at once — A being looked for (it sends nothing) never holds the queue, and an empty job
+    // list (a new bridge session) never makes C wait for A's POST on another node
     await run(3_000)
     expect(take(a.id)).toMatchObject({ status: 'processing', remoteId: null })
-    expect(take(c.id).remoteId).toBe('proj1:job2')
+    expect(take(c.id).remoteId).toBe('proj1:job1')
     // B waits (main may still be sending A's request for minutes): nothing sent, and it says why and until when
     await run(47_000)
     expect(take(a.id)).toMatchObject({ status: 'processing', remoteId: null })
@@ -732,11 +705,83 @@ describe('gateway e2e: app restart', () => {
     // once a read surely shows A's job (if any): nothing of A's → A is sent again by itself (same key), and B is sent,
     // once — the reason is gone; each its own job
     await run(6 * 60_000)
-    expect(take(a.id).remoteId).toBe('proj1:job3')
-    expect(take(b.id).remoteId).toBe('proj1:job4')
+    expect(take(a.id).remoteId).toBe('proj1:job2')
+    expect(take(b.id).remoteId).toBe('proj1:job3')
     expect(useTakeWaits.getState().byTake[b.id]).toBeUndefined()
-    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([z, c, a, b].map((x) => clientRequestIdFor(x.id)))
-    expect(fake.count('POST', '/api/video-jobs')).toBe(5) // Z's, A's (hung, never arrived), C's, A's again, B's
+    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([c, a, b].map((x) => clientRequestIdFor(x.id)))
+    expect(fake.count('POST', '/api/video-jobs')).toBe(4) // A's (hung, never arrived), C's, A's again, B's
+  })
+
+  it('review: closed while posting, canvasapp made (and billed) the job, then it was deleted on canvasapp’s page; reopened a week later: “không rõ” — never posted again by itself', async () => {
+    fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: true } : undefined)
+    const [t] = enqueue('s1')
+    await run(300)
+    const onDisk = saved()
+    fake.state.fault = null
+    expect(fake.state.jobs).toHaveLength(1)
+    fake.state.jobs = [] // the user deletes it on canvasapp's page (or the job list no longer reaches it)
+    vi.setSystemTime(Date.now() + 7 * 86_400_000)
+    restart(onDisk)
+    await run(7 * 60_000)
+    // (the old rule: no job in a read that surely shows it → sent again by itself: a second charge)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null, submitUnknown: true })
+    expect(isUncertainSubmit(take(t.id))).toBe(true)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.state.balance).toBe(100 - S1_COST)
+  })
+
+  it('“Chạy lại” before a read can surely show the earlier POST’s job (the clock was set back meanwhile): the take waits — saying why and until when, still “maybe billed”, nothing sent — then is looked for again by itself', async () => {
+    fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: false } : undefined)
+    const [t] = enqueue('s1')
+    await run(300)
+    const onDisk = saved()
+    fake.state.fault = null
+    restart(onDisk)
+    await run(60_000) // looked for at once; the look that surely shows its job waits for main's last minutes
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    // the user sets this computer's clock back two hours: that POST's record is "in the future" — rewritten to now, so a
+    // read can surely show its job only minutes from now; the look then made tells nothing → "không rõ"
+    vi.setSystemTime(Date.now() - 2 * 3600_000)
+    await run(6 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null, submitUnknown: true })
+    // an explicit retry right away: not posted again yet — the take waits, saying why and until when (the moment a read
+    // can surely show that job), still "maybe billed"
+    useRuns.getState().retry(t.id)
+    await run(1_000)
+    expect(take(t.id)).toMatchObject({ status: 'queued', remoteId: null, submitUnknown: true })
+    const wait = useTakeWaits.getState().byTake[t.id]
+    expect(wait).toMatchObject({ why: STILL_SENDING_TEXT, provider: 'canvasapp', timed: true })
+    expect(wait.until).toBeGreaterThan(Date.now() + 3 * 60_000)
+    expect(takeCostLine(take(t.id)).note).toContain('lần gửi trước không rõ')
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    // ...and once a read can surely show it, it is looked for again by itself: not there → same key, one job
+    await run(6 * 60_000)
+    expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(t.id)])
+    expect(take(t.id).remoteId).toBe('proj1:job1')
+    expect(useTakeWaits.getState().byTake[t.id]).toBeUndefined()
+  })
+
+  it('review: “Huỷ” while a take is being sent, then “Thử lại” at once: the same take goes again (never a new paid take) — one POST, its job', async () => {
+    fake.state.dedupe = false // a second take's POST would be billed again
+    const g1 = gate()
+    let first = true
+    fake.state.fault = (req) => {
+      if (req.method !== 'POST' || req.path !== '/api/video-jobs' || !first) return undefined
+      first = false
+      return { kind: 'wait', until: g1.until }
+    }
+    const [t] = enqueue('s1')
+    await run(300)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    useRuns.getState().cancel(t.id)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    expect(takes()).toHaveLength(1)
+    g1.open()
+    await run(45_000)
+    expect(take(t.id)).toMatchObject({ remoteId: 'proj1:job1', status: 'completed' })
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    expect(fake.state.balance).toBe(100 - S1_COST)
   })
 
   it('“Chạy lại” while the job list cannot be read: held back with the reason, still “không rõ”, nothing sent', async () => {
@@ -995,9 +1040,7 @@ describe('gateway e2e: projects sharing scene ids (Nhân bản dự án, a file 
       const a = savedProcessing('s1', null)
       const aNode = where === 'legacy' ? canvasNodeId('s1') : nodeOf('s1')
       seedBridge({}, { sent: { [a.id]: { projectId: 'proj1', nodeId: aNode, at: Date.now() - 30_000, before: [] } } })
-      // (a job of long ago on the bridge session: the job list says on which node each job is — an empty one does not,
-      // and B would then wait for A's POST like a take of A's own scene)
-      fake.state.jobs.push(oldJob())
+      // (the bridge session has no job yet: an empty list never makes B wait for A's POST on another node)
       // the copy: take B of the same scene, canvasapp creates its job but the answer is lost
       useProject.getState().loadProject(copy())
       useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
@@ -1009,7 +1052,7 @@ describe('gateway e2e: projects sharing scene ids (Nhân bản dự án, a file 
       }
       const [b] = enqueue('s1')
       await run(300)
-      expect(fake.state.jobs).toHaveLength(2)
+      expect(fake.state.jobs).toHaveLength(1)
       const bOnDisk = saved()
       // while B waits to look for its job, the original is opened: A is looked up (main may have been sending its POST
       // for minutes: it stays "sending" until a read surely shows its job) — B's job is on the copy's node, never A's:
@@ -1027,7 +1070,7 @@ describe('gateway e2e: projects sharing scene ids (Nhân bản dự án, a file 
       await run(60_000)
       expect(take(b.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
       expect(fake.count('POST', '/api/video-jobs')).toBe(2)
-      expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor('take_long_ago'), clientRequestIdFor(b.id), clientRequestIdFor(a.id)])
+      expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(b.id), clientRequestIdFor(a.id)])
       expect(fake.state.balance).toBe(100 - 2 * S1_COST)
     },
   )
@@ -1901,7 +1944,7 @@ describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page beco
     const site = fake.siteJob(nodeOf('s1'))
     const scan = await scanForImport()
     expect(scan.scan.candidates).toEqual([])
-    expect(scan.scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 's1', code: 'maybe-pending', pendingTakeId: a.id, windowHours: 14 })
+    expect(scan.scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 's1', code: 'maybe-pending', pendingTakeId: a.id })
     await run(50_000) // its look that surely shows its job sees two jobs it could own (the same prompt) → "không rõ", nothing guessed
     expect(take(a.id)).toMatchObject({ status: 'failed', submitUnknown: true })
     expect((await scanForImport()).scan.candidates).toEqual([])

@@ -18,9 +18,12 @@ import {
   LIST_FIRST_TEXT,
   LIST_NEEDED_AFTER_LOST_TEXT,
   LIST_NEEDED_TEXT,
+  LIST_SHAPE_KEY,
   LOOKUP_FAILED_TEXT,
+  MAX_JOB_RECORDS,
   memoryStorage,
   MIN_POLL_MS,
+  NOT_MADE_FRESH_MS,
   NOT_MADE_TEXT,
   type KeyValueStorage,
   PROFILES_FALLBACK_TEXT,
@@ -357,11 +360,13 @@ describe('canvasapp adapter', () => {
     expect(canvas.nodes.every((n) => !('title' in n.data) && !('label' in n.data))).toBe(true)
     expect(JSON.stringify(canvas)).not.toContain('sv_')
     expect(server.state.jobs[0].body.client_request_id).toBe(clientRequestIdFor('take_1'))
-    // the old "sent" record (v0.2.0 node id) is still looked up by its own node id — no job there → nothing adopted (it
-    // surely made none: the take goes back to the queue)
-    await expect(provider.recover!(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))).rejects.toMatchObject(NOT_MADE)
-    // an explicit retry of it: nothing found on that node → sent on the scene's node of its project (never "sv_…")
-    await provider.submit(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))
+    // the old "sent" record (v0.2.0 node id) is still looked up by its own node id — no job there → nothing adopted; its
+    // POST is long over and the list was never read soon after it: a job it made may have been deleted since → "không
+    // rõ" (null), never sent again by itself
+    await expect(provider.recover!(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))).resolves.toBeNull()
+    // an explicit retry of it ("Chạy lại": resend): nothing found on that node → sent on the scene's node of its
+    // project (never "sv_…")
+    await provider.submit(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z', resend: true }))
     expect(server.state.jobs[1].body.canvas_node_id).toBe(node('scene_z'))
   })
 
@@ -621,7 +626,7 @@ describe('canvasapp adapter', () => {
     storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_1: { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [] } } }))
     server.state.extra = (r) => (isPut(r) ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
     const again = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
-    const refused = (await again.submit(req()).catch((e: unknown) => e)) as CanvasappError
+    const refused = (await again.submit(req({ resend: true })).catch((e: unknown) => e)) as CanvasappError
     expect(refused.message).toContain('lần gửi trước vẫn chưa rõ đã bị trừ credit chưa')
     expect(refused.message).not.toContain(CANVAS_NOT_SAVED_TEXT)
     // held back like every "nothing sent this time" of a take in doubt: still "không rõ", with the reason
@@ -1126,8 +1131,8 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     const { provider, server, storage } = restarted({
       ledger: { sent: { take_1: { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [] } } },
     })
-    // nothing found for it on its node → posted again, with the same node id and key as the first time
-    await provider.submit(req())
+    // "Chạy lại" (resend): nothing found for it on its node → posted again, with the same node id and key as the first time
+    await provider.submit(req({ resend: true }))
     const [first] = jobPosts(server)
     expect(first.json).toMatchObject({ canvas_node_id: canvasNodeId('scene_a'), client_request_id: clientRequestIdFor('take_1') })
     expect(videosOf(server.state.canvases.get('proj1'))).toEqual([canvasNodeId('scene_a')])
@@ -1231,8 +1236,9 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     const b = provider.submit(req({ key: 'take_b', takeId: 'take_b' })) // explicit retry: nothing found → re-sent
     await waiting()
     expect(jobPosts(server).map((c) => (c.json as { canvas_node_id: string }).canvas_node_id)).toEqual([legacy])
-    // (take_b's read before its POST surely showed take_a's job, if any: none — take_a's POST made nothing)
-    await expect(provider.recover!(req({ key: 'take_a', takeId: 'take_a' }))).rejects.toMatchObject(NOT_MADE)
+    // (take_b's read before its POST surely showed take_a's job, if any: none — but that POST is 20 min old and the
+    // list was never read soon after it: a job it made may have been deleted since → "không rõ", never sent by itself)
+    await expect(provider.recover!(req({ key: 'take_a', takeId: 'take_a' }))).resolves.toBeNull()
     // (its job is taken from the look that surely shows it: the second one)
     wake()
     await waiting()
@@ -1379,8 +1385,10 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     expect(waits).toMatchObject({ code: 'deferred', message: RIVAL_PENDING_TEXT, retryAfterMs: 335_000 })
     expect(waits.uncertain).toBeUndefined()
     expect(jobPosts(server)).toHaveLength(0)
-    // (B's lookup read surely shows B's own job, if any: what it listed is noted — no later job is B's)
-    expect(sentRecords(storage).take_b).toEqual({ ...before, covered: [] })
+    // (B's lookup read surely shows B's own job, if any: what it listed is noted — no later job is B's — and what it
+    // surely showed: coveredAt)
+    const noted = { ...before, covered: [], coveredAt: T - 15_000 }
+    expect(sentRecords(storage).take_b).toEqual(noted)
     // just before then, B's lookup read answers (nothing of B's) but only 2 s later — so it does not surely show A's
     // job; saving the canvas takes a while (that read is too old to stand for the read before the POST), which fails
     clock.t = T + 334_000
@@ -1397,7 +1405,7 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     expect(refused.message.startsWith(LIST_NEEDED_AFTER_LOST_TEXT)).toBe(true)
     expect(isSubmitHeldBack(refused)).toBe(true) // still "không rõ", with the reason
     expect(jobPosts(server)).toHaveLength(0)
-    expect(sentRecords(storage).take_b).toEqual({ ...before, covered: [] }) // its first POST is still looked for
+    expect(sentRecords(storage).take_b).toEqual(noted) // its first POST is still looked for
     expect(Object.keys(sentRecords(storage)).sort()).toEqual(['take_a', 'take_b'])
   })
 
@@ -1942,7 +1950,7 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     clock.t += 10 * 60_000
     server.state.jobs.push({ job_id: 'job_s', status: 'completed', project_id: 'proj1', canvas_node_id: node('scene_a'), created_at: new Date(clock.t).toISOString(), body: {} })
     // "Chạy lại" of take_a: job_s was made after take_c's read, which would show take_a's job → not take_a's: posted, as itself
-    expect(await provider.submit(req({ key: 'take_a', takeId: 'take_a', images: [], prompt: 'take A' }))).toEqual({ remoteId: 'proj1:job3' })
+    expect(await provider.submit(req({ key: 'take_a', takeId: 'take_a', images: [], prompt: 'take A', resend: true }))).toEqual({ remoteId: 'proj1:job3' })
     expect(server.state.jobs.map((j) => j.body.prompt)).toEqual(['take C', undefined, 'take A'])
     // job_s is nobody's: it stays importable ("Nhập job")
     expect(JSON.stringify(JSON.parse(storage.get(JOBS_KEY)!).jobs)).not.toContain('job_s')
@@ -2152,17 +2160,21 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
   it.each([
     ['another prompt (the node edited on the site): canvasapp’s prompt tells them apart — its own job', false],
     ['the same prompt: never guessed, never posted again', true],
-  ])('a job an unanswered POST may own is refused at claim time even when the scan offered it (a POST sent after the scan, its read from before the site job) — %s', async (_label, samePrompt) => {
+  ])('a job an unanswered POST may own is refused at claim time even when the scan offered it (another tab posted after the scan, its read from before the site job) — %s', async (_label, samePrompt) => {
     const { server, clock } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
     const wakers: (() => void)[] = []
-    // a provider whose waits after an unanswered POST hang until the test releases them
-    const p = createCanvasappProvider({
-      api: createCanvasappApi(server.transport),
-      getBlob: async (id) => blobs[id] ?? null,
-      storage: memoryStorage(),
-      now: () => clock.t,
-      sleep: heldSleep(clock, wakers),
-    })
+    // two tabs of the web dev mode on one ledger: `p` runs the queue, `q` imports
+    const storage = memoryStorage()
+    const tab = () =>
+      createCanvasappProvider({
+        api: createCanvasappApi(server.transport),
+        getBlob: async (id) => blobs[id] ?? null,
+        storage,
+        now: () => clock.t,
+        sleep: heldSleep(clock, wakers),
+      })
+    const p = tab()
+    const q = tab()
     // take_b's read right before its POST: canvasapp builds its answer (no site job yet), which arrives only later
     let release: (() => void) | null = null
     const inner = server.transport.request
@@ -2177,25 +2189,67 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
     server.state.loseAnswers = 1
     const b = p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
     await vi.waitFor(() => expect(release).not.toBeNull())
-    // meanwhile the site job is made and "Nhập job" offers it (no POST in doubt yet)
+    // meanwhile the site job is made and "Nhập job" in the other tab offers it (no POST in doubt yet)
     siteJob(server, samePrompt ? { body: { prompt: req().prompt, client_request_id: '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f' } } : {})
-    const scan = await p.scanSiteJobs(input())
-    const [c] = scan.candidates
+    const [c] = (await q.scanSiteJobs(input())).candidates
     expect(c.jobId).toBe('site1')
-    // that read's answer arrives: take_b's POST goes out without the site job in its `before`, and its answer is lost —
-    // its "sent" record may own the site job (made within the time window, after the read)
+    // that read's answer arrives: take_b's POST goes out without the site job in its `before` (this tab never listed
+    // it), and its answer is lost — its "sent" record may own the site job
     release!()
     await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
-    expect(p.claimSiteJobs([{ key: 't_x', remoteId: c.remoteId, nodeId: NODE, job: c.job, reimport: false }])).toEqual([])
-    const again = await p.scanSiteJobs(input())
-    expect(again.skipped).toContainEqual({ jobId: 'site1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b', windowHours: 14 })
-    // its looks: the second one surely shows its own job — two jobs could be take_b's (its own + the site's) by node and
-    // time; only one has its prompt, unless both do
+    expect(q.claimSiteJobs([{ key: 't_x', remoteId: c.remoteId, nodeId: NODE, job: c.job, reimport: false }])).toEqual([])
+    const again = await q.scanSiteJobs(input())
+    expect(again.skipped).toContainEqual({ jobId: 'site1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b' })
+    // its looks: the second one surely shows its own job — two jobs could be take_b's (its own + the site's) by node;
+    // only one has its prompt, unless both do
     wakers.splice(0).forEach((w) => w())
     await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
     wakers.splice(0).forEach((w) => w())
     if (samePrompt) await expect(b).rejects.toMatchObject({ uncertain: true })
     else expect(await b).toEqual({ remoteId: 'proj1:job2' })
+    expect(jobPosts(server)).toHaveLength(1)
+  })
+
+  it.each([
+    ['another prompt', false],
+    ['the same prompt', true],
+  ])('a site job a read listed before the POST went out — even a read that is not the one right before it — is never that POST\'s: claimable, and the take finds its own job (%s)', async (_label, samePrompt) => {
+    // review (repost / slow read): the site job is made after take_b's read right before its POST was built, but the
+    // scan lists it before that read's answer comes back — the POST then goes out knowing it (its `before`)
+    const { server, clock } = setup(fakeServer({ projects: [{ project_id: 'proj1', name: BRIDGE_PROJECT_NAME }] }))
+    const wakers: (() => void)[] = []
+    const storage = memoryStorage()
+    const p = createCanvasappProvider({
+      api: createCanvasappApi(server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage,
+      now: () => clock.t,
+      sleep: heldSleep(clock, wakers),
+    })
+    let release: (() => void) | null = null
+    const inner = server.transport.request
+    server.transport.request = async (r) => {
+      if (!release && r.method === 'GET' && r.path.startsWith('/api/video-jobs?')) {
+        const res = await inner(r)
+        await new Promise<void>((resolve) => (release = resolve))
+        return res
+      }
+      return inner(r)
+    }
+    server.state.loseAnswers = 1
+    const b = p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))
+    await vi.waitFor(() => expect(release).not.toBeNull())
+    siteJob(server, samePrompt ? { body: { prompt: req().prompt, client_request_id: '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f' } } : {})
+    const [c] = (await p.scanSiteJobs(input())).candidates
+    expect(c.jobId).toBe('site1')
+    release!()
+    await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
+    expect((JSON.parse(storage.get(JOBS_KEY)!).sent as Record<string, { before?: string[] }>).take_b.before).toEqual(['site1'])
+    expect(p.claimSiteJobs([{ key: 't_x', remoteId: c.remoteId, nodeId: NODE, job: c.job, reimport: false }])).toEqual(['t_x'])
+    wakers.splice(0).forEach((w) => w())
+    await vi.waitFor(() => expect(wakers.length).toBeGreaterThan(0))
+    wakers.splice(0).forEach((w) => w())
+    expect(await b).toEqual({ remoteId: 'proj1:job2' })
     expect(jobPosts(server)).toHaveLength(1)
   })
 
@@ -2300,32 +2354,34 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
     })
 
     /**
-     * take_b's POST lost its answer at t0 (nothing known before it on the node); 15 h later — past what that POST may own
-     * (CREATED_SKEW_MS + POST_WINDOW_MS) — the user makes a job on that node on canvasapp's page and imports it.
+     * take_b's POST lost its answer at t0 (nothing known before it on the node) and the app closed; 15 h later the user
+     * makes a job on that node on canvasapp's page, then opens SanoVids: its first read of the job list (the scan) is
+     * the first that surely shows take_b's job — the site job could be take_b's (canvasapp's created_at is never trusted
+     * to rule it out: this computer's clock may be days off canvasapp's), so it is held back for take_b.
      */
-    const importLater = async (w: ReturnType<typeof world>) => {
+    const siteLater = async (w: ReturnType<typeof world>, over: Parameters<typeof siteJob>[1] = {}) => {
       const t0 = w.clock.t
       w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
       w.restart()
       w.clock.t = t0 + 15 * 3600_000
-      const site = siteJob(w.server)
+      const site = siteJob(w.server, over)
       const scan = await w.p.scanSiteJobs(input())
-      expect(scan.candidates.map((c) => c.jobId)).toEqual([site.job_id])
-      const [c] = scan.candidates
-      expect(w.p.claimSiteJobs([{ key: 't_imp', remoteId: c.remoteId, nodeId: c.nodeId, job: c.job, reimport: false }])).toEqual(['t_imp'])
+      expect(scan.candidates).toEqual([])
+      expect(scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b' })
       return { t0, site }
     }
 
-    it('(d) imported long after a POST that never arrived: "Chạy lại" never takes the imported job — posted once, its own job', async () => {
+    it('(d) a site job made long after a POST that never arrived, the list not read meanwhile: held back for it; the take is “không rõ” — never posted again, by itself or by “Chạy lại”, while that job (another prompt) could be its own', async () => {
       const w = world()
-      const { site } = await importLater(w)
-      await expect(w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).rejects.toMatchObject(NOT_MADE)
-      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
-      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual([site.job_id, 'job2'])
-      expect(jobPosts(w.server)).toHaveLength(1)
+      await siteLater(w)
+      // no read soon after its POST: a job it made may have been deleted since — "không rõ", not sent by itself
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
+      // "Chạy lại": the one job that could be its own has another prompt (what canvasapp does to a prompt is VERIFY)
+      await expect(w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).rejects.toMatchObject({ uncertain: true })
+      expect(jobPosts(w.server)).toHaveLength(0)
     })
 
-    it('(e) imported long after a POST whose answer was lost: the take still finds its own job (never “không rõ” for good)', async () => {
+    it('(e) a site job made long after a POST whose answer was lost: the take still finds its own job (never “không rõ” for good), then the site job is importable', async () => {
       const w = world()
       // take_b's POST did create job1 a second after it was sent (paid); the answer never came back
       w.server.state.jobs.push({
@@ -2338,12 +2394,13 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
         duration: 15,
         body: { prompt: req().prompt },
       })
-      await importLater(w)
-      const again = await w.p.scanSiteJobs(input())
-      expect(again.skipped).toContainEqual({ jobId: 'job1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b', windowHours: 14 })
+      const { site } = await siteLater(w)
+      expect((await w.p.scanSiteJobs(input())).skipped).toContainEqual({ jobId: 'job1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_b' })
+      // the one job with its prompt: its own — found, however late (a job found is never one deleted unseen)
       expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
       expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job1' })
       expect(jobPosts(w.server)).toHaveLength(0)
+      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
     })
 
     /**
@@ -2387,20 +2444,11 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
     })
 
-    it('(h) a site job made long after a POST that never arrived, not imported: "Chạy lại" never takes it — posted once, its own job', async () => {
+    it('(h) a site job made long after a POST that never arrived, with the take’s prompt (the node run as SanoVids left it): “Chạy lại” takes it — the same request, paid once on the site; never posted', async () => {
       const w = world()
-      const t0 = w.clock.t
-      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
-      w.restart()
-      // a day later — past what that POST may own (inPostWindow) — the user runs the node on canvasapp's page
-      w.clock.t = t0 + 24 * 3600_000
-      const site = siteJob(w.server)
-      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
-      await expect(w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).rejects.toMatchObject(NOT_MADE)
-      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
-      expect(jobPosts(w.server)).toHaveLength(1)
-      // the lookup and the import agree: still importable, never both a POST's and a new take's
-      expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
+      const { site } = await siteLater(w, { body: { prompt: req().prompt, client_request_id: '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f' } })
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: `proj1:${site.job_id}` })
+      expect(jobPosts(w.server)).toHaveLength(0)
     })
   })
 })
@@ -2663,10 +2711,10 @@ describe('canvasapp api + transport', () => {
 })
 
 // ---------------------------------------------------------------------------------------------------------------
-// Root causes found by the seeded fault-injection simulation (canvasapp-fuzz.test.ts), one focused test each.
+// Root causes found by the seeded fault-injection simulation (canvasappFuzz.ts), one focused test each.
 // ---------------------------------------------------------------------------------------------------------------
 
-describe('canvasapp adapter: what the seeded fault-injection simulation found (canvasapp-fuzz.test.ts)', () => {
+describe('canvasapp adapter: what the seeded fault-injection simulation found (canvasappFuzz.ts)', () => {
   const NODE_A = sceneNodeId('prj_a', 'scene_a')
   const iso = (ms: number) => new Date(ms).toISOString()
   const A = req({ key: 'take_a', takeId: 'take_a', images: [], prompt: 'cảnh A' })
@@ -2774,17 +2822,45 @@ describe('canvasapp adapter: what the seeded fault-injection simulation found (c
     expect(jobPosts(w.server)).toHaveLength(1)
   })
 
-  it('RC2b an empty job list does not say whether jobs carry canvas_node_id: another scene’s take waits too — and goes at once once the list says it', async () => {
+  it('RC2b (review: empty list) an empty job list — a new bridge session — never holds another scene back for a POST on another node; a list once read with jobs without canvas_node_id does, until a list says each job’s node', async () => {
     const w = world()
     const T = w.clock.t
-    w.ledger({ sent: { take_a: { projectId: 'proj1', nodeId: NODE_A, at: T - 5_000, endedAt: T - 2_000, before: [], beforeAt: T - 20_000 } } })
+    const pending = { take_a: { projectId: 'proj1', nodeId: NODE_A, at: T - 5_000, endedAt: T - 2_000, before: [], beforeAt: T - 20_000 } }
+    w.ledger({ sent: pending })
     const B = req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [] })
+    // nothing tells the list's shape (nothing listed yet): another scene's take goes at once
+    const first = w.start()
+    expect(await first.submit(B)).toEqual({ remoteId: 'proj1:job1' })
+    expect(w.storage.get(LIST_SHAPE_KEY)).toBeNull()
+    await first.poll(['proj1:job1'])
+    expect(w.storage.get(LIST_SHAPE_KEY)).toBe('nodes') // (that job is listed with its node: remembered)
+
+    // a computer whose last list with jobs had one without canvas_node_id (VERIFY), then an empty session
+    const v = world()
+    v.ledger({ sent: pending })
+    v.storage.set(LIST_SHAPE_KEY, 'no-nodes')
+    const C = req({ key: 'take_c', takeId: 'take_c', sceneId: 'scene_b', images: [] })
+    const p = v.start()
+    await expect(p.submit(C)).rejects.toMatchObject({ code: 'deferred', message: RIVAL_PENDING_ANY_TEXT })
+    // a job of long ago, with its node: once a read lists it, the list says where jobs are → C is not held back by A's
+    // POST on another node
+    v.server.state.jobs.push({ job_id: 'job_old', status: 'completed', project_id: 'proj1', canvas_node_id: sceneNodeId('prj_a', 'scene_z'), created_at: iso(T - 3600_000), body: {} })
+    v.clock.t += 1_000
+    await p.poll(['proj1:job_old'])
+    expect(await p.submit(C)).toEqual({ remoteId: 'proj1:job2' })
+    expect(v.storage.get(LIST_SHAPE_KEY)).toBe('nodes')
+  })
+
+  it('RC2c (review: empty list) a POST still being sent by main when the page reloaded holds back only takes of its own node: another scene’s take, on an empty list, goes at once', async () => {
+    const w = world()
+    const T = w.clock.t
+    // A's POST: the page went away 10 s ago while main was sending it (no endedAt: its job may show up to 5 min 30 s later)
+    w.ledger({ sent: { take_a: { projectId: 'proj1', nodeId: NODE_A, at: T - 10_000, before: [], beforeAt: T - 25_000 } } })
     const p = w.start()
-    await expect(p.submit(B)).rejects.toMatchObject({ code: 'deferred', message: RIVAL_PENDING_ANY_TEXT })
-    // a job of long ago, with its node: the list says where jobs are → B is not held back by A's POST on another node
-    w.server.state.jobs.push({ job_id: 'job_old', status: 'completed', project_id: 'proj1', canvas_node_id: sceneNodeId('prj_a', 'scene_z'), created_at: iso(T - 3600_000), body: {} })
-    w.clock.t += 1_000
-    expect(await p.submit(B)).toEqual({ remoteId: 'proj1:job2' })
+    const B = req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [] })
+    expect(await p.submit(B)).toEqual({ remoteId: 'proj1:job1' })
+    // A's own scene still waits for it, saying so
+    await expect(p.submit(req({ key: 'take_a2', takeId: 'take_a2', images: [] }))).rejects.toMatchObject({ code: 'deferred', message: RIVAL_PENDING_TEXT })
   })
 
   it('RC3 a job made on the site after a read that surely showed a lost answer’s job is never taken for it — and can be imported', async () => {
@@ -2892,5 +2968,162 @@ describe('canvasapp adapter: what the seeded fault-injection simulation found (c
     const l = JSON.parse(w.storage.get(JOBS_KEY)!)
     expect(Object.keys(l.jobs)).toEqual(['take_b'])
     expect(jobPosts(w.server)).toHaveLength(0)
+  })
+
+  // ---- what the review of the simulation found (canvasapp-fuzz-*.test.ts reaches each of these too) ----
+
+  it.each([
+    ['zoned, a day behind', (ms: number) => iso(ms - 24 * 3600_000)],
+    ['zoned, three days ahead', (ms: number) => iso(ms + 72 * 3600_000)],
+    ['without a time zone, 30 h off', (ms: number) => iso(ms - 30 * 3600_000).slice(0, 23)],
+  ])('R8a (review: clock skew) canvasapp’s created_at %s: a lost answer’s own job is still its own — never posted again, never offered for import', async (_label, stamp) => {
+    const w = world()
+    w.server.state.stamp = stamp
+    w.server.state.loseAnswers = 1
+    const p = w.start()
+    const run = p.submit(A)
+    await w.wakeAll()
+    // while it is looked for, "Nhập job" never offers it (the old rule: outside ±14 h / 27 h → importable)
+    const scan = await p.scanSiteJobs(scanInput())
+    expect(scan.candidates).toEqual([])
+    expect(scan.skipped).toContainEqual({ jobId: 'job1', sceneId: 'scene_a', code: 'maybe-pending', pendingTakeId: 'take_a' })
+    await w.wakeAll()
+    // (the old rule: outside the window → "none" → posted again, a second charge)
+    expect(await run).toEqual({ remoteId: 'proj1:job1' })
+    expect(jobPosts(w.server)).toHaveLength(1)
+  })
+
+  it.each([
+    ['creation_mode "api" for SanoVids’ own jobs', { creation_mode: 'api' }],
+    ['the clip length as duration', { duration: 15.04 }],
+    ['a model’s display name', { model_profile: 'Seedance 2.5' }],
+  ])('R8b (review: values VERIFY) the list writes %s: a lost answer is never posted again — its own job “không rõ” at worst', async (_label, extra) => {
+    const w = world()
+    w.server.state.extra = (r) =>
+      r.method === 'GET' && r.path.startsWith('/api/video-jobs?') ? json(w.server.state.jobs.map(({ body: _b, ...j }) => ({ ...j, ...extra }))) : undefined
+    w.server.state.loseAnswers = 1
+    const p = w.start()
+    const run = p.submit(A)
+    await w.wakeAll()
+    await w.wakeAll()
+    await expect(run).rejects.toMatchObject({ uncertain: true })
+    // "Chạy lại": still the job that could be its own — never posted again
+    await expect(p.submit({ ...A, resend: true })).rejects.toMatchObject({ uncertain: true })
+    expect(jobPosts(w.server)).toHaveLength(1)
+  })
+
+  it.each([
+    ['the POST sent again never reaches canvasapp either: “không rõ” — never the site’s job', 2, null],
+    ['the POST sent again makes its job and loses its answer: its own job is found', 1, 'proj1:job2'],
+  ])('R8c (review: a POST sent again keeps every job known so far out of its lookups) a job made on the site from the node, with its prompt, after a read that surely showed the first POST’s job — %s', async (_label, unreachable, outcome) => {
+    const w = world()
+    const T = w.clock.t
+    w.server.state.unreachablePosts = unreachable
+    if (unreachable === 1) w.server.state.loseAnswers = 0
+    const p = w.start()
+    const run = p.submit(A)
+    run.catch(() => undefined)
+    await w.wakeAll() // its first look (15 s after the outcome): too early to say "none"
+    // a poll that surely shows its job, if any: none — noted (covered)
+    w.clock.t = T + 45_000
+    await p.poll(['proj1:other'])
+    // the user runs the node on canvasapp's page as SanoVids left it
+    const site = siteJobOn(w.server, NODE_A, A.prompt)
+    if (unreachable === 1) w.server.state.loseAnswers = 1
+    // the look that surely shows it: the site job is not its own (made after) → sent again, the site job in `before`
+    await w.wakeAll()
+    await vi.waitFor(() => expect(jobPosts(w.server)).toHaveLength(2))
+    await w.wakeAll()
+    await w.wakeAll()
+    if (outcome) expect(await run).toEqual({ remoteId: outcome })
+    else {
+      await expect(run).rejects.toMatchObject({ uncertain: true })
+      expect((JSON.parse(w.storage.get(JOBS_KEY)!).sent.take_a as { before: string[] }).before).toContain(site.job_id)
+    }
+    expect(jobPosts(w.server)).toHaveLength(2)
+  })
+
+  it('R8d (review: deleted on the site) a lost answer’s job a look listed, deleted before the look that surely shows it: never posted again — “không rõ”', async () => {
+    const w = world()
+    w.server.state.loseAnswers = 1
+    const p = w.start()
+    const run = p.submit(A)
+    run.catch(() => undefined)
+    await w.wakeAll() // its first look lists job1 (too early to take it)
+    w.server.state.jobs = w.server.state.jobs.filter((j) => j.job_id !== 'job1')
+    await w.wakeAll()
+    await expect(run).rejects.toMatchObject({ uncertain: true })
+    await expect(p.submit({ ...A, resend: true })).rejects.toMatchObject({ uncertain: true })
+    expect(jobPosts(w.server)).toHaveLength(1)
+  })
+
+  it('R8e (review: recover() posts again only on a list read soon after that POST) the app closed while posting, reopened a week later (its job may have been made and deleted since): “không rõ” — sent again only by “Chạy lại”', async () => {
+    const w = world()
+    const T = w.clock.t
+    const week = 7 * 86_400_000
+    w.ledger({ sent: { take_a: { projectId: 'proj1', nodeId: NODE_A, at: T - week, before: [], beforeAt: T - week - 15_000 } } })
+    const p = w.start()
+    expect(await p.recover!(A)).toBeNull()
+    // the queue never sends it by itself either (a take a reload left queued)
+    await expect(p.submit(A)).rejects.toMatchObject({ uncertain: true })
+    expect(jobPosts(w.server)).toHaveLength(0)
+    // "Chạy lại" (sent again on purpose, after the "không rõ" text): looked for first, then sent — the same key
+    expect(await p.submit({ ...A, resend: true })).toEqual({ remoteId: 'proj1:job1' })
+    expect(jobPosts(w.server)).toHaveLength(1)
+  })
+
+  it('R8e …reopened soon after (a read within NOT_MADE_FRESH_MS of when its job would show): nothing → back to the queue, sent again under the same key', async () => {
+    const w = world()
+    const T = w.clock.t
+    // the page went away mid-POST 6 min ago (main may have sent it for 5 min; its job shows 30 s after): a read now is fresh
+    w.ledger({ sent: { take_a: { projectId: 'proj1', nodeId: NODE_A, at: T - 6 * 60_000, before: [], beforeAt: T - 6 * 60_000 - 15_000 } } })
+    expect(NOT_MADE_FRESH_MS).toBeGreaterThanOrEqual(60_000)
+    const p = w.start()
+    await expect(p.recover!(A)).rejects.toMatchObject(NOT_MADE)
+    expect(await p.submit(A)).toEqual({ remoteId: 'proj1:job1' })
+  })
+
+  it('R8f (review: job records capped) the ledger keeps MAX_JOB_RECORDS (2000) records — newest first; the engine keeps the id of a take whose project was closed meanwhile (runs-engine)', async () => {
+    const w = world()
+    const jobs = Object.fromEntries(Array.from({ length: MAX_JOB_RECORDS - 1 }, (_, i) => [`old_${i}`, { remoteId: `proj1:old${i}`, at: 1_000 + i, nodeId: NODE_A }]))
+    w.ledger({ jobs })
+    const p = w.start()
+    await p.submit(A)
+    expect(Object.keys(JSON.parse(w.storage.get(JOBS_KEY)!).jobs)).toHaveLength(MAX_JOB_RECORDS)
+    await p.submit(req({ key: 'take_b', takeId: 'take_b', sceneId: 'scene_b', images: [] }))
+    const kept = JSON.parse(w.storage.get(JOBS_KEY)!).jobs as Record<string, unknown>
+    expect(Object.keys(kept)).toHaveLength(MAX_JOB_RECORDS)
+    expect('old_0' in kept).toBe(false)
+    expect('take_a' in kept && 'take_b' in kept).toBe(true)
+  })
+
+  it('R8g (review: job records capped) a job another take got while this POST went out with an older read stays never its own after the ledger drops that take’s record', async () => {
+    const w = world()
+    const p = w.start()
+    const X = req({ key: 'take_x', takeId: 'take_x', images: [], prompt: A.prompt })
+    expect(await p.submit(X)).toEqual({ remoteId: 'proj1:job1' }) // take X of the scene: job1, its read before (no job1)
+    // take A of the same scene: the read right before its POST fails → it goes out with X's read (job1 not in it)
+    let failList = true
+    w.server.state.extra = (r) => {
+      if (failList && r.method === 'GET' && r.path.startsWith('/api/video-jobs?')) {
+        failList = false
+        return json({ detail: 'down' }, 503)
+      }
+      return undefined
+    }
+    w.server.state.unreachablePosts = 1
+    const run = p.submit(A)
+    run.catch(() => undefined)
+    await vi.waitFor(() => expect(jobPosts(w.server)).toHaveLength(2))
+    expect((JSON.parse(w.storage.get(JOBS_KEY)!).sent.take_a as { before: string[]; taken?: string[] }).taken).toEqual(['job1'])
+    // the ledger no longer keeps X's record (MAX_JOB_RECORDS newer ones; here: dropped by hand)
+    const l = JSON.parse(w.storage.get(JOBS_KEY)!)
+    delete l.jobs.take_x
+    w.storage.set(JOBS_KEY, JSON.stringify(l))
+    // A's lookups: job1 (X's, the same prompt) is never taken for A's — A's POST made nothing: sent again, its own job
+    await w.wakeAll()
+    await w.wakeAll()
+    expect(await run).toEqual({ remoteId: 'proj1:job2' })
+    expect(jobPosts(w.server)).toHaveLength(3) // X's, A's (never arrived), A's again
   })
 })
