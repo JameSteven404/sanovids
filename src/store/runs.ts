@@ -12,16 +12,19 @@
 // with storage (persist registers `beforeTakeover`), then adopts what the previous tab left running:
 //   demo jobs restart from the queue; remote jobs with a remote id resume polling; a remote job without one (the
 //   page closed while it was being submitted, or before its id was saved) is looked up at the provider
-//   (provider.recover: finds the job without ever creating one) and resumes when found; otherwise it is marked failed
-//   with UNKNOWN_SUBMIT_ERROR — it is NEVER submitted again by itself (that could pay twice).
+//   (provider.recover: finds the job without ever creating one) and resumes when found — or, when the provider knows
+//   that submit sent nothing billable (isRecoverNotSent: deferred, refused…), goes on as that submit's error would
+//   have; otherwise it is marked failed with UNKNOWN_SUBMIT_ERROR — it is NEVER submitted again by itself (that could
+//   pay twice). Such a lookup sends nothing: it never holds the provider's one-new-submit-at-a-time gate.
 // Paying once per take: the take id is the idempotency key (client_request_id). A remote take whose submit ended
-// "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
-// provider looks for the job first). A take cancelled before its job was created is never billed (submit checks
-// isCancelled before posting). A finished remote video that fails to download is retried, never failed at once (only
-// a video over the gateway's size cap, or one whose download outlived the gateway's time limit without being able to
-// continue, is: another try gives the same end). Its download reports progress (store/takeTransfers) and stops when the
-// take is cancelled / deleted or the project is switched (fetchAborts) — not counted as a failure. remoteVideoReady()
-// tells the UI a running take's video is already made (and paid): "Huỷ" then asks first (actions.cancelTake).
+// "unknown" (UNKNOWN_SUBMIT_ERROR — also one the user cancelled meanwhile: it keeps submitUnknown) is re-sent only by
+// an explicit retry(takeId), as THE SAME take (same key; the provider looks for the job first). A take cancelled before
+// its job was created is never billed (submit checks isCancelled before posting). A finished remote video that fails
+// to download is retried, never failed at once (only a video over the gateway's size cap, or one whose download
+// outlived the gateway's time limit without being able to continue, is: another try gives the same end). Its download
+// reports progress (store/takeTransfers) and stops when the take is cancelled / deleted or the project is switched
+// (fetchAborts) — not counted as a failure. remoteVideoReady() tells the UI a running take's video is already made (and
+// paid): "Huỷ" then asks first (actions.cancelTake).
 // Imported takes ("Nhập job", importTakes: jobs made on canvasapp's own page) are born `processing` with their remote
 // id: the engine only polls and downloads them, never submits them, and they do not take a submit slot (concurrency).
 // check() / enqueue() also skip a scene whose settings the gateway surely refuses now (providers providerLimits: a
@@ -58,6 +61,7 @@ import {
   isResultTooSlow,
   isSubmitCancelled,
   isSubmitDeferred,
+  isRecoverNotSent,
   isSubmitHeldBack,
   submitDeferredFor,
   isSubmitUncertain,
@@ -220,15 +224,19 @@ const polling = new Set<ProviderId>()
 const lastPoll = new Map<ProviderId, number>()
 /** Back-off after poll errors: provider → time before which we don't poll again. */
 const pollPausedUntil = new Map<ProviderId, number>()
-/** A submit was deferred (provider: "try later", nothing sent): provider → time before which no queued take starts. */
-const startPausedUntil = new Map<ProviderId, number>()
-// (the deferred take itself — that take alone when the provider says `retryAfterMs`, submitDeferredFor — waits until
-// its store/takeWaits entry's `until`, which also tells the UI why)
+// A deferred submit (provider: "try later", nothing sent) makes THAT take wait — until the time the provider named
+// (retryAfterMs, submitDeferredFor), else a poll interval — in store/takeWaits, which also tells the UI why; the takes
+// behind it start meanwhile.
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
 /** Takes whose submit (or recovery) this engine started since the last loadRuns: never "adopted" as left over. */
 const ownedHere = new Set<string>()
+/**
+ * Of `submitting`: takes only being looked for at their provider (recoverTake — it never sends anything), so they do
+ * not hold the provider's one-new-submit-at-a-time gate: the queue goes on while a take left mid-send is looked up.
+ */
+const recovering = new Set<string>()
 /** Finished remote videos whose download failed: take id → failures so far / time before which not to retry. */
 const fetchFailures = new Map<string, number>()
 const fetchRetryAt = new Map<string, number>()
@@ -709,7 +717,7 @@ function resetEngineState() {
   polling.clear()
   lastPoll.clear()
   pollPausedUntil.clear()
-  startPausedUntil.clear()
+  recovering.clear()
   clearTakeWaits()
   pollFailures.clear()
   ownedHere.clear()
@@ -879,6 +887,21 @@ function failTake(id: string, error: string, progress?: number, unknown = isUnkn
   emitRun('failed', t)
 }
 
+/**
+ * The submit (or recovery) of take `id` ended without knowing whether its provider created — and billed — the job: a
+ * running take fails with `error` (the "không rõ" text); one the user cancelled meanwhile (no remote id) stays
+ * cancelled but keeps that doubt (submitUnknown), so "Chạy lại" re-sends THE SAME take (its job looked for first) —
+ * never a new paid take.
+ */
+function markSubmitUnknown(id: string, error: string) {
+  const t = findTake(id)
+  if (t?.status === 'cancelled' && !remoteIdOf(t)) {
+    if (!t.submitUnknown) patchTake(id, { submitUnknown: true })
+    return
+  }
+  failTake(id, error, undefined, true)
+}
+
 function concurrencyFor(pid: ProviderId): number {
   if (pid === 'mock') return Math.max(1, useRuns.getState().mock.concurrency)
   try {
@@ -925,23 +948,24 @@ function tick() {
   // A remote provider gets ONE new submit at a time: a take is only marked running once the previous one has its
   // remote id (the canvasapp adapter sends them one by one anyway). The takes behind it stay honestly "queued": they
   // cancel cleanly, and a page closed meanwhile leaves at most one take whose submit is unknown — not up to 10.
+  // (A take only being looked for — recoverTake — sends nothing: it never holds the others back.)
   const sending = new Set<ProviderId>()
-  for (const t of active) if (providerOf(t) !== 'mock' && !remoteIdOf(t)) sending.add(providerOf(t))
+  for (const t of active) if (providerOf(t) !== 'mock' && !remoteIdOf(t) && !recovering.has(t.id)) sending.add(providerOf(t))
+  // A deferred take waits until its time (alone: the ones behind it may start); once that time has come its reason is
+  // gone — also for a take that waits for something else now (its scene deleted, an update about to restart).
+  for (const t of queued) {
+    const after = takeWaitUntil(t.id)
+    if (after !== null && now >= after) clearTakeWait(t.id)
+  }
   const started: Take[] = []
   // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
   for (const t of submitHold ? [] : queued) {
-    if (!scenes.has(t.sceneId)) continue
-    // a deferred take waits (alone, e.g. next to another take of its scene in doubt: the ones behind it may start)
-    const after = takeWaitUntil(t.id)
-    if (after !== null) {
-      if (now < after) continue
-      clearTakeWait(t.id)
-    }
+    if (!scenes.has(t.sceneId) || takeWaitUntil(t.id) !== null) continue
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
     if (pid !== 'mock') {
-      if (sending.has(pid) || now < (startPausedUntil.get(pid) ?? 0)) continue
+      if (sending.has(pid)) continue
       sending.add(pid)
     }
     running.set(pid, n + 1)
@@ -1081,39 +1105,42 @@ async function submitTake(id: string) {
     }
     emitRun('submitted', t)
   } catch (e) {
-    if (gen !== generation) return
-    const deferred = isSubmitDeferred(e)
-    if (deferred) {
-      // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while —
-      // or, when only this take has to wait (submitDeferredFor), this take alone. The take keeps the provider's words
-      // and the time (store/takeWaits): "Đang chờ" says why.
-      const wait = submitDeferredFor(e)
-      const until = Date.now() + (wait ?? pollIntervalFor(pid))
-      if (wait === null) startPausedUntil.set(pid, until)
-      if (findTake(id)?.status === 'processing') setTakeWait(id, { until, why: errorText(e), provider: pid })
-    }
-    if (deferred || isSubmitCancelled(e)) {
-      // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").
-      const cur = findTake(id)
-      // (A take re-sent after a lost answer keeps its "maybe billed" state: the first request may have been charged.)
-      if (cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
-      else if (cur?.status === 'processing' && !remoteIdOf(cur)) {
-        // Deferred, or its scene was deleted: back to the queue (it waits there for its turn, or until an Undo brings
-        // the scene back).
-        ownedHere.delete(id)
-        patchTake(id, { status: 'queued', progress: 0, startedAt: null })
-      }
-      return
-    }
-    if (isSubmitHeldBack(e)) return failTake(id, heldBackSubmitError(pid, errorText(e)), undefined, true)
-    if (isSubmitUncertain(e)) return failTake(id, unknownSubmitError(pid))
-    failTake(id, errorText(e))
-    const code = (e as { code?: unknown })?.code
-    if (pid !== 'mock' && code === 'login-required') {
-      useRuns.setState({ providerIssue: { provider: pid, code, message: errorText(e), at: Date.now() } })
-    }
+    if (gen === generation) submitFailed(id, pid, e)
   } finally {
     if (gen === generation) submitting.delete(id)
+  }
+}
+
+/** What a submit that failed does to its take — also a recovery whose provider knows that submit sent nothing. */
+function submitFailed(id: string, pid: ProviderId, e: unknown) {
+  const deferred = isSubmitDeferred(e)
+  if (deferred) {
+    // The provider asks to try later (e.g. another take of its scene was just sent without a known answer, or no room
+    // until a running job ends): this take waits — until the time the provider named (submitDeferredFor), else until
+    // the next look a poll interval later (`timed` false: no time worth showing). It keeps the provider's words
+    // (store/takeWaits): "Đang chờ" says why.
+    const wait = submitDeferredFor(e)
+    if (findTake(id)?.status === 'processing') setTakeWait(id, { until: Date.now() + (wait ?? pollIntervalFor(pid)), why: errorText(e), provider: pid, timed: wait !== null })
+  }
+  if (deferred || isSubmitCancelled(e)) {
+    // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").
+    const cur = findTake(id)
+    // (A take re-sent after a lost answer keeps its "maybe billed" state: the first request may have been charged.)
+    if (cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
+    else if (cur?.status === 'processing' && !remoteIdOf(cur)) {
+      // Deferred, or its scene was deleted: back to the queue (it waits there for its turn, or until an Undo brings
+      // the scene back).
+      ownedHere.delete(id)
+      patchTake(id, { status: 'queued', progress: 0, startedAt: null })
+    }
+    return
+  }
+  if (isSubmitHeldBack(e)) markSubmitUnknown(id, heldBackSubmitError(pid, errorText(e)))
+  else if (isSubmitUncertain(e)) markSubmitUnknown(id, unknownSubmitError(pid))
+  else failTake(id, errorText(e))
+  const code = (e as { code?: unknown })?.code
+  if (pid !== 'mock' && code === 'login-required') {
+    useRuns.setState({ providerIssue: { provider: pid, code, message: errorText(e), at: Date.now() } })
   }
 }
 
@@ -1126,23 +1153,28 @@ async function recoverTake(id: string) {
   const gen = generation
   const t = findTake(id)
   if (!t || submitting.has(id) || ownedHere.has(id)) return
+  const pid = providerOf(t)
   submitting.add(id)
+  recovering.add(id)
   ownedHere.add(id)
   try {
-    const provider = getProvider(providerOf(t))
+    const provider = getProvider(pid)
     const found = provider.recover ? await provider.recover(buildRequest(t)) : null
     if (gen !== generation) return
     const cur = findTake(id)
-    if (!found) {
-      failTake(id, unknownSubmitError(providerOf(t)))
-      return
-    }
+    if (!found) return markSubmitUnknown(id, unknownSubmitError(pid))
     if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
     if (cur?.status === 'processing') emitRun('submitted', t)
-  } catch {
-    if (gen === generation) failTake(id, unknownSubmitError(providerOf(t)))
+  } catch (e) {
+    if (gen !== generation) return
+    // the provider knows that submit sent nothing (deferred, refused…): what that submit's own error would have done
+    if (isRecoverNotSent(e)) submitFailed(id, pid, e)
+    else markSubmitUnknown(id, unknownSubmitError(pid))
   } finally {
-    if (gen === generation) submitting.delete(id)
+    if (gen === generation) {
+      submitting.delete(id)
+      recovering.delete(id)
+    }
   }
 }
 

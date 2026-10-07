@@ -286,6 +286,20 @@ describe('dev mode e2e: happy path through the real engine and adapter', () => {
     expect(events).toContainEqual({ type: 'completed', takeId: t.id, provider: 'dev' })
   })
 
+  it('site data blocked (localStorage throws): takes still run — the ledger is kept in memory, like everything else such a page has', async () => {
+    const blocked = () => {
+      throw new Error('SecurityError: The operation is insecure.')
+    }
+    vi.stubGlobal('localStorage', { getItem: blocked, setItem: blocked, removeItem: blocked, clear: blocked, key: blocked, length: 0 })
+    await resetDevMode() // the dev provider, built again on that storage
+    server.login()
+    const [t] = enqueue('s1')
+    await run(300)
+    expect(take(t.id)).toMatchObject({ status: 'processing', error: null })
+    expect(take(t.id).remoteId).not.toBeNull()
+    expect(server.snapshot().jobs).toHaveLength(1)
+  })
+
   it('logged out at first: the take fails with the login message; the simulated login sheet logs in and polling resumes', async () => {
     const [t] = enqueue('s1')
     await run(300)

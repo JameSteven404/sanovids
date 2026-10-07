@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { CanvasappError, errorFromResponse } from '../canvasapp/api'
 import * as apiTexts from '../canvasapp/api'
 import * as adapterTexts from '../canvasapp/adapter'
-import { CANVAS_NOT_SAVED_AFTER_LOST_TEXT, LEDGER_NOT_SAVED_AFTER_LOST_TEXT, LIST_NEEDED_AFTER_LOST_TEXT, LOOKUP_FAILED_TEXT, STILL_SENDING_TEXT } from '../canvasapp/adapter'
+import { CANVAS_NOT_SAVED_AFTER_LOST_TEXT, LEDGER_NOT_SAVED_AFTER_LOST_TEXT, LIST_NEEDED_AFTER_LOST_TEXT, LOOKUP_FAILED_TEXT, RESEND_REFUSED_TEXT, STILL_SENDING_TEXT } from '../canvasapp/adapter'
 import { devError, devResult, devWording, withDevWording } from '../dev/wording'
 import { downloadFailedError, DEV_UNKNOWN_SUBMIT_ERROR, hasUncertainSubmitText, heldBackSubmitError, rerunTitle, unknownSubmitError, UNKNOWN_SUBMIT_ERROR } from '../../store/runs'
 
@@ -35,9 +35,10 @@ describe('devWording', () => {
     }
   })
 
-  it('the reasons a "Chạy lại" was held back name the simulation and credit dev, like the dev "không rõ" text they follow', () => {
+  it('the reasons a "Chạy lại" was held back (or waits) name the simulation and credit dev, like the dev "không rõ" text they follow', () => {
     for (const t of [
       STILL_SENDING_TEXT,
+      `${RESEND_REFUSED_TEXT} Tài khoản canvasapp không đủ credit để tạo video này — nạp thêm credit rồi chạy lại.`,
       `${LOOKUP_FAILED_TEXT} (Không kết nối được tới canvasapp.io.vn.)`,
       `${LIST_NEEDED_AFTER_LOST_TEXT} (Không kết nối được tới canvasapp.io.vn.)`,
       `${CANVAS_NOT_SAVED_AFTER_LOST_TEXT} canvasapp.io.vn không nhận yêu cầu này.`,
@@ -50,11 +51,12 @@ describe('devWording', () => {
       expect(dev).not.toMatch(/credit(?! dev)/)
       expect(devWording(dev)).toBe(dev)
     }
-    const shown = heldBackSubmitError('dev', devWording(STILL_SENDING_TEXT))
+    const shown = heldBackSubmitError('dev', devWording(LOOKUP_FAILED_TEXT))
     expect(shown.startsWith(DEV_UNKNOWN_SUBMIT_ERROR)).toBe(true)
     expect(shown).not.toMatch(/canvasapp(?! giả lập)|credit(?! dev)/)
     // the real gateway keeps its words
-    expect(heldBackSubmitError('canvasapp', STILL_SENDING_TEXT)).toContain('trên canvasapp, nhưng')
+    expect(heldBackSubmitError('canvasapp', LOOKUP_FAILED_TEXT)).toContain('trên canvasapp để tìm')
+    expect(devWording(STILL_SENDING_TEXT)).toContain('trên canvasapp giả lập, nhưng')
   })
 
   it('devError keeps the error (code, status, flags) and only changes its words; devResult rewrites error / reason', () => {

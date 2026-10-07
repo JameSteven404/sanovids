@@ -439,7 +439,7 @@ function BusyButton({ take }: { take: Take }) {
       className="btn btn-primary btn-lg rq-dl-big busy"
       disabled
       style={{ ['--p' as string]: `${pct}%` }}
-      title={transfer ? 'Video đã tạo xong, đang tải về máy' : 'Video đang được tạo'}
+      title={transfer ? 'Video đã tạo xong, đang tải về máy' : processing ? 'Video đang được tạo' : 'Đang chờ trong hàng đợi (chưa gửi)'}
     >
       <LoaderCircle size={17} className="rq-spin" />
       {processing ? (transfer ?? `Đang tạo ${pct}%`) : 'Đang chờ…'}
@@ -506,7 +506,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
                   ? 'Đang tạo video trên canvasapp giả lập (chế độ Phát triển)…'
                   : `Đang tạo video trên ${PROVIDER_LABEL[provider]}…`
               : wait
-                ? `${waitLabel(wait)} (chưa gửi)`
+                ? `${waitLabel(wait) ?? 'Đang chờ'} (chưa gửi)`
                 : 'Đang chờ trong hàng đợi…'}
         </div>
         {take.status === 'queued' && wait?.why && <div className="rq-stage-dim">{wait.why}</div>}

@@ -47,7 +47,7 @@ import { useUI } from '../../store/ui'
 import { takeCostLine } from '../../components/runs/creditText'
 import { heldBackSubmitError, isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
-import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
+import { createCanvasappApi, NOT_ENOUGH_CREDITS_TEXT, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
 import {
   CANVAS_NOT_SAVED_TEXT,
   createCanvasappProvider,
@@ -57,6 +57,7 @@ import {
   PROFILES_TTL_MS,
   STATE_KEY,
   LOOKUP_FAILED_TEXT,
+  RESEND_REFUSED_TEXT,
   RIVAL_PENDING_TEXT,
   STILL_SENDING_TEXT,
   type KeyValueStorage,
@@ -1010,17 +1011,32 @@ describe('gateway e2e: idempotency when POST /api/video-jobs fails mid-way', () 
   it.each([
     ['409 duplicate', 409],
     ['400 refusal', 400],
+    ['402 not enough credits', 402],
   ])('retry after a lost answer, re-sent request refused (%s) → still "maybe billed", never "không bị trừ credit"', async (_label, status) => {
     const post = (req: TransportRequest) => req.method === 'POST' && req.path === '/api/video-jobs'
     fake.state.fault = (req) => (post(req) ? { kind: 'network' } : undefined)
     const [t] = enqueue('s1')
     await run(3 * 60_000)
     expect(take(t.id)).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
-    fake.state.fault = (req) => (post(req) ? { kind: 'response', status, json: { detail: 'Duplicate request' } } : undefined)
+    fake.state.fault = (req) => (post(req) ? { kind: 'response', status, json: { detail: status === 402 ? 'Insufficient credits' : 'Duplicate request' } } : undefined)
+    const posted = fake.jobPosts().length
     useRuns.getState().retry(t.id)
-    await run(3 * 60_000)
+    if (status === 409) {
+      // 409: that request DID reach canvasapp — its job is looked for (not found here), never taken as a refusal
+      await run(3 * 60_000)
+      expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    } else {
+      // a sure refusal of the re-sent request: it made nothing — one POST, no lookups, no second POST — and the take
+      // says what canvasapp answered, still "maybe billed" (the first request lost its answer)
+      await run(2_000)
+      const held = take(t.id)
+      expect(held).toMatchObject({ status: 'failed', submitUnknown: true, remoteId: null })
+      expect(held.error!.startsWith(heldBackSubmitError('canvasapp', RESEND_REFUSED_TEXT))).toBe(true)
+      expect(held.error).toContain(status === 402 ? NOT_ENOUGH_CREDITS_TEXT : 'Duplicate request')
+      await run(3 * 60_000)
+      expect(fake.jobPosts().length).toBe(posted + 1)
+    }
     const after = take(t.id)
-    expect(after).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
     expect(isUncertainSubmit(after)).toBe(true)
     expect(takeCostLine(after)).toMatchObject({ struck: false })
     expect(takeCostLine(after).note).toContain('không rõ')
@@ -1090,20 +1106,21 @@ describe('gateway e2e: app restart', () => {
     } else {
       expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
       expect(fake.state.jobs).toHaveLength(0)
-      // an explicit retry right away: main may still be sending the request of the closed page — not posted again yet
-      // — and the take says so (wait, try again later), still "unknown"
+      // an explicit retry right away: main may still be sending the request of the closed page — not posted again yet:
+      // the take waits, saying why and until when (the moment a read can surely show that job), still "maybe billed"
       useRuns.getState().retry(t.id)
       await run(1_000)
-      expect(take(t.id)).toMatchObject({ status: 'failed', error: heldBackSubmitError('canvasapp', STILL_SENDING_TEXT), remoteId: null, submitUnknown: true })
-      expect(take(t.id).error).toContain('Thử lại sau vài phút')
-      expect(isUncertainSubmit(take(t.id))).toBe(true)
+      expect(take(t.id)).toMatchObject({ status: 'queued', remoteId: null, submitUnknown: true })
+      const wait = useTakeWaits.getState().byTake[t.id]
+      expect(wait).toMatchObject({ why: STILL_SENDING_TEXT, provider: 'canvasapp', timed: true })
+      expect(wait.until).toBeGreaterThan(Date.now() + 3 * 60_000)
+      expect(takeCostLine(take(t.id)).note).toContain('lần gửi trước không rõ')
       expect(fake.count('POST', '/api/video-jobs')).toBe(1)
-      // ...once that request is surely over: same key, one job
+      // ...and once that request is surely over it is looked for again by itself: not there → same key, one job
       await run(5 * 60_000)
-      useRuns.getState().retry(t.id)
-      await run(60_000)
       expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(t.id)])
       expect(take(t.id).remoteId).toBe('proj1:job1')
+      expect(useTakeWaits.getState().byTake[t.id]).toBeUndefined()
     }
   })
 
@@ -1117,17 +1134,18 @@ describe('gateway e2e: app restart', () => {
     // right after the restart: a new take of the same scene, and one of another scene
     const [b] = enqueue('s1')
     const [c] = enqueue('s2')
+    // C, another scene, is sent at once — A being looked for (it sends nothing) never holds the queue
+    await run(3_000)
+    expect(take(a.id)).toMatchObject({ status: 'processing', remoteId: null })
+    expect(take(c.id).remoteId).toBe('proj1:job1')
     // A is looked for (at once, then once more 45 s later): nothing → "không rõ"
-    await run(50_000)
+    await run(47_000)
     expect(take(a.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
     // B waits (main may still be sending A's request for minutes): nothing sent, and it says why and until when
     expect(take(b.id)).toMatchObject({ status: 'queued', remoteId: null, error: null })
     const wait = useTakeWaits.getState().byTake[b.id]
-    expect(wait).toMatchObject({ why: RIVAL_PENDING_TEXT, provider: 'canvasapp' })
+    expect(wait).toMatchObject({ why: RIVAL_PENDING_TEXT, provider: 'canvasapp', timed: true })
     expect(wait.until).toBeGreaterThan(Date.now() + 4 * 60_000)
-    // C, another scene, runs meanwhile
-    await run(1_000)
-    expect(take(c.id).remoteId).toBe('proj1:job1')
     // once a read surely shows A's job (if any): B is sent, once — the reason is gone
     await run(6 * 60_000)
     expect(take(b.id).remoteId).toBe('proj1:job2')
@@ -1178,6 +1196,34 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     useRuns.getState().loadRuns({ takes: leftOnDisk, credits: 1000, spent: 0 })
     await run(45_000)
     expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: 'proj1:job1' })
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+  })
+
+  it('switching project while a submit is on its way, which then ends without sending anything billable: reopened, the take says why — never "không rõ"', async () => {
+    const g1 = gate()
+    // the submit waits on its profiles read; canvasapp then refuses the POST for lack of credits (nothing created)
+    fake.state.fault = (req) =>
+      req.method === 'GET' && req.path === '/api/video-profiles'
+        ? { kind: 'wait', until: g1.until }
+        : req.method === 'POST' && req.path === '/api/video-jobs'
+          ? { kind: 'response', status: 402, json: { detail: 'Insufficient credits' } }
+          : undefined
+    const [t] = enqueue('s1')
+    await run(300)
+    const leftOnDisk = saved()
+    useProject.getState().loadProject({ ...project(), id: 'q', scenes: [scene('q1', 1)] })
+    useRuns.getState().loadRuns(null)
+    g1.open()
+    await run(1_000)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: leftOnDisk, credits: 1000, spent: 0 })
+    await run(1_000)
+    const after = take(t.id)
+    expect(after).toMatchObject({ status: 'failed', remoteId: null })
+    expect(after.error).toContain(NOT_ENOUGH_CREDITS_TEXT)
+    expect(after.submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(after)).toBe(false)
     expect(fake.count('POST', '/api/video-jobs')).toBe(1)
   })
 

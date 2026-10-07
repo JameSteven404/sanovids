@@ -213,7 +213,9 @@ export interface VideoProvider {
   submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
   /**
    * Find the job an earlier submit of `req.key` created (the page closed / reloaded before its id was saved)
-   * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown".
+   * WITHOUT ever creating one. Null = none known. Rejects with that submit's own error, flagged `notSent`
+   * (isRecoverNotSent), when it is known that it sent nothing billable. Optional: without it such takes fail as
+   * "unknown".
    */
   recover?(req: JobRequest): Promise<{ remoteId: string } | null>
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
@@ -259,15 +261,15 @@ export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'o
 
 /**
  * submit() sent nothing and asks to be tried again later (code 'deferred'; e.g. canvasapp's bridge canvas has no room
- * until a running job ends): the engine puts the take back in the queue and waits a poll interval before starting
- * another take of that provider. Nothing was billed.
+ * until a running job ends): the engine puts the take back in the queue, where it waits — until `retryAfterMs`
+ * (submitDeferredFor), else a poll interval — while the takes behind it start. Nothing was billed.
  */
 export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
 
 /**
- * A deferred submit that concerns that take alone (`retryAfterMs`; e.g. another take of its scene was just sent without
- * a known answer): how long THAT take waits before it is tried again — other takes of the provider start meanwhile.
- * null = the provider as a whole asks to wait (isSubmitDeferred alone).
+ * How long a deferred submit's take waits before it is tried again (`retryAfterMs`: a time that means something, e.g.
+ * until a job-list read can surely show another take's job); null = no such time (e.g. until a running job ends: the
+ * engine looks again a poll interval later).
  */
 export function submitDeferredFor(e: unknown): number | null {
   if (!isSubmitDeferred(e)) return null
@@ -294,12 +296,21 @@ export const isResultDeferred = (e: unknown): boolean => !!e && typeof e === 'ob
 export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { uncertain?: unknown }).uncertain === true
 
 /**
- * An uncertain submit (isSubmitUncertain) that sent nothing THIS time (`heldBack: true`): the retry of a take whose
- * earlier request may still be on its way, or whose job could not be looked for, was not sent again. The outcome of
- * that earlier request is still unknown; the error's message says why nothing was sent and when to try again — the
- * engine shows it next to the "unknown" text (store/runs heldBackSubmitError).
+ * An uncertain submit (isSubmitUncertain) that made nothing THIS time (`heldBack: true`): the retry of a take whose
+ * earlier request lost its answer was not sent again (its job could not be looked for, the job list or the canvas could
+ * not be read / saved first…), or was sent again and surely refused (e.g. not enough credits). The outcome of that
+ * earlier request is still unknown; the error's message says what happened this time — the engine shows it next to
+ * the "unknown" text (store/runs heldBackSubmitError).
  */
 export const isSubmitHeldBack = (e: unknown): boolean => isSubmitUncertain(e) && (e as { heldBack?: unknown }).heldBack === true
+
+/**
+ * recover() rejected with the error of that take's submit, which surely sent nothing billable (`notSent: true`: it was
+ * deferred, refused, or stopped before its request — e.g. it ended while another project was open): the engine treats
+ * it like that submit's own error (deferred → back to the queue, refused → failed with the reason). Any other
+ * rejection of recover() leaves the take "unknown".
+ */
+export const isRecoverNotSent = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { notSent?: unknown }).notSent === true && !isSubmitUncertain(e)
 
 /**
  * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`

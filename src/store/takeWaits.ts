@@ -1,22 +1,31 @@
 // Why a queued take waits, and until when: its provider deferred the submit (nothing sent) — e.g. another take of its
-// scene was just sent without a known answer (canvasapp RIVAL_PENDING_TEXT), or the bridge canvas has no room
-// (CANVAS_FULL_TEXT). Not saved, not undoable. Set by the queue engine (store/runs submitTake), which does not start the
-// take before `until`; cleared when that time has come (the take is tried again), when it is cancelled / deleted, when
-// the engine restarts (loadRuns), and for every take of a provider whose state was wiped (resetDevMode →
-// clearTakeWaits('dev')). The take node, the queue and Xem take show it next to "Đang chờ".
+// scene was just sent without a known answer (canvasapp RIVAL_PENDING_TEXT: a time, `timed`), or the bridge canvas has
+// no room until a running job ends (CANVAS_FULL_TEXT: looked at again every poll interval, no time shown). Not saved,
+// not undoable. Set by the queue engine (store/runs submitFailed), which does not start the take before `until`;
+// cleared when that time has come (whether or not the take can start then: its scene may be deleted, an update may
+// hold new submits), when it is cancelled / deleted, when the engine restarts (loadRuns), and for every take of a
+// provider whose state was wiped (resetDevMode → clearTakeWaits('dev')). The take node, the queue and Xem take show it
+// next to "Đang chờ".
 //
 // ---- API ----
-//   useTakeWaits                         zustand store { byTake: { [takeId]: { until, why, provider } } } — select one
-//                                        take's entry (an existing object or undefined: stable).
+//   useTakeWaits                         zustand store { byTake: { [takeId]: { until, why, provider, timed? } } } —
+//                                        select one take's entry (an existing object or undefined: stable).
 //   setTakeWait(id, wait) / clearTakeWait(id) / clearTakeWaits(provider?)
 //   takeWaitUntil(id)                    the time before which the engine does not start it (null = none).
-//   waitLabel(w) / waitText(w)           "Chờ tới 14:32" / "Chờ tới 14:32 — <why>" (pure; null without a wait).
+//   waitLabel(w) / waitText(w)           "Chờ tới 14:32" / "Chờ tới 14:32 — <why>" (pure; null without a wait; an untimed
+//                                        wait: no label, its text is "<why>").
 import { create } from 'zustand'
 import type { ProviderId } from '../providers/types'
 
 export interface TakeWait {
   /** Local time before which the take is not tried again. */
   until: number
+  /**
+   * `until` is a time the provider named (retryAfterMs: e.g. when a job-list read can surely show another take's job),
+   * shown as "Chờ tới 14:32". False / missing: only when the engine looks again (e.g. no room on the bridge canvas until
+   * a running job ends — nobody knows when): the reason is shown without a time.
+   */
+  timed?: boolean
   /** The provider's words (what was not done, and why). */
   why: string
   provider: ProviderId
@@ -30,7 +39,8 @@ export const useTakeWaits = create<TakeWaitsState>()(() => ({ byTake: {} }))
 
 export function setTakeWait(takeId: string, wait: TakeWait): void {
   if (!Number.isFinite(wait.until)) return
-  useTakeWaits.setState((s) => ({ byTake: { ...s.byTake, [takeId]: { until: wait.until, why: wait.why.trim(), provider: wait.provider } } }))
+  const next: TakeWait = { until: wait.until, why: wait.why.trim(), provider: wait.provider, ...(wait.timed ? { timed: true } : {}) }
+  useTakeWaits.setState((s) => ({ byTake: { ...s.byTake, [takeId]: next } }))
 }
 
 export function clearTakeWait(takeId: string): void {
@@ -55,16 +65,20 @@ export function takeWaitUntil(takeId: string): number | null {
 
 const two = (n: number) => String(n).padStart(2, '0')
 
-/** "Chờ tới 14:32" (local time, rounded up to the minute: never earlier than the take is tried again). */
+/**
+ * "Chờ tới 14:32" (local time, rounded up to the minute: never earlier than the take is tried again); null without a
+ * wait, or for one without a time worth showing (`timed` false: the UI says "Đang chờ" and the reason).
+ */
 export function waitLabel(w: TakeWait | undefined): string | null {
-  if (!w) return null
+  if (!w?.timed) return null
   const d = new Date(Math.ceil(w.until / 60_000) * 60_000)
   return `Chờ tới ${two(d.getHours())}:${two(d.getMinutes())}`
 }
 
-/** "Chờ tới 14:32 — <why>" for a tooltip / the queue row. */
+/** "Chờ tới 14:32 — <why>" for a tooltip / the queue row ("<why>" alone for a wait without a time); null without a wait. */
 export function waitText(w: TakeWait | undefined): string | null {
+  if (!w) return null
   const label = waitLabel(w)
-  if (!label || !w) return null
+  if (!label) return w.why || null
   return w.why ? `${label} — ${w.why}` : label
 }
