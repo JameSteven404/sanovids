@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { footerTitle, starTitle, titleLine, TITLE_LINE_GAP, TITLE_LINE_H } from '../takeNodeModel'
+import { TAKE_CHROME, TAKE_POSTER_H } from '../canvasModel'
+import { footerTitle, starTitle, titleLine, TITLE_LINE_EDIT_H, TITLE_LINE_GAP, TITLE_LINE_H } from '../takeNodeModel'
+
+/** Rows of a project saved before 0.6.0 (old ROW_H) and the take card's natural height now (poster + chrome). */
+const LEGACY_ROW_H = 248
+const TAKE_CARD_H = TAKE_POSTER_H + TAKE_CHROME
 
 describe('take title line (above the card, top-left)', () => {
   it('shows the code, and the custom file name only when the user set one', () => {
@@ -33,6 +38,12 @@ describe('take title line (above the card, top-left)', () => {
 
   it('the line fits in the room an old 248px row leaves under a take (17px)', () => {
     expect(TITLE_LINE_H + TITLE_LINE_GAP).toBe(17)
+    expect(TITLE_LINE_H + TITLE_LINE_GAP).toBeLessThanOrEqual(LEGACY_ROW_H - TAKE_CARD_H)
+  })
+  it('the rename input fits there too: it never reaches into the take card of the row above (a 20px one did)', () => {
+    expect(LEGACY_ROW_H - TAKE_CARD_H).toBeCloseTo(19.125, 3)
+    expect(TITLE_LINE_EDIT_H + TITLE_LINE_GAP).toBeLessThanOrEqual(LEGACY_ROW_H - TAKE_CARD_H)
+    expect(TITLE_LINE_EDIT_H).toBeGreaterThanOrEqual(TITLE_LINE_H)
   })
 })
 

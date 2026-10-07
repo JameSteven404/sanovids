@@ -4,14 +4,20 @@
 // - L: forward at 1× → 2× → 4× (core/transportKeys nextShuttle). J: backwards — Chromium cannot play backwards, so the
 //   video is paused and its time moved every animation frame (a little choppier than Premiere); it stops at 0.
 // - K / stop(): pause, leave the shuttle, back to the user's speed. release(): leave the shuttle without pausing.
-// - Frames: pause, then ± FRAME_S per frame, kept inside the clip.
+// - Frames: pause, then ± FRAME_S per frame, kept inside the clip. End: paused on the last frame (the card's and the
+//   viewer's videos loop: a seek to the very end would restart them at 0).
 // - The shuttle speeds are never the user's speed: the players' 'ratechange' handlers skip the running shuttle's rate
 //   (ownsRate), so usePlayback.setRate (clamped to 2× and stored) never sees a 4× of L.
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
-import { FRAME_S, focusKind, frameTarget, nextShuttle, reverseStep, SHUTTLE_IDLE, shuttleOwnsRate, type FocusKind, type Shuttle } from '../core/transportKeys'
+import { edgeSeek, FRAME_S, focusKind, frameTarget, nextShuttle, reverseStep, SHUTTLE_IDLE, shuttleOwnsRate, type FocusKind, type Shuttle } from '../core/transportKeys'
 
-/** The players' key rules need to know what the focused element is (core/transportKeys focusKind). */
-export function describeFocus(el: Element | null): FocusKind {
+/**
+ * The players' key rules need to know what the focused element is (core/transportKeys focusKind). `keyboard`: the
+ * player saw Tab since the last pointer press (the take viewer tracks it) — what decides for a `<video controls>`:
+ * its built-in controls are out of reach (the key event's target is the video), and :focus-visible cannot tell a
+ * Tab into them from a click on the picture.
+ */
+export function describeFocus(el: Element | null, opts?: { keyboard?: boolean }): FocusKind {
   if (!el || !(el instanceof HTMLElement)) return 'none'
   let visible = false
   try {
@@ -19,7 +25,38 @@ export function describeFocus(el: Element | null): FocusKind {
   } catch {
     /* an engine without :focus-visible: treat as a mouse focus */
   }
-  return focusKind({ tag: el.tagName, type: (el as HTMLInputElement).type, role: el.getAttribute('role'), editable: el.isContentEditable, focusVisible: visible })
+  const mediaControls = (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') && (el as HTMLMediaElement).controls
+  return focusKind({
+    tag: el.tagName,
+    type: (el as HTMLInputElement).type,
+    role: el.getAttribute('role'),
+    editable: el.isContentEditable,
+    focusVisible: visible,
+    mediaControls,
+    keyboard: !!opts?.keyboard,
+  })
+}
+
+/** The part of a <video> the seek helpers use (a fake in the tests). */
+export interface SeekableVideo {
+  currentTime: number
+  readonly duration: number
+  pause(): void
+}
+const lengthOf = (v: SeekableVideo) => (Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0)
+
+/** ← / → (Shift: 5): pause, then `frames` frames on (never past the last frame: a `loop` video would restart). */
+export function stepFrames(v: SeekableVideo, frames: number): void {
+  v.pause()
+  v.currentTime = frameTarget(v.currentTime, frames, lengthOf(v), FRAME_S)
+}
+
+/** Home / End (core/transportKeys edgeSeek): End pauses on the last frame — a seek to the length would loop to 0. */
+export function seekEdge(v: SeekableVideo, where: 'start' | 'end'): void {
+  const s = edgeSeek(where, lengthOf(v), FRAME_S)
+  if (!s) return
+  if (s.pause) v.pause()
+  v.currentTime = s.time
 }
 
 export interface TransportControls {
@@ -39,8 +76,6 @@ export interface TransportControls {
   /** This rate was set by the shuttle (a 'ratechange' handler must not store it as the user's speed). */
   ownsRate: (rate: number) => boolean
 }
-
-const lengthOf = (v: HTMLVideoElement) => (Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0)
 
 export function useTransport(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -136,8 +171,7 @@ export function useTransport(
       const v = videoRef.current
       if (!v) return
       leave()
-      v.pause()
-      v.currentTime = frameTarget(v.currentTime, frames, lengthOf(v), FRAME_S)
+      stepFrames(v, frames)
     },
     [leave, videoRef],
   )
@@ -147,8 +181,7 @@ export function useTransport(
       const v = videoRef.current
       if (!v) return
       leave()
-      const d = lengthOf(v)
-      v.currentTime = where === 'start' ? 0 : d
+      seekEdge(v, where)
     },
     [leave, videoRef],
   )

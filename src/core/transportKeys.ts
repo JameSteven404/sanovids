@@ -150,13 +150,34 @@ export function frameDelta(op: TransportOp): number {
   return op === 'frame-back' ? -1 : op === 'frame-fwd' ? 1 : op === 'frame-back5' ? -5 : op === 'frame-fwd5' ? 5 : 0
 }
 
-/** Where a frame step lands: `frames` frames from `current`, kept inside the clip (an unknown length only stops at 0). */
+/**
+ * The time that shows the clip's last frame (0 for an unknown length). Never the length itself: a seek to the very end
+ * ends the clip — and restarts it at 0 on a `loop` video (the canvas card's and the viewer's), so End / → would show
+ * the first frame instead of the last.
+ */
+export function lastFrameTime(duration: number, frameS: number = FRAME_S): number {
+  if (!Number.isFinite(duration) || duration <= 0) return 0
+  const step = Number.isFinite(frameS) && frameS > 0 ? frameS : FRAME_S
+  return Math.max(0, duration - step)
+}
+
+/** Where a frame step lands: `frames` frames from `current`, kept inside the clip, at most its last frame (an unknown length only stops at 0). */
 export function frameTarget(current: number, frames: number, duration: number, frameS: number = FRAME_S): number {
   const from = Number.isFinite(current) ? current : 0
   const step = Number.isFinite(frameS) && frameS > 0 ? frameS : FRAME_S
   const t = from + frames * step
-  const max = Number.isFinite(duration) && duration > 0 ? duration : Infinity
+  const max = Number.isFinite(duration) && duration > 0 ? lastFrameTime(duration, step) : Infinity
   return Math.min(max, Math.max(0, t))
+}
+
+/**
+ * Home / End on a player's video: Home → the start (playing or paused, as it was); End → paused on the last frame
+ * (Premiere's playhead at the end). null = nothing to do (End with an unknown length).
+ */
+export function edgeSeek(where: 'start' | 'end', duration: number, frameS: number = FRAME_S): { time: number; pause: boolean } | null {
+  if (where === 'start') return { time: 0, pause: false }
+  if (!Number.isFinite(duration) || duration <= 0) return null
+  return { time: lastFrameTime(duration, frameS), pause: true }
 }
 
 /**
@@ -195,6 +216,13 @@ export interface FocusDesc {
   editable?: boolean
   /** It shows a keyboard focus ring (`:focus-visible`): reached with Tab, not clicked. */
   focusVisible?: boolean
+  /**
+   * A media element with its built-in controls (`<video controls>`): the key's target while the focus is on the video
+   * or inside those controls (their timeline / volume sliders are out of the page's reach).
+   */
+  mediaControls?: boolean
+  /** The player saw Tab since the last pointer press (what decides for `mediaControls`, see focusKind). */
+  keyboard?: boolean
 }
 
 export type FocusKind = 'typing' | 'slider' | 'control-key' | 'control-mouse' | 'none'
@@ -208,6 +236,9 @@ export function focusKind(d: FocusDesc | null | undefined): FocusKind {
   if (!d || !d.tag) return 'none'
   const tag = d.tag.toUpperCase()
   if (d.editable || tag === 'TEXTAREA' || tag === 'SELECT') return 'typing'
+  // Tabbed into a video's own controls: its sliders keep the arrows, Home and End (↑ / ↓ = its volume, not another
+  // take). After a click on the picture every transport key stays the player's (← / → frames after a click to pause).
+  if (d.mediaControls) return d.keyboard ? 'slider' : 'none'
   if (tag === 'INPUT') {
     const type = (d.type || 'text').toLowerCase()
     if (type === 'range') return 'slider'

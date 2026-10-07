@@ -31,7 +31,7 @@ import {
   type WheelEvent,
 } from 'react'
 import { takeFileBase } from '../../actions'
-import { frameDelta, nodeFullKey, VOLUME_KEY_STEP, type TransportOp } from '../../core/transportKeys'
+import { frameDelta, lastFrameTime, nodeFullKey, VOLUME_KEY_STEP, type TransportOp } from '../../core/transportKeys'
 import { describeFocus, useTransport } from '../../hooks/useTransport'
 import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { knownLength, playWithSound, resumePoint, savedPosition, saveLength, savePosition, toggleSound, usePlayback } from '../../lib/playback'
@@ -354,7 +354,8 @@ function TakePlayerView({ takeId, url, videoRef, stageRef, code, onFullChange }:
     const d = v ? lengthOf(v) : 0
     if (!v || !d) return
     trackRef.current?.style.setProperty('--tp-played', String(f))
-    v.currentTime = f * d
+    // never the very end (the rail's right end, End, → there): the card's video loops, it would restart at 0
+    v.currentTime = Math.min(f * d, lastFrameTime(d))
   }
   const onTrackDown = (e: PointerEvent<HTMLDivElement>) => {
     e.stopPropagation()

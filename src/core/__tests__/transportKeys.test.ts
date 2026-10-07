@@ -3,12 +3,14 @@ import { snapRate } from '../../lib/playback'
 import type { KeyEventLike } from '../keymap'
 import {
   defaultDownloadChords,
+  edgeSeek,
   ESC_AFTER_EXIT_MS,
   escapeDecision,
   focusKind,
   FRAME_S,
   frameDelta,
   frameTarget,
+  lastFrameTime,
   nextShuttle,
   nodeFullKey,
   playerKey,
@@ -171,10 +173,33 @@ describe('frames', () => {
     expect(frameTarget(1, 1, 5)).toBeCloseTo(1 + FRAME_S, 9)
     expect(frameTarget(1, -5, 5)).toBeCloseTo(1 - 5 * FRAME_S, 9)
     expect(frameTarget(0.01, -1, 5)).toBe(0)
-    expect(frameTarget(4.99, 5, 5)).toBe(5)
+    // at most the last frame: the length itself would end the clip (a looping video restarts at 0)
+    expect(frameTarget(4.99, 5, 5)).toBeCloseTo(5 - FRAME_S, 9)
+    expect(frameTarget(5 - FRAME_S, 1, 5)).toBeCloseTo(5 - FRAME_S, 9)
+    expect(frameTarget(4.99, 1, 5)).toBeLessThan(5)
     // unknown length: only 0 bounds it
     expect(frameTarget(3, 24, 0)).toBeCloseTo(4, 9)
     expect(frameTarget(Number.NaN, 1, 5)).toBeCloseTo(FRAME_S, 9)
+  })
+  it('the last frame is one frame before the length (0 for an unknown or shorter-than-a-frame clip)', () => {
+    expect(lastFrameTime(5)).toBeCloseTo(5 - FRAME_S, 9)
+    expect(lastFrameTime(5, 0.5)).toBe(4.5)
+    expect(lastFrameTime(0)).toBe(0)
+    expect(lastFrameTime(Number.NaN)).toBe(0)
+    expect(lastFrameTime(Infinity)).toBe(0)
+    expect(lastFrameTime(FRAME_S / 2)).toBe(0)
+  })
+  it('End pauses on the last frame (never the length: the card / viewer videos loop); Home goes to 0 as it plays', () => {
+    const end = edgeSeek('end', 8)
+    expect(end).not.toBeNull()
+    expect(end!.pause).toBe(true)
+    expect(end!.time).toBeCloseTo(8 - FRAME_S, 9)
+    expect(end!.time).toBeLessThan(8)
+    expect(edgeSeek('start', 8)).toEqual({ time: 0, pause: false })
+    expect(edgeSeek('start', 0)).toEqual({ time: 0, pause: false })
+    // no length yet: End does nothing (it used to act like Home)
+    expect(edgeSeek('end', 0)).toBeNull()
+    expect(edgeSeek('end', Number.NaN)).toBeNull()
   })
 })
 
@@ -202,6 +227,28 @@ describe('what the focused element keeps', () => {
     expect(focusKind({ tag: 'BUTTON' })).toBe('control-mouse')
     expect(focusKind({ tag: 'INPUT', type: 'checkbox' })).toBe('control-mouse')
     expect(focusKind({ tag: 'VIDEO' })).toBe('none')
+  })
+
+  it('a <video controls>: Tabbed into its own controls they keep the arrows / Home / End; after a click they are ours', () => {
+    // Tab since the last pointer press: the native volume / timeline slider has the focus
+    expect(focusKind({ tag: 'VIDEO', mediaControls: true, keyboard: true })).toBe('slider')
+    // :focus-visible alone does not decide (any key press can turn it on after a click on the picture)
+    expect(focusKind({ tag: 'VIDEO', mediaControls: true, focusVisible: true, keyboard: false })).toBe('none')
+    expect(focusKind({ tag: 'VIDEO', mediaControls: true })).toBe('none')
+    // a video without built-in controls (the canvas card's) never keeps keys
+    expect(focusKind({ tag: 'VIDEO', keyboard: true })).toBe('none')
+    const ctx = { player: 'viewer' as const, mac: false }
+    const tabbed = focusKind({ tag: 'VIDEO', mediaControls: true, keyboard: true })
+    // ↑ / ↓ change the native volume instead of switching takes; ← / →, Home / End stay with the native slider
+    for (const code of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']) expect(playerKey(k(code), tabbed, ctx), code).toBeNull()
+    expect(playerKey(k('ArrowUp', { shiftKey: true }), tabbed, ctx)).toBeNull()
+    // Space still plays / pauses, J / K / L still shuttle
+    expect(playerKey(k('Space'), tabbed, ctx)).toBe('toggle')
+    expect(playerKey(k('KeyL'), tabbed, ctx)).toBe('forward')
+    // clicked: ↑ / ↓ switch takes, ← / → step frames
+    const clicked = focusKind({ tag: 'VIDEO', mediaControls: true, keyboard: false })
+    expect(playerKey(k('ArrowDown'), clicked, ctx)).toBe('clip-next')
+    expect(playerKey(k('ArrowLeft'), clicked, ctx)).toBe('frame-back')
   })
 
   it('viewer / film: typing keeps every key, a slider its arrows, a Tab-focused control its Space / Enter', () => {

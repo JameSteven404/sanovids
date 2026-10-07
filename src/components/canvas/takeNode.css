@@ -155,8 +155,9 @@
 .cv-take.is-selected.is-sized .cv-take-label {
   right: 30px;
 }
+/* the rename input stays short: an old project's 248px rows leave ~19px under the take above (takeNodeModel) */
 .cv-take-label.is-renaming {
-  height: 20px;
+  height: 15px;
 }
 .cv-take-label-sp {
   flex: 1 1 auto;
@@ -265,17 +266,19 @@
 .cv-take-name-input {
   flex: 1 1 auto;
   min-width: 120px;
-  height: 20px;
-  padding: 0 6px;
+  height: 15px;
+  padding: 0 5px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--accent);
   background: var(--bg-elev);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
+  line-height: 13px;
   outline: none;
-  box-shadow: var(--focus-ring);
+  /* the focus ring stays inside the box: an outer ring would reach into the row above */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .cv-take-name-input::placeholder {
   color: var(--text-faint);
@@ -576,7 +579,31 @@
   opacity: 0.35;
 }
 
+/* ============================== resized take (NodeSizer) ============================== */
+/* (.cv-take.is-sized itself — flex column filling the wrapper — is shared with the other nodes in canvas.css) */
+.cv-take.is-sized .cv-take-stage {
+  flex: none;
+}
+.cv-take.is-sized .cv-take-media {
+  flex: none;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cv-take-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.cv-take.is-sized .cv-take-foot,
+.cv-take.is-sized .cv-take-main-wrap {
+  flex: none;
+}
+
 /* ============================== fullscreen ("Phóng to") ============================== */
+/*
+ * Keep this block AFTER "resized take": its rules have the same specificity, and a resized node's `flex: none` media
+ * box (children all absolute, no inline size while full) would collapse to 0px here — a black screen
+ * (takeNodeLayout.test.ts checks the cascade).
+ */
 /* the stage left the card (top layer): this keeps its place, so nothing on the board moves meanwhile */
 .cv-take.is-full::before {
   content: '';
@@ -855,25 +882,6 @@
 .cv-take-main.is-retry:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-/* ============================== resized take (NodeSizer) ============================== */
-/* (.cv-take.is-sized itself — flex column filling the wrapper — is shared with the other nodes in canvas.css) */
-.cv-take.is-sized .cv-take-stage {
-  flex: none;
-}
-.cv-take.is-sized .cv-take-media {
-  flex: none;
-  max-width: 100%;
-  margin: 0 auto;
-}
-.cv-take-fill {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.cv-take.is-sized .cv-take-foot,
-.cv-take.is-sized .cv-take-main-wrap {
-  flex: none;
 }
 
 /* ============================== focus (keyboard) ============================== */

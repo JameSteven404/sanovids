@@ -246,6 +246,11 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
   const exitedAt = useRef(-Infinity)
   /** Space was a transport key: its keyup must not press the (mouse-focused) button either. */
   const spaceTaken = useRef(false)
+  /**
+   * Tab was pressed since the last pointer press: a key aimed at the <video controls> then comes from its own controls
+   * (their sliders keep the arrows, Home and End — focusKind 'slider'); after a click on the picture they stay ours.
+   */
+  const tabbed = useRef(false)
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => undefined)
   keyRef.current = (e) => {
     // A sheet above every dialog (development mode's login / SePay) gets its own keys.
@@ -257,6 +262,7 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
       }
       return
     }
+    if (e.key === 'Tab') tabbed.current = true
     if (e.key === 'Escape') {
       const d = escapeDecision({ fullscreen: !!document.fullscreenElement, exitedAt: exitedAt.current, now: performance.now() })
       if (d === 'normal') return
@@ -266,7 +272,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
       if (d === 'exit-fullscreen') void document.exitFullscreen().catch(() => undefined)
       return
     }
-    const op = playerKey(eventLike(e), describeFocus(e.target instanceof Element ? e.target : null), { player: 'viewer', mac: IS_MAC })
+    const focus = describeFocus(e.target instanceof Element ? e.target : null, { keyboard: tabbed.current })
+    const op = playerKey(eventLike(e), focus, { player: 'viewer', mac: IS_MAC })
     if (!op || op === 'exit') return
     e.preventDefault()
     e.stopPropagation()
@@ -319,12 +326,17 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     const onFull = () => {
       if (!document.fullscreenElement) exitedAt.current = performance.now()
     }
+    const onPointer = () => {
+      tabbed.current = false
+    }
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('keyup', onKey, true)
+    window.addEventListener('pointerdown', onPointer, true)
     document.addEventListener('fullscreenchange', onFull)
     return () => {
       window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('keyup', onKey, true)
+      window.removeEventListener('pointerdown', onPointer, true)
       document.removeEventListener('fullscreenchange', onFull)
       // Closing the viewer while its video is fullscreen: leave fullscreen too.
       if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)

@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { TAKE_BAR_H } from '../canvasModel'
-import { TITLE_LINE_GAP, TITLE_LINE_H } from '../takeNodeModel'
+import { TITLE_LINE_EDIT_H, TITLE_LINE_GAP, TITLE_LINE_H } from '../takeNodeModel'
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const takeCss = read('../takeNode.css')
@@ -16,6 +16,116 @@ const takeNode = read('../TakeNode.tsx')
 const takePlayer = read('../TakePlayer.tsx')
 const viewer = read('../../runs/TakeViewer.tsx')
 const film = read('../../player/FilmPlayer.tsx')
+const transportHook = read('../../../hooks/useTransport.ts')
+
+// ---- a tiny cascade: which declaration wins on an element (top-level rules, descendant-only selectors) ----
+interface CssRule {
+  selectors: string[]
+  decls: Record<string, string>
+  order: number
+}
+/** Split at a separator outside parentheses. */
+function splitTop(text: string, sep: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of text) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (ch === sep && depth === 0) {
+      out.push(cur)
+      cur = ''
+    } else cur += ch
+  }
+  out.push(cur)
+  return out.map((x) => x.trim()).filter(Boolean)
+}
+/** The top-level style rules in source order (@media / @container / @keyframes blocks are left out). */
+function topLevelRules(css: string): CssRule[] {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const rules: CssRule[] = []
+  let i = 0
+  while (i < src.length) {
+    const open = src.indexOf('{', i)
+    if (open < 0) break
+    const prelude = src.slice(i, open).trim()
+    let depth = 1
+    let j = open + 1
+    for (; j < src.length && depth; j++) depth += src[j] === '{' ? 1 : src[j] === '}' ? -1 : 0
+    const body = src.slice(open + 1, j - 1)
+    if (!prelude.startsWith('@')) {
+      const decls: Record<string, string> = {}
+      for (const d of splitTop(body, ';')) {
+        const c = d.indexOf(':')
+        if (c > 0) decls[d.slice(0, c).trim()] = d.slice(c + 1).trim().replace(/\s+/g, ' ')
+      }
+      rules.push({ selectors: splitTop(prelude, ','), decls, order: rules.length })
+    }
+    i = j
+  }
+  return rules
+}
+interface El {
+  tag: string
+  classes: string[]
+  pseudo?: string[]
+}
+const COMPOUND = /^([a-z][\w-]*|\*)?((?:[.:][\w-]+)*)$/i
+/** Specificity [ids, classes + pseudo-classes, types] of a descendant-only selector; null for any other selector. */
+function specificity(sel: string): [number, number, number] | null {
+  if (/[>~+[(]|::/.test(sel)) return null
+  let cls = 0
+  let types = 0
+  for (const part of sel.split(/\s+/)) {
+    const m = COMPOUND.exec(part)
+    if (!m) return null
+    if (m[1] && m[1] !== '*') types++
+    cls += (m[2].match(/[.:]/g) ?? []).length
+  }
+  return [0, cls, types]
+}
+function compoundMatches(part: string, el: El): boolean {
+  const m = COMPOUND.exec(part)
+  if (!m) return false
+  if (m[1] && m[1] !== '*' && m[1].toLowerCase() !== el.tag) return false
+  for (const t of m[2].match(/[.:][\w-]+/g) ?? []) {
+    if (t[0] === '.' && !el.classes.includes(t.slice(1))) return false
+    if (t[0] === ':' && !(el.pseudo ?? []).includes(t.slice(1))) return false
+  }
+  return true
+}
+/** Does a descendant-only selector match the last element of `chain` (root → element)? */
+function matches(sel: string, chain: El[]): boolean {
+  if (!specificity(sel)) return false
+  const parts = sel.split(/\s+/)
+  if (!compoundMatches(parts[parts.length - 1], chain[chain.length - 1])) return false
+  let at = chain.length - 1
+  for (let k = parts.length - 2; k >= 0; k--) {
+    let found = -1
+    for (let a = at - 1; a >= 0; a--)
+      if (compoundMatches(parts[k], chain[a])) {
+        found = a
+        break
+      }
+    if (found < 0) return false
+    at = found
+  }
+  return true
+}
+/** The value of `prop` that wins on the last element of `chain` (highest specificity, then the later rule). */
+function winning(rules: CssRule[], chain: El[], prop: string): string | undefined {
+  let best: { spec: [number, number, number]; order: number; value: string } | null = null
+  for (const r of rules) {
+    if (!(prop in r.decls)) continue
+    for (const sel of r.selectors) {
+      if (!matches(sel, chain)) continue
+      const spec = specificity(sel)!
+      const cmp = best ? spec[0] - best.spec[0] || spec[1] - best.spec[1] || spec[2] - best.spec[2] || r.order - best.order : 1
+      if (cmp >= 0) best = { spec, order: r.order, value: r.decls[prop] }
+    }
+  }
+  return best?.value
+}
 
 /** The declarations of the first rule whose selector list is exactly `selector`. */
 function rule(css: string, selector: string): string {
@@ -77,6 +187,44 @@ describe('take card geometry (CSS)', () => {
     expect(rule(takeCss, '.cv-take.is-full::before')).toContain('height: var(--stage-h);')
     expect(rule(takeCss, '.cv-take-stage:fullscreen')).toContain('background: var(--media-bg);')
     expect(rule(takeCss, '.cv-take-stage:fullscreen .cv-take-pbar')).toContain('height: 56px;')
+  })
+  it('"Phóng to" on a RESIZED take still fills the screen with the picture (its media box never collapses to 0px)', () => {
+    const rules = topLevelRules(takeCss)
+    const card = (sized: boolean, full: boolean): El => ({
+      tag: 'div',
+      classes: ['cv-take', 'st-completed', 'is-playing', ...(sized ? ['is-sized'] : []), ...(full ? ['is-full'] : [])],
+    })
+    const stage = (full: boolean): El => ({
+      tag: 'div',
+      classes: ['cv-take-stage', ...(full ? ['is-full', 'nowheel', 'nodrag', 'nopan', 'nokey'] : [])],
+      pseudo: full ? ['fullscreen'] : [],
+    })
+    const media: El = { tag: 'div', classes: ['cv-take-media'] }
+    const chain = (sized: boolean, full: boolean) => [card(sized, full), stage(full), media]
+    // While full, TakeNode drops the media box's inline size and every child of it is absolute: only flex-grow gives
+    // it a height. A resized node's `flex: none` must not win here (it did: same specificity, later in the file).
+    for (const sized of [false, true]) {
+      const c = chain(sized, true)
+      const what = sized ? 'resized' : 'default size'
+      expect(winning(rules, c, 'flex'), what).toBe('1 1 auto')
+      expect(winning(rules, c, 'min-height'), what).toBe('0')
+      expect(winning(rules, c, 'aspect-ratio'), what).toBe('auto')
+      expect(winning(rules, c, 'width'), what).toBe('100%')
+      expect(winning(rules, [card(sized, true), stage(true)], 'display'), what).toBe('flex')
+      expect(winning(rules, [card(sized, true), stage(true)], 'flex-direction'), what).toBe('column')
+    }
+    // outside fullscreen the cards keep their own layout (and the helper does see the resized rule)
+    expect(winning(rules, chain(true, false), 'flex')).toBe('none')
+    expect(winning(rules, chain(false, false), 'aspect-ratio')).toBe('16 / 9')
+    expect(takeNode).toContain('style={media && !full ? { width: media.w, height: media.h } : undefined}')
+  })
+  it('the rename input stays short with its focus ring inside (an old 248px row leaves ~19px above the card)', () => {
+    expect(rule(takeCss, '.cv-take-label.is-renaming')).toContain(`height: ${TITLE_LINE_EDIT_H}px;`)
+    const input = rule(takeCss, '.cv-take-name-input')
+    expect(input).toContain(`height: ${TITLE_LINE_EDIT_H}px;`)
+    expect(input).not.toContain('var(--focus-ring)')
+    const shadow = /box-shadow:\s*([^;]*);/.exec(input)?.[1].trim()
+    if (shadow) expect(shadow === 'none' || shadow.startsWith('inset ')).toBe(true)
   })
   it('canvas.css / saving.css no longer carry take rules (one place: takeNode.css)', () => {
     // (.cv-take-line is the scene card's take row; `.cv-take.is-sized,` the resize rule shared by every node)
@@ -176,6 +324,18 @@ describe('one key table for every player', () => {
   it('the viewer’s Escape listener is added before Modal’s (layout effect), so Esc in fullscreen keeps the dialog', () => {
     expect(viewer).toContain('useLayoutEffect(() => {\n    const onKey = (e: KeyboardEvent) => keyRef.current(e)')
     expect(viewer).toContain('escapeDecision(')
+  })
+  it('End / → never seek to the very end of a looping video (it would restart at 0)', () => {
+    expect(transportHook).toMatch(/leave\(\)\n\s*seekEdge\(v, where\)/)
+    expect(transportHook).toMatch(/leave\(\)\n\s*stepFrames\(v, frames\)/)
+    expect(takePlayer).toContain('v.currentTime = Math.min(f * d, lastFrameTime(d))')
+  })
+  it('the viewer tells a Tab into its <video controls> from a click on the picture (↑ / ↓ there = native volume)', () => {
+    expect(viewer).toContain("if (e.key === 'Tab') tabbed.current = true")
+    expect(viewer).toContain("window.addEventListener('pointerdown', onPointer, true)")
+    expect(viewer).toContain("window.removeEventListener('pointerdown', onPointer, true)")
+    expect(viewer).toContain('describeFocus(e.target instanceof Element ? e.target : null, { keyboard: tabbed.current })')
+    expect(transportHook).toContain("const mediaControls = (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') && (el as HTMLMediaElement).controls")
   })
   it('shuttle speeds never reach the stored speed (ownsRate filter)', () => {
     expect(viewer).toContain('ownsRate(e.currentTarget.playbackRate)')

@@ -48,3 +48,8 @@ export const TITLE_LINE_SELECTOR = '.cv-take-label'
 /** Height of the title line above the card (px; CSS .cv-take-label) and its gap to the card. */
 export const TITLE_LINE_H = 13
 export const TITLE_LINE_GAP = 4
+/**
+ * Height of the rename input that takes the line's place (px; CSS .cv-take-label.is-renaming / .cv-take-name-input).
+ * Kept short, its focus ring inside: an old project's 248px rows leave only ~19px under the take above.
+ */
+export const TITLE_LINE_EDIT_H = 15
