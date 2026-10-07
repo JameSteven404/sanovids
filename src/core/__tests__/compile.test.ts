@@ -75,6 +75,20 @@ describe('compileScene', () => {
     expect(out.images).toHaveLength(0)
     expect(out.limit).toBe(7000)
   })
+  it('names a mode by its quoted name in every "Chế độ …" message, never by its code (as the inspector does)', () => {
+    const h3 = (mode: 't2v' | 'i2v' | 'transform', over: Partial<Scene> = {}) =>
+      scene({ settings: { model: 'minimax_h3', mode, duration: 5, resolution: '768p', ratio: '16:9' }, ...over })
+    const out = (s: Scene) => compileScene(project([s]), s)
+    const t2v = out(h3('t2v', { prompt: 'walks with @image_1', refs: ['a'] }))
+    expect(t2v.notes).toContain('Chế độ “Text → Video” của MiniMax-H3 không gửi ảnh tham chiếu.')
+    expect(t2v.warnings).toContain('Chế độ “Text → Video” của MiniMax-H3 không gửi ảnh: các @image_N sẽ chỉ là chữ trong prompt.')
+    expect(out(h3('i2v', { prompt: 'walks' })).warnings).toContain('Chế độ “Ảnh → Video” cần ít nhất 1 ảnh tham chiếu.')
+    expect(out(h3('transform', { prompt: 'walks', firstFrame: 'c' })).warnings).toContain('Chế độ “Khung đầu → cuối” cần đủ Khung đầu và Khung cuối.')
+    for (const mode of ['t2v', 'i2v', 'transform'] as const) {
+      const all = out(h3(mode, { prompt: 'walks with @image_1', refs: ['a'] }))
+      for (const text of [...all.warnings, ...all.notes].filter((t) => t.startsWith('Chế độ'))) expect(text).toMatch(/^Chế độ “[^”]+” /)
+    }
+  })
 })
 
 describe('tokens', () => {

@@ -67,6 +67,9 @@ const MODES: readonly Mode[] = ['t2v', 'i2v', 'transform', 'first']
 describe('catalogue (SEEDVIS_ENABLED false)', () => {
   it('seedvis stays switched off until wave C flips it — with the per-scene engine (B2) merged', () => {
     // Flipping it before B2 would hand seedvis scenes to the canvasapp queue (store/runs check uses activeProviderId).
+    // Preconditions of the flip (core/seedvisFlag): every run gate judges a scene by ITS provider's limits —
+    // store/runs check() / enqueue (B2), runs/shared useSettingsRunBlock + useSceneRunBlock and the useActiveLimits
+    // callers (B3) — else a Veo 8 s scene is blocked by canvasapp's Seedance profile.
     expect(SEEDVIS_ENABLED).toBe(false)
   })
 
@@ -145,6 +148,14 @@ describe('catalogue (SEEDVIS_ENABLED false)', () => {
       expect(specOf(id)).toBe(CATALOGUE.seedance_2_5)
       expect(serviceOf(id)).toBe('canvasapp')
     }
+  })
+
+  it('serviceOf: a newer build’s seedvis route (an id this build has no route for) is seedvis’s — the id carries its service', () => {
+    for (const id of ['seedvis/omni_flash', 'seedvis/veo_4']) {
+      expect(serviceOf(id)).toBe('seedvis')
+      expect(specOf(id)).toBe(CATALOGUE.seedance_2_5) // the data fallback is unchanged
+    }
+    for (const id of ['seedvis', 'Seedvis/veo_3.1', 'x/seedvis/veo_3.1', 'seedvis_veo']) expect(serviceOf(id)).toBe('canvasapp')
   })
 
   it('one image cap per seedvis model, the one its request route allows (single-cap invariant)', () => {

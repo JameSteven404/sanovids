@@ -58,10 +58,13 @@ describe('seedvis in the provider registry', () => {
     expect(providerForModel('seedance_2_5')).toBe(activeProviderId())
     expect(providerForModel('minimax_h3')).toBe('dev')
     expect(providerForModel('seedvis/veo_3.1')).toBe('seedvis-dev')
+    // a newer build's seedvis route: still seedvis's wallet / limits, never canvasapp's
+    expect(providerForModel('seedvis/omni_flash')).toBe('seedvis-dev')
     applyDevAccessState(bareState('locked'))
     expect(providerForModel('seedance_2_5')).toBe('canvasapp')
     // locked builds: the real seedvis only — never a silent fallback to the simulation
     expect(providerForModel('seedvis/seedance_2.0_fast')).toBe('seedvis')
+    expect(providerForModel('seedvis/omni_flash')).toBe('seedvis')
     // an id this build has no route for is canvasapp's (as specOf / normalizeSettings)
     expect(providerForModel('future/model_x')).toBe('canvasapp')
   })

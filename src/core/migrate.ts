@@ -129,7 +129,9 @@ const markOf = (settings: VideoSettings, model: string | null, foreign: ForeignS
  *   stand-in values — it blocks running too (core/runRules), and any settings change drops it (store/project);
  * - else a marker saved with it (by a build that kept one) is validated and kept; once the build knows that model /
  *   offers those values, `settings` are restored from the marker (foreignSettings [+ foreignModel]) and the marker goes
- *   — what the build that brings them does;
+ *   — what the build that brings them does; a model it knows again whose marker values it still does not offer comes
+ *   back as a config marker (an even newer build's values survive a trip through a build without the model: that
+ *   build keeps a same-model config marker's values, never the stand-ins beside it);
  * - else no marker (an empty / missing model is the old default, Seedance 2.5, as always).
  * `omit`: keys of `rawSettings` that are not settings (a preset is its own settings object: id, name, marker).
  * `newerFile`: the project's schemaVersion is above 2 (see lostConfigValues).
@@ -143,7 +145,12 @@ function migrateModelMark(
   const raw = (rawSettings && typeof rawSettings === 'object' ? rawSettings : {}) as Partial<VideoSettings>
   const model: unknown = raw.model
   const settings = normalizeSettings(raw)
-  if (typeof model === 'string' && model.trim() && !isModelId(model)) return markOf(settings, foreignId(model), cleanForeignSettings(raw, omit))
+  if (typeof model === 'string' && model.trim() && !isModelId(model)) {
+    // A config marker saved with it for this very model (by a build that knows the model, not some of its values) holds
+    // an even newer build's values, the settings only that build's stand-ins: keep the marker's (else they are lost).
+    const config = foreignId(saved.foreignModel) ? null : cleanForeignSettings(saved.foreignSettings)
+    return markOf(settings, foreignId(model), config && config.model === model ? config : cleanForeignSettings(raw, omit))
+  }
   if (lostConfigValues(raw, newerFile).length) {
     // Only a marker that still holds a value it is made for: cleanForeignSettings skips an entry too big to keep (a
     // 5000-character "ratio" is no newer build's value), and a marker without its lost value would be restored — and
@@ -160,7 +167,13 @@ function migrateModelMark(
     if (!lostConfigValues(keptSettings, true).length) return markOf(restored, null, null)
     return { settings, foreignSettings: keptSettings }
   }
-  if (isModelId(kept)) return markOf(normalizeSettings({ ...(keptSettings ?? {}), model: kept } as Partial<VideoSettings>), null, null)
+  if (isModelId(kept)) {
+    const full = { ...(keptSettings ?? {}), model: kept }
+    const restored = normalizeSettings(full as Partial<VideoSettings>)
+    // values this build does not offer for it either (an even newer build's): a config marker, as above
+    const config = keptSettings && lostConfigValues(full, true).length ? cleanForeignSettings(full) : null
+    return config && lostConfigValues(config, true).length ? { settings: restored, foreignSettings: config } : markOf(restored, null, null)
+  }
   return markOf(settings, foreignId(kept), keptSettings)
 }
 
@@ -345,7 +358,8 @@ function takeSettings(raw: Record<string, unknown>): VideoSettings {
 const REMOTE_NOTE_MAX = 500
 const REMOTE_DETAIL_MAX = 2000
 const REMOTE_CODE_RE = /^[A-Za-z0-9_.:-]{1,64}$/
-const KEY_HINT_RE = /^[A-Za-z0-9_-]{1,8}$/
+/** Take.keyHint: the LAST 4 characters of the key (plan §10.3) — never more of a real key. */
+const KEY_HINT_RE = /^[A-Za-z0-9_-]{1,4}$/
 const KEY_TAG_RE = /^[0-9a-fA-F]{1,64}$/
 
 /**

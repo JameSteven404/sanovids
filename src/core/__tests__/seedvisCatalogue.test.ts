@@ -165,9 +165,9 @@ describe('the build that ships seedvis: compile', () => {
     expect(out.images).toEqual([])
     expect(out.unsentTokens).toEqual(['@image_1'])
     expect(out.notes).toContain('Chế độ “Khung đầu → Video” của Veo 3.1 · seedvis không gửi ảnh tham chiếu.')
-    expect(out.warnings).toContain('Chế độ Khung đầu → Video cần Khung đầu.')
-    expect(compiled(scene({ settings: VEO('first'), firstFrame: 'cave' })).warnings).not.toContain('Chế độ Khung đầu → Video cần Khung đầu.')
-    expect(compiled(scene({ settings: VEO('transform'), firstFrame: 'cave' })).warnings).toContain('Chế độ Khung đầu → cuối cần đủ Khung đầu và Khung cuối.')
+    expect(out.warnings).toContain('Chế độ “Khung đầu → Video” cần Khung đầu.')
+    expect(compiled(scene({ settings: VEO('first'), firstFrame: 'cave' })).warnings).not.toContain('Chế độ “Khung đầu → Video” cần Khung đầu.')
+    expect(compiled(scene({ settings: VEO('transform'), firstFrame: 'cave' })).warnings).toContain('Chế độ “Khung đầu → cuối” cần đủ Khung đầu và Khung cuối.')
   })
 
   it('seedvis notes, never blocking: undocumented @image_N, @image_1 as the opening frame, real people refused', () => {

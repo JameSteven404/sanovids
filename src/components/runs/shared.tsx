@@ -95,6 +95,8 @@ export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimit
  * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
  */
 export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+  // TODO(B3, before SEEDVIS_ENABLED flips): the limits of the scene's own provider (useSceneProvider(settings.model));
+  // the active canvasapp one judges a Veo 8 s scene by canvasapp's Seedance profile and blocks it
   const provider = useActiveProvider()
   return useProviderLimits((s) => {
     void s.rev[provider]
@@ -114,6 +116,8 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
   const given = typeof target === 'string' ? undefined : target
   // by id: the map shared by every selector of this scenes array (core/sceneIndex), never a scan per keystroke
   const pick = (scenes: readonly Scene[]) => (id === undefined ? given : sceneMapOf(scenes).get(id))
+  // TODO(B3, before SEEDVIS_ENABLED flips): settingsBlock from the scene's own provider (providerForModel), as
+  // useSettingsRunBlock above and store/runs check() (B2) — not the active canvasapp provider's limits
   const provider = useActiveProvider()
   // re-renders (and so re-selects below) when what the gateway refuses was read again
   useProviderLimits((s) => s.rev[provider] ?? 0)

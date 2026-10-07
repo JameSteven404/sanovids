@@ -574,6 +574,18 @@ describe('values of a newer build for a model this build knows (config marker)',
     expect(p.scenes[0].settings).toEqual(offered)
     expect('foreignSettings' in p.scenes[0]).toBe(false)
   })
+
+  it('a model marker for a model known here, with values it still does not offer: a config marker, never quietly fixed', () => {
+    // a newer build's 4k value parked by a build without the model, opened by a build that knows the model, not 4k
+    const stand: Record<string, unknown> = { ...normalizeSettings({}) }
+    const p = migrateProject({ ...project(2, FOURK), presets: [{ id: 'k', name: 'K', ...stand, foreignModel: 'seedance_2_5', foreignSettings: FOURK }], scenes: [scene(stand, { foreignModel: 'seedance_2_5', foreignSettings: FOURK })] })
+    for (const x of [p.scenes[0], p.presets[0]]) {
+      expect(x.foreignSettings).toEqual(FOURK)
+      expect('foreignModel' in x).toBe(false)
+    }
+    expect(p.scenes[0].settings).toEqual({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' })
+    expect(migrateProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+  })
 })
 
 describe('imported takes ("Nhập job") in saved data', () => {

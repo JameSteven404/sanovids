@@ -204,6 +204,24 @@ describe('the build that ships seedvis (flag on)', () => {
       expect(withSettings({ ...VEO, ratio: '1:1' }).foreignSettings).toBeUndefined()
       expect(withSettings({ ...VEO, ratio: '1:1' }, 3).foreignSettings).toEqual({ ...VEO, ratio: '1:1' })
     })
+
+    it('an even newer build’s value (config marker) survives on → off → on: still marked, never quietly fixed', () => {
+      const newer = { ...SD_SV, resolution: '480p' } // a value no seedvis route offers here
+      const start = { ...project(), presets: [{ id: 'pv', name: 'Mới hơn', ...newer }], scenes: [{ ...project().scenes[1], presetId: 'pv', settings: newer }] }
+      const first = on.migrateProject(start)
+      expect(first.scenes[0]).toMatchObject({ settings: SD_SV, foreignSettings: newer })
+      expect(first.presets[0]).toMatchObject({ ...SD_SV, foreignSettings: newer })
+      const parked = off.migrateProject(json(first))
+      // the build without seedvis keeps the marker's values (not the stand-ins of the build in between)
+      expect(parked.scenes[0]).toMatchObject({ foreignModel: 'seedvis/seedance_2.5', foreignSettings: newer })
+      expect(parked.presets[0]).toMatchObject({ foreignModel: 'seedvis/seedance_2.5', foreignSettings: newer })
+      expect(JSON.stringify(off.migrateProject(json(parked)))).toBe(JSON.stringify(parked))
+      const back = on.migrateProject(json(parked))
+      expect(back.scenes).toEqual(first.scenes)
+      expect(back.presets).toEqual(first.presets)
+      expect(back.scenes[0].foreignModel).toBeUndefined()
+      expect(JSON.stringify(on.migrateProject(json(back)))).toBe(JSON.stringify(back))
+    })
   })
 
   it('the optional seedvis fields are validated: wrong types / shapes dropped, each omitted at its default', () => {
@@ -228,6 +246,9 @@ describe('the build that ships seedvis (flag on)', () => {
     }
     const kept = on.migrateTake(take({ status: 'failed', fetchable: true, cancelRequested: true, remoteCode: 'content_policy', remoteDetail: 'chi tiết' }))
     expect(kept).toMatchObject({ fetchable: true, cancelRequested: true, remoteCode: 'content_policy', remoteDetail: 'chi tiết', keyHint: 'AB12', keyTag: 'a1b2c3d4e5f6' })
+    // the hint is the key's last 4 characters (plan §10.3): a longer one keeps more of a real key than meant — dropped
+    for (const keyHint of ['ABCD1', 'cdef1234']) expect('keyHint' in on.migrateTake(take({ keyHint })), keyHint).toBe(false)
+    expect(on.migrateTake(take({ keyHint: 'x9' })).keyHint).toBe('x9')
     // a canvasapp take without them stays without them (no key added)
     const plain = off.migrateTake({ id: 't', provider: 'canvasapp', status: 'completed' })
     for (const k of ['costEstimated', 'remotePhase', 'keyHint', 'fetchable']) expect(k in plain, k).toBe(false)

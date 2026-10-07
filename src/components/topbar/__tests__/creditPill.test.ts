@@ -1,7 +1,7 @@
 // The credit pill's states (docs/SPEC-v2.md §9): demo is clearly play money, the real canvasapp balance is never
 // invented ("—" until known), login-required becomes an action.
 import { describe, expect, it } from 'vitest'
-import { DEMO_CREDIT_HINT, DEV_CREDIT_HINT } from '../../../lib/credits'
+import { DEMO_CREDIT_HINT, DEV_CREDIT_HINT, isSimulatedCredit, SEEDVIS_DEV_CREDIT_HINT } from '../../../lib/credits'
 import { clockText, creditPillView, LOW_CREDITS, type CreditPillInput } from '../creditPillModel'
 
 const real = (patch: Partial<CreditPillInput>): CreditPillInput => ({
@@ -171,5 +171,38 @@ describe('creditPillView — canvasapp gateway off (development mode locked, not
     expect(v.sim).toBe(false)
     expect(v.title).toBe('Cổng canvasapp.io.vn đang tắt. Bấm để mở Cài đặt.')
     expect(`${v.title} ${v.ariaLabel}`).not.toMatch(/DEV|dev|giả lập/)
+  })
+})
+
+describe('creditPillView — every gateway wallet has its own words (no silent canvasapp fallback)', () => {
+  const at = new Date(2026, 9, 2, 14, 5, 30).getTime()
+  const KINDS = ['canvasapp', 'dev', 'seedvis', 'seedvis-dev'] as const
+
+  it('canvasapp / dev texts are the same as before seedvis', () => {
+    const v = creditPillView(real({ status: 'ok', balance: 1234, updatedAt: at }), { now: at })
+    expect(v.title).toBe('Credit thật của tài khoản canvasapp.io.vn: 1.234 credit ≈ 1.234.000đ (cập nhật lúc 14:05).\nTake mới trừ vào số này khi canvasapp nhận job. Bấm để cập nhật.')
+    expect(v.ariaLabel).toBe('canvasapp: 1.234 credit, khoảng 1.234.000đ — bấm để cập nhật')
+    const d = creditPillView(real({ kind: 'dev', status: 'ok', balance: 1000, updatedAt: at }), { now: at })
+    expect(d.title.startsWith(`${DEV_CREDIT_HINT}.\nSố dư tài khoản canvasapp giả lập (chế độ Phát triển): 1.000 credit dev (cập nhật lúc 14:05).\n`)).toBe(true)
+    expect(d.ariaLabel).toBe('DEV: 1.000 credit dev (giả lập, không phải tiền thật) — bấm để cập nhật')
+  })
+
+  it('a seedvis wallet is never shown as canvasapp money: own name, no đồng, simulated only when it is, no canvasapp top-up', () => {
+    for (const kind of KINDS) {
+      for (const status of ['ok', 'loading', 'error'] as const) {
+        const v = creditPillView(real({ kind, status, balance: 300, updatedAt: at, error: status === 'error' ? 'Mất mạng.' : null }), { now: at })
+        expect(v.sim, `${kind} ${status}`).toBe(isSimulatedCredit(kind))
+        if (kind.startsWith('seedvis')) {
+          const text = `${v.source} ${v.title} ${v.ariaLabel}`
+          expect(text, `${kind} ${status}`).not.toMatch(/canvasapp|\d+đ/)
+          expect(text, `${kind} ${status}`).toContain(kind === 'seedvis' ? '300 credit seedvis' : '300 credit dev seedvis')
+          expect(v.topUp, `${kind} ${status}`).toBe(false)
+        }
+      }
+    }
+    const sim = creditPillView(real({ kind: 'seedvis-dev', status: 'ok', balance: 300, updatedAt: at }), { now: at })
+    expect(sim).toMatchObject({ tone: 'dev', sim: true, source: 'seedvis · DEV' })
+    expect(sim.title).toContain(SEEDVIS_DEV_CREDIT_HINT)
+    expect(creditPillView(real({ kind: 'seedvis', status: 'ok', balance: 300, updatedAt: at }), { now: at })).toMatchObject({ tone: 'real', sim: false, source: 'seedvis' })
   })
 })

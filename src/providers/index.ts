@@ -10,7 +10,8 @@
 //   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
 //                                          | 'seedvis-dev' "seedvis giả lập" | 'seedvis' "seedvis.com".
 //   providerForModel(model): ProviderId     provider a scene of that model runs on now (wallet, limits): canvasapp's
-//                                          routes → activeProviderId(); seedvis's → 'seedvis-dev' open / 'seedvis' locked.
+//                                          routes → activeProviderId(); seedvis's (a newer build's 'seedvis/…' id too,
+//                                          models serviceOf) → 'seedvis-dev' open / 'seedvis' locked.
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
 //                                          (SELECTABLE_PROVIDERS: the open list, deprecated).
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice

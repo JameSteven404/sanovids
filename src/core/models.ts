@@ -232,9 +232,17 @@ export function specOf(id: string | null | undefined): ModelSpec {
   return isCatalogued(id) ? CATALOGUE[id] : CATALOGUE.seedance_2_5
 }
 
-/** The service of a model id (= specOf(id).service: an unknown id counts as canvasapp's Seedance 2.5). */
+/** Prefix of every seedvis route id, a newer build's included (design B: the id carries its service). */
+const SEEDVIS_ID_PREFIX = 'seedvis/'
+
+/**
+ * The service of a model id: its route's; an id this build has no route for by its prefix — a newer build's
+ * 'seedvis/…' route is seedvis's (its wallet and limits, never canvasapp's) — anything else canvasapp's. Unlike
+ * specOf, whose fallback spec stays canvasapp's Seedance 2.5 for every unknown id.
+ */
 export function serviceOf(id: string | null | undefined): ServiceId {
-  return specOf(id).service
+  if (isCatalogued(id)) return CATALOGUE[id].service
+  return typeof id === 'string' && id.startsWith(SEEDVIS_ID_PREFIX) ? 'seedvis' : 'canvasapp'
 }
 
 /**

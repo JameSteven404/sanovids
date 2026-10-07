@@ -423,10 +423,10 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
   const notes: string[] = []
   const sendsImages = usesRefs(scene.settings)
   const assetMap = new Map(project.assets.map((a) => [a.id, a]))
-  // "Seedance 2.5 · seedvis" where the family name alone is ambiguous; the mode by its name, never "FIRST"
+  // "Seedance 2.5 · seedvis" where the family name alone is ambiguous; the mode by its name, never "FIRST" — quoted in
+  // every "Chế độ …" message, as the inspector writes it (Veo's names are long: "Ảnh tham chiếu → Video (1–3 ảnh)")
   const model = modelLabel(spec.id, { withService: true })
-  const modeName = modeLabel(scene.settings.mode, scene.settings.model)
-  const mode = `“${modeName}”`
+  const mode = `“${modeLabel(scene.settings.mode, scene.settings.model)}”`
 
   // Images
   const allSlots = imageSlots(project, scene)
@@ -438,7 +438,7 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
     const a = assetMap.get(id)
     if (a && !a.imageIds.length) warnings.push(`“${a.name}” chưa có ảnh nên không được gửi.`)
   }
-  if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push(`Chế độ ${modeName} cần ít nhất 1 ảnh tham chiếu.`)
+  if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push(`Chế độ ${mode} cần ít nhất 1 ảnh tham chiếu.`)
   if (!sendsImages && scene.refs.length) notes.push(`Chế độ ${mode} của ${model} không gửi ảnh tham chiếu.`)
   // seedvis notes (never blocking): what the service does not promise about the pictures it receives
   if (sendsImages && images.length) {
@@ -448,8 +448,8 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
   }
 
   const frames = frameSlots(spec, scene.settings.mode)
-  if (frames.last && (!scene.firstFrame || !scene.lastFrame)) warnings.push(`Chế độ ${modeName} cần đủ Khung đầu và Khung cuối.`)
-  else if (frames.first && !scene.firstFrame) warnings.push(`Chế độ ${modeName} cần Khung đầu.`)
+  if (frames.last && (!scene.firstFrame || !scene.lastFrame)) warnings.push(`Chế độ ${mode} cần đủ Khung đầu và Khung cuối.`)
+  else if (frames.first && !scene.firstFrame) warnings.push(`Chế độ ${mode} cần Khung đầu.`)
 
   // Legacy @Tag mentions -> @image_N
   const unknown = new Set<string>()
