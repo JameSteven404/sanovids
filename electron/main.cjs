@@ -920,7 +920,8 @@ async function storeCanvasappKeepPrefs(keepLogin) {
 function startCanvasappKeepLogin() {
   canvasappKeepPrefs = readCanvasappKeepPrefs()
   const asyncSafeStorage = {
-    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable() && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
+    // the async encryptor (initialized lazily on its first use); Linux's plain-text backend counts as unavailable
+    isEncryptionAvailable: async () => (await safeStorage.isAsyncEncryptionAvailable()) && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
     encryptStringAsync: (text) => safeStorage.encryptStringAsync(text),
     decryptStringAsync: (bytes) => safeStorage.decryptStringAsync(bytes),
   }

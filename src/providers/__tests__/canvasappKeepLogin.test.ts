@@ -813,6 +813,20 @@ describe('keep-login: saving', () => {
     expect(u.keep.state().available).toBe(false)
   })
 
+  it('the availability check may answer asynchronously (Electron’s async encryptor): false → nothing kept, true → kept', async () => {
+    const w = world()
+    const c = w.crypto as unknown as { isEncryptionAvailable: () => Promise<boolean> }
+    c.isEncryptionAvailable = async () => false
+    expect(await loggedIn(w)).toEqual({ kept: false })
+    expect(w.fsp.files.has(FILE)).toBe(false)
+    c.isEncryptionAvailable = async () => true
+    w.put(ck({ value: 'v2' }))
+    w.timers.fire()
+    await tick()
+    expect(w.copy()!.cookies.find((e) => e.name === 'sid')!.value).toBe('v2')
+    expect(w.keep.state().available).toBe(true)
+  })
+
   it('a failed encryption or write is swallowed (no throw out of the listener) and the next change retries', async () => {
     const w = world()
     w.crypto.st.encryptThrows = true
@@ -1095,7 +1109,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     const cryptoObj = start.slice(start.indexOf('const asyncSafeStorage = {'), blockAt(start, start.indexOf('const asyncSafeStorage = {'))[1])
     expect(count(mainCode, 'safeStorage')).toBe(count(cryptoObj, 'safeStorage') + 1)
     expect(mainCode).toMatch(/const \{ app, BrowserWindow, Menu, dialog, ipcMain, protocol, safeStorage, session, shell \} = require\('electron'\)/)
-    for (const line of cryptoObj.split('\n').filter((l) => l.includes('safeStorage'))) expect(line).toMatch(/=> safeStorage\./)
+    // only inside arrow functions (called later by the keep-login object, never at start)
+    for (const line of cryptoObj.split('\n').filter((l) => l.includes('safeStorage'))) expect(line).toMatch(/^\s+\w+: (async )?\([^)]*\) => /)
+    expect(cryptoObj).toContain('await safeStorage.isAsyncEncryptionAvailable()')
     expect(mainCode).not.toMatch(/encryptString\(|decryptString\(|setUsePlainTextEncryption/)
     expect(cryptoObj).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'")
     expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, appPlacement().kind)')

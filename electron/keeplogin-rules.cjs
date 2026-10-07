@@ -271,7 +271,8 @@ function keepLoginPayload({ enabled, available, chosen }) {
 /**
  * deps: {
  *   cookies   Session.cookies of the canvasapp partition (get, set, flushStore),
- *   crypto    safeStorage-like: isEncryptionAvailable(), encryptStringAsync(text) → bytes, decryptStringAsync(bytes) → { result, shouldReEncrypt },
+ *   crypto    safeStorage-like: isEncryptionAvailable() → boolean | Promise<boolean>, encryptStringAsync(text) → bytes,
+ *             decryptStringAsync(bytes) → { result, shouldReEncrypt },
  *   fsp       fs.promises-like: readFile, writeFile, rm,   rename (from, to) (default fsp.rename),
  *   file      absolute path of the copy (userData/canvasapp-login.bin),
  *   host, origin, now, sleep(ms), setTimer(fn, ms), clearTimer(t),
@@ -300,10 +301,11 @@ function createCanvasappKeepLogin(deps) {
   const run = (fn) => (chain = chain.then(() => fn()).catch(() => undefined))
   /** A chain step, waited for at most capMs (false when it did not finish in time). */
   const capped = (p) => Promise.race([p, sleep(capMs).then(() => false)])
-  const encryption = () => {
+  /** Can this computer encrypt? (crypto.isEncryptionAvailable may answer a boolean or a promise of one.) */
+  const encryption = async () => {
     let ok = false
     try {
-      ok = crypto.isEncryptionAvailable() === true
+      ok = (await crypto.isEncryptionAvailable()) === true
     } catch {
       ok = false
     }
@@ -366,7 +368,7 @@ function createCanvasappKeepLogin(deps) {
       if (!writable(at)) return
       const snap = loginSnapshot(list, host, now())
       const key = loginSnapshotKey(snap)
-      if (!snap || !encryption()) {
+      if (!snap || !(await encryption())) {
         if (fileKey !== '') await dropFile()
       } else if (key !== fileKey) {
         let bytes
@@ -398,7 +400,7 @@ function createCanvasappKeepLogin(deps) {
       fileKey = '' // no copy: safeStorage is never touched (no DPAPI / Keychain for users who never log in)
       return 0
     }
-    if (!enabled || !bytes || bytes.length === 0 || bytes.length > KEEP_LOGIN_MAX_FILE_BYTES || !encryption()) {
+    if (!enabled || !bytes || bytes.length === 0 || bytes.length > KEEP_LOGIN_MAX_FILE_BYTES || !(await encryption())) {
       await dropFile()
       return 0
     }
