@@ -58,6 +58,7 @@ import {
   isResultTooSlow,
   isSubmitCancelled,
   isSubmitDeferred,
+  isSubmitHeldBack,
   isSubmitUncertain,
   providerOf,
   type JobFrame,
@@ -254,6 +255,12 @@ export const DEV_UNKNOWN_SUBMIT_ERROR =
 /** UNKNOWN_SUBMIT_ERROR in the words of the take's provider ('dev': the Bảng phát triển, not canvasapp.io.vn). */
 export const unknownSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR)
 const isUnknownSubmitError = (error: string) => error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR
+/**
+ * "Chạy lại" of an "unknown" take that the provider held back (isSubmitHeldBack: its earlier request may still be on
+ * its way, or its job could not be looked for — nothing sent this time): still "unknown", plus the provider's reason
+ * and when to try again (`why`), so the retry never looks like it failed for nothing.
+ */
+export const heldBackSubmitError = (pid: ProviderId, why: string): string => `${unknownSubmitError(pid)} ${why}`.trim()
 
 /**
  * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
@@ -835,15 +842,18 @@ function patchTake(id: string, patch: Partial<Take>) {
   useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? { ...t, ...patch } : t)) }))
 }
 
-/** Mark a running take failed, refunding demo credits when they were charged. */
-function failTake(id: string, error: string, progress?: number) {
+/**
+ * Mark a running take failed, refunding demo credits when they were charged. `unknown`: whether its submit may have
+ * been billed although no job id came back (submitUnknown) — by default, when the error is the "unknown" text.
+ */
+function failTake(id: string, error: string, progress?: number, unknown = isUnknownSubmitError(error)) {
   const t = findTake(id)
   if (!t || t.status !== 'processing') return
   const refund = isCharged(t) ? t.cost : 0
   useRuns.setState((s) => ({
     takes: s.takes.map((x) =>
       x.id === id
-        ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress, ...(isUnknownSubmitError(error) ? { submitUnknown: true } : {}) }
+        ? { ...x, status: 'failed', finishedAt: Date.now(), error, progress: progress ?? x.progress, ...(unknown ? { submitUnknown: true } : {}) }
         : x,
     ),
     credits: s.credits + refund,
@@ -1067,6 +1077,7 @@ async function submitTake(id: string) {
       }
       return
     }
+    if (isSubmitHeldBack(e)) return failTake(id, heldBackSubmitError(pid, errorText(e)), undefined, true)
     if (isSubmitUncertain(e)) return failTake(id, unknownSubmitError(pid))
     failTake(id, errorText(e))
     const code = (e as { code?: unknown })?.code

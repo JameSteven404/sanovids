@@ -22,6 +22,7 @@ import { memoryStorage } from '../canvasapp/adapter'
 import { CanvasappError, createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
 import { bridgeCanvas, canvasNodeId, clientRequestIdFor, isUuid, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
 import { createDesktopTransport, openCheckout, type BridgeDownloadOpen } from '../canvasapp/transport'
+import { createdSkewOf, NAIVE_CREATED_SKEW_MS, wallText } from '../canvasapp/siteJobs'
 import {
   answerDevCheckout,
   answerDevLogin,
@@ -31,6 +32,7 @@ import {
   createDevBridge,
   createDevCanvasapp,
   DEV_CHECKOUT_ORIGIN,
+  DEV_CONFIG_DEFAULT,
   DEV_ENDPOINTS,
   DEV_FAULT_PRESETS,
   DEV_LOG_MAX,
@@ -471,6 +473,20 @@ describe('dev server: "Tạo job như trên trang canvasapp" (a job SanoVids did
     expect(origins).toEqual({ [job.job_id]: 'site', [mine]: 'app' })
   })
 
+  it('“Giờ … không có múi giờ” (naiveTimes): the job list prints created_at / finished_at as naive UTC — the ±27 h branch, “(giờ canvasapp)”', async () => {
+    const s = setup({ naiveTimes: true })
+    const { projectId } = await prepared(s)
+    s.server.createSiteJob({ nodeId: canvasNodeId('s1') })
+    const [listed] = await s.api.listVideoJobs(projectId)
+    expect(listed.created_at).toBe(`${new Date(s.clock.t).toISOString().slice(0, 23)}000`)
+    expect(createdSkewOf(listed.created_at)).toBe(NAIVE_CREATED_SKEW_MS)
+    expect(wallText(listed.created_at)).toBe(`${new Date(s.clock.t).toISOString().slice(11, 16)} ${new Date(s.clock.t).toISOString().slice(8, 10)}/${new Date(s.clock.t).toISOString().slice(5, 7)}`)
+    // off (the default): ISO with 'Z'
+    s.server.setConfig({ naiveTimes: false })
+    expect((await s.api.listVideoJobs(projectId))[0].created_at).toBe(new Date(s.clock.t).toISOString())
+    expect(DEV_CONFIG_DEFAULT.naiveTimes).toBe(false)
+  })
+
   it('an edit made on the page first: saved canvas still valid, the job uses it; refusals bill nothing', async () => {
     const s = setup()
     const { projectId } = await prepared(s)
@@ -779,6 +795,38 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     s.clock.t = sent + 2_100 // 0.6 s after it arrived, but 2.1 s after it was sent: read again
     await api.listVideoJobs(projectId)
     expect(reads()).toBe(before + 2)
+  })
+})
+
+describe('dev bridge: logout and the job-list cache', () => {
+  it('a job-list read in flight across a logout is never kept (like main.cjs drop()): the next read says login-required', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    const real = s.server
+    let release = () => undefined as void
+    let hold = true
+    const held = {
+      ...real,
+      request: async (r: TransportRequest) => {
+        if (hold && r.method === 'GET' && r.path.startsWith('/api/video-jobs?')) {
+          hold = false
+          const res = await real.request(r) // answered while still logged in…
+          await new Promise<void>((resolve) => (release = resolve)) // …and handed back only after the logout
+          return res
+        }
+        return real.request(r)
+      },
+    }
+    const bridge = createDevBridge(() => held, { now: () => s.clock.t, jobListCacheMs: 2_000 })
+    const api = createCanvasappApi(createDesktopTransport(() => bridge))
+    const poll = api.listVideoJobs(projectId)
+    await until(() => !hold)
+    await bridge.logout()
+    release()
+    expect(await poll).toEqual([]) // the read that started before the logout gets its answer…
+    s.advance(500)
+    // …but it is not served again: the logged-out account's next read is asked anew (401)
+    await expect(api.listVideoJobs(projectId)).rejects.toMatchObject({ code: 'login-required' })
   })
 })
 

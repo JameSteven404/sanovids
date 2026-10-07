@@ -23,7 +23,7 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { cancelTake, createSceneFromTake } from '../../actions'
+import { cancelTake, createSceneFromTake, deleteSelection, deleteTakes } from '../../actions'
 import { importSiteJobs, scanForImport } from '../../siteJobActions'
 import { importWords } from '../../components/runs/importJobsModel'
 import { takeCostLine } from '../../components/runs/creditText'
@@ -513,6 +513,29 @@ describe('dev mode e2e: “Huỷ” of a take whose video is already made (paid)
       text: expect.stringContaining('video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển'),
     })
     expect(events.filter((e) => e.type === 'failed')).toEqual([])
+  })
+
+  it('MONEY: deleting it (trash button after its two clicks, Delete key) asks the same first: “no” keeps it downloading', async () => {
+    server.login()
+    videoSize = 300 * 1024
+    server.addFault({ ...DEV_FAULT_PRESETS.find((p) => p.id === 'stream-slow')!.rule, sticky: true })
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('window', { confirm })
+    const [a] = enqueue('s1')
+    await run(10_200)
+    expect(useTakeTransfers.getState().byTake[a.id]).toBeDefined()
+    // the take node / Xem take trash button (already clicked twice)
+    expect(deleteTakes([a.id], { confirm: 'usedOnly' })).toBeNull()
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(String((confirm.mock.calls[0] as unknown[])[0])).toContain('video đã tạo xong trên canvasapp giả lập và đã trừ credit dev')
+    // the Delete key on the selected take node
+    useUI.getState().select([a.id])
+    deleteSelection()
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(String((confirm.mock.calls[1] as unknown[])[0])).toContain('SanoVids chưa tải về xong')
+    expect(take(a.id).status).toBe('processing')
+    await run(20_000)
+    expect(take(a.id).status).toBe('completed') // kept: the paid video came in full
   })
 
   it('a take whose job still runs (or waits in the queue) is cancelled without a question', async () => {

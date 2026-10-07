@@ -44,7 +44,7 @@ import type { LockManagerLike } from '../../store/engineLock'
 import { undo, useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { takeCostLine } from '../../components/runs/creditText'
-import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
+import { heldBackSubmitError, isUncertainSubmit, MAX_REMOTE_CONCURRENCY, onRunEvent, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns, type RunEvent } from '../../store/runs'
 import mainSource from '../../../electron/main.cjs?raw'
 import { createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
 import {
@@ -55,6 +55,7 @@ import {
   memoryStorage,
   PROFILES_TTL_MS,
   STATE_KEY,
+  STILL_SENDING_TEXT,
   type KeyValueStorage,
 } from '../canvasapp/adapter'
 import { canvasNodeId, clientRequestIdFor, sceneNodeId } from '../canvasapp/mapping'
@@ -1087,9 +1088,12 @@ describe('gateway e2e: app restart', () => {
       expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
       expect(fake.state.jobs).toHaveLength(0)
       // an explicit retry right away: main may still be sending the request of the closed page — not posted again yet
+      // — and the take says so (wait, try again later), still "unknown"
       useRuns.getState().retry(t.id)
       await run(1_000)
-      expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+      expect(take(t.id)).toMatchObject({ status: 'failed', error: heldBackSubmitError('canvasapp', STILL_SENDING_TEXT), remoteId: null, submitUnknown: true })
+      expect(take(t.id).error).toContain('Thử lại sau vài phút')
+      expect(isUncertainSubmit(take(t.id))).toBe(true)
       expect(fake.count('POST', '/api/video-jobs')).toBe(1)
       // ...once that request is surely over: same key, one job
       await run(5 * 60_000)
@@ -2203,7 +2207,7 @@ describe('gateway e2e: "Nhập job" — jobs made on canvasapp’s own page beco
     const site = fake.siteJob(nodeOf('s1'))
     const scan = await scanForImport()
     expect(scan.scan.candidates).toEqual([])
-    expect(scan.scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 's1', code: 'maybe-pending', pendingTakeId: a.id })
+    expect(scan.scan.skipped).toContainEqual({ jobId: site.job_id, sceneId: 's1', code: 'maybe-pending', pendingTakeId: a.id, windowHours: 14 })
     await run(40_000) // its lookups see two jobs it could own → "không rõ", nothing guessed
     expect(take(a.id)).toMatchObject({ status: 'failed', submitUnknown: true })
     expect((await scanForImport()).scan.candidates).toEqual([])

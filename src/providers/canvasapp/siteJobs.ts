@@ -61,6 +61,36 @@ export function inPostWindow(createdAt: unknown, at: number): boolean | null {
 }
 /** A finished job canvasapp does not let download (download_available false) this long: not offered any more. */
 export const NO_DOWNLOAD_AFTER_MS = 60 * 60_000
+/** A time canvasapp lists (created_at / finished_at) as a real instant: a number, or a string with its time zone. */
+export function zonedTime(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v !== 'string' || !ZONED_RE.test(v.trim())) return null
+  const t = Date.parse(v)
+  return Number.isFinite(t) ? t : null
+}
+const WALL_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/
+/**
+ * "HH:MM DD/MM" exactly as a time WITHOUT a time zone is written (canvasapp's own clock, whatever zone that is), null
+ * for anything else. Such a time is never converted: Date.parse would read it in this computer's zone.
+ */
+export function wallText(v: unknown): string | null {
+  if (typeof v !== 'string' || zonedTime(v) !== null) return null
+  const m = WALL_RE.exec(v.trim())
+  return m ? `${m[4]}:${m[5]} ${m[3]}/${m[2]}` : null
+}
+/**
+ * A finished job canvasapp does not let download (download_available false): still offered? Its finished_at as a real
+ * instant (zonedTime): while younger than NO_DOWNLOAD_AFTER_MS. Without a time zone it is read in this computer's zone
+ * and may be off by up to NAIVE_CREATED_SKEW_MS: surely older than that hour → no; otherwise for NO_DOWNLOAD_AFTER_MS
+ * from when this computer first saw it so (`firstSeen`, the adapter's memory). No finished_at → no.
+ */
+export function mayStillDownload(finishedAt: unknown, now: number, firstSeen: number | undefined): boolean {
+  const zoned = zonedTime(finishedAt)
+  if (zoned !== null) return now - zoned < NO_DOWNLOAD_AFTER_MS
+  const t = createdTime(finishedAt)
+  if (!Number.isFinite(t) || now - t >= NO_DOWNLOAD_AFTER_MS + NAIVE_CREATED_SKEW_MS) return false
+  return firstSeen !== undefined && now - firstSeen < NO_DOWNLOAD_AFTER_MS
+}
 /** canvasapp's own prompt limit (20.000): a longer /prompt answer is not trusted (unknown). */
 export const MAX_IMPORT_PROMPT = 20_000
 /** Ids that go into request paths (electron/main.cjs CANVASAPP_ID, api.ts safeId). */
@@ -105,6 +135,8 @@ export interface SiteJobContext {
   takeIds: ReadonlySet<string>
   ledger: SiteJobLedger
   now: number
+  /** job id → when this computer first listed it finished but not downloadable (mayStillDownload). */
+  firstSeen?: ReadonlyMap<string, number>
 }
 
 /** The bridge node as it was (likely) when the job was made: from the saved canvas or SanoVids' own entry. */
@@ -134,7 +166,10 @@ export interface SiteJobCandidate {
   jobName: string | null
   state: 'queued' | 'processing' | 'completed'
   progress: number | null
+  /** created_at as a real instant (zonedTime); null when canvasapp did not say, or wrote no time zone. */
   createdAt: number | null
+  /** ...a created_at without a time zone as canvasapp wrote it ("14:32 06/10", its own clock — wallText). */
+  createdWall: string | null
   model: ModelId
   duration: number | null
   ratio: string | null
@@ -150,6 +185,12 @@ export interface SiteJobSkipped {
   code: SiteJobSkip
   /** 'maybe-pending': the take whose unanswered POST may have made it. */
   pendingTakeId?: string
+  /**
+   * 'maybe-pending', matched by node and time (no client_request_id in the list) with a readable created_at: how many
+   * hours around that POST a job is held for it (createdSkewOf: 14 with a time zone, 27 without). Absent = held
+   * whenever it was made (its key in the list, or no creation time).
+   */
+  windowHours?: number
 }
 
 export interface SiteJobScan {
@@ -169,6 +210,7 @@ export interface SiteTakeDraft {
   sceneId: string
   job: CanvasJob
   jobName: string | null
+  /** A real instant only (SiteJobCandidate.createdAt): null → the take is stamped with the import time. */
   createdAt: number | null
   /** 1–99 (a finished job shows 99 until its video is downloaded). */
   progress: number
@@ -264,7 +306,8 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     const jobId = typeof job.job_id === 'string' ? job.job_id : ''
     const nodeId = typeof job.canvas_node_id === 'string' ? job.canvas_node_id : null
     const sceneId = nodeId ? (ctx.sceneByNode.get(nodeId) ?? null) : null
-    const skip = (code: SiteJobSkip, pendingTakeId?: string) => skipped.push({ jobId, sceneId, code, ...(pendingTakeId ? { pendingTakeId } : {}) })
+    const skip = (code: SiteJobSkip, pendingTakeId?: string, windowHours?: number) =>
+      skipped.push({ jobId, sceneId, code, ...(pendingTakeId ? { pendingTakeId } : {}), ...(windowHours !== undefined ? { windowHours } : {}) })
     if (!JOB_ID_RE.test(jobId) || seen.has(jobId)) {
       skip('bad-id')
       continue
@@ -276,16 +319,16 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     else if (made.has(jobId)) skip('sanovids')
     else {
       const pending = pendingOwnerOf(job, ctx.ledger, ctx.projectId, listHasKeys)
-      if (pending) skip('maybe-pending', pending)
+      if (pending) skip('maybe-pending', pending, listHasKeys || !Number.isFinite(createdTime(job.created_at)) ? undefined : Math.round(createdSkewOf(job.created_at) / 3600_000))
       else if (listHasKeys && typeof job.client_request_id === 'string' && ownKeys.has(job.client_request_id)) skip('sanovids')
       else if (!nodeId || !sceneId) skip('no-scene')
       else if (ENDED.has(String(job.status))) skip('ended')
-      else if (job.status === 'completed' && job.download_available === false && !(ctx.now - createdTime(job.finished_at) < NO_DOWNLOAD_AFTER_MS)) skip('no-download')
+      else if (job.status === 'completed' && job.download_available === false && !mayStillDownload(job.finished_at, ctx.now, ctx.firstSeen?.get(jobId))) skip('no-download')
       else {
         const model = modelOfProfile(job.model_profile)
         if (!model) skip('unsupported-model')
         else {
-          const t = createdTime(job.created_at)
+          const at = zonedTime(job.created_at)
           const p = typeof job.progress === 'number' && Number.isFinite(job.progress) ? job.progress : null
           const duration = Number(job.duration)
           candidates.push({
@@ -297,7 +340,8 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
             jobName: typeof job.job_name === 'string' ? job.job_name.slice(0, 200) : null,
             state: job.status === 'completed' ? 'completed' : job.status === 'queued' ? 'queued' : 'processing',
             progress: p,
-            createdAt: Number.isFinite(t) ? t : null,
+            createdAt: at,
+            createdWall: at === null ? wallText(job.created_at) : null,
             model,
             duration: job.duration !== undefined && job.duration !== null && Number.isFinite(duration) ? duration : null,
             ratio: typeof job.aspect_ratio === 'string' ? job.aspect_ratio : null,
@@ -309,7 +353,12 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     }
   }
   const order = (c: SiteJobCandidate) => ctx.sceneOrder.get(c.sceneId) ?? Number.MAX_SAFE_INTEGER
-  candidates.sort((a, b) => order(a) - order(b) || (a.createdAt ?? Infinity) - (b.createdAt ?? Infinity) || (a.jobId < b.jobId ? -1 : 1))
+  // by creation as the list writes it (one format for all its jobs: the order holds without a time zone too)
+  const madeAt = (c: SiteJobCandidate) => {
+    const t = createdTime(c.job.created_at)
+    return Number.isFinite(t) ? t : Infinity
+  }
+  candidates.sort((a, b) => order(a) - order(b) || madeAt(a) - madeAt(b) || (a.jobId < b.jobId ? -1 : 1))
   return { listHasKeys, candidates, skipped }
 }
 

@@ -91,6 +91,12 @@ export interface DevConfig {
   dedupe: boolean
   /** Job list items carry client_request_id (unknown on the live site: off by default). */
   exposeKey: boolean
+  /**
+   * Job list times (created_at, finished_at) WITHOUT a time zone, the way a FastAPI naive UTC datetime prints
+   * ("2026-10-07T12:00:00.123000"): unknown on the live site (VERIFY), off by default. On: the lost-answer lookup and
+   * "Nhập job" take their ±27 h branch (siteJobs.createdSkewOf), the dialog shows "(giờ canvasapp)".
+   */
+  naiveTimes: boolean
   /** HTTP status of "not enough credits". */
   insufficientStatus: 400 | 402
   /** Latency added to every request (ms). */
@@ -110,6 +116,7 @@ export const DEV_CONFIG_DEFAULT: DevConfig = {
   topupEnabled: true,
   dedupe: true,
   exposeKey: false,
+  naiveTimes: false,
   insufficientStatus: 402,
   latencyMs: 150,
   failRate: 0,
@@ -691,6 +698,8 @@ export function imageIdFromUploadFilename(filename: string): string | null {
 // ---------------------------------------------------------------------------------------------
 
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString())
+/** A UTC time with no time zone, microseconds like Python prints them (DevConfig.naiveTimes). */
+const naiveUtc = (ms: number | null) => (ms === null ? null : `${new Date(ms).toISOString().slice(0, 23)}000`)
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n))
 const json = (body: unknown, status = 200): BridgeResponse => ({ ok: true, status, contentType: 'application/json', json: body })
 const detail = (status: number, text: unknown): BridgeResponse => json({ detail: text }, status)
@@ -721,6 +730,7 @@ function mergeConfig(raw: unknown): DevConfig {
     topupEnabled: typeof c.topupEnabled === 'boolean' ? c.topupEnabled : d.topupEnabled,
     dedupe: typeof c.dedupe === 'boolean' ? c.dedupe : d.dedupe,
     exposeKey: typeof c.exposeKey === 'boolean' ? c.exposeKey : d.exposeKey,
+    naiveTimes: typeof c.naiveTimes === 'boolean' ? c.naiveTimes : d.naiveTimes,
     insufficientStatus: c.insufficientStatus === 400 ? 400 : 402,
     latencyMs: num(c.latencyMs, d.latencyMs, 0, 60_000),
     failRate: num(c.failRate, d.failRate, 0, 1),
@@ -1231,8 +1241,8 @@ export function createDevCanvasapp(deps: DevCanvasappDeps = {}): DevCanvasapp {
       error_message: j.error_message,
       duration: j.duration,
       aspect_ratio: j.aspect_ratio,
-      created_at: iso(j.created_at),
-      finished_at: iso(j.finished_at),
+      created_at: config.naiveTimes ? naiveUtc(j.created_at) : iso(j.created_at),
+      finished_at: config.naiveTimes ? naiveUtc(j.finished_at) : iso(j.finished_at),
       creation_mode: 'canvas',
       ...(config.exposeKey ? { client_request_id: j.client_request_id } : {}),
     }

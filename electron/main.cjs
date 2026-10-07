@@ -1181,12 +1181,15 @@ async function canvasappRequest(req) {
       // canvasapp did not answer, never "not sent yet".
       timer = setTimeout(() => controller.abort(), 60_000)
       sentAt = Date.now() // a cached job list is timed from here (what canvasapp can have listed), not its arrival
+      // Never a redirect: session.fetch would follow one to http too (the CSRF token, the body and non-Secure cookies
+      // sent in clear) and its Response cannot say where it ended. canvasapp's API routes do not redirect; one that
+      // does fails as a network error ('network' — for a job POST: "may exist", looked for, never "not billed").
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
         body,
         credentials: 'include',
-        redirect: 'follow',
+        redirect: 'error',
         signal: controller.signal,
         bypassCustomProtocolHandlers: true,
       })
@@ -1208,7 +1211,15 @@ async function canvasappRequest(req) {
     return result
   } catch (e) {
     const aborted = e && e.name === 'AbortError'
-    return gatewayError('network', aborted ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
+    const message = String((e && e.message) || e)
+    return gatewayError(
+      'network',
+      aborted
+        ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).'
+        : /redirect/i.test(message)
+          ? 'canvasapp.io.vn chuyển hướng yêu cầu sang địa chỉ khác — SanoVids không theo chuyển hướng ở API (thử lại sau).'
+          : `Không kết nối được tới canvasapp.io.vn (${message}).`,
+    )
   } finally {
     if (timer) clearTimeout(timer)
     if (createsJob) canvasappJobListCache.drop()

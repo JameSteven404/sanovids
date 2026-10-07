@@ -134,6 +134,14 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
   const logging = opts.log !== false
   const listCache = new Map<string, { at: number; result: BridgeResponse }>()
   let jobsEpoch = 0
+  /**
+   * A job POST starts / ends, a logout, a reset: forget every kept answer AND any read still on its way (main.cjs
+   * canvasappJobListCache.drop()) — a read that started before is never kept.
+   */
+  const dropListCache = () => {
+    jobsEpoch++
+    listCache.clear()
+  }
   let loginInFlight: Promise<BridgeStatus> | null = null
   const downloadLane = createDevLane(2)
   const downloadPaths = new Map<string, string>()
@@ -232,10 +240,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
       }
     }
     const createsJob = method === 'POST' && match.pathname === '/api/video-jobs'
-    if (createsJob) {
-      jobsEpoch++
-      listCache.clear()
-    }
+    if (createsJob) dropListCache()
     const epoch = jobsEpoch
     try {
       // timed from here (what the simulated site can have listed), never from the answer's arrival (main.cjs the same)
@@ -247,10 +252,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     } catch (e) {
       return gatewayError('network', `Không kết nối được tới canvasapp giả lập (${e instanceof Error ? e.message : String(e)}).`)
     } finally {
-      if (createsJob) {
-        jobsEpoch++
-        listCache.clear()
-      }
+      if (createsJob) dropListCache()
     }
   }
 
@@ -335,15 +337,14 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     downloadPaths.clear()
     closeDevPrompts()
     server().logout()
-    listCache.clear()
+    dropListCache()
     return { ok: true }
   }
 
   function reset(): void {
     downloads.closeAll()
     downloadPaths.clear()
-    listCache.clear()
-    jobsEpoch++ // a job-list read in flight across the reset is not cached
+    dropListCache()
   }
 
   async function checkout(args: CheckoutArgs): Promise<BridgeCheckoutResponse> {

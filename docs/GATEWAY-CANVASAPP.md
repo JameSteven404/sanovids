@@ -54,7 +54,8 @@ Dùng nó như bản tập dượt của mọi luồng trong tài liệu này: *
  │   • allowlist method + path (+ query project_id), id chỉ gồm [A-Za-z0-9_-]                     │
  │   • thêm X-CSRF-Token từ cookie canvas_csrf; JSON ≤ 2 MB, ảnh ≤ 20 MB (multipart tự dựng)       │
  │   • 2 request API + 2 lượt tải video song song (hai làn riêng); /api/video-jobs cache 15 s      │
- │   • API: session.fromPartition('persist:canvasapp').fetch(…)  (Electron 44: Session.fetch)      │
+ │   • API: session.fromPartition('persist:canvasapp').fetch(…, redirect 'error': không theo       │
+ │     chuyển hướng nào — https → http cũng không)                                                │
  │   • video: net.request (<canvasapp-net-get>), chỉ theo chuyển hướng https                       │
  │   • cửa sổ đăng nhập = trang thật https://canvasapp.io.vn/ trong cùng phân vùng                 │
  └───────────────────────────────────────────────│──────────────────────────────────────────────┘
@@ -179,11 +180,12 @@ app đóng giữa chừng thì nhiều nhất một take ở trạng thái "khô
    3.2; không đủ chỗ cạnh các cảnh đang chạy → về hàng đợi, xét ngay trước bước 3). Lỗi ở bước này luôn
    ghi "Lưu canvas cầu nối … không thành công — chưa gửi yêu cầu tạo video, không bị trừ credit.";
 5. đọc danh sách job **ngay trước** `POST` (`GET /api/video-jobs?project_id=`; một lần đọc mà cổng sẽ trả từ cache của
-   nó — chưa quá 15 s, chưa có `POST` nào sau đó — thì dùng luôn): mọi job có trong lần đọc đó trên node (của take khác,
+   nó — **gửi** chưa quá 15 s, như cache của cổng tính từ lúc gửi, kể cả khi câu trả lời về chậm; chưa có `POST` nào sau
+   đó — thì dùng luôn): mọi job có trong lần đọc đó trên node (của take khác,
    hoặc job người dùng tạo trên trang canvasapp mà chưa nhập) vào `before` của lần gửi, không bao giờ bị nhận nhầm là
    job của nó. Đọc không được → vẫn gửi với lần đọc trước đó (trừ khi cạnh một take còn chưa rõ, xem dưới). Job tạo trên
-   trang **sau** lần đọc mà `before` lấy từ đó (≤ 15 s trước khi đọc vì cache, hoặc từ lần đọc được gần nhất) thì không có
-   trong `before`: nếu câu trả lời của lần gửi này bị mất, take nhận job đó khi `POST` không tới canvasapp (video của job
+   trang **sau** lần đọc mà `before` lấy từ đó (≤ 15 s trước khi gửi lần đọc đó vì cache — tức ≤ 30 s trước `POST` —,
+   hoặc từ lần đọc được gần nhất) thì không có trong `before`: nếu câu trả lời của lần gửi này bị mất, take nhận job đó khi `POST` không tới canvasapp (video của job
    đó, không trừ tiền lần hai — và job đó không còn nhập được), hoặc "không rõ" mãi khi `POST` đã tới (cả hai job đều có
    thể là của nó) — xem §4 "Nhập job" bước 4;
 6. ghi trước "đã gửi" (`sent[take.id]`, localStorage `bdp:canvasapp:jobs`) → `POST /api/video-jobs` → `job_id` →
@@ -210,12 +212,17 @@ Sổ `sent` ghi cả `endedAt` = lúc câu trả lời (hoặc lỗi) của `POS
 chờ chỗ), nên coi như `POST` đó kết thúc muộn nhất 5 phút sau `at` (`POST_IN_FLIGHT_MS`). Job của một `POST` (nếu có)
 có trong danh sách chậm nhất `listedBy` = (`endedAt`, hoặc `at` + 5 phút) + 30 s. "Chạy lại" mà lần đọc chưa chắc thấy
 tới mốc đó → **chưa gửi lại** (`STILL_SENDING_TEXT`, vẫn "không rõ"; thử lại sau vài phút), không bao giờ trả hai lần
-vì `POST` cũ còn đang tới canvasapp.
+vì `POST` cũ còn đang tới canvasapp. Lỗi đó (và "không đọc được danh sách để tìm job cũ", `LOOKUP_FAILED_TEXT`) mang cờ
+`heldBack` (`providers/types.isSubmitHeldBack`): engine ghi vào take cả câu "không rõ" lẫn lý do chưa gửi lại
+(`runs.heldBackSubmitError`), nên "Chạy lại" không bao giờ trông như hỏng không lý do; thông báo khi bấm chỉ nói "Đang
+kiểm tra lại … chỉ gửi lại khi chắc chắn chưa có".
 
 Hai take trên **cùng một node** (hai take của một cảnh trong một dự án, hoặc take gửi lại trên node cũ) mà đều chưa rõ
 câu trả lời: job nào cũng có thể là của take kia. Lần đọc danh sách job ngay trước `POST` (bước 5: `before` + `beforeAt`
 trong sổ `sent`) khi đó là **bắt buộc**: đọc không được → **không gửi** (take `failed`, "chưa
-gửi … không bị trừ credit"; take đang gửi lại thì vẫn "có thể đã bị trừ" như trước). Khi tìm job (`findJob`): một take
+gửi … không bị trừ credit"; take đang gửi lại thì vẫn "có thể đã bị trừ" như trước) — trừ khi lần đọc được gần nhất
+(lần `before` sẽ dùng) đã chắc chắn thấy job của take kia, nếu có (tới mốc `listedBy` của nó, `liveRivalsOf`): job đó
+khi ấy nằm trong `before`, nên một take "không rõ" cũ không bao giờ được thử lại (hoặc đã xoá) không chặn cảnh mãi. Khi tìm job (`findJob`): một take
 `POST` **sau** chỉ có thể sở hữu job mà lần đọc ngay trước `POST` của nó chưa thấy; một take `POST` **trước** chỉ có
 thể sở hữu job mà lần đọc trước `POST` của take đang tìm chưa thấy dù lần đọc đó chắc chắn thấy mọi job có từ mốc
 `listedBy` của `POST` kia (30 s — `SETTLE_MS` = tổng hai lần đợi — sau khi câu trả lời của nó về; không rõ lúc về vì
@@ -270,6 +277,9 @@ còn **chờ chỗ**. Trang chỉ gửi một đường dẫn trong allowlist (k
 qua `net.request` (khối `<canvasapp-net-get>`, `redirect: 'manual'`): chuyển hướng chỉ được theo tới **https** — yêu cầu
 tới một địa chỉ http **không bao giờ được gửi** (lỗi `not-allowed`, lần thử sau như mọi lượt tải hỏng). `session.fetch`
 không dùng được cho việc này: nó theo mọi chuyển hướng, kể cả https → http, và câu trả lời không cho biết địa chỉ cuối.
+Vì vậy các lời gọi API (`canvasapp:request`, mang `X-CSRF-Token`, prompt, mã upload, đơn nạp) gửi với `redirect: 'error'`:
+route API của canvasapp không chuyển hướng; nếu có thì lời gọi hỏng như lỗi mạng (`network` — với `POST` tạo job: "có thể
+đã tạo", tìm job trước, không bao giờ coi là "chưa trừ tiền"), không bao giờ gửi lại sang địa chỉ khác.
 **Tải tiếp (Range)**: chỉ khi canvasapp gửi ETag mạnh (hoặc Last-Modified) cho đúng video đó — main giữ nó 10 phút kể từ
 khi kết nối cuối của video đó kết thúc (lượt tải dài hơn 10 phút vẫn tải tiếp được) và gửi `Range: bytes=N-` +
 `If-Range`; trả 206 đúng chỗ **và** mang đúng validator đã gửi → ghép tiếp (206 mang validator khác / không có: máy chủ bỏ
@@ -290,7 +300,9 @@ nhiều video cùng lúc" (16 lượt mở / chờ) → thử lại sau 15 giây
 tải dừng ngay (không tính là hỏng). **Huỷ** khi job đã xong trên canvasapp (đang tải về, hoặc chờ thử tải lại —
 `runs.remoteVideoReady`) → `actions.cancelTake` **hỏi trước**: video đã tạo xong và đã trừ credit, huỷ sẽ bỏ video này
 trong SanoVids (vẫn tải được trên canvasapp.io.vn), chạy lại cảnh sẽ trừ thêm; không đồng ý → tải tiếp như cũ. Thông báo
-sau khi huỷ nói đúng điều đó (không còn "job vẫn chạy ở đó").
+sau khi huỷ nói đúng điều đó (không còn "job vẫn chạy ở đó"). **Xoá** take đó (phím Delete, nút thùng rác của node / Xem
+take kể cả sau hai lần bấm) cũng **hỏi trước** như vậy (`deletePlan.checkTakeDelete` `paidPending`; take nhập thì không
+hỏi: "Nhập job" đưa job về lại được).
 `download-token` **không** dùng: main đã gửi cookie phiên canvasapp với `GET /stream`; token chỉ là phương án dự phòng
 nếu `/stream` không tải trọn được (khi đó: allowlist riêng, che token trong `requestLabel` và nhật ký).
 
@@ -312,12 +324,19 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    /api/video-jobs/{id}/prompt` từng job một, tối đa **20 job** mỗi lần.
 2. Job nhập được = job canvas (`creation_mode` trống / `canvas`), mã job hợp lệ, `canvas_node_id` là node của một cảnh
    trong dự án đang mở (`sceneNodeId`, hoặc node cũ theo id cảnh), chưa kết thúc lỗi / huỷ / hết hạn (job xong mà
-   `download_available: false` quá 1 giờ thì bỏ), model SanoVids có. **Không bao giờ** nhập: job đã là take của dự án;
+   `download_available: false` quá 1 giờ thì bỏ — `finished_at` không có múi giờ thì lệch tới 27 giờ ở máy này: chỉ bỏ khi
+   chắc chắn đã quá, còn lại mời trong 1 giờ kể từ lần quét đầu tiên thấy nó như vậy, `siteJobs.mayStillDownload`), model
+   SanoVids có. `created_at` không có múi giờ **không bao giờ** được đổi như giờ của máy này: hộp Nhập job hiện đúng như
+   canvasapp ghi, kèm "(giờ canvasapp)", và take nhập lấy giờ lúc nhập (`SiteJobCandidate.createdAt` chỉ là thời điểm
+   thật — `zonedTime`; dùng cho giờ tạo của take, Xem take và tên file `{date}` / `{time}`). **Không bao giờ** nhập: job đã là take của dự án;
    job SanoVids tạo (sổ `jobs`, hoặc `client_request_id` của một take khi danh sách có trường này); job mà một lần `POST`
    còn chưa rõ câu trả lời (sổ `sent`) **có thể** đã tạo (`sentMayOwn`: cùng `client_request_id` nếu danh sách có, nếu
    không thì cùng node, không có trong lần đọc trước `POST`, tạo trong khoảng của lần gửi `inPostWindow` (14 giờ trước →
    14 giờ 10 phút sau; `created_at` không có múi giờ: 27 giờ) — take đó phải tự tìm ra job của nó, không bao giờ thành
-   take mới). Sổ được đọc lại từ localStorage mỗi lần dùng và gộp theo từng bản ghi (`ledgerNow`): ở bản web chế độ Phát
+   take mới). Job như vậy bị giữ **không thời hạn** (tới khi take đó tìm ra job của nó — "Chạy lại"); dòng "Không nhập
+   được" nói khoảng giờ đang áp dụng cho từng job (`SiteJobSkipped.windowHours`), không hứa mốc nào; take đó đã xoá thì
+   không bao giờ tìm lại nữa → job đó không nhập được (tải video trên canvasapp.io.vn) — không tự nhả: một take chưa kịp
+   lưu ở tab / cửa sổ khác cũng chưa có trong danh sách take, nhả nhầm thì lần gửi lại của nó có thể trả tiền hai lần. Sổ được đọc lại từ localStorage mỗi lần dùng và gộp theo từng bản ghi (`ledgerNow`): ở bản web chế độ Phát
    triển, một tab khác (dự án khác, hoặc Nhập job) ghi vào cùng sổ không xoá bản ghi của tab này.
 3. Take nhập sinh ra ở trạng thái **`processing` có sẵn `remoteId`** (`useRuns.importTakes`, đồng bộ): engine chỉ theo
    dõi + tải video (poster, tự tải, lưu vào Thư mục như mọi take), **không bao giờ gửi**; không chiếm chỗ trong 10 job
@@ -334,7 +353,8 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    job có từ trước lần `POST` nằm trong `before` (đọc danh sách ngay trước `POST`, bước 5 của "Gửi") nên không bao giờ
    bị nhận là job của nó; job tạo sau khi lần gửi đã quá khoảng `inPostWindow` cũng không (`findJob` dùng đúng khoảng của
    `sentMayOwn`) — vẫn nhập được. Trường hợp còn lại (hiếm): job tạo trên trang cùng node chỉ vài giây trước `POST`
-   (cổng còn trả danh sách từ cache ≤ 15 s) hoặc lúc danh sách không đọc được ngay trước `POST`, rồi câu trả lời bị mất →
+   (cổng còn trả danh sách từ cache: lần đọc gửi ≤ 15 s trước, nên tới 30 s trước `POST`) hoặc lúc danh sách không đọc
+   được ngay trước `POST`, rồi câu trả lời bị mất →
    take có thể "không rõ" (hai job cùng có thể là của nó) hoặc, nếu `POST` không tới canvasapp, nhận job đó. Không bao giờ
    trả tiền hai lần.
 5. Danh sách job **không** cho biết độ phân giải, chế độ (trừ Seedance chỉ có t2v), prompt, ảnh. Prompt lấy từ
@@ -345,7 +365,8 @@ Bảng phát triển — nơi này luôn đọc canvasapp giả lập) đưa cá
    đổi độ phân giải rồi SanoVids ghi đè lại) nên giá trị đoán **không bao giờ** được coi là chắc chắn: chi phí "≈ 20
    credit" (không rõ độ phân giải / thời lượng → "—"); "Khôi phục prompt này" tắt khi không rõ prompt hoặc ảnh tham
    chiếu, và chỉ khôi phục cấu hình chắc chắn — trường đoán / không rõ giữ giá trị của cảnh (thông báo nói rõ "không rõ"
-   hay "chỉ đoán được"); ảnh tham chiếu và chế độ đi cùng nhau (`importedTake.restorePlan`): job gửi ảnh tham chiếu →
+   hay "chỉ đoán được"); model của take không có giá trị đó của cảnh → đặt mặc định của model đó (`restorePlan.defaulted`,
+   thông báo "đặt … mặc định của <model> (…; giá trị của cảnh không có ở model này) — hãy kiểm tra"); ảnh tham chiếu và chế độ đi cùng nhau (`importedTake.restorePlan`): job gửi ảnh tham chiếu →
    khôi phục ảnh đoán theo node **cùng** chế độ cần cho chúng (kể cả chế độ đoán, thông báo ghi "đoán"); job không gửi
    ảnh (MiniMax-H3 Text → Video / Khung đầu → cuối, có thể chỉ đoán) → cảnh giữ ảnh tham chiếu của nó (không bao giờ
    xoá trắng); @video của cảnh luôn giữ (canvasapp không gửi video tham chiếu); khung hình không khôi phục (như mọi
@@ -444,7 +465,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | API nội bộ, có thể đổi bất cứ lúc nào | mọi giả định gom ở `mapping.ts`/`api.ts`, có test; lỗi định dạng → `bad-response` rõ ràng |
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request API + ≤ 2 lượt tải video song song, ≤ 10 job, một lần đọc danh sách job mỗi chu kỳ poll (≥ 15 s) cho mọi job + một lần ngay trước mỗi `POST /api/video-jobs`, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
-| CSRF / Origin | gửi `X-CSRF-Token` từ cookie; **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
+| CSRF / Origin | gửi `X-CSRF-Token` từ cookie (lời gọi API không theo chuyển hướng nào: token không bao giờ đi sang địa chỉ khác, kể cả http); **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
 | Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu); vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; đọc danh sách job ngay trước mỗi `POST` (job đã có trên node — của take khác hay tạo trên trang mà chưa nhập — không bao giờ là job của lần gửi đó); job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: đọc không được → không gửi); `POST` có thể còn đang tới canvasapp (trang tải lại khi main còn gửi: `endedAt` / `listedBy`) → "Chạy lại" chưa gửi lại, take khác không nhận job của nó; câu trả lời cache của cổng (tính từ lúc gửi request) không bao giờ được coi là mới hơn thực tế; `created_at` không có múi giờ → khoảng ±27 h; sổ đọc lại từ localStorage mỗi lần dùng (nhiều tab). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
@@ -521,19 +542,23 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   `canvasapp-download`, `canvasapp-e2e`, `dev-server`, `dev-e2e`, `runs-engine`, `creditText`, `hardeningRules`,
   `devModel`. Còn VERIFY trên máy chủ thật: `/stream` có Content-Length, Accept-Ranges, ETag / Last-Modified, có nén không,
   có chuyển hướng (CDN, luôn https?) không, kích thước video thường gặp; RAM của main khi trang đọc chậm (luồng của
-  `net.request` chỉ xin thêm dữ liệu khi được đọc). Việc tiếp: lưu video lớn ra đĩa theo từng phần (`files:*`).
+  `net.request` chỉ xin thêm dữ liệu khi được đọc). (Chỉ phần tải về — việc lưu ra đĩa là mục riêng bên dưới.)
+- [ ] Lưu video lớn ra đĩa theo từng phần: tự tải, nút Thư mục và "Hỏi nơi lưu" vẫn gửi cả file qua IPC một lần
+  (`files:saveAs` / `files:writeToFolder`, ≤ 1 GB) — cần làm từng phần như phần tải về (§6 "Video lớn qua IPC").
 - [x] Đồng bộ ngược: nhập các job đã tạo trên canvasapp (trong phiên bridge) thành take — "Nhập job" (§4): chỉ đọc
   (`GET`), take nhập sinh ra `processing` có `remoteId` (chỉ theo dõi + tải, không bao giờ gửi, "Chạy lại" = take mới),
   sổ `imported` (không bao giờ `POST` khoá đó; `findJob` loại mọi job đã nhập, job chưa nhập có từ trước lần gửi — đọc
   danh sách ngay trước mỗi `POST` — và job ngoài khoảng `inPostWindow` của lần gửi), không nhập job mà một lần gửi chưa
   rõ có thể sở hữu (kiểm tra cả lúc quét và lúc ghi), dự án được ghim, tối đa 20 job / lần, cấu hình chỉ "đoán" (≈) theo
   node có prompt khớp, không rõ (?) thì không tính chi phí / không khôi phục. Chế độ Phát triển: Bảng phát triển › Job &
-  đơn nạp › "Tạo job như trên trang canvasapp" (sửa node trước nếu muốn) + nút "Nhập" ở job chưa có take. Test:
+  đơn nạp › "Tạo job như trên trang canvasapp" (sửa node trước nếu muốn) + nút "Nhập" ở job tạo trên trang, chưa lỗi /
+  huỷ / hết hạn, trên node của dự án đang mở (`devModel.mayOfferImport`). Test:
   `canvasapp-siteJobs`, `canvasapp-adapter`, `canvasapp-e2e`, `dev-server`, `dev-e2e`, `runs-engine`, `importedTake`,
   `importJobsModel`, `migrate`, `devModel`. Còn VERIFY trên máy chủ thật: mọi job trong `GET /api/video-jobs` có
   `canvas_node_id` không (không có → không nhập được gì); danh sách có `client_request_id` / `mode` / `resolution` /
   `upload_ids` / số credit không (có → nhập chính xác, không cần đoán); danh sách có cắt trang không, `creation_mode` của
-  job canvas / simple là gì; `created_at` có múi giờ không (có: cửa sổ ±14 giờ; không: ±27 giờ); `GET /api/projects/{id}` trả `{ canvas: {
+  job canvas / simple là gì; `created_at` có múi giờ không (có: cửa sổ ±14 giờ; không: ±27 giờ — thử trước ở chế độ Phát triển: Hành vi máy chủ ›
+  "Giờ trong danh sách job không có múi giờ", `DevConfig.naiveTimes`); `GET /api/projects/{id}` trả `{ canvas: {
   nodes, connections } }` và giữ nguyên dữ liệu node như đã `PUT` không; job H3 transform có `aspect_ratio: null` trong
   danh sách không; `GET …/prompt` trả prompt đã trim như lúc gửi, cho job tạo trên trang và job đã hết hạn không; `GET
   …/stream` có tải được job tạo trên trang không; có thể có nhiều phiên tên "SanoVids bridge" không (nhập chỉ đọc phiên

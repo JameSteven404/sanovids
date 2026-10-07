@@ -27,6 +27,7 @@ const cand = (jobId: string, sceneId: string, over: Partial<SiteJobCandidate> = 
   state: 'processing',
   progress: 40,
   createdAt: null,
+  createdWall: null,
   model: 'seedance_2_5',
   duration: 15,
   ratio: '16:9',

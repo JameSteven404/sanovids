@@ -283,6 +283,14 @@ export const isResultDeferred = (e: unknown): boolean => !!e && typeof e === 'ob
 export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { uncertain?: unknown }).uncertain === true
 
 /**
+ * An uncertain submit (isSubmitUncertain) that sent nothing THIS time (`heldBack: true`): the retry of a take whose
+ * earlier request may still be on its way, or whose job could not be looked for, was not sent again. The outcome of
+ * that earlier request is still unknown; the error's message says why nothing was sent and when to try again — the
+ * engine shows it next to the "unknown" text (store/runs heldBackSubmitError).
+ */
+export const isSubmitHeldBack = (e: unknown): boolean => isSubmitUncertain(e) && (e as { heldBack?: unknown }).heldBack === true
+
+/**
  * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`
  * itself (core/types.ts) and are defaulted by migrateTake.
  * @deprecated use `Take`.

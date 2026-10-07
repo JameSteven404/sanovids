@@ -608,6 +608,10 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     const request = mainSource.slice(rs, re)
     expect(request).toContain('const match = matchCanvasappRequest(method, req.path)')
     expect(request).not.toMatch(/route\.binary|arrayBuffer|'download'/)
+    // the API lane (X-CSRF-Token, prompts, upload ids, top-up orders) never follows a redirect — https → http included:
+    // session.fetch would, and could not even say where it ended. Nothing in main follows one blindly.
+    expect(request).toContain("credentials: 'include',\n        redirect: 'error',")
+    expect(mainSource).not.toMatch(/redirect:\s*'follow'/)
   })
 
   it('preload: the canvasapp block forwards only plain data (download calls: id, path, from)', () => {

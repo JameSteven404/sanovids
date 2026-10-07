@@ -375,7 +375,11 @@ export function deleteSelection() {
   const links = refs.length + videoRefs.length + frames.length + folderLinks.length
   // Ask BEFORE changing anything: Cancel must leave the whole selection untouched.
   if (takeIds.length) {
-    const check = checkTakeDelete(takeIds, takes, project.scenes, { ignoreScenes: deadScenes, label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined })
+    const check = checkTakeDelete(takeIds, takes, project.scenes, {
+      ignoreScenes: deadScenes,
+      label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+      videoReady: remoteVideoReady,
+    })
     if (check.question && !window.confirm(check.question)) return
   }
   // Takes first: their labels ("video S01·T1") need their scene, which deleteItems may remove.
@@ -419,8 +423,9 @@ export const TAKES_GONE_NOTE = '(Video đã xoá không hoàn tác được.)'
 
 export interface DeleteTakesOptions {
   /**
-   * Ask first (window.confirm). true (default) = when a finished video would be lost or a scene uses one as @video;
-   * 'usedOnly' = only for @video users (the caller already confirmed, e.g. a two-click button); false = never.
+   * Ask first (window.confirm). true (default) = when a finished video would be lost, a paid video is still
+   * downloading or a scene uses one as @video; 'usedOnly' = only for @video users and paid videos still downloading
+   * (the caller already confirmed the take's loss, e.g. a two-click button); false = never.
    */
   confirm?: TakeDeleteConfirm
   /** Show the result toast (default true). */
@@ -443,6 +448,8 @@ export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions
     confirm: opts.confirm ?? true,
     ignoreScenes: opts.ignoreScenes,
     label: takeIds.length === 1 ? takeLabel(takeIds[0]) : undefined,
+    // a paid video still downloading is dropped like "Huỷ" drops it (cancelTake asks too)
+    videoReady: remoteVideoReady,
   })
   if (!check.ids.length) return 0
   if (check.question && !window.confirm(check.question)) return null
@@ -546,7 +553,8 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const res = useRuns.getState().retry(takeId)
   if (!res) return
   if (res.error) toast(res.error, { tone: 'error' })
-  else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
+  // Not "đang gửi lại": the provider may find the job, or hold the request back (the take then says why and when).
+  else toast(`Đang kiểm tra lại ${takeLabel(takeId)}: tìm job cũ trước, chỉ gửi lại (cùng mã yêu cầu) khi chắc chắn chưa có.`, { tone: 'success' })
 }
 
 /**

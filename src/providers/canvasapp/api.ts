@@ -84,15 +84,22 @@ export class CanvasappError extends Error {
   readonly detail?: string
   /** A video job may have been created (and billed) although no job id came back — see providers/types isSubmitUncertain. */
   readonly uncertain?: boolean
+  /** ...and nothing was sent this time (a retry held back) — see providers/types isSubmitHeldBack. */
+  readonly heldBack?: boolean
   /** Refused for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance): message NOT_ENOUGH_CREDITS_TEXT. */
   readonly noCredit?: boolean
-  constructor(code: CanvasappErrorCode, message: string, opts: { status?: number; detail?: string; uncertain?: boolean; noCredit?: boolean } = {}) {
+  constructor(
+    code: CanvasappErrorCode,
+    message: string,
+    opts: { status?: number; detail?: string; uncertain?: boolean; heldBack?: boolean; noCredit?: boolean } = {},
+  ) {
     super(message)
     this.name = 'CanvasappError'
     this.code = code
     this.status = opts.status
     this.detail = opts.detail
     if (opts.uncertain) this.uncertain = true
+    if (opts.uncertain && opts.heldBack) this.heldBack = true
     if (opts.noCredit) this.noCredit = true
   }
 }

@@ -61,9 +61,12 @@ export function candidateSettingsText(c: Pick<SiteJobCandidate, 'model' | 'durat
 }
 
 const two = (n: number) => String(n).padStart(2, '0')
-/** "tạo lúc 14:32 06/10" (local time) or "" when canvasapp did not say. */
-export function candidateTimeText(c: Pick<SiteJobCandidate, 'createdAt'>): string {
-  if (c.createdAt === null) return ''
+/**
+ * "tạo lúc 14:32 06/10" (local time) or "" when canvasapp did not say; a created_at without a time zone is shown as
+ * canvasapp wrote it, said so ("(giờ canvasapp)") — never converted as if it were this computer's time.
+ */
+export function candidateTimeText(c: Pick<SiteJobCandidate, 'createdAt'> & Partial<Pick<SiteJobCandidate, 'createdWall'>>): string {
+  if (c.createdAt === null) return c.createdWall ? `tạo lúc ${c.createdWall} (giờ canvasapp)` : ''
   const d = new Date(c.createdAt)
   return `tạo lúc ${two(d.getHours())}:${two(d.getMinutes())} ${two(d.getDate())}/${two(d.getMonth() + 1)}`
 }
@@ -104,6 +107,9 @@ const SKIP_ORDER: SiteJobSkip[] = ['maybe-pending', 'in-project', 'sanovids', 'n
 /**
  * The "Không nhập được (N)" lines, one per reason. `pendingLabel(takeId)` names a take of the open project ("S03·T2")
  * whose unanswered POST may own a job, null when it is not in this project (deleted, or another project).
+ * 'maybe-pending' never promises a time: such a job is held for as long as that take has not found its job, whenever
+ * that is — only jobs made within `windowHours` around its POST (14 h, 27 h for a created_at without a time zone) are
+ * held when the list does not carry client_request_id. A deleted take never looks again: its job is never importable.
  */
 export function skipLines(scan: Pick<SiteJobScan, 'skipped'>, w: ImportWords, pendingLabel: (takeId: string) => string | null): { code: SiteJobSkip; text: string }[] {
   const out: { code: SiteJobSkip; text: string }[] = []
@@ -113,11 +119,25 @@ export function skipLines(scan: Pick<SiteJobScan, 'skipped'>, w: ImportWords, pe
     const n = items.length
     switch (code) {
       case 'maybe-pending': {
-        const labels = [...new Set(items.map((s) => (s.pendingTakeId ? pendingLabel(s.pendingTakeId) : null) ?? 'take đã xoá hoặc ở dự án khác'))]
-        out.push({
-          code,
-          text: `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${n} job — tạm chưa nhập được (tới khi take đó tìm ra job của nó, tối đa khoảng 14 giờ quanh lần gửi đó); dùng “Chạy lại” trên take đó nếu còn — SanoVids tìm job trước, không trả hai lần.`,
-        })
+        const labelOf = (s: (typeof items)[number]) => (s.pendingTakeId ? pendingLabel(s.pendingTakeId) : null)
+        const mine = items.filter((s) => labelOf(s) !== null)
+        const gone = n - mine.length
+        const parts: string[] = []
+        if (mine.length) {
+          const labels = [...new Set(mine.map((s) => labelOf(s)!))]
+          const hours = [...new Set(mine.map((s) => s.windowHours).filter((h): h is number => typeof h === 'number'))].sort((a, b) => a - b)
+          const window = hours.length ? ` (chỉ giữ job tạo trong khoảng ${hours.length > 1 ? `${hours[0]}–${hours[hours.length - 1]}` : hours[0]} giờ quanh lần gửi đó)` : ''
+          parts.push(
+            `Có thể là job của take “không rõ đã gửi” (${labels.join(', ')}): ${mine.length} job — chưa nhập được tới khi take đó tìm ra job của nó${window}. Bấm “Chạy lại” trên take đó: SanoVids tìm job trước, không trả hai lần.`,
+          )
+        }
+        if (gone) {
+          const fetch = w.simulated ? 'xem job đó trong Bảng phát triển' : `tải video trên ${w.site} (phiên “SanoVids bridge”)`
+          parts.push(
+            `Có thể là job của một take “không rõ đã gửi” đã xoá hoặc ở dự án khác: ${gone} job — không nhập được ở đây. Take ở dự án khác: mở dự án đó rồi bấm “Chạy lại” trên take đó; take đã xoá: job đó không nhập được nữa — ${fetch}.`,
+          )
+        }
+        out.push({ code, text: parts.join(' ') })
         break
       }
       case 'in-project':

@@ -33,9 +33,10 @@ function openTake(takeId: string) {
 }
 
 /**
- * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video — the
- * node's trash button already needed a second click (TakeDeleteButton), like the viewer's. deleteTakes also removes
- * its media blobs, drops it from the selection and says so in a toast.
+ * Delete one take (not undoable) through actions.deleteTakes: asks first only when scenes use it as @video, or when its
+ * paid video is still downloading (like "Huỷ") — the node's trash button already needed a second click
+ * (TakeDeleteButton), like the viewer's. deleteTakes also removes its media blobs, drops it from the selection and says
+ * so in a toast.
  */
 export function deleteTake(takeId: string) {
   deleteTakes([takeId], { confirm: 'usedOnly' })

@@ -10,8 +10,9 @@
 //                  a bug report); "Kiểm tra nhân vật" for each POST /api/video-jobs.
 //   Job & đơn nạp  "Tạo job như trên trang canvasapp" (a job the site's own page makes on a bridge node — to test
 //                  "Nhập job"), the server's jobs (finish / fail / expire now, which SanoVids take and bridge node — a
-//                  scene of the open project, an old node, another one — they belong to; "Nhập" for one without a
-//                  take), top-up orders (decide what canvasapp says), uploaded pictures.
+//                  scene of the open project, an old node, another one — they belong to; "Nhập" for one made on the
+//                  site, not failed / cancelled / expired, on a node of the open project: devModel.mayOfferImport),
+//                  top-up orders (decide what canvasapp says), uploaded pictures.
 //   Cập nhật       the simulated app updater and the simulated signature self-check of "Giới thiệu" (DevUpdatesTab.tsx;
 //                  only outside Electron — the desktop app uses the real ones).
 // Opened from the top bar bug button, Settings and the queue drawer (actions.openDevPanel). Lazy chunk (App.tsx).
@@ -334,6 +335,12 @@ function StatusTab({ snap }: { snap: DevServerSnapshot }) {
           onChange={(exposeKey) => setConfig({ exposeKey })}
           label="Danh sách job có client_request_id"
           hint="Trang thật chưa rõ có trả trường này không — tắt là mặc định an toàn."
+        />
+        <Switch
+          checked={c.naiveTimes}
+          onChange={(naiveTimes) => setConfig({ naiveTimes })}
+          label="Giờ trong danh sách job không có múi giờ"
+          hint="created_at / finished_at kiểu “2026-10-07T12:00:00.123000” (giờ UTC, không ghi múi giờ). Trang thật chưa rõ — bật để thử tìm job khi mất câu trả lời và Nhập job với giờ lệch tới 27 giờ."
         />
         <Switch
           checked={c.rangeSupport}

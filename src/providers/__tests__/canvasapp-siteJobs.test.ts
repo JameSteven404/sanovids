@@ -124,6 +124,42 @@ describe('classifySiteJobs: what may be imported', () => {
     expect(skipped).toEqual({ old: 'no-download', none: 'no-download' })
   })
 
+  it('a finished_at without a time zone is up to a day off here: never taken as “over an hour ago” unless surely so — an hour from when this computer first saw it', () => {
+    // canvasapp prints naive UTC; this computer is on Vietnam time (UTC+7): read 7 h too early
+    const wall = (ms: number) => new Date(ms).toISOString().slice(0, 23) + '456'
+    const prev = process.env.TZ
+    process.env.TZ = 'Asia/Ho_Chi_Minh'
+    try {
+      const now = T + 60_000
+      const just = job({ job_id: 'just', status: 'completed', download_available: false, finished_at: wall(T) }) // ended a minute ago
+      const longAgo = job({ job_id: 'gone', status: 'completed', download_available: false, finished_at: wall(T - 2 * NAIVE_CREATED_SKEW_MS) })
+      const firstSeen = new Map([
+        ['just', now - 5 * 60_000],
+        ['gone', now - 5 * 60_000],
+      ])
+      expect(codes([just, longAgo], ctx({ now, firstSeen })).ok).toEqual(['just'])
+      expect(codes([just, longAgo], ctx({ now, firstSeen })).skipped).toEqual({ gone: 'no-download' })
+      // an hour after this computer first saw it so: not offered any more
+      expect(codes([just], ctx({ now: now + NO_DOWNLOAD_AFTER_MS, firstSeen })).skipped).toEqual({ just: 'no-download' })
+      // never seen before (no record): not offered
+      expect(codes([just], ctx({ now })).skipped).toEqual({ just: 'no-download' })
+    } finally {
+      if (prev === undefined) delete process.env.TZ
+      else process.env.TZ = prev
+    }
+  })
+
+  it('a created_at without a time zone is never taken for this computer’s time: the take gets the import time, the dialog shows canvasapp’s own clock', () => {
+    const naiveJob = job({ job_id: 'n1', created_at: '2026-10-06T10:00:00.123456' })
+    const zoned = job({ job_id: 'z1', created_at: new Date(T).toISOString(), canvas_node_id: node('s1') })
+    const { r } = codes([naiveJob, zoned])
+    const byId = Object.fromEntries(r.candidates.map((c) => [c.jobId, c]))
+    expect(byId.n1).toMatchObject({ createdAt: null, createdWall: '10:00 06/10' })
+    expect(byId.z1).toMatchObject({ createdAt: T, createdWall: null })
+    // what a take made from it records: no creation time (importTakes then uses the import time)
+    expect(reconstructSiteJob(byId.n1, 'p', () => null).createdAt).toBeNull()
+  })
+
   it('a job claimed before (take deleted / another project) is offered again as a re-import', () => {
     const { r } = codes([job()], ctx({ ledger: { jobs: {}, sent: {}, imported: { take_x: { remoteId: encodeRemoteId(P, 'job1') } } } }))
     expect(r.candidates[0].reimport).toBe(true)
@@ -228,6 +264,13 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
     const { skipped, r } = codes([job()], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
     expect(skipped).toEqual({ job1: 'maybe-pending' })
     expect(r.skipped[0].pendingTakeId).toBe('take_lost')
+    // how long around that POST a job is held (the dialog says it): 14 h with a time zone, 27 h without, none by key
+    expect(r.skipped[0].windowHours).toBe(CREATED_SKEW_MS / 3600_000)
+    const naiveMade = codes([job({ created_at: naive(T + 5_000, 0) })], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
+    expect(naiveMade.r.skipped[0]).toMatchObject({ code: 'maybe-pending', windowHours: NAIVE_CREATED_SKEW_MS / 3600_000 })
+    const noTime = codes([job({ created_at: undefined })], ctx({ ledger: { jobs: {}, sent: { take_lost: rec }, imported: {} } }))
+    expect(noTime.r.skipped[0].code).toBe('maybe-pending')
+    expect(noTime.r.skipped[0].windowHours).toBeUndefined()
     const settled = codes([job()], ctx({ ledger: { jobs: { take_lost: { remoteId: encodeRemoteId(P, 'other') } }, sent: { take_lost: rec }, imported: {} } }))
     expect(settled.ok).toEqual(['job1'])
   })
@@ -327,6 +370,7 @@ describe('reconstructSiteJob: what the imported take records', () => {
       state: 'processing',
       progress: 40,
       createdAt: T,
+      createdWall: null,
       model: 'seedance_2_5',
       duration: 15,
       ratio: '16:9',

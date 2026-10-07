@@ -1,7 +1,7 @@
 // "Nhập job" dialog texts and rules (importJobsModel.ts), for the real site and development mode.
 import { describe, expect, it } from 'vitest'
 import type { Scene } from '../../../core/types'
-import type { SiteJobCandidate, SiteJobScan } from '../../../providers/canvasapp/siteJobs'
+import { CREATED_SKEW_MS, NAIVE_CREATED_SKEW_MS, type SiteJobCandidate, type SiteJobScan } from '../../../providers/canvasapp/siteJobs'
 import {
   candidateSettingsText,
   candidateStatusText,
@@ -37,6 +37,7 @@ const cand = (jobId: string, sceneId: string, over: Partial<SiteJobCandidate> = 
   state: 'processing',
   progress: 40,
   createdAt: new Date(2026, 9, 6, 14, 32).getTime(),
+  createdWall: null,
   model: 'seedance_2_5',
   duration: 15,
   ratio: '16:9',
@@ -74,6 +75,8 @@ describe('importJobsModel: words', () => {
     expect(candidateSettingsText(cand('a', 's1', { model: 'minimax_h3', duration: null, ratio: null }))).toBe('MiniMax-H3')
     expect(candidateTimeText(cand('a', 's1'))).toBe('tạo lúc 14:32 06/10')
     expect(candidateTimeText(cand('a', 's1', { createdAt: null }))).toBe('')
+    // created_at without a time zone: canvasapp's own clock, said so (never converted as if it were this computer's)
+    expect(candidateTimeText(cand('a', 's1', { createdAt: null, createdWall: '10:00 06/10' }))).toBe('tạo lúc 10:00 06/10 (giờ canvasapp)')
   })
 })
 
@@ -111,9 +114,28 @@ describe('importJobsModel: rules', () => {
     }
     const lines = skipLines(scan, dev, (id) => (id === 'take_1' ? 'S01·T2' : null))
     expect(lines.map((l) => l.code)).toEqual(['maybe-pending', 'in-project', 'sanovids', 'no-scene', 'no-download'])
-    expect(lines[0].text).toMatch(/^Có thể là job của take “không rõ đã gửi” \(S01·T2, take đã xoá hoặc ở dự án khác\): 2 job — tạm chưa nhập được/)
+    expect(lines[0].text).toMatch(/^Có thể là job của take “không rõ đã gửi” \(S01·T2\): 1 job — chưa nhập được tới khi take đó tìm ra job của nó\. Bấm “Chạy lại”/)
+    // a deleted take never looks again: its job is never importable — said so, with where to get the video
+    expect(lines[0].text).toContain('đã xoá hoặc ở dự án khác: 1 job — không nhập được ở đây')
+    expect(lines[0].text).toContain('take đã xoá: job đó không nhập được nữa — xem job đó trong Bảng phát triển')
     expect(lines[1].text).toBe('Đã có trong dự án: 2 job')
     expect(lines[4].text).toBe('Đã xong nhưng canvasapp giả lập không cho tải nữa: 1 job')
+  })
+
+  it('MONEY: the maybe-pending line never promises a time limit — only which jobs around that POST are held (14 h / 27 h without a time zone)', () => {
+    const line = (skipped: SiteJobScan['skipped'], w = real) => skipLines({ skipped }, w, (id) => (id === 'take_1' ? 'S01·T2' : null))[0].text
+    const zoned = line([{ jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: CREATED_SKEW_MS / 3600_000 }])
+    expect(zoned).toContain('chỉ giữ job tạo trong khoảng 14 giờ quanh lần gửi đó')
+    expect(zoned).not.toMatch(/tối đa/)
+    const both = line([
+      { jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: CREATED_SKEW_MS / 3600_000 },
+      { jobId: 'd', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1', windowHours: NAIVE_CREATED_SKEW_MS / 3600_000 },
+    ])
+    expect(both).toContain('trong khoảng 14–27 giờ quanh lần gửi đó')
+    // matched by key, or no creation time: held whenever it was made — no hours at all
+    expect(line([{ jobId: 'c', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_1' }])).not.toMatch(/giờ/)
+    // the real site: where the deleted take's video can still be fetched
+    expect(line([{ jobId: 'd', sceneId: 's1', code: 'maybe-pending', pendingTakeId: 'take_gone' }])).toContain('tải video trên canvasapp.io.vn (phiên “SanoVids bridge”)')
   })
 
   it('toasts: what came in and where; partial; another project; dropping them again', () => {
