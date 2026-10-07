@@ -432,9 +432,41 @@ function matchCanvasappRequest(method, rawPath) {
 
 let canvasappLoginWin = null
 let canvasappLoginPromise = null
-const canvasappJobListCache = new Map() // query string -> { at, result }
-/** Bumped by every POST /api/video-jobs: a job list read that started before it is never cached. */
-let canvasappJobsEpoch = 0
+
+// <canvasapp-job-list-cache> (pure; src/providers/__tests__/gatewayLanes.test.ts runs this block as-is)
+/**
+ * GET /api/video-jobs at most once per `ttlMs` per query: an answer is reused that long, timed from when its request was
+ * SENT — the adapter trusts a read to show every job made `ttlMs` before IT was sent (adapter.ts SentRecord.beforeAt,
+ * gatewayListCacheMs); timed from the answer's arrival, a slow answer would be served as fresher than it is. Every POST
+ * /api/video-jobs drops it (when it starts and when it ends, whatever came of it), and so does a logout; a read that
+ * started before one of those is never kept. now() = Date.now in main.
+ */
+function createJobListCache(ttlMs, now) {
+  const entries = new Map() // query string -> { at, result }
+  let epoch = 0
+  return {
+    /** A kept answer for `key`, or null. */
+    get(key) {
+      const hit = entries.get(key)
+      return hit && now() - hit.at < ttlMs ? hit.result : null
+    },
+    /** A read of `key` is about to wait for its slot: what put() needs to know nothing dropped the cache since. */
+    ticket() {
+      return epoch
+    },
+    /** Its 200 answer, its request sent at `sentAt`: kept unless the cache was dropped after `ticket`. */
+    put(key, ticket, sentAt, result) {
+      if (ticket === epoch) entries.set(key, { at: sentAt, result })
+    },
+    /** A job POST starts / ends, a logout: forget every answer (and any read still on its way). */
+    drop() {
+      epoch++
+      entries.clear()
+    },
+  }
+}
+// </canvasapp-job-list-cache>
+const canvasappJobListCache = createJobListCache(CANVASAPP_JOBS_MIN_MS, Date.now)
 
 function canvasappSession() {
   return session.fromPartition(CANVASAPP_PARTITION)
@@ -1113,7 +1145,7 @@ async function canvasappRequest(req) {
   const cacheKey = method === 'GET' && url.pathname === '/api/video-jobs' ? url.search : null
   if (cacheKey !== null) {
     const hit = canvasappJobListCache.get(cacheKey)
-    if (hit && Date.now() - hit.at < CANVASAPP_JOBS_MIN_MS) return hit.result
+    if (hit) return hit
   }
 
   const headers = { Accept: 'application/json' }
@@ -1138,18 +1170,17 @@ async function canvasappRequest(req) {
   // A new job changes the list: whatever the outcome (even a lost answer, when the job may exist), the next read of
   // the job list must come from canvasapp — SanoVids looks for the job there before posting it again.
   const createsJob = method === 'POST' && url.pathname === '/api/video-jobs'
-  if (createsJob) {
-    canvasappJobsEpoch++
-    canvasappJobListCache.clear()
-  }
-  const epoch = canvasappJobsEpoch
+  if (createsJob) canvasappJobListCache.drop()
+  const ticket = canvasappJobListCache.ticket()
   const controller = new AbortController()
   let timer = null
+  let sentAt = 0
   try {
     const result = await withCanvasappSlot('api', async () => {
       // The clock starts when the request is really sent, not while it waits for a slot: a timeout then means
       // canvasapp did not answer, never "not sent yet".
       timer = setTimeout(() => controller.abort(), 60_000)
+      sentAt = Date.now() // a cached job list is timed from here (what canvasapp can have listed), not its arrival
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
@@ -1173,17 +1204,14 @@ async function canvasappRequest(req) {
       }
       return out
     })
-    if (cacheKey !== null && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: Date.now(), result })
+    if (cacheKey !== null && result.status === 200) canvasappJobListCache.put(cacheKey, ticket, sentAt, result)
     return result
   } catch (e) {
     const aborted = e && e.name === 'AbortError'
     return gatewayError('network', aborted ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
   } finally {
     if (timer) clearTimeout(timer)
-    if (createsJob) {
-      canvasappJobsEpoch++
-      canvasappJobListCache.clear()
-    }
+    if (createsJob) canvasappJobListCache.drop()
   }
 }
 
@@ -1379,7 +1407,7 @@ async function canvasappLogout() {
   const ses = canvasappSession()
   await ses.clearStorageData()
   await ses.clearCache()
-  canvasappJobListCache.clear()
+  canvasappJobListCache.drop()
   return { ok: true }
 }
 

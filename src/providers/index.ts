@@ -124,7 +124,8 @@ export function canvasappProvider(): CanvasappProvider {
 export const DEV_POLL_MS = 3_000
 /**
  * The dev provider reuses a job-list answer this long. Below DEV_POLL_MS minus the simulated latency (150 ms by
- * default, + "Chậm" faults): the cache is stamped when the answer arrives, so a 3 s cache would skip every other poll.
+ * default, + "Chậm" faults): the adapter's own cache is stamped when the answer arrives, so a 3 s cache would skip
+ * every other poll. (The dev bridge's cache, like main's, is timed from when the request was sent.)
  */
 export const DEV_LIST_CACHE_MS = 2_000
 /** localStorage prefix of the dev provider's own records (bridge project, upload cache, job ledger). */

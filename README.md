@@ -107,7 +107,7 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 **An toàn tiền & đúng nhân vật**
 - `@image_N` luôn là đúng tấm ảnh thứ N gửi đi (thứ tự tải lên = thứ tự `@image`). Mỗi ảnh chỉ tải lên canvasapp một lần.
-- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. Take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng **cùng mã yêu cầu**.
+- Mất mạng đúng lúc gửi: SanoVids **không tự gửi lại thành job mới**. Take hiện "không rõ đã bị trừ chưa". Bấm gửi lại thì app tìm job cũ trên canvasapp trước, rồi mới gửi lại bằng **cùng mã yêu cầu** — nếu lần gửi trước có thể vẫn đang tới canvasapp (vd. trang vừa tải lại đúng lúc gửi), app chưa gửi lại: thử lại sau vài phút.
 - Video đã tạo xong (đã trả tiền) mà tải về lỗi thì app tự thử tải lại (tải tiếp từ chỗ dừng khi canvasapp cho), không đánh "thất bại". Trừ hai trường hợp không bao giờ tải được: video **lớn hơn 1 GB**, hoặc một kết nối quá **60 phút** mà không tải tiếp được — take báo lỗi ngay, ghi rõ **đã trừ credit** và tải video trực tiếp trên canvasapp.io.vn (phiên "SanoVids bridge").
 - Đóng app khi đang tạo: mở lại, app tiếp tục theo dõi job cũ, không gửi lại.
 

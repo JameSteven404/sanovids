@@ -95,7 +95,9 @@ describe('what an imported take shows', () => {
     expect(importedSourceText(take())).toBe('Tạo trên canvasapp.io.vn (phiên “SanoVids bridge”), nhập vào SanoVids lúc 14:32 06/10 · tên job: Video 9')
     expect(importedSourceText(take([], [], { provider: 'dev' }))).toMatch(/^Tạo trên canvasapp giả lập /)
     expect(importedSourceText(plain())).toBeNull()
-    expect(importedChipTitle(take())).toMatch(/“Chạy lại” tạo take mới/)
+    expect(importedChipTitle(take())).toMatch(/“Chạy lại” tạo take mới \(trừ credit như thường\)$/)
+    // development mode: the simulated credits
+    expect(importedChipTitle(take([], [], { provider: 'dev' }))).toMatch(/^Job tạo trên canvasapp giả lập .*\(trừ credit dev như thường\)$/)
     expect(unknownFieldTitle(take())).toBe('canvasapp.io.vn không cho biết — không rõ')
     expect(unknownFieldTitle(take([], [], { provider: 'dev' }))).toBe('canvasapp giả lập không cho biết — không rõ')
     expect(importedFieldsNote(take(['resolution', 'refs'], ['mode']))).toBe('không rõ: độ phân giải, ảnh tham chiếu · đoán theo node: chế độ')
@@ -122,7 +124,7 @@ describe('"Khôi phục prompt này" of an imported take', () => {
 
   it('settings: only the known ones; the scene keeps its own for unknown or inferred fields (said in the toast)', () => {
     const plainTake = { ...plain(), rawPromptSnapshot: 'p', refsSnapshot: ['x'], videoRefsSnapshot: ['v'] }
-    expect(restorePlan(plainTake, sceneOf(scene))).toEqual({ source: plainTake, settings: SETTINGS, kept: [], guessed: [], keepRefs: false })
+    expect(restorePlan(plainTake, sceneOf(scene))).toEqual({ source: plainTake, settings: SETTINGS, kept: [], defaulted: [], guessed: [], keepRefs: false })
     const t = { ...take(['resolution'], ['ratio', 'refs']), ...snap }
     const r = restorePlan(t, sceneOf(scene))
     expect(r).toMatchObject({ settings: { ...SETTINGS, resolution: '720p', ratio: '9:16' }, kept: ['resolution', 'ratio'], guessed: [], keepRefs: false })
@@ -133,9 +135,18 @@ describe('"Khôi phục prompt này" of an imported take', () => {
       'giữ tỉ lệ khung của cảnh (chỉ đoán được lúc tạo)',
       'ảnh tham chiếu theo node trên canvas cầu nối (đoán) — hãy kiểm tra',
     ])
-    // a scene value the take's model does not have → that model's default (never an invalid setting)
-    const h3 = restorePlan({ ...take(['resolution'], [], { settings: H3('t2v') }), ...snap }, sceneOf(scene))
-    expect(h3.settings).toMatchObject({ model: 'minimax_h3', resolution: '768p' })
+    // a scene value the take's model does not have → that model's default (never an invalid setting), and the toast
+    // says so — never "giữ … của cảnh" for a value the scene did not keep
+    const h3Take = { ...take(['resolution'], ['duration', 'ratio'], { settings: { ...H3('t2v'), duration: 10 } }), ...snap }
+    const h3 = restorePlan(h3Take, sceneOf({ ...scene, duration: 30 }))
+    expect(h3.settings).toMatchObject({ model: 'minimax_h3', resolution: '768p', duration: 15, ratio: '9:16' })
+    expect(h3).toMatchObject({ kept: ['ratio'], defaulted: ['resolution', 'duration'] })
+    expect(restoreNotes(h3Take, h3)).toEqual([
+      'giữ tỉ lệ khung của cảnh (chỉ đoán được lúc tạo)',
+      'đặt độ phân giải mặc định của MiniMax-H3 (không rõ lúc tạo; giá trị của cảnh không có ở model này) — hãy kiểm tra',
+      'đặt thời lượng mặc định của MiniMax-H3 (chỉ đoán được lúc tạo; giá trị của cảnh không có ở model này) — hãy kiểm tra',
+      'giữ ảnh tham chiếu của cảnh (job Text → Video không gửi ảnh tham chiếu)',
+    ])
   })
 
   it('MiniMax-H3 Text → Video / Khung đầu → cuối (job sent no reference images, mode maybe only guessed): the scene keeps its references and mode', () => {

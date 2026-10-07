@@ -549,6 +549,15 @@ export function jobNodeOwners(projectId: string, scenes: readonly Pick<Scene, 'i
   return m
 }
 
+/**
+ * Does the job line offer "Nhập" (open "Nhập job")? Only for a job that dialog could offer: made on the site's page
+ * (origin 'site' — SanoVids' own jobs are never imported), not ended in failure / cancel / expiry, on a node of a scene
+ * of the open project. Anything else says "không có take" only (the dialog would list it under "Không nhập được").
+ */
+export function mayOfferImport(job: { origin: 'app' | 'site'; status: string }, owner: JobNodeOwner | undefined): boolean {
+  return job.origin === 'site' && !['failed', 'cancelled', 'expired'].includes(job.status) && (owner?.kind === 'scene' || owner?.kind === 'legacy')
+}
+
 /** The job line's node label and its tooltip (which starts with the full canvas_node_id). */
 export function jobNodeText(nodeId: string, owner: JobNodeOwner | undefined): { label: string; title: string } {
   const head = `canvas_node_id: ${nodeId}\n`

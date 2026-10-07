@@ -1086,7 +1086,13 @@ describe('gateway e2e: app restart', () => {
     } else {
       expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
       expect(fake.state.jobs).toHaveLength(0)
-      // explicit retry of that take: same key, one job
+      // an explicit retry right away: main may still be sending the request of the closed page — not posted again yet
+      useRuns.getState().retry(t.id)
+      await run(1_000)
+      expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+      expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+      // ...once that request is surely over: same key, one job
+      await run(5 * 60_000)
       useRuns.getState().retry(t.id)
       await run(60_000)
       expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(t.id)])

@@ -1,5 +1,6 @@
 // electron/main.cjs request lanes (its <canvasapp-lanes> block, run as-is): with up to 10 canvasapp jobs running,
 // finished videos download in their own small lane, so the job-list poll / a submit never waits behind them.
+// Also main's job-list cache (its <canvasapp-job-list-cache> block, run as-is).
 import { describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 
@@ -64,5 +65,60 @@ describe('canvasapp gateway lanes (electron/main.cjs)', () => {
     expect(order).toEqual(['a', 'b', 'c'])
     a.finish()
     await Promise.all([p1, p3])
+  })
+})
+
+interface JobListCache {
+  get(key: string): unknown
+  ticket(): number
+  put(key: string, ticket: number, sentAt: number, result: unknown): void
+  drop(): void
+}
+
+function loadListCache(clock: { t: number }): JobListCache {
+  const m = /\/\/ <canvasapp-job-list-cache>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-job-list-cache>/.exec(mainSource)
+  if (!m) throw new Error('canvasapp-job-list-cache block not found in electron/main.cjs')
+  const create = new Function(`${m[1]}\nreturn createJobListCache`)() as (ttlMs: number, now: () => number) => JobListCache
+  return create(15_000, () => clock.t)
+}
+
+describe('canvasapp job-list cache (electron/main.cjs)', () => {
+  it('an answer is reused 15 s from when its request was SENT, never from when it arrived (a slow answer is never fresher than it is)', () => {
+    const clock = { t: 100_000 }
+    const cache = loadListCache(clock)
+    const ticket = cache.ticket()
+    const sentAt = clock.t
+    clock.t += 3_000 // canvasapp built the list right away; the answer took 3 s to come back
+    cache.put('?project_id=p', ticket, sentAt, { status: 200, json: [] })
+    clock.t = sentAt + 14_999
+    expect(cache.get('?project_id=p')).toEqual({ status: 200, json: [] })
+    clock.t = sentAt + 15_000 // 12 s after it arrived: read again
+    expect(cache.get('?project_id=p')).toBeNull()
+  })
+
+  it('a job POST (start or end) or a logout drops it, and a read that started before one is never kept', () => {
+    const clock = { t: 100_000 }
+    const cache = loadListCache(clock)
+    cache.put('a', cache.ticket(), clock.t, 1)
+    cache.drop() // a POST /api/video-jobs starts
+    expect(cache.get('a')).toBeNull()
+    const ticket = cache.ticket()
+    cache.drop() // ...and ends while this read was on its way
+    cache.put('a', ticket, clock.t, 2)
+    expect(cache.get('a')).toBeNull()
+    cache.put('a', cache.ticket(), clock.t, 3)
+    expect(cache.get('a')).toBe(3)
+  })
+
+  it('canvasappRequest times an entry from the moment its request goes out (inside its slot), not from the answer', () => {
+    const body = /async function canvasappRequest\(req\) \{([\s\S]*?)\n\}\n/.exec(mainSource)?.[1] ?? ''
+    const slot = body.indexOf("withCanvasappSlot('api'")
+    const stamp = body.indexOf('sentAt = Date.now()')
+    const fetch = body.indexOf('canvasappSession().fetch(')
+    expect(slot).toBeGreaterThan(0)
+    expect(stamp).toBeGreaterThan(slot)
+    expect(fetch).toBeGreaterThan(stamp)
+    expect(body).toContain('canvasappJobListCache.put(cacheKey, ticket, sentAt, result)')
+    expect(body).not.toMatch(/canvasappJobListCache\.set\(/)
   })
 })

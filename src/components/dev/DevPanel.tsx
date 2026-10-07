@@ -104,6 +104,7 @@ import {
   isDevEndpoint,
   jobNodeOwners,
   jobNodeText,
+  mayOfferImport,
   SITE_JOB_HINT,
   siteJobToast,
   siteNodeLabel,
@@ -1218,9 +1219,11 @@ function JobList({ jobs }: { jobs: DevJobView[] }) {
                       <span className="dv-hint" title="Không có take nào trong dự án đang mở trỏ tới job này">
                         không có take
                       </span>
-                      <button type="button" className="btn btn-sm" onClick={importHere} title="Mở “Nhập job”: đưa job tạo trên trang vào dự án thành take (không trừ credit dev)">
-                        <CloudDownload size={13} /> Nhập
-                      </button>
+                      {mayOfferImport(j, nodeOwners.get(j.canvas_node_id)) && (
+                        <button type="button" className="btn btn-sm" onClick={importHere} title="Mở “Nhập job”: đưa job tạo trên trang vào dự án thành take (không trừ credit dev)">
+                          <CloudDownload size={13} /> Nhập
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

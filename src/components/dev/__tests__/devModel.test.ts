@@ -20,6 +20,7 @@ import {
   filterLog,
   jobNodeOwners,
   jobNodeText,
+  mayOfferImport,
   siteJobToast,
   siteNodeLabel,
   limitsDifferFromConfig,
@@ -336,6 +337,15 @@ describe('jobNodeOwners / jobNodeText (Job & đơn nạp)', () => {
     { id: 'scn_b', order: 12 },
   ]
   const owners = jobNodeOwners('prj_1', scenes)
+
+  it('"Nhập" only on a job "Nhập job" could offer: made on the site, not ended badly, on a node of the open project', () => {
+    const node = owners.get(sceneNodeId('prj_1', 'scn_a'))
+    expect(mayOfferImport({ origin: 'site', status: 'processing' }, node)).toBe(true)
+    expect(mayOfferImport({ origin: 'site', status: 'completed' }, owners.get(canvasNodeId('scn_a')))).toBe(true)
+    expect(mayOfferImport({ origin: 'app', status: 'processing' }, node)).toBe(false) // SanoVids' own (a deleted take's)
+    for (const status of ['failed', 'cancelled', 'expired']) expect(mayOfferImport({ origin: 'site', status }, node)).toBe(false)
+    expect(mayOfferImport({ origin: 'site', status: 'queued' }, owners.get(sceneNodeId('prj_2', 'scn_a')))).toBe(false)
+  })
 
   it('a scene of the open project, its old node (scene id alone), or anything else', () => {
     expect(owners.get(sceneNodeId('prj_1', 'scn_a'))).toEqual({ kind: 'scene', code: 'S03' })

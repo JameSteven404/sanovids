@@ -49,8 +49,9 @@ import type { DevCanvasapp, DevStreamAnswer } from './server'
 import { devWording } from './wording'
 
 /**
- * Job-list answers reused this long (main.cjs: 15 s for the real site, polled every 20 s). The dev engine polls every
- * 3 s and the answer is stamped when it arrives (after the simulated latency): 2 s, so no poll is served stale.
+ * Job-list answers reused this long (main.cjs: 15 s for the real site, polled every 20 s), timed like main's from when
+ * the request was SENT (the adapter's beforeAt trusts a read to show what existed this long before it was sent). The
+ * dev engine polls every 3 s: 2 s, so no poll is served stale.
  */
 export const DEV_JOB_LIST_CACHE_MS = 2_000
 /** The checkout window closes by itself after this long (main.cjs CHECKOUT_TIMEOUT_MS). */
@@ -237,9 +238,11 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     }
     const epoch = jobsEpoch
     try {
+      // timed from here (what the simulated site can have listed), never from the answer's arrival (main.cjs the same)
+      const sentAt = now()
       const res = await server().request(out)
       const copy: BridgeResponse = res.ok && res.json !== undefined ? { ...res, json: clone(res.json) } : res
-      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: now(), result: clone(copy) })
+      if (cacheKey !== null && cacheMs > 0 && copy.ok && copy.status === 200 && epoch === jobsEpoch) listCache.set(cacheKey, { at: sentAt, result: clone(copy) })
       return copy
     } catch (e) {
       return gatewayError('network', `Không kết nối được tới canvasapp giả lập (${e instanceof Error ? e.message : String(e)}).`)

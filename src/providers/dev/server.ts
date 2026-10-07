@@ -311,7 +311,7 @@ export const DEV_FAULT_PRESETS: { id: string; label: string; hint: string; rule:
   {
     id: 'list-network',
     label: 'Mất mạng khi đọc danh sách job (giữ)',
-    hint: 'Tiến độ không cập nhật được; take vẫn chạy, SanoVids lùi thời gian thử lại.',
+    hint: 'Tiến độ không cập nhật được; take vẫn chạy, SanoVids lùi thời gian thử lại. Cũng là lần đọc ngay trước mỗi lần gửi (cạnh một take “không rõ” trên cùng node: take mới chưa được gửi, không tốn credit dev) và lần quét của Nhập job (báo lỗi).',
     rule: { endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true },
   },
   {

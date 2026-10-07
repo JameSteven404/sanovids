@@ -759,6 +759,27 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     await s.api.listVideoJobs(projectId)
     expect(reads()).toBe(3)
   })
+
+  it('times a kept job-list answer from when its request was sent, like main.cjs (a slow answer is never served as fresher than it is)', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    // a list that takes 1.5 s to come back after the simulated site built it
+    const real = s.server
+    const slow = { ...real, request: async (r: TransportRequest) => (r.method === 'GET' && r.path.startsWith('/api/video-jobs?') ? real.request(r).finally(() => s.advance(1_500)) : real.request(r)) }
+    const bridge = createDevBridge(() => slow, { now: () => s.clock.t, jobListCacheMs: 2_000 })
+    const api = createCanvasappApi(createDesktopTransport(() => bridge))
+    const reads = () => useDevLog.getState().entries.filter((e) => e.endpoint === 'jobs-list' && e.fault === null).length
+    const before = reads()
+    const sent = s.clock.t
+    await api.listVideoJobs(projectId)
+    expect(s.clock.t).toBe(sent + 1_500)
+    s.clock.t = sent + 1_900
+    await api.listVideoJobs(projectId) // 1.9 s after it was sent: reused
+    expect(reads()).toBe(before + 1)
+    s.clock.t = sent + 2_100 // 0.6 s after it arrived, but 2.1 s after it was sent: read again
+    await api.listVideoJobs(projectId)
+    expect(reads()).toBe(before + 2)
+  })
 })
 
 describe('dev server: persistence and reset', () => {

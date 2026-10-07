@@ -7,10 +7,13 @@ import {
   canvasHintFor,
   classifySiteJobs,
   CREATED_SKEW_MS,
+  createdSkewOf,
   entryHint,
   hintMatches,
   hintsFor,
+  inPostWindow,
   MAX_IMPORT_PROMPT,
+  NAIVE_CREATED_SKEW_MS,
   NO_DOWNLOAD_AFTER_MS,
   normalizeImportPrompt,
   POST_WINDOW_MS,
@@ -177,6 +180,48 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
   it('an unknown creation time → reserved (it could be)', () => {
     expect(may({ created_at: undefined })).toBe(true)
     expect(may({ created_at: 'not a date' })).toBe(true)
+  })
+
+  /** Run `fn` with this computer in time zone `tz` (Node re-reads TZ at once). */
+  const inZone = (tz: string, fn: () => void) => {
+    const old = process.env.TZ
+    process.env.TZ = tz
+    try {
+      fn()
+    } finally {
+      if (old === undefined) delete process.env.TZ
+      else process.env.TZ = old
+    }
+  }
+  /** created_at as a naive datetime in the server's own zone (UTC+`h`), the way FastAPI prints one: no time zone. */
+  const naive = (ms: number, h: number) => new Date(ms + h * 3600_000).toISOString().slice(0, 23) + '456'
+
+  it('created_at without a time zone (VERIFY) is read in THIS computer’s zone: a job made seconds after the POST stays its own, wherever the user is', () => {
+    expect(createdSkewOf(new Date(T).toISOString())).toBe(CREATED_SKEW_MS)
+    expect(createdSkewOf('2026-10-06T17:00:00+07:00')).toBe(CREATED_SKEW_MS)
+    expect(createdSkewOf(T)).toBe(CREATED_SKEW_MS)
+    expect(createdSkewOf('2026-10-06T17:00:00.123456')).toBe(NAIVE_CREATED_SKEW_MS)
+    expect(createdSkewOf('2026-10-06 17:00:00')).toBe(NAIVE_CREATED_SKEW_MS)
+    // canvasapp on Vietnam time (UTC+7) read in Hawaii: +17 h; on US Pacific time (UTC−8) read in Kiribati (UTC+14): −22 h
+    for (const [tz, server] of [
+      ['Pacific/Honolulu', 7],
+      ['America/Los_Angeles', 7],
+      ['Asia/Ho_Chi_Minh', 7],
+      ['Pacific/Kiritimati', -8],
+      ['Pacific/Kiritimati', 0],
+    ] as const) {
+      inZone(tz, () => {
+        const made = naive(T + 5_000, server)
+        expect(inPostWindow(made, T), `${tz} / UTC${server}`).toBe(true)
+        expect(may({ created_at: made }), `${tz} / UTC${server}`).toBe(true)
+        // two days later: never that POST's, whatever the zones (still importable)
+        expect(inPostWindow(naive(T + 50 * 3600_000, server), T), `${tz} / UTC${server}`).toBe(false)
+      })
+    }
+    // with a time zone the window stays ±14 h (+10 min): a job made 15 h later on canvasapp's page is importable
+    inZone('Pacific/Honolulu', () => expect(inPostWindow(new Date(T + 15 * 3600_000).toISOString(), T)).toBe(false))
+    expect(inPostWindow(undefined, T)).toBeNull()
+    expect(inPostWindow('not a date', T)).toBeNull()
   })
 
   it('the scan holds such a job back as maybe-pending, naming the take; a POST whose job is known reserves nothing', () => {

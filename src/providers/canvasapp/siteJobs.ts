@@ -14,7 +14,8 @@
 // ---- API ----
 //   classifySiteJobs(jobs, ctx)        → { listHasKeys, candidates, skipped } (candidates sorted by scene, then time)
 //   sentMayOwn(job, key, rec, …)       could an unanswered POST of take `key` (ledger.sent) have made this job?
-//   inPostWindow(t, at)                the creation-time window of that rule (shared with the adapter's lookup)
+//   inPostWindow(createdAt, at)        the creation-time window of that rule (shared with the adapter's lookup;
+//                                      createdSkewOf: ±14 h with a time zone, ±27 h without one)
 //   hintsFor(nodeId, canvas, entries, imageOfUpload)   the node's settings as the bridge canvas / SanoVids' entry hold them
 //   canvasHintFor / entryHint / hintMatches            the parts of hintsFor + the match rule
 //   reconstructSiteJob(candidate, prompt, assetOf)     → SiteTakeDraft (settings + what is unknown / inferred)
@@ -25,20 +26,39 @@ import type { CanvasJob } from './api'
 import { canvasNodeId, clientRequestIdFor, decodeRemoteId, encodeRemoteId, inputShapeOf, modelProfileOf, resolutionOf, type BridgeEntry } from './mapping'
 
 /**
- * A job found for a lost answer must be created after the request was sent. Generous on purpose: canvasapp's
- * created_at may come without a time zone (VERIFY), which can shift it by up to ±14 h.
+ * How far a created_at WITH a time zone ('Z', ±hh:mm, or a number) may be from this computer's clock when the job was
+ * made: only that clock (or its time zone setting) can be wrong. Generous on purpose.
  */
 export const CREATED_SKEW_MS = 14 * 3600_000
+/**
+ * ...and one WITHOUT a time zone (canvasapp's format is still VERIFY: a FastAPI / Python naive datetime prints like
+ * "2026-10-07T12:00:00.123456"): Date.parse reads it in THIS computer's time zone, while canvasapp wrote it in its own
+ * (UTC, or the server's local time). Off by the gap between two time zones — up to 26 h (UTC−12 … UTC+14), e.g. +17 h
+ * for Vietnam time read in Hawaii — plus an hour for this computer's clock.
+ */
+export const NAIVE_CREATED_SKEW_MS = 27 * 3600_000
 /** At most this many jobs per import (one GET …/prompt each, one after the other: gentle on canvasapp). */
 export const MAX_IMPORT_BATCH = 20
 /** How long after its POST a job may still appear (the reservation of an unanswered POST, past the skew). */
 export const POST_WINDOW_MS = 10 * 60_000
+/** A date-time string that says its time zone: ends with Z / GMT / UTC / ±hh[:mm] after a time of day. */
+const ZONED_RE = /\d:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*(?:[zZ]|(?:GMT|UTC)?\s*[+-]\d{2}(?::?\d{2})?|GMT|UTC)$/
+/** How far `created_at` (as canvasapp lists it) may be off: CREATED_SKEW_MS with a time zone, else NAIVE_CREATED_SKEW_MS. */
+export function createdSkewOf(v: unknown): number {
+  return typeof v === 'number' || (typeof v === 'string' && ZONED_RE.test(v.trim())) ? CREATED_SKEW_MS : NAIVE_CREATED_SKEW_MS
+}
 /**
- * Could a job created at `t` (created_at, ms) be the job of a POST sent at `at` (local time)? Created within the skew
- * before it, or within the skew + POST_WINDOW_MS after it. The ONE window of the lost-answer lookup (adapter findJob),
- * its rival test and the import's reservation (sentMayOwn): a job is either a POST's to find or importable, never both.
+ * Could a job whose created_at is `createdAt` be the job of a POST sent at `at` (local time)? Created within its skew
+ * (createdSkewOf) before it, or within that skew + POST_WINDOW_MS after it; null = no usable creation time (each caller
+ * decides). The ONE window of the lost-answer lookup (adapter findJob), its rival test and the import's reservation
+ * (sentMayOwn): a job is either a POST's to find or importable, never both.
  */
-export const inPostWindow = (t: number, at: number): boolean => t >= at - CREATED_SKEW_MS && t <= at + CREATED_SKEW_MS + POST_WINDOW_MS
+export function inPostWindow(createdAt: unknown, at: number): boolean | null {
+  const t = createdTime(createdAt)
+  if (!Number.isFinite(t)) return null
+  const skew = createdSkewOf(createdAt)
+  return t >= at - skew && t <= at + skew + POST_WINDOW_MS
+}
 /** A finished job canvasapp does not let download (download_available false) this long: not offered any more. */
 export const NO_DOWNLOAD_AFTER_MS = 60 * 60_000
 /** canvasapp's own prompt limit (20.000): a longer /prompt answer is not trusted (unknown). */
@@ -205,8 +225,7 @@ const jobIdsOf = (records: Readonly<Record<string, { remoteId: string }>>): Set<
 export function sentMayOwn(job: CanvasJob, key: string, rec: SentLike, projectId: string, listHasKeys: boolean): boolean {
   if (listHasKeys) return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key
   if (rec.projectId !== projectId || job.canvas_node_id !== rec.nodeId || rec.before?.includes(job.job_id)) return false
-  const t = createdTime(job.created_at)
-  return !Number.isFinite(t) || inPostWindow(t, rec.at)
+  return inPostWindow(job.created_at, rec.at) ?? true
 }
 
 /** The first unanswered POST that may own `job` (its take id), or null. */
