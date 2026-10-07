@@ -4,14 +4,14 @@ import { useRuns, stopEngine } from '../store/runs'
 import { useSceneEditor } from '../store/sceneEditor'
 import { flush, switchProject } from '../store/persist'
 import { useUI } from '../store/ui'
-import { flushAll } from '../lib/promptDrafts'
-import { frame, pause, settle, type work } from './measure'
-import { perfCanvas } from './probe'
 import { LOD_ZOOM } from '../components/canvas/canvasModel'
 import { cutEdge } from '../components/canvas/edges'
 import { edgeId } from '../actions'
 import { parsePlaceholders } from '../core/placeholders'
 import { libraryFixture } from './synth'
+import { flushAll } from '../lib/promptDrafts'
+import { frame, pause, settle, type work } from './measure'
+import { perfCanvas } from './probe'
 
 export interface Scenario { id: string; label: string; run(sample: typeof work): Promise<void>; optional?: string }
 const element = <T extends HTMLElement>(selector: string): T => {
@@ -60,7 +60,28 @@ async function prepareNode() {
   flushSync(() => useUI.getState().select([scene.id]))
   await settle(nodeSelector())
 }
-function openNode() { element(`${nodeSelector()} .cv-sn-pr`).click() }
+/**
+ * The click a user makes on the static prompt: on its first characters, so SceneNode's onClick takes the caret-where-
+ * clicked path (staticTextBefore hit test + caretFromExcerptHit), not the caret-at-end one of a click below the text.
+ * The point is found before the measured slice; the returned action only dispatches the click.
+ */
+function nodeClick(): () => void {
+  const text = element(`${nodeSelector()} .cv-sn-pr .cv-sn-text`)
+  const first = document.createTreeWalker(text, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP }).nextNode()
+  check(!!first && first.textContent!.length >= 4, 'Prompt tĩnh chưa có chữ để bấm.')
+  const range = document.createRange()
+  range.setStart(first, 0); range.setEnd(first, 4)
+  const box = range.getBoundingClientRect()
+  const x = box.left + box.width / 2, y = box.top + box.height / 2
+  const target = document.elementFromPoint(x, y)
+  check(!!target && text.contains(target), 'Chữ prompt tĩnh bị che; không bấm được như người dùng.')
+  return () => { target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, detail: 1, view: window })) }
+}
+/** The editor opened where the static text was clicked (not at the end). */
+function checkCaretAtClick() {
+  const caret = useSceneEditor.getState().caret
+  check(caret !== null && caret < useProject.getState().project.scenes[0].prompt.length, 'Bấm vào chữ chưa đặt con trỏ tại chỗ bấm.')
+}
 function closeNode() {
   nodeField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
 }
@@ -80,18 +101,51 @@ async function typeText(sample: typeof work, textarea: HTMLTextAreaElement) {
   flushAll()
   check(useProject.getState().project.scenes[0].prompt === before + text, 'Nháp chưa được ghi vào cảnh.')
 }
-async function prepareLibrary() {
-  const project = libraryFixture(useProject.getState().project)
-  flushSync(() => { useProject.setState({ project }); useUI.getState().setLibrarySelection([]) })
-  flushSync(() => {
-    document.querySelector<HTMLElement>('.sb-search-clear')?.click()
-    document.querySelector<HTMLElement>('.sb-library .sb-sec-toggle[aria-expanded="false"]')?.click()
-  })
-  flushSync(() => element('.sb-library .sb-kind').click()) // First tab: all kinds.
-  await settle('.sb-library .sb-grid')
-  const ids = project.assets.slice(-200).map((a) => a.id)
-  for (const id of ids) element(`.sb-library [data-asset-id="${id}"]`)
-  return ids
+/** Type into the sidebar search the way React sees typing (its value is component state, not a pref). */
+function setSearch(value: string) {
+  const input = document.querySelector<HTMLInputElement>('.sb-search-input')
+  if (!input || input.value === value) return
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+const SIDEBAR_PREFS = ['bdp:pref:sb-collapsed', 'bdp:pref:sb-kind'] // Sidebar.tsx, AssetLibrary.tsx usePrefState
+const kindLabel = (tab: Element | null) => tab?.querySelector('span')?.textContent ?? null
+/**
+ * Shows the 200 fixture cards: clears the sidebar search, opens the Thư viện section, picks the "Tất cả" tab. Returns
+ * the card ids and the undo of those UI changes (search text, section, tab and both device prefs, as they were).
+ */
+async function prepareLibrary(): Promise<{ ids: string[]; restore: () => Promise<void> }> {
+  const query = document.querySelector<HTMLInputElement>('.sb-search-input')?.value ?? ''
+  const collapsed = !!document.querySelector('.sb-library .sb-sec-toggle[aria-expanded="false"]')
+  const prefs = SIDEBAR_PREFS.map((key) => [key, localStorage.getItem(key)] as const)
+  let kind: string | null = null
+  const restore = async () => {
+    flushSync(() => {
+      const tab = [...document.querySelectorAll('.sb-library .sb-kind')].find((t) => kindLabel(t) === kind)
+      if (tab && !tab.classList.contains('active')) (tab as HTMLElement).click()
+    })
+    flushSync(() => { if (collapsed) document.querySelector<HTMLElement>('.sb-library .sb-sec-toggle[aria-expanded="true"]')?.click() })
+    flushSync(() => setSearch(query))
+    await frame() // The prefs' write effects ran: put back the exact stored values (a tab no longer shown included).
+    for (const [key, value] of prefs) if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value)
+  }
+  try {
+    const project = libraryFixture(useProject.getState().project)
+    flushSync(() => { useProject.setState({ project }); useUI.getState().setLibrarySelection([]) })
+    flushSync(() => {
+      setSearch('')
+      if (collapsed) element('.sb-library .sb-sec-toggle').click()
+    })
+    kind = kindLabel(element('.sb-library .sb-kind.active'))
+    flushSync(() => element('.sb-library .sb-kind').click()) // First tab: all kinds.
+    await settle('.sb-library .sb-grid')
+    const ids = project.assets.slice(-200).map((a) => a.id)
+    for (const id of ids) element(`.sb-library [data-asset-id="${id}"]`)
+    return { ids, restore }
+  } catch (error) {
+    await restore()
+    throw error
+  }
 }
 function selectLibrary(ids: string[]) {
   element(`.sb-library [data-asset-id="${ids[0]}"]`).click()
@@ -163,8 +217,22 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       await sample(async () => { if (!await flush()) throw new Error('Không lưu được dữ liệu thử.') })
     } },
     { id: 'typeNode', label: 'Gõ trên thẻ', run: async (sample) => {
-      await prepareNode(); flushSync(openNode); await frame(); checkEditor(true)
+      await prepareNode(); flushSync(nodeClick()); await frame(); checkEditor(true); checkCaretAtClick()
       await typeText(sample, nodeField())
+      checkEditor(true)
+    } },
+    { id: 'nodeCommit', label: 'Commit prompt trên thẻ', run: async (sample) => {
+      await prepareNode(); flushSync(nodeClick()); await frame(); checkEditor(true)
+      const textarea = nodeField()
+      textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+      for (const character of ' Ánh nắng chiếu qua tán lá, máy quay lia.'.repeat(2).slice(0, 40)) {
+        check(document.execCommand('insertText', false, character), 'Trình duyệt không chèn được chữ.')
+        const draft = textarea.value
+        check(useProject.getState().project.scenes[0].prompt !== draft, 'Nháp đã vào cảnh trước bước đo commit.')
+        // The editor commits 160 ms after a burst of keys (throttle); its registered draft flush is the same commit, now.
+        await sample(flushAll)
+        check(useProject.getState().project.scenes[0].prompt === draft, 'Commit chưa ghi nháp của thẻ vào cảnh.')
+      }
       checkEditor(true)
     } },
     ...(['openEditor', 'closeEditor'] as const).map((id) => ({ id,
@@ -172,10 +240,10 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
         await prepareNode()
         for (let i = 0; i < 20; i++) {
           if (id === 'openEditor') {
-            await sample(openNode); checkEditor(true)
+            await sample(nodeClick()); checkEditor(true); checkCaretAtClick()
             flushSync(closeNode); await frame(); checkEditor(false)
           } else {
-            flushSync(openNode); await frame(); checkEditor(true)
+            flushSync(nodeClick()); await frame(); checkEditor(true)
             await sample(closeNode); checkEditor(false)
           }
         }
@@ -194,32 +262,38 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       label: ({ panWithEditor: 'Kéo khi sửa', zoomWithEditor: 'Zoom khi sửa', lodSwitch: 'Qua ngưỡng 55% hai chiều' })[id],
       run: async (sample: typeof work) => {
         await prepareNode()
-        if (id !== 'lodSwitch') { flushSync(openNode); await frame(); checkEditor(true) }
+        if (id !== 'lodSwitch') { flushSync(nodeClick()); await frame(); checkEditor(true) }
         const api = perfCanvas()!, scene = useProject.getState().project.scenes[0]
         // Keep the edited card in view; zoomWithEditor stays near, lodSwitch covers both sides and exactly 55%.
+        // panWithEditor: 40 px per step (the pan metric), back and forth, so the culled edge moves and the card stays.
         for (let i = 0; i < 30; i++) {
           const zoom = id === 'lodSwitch' ? [LOD_ZOOM - 0.01, LOD_ZOOM, LOD_ZOOM + 0.01][i % 3]
             : id === 'zoomWithEditor' ? 0.7 + (i % 10) * 0.03 : 1
-          await sample(() => { void api.setViewport({ x: 40 - scene.position.x * zoom + (id === 'panWithEditor' ? i * 2 : 0), y: 40 - scene.position.y * zoom, zoom }) })
+          const target = { x: 40 - scene.position.x * zoom + (id === 'panWithEditor' && i % 2 === 0 ? 40 : 0), y: 40 - scene.position.y * zoom, zoom }
+          await sample(() => { void api.setViewport(target) })
+          const now = api.getViewport()
+          check(Math.abs(now.x - target.x) < 0.5 && Math.abs(now.y - target.y) < 0.5 && Math.abs(now.zoom - zoom) < 1e-3, 'Viewport chưa đổi theo bước đo.')
           check(element(`${nodeSelector()} .cv-scene`).classList.contains('is-far') === (zoom < LOD_ZOOM), 'Node chưa đổi mức chi tiết tại 55%.')
           if (id !== 'lodSwitch') checkEditor(true)
         }
       } })),
     ...(['librarySelect200', 'libraryDelete200'] as const).map((id) => ({ id,
       label: id === 'librarySelect200' ? 'Chọn 200 mục thư viện' : 'Xoá 200 mục thư viện', run: async (sample: typeof work) => {
-        const selected = await prepareLibrary()
-        if (id === 'librarySelect200') {
-          await sample(() => selectLibrary(selected)); checkLibrary(selected)
-        } else {
-          flushSync(() => selectLibrary(selected)); await frame(); checkLibrary(selected)
-          const before = useProject.getState().project
-          await sample(() => element('.sb-library .sb-libfoot-del').click())
-          const after = useProject.getState().project
-          check(after.assets.length === before.assets.length - 200 && after.assets.every((a) => !selected.includes(a.id)), 'Chưa xoá đúng 200 mục thư viện.')
-          check(selected.every((assetId) => !document.querySelector(`.sb-library [data-asset-id="${assetId}"]`)), 'Card đã xoá vẫn còn trong thư viện.')
-          check(useUI.getState().librarySelection.length === 0, 'Lựa chọn thư viện chưa được xoá.')
-          check(before.scenes.every((scene, i) => after.scenes[i] === scene), 'Xoá ảnh chưa dùng làm thay đổi cảnh.')
-        }
+        const { ids: selected, restore } = await prepareLibrary()
+        try {
+          if (id === 'librarySelect200') {
+            await sample(() => selectLibrary(selected)); checkLibrary(selected)
+          } else {
+            flushSync(() => selectLibrary(selected)); await frame(); checkLibrary(selected)
+            const before = useProject.getState().project
+            await sample(() => element('.sb-library .sb-libfoot-del').click())
+            const after = useProject.getState().project
+            check(after.assets.length === before.assets.length - 200 && after.assets.every((a) => !selected.includes(a.id)), 'Chưa xoá đúng 200 mục thư viện.')
+            check(selected.every((assetId) => !document.querySelector(`.sb-library [data-asset-id="${assetId}"]`)), 'Card đã xoá vẫn còn trong thư viện.')
+            check(useUI.getState().librarySelection.length === 0, 'Lựa chọn thư viện chưa được xoá.')
+            check(before.scenes.every((scene, i) => after.scenes[i] === scene), 'Xoá ảnh chưa dùng làm thay đổi cảnh.')
+          }
+        } finally { await restore() }
       } })),
     ...(['cutWire', 'undoWire'] as const).map((id) => ({ id,
       label: id === 'cutWire' ? 'Cắt dây, giữ chữ đỏ' : 'Hoàn tác dây và chữ đỏ', run: async (sample: typeof work) => {

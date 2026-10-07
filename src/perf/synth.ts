@@ -1,7 +1,10 @@
 import type { Project, Take, VideoSettings } from '../core/types'
 
+/** Perf tiers. XXL is 3,000 scenes here; the stress tester's XXL (devtools/stress/synth TIER_SIZE) is 2,000. */
 export const SIZES = { M: { scenes: 300, takes: 600 }, L: { scenes: 600, takes: 1200 }, XL: { scenes: 1000, takes: 3000 }, XXL: { scenes: 3000, takes: 6000 } } as const
 export type PerfSize = keyof typeof SIZES
+/** Largest project synthProject makes (a custom size in the Hiệu năng panel / API included). */
+export const SYNTH_MAX = { scenes: 3000, takes: 6000 } as const
 /**
  * The 0.6.0 canvas layout (store/project LAYOUT / ROW_H — literal here: this module stays free of the stores; synth.test
  * checks both): scene rows 352 apart at x 464, the image column at x 40 in 220 × 275 tiles 24px apart, takes 224 + 16
@@ -18,8 +21,8 @@ export function mulberry32(seed: number) {
   }
 }
 export function synthProject(spec: SynthSpec, seed = 20261006): { project: Project; runs: { takes: Take[]; credits: number; spent: number } } {
-  if (!Number.isInteger(spec.scenes) || spec.scenes < 1 || spec.scenes > 3000 || !Number.isInteger(spec.takes)
-    || spec.takes < spec.scenes || spec.takes > 6000 || !Number.isSafeInteger(seed)) throw new Error('Cỡ thử không hợp lệ (1–3.000 cảnh, tối đa 6.000 video).')
+  if (!Number.isInteger(spec.scenes) || spec.scenes < 1 || spec.scenes > SYNTH_MAX.scenes || !Number.isInteger(spec.takes)
+    || spec.takes < spec.scenes || spec.takes > SYNTH_MAX.takes || !Number.isSafeInteger(seed)) throw new Error('Cỡ thử không hợp lệ (1–3.000 cảnh, tối đa 6.000 video).')
   const random = mulberry32(seed)
   const id = (kind: string, n = 0) => `prf_${seed}_${spec.scenes}_${spec.takes}_${kind}_${n}`
   const settings: VideoSettings = { model: 'seedance_2_5', mode: 'i2v', duration: 5, resolution: '720p', ratio: '16:9' }

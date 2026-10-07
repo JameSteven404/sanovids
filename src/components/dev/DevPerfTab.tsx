@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { harness } from '../../perf/runner'
 import type { PerfReport } from '../../perf/report'
-import type { PerfSize } from '../../perf/synth'
+import { SYNTH_MAX, type PerfSize } from '../../perf/synth'
 
 export function DevPerfTab() {
   const [size, setSize] = useState<PerfSize | 'custom'>('L')
@@ -24,17 +24,18 @@ export function DevPerfTab() {
   }
   return <section className="dv-perf" aria-label="Hiệu năng">
     <h3>Đo hiệu năng với dự án thử nghiệm</h3>
-    <p>Bản perf · dữ liệu cách ly. Các bài đo khung sửa trên thẻ chờ giao diện E2. Kết quả web chỉ để kiểm nhanh.</p>
+    <p>Bản perf · dữ liệu cách ly. Kết quả web chỉ để kiểm nhanh.</p>
     <div className="dv-perf-controls">
       <label>Cỡ dự án <select className="select" value={size} disabled={busy} onChange={(e) => setSize(e.target.value as typeof size)}>
         <option value="M">Vừa · 300 cảnh · 600 video</option>
         <option value="L">Lớn · 600 cảnh · 1.200 video</option>
         <option value="XL">Rất lớn · 1.000 cảnh · 3.000 video</option>
+        <option value="XXL">Cực lớn · 3.000 cảnh · 6.000 video</option>
         <option value="custom">Tuỳ chỉnh…</option>
       </select></label>
       {size === 'custom' && <>
-        <label>Cảnh <input className="input" type="number" min={1} max={2000} value={scenes} disabled={busy} onChange={(e) => setScenes(e.target.valueAsNumber)} /></label>
-        <label>Video <input className="input" type="number" min={scenes} max={6000} value={takes} disabled={busy} onChange={(e) => setTakes(e.target.valueAsNumber)} /></label>
+        <label>Cảnh <input className="input" type="number" min={1} max={SYNTH_MAX.scenes} value={scenes} disabled={busy} onChange={(e) => setScenes(e.target.valueAsNumber)} /></label>
+        <label>Video <input className="input" type="number" min={scenes} max={SYNTH_MAX.takes} value={takes} disabled={busy} onChange={(e) => setTakes(e.target.valueAsNumber)} /></label>
       </>}
       <button className="btn" disabled={busy} onClick={() => void act(() => harness.create(size === 'custom' ? { scenes, takes } : size))}>Tạo dự án thử nghiệm</button>
       <button className="btn btn-primary" disabled={busy} onClick={() => void act(async () => {

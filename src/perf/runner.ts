@@ -154,15 +154,17 @@ async function run(runs = 3): Promise<PerfReport> {
         result.status = verdict(result.workMs?.p95 ?? null, result.budget)
         result.frames = frameSamples ? { intervals: stats(intervals), over33: over33 / frameSamples, loafMax } : null
         const check = (label: string, passed: boolean) => result.assertions.push({ label, passed })
-        if (['typeInspector', 'typeNode', 'promptCommit', 'runsTick'].includes(scenario.id)) check('CanvasInner không render', !result.renders.counts.CanvasInner)
+        if (['typeInspector', 'typeNode', 'nodeCommit', 'promptCommit', 'runsTick'].includes(scenario.id)) check('CanvasInner không render', !result.renders.counts.CanvasInner)
         if (scenario.id === 'select') check('Tối đa 25 dòng video cho một lựa chọn', (result.maxRenders!.TakeRow ?? 0) <= 25)
         if (scenario.id === 'runsTick') check('Không ghi runs khi chỉ đổi tiến độ', !(result.renders.durations.autosaveRuns?.length))
         if (['drag', 'drag50'].includes(scenario.id)) check('Không commit ngoài canvas khi kéo', ['Sidebar', 'Inspector', 'TopBar'].every((id) => !result.renders.commits[id]))
-        if (result.frames && ['pan', 'pan04', 'panFar', 'zoom', 'drag', 'drag50', 'typeInspector', 'typeNode', 'panWithEditor', 'zoomWithEditor', 'lodSwitch'].includes(scenario.id)) {
+        if (result.frames && ['pan', 'pan04', 'panFar', 'zoom', 'drag', 'drag50', 'typeInspector', 'typeNode', 'nodeCommit', 'panWithEditor', 'zoomWithEditor', 'lodSwitch'].includes(scenario.id)) {
           check('Trung vị khung hình ≤ 17 ms', (result.frames.intervals?.median ?? Infinity) <= 17)
           check('Tối đa 5% khung hình > 33 ms', result.frames.over33 <= 0.05)
-          check('Không có khung dài vượt ngân sách', result.frames.loafMax <= (['typeInspector', 'typeNode'].includes(scenario.id) ? 50 : 100))
+          check('Không có khung dài vượt ngân sách', result.frames.loafMax <= (['typeInspector', 'typeNode', 'nodeCommit'].includes(scenario.id) ? 50 : 100))
         }
+        // Plan 3.5.6: a key or a commit on the node renders SceneNode for the edited id only (a sample = one key / commit).
+        if (['typeNode', 'nodeCommit'].includes(scenario.id)) check('Chỉ thẻ đang sửa render', (result.maxRenders!.SceneNodeView ?? 0) <= 1)
         if (result.assertions.some((a) => !a.passed)) result.status = 'fail'
       } catch (error) {
         result.reason = error instanceof Error ? error.message : String(error)

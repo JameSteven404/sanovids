@@ -1,4 +1,7 @@
-// Always-on CI ceilings for pure/store work. No React mount, DOM, paint, browser, gateway or persistence.
+// Always-on CI gate for the pure/store part of the 0.6.0 canvas scenarios. No React mount, DOM, paint, browser, gateway
+// or persistence. The functional checks always run; the time ceilings (budgets.headlessBudget) are compared with the
+// MEDIAN of 25 samples, which a loaded machine (parallel gates, shared CI runner) does not move, and with the p95 only
+// when SANOVIDS_TIMING=1 (quiet machine, like the other *.timing tests).
 import { afterEach, describe, expect, it } from 'vitest'
 import { lodOf, sceneAssetsOf, sceneGraphOf, sceneMapOf } from '../../components/canvas/canvasModel'
 import { farExcerpt, promptBoxHeight, promptLinesFor, promptTextWidth, settingsSummary, staticExcerpt } from '../../components/canvas/sceneNodeModel'
@@ -13,10 +16,11 @@ import { register } from '../../lib/promptDrafts'
 import { clearHistory, undo, useProject } from '../../store/project'
 import { useSceneEditor } from '../../store/sceneEditor'
 import { useUI } from '../../store/ui'
-import { HEADLESS_BUDGETS } from '../budgets'
+import { headlessBudget, type HeadlessId } from '../budgets'
 import { stats } from '../report'
 import { libraryFixture, SIZES, synthProject } from '../synth'
 
+const STRICT = !!process.env.SANOVIDS_TIMING
 const originalProject = useProject.getState().project
 const originalUI = useUI.getState(), originalPrefs = useCanvasPrefs.getState()
 afterEach(() => {
@@ -37,7 +41,7 @@ describe('canvas scenario pure/store timing (CI, no GUI)', () => {
       const target = project.scenes.at(-1)!
       const current = () => sceneMapOf(useProject.getState().project.scenes).get(target.id)!
       const results: Record<string, ReturnType<typeof stats>> = {}
-      const timed = (id: keyof typeof HEADLESS_BUDGETS, action: () => void, prepare = () => {}, verify = () => {}) => {
+      const timed = (id: HeadlessId, action: () => void, prepare = () => {}, verify = () => {}) => {
         const samples: number[] = []
         for (let i = -3; i < 25; i++) {
           prepare()
@@ -48,7 +52,9 @@ describe('canvas scenario pure/store timing (CI, no GUI)', () => {
           if (i >= 0) samples.push(elapsed)
         }
         results[id] = stats(samples)
-        expect(results[id]!.p95, `${tier}/${id}: pure/store p95 ms`).toBeLessThanOrEqual(HEADLESS_BUDGETS[id])
+        const ceiling = headlessBudget(id, tier)
+        expect(results[id]!.median, `${tier}/${id}: pure/store median ms`).toBeLessThanOrEqual(ceiling)
+        if (STRICT) expect(results[id]!.p95, `${tier}/${id}: pure/store p95 ms`).toBeLessThanOrEqual(ceiling)
       }
 
       let graph = sceneGraphOf(project.scenes)
