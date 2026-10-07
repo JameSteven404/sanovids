@@ -17,12 +17,10 @@ export function matchSeedvisRoute(method: string, path: unknown): SeedvisRouteMa
       continue
     }
     const [prefix, suffix] = template.split('{id}')
-    // An omitted wait is allowed; any supplied value must be exactly wait=0.
-    for (const tail of suffix === '?wait=0' ? [suffix, ''] : [suffix]) {
-      if (!path.startsWith(prefix) || !path.endsWith(tail)) continue
-      const id = path.slice(prefix.length, tail ? -tail.length : undefined)
-      if (SEEDVIS_ID_RE.test(id)) return { endpoint: endpoint as SeedvisIpcRoute, id }
-    }
+    // Exactly the contract template: a poll always carries ?wait=0 (no wait could hold the connection and a lane).
+    if (!path.startsWith(prefix) || !path.endsWith(suffix) || path.length <= prefix.length + suffix.length) continue
+    const id = path.slice(prefix.length, path.length - suffix.length)
+    if (SEEDVIS_ID_RE.test(id)) return { endpoint: endpoint as SeedvisIpcRoute, id }
   }
   return null
 }

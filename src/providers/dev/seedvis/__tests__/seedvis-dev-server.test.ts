@@ -4,11 +4,11 @@ import { SEEDVIS_API_BASE, SEEDVIS_IPC_ROUTES, SEEDVIS_KEY_MEMORY_MS, type Seedv
 import { SEEDVIS_MODEL_IDS } from '../../../../core/services'
 import { SEEDVIS_ROUTE_TABLE } from '../../../../core/seedvisRoutes'
 import { createDevSeedvisBridge } from '../bridge'
-import { createDevSeedvis } from '../server'
-import { SEEDVIS_FAULT_PRESETS } from '../faults'
-import { initialSeedvisState, memorySeedvisStore, readSeedvisState, SEEDVIS_DEV_KEYS, type SeedvisStateStore } from '../state'
+import { createDevSeedvis, SEEDVIS_SLOTS_FULL_MESSAGE, seedvisSizeLabel } from '../server'
+import { SEEDVIS_FAULT_PRESETS, type SeedvisFaultInput } from '../faults'
+import { initialSeedvisState, memorySeedvisStore, readSeedvisState, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_MAX_JOBS, type SeedvisStateStore } from '../state'
 import { matchSeedvisRoute } from '../routes'
-import { seedvisRequestProblem, seedvisUploadBytes, type SeedvisCreate } from '../validate'
+import { SEEDVIS_DEV_FAILURE_TEXT, seedvisRequestProblem, seedvisUploadBytes, type SeedvisCreate } from '../validate'
 
 const key = '12345678-1234-4234-8234-123456789abc'
 const create = (patch: Partial<SeedvisCreate> = {}): SeedvisCreate => ({ route: 'generations.create', idempotencyKey: key,
@@ -17,7 +17,7 @@ const png = (length = 16) => { const b = new Uint8Array(length); b.set([137, 80,
 const withImage = (length = 16) => create({ body: { ...create().body, mode: 'image-to-video' }, images: [{ field: 'reference_images', index: 0, mime: 'image/png', bytes: png(length) }] })
 function data(r: SeedvisResponse): any { expect(r.ok).toBe(true); return r.ok ? (r.json as any)?.data : undefined }
 function status(r: SeedvisResponse) { expect(r.ok).toBe(true); return r.ok ? r.status : 0 }
-function code(r: SeedvisResponse) { return r.ok ? (r.json as any)?.error?.code : r.code }
+function code(r: SeedvisResponse) { return r.ok ? ((r.json as any)?.code ?? (r.json as any)?.error?.code) : r.code }
 function harness(store: SeedvisStateStore = memorySeedvisStore()) {
   let time = 1_800_000_000_000
   const now = () => time
@@ -36,9 +36,11 @@ describe('seedvis route and request boundary', () => {
       expect(matchSeedvisRoute('DELETE', path)).toBeNull()
       expect(matchSeedvisRoute(route.method, `${path}#x`)).toBeNull()
     }
-    for (const path of ['/api/v1/developer/generations/a?wait=1', '/api/v1/developer/generations/a?wait=0&wait=0', '/api/v1/developer/generations/a?next=https://x', '/api/v1/../v1/models', '/api/v1/developer/generations/%2e%2e', '/api/v1/developer/generations/a/b', 'https://seedvis.com/api/v1/models', '//seedvis.com/api/v1/models', '/api/v1/models?', '/api/v1/models\n']) expect(matchSeedvisRoute('GET', path)).toBeNull()
+    for (const path of ['/api/v1/developer/generations/a?wait=1', '/api/v1/developer/generations/a?wait=0&wait=0', '/api/v1/developer/generations/a?next=https://x', '/api/v1/../v1/models', '/api/v1/developer/generations/%2e%2e', '/api/v1/developer/generations/a/b', 'https://seedvis.com/api/v1/models', '//seedvis.com/api/v1/models', '/api/v1/models?', '/api/v1/models\n', '/api/v1/developer/generations/a', '/api/v1/developer/generations/?wait=0']) expect(matchSeedvisRoute('GET', path)).toBeNull()
     expect(matchSeedvisRoute('GET', `/api/v1/developer/generations/${'a'.repeat(101)}`)).toBeNull()
-    expect(matchSeedvisRoute('GET', '/api/v1/developer/generations/a')).toMatchObject({ id: 'a' })
+    // Exactly the contract template: a poll without wait=0 could hold the connection (and a lane) on the real API.
+    expect(matchSeedvisRoute('GET', '/api/v1/developer/generations/a?wait=0')).toMatchObject({ endpoint: 'generations.get', id: 'a' })
+    expect(matchSeedvisRoute('POST', '/api/v1/developer/generations/a/cancel')).toMatchObject({ endpoint: 'generations.cancel', id: 'a' })
   })
 
   it('accepts all catalogue model/mode combinations and preserves reference order', async () => {
@@ -85,7 +87,7 @@ describe('seedvis lifecycle, account, faults and money', () => {
     await server.configure({ modesShape: 'objects' })
     expect(data(await bridge.request({ route: 'models' }))[0].modes[0]).toMatchObject({ id: 'text-to-video' })
     await bridge.request(create())
-    expect(data(await bridge.request({ route: 'account.usage' }))).toMatchObject({ generations: 1, credits_used: 10 })
+    expect(data(await bridge.request({ route: 'account.usage' }))).toMatchObject({ generations: 1, credits_used: 10, by_status: { queued: 1, processing: 0, completed: 0, failed: 0 } })
   })
 
   it('returns 202 queued, 202 polling, processing and final output using elapsed time', async () => {
@@ -94,12 +96,14 @@ describe('seedvis lifecycle, account, faults and money', () => {
     const first = await bridge.request(create())
     expect(status(first)).toBe(202)
     const job = data(first)
-    expect(job).toMatchObject({ status: 'queued', is_final: false, queue: { position: 1 }, next: { after_seconds: 15 } })
+    expect(first).toMatchObject({ json: { success: true, status: 202 } })
+    expect(job).toMatchObject({ object: 'generation', status: 'queued', is_final: false, queue: { position: 1 },
+      next: { action: 'poll', url: `/api/v1/developer/generations/${job.id}`, after_seconds: 15 } })
     expect(status(await bridge.request({ route: 'generations.get', id: job.id }))).toBe(202)
     advance(1000)
-    expect(data(await bridge.request({ route: 'generations.get', id: job.id })).status).toBe('processing')
+    expect(data(await bridge.request({ route: 'generations.get', id: job.id }))).toMatchObject({ status: 'processing', next: { action: 'poll', url: `/api/v1/developer/generations/${job.id}?wait=0` } })
     advance(6000)
-    expect(data(await bridge.request({ route: 'generations.get', id: job.id }))).toMatchObject({ status: 'completed', is_final: true, outputs: [{ type: 'video' }] })
+    expect(data(await bridge.request({ route: 'generations.get', id: job.id }))).toMatchObject({ status: 'completed', is_final: true, next: { action: 'done' }, outputs: [{ type: 'video' }] })
   })
 
   it('queues by available streams and rejects excess slots without billing', async () => {
@@ -120,14 +124,17 @@ describe('seedvis lifecycle, account, faults and money', () => {
     const { server, bridge, advance } = harness()
     const id = data(await bridge.request(create())).id
     const cancel = { route: 'generations.cancel', id } as const
-    expect(await bridge.request(cancel)).toMatchObject({ ok: true, status: 200, json: { cancellation: { refunded_credits: 10 } } })
-    expect(status(await bridge.request(cancel))).toBe(200)
+    expect(await bridge.request(cancel)).toMatchObject({ ok: true, status: 200, json: { cancellation: { outcome: 'cancelled', cancelled_outputs: 1, running_outputs: 0 } } })
+    // Safe to call twice; the refund happens exactly once and no invented refund amount is reported.
+    const again = await bridge.request(cancel)
+    expect(again).toMatchObject({ ok: true, status: 200, json: { cancellation: { outcome: 'cancelled', cancelled_outputs: 0, running_outputs: 0 } } })
+    expect(JSON.stringify(again)).not.toContain('refunded_credits')
     expect((await snapshot(server)).balances.A001).toBe(1000)
     const second = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
     advance(1000)
     expect(code(await bridge.request({ ...cancel, id: second }))).toBe('not_cancellable')
     server.addFault({ endpoint: 'generations.cancel', fault: { kind: 'cancel-partial' } })
-    expect(await bridge.request({ ...cancel, id: second })).toMatchObject({ ok: true, json: { cancellation: { outcome: 'partial', running_outputs: 1, refunded_credits: 0 } } })
+    expect(await bridge.request({ ...cancel, id: second })).toMatchObject({ ok: true, json: { cancellation: { outcome: 'partial', cancelled_outputs: 0, running_outputs: 1 } } })
     server.addFault({ endpoint: 'generations.cancel', fault: { kind: 'response', status: 503, code: 'cancel_unavailable', retryAfterSeconds: 2 } })
     expect(await bridge.request({ ...cancel, id: second })).toMatchObject({ status: 503, headers: { 'Retry-After': '2' } })
     advance(6000)
@@ -175,14 +182,20 @@ describe('seedvis lifecycle, account, faults and money', () => {
     expect(status(await bridge.request(poll))).toBe(200)
   })
 
-  it('implements the field-keyed native/OpenAI/Google errors and pre/post-processing 5xx', async () => {
+  it('implements the documented native/OpenAI/Google error bodies and pre/post-processing 5xx', async () => {
     const { server, bridge } = harness()
     for (const format of ['native', 'openai', 'google'] as const) {
       server.addFault({ endpoint: 'generations.create', fault: { kind: 'response', status: 400, code: 'invalid_image', field: 'reference_images[0]', format } })
       const answer = await bridge.request(create())
       expect(status(answer)).toBe(400)
       expect(JSON.stringify(answer)).toContain(format === 'google' ? 'invalid_image' : 'reference_images[0]')
+      if (format === 'native') expect((answer as any).json).toEqual({ success: false, status: 400, code: 'invalid_image', message: expect.any(String), errors: { 'reference_images[0]': [expect.any(String)] } })
+      if (format === 'google') expect((answer as any).json.error).toMatchObject({ code: 400, status: 'INVALID_ARGUMENT' })
     }
+    // errors{} only for a field-keyed code; a 402 / 404 names no field.
+    server.addFault({ endpoint: 'generations.create', fault: { kind: 'response', status: 402, code: 'insufficient_credits' } })
+    expect((await bridge.request(create()) as any).json).toEqual({ success: false, status: 402, code: 'insufficient_credits', message: expect.any(String) })
+    expect((await bridge.request({ route: 'generations.get', id: 'missing' }) as any).json).toEqual({ success: false, status: 404, code: 'generation_not_found', message: expect.any(String) })
     server.addFault({ endpoint: 'generations.create', fault: { kind: 'response', status: 502, code: 'generation_failed', afterProcessing: true } })
     expect(status(await bridge.request(create()))).toBe(502)
     expect((await snapshot(server)).jobs).toHaveLength(1)
@@ -306,7 +319,7 @@ describe('idempotency, arrival time, and persistent state', () => {
     expect(() => readSeedvisState({ version: 2 })).toThrow()
     const base = initialSeedvisState(); base.balances.A001 = NaN
     expect(() => readSeedvisState(base)).toThrow()
-    const store: SeedvisStateStore = { read: async () => { throw new Error('secret') }, change: async () => { throw new Error('secret') }, reset: async () => { throw new Error('secret') } }
+    const store: SeedvisStateStore = { peek: async () => { throw new Error('secret') }, change: async () => { throw new Error('secret') }, reset: async () => { throw new Error('secret') } }
     const { server, bridge } = harness(store)
     expect(await bridge.request(create())).toMatchObject({ ok: false, code: 'storage-failed' })
     expect(JSON.stringify(await server.snapshot())).not.toContain('secret')
@@ -394,7 +407,7 @@ describe('gateway downloads, key isolation and lock', () => {
     expect((await bridge.keyStatus()).tag).toBe(a.tag)
     expect(data(await bridge.request({ route: 'generations.get', id })).status).toBe('completed')
     expect(await bridge.downloadOpen({ generationId: id, index: 0 })).toMatchObject({ ok: true })
-    for (const [state, expected] of [['unreadable', 'key-unreadable'], ['revoked', 'invalid_api_key'], ['forbidden', 'api_disabled'], ['none', 'no-key']] as const) {
+    for (const [state, expected] of [['unreadable', 'key-unreadable'], ['revoked', 'unauthorized'], ['forbidden', 'forbidden'], ['none', 'no-key']] as const) {
       await server.setKeyState(state)
       expect(code(await bridge.request({ route: 'account.info' }))).toBe(expected)
     }
@@ -414,10 +427,247 @@ describe('gateway downloads, key isolation and lock', () => {
     expect(await bridge.keyStatus()).toMatchObject({ hasKey: false })
     expect(await bridge.downloadOpen({ generationId: 'job', index: 0 })).toMatchObject({ code: 'not-allowed' })
     expect(await server.snapshot()).toBeNull()
-    expect(server.addFault(SEEDVIS_FAULT_PRESETS[0].rule)).toBeNull()
+    expect(server.addFault(SEEDVIS_FAULT_PRESETS[0].rule)).toMatchObject({ ok: false, code: 'not-allowed' })
+    expect(server.faults()).toEqual([])
     applyDevAccessState(bareState('build'))
     expect((await snapshot(server)).jobs).toHaveLength(0)
     expect(await bridge.openBilling()).toEqual({ ok: true })
     expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('review round 3: wording the mapping track relies on, money traces, faults, queue and cost', () => {
+  // Recorded expectation for cx/sv-map: errorOf tells "slots full" from a schema 422 only by this wording. When the tracks
+  // are wired, the integration test must assert errorOf classifies the slots body as 'deferred' and the schema body as an error.
+  const SV_MAP_SLOTS_RE = /(?:slots?|streams?|concurrency).*(?:full|busy|limit).*(?:queue).*(?:full|limit|reached)|(?:queue).*(?:full|limit).*(?:slots?|streams?|concurrency).*(?:full|busy|limit|reached)/i
+  const preset = (id: string) => SEEDVIS_FAULT_PRESETS.find(p => p.id === id)!.rule
+
+  it('answers slots / queue full with one fixed realistic 422, distinct from a schema 422', async () => {
+    const { server, bridge, advance } = harness()
+    const slots = { success: false, status: 422, code: 'validation_error', message: SEEDVIS_SLOTS_FULL_MESSAGE }
+    expect(SV_MAP_SLOTS_RE.test(SEEDVIS_SLOTS_FULL_MESSAGE)).toBe(true)
+    await server.configure({ concurrency: 1, queueLimit: 0 })
+    expect(status(await bridge.request(create()))).toBe(202)
+    expect((await bridge.request(create({ idempotencyKey: crypto.randomUUID() })) as any).json).toEqual(slots)
+    await server.configure({ concurrency: 2, queueLimit: 10 })
+    expect(server.addFault(preset('slots-once'))).toMatchObject({ ok: true })
+    expect((await bridge.request(create({ idempotencyKey: crypto.randomUUID() })) as any).json).toEqual(slots)
+    expect(status(await bridge.request(create({ idempotencyKey: crypto.randomUUID() })))).toBe(202)
+    server.addFault(preset('slots'))
+    const later = crypto.randomUUID()
+    expect((await bridge.request(create({ idempotencyKey: later })) as any).json).toEqual(slots)
+    advance(119_000)
+    expect((await bridge.request(create({ idempotencyKey: later })) as any).json).toEqual(slots)
+    advance(1000)
+    expect(status(await bridge.request(create({ idempotencyKey: later })))).toBe(202)
+    server.addFault(preset('schema'))
+    const schema = await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))
+    expect(schema).toMatchObject({ ok: true, status: 422, json: { success: false, code: 'validation_error', errors: { prompt: [expect.any(String)] } } })
+    expect(SV_MAP_SLOTS_RE.test((schema as any).json.message)).toBe(false)
+    expect((await snapshot(server)).balances.A001).toBe(970)
+  })
+
+  it('records the Idempotency-Key on every job, also after the key memory expired (a double charge stays visible)', async () => {
+    const { server, bridge, advance } = harness()
+    await server.configure({ keyMemoryMs: 2000 })
+    const first = data(await bridge.request(create())).id
+    advance(2000)
+    const second = data(await bridge.request(create())).id
+    expect(second).not.toBe(first)
+    const snap = await snapshot(server)
+    expect(snap.memory.map(m => m.jobId)).toEqual([second])
+    expect(snap.jobs.map(j => [j.id, j.idempotencyKey])).toEqual([[first, key], [second, key]])
+    const { idempotencyKey: _, ...noKey } = create({ body: { ...create().body, prompt: 'khác' } })
+    await server.createWithoutKey(noKey)
+    expect((await snapshot(server)).jobs[2].idempotencyKey).toMatch(/^body:[a-f0-9]{64}$/)
+  })
+
+  it('keeps the job list bounded: the oldest finished jobs go, open and remembered ones stay, usage totals survive', async () => {
+    const { server, bridge, advance } = harness()
+    await server.configure({ keyMemoryMs: 100_000_000, concurrency: 10, queueLimit: 1000 })
+    await server.setBalance(1_000_000)
+    const pinnedKey = crypto.randomUUID()
+    const ids = [data(await bridge.request(create({ idempotencyKey: pinnedKey }))).id]
+    await server.configure({ keyMemoryMs: 1000 })
+    for (let i = 1; i < SEEDVIS_DEV_MAX_JOBS + 50; i++) {
+      advance(7000)
+      ids.push(data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id)
+    }
+    advance(7000)
+    server.addFault({ endpoint: 'generations.create', fault: { kind: 'hold' } })
+    const held = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+    const kept = (await snapshot(server)).jobs.map(j => j.id)
+    expect(kept).toHaveLength(SEEDVIS_DEV_MAX_JOBS)
+    expect(kept).toEqual([ids[0], ...ids.slice(52), held])
+    expect(data(await bridge.request({ route: 'account.usage' }))).toMatchObject({ generations: 251, credits_used: 2510, by_status: { queued: 1, processing: 0, completed: 250, failed: 0 } })
+    expect(code(await bridge.request({ route: 'generations.get', id: ids[1] }))).toBe('generation_not_found')
+    expect(data(await bridge.request(create({ idempotencyKey: pinnedKey }))).id).toBe(ids[0])
+  }, 60_000)
+
+  it('refuses fault parameters the saved state could not hold, and stays usable', async () => {
+    const { server, bridge } = harness()
+    const bad: unknown[] = [
+      { endpoint: 'generations.create', fault: { kind: 'slots-full', forMs: Infinity } },
+      { endpoint: 'generations.create', fault: { kind: 'slots-full', forMs: NaN } },
+      { endpoint: 'generations.create', fault: { kind: 'not-started', afterMs: -1 } },
+      { endpoint: 'generations.create', fault: { kind: 'poll-404', polls: 1.5 } },
+      { endpoint: 'generations.create', fault: { kind: 'slow-upload', bytesPerSecond: 0 } },
+      { endpoint: 'generations.create', fault: { kind: 'fail-job', code: 'x'.repeat(101) } },
+      { endpoint: 'generations.create', fault: { kind: 'fail-job', code: 42 } },
+      { endpoint: 'generations.create', fault: { kind: 'response', status: 600, code: 'server_error' } },
+      { endpoint: 'generations.create', fault: { kind: 'response', status: 422, code: 'Bad Code' } },
+      { endpoint: 'generations.create', fault: { kind: 'response', status: 400, code: 'invalid_image', field: '<b>' } },
+      { endpoint: 'generations.create', fault: { kind: 'lost-response' }, times: NaN },
+      { endpoint: 'generations.create', fault: { kind: 'lost-response' }, times: Infinity },
+      { endpoint: 'generations.create', fault: { kind: 'nope' } },
+      { endpoint: 'nope', fault: { kind: 'offline' } },
+      { endpoint: 'download', fault: { kind: 'slots-full', forMs: 1 } },
+      { endpoint: 'generations.get', fault: { kind: 'hold' } },
+    ]
+    for (const input of bad) expect(server.addFault(input as SeedvisFaultInput)).toMatchObject({ ok: false, code: 'bad-request' })
+    expect(server.faults()).toEqual([])
+    expect(data(await bridge.request({ route: 'account.info' }))).toMatchObject({ credit_balance: 1000 })
+    expect(status(await bridge.request(create()))).toBe(202)
+    for (const p of SEEDVIS_FAULT_PRESETS) expect(server.addFault(p.rule)).toMatchObject({ ok: true })
+    expect(server.addFault({ endpoint: 'generations.create', fault: { kind: 'lost-response' }, times: 2.7 })).toMatchObject({ ok: true, rule: { remaining: 2 } })
+  })
+
+  it('uses up a fault only where it acts: early exits keep it for the next request; list, remove and subscribe', async () => {
+    const { server, bridge, now } = harness()
+    const calls = vi.fn()
+    const off = server.subscribe(calls)
+    await server.configure({ uploadBytesPerSecond: 1000 })
+    server.addFault(preset('lost'))
+    expect(await bridge.request({ ...withImage(), mustFinishBy: now() + 10 })).toMatchObject({ code: 'deadline', sent: false })
+    await server.configure({ online: false })
+    expect(await bridge.request(create())).toMatchObject({ code: 'offline', sent: false })
+    await server.configure({ online: true })
+    expect(server.faults().map(f => f.fault.kind)).toEqual(['lost-response'])
+    expect(await bridge.request(create())).toMatchObject({ ok: false, code: 'network', sent: true })
+    expect(server.faults()).toEqual([])
+    // Job modifiers are not spent by a replay, a 409 or a 402: only a new job takes them.
+    server.addFault({ endpoint: 'generations.create', fault: { kind: 'poll-404', polls: 2 } })
+    server.addFault(preset('hold'))
+    expect(await bridge.request(create())).toMatchObject({ ok: true, headers: { 'Idempotency-Replayed': 'true' } })
+    expect(code(await bridge.request(create({ body: { ...create().body, prompt: 'khác' } })))).toBe('idempotency_conflict')
+    await server.setBalance(0)
+    expect(code(await bridge.request(create({ idempotencyKey: crypto.randomUUID() })))).toBe('insufficient_credits')
+    await server.setBalance(1000)
+    expect(server.faults().map(f => f.fault.kind)).toEqual(['poll-404', 'hold'])
+    const id = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+    expect(server.faults()).toEqual([])
+    expect(code(await bridge.request({ route: 'generations.get', id }))).toBe('generation_not_found')
+    // A lost answer also hides a refusal: the server answered, the answer never came back.
+    server.addFault(preset('lost'))
+    await server.setBalance(0)
+    expect(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).toMatchObject({ ok: false, code: 'network', sent: true })
+    const added = server.addFault(preset('missing'))
+    if (!added.ok) throw new Error('No rule')
+    expect(server.faults()).toEqual([expect.objectContaining({ id: added.rule.id, sticky: true, hits: 0 })])
+    server.removeFault(added.rule.id)
+    expect(server.faults()).toEqual([])
+    await Promise.resolve()
+    expect(calls).toHaveBeenCalled()
+    off()
+  })
+
+  it('never runs more jobs than the plan streams: a released held job waits behind the job already due', async () => {
+    for (const pollBeforeRelease of [false, true]) {
+      const { server, bridge, advance, now } = harness()
+      const t0 = now()
+      await server.configure({ concurrency: 1 })
+      server.addFault(preset('hold'))
+      const h = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+      const b = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+      const statusOf = async (id: string) => data(await bridge.request({ route: 'generations.get', id })).status
+      advance(1200)
+      if (pollBeforeRelease) expect(await statusOf(b)).toBe('processing')
+      advance(300)
+      await server.releaseHeld(h)
+      advance(100)
+      expect([await statusOf(b), await statusOf(h)]).toEqual(['processing', 'queued'])
+      for (let i = 0; i < 15; i++) {
+        advance(1000)
+        expect((await snapshot(server)).jobs.filter(j => j.status === 'processing').length).toBeLessThanOrEqual(1)
+      }
+      const jobs = (await snapshot(server)).jobs
+      const bJob = jobs.find(j => j.id === b)!
+      expect(bJob).toMatchObject({ status: 'completed', startAt: bJob.readyAt, endAt: bJob.readyAt + 6000 })
+      expect(bJob.readyAt - t0).toBeLessThan(1010)
+      expect(jobs.find(j => j.id === h)).toMatchObject({ status: 'completed', startAt: bJob.endAt })
+    }
+  })
+
+  it('cancel-partial never forces a queued job past the limit; more streams never start jobs in the past', async () => {
+    const { server, bridge, advance, now } = harness()
+    const t0 = now()
+    await server.configure({ concurrency: 1 })
+    const a = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+    const q = data(await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))).id
+    advance(2000)
+    server.addFault(preset('partial'))
+    expect(await bridge.request({ route: 'generations.cancel', id: q })).toMatchObject({ ok: true, json: { data: { status: 'queued' }, cancellation: { outcome: 'partial', running_outputs: 1 } } })
+    expect((await snapshot(server)).jobs.filter(j => j.status === 'processing').map(j => j.id)).toEqual([a])
+    advance(1000)
+    const more = now()
+    await server.configure({ concurrency: 2 })
+    advance(500)
+    const queued = (await snapshot(server)).jobs.find(j => j.id === q)!
+    expect(queued).toMatchObject({ status: 'processing', startAt: more })
+    expect(queued.readyAt).toBeLessThan(t0 + 1010)
+  })
+
+  it('the simulated bridge owns a copy of the request before its first await, like IPC', async () => {
+    const { server, bridge } = harness()
+    const req = withImage()
+    const pending = bridge.request(req)
+    req.body.prompt = 'đã đổi'
+    req.images![0].bytes[12] = 77
+    const first = data(await pending)
+    expect((await snapshot(server)).jobs[0].body.prompt).toBe('Một chú mèo')
+    expect(data(await bridge.request(withImage())).id).toBe(first.id)
+  })
+
+  it('logs every request with its outcome, sent flag and bytes on the wire (offline, deadline and refusals included)', async () => {
+    const { server, bridge, now } = harness()
+    await server.configure({ uploadBytesPerSecond: 250_000 })
+    const big = withImage(1_258_291)
+    expect(status(await bridge.request(big))).toBe(202)
+    const total = seedvisUploadBytes(big)
+    await server.configure({ online: false })
+    await bridge.request(create({ idempotencyKey: crypto.randomUUID() }))
+    await server.configure({ online: true })
+    expect(await bridge.request({ ...big, idempotencyKey: crypto.randomUUID(), mustFinishBy: now() + 1000 })).toMatchObject({ code: 'deadline', message: SEEDVIS_DEV_FAILURE_TEXT.deadline })
+    await bridge.request({ route: 'models', url: 'https://example.invalid' } as unknown as SeedvisRequest)
+    await server.setKeyState('none')
+    await bridge.request({ route: 'account.info' })
+    const snap = await snapshot(server)
+    expect(snap.logs).toEqual([
+      expect.objectContaining({ endpoint: 'generations.create', status: 202, sent: true, uploadedBytes: total, authorization: 'Bearer ***', images: ['[png 1.2 MB]'] }),
+      expect.objectContaining({ endpoint: 'generations.create', status: 'offline', sent: false, uploadedBytes: 0 }),
+      expect.objectContaining({ endpoint: 'generations.create', status: 'deadline', sent: false, uploadedBytes: 250_000 }),
+      expect.objectContaining({ endpoint: 'models', status: 'bad-request' }),
+      expect.objectContaining({ endpoint: 'account.info', status: 'no-key' }),
+    ])
+    expect(snap.logs[3].authorization).toBeUndefined()
+    expect(snap.uploadedBytes).toBe(total + 250_000)
+    expect([seedvisSizeLabel(16), seedvisSizeLabel(2048)]).toEqual(['16 B', '2.0 KB'])
+  })
+
+  it('gives each gateway failure its own fixed Vietnamese text (brand in lowercase)', async () => {
+    for (const [failureCode, text] of Object.entries(SEEDVIS_DEV_FAILURE_TEXT)) {
+      expect(text).not.toMatch(/^Seedvis/)
+      if (failureCode !== 'bad-request') expect(text).not.toBe(SEEDVIS_DEV_FAILURE_TEXT['bad-request'])
+    }
+    const { server, bridge, advance } = harness()
+    await server.configure({ online: false })
+    expect(await bridge.request(create())).toMatchObject({ code: 'offline', message: 'seedvis giả lập đang mất mạng.' })
+    await server.configure({ online: true })
+    const id = data(await bridge.request(create())).id
+    advance(7000)
+    await bridge.request({ route: 'generations.get', id })
+    advance(60_000)
+    expect(await bridge.downloadOpen({ generationId: id, index: 0 })).toEqual({ ok: false, code: 'expired-link', message: 'Link video giả lập đã hết hạn.' })
+    expect(await server.download('not a url')).toMatchObject({ code: 'not-allowed' })
   })
 })

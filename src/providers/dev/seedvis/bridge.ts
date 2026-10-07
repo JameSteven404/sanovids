@@ -26,8 +26,11 @@ export function createDevSeedvisBridge(server: DevSeedvis = createDevSeedvis()):
     async clearKey() { clear(); return server.clearKey() },
     async request(args: SeedvisRequest) {
       if (!devAllowed()) return locked()
+      // Like IPC, own a copy of the arguments before the first await: later renderer edits cannot change what is billed or hashed.
+      let req: SeedvisRequest
+      try { req = structuredClone(args) } catch { return failure('bad-request') }
       const before = await stamp()
-      const answer = await server.request(args)
+      const answer = await server.request(req)
       if (answer.ok && before && before === await stamp() && isObj(answer.json) && isObj(answer.json.data)) {
         const job = answer.json.data
         if (typeof job.id === 'string' && SEEDVIS_ID_RE.test(job.id) && Array.isArray(job.outputs)) {

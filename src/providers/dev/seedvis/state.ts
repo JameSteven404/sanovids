@@ -11,6 +11,7 @@ export const SEEDVIS_DEV_STATE_KEY = 'state-v1'
 export const SEEDVIS_DEV_KEYS = { A001: 'dev-seedvis-account-A001', B002: 'dev-seedvis-account-B002' } as const
 export type SeedvisDevAccount = keyof typeof SEEDVIS_DEV_KEYS
 export type SeedvisDevKeyState = 'verified' | 'none' | 'revoked' | 'forbidden' | 'unreadable'
+export const SEEDVIS_DEV_ACCOUNTS = Object.keys(SEEDVIS_DEV_KEYS) as SeedvisDevAccount[]
 
 export interface SeedvisDevConfig {
   keyMemoryMs: number
@@ -59,6 +60,8 @@ export function seedvisConfig(raw: unknown): SeedvisDevConfig {
 export interface SeedvisDevJob {
   id: string
   account: SeedvisDevAccount
+  /** Normalised Idempotency-Key that created the job (lowercase UUID, or `body:<sha256>` without a key). Outlives the key memory, so a snapshot can count jobs per key. */
+  idempotencyKey: string
   body: SeedvisGenerationBody
   references: { field: SeedvisImageField; index: number }[]
   createdAt: number
@@ -79,38 +82,56 @@ export interface SeedvisDevJob {
   links: { token: string; expiresAt: number }[]
   video: Uint8Array
 }
+/** Usage of the finished jobs that compaction dropped, so /account/usage totals survive the job cap. */
+export interface SeedvisDevTrimmed { generations: number; creditsUsed: number; completed: number; failed: number }
 export interface SeedvisDevState {
   version: 1
+  /** New on every write: a store re-validates a saved value only when another writer changed it. */
+  rev: string
   epoch: string
   config: SeedvisDevConfig
   account: SeedvisDevAccount
   keyState: SeedvisDevKeyState
   savedAt: number
   balances: Record<SeedvisDevAccount, number>
+  /** Creation order, oldest first. */
   jobs: SeedvisDevJob[]
   memory: { account: SeedvisDevAccount; key: string; hash: string; jobId: string; expiresAt: number }[]
   slotsFullUntil: number
+  /** When the queue was last brought up to date: a queued job never starts before it. */
+  clock: number
+  trimmed: Record<SeedvisDevAccount, SeedvisDevTrimmed>
 }
 
+/** Finished jobs kept, like the canvasapp sim's MAX_JOBS. Queued / processing jobs and jobs an unexpired key points at are never dropped. */
+export const SEEDVIS_DEV_MAX_JOBS = 200
+export const SEEDVIS_JOB_KEY_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|body:[a-f0-9]{64})$/
+
+const noTrim = (): SeedvisDevTrimmed => ({ generations: 0, creditsUsed: 0, completed: 0, failed: 0 })
+
 export function initialSeedvisState(now = Date.now()): SeedvisDevState {
-  return { version: 1, epoch: crypto.randomUUID(), config: { ...SEEDVIS_DEV_DEFAULTS }, account: 'A001', keyState: 'verified', savedAt: now,
-    balances: { A001: 1000, B002: 1000 }, jobs: [], memory: [], slotsFullUntil: 0 }
+  return { version: 1, rev: crypto.randomUUID(), epoch: crypto.randomUUID(), config: { ...SEEDVIS_DEV_DEFAULTS }, account: 'A001', keyState: 'verified', savedAt: now,
+    balances: { A001: 1000, B002: 1000 }, jobs: [], memory: [], slotsFullUntil: 0, clock: 0, trimmed: { A001: noTrim(), B002: noTrim() } }
 }
 
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0
 const time = (n: unknown) => n === null || finite(n)
 const account = (n: unknown): n is SeedvisDevAccount => n === 'A001' || n === 'B002'
+const shortText = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 100
+const trimmedOk = (t: unknown) => isObj(t) && ['generations', 'creditsUsed', 'completed', 'failed'].every(k => finite(t[k]))
 
-/** Corrupt persisted state fails closed; do not silently reset a paid simulation's ledger. */
+/** Corrupt persisted state fails closed; do not silently reset a paid simulation's ledger. Runs when a value is loaded, not per request. */
 export function readSeedvisState(raw: unknown): SeedvisDevState {
   if (raw === undefined) return initialSeedvisState()
-  if (!isObj(raw) || raw.version !== 1 || typeof raw.epoch !== 'string' || !account(raw.account)
+  if (!isObj(raw) || raw.version !== 1 || !shortText(raw.rev) || !shortText(raw.epoch) || !account(raw.account)
     || !['verified', 'none', 'revoked', 'forbidden', 'unreadable'].includes(String(raw.keyState))
-    || !finite(raw.savedAt) || !finite(raw.slotsFullUntil) || !isObj(raw.balances) || !finite(raw.balances.A001) || !finite(raw.balances.B002)
+    || !finite(raw.savedAt) || !finite(raw.slotsFullUntil) || !finite(raw.clock) || !isObj(raw.balances) || !finite(raw.balances.A001) || !finite(raw.balances.B002)
+    || !isObj(raw.trimmed) || !trimmedOk(raw.trimmed.A001) || !trimmedOk(raw.trimmed.B002)
     || !Array.isArray(raw.jobs) || !Array.isArray(raw.memory)) throw new Error('Invalid seedvis dev state')
-  const ids = new Set<string>()
+  const owner = new Map<string, string>()
   for (const j of raw.jobs) {
-    if (!isObj(j) || typeof j.id !== 'string' || !SEEDVIS_ID_RE.test(j.id) || ids.has(j.id) || !account(j.account) || !isObj(j.body)
+    if (!isObj(j) || typeof j.id !== 'string' || !SEEDVIS_ID_RE.test(j.id) || owner.has(j.id) || !account(j.account) || !isObj(j.body)
+      || typeof j.idempotencyKey !== 'string' || !SEEDVIS_JOB_KEY_RE.test(j.idempotencyKey)
       || !['queued', 'processing', 'completed', 'failed'].includes(String(j.status))
       || ![j.createdAt, j.readyAt, j.processingMs, j.cost, j.missingPolls].every(finite) || ![j.startAt, j.endAt, j.notStartedAt].every(time)
       || !['refunded', 'held', 'emptyOutputs', 'shortEcho'].every(k => typeof j[k] === 'boolean')
@@ -122,32 +143,34 @@ export function readSeedvisState(raw: unknown): SeedvisDevState {
     if (seedvisRequestProblem({ route: 'generations.create', idempotencyKey: '00000000-0000-4000-8000-000000000000', body: j.body, images })
       || ((j.status === 'processing' || j.status === 'completed') && (j.startAt === null || j.endAt === null))
       || ((j.startAt === null) !== (j.endAt === null))) throw new Error('Invalid seedvis dev job body or phase')
-    ids.add(j.id)
+    owner.set(j.id, `${j.account} ${j.idempotencyKey}`)
   }
   for (const m of raw.memory) {
-    if (!isObj(m) || !account(m.account) || typeof m.key !== 'string' || m.key.length > 100 || typeof m.hash !== 'string' || !/^[a-f0-9]{64}$/.test(m.hash)
-      || !(SEEDVIS_UUID_RE.test(m.key) || /^body:[a-f0-9]{64}$/.test(m.key))
-      || typeof m.jobId !== 'string' || !ids.has(m.jobId) || !finite(m.expiresAt)
-      || raw.jobs.find(j => j.id === m.jobId)?.account !== m.account) throw new Error('Invalid seedvis dev memory')
+    if (!isObj(m) || !account(m.account) || typeof m.key !== 'string' || !SEEDVIS_JOB_KEY_RE.test(m.key) || typeof m.hash !== 'string' || !/^[a-f0-9]{64}$/.test(m.hash)
+      || typeof m.jobId !== 'string' || owner.get(m.jobId) !== `${m.account} ${m.key}` || !finite(m.expiresAt)) throw new Error('Invalid seedvis dev memory')
   }
   return { ...(structuredClone(raw) as unknown as SeedvisDevState), config: seedvisConfig(raw.config) }
 }
 
 /** An atomic update prevents two tabs from billing the same idempotency key twice. */
 export interface SeedvisStateStore {
-  read(): Promise<SeedvisDevState>
+  /** Runs fn on the saved state without writing (fn must not change it); returns a copy of fn's result. */
+  peek<T>(fn: (state: Readonly<SeedvisDevState>) => T): Promise<T>
+  /** Atomic read-modify-write: a throw leaves the saved state untouched. Returns a copy of fn's result. */
   change<T>(fn: (state: SeedvisDevState) => T): Promise<T>
   reset(): Promise<void>
 }
 
-export function memorySeedvisStore(initial: SeedvisDevState = initialSeedvisState()): SeedvisStateStore {
-  let saved = structuredClone(initial)
+/** Validated once, when created; later writes come from the simulator itself, so no request re-validates every job. */
+export function memorySeedvisStore(initial?: SeedvisDevState): SeedvisStateStore {
+  let saved = readSeedvisState(initial)
   return {
-    read: async () => readSeedvisState(saved),
+    peek: async fn => structuredClone(fn(saved)),
     async change(fn) {
-      const state = readSeedvisState(saved)
-      const result = fn(state)
-      saved = structuredClone(state)
+      const draft = structuredClone(saved)
+      const result = fn(draft)
+      draft.rev = crypto.randomUUID()
+      saved = draft
       return structuredClone(result)
     },
     async reset() { saved = initialSeedvisState() },
@@ -157,17 +180,35 @@ export function memorySeedvisStore(initial: SeedvisDevState = initialSeedvisStat
 /** Lazy: importing the simulator does not open IndexedDB or wire it into the app. */
 export function indexedSeedvisStore(): SeedvisStateStore {
   const store = createStore(SEEDVIS_DEV_DB, 'simulation')
+  let checkedRev: string | null = null
+  // IndexedDB hands back a fresh copy on every read: validate it only when another writer (a tab, a reset) changed it.
+  const accept = (raw: unknown): SeedvisDevState => {
+    if (checkedRev !== null && isObj(raw) && raw.rev === checkedRev) return raw as unknown as SeedvisDevState
+    const state = readSeedvisState(raw)
+    if (raw !== undefined) checkedRev = state.rev
+    return state
+  }
+  // The first read saves the initial state, so its epoch (the key session) is the one every later change sees.
+  async function load(): Promise<SeedvisDevState> {
+    const raw = await get(SEEDVIS_DEV_STATE_KEY, store)
+    if (raw !== undefined) return accept(raw)
+    await update(SEEDVIS_DEV_STATE_KEY, saved => saved ?? initialSeedvisState(), store)
+    return accept(await get(SEEDVIS_DEV_STATE_KEY, store))
+  }
   return {
-    read: async () => readSeedvisState(await get(SEEDVIS_DEV_STATE_KEY, store)),
+    peek: async fn => fn(await load()),
     async change(fn) {
       let result!: ReturnType<typeof fn>
+      let rev = ''
       await update<SeedvisDevState>(SEEDVIS_DEV_STATE_KEY, raw => {
-        const state = readSeedvisState(raw)
+        const state = accept(raw)
         result = fn(state)
+        state.rev = rev = crypto.randomUUID()
         return state
       }, store)
-      return structuredClone(result)
+      checkedRev = rev
+      return result
     },
-    async reset() { await update(SEEDVIS_DEV_STATE_KEY, () => initialSeedvisState(), store) },
+    async reset() { checkedRev = null; await update(SEEDVIS_DEV_STATE_KEY, () => initialSeedvisState(), store) },
   }
 }

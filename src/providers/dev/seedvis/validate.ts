@@ -9,7 +9,32 @@ import { matchSeedvisRoute, SEEDVIS_ID_RE } from './routes'
 
 export { isObj }
 export const SEEDVIS_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-export const failure = (code: SeedvisBridgeErrorCode, message = 'Yêu cầu seedvis giả lập không hợp lệ.'): SeedvisBridgeFailure => ({ ok: false, code, message })
+
+/** One fixed Vietnamese text per gateway failure (the contract never carries raw exceptions). The brand stays lowercase. */
+export const SEEDVIS_DEV_FAILURE_TEXT: Record<SeedvisBridgeErrorCode, string> = {
+  'not-allowed': 'seedvis giả lập không cho phép yêu cầu này.',
+  'no-key': 'Chưa có khoá giả lập seedvis.',
+  'key-unreadable': 'Không đọc được khoá giả lập seedvis.',
+  'bad-key': 'Khoá seedvis giả lập không dùng được.',
+  'bad-request': 'Yêu cầu seedvis giả lập không hợp lệ.',
+  'too-large': 'Yêu cầu hoặc video seedvis giả lập vượt giới hạn kích thước.',
+  'bad-image': 'Ảnh gửi seedvis giả lập không hợp lệ (định dạng, thứ tự hoặc số ảnh).',
+  'rate-limited': 'seedvis giả lập đang giới hạn tốc độ — thử lại sau.',
+  network: 'Mất kết nối tới seedvis giả lập.',
+  timeout: 'seedvis giả lập không trả lời kịp.',
+  deadline: 'Đã dừng tải lên trước hạn gửi lại an toàn — seedvis chưa nhận yêu cầu.',
+  'bad-response': 'seedvis giả lập trả về dữ liệu không đọc được.',
+  'expired-link': 'Link video giả lập đã hết hạn.',
+  offline: 'seedvis giả lập đang mất mạng.',
+  'unknown-output': 'Không có video này trong các câu trả lời seedvis giả lập đã ghi nhận.',
+  'idempotency-conflict': 'Cùng mã gửi nhưng nội dung khác — seedvis giả lập từ chối.',
+  busy: 'Đang tải đủ số video cùng lúc — thử lại sau.',
+  gone: 'Phiên tải video giả lập đã kết thúc.',
+  'too-slow': 'Tải video giả lập quá chậm.',
+  'storage-unavailable': 'Không có chỗ lưu dữ liệu seedvis giả lập.',
+  'storage-failed': 'Không lưu hoặc đọc được dữ liệu seedvis giả lập.',
+}
+export const failure = (code: SeedvisBridgeErrorCode, message = SEEDVIS_DEV_FAILURE_TEXT[code]): SeedvisBridgeFailure => ({ ok: false, code, message })
 const only = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).every(k => keys.includes(k))
 const textBytes = (s: string) => new TextEncoder().encode(s).length
 
