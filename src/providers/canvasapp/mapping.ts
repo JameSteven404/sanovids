@@ -491,6 +491,31 @@ export interface BridgeEntry {
   lastFrameUploadId: string | null
   /** Last time a job was submitted for this scene (newest entries win when the canvas is full). */
   usedAt: number
+  /**
+   * Only on a node read back from canvasapp's copy of the bridge canvas (adoptBridgeCanvas): its video node id, since
+   * its scene (and SanoVids project) is not known here. `sceneId` is then adoptedKey(nodeId). Every other entry's node
+   * is canvasNodeId(sceneId) (its node key).
+   */
+  nodeId?: string
+}
+
+/** Video node id of a bridge entry. */
+export const entryNodeId = (e: BridgeEntry): string => e.nodeId ?? canvasNodeId(e.sceneId)
+
+/**
+ * Key (and `sceneId`) of an entry adopted from canvasapp's canvas: never a SanoVids scene id ("scn_…"), never a
+ * sceneNodeKey ("node:<n>:…") — its own prefix, so no key of one kind can be read as the other.
+ */
+export const adoptedKey = (nodeId: string): string => `adopted:${nodeId}`
+
+/**
+ * `entries` with `entry` as its node: an entry under another key with the same video node (adopted from canvasapp's
+ * canvas before this scene of this project — or a legacy node — was submitted again here) is replaced, never doubled.
+ */
+export function withEntry(entries: Record<string, BridgeEntry>, entry: BridgeEntry): Record<string, BridgeEntry> {
+  const node = entryNodeId(entry)
+  const others = Object.entries(entries).filter(([k, e]) => k !== entry.sceneId && entryNodeId(e) !== node)
+  return { ...Object.fromEntries(others), [entry.sceneId]: entry }
 }
 
 /**
@@ -544,6 +569,7 @@ export function bridgeEntriesFrom(raw: unknown): Record<string, BridgeEntry> {
     if (!isNum(e.duration) || !isStr(e.resolution) || !isStr(e.ratio) || !isStr(e.prompt) || !isNum(e.usedAt)) continue
     if (!Array.isArray(e.uploadIds) || !e.uploadIds.every((u) => isStr(u) && u.length > 0)) continue
     if (!isIdOrNull(e.firstFrameUploadId) || !isIdOrNull(e.lastFrameUploadId)) continue
+    if (e.nodeId !== undefined && !(isUuid(e.nodeId) && key === adoptedKey(e.nodeId))) continue
     out[key] = {
       sceneId: e.sceneId,
       model: e.model as ModelId,
@@ -556,8 +582,66 @@ export function bridgeEntriesFrom(raw: unknown): Record<string, BridgeEntry> {
       firstFrameUploadId: e.firstFrameUploadId,
       lastFrameUploadId: e.lastFrameUploadId,
       usedAt: e.usedAt,
+      ...(e.nodeId !== undefined ? { nodeId: e.nodeId } : {}),
     }
   }
+  return out
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * The bridge canvas as canvasapp saved it (GET /api/projects/{id} → `canvas`) turned back into entries, so a PUT made
+ * without the entries remembered here (after a logout, on another computer…) keeps every node already there — among
+ * them the nodes of jobs still running. One entry per video node SanoVids could have written (known model / mode,
+ * the six data fields, a UUID id), keyed adoptedKey(node id): its scene is not known here. Its pictures come from its
+ * connections (references in `order`, first / last frame), the uploads of the image nodes they start from. Other nodes
+ * ('result', hand-made ones) are left out. Older than any entry made here (`usedAt` 1…n, canvas order kept).
+ * No canvas saved yet (null / missing) → {}; a canvas of another shape → null (unreadable: nothing may be decided).
+ */
+export function adoptBridgeCanvas(canvas: unknown): Record<string, BridgeEntry> | null {
+  if (canvas === null || canvas === undefined) return {}
+  if (!isObject(canvas) || !Array.isArray(canvas.nodes)) return null
+  if (canvas.connections !== undefined && !Array.isArray(canvas.connections)) return null
+  const nodes = canvas.nodes.filter(isObject)
+  const edges = (canvas.connections ?? []).filter(isObject)
+  const uploadsOf = new Map<string, string[]>()
+  for (const n of nodes) {
+    if (n.type !== 'images' || !isStr(n.id) || !isObject(n.data) || !Array.isArray(n.data.upload_ids)) continue
+    uploadsOf.set(n.id, n.data.upload_ids.filter((u): u is string => isStr(u) && u.length > 0))
+  }
+  const videos = nodes.filter((n) => n.type === 'video' && isUuid(n.id) && isObject(n.data))
+  const out: Record<string, BridgeEntry> = {}
+  videos.forEach((n, i) => {
+    const id = n.id as string
+    const d = n.data as Record<string, unknown>
+    if (!isStr(d.model_profile) || !MODEL_IDS.includes(d.model_profile)) return
+    const mode = d.mode === undefined || d.mode === null ? 't2v' : d.mode
+    if (!isStr(mode) || !MODES.includes(mode)) return
+    if (!isNum(d.duration) || !isStr(d.resolution) || !isStr(d.prompt) || !(isStr(d.aspect_ratio) || d.aspect_ratio === null)) return
+    if (out[adoptedKey(id)]) return
+    const model = d.model_profile as ModelId
+    const into = (handle: string) =>
+      edges
+        .filter((c) => c.to === id && c.target_handle === handle && isStr(c.from))
+        .sort((a, b) => (isNum(a.order) ? a.order : 0) - (isNum(b.order) ? b.order : 0))
+        .flatMap((c) => uploadsOf.get(c.from as string) ?? [])
+    const shape = inputShapeOf(model, mode as Mode)
+    out[adoptedKey(id)] = {
+      sceneId: adoptedKey(id),
+      model,
+      mode: mode as Mode,
+      duration: d.duration,
+      resolution: resolutionOf(d.resolution),
+      ratio: d.aspect_ratio ?? '',
+      prompt: d.prompt,
+      uploadIds: shape === 'refs' ? into('reference') : [],
+      firstFrameUploadId: shape === 'frames' ? (into('first_frame')[0] ?? null) : null,
+      lastFrameUploadId: shape === 'frames' ? (into('last_frame')[0] ?? null) : null,
+      usedAt: videos.length - i,
+      nodeId: id,
+    }
+  })
   return out
 }
 
@@ -605,12 +689,12 @@ const ROW_GAP = 80
  *   video node  { id, type:'video', x, y, w, h, data:{ model_profile, duration, resolution, aspect_ratio, mode, prompt } }
  *   image node  { id, type:'images', x, y, data:{ upload_ids:[one] } }
  *   connection  { from, to, target_handle, order }  (references 1..N in @image order, first_frame 1, last_frame 2)
- * One video node per entry (id = canvasNodeId(entry key) — a scene of a project); one image node per upload, shared by
- * every video node that uses it (a second one only when one video node takes the same upload twice). Ids are UUIDs,
- * coordinates integers. Within canvasapp's client limits: 40 nodes, 30 image uploads on the canvas — plus a prompt
- * budget. Newest entries first; an older entry that would go past a limit is left out — the newest entry is always
- * kept (validateRequest caps it at 30 references). See planBridgeCanvas for the entry being submitted and the entries
- * whose jobs still run.
+ * One video node per entry (id = entryNodeId: canvasNodeId(entry key) — a scene of a project, or a legacy bare scene
+ * id —, or an adopted node's own id; never twice); one image node per upload, shared by every video node that uses it
+ * (a second one only when one video node takes the same upload twice). Ids are UUIDs, coordinates integers. Within
+ * canvasapp's client limits: 40 nodes, 30 image uploads on the canvas — plus a prompt budget. Newest entries first; an
+ * older entry that would go past a limit is left out — the newest entry is always kept (validateRequest caps it at 30
+ * references). See planBridgeCanvas for the entry being submitted and the entries whose jobs still run.
  */
 export function bridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptions = {}): CanvasPayload {
   return planBridgeCanvas(entries, opts).canvas
@@ -647,9 +731,13 @@ export function planBridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptio
   const images = new Map<string, string>()
   const references: CanvasConnection[] = []
   const frames: CanvasConnection[] = []
+  /** video node ids placed: one node per id (the first entry — `current` first — wins) */
+  const videos = new Set<string>()
   let promptChars = 0
   let y0 = MARGIN
   for (const e of sorted) {
+    const vid = entryNodeId(e)
+    if (videos.has(vid)) continue
     const slots = slotsOf(e)
     const wanted = slotImages(slots)
     const fresh = wanted.filter((w) => !images.has(w.key)).length
@@ -661,7 +749,7 @@ export function planBridgeCanvas(entries: BridgeEntry[], opts: BridgeCanvasOptio
       continue
     }
     promptChars += e.prompt.length
-    const vid = canvasNodeId(e.sceneId)
+    videos.add(vid)
     const video: CanvasVideoNode = {
       id: vid,
       type: 'video',

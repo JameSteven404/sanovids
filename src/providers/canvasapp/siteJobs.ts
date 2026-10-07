@@ -22,7 +22,7 @@
 import { costOf, MODELS, normalizeSettings } from '../../core/models'
 import type { ImportedField, Mode, ModelId, VideoSettings } from '../../core/types'
 import type { CanvasJob } from './api'
-import { canvasNodeId, clientRequestIdFor, decodeRemoteId, encodeRemoteId, inputShapeOf, modelProfileOf, resolutionOf, type BridgeEntry } from './mapping'
+import { clientRequestIdFor, decodeRemoteId, encodeRemoteId, entryNodeId, inputShapeOf, modelProfileOf, resolutionOf, type BridgeEntry } from './mapping'
 
 /**
  * A job found for a lost answer must be created after the request was sent. Generous on purpose: canvasapp's
@@ -373,7 +373,8 @@ export function hintsFor(
   const out: SiteJobHint[] = []
   const c = canvasHintFor(canvas, nodeId, imageOfUpload)
   if (c) out.push(c)
-  const key = Object.keys(entries).find((k) => canvasNodeId(k) === nodeId)
+  // by the entry's own node id: a node read back from canvasapp's canvas (adoptedKey) is named by it, not by its key
+  const key = Object.keys(entries).find((k) => entryNodeId(entries[k]) === nodeId)
   if (key) {
     try {
       out.push(entryHint(entries[key], imageOfUpload))

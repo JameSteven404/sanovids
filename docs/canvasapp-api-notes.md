@@ -71,10 +71,13 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `PATCH /api/projects/{id} { name }` (`#renameProject`). SanoVids does the same for "SanoVids bridge" (a failed
   rename is ignored: the id is remembered locally).
 - `DELETE /api/projects/{id}` (not used by SanoVids).
-- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`). SanoVids reads it only for
-  "Nhập job" (reverse sync, `scanSiteJobs`): the bridge node a site-made job ran from hints its resolution / mode /
-  pictures — only when that node's prompt, model, duration and ratio match the job (VERIFY: is node data kept exactly as
-  PUT?).
+- `GET /api/projects/{id}` → `{ canvas: { nodes, connections, viewport } }` (`loadProject()`; nothing saved yet: `canvas`
+  null). SanoVids reads it back whenever it finds the bridge by name (after a logout, another account, a deleted
+  remembered id…) before its first `PUT`, so the nodes already there — those of running jobs among them — stay
+  (`adoptBridgeCanvas`, mapping.ts; a node read back is kept by its own id until a submit names the same node — a scene
+  of a project, or a legacy one). It also reads it for "Nhập job" (reverse sync, `scanSiteJobs`): the bridge node a
+  site-made job ran from hints its resolution / mode / pictures — only when that node's prompt, model, duration and
+  ratio match the job (VERIFY: is node data kept exactly as PUT?).
 - `PUT /api/projects/{id}/canvas` — body exactly as `canvasPayload()` builds it, **no other key anywhere**:
   ```json
   { "nodes": [
