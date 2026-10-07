@@ -116,7 +116,8 @@
   position: absolute;
   right: 6px;
   bottom: 6px;
-  height: 20px;
+  min-width: 24px;
+  height: 24px;
   padding: 0 7px;
   border: 1px solid color-mix(in srgb, var(--video) 50%, transparent);
   border-radius: 999px;
@@ -196,6 +197,7 @@
   cursor: default;
 }
 .cv-take-label .cv-take-more {
+  position: relative;
   flex: none;
   height: 13px;
   padding: 0 4px;
@@ -211,6 +213,23 @@
 }
 .cv-take-label .cv-take-more:hover {
   background: var(--video-soft);
+}
+/*
+ * ★ and "+N" stay 13px in the 13px line (TITLE_LINE_H); their hit areas are 24px, up from the line and down to the
+ * card's top edge, never into the card.
+ */
+.cv-take-label .cv-take-more::before,
+.cv-take-star::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: max(100%, 24px);
+  height: 24px;
+  transform: translateX(-50%);
+}
+.cv-take-label .cv-take-more::before {
+  bottom: -5px;
 }
 /* which service generated the video: development mode "DEV" (dashed, like the simulated credit pill) or a cloud */
 .cv-take-provider {
@@ -248,12 +267,6 @@
   cursor: pointer;
   transition: color 0.15s var(--cv-ease);
 }
-/* a bigger hit area than the 12px icon */
-.cv-take-star::before {
-  content: '';
-  position: absolute;
-  inset: -4px;
-}
 .cv-take-star:hover:not(:disabled),
 .cv-take-star.on {
   color: var(--warn);
@@ -279,6 +292,9 @@
   outline: none;
   /* the focus ring stays inside the box: an outer ring would reach into the row above */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.cv-take-name-input:focus-visible {
+  box-shadow: inset var(--focus-ring);
 }
 .cv-take-name-input::placeholder {
   color: var(--text-faint);
@@ -313,8 +329,9 @@
   position: absolute;
   left: 4px;
   right: 4px;
-  top: 0;
-  height: 8px;
+  /* Grow into the poster; keep the rail at y=4 and the 30px bar unchanged. */
+  top: -16px;
+  height: 24px;
   border-radius: 4px;
   cursor: pointer;
   touch-action: none;
@@ -332,7 +349,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 50%;
+  top: calc(100% - 4px);
   height: 3px;
   margin-top: -1.5px;
   border-radius: 999px;
@@ -381,7 +398,7 @@
 .cv-tp-knob > i {
   position: absolute;
   left: -4.5px;
-  top: 50%;
+  top: calc(100% - 4px);
   width: 9px;
   height: 9px;
   margin-top: -4.5px;
@@ -437,8 +454,8 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
-  height: 20px;
+  min-width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-xs);
@@ -511,7 +528,7 @@
   position: relative;
   flex: none;
   width: 44px;
-  height: 16px;
+  height: 24px;
   margin: 0 5px 0 3px;
   border-radius: 4px;
   cursor: pointer;
@@ -641,7 +658,12 @@
 .cv-take-stage:fullscreen .cv-tp-track {
   left: 12px;
   right: 12px;
-  height: 12px;
+  top: -12px;
+  height: 24px;
+}
+.cv-take-stage:fullscreen .cv-tp-rail,
+.cv-take-stage:fullscreen .cv-tp-knob > i {
+  top: calc(100% - 6px);
 }
 .cv-take-stage:fullscreen .cv-tp-rail,
 .cv-take-stage:fullscreen .cv-tp-vslider::before {
@@ -870,7 +892,19 @@
 
 /* ============================== reduced motion ============================== */
 @media (prefers-reduced-motion: reduce) {
+  .cv-take *,
+  .cv-take *::before,
+  .cv-take *::after {
+    animation: none !important;
+    transition: none !important;
+  }
   .cv-take-main:active:not(:disabled) {
     transform: none;
   }
+}
+:root:is([data-motion='reduced'], [data-motion='off']) .cv-take-main:active:not(:disabled) {
+  transform: none;
+}
+:root[data-motion='reduced'] .cv-take-btn.danger.is-armed {
+  animation: none;
 }

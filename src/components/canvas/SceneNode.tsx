@@ -581,6 +581,8 @@ function AddRef({ sceneId, refs, images, max }: { sceneId: string; refs: string[
         className="cv-sn-add-btn"
         title={`Nối thêm ảnh tham chiếu (${images}/${max} ảnh) — hoặc kéo ô ảnh / nhân vật vào node`}
         aria-label="Nối thêm ảnh tham chiếu"
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={(e) => {
           e.stopPropagation()
           setOpen((o) => !o)
@@ -642,6 +644,7 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
         autoFocus
         value={draft}
         placeholder="Tên cảnh"
+        aria-label="Tên cảnh"
         onChange={(e) => {
           pending.current = e.target.value
           setDraft(e.target.value)

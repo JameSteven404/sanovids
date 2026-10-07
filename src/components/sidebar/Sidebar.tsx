@@ -58,6 +58,7 @@ export function Sidebar() {
             ref={inputRef}
             className="input sb-search-input"
             placeholder="Tìm nhân vật, bối cảnh, video…"
+            aria-label="Tìm trong thư viện và video đã tạo"
             value={query}
             spellCheck={false}
             onChange={(e) => setQuery(e.target.value)}

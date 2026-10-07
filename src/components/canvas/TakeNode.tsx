@@ -200,6 +200,7 @@ const TakeTitle = memo(function TakeTitle({
         <button
           className="cv-take-more nodrag nopan"
           title={line.moreTitle}
+          aria-label={line.moreTitle}
           onPointerDown={stop}
           onDoubleClick={stop}
           onClick={(e) => {
@@ -371,6 +372,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
               <button
                 className="cv-take-more nodrag nopan"
                 title={`${hidden} take khác của cảnh này đang ẩn — bấm để xem tất cả`}
+                aria-label={`Xem ${hidden} take khác của cảnh này`}
                 onPointerDown={stop}
                 onDoubleClick={stop}
                 onClick={(e) => {

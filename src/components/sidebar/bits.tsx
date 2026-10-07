@@ -36,6 +36,7 @@ export function Section({ title, icon, count, actions, collapsed, onToggle, grow
         <button
           className="sb-sec-toggle"
           aria-expanded={!collapsed}
+          aria-label={`${collapsed ? 'Mở rộng' : 'Thu gọn'} ${title}`}
           title={collapsed ? 'Mở rộng' : 'Thu gọn'}
           onClick={(e) => {
             e.stopPropagation()

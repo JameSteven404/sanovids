@@ -9,14 +9,14 @@
   /*
    * Media (posters, video, the "Phát liền" player): dark letterbox and dark glass chips with light text in BOTH
    * themes, like Photos / QuickTime and the canvas take nodes (canvas.css) — the picture decides the background,
-   * not the theme. Theme-independent tokens (--media-bg / --media-scrim / --on-media) when base.css has them; the
-   * keyword fallbacks are deliberate media scrims, the only literal colors in this file.
+   * not the theme. Theme-independent tokens from base.css (--media-bg / --media-scrim / --on-media); no literal
+   * colors here (src/styles/__tests__/noLiteralColors.test.ts).
    */
-  --vw-on-media: var(--on-media, white);
+  --vw-on-media: var(--on-media);
   --vw-on-media-dim: color-mix(in srgb, var(--vw-on-media) 64%, transparent);
   --vw-on-media-faint: color-mix(in srgb, var(--vw-on-media) 42%, transparent);
-  --vw-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
-  --vw-media-bg: var(--media-bg, black);
+  --vw-media-chip: var(--media-scrim);
+  --vw-media-bg: var(--media-bg);
   /* glass buttons drawn on media (player end screen) */
   --vw-media-btn: color-mix(in srgb, var(--vw-on-media) 14%, transparent);
   --vw-media-btn-hover: color-mix(in srgb, var(--vw-on-media) 22%, transparent);

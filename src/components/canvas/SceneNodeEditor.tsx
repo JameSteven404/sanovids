@@ -639,7 +639,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
         placeholder={placeholder}
         aria-label={`Prompt cảnh ${sceneCode(scene.order)}`}
         aria-autocomplete="list"
-        aria-expanded={!!mention && suggestions.length > 0}
+        aria-haspopup="listbox"
         onChange={(e) => {
           const v = e.target.value
           textRef.current = v
@@ -735,6 +735,7 @@ function NodeMentionList({
       style={{ left: pos.left, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight, width: POP_W }}
       onMouseDown={(e) => e.preventDefault() /* keep the caret in the field */}
       role="listbox"
+      aria-label="Ảnh tham chiếu để chèn vào prompt"
     >
       <div className="in-mention-head">
         <AtSign size={11} />

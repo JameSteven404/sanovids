@@ -1764,3 +1764,10 @@
     animation-duration: 2.4s;
   }
 }
+
+/* App-level reduced motion also suppresses static hover/press transforms. */
+:root:is([data-motion='reduced'], [data-motion='off']) .sb-card:hover,
+:root:is([data-motion='reduced'], [data-motion='off']) .sb-card.dragging,
+:root:is([data-motion='reduced'], [data-motion='off']) .sb-card-actions {
+  transform: none;
+}

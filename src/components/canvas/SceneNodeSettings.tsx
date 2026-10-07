@@ -114,7 +114,7 @@ export const SceneNodeSettings = memo(function SceneNodeSettings({
           ))}
         </select>
         <span className="cv-sn-setx-sp" />
-        <button type="button" className="cv-sn-setx-close" onClick={onClose} title="Thu gọn cấu hình" aria-label="Thu gọn cấu hình">
+        <button type="button" className="cv-sn-setx-close" onClick={onClose} title="Thu gọn cấu hình" aria-label="Thu gọn cấu hình" aria-expanded={true}>
           <ChevronUp size={13} strokeWidth={2.4} />
         </button>
       </div>

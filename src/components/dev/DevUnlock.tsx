@@ -151,6 +151,7 @@ export function DevUnlock({ onClose }: { onClose: () => void }) {
       {sim && <p className="dv-ul-note">{DEV_SIM_HINT}</p>}
       <form
         className="dv-ul-form"
+        aria-busy={busy}
         onSubmit={(e) => {
           e.preventDefault()
           void submit()
@@ -166,6 +167,7 @@ export function DevUnlock({ onClose }: { onClose: () => void }) {
           spellCheck={false}
           maxLength={300}
           value={code}
+          aria-invalid={!!error}
           onChange={(e) => setCode(e.target.value)}
         />
         {error && (

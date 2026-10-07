@@ -125,6 +125,7 @@ function ViewerVideo({ url, poster, videoRef: ref, ownsRate }: { url: string; po
     <video
       ref={ref}
       className="rq-video"
+      aria-label="Video của take"
       src={url}
       poster={poster ?? undefined}
       loop
@@ -747,6 +748,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
         <button
           type="button"
           className={`btn btn-sm rq-star-btn${take.starred ? ' on' : ''}`}
+          aria-pressed={!!take.starred}
           disabled={take.status !== 'completed' && !take.starred}
           onClick={() => toggleChosenTake(take.id)}
           title={take.starred ? 'Bỏ chọn take này' : 'Đánh dấu là take dùng cho cảnh (Phát liền và file .zip sẽ ưu tiên)'}
@@ -887,7 +889,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
                 .join(', ')}
             </span>
             <span className="rq-spacer" />
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowDiff((v) => !v)}>
+            <button type="button" className="btn btn-ghost btn-sm" aria-expanded={showDiff} onClick={() => setShowDiff((v) => !v)}>
               <FileDiff size={12} />
               {showDiff ? 'Ẩn khác biệt' : 'Xem khác biệt'}
             </button>

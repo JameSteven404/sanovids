@@ -206,7 +206,7 @@
   flex: 0 1 auto;
   min-width: 0;
   max-width: 120px;
-  height: 22px;
+  height: 24px;
   padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -239,8 +239,8 @@
   flex: none;
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -303,7 +303,7 @@
 .cv-sn-pr:focus-within {
   border-color: var(--accent);
   background: var(--panel);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--focus-ring);
 }
 .cv-sn-text,
 .cv-sn-back,
@@ -446,10 +446,21 @@
   min-width: 34px;
 }
 .cv-sn-strip .in-ph-chip {
+  position: relative;
   height: 16px;
   min-width: 0;
   padding: 0 4px 0 6px;
   font-size: 10.5px;
+}
+/* a 24px-tall hit area around the 16px chip: the strip stays one 22px line (sceneNodeModel NODE.strip) */
+.cv-sn-strip .in-ph-chip::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: 50%;
+  height: 24px;
+  margin-top: -12px;
 }
 .cv-sn-strip .in-picker {
   top: auto;
@@ -564,7 +575,9 @@
   position: absolute;
   top: -5px;
   right: -5px;
-  display: none;
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
   align-items: center;
   justify-content: center;
   width: 14px;
@@ -577,9 +590,27 @@
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
+/* the 14px badge keeps a 24px hit area */
+.cv-sn-th-x::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+}
 .cv-sn-th:hover .cv-sn-th-x,
+.cv-sn-th:focus-within .cv-sn-th-x {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .cv-sn-th-x {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 .cv-sn-th-x:focus-visible {
-  display: inline-flex;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .cv-sn-more {
   flex: none;
@@ -893,6 +924,10 @@
   color: var(--text-faint);
   pointer-events: none;
 }
+.cv-snf-run:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 .cv-snf-run-wrap:has(:disabled) {
   cursor: not-allowed;
 }
@@ -903,12 +938,22 @@
   z-index: 96;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .cv-sn-run:active:not(.is-blocked) {
-    transform: none;
-  }
-}
 .cv-stage[data-motion='off'] .cv-sn-sum-chev,
 .cv-stage[data-motion='off'] .cv-sn-run {
   transition: none;
+}
+
+/* Keep activation effects still for both the OS preference and the app preference. */
+@media (prefers-reduced-motion: reduce) {
+  .cv-sn *, .cv-sn *::before, .cv-sn *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .cv-sn-run:active:not(.is-blocked), .cv-snf-run:active:not(:disabled),
+  .cv-sn-setx-row .in-seg-btn:active { transform: none; }
+}
+:root:is([data-motion='reduced'], [data-motion='off']) .cv-sn-run:active:not(.is-blocked),
+:root:is([data-motion='reduced'], [data-motion='off']) .cv-snf-run:active:not(:disabled),
+:root:is([data-motion='reduced'], [data-motion='off']) .cv-sn-setx-row .in-seg-btn:active {
+  transform: none;
 }
