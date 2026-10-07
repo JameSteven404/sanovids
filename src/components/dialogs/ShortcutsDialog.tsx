@@ -37,8 +37,11 @@ const KEY_GROUPS: Group[] = [
         'Xoá cảnh và video (take) đang chọn · ẩn thẻ khỏi canvas · cắt dây đang chọn. Video chọn cùng cảnh của nó chỉ ẩn theo cảnh (hoàn tác được).',
       ],
       ['Ctrl+A', 'Chọn tất cả cảnh trên canvas'],
-      ['C', 'Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn'],
-      ['Ctrl+Enter', 'Chạy các cảnh đang chọn'],
+      ['C', 'Nối mọi nhân vật (ảnh tham chiếu) đang chọn vào mọi cảnh đang chọn'],
+      ['Ctrl+Enter', 'Chạy các cảnh đang chọn · đang gõ trên node: chỉ cảnh đó (xem chi phí trước)'],
+      // the scene node is the editor (E2): typing on the node itself
+      ['Enter', 'Gõ prompt ngay trên node của cảnh đang chọn (khi chỉ chọn một cảnh)'],
+      ['Esc', 'Đang gõ trên node: thôi gõ, cảnh vẫn được chọn'],
     ],
   },
   {
@@ -47,7 +50,7 @@ const KEY_GROUPS: Group[] = [
     rows: [
       [
         IS_MAC ? 'Delete / ⌫' : 'Delete',
-        'Sau khi bấm vào Thư viện: xoá các thẻ đang chọn (đang thấy) khỏi thư viện và mọi cảnh. Thẻ chưa dùng xoá ngay, thẻ đang dùng ở cảnh hỏi một lần · hoàn tác được.',
+        'Sau khi bấm vào Thư viện: xoá các thẻ đang chọn (đang thấy) khỏi thư viện và mọi cảnh — xoá ngay; chỉ hỏi một lần khi prompt đang nhắc ảnh của thẻ (sẽ thành chữ đỏ) hoặc cảnh mất khung đầu / cuối · hoàn tác được.',
       ],
       ['Ctrl+A', 'Sau khi bấm vào Thư viện: chọn mọi thẻ đang thấy'],
     ],

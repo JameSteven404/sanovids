@@ -49,6 +49,14 @@ describe('canvas subscription boundaries', () => {
     expect(field).not.toMatch(/import[^\n]*\bPromptEditor\b/)
   })
 
+  it('the shortcuts help names the node-editor keys and never offers a video as a reference', () => {
+    const help = readFileSync(new URL('../dialogs/ShortcutsDialog.tsx', canvas), 'utf8')
+    expect(help).toContain("['Enter', 'Gõ prompt ngay trên node của cảnh đang chọn (khi chỉ chọn một cảnh)']")
+    expect(help).toContain("['Esc', 'Đang gõ trên node: thôi gõ, cảnh vẫn được chọn']")
+    expect(help).toContain('đang gõ trên node: chỉ cảnh đó')
+    expect(help).not.toContain('nhân vật / video đang chọn')
+  })
+
   it('the red placeholder strip is the panel\'s PlaceholderBar (variant node), mounted only when the compile found such a token', () => {
     const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
     expect(scene).toContain('<PlaceholderBar sceneId={scene.id} variant="node" />')
