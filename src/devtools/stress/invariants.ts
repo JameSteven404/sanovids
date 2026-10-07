@@ -9,6 +9,7 @@
 //   H2 undo history ≤ 200                                       C1 a job's pictures = the take's @image order
 //   C2 a job prompt never names a picture it does not send (never a red placeholder)
 //   $1 one job (one charge) per take
+//   $2 a take the server made a job for never reads "not sent" (its "Chạy lại" would be a new take, paying twice)
 //   E1 ≤ MAX_REMOTE_CONCURRENCY running at once                 E2 the queue drains once faults are gone
 //   D1 a saved project reads back the same                      D2 migrate never throws and is idempotent
 //   R1 no console.error / unhandled error                       S1–S3 guards (sandbox / session)
@@ -21,7 +22,7 @@ import type { Asset, Project, Scene, Take } from '../../core/types'
 import { clientRequestIdFor } from '../../providers/canvasapp/mapping'
 import type { DevServerSnapshot } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { MAX_REMOTE_CONCURRENCY, requestImages } from '../../store/runs'
+import { isUncertainSubmit, MAX_REMOTE_CONCURRENCY, requestImages, requestInFlight } from '../../store/runs'
 import type { Violation } from './types'
 
 /**
@@ -209,12 +210,23 @@ export function checkHistorySize(): Violation[] {
 export class JobAudit {
   private seen = new Map<string, string>() // job id → client_request_id
   private perKey = new Map<string, number>()
+  private forgotten = new Set<string>() // takes reported under $2 (once each)
   jobs = 0
 
   audit(snap: DevServerSnapshot, takes: readonly Take[], assets: Asset[], dedupe: boolean): Violation[] {
     const out: Violation[] = []
     const byKey = new Map<string, Take>()
     for (const t of takes) byKey.set(clientRequestIdFor(t.id), t)
+    // $2: the server made (and billed) a job for this take, yet it ended reading "not sent": no job id, not "maybe billed"
+    // (e.g. cancelled while its POST lost its answer) — its "Chạy lại" would make a NEW take and pay again. Checked once
+    // no request of the take is on its way (its answer may still bring the job id).
+    const billed = new Set(snap.jobs.map((j) => j.client_request_id))
+    for (const t of takes) {
+      if ((t.status !== 'failed' && t.status !== 'cancelled') || t.provider !== 'dev' || t.remoteId || isUncertainSubmit(t)) continue
+      if (this.forgotten.has(t.id) || !billed.has(clientRequestIdFor(t.id)) || requestInFlight(t.id)) continue
+      this.forgotten.add(t.id)
+      out.push(err('$2', `Take ${t.id} đã có job (đã trừ credit dev) trên máy chủ giả lập nhưng ghi là chưa gửi — “Chạy lại” sẽ tạo take mới, trả tiền lần nữa.`, { takeId: t.id, status: t.status, error: t.error }))
+    }
     const uploadImage = new Map(snap.uploads.map((u) => [u.upload_id, u.imageId]))
     for (const job of snap.jobs) {
       if (this.seen.has(job.job_id)) continue

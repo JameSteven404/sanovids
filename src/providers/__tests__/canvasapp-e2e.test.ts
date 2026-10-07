@@ -49,6 +49,7 @@ import {
   isUnverifiableSubmit,
   MAX_REMOTE_CONCURRENCY,
   onRunEvent,
+  requestInFlightText,
   setEngineHooks,
   setEngineLockManager,
   UNKNOWN_SUBMIT_ERROR,
@@ -1918,6 +1919,151 @@ describe('gateway e2e: cancel', () => {
     expect(fake.count('DELETE', /^\/api\/video-jobs\//)).toBe(0)
     expect(fake.state.jobs).toHaveLength(1)
     expect(fake.listReads().length).toBe(reads) // nothing left to follow
+  })
+})
+
+describe('gateway e2e: "Huỷ" while its POST lost its answer, server without dedupe (PAY-H)', () => {
+  const isPost = (r: TransportRequest) => r.method === 'POST' && r.path === '/api/video-jobs'
+  const isList = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+  const jobsOf = (takeId: string) => fake.state.jobs.filter((j) => j.client_request_id === clientRequestIdFor(takeId))
+  const postsOf = (takeId: string) => fake.jobPosts().filter((b) => b.client_request_id === clientRequestIdFor(takeId)).length
+  const confirmWith = (answer: boolean) => {
+    const confirm = vi.fn((_message: string) => answer)
+    ;(g.window as { confirm?: unknown }).confirm = confirm
+    return confirm
+  }
+
+  /** canvasapp creates (and bills) s1's job, the answer is lost, its job list cannot be read: Huỷ during the look-up. */
+  async function cancelledWhileLost() {
+    fake.state.dedupe = false
+    let first = true
+    fake.state.fault = (r) => {
+      if (isPost(r) && first) {
+        first = false
+        return { kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } }
+      }
+      return isList(r) ? { kind: 'network' } : undefined
+    }
+    const [t] = enqueue('s1')
+    await run(5_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    expect(jobsOf(t.id)).toHaveLength(1) // made and billed at canvasapp
+    useRuns.getState().cancel(t.id)
+    return t
+  }
+
+  it('Huỷ → "Chạy lại": the take keeps "không rõ" and is re-sent as THE SAME take — the job is found, one job, one charge', async () => {
+    const t = await cancelledWhileLost()
+    // while its look-up runs: neither the same take nor a new one is sent (no question, no cost dialog)
+    const early = confirmWith(true)
+    rerunTake(t.id)
+    expect(early).not.toHaveBeenCalled()
+    expect(useUI.getState().dialog).toEqual({ kind: 'none' })
+    expect(useUI.getState().toasts.at(-1)?.text).toBe(requestInFlightText('canvasapp'))
+
+    await run(60_000)
+    const after = take(t.id)
+    expect(after).toMatchObject({ status: 'cancelled', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUncertainSubmit(after)).toBe(true)
+    expect(takeCostLine(after)).toMatchObject({ struck: false })
+    expect(takeCostLine(after).note).toContain('không rõ')
+    expect(postsOf(t.id)).toBe(1) // never re-posted while unsure
+
+    // the network is back; "Chạy lại": the same take, its job looked up first — never the cost dialog of a new take
+    fake.state.fault = null
+    const confirm = confirmWith(true)
+    rerunTake(t.id)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0][0]).toContain('cùng mã yêu cầu')
+    expect(useUI.getState().dialog).toEqual({ kind: 'none' })
+    expect(takes()).toHaveLength(1)
+    await run(2 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: `proj1:${jobsOf(t.id)[0].job_id}` })
+    expect(postsOf(t.id)).toBe(1)
+    expect(fake.state.jobs).toHaveLength(1)
+    expect(fake.state.balance).toBe(100 - S1_COST)
+  })
+
+  it('…when that request can no longer be checked (list cut since): "Tạo lại" only — the old key is never sent again', async () => {
+    fake.state.listCap = 200
+    const t = await cancelledWhileLost()
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    fake.state.fault = null
+    await run(60 * 60_000)
+    // 250 jobs made later (another device, canvasapp's own page): the list no longer reaches back to that request
+    for (let i = 0; i < 250; i++) {
+      const id = 'job' + (fake.state.jobs.length + 1)
+      fake.state.jobs.push({
+        ...jobsOf(t.id)[0],
+        job_id: id,
+        client_request_id: `other-${id}`,
+        canvas_node_id: canvasNodeId('s3'),
+        status: 'completed',
+        created_at: new Date(Date.now()).toISOString(),
+        script: [],
+      })
+    }
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    await run(2 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNVERIFIABLE_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUnverifiableSubmit(take(t.id))).toBe(true)
+    const confirm = confirmWith(false)
+    rerunTake(t.id)
+    expect(confirm.mock.calls[0][0]).toContain('“Tạo lại” tạo một take MỚI')
+    expect(postsOf(t.id)).toBe(1)
+    expect(jobsOf(t.id)).toHaveLength(1)
+  })
+
+  it('Huỷ, then the app closes before the answer: reopened, "Chạy lại" still looks for the job first — one job', async () => {
+    const t = await cancelledWhileLost()
+    const onDisk = saved() // what persist wrote right after the cancel
+    expect(onDisk[0]).toMatchObject({ status: 'cancelled', submitUnknown: true, remoteId: null })
+    await run(60_000) // (the old window's request ends; a real restart just drops it)
+    fake.state.fault = null
+    restart(onDisk)
+    expect(isUncertainSubmit(take(t.id))).toBe(true)
+    confirmWith(true)
+    rerunTake(t.id)
+    await run(2 * 60_000)
+    expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: `proj1:${jobsOf(t.id)[0].job_id}` })
+    expect(postsOf(t.id)).toBe(1)
+    expect(fake.state.jobs).toHaveLength(1)
+    expect(fake.state.balance).toBe(100 - S1_COST)
+  })
+
+  it('Huỷ, then another project opened while the answer is lost: the cancelled take is never posted after the switch; reopened it reads "không rõ"', async () => {
+    fake.state.dedupe = false
+    let first = true
+    // nothing reaches canvasapp; the job list is readable (empty): the look-up proves there is no job — a take that was
+    // not cancelled would be posted again with the same key now
+    fake.state.fault = (r) => {
+      if (isPost(r) && first) {
+        first = false
+        return { kind: 'network' }
+      }
+    }
+    const [t] = enqueue('s1')
+    await run(5_000)
+    useRuns.getState().cancel(t.id)
+    const leftOnDisk = saved()
+    useProject.getState().loadProject({ ...project(), id: 'q', scenes: [scene('q1', 1)] })
+    useRuns.getState().loadRuns(null)
+    await run(60_000)
+    expect(postsOf(t.id)).toBe(1) // cancelled before the switch: never posted again behind the user's back
+    expect(fake.state.jobs).toHaveLength(0)
+
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: leftOnDisk, credits: 1000, spent: 0 })
+    await run(0)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    confirmWith(true)
+    rerunTake(t.id)
+    await run(2 * 60_000)
+    expect(postsOf(t.id)).toBe(2) // the lost one + the retry, same key (the list proves nothing was made)
+    expect(jobsOf(t.id)).toHaveLength(1)
+    expect(fake.state.jobs).toHaveLength(1)
+    expect(take(t.id).status).toBe('completed')
   })
 })
 

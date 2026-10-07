@@ -5,7 +5,7 @@ import type { ScenarioDef } from './types'
 const SCENE_EDITS = { 'scene.prompt': 6, 'scene.title': 2, 'scene.settings': 2, 'scene.add': 2, 'scene.remove': 1, 'scene.duplicate': 1, 'scene.next': 1, 'scene.move': 2 }
 const REF_EDITS = { 'refs.link': 5, 'refs.unlink': 4, 'refs.move': 4, 'refs.toScene': 2, 'refs.token': 3, 'refs.deleteWires': 2 }
 const ASSET_EDITS = { 'asset.add': 2, 'asset.images': 4, 'asset.rename': 1, 'asset.remove': 1, 'asset.canvas': 1 }
-const RUNS = { 'run.enqueue': 6, 'run.cancel': 2, 'run.retry': 2, 'run.wait': 4, 'run.star': 1, 'run.delete': 1 }
+const RUNS = { 'run.enqueue': 6, 'run.cancel': 2, 'run.cancelSending': 1, 'run.retry': 2, 'run.wait': 4, 'run.star': 1, 'run.delete': 1 }
 const FAULTS = { 'fault.preset': 2, 'fault.random': 3, 'fault.job': 2, 'fault.force': 1, 'fault.session': 1, 'fault.balance': 1, 'fault.clear': 2 }
 const HISTORY = { 'history.undo': 3, 'history.redo': 3, 'history.roundTrip': 1 }
 
@@ -137,7 +137,7 @@ export const SCENARIOS: ScenarioDef[] = [
     id: 'dedupe-off',
     label: 'Máy chủ không chống trùng',
     group: 'B',
-    hint: 'canvasapp giả lập tạo job mới cho mỗi POST: SanoVids không được gửi lại một take đã có thể bị tính tiền.',
+    hint: 'canvasapp giả lập tạo job mới cho mỗi POST: SanoVids không được gửi lại một take đã có thể bị tính tiền — kể cả take bị huỷ lúc đang gửi.',
     minutes: 5,
     headless: true,
     app: true,
@@ -145,7 +145,7 @@ export const SCENARIOS: ScenarioDef[] = [
     faults: 'sometimes',
     project: 'bridge-full',
     server: { dedupe: false },
-    weights: { 'run.enqueue': 6, 'run.wait': 6, 'run.retry': 3, 'fault.random': 4, 'fault.preset': 2, 'fault.clear': 2 },
+    weights: { 'run.enqueue': 6, 'run.wait': 6, 'run.retry': 3, 'run.cancelSending': 2, 'fault.random': 4, 'fault.preset': 2, 'fault.clear': 2 },
     drainEvery: 30,
   },
   {
@@ -159,7 +159,7 @@ export const SCENARIOS: ScenarioDef[] = [
     tier: 'S',
     faults: 'sometimes',
     project: 'bridge-full',
-    weights: { 'run.enqueue': 6, 'run.cancel': 6, 'run.delete': 3, 'run.retry': 2, 'run.wait': 3, 'fault.random': 1, 'fault.clear': 1 },
+    weights: { 'run.enqueue': 6, 'run.cancel': 6, 'run.cancelSending': 3, 'run.delete': 3, 'run.retry': 2, 'run.wait': 3, 'fault.random': 1, 'fault.clear': 1 },
     drainEvery: 40,
   },
 

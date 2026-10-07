@@ -518,6 +518,23 @@ export const ACTIONS: StressAction[] = [
     },
   },
   {
+    // PAY-H: the window where a cancelled take may already be billed (its POST on its way, or its answer lost and being
+    // looked up). Invariant $2 then checks it never ends reading "not sent" while the server has its job.
+    id: 'run.cancelSending',
+    label: 'Huỷ video lúc đang gửi đi',
+    group: 'run',
+    layer: 'store',
+    when: () => takes().some((t) => t.status === 'processing' && !t.remoteId),
+    args: (rng) => ({ t: rng.raw() }),
+    run: (_c, a) => {
+      const t = at(
+        takes().filter((x) => x.status === 'processing' && !x.remoteId),
+        num(a, 't'),
+      )
+      if (t) R().cancel(t.id)
+    },
+  },
+  {
     id: 'run.retry',
     label: 'Thử lại video lỗi',
     group: 'run',

@@ -266,6 +266,16 @@ lịch sử credit trên canvasapp; muốn thử lại thì “Tạo lại”"),
 đó (khung xem take ghi **“Tạo lại”**) thành `actions.rerunTake`: cảnh báo rồi mở hộp chi phí cho một take **mới** = khoá
 mới — người dùng tự chọn, có thể trả thêm một lần.
 
+**Huỷ lúc đang gửi** (take `processing` chưa có mã job; PAY-H, `store/runs.ts`): take thành `cancelled` nhưng **giữ**
+`submitUnknown` ngay lúc bấm Huỷ (app tắt trước khi có câu trả lời vẫn không quên "có thể đã bị trừ"). Kết thúc của lần
+gửi đó quyết định: có mã job → take huỷ giữ mã đó; câu trả lời mất (`uncertain`) → vẫn `cancelled` với
+`UNKNOWN_SUBMIT_ERROR` / `UNVERIFIABLE_SUBMIT_ERROR`, nên "Chạy lại" = gửi lại **chính take đó** (tìm job trước,
+`listCovers`) hoặc chỉ “Tạo lại” — không bao giờ lặng lẽ thành take mới; bỏ trước `POST` hoặc bị từ chối (không tạo gì)
+→ bỏ dấu, "huỷ trước khi gửi — không bị trừ credit". Trong lúc lần gửi đó chưa xong (`requestInFlight`), "Chạy lại"
+chỉ báo "đợi vài giây" (không gửi gì, kể cả take mới). Huỷ rồi mở dự án khác: lần gửi đó vẫn coi take là đã huỷ
+(không `POST` lại sau khi đổi dự án), và kết quả được ghi vào take khi dự án được mở lại. Huỷ trong lúc tìm lại job của
+take bị bỏ dở khi mở app (`recoverTake`): không thấy → vẫn "có thể đã bị trừ", không bao giờ "chưa gửi".
+
 Hai take trên **cùng một node** (hai take của một cảnh trong một dự án, hoặc take gửi lại trên node cũ) mà đều chưa rõ
 câu trả lời: job nào cũng có thể là của take kia. Lần đọc danh sách job ngay trước `POST` (bước 5: `before` + `beforeAt`
 trong sổ `sent`) khi đó là **bắt buộc**: đọc không được → **không gửi** (take `failed`, "chưa
