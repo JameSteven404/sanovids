@@ -10,6 +10,7 @@
 //   C2 a job prompt never names a picture it does not send (never a red placeholder)
 //   $1 one job (one charge) per take
 //   $2 a take the server made a job for never reads "not sent" (its "Chạy lại" would be a new take, paying twice)
+//   $3 …nor while its request is still on its way after a cancel (an app closed then keeps only the cancel's mark)
 //   E1 ≤ MAX_REMOTE_CONCURRENCY running at once                 E2 the queue drains once faults are gone
 //   D1 a saved project reads back the same                      D2 migrate never throws and is idempotent
 //   R1 no console.error / unhandled error                       S1–S3 guards (sandbox / session)
@@ -211,6 +212,7 @@ export class JobAudit {
   private seen = new Map<string, string>() // job id → client_request_id
   private perKey = new Map<string, number>()
   private forgotten = new Set<string>() // takes reported under $2 (once each)
+  private unmarked = new Set<string>() // takes reported under $3 (once each)
   jobs = 0
 
   audit(snap: DevServerSnapshot, takes: readonly Take[], assets: Asset[], dedupe: boolean): Violation[] {
@@ -226,6 +228,15 @@ export class JobAudit {
       if (this.forgotten.has(t.id) || !billed.has(clientRequestIdFor(t.id)) || requestInFlight(t.id)) continue
       this.forgotten.add(t.id)
       out.push(err('$2', `Take ${t.id} đã có job (đã trừ credit dev) trên máy chủ giả lập nhưng ghi là chưa gửi — “Chạy lại” sẽ tạo take mới, trả tiền lần nữa.`, { takeId: t.id, status: t.status, error: t.error }))
+    }
+    // $3: the same, from the cancel on — a take cancelled while its request is still on its way, whose job the server
+    // already made, reads "maybe billed" at once (store/runs cancel() asks the provider: mayHaveSent). The app may close
+    // before that request ends: then only that mark keeps its "Chạy lại" from making a NEW take that pays again.
+    for (const t of takes) {
+      if (t.status !== 'cancelled' || t.provider !== 'dev' || t.remoteId || isUncertainSubmit(t)) continue
+      if (this.unmarked.has(t.id) || !billed.has(clientRequestIdFor(t.id)) || !requestInFlight(t.id)) continue
+      this.unmarked.add(t.id)
+      out.push(err('$3', `Take ${t.id} bị huỷ lúc đang gửi, máy chủ giả lập đã tạo job (đã trừ credit dev) mà take không ghi “có thể đã bị trừ” — app tắt lúc này thì “Chạy lại” sẽ tạo take mới, trả tiền lần nữa.`, { takeId: t.id, error: t.error }))
     }
     const uploadImage = new Map(snap.uploads.map((u) => [u.upload_id, u.imageId]))
     for (const job of snap.jobs) {

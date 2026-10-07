@@ -45,18 +45,24 @@ export interface TakeDeleteCheck {
    * waiting for the next try) — deleting one drops that paid video in SanoVids, like "Huỷ" (creditText.cancelQuestion).
    */
   paidPending: number
+  /**
+   * How many are "maybe billed" (`uncertain`: runs.isUncertainSubmit — a request whose answer was lost, or cancelled
+   * while it was on its way): deleting one drops the only trace of a job that may have been made and billed (its
+   * "Chạy lại" looks that job up first; once it is deleted, a run of its scene may pay again).
+   */
+  maybeBilled: number
   /** Confirm text, or null when nothing needs asking. */
   question: string | null
 }
 
 /**
  * What deleting `takeIds` loses, and the confirm question to ask (null = no need to ask). `label` names a single take
- * ("S03·T2"). confirm: true = ask when a finished video is lost or a paid video is still downloading (`videoReady` on
- * a running take); 'usedOnly' / false = never.
+ * ("S03·T2"). confirm: true = ask when a finished video is lost, a paid video is still downloading (`videoReady` on
+ * a running take) or a take is "maybe billed" (`uncertain`); 'usedOnly' / false = never.
  */
 export function checkTakeDelete(
   takeIds: readonly string[],
-  takes: readonly { id: string; status: JobStatus; videoReady?: boolean; provider?: string }[],
+  takes: readonly { id: string; status: JobStatus; videoReady?: boolean; uncertain?: boolean; provider?: string }[],
   opts: { confirm?: TakeDeleteConfirm; label?: string } = {},
 ): TakeDeleteCheck {
   const wanted = new Set(takeIds)
@@ -65,8 +71,10 @@ export function checkTakeDelete(
   const finished = found.filter((t) => t.status === 'completed').length
   const pending = found.filter((t) => t.status === 'processing' && t.videoReady === true && t.provider !== 'mock')
   const paidPending = pending.length
-  const ask = (opts.confirm ?? true) === true && (finished > 0 || paidPending > 0)
-  if (!ask || !ids.length) return { ids, finished, paidPending, question: null }
+  const doubtful = found.filter((t) => t.uncertain === true && t.provider !== 'mock')
+  const maybeBilled = doubtful.length
+  const ask = (opts.confirm ?? true) === true && (finished > 0 || paidPending > 0 || maybeBilled > 0)
+  if (!ask || !ids.length) return { ids, finished, paidPending, maybeBilled, question: null }
   const one = ids.length === 1
   const what = one && opts.label ? opts.label : `${ids.length} video${finished && finished < ids.length ? ` (${finished} video đã tạo xong)` : ''}`
   const lines = [`Xoá vĩnh viễn ${what}? Video đã xoá không hoàn tác được.`]
@@ -80,5 +88,14 @@ export function checkTakeDelete(
         : `${who} đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong: xoá sẽ bỏ video đó trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.`,
     )
   }
-  return { ids, finished, paidPending, question: lines.join('\n') }
+  if (maybeBilled) {
+    const dev = doubtful.every((t) => t.provider === 'dev')
+    const who = one && opts.label ? opts.label : `${maybeBilled} video`
+    lines.push(
+      dev
+        ? `${who}: không rõ canvasapp giả lập đã nhận (và trừ credit dev) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit dev lần nữa.`
+        : `${who}: không rõ canvasapp đã nhận (và trừ credit) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit lần nữa.`,
+    )
+  }
+  return { ids, finished, paidPending, maybeBilled, question: lines.join('\n') }
 }

@@ -25,6 +25,8 @@ import {
   isParkedTake,
   isUncertainSubmit,
   isUnverifiableSubmit,
+  maybeBilledRunWarning,
+  paidCancelledRunWarning,
   remoteVideoReady,
   requestInFlight,
   requestInFlightText,
@@ -877,14 +879,19 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
    * adapter: `loseNext(created)` = the next POST's answer is lost (its job IS made when `created`) and its look-up ends
    * with what the test passes to `answer` — 'repost' = provably nothing there: posted again (same key) unless the take
    * was cancelled meanwhile, then "uncertain" like the adapter. Any later submit of a key looks first: its job found →
-   * that job, no POST.
+   * that job, no POST. `holdNext()`: the next submit waits BEFORE its POST (uploads, the canvas…) until `release()`,
+   * then gives up if the take was cancelled. mayHaveSent(key) like the adapter: once the POST of the key went out.
    */
   function payingProvider() {
     const f = fakeProvider('dev')
     const jobs: { key: string; remoteId: string }[] = []
     const calls: { key: string; retryOfUnknown: boolean }[] = []
+    const sent = new Set<string>()
     let lost: { created: boolean; outcome: Promise<Outcome> } | null = null
     let answer: (o: Outcome) => void = () => undefined
+    let hold: Promise<void> | null = null
+    let release: () => void = () => undefined
+    f.p.mayHaveSent = (key) => sent.has(key)
     const post = (key: string) => {
       const remoteId = `r_${key}_${jobs.length + 1}`
       jobs.push({ key, remoteId })
@@ -897,6 +904,13 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       const mine = jobs.find((j) => j.key === req.key)
       if (mine) return { remoteId: mine.remoteId }
       if (opts.isCancelled?.()) throw err('cancelled')
+      if (hold) {
+        const h = hold
+        hold = null
+        await h
+        if (opts.isCancelled?.()) throw err('cancelled')
+      }
+      sent.add(req.key) // the POST goes out now
       if (!lost) return { remoteId: post(req.key) }
       const l = lost
       lost = null
@@ -912,10 +926,15 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       f,
       jobs,
       calls,
+      sent,
       loseNext(created: boolean) {
         lost = { created, outcome: new Promise<Outcome>((r) => (answer = r)) }
       },
       answer: (o: Outcome) => answer(o),
+      holdNext() {
+        hold = new Promise<void>((r) => (release = r))
+      },
+      release: () => release(),
     }
   }
 
@@ -1091,5 +1110,174 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       expect(isUncertainSubmit(take('t1'))).toBe(true)
     }
     expect(f.submitted).toHaveLength(0)
+  })
+
+  /** What persist wrote for the open project (a JSON copy). */
+  const onDisk = () => JSON.parse(JSON.stringify(useRuns.getState().takes)) as Take[]
+
+  it('Huỷ while the request is still BEFORE its POST (uploads, canvas): not "maybe billed" — even when the app closes right then, its "Chạy lại" is a new take, never a look-up that can only end "Tạo lại"', async () => {
+    const pp = payingProvider()
+    registerProvider(pp.f.p)
+    pp.holdNext()
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: null })
+    expect(requestInFlight(id)).toBe(true)
+    useRuns.getState().cancel(id)
+    expect(take(id)).toMatchObject({ status: 'cancelled', error: 'Đã huỷ' })
+    expect(take(id).submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(take(id))).toBe(false)
+    const closedNow = onDisk() // the app closes now (an update installs: a cancelled take is not waited for)
+
+    pp.release()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(pp.jobs).toHaveLength(0) // it gave up before its POST
+    expect(pp.sent.size).toBe(0)
+    expect(take(id)).toMatchObject({ status: 'cancelled', startedAt: null })
+
+    // after the restart: a plain cancelled take — "Chạy lại" queues a NEW take (the cost dialog in the app)
+    const pp2 = payingProvider()
+    registerProvider(pp2.f.p)
+    useRuns.getState().loadRuns({ takes: closedNow, credits: 100, spent: 0 })
+    expect(isUncertainSubmit(take(id))).toBe(false)
+    expect(useRuns.getState().retry(id)).toMatchObject({ queued: 1 })
+    expect(useRuns.getState().takes).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(pp2.calls).toHaveLength(1)
+    expect(pp2.calls[0]).toMatchObject({ retryOfUnknown: false })
+    expect(pp2.calls[0].key).not.toBe(id)
+  })
+
+  it('…but once its POST went out (mayHaveSent), Huỷ marks it at once; a provider that cannot tell counts every cancel while sending', async () => {
+    const pp = payingProvider()
+    registerProvider(pp.f.p)
+    pp.loseNext(true)
+    useRuns.getState().enqueue(['s2'])
+    const a = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    expect(pp.sent.has(a)).toBe(true)
+    useRuns.getState().cancel(a)
+    expect(take(a)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    pp.answer('uncertain')
+    await vi.advanceTimersByTimeAsync(250)
+
+    const blind = payingProvider()
+    delete blind.f.p.mayHaveSent
+    registerProvider(blind.f.p)
+    blind.holdNext()
+    useRuns.getState().enqueue(['s1'])
+    const b = useRuns.getState().takes.find((t) => t.sceneId === 's1')!.id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(b)
+    expect(take(b)).toMatchObject({ status: 'cancelled', submitUnknown: true })
+    blind.release()
+    await vi.advanceTimersByTimeAsync(250)
+    // nothing was sent after all: the mark goes
+    expect(take(b).submitUnknown).toBeUndefined()
+    expect(take(b).startedAt).toBeNull()
+  })
+
+  it.each(['job', 'uncertain', 'refused'] as const)(
+    'Huỷ, then a switch writes the runs and the answer (%s) comes before the next project is loaded: it still reaches the take when its project is opened again',
+    async (kind) => {
+      const pp = payingProvider()
+      registerProvider(pp.f.p)
+      let id: string
+      if (kind === 'job') {
+        let answer: () => void = () => undefined
+        const base = pp.f.p.submit
+        pp.f.p.submit = async (req, opts) => {
+          pp.sent.add(req.key) // its POST is on its way: the answer comes after the cancel
+          await new Promise<void>((r) => (answer = r))
+          return base(req, { ...opts, isCancelled: () => false })
+        }
+        useRuns.getState().enqueue(['s2'])
+        id = useRuns.getState().takes[0].id
+        await vi.advanceTimersByTimeAsync(250)
+        useRuns.getState().cancel(id)
+        const flushed = onDisk() // switchProject: flush() …
+        answer() // … the answer comes while loadProjectData() reads the next project (same runs, same generation)
+        await vi.advanceTimersByTimeAsync(250)
+        useProject.getState().loadProject({ ...project(), id: 'q', scenes: [scene('q1', 1)] })
+        useRuns.getState().loadRuns(null)
+        await reopen(flushed)
+        expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: pp.jobs[0].remoteId })
+        expect(isUncertainSubmit(take(id))).toBe(false)
+        return
+      }
+      const lost = await sentAndLost(kind === 'uncertain')
+      id = lost.id
+      useRuns.getState().cancel(id)
+      expect(take(id)).toMatchObject({ status: 'cancelled', submitUnknown: true, error: 'Đã huỷ' })
+      const flushed = onDisk()
+      lost.pp.answer(kind)
+      await vi.advanceTimersByTimeAsync(250)
+      useProject.getState().loadProject({ ...project(), id: 'q', scenes: [scene('q1', 1)] })
+      useRuns.getState().loadRuns(null)
+      await reopen(flushed)
+      if (kind === 'uncertain') {
+        expect(take(id)).toMatchObject({ status: 'cancelled', submitUnknown: true, remoteId: null, error: unknownSubmitError('dev') })
+        expect(isUncertainSubmit(take(id))).toBe(true)
+      } else {
+        // refused: nothing was created — never "Tạo lại" for it (the mark of its cancel went)
+        expect(take(id)).toMatchObject({ status: 'cancelled', startedAt: null, error: 'Đã huỷ' })
+        expect(take(id).submitUnknown).toBeUndefined()
+      }
+      // put on once: a later load of the project changes nothing more
+      const after = take(id)
+      useRuns.getState().loadRuns({ takes: onDisk(), credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(take(id)).toEqual(after)
+    },
+  )
+
+  it('"Dọn job lỗi/đã huỷ" never deletes a "maybe billed" take (its "Chạy lại" finds the job); a plain failed one goes', async () => {
+    const { pp, id } = await sentAndLost(true)
+    useRuns.getState().cancel(id)
+    pp.answer('uncertain')
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.setState((s) => ({ takes: [...s.takes, { ...legacyTake('plain', 's1'), provider: 'dev', charged: false, status: 'failed', error: 'canvasapp không nhận job' }] }))
+    expect(isUncertainSubmit(take(id))).toBe(true)
+    expect(clearableTakes(useRuns.getState().takes).map((t) => t.id)).toEqual(['plain'])
+  })
+
+  it('the run dialog names a scene whose newest take may already be billed (a run there is a NEW take); a newer take ends it', async () => {
+    const { pp, id } = await sentAndLost(true)
+    useRuns.getState().cancel(id)
+    pp.answer('uncertain')
+    await vi.advanceTimersByTimeAsync(250)
+    const [c] = useRuns.getState().check(['s2'])
+    expect(c.ok).toBe(true)
+    expect(c.warnings[0]).toBe(maybeBilledRunWarning('S02·T1', 'dev', false))
+    expect(c.warnings[0]).toContain('“Chạy lại” trên S02·T1 tìm job cũ')
+    expect(c.warnings[0]).toContain('credit dev')
+    expect(useRuns.getState().check(['s1'])[0].warnings.some((w) => w.includes('lần gửi trước'))).toBe(false)
+    // unverifiable: no look-up can help — the wording sends the user to the gateway's history instead
+    useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? { ...t, error: unverifiableSubmitError('dev') } : t)) }))
+    expect(useRuns.getState().check(['s2'])[0].warnings[0]).toBe(maybeBilledRunWarning('S02·T1', 'dev', true))
+    expect(maybeBilledRunWarning('S02·T1', 'canvasapp', true)).toContain('lịch sử credit trên canvasapp.io.vn')
+    // the user ran the scene anyway (a new take): no more warning
+    useRuns.getState().enqueue(['s2'])
+    expect(useRuns.getState().check(['s2'])[0].warnings.some((w) => w.includes('lần gửi trước'))).toBe(false)
+  })
+
+  it('…and one whose newest take was cancelled although its job exists (billed, still made there): a run is a NEW take that pays again', async () => {
+    const pp = payingProvider()
+    pp.f.p.poll = async (ids) => ids.map((remoteId) => ({ remoteId, state: 'processing' as const, progress: 40 })) // still being made
+    registerProvider(pp.f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(500)
+    expect(take(id)).toMatchObject({ status: 'processing', remoteId: pp.jobs[0].remoteId })
+    useRuns.getState().cancel(id)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: pp.jobs[0].remoteId })
+    expect(useRuns.getState().check(['s2'])[0].warnings[0]).toBe(paidCancelledRunWarning('S02·T1', 'dev'))
+    expect(paidCancelledRunWarning('S02·T1', 'canvasapp')).toContain('vẫn tải được trên canvasapp.io.vn')
+    // a scene that is blocked anyway says why, nothing else
+    useProject.getState().updateScene('s2', { prompt: '' })
+    const [blocked] = useRuns.getState().check(['s2'])
+    expect(blocked.ok).toBe(false)
+    expect(blocked.warnings.some((w) => w.includes('đã huỷ trong SanoVids'))).toBe(false)
   })
 })

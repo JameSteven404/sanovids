@@ -30,7 +30,7 @@ vi.mock('../../lib/imageStore', () => {
   }
 })
 
-import { createSceneFromVideo, rerunTake, restoreFromTake, runNow, takeFileBase } from '../../actions'
+import { createSceneFromVideo, deleteTakes, rerunTake, restoreFromTake, runNow, takeFileBase } from '../../actions'
 import { importSiteJobs, scanForImport } from '../../siteJobActions'
 import { defaultPicks } from '../../components/runs/importJobsModel'
 import { restoreBlock, takeSettingsText } from '../../components/runs/importedTake'
@@ -45,6 +45,7 @@ import { undo, useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { takeCostLine } from '../../components/runs/creditText'
 import {
+  clearableTakes,
   isUncertainSubmit,
   isUnverifiableSubmit,
   MAX_REMOTE_CONCURRENCY,
@@ -2064,6 +2065,62 @@ describe('gateway e2e: "Huỷ" while its POST lost its answer, server without de
     expect(jobsOf(t.id)).toHaveLength(1)
     expect(fake.state.jobs).toHaveLength(1)
     expect(take(t.id).status).toBe('completed')
+  })
+
+  it('Huỷ while its canvas is still being saved (nothing posted yet): never "maybe billed" — closed right then, "Chạy lại" after the restart is the cost dialog of a new take, never "Tạo lại"', async () => {
+    fake.state.dedupe = false
+    const g1 = gate()
+    let held = false
+    fake.state.fault = (r) => {
+      if (r.method !== 'PUT' || !/\/canvas$/.test(r.path) || held) return undefined
+      held = true
+      return { kind: 'wait', until: g1.until }
+    }
+    const [t] = enqueue('s1')
+    await run(5_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    expect(fake.count('PUT', /\/canvas$/)).toBe(1)
+    useRuns.getState().cancel(t.id)
+    expect(isUncertainSubmit(take(t.id))).toBe(false)
+    // the app closes now (an update installs: a cancelled take is never waited for)
+    const onDisk = saved()
+    expect(onDisk[0]).toMatchObject({ status: 'cancelled', remoteId: null })
+    expect(onDisk[0].submitUnknown).toBeUndefined()
+
+    g1.open() // (the old window's request: it stops before its POST)
+    await run(60_000)
+    expect(fake.jobPosts()).toHaveLength(0)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', startedAt: null })
+    expect(takeCostLine(take(t.id))).toMatchObject({ struck: true })
+
+    restart(onDisk)
+    expect(isUncertainSubmit(take(t.id))).toBe(false)
+    const confirm = confirmWith(true)
+    rerunTake(t.id)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(useUI.getState().dialog).toMatchObject({ kind: 'runConfirm', sceneIds: ['s1'] })
+    useUI.getState().closeDialog()
+    expect(fake.jobPosts()).toHaveLength(0)
+    expect(fake.state.jobs).toHaveLength(0)
+  })
+
+  it('a cancelled take that may be billed: "Dọn job lỗi/đã huỷ" leaves it (also while its look-up runs), deleting it alone asks first', async () => {
+    const t = await cancelledWhileLost()
+    // its look-up still runs: deleting it now would drop the job id the look-up may still bring
+    expect(clearableTakes(takes())).toEqual([])
+    let confirm = confirmWith(false)
+    expect(deleteTakes([t.id])).toBeNull()
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(confirm.mock.calls[0][0]).toContain('không rõ canvasapp đã nhận (và trừ credit) chưa')
+    expect(take(t.id)).toBeDefined()
+
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', error: UNKNOWN_SUBMIT_ERROR, submitUnknown: true })
+    expect(clearableTakes(takes())).toEqual([])
+    confirm = confirmWith(true)
+    expect(deleteTakes([t.id], { toast: false })).toBe(1)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(takes()).toHaveLength(0)
   })
 })
 

@@ -61,6 +61,7 @@
 //     here at all — another computer, lost with the storage, written over by another build, or forgotten from
 //     `dropped`: no evidence never means "never sent".
 //   - opts.isCancelled() → stop before uploading / posting: a take cancelled while it waits here is never billed.
+//     mayHaveSent(key) tells the engine, at the moment of a cancel, whether the POST may already have gone out.
 //   - `imported[key]`: a job made on canvasapp's own page that became the take `key` ("Nhập job": scanSiteJobs →
 //     siteJobPrompts → claimSiteJobs, rules in siteJobs.ts). Such a key is never posted either; the import itself
 //     only reads (GET), and never offers a job an unanswered POST may own (sentMayOwn, checked again at claim time).
@@ -1579,6 +1580,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       }
       return null
     },
+
+    // `sent[key]` is stored in the same synchronous step as submitNow's last checkCancelled() and the POST itself
+    // (postJob): without any record of the key, nothing of it went out from here — a submit on its way then stops at
+    // its next checkCancelled() (store/runs: a take cancelled then is not "maybe billed").
+    mayHaveSent: (key) => key in ledger.sent || key in ledger.jobs || key in ledger.imported || ledger.dropped.includes(key),
 
     poll: async (remoteIds) => {
       const out: RemoteStatus[] = []

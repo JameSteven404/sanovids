@@ -54,6 +54,27 @@ describe('checkTakeDelete', () => {
     expect(checkTakeDelete(['r1'], running, { confirm: 'usedOnly' }).question).toBeNull()
   })
 
+  it('asks before deleting a "maybe billed" take (its "Chạy lại" finds the job; deleted, a run of its scene may pay again)', () => {
+    const doubtful = [
+      { id: 'u1', status: 'cancelled' as const, uncertain: true, provider: 'canvasapp' },
+      { id: 'u2', status: 'failed' as const, uncertain: true, provider: 'dev' },
+      { id: 'f1', status: 'failed' as const, uncertain: false, provider: 'canvasapp' },
+      { id: 'm1', status: 'failed' as const, uncertain: true, provider: 'mock' },
+    ]
+    const c = checkTakeDelete(['u1'], doubtful, { label: 'S01·T2' })
+    expect(c.maybeBilled).toBe(1)
+    expect(c.question).toContain('Xoá vĩnh viễn S01·T2?')
+    expect(c.question).toContain('S01·T2: không rõ canvasapp đã nhận (và trừ credit) chưa')
+    expect(c.question).toContain('“Chạy lại” trên take tìm job cũ trước khi gửi')
+    const dev = checkTakeDelete(['u2'], doubtful).question!
+    expect(dev).toContain('canvasapp giả lập')
+    expect(dev).toContain('credit dev')
+    expect(checkTakeDelete(['u1', 'u2', 'f1'], doubtful).question).toContain('2 video: không rõ')
+    // a plain failed take, or the old demo: nothing to ask
+    expect(checkTakeDelete(['f1', 'm1'], doubtful).question).toBeNull()
+    expect(checkTakeDelete(['u1'], doubtful, { confirm: false }).question).toBeNull()
+  })
+
   it("'usedOnly' (the caller already confirmed) and false never ask", () => {
     expect(checkTakeDelete(['t3'], takes, { confirm: 'usedOnly' }).question).toBeNull()
     expect(checkTakeDelete(['t1'], takes, { confirm: false }).question).toBeNull()

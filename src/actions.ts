@@ -469,10 +469,17 @@ export interface DeleteTakesOptions {
  */
 /**
  * Takes as checkTakeDelete sees them: a running take whose video is already made and paid (remoteVideoReady:
- * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video.
+ * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video;
+ * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed.
  */
-function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; provider: string }[] {
-  return takes.map((t) => ({ id: t.id, status: t.status, videoReady: t.status === 'processing' && remoteVideoReady(t.id), provider: providerOf(t) }))
+function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; uncertain: boolean; provider: string }[] {
+  return takes.map((t) => ({
+    id: t.id,
+    status: t.status,
+    videoReady: t.status === 'processing' && remoteVideoReady(t.id),
+    uncertain: isUncertainSubmit(t),
+    provider: providerOf(t),
+  }))
 }
 
 export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {

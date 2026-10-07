@@ -211,7 +211,8 @@ function QueuePanel() {
 
   // The shared delete (actions.deleteTakes): also drops the takes from folder nodes and the selection and deletes
   // their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming. A newer
-  // build's take parked here (it may still be running, and paid, there) is never part of it (clearableTakes).
+  // build's take parked here (it may still be running, and paid, there) and a "maybe billed" take (its "Chạy lại"
+  // finds the job its earlier request may have made) are never part of it (clearableTakes).
   const clearFailed = () => {
     const n = deleteTakes(
       clearable.map((t) => t.id),
@@ -250,7 +251,7 @@ function QueuePanel() {
             <span className="rq-btn-label">Cổng canvasapp</span>
           </button>
         )}
-        <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách — take “không rõ đã bị trừ credit chưa” được giữ lại (xoá riêng từng take nếu muốn)">
           <Trash size={13} />
           <span className="rq-btn-label">Dọn job lỗi/đã huỷ{clearable.length ? ` (${clearable.length})` : ''}</span>
         </button>

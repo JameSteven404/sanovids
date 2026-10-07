@@ -745,6 +745,24 @@ describe('dev mode e2e: idempotency', () => {
     expect(server.snapshot().jobs).toHaveLength(1)
     expect(server.balance()).toBe(1000 - S1_COST)
   })
+
+  it('PAY-H: "Huỷ" while the canvas is still being saved (nothing posted yet) → not "maybe billed", never posted, "huỷ trước khi gửi"', async () => {
+    server.login()
+    server.setConfig({ dedupe: false })
+    server.addFault({ endpoint: 'canvas-put', fault: { kind: 'slow', ms: 10_000 } })
+    const [t] = enqueue('s1')
+    await run(2_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    useRuns.getState().cancel(t.id)
+    expect(take(t.id).submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(take(t.id))).toBe(false)
+    await run(30_000)
+    expect(logOf('job-create')).toHaveLength(0)
+    expect(server.snapshot().jobs).toHaveLength(0)
+    expect(server.balance()).toBe(1000)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', startedAt: null })
+    expect(takeCostLine(take(t.id))).toMatchObject({ struck: true })
+  })
 })
 
 describe('dev mode e2e: a duplicated project (same scene ids)', () => {
