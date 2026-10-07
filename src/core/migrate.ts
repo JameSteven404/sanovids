@@ -6,6 +6,7 @@ import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
 import { cleanForeignSettings, foreignId, lostConfigValues } from './foreignMark'
 import { isModelId, normalizeSettings } from './models'
+import { normalizeAssetName, normalizePresetName } from './names'
 import type { Asset, AssetKind, ForeignSettings, ImportedField, JobStatus, Preset, Project, Scene, Take, TakeImport, TakeProvider, VideoSettings, XY } from './types'
 
 interface V1Block {
@@ -41,7 +42,7 @@ function normalizeAssets(raw: unknown): Asset[] {
     let id = typeof a.id === 'string' && a.id ? a.id : newId('ast')
     if (ids.has(id)) id = newId('ast')
     ids.add(id)
-    const name = text(a.name).trim() ? text(a.name) : 'Không tên'
+    const name = normalizeAssetName(a.name) // = the store's rule (core/names)
     const free = typeof a.tag === 'string' && !!a.tag && !tags.some((t) => t.toLowerCase() === a.tag!.toLowerCase())
     const tag = free ? a.tag! : uniqueTag(name, tags)
     tags.push(tag)
@@ -111,8 +112,11 @@ function migrateModelMark(
   const settings = normalizeSettings(raw)
   if (typeof model === 'string' && model.trim() && !isModelId(model)) return markOf(settings, foreignId(model), cleanForeignSettings(raw, omit))
   if (lostConfigValues(raw, newerFile).length) {
+    // Only a marker that still holds a value it is made for: cleanForeignSettings skips an entry too big to keep (a
+    // 5000-character "ratio" is no newer build's value), and a marker without its lost value would be restored — and
+    // dropped — at the next load (migrate must give the same project twice: save + reopen changes nothing).
     const config = cleanForeignSettings(raw, omit)
-    if (config) return { settings, foreignSettings: config }
+    if (config && lostConfigValues(config, newerFile).length) return { settings, foreignSettings: config }
   }
   const kept = typeof saved.foreignModel === 'string' && saved.foreignModel.trim() ? saved.foreignModel : null
   const keptSettings = cleanForeignSettings(saved.foreignSettings)
@@ -143,7 +147,7 @@ export function normalizePresets(raw: unknown, newerFile = false): Preset[] {
       if (ids.has(id)) id = newId('pst')
       ids.add(id)
       const { settings, ...marker } = migrateModelMark(r, r, PRESET_NOT_SETTINGS, newerFile)
-      return { id, name: text(r.name).trim() || 'Preset', ...settings, ...marker }
+      return { id, name: normalizePresetName(r.name), ...settings, ...marker }
     })
 }
 

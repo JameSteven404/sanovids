@@ -293,6 +293,65 @@ describe('updatePreset', () => {
   })
 })
 
+// Test giới hạn D1: "Dự án đọc lại khác bản đang mở" — the store kept blank / untrimmed names that migrate rewrites.
+describe('names are kept the way migrate reads them back (core/names): save + reopen changes nothing', () => {
+  /** What a reopen gives: the project as saved (JSON), migrated. */
+  const reopened = () => migrateProject(JSON.parse(JSON.stringify(st().project)))
+  const long = 'Tên '.repeat(80) + '🎬'.repeat(60)
+
+  it('assets: a blank name is "Không tên" at once (create and rename); a typed one is kept as typed', () => {
+    const blank = st().addAsset({ name: '' })
+    const spaces = st().addAsset({ name: '   ' })
+    const typed = st().addAsset({ name: '  Elara 2 ' })
+    const named = (id: string) => st().project.assets.find((a) => a.id === id)!
+    expect([named(blank).name, named(spaces).name, named(typed).name]).toEqual(['Không tên', 'Không tên', '  Elara 2 '])
+    expect(named(blank).tag).toBeTruthy()
+    st().updateAsset('a', { name: ' \t ' })
+    expect(named('a').name).toBe('Không tên')
+    st().updateAsset('b', { name: long })
+    expect(named('b').name).toBe(long)
+    const back = reopened()
+    expect(back.assets.map((a) => [a.id, a.name, a.tag])).toEqual(st().project.assets.map((a) => [a.id, a.name, a.tag]))
+  })
+
+  it('folder nodes: trimmed, at most 120 characters (never half an emoji), blank → the folder name or "Thư mục" — on create and on "Chọn lại thư mục"', () => {
+    const a = st().addFolder({ name: '   ', path: null, position: { x: 0, y: 0 } })
+    const b = st().addFolder({ name: '  Phim A  ', path: null, position: { x: 0, y: 200 } })
+    const c = st().addFolder({ name: '🎬'.repeat(130), path: null, position: { x: 0, y: 400 } })
+    const d = st().addFolder({ name: '', path: 'C:\\Users\\me\\Videos\\Phim B\\', position: { x: 0, y: 600 } })
+    const name = (id: string) => st().project.folders!.find((f) => f.id === id)!.name
+    expect([name(a), name(b), name(d)]).toEqual(['Thư mục', 'Phim A', 'Phim B'])
+    expect(name(c)).toBe('🎬'.repeat(120)) // 120 code points, never half an emoji
+    const e = st().addFolder({ name: long, path: null, position: { x: 0, y: 800 } })
+    expect([...name(e)].length).toBeLessThanOrEqual(120)
+    expect(name(e)).toBe(name(e).trim())
+    st().setFolderPlace(b, { name: ' ', path: null })
+    expect(name(b)).toBe('Thư mục')
+    st().setFolderPlace(a, { name: '  Kết quả ', path: '/home/me/out' })
+    expect(name(a)).toBe('Kết quả')
+    const back = reopened()
+    expect(back.folders!.map((f) => [f.id, f.name])).toEqual(st().project.folders!.map((f) => [f.id, f.name]))
+  })
+
+  it('presets: trimmed on create and rename (a blank rename still keeps the old name)', () => {
+    const id = st().addPreset({ name: '  Phim  ', model: 'seedance_2_5' })
+    const preset = () => st().project.presets.find((p) => p.id === id)!
+    expect(preset().name).toBe('Phim')
+    st().updatePreset(id, { name: '  Phim mới ' })
+    expect(preset().name).toBe('Phim mới')
+    st().updatePreset(id, { name: '   ' })
+    expect(preset().name).toBe('Phim mới')
+    expect(reopened().presets.map((p) => p.name)).toEqual(st().project.presets.map((p) => p.name))
+  })
+
+  it('migrate itself: a folder name cut at 120 that would end on a space reads back the same (idempotent)', () => {
+    const raw = { ...st().project, folders: [{ id: 'f1', name: 'a'.repeat(119) + ' b', path: null, position: { x: 0, y: 0 }, mode: 'copy' }] }
+    const once = migrateProject(JSON.parse(JSON.stringify(raw)))
+    expect(once.folders![0].name).toBe('a'.repeat(119))
+    expect(migrateProject(JSON.parse(JSON.stringify(once)))).toEqual(once)
+  })
+})
+
 describe('removed images fall back to a readable name', () => {
   it('blank asset name → tag', () => {
     st().loadProject({

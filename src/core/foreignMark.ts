@@ -87,7 +87,8 @@ export function foreignMarkOf(settings: unknown): { foreignModel?: string; forei
   const model: unknown = settings && typeof settings === 'object' ? (settings as { model?: unknown }).model : undefined
   if (isModelId(model)) {
     const config = lostConfigValues(settings, true).length ? cleanForeignSettings(settings) : null
-    return config ? { foreignSettings: config } : null
+    // a marker that lost the very values it is for (too big to keep) would be dropped by the next load: none
+    return config && lostConfigValues(config, true).length ? { foreignSettings: config } : null
   }
   if (typeof model !== 'string' || !model.trim()) return null
   const foreign = cleanForeignSettings(settings)

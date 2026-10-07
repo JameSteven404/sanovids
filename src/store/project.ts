@@ -11,6 +11,7 @@ import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } fr
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
 import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
+import { normalizeAssetName, normalizeFolderName, normalizePresetName } from '../core/names'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
 
@@ -598,11 +599,13 @@ export const useProject = create<ProjectState>()(
         addAsset: (partial) => {
           const p = get().project
           const id = partial.id ?? newId('ast')
+          // named exactly as migrate reads it back (core/names): a blank name is "Không tên" now, not after a reopen
+          const name = normalizeAssetName(partial.name)
           const asset: Asset = {
             id,
             kind: partial.kind ?? 'character',
-            name: partial.name,
-            tag: partial.tag && !assetByTag(p.assets, partial.tag) ? partial.tag : uniqueTag(partial.name, p.assets.map((a) => a.tag)),
+            name,
+            tag: partial.tag && !assetByTag(p.assets, partial.tag) ? partial.tag : uniqueTag(name, p.assets.map((a) => a.tag)),
             description: partial.description ?? '',
             imageIds: partial.imageIds ?? [],
             color: partial.color ?? pickColor(p.assets.length),
@@ -618,6 +621,7 @@ export const useProject = create<ProjectState>()(
             const assets = p.assets.map((a) => {
               if (a.id !== id) return a
               const next = { ...a, ...patch }
+              if (patch.name !== undefined) next.name = normalizeAssetName(patch.name) // = migrate (core/names)
               if (patch.tag !== undefined) next.tag = uniqueTag(patch.tag || next.name, others)
               return next
             })
@@ -657,7 +661,7 @@ export const useProject = create<ProjectState>()(
         addPreset: (partial) => {
           const id = partial.id ?? newId('pst')
           const settings = normalizeSettings(partial)
-          mutate((p) => ({ ...p, presets: [...p.presets, withForeignOf<Preset>({ id, name: partial.name, ...settings }, partial)] }))
+          mutate((p) => ({ ...p, presets: [...p.presets, withForeignOf<Preset>({ id, name: normalizePresetName(partial.name), ...settings }, partial)] }))
           return id
         },
         /**
@@ -669,7 +673,8 @@ export const useProject = create<ProjectState>()(
           mutate((p) => {
             const old = p.presets.find((x) => x.id === id)!
             let next: Preset = { ...old, ...patch, id, ...normalizeSettings({ ...old, ...patch }) }
-            if (typeof next.name !== 'string' || !next.name.trim()) next.name = old.name
+            // a blank rename keeps the old name; any other is trimmed, as migrate reads it back (core/names)
+            next.name = typeof next.name === 'string' && next.name.trim() ? normalizePresetName(next.name) : old.name
             // Picking a model for a preset of a newer build's model drops its marker (like updateSettings for scenes); a
             // preset that only keeps a newer build's values for a known model (config marker) loses it on any setting.
             const setting = (['model', 'mode', 'duration', 'resolution', 'ratio'] as const).some((k) => patch[k] !== undefined)
@@ -987,14 +992,16 @@ export const useProject = create<ProjectState>()(
           const taken = new Set([...p.assets.map((a) => a.id), ...p.scenes.map((s) => s.id), ...(p.folders ?? []).map((f) => f.id)])
           let id = folder.id ?? newId('fld')
           while (taken.has(id)) id = newId('fld')
-          const next: SaveFolder = { id, name: folder.name, path: folder.path, position: folder.position, mode: 'copy' }
+          // named exactly as migrate reads it back (core/names: trimmed, ≤ 120, blank → the folder's name / "Thư mục")
+          const next: SaveFolder = { id, name: normalizeFolderName(folder.name, folder.path), path: folder.path, position: folder.position, mode: 'copy' }
           if (folder.autoScenes?.length) next.autoScenes = [...new Set(folder.autoScenes)]
           if (folder.takes?.length) next.takes = [...new Set(folder.takes)]
           mutate((pp) => ({ ...pp, folders: [...(pp.folders ?? []), next] }))
           return id
         },
         setFolderPlace: (id, place) => {
-          const at = (f: SaveFolder) => (f.id === id && (f.name !== place.name || f.path !== place.path) ? { ...f, name: place.name, path: place.path } : f)
+          const name = normalizeFolderName(place.name, place.path) // = migrate (core/names)
+          const at = (f: SaveFolder) => (f.id === id && (f.name !== name || f.path !== place.path) ? { ...f, name, path: place.path } : f)
           // Where a node writes is not an edit: the browser keeps the folder itself (its handle) outside the project and
           // the undo history, so no undo / redo may show the old folder's name while saves go to the new one.
           applyEverywhere((p) => (p.folders?.some((f) => at(f) !== f) ? { ...p, folders: p.folders.map(at) } : p))

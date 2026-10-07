@@ -6,6 +6,7 @@ import {
   FOREIGN_RUNNING_ERROR,
   FOREIGN_SETTINGS_MAX_BYTES,
   FOREIGN_SETTINGS_MAX_KEYS,
+  foreignMarkOf,
   migrateProject,
   migrateTake,
   parkForeignTake,
@@ -540,6 +541,28 @@ describe('values of a newer build for a model this build knows (config marker)',
     expect(v2new.scenes[0].foreignSettings).toEqual(FOURK)
     // the same mix in a newer schema: kept (a newer build may have added 2k to Seedance)
     expect(migrateProject(project(3, { model: 'seedance_2_5', mode: 't2v', duration: 10, resolution: '2k', ratio: '16:9' })).scenes[0].foreignSettings).toMatchObject({ resolution: '2k' })
+  })
+
+  // Test giới hạn parser-fuzz (seed 5a17c0de, D2): "migrate hai lần cho kết quả khác ở .presets.0.foreignSettings"
+  it('a lost value too big to keep makes no marker — migrate gives the same project twice (scenes and presets)', () => {
+    const huge = { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '480p', ratio: 'x'.repeat(5000) }
+    for (const v of [2, 3]) {
+      const p = migrateProject(project(v, huge))
+      for (const x of [p.presets[0], p.scenes[0]]) expect('foreignSettings' in x || 'foreignModel' in x).toBe(false)
+      expect(p.presets[0]).toMatchObject({ ratio: '16:9' })
+      expect(p.scenes[0].settings.ratio).toBe('16:9')
+      expect(migrateProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
+    }
+    // one lost value that fits, one too big: the marker keeps the one it can, and stays as it is at the next load
+    const mixed = { ...huge, resolution: '4k' }
+    const kept = { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '4k' }
+    const m = migrateProject(project(2, mixed))
+    expect(m.presets[0].foreignSettings).toEqual(kept)
+    expect(m.scenes[0].foreignSettings).toEqual(kept)
+    expect(migrateProject(JSON.parse(JSON.stringify(m)))).toEqual(m)
+    // the same rule when a take's settings are put back on a scene (store/project)
+    expect(foreignMarkOf(huge)).toBeNull()
+    expect(foreignMarkOf(mixed)).toEqual({ foreignSettings: kept })
   })
 
   it('a build that offers those values restores them and drops the marker', () => {

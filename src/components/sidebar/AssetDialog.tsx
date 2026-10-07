@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { focusNodes, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
+import { normalizeAssetName } from '../../core/names'
 import type { Asset, AssetKind } from '../../core/types'
 import { aspectOf, useImageSize } from '../../lib/imageMeta'
 import { useProject } from '../../store/project'
@@ -51,6 +52,9 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
   useFileDropGuard()
   /** Image files dragged anywhere over the dialog body are added to this asset. */
   const [fileOver, setFileOver] = useState(false)
+  // What is typed while the name is edited: the store keeps a blank name as "Không tên" (core/names), the field shows it
+  // only once the edit ends.
+  const [nameDraft, setNameDraft] = useState<string | null>(null)
 
   const remove = () => {
     const name = asset.name || asset.tag
@@ -117,10 +121,14 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
               <span>Tên</span>
               <input
                 className="input"
-                value={asset.name}
+                value={nameDraft !== null && normalizeAssetName(nameDraft) === asset.name ? nameDraft : asset.name}
                 placeholder="Ví dụ: Elara"
-                onChange={(e) => update({ name: e.target.value })}
+                onChange={(e) => {
+                  setNameDraft(e.target.value)
+                  update({ name: e.target.value })
+                }}
                 onBlur={(e) => {
+                  setNameDraft(null)
                   if (!e.target.value.trim()) update({ name: asset.tag })
                 }}
               />

@@ -1,7 +1,10 @@
 // "Thư mục" nodes (Project.folders): pure rules — data repair for saved / imported projects, which folders a
 // finished take goes to, cached lookups. Unit-tested in ./__tests__/folders.test.ts.
 import { newId } from './ids'
+import { normalizeFolderName } from './names'
 import type { SaveFolder, XY } from './types'
+
+export { folderBaseName } from './names'
 
 /** Default size of a folder node on the canvas (it has no resize handle). */
 export const FOLDER_W = 248
@@ -14,12 +17,6 @@ const isXY = (v: unknown): v is XY => !!v && typeof v === 'object' && Number.isF
 /** Link list without duplicates; past MAX_LINKS the most recent links (the end of the list) are kept. */
 const uniqueStrings = (v: unknown, keep: (s: string) => boolean = () => true): string[] =>
   Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string' && !!x && keep(x)))].slice(-MAX_LINKS) : []
-
-/** "C:\Users\me\Videos\Phim A" / "/home/me/Phim A/" → "Phim A" ('' when there is none). */
-export function folderBaseName(path: string): string {
-  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/)
-  return parts[parts.length - 1] ?? ''
-}
 
 /**
  * Folder nodes of a saved / imported project, repaired: unique ids that collide with no other node (`taken`: scene and
@@ -37,7 +34,8 @@ export function normalizeFolders(raw: unknown, taken: ReadonlySet<string> = new 
     while (ids.has(id) || taken.has(id)) id = newId('fld')
     ids.add(id)
     const path = typeof f.path === 'string' && f.path.trim() && f.path.length <= 1024 && !f.path.includes('\u0000') ? f.path : null
-    const name = (typeof f.name === 'string' && f.name.trim() ? f.name.trim() : path ? folderBaseName(path) : '').slice(0, 120) || 'Thư mục'
+    // the store names a node the same way (core/names): a save + reopen never renames it
+    const name = normalizeFolderName(f.name, path)
     const folder: SaveFolder = {
       id,
       name,
