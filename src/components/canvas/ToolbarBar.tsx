@@ -1,22 +1,38 @@
 import { useReactFlow, useStore } from '@xyflow/react'
-import { Film, FolderPlus, GripVertical, Hand, Link2, Map as MapIcon, Maximize, MoreHorizontal, MousePointer2, Play, Plus, Spline } from 'lucide-react'
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { connectSelection, downloadChosenTakesZip, nextScene, redo, requestRun, selectedSceneIds, selectScenesWithoutVideo, undo } from '../../actions'
+import { ChevronDown, Eye, GripVertical, Hand, Maximize, MoreHorizontal, MousePointer2, Play, Plus } from 'lucide-react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { connectSelection, downloadChosenTakesZip, newScene, nextScene, redo, requestRun, selectedSceneIds, selectScenesWithoutVideo, undo } from '../../actions'
 import type { ActionId } from '../../core/keymap'
 import { createFolderNode } from '../../folderActions'
 import { useMotionLevel } from '../../lib/canvasPrefs'
+import { IS_MAC } from '../../lib/platform'
 import { DEFAULT_TOOLBAR_PLACE, useToolbarPrefs, type ToolbarDock } from '../../lib/toolbarPrefs'
 import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { ArrangeToolbarSlot } from './ArrangeToolbarSlot'
 import { sceneMapOf } from './canvasModel'
-import { ToolbarButton, ToolbarMenu, toolbarArrowKey, type ToolbarMenuItem } from './ToolbarControls'
+import { ensureRovingStop, ToolbarButton, ToolbarMenu, toolbarArrowKey, useFocusRescue, type ToolbarMenuItem } from './ToolbarControls'
 import { ToolbarTray } from './ToolbarTray'
-import { minimapPosition, nudgeToolbar, toolbarSide, type ToolbarItemId } from './toolbarModel'
+import {
+  canScrollBy, canvasOnlyLabel, gripHelpText, minimapPosition, nudgeToolbar, toggleCanvasOnly, toolbarSide, viewDiffers,
+  type PanelState, type ToolbarItemId,
+} from './toolbarModel'
 import { useToolbarPlace } from './useToolbarPlace'
 import './toolbar.css'
 
 const DOCK_LABELS: Record<ToolbarDock, string> = { bottom: 'Cạnh dưới', top: 'Cạnh trên', left: 'Cạnh trái', right: 'Cạnh phải', free: 'Đặt tự do' }
+const MENU = { place: 'Vị trí thanh công cụ', add: 'Thêm vào canvas', view: 'Hiển thị', zoom: 'Thu phóng', more: 'Thêm thao tác' } as const
+const ICON = { size: 16, strokeWidth: 1.75 } as const
+// Which side panels "Chỉ canvas" hid, so pressing it again shows exactly those (kept across canvas remounts).
+let hiddenPanels: PanelState | null = null
+
+function toggleSidePanels() {
+  const ui = useUI.getState()
+  const { next, remember } = toggleCanvasOnly({ left: ui.leftOpen, right: ui.rightOpen }, hiddenPanels)
+  hiddenPanels = remember
+  ui.setLeftOpen(next.left)
+  ui.setRightOpen(next.right)
+}
 
 export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { onArrange: () => void; onFit: (ids?: string[]) => void; big: boolean }) {
   const rf = useReactFlow()
@@ -25,7 +41,9 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   const edgeMode = useUI((s) => s.edgeMode)
   const takeDisplay = useUI((s) => s.takeDisplay)
   const minimapHidden = useUI((s) => !!s.minimapAutoHiddenFor && !s.minimapShownFor.includes(s.minimapAutoHiddenFor))
-  const showMinimap = useUI((s) => s.showMinimap) && !minimapHidden
+  const minimapPref = useUI((s) => s.showMinimap)
+  const showMinimap = minimapPref && !minimapHidden
+  const viewChanged = viewDiffers({ edgeMode, takeDisplay, showMinimap: minimapPref })
   const selected = useUI((s) => s.selectedIds)
   const wireCount = useUI((s) => s.selectedEdgeIds.length)
   const sceneCount = useProject((s) => selected.filter((id) => sceneMapOf(s.project.scenes).has(id)).length)
@@ -36,8 +54,10 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   const side = toolbarSide(fit.dock, rect, stage)
   const barRef = useRef<HTMLDivElement>(null)
   const menuOpener = useRef<HTMLElement | null>(null)
-  const focused = useRef<string | null>(null)
   const [menu, setMenu] = useState<{ label: string; items: ToolbarMenuItem[] } | null>(null)
+  const focusMore = useCallback(() => barRef.current?.querySelector<HTMLButtonElement>('[data-tool="more"]'), [])
+  const rescue = useFocusRescue(focusMore)
+  useLayoutEffect(() => { ensureRovingStop(barRef.current, document.activeElement) })
   const closeMenu = useCallback(() => {
     setMenu(null)
     if (menuOpener.current?.isConnected) menuOpener.current.focus({ preventScroll: true })
@@ -53,11 +73,6 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     window.addEventListener('blur', closeMenu)
     return () => { window.removeEventListener('pointerdown', closeOutside, true); window.removeEventListener('blur', closeMenu) }
   }, [menu, closeMenu, host])
-  useLayoutEffect(() => {
-    if (focused.current && !barRef.current?.querySelector(`[data-tool="${focused.current}"]`) && document.activeElement === document.body) {
-      barRef.current?.querySelector<HTMLButtonElement>('[data-tool="more"]')?.focus()
-    }
-  }, [fit.shown.join(',')])
   useLayoutEffect(() => {
     const el = host.current
     const map = el?.parentElement?.querySelector<HTMLElement>('.react-flow__minimap')
@@ -84,6 +99,9 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     if (!el) return
     const wheel = (e: WheelEvent) => {
       if (menu || dragging) return
+      // A tray that wraps past its max height scrolls under the wheel until its end; then the wheel zooms again.
+      const box = e.target instanceof Element ? e.target.closest('.cv-toolbar-tray') : null
+      if (box && !e.ctrlKey && !e.metaKey && canScrollBy(box, e.deltaX, e.deltaY)) return
       const pane = el.parentElement?.querySelector('.react-flow__pane')
       if (!pane) return
       e.preventDefault()
@@ -95,54 +113,87 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   }, [host, menu, dragging])
 
   const ui = useUI.getState()
-  const positionMenu = () => openMenu('Vị trí thanh công cụ', [
+  const positionMenu = () => openMenu(MENU.place, [
     ...(['bottom', 'top', 'left', 'right'] as const).map((dock) => ({ id: dock, label: DOCK_LABELS[dock], checked: place.dock === dock,
       run: () => useToolbarPrefs.getState().setPlace({ ...place, dock }) })),
     { id: 'reset', label: 'Đưa thanh về chỗ cũ', run: () => { useToolbarPrefs.getState().setPlace(DEFAULT_TOOLBAR_PLACE); toast('Đã đưa thanh công cụ về chỗ cũ.') } },
   ])
-  const zoomMenu = () => openMenu('Thu phóng', [
+  const zoomMenu = () => openMenu(MENU.zoom, [
     { id: 'in', label: 'Phóng to', run: () => { void rf.zoomIn({ duration }) } },
     { id: 'out', label: 'Thu nhỏ', run: () => { void rf.zoomOut({ duration }) } },
     ...[0.5, 1, 2].map((value) => ({ id: String(value), label: `${value * 100}%`, run: () => { void rf.zoomTo(value, { duration }) } })),
     { id: 'fit', label: 'Vừa màn hình', shortcut: 'canvas.fit', run: () => onFit() },
     { id: 'selection', label: 'Vừa vùng đang chọn', disabled: !selected.length, run: () => onFit(useUI.getState().selectedIds) },
   ])
-  const edgeMenu = () => openMenu('Hiển thị dây nối', [
-    { id: 'hidden', label: 'Ẩn · chỉ hiện dây đang trỏ', checked: edgeMode === 'hidden', run: () => ui.setEdgeMode('hidden') },
-    { id: 'selected', label: 'Đang chọn', checked: edgeMode === 'selected', shortcut: 'canvas.cycleEdges', run: () => ui.setEdgeMode('selected') },
-    { id: 'all', label: big ? 'Tất cả · chỉ vẽ dây gần vùng đang xem' : 'Tất cả', checked: edgeMode === 'all', run: () => ui.setEdgeMode('all') },
+  // Dây nối / Video / Bản đồ thu nhỏ share one "Hiển thị" button (mockup A); E and M still switch them directly.
+  const viewMenu = () => openMenu(MENU.view, [
+    { id: 'edges', label: 'Dây nối', heading: true, shortcut: 'canvas.cycleEdges' },
+    { id: 'edges-hidden', label: 'Ẩn · chỉ hiện dây đang trỏ', checked: edgeMode === 'hidden', run: () => ui.setEdgeMode('hidden') },
+    { id: 'edges-selected', label: 'Đang chọn', checked: edgeMode === 'selected', run: () => ui.setEdgeMode('selected') },
+    { id: 'edges-all', label: big ? 'Tất cả · chỉ vẽ dây gần vùng đang xem' : 'Tất cả', checked: edgeMode === 'all', run: () => ui.setEdgeMode('all') },
+    { id: 'takes', label: 'Video', heading: true },
+    { id: 'takes-all', label: 'Tất cả', checked: takeDisplay === 'all', run: () => ui.setTakeDisplay('all') },
+    { id: 'takes-chosen', label: 'Chỉ take chọn ★', checked: takeDisplay === 'chosen', run: () => ui.setTakeDisplay('chosen') },
+    { id: 'view-sep', label: '', separator: true },
+    { id: 'minimap', label: minimapHidden ? 'Bản đồ thu nhỏ · đang tạm ẩn vì dự án lớn' : 'Bản đồ thu nhỏ', check: true, checked: showMinimap,
+      shortcut: 'canvas.minimap', run: () => ui.toggleMinimap() },
   ])
-  const takeMenu = () => openMenu('Hiển thị video', [
-    { id: 'all', label: 'Tất cả', checked: takeDisplay === 'all', run: () => ui.setTakeDisplay('all') },
-    { id: 'chosen', label: 'Chỉ take chọn ★', checked: takeDisplay === 'chosen', run: () => ui.setTakeDisplay('chosen') },
-  ])
-  const entries: Record<ToolbarItemId, { label: string; icon: typeof Plus; run: () => void; shortcut?: ActionId; pressed?: boolean; disabled?: boolean; menu?: boolean }> = {
-    new: { label: 'Cảnh mới', icon: Plus, run: () => { nextScene() }, shortcut: 'scene.next' },
-    folder: { label: 'Thư mục lưu video…', icon: FolderPlus, run: () => { void createFolderNode() } },
-    link: { label: 'Nối ảnh vào các cảnh đang chọn', icon: Link2, run: connectSelection, shortcut: 'selection.connect' },
-    run: { label: sceneCount ? `Chạy ${sceneCount} cảnh đang chọn · xác nhận chi phí` : 'Chạy · chọn ít nhất một cảnh', icon: Play, run: () => requestRun(selectedSceneIds()), shortcut: 'scene.run', disabled: !sceneCount },
-    arrange: { label: 'Sắp xếp lại canvas', icon: Maximize, run: onArrange },
-    fit: { label: 'Vừa màn hình', icon: Maximize, run: () => onFit(useUI.getState().selectedIds), shortcut: 'canvas.fit' },
-    hand: { label: 'Tay · kéo nền để di chuyển', icon: Hand, run: () => ui.setInteraction('hand'), shortcut: 'canvas.hand', pressed: interaction === 'hand' },
-    select: { label: 'Chọn · kéo để chọn vùng', icon: MousePointer2, run: () => ui.setInteraction('select'), shortcut: 'canvas.select', pressed: interaction === 'select' },
-    edges: { label: 'Hiển thị dây nối', icon: Spline, run: edgeMenu, shortcut: 'canvas.cycleEdges', menu: true },
-    takes: { label: 'Hiển thị video', icon: Film, run: takeMenu, menu: true },
-    minimap: { label: minimapHidden ? 'Bản đồ thu nhỏ · đang tạm ẩn vì dự án lớn' : 'Bản đồ thu nhỏ', icon: MapIcon, run: () => ui.toggleMinimap(), shortcut: 'canvas.minimap', pressed: showMinimap },
-    zoom: { label: `Thu phóng ${zoom}%`, icon: Maximize, run: zoomMenu, menu: true },
+  const addItems: ToolbarMenuItem[] = [
+    { id: 'add-empty', label: 'Cảnh trống', run: () => { newScene() } },
+    { id: 'add-folder', label: 'Thư mục lưu video…', run: () => { void createFolderNode() } },
+    { id: 'add-import', label: 'Nhập nhiều prompt…', run: () => ui.openDialog({ kind: 'import' }) },
+  ]
+  const addMenu = () => openMenu(MENU.add, [{ id: 'add-next', label: 'Cảnh tiếp theo', shortcut: 'scene.next', run: () => { nextScene() } }, ...addItems])
+  const hand = { label: 'Tay · kéo nền để di chuyển', shortcut: 'canvas.hand' as const, run: () => ui.setInteraction('hand'), pressed: interaction === 'hand' }
+  const pick = { label: 'Chọn · kéo để chọn vùng', shortcut: 'canvas.select' as const, run: () => ui.setInteraction('select'), pressed: interaction === 'select' }
+  const entries: Record<Exclude<ToolbarItemId, 'mouse' | 'arrange'>, { label: string; icon: ReactNode; run: () => void; shortcut?: ActionId; disabled?: boolean; menu?: string }> = {
+    new: { label: 'Cảnh mới', icon: <Plus {...ICON} />, run: () => { nextScene() }, shortcut: 'scene.next' },
+    add: { label: 'Thêm: cảnh trống, thư mục lưu video, nhập nhiều prompt', icon: <ChevronDown size={12} strokeWidth={2} />, run: addMenu, menu: MENU.add },
+    run: { label: sceneCount ? `Chạy ${sceneCount} cảnh đang chọn · xác nhận chi phí` : 'Chạy · chọn ít nhất một cảnh', icon: <Play {...ICON} />, run: () => requestRun(selectedSceneIds()), shortcut: 'scene.run', disabled: !sceneCount },
+    fit: { label: 'Vừa màn hình', icon: <Maximize {...ICON} />, run: () => onFit(useUI.getState().selectedIds), shortcut: 'canvas.fit' },
+    view: { label: `Hiển thị: dây nối, video, bản đồ thu nhỏ${viewChanged ? ' (đang khác mặc định)' : ''}`, icon: <Eye {...ICON} />, run: viewMenu, menu: MENU.view },
+    zoom: { label: `Thu phóng ${zoom}%`, icon: `${zoom}%`, run: zoomMenu, menu: MENU.zoom },
   }
-  const moreMenu = () => openMenu('Thêm thao tác', [
-    ...fit.overflow.map((id) => ({ id, ...entries[id] })),
-    { id: 'pending', label: 'Chọn cảnh chưa có video', run: () => { selectScenesWithoutVideo() } },
-    { id: 'failed', label: 'Chọn cảnh bị lỗi', run: () => { selectScenesWithoutVideo(true) } },
-    { id: 'undo', label: 'Hoàn tác', shortcut: 'history.undo', run: undo },
-    { id: 'redo', label: 'Làm lại', shortcut: 'history.redo', run: redo },
-    { id: 'zip', label: 'Tải tất cả video chọn ★ (.zip)', run: () => { void downloadChosenTakesZip() } },
-    { id: 'panels', label: ui.leftOpen || ui.rightOpen ? 'Chỉ canvas (ẩn hai khung bên)' : 'Hiện hai khung bên', run: () => {
-      const state = useUI.getState(), show = !state.leftOpen && !state.rightOpen
-      state.setLeftOpen(show); state.setRightOpen(show)
-    } },
-    { id: 'shortcuts', label: 'Phím tắt', shortcut: 'help.shortcuts', run: () => ui.openDialog({ kind: 'shortcuts' }) },
-  ])
+  // A slot that does not fit is still one click away in "⋯" (Tay and Chọn together, the "+ ▾" rows one by one).
+  const overflowRows = (id: ToolbarItemId): ToolbarMenuItem[] => id === 'mouse'
+    ? [{ id: 'hand', ...hand, checked: hand.pressed }, { id: 'select', ...pick, checked: pick.pressed }]
+    : id === 'add' ? addItems
+      : id === 'arrange' ? [{ id, label: 'Sắp xếp lại canvas', run: onArrange }]
+        : [{ id, ...entries[id], label: entries[id].menu ? `${entries[id].menu}…` : entries[id].label }]
+  const moreMenu = () => {
+    const now = useUI.getState()
+    const overflow = fit.overflow.flatMap(overflowRows)
+    openMenu(MENU.more, [
+      ...(overflow.length ? [{ id: 'overflow', label: 'Không đủ chỗ trên thanh', heading: true }, ...overflow, { id: 'overflow-sep', label: '', separator: true }] : []),
+      { id: 'link', label: 'Nối ảnh vào các cảnh đang chọn', shortcut: 'selection.connect', run: connectSelection },
+      { id: 'pending', label: 'Chọn cảnh chưa có video', run: () => { selectScenesWithoutVideo() } },
+      { id: 'failed', label: 'Chọn cảnh bị lỗi', run: () => { selectScenesWithoutVideo(true) } },
+      { id: 'more-sep', label: '', separator: true },
+      { id: 'zip', label: 'Tải tất cả video chọn ★ (.zip)', run: () => { void downloadChosenTakesZip() } },
+      // Label read now, not at render: the panels may have been toggled elsewhere since.
+      { id: 'panels', label: canvasOnlyLabel({ left: now.leftOpen, right: now.rightOpen }), run: toggleSidePanels },
+      { id: 'undo', label: 'Hoàn tác', shortcut: 'history.undo', run: undo },
+      { id: 'redo', label: 'Làm lại', shortcut: 'history.redo', run: redo },
+      { id: 'shortcuts', label: 'Phím tắt', shortcut: 'help.shortcuts', run: () => ui.openDialog({ kind: 'shortcuts' }) },
+    ])
+  }
+  const slot = (id: ToolbarItemId) => {
+    if (id === 'arrange') return <span key={id} data-tool={id} className="cv-toolbar-arrange"><ArrangeToolbarSlot onArrange={onArrange} /></span>
+    if (id === 'mouse') return <span key={id} className="cv-toolbar-pair" role="group" aria-label="Chế độ chuột">
+      {([['hand', hand, Hand], ['select', pick, MousePointer2]] as const).map(([tool, item, Icon]) =>
+        <ToolbarButton key={tool} data-tool={tool} className="cv-toolbar-button" label={item.label} shortcut={item.shortcut}
+          aria-pressed={item.pressed} onClick={item.run}><Icon {...ICON} /></ToolbarButton>)}
+    </span>
+    const item = entries[id]
+    return <ToolbarButton key={id} data-tool={id} className={`cv-toolbar-button cv-toolbar-${id}`}
+      label={item.label} shortcut={item.shortcut} disabled={item.disabled} tabIndex={id === fit.shown[0] ? 0 : -1}
+      aria-haspopup={item.menu ? 'menu' : undefined} aria-expanded={item.menu ? menu?.label === item.menu : undefined}
+      onClick={item.run}>
+      {item.icon}
+      {id === 'run' && sceneCount > 0 && <span className="cv-toolbar-count" aria-hidden>{sceneCount}</span>}
+      {id === 'view' && viewChanged && <span className="cv-toolbar-dot" aria-hidden />}
+    </ToolbarButton>
+  }
   // `nokey`: React Flow ignores plain keys typed here (Space on a button must not start panning); global shortcuts still run.
   return <div ref={host} className="cv-toolbar-host nokey" data-dock={fit.dock} data-dragging={dragging || undefined}
     onDoubleClick={(e) => e.stopPropagation()}
@@ -150,10 +201,9 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     onDrop={(e) => { e.preventDefault(); e.stopPropagation() }}>
     <div ref={barRef} className="cv-toolbar cv-toolbar-bar material nodrag nopan" role="toolbar" aria-label="Công cụ canvas"
       aria-orientation={fit.vertical ? 'vertical' : 'horizontal'} data-orient={fit.vertical ? 'vertical' : 'horizontal'}
-      style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} onKeyDown={toolbarArrowKey}
-      onFocus={(e) => { focused.current = (e.target as HTMLElement).closest<HTMLElement>('[data-tool]')?.dataset.tool ?? null }}>
+      style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} onKeyDown={toolbarArrowKey} onFocus={rescue.onFocus} onBlur={rescue.onBlur}>
       <ToolbarButton className="cv-toolbar-button cv-toolbar-grip" label="Kéo để dời thanh · bấm để mở menu của thanh" data-grip tabIndex={0}
-        aria-haspopup="menu" aria-expanded={menu?.label === 'Vị trí thanh công cụ'} aria-describedby="cv-toolbar-grip-help"
+        aria-haspopup="menu" aria-expanded={menu?.label === MENU.place} aria-describedby="cv-toolbar-grip-help"
         onPointerDown={placement.start} onPointerMove={placement.move} onPointerUp={() => placement.finish(true)}
         onPointerCancel={() => placement.finish(false)} onLostPointerCapture={() => placement.finish(false)}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); positionMenu() }}
@@ -164,25 +214,19 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
             e.preventDefault()
             useToolbarPrefs.getState().setPlace(nudgeToolbar(place, e.key, stage, e.shiftKey, e.altKey))
           }
-        }}><GripVertical size={16} strokeWidth={1.75} /></ToolbarButton>
-      {fit.shown.map((id, index) => {
-        const item = entries[id]
-        if (id === 'arrange') return <span key={id} data-tool={id} className="cv-toolbar-arrange"><ArrangeToolbarSlot onArrange={onArrange} /></span>
-        return <ToolbarButton key={id} data-tool={id} className={`cv-toolbar-button ${id === 'run' ? 'cv-toolbar-run' : ''} ${id === 'zoom' ? 'cv-toolbar-zoom' : ''}`}
-          label={item.label} shortcut={item.shortcut} disabled={item.disabled} aria-pressed={item.pressed} tabIndex={index === 0 ? 0 : -1}
-          aria-haspopup={item.menu ? 'menu' : undefined} aria-expanded={item.menu ? menu?.label === (id === 'zoom' ? 'Thu phóng' : item.label) : undefined}
-          onClick={item.run}>
-          {id === 'zoom' ? `${zoom}%` : <item.icon size={16} strokeWidth={1.75} />}
-          {id === 'run' && sceneCount > 0 && <span className="cv-toolbar-count" aria-hidden>{sceneCount}</span>}
-        </ToolbarButton>
-      })}
-      <ToolbarButton data-tool="more" className="cv-toolbar-button" label="Thêm thao tác" aria-haspopup="menu" aria-expanded={menu?.label === 'Thêm thao tác'} onClick={moreMenu}>
-        <MoreHorizontal size={16} strokeWidth={1.75} />
-      </ToolbarButton>
+        }}><GripVertical {...ICON} /></ToolbarButton>
+      {fit.groups.map((group, index) => <Fragment key={group[0] ?? 'last'}>
+        <span className="cv-toolbar-sep" aria-hidden />
+        {group.map(slot)}
+        {index === fit.groups.length - 1 && <ToolbarButton data-tool="more" className="cv-toolbar-button" label={MENU.more}
+          aria-haspopup="menu" aria-expanded={menu?.label === MENU.more} onClick={moreMenu}>
+          <MoreHorizontal {...ICON} />
+        </ToolbarButton>}
+      </Fragment>)}
     </div>
-    {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} openMenu={openMenu} />}
+    {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} openMenu={openMenu} focusBar={focusMore} />}
     {menu && <ToolbarMenu key={menu.label} {...menu} anchor={rect} stage={stage} side={side} onClose={closeMenu} />}
-    <span className="cv-toolbar-sr" id="cv-toolbar-grip-help">Kéo để dời. Enter: menu của thanh. Mũi tên: dời 16 px; Shift: 64 px. Alt + mũi tên: bám cạnh. Home: về chỗ cũ.</span>
+    <span className="cv-toolbar-sr" id="cv-toolbar-grip-help">{gripHelpText(IS_MAC)}</span>
     <span className="cv-toolbar-sr" role="status">{dragging ? '' : `Thanh công cụ: ${DOCK_LABELS[fit.dock]}.`}</span>
   </div>
 })

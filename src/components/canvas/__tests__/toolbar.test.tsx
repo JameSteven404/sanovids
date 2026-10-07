@@ -1,10 +1,15 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { resolveKeymap } from '../../../core/keymap'
 import { useKeymap } from '../../../lib/keymapPrefs'
+import { DEFAULT_SETTINGS } from '../../../lib/settings'
 import { DEFAULT_TOOLBAR_PLACE, TOOLBAR_PREFS_KEY, parseToolbarPrefs, useToolbarPrefs, validateToolbarPlace, type ToolbarDock } from '../../../lib/toolbarPrefs'
-import { ToolbarButton, toolbarArrowKey } from '../ToolbarControls'
-import { clampToolbar, fitToolbar, minimapPosition, nudgeToolbar, placeToolbarPanel, snapToolbar, toolbarOrientation, toolbarRect, toolbarSide, toolbarTrayContents } from '../toolbarModel'
+import { ensureRovingStop, ToolbarButton, toolbarArrowKey } from '../ToolbarControls'
+import {
+  canScrollBy, canvasOnlyLabel, clampToolbar, DEFAULT_VIEW, fitToolbar, gripHelpText, minimapPosition, nudgeToolbar, placeToolbarPanel, snapToolbar,
+  toggleCanvasOnly, TOOLBAR_ITEMS, toolbarGroups, toolbarLength, toolbarOrientation, toolbarRect, toolbarSide, toolbarTrayContents, traySummary, viewDiffers,
+} from '../toolbarModel'
 import type { KeyboardEvent } from 'react'
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); useKeymap.getState().resetAll() })
@@ -42,7 +47,7 @@ describe('fit, clamp and docking', () => {
       expect(rect.x + rect.w).toBeLessThanOrEqual(size.w)
       expect(rect.y + rect.h).toBeLessThanOrEqual(size.h)
       expect(fit.shown).toContain('run')
-      expect(new Set([...fit.shown, ...fit.overflow]).size).toBe(12)
+      expect(new Set([...fit.shown, ...fit.overflow]).size).toBe(TOOLBAR_ITEMS.length)
       expect(place).toEqual({ dock, x: 0.9, y: 0.9 })
     }
   })
@@ -76,6 +81,13 @@ describe('fit, clamp and docking', () => {
     expect(nudgeToolbar(free, 'Home', stage)).toEqual(DEFAULT_TOOLBAR_PLACE)
     expect(nudgeToolbar(DEFAULT_TOOLBAR_PLACE, 'ArrowLeft', stage).dock).toBe('bottom')
     expect(nudgeToolbar(DEFAULT_TOOLBAR_PLACE, 'ArrowUp', stage).dock).toBe('free')
+    // Pushing into the docked edge keeps the dock (no silent "Đặt tự do" with the bar in the same spot).
+    expect(nudgeToolbar(DEFAULT_TOOLBAR_PLACE, 'ArrowDown', stage)).toEqual(DEFAULT_TOOLBAR_PLACE)
+    expect(nudgeToolbar(DEFAULT_TOOLBAR_PLACE, 'ArrowDown', stage, true)).toEqual(DEFAULT_TOOLBAR_PLACE)
+    expect(nudgeToolbar({ dock: 'left', x: 0, y: 0.4 }, 'ArrowLeft', stage)).toEqual({ dock: 'left', x: 0, y: 0.4 })
+    expect(nudgeToolbar({ dock: 'right', x: 1, y: 0.4 }, 'ArrowRight', stage)).toEqual({ dock: 'right', x: 1, y: 0.4 })
+    expect(nudgeToolbar({ dock: 'top', x: 0.2, y: 0 }, 'ArrowUp', stage)).toEqual({ dock: 'top', x: 0.2, y: 0 })
+    expect(nudgeToolbar({ dock: 'left', x: 0, y: 0.4 }, 'ArrowDown', stage).dock).toBe('left')
     const left = { dock: 'left' as const, x: 0, y: 0.5 }
     const fromLeft = toolbarRect(left, stage, fitToolbar(stage, 'left').size)
     const undocked = nudgeToolbar(left, 'ArrowRight', stage)
@@ -111,15 +123,109 @@ describe('selection tray projection', () => {
     expect(toolbarTrayContents({ ...selection, nodes: 2, scenes: 2 })).toEqual(['duplicate', 'delete'])
     expect(toolbarTrayContents({ ...selection, nodes: 3, scenes: 2, assets: 1 })).toEqual(['connect', 'duplicate', 'delete'])
   })
+  it('appears for any two canvas items (the old "… bấm C để nối" cases included)', () => {
+    // 1 scene + 1 image on the canvas: the most common connect case.
+    const sceneImage = { ...selection, nodes: 2, scenes: 1, assets: 1 }
+    expect(toolbarTrayContents(sceneImage)).toEqual(['connect', 'duplicate', 'delete'])
+    expect(traySummary(sceneImage)).toBe('2 mục · 1 ảnh + 1 cảnh')
+    // 2 images, 1 scene + 1 video, 2 videos: nothing to link; duplicate only with a scene; deletion stays.
+    expect(toolbarTrayContents({ ...selection, nodes: 2, assets: 2 })).toEqual(['delete'])
+    expect(toolbarTrayContents({ ...selection, nodes: 2, scenes: 1 })).toEqual(['duplicate', 'delete'])
+    expect(toolbarTrayContents({ ...selection, nodes: 2 })).toEqual(['delete'])
+    expect(traySummary({ ...selection, nodes: 2 })).toBe('2 mục')
+  })
+  it('announces images picked in Thư viện for one selected scene (the only sign they will be linked)', () => {
+    const library = { ...selection, nodes: 1, scenes: 1, assets: 3, fromLibrary: true }
+    expect(toolbarTrayContents(library)).toEqual(['connect'])
+    expect(traySummary(library)).toBe('3 ảnh trong Thư viện + 1 cảnh')
+    expect(traySummary({ ...library, nodes: 2, scenes: 2 })).toBe('2 mục · 3 ảnh trong Thư viện + 2 cảnh')
+    // A selected video drops the library selection (pickAssetSelection gives 0 images): no connect.
+    expect(toolbarTrayContents({ ...selection, nodes: 2, scenes: 1, assets: 0 })).not.toContain('connect')
+  })
   it('shows only status-appropriate video operations, and only for exactly one take', () => {
     expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'completed' })).toEqual(['star', 'download', 'save', 'delete'])
     expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'failed' })).toEqual(['rerun', 'delete'])
     expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'processing' })).toEqual(['delete'])
-    expect(toolbarTrayContents({ ...selection, nodes: 2, takeStatus: 'completed' })).toEqual([])
+    expect(traySummary({ ...selection, nodes: 1, takeStatus: 'completed' }, 'S03·T2')).toBe('S03·T2')
+    expect(toolbarTrayContents({ ...selection, nodes: 2, takeStatus: 'completed' })).toEqual(['delete'])
   })
   it('cuts wires only when no nodes are selected', () => {
     expect(toolbarTrayContents({ ...selection, cuttableWires: 3 })).toEqual(['cut'])
+    expect(traySummary({ ...selection, cuttableWires: 3 })).toBe('3 dây')
     expect(toolbarTrayContents({ ...selection, nodes: 1, scenes: 1, cuttableWires: 3 })).toEqual([])
+  })
+})
+
+describe('bar layout (mockup A)', () => {
+  it('groups the slots with dividers and stays about 430 px wide', () => {
+    expect(toolbarGroups(TOOLBAR_ITEMS)).toEqual([['new', 'add', 'run'], ['arrange', 'fit'], ['mouse', 'view'], ['zoom']])
+    expect(toolbarLength(TOOLBAR_ITEMS, false)).toBeLessThanOrEqual(430)
+    expect(fitToolbar({ w: 1000, h: 700 }, 'bottom')).toMatchObject({ overflow: [], size: { w: toolbarLength(TOOLBAR_ITEMS, false), h: 46 } })
+  })
+  it('moves Tay and Chọn to "⋯" together, never Run, and keeps the last segment for "⋯"', () => {
+    for (let w = 120; w <= 460; w += 4) {
+      const fit = fitToolbar({ w, h: 700 }, 'bottom')
+      expect(fit.shown).toContain('run')
+      expect(fit.groups.at(-1)).toEqual(fit.shown.includes('zoom') ? ['zoom'] : [])
+      expect(fit.size.w).toBeLessThanOrEqual(w)
+    }
+    expect(fitToolbar({ w: 400, h: 700 }, 'bottom').overflow).toEqual(['add', 'view'])
+    expect(fitToolbar({ w: 300, h: 700 }, 'bottom').overflow).toContain('mouse')
+  })
+  it('remembers which side panels "Chỉ canvas" hid and shows exactly those again', () => {
+    const libraryOnly = toggleCanvasOnly({ left: true, right: false }, null)
+    expect(libraryOnly).toEqual({ next: { left: false, right: false }, remember: { left: true, right: false } })
+    expect(toggleCanvasOnly(libraryOnly.next, libraryOnly.remember)).toEqual({ next: { left: true, right: false }, remember: null })
+    expect(toggleCanvasOnly({ left: false, right: false }, null).next).toEqual({ left: true, right: true })
+    expect(canvasOnlyLabel({ left: false, right: true })).toBe('Chỉ canvas (ẩn hai khung bên)')
+    expect(canvasOnlyLabel({ left: false, right: false })).toBe('Hiện lại hai khung bên')
+  })
+  it('marks "Hiển thị" only when wires, videos or the minimap differ from the defaults', () => {
+    const { edgeMode, takeDisplay, showMinimap } = DEFAULT_SETTINGS.ui
+    expect(DEFAULT_VIEW).toEqual({ edgeMode, takeDisplay, showMinimap })
+    const defaults = { edgeMode: 'selected', takeDisplay: 'all', showMinimap: true }
+    expect(viewDiffers(defaults)).toBe(false)
+    expect(viewDiffers(defaults, defaults)).toBe(false)
+    expect(viewDiffers({ ...defaults, edgeMode: 'all' }, defaults)).toBe(true)
+    expect(viewDiffers({ ...defaults, takeDisplay: 'chosen' }, defaults)).toBe(true)
+    expect(viewDiffers({ ...defaults, showMinimap: false }, defaults)).toBe(true)
+  })
+  it('names Mac keys on a Mac in the grip help', () => {
+    expect(gripHelpText(true)).toContain('⌥ + mũi tên')
+    expect(gripHelpText(true)).toContain('Fn + ←')
+    expect(gripHelpText(true)).not.toMatch(/\bAlt\b|\bShift\b/)
+    expect(gripHelpText(false)).toContain('Alt + mũi tên')
+    expect(gripHelpText(false)).toContain('Home: về chỗ cũ')
+  })
+  it('lets a tray that can still scroll take the wheel, and hands the rest to the canvas', () => {
+    const box = { scrollLeft: 0, scrollTop: 0, scrollWidth: 300, scrollHeight: 200, clientWidth: 300, clientHeight: 100 }
+    expect(canScrollBy(box, 0, 40)).toBe(true)
+    expect(canScrollBy(box, 0, -40)).toBe(false)
+    expect(canScrollBy({ ...box, scrollTop: 100 }, 0, 40)).toBe(false)
+    expect(canScrollBy({ ...box, scrollTop: 100 }, 0, -40)).toBe(true)
+    expect(canScrollBy({ ...box, scrollHeight: 100 }, 0, 40)).toBe(false)
+  })
+})
+
+describe('toolbar.css paint order', () => {
+  const css = readFileSync(new URL('../toolbar.css', import.meta.url), 'utf8')
+  const zOf = (selector: string) => {
+    const block = css.slice(css.indexOf(`${selector} {`))
+    return Number(/z-index:\s*(\d+)/.exec(block.slice(0, block.indexOf('}')))?.[1])
+  }
+  it('draws the bar (and its tooltips) above the tray, and an open menu above both', () => {
+    const tray = zOf('.cv-toolbar-host .cv-toolbar-tray'), bar = zOf('.cv-toolbar-host .cv-toolbar-bar')
+    const backdrop = zOf('.cv-toolbar-backdrop'), menu = zOf('.cv-toolbar-host .cv-toolbar-menu')
+    expect([tray, bar, backdrop, menu].every(Number.isFinite)).toBe(true)
+    expect(bar).toBeGreaterThan(tray)
+    expect(backdrop).toBeGreaterThan(bar)
+    expect(menu).toBeGreaterThan(backdrop)
+  })
+  it('no legacy toolbar / selection-hint rules left in canvas.css to leak into the bar and tray', () => {
+    const canvas = readFileSync(new URL('../canvas.css', import.meta.url), 'utf8')
+    for (const cls of ['cv-toolbar', 'cv-sel-hint', 'cv-sel-hint-btn', 'cv-tb-btn', 'cv-tb-icon', 'cv-tb-sep', 'cv-tb-count', 'cv-seg', 'cv-zoom', 'cv-zoom-val', 'cv-lift-minimap']) {
+      expect(canvas, cls).not.toMatch(new RegExp(`\\.${cls}(?![\\w-])`))
+    }
   })
 })
 
@@ -153,5 +259,32 @@ describe('keyboard toolbar', () => {
       expect(e.preventDefault).not.toHaveBeenCalled()
     }
     expect(buttons[0].focus).not.toHaveBeenCalled()
+  })
+  it('lets Alt / Ctrl / ⌘ + arrows through (Alt+↑/↓ moves the selected scene)', () => {
+    const buttons = [{ tabIndex: 0, focus: vi.fn() }, { tabIndex: -1, focus: vi.fn() }]
+    vi.stubGlobal('document', { activeElement: buttons[0] })
+    for (const mod of ['altKey', 'ctrlKey', 'metaKey']) {
+      const e = { key: 'ArrowDown', [mod]: true, currentTarget: { querySelectorAll: () => buttons }, preventDefault: vi.fn(), stopPropagation: vi.fn() }
+      toolbarArrowKey(e as unknown as KeyboardEvent<HTMLElement>)
+      expect(e.stopPropagation).not.toHaveBeenCalled()
+      expect(e.preventDefault).not.toHaveBeenCalled()
+    }
+    expect(buttons[1].focus).not.toHaveBeenCalled()
+  })
+  it('keeps exactly one Tab stop after the roving item left the bar (or a refit added a second)', () => {
+    const items = (...tabs: number[]) => tabs.map((tabIndex) => ({ tabIndex }))
+    const none = items(-1, -1, -1)
+    ensureRovingStop({ querySelectorAll: () => none })
+    expect(none.map((b) => b.tabIndex)).toEqual([0, -1, -1])
+    const two = items(0, -1, 0)
+    ensureRovingStop({ querySelectorAll: () => two }, two[2])
+    expect(two.map((b) => b.tabIndex)).toEqual([-1, -1, 0])
+    const focusedElsewhere = items(-1, -1, -1)
+    ensureRovingStop({ querySelectorAll: () => focusedElsewhere }, focusedElsewhere[1])
+    expect(focusedElsewhere.map((b) => b.tabIndex)).toEqual([-1, 0, -1])
+    const fine = items(-1, 0, -1)
+    ensureRovingStop({ querySelectorAll: () => fine }, fine[0])
+    expect(fine.map((b) => b.tabIndex)).toEqual([-1, 0, -1])
+    expect(() => ensureRovingStop(null)).not.toThrow()
   })
 })

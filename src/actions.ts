@@ -368,7 +368,8 @@ export function selectScenesWithoutVideo(failedOnly = false) {
     const latest = own.reduce<Take | undefined>((last, t) => !last || t.number > last.number || (t.number === last.number && t.createdAt > last.createdAt) ? t : last, undefined)
     if (!failedOnly || latest?.status === 'failed') ids.push(scene.id)
   }
-  useUI.getState().select(ids)
+  // Nothing matched: keep the selection the user built (selection is not in the undo history).
+  if (ids.length) useUI.getState().select(ids)
   const text = ids.length ? `Đã chọn ${ids.length} cảnh ${failedOnly ? 'có video lỗi' : 'chưa có video'} — bấm ▶ để xem chi phí rồi chạy.`
     : failedOnly ? 'Không có cảnh nào bị lỗi.' : 'Không có cảnh chưa có video nào có thể chọn.'
   toast(text + (review.length ? ` Bỏ qua ${review.length} cảnh cần xem lại trước (có thể đã trừ credit) — mở thẻ video lỗi để xem cách xử lý.` : ''))
@@ -909,6 +910,21 @@ export async function downloadTake(takeId: string, opts: { auto?: boolean } = {}
   } catch (e) {
     toast(`Không lưu được video: ${(e as Error).message}`, { tone: 'error' })
     return false
+  }
+}
+
+const savingTakes = new Set<string>()
+/**
+ * downloadTake for buttons without their own busy state (the canvas toolbar tray): one save per take at a time, so
+ * a double click — or a click while the files are still being built — never saves twice or opens two save dialogs.
+ */
+export async function downloadTakeOnce(takeId: string) {
+  if (savingTakes.has(takeId)) return false
+  savingTakes.add(takeId)
+  try {
+    return await downloadTake(takeId)
+  } finally {
+    savingTakes.delete(takeId)
   }
 }
 

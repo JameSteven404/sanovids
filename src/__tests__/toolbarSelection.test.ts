@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest'
-import { selectScenesWithoutVideo } from '../actions'
+import { downloadTakeOnce, selectScenesWithoutVideo } from '../actions'
 import { migrateTake } from '../core/migrate'
 import { useProject } from '../store/project'
 import { downloadFailedError, UNKNOWN_SUBMIT_ERROR, useRuns } from '../store/runs'
@@ -37,4 +37,27 @@ it('selects only scenes with no completed, active, foreign or possibly billed ta
   expect(useRuns.getState().takes).toBe(current)
   expect(selectScenesWithoutVideo(true).ids).toEqual(['failed'])
   expect(useUI.getState().toasts.at(-1)?.text).toContain('Bỏ qua 4 cảnh')
+})
+
+it('keeps a hand-built selection when nothing matches (selection is not undoable)', () => {
+  useProject.setState({ project: { ...project, scenes: ['a', 'b'].map((id, index) => ({ ...project.scenes[0], id, order: index + 1 })) } })
+  useRuns.setState({ takes: ['a', 'b'].map((sceneId) => migrateTake({ id: `t-${sceneId}`, sceneId, number: 1, status: 'completed', provider: 'canvasapp' })) })
+  useUI.setState({ selectedIds: ['a', 'b', 't-a'] })
+  expect(selectScenesWithoutVideo(true).ids).toEqual([])
+  expect(useUI.getState().selectedIds).toEqual(['a', 'b', 't-a'])
+  expect(useUI.getState().toasts.at(-1)?.text).toBe('Không có cảnh nào bị lỗi.')
+  expect(selectScenesWithoutVideo().ids).toEqual([])
+  expect(useUI.getState().selectedIds).toEqual(['a', 'b', 't-a'])
+})
+
+it('saves a take once per click: a second click while the first save runs is ignored', async () => {
+  useRuns.setState({ takes: [migrateTake({ id: 'busy', sceneId: project.scenes[0]?.id ?? 's', number: 1, status: 'processing', provider: 'canvasapp' })] })
+  const before = useUI.getState().toasts.length
+  const first = downloadTakeOnce('busy')
+  expect(await downloadTakeOnce('busy')).toBe(false)
+  expect(await first).toBe(false)
+  // Only the first click reached downloadTake ("Video chưa tạo xong."); the guard is released afterwards.
+  expect(useUI.getState().toasts.length - before).toBe(1)
+  expect(await downloadTakeOnce('busy')).toBe(false)
+  expect(useUI.getState().toasts.length - before).toBe(2)
 })
