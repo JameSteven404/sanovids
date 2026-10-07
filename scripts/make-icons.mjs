@@ -29,7 +29,8 @@
 //   build/icon.icns               macOS app icon (package.json build.mac.icon): PNG entries 16…1024 on Apple's macOS 11+
 //                                 grid (824 px plate at 100,100 on a 1024 canvas, soft shadow below)
 //   build/dmg-background.png      540x380 (+ @2x 1080x760, dmg-builder joins them into a HiDPI tiff): neutral charcoal
-//                                 with a Sano red arrow from the app to Applications, no text (Finder draws the labels)
+//                                 with a Sano red arrow from the app to Applications, no text (Finder draws the labels,
+//                                 black or white by appearance, on mid-grey plates readable either way)
 //   public/favicon.svg
 //   public/icons/icon.ico         same as build/icon.ico (BrowserWindow icon on Windows, ships inside dist/)
 //   public/icons/icon-192.png, icon-512.png      rounded plate, transparent corners (PWA purpose "any")
@@ -264,11 +265,19 @@ function readIcns(buf) {
   return out
 }
 
-/** DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190). */
+/**
+ * DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190).
+ * Finder draws the icon labels itself, black under the macOS Light appearance and white under Dark (a DMG cannot set
+ * their colour), so each label row (y 240-274, below the 96 pt icon) sits on a mid-grey plate #757579 that keeps
+ * about 4.6:1 contrast with both; on the bare charcoal a black label would vanish.
+ * scripts/__tests__/designDocs.test.mjs checks the committed PNGs.
+ */
 function dmgBackgroundSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
 <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F1F22"/><stop offset="1" stop-color="#161618"/></linearGradient></defs>
 <rect width="540" height="380" fill="url(#bg)"/>
+<rect x="80" y="240" width="120" height="34" rx="12" fill="#757579"/>
+<rect x="340" y="240" width="120" height="34" rx="12" fill="#757579"/>
 <path d="M212 190 H318" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" fill="none"/>
 <path d="M306 174 L328 190 L306 206" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>`
