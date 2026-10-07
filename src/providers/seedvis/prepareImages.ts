@@ -1,5 +1,5 @@
 import { SEEDVIS_IMAGE_LIMITS, type SeedvisImageMime } from '../../core/seedvisRoutes'
-import { SEEDVIS_TEXT, seedvisDownscaleText, seedvisFormatText } from './wording'
+import { SeedvisPreSendError, seedvisDownscaleText, seedvisFormatText } from './wording'
 
 export interface SourceImage {
   /** Snapshot blob identity; unchanged images keep the original byte reference. */
@@ -65,15 +65,21 @@ export function downscalePlan(image: SourceImage, longEdge: 2048 | 1536): Encode
   }
 }
 
-/** Preserve slot order; only the processing order is largest-first (ties by slot). */
-export async function prepareImages(images: readonly SourceImage[], encode: ImageEncoder): Promise<{
+/**
+ * Preserve slot order; only the processing order is largest-first (ties by slot). `slots` names the images in user
+ * words, in order (default @image_N; Veo frame modes pass "khung đầu" / "khung cuối"). An image over 20 MiB is
+ * downscaled like any image over budget and blocked only if it is still too big after 1536 px. Every refusal is a
+ * SeedvisPreSendError (nothing sent).
+ */
+export async function prepareImages(images: readonly SourceImage[], encode: ImageEncoder, slots: readonly string[] = []): Promise<{
   images: PreparedImage[]; encodedBytes: number; remoteNote: string | null
 }> {
-  const fail = (why: string): never => { throw new Error(`${why} ${SEEDVIS_TEXT.preSend}`) }
+  const fail = (why: string): never => { throw new SeedvisPreSendError(why) }
+  const slotOf = (i: number) => slots[i] ?? `@image_${i + 1}`
   if (images.length > SEEDVIS_IMAGE_LIMITS.maxImages) fail('seedvis chỉ nhận tối đa 10 ảnh.')
   const prepared: PreparedImage[] = []
   for (const [i, source] of images.entries()) {
-    const slot = `@image_${i + 1}`
+    const slot = slotOf(i)
     if (![source.width, source.height].every(n => Number.isSafeInteger(n) && n > 0) || typeof source.alpha !== 'boolean') fail(`Không đọc được kích thước ảnh ${slot}.`)
     const format = imageFormat(source.bytes)
     if (!format) fail(`Không đọc được ảnh ${slot}.`)
@@ -84,10 +90,10 @@ export async function prepareImages(images: readonly SourceImage[], encode: Imag
     else {
       mime = 'image/png'
       try { bytes = await encode(source, { mime, width: source.width, height: source.height }) }
-      catch { throw new Error(seedvisFormatText(slot, format!)) }
+      catch { fail(seedvisFormatText(slot, format!)) }
       if (imageFormat(bytes) !== mime) fail(`Không chuyển được ảnh ${slot} sang PNG.`)
     }
-    if (bytes.byteLength > SEEDVIS_IMAGE_LIMITS.maxImageBytes) fail(`Ảnh ${slot} vượt 20 MiB.`)
+    // Over 20 MiB is not refused here: imageBudget().fits is false, so the passes below shrink it first.
     prepared.push({ ...source, bytes, mime, changed: !native })
   }
   const shrunk = new Set<number>()
@@ -102,17 +108,19 @@ export async function prepareImages(images: readonly SourceImage[], encode: Imag
       const plan = downscalePlan(source, edge)
       let bytes: Uint8Array
       try { bytes = await encode(source, plan) }
-      catch { fail(`Không thu nhỏ được ảnh @image_${index + 1}.`) }
-      if (imageFormat(bytes!) !== plan.mime) fail(`Không mã hoá được ảnh @image_${index + 1}.`)
+      catch { fail(`Không thu nhỏ được ảnh ${slotOf(index)}.`) }
+      if (imageFormat(bytes!) !== plan.mime) fail(`Không mã hoá được ảnh ${slotOf(index)}.`)
       if (bytes!.byteLength >= prepared[index].bytes.byteLength) continue
       prepared[index] = { ...source, bytes: bytes!, mime: plan.mime, width: plan.width, height: plan.height, changed: true }
       shrunk.add(index)
     }
   }
+  const tooBig = prepared.findIndex(image => image.bytes.byteLength > SEEDVIS_IMAGE_LIMITS.maxImageBytes)
+  if (tooBig >= 0) fail(`Ảnh ${slotOf(tooBig)} vẫn vượt 20 MiB sau khi thu nhỏ tới 1536 px.`)
   const budget = imageBudget(prepared)
   if (!budget.fits) fail('Ảnh vẫn vượt giới hạn seedvis sau khi thu nhỏ tới 1536 px (tối đa 39 MiB base64).')
   return {
     images: prepared, encodedBytes: budget.encodedBytes,
-    remoteNote: shrunk.size ? seedvisDownscaleText([...shrunk].sort((a, b) => a - b).map(i => `@image_${i + 1}`)) : null,
+    remoteNote: shrunk.size ? seedvisDownscaleText([...shrunk].sort((a, b) => a - b).map(slotOf)) : null,
   }
 }
