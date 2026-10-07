@@ -4,6 +4,7 @@
 // content coordinates (offsetLeft / offsetTop / offsetWidth / offsetHeight, which ignore transforms), so slots stay
 // put while cards are shifted with transforms, and a card dropped at index `to` lands in `slots[to]`.
 import { sceneCode } from '../../core/compile'
+import { DRAG_SLOP } from '../../lib/gesture'
 
 export interface Slot {
   x: number
@@ -18,8 +19,8 @@ export interface Offset {
 
 /** The lifted card grows a little while it is dragged ('full' motion only). */
 export const LIFT_SCALE = 1.03
-/** How far a press must travel before it becomes a drag (px). Touch drags start with a long press instead. */
-export const DRAG_SLOP = { mouse: 5, pen: 6, touch: 10 } as const
+/** How far a press must travel before it becomes a drag (px): lives in lib/gesture, re-exported for this frozen view. */
+export { DRAG_SLOP }
 /** Touch: hold this long (without moving past the slop) to lift a card; moving earlier scrolls the storyboard. */
 export const LONG_PRESS_MS = 380
 /** Auto-scroll zone at the top / bottom of the storyboard (px) and the top speed at the very edge (px per frame). */

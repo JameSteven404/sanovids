@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeIn, actionById, chordAria, chordFromEvent, chordLabel, chordParts, contextsOverlap, decideShortcut,
-  defaultBindings, formatChord, KEY_ACTIONS, parseChord, refusalFor, resolveKeymap, validateBindings, warningsFor,
+  defaultBindings, FIXED_KEYS, formatChord, KEY_ACTIONS, parseChord, refusalFor, resolveKeymap, validateBindings, warningsFor,
   type Ctx, type KeyEventLike,
 } from '../keymap'
 import { eventLike, isImeKey, isTypingTarget } from '../../lib/keyEvents'
@@ -13,7 +13,7 @@ it('keeps today’s single default table and supplies Vietnamese registry metada
   expect(defaultBindings()).toEqual({
     'project.save': ['Ctrl+KeyS'], 'scene.run': ['Ctrl+Enter'], 'history.undo': ['Ctrl+KeyZ'],
     'history.redo': ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'], 'library.search': ['Ctrl+KeyK'], 'help.shortcuts': ['Shift+Slash'],
-    'view.canvas': ['Digit1'], 'view.table': ['Digit2'], 'view.storyboard': ['Digit3'], 'scene.next': ['KeyN'],
+    'scene.next': ['KeyN'],
     'selection.duplicate': ['Ctrl+KeyD'], 'selection.delete': ['Delete'], 'selection.selectAll': ['Ctrl+KeyA'],
     'selection.connect': ['KeyC'], 'canvas.fit': ['KeyF'], 'canvas.cycleEdges': ['KeyE'], 'canvas.hand': ['KeyH'],
     'canvas.select': ['KeyV'], 'canvas.minimap': ['KeyM'], 'settings.search': ['Ctrl+KeyF'],
@@ -22,6 +22,28 @@ it('keeps today’s single default table and supplies Vietnamese registry metada
     expect([a.label, a.help, a.hint, a.keywords].every(Boolean)).toBe(true)
     for (const mac of [false, true]) for (const c of a.defaults) expect(refusalFor(c, a, mac), `${a.id} ${c}`).toBeNull()
   }
+})
+
+it('retires the hidden views’ commands (1 / 2 / 3) and keeps Alt + ↑ / ↓ as fixed scene-order keys', () => {
+  // 0.6.0 shows the canvas only (core/shownViews): 17 commands, none of them view.*.
+  expect(KEY_ACTIONS).toHaveLength(17)
+  expect(KEY_ACTIONS.filter((a) => a.id.startsWith('view.'))).toEqual([])
+  for (const digit of ['Digit1', 'Digit2', 'Digit3']) {
+    expect(resolveKeymap().lookup[digit]).toBeUndefined()
+    expect(decideShortcut(event(digit.slice(-1), digit), ctx, false)).toEqual({ action: null, handled: false })
+  }
+  // A stored binding of a retired command is kept as a foreign value and does nothing.
+  const old = validateBindings({ 'view.table': ['Digit2'], 'scene.next': ['KeyJ'] })
+  expect(old.foreign).toEqual({ 'view.table': ['Digit2'] })
+  expect(old.bindings).toEqual({ 'scene.next': ['KeyJ'] })
+  expect(resolveKeymap({ 'view.table': ['Digit2'] }).lookup.Digit2).toBeUndefined()
+  // Scene order: a fixed row, never a command (refusalFor keeps Alt + arrows away from every command).
+  const order = FIXED_KEYS.find((k) => k.label.startsWith('Thứ tự cảnh'))
+  expect(order?.keys).toEqual(['Alt+ArrowUp', 'Alt+ArrowDown'])
+  expect(FIXED_KEYS.some((k) => /storyboard|bảng cảnh/i.test(k.label))).toBe(false)
+  expect(KEY_ACTIONS.some((a) => /storyboard|bảng cảnh/i.test(`${a.label} ${a.help}`))).toBe(false)
+  for (const a of KEY_ACTIONS) for (const c of ['Alt+ArrowUp', 'Alt+ArrowDown']) for (const mac of [false, true]) expect(refusalFor(c, a, mac), `${a.id} ${c}`).toBeTruthy()
+  for (const mac of [false, true]) expect(decideShortcut(event('ArrowUp', 'ArrowUp', { altKey: true }), ctx, mac).action).toBeNull()
 })
 
 it('round trips every whitelisted key and modifier combination', () => {

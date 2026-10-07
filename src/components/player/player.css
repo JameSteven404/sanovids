@@ -1,0 +1,363 @@
+/*
+ * "Phát liền" player (FilmPlayer.tsx): full-window dark stage, what is on screen in the top bar (never over the
+ * picture), floating material controls. Mounted by the dialog layer (FilmPlayerDialog), so it carries its own media
+ * tokens instead of inheriting them from a view. The vw- prefix is historical (the player came from the Storyboard).
+ * Motion: <html data-motion> (styles/app.css, "Hiệu ứng chuyển động") plus the OS reduce-motion block below.
+ */
+.vw-player {
+  /*
+   * Media: dark letterbox and light text in BOTH themes, like Photos / QuickTime and the canvas take nodes — the
+   * picture decides the background, not the theme. Theme-independent tokens from base.css (--media-bg /
+   * --media-scrim / --on-media); the keyword fallbacks are deliberate media scrims.
+   */
+  --vw-on-media: var(--on-media, white);
+  --vw-on-media-dim: color-mix(in srgb, var(--vw-on-media) 64%, transparent);
+  --vw-on-media-faint: color-mix(in srgb, var(--vw-on-media) 42%, transparent);
+  --vw-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
+  --vw-media-bg: var(--media-bg, black);
+  /* glass buttons drawn on the stage (end screen, "Chọn N cảnh chưa có ★") */
+  --vw-media-btn: color-mix(in srgb, var(--vw-on-media) 14%, transparent);
+  --vw-media-btn-hover: color-mix(in srgb, var(--vw-on-media) 22%, transparent);
+
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: var(--vw-media-bg);
+  color: var(--vw-on-media);
+  animation: vw-player-fade 0.18s ease-out;
+}
+@keyframes vw-player-fade {
+  from {
+    opacity: 0;
+  }
+}
+.vw-player .faint {
+  color: var(--vw-on-media-faint);
+}
+.vw-player .icon-btn {
+  color: var(--vw-on-media-dim);
+}
+.vw-player .icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vw-on-media) 12%, transparent);
+  color: var(--vw-on-media);
+}
+.vw-player .icon-btn:focus-visible,
+.vw-player .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* secondary buttons on the dark stage: glass, not the theme's panel fill (a light slab in the light theme) */
+.vw-player .btn:not(.btn-primary) {
+  background: var(--vw-media-btn);
+  border-color: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
+  color: var(--vw-on-media);
+}
+.vw-player .btn:not(.btn-primary):hover:not(:disabled) {
+  background: var(--vw-media-btn-hover);
+}
+
+/* top bar: what is playing (code, take, title, place in the film), notes, actions */
+.vw-player-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 52px;
+  padding: 0 12px 0 20px;
+}
+.vw-player-caption {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.vw-player-label {
+  flex: none;
+  font-size: 13px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-code {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.vw-player-take {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-scene-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vw-on-media);
+}
+.vw-player-count {
+  flex: none;
+  font-size: 12px;
+}
+.vw-player-sub {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-note {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 11px;
+  color: var(--vw-on-media-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "Chọn N cảnh chưa có ★": closes the player and selects those scenes on the canvas */
+.vw-player-missing {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vw-player-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 24px;
+}
+.vw-player-frame {
+  position: relative;
+  width: min(100%, calc((100vh - 190px) * 16 / 9));
+  aspect-ratio: 16 / 9;
+  background: var(--vw-media-bg);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+.vw-player-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--vw-media-bg);
+}
+.vw-player-slate {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: radial-gradient(80% 80% at 50% 40%, color-mix(in srgb, var(--vw-on-media) 7%, var(--vw-media-bg)), var(--vw-media-bg));
+}
+.vw-player-slate span {
+  font-family: var(--mono);
+  font-size: 56px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--vw-on-media) 85%, transparent);
+}
+.vw-player-slate small {
+  font-size: 16px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-slate em {
+  margin-top: 10px;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--vw-on-media-faint);
+  border: 1px dashed color-mix(in srgb, var(--vw-on-media) 25%, transparent);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+.vw-player-loading {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  font-size: 11px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-end {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--vw-media-chip);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  animation: vw-player-fade 0.2s ease-out;
+}
+.vw-player-end h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+}
+.vw-player-end p {
+  margin: 0 0 12px;
+  color: var(--vw-on-media-dim);
+}
+.vw-player-end div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* floating material controls (like a QuickTime HUD) */
+.vw-player-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(100% - 48px, 1120px);
+  margin: 6px auto 18px;
+  padding: 8px 8px 8px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--vw-on-media) 12%, transparent);
+  /* a lighter glass than the stage behind it (a dark scrim would vanish on the dark stage) */
+  background: color-mix(in srgb, var(--vw-on-media) 9%, transparent);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
+}
+.vw-player-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.vw-player-pp {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--vw-on-media);
+  color: var(--vw-media-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    opacity 0.12s ease-out,
+    transform 0.12s ease-out;
+}
+.vw-player-pp:hover {
+  opacity: 0.88;
+}
+.vw-player-pp:active {
+  transform: scale(0.94);
+}
+.vw-player-pp:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+/* "Tải video này": big download button for the clip on screen */
+.vw-player-dl {
+  flex: none;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: var(--radius);
+  font-size: 13.5px;
+}
+.vw-player-spin {
+  animation: vw-player-spin 0.9s linear infinite;
+}
+@keyframes vw-player-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* timeline: one segment per scene (width = its duration); click to jump */
+.vw-player-timeline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 16px;
+}
+.vw-seg {
+  position: relative;
+  flex-basis: 0;
+  min-width: 4px;
+  height: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
+  overflow: hidden;
+  cursor: pointer;
+  transition: height 0.12s ease-out;
+}
+.vw-seg:hover {
+  height: 12px;
+}
+.vw-seg:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.vw-seg.is-empty {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vw-on-media) 12%, transparent) 0 3px,
+    color-mix(in srgb, var(--vw-on-media) 4%, transparent) 3px 6px
+  );
+}
+.vw-seg.current {
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.vw-seg i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+}
+
+/* ---------- motion: the OS asks for less (the app-wide "Giảm bớt" / "Tắt" rules live in styles/app.css) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .vw-player-pp,
+  .vw-seg {
+    transition: none;
+  }
+  .vw-player-pp:active {
+    transform: none;
+  }
+  .vw-player,
+  .vw-player-end {
+    animation: none;
+  }
+  .vw-player-spin {
+    animation-duration: 2.4s;
+  }
+}
+/* "Giảm bớt" / "Tắt" (<html data-motion>): the play button does not scale; app.css already limits or drops every
+   transition and animation (the spinner then shows as a still icon). */
+:root[data-motion='reduced'] .vw-player-pp:active,
+:root[data-motion='off'] .vw-player-pp:active {
+  transform: none;
+}

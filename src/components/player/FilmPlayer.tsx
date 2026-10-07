@@ -1,23 +1,18 @@
-// "Phát liền": plays every scene's chosen take in order (webm when the mock recorded one, else poster).
-import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, Star, Volume2, VolumeX, X } from 'lucide-react'
+// "Phát liền": plays every scene's chosen take in scene order (the video, else its poster, else a slate). Opened from
+// the top bar (filmActions.openFilmPlayer → dialog kind 'player', FilmPlayerDialog); items from core/filmItems.
+// Styles: player.css (its own media tokens, so it looks the same wherever it is mounted).
+import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, SquareMousePointer, Star, Volume2, VolumeX, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
-import type { Take } from '../../core/types'
+import { formatRuntime, type PlayerItem } from '../../core/filmItems'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
 import { keyForTopOverlay, trapTabWithin, useOverlayFocus } from '../common/focus'
 import { MediaImg } from '../common/Media'
-import { formatRuntime } from './shared'
+import './player.css'
 
-export interface PlayerItem {
-  sceneId: string
-  code: string
-  title: string
-  take: Take | null
-  /** Seconds (take or scene setting). Stills are shown for duration / 5 in the demo. */
-  duration: number
-}
+export type { PlayerItem }
 
 /** Length of a fake clip (development mode / old demo, lib/mockProvider) when the webm has no duration metadata. */
 const MOCK_CLIP_S = 3
@@ -63,7 +58,16 @@ function SoundButton({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null
   )
 }
 
-export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[]; start: number; onClose: () => void }) {
+export interface FilmPlayerProps {
+  items: PlayerItem[]
+  start: number
+  onClose: () => void
+  /** Scenes without a ★ take: with `onSelectMissing`, a "Chọn N cảnh chưa có ★" button (top bar and end screen). */
+  missingCount?: number
+  onSelectMissing?: () => void
+}
+
+export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMissing }: FilmPlayerProps) {
   const [index, setIndex] = useState(() => Math.min(Math.max(0, start), Math.max(0, items.length - 1)))
   const [paused, setPaused] = useState(false)
   const [ended, setEnded] = useState(false)
@@ -71,7 +75,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   const [video, setVideo] = useState<VideoState>(null)
   const [saving, setSaving] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
-  // Focus the player while it is open (keys stay here) and give focus back to the storyboard on close.
+  // Focus the player while it is open (keys stay here) and give focus back to where it was (the top-bar button) on close.
   const rootRef = useRef<HTMLDivElement>(null)
   useOverlayFocus(rootRef)
 
@@ -161,7 +165,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
   }, [mode, paused, ended, index, next])
 
   // Keyboard: Space pause, ←/→ prev/next, Esc close. Captured so global shortcuts don't fire: every
-  // other key is stopped too (F / 1-3 would switch view, N / Delete / Ctrl+Z edit the project behind
+  // other key is stopped too (F / N / Delete / Ctrl+Z / Alt+↑ would act on the canvas or the project behind
   // the overlay) — only Ctrl/Cmd+S still reaches useShortcuts. Default actions (Tab, Enter) still work.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -208,6 +212,18 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
       setSaving(false)
     }
   }
+  // "Chọn N cảnh chưa có ★" (top bar, small; end screen, full size).
+  const missing = (size: 'sm' | 'md') =>
+    missingCount > 0 && onSelectMissing ? (
+      <button
+        type="button"
+        className={`btn${size === 'sm' ? ' btn-sm' : ''} vw-player-missing`}
+        onClick={onSelectMissing}
+        title="Đóng trình phát và chọn các cảnh này trên canvas"
+      >
+        <SquareMousePointer size={size === 'sm' ? 13 : 14} /> Chọn {missingCount} cảnh chưa có ★
+      </button>
+    ) : null
   const segProgress = (i: number) => {
     if (i < index || (ended && i === index)) return 1
     if (i > index) return 0
@@ -226,19 +242,30 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
       className="vw-player"
       role="dialog"
       aria-modal="true"
-      aria-label="Phát liền storyboard"
+      aria-label="Phát liền"
       tabIndex={-1}
       style={{ outline: 'none' }}
     >
+      {/* What is on screen lives up here, never over the picture. */}
       <div className="vw-player-top">
-        <span className="vw-player-title">
-          Phát liền · <b>{item.code}</b>
-          <span className="faint">
-            {' '}
+        <div className="vw-player-caption">
+          <span className="vw-player-label">Phát liền</span>
+          <span className="vw-player-code">
+            {item.code}
+            {take && (
+              <span className="vw-player-take">
+                {take.starred && <Star size={11} fill="currentColor" />}T{take.number}
+              </span>
+            )}
+          </span>
+          {item.title && <span className="vw-player-scene-title">{item.title}</span>}
+          <span className="vw-player-count faint">
             ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
           </span>
-        </span>
+          {take && mode === 'still' && <span className="vw-player-sub">Không có video — hiển thị poster</span>}
+        </div>
         <span className="vw-player-note">{hasFake ? 'Phát triển: video giả ~3 giây · ' : ''}Cảnh chỉ có poster được hiện trong 1/5 thời lượng</span>
+        {missing('sm')}
         <SoundButton videoRef={videoRef} />
         <button className="icon-btn" onClick={onClose} title="Đóng (Esc)" aria-label="Đóng">
           <X size={18} />
@@ -271,19 +298,6 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
           )}
           {mode === 'loading' && <div className="vw-player-loading">Đang tải video…</div>}
 
-          <div className="vw-player-caption">
-            <span className="vw-player-code">
-              {item.code}
-              {take && (
-                <span className="vw-player-take">
-                  {take.starred && <Star size={11} fill="currentColor" />}T{take.number}
-                </span>
-              )}
-            </span>
-            {item.title && <span className="vw-player-scene-title">{item.title}</span>}
-            {take && mode === 'still' && <span className="vw-player-sub">Không có video — hiển thị poster</span>}
-          </div>
-
           {ended && (
             <div className="vw-player-end">
               <h3>Hết phim</h3>
@@ -297,6 +311,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
                 <button className="btn" onClick={onClose}>
                   Đóng
                 </button>
+                {missing('md')}
               </div>
             </div>
           )}
@@ -334,7 +349,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
           onClick={() => void save()}
           title={canSave && take ? `Tải video ${item.code}_T${take.number} (kèm prompt nếu bật trong Cài đặt)` : 'Cảnh này chưa có video tạo xong'}
         >
-          {saving ? <LoaderCircle size={15} className="vw-spin" /> : <Download size={15} />}
+          {saving ? <LoaderCircle size={15} className="vw-player-spin" /> : <Download size={15} />}
           Tải video này
         </button>
       </div>

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { modelPick } from '../../components/inspector/SettingsFields'
 import { migrateProject } from '../../core/migrate'
 import { sceneRunBlockReason } from '../../core/runRules'
@@ -678,5 +678,38 @@ describe('a newer build’s project through save / load (migrate round trip)', (
       expect(sc(id)).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
       expect(blockReason(id)).toContain('mới hơn')
     }
+  })
+})
+
+describe('moveScene undo coalescing (sceneOrderActions: a held Alt + ↑ is one step)', () => {
+  const ids = () => [...st().project.scenes].sort((a, b) => a.order - b.order).map((s) => s.id)
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('moves with the same coalesce key within 1.5 s merge into one step; plain moves stay one step each', () => {
+    vi.useFakeTimers()
+    let t = 5_000_000
+    vi.setSystemTime(t)
+    st().moveScene('s4', 3, { coalesce: 'move:s4' })
+    vi.setSystemTime((t += 500))
+    st().moveScene('s4', 2, { coalesce: 'move:s4' })
+    vi.setSystemTime((t += 500))
+    st().moveScene('s4', 1, { coalesce: 'move:s4' })
+    expect(ids()).toEqual(['s4', 's1', 's2', 's3', 's5', 's6'])
+    expect(history().pastStates).toHaveLength(1)
+    undo()
+    expect(ids()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+
+    // After 1.5 s (or with another key) a new step starts; without a key every call is its own step.
+    st().moveScene('s4', 3, { coalesce: 'move:s4' })
+    vi.setSystemTime((t += 1600))
+    st().moveScene('s4', 2, { coalesce: 'move:s4' })
+    vi.setSystemTime((t += 100))
+    st().moveScene('s2', 6, { coalesce: 'move:s2' })
+    vi.setSystemTime((t += 100))
+    st().moveScene('s1', 2)
+    st().moveScene('s1', 3)
+    expect(history().pastStates).toHaveLength(5)
   })
 })

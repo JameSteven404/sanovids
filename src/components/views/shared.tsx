@@ -52,23 +52,9 @@ export const STATUS_LABEL: Record<JobStatus, string> = {
   cancelled: 'Đã huỷ',
 }
 
-/** Starred completed take (newest starred), else the newest completed take. */
-export function pickShowcaseTake(takes: Take[]): Take | undefined {
-  let starred: Take | undefined
-  let completed: Take | undefined
-  for (const t of takes) {
-    if (t.status !== 'completed') continue
-    if (t.starred && (!starred || t.number > starred.number)) starred = t
-    if (!completed || t.number > completed.number) completed = t
-  }
-  return starred ?? completed
-}
-
-export function starredTake(takes: Take[]): Take | undefined {
-  let best: Take | undefined
-  for (const t of takes) if (t.starred && t.status === 'completed' && (!best || t.number > best.number)) best = t
-  return best
-}
+// Moved to core/filmItems (the "Phát liền" player lives outside this hidden folder); re-exported for the frozen
+// Storyboard.
+export { formatRuntime, pickShowcaseTake, starredTake } from '../../core/filmItems'
 
 export function latestOf(takes: Take[]): Take | undefined {
   let best: Take | undefined
@@ -88,15 +74,6 @@ export function useTakesByScene(): Map<string, Take[]> {
     }
     return map
   }, [takes])
-}
-
-/** 95 → "1:35", 30 → "0:30". */
-export function formatRuntime(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds))
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = String(s % 60).padStart(2, '0')
-  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`
 }
 
 /** Text with @image_N (teal), @video_N (purple) and legacy @Tag mentions highlighted, truncated to `max` characters. */

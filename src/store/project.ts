@@ -470,7 +470,12 @@ export interface ProjectState {
    * model marker), with an empty prompt.
    */
   createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'prompt' | 'videoRefs' | 'title'>>) => string
-  moveScene: (id: string, toOrder: number) => void
+  /**
+   * Move a scene to place `toOrder` (1-based, clamped) of the scene order; every scene code renumbers. Every call is an
+   * undo step (even one that changes nothing: do not call it for a no-op). `coalesce`: moves made with the same key
+   * within 1.5 s of each other merge into ONE step (sceneOrderActions: a held Alt + ↑ is undone at once).
+   */
+  moveScene: (id: string, toOrder: number, opts?: { coalesce?: string }) => void
   setFrame: (sceneId: string, which: 'first' | 'last', assetId: string | null) => void
 
   // image references
@@ -820,7 +825,8 @@ export const useProject = create<ProjectState>()(
           }))
           return next.id
         },
-        moveScene: (id, toOrder) =>
+        moveScene: (id, toOrder, opts) => {
+          if (opts?.coalesce) coalesce(opts.coalesce)
           mutate((p) => {
             const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
             const from = sorted.findIndex((s) => s.id === id)
@@ -828,7 +834,8 @@ export const useProject = create<ProjectState>()(
             const [s] = sorted.splice(from, 1)
             sorted.splice(Math.max(0, Math.min(sorted.length, toOrder - 1)), 0, s)
             return { ...p, scenes: sorted.map((x, i) => (x.order === i + 1 ? x : { ...x, order: i + 1 })) }
-          }),
+          })
+        },
         setFrame: (sceneId, which, assetId) =>
           mapScenes([sceneId], (s) => (which === 'first' ? { ...s, firstFrame: assetId } : { ...s, lastFrame: assetId })),
 

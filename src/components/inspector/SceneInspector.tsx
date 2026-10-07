@@ -23,6 +23,7 @@ import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
 import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
 import { flushPromptEditor, PromptEditor } from './PromptEditor'
+import { SceneOrderControl } from './SceneOrderControl'
 import { SettingsFields } from './SettingsFields'
 import { AssetPicker, EMPTY_IDS, KIND_LABEL, Section, useSceneField } from './shared'
 import { TakePicker } from './TakePicker'
@@ -138,7 +139,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
   return (
     <header className="in-head">
       <div className="in-head-row">
-        <span className="in-code mono">{sceneCode(order)}</span>
+        <SceneOrderControl sceneId={sceneId} order={order} idx={idx} count={options.length} />
         <input
           className="in-title-input"
           value={title}

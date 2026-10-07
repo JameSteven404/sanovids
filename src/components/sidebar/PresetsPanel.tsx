@@ -210,7 +210,7 @@ const PresetRow = memo(function PresetRow({ preset, usage, selected, active, edi
           <button
             className="btn btn-sm sb-apply"
             disabled={!n}
-            title={n ? `Áp dụng cho ${n} cảnh đang chọn` : 'Chọn cảnh trên canvas / bảng cảnh trước'}
+            title={n ? `Áp dụng cho ${n} cảnh đang chọn` : 'Chọn cảnh trên canvas trước'}
             onClick={apply}
           >
             Áp dụng{n > 1 ? ` · ${n}` : ''}
