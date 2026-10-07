@@ -6,6 +6,51 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.6.0] — 2026-10-07 — Nhập job từ canvasapp, cấu hình model theo canvasapp, tải video theo từng phần
+
+✨ **Nhập job từ canvasapp.io.vn**
+- Video bạn bấm **Tạo video** trực tiếp trên canvasapp.io.vn, trên node của một cảnh trong phiên **"SanoVids bridge"**, giờ đưa được vào dự án thành take của đúng cảnh đó: nút **Nhập job** ở **Hàng đợi** và ở **Cài đặt › Nâng cao › Cổng canvasapp.io.vn**.
+- Chỉ đọc từ canvasapp, không trừ credit. Video đang tạo được theo dõi và tự tải về khi xong.
+- Take nhập có chip **nhập**. Cấu hình canvasapp không cho biết thì hiện **?**, giá trị đoán theo node thì hiện **≈**.
+- **Chạy lại** một take nhập luôn tạo take mới qua hộp xác nhận chi phí: không bao giờ gửi lại job cũ, không trả hai lần.
+- Nhập lại nhiều lần không tạo take trùng. **Bỏ nhập** trên thông báo xoá các take vừa nhập (job vẫn còn trên canvasapp, nhập lại được).
+
+✨ **Cấu hình video đi theo canvasapp**
+- Trong khung chỉnh cảnh (một cảnh hoặc nhiều cảnh), model, chế độ, thời lượng, độ phân giải và tỉ lệ mà canvasapp đang tắt hiện mờ kèm lý do, không chọn được. Cấu hình đã lưu của cảnh không bị đổi.
+- Cảnh đang dùng lựa chọn bị tắt thì chưa chạy được: nút **Chạy** tắt kèm lý do, hộp **Chạy** bỏ qua cảnh đó trước khi gửi (không tạo take, không tốn credit). Chưa đọc được cấu hình từ canvasapp thì chỉ cảnh báo "có thể bị từ chối".
+- Nút **Đọc lại** dưới cấu hình video để cập nhật ngay khi canvasapp vừa mở lại. Sau khi đăng nhập, SanoVids tự đọc lại.
+
+✨ **Tải video theo từng phần**
+- Video đã tạo xong được tải về từng phần, nên video rất lớn hay mạng chậm không còn hỏng giữa chừng. Mạng ngừng gửi 60 giây thì lượt tải tự dừng rồi thử lại sau, take không bị đánh lỗi.
+- Trong lúc tải, take, **Hàng đợi** và **Xem take** hiện **Đang tải về 45%** (hoặc số MB đã nhận) thay vì đứng ở "Đang tạo 99%". Đổi dự án thì lượt tải dừng ngay.
+- Mất mạng giữa chừng: SanoVids tải tiếp từ chỗ dừng khi canvasapp cho phép, nếu không thì tải lại từ đầu ở lần sau. Video lớn hơn 1 GB được báo ngay (đã trừ credit, tải trực tiếp trên canvasapp).
+- Bảo mật: tải video chỉ theo chuyển hướng sang https, phần tải tiếp chỉ được ghép khi đúng là video đang tải; các yêu cầu khác tới canvasapp không bao giờ theo chuyển hướng.
+- Xoá (hoặc **Huỷ**) một take đang tải về video đã trừ credit thì SanoVids hỏi trước.
+
+🐞 **Không bao giờ trừ credit hai lần**
+- Hai dự án có cùng cảnh (sau **Nhân bản dự án**, hoặc nhập cùng một tệp hai lần) giờ có node video riêng trên canvas cầu nối, mỗi node giữ đúng prompt của dự án mình. Take của dự án này không còn nhận nhầm video của dự án kia khi mất kết nối lúc gửi.
+- Khi mất câu trả lời lúc gửi, SanoVids chỉ tự gửi lại (cùng mã yêu cầu) sau khi đọc danh sách job trên canvasapp và chắc chắn không thấy job đó. Không chắc thì take ghi **"không rõ"** và không gửi lần hai; **Chạy lại** gửi lại chính take đó (tìm job cũ trước), không bao giờ tạo take mới trả thêm.
+- Take "không rõ" không còn nhận nhầm job của một take khác, hay job bạn tạo trên trang canvasapp. Giờ tạo, thời lượng hay model lạ trong danh sách job, kể cả khi đồng hồ máy lệch, không bao giờ làm SanoVids tưởng job chưa được tạo.
+- Take khác của cùng cảnh chờ tới khi biết chắc kết quả của take "không rõ" (trên take hiện **Chờ tới HH:MM** kèm lý do); take của cảnh khác vẫn chạy bình thường.
+- **Huỷ** một take đang gửi giữ trạng thái "có thể đã bị trừ": **Thử lại** gửi lại chính take đó.
+- SanoVids không gửi yêu cầu tạo video khi chưa đọc được danh sách job, hoặc khi máy không ghi được sổ gửi job (báo rõ, không bị trừ credit).
+- Take đang chạy từ bản trước vẫn được theo dõi và giữ chỗ trên canvas cầu nối tới khi xong. Không take nào bị gửi lại.
+- Các trường hợp trên được kiểm bằng hàng nghìn kịch bản lỗi mạng mô phỏng (mất câu trả lời, tải lại trang giữa chừng, job tạo trên trang, đồng hồ chỉnh lùi, bộ nhớ đầy…).
+
+🐞 **Nút Chạy và video tham chiếu**
+- Mọi nút **Chạy** của một cảnh (thẻ cảnh, khung chỉnh cảnh, Storyboard, Bảng cảnh, hộp **Chạy**) giờ tắt theo cùng một danh sách lý do. Di chuột lên nút để xem "Chưa chạy được: …".
+- Cảnh **MiniMax-H3** ở chế độ không gửi video (**Text → Video**, **Khung đầu → cuối**) không còn bị khoá chỉ vì còn nối một video tham chiếu, miễn là prompt không nhắc `@video_N`.
+- Cổng canvasapp chưa nhận video tham chiếu: lý do ghi rõ việc cần làm (bỏ video khỏi cảnh bằng nút × hoặc cắt dây). Hộp **Chạy** chỉ đếm những video tham chiếu thật sự được gửi.
+
+🛠️ **Chế độ Phát triển**
+- **Bảng phát triển › Job & đơn nạp**: **Tạo job như trên trang canvasapp** để thử **Nhập job** bằng credit dev; mỗi job ghi thuộc node nào (cảnh của dự án đang mở, node cũ hay node khác).
+- **Bảng phát triển › Model**: thử bỏ bớt thời lượng / độ phân giải / tỉ lệ, xem SanoVids đã đọc cấu hình lúc nào, nút **Đọc lại ngay**.
+- Lỗi giả mới khi tải video (mất mạng giữa chừng, bị treo, chậm, rất chậm, quá lớn, chuyển sang http) và công tắc **Cho tải tiếp video (HTTP Range)**. **Xoá dữ liệu máy chủ giả lập** dừng ngay các video đang tải.
+
+⚠️ **Lưu ý**
+- Sau khi mất câu trả lời lúc gửi, SanoVids có thể chờ khoảng 45 giây (tới khoảng 6 phút nếu app tắt / tải lại đúng lúc đang gửi) trước khi tự gửi lại hay báo "không rõ": đó là thời gian để chắc chắn không trả hai lần.
+- Cần kiểm tra trên canvasapp.io.vn thật: một số chi tiết của máy chủ chưa được xác nhận (danh sách job có `canvas_node_id` / `client_request_id` không, `/stream` có cho tải tiếp không…). Khi thiếu thông tin, SanoVids luôn chọn cách an toàn: không nhập, không nhận job, không gửi lại. Danh sách cần kiểm tra: `docs/GATEWAY-CANVASAPP.md` §8–§9.
+
 ## [0.5.0] — 2026-10-03 — Tự động cập nhật, chữ ký số, icon mới
 
 ✨ **SanoVids tự cập nhật** (bản cài Setup)

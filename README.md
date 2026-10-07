@@ -298,6 +298,7 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
 - [x] Tự cập nhật phiên bản (0.5.0)
 - [x] Ký số file .exe (0.5.0): bản cập nhật chỉ nhận chữ ký của tác giả, app tự kiểm tra chữ ký, chống can thiệp, icon mới
+- [x] Nhập job từ canvasapp, cấu hình model theo canvasapp, tải video theo từng phần, chống trả tiền hai lần chặt hơn (0.6.0)
 - [ ] Video tham chiếu `@video_N` qua cổng canvasapp (chờ ghi lại cách trang canvasapp gửi video, nếu có: [docs/canvasapp-api-notes.md](docs/canvasapp-api-notes.md))
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
