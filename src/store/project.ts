@@ -578,7 +578,18 @@ export interface ProjectState {
   applyImport: (data: { scenes: Partial<Scene>[] }, hint?: PlaceHint) => string[]
 }
 
-const touch = (p: Project): Project => ({ ...p, updatedAt: Date.now() })
+/**
+ * Every change to the open project: stamped, and kept in the shape core/migrate reads back, so a save → reopen gives
+ * the same project (stress invariant D1). migrate writes no `folders` key without folders (older files stay the same),
+ * so the last folder deleted (removeFolders, deleteItems) drops the key instead of leaving `folders: []`.
+ */
+function touch(p: Project): Project {
+  if (p.folders && !p.folders.length) {
+    const { folders: _none, ...rest } = p
+    return { ...rest, updatedAt: Date.now() }
+  }
+  return { ...p, updatedAt: Date.now() }
+}
 
 export const useProject = create<ProjectState>()(
   temporal(
