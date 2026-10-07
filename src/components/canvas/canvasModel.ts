@@ -2,6 +2,7 @@
 // and a tiny hover store.
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
+import { getViewportForBounds, Position, type Node, type NodeHandle } from '@xyflow/react'
 import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
@@ -821,6 +822,74 @@ export function fallbackNodeSize(type: string | undefined): { w: number; h: numb
   if (type === 'folder') return { w: FOLDER_W, h: FOLDER_H }
   if (type === 'asset') return { w: ASSET_TILE.w, h: ASSET_TILE.h }
   return { w: LAYOUT.sceneW, h: LAYOUT.sceneH }
+}
+
+/**
+ * Where the estimated dots sit, mirroring the CSS (fastOpen.test reads canvas.css / saving.css against these):
+ * the folder dot's `top` (saving.css `.cv-h-folder`, far card), the frame dots' distance from the card's bottom
+ * (canvas.css `.cv-h-first` / `.cv-h-last`: `top: calc(100% - Npx)`) and the side dots' -0.5px overhang.
+ */
+export const ESTIMATED_DOTS = { folderTop: 25, folderTopFar: 40, firstFromBottom: 52, lastFromBottom: 28, sideOverhang: 0.5 } as const
+/** Card border (1px): a dot's CSS `top` counts from inside it. */
+const CARD_BORDER = 1
+
+/** Initial geometry only: React Flow replaces it with DOM measurements, never persisted sizes. */
+export function estimatedGeometry(type: string | undefined, size?: Size | null, far = false, mode?: string) {
+  const box = type === 'scene' ? drawnSceneSize(size) : size
+  const { w, h } = box ?? fallbackNodeSize(type)
+  const handles: NodeHandle[] = []
+  const d = ESTIMATED_DOTS
+  // Handles have zero-sized boxes (canvas.css); the card's border adds 1px to CSS top.
+  const dot = (id: string, kind: 'source' | 'target', right: boolean, y: number) => handles.push({
+    id, type: kind, position: right ? Position.Right : Position.Left,
+    x: right ? w - CARD_BORDER + d.sideOverhang : CARD_BORDER - d.sideOverhang, y, width: 0, height: 0,
+  })
+  if (type === 'asset') dot('out', 'source', true, h / 2)
+  else if (type === 'folder') dot('in', 'target', false, (far ? d.folderTopFar : d.folderTop) + CARD_BORDER)
+  else if (type === 'take') {
+    const y = takeDotTop(box ?? null, far) + CARD_BORDER
+    dot('in', 'target', false, y)
+    dot('out', 'source', true, y)
+  } else {
+    dot('ref', 'target', false, DOT_TOP + CARD_BORDER)
+    dot('take', 'source', true, DOT_TOP + CARD_BORDER)
+    if (mode === 'transform') {
+      // `calc(100% - Npx)` of the card's padding box: border + (h - 2 borders) - N.
+      dot('first', 'target', false, h - CARD_BORDER - d.firstFromBottom)
+      dot('last', 'target', false, h - CARD_BORDER - d.lastFromBottom)
+    }
+  }
+  return { initialWidth: w, initialHeight: h, handles }
+}
+
+/**
+ * Whether a node's estimate changes with the zoom level (far / near): only the folder's dot and a resized take's
+ * dots move (takeDotTop). Scene, asset and default-size take estimates stay the same object across LOD_ZOOM, so
+ * crossing it does not make React Flow re-adopt every unmeasured node.
+ */
+export function estimateDependsOnZoom(type: string | undefined, size?: Size | null): boolean {
+  return type === 'folder' || (type === 'take' && !!size?.w && !!size?.h)
+}
+
+/**
+ * Viewport that shows every node (padding 0.12, zoom 0.1 – 1: the old `fitView` options), from each node's measured
+ * size, else its stored size, else its estimate (initialWidth / initialHeight) — never only the measured nodes:
+ * nodes that were never on screen are never measured. Used on open and by "fit everything" (F, toolbar, after
+ * "Sắp xếp"). null = no node, or a stage without a size yet.
+ */
+export function initialViewport(nodes: readonly Node[], width: number, height: number): Viewport | null {
+  if (!nodes.length || !(width > 0 && height > 0)) return null
+  // React Flow's getNodesBounds without a nodeLookup (= same chain: measured → width → initialWidth) warns in dev.
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+  for (const n of nodes) {
+    const w = n.measured?.width ?? n.width ?? n.initialWidth ?? 0
+    const h = n.measured?.height ?? n.height ?? n.initialHeight ?? 0
+    x1 = Math.min(x1, n.position.x)
+    y1 = Math.min(y1, n.position.y)
+    x2 = Math.max(x2, n.position.x + w)
+    y2 = Math.max(y2, n.position.y + h)
+  }
+  return getViewportForBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, width, height, 0.1, 1, 0.12)
 }
 
 /**

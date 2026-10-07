@@ -2,7 +2,7 @@
 // Used to show reference images in full at their real aspect ratio (no square crop).
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { getUrl } from './imageStore'
+import { getUrl, releaseUrl } from './imageStore'
 
 export interface ImageSize {
   w: number
@@ -31,16 +31,17 @@ export function measureImage(id: string): Promise<ImageSize | null> {
           img.onload = () => {
             const size = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 }
             useImageMeta.setState((s) => ({ sizes: { ...s.sizes, [id]: size } }))
-            inflight.delete(id)
             resolve(size)
           }
           img.onerror = () => {
-            inflight.delete(id)
             resolve(null)
           }
           img.src = url
         }),
-    )
+    ).catch(() => null).finally(() => {
+      inflight.delete(id)
+      releaseUrl(id)
+    })
     inflight.set(id, p)
   }
   return p

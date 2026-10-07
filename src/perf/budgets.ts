@@ -1,8 +1,10 @@
 import type { PerfSize } from './synth'
 
-// Wave A budgets, in milliseconds unless the id names a count or memory value.
+// Wave A budgets, in milliseconds unless the id names a count or memory value — except opening a project, which has
+// its wave B budget since B1 (estimated geometry: only the nodes on screen mount) and B5 (shared media URLs), plan
+// §3.5.2: L ≤ 800, M = 0.6 × L, XL ≤ 1,500 (not 2 × L).
 const L: Record<string, number> = {
-  open: 2400, pan: 6, pan04: 6, panFar: 10, zoom: 12, select: 30, selectFirst: 120,
+  open: 800, pan: 6, pan04: 6, panFar: 10, zoom: 12, select: 30, selectFirst: 120,
   drag: 8, drag50: 12, typeInspector: 4, promptCommit: 4, runsTick: 3, star: 8, hover: 6,
   allWires: 10, minimapOn: 6, typeNode: 5, nodeCommit: 5, openEditor: 60, closeEditor: 30,
   panWithEditor: 7, zoomWithEditor: 12, autosaveProject: 4, autosaveRuns: 6, dom: 8000,
@@ -10,6 +12,7 @@ const L: Record<string, number> = {
 export function budgetFor(id: string, size: PerfSize | 'custom'): number | null {
   if (size === 'custom' || !(id in L)) return null
   if (id === 'autosaveRuns' && size === 'XL') return 12
+  if (id === 'open' && size === 'XL') return 1500
   return L[id] * (size === 'M' ? 0.6 : size === 'XL' ? 2 : 1)
 }
 /**

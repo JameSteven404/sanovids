@@ -18,7 +18,7 @@ import { dropLegacyVideoRefs, migrateProject } from '../core/migrate'
 import { createDemoProject } from '../core/seed'
 import { backupWins, isForeignWrite, nextStamp, sortByUpdated, upsertById, type BackupInfo, type RevStamp } from '../core/storageRules'
 import type { Project, Take } from '../core/types'
-import { dataUrlToBlob, deleteMedia, getBlob, putBlob } from '../lib/imageStore'
+import { dataUrlToBlob, deleteMedia, getBlob, putBlob, revokeUnusedUrls } from '../lib/imageStore'
 import { copyFolderHandle } from '../lib/saveFolders'
 import { clearHistory, emptyProject, useProject } from './project'
 import { setEngineHooks, stopEngine, useRuns } from './runs'
@@ -377,6 +377,8 @@ async function loadProjectData(id: string): Promise<Loaded | null> {
 }
 
 function openProject({ project: p, runs, rev, unsaved }: Loaded) {
+  // Media URLs live as long as their project is open (imageStore: idle URLs are kept for the open project only).
+  if (p.id !== useProject.getState().project.id) revokeUnusedUrls()
   useProject.getState().loadProject(p)
   clearHistory()
   useRuns.getState().loadRuns(runs)

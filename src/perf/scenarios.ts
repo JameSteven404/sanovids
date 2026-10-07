@@ -6,7 +6,8 @@ import { flush, switchProject } from '../store/persist'
 import { useUI } from '../store/ui'
 import { flushAll } from '../lib/promptDrafts'
 import { frame, pause, settle, type work } from './measure'
-import { perfCanvas } from './probe'
+import { perfCanvas, perfValue } from './probe'
+import { OPEN_MOUNTED, OPEN_VISIBLE } from './report'
 
 export interface Scenario { id: string; label: string; run(sample: typeof work): Promise<void>; optional?: string }
 const element = <T extends HTMLElement>(selector: string): T => {
@@ -19,6 +20,16 @@ const element = <T extends HTMLElement>(selector: string): T => {
 async function showCanvas() {
   flushSync(() => useUI.setState({ view: 'canvas' }))
   await settle('.react-flow')
+}
+/** Canvas nodes in the DOM, and how many of them are on the board's visible area. */
+function mountedNodes() {
+  const pane = element<HTMLElement>('.react-flow').getBoundingClientRect()
+  const nodes = [...document.querySelectorAll<HTMLElement>('.react-flow__node')]
+  const visible = nodes.filter((node) => {
+    const r = node.getBoundingClientRect()
+    return r.right > pane.left && r.left < pane.right && r.bottom > pane.top && r.top < pane.bottom
+  }).length
+  return { mounted: nodes.length, visible }
 }
 async function pan(sample: typeof work, zoom: number, count = 30) {
   const api = perfCanvas()
@@ -51,6 +62,10 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       await switchProject(alternateId)
       await showCanvas()
       await sample(async () => { await switchProject(projectId); stopEngine(); await settle('.react-flow') })
+      // Plan §3.5.2 after B1: the nodes mounted right at open ≤ 2 × the nodes on screen (report.mountsWithinBudget).
+      const { mounted, visible } = mountedNodes()
+      perfValue(OPEN_MOUNTED, mounted)
+      perfValue(OPEN_VISIBLE, visible)
     } },
     ...([1, 0.4, 0.15] as const).map((zoom) => ({ id: zoom === 0.15 ? 'panFar' : zoom === 0.4 ? 'pan04' : 'pan', label: `Kéo canvas · zoom ${zoom}`, run: (sample: typeof work) => pan(sample, zoom) })),
     { id: 'zoom', label: 'Thu phóng', run: async (sample) => {
