@@ -292,13 +292,14 @@ describe('runInSandbox', () => {
   })
 
   it('runs on its own project and puts everything back', async () => {
-    useUI.getState().setView('table')
+    // (0.6.0 shows the canvas only: the layout restored here is the take display, which a run may change)
+    useUI.getState().setTakeDisplay('chosen')
     const seen: { active: string | null; autoDownload: boolean; manifest: string | null; project: string }[] = []
     const r = await runInSandbox(
       opts({
         onProgress: (_p: StressProgress) => {
           seen.push({ active: localStorage.getItem('bdp:active'), autoDownload: useDownloadPrefs.getState().autoDownload, manifest: localStorage.getItem(MANIFEST_KEY), project: useProject.getState().project.id })
-          useUI.getState().setView('storyboard') // the run may change the layout
+          useUI.getState().setTakeDisplay('all') // the run may change the layout
         },
       }),
     )
@@ -312,7 +313,8 @@ describe('runInSandbox', () => {
     expect(db.deleted).toEqual(['prj_tmp'])
     expect(useProject.getState().project.id).toBe('prj_user')
     expect(useRuns.getState().takes.map((t) => t.id)).toEqual(['take_user_1'])
-    expect(useUI.getState().view).toBe('table')
+    expect(useUI.getState().takeDisplay).toBe('chosen')
+    expect(useUI.getState().view).toBe('canvas')
     expect(useDownloadPrefs.getState().autoDownload).toBe(true)
     expect(localStorage.getItem(MANIFEST_KEY)).toBeNull()
     expect(getProvider('dev')).toBe(devProvider())
@@ -454,7 +456,7 @@ describe('runInSandbox', () => {
 describe('leftovers of a run that never finished', () => {
   it('are cleaned up at the next start: temporary project, waiting folder saves, layout, auto-download', async () => {
     localStorage.setItem('bdp:folder-waiting', JSON.stringify({ fld_stress: ['take_x'], fld_user: ['take_user_1'] }))
-    useUI.getState().setView('storyboard')
+    useUI.getState().setTakeDisplay('chosen')
     // A download setting changed during the crashed run saved the run's "auto-download off" with it; after the restart
     // the switch reads off from storage.
     localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify({ autoDownload: false, withPrompt: true }))
@@ -465,7 +467,9 @@ describe('leftovers of a run that never finished', () => {
     expect(switchProject).not.toHaveBeenCalled() // the user's project is the open one already
     expect(localStorage.getItem(MANIFEST_KEY)).toBeNull()
     expect(JSON.parse(localStorage.getItem('bdp:folder-waiting') ?? '{}')).toEqual({ fld_user: ['take_user_1'] })
-    expect(useUI.getState().view).toBe('table')
+    expect(useUI.getState().takeDisplay).toBe('all')
+    // a manifest of an older build may name a hidden view: the canvas stays (core/shownViews)
+    expect(useUI.getState().view).toBe('canvas')
     expect(useDownloadPrefs.getState().autoDownload).toBe(true)
     expect(JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY)!)).toMatchObject({ autoDownload: true, withPrompt: true })
   })

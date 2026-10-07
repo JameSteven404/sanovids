@@ -1,4 +1,4 @@
-// Focus handling for dialogs and full-screen overlays (Modal, ImageLightbox, StoryboardPlayer).
+// Focus handling for dialogs and full-screen overlays (Modal, ImageLightbox, FilmPlayer).
 // While an overlay is open the keyboard must act on it, never on the page behind it: otherwise arrow keys still
 // move a focused (selected) canvas node, and typing still edits a focused prompt behind the dialog.
 import { useLayoutEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'

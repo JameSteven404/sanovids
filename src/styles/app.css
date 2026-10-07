@@ -182,7 +182,8 @@ body.is-resizing-panels video {
 
 /* ---------- "Hiệu ứng chuyển động" (Cài đặt → Nâng cao) ----------
    lib/canvasPrefs initMotion() sets <html data-motion> from the pref and the OS setting ('full' becomes 'reduced'
-   when the OS asks for less motion). The canvas and the storyboard add their own rules on top (wires.css, views.css). */
+   when the OS asks for less motion). The canvas and the "Phát liền" player add their own rules on top (wires.css,
+   player.css). */
 /* Giảm bớt: fades and color changes stay, nothing glides, slides or scales; sheets and toasts just fade in. */
 :root[data-motion='reduced'] *,
 :root[data-motion='reduced'] *::before,

@@ -20,11 +20,10 @@ import { startUpdates } from './updateActions'
 let PerfProfiler = ({ children }: { id: string; children: ReactNode }) => <>{children}</>
 if (__SANOVIDS_PERF__) PerfProfiler = (await import('./perf/PerfProfiler')).PerfProfiler
 
-// Code splitting: the canvas (default view) ships in the main bundle; the other views and every dialog are
-// separate chunks, loaded on first use and prefetched once the browser is idle so opening them stays instant.
+// Code splitting: the canvas (the only view shown, core/shownViews) ships in the main bundle; every dialog — the
+// "Phát liền" player too — is a separate chunk, loaded on first use and prefetched once the browser is idle so opening
+// it stays instant. The hidden Storyboard (components/views) is not imported at all, so it is not bundled.
 const chunks = {
-  sceneTable: () => import('./components/views/SceneTable'),
-  storyboard: () => import('./components/views/Storyboard'),
   importDialog: () => import('./components/dialogs/ImportDialog'),
   settingsDialog: () => import('./components/dialogs/SettingsDialog'),
   shortcutsDialog: () => import('./components/dialogs/ShortcutsDialog'),
@@ -37,10 +36,9 @@ const chunks = {
   devSheets: () => import('./components/dev/DevSheets'),
   updateDialog: () => import('./components/dialogs/UpdateDialog'),
   importJobsDialog: () => import('./components/runs/ImportJobsDialog'),
+  filmPlayer: () => import('./components/player/FilmPlayerDialog'),
 }
 
-const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
-const Storyboard = lazy(() => chunks.storyboard().then((m) => ({ default: m.Storyboard })))
 const ImportDialog = lazy(() => chunks.importDialog().then((m) => ({ default: m.ImportDialog })))
 const SettingsDialog = lazy(() => chunks.settingsDialog().then((m) => ({ default: m.SettingsDialog })))
 const ShortcutsDialog = lazy(() => chunks.shortcutsDialog().then((m) => ({ default: m.ShortcutsDialog })))
@@ -59,6 +57,7 @@ const StressHud = lazy(
   (): Promise<{ default: ComponentType }> =>
     import('./devtools/stress/StressHud').then((m) => ({ default: m.StressHud })).catch(() => ({ default: () => null })),
 )
+const FilmPlayerDialog = lazy(() => chunks.filmPlayer().then((m) => ({ default: m.FilmPlayerDialog })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -119,7 +118,6 @@ function Shell() {
   // App updates (desktop: the main process updater; development mode in a browser: its simulation): state mirror,
   // "download ready" / "updated" toasts. Ref-counted.
   useEffect(() => startUpdates(), [])
-  const view = useUI((s) => s.view)
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
   const root = useRef<HTMLDivElement>(null)
@@ -141,12 +139,9 @@ function Shell() {
         )}
         {leftOpen && <PanelResizer spec={LEFT_PANEL} side="left" root={root} onCollapse={() => useUI.getState().setLeftOpen(false)} />}
         <main className="app-center">
-          <SectionBoundary key={view} area={VIEW_AREA[view] ?? 'Chế độ xem'}>
-            {view === 'canvas' ? (
-              __SANOVIDS_PERF__ ? <PerfProfiler id="CanvasInner"><CanvasView /></PerfProfiler> : <CanvasView />
-            ) : (
-              <Suspense fallback={<div className="app-loading busy">Đang tải…</div>}>{view === 'table' ? <SceneTable /> : <Storyboard />}</Suspense>
-            )}
+          {/* The only view (core/shownViews): it never unmounts, whatever ui.view says. */}
+          <SectionBoundary area="Canvas">
+            {__SANOVIDS_PERF__ ? <PerfProfiler id="CanvasInner"><CanvasView /></PerfProfiler> : <CanvasView />}
           </SectionBoundary>
           <SectionBoundary area="Hàng đợi" variant="bar" className="app-crash-queue">
             <QueueDrawer />
@@ -179,9 +174,6 @@ function StressHudSlot() {
     </Suspense>
   )
 }
-
-/** Names of the center views in crash messages. */
-const VIEW_AREA: Record<string, string> = { canvas: 'Canvas', table: 'Bảng cảnh', storyboard: 'Storyboard' }
 
 function Dialogs() {
   const dialog = useUI((s) => s.dialog)
@@ -219,6 +211,8 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <UpdateDialog />
     case 'importJobs':
       return <ImportJobsDialog back={dialog.back} provider={dialog.provider} />
+    case 'player':
+      return <FilmPlayerDialog start={dialog.start} />
     default:
       return null
   }

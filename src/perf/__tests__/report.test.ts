@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { budgetFor, relativeBudget } from '../budgets'
 import { compare, reportExitCode, withBaselineBudgets, stats, verdict, type PerfReport } from '../report'
@@ -17,8 +18,6 @@ describe('performance report math', () => {
     expect(budgetFor('pan', 'M')).toBeCloseTo(3.6)
     expect(budgetFor('autosaveRuns', 'XL')).toBe(12)
     expect(budgetFor('pan', 'custom')).toBeNull()
-    expect(relativeBudget('tableScroll', 100)).toBe(60)
-    expect(relativeBudget('storyboardReorder', 100)).toBe(100)
     expect(reportExitCode(report(6.6))).toBe(0)
     expect(reportExitCode(report(6.61))).toBe(1)
     expect(reportExitCode({ ...report(1), complete: false })).toBe(2)
@@ -32,14 +31,31 @@ describe('performance report math', () => {
     failed.results[0].assertions.push({ label: 'Không commit', passed: false })
     expect(reportExitCode(failed)).toBe(1)
   })
-  it('applies relative A9 budgets to matching baselines', () => {
+  it('a baseline adds no budget where no relative budget exists (the A9 ones left with the hidden views)', () => {
     const before = report(100), after = report(70)
     before.results[0].id = after.results[0].id = 'tableScroll'
     after.results[0].budget = null
-    expect(reportExitCode(after, before)).toBe(1)
-    const compared = withBaselineBudgets(after, before)
-    expect(compared.results[0].budget).toBe(60)
-    expect(compared.results[0].status).toBe('fail')
-    expect(after.results[0].budget).toBeNull()
+    after.results[0].status = 'unbudgeted'
+    expect(withBaselineBudgets(after, before).results[0]).toEqual(after.results[0])
+    expect(reportExitCode(after, before)).toBe(0)
+    // Incompatible runs are still refused before any budget is assigned.
+    expect(() => withBaselineBudgets(after, { ...before, dataHash: 'other' })).toThrow()
+  })
+})
+
+describe('scenarios of the hidden views are gone (0.6.0 shows the canvas only)', () => {
+  const RETIRED = ['returnCanvas', 'tableScroll', 'storyboardOpen', 'storyboardReorder']
+  it('no budget, no relative budget', () => {
+    for (const id of RETIRED) {
+      for (const size of ['M', 'L', 'XL'] as const) expect(budgetFor(id, size), id).toBeNull()
+      expect(relativeBudget(id, 100), id).toBeNull()
+    }
+    expect(relativeBudget('__proto__', 100)).toBeNull()
+  })
+  it('no scenario switches to Bảng cảnh / Storyboard', () => {
+    const source = readFileSync(new URL('../scenarios.ts', import.meta.url), 'utf8')
+    for (const id of RETIRED) expect(source).not.toContain(`id: '${id}'`)
+    expect(source).not.toMatch(/view: '(table|storyboard)'|\.vw-(table|sb)/)
+    expect(source).toContain("id: 'open'")
   })
 })

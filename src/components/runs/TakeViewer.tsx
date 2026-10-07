@@ -641,7 +641,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           className={`btn btn-sm rq-star-btn${take.starred ? ' on' : ''}`}
           disabled={take.status !== 'completed' && !take.starred}
           onClick={() => toggleChosenTake(take.id)}
-          title={take.starred ? 'Bỏ chọn take này' : 'Đánh dấu là take dùng cho cảnh (Storyboard sẽ ưu tiên)'}
+          title={take.starred ? 'Bỏ chọn take này' : 'Đánh dấu là take dùng cho cảnh (Phát liền và file .zip sẽ ưu tiên)'}
         >
           <Star size={13} fill={take.starred ? 'currentColor' : 'none'} />
           {take.starred ? 'Đã chọn' : 'Chọn take này'}
@@ -927,8 +927,8 @@ function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefine
     : targets.length
       ? `Thêm video này vào video tham chiếu của ${targets.length} cảnh đang chọn`
       : ownSelected
-        ? 'Không thể dùng video của chính cảnh này — chọn cảnh khác trên canvas hoặc Bảng cảnh trước'
-        : 'Chưa chọn cảnh nào — chọn cảnh trên canvas hoặc Bảng cảnh trước'
+        ? 'Không thể dùng video của chính cảnh này — chọn cảnh khác trên canvas trước'
+        : 'Chưa chọn cảnh nào — chọn cảnh trên canvas trước'
 
   return (
     <div className="rq-sec rq-use">

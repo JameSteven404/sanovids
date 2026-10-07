@@ -12,6 +12,7 @@ import {
   selectedSceneIds,
   undo,
 } from '../actions'
+import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { useProject } from '../store/project'
 import { flush } from '../store/persist'
 import { toast, useUI } from '../store/ui'
@@ -128,7 +129,17 @@ export function useShortcuts(): void {
         }
         return
       }
-      if (e.altKey) return
+      if (e.altKey) {
+        // Fixed keys Alt + ↑ / ↓ (sceneOrderActions.sceneOrderKey): move the single selected scene one place in the
+        // scene order (codes renumber). Held down it keeps moving; the whole burst is one undo step and one toast.
+        // Keep this ahead of any plain ↑ / ↓ handling (src/__tests__/sceneOrderKeys.test.ts drives this handler).
+        const step = sceneOrderKey(e)
+        if (step) {
+          e.preventDefault()
+          moveSelectedScene(step)
+        }
+        return
+      }
 
       // ---- single keys ----
       const del = deleteKeyAction(key, IS_MAC)
@@ -179,15 +190,7 @@ export function useShortcuts(): void {
         case 'm':
           ui.toggleMinimap()
           break
-        case '1':
-          ui.setView('canvas')
-          break
-        case '2':
-          ui.setView('table')
-          break
-        case '3':
-          ui.setView('storyboard')
-          break
+        // No 1 / 2 / 3 any more: the canvas is the only view shown (core/shownViews).
       }
     }
     window.addEventListener('keydown', onKey)

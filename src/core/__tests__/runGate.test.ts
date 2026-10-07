@@ -189,7 +189,8 @@ describe('sceneRunBlock: what a one-scene Run button holds (assets + joined stat
 
 describe('every one-scene Run button is gated by core/runGate (no drift to a prompt-only check)', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
-  const FILES = ['../../components/canvas/SceneNode.tsx', '../../components/inspector/SceneInspector.tsx', '../../components/views/Storyboard.tsx', '../../components/views/SceneTable.tsx']
+  // (Bảng cảnh / SceneTable.tsx was deleted in 0.6.0; the hidden Storyboard is frozen but still gated)
+  const FILES = ['../../components/canvas/SceneNode.tsx', '../../components/inspector/SceneInspector.tsx', '../../components/views/Storyboard.tsx']
   /** The <button>…</button> around each `requestRun([…])` (a one-scene run; a selection opens the dialog). */
   const runButtons = (src: string) =>
     [...src.matchAll(/requestRun\(\[/g)].map((m) => src.slice(src.lastIndexOf('<button', m.index), src.indexOf('</button>', m.index)))
@@ -207,7 +208,7 @@ describe('every one-scene Run button is gated by core/runGate (no drift to a pro
     expect(runButtons(read('../../components/inspector/SceneInspector.tsx'))).toHaveLength(2)
   })
   it('the places that call runBlockReason themselves pass the gateway’s refusal of the settings too', () => {
-    for (const file of ['../../components/canvas/SceneNode.tsx', '../../components/views/SceneTable.tsx', '../../store/runs.ts']) {
+    for (const file of ['../../components/canvas/SceneNode.tsx', '../../store/runs.ts']) {
       expect(read(file)).toMatch(/runBlockReason\([^)]*settingsBlock/)
     }
     expect(read('../../components/runs/shared.tsx')).toMatch(/sceneRunBlock\(scene, assets, videoStatus, videoCap, settingsBlock\)/)

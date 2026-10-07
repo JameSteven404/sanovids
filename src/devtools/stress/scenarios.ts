@@ -246,7 +246,7 @@ export const SCENARIOS: ScenarioDef[] = [
     id: 'ui-cycle',
     label: 'Đổi giao diện liên tục',
     group: 'C',
-    hint: 'Đổi Canvas / Bảng / Storyboard, chọn hàng nghìn cảnh, mở / đóng bảng — giao diện không treo.',
+    hint: 'Đổi chế độ xem (màn đã ẩn phải bị bỏ qua), chọn hàng nghìn cảnh, mở / đóng bảng — giao diện không treo.',
     minutes: 3,
     headless: false,
     app: true,

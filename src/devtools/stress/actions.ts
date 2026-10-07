@@ -798,6 +798,8 @@ export const ACTIONS: StressAction[] = [
     group: 'ui',
     layer: 'ui',
     args: (rng) => ({ v: rng.int(0, 2) }),
+    // 0.6.0 shows the canvas only (core/shownViews): asking for a hidden view must be ignored — the same args as
+    // before, so recorded seeds replay the same steps.
     run: (_c, a) => useUI.getState().setView((['canvas', 'table', 'storyboard'] as const)[num(a, 'v')]),
   },
   {

@@ -2,7 +2,9 @@
 import { expect, it } from 'vitest'
 import { chordFromEvent, decideShortcut as decide, parseChord, type Ctx, type DialogKind, type KeyEventLike, type View } from '../keymap'
 
-// Oracle: today's decision, transcribed from src/hooks/useShortcuts.ts:72-191 and sidebar/shared.ts:395-411 (no side effects).
+// Oracle: today's decision, transcribed from src/hooks/useShortcuts.ts (onKey) and sidebar/shared.ts:395-411 (no side
+// effects). Since 0.6.0 there are no 1 / 2 / 3 keys (the canvas is the only view, core/shownViews), and Alt + ↑ / ↓
+// are fixed scene-order keys handled before the dispatcher, outside the registry (FIXED_KEYS).
 function legacy(e: KeyEventLike, ctx: Ctx, mac: boolean): string | null {
   if (e.isComposing) return null
   const mod = !!(e.ctrlKey || e.metaKey)
@@ -31,7 +33,6 @@ function legacy(e: KeyEventLike, ctx: Ctx, mac: boolean): string | null {
   if (e.repeat) return null
   const single: Record<string, string> = {
     n: 'scene.next', c: 'selection.connect', f: 'canvas.fit', e: 'canvas.cycleEdges', h: 'canvas.hand', v: 'canvas.select', m: 'canvas.minimap',
-    '1': 'view.canvas', '2': 'view.table', '3': 'view.storyboard',
   }
   return single[key] ?? null
 }
@@ -54,7 +55,8 @@ it('defaults behave like today, except the intended differences', () => {
   const diffs: Diff[] = []
   let cases = 0
   const dialogs: DialogKind[] = ['none', 'settings', 'asset', 'import', 'take', 'shortcuts']
-  const views: View[] = ['canvas', 'table', 'storyboard']
+  // Only the canvas is ever shown (ui.setView refuses the hidden views, a stored one falls back to the canvas).
+  const views: View[] = ['canvas']
   for (const mac of [false, true])
     for (const [code, plain, shifted] of US)
       for (let m = 0; m < 16; m++) {
@@ -84,7 +86,7 @@ it('defaults behave like today, except the intended differences', () => {
     const ctrlShiftY = ev.shiftKey && l === 'history.redo' && ev.code === 'KeyY'
     return !(winKey || macBoth || macControl || macForceQuit || extraShift || extraAlt || ctrlShiftY) || next !== null
   })
-  expect(cases).toBe(96768)
+  expect(cases).toBe(32256)
   expect(unexplained).toEqual([])
 })
 
@@ -97,11 +99,14 @@ it('Vietnamese input and layouts', () => {
   // Microsoft Vietnamese Telex (TSF composition)
   expect(decide({ key: 'Process', code: 'KeyE', keyCode: 229 }, ctx, false).action).toBe(null)
   expect(decide({ key: 'e', code: 'KeyE', isComposing: true }, ctx, false).action).toBe(null)
-  // Windows' built-in Vietnamese layout: the digit row types ă â ê… — 1/2/3 now work (today they do not)
-  expect(decide({ key: 'ă', code: 'Digit1' }, ctx, false).action).toBe('view.canvas')
+  // Windows' built-in Vietnamese layout: the digit row types ă â ê… — read by its key code; no digit has a command
+  // since the 1 / 2 / 3 view keys went away
+  expect(chordFromEvent({ key: 'ă', code: 'Digit1' }, false)).toBe('Digit1')
+  expect(decide({ key: 'ă', code: 'Digit1' }, ctx, false).action).toBe(null)
   // Caps Lock, numpad (NumLock on / off)
   expect(decide({ key: 'N', code: 'KeyN' }, ctx, false).action).toBe('scene.next')
-  expect(decide({ key: '2', code: 'Numpad2' }, ctx, false).action).toBe('view.table')
+  expect(chordFromEvent({ key: '2', code: 'Numpad2' }, false)).toBe('Digit2')
+  expect(decide({ key: '2', code: 'Numpad2' }, ctx, false).action).toBe(null)
   expect(decide({ key: 'Delete', code: 'NumpadDecimal' }, ctx, false).action).toBe('selection.delete')
   expect(decide({ key: 'Enter', code: 'NumpadEnter', ctrlKey: true }, ctx, false).action).toBe('scene.run')
   // Alt + numpad digits type characters (Alt codes): never a chord with a digit

@@ -13,9 +13,11 @@ const element = <T extends HTMLElement>(selector: string): T => {
   if (!result) throw new Error(`Chưa có phần tử đo: ${selector}`)
   return result
 }
-async function view(next: 'canvas' | 'table' | 'storyboard') {
-  flushSync(() => useUI.setState({ view: next }))
-  await settle(next === 'canvas' ? '.react-flow' : next === 'table' ? '.vw-table' : '.vw-sb-grid')
+// The canvas is the only view (core/shownViews): the scenarios of the hidden Bảng cảnh / Storyboard (returnCanvas,
+// tableScroll, storyboardOpen, storyboardReorder) were removed with them.
+async function showCanvas() {
+  flushSync(() => useUI.setState({ view: 'canvas' }))
+  await settle('.react-flow')
 }
 async function pan(sample: typeof work, zoom: number, count = 30) {
   const api = perfCanvas()
@@ -46,10 +48,9 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
   return [
     { id: 'open', label: 'Mở dự án', run: async (sample) => {
       await switchProject(alternateId)
-      await view('canvas')
+      await showCanvas()
       await sample(async () => { await switchProject(projectId); stopEngine(); await settle('.react-flow') })
     } },
-    { id: 'returnCanvas', label: 'Quay lại Canvas', run: async (sample) => { await view('table'); await sample(() => view('canvas')) } },
     ...([1, 0.4, 0.15] as const).map((zoom) => ({ id: zoom === 0.15 ? 'panFar' : zoom === 0.4 ? 'pan04' : 'pan', label: `Kéo canvas · zoom ${zoom}`, run: (sample: typeof work) => pan(sample, zoom) })),
     { id: 'zoom', label: 'Thu phóng', run: async (sample) => {
       const api = perfCanvas()
@@ -105,24 +106,6 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       useProject.getState().setScenePrompt(ids()[0], 'Đo lưu tự động')
       useRuns.getState().toggleStar(useRuns.getState().takes[0].id)
       await sample(async () => { if (!await flush()) throw new Error('Không lưu được dữ liệu thử.') })
-    } },
-    { id: 'tableScroll', label: 'Cuộn Bảng cảnh · 400 px', run: async (sample) => {
-      await view('table')
-      const scroller = element('.vw-table-scroll')
-      for (let i = 1; i <= 20; i++) await sample(() => { scroller.scrollTop = i * 400 })
-    } },
-    { id: 'storyboardOpen', label: 'Mở Storyboard', run: async (sample) => { await view('canvas'); await sample(() => view('storyboard')) } },
-    { id: 'storyboardReorder', label: 'Đổi thứ tự Storyboard · tự cuộn', run: async (sample) => {
-      await view('storyboard')
-      const card = element<HTMLElement>('.vw-sb-grid [data-card]')
-      const scroller = element('.vw-sb-scroll'), rect = card.getBoundingClientRect(), bounds = scroller.getBoundingClientRect()
-      card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, isPrimary: true, pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1, clientX: rect.x + 30, clientY: rect.y + 30 }))
-      try {
-        for (let i = 0; i < 30; i++) await sample(() => { window.dispatchEvent(new PointerEvent('pointermove', {
-          bubbles: true, pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: rect.x + 60, clientY: bounds.bottom - 8,
-        })) })
-      } finally { window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 })) }
-      if (scroller.scrollTop === 0) throw new Error('Kéo thử chưa kích hoạt tự cuộn; cần kiểm tra sự kiện thật.')
     } },
     ...['typeNode', 'openEditor', 'closeEditor', 'panWithEditor', 'zoomWithEditor'].map((id) => ({ id,
       label: ({ typeNode: 'Gõ trên thẻ', openEditor: 'Mở khung sửa', closeEditor: 'Đóng khung sửa', panWithEditor: 'Kéo khi sửa', zoomWithEditor: 'Zoom khi sửa' } as Record<string, string>)[id],

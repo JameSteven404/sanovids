@@ -166,7 +166,7 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Âm thanh video',
-    desc: 'Cho trình phát trên canvas, cửa sổ xem take và “Phát liền” ở Storyboard. Nhớ trên máy này.',
+    desc: 'Cho trình phát trên canvas, cửa sổ xem take và “Phát liền”. Nhớ trên máy này.',
     rows: [
       {
         id: 'sound',
@@ -233,7 +233,7 @@ const GROUPS: Group[] = [
       {
         id: 'animations',
         label: 'Hiệu ứng chuyển động',
-        hint: 'Đầy đủ: dây cắt rồi thu về, dây mới vẽ ra, thẻ Storyboard lướt. Giảm bớt: chỉ mờ dần, không gì trượt. Tắt: không hiệu ứng nào trong toàn bộ app.',
+        hint: 'Đầy đủ: dây cắt rồi thu về, dây mới vẽ ra. Giảm bớt: chỉ mờ dần, không gì trượt. Tắt: không hiệu ứng nào trong toàn bộ app.',
         keywords: 'hoạt ảnh animation giảm motion mượt',
         C: MotionSetting,
       },

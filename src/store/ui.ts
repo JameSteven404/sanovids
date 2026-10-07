@@ -1,5 +1,6 @@
 // UI-only state: selection, view, dialogs, drag overlay, toasts. Never undoable, mostly not persisted.
 import { create } from 'zustand'
+import { isShownView } from '../core/shownViews'
 import type { EdgeMode, ViewMode } from '../core/types'
 
 export interface ToastAction {
@@ -42,6 +43,11 @@ export type DialogState =
    * gateway to read (default: the one new takes use; the Bảng phát triển always reads the simulated one).
    */
   | { kind: 'importJobs'; back?: DialogState; provider?: 'dev' | 'canvasapp' }
+  /**
+   * "Phát liền" (components/player/FilmPlayerDialog): every scene's chosen take in scene order, from item `start`
+   * (0-based). Open with filmActions.openFilmPlayer(start), which refuses a project without scenes.
+   */
+  | { kind: 'player'; start?: number }
 
 /** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
 export type TopUpTab = 'topup' | 'history'
@@ -66,6 +72,7 @@ export const TOAST_TIME_LABEL: Record<ToastTime, string> = { short: 'Ngắn', no
 export const TOAST_BASE_MS = 2800
 export const TOAST_ACTION_MS = 6000
 
+/** Every view id a stored pref may hold. Only the shown ones (core/shownViews) are ever used. */
 export const VIEW_MODES: readonly ViewMode[] = ['canvas', 'table', 'storyboard']
 export const EDGE_MODES: readonly EdgeMode[] = ['hidden', 'selected', 'all']
 export const INTERACTION_MODES: readonly InteractionMode[] = ['hand', 'select']
@@ -168,7 +175,8 @@ export interface UIState {
 let toastSeq = 1
 
 export const useUI = create<UIState>()((set, get) => ({
-  view: pref('view', 'canvas', oneOf(VIEW_MODES)),
+  // A hidden view saved by an older version (Bảng cảnh / Storyboard) opens the canvas; the stored value is left alone.
+  view: pref('view', 'canvas', isShownView),
   edgeMode: pref('edgeMode', 'selected', oneOf(EDGE_MODES)),
   interaction: pref('interaction', 'hand', oneOf(INTERACTION_MODES)),
   showMinimap: pref('minimap', true, isBool),
@@ -189,6 +197,8 @@ export const useUI = create<UIState>()((set, get) => ({
   toasts: [],
 
   setView: (view) => {
+    // Hidden views (core/shownViews) are never shown: there would be no way back to the canvas.
+    if (!isShownView(view)) return
     savePref('view', view)
     set({ view })
   },

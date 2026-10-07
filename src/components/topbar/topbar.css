@@ -3,8 +3,8 @@
   height: var(--topbar-h);
   flex: none;
   display: grid;
-  /* The right column never gets narrower than its buttons (running jobs widen it): the view switch then moves
-     left instead of the right cluster spilling over it. Wide windows keep the switch centred. */
+  /* The right column never gets narrower than its buttons (running jobs widen it): the centre ("Phát liền", the view
+     switch when shown) then moves left instead of the right cluster spilling over it. Wide windows keep it centred. */
   grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   gap: 12px;
@@ -233,7 +233,25 @@
   text-overflow: ellipsis;
 }
 
-/* view switch: segmented control with a sliding raised thumb */
+/* "Phát liền" (centre): a quiet pill like the old view switch, the play glyph in the accent colour */
+.tb-film {
+  gap: 6px;
+  padding: 0 12px 0 10px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.tb-film .lucide {
+  color: var(--accent);
+}
+.tb-film:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.tb-film:disabled .lucide {
+  color: inherit;
+}
+
+/* view switch: segmented control with a sliding raised thumb (rendered only while 2+ views are shown, core/shownViews) */
 .tb-seg {
   --seg-i: 0;
   --seg-n: 3;
@@ -552,11 +570,11 @@
 .tb:has(.tb-running) .tb-update .tb-hide-md {
   display: none;
 }
-/* Jobs running, an app update or a provider problem in a narrow window: the view switch shows icons only (like below
-   1120px; each button keeps its title) — the left cluster has nothing left to give way there, so the project name
-   would be cut to a few letters (or nothing) next to the labels. */
+/* Jobs running, an app update or a provider problem in a narrow window: the centre ("Phát liền", the view switch) shows
+   icons only (like below 1120px; each button keeps its title / aria-label) — the left cluster has nothing left to give
+   way there, so the project name would be cut to a few letters (or nothing) next to the labels. */
 @media (max-width: 1240px) {
-  .tb:has(.tb-running, .tb-update, .tb-provider) .tb-seg-label {
+  .tb:has(.tb-running, .tb-update, .tb-provider) :is(.tb-seg-label, .tb-film-label) {
     display: none;
   }
 }
@@ -568,15 +586,19 @@
   }
 }
 @media (max-width: 1320px) {
-  .tb:has(.tb-running):has(.tb-update) .tb-seg-label {
+  .tb:has(.tb-running):has(.tb-update) :is(.tb-seg-label, .tb-film-label) {
     display: none;
   }
 }
 @media (max-width: 1120px) {
   .tb-hide-sm,
   .tb-brand-text,
-  .tb-seg-label {
+  .tb-seg-label,
+  .tb-film-label {
     display: none;
+  }
+  .tb-film {
+    padding: 0 8px;
   }
   .tb-name {
     max-width: 160px;
@@ -599,6 +621,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .tb-film,
   .tb-seg-thumb,
   .tb-seg-btn,
   .tb-seg-btn + .tb-seg-btn::before,

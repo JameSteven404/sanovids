@@ -148,7 +148,7 @@ function toggleOnCanvas(id: string) {
 function linkCardToSelection(id: string) {
   const scenes = selectedSceneIds()
   if (!scenes.length) {
-    toast('Chọn một hoặc nhiều cảnh trên canvas / bảng cảnh trước.', { tone: 'warning' })
+    toast('Chọn một hoặc nhiều cảnh trên canvas trước.', { tone: 'warning' })
     return
   }
   linkAssets(scenes, dragIdsFor(id))
@@ -557,7 +557,7 @@ export function AssetLibrary({
       <button
         className="btn btn-sm sb-link-btn"
         disabled={!selectedScenes.length}
-        title={selectedScenes.length ? `Nối ${selection.length} mục vào ${selectedScenes.length} cảnh đang chọn (C)` : 'Chọn cảnh trên canvas / bảng cảnh trước'}
+        title={selectedScenes.length ? `Nối ${selection.length} mục vào ${selectedScenes.length} cảnh đang chọn (C)` : 'Chọn cảnh trên canvas trước'}
         onClick={() => linkAssets(selectedScenes, selection)}
       >
         <Link2 size={13} />

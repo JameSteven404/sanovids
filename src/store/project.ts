@@ -470,7 +470,12 @@ export interface ProjectState {
    * model marker), with an empty prompt.
    */
   createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'prompt' | 'videoRefs' | 'title'>>) => string
-  moveScene: (id: string, toOrder: number) => void
+  /**
+   * Move a scene to place `toOrder` (1-based, clamped) of the scene order; every scene code renumbers. Every call is an
+   * undo step (even one that changes nothing: do not call it for a no-op). `coalesce`: moves made with the same key
+   * within 1.5 s of each other merge into ONE step (sceneOrderActions: a held Alt + ↑ is undone at once).
+   */
+  moveScene: (id: string, toOrder: number, opts?: { coalesce?: string }) => void
   setFrame: (sceneId: string, which: 'first' | 'last', assetId: string | null) => void
 
   // image references
@@ -820,7 +825,8 @@ export const useProject = create<ProjectState>()(
           }))
           return next.id
         },
-        moveScene: (id, toOrder) =>
+        moveScene: (id, toOrder, opts) => {
+          if (opts?.coalesce) coalesce(opts.coalesce)
           mutate((p) => {
             const sorted = [...p.scenes].sort((a, b) => a.order - b.order)
             const from = sorted.findIndex((s) => s.id === id)
@@ -828,7 +834,8 @@ export const useProject = create<ProjectState>()(
             const [s] = sorted.splice(from, 1)
             sorted.splice(Math.max(0, Math.min(sorted.length, toOrder - 1)), 0, s)
             return { ...p, scenes: sorted.map((x, i) => (x.order === i + 1 ? x : { ...x, order: i + 1 })) }
-          }),
+          })
+        },
         setFrame: (sceneId, which, assetId) =>
           mapScenes([sceneId], (s) => (which === 'first' ? { ...s, firstFrame: assetId } : { ...s, lastFrame: assetId })),
 
@@ -1210,6 +1217,24 @@ function historyJump(kind: HistoryJumpKind) {
 export const undo = () => historyJump('undo')
 export const redo = () => historyJump('redo')
 export const clearHistory = () => useProject.temporal.getState().clear()
+
+/**
+ * Takes back the newest undo step when it holds a coalesced burst of `key` (the last tracked edit had that key, so no
+ * other step came after it) and `unchanged(before, now)` says the burst ended where it started, e.g. a scene moved away
+ * and back (sceneOrderActions). The project stays as it is (it differs from the step's snapshot only by `updatedAt`):
+ * Ctrl+Z must not spend a keystroke on a step that changes nothing. The burst ends, so the next edit with `key` gets
+ * its own step instead of merging into the older, unrelated one. (The redo stack the burst dropped stays dropped.)
+ * Returns whether the step was dropped.
+ */
+export function dropBurstStep(key: string, unchanged: (before: Project, now: Project) => boolean): boolean {
+  if (!key || key !== lastKey) return false
+  const history = useProject.temporal.getState()
+  const before = history.pastStates[history.pastStates.length - 1]?.project
+  if (!before || !unchanged(before, useProject.getState().project)) return false
+  useProject.temporal.setState({ pastStates: history.pastStates.slice(0, -1) })
+  lastKey = null
+  return true
+}
 
 /**
  * Toast action that undoes the edit that was just made — but only if nothing changed since.

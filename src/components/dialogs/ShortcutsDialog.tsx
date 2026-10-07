@@ -23,7 +23,6 @@ const KEY_GROUPS: Group[] = [
       ['Ctrl+Shift+Z / Ctrl+Y', 'Làm lại'],
       ['Ctrl+S', 'Lưu ngay'],
       ['Ctrl+K', 'Tìm trong thư viện'],
-      ['1 / 2 / 3', 'Canvas / Bảng cảnh / Storyboard'],
       ['Esc', 'Bỏ chọn · đóng hộp thoại'],
       ['?', 'Mở bảng phím tắt này'],
     ],
@@ -37,7 +36,7 @@ const KEY_GROUPS: Group[] = [
         IS_MAC ? 'Delete / ⌫' : 'Delete',
         'Xoá cảnh và video (take) đang chọn · ẩn thẻ khỏi canvas · cắt dây đang chọn. Video chọn cùng cảnh của nó chỉ ẩn theo cảnh (hoàn tác được).',
       ],
-      ['Ctrl+A', 'Chọn tất cả cảnh (Canvas, Bảng cảnh, Storyboard)'],
+      ['Ctrl+A', 'Chọn tất cả cảnh trên canvas'],
       ['C', 'Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn'],
       ['Ctrl+Enter', 'Chạy các cảnh đang chọn'],
     ],
@@ -52,15 +51,15 @@ const KEY_GROUPS: Group[] = [
     ],
   },
   {
-    title: 'Bảng cảnh & Storyboard',
+    title: 'Thứ tự cảnh',
+    rows: [['Alt+↑ / Alt+↓', 'Dời cảnh đang chọn lên trước / ra sau một chỗ. Giữ phím để dời nhiều chỗ, Ctrl+Z trả lại cả lượt']],
+  },
+  {
+    title: 'Phát liền',
     rows: [
-      ['↑ / ↓', 'Bảng cảnh: chuyển cảnh (Shift để chọn thêm)'],
-      ['← / → / ↑ / ↓', 'Storyboard: sang thẻ bên cạnh (Enter để xem take)'],
-      ['Alt+← / Alt+→', 'Storyboard: dời cảnh đang chọn lên trước / ra sau một chỗ (mã cảnh đánh số lại)'],
-      ['Alt+↑ / Alt+↓', 'Storyboard: dời cảnh đang chọn lên / xuống một hàng'],
-      ['Shift+Click / Ctrl+Click', 'Chọn một dải / chọn thêm từng cảnh'],
-      ['Space', 'Phát liền: phát / tạm dừng'],
-      ['← / →', 'Phát liền: cảnh trước / sau'],
+      ['Space', 'Phát / tạm dừng'],
+      ['← / →', 'Cảnh trước / sau'],
+      ['Esc', 'Đóng trình phát'],
     ],
   },
 ]
@@ -76,13 +75,13 @@ const GESTURES: Group[] = [
     ],
   },
   {
-    title: 'Sắp xếp cảnh',
+    title: 'Thứ tự cảnh',
     rows: [
+      ['▲ / ▼ cạnh mã cảnh', 'Ở bảng bên phải: dời cảnh đang chọn lên trước / ra sau một chỗ'],
       [
-        'Kéo thẻ Storyboard',
-        `Thả vào chỗ mới để đổi thứ tự cảnh: các thẻ khác dạt ra nhường chỗ, gần mép trên / dưới thì tự cuộn. Mã cảnh S01, S02… đánh số lại theo thứ tự mới; Phát liền và file .zip đi theo thứ tự này. Esc để huỷ khi đang kéo, ${IS_MAC ? '⌘' : 'Ctrl'}+Z để hoàn tác. Màn hình cảm ứng: giữ thẻ một chút rồi kéo.`,
+        'Bấm vào mã cảnh (S05)',
+        `Gõ vị trí mới để dời một lần tới đó. Các cảnh khác đánh số lại; Phát liền và file .zip đi theo thứ tự mới, thẻ trên canvas giữ chỗ cũ (bấm Sắp xếp để xếp lại). ${IS_MAC ? '⌘' : 'Ctrl'}+Z để hoàn tác.`,
       ],
-      ['Tay cầm ⋮⋮ trong Bảng cảnh', 'Kéo để đổi thứ tự cảnh ngay trong bảng.'],
     ],
   },
   {
@@ -100,7 +99,7 @@ const GESTURES: Group[] = [
         'Thả ra chỗ trống',
         'Từ nhân vật: “Tạo cảnh mới có @Tag” hoặc “Nối vào N cảnh đang chọn”. Từ video: “Tạo cảnh tiếp nối từ video này” (cảnh mới bên dưới, video thành @video_1) hoặc “Dùng làm @video cho N cảnh đang chọn”.',
       ],
-      ['Thư viện → cảnh', 'Kéo thẻ nhân vật hoặc video (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas hoặc dòng trong Bảng cảnh.'],
+      ['Thư viện → cảnh', 'Kéo thẻ nhân vật hoặc video (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas.'],
       ['Thư viện → nền', 'Đặt nhân vật lên canvas tại điểm thả. Thả file ảnh → tạo nhân vật mới.'],
       ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
       [

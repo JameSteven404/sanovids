@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const topbarCss = read('../topbar.css')
+const topbarTsx = read('../TopBar.tsx')
 const dialogsCss = read('../../dialogs/dialogs.css')
 
 /** `@container tb-left (max-width: Npx) { <selector> { display: none; } }` blocks → [{ px, selector }] in file order. */
@@ -70,8 +71,43 @@ describe('top bar: the project name keeps room', () => {
     }
   })
 
-  it('a running job, an update or a provider problem hides the view-switch labels below 1240px', () => {
-    expect(topbarCss).toMatch(/@media \(max-width: 1240px\) \{\s*\.tb:has\(\.tb-running, \.tb-update, \.tb-provider\) \.tb-seg-label \{\s*display: none;/)
+  it('a running job, an update or a provider problem hides the centre labels ("Phát liền", view switch) below 1240px', () => {
+    expect(topbarCss).toMatch(/@media \(max-width: 1240px\) \{\s*\.tb:has\(\.tb-running, \.tb-update, \.tb-provider\) :is\(\.tb-seg-label, \.tb-film-label\) \{\s*display: none;/)
+  })
+})
+
+// 0.6.0 hides Bảng cảnh / Storyboard (core/shownViews): "Phát liền" takes the centre where the view switch was. The
+// button (icon + "Phát liền", about 100px; 32px as an icon) is narrower than the three-segment switch it replaces
+// (about 290px with labels, 110px as icons), and its label gives way at exactly the widths and conditions the switch
+// labels did — so at every window width the project name keeps at least the room it had before.
+describe('top bar: "Phát liền" in the centre', () => {
+  it('keeps the 3-column grid: the centre cell stays even when it only holds the film button', () => {
+    expect(topbarCss).toMatch(/\.tb \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto minmax\(max-content, 1fr\);/)
+    expect(topbarCss).toMatch(/\.tb-center \{\s*display: flex;\s*justify-content: center;/)
+    const center = topbarTsx.match(/<div className="tb-center">([\s\S]*?)<\/div>/)
+    expect(center?.[1]).toContain('<FilmButton />')
+    // The view switch renders only with 2+ shown views; the condition sits at the call site, not inside a hook.
+    expect(center?.[1]).toMatch(/\{SHOWN_VIEW_LIST\.length > 1 && <ViewSwitch \/>\}/)
+    // Left, centre, right: the film button sits between the two clusters.
+    const left = topbarTsx.indexOf('className="tb-left"'), mid = topbarTsx.indexOf('className="tb-center"'), right = topbarTsx.indexOf('className="tb-right"')
+    expect(left).toBeGreaterThan(0)
+    expect(mid).toBeGreaterThan(left)
+    expect(right).toBeGreaterThan(mid)
+  })
+
+  it('the film button opens the player, has a name without its label and is off until a take is finished', () => {
+    const button = topbarTsx.slice(topbarTsx.indexOf('function FilmButton()'))
+    expect(button).toMatch(/onClick=\{\(\) => openFilmPlayer\(\)\}/)
+    expect(button).toMatch(/aria-label="Phát liền"/)
+    expect(button).toMatch(/disabled=\{!count\}/)
+    expect(button).toMatch(/<span className="tb-film-label">Phát liền<\/span>/)
+  })
+
+  it('its label gives way exactly where the view-switch labels did', () => {
+    expect(topbarCss).toMatch(/@media \(max-width: 1320px\) \{\s*\.tb:has\(\.tb-running\):has\(\.tb-update\) :is\(\.tb-seg-label, \.tb-film-label\) \{\s*display: none;/)
+    expect(topbarCss).toMatch(/@media \(max-width: 1120px\) \{\s*\.tb-hide-sm,\s*\.tb-brand-text,\s*\.tb-seg-label,\s*\.tb-film-label \{\s*display: none;/)
+    // Never on the generic 1360px rule (that one is for the right cluster's labels).
+    expect(topbarTsx).not.toMatch(/tb-film[^"]*tb-hide-md|tb-hide-md[^"]*Phát liền/)
   })
 })
 

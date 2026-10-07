@@ -1,5 +1,6 @@
 // Pure shortcut engine, based on the Wave C prototype. Ctrl is the portable Mod token (Command on Mac).
 export type DialogKind = string
+/** ui.view. Only 'canvas' is ever shown (core/shownViews); the others remain for old stored prefs. */
 export type View = 'canvas' | 'table' | 'storyboard'
 
 export interface KeyEventLike {
@@ -18,7 +19,6 @@ export interface KeyEventLike {
 
 export type ActionId =
   | 'project.save' | 'scene.run' | 'history.undo' | 'history.redo' | 'library.search' | 'help.shortcuts'
-  | 'view.canvas' | 'view.table' | 'view.storyboard'
   | 'scene.next' | 'selection.duplicate' | 'selection.delete' | 'selection.selectAll' | 'selection.connect'
   | 'canvas.fit' | 'canvas.cycleEdges' | 'canvas.hand' | 'canvas.select' | 'canvas.minimap'
   | 'settings.search'
@@ -40,6 +40,8 @@ export interface KeyAction {
 }
 
 // The only default-chord table. A later preset change belongs here, not in dispatchers or components.
+// No view.* commands (1 / 2 / 3): Bảng cảnh and Storyboard are hidden since 0.6.0; stored bindings of them are kept as
+// foreign values (validateBindings) and do nothing. Scene order keys (Alt + ↑ / ↓) are FIXED_KEYS, not commands.
 const ACTION_DEFAULTS: Omit<KeyAction, 'label' | 'help' | 'group' | 'hint' | 'keywords'>[] = [
   { id: 'project.save', defaults: ['Ctrl+KeyS'], whileTyping: true, alsoInDialogs: 'all' },
   { id: 'scene.run', defaults: ['Ctrl+Enter'], whileTyping: true },
@@ -47,9 +49,6 @@ const ACTION_DEFAULTS: Omit<KeyAction, 'label' | 'help' | 'group' | 'hint' | 'ke
   { id: 'history.redo', defaults: ['Ctrl+Shift+KeyZ', 'Ctrl+KeyY'], repeat: true, alsoInDialogs: ['asset'] },
   { id: 'library.search', defaults: ['Ctrl+KeyK'] },
   { id: 'help.shortcuts', defaults: ['Shift+Slash'], repeat: true },
-  { id: 'view.canvas', defaults: ['Digit1'] },
-  { id: 'view.table', defaults: ['Digit2'] },
-  { id: 'view.storyboard', defaults: ['Digit3'] },
   { id: 'scene.next', defaults: ['KeyN'] },
   { id: 'selection.duplicate', defaults: ['Ctrl+KeyD'] },
   { id: 'selection.delete', defaults: ['Delete'] },
@@ -70,13 +69,10 @@ const ACTION_TEXT: Record<ActionId, [label: string, help: string]> = {
   'history.redo': ['Làm lại', 'Làm lại thay đổi vừa hoàn tác.'],
   'library.search': ['Tìm trong thư viện', 'Mở thư viện và đưa con trỏ vào ô tìm kiếm.'],
   'help.shortcuts': ['Bảng phím tắt', 'Xem phím tắt và thao tác.'],
-  'view.canvas': ['Mở Canvas', 'Chuyển sang Canvas.'],
-  'view.table': ['Mở Bảng cảnh', 'Chuyển sang Bảng cảnh.'],
-  'view.storyboard': ['Mở Storyboard', 'Chuyển sang Storyboard.'],
   'scene.next': ['Cảnh tiếp theo', 'Tạo cảnh bên dưới, giữ tham chiếu và cấu hình; tạo cảnh mới khi chưa chọn gì.'],
   'selection.duplicate': ['Nhân bản cảnh', 'Nhân bản các cảnh đang chọn.'],
   'selection.delete': ['Xoá lựa chọn', 'Xoá cảnh và video, ẩn thẻ hoặc cắt dây đang chọn.'],
-  'selection.selectAll': ['Chọn tất cả cảnh', 'Chọn mọi cảnh trong màn hình hiện tại.'],
+  'selection.selectAll': ['Chọn tất cả cảnh', 'Chọn mọi cảnh trên canvas.'],
   'selection.connect': ['Nối lựa chọn', 'Nối nhân vật và video đang chọn vào các cảnh đang chọn.'],
   'canvas.fit': ['Vừa màn hình', 'Hiện vừa vùng chọn hoặc toàn bộ canvas.'],
   'canvas.cycleEdges': ['Đổi cách hiện dây', 'Ẩn → Đang chọn → Tất cả.'],
@@ -100,8 +96,9 @@ export const FIXED_KEYS: FixedKey[] = [
   { keys: ['Tab', 'Shift+Tab'], label: 'Chuyển tới điều khiển tiếp theo / trước' },
   { keys: ['Enter', 'Space'], label: 'Kích hoạt nút; Enter mở khung sửa cảnh hoặc xem take' },
   { keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'], label: 'Di chuyển giữa các thẻ' },
-  { keys: ['Alt+ArrowLeft', 'Alt+ArrowRight', 'Alt+ArrowUp', 'Alt+ArrowDown'], label: 'Dời cảnh trong Storyboard' },
-  { keys: ['Space', 'ArrowLeft', 'ArrowRight'], label: 'Trình phát: phát / tạm dừng · cảnh trước / sau' },
+  // Scene order (sceneOrderActions): fixed, because refusalFor keeps Alt + arrows away from every command.
+  { keys: ['Alt+ArrowUp', 'Alt+ArrowDown'], label: 'Thứ tự cảnh: dời cảnh đang chọn lên trước / ra sau một chỗ' },
+  { keys: ['Space', 'ArrowLeft', 'ArrowRight', 'Escape'], label: 'Phát liền: phát / tạm dừng · cảnh trước / sau · đóng' },
   { keys: ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'], label: 'Popup @: chọn · chèn · đóng' },
   { keys: ['Space'], label: 'Giữ và kéo để di chuyển canvas' },
   { keys: ['Shift'], label: 'Giữ và kéo để chọn vùng' },
@@ -375,7 +372,7 @@ export function decideShortcut(e: KeyEventLike, ctx: Ctx, mac: boolean, resolved
   for (const a of KEY_ACTIONS) {
     if (a.onlyInDialog || !activeIn(a, ctx)) continue
     if (!b[a.id].includes(chord)) continue
-    // selectAll: the global handler acts on Canvas only (Bảng cảnh / Storyboard have their own handlers)
+    // selectAll: the global handler acts on the canvas only (the hidden views had their own handlers)
     if (a.id === 'selection.selectAll' && ctx.view !== 'canvas') return { action: null, handled: false }
     // Key repeat: like today, chords with Ctrl / Alt repeat (undo held = many steps), single keys do not;
     // the delete command never repeats.
