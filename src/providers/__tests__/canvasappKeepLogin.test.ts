@@ -73,6 +73,9 @@ interface Rules {
   restoreCookieDetails(e: Entry, origin: string, host: string): Record<string, unknown>
   statusVerdict(pathname: string, status: number, json: unknown): 'accepted' | 'denied' | null
   cookieShapeLine(c: unknown, now: number): string
+  isGoogleAccountCookie(c: unknown): boolean
+  cookieRemovalUrl(c: Ck): string
+  removeGoogleAccountCookies(cookies: unknown): Promise<number>
   parseKeepLoginPrefs(text: unknown): { keepLogin: boolean } | null
   keepLoginPrefsText(keepLogin: boolean): string
   resolveKeepLogin(prefs: { keepLogin: boolean } | null, kind: unknown): boolean
@@ -288,6 +291,65 @@ describe('keep-login rules: which cookies are kept', () => {
     // a restored cookie never gets an expiry (never written to the cookie file): only `expirationDate: undefined` (a forged one dropped)
     expect(code).not.toMatch(/expirationDate\s*:(?!\s*undefined\b)/)
     expect(code).toContain('expirationDate: undefined')
+  })
+})
+
+describe('Google account cookies (separate cleanup after a confirmed canvasapp login)', () => {
+  const g = (domain: string, over: Partial<Ck> = {}) => ck({ name: 'SID', value: 'GOOGLE-SECRET', domain, hostOnly: !domain.startsWith('.'), session: false, expirationDate: 9e9, ...over })
+
+  it('scope: Google’s and YouTube’s own domains only — never canvasapp, SePay or look-alikes', () => {
+    for (const d of ['google.com', '.google.com', 'accounts.google.com', '.accounts.google.com', 'www.google.com.vn', '.google.com.vn', 'google.vn', '.google.co.uk', 'myaccount.google.com', '.youtube.com', 'accounts.youtube.com', 'ACCOUNTS.GOOGLE.COM']) {
+      expect(R.isGoogleAccountCookie(g(d)), d).toBe(true)
+    }
+    for (const d of [
+      'canvasapp.io.vn',
+      '.canvasapp.io.vn',
+      'sepay.vn',
+      'pay.sepay.vn',
+      '.sepay.vn',
+      'notgoogle.com',
+      'evilgoogle.com',
+      'google.com.evil.com',
+      'google.evil.com',
+      'accounts.google.com.attacker.vn',
+      'my-youtube.com',
+      'youtube.com.evil.com',
+      'googleusercontent.com',
+      'google',
+      '',
+      'google.com/',
+      'google..com',
+    ]) {
+      expect(R.isGoogleAccountCookie(g(d)), d).toBe(false)
+    }
+    expect(R.isGoogleAccountCookie(null)).toBe(false)
+    expect(R.isGoogleAccountCookie({ name: 'x' })).toBe(false)
+    expect(R.cookieRemovalUrl(g('.google.com'))).toBe('https://google.com/')
+    expect(R.cookieRemovalUrl(g('accounts.google.com', { path: '/signin' }))).toBe('https://accounts.google.com/signin')
+    expect(R.cookieRemovalUrl(g('accounts.google.com', { path: 'odd' }))).toBe('https://accounts.google.com/')
+  })
+
+  it('removes exactly the Google ones (canvasapp’s login and SePay stay), flushes, and one failure never stops the rest', async () => {
+    const list: Ck[] = [ck(), csrf(), ck({ name: 'cf_clearance', session: false, expirationDate: 9e9 }), g('.google.com'), g('accounts.google.com', { name: '__Host-GAPS' }), g('.youtube.com', { name: 'LOGIN_INFO' }), g('pay.sepay.vn', { name: 'sepay' })]
+    const removed: string[] = []
+    let flushes = 0
+    const fake = {
+      get: async () => list.map((c) => ({ ...c })),
+      remove: async (url: string, name: string) => {
+        if (name === '__Host-GAPS') throw new Error('locked')
+        removed.push(`${url} ${name}`)
+      },
+      flushStore: async () => void flushes++,
+    }
+    expect(await R.removeGoogleAccountCookies(fake)).toBe(2)
+    expect(removed).toEqual(['https://google.com/ SID', 'https://youtube.com/ LOGIN_INFO'])
+    expect(flushes).toBe(1)
+    // nothing to remove → no flush; a store that cannot be read → 0, never throws
+    const rm = R.removeGoogleAccountCookies
+    let noFlush = 0
+    expect(await rm({ get: async () => [ck()], remove: async () => undefined, flushStore: async () => void noFlush++ })).toBe(0)
+    expect(noFlush).toBe(0)
+    expect(await rm({ get: async () => Promise.reject(new Error('gone')), remove: async () => undefined, flushStore: async () => undefined })).toBe(0)
   })
 })
 
@@ -1001,8 +1063,9 @@ describe('keep-login wiring (electron/main.cjs)', () => {
       'const mark = statusReq && canvasappKeep ? canvasappKeep.mark() : null',
       'canvasappSession().fetch(',
       'keepLoginRules.statusVerdict(url.pathname, res.status, out.json)',
-      "if (verdict === 'denied') void canvasappKeep.rejected(mark)",
-      "else if (verdict === 'accepted') void canvasappKeep.confirmed(mark)",
+      "if (mark && verdict === 'denied') void canvasappKeep.rejected(mark)",
+      "else if (mark && verdict === 'accepted') void canvasappKeep.confirmed(mark)",
+      "if (verdict === 'accepted') canvasappLoginConfirmed()",
       'canvasappInFlight.delete(inFlight)',
       'settle()',
     ])
@@ -1109,6 +1172,19 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(shape).not.toMatch(/\.value/)
     // the only DEVTOOLS shortcut block stays the first `if (DEVTOOLS) {` (hardeningRules.test.ts relies on it)
     expect(mainCode.indexOf('if (DEVTOOLS) {')).toBeLessThan(mainCode.indexOf('if (DEVTOOLS) void logCanvasappCookieShape()'))
+  })
+
+  it('Google account cookies: removed after a confirmed login (finish), and once per run after a confirmed session — never while the login window is open', () => {
+    const login = fnBody('canvasappLogin')
+    order(login, ['(await canvasappKeep.loggedIn()).kept', 'if (st.ok && st.authenticated) await keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)', 'resolve('])
+    const confirmed = fnBody('canvasappLoginConfirmed')
+    order(confirmed, [
+      'if (canvasappGoogleCleaned || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return',
+      'canvasappGoogleCleaned = true',
+      'void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)',
+    ])
+    expect(count(mainCode, 'removeGoogleAccountCookies(')).toBe(2)
+    expect(mainCode).not.toMatch(/cookies\.remove\(/) // only through the rules (Google cookies only)
   })
 
   it('the user texts never claim canvasapp revoked the session', () => {

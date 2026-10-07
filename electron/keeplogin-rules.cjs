@@ -11,6 +11,8 @@
 //
 // Never: Cloudflare's cookies, another host's (Google, SePay…), plaintext, a cookie value in a log / IPC payload / error,
 // a cookie turned persistent, a quit hook.
+// Separately: once canvasapp has confirmed a login, the Google account cookies "Đăng nhập bằng Google" left in the
+// canvasapp partition (plaintext, ~2 years) are removed (removeGoogleAccountCookies).
 //
 // No require (main.cjs and the tests share it; app.asar cannot resolve npm helpers from electron/), no electron, no fs:
 // every dependency of createCanvasappKeepLogin is injected, so src/providers/__tests__/canvasappKeepLogin.test.ts runs it
@@ -172,6 +174,63 @@ function cookieShapeLine(c, now) {
   const exp = c && Number.isFinite(c.expirationDate) ? `${Math.round(((c.expirationDate * 1000 - now) / 3_600_000) * 10) / 10} h` : 'session'
   const flag = (k) => (c && c[k] === true ? 'y' : 'n')
   return `${String(c && c.name).slice(0, 80)} domain=${String(c && c.domain).slice(0, 80)} session=${flag('session')} httpOnly=${flag('httpOnly')} secure=${flag('secure')} hostOnly=${flag('hostOnly')} sameSite=${String(c && c.sameSite).slice(0, 20)} expires=${exp}`
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Google account cookies (a separate cleanup, once canvasapp has confirmed the login)
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * A Google account cookie. "Đăng nhập bằng Google" runs in the canvasapp partition, so Google's long-lived account
+ * cookies (~2 years) would sit there in plaintext (CookieEncryption is off) until Đăng xuất. Google's own domains
+ * (google.com and its subdomains, country domains like google.com.vn / google.vn / google.co.uk) and YouTube's (Google's
+ * sign-in sets them too). Never canvasapp.io.vn, SePay or anything else: `evilgoogle.com`, `google.com.evil.com`,
+ * `my-youtube.com` are not Google.
+ */
+function isGoogleAccountCookie(c) {
+  if (!c || typeof c.domain !== 'string') return false
+  const d = c.domain.toLowerCase().replace(/^\./, '')
+  if (!/^[a-z0-9.-]{1,253}$/.test(d)) return false
+  return /^(?:[a-z0-9-]+\.)*(?:google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})|youtube\.com)$/.test(d)
+}
+
+/** The URL cookies.remove needs for this cookie: https, its domain without the dot, its path. */
+function cookieRemovalUrl(c) {
+  const d = String(c.domain).toLowerCase().replace(/^\./, '')
+  const path = typeof c.path === 'string' && c.path.startsWith('/') ? c.path : '/'
+  return `https://${d}${path}`
+}
+
+/**
+ * Removes the Google account cookies of a partition (`cookies` = Session.cookies: get, remove, flushStore) and flushes.
+ * The next Google sign-in in SanoVids asks for the Google password again. Never throws; one failure never stops the
+ * others. → how many were removed.
+ */
+async function removeGoogleAccountCookies(cookies) {
+  let list
+  try {
+    list = await cookies.get({})
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const c of Array.isArray(list) ? list : []) {
+    if (!isGoogleAccountCookie(c) || typeof c.name !== 'string') continue
+    try {
+      await cookies.remove(cookieRemovalUrl(c), c.name)
+      removed++
+    } catch {
+      /* the others still go */
+    }
+  }
+  if (removed) {
+    try {
+      await cookies.flushStore()
+    } catch {
+      /* shutting down */
+    }
+  }
+  return removed
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -477,6 +536,9 @@ module.exports = {
   restoreCookieDetails,
   statusVerdict,
   cookieShapeLine,
+  isGoogleAccountCookie,
+  cookieRemovalUrl,
+  removeGoogleAccountCookies,
   parseKeepLoginPrefs,
   keepLoginPrefsText,
   resolveKeepLogin,

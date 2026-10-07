@@ -446,7 +446,8 @@ function registerAppBridge() {
 // only while "Giữ đăng nhập canvasapp trên máy này" is on (userData/canvasapp-prefs.json; default: installer / source
 // on, Portable / temp copy off). Đăng xuất refuses new requests, aborts and awaits the ones in flight, deletes the copy
 // (and says so when it cannot), asks canvasapp to end the session (POST /api/auth/logout, like its own button) and
-// clears the partition. No quit hook: saving happens when the cookies change.
+// clears the partition. No quit hook: saving happens when the cookies change. Separately, once canvasapp confirms a
+// login, the Google account cookies "Đăng nhập bằng Google" leaves in this partition (plaintext, ~2 years) are removed.
 // ---------------------------------------------------------------------------------------------------------------
 
 const keepLoginRules = require('./keeplogin-rules.cjs')
@@ -532,6 +533,8 @@ let canvasappLogoutPromise = null
 let canvasappLogoutEpoch = 0
 /** Every canvasapp request from its start (lane wait included) to its end: Đăng xuất aborts and awaits them. */
 const canvasappInFlight = new Set()
+/** Google account cookies left from an earlier run were removed after the first confirmed session (canvasappLoginConfirmed). */
+let canvasappGoogleCleaned = false
 
 function canvasappSession() {
   return session.fromPartition(CANVASAPP_PARTITION)
@@ -682,12 +685,13 @@ async function canvasappRequest(req) {
           out.text = text.slice(0, 2000)
         }
       }
-      if (mark) {
+      if (statusReq) {
         // canvasapp decides: a refusal drops the kept copy (unless the kept cookies changed since `mark`), a
         // confirmation arms it (only a login canvasapp accepted is ever written).
         const verdict = keepLoginRules.statusVerdict(url.pathname, res.status, out.json)
-        if (verdict === 'denied') void canvasappKeep.rejected(mark)
-        else if (verdict === 'accepted') void canvasappKeep.confirmed(mark)
+        if (mark && verdict === 'denied') void canvasappKeep.rejected(mark)
+        else if (mark && verdict === 'accepted') void canvasappKeep.confirmed(mark)
+        if (verdict === 'accepted') canvasappLoginConfirmed()
       }
       return out
     })
@@ -762,6 +766,8 @@ function canvasappLogin(parent) {
         // A confirmed login: keep it now (encrypted, flushed — an app killed right after login stays logged in).
         const kept = st.ok && st.authenticated && canvasappKeep ? (await canvasappKeep.loggedIn()).kept : false
         if (DEVTOOLS) void logCanvasappCookieShape()
+        // "Đăng nhập bằng Google" is over: Google's account cookies are not needed in this partition any more.
+        if (st.ok && st.authenticated) await keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
         if (closeWindow && !win.isDestroyed()) win.close()
         resolve(st.ok && st.authenticated ? { ...st, keepLogin: kept } : st)
       }
@@ -858,6 +864,17 @@ async function canvasappServerLogout() {
   } catch {
     /* offline / refused: the local copy and the partition are cleared anyway */
   }
+}
+
+/**
+ * canvasapp confirmed the session (200 /api/me, /api/auth/state authenticated): once per run, Google account cookies a
+ * past "Đăng nhập bằng Google" left in the partition are removed (plaintext, ~2 years; logins that end in the login
+ * window remove them in `finish`). Never while the login window is open: a Google sign-in may be under way there.
+ */
+function canvasappLoginConfirmed() {
+  if (canvasappGoogleCleaned || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return
+  canvasappGoogleCleaned = true
+  void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
 }
 
 /** The kept login is put back once, before the first canvasapp use of the run (at most 3 s), then changes are watched. */
