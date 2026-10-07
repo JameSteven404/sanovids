@@ -4,7 +4,7 @@
 // (never "Bản mới"), without its notes, with how to check an installer's certificate before installing one by hand.
 // Every text / button decision is in lib/updateModel dialogView (pure,
 // tested); the commands are in updateActions. Lazy chunk (App.tsx 'updateDialog'). Styles: dialogs.css (dg-upd-).
-import { CircleArrowUp, CircleCheck, CloudDownload, ExternalLink, LoaderCircle, ShieldAlert, TriangleAlert } from 'lucide-react'
+import { CircleArrowUp, CircleCheck, CloudDownload, ExternalLink, Info, LoaderCircle, ShieldAlert, TriangleAlert } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useStore } from 'zustand'
 import { pendingDownloadCount } from '../../lib/downloads'
@@ -15,6 +15,7 @@ import {
   formatReleaseDate,
   installBlockers,
   isSignatureError,
+  isUpToDate,
   KIND_LABEL,
   noteBlocks,
   type NoteBlock,
@@ -175,12 +176,15 @@ export function UpdateDialog() {
       dialog.querySelector<HTMLElement>('.modal-foot .btn-primary:not(:disabled)') ?? dialog.querySelector<HTMLElement>('.modal-foot button:not(:disabled)') ?? dialog
     target.focus({ preventScroll: true })
   }, [actionKey, disabled])
-  const good = state.status === 'ready' || state.status === 'none'
+  // A Mac build whose newest release has no Mac build is not "up to date": neutral icon, never the green check.
+  const good = state.status === 'ready' || isUpToDate(state)
   const icon =
     state.status === 'downloading' ? (
       <CloudDownload size={18} />
     ) : good ? (
       <CircleCheck size={18} />
+    ) : state.status === 'none' ? (
+      <Info size={18} />
     ) : state.status === 'error' && isSignatureError(state.error) ? (
       <ShieldAlert size={18} />
     ) : state.status === 'error' ? (
