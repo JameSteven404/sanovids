@@ -4,6 +4,7 @@
 // Problems of the APP found here are reported as findings (see _antigravity/KET-QUA-1.md), not hidden: a scenario
 // whose known finding is listed in KNOWN is expected to report exactly that invariant.
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('idb-keyval', () => import('./memoryDb'))
 
 const media = vi.hoisted(() => new Map<string, Blob>())
 vi.mock('../../../lib/imageStore', () => {
@@ -25,6 +26,8 @@ vi.mock('../../../lib/imageStore', () => {
 
 import { clearDevLog, pushDevLog, useDevLog } from '../../../providers/dev'
 import { getProvider, useProviderPrefs } from '../../../providers'
+import { applyDevAccessState, bareState, useDevAccess } from '../../../providers/devAccess'
+import { getBlob } from '../../../lib/imageStore'
 import { runStress, shrinkFailure } from '../runner'
 import { SCENARIOS } from '../scenarios'
 import { summaryText, toMarkdown } from '../report'
@@ -49,6 +52,7 @@ describe('stress tester: every headless scenario runs', () => {
       const r = await run(s.id, 'c0ffee01')
       if (r.result !== 'pass') console.log(s.id, summaryText(r), JSON.stringify(r.failure?.detail ?? null).slice(0, 800))
       expect(r.result).not.toBe('harness-error')
+      expect(r.result, summaryText(r)).toBe('pass')
       expect(r.steps).toBeGreaterThan(0)
       expect(r.log.length).toBeGreaterThan(0)
       expect(sessionActive()).toBe(false)
@@ -56,6 +60,15 @@ describe('stress tester: every headless scenario runs', () => {
       expect(getProvider('dev').label).not.toContain('thử nghiệm')
       expect(useDevLog.getState().entries.filter((e) => e.fault === 'not-allowed')).toEqual([])
       expect(toMarkdown(r)).toContain(r.seed)
+      const coverage: Record<string, string[]> = {
+        'placeholder-churn': ['placeholder.filled', 'placeholder.replaced'],
+        'editor-drafts': ['editor.persistPending', 'editor.persistSwitch', 'editor.operation.0', 'editor.operation.1', 'editor.operation.2', 'editor.operation.3'],
+        'library-bulk': ['library.deleteUndo.1', 'library.deleteUndo.200'],
+        'download-chaos': ['download.cut', 'download.stall', 'download.oversize', 'download.resumed', 'download.savedVerified'],
+        'import-jobs': ['import.adopted', 'import.staleScanRetried'],
+        relogin: ['login.kept', 'login.notKept'],
+      }
+      for (const key of coverage[s.id] ?? []) expect(r.coverage?.[key] ?? 0, key).toBeGreaterThan(0)
     }, 120_000)
   }
 })
@@ -76,6 +89,27 @@ describe('stress tester: action timings', () => {
 })
 
 describe('stress tester: reproducible and safe', () => {
+  it('refuses a locked development mode without opening a session', async () => {
+    h = createHeadless('deadbeef')
+    const before = useDevAccess.getState().state
+    try {
+      applyDevAccessState(bareState('locked'))
+      const r = await runStress({ scenarios: ['editor-drafts'], seed: 'deadbeef', steps: 10, maxMs: 0, checkEvery: 1, stopOnFirst: true }, h.env)
+      expect(r.result).toBe('harness-error')
+      expect(r.failure?.message).toContain('khoá')
+      expect(r.steps).toBe(0)
+      expect(sessionActive()).toBe(false)
+    } finally { applyDevAccessState(before) }
+  })
+
+  it('detects corrupted persisted video bytes (DL1), not just a completed status', async () => {
+    vi.mocked(getBlob).mockImplementation(async (id) => id.startsWith('video_') ? new Blob(['truncated']) : media.get(id) ?? null)
+    try {
+      const r = await run('download-chaos', '5a17c0de', 30)
+      expect(r.result).toBe('fail')
+      expect(r.failure?.invariant).toBe('DL1')
+    } finally { vi.mocked(getBlob).mockImplementation(async (id) => media.get(id) ?? null) }
+  }, 120_000)
   it('same seed → same steps; replay reproduces the run', async () => {
     const a = await run('monkey', 'abad1dea', 200)
     h?.dispose()

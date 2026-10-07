@@ -223,10 +223,9 @@ export class JobAudit {
       const count = (this.perKey.get(job.client_request_id) ?? 0) + 1
       this.perKey.set(job.client_request_id, count)
       const take = byKey.get(job.client_request_id)
-      if (count > 1) {
-        out.push((dedupe ? warn : err)('$1', `Một take bị tạo ${count} job (trả tiền ${count} lần)${take ? ` — take ${take.id}` : ''}.`, { key: job.client_request_id }))
-      }
+      if (count > 1) out.push(err('$1', `Một take bị tạo ${count} job (trả tiền ${count} lần)${take ? ` — take ${take.id}` : ''}.`, { key: job.client_request_id, dedupe }))
       if (!take) continue // deleted since: nothing to compare with
+      if (take.imported) out.push(err('IJ2', 'Take nhập từ trang bị POST tạo job mới.', { takeId: take.id, jobId: job.job_id }))
       if (take.provider === 'canvasapp') out.push(err('T3', 'Một take chạy trên canvasapp thật trong lúc thử nghiệm.', { takeId: take.id }))
       // C2: every @image_N of the prompt sent has a picture in the request.
       const sent = job.upload_ids.length
@@ -252,10 +251,18 @@ export class JobAudit {
 }
 
 export function checkEngine(takes: readonly Take[]): Violation[] {
-  const running = takes.filter((t) => t.status === 'processing' && (t.provider === 'dev' || t.provider === 'canvasapp')).length
+  // Site jobs only poll and deliberately do not occupy an app submit slot (store/runs.tick).
+  const running = takes.filter((t) => !t.imported && t.status === 'processing' && (t.provider === 'dev' || t.provider === 'canvasapp')).length
   const out: Violation[] = []
   if (running > MAX_REMOTE_CONCURRENCY) out.push(err('E1', `${running} take chạy cùng lúc (giới hạn ${MAX_REMOTE_CONCURRENCY}).`))
   if (takes.some((t) => t.provider === 'canvasapp' && (t.status === 'queued' || t.status === 'processing'))) out.push(err('T3', 'Có take xếp hàng trên canvasapp thật.'))
+  const owners = new Set<string>()
+  for (const t of takes) {
+    if (!t.remoteId) continue
+    const key = `${t.provider}:${t.remoteId}`
+    if (owners.has(key)) out.push(err('IJ1', 'Một job có nhiều take nhận sở hữu.', { remoteId: t.remoteId }))
+    owners.add(key)
+  }
   return out
 }
 

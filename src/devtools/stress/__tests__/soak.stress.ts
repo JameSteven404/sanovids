@@ -13,6 +13,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+vi.mock('idb-keyval', () => import('./memoryDb'))
 
 const media = vi.hoisted(() => new Map<string, Blob>())
 vi.mock('../../../lib/imageStore', () => {

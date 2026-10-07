@@ -3,7 +3,7 @@
 // Runs headless (vitest, fake timers) and in the app (real time) — the environment is given by the caller (StressEnv).
 // Restoring the user's project in the app is the sandbox's job (sandbox.ts); the runner only owns its session.
 import { version as APP_VERSION } from '../../../package.json'
-import { activeProviderId } from '../../providers'
+import { activeProviderId, devAllowed } from '../../providers'
 import { useDevLog } from '../../providers/dev'
 import { clearHistory, useProject } from '../../store/project'
 import { currentRestartWork, useRuns } from '../../store/runs'
@@ -122,6 +122,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   }
   report.spec.tier = plan.tier
   report.spec.faults = plan.faults
+  if (!devAllowed()) return harness('Chế độ Phát triển đang khoá.')
   if (activeProviderId() !== 'dev') return harness('Chỉ chạy được ở chế độ Phát triển (giả lập): đang chọn canvasapp.io.vn thật.')
   if (!plan.actions.length) return harness('Kịch bản không có thao tác nào chạy được ở đây.')
 
@@ -134,6 +135,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   // Request-log lines from before this run (another run's, the user's) are not this run's: never judged by S2.
   const seenLog = new Set<number>(useDevLog.getState().entries.map((e) => e.id))
   let offLog: () => void = () => undefined
+  let offJobs: () => void = () => undefined
   let stopping = false
   // The project this run loaded (the app: the sandbox's temporary project) — once the load is done, or the first project
   // opened while it loads (a load that opened it and then failed: its takes are still stopped). Nothing is done to any
@@ -148,8 +150,11 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   }
 
   try {
-    session = startSession({ rng, kind: env.kind })
+    session = startSession({ rng, kind: env.kind, checkResume: plan.defs.some((d) => d.id === 'download-chaos') })
     const s = session
+    report.coverage = s.coverage
+    // Observe before the simulated site's bounded job list evicts older charges.
+    offJobs = s.server.subscribe(() => pending.push(...audit.audit(s.server.snapshot(), useRuns.getState().takes, useProject.getState().project.assets, s.server.config().dedupe)))
     if (plan.server.dedupe !== undefined) s.server.setConfig({ dedupe: plan.server.dedupe })
     if (plan.server.failRate !== undefined) s.server.setConfig({ failRate: plan.server.failRate })
     if (plan.server.latencyMs !== undefined) s.server.setConfig({ latencyMs: plan.server.latencyMs })
@@ -209,6 +214,8 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
       tier: plan.tier,
       step: 0,
       server: s.server,
+      bridge: s.bridge,
+      hit: (event) => { s.coverage[event] = (s.coverage[event] ?? 0) + 1 },
       report: (v) => pending.push(v),
       note,
       newImage: (kind = 'good') => {
@@ -342,6 +349,12 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         stopping = true
         break
       }
+      if (!devAllowed() || activeProviderId() !== 'dev') {
+        report.result = 'stopped'
+        note('Đã dừng: chế độ Phát triển bị khoá hoặc provider đã đổi.')
+        stopping = true
+        break
+      }
       if (!ownProjectOpen()) {
         note(`Dự án thử nghiệm không còn mở (đã mở dự án khác) sau ${n - 1} bước — dừng, dự án kia không bị đụng tới.`)
         report.result = report.result === 'fail' ? 'fail' : 'stopped'
@@ -427,6 +440,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     if (!stopping && ownProjectOpen() && (report.result === 'pass' || !opts.stopOnFirst)) {
       await quiesce()
       fullChecks()
+      pending.push(...await s.checkCompleted(useRuns.getState().takes))
       settle(report.steps + 1, 'end', {})
     }
     const snap = s.server.snapshot()
@@ -435,6 +449,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     harness(`Lỗi của bộ thử nghiệm: ${(e as Error)?.message ?? String(e)}`, (e as Error)?.stack)
   } finally {
     offLog()
+    offJobs()
     // Stop the engine before the session's provider goes away (in-flight work of this generation is then ignored) —
     // only while the project this run loaded is the open one: emptying the takes of any other project (the user's,
     // when loading failed or another project was opened meanwhile) would be saved and lose its videos.

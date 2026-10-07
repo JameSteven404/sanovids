@@ -4,18 +4,25 @@
 //
 // No network is possible here: the dev provider talks to the simulated server through the in-app dev bridge.
 import { getBlob as mediaGetBlob } from '../../lib/imageStore'
-import { canvasappProvider, devApi, devProvider, DEV_PROVIDER_LABEL, registerProvider } from '../../providers'
+import { canvasappProvider, devProvider, DEV_PROVIDER_LABEL, registerProvider } from '../../providers'
 import { createCanvasappProvider, memoryStorage } from '../../providers/canvasapp/adapter'
-import { createDevCanvasapp, devResult, devServer, memoryBlobStore, setDevServer, withDevWording, type DevCanvasapp } from '../../providers/dev'
+import { createCanvasappApi } from '../../providers/canvasapp/api'
+import { decodeRemoteId } from '../../providers/canvasapp/mapping'
+import { createDesktopTransport } from '../../providers/canvasapp/transport'
+import { createDevBridge, createDevCanvasapp, devResult, devServer, memoryBlobStore, setDevServer, withDevWording, type DevCanvasapp, type DevBridge } from '../../providers/dev'
 import { ProviderError, type VideoProvider } from '../../providers/types'
 import type { Rng } from './rng'
 import type { Violation } from './types'
+import type { Take } from '../../core/types'
 
 /** The session's simulated canvasapp: the dev server API + how many requests reached it. */
 export type SessionServer = DevCanvasapp & { requestCount(): number }
 
 export interface Session {
   server: SessionServer
+  bridge: DevBridge
+  coverage: Record<string, number>
+  checkCompleted(takes: readonly Take[]): Promise<Violation[]>
   /** Pictures the session provider can upload (image id → blob). */
   media: Map<string, Blob>
   /** Fatal trips (the real provider was called). Drained by the runner. */
@@ -37,6 +44,16 @@ const PNG_1PX = Uint8Array.from(
 )
 export const goodImage = () => new Blob([PNG_1PX], { type: 'image/png' })
 
+/** At least three gateway chunks, with a job-specific pattern: truncation / duplication / wrong-job bytes are detectable. */
+export const stressVideo = (jobNumber: number) => new Blob([`WEBM:stress#${jobNumber}|`.repeat(16_384)], { type: 'video/webm' })
+
+async function matchesVideo(blob: Blob | null, n: number): Promise<boolean> {
+  if (!blob) return false
+  const expected = new Uint8Array(await stressVideo(n).arrayBuffer())
+  const actual = new Uint8Array(await blob.arrayBuffer())
+  return actual.length === expected.length && actual.every((byte, i) => byte === expected[i])
+}
+
 let active: Session | null = null
 
 /** Whether a stress session currently replaces the app's dev server / providers. */
@@ -52,13 +69,17 @@ export interface SessionOptions {
   rng: Rng
   /** 'app': the app's own dev server exists and must come back; 'headless': none (tests). */
   kind: 'app' | 'headless'
+  checkResume?: boolean
 }
 
-export function startSession({ rng, kind }: SessionOptions): Session {
+export function startSession({ rng, kind, checkResume = false }: SessionOptions): Session {
   if (active) throw new Error('Đang có một phiên thử nghiệm khác.')
   const serverRng = rng.fork('server')
   const media = new Map<string, Blob>()
   const trips: Violation[] = []
+  const coverage: Record<string, number> = {}
+  const hit = (key: string) => { coverage[key] = (coverage[key] ?? 0) + 1 }
+  const numbers = new Map<string, number>()
   // The app's own dev server (created if needed — it only reads its saved account) comes back on stop.
   const originalServer = kind === 'app' ? devServer() : null
 
@@ -67,13 +88,20 @@ export function startSession({ rng, kind }: SessionOptions): Session {
     blobs: memoryBlobStore(),
     random: () => serverRng.next(),
     // Cheap "video": nothing is drawn (no canvas / MediaRecorder work during a stress run).
-    render: async (input) => new Blob([`WEBM:stress#${input.jobNumber}`], { type: 'video/webm' }),
+    render: async (input) => stressVideo(input.jobNumber),
   })
   let requests = 0
   const origRequest = base.request.bind(base)
   const server = base as SessionServer
   server.request = (req) => {
     requests++
+    if (req.method === 'POST' && req.path === '/api/video-jobs') {
+      hit('jobs.post')
+      if (!server.isAuthenticated()) {
+        hit('jobs.postLoggedOut')
+        trips.push({ invariant: 'RL3', severity: 'error', kind: 'app', message: 'POST tạo job vẫn được gửi sau khi đăng xuất.' })
+      }
+    }
     return origRequest(req)
   }
   server.requestCount = () => requests
@@ -81,17 +109,51 @@ export function startSession({ rng, kind }: SessionOptions): Session {
   server.login()
   server.setBalance(SESSION_BALANCE)
   setDevServer(server)
+  const offNumbers = server.subscribe(() => {
+    for (const j of server.snapshot().jobs) numbers.set(j.job_id, j.number)
+  })
+  const openStream = server.openStream.bind(server)
+  const needsResume = new Set<string>()
+  server.openStream = async (req) => {
+    requests++
+    hit('download.open')
+    if (checkResume && needsResume.delete(req.path) && !(req.range && req.range.from > 0)) {
+      trips.push({ invariant: 'DL2', severity: 'error', kind: 'app', message: 'Máy chủ cho tải tiếp nhưng lượt sau tải lại từ đầu.', detail: { path: req.path } })
+    }
+    const fault = server.faults().find((r) => r.endpoint === 'job-stream' && !['slow', 'trickle'].includes(r.fault.kind))?.fault
+    const res = await openStream(req)
+    if (res.ok && (res.status === 200 || res.status === 206)) {
+      if (req.range?.from && res.status === 206) hit('download.resumed')
+      if (fault) hit(`download.${fault.kind}`)
+      if (server.config().rangeSupport && (fault?.kind === 'cut' || fault?.kind === 'stall')) needsResume.add(req.path)
+    }
+    return res
+  }
+
+  const bridge = createDevBridge(() => server, { keepLoginStorage: memoryStorage(), jobListCacheMs: SESSION_LIST_CACHE_MS })
 
   const adapter = createCanvasappProvider({
     id: 'dev',
     label: DEV_PROVIDER_LABEL,
-    api: devApi(),
+    api: withDevWording(createCanvasappApi(createDesktopTransport(() => bridge))),
     getBlob: async (id) => media.get(id) ?? (await mediaGetBlob(id)),
     storage: memoryStorage(),
     minPollMs: SESSION_POLL_MS,
     pollIntervalMs: SESSION_POLL_MS,
     listCacheMs: SESSION_LIST_CACHE_MS,
+    gatewayListCacheMs: SESSION_LIST_CACHE_MS,
   })
+  const fetchResult = adapter.fetchResult.bind(adapter)
+  adapter.fetchResult = async (remoteId, opts) => {
+    const result = await fetchResult(remoteId, opts)
+    const jobId = decodeRemoteId(remoteId)?.jobId
+    const number = jobId ? numbers.get(jobId) : undefined
+    if (number !== undefined && !await matchesVideo(result.video, number)) {
+      trips.push({ invariant: 'DL1', severity: 'error', kind: 'app', message: 'Video tải xong khác toàn bộ byte nguồn giả lập.', detail: { jobId } })
+    }
+    hit('download.verified')
+    return result
+  }
   const sessionDev = withDevWording(adapter, { poll: devResult, available: devResult })
   registerProvider(sessionDev)
 
@@ -116,11 +178,28 @@ export function startSession({ rng, kind }: SessionOptions): Session {
   let stopped = false
   const session: Session = {
     server,
+    bridge,
+    coverage,
+    checkCompleted: async (takes) => {
+      const out: Violation[] = []
+      for (const t of takes) {
+        if (t.status !== 'completed' || t.provider !== 'dev' || !t.remoteId) continue
+        const jobId = decodeRemoteId(t.remoteId)?.jobId
+        const n = jobId ? numbers.get(jobId) : undefined
+        if (n === undefined) continue
+        const saved = t.videoId ? await mediaGetBlob(t.videoId) : null
+        if (!await matchesVideo(saved, n)) out.push({ invariant: 'DL1', severity: 'error', kind: 'app', message: 'Take hoàn tất nhưng byte đã lưu thiếu hoặc hỏng.', detail: { takeId: t.id, jobId } })
+        else hit('download.savedVerified')
+      }
+      return out
+    },
     media,
     trips,
     stop: () => {
       if (stopped) return
       stopped = true
+      bridge.reset()
+      offNumbers()
       // The app's own providers (the same singletons getProvider() would build) and dev server.
       registerProvider(devProvider())
       registerProvider(canvasappProvider())

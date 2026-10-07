@@ -97,6 +97,11 @@ export function toMarkdown(r: StressReport): string {
     for (const [k, n] of Object.entries(r.guards)) lines.push(`- ${k}: ${n}`)
     lines.push('')
   }
+  if (r.coverage && Object.keys(r.coverage).length) {
+    lines.push('## Kết quả đã thực sự quan sát', '')
+    for (const [key, n] of Object.entries(r.coverage)) lines.push(`- ${key}: ${n}`)
+    lines.push('')
+  }
   if (r.notes.length) {
     lines.push('## Ghi chú')
     lines.push('')

@@ -8,6 +8,7 @@ import { useProviderPrefs } from '../../../providers'
 import { useDownloadPrefs } from '../../../lib/downloads'
 import { createRng, seededUuid } from '../rng'
 import type { StressEnv } from '../types'
+import { useProject } from '../../../store/project'
 
 const realSetTimeout = globalThis.setTimeout
 const realPerfNow = performance.now.bind(performance)
@@ -45,6 +46,21 @@ export function createHeadless(seed: string): Headless {
 
   const env: StressEnv = {
     kind: 'headless',
+    saveProject: async () => {
+      const { flush } = await import('../../../store/persist')
+      if (!await flush()) throw new Error('Không ghi được dự án thử vào bộ nhớ cô lập.')
+      const { get } = await import('./memoryDb')
+      return await get(`project:${useProject.getState().project.id}`) as import('../../../core/types').Project | null
+    },
+    switchProjectRoundTrip: async () => {
+      const { switchProject } = await import('../../../store/persist')
+      const { set } = await import('./memoryDb')
+      const p = useProject.getState().project
+      const other = { ...p, id: `${p.id}_other`, scenes: p.scenes.map((s) => ({ ...s, prompt: 'Dự án khác' })) }
+      await set(`project:${other.id}`, other)
+      await switchProject(other.id)
+      await switchProject(p.id)
+    },
     advance: async (ms) => {
       if (ms > 0) await vi.advanceTimersByTimeAsync(ms)
     },

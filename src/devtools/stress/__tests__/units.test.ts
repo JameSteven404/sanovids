@@ -12,6 +12,7 @@ import { allowlistBreach, checkProject, checkStructural, isSubsequence, videoTok
 import { summaryText, toMarkdown, toJSON, reportFileName } from '../report'
 import { SCENARIOS, SCENARIO_BY_ID } from '../scenarios'
 import { ACTION_BY_ID } from '../actions'
+import { checkExplicitRewrite } from '../featureActions'
 import type { Project } from '../../../core/types'
 import type { StressReport } from '../types'
 
@@ -146,6 +147,11 @@ describe('S2 on the request log (allowlistBreach)', () => {
 })
 
 describe('scenarios & report', () => {
+  it('explicit fills may replace token labels, but never prose or the number of tokens', () => {
+    expect(checkExplicitRewrite('ệ @image_?2(Lumi) 👩‍👩‍👧‍👦', 'ệ @image_1 👩‍👩‍👧‍👦')).toBe(true)
+    expect(checkExplicitRewrite('ệ @image_?2(Lumi) cuối', '@image_1 cuối')).toBe(false)
+    expect(checkExplicitRewrite('ệ @image_?2(Lumi) cuối', 'ệ Lumi cuối')).toBe(false)
+  })
   it('every scenario only weights known actions', () => {
     expect(SCENARIOS.length).toBeGreaterThanOrEqual(18)
     for (const s of SCENARIOS) {

@@ -10,6 +10,18 @@ const FAULTS = { 'fault.preset': 2, 'fault.random': 3, 'fault.job': 2, 'fault.fo
 const HISTORY = { 'history.undo': 3, 'history.redo': 3, 'history.roundTrip': 1 }
 
 export const SCENARIOS: ScenarioDef[] = [
+  { id: 'placeholder-churn', label: 'Cắt / gắn / thay chữ đỏ', group: 'C', hint: 'Giữ chữ và số token qua cắt, hoàn tác, gắn, thay và xoá ảnh đang dùng.', minutes: 5, headless: true, app: true, tier: 'S', faults: 'none',
+    weights: { ...REF_EDITS, 'refs.fill': 12, 'refs.replace': 6, 'asset.remove': 2, 'asset.add': 3, ...HISTORY, 'run.enqueue': 2, 'run.wait': 2 }, drainEvery: 80 },
+  { id: 'editor-drafts', label: 'Bản nháp editor', group: 'C', hint: 'Gõ tiếng Việt, đổi cảnh / dự án trong bộ nhớ, hoàn tác và flush; dữ liệu lưu bằng chữ hiện.', minutes: 3, headless: true, app: true, tier: 'S', faults: 'none',
+    weights: { 'editor.draft': 8, 'editor.savePending': 2, 'ui.transport': 2, 'persist.roundTrip': 1 }, drainEvery: 0 },
+  { id: 'library-bulk', label: 'Xoá thư viện hàng loạt', group: 'C', hint: 'Chọn 1–200 mục, kiểm tra câu hỏi, xoá một lần và hoàn tác.', minutes: 3, headless: true, app: true, tier: 'S', faults: 'none',
+    weights: { 'library.bulk': 8, 'refs.link': 2, 'refs.token': 2 }, drainEvery: 0 },
+  { id: 'download-chaos', label: 'Tải video hỗn loạn', group: 'B', hint: 'Cắt / treo / quá lớn; kiểm tra toàn bộ byte tải qua gateway từng khối.', minutes: 5, headless: true, app: true, tier: 'S', faults: 'none',
+    weights: { 'download.chaos': 3, 'run.wait': 4 }, drainEvery: 40 },
+  { id: 'import-jobs', label: 'Nhập job trong khi chạy', group: 'B', hint: 'Job tạo trên trang, scan cũ nhập hai lần và thử lại; không nhận trùng hoặc POST lại.', minutes: 5, headless: true, app: true, tier: 'S', faults: 'none',
+    weights: { 'import.site': 3, 'run.wait': 4 }, drainEvery: 40 },
+  { id: 'relogin', label: 'Đăng nhập lại giữa hàng đợi', group: 'B', hint: 'Giữ đăng nhập, restart và logout khi đang chạy; không trả tiền hai lần.', minutes: 5, headless: true, app: true, tier: 'S', faults: 'none', server: { dedupe: false },
+    weights: { 'login.restart': 3, 'run.wait': 4, 'run.retry': 1 }, drainEvery: 40 },
   // ---- A: limits & data ----
   {
     id: 'huge-project',
