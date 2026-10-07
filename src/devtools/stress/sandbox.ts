@@ -16,7 +16,7 @@
 // meets them; the runner never touches a project it did not load).
 // Crash safety (manifest.ts): RUN_LOCK + the manifest 'bdp:stress:session'; 'bdp:active' stays on the user's project,
 // and the next start removes what a run that never finished left behind.
-import { DOWNLOAD_PREFS_KEY, useDownloadPrefs } from '../../lib/downloads'
+import { useDownloadPrefs } from '../../lib/downloads'
 import { activeProviderId, useProviderPrefs } from '../../providers'
 import { refreshRealCredits } from '../../store/credits'
 import { flush, importProjectFile, useSave } from '../../store/persist'
@@ -28,9 +28,11 @@ import {
   forgetFolderSaves,
   forgetMedia,
   leftover,
+  MANIFEST_KEY,
   pinActiveProject,
   readManifest,
   rememberFolderIds,
+  restoreAutoDownload,
   restoreUiLayout,
   restoreUser,
   uiLayout,
@@ -71,6 +73,37 @@ function blockedReason(locked: boolean): string | null {
   if (w.queued + w.processing > 0) return `Dự án của bạn còn ${w.queued + w.processing} video đang chờ / đang tạo — đợi xong (hoặc huỷ) rồi chạy thử nghiệm.`
   if (!locked && (leftover() || readManifest())) return 'Còn dữ liệu thử nghiệm của lần trước — bấm “Dọn dữ liệu thử nghiệm” trước.'
   return null
+}
+
+/**
+ * Call `onChange` when an input of startBlockedReason() may have changed: the open project's takes / scenes, the save
+ * state, the provider choice, the manifest (another window). StressTab reads the reason with useSyncExternalStore, so a
+ * queue that finishes enables "Bắt đầu" again without reopening the tab.
+ */
+export function subscribeStartBlocked(onChange: () => void): () => void {
+  const offs = [
+    useRuns.subscribe((s, prev) => {
+      if (s.takes !== prev.takes) onChange()
+    }),
+    useProject.subscribe((s, prev) => {
+      if (s.project.scenes !== prev.project.scenes || s.project.id !== prev.project.id) onChange()
+    }),
+    useSave.subscribe((s, prev) => {
+      if (s.ready !== prev.ready || s.stale !== prev.stale) onChange()
+    }),
+    useProviderPrefs.subscribe((s, prev) => {
+      if (s.provider !== prev.provider) onChange()
+    }),
+  ]
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === null || e.key === MANIFEST_KEY) onChange()
+  }
+  const win = typeof window !== 'undefined' ? window : undefined
+  win?.addEventListener?.('storage', onStorage)
+  return () => {
+    for (const off of offs) off()
+    win?.removeEventListener?.('storage', onStorage)
+  }
 }
 
 /** "Dọn dữ liệu thử nghiệm": remove what a crashed / closed run left behind. */
@@ -303,9 +336,11 @@ async function runLocked(options: StressOptions, hooks: SandboxHooks): Promise<S
   if (blocked) throw new Error(blocked)
   const originalId = useProject.getState().project.id
   const layout = uiLayout()
-  const manifest: Manifest = { originalId, tempId: null, startedAt: Date.now(), seed: options.seed ?? '', beat: Date.now(), ui: layout }
-  writeManifest(manifest)
   const autoDownload = useDownloadPrefs.getState().autoDownload
+  // The switch is in the manifest too: a crash after a download setting was saved mid-run (which saves the run's
+  // "off" with it) gets it back at the next start.
+  const manifest: Manifest = { originalId, tempId: null, startedAt: Date.now(), seed: options.seed ?? '', beat: Date.now(), ui: layout, autoDownload }
+  writeManifest(manifest)
 
   let guards: Guards | null = null
   let env: (StressEnv & { dispose(): void }) | null = null
@@ -351,10 +386,10 @@ async function runLocked(options: StressOptions, hooks: SandboxHooks): Promise<S
       useProject.subscribe((s, prev) => {
         if (restoring) return
         if (s.project.id !== id) {
-          if (!stopReason) {
-            stopWith('Đã mở dự án khác trong lúc thử nghiệm: dừng ngay để không đụng tới dự án đó.')
-            stopActiveSession()
-          }
+          stopWith('Đã mở dự án khác trong lúc thử nghiệm: dừng ngay để không đụng tới dự án đó.')
+          // Always, even when the run is already stopping for another reason (canvasapp.io.vn chosen…): the session
+          // lives until the runner's next check, and that project's queue must never meet its server or the trap.
+          stopActiveSession()
           return
         }
         if (s.project.folders === prev.project.folders) return
@@ -450,25 +485,16 @@ async function runLocked(options: StressOptions, hooks: SandboxHooks): Promise<S
     await forgetMedia(media).catch(() => undefined)
     forgetFolderSaves([...folderIds])
     restoreUiLayout(layout)
-    restoreAutoDownload(autoDownload)
-    // Kept when the temporary project could not be deleted: "Dọn dữ liệu thử nghiệm" tries again.
+    try {
+      restoreAutoDownload(autoDownload)
+    } catch {
+      /* storage unavailable */
+    }
+    // Kept when the temporary project could not be deleted: "Dọn dữ liệu thử nghiệm" tries again — without the layout
+    // and the switch, given back just now (a later clean-up must not undo what the user changes meanwhile).
     if (gone) writeManifest(null)
+    else updateManifest({ ui: undefined, autoDownload: undefined })
     void refreshRealCredits({ force: true }).catch(() => undefined)
     phase('')
   }
-}
-
-/**
- * The auto-download switch as it was. The run only turned it off in memory — unless a download setting was changed
- * meanwhile (that saves every download setting, the switch included): then it is saved back as well.
- */
-function restoreAutoDownload(before: boolean) {
-  let stored: unknown
-  try {
-    stored = (JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY) ?? 'null') as { autoDownload?: unknown } | null)?.autoDownload
-  } catch {
-    stored = undefined
-  }
-  if (typeof stored === 'boolean' && stored !== before) useDownloadPrefs.getState().set({ autoDownload: before })
-  else if (useDownloadPrefs.getState().autoDownload !== before) useDownloadPrefs.setState({ autoDownload: before })
 }

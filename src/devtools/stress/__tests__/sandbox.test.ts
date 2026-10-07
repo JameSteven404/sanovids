@@ -1,7 +1,8 @@
 // The in-app sandbox of the stress tester (sandbox.ts + manifest.ts), in node with a fake page: every patched global
 // comes back exactly as it was, a failed start never empties the user's takes, the run stops (and leaves the other
 // project alone) when another project is opened or canvasapp.io.vn is chosen, folder nodes never keep a real folder,
-// and a run that never finished is cleaned up at the next start — but never while its lock is held.
+// and a run that never finished is cleaned up at the next start (auto-download switch included) — but never while its
+// lock is held. The start button's reason follows the stores it depends on.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const page = vi.hoisted(() => {
@@ -43,6 +44,7 @@ vi.mock('../../../lib/imageStore', () => {
 const db = vi.hoisted(() => ({
   projects: new Map<string, { project: unknown; takes: unknown[] }>(),
   importFails: false,
+  deleteFails: false,
   deleted: [] as string[],
   switched: [] as string[],
 }))
@@ -78,6 +80,7 @@ vi.mock('../../../store/persist', async () => {
       open(id)
     }),
     deleteProject: vi.fn(async (id: string) => {
+      if (db.deleteFails) throw new Error('Không xoá được dự án (bộ nhớ trình duyệt).')
       db.deleted.push(id)
       db.projects.delete(id)
     }),
@@ -86,11 +89,11 @@ vi.mock('../../../store/persist', async () => {
 
 import { emptyProject, useProject } from '../../../store/project'
 import { setEngineHooks, setEngineLockManager, useRuns } from '../../../store/runs'
-import { devProvider, getProvider, useProviderPrefs } from '../../../providers'
-import { useDownloadPrefs } from '../../../lib/downloads'
+import { canvasappProvider, devProvider, getProvider, useProviderPrefs } from '../../../providers'
+import { DOWNLOAD_PREFS_KEY, useDownloadPrefs } from '../../../lib/downloads'
 import { useUI } from '../../../store/ui'
-import { deleteProject, switchProject } from '../../../store/persist'
-import { installGuards, runInSandbox, startBlockedReason } from '../sandbox'
+import { deleteProject, switchProject, useSave } from '../../../store/persist'
+import { installGuards, runInSandbox, startBlockedReason, subscribeStartBlocked } from '../sandbox'
 import { MANIFEST_KEY, parseManifest, recoverLeftover, cleanupLeftovers, writeManifest } from '../manifest'
 import { sessionActive } from '../session'
 import type { Take } from '../../../core/types'
@@ -209,13 +212,15 @@ beforeEach(() => {
   page.store.clear()
   db.projects.clear()
   db.importFails = false
+  db.deleteFails = false
   db.deleted = []
   db.switched = []
   fakePage()
   setEngineLockManager(null)
   setEngineHooks({})
   useProviderPrefs.setState({ provider: 'dev' })
-  useDownloadPrefs.setState({ autoDownload: true })
+  useDownloadPrefs.setState({ autoDownload: true, withPrompt: false })
+  useSave.setState({ ready: true, stale: false })
   openUserProject()
 })
 
@@ -301,7 +306,7 @@ describe('runInSandbox', () => {
     expect(seen.length).toBe(12)
     // the run works on the temporary project; a restart in the middle would reopen the user's one
     expect(seen.every((s) => s.project === 'prj_tmp' && s.active === 'prj_user' && s.autoDownload === false)).toBe(true)
-    expect(parseManifest(JSON.parse(seen[0].manifest!))).toMatchObject({ originalId: 'prj_user', tempId: 'prj_tmp' })
+    expect(parseManifest(JSON.parse(seen[0].manifest!))).toMatchObject({ originalId: 'prj_user', tempId: 'prj_tmp', autoDownload: true })
     // back: the user's project and takes, the temporary project deleted, the layout, auto-download, providers
     expect(switchProject).toHaveBeenCalledWith('prj_user')
     expect(db.deleted).toEqual(['prj_tmp'])
@@ -383,6 +388,61 @@ describe('runInSandbox', () => {
     expect(Object.getOwnPropertyDescriptor(win, 'fetch')?.value).toBe(origFetch)
   })
 
+  it('another project opened right after canvasapp.io.vn was chosen never meets the session either', async () => {
+    win.bdpDesktop = { canvasapp: { request: vi.fn(async () => Promise.reject(new Error('real canvasapp called'))) } }
+    const other = { ...emptyProject('Dự án khác'), id: 'prj_other' }
+    db.projects.set('prj_other', { project: other, takes: [take('take_other_1', 'scn_other')] })
+    let after: { dev: unknown; canvasapp: unknown; active: boolean } | null = null
+    const r = await runInSandbox(
+      opts({
+        steps: 200,
+        onProgress: (p: StressProgress) => {
+          if (p.step !== 3) return
+          useProviderPrefs.getState().setProvider('canvasapp') // the run is stopping from now on…
+          void switchProject('prj_other') // …and the user opens another project in the same tick
+          after = { dev: getProvider('dev'), canvasapp: getProvider('canvasapp'), active: sessionActive() }
+        },
+      }),
+    )
+    // the app's own providers were back before that project's queue could start (no private server, no trap)
+    expect(after!.dev).toBe(devProvider())
+    expect(after!.canvasapp).toBe(canvasappProvider())
+    expect(after!.active).toBe(false)
+    expect(r.result).toBe('stopped')
+    expect(r.notes[0]).toContain('canvasapp.io.vn')
+    expect(useProviderPrefs.getState().provider).toBe('dev')
+    expect(useProject.getState().project.id).toBe('prj_other')
+    expect(useRuns.getState().takes.map((t) => t.id)).toEqual(['take_other_1'])
+    expect(db.deleted).toEqual(['prj_tmp'])
+  })
+
+  it('a temporary project that cannot be deleted keeps the manifest, without what was already given back', async () => {
+    db.deleteFails = true
+    const r = await runInSandbox(
+      opts({
+        onProgress: (p: StressProgress) => {
+          if (p.step === 2) useDownloadPrefs.getState().set({ withPrompt: true }) // saves the run's "off" with it
+        },
+      }),
+    )
+    expect(r.result).toBe('pass')
+    expect(useProject.getState().project.id).toBe('prj_user')
+    expect(useDownloadPrefs.getState().autoDownload).toBe(true)
+    expect(JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY)!)).toMatchObject({ autoDownload: true, withPrompt: true })
+    const kept = parseManifest(JSON.parse(localStorage.getItem(MANIFEST_KEY)!))
+    expect(kept).toMatchObject({ originalId: 'prj_user', tempId: 'prj_tmp' })
+    expect(kept?.ui).toBeUndefined()
+    expect(kept?.autoDownload).toBeUndefined()
+    // the user turns auto-download off afterwards; "Dọn dữ liệu thử nghiệm" deletes the project and leaves that alone
+    useDownloadPrefs.getState().set({ autoDownload: false })
+    db.deleteFails = false
+    vi.stubGlobal('navigator', { locks: { request: async (_n: string, _o: unknown, cb: (lock: unknown) => Promise<unknown>) => cb({ name: 'x' }) } })
+    expect(await cleanupLeftovers(() => false)).toContain('Đã xoá dự án thử nghiệm')
+    expect(db.deleted).toEqual(['prj_tmp'])
+    expect(useDownloadPrefs.getState().autoDownload).toBe(false)
+    expect(localStorage.getItem(MANIFEST_KEY)).toBeNull()
+  })
+
   it('refuses to start over the leftovers of a run that never finished', async () => {
     writeManifest({ originalId: 'prj_user', tempId: 'prj_gone', startedAt: 1, seed: 'x' })
     expect(startBlockedReason()).toContain('Dọn dữ liệu thử nghiệm')
@@ -392,16 +452,22 @@ describe('runInSandbox', () => {
 })
 
 describe('leftovers of a run that never finished', () => {
-  it('are cleaned up at the next start: temporary project, waiting folder saves, layout', async () => {
+  it('are cleaned up at the next start: temporary project, waiting folder saves, layout, auto-download', async () => {
     localStorage.setItem('bdp:folder-waiting', JSON.stringify({ fld_stress: ['take_x'], fld_user: ['take_user_1'] }))
     useUI.getState().setView('storyboard')
-    writeManifest({ originalId: 'prj_user', tempId: 'prj_tmp_old', startedAt: 1, seed: '5eedf00d', folderIds: ['fld_stress'], ui: { view: 'table', leftOpen: true, rightOpen: true, queueOpen: false, showMinimap: true, takeDisplay: 'all', edgeMode: 'selected' } })
+    // A download setting changed during the crashed run saved the run's "auto-download off" with it; after the restart
+    // the switch reads off from storage.
+    localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify({ autoDownload: false, withPrompt: true }))
+    useDownloadPrefs.setState({ autoDownload: false, withPrompt: true })
+    writeManifest({ originalId: 'prj_user', tempId: 'prj_tmp_old', startedAt: 1, seed: '5eedf00d', folderIds: ['fld_stress'], autoDownload: true, ui: { view: 'table', leftOpen: true, rightOpen: true, queueOpen: false, showMinimap: true, takeDisplay: 'all', edgeMode: 'selected' } })
     await recoverLeftover(() => false)
     expect(db.deleted).toEqual(['prj_tmp_old'])
     expect(switchProject).not.toHaveBeenCalled() // the user's project is the open one already
     expect(localStorage.getItem(MANIFEST_KEY)).toBeNull()
     expect(JSON.parse(localStorage.getItem('bdp:folder-waiting') ?? '{}')).toEqual({ fld_user: ['take_user_1'] })
     expect(useUI.getState().view).toBe('table')
+    expect(useDownloadPrefs.getState().autoDownload).toBe(true)
+    expect(JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY)!)).toMatchObject({ autoDownload: true, withPrompt: true })
   })
 
   it('are left alone while their run still holds the lock (another window)', async () => {
@@ -422,6 +488,42 @@ describe('leftovers of a run that never finished', () => {
 
   it('a malformed manifest is ignored, never trusted', () => {
     expect(parseManifest({ originalId: 1, tempId: 'x' })).toBeNull()
-    expect(parseManifest({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', ui: { view: '<img>' }, folderIds: ['f', 3] })).toEqual({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', folderIds: ['f'] })
+    expect(parseManifest({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', ui: { view: '<img>' }, autoDownload: 'yes', folderIds: ['f', 3] })).toEqual({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', folderIds: ['f'] })
+    expect(parseManifest({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', autoDownload: false })).toEqual({ originalId: 'a', tempId: null, startedAt: 1, seed: 's', autoDownload: false })
+  })
+})
+
+describe('the start button', () => {
+  it('follows the open project\'s queue, the save state and the provider', () => {
+    const onChange = vi.fn()
+    const off = subscribeStartBlocked(onChange)
+    expect(startBlockedReason()).toBeNull()
+    // a take of the user's project starts (the button turns off)…
+    useRuns.setState({ takes: [{ ...take('take_user_2', 'scn_user'), status: 'processing', videoId: null }] })
+    expect(onChange).toHaveBeenCalled()
+    expect(startBlockedReason()).toContain('1 video đang chờ')
+    // …and finishes: the tab is told, the button turns on again
+    onChange.mockClear()
+    useRuns.setState({ takes: [take('take_user_2', 'scn_user')] })
+    expect(onChange).toHaveBeenCalled()
+    expect(startBlockedReason()).toBeNull()
+    onChange.mockClear()
+    useSave.setState({ stale: true })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(startBlockedReason()).toContain('đã cũ')
+    useSave.setState({ stale: false })
+    onChange.mockClear()
+    win.bdpDesktop = { canvasapp: { request: vi.fn() } }
+    useProviderPrefs.getState().setProvider('canvasapp')
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(startBlockedReason()).toContain('chế độ Phát triển')
+    useProviderPrefs.getState().setProvider('dev')
+    // unsubscribed: nothing more
+    off()
+    onChange.mockClear()
+    useRuns.setState({ takes: [] })
+    useSave.setState({ ready: false })
+    useProviderPrefs.getState().setProvider('canvasapp')
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

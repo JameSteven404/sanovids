@@ -2,12 +2,14 @@
 // imports it at start-up for the crash recovery; the heavy tester (runner, actions…) loads only when a run starts.
 //
 // While a run lasts (sandbox.ts) it holds the Web Lock RUN_LOCK and keeps a manifest in localStorage
-// ('bdp:stress:session'): the user's project id, the temporary project id, the UI layout to give back and the folder
-// node ids of the temporary project. A manifest whose lock is free belongs to a run that ended without its clean-up
-// (crash, window closed, reload, update restart): recoverLeftover() — run at the next start by StressHud / StressTab —
-// deletes the temporary project (and its videos), drops the folder saves it left waiting and gives the layout back.
+// ('bdp:stress:session'): the user's project id, the temporary project id, the UI layout and the auto-download switch
+// to give back and the folder node ids of the temporary project. A manifest whose lock is free belongs to a run that
+// ended without its clean-up (crash, window closed, reload, update restart): recoverLeftover() — run at the next start
+// by StressHud / StressTab — deletes the temporary project (and its videos), drops the folder saves it left waiting and
+// gives the layout and the auto-download switch back.
 // The run keeps 'bdp:active' on the user's project, so a restart in the middle reopens the user's project, never the
 // temporary one (whose queue would otherwise start again).
+import { DOWNLOAD_PREFS_KEY, useDownloadPrefs } from '../../lib/downloads'
 import { deleteMedia } from '../../lib/imageStore'
 import { markTrashWaiting, markWaiting, trashWaitingTakes, waitingTakes } from '../../lib/saveFolders'
 import { deleteProject, switchProject, useSave } from '../../store/persist'
@@ -44,6 +46,8 @@ export interface Manifest {
   /** Last sign of life of the run (only used where Web Locks are missing). */
   beat?: number
   ui?: UiLayout
+  /** The auto-download switch before the run (the run turns it off; see restoreAutoDownload). */
+  autoDownload?: boolean
   folderIds?: string[]
 }
 
@@ -69,6 +73,7 @@ export function parseManifest(raw: unknown): Manifest | null {
   if (typeof r.beat === 'number' && Number.isFinite(r.beat)) m.beat = r.beat
   const ui = parseLayout(r.ui)
   if (ui) m.ui = ui
+  if (isBool(r.autoDownload)) m.autoDownload = r.autoDownload
   if (Array.isArray(r.folderIds)) m.folderIds = r.folderIds.filter((x): x is string => isStr(x) && !!x).slice(0, MAX_FOLDER_IDS)
   return m
 }
@@ -148,6 +153,22 @@ export function restoreUiLayout(l: UiLayout) {
   }
 }
 
+/**
+ * The auto-download switch as it was before the run. The run only turns it off in memory — unless a download setting
+ * was changed meanwhile (that saves every download setting, the switch included): then it is saved back as well. After
+ * a crash the memory value comes from storage, so the stored value is what gets mended.
+ */
+export function restoreAutoDownload(before: boolean) {
+  let stored: unknown
+  try {
+    stored = (JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY) ?? 'null') as { autoDownload?: unknown } | null)?.autoDownload
+  } catch {
+    stored = undefined
+  }
+  if (typeof stored === 'boolean' && stored !== before) useDownloadPrefs.getState().set({ autoDownload: before })
+  else if (useDownloadPrefs.getState().autoDownload !== before) useDownloadPrefs.setState({ autoDownload: before })
+}
+
 /** Saves of the temporary project's folder nodes still waiting for a folder (they never get one): forget them. */
 export function forgetFolderSaves(folderIds: readonly string[]) {
   for (const id of folderIds) {
@@ -207,7 +228,17 @@ async function cleanUp(m: Manifest): Promise<boolean> {
   const gone = await restoreUser(m.originalId, m.tempId)
   forgetFolderSaves(m.folderIds ?? [])
   if (m.ui) restoreUiLayout(m.ui)
+  if (m.autoDownload !== undefined) {
+    try {
+      restoreAutoDownload(m.autoDownload)
+    } catch {
+      /* storage unavailable */
+    }
+  }
   if (gone) writeManifest(null)
+  // Kept (the temporary project could not be deleted): what was given back is not given back again by a later clean-up
+  // — the user may change the layout / the switch meanwhile.
+  else updateManifest({ ui: undefined, autoDownload: undefined })
   return gone
 }
 
