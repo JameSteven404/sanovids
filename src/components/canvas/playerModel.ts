@@ -90,3 +90,59 @@ export function wheelStep(acc: number, deltaY: number, deltaMode = 0): { step: -
 export function seekStep(shift: boolean): number {
   return shift ? 5 : 1
 }
+
+// ---------------- a click on ▶ / ⏸ right after the hover preview started ----------------
+/** For this long after the hover preview started on its own, a click on the play button keeps it playing. */
+export const AUTOPLAY_GRACE_MS = 600
+
+/**
+ * What a click on the play / pause button does. The hover preview starts playing by itself as the pointer reaches the
+ * card, often just before a click aimed at "▶": within AUTOPLAY_GRACE_MS of that start (playing, not pinned yet) the
+ * click pins the player and keeps it running ('pin-keep') instead of pausing what the user wanted to start.
+ */
+export function playClickAction(s: { playing: boolean; autoStartedAt: number | null; now: number; pinned: boolean }): 'pin-keep' | 'toggle' {
+  if (!s.playing || s.pinned || s.autoStartedAt === null) return 'toggle'
+  const age = s.now - s.autoStartedAt
+  return age >= 0 && age < AUTOPLAY_GRACE_MS ? 'pin-keep' : 'toggle'
+}
+
+// ---------------- the resting bar (no player mounted) ----------------
+export interface RestBar {
+  /** The play button works (finished take with a video). */
+  canPlay: boolean
+  title: string
+  aria: string
+  /** 0..1 generation progress shown on the rail (queued / processing), else null. */
+  progress: number | null
+  /** Measured length ("0:05") once a player loaded the video this session, else null (never the requested length). */
+  length: string | null
+}
+
+/** The resting bar of a take card: what its play button, rail and time say. */
+export function restBarState(t: { status: string; progress: number; videoId: string | null }, code: string, known: number | undefined): RestBar {
+  const busy = t.status === 'queued' || t.status === 'processing'
+  const canPlay = t.status === 'completed' && !!t.videoId
+  const pct = Number.isFinite(t.progress) ? Math.min(100, t.progress) : 0
+  const progress = t.status === 'processing' ? Math.max(3, pct) / 100 : t.status === 'queued' ? 0 : null
+  const title = canPlay ? 'Phát' : busy ? 'Video chưa tạo xong' : 'Take này không có video'
+  return {
+    canPlay,
+    title,
+    aria: canPlay ? `Phát video ${code}` : title,
+    progress,
+    length: canPlay && known !== undefined && Number.isFinite(known) && known > 0 ? formatLength(known) : null,
+  }
+}
+
+/** "Phóng to" button of the player bar, both states. */
+export function fullscreenButton(full: boolean): { title: string; aria: string } {
+  return full
+    ? { title: 'Thu nhỏ — thoát toàn màn hình (Esc)', aria: 'Thoát toàn màn hình' }
+    : { title: 'Phóng to — xem toàn màn hình', aria: 'Phóng to video' }
+}
+
+/** The J / L shuttle on the speed button while it runs: "▶▶ 2×", "◀◀ 4×"; null = show the user's speed. */
+export function shuttleLabel(s: { dir: -1 | 0 | 1; rate: number }): string | null {
+  if (s.dir === 0) return null
+  return `${s.dir > 0 ? '▶▶' : '◀◀'} ${rateLabel(s.rate)}`
+}

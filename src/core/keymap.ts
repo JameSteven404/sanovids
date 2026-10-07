@@ -98,7 +98,14 @@ export const FIXED_KEYS: FixedKey[] = [
   { keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'], label: 'Di chuyển giữa các thẻ' },
   // Scene order (sceneOrderActions): fixed, because refusalFor keeps Alt + arrows away from every command.
   { keys: ['Alt+ArrowUp', 'Alt+ArrowDown'], label: 'Thứ tự cảnh: dời cảnh đang chọn lên trước / ra sau một chỗ' },
-  { keys: ['Space', 'ArrowLeft', 'ArrowRight', 'Escape'], label: 'Phát liền: phát / tạm dừng · cảnh trước / sau · đóng' },
+  // Video players (take viewer, a take node's fullscreen player, Phát liền): one table, core/transportKeys.
+  { keys: ['Space', 'KeyK', 'KeyJ', 'KeyL'], label: 'Trình phát video: Space / K phát – dừng · L tua tới, J tua lùi (bấm thêm: 2×, 4×)' },
+  { keys: ['ArrowLeft', 'ArrowRight', 'Shift+ArrowLeft', 'Shift+ArrowRight'], label: 'Trình phát video: ← → từng khung hình (Shift: 5 khung)' },
+  { keys: ['ArrowUp', 'ArrowDown', 'Home', 'End'], label: 'Trình phát video: ↑ ↓ take trước / sau (Phát liền: cảnh; video phóng to: âm lượng) · Home / End về đầu / cuối' },
+  { keys: ['Backquote', 'Escape'], label: 'Trình phát video: ` bật / tắt toàn màn hình (Windows: cả Ctrl+`) · Esc chỉ thoát toàn màn hình' },
+  { keys: ['KeyM'], label: 'Xem take, video phóng to: M chọn ★ · Ctrl+M (Mac: ⌘E) tải video đang xem' },
+  { keys: ['KeyF', 'Escape'], label: 'Video phóng to: thoát (mọi phím khác của app không chạy khi đang phóng to)' },
+  { keys: ['Escape'], label: 'Phát liền: đóng' },
   { keys: ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'], label: 'Popup @: chọn · chèn · đóng' },
   { keys: ['Space'], label: 'Giữ và kéo để di chuyển canvas' },
   { keys: ['Shift'], label: 'Giữ và kéo để chọn vùng' },

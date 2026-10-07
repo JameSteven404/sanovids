@@ -413,8 +413,10 @@ export function lodOf(zoom: number): 'far' | 'near' {
  */
 export const sceneNodeSize = drawnSceneSize
 
-/** Take node: chrome below the poster (footer + big download button). */
-export const TAKE_CHROME = 74
+/** Take node: the player bar right under the picture (timeline + buttons; never drawn over it). */
+export const TAKE_BAR_H = 30
+/** Take node: chrome below the poster (player bar + footer + big download button). */
+export const TAKE_CHROME = 74 + TAKE_BAR_H
 /** Largest 16:9 box that fits a node `w` × `h` (1px borders) above `chrome` px of controls. */
 export function fitMedia(w: number, h: number, chrome: number): { w: number; h: number } {
   const innerW = Math.max(0, w - 2)

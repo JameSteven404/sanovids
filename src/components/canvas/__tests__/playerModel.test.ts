@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { PLAYBACK_RATES } from '../../../lib/playback'
 import {
+  AUTOPLAY_GRACE_MS,
   formatClock,
   formatLength,
   fractionAt,
+  fullscreenButton,
   nextRate,
+  playClickAction,
   rateLabel,
   rememberedVolume,
+  restBarState,
   seekStep,
+  shuttleLabel,
   stepVolume,
   volumeLevel,
   VOLUME_BURST_MS,
@@ -185,5 +190,53 @@ describe('seekStep', () => {
   it('arrows move 1 s, 5 s with Shift', () => {
     expect(seekStep(false)).toBe(1)
     expect(seekStep(true)).toBe(5)
+  })
+})
+
+describe('playClickAction (▶ right after the hover preview started)', () => {
+  it('within the grace after an automatic start, a click pins and keeps playing', () => {
+    expect(playClickAction({ playing: true, autoStartedAt: 1000, now: 1000 + AUTOPLAY_GRACE_MS - 1, pinned: false })).toBe('pin-keep')
+    expect(playClickAction({ playing: true, autoStartedAt: 1000, now: 1000, pinned: false })).toBe('pin-keep')
+  })
+  it('after the grace, when paused, already pinned or not started by the hover: a normal toggle', () => {
+    expect(AUTOPLAY_GRACE_MS).toBe(600)
+    expect(playClickAction({ playing: true, autoStartedAt: 1000, now: 1000 + AUTOPLAY_GRACE_MS, pinned: false })).toBe('toggle')
+    expect(playClickAction({ playing: false, autoStartedAt: 1000, now: 1100, pinned: false })).toBe('toggle')
+    expect(playClickAction({ playing: true, autoStartedAt: 1000, now: 1100, pinned: true })).toBe('toggle')
+    expect(playClickAction({ playing: true, autoStartedAt: null, now: 1100, pinned: false })).toBe('toggle')
+    expect(playClickAction({ playing: true, autoStartedAt: 2000, now: 1100, pinned: false })).toBe('toggle')
+  })
+})
+
+describe('restBarState (the bar under a card without a player)', () => {
+  it('a finished take with a video plays; the length only once a player measured it', () => {
+    const t = { status: 'completed', progress: 100, videoId: 'v1' }
+    expect(restBarState(t, 'S03·T2', undefined)).toEqual({ canPlay: true, title: 'Phát', aria: 'Phát video S03·T2', progress: null, length: null })
+    expect(restBarState(t, 'S03·T2', 4.96).length).toBe('0:05')
+    expect(restBarState(t, 'S03·T2', 0).length).toBeNull()
+  })
+  it('generating: the rail shows the progress (at least 3 %), the button is off', () => {
+    const p = restBarState({ status: 'processing', progress: 40, videoId: null }, 'S01·T1', 3)
+    expect(p).toMatchObject({ canPlay: false, title: 'Video chưa tạo xong', aria: 'Video chưa tạo xong', progress: 0.4, length: null })
+    expect(restBarState({ status: 'processing', progress: 0, videoId: null }, 'S01·T1', undefined).progress).toBe(0.03)
+    expect(restBarState({ status: 'processing', progress: 250, videoId: null }, 'S01·T1', undefined).progress).toBe(1)
+    expect(restBarState({ status: 'queued', progress: 0, videoId: null }, 'S01·T1', undefined)).toMatchObject({ canPlay: false, progress: 0 })
+  })
+  it('no video to play: failed, cancelled, or finished without a recording', () => {
+    for (const status of ['failed', 'cancelled'])
+      expect(restBarState({ status, progress: 0, videoId: null }, 'S01·T1', undefined)).toMatchObject({ canPlay: false, title: 'Take này không có video', progress: null })
+    expect(restBarState({ status: 'completed', progress: 100, videoId: null }, 'S01·T1', 5)).toMatchObject({ canPlay: false, title: 'Take này không có video', length: null })
+  })
+})
+
+describe('player bar labels', () => {
+  it('"Phóng to" / "Thu nhỏ"', () => {
+    expect(fullscreenButton(false)).toEqual({ title: 'Phóng to — xem toàn màn hình', aria: 'Phóng to video' })
+    expect(fullscreenButton(true)).toEqual({ title: 'Thu nhỏ — thoát toàn màn hình (Esc)', aria: 'Thoát toàn màn hình' })
+  })
+  it('the speed button shows a running J / L shuttle, else the user’s speed', () => {
+    expect(shuttleLabel({ dir: 0, rate: 1 })).toBeNull()
+    expect(shuttleLabel({ dir: 1, rate: 2 })).toBe('▶▶ 2×')
+    expect(shuttleLabel({ dir: -1, rate: 4 })).toBe('◀◀ 4×')
   })
 })

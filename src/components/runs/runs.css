@@ -1386,6 +1386,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* "★ Take đã chọn": in the header (nothing is drawn over the picture) */
+.rq-tv-star {
+  flex: none;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 /* "Tên file" in the take viewer's header: the video's file name, edited in place (TakeFileNameField) */
 .rq-fname {
   display: inline-flex;
@@ -1500,8 +1508,7 @@
   object-fit: contain;
   background: var(--rq-media-bg);
 }
-.rq-stage-note,
-.rq-stage-star {
+.rq-stage-note {
   position: absolute;
   padding: 4px 9px;
   border-radius: 999px;
@@ -1516,12 +1523,6 @@
   left: 10px;
   bottom: 10px;
   border-radius: var(--radius-sm);
-}
-.rq-stage-star {
-  top: 10px;
-  right: 10px;
-  color: var(--accent);
-  font-weight: 600;
 }
 .rq-stage-state {
   display: flex;

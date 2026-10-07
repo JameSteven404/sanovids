@@ -18,7 +18,7 @@ import {
   Trash,
   Undo2,
 } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   cancelTake,
   defaultTakeFileBase,
@@ -32,6 +32,9 @@ import {
   takeFileBase,
 } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode } from '../../core/compile'
+import { escapeDecision, frameDelta, playerKey, type TransportOp } from '../../core/transportKeys'
+import { describeFocus, useTransport } from '../../hooks/useTransport'
+import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, ImportedField, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
@@ -44,6 +47,7 @@ import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { useProject } from '../../store/project'
 import { isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { keyForTopOverlay } from '../common/focus'
 import { AssetChip } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { takeCostLine } from './creditText'
@@ -56,7 +60,6 @@ import {
   formatDuration,
   HighlightedPrompt,
   isActive,
-  isTypingTarget,
   NEWER_BUILD_TITLE,
   paragraphDiff,
   ProviderBadge,
@@ -66,6 +69,9 @@ import {
   useNow,
 } from './shared'
 import './runs.css'
+
+/** Held keys repeat only for frame steps; the shuttle, toggles and switching takes act once per press. */
+const VIEWER_REPEATS = new Set<TransportOp>(['frame-back', 'frame-fwd', 'frame-back5', 'frame-fwd5'])
 
 /** Modal to watch a take and compare / restore the prompt it was generated with. */
 export function TakeViewer({ takeId }: { takeId: string }) {
@@ -88,10 +94,10 @@ function openTake(id: string) {
 /**
  * The viewer's player: starts with the shared sound, volume and speed (lib/playback.ts); what the user changes with
  * its own controls (mute, volume, speed menu) updates them for every player. The changes it makes itself while
- * starting (and the muted fallback when autoplay with sound is refused) are not the user's: ignored.
+ * starting (and the muted fallback when autoplay with sound is refused) are not the user's: ignored — and so are the
+ * J / L shuttle speeds (`ownsRate`, hooks/useTransport): a 4× of L never becomes the stored speed.
  */
-function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
-  const ref = useRef<HTMLVideoElement>(null)
+function ViewerVideo({ url, poster, videoRef: ref, ownsRate }: { url: string; poster: string | null; videoRef: RefObject<HTMLVideoElement | null>; ownsRate: (rate: number) => boolean }) {
   /** Until the start settles, volume / rate events come from the code above, not from the user. */
   const starting = useRef(true)
   useEffect(() => {
@@ -113,7 +119,7 @@ function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
     return () => {
       live = false
     }
-  }, [url])
+  }, [url, ref])
   return (
     <video
       ref={ref}
@@ -132,7 +138,7 @@ function ViewerVideo({ url, poster }: { url: string; poster: string | null }) {
         if (p.volume !== v.volume) p.setVolume(v.volume)
       }}
       onRateChange={(e) => {
-        if (starting.current) return
+        if (starting.current || ownsRate(e.currentTarget.playbackRate)) return
         // The native menu also offers 0.25× / 1.75×: stored as the nearest speed of the canvas player.
         const p = usePlayback.getState()
         if (p.rate !== snapRate(e.currentTarget.playbackRate)) p.setRate(e.currentTarget.playbackRate)
@@ -223,21 +229,116 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
   const code = scene ? sceneCode(scene.order) : 'S??'
   const label = `${code} · T${take.number}`
 
+  // ---- transport keys (core/transportKeys, player 'viewer'): Space / K play–pause, J / L shuttle, ← / → frames,
+  // ↑ / ↓ previous / next take of the scene, Home / End, Ctrl+` / ` fullscreen, M ★, Ctrl+M download. Esc while
+  // fullscreen only leaves fullscreen (the dialog stays open).
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const transport = useTransport(videoRef, { userRate: () => usePlayback.getState().rate })
+  // Another take shown (a new <video>): no shuttle carries over.
+  const { release } = transport
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // defaultPrevented: something focused already used the key (a slider, a canvas node behind the dialog).
-      if (e.defaultPrevented || isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
-      if (e.key === 'ArrowLeft' && prev) {
+    release()
+  }, [take.id, release])
+  /** When fullscreen last ended (performance.now()): the Escape that ended it must not close the dialog too. */
+  const exitedAt = useRef(-Infinity)
+  /** Space was a transport key: its keyup must not press the (mouse-focused) button either. */
+  const spaceTaken = useRef(false)
+  /**
+   * Tab was pressed since the last pointer press: a key aimed at the <video controls> then comes from its own controls
+   * (their sliders keep the arrows, Home and End — focusKind 'slider'); after a click on the picture they stay ours.
+   */
+  const tabbed = useRef(false)
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => undefined)
+  keyRef.current = (e) => {
+    // A sheet above every dialog (development mode's login / SePay) gets its own keys.
+    if (keyForTopOverlay(e)) return
+    if (e.type === 'keyup') {
+      if (spaceTaken.current && (e.key === ' ' || e.code === 'Space')) {
+        spaceTaken.current = false
         e.preventDefault()
-        openTake(prev.id)
-      } else if (e.key === 'ArrowRight' && next) {
-        e.preventDefault()
-        openTake(next.id)
+      }
+      return
+    }
+    if (e.key === 'Tab') tabbed.current = true
+    if (e.key === 'Escape') {
+      const d = escapeDecision({ fullscreen: !!document.fullscreenElement, exitedAt: exitedAt.current, now: performance.now() })
+      if (d === 'normal') return
+      // Before Modal's own Escape listener (added after this one): the dialog stays open.
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      if (d === 'exit-fullscreen') void document.exitFullscreen().catch(() => undefined)
+      return
+    }
+    const focus = describeFocus(e.target instanceof Element ? e.target : null, { keyboard: tabbed.current })
+    const op = playerKey(eventLike(e), focus, { player: 'viewer', mac: IS_MAC })
+    if (!op || op === 'exit') return
+    e.preventDefault()
+    e.stopPropagation()
+    if (op === 'toggle') spaceTaken.current = true
+    if (e.repeat && !VIEWER_REPEATS.has(op)) return
+    runOp(op)
+  }
+  const runOp = (op: TransportOp) => {
+    const v = videoRef.current
+    switch (op) {
+      case 'toggle':
+        if (!v) return
+        if (transport.shuttling()) return transport.stop()
+        if (v.paused) void v.play().catch(() => undefined)
+        else v.pause()
+        return
+      case 'stop':
+        return transport.stop()
+      case 'forward':
+      case 'reverse':
+        return transport.shuttleOp(op)
+      case 'start':
+      case 'end':
+        return transport.edge(op)
+      case 'clip-prev':
+        if (prev) openTake(prev.id)
+        return
+      case 'clip-next':
+        if (next) openTake(next.id)
+        return
+      case 'fullscreen':
+        if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+        else if (v && document.fullscreenEnabled) void v.requestFullscreen().catch(() => undefined)
+        return
+      case 'star':
+        if (take.status === 'completed' || take.starred) toggleChosenTake(take.id)
+        return
+      case 'download':
+        void downloadTake(take.id)
+        return
+      default: {
+        const n = frameDelta(op)
+        if (n) transport.frame(n)
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [prev, next])
+  }
+  // Added once, in a layout effect: before Modal's (passive) Escape listener, so Esc in fullscreen can stop it.
+  useLayoutEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e)
+    const onFull = () => {
+      if (!document.fullscreenElement) exitedAt.current = performance.now()
+    }
+    const onPointer = () => {
+      tabbed.current = false
+    }
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('keyup', onKey, true)
+    window.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('fullscreenchange', onFull)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKey, true)
+      window.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('fullscreenchange', onFull)
+      // Closing the viewer while its video is fullscreen: leave fullscreen too.
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+    }
+  }, [])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   useEffect(() => {
@@ -298,19 +399,21 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
         <span className="rq-tv-title">
           <span className="mono">{label}</span>
           <span className={`rq-tv-scene${scene?.title ? '' : ' faint'}`}>{scene ? scene.title || 'Chưa đặt tên' : 'Cảnh đã bị xoá'}</span>
+          {/* up here, never over the picture */}
+          {take.starred && <span className="rq-tv-star">★ Take đã chọn</span>}
         </span>
       }
       headerExtra={
         <>
           <TakeFileNameField key={take.id} take={take} />
           <span className="rq-tv-nav">
-            <button type="button" className="icon-btn" disabled={!prev} onClick={() => prev && openTake(prev.id)} title="Take trước (←)" aria-label="Take trước">
+            <button type="button" className="icon-btn" disabled={!prev} onClick={() => prev && openTake(prev.id)} title="Take trước (↑)" aria-label="Take trước">
               <ChevronLeft size={16} />
             </button>
             <span className="mono faint">
               {idx + 1}/{sorted.length}
             </span>
-            <button type="button" className="icon-btn" disabled={!next} onClick={() => next && openTake(next.id)} title="Take sau (→)" aria-label="Take sau">
+            <button type="button" className="icon-btn" disabled={!next} onClick={() => next && openTake(next.id)} title="Take sau (↓)" aria-label="Take sau">
               <ChevronRight size={16} />
             </button>
           </span>
@@ -356,11 +459,11 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
     >
       <div className="rq-tv">
         <div className="rq-tv-left">
-          <Stage take={take} onRerun={scene ? rerun : undefined} />
+          <Stage take={take} onRerun={scene ? rerun : undefined} videoRef={videoRef} ownsRate={transport.ownsRate} />
           <div className="rq-tv-strip">
             <div className="section-title">
               <span>Các take của cảnh</span>
-              <span className="faint">← → để chuyển</span>
+              <span className="faint">↑ ↓ để chuyển</span>
             </div>
             <TakeStrip sceneId={take.sceneId} size="md" activeTakeId={take.id} />
           </div>
@@ -436,7 +539,17 @@ function BusyButton({ take }: { take: Take }) {
   )
 }
 
-function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
+function Stage({
+  take,
+  onRerun,
+  videoRef,
+  ownsRate,
+}: {
+  take: Take
+  onRerun?: () => void
+  videoRef: RefObject<HTMLVideoElement | null>
+  ownsRate: (rate: number) => boolean
+}) {
   const videoUrl = useMediaUrl(take.videoId)
   const posterUrl = useMediaUrl(take.posterId)
   const transfer = useTakeTransfers((s) => transferLabel(s.byTake[take.id]))
@@ -468,7 +581,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
 
   let content: ReactNode
   if (take.status === 'completed' && videoUrl) {
-    content = <ViewerVideo key={videoUrl} url={videoUrl} poster={posterUrl} />
+    content = <ViewerVideo key={videoUrl} url={videoUrl} poster={posterUrl} videoRef={videoRef} ownsRate={ownsRate} />
   } else if (take.status === 'completed') {
     content = (
       <>
@@ -555,10 +668,7 @@ function Stage({ take, onRerun }: { take: Take; onRerun?: () => void }) {
   }
 
   return (
-    <div className={`rq-stage ${take.status}`}>
-      {content}
-      {take.starred && <span className="rq-stage-star">★ Take đã chọn</span>}
-    </div>
+    <div className={`rq-stage ${take.status}`}>{content}</div>
   )
 }
 
