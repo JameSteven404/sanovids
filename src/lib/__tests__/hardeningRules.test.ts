@@ -588,7 +588,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // the sessions use the allowlist, the 'download' lane and the canvasapp partition (no other session, no URL from the page)
     const [cs, ce] = blockAt(idx('const canvasappDownloads = createDownloadSessions('))
     const wiring = mainSource.slice(cs, ce)
-    expect(wiring).toContain("withSlot: (fn) => withCanvasappSlot('download', fn)")
+    expect(wiring).toContain("withSlot: (fn, signal) => withCanvasappSlot('download', fn, signal)")
     expect(wiring).toContain("const m = matchCanvasappRoute('GET', rawPath)")
     // the GET goes through <canvasapp-net-get> (net.request, redirect 'manual', https only), never session.fetch
     // (which follows https → http and cannot even tell where it ended)

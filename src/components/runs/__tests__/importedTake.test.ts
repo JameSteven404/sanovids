@@ -27,6 +27,7 @@ import {
   takeDurationText,
   takeModeText,
   takeSettingsText,
+  takesRuntime,
   unknownFieldTitle,
 } from '../importedTake'
 
@@ -55,6 +56,11 @@ describe('what an imported take shows', () => {
     expect(takeDurationText(take(['duration']))).toBe('?s')
     expect(takeDurationText(take([], ['duration']))).toBe('≈15s')
     expect(takeDurationText(plain())).toBe('15s')
+    // the Storyboard's ★ runtime: a guess as soon as one take does not know its duration for sure
+    expect(takesRuntime([plain(), take(['resolution'])])).toEqual({ seconds: 30, guessed: false })
+    expect(takesRuntime([plain(), take(['duration'])])).toEqual({ seconds: 30, guessed: true })
+    expect(takesRuntime([take([], ['duration'])])).toEqual({ seconds: 15, guessed: true })
+    expect(takesRuntime([])).toEqual({ seconds: 0, guessed: false })
     expect(takeModeText(take(['mode'], [], { settings: { ...SETTINGS, model: 'minimax_h3', mode: 't2v' } }))).toBe('chế độ ?')
     expect(takeModeText(take([], ['mode'], { settings: { ...SETTINGS, model: 'minimax_h3', mode: 'transform' } }))).toBe('≈Khung đầu → cuối')
     expect(fieldState(plain(), 'refs')).toBe('known')

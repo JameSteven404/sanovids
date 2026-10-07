@@ -204,8 +204,9 @@ trong lần đọc danh sách trước `POST`, tạo trong khoảng thời gian 
 múi giờ theo múi giờ của máy, canvasapp ghi theo múi giờ của nó: lệch tới 26 h, vd. giờ Việt Nam đọc ở Hawaii lệch
 +17 h; đúng khoảng mà "Nhập job" giữ cho nó, nên một job không bao giờ vừa là của một lần gửi vừa nhập được)
 — và không thể là job của một take khác trên cùng node còn chưa rõ câu trả lời: khi đó "không rõ", không
-đoán); đọc lần 2 sau 15 s nữa; không có → gửi lại
-**một lần** với **cùng** body và `client_request_id`; vẫn không rõ → take `failed` với `UNKNOWN_SUBMIT_ERROR`
+đoán); đọc lần 2 khi một lần đọc **chắc chắn** thấy job đó nếu có (`listedBy` + thời gian cache của cổng, `coverableAt`:
+45 s sau khi câu trả lời / lỗi về qua cache 15 s của main); lần đọc đó không có → gửi lại
+**một lần** với **cùng** body và `client_request_id`; lần đọc đó hỏng (dù lần 1 không thấy), hoặc vẫn không rõ → take `failed` với `UNKNOWN_SUBMIT_ERROR`
 ("không rõ đã trừ credit chưa"). `useRuns.retry(takeId)` cho take đó gửi lại **chính take đó** (cùng khoá; tìm job trước).
 Sổ `sent` ghi cả `endedAt` = lúc câu trả lời (hoặc lỗi) của `POST` về tới trang; trang tải lại / đóng khi `POST` còn
 đang đi thì không có `endedAt` — main vẫn gửi tiếp (60 s mỗi request sau khi có chỗ trong làn 'api', cộng thời gian
@@ -218,22 +219,29 @@ vì `POST` cũ còn đang tới canvasapp. Lỗi đó (và "không đọc đư�
 kiểm tra lại … chỉ gửi lại khi chắc chắn chưa có".
 
 Hai take trên **cùng một node** (hai take của một cảnh trong một dự án, hoặc take gửi lại trên node cũ) mà đều chưa rõ
-câu trả lời: job nào cũng có thể là của take kia. Lần đọc danh sách job ngay trước `POST` (bước 5: `before` + `beforeAt`
-trong sổ `sent`) khi đó là **bắt buộc**: đọc không được → **không gửi** (take `failed`, "chưa
+câu trả lời: job nào cũng có thể là của take kia. Vì thế một take **không được gửi** khi một take khác trên node đó còn
+chưa rõ câu trả lời mà lần đọc gửi lúc này chưa chắc thấy job của nó (`rivalWait`: chưa tới `listedBy` + thời gian cache
+của cổng — vd. take trước vừa "không rõ" vì trang tải lại khi main còn gửi: tới 5 phút 45 s): lỗi `deferred` kèm
+`retryAfterMs` (`RIVAL_PENDING_TEXT`, chưa gửi gì) → engine đưa **riêng take đó** về hàng đợi tới lúc ấy
+(`providers/types.submitDeferredFor`, `runs` `takeStartAfter`), take của cảnh khác vẫn chạy. Lần đọc danh sách job ngay
+trước `POST` (bước 5: `before` + `beforeAt` trong sổ `sent`) khi đó là **bắt buộc** và phải chắc chắn thấy job của mọi
+take như vậy (lần đọc cache chưa thấy tới đó → đọc lại): đọc không được → **không gửi** (take `failed`, "chưa
 gửi … không bị trừ credit"; take đang gửi lại thì vẫn "có thể đã bị trừ" như trước) — trừ khi lần đọc được gần nhất
-(lần `before` sẽ dùng) đã chắc chắn thấy job của take kia, nếu có (tới mốc `listedBy` của nó, `liveRivalsOf`): job đó
+(lần `before` sẽ dùng) đã chắc chắn thấy job của take kia, nếu có (tới mốc `listedBy` của nó, `covers`): job đó
 khi ấy nằm trong `before`, nên một take "không rõ" cũ không bao giờ được thử lại (hoặc đã xoá) không chặn cảnh mãi. Khi tìm job (`findJob`): một take
-`POST` **sau** chỉ có thể sở hữu job mà lần đọc ngay trước `POST` của nó chưa thấy; một take `POST` **trước** chỉ có
+`POST` **sau** chỉ có thể sở hữu job mà lần đọc ngay trước `POST` của nó chưa thấy — và khi lần đọc đó chắc chắn thấy
+job của take `POST` **trước** (`beforeAt` ≥ `listedBy` của nó, điều `rivalWait` bảo đảm), job không có trong lần đọc
+đó không bao giờ là của take trước; một take `POST` **trước** chỉ có
 thể sở hữu job mà lần đọc trước `POST` của take đang tìm chưa thấy dù lần đọc đó chắc chắn thấy mọi job có từ mốc
-`listedBy` của `POST` kia (30 s — `SETTLE_MS` = tổng hai lần đợi — sau khi câu trả lời của nó về; không rõ lúc về vì
+`listedBy` của `POST` kia (30 s — `SETTLE_MS` — sau khi câu trả lời của nó về; không rõ lúc về vì
 trang tải lại giữa chừng → sau 5 phút + 30 s) — job của một `POST` có trong danh sách trong 30 s sau câu trả lời hoặc
 không bao giờ, đúng như điều adapter đã dựa vào khi gửi lại. `beforeAt` vì thế là lúc **gửi** lần đọc đó trừ đi thời
 gian cổng có thể trả danh sách từ cache của nó (main: 15 s; giả lập: 2 s — `gatewayListCacheMs`), không phải lúc nhận
 câu trả lời; cache của main và của cầu nối giả cũng tính 15 s / 2 s từ lúc **gửi** request đã điền cache
 (`<canvasapp-job-list-cache>`), không phải lúc câu trả lời về: một câu trả lời cache cũ, kể cả câu trả lời chậm, không
 bao giờ được coi là mới hơn thực tế. Không chắc (ví dụ hai bản ghi của bản trước 0.6.0, không ghi giờ đọc) → **không take nào nhận** job đó,
-cả hai "không rõ", không gửi lại — kiểm tra trên canvasapp.io.vn. Lần gửi lại (sau 2 lần đọc không thấy) ghi lại giờ
-`at` của chính nó.
+cả hai "không rõ", không gửi lại — kiểm tra trên canvasapp.io.vn. Lần gửi lại (sau lần đọc chắc chắn không thấy) ghi lại
+giờ `at` của chính nó.
 
 **Cấu hình model trong inspector và hộp Chạy** — cùng một luật với bước 1 (`mapping.profileIssues`, không viết lại
 luật), trên cùng bộ nhớ đệm `/api/video-profiles` của adapter (`settingsLimits()`; tín hiệu `useProviderLimits` trong
@@ -466,7 +474,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
 | Điều khoản sử dụng / quyền của bên vận hành | cảnh báo trong Cài đặt; tắt mặc định; **xin phép trước khi dùng**. Nếu canvasapp có API chính thức, thay `transport.ts` + `api.ts` |
 | Giới hạn tần suất, Cloudflare | ≤ 2 request API + ≤ 2 lượt tải video song song, ≤ 10 job, một lần đọc danh sách job mỗi chu kỳ poll (≥ 15 s) cho mọi job + một lần ngay trước mỗi `POST /api/video-jobs`, cache danh sách job; 429 → nghỉ dần. Không có cơ chế vượt Cloudflare: nếu bị chặn thì dừng |
 | CSRF / Origin | gửi `X-CSRF-Token` từ cookie (lời gọi API không theo chuyển hướng nào: token không bao giờ đi sang địa chỉ khác, kể cả http); **không** giả `Origin`. Nếu máy chủ bắt buộc `Origin` = canvasapp → nhận 403 → cần bên vận hành hỗ trợ |
-| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu); vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; đọc danh sách job ngay trước mỗi `POST` (job đã có trên node — của take khác hay tạo trên trang mà chưa nhập — không bao giờ là job của lần gửi đó); job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: đọc không được → không gửi); `POST` có thể còn đang tới canvasapp (trang tải lại khi main còn gửi: `endedAt` / `listedBy`) → "Chạy lại" chưa gửi lại, take khác không nhận job của nó; câu trả lời cache của cổng (tính từ lúc gửi request) không bao giờ được coi là mới hơn thực tế; `created_at` không có múi giờ → khoảng ±27 h; sổ đọc lại từ localStorage mỗi lần dùng (nhiều tab). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts` |
+| Trả tiền hai lần | `client_request_id = clientRequestIdFor(take.id)` (UUID cố định theo take); sổ `jobs`/`sent`/`imported` (localStorage `bdp:canvasapp:jobs`, giữ cả khi đăng xuất); khoá đã có job (kể cả job nhập) không bao giờ `POST` lại; take nhập không bao giờ được gửi, "Chạy lại" tạo take mới; nhập không bao giờ nhận job mà một lần gửi chưa rõ có thể sở hữu; câu trả lời mất → tìm job trong danh sách trước, chỉ gửi lại 1 lần cùng khoá (cùng node như lần đầu) và chỉ sau một lần đọc chắc chắn thấy job đó nếu có (`listedBy` + cache của cổng); vẫn không rõ → `UNKNOWN_SUBMIT_ERROR`, không tự gửi; huỷ trước `POST` → không gửi; mỗi dự án một node cho mỗi cảnh; đọc danh sách job ngay trước mỗi `POST` (job đã có trên node — của take khác hay tạo trên trang mà chưa nhập — không bao giờ là job của lần gửi đó); job có thể là của một take khác còn chưa rõ trên cùng node → không nhận (cạnh take như vậy: chưa có lần đọc nào chắc chắn thấy job của nó → take đó chờ trong hàng đợi, `rivalWait`; đọc không được → không gửi); `POST` có thể còn đang tới canvasapp (trang tải lại khi main còn gửi: `endedAt` / `listedBy`) → "Chạy lại" chưa gửi lại, take khác không nhận job của nó; câu trả lời cache của cổng (tính từ lúc gửi request) không bao giờ được coi là mới hơn thực tế; `created_at` không có múi giờ → khoảng ±27 h; sổ đọc lại từ localStorage mỗi lần dùng (nhiều tab). Test: `providers/__tests__/canvasapp-e2e.test.ts`, `canvasapp-adapter.test.ts`, `dev-e2e.test.ts` |
 | 401 (hết phiên) | submit: take `failed` "Chưa đăng nhập…" (không tốn credit); poll: take giữ nguyên, `providerIssue` báo đăng nhập lại, poll tự tiếp tục sau khi đăng nhập |
 | Huỷ | canvasapp không có API huỷ rõ ràng (`DELETE` có thể không hoàn tiền) → huỷ trong SanoVids **chỉ ngừng theo dõi**; job vẫn chạy và tính tiền trên canvasapp |
 | Google chặn đăng nhập trong cửa sổ nhúng | dùng email/mật khẩu trên trang canvasapp; không giả User-Agent |
@@ -493,7 +501,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   cần đăng nhập không, `visible` / `enabled` có làm trang ẩn / làm mờ model không, máy chủ có tự từ chối thời lượng /
   độ phân giải / tỉ lệ ngoài danh sách không, và danh sách có thể có giá trị SanoVids chưa biết (4K, 20 s, 21:9) không.
 - [x] Node video theo cảnh **của dự án**: `JobRequest.sanovidsProjectId` + `sceneId` → `sceneNodeKey` → `canvasNodeId` (trước đây chỉ theo `sceneId`: hai dự án có cùng id cảnh — nhân bản / nhập cùng tệp hai lần — dùng chung một node, và khi danh sách job không có `client_request_id`, take "không rõ" của dự án này có thể nhận nhầm job của dự án kia rồi take kia gửi lại → trả tiền hai lần nếu máy chủ không dedupe). Không chuyển đổi dữ liệu: job đang chạy / take gửi dở từ bản trước giữ node cũ, gửi lại cũng trên node cũ; bản cũ hơn vẫn đọc được mục mới. Thêm: mục canvas đã nhớ chỉ gồm các cảnh có trên canvas (≤ 40); khi tìm job của câu trả lời bị mất, không nhận job mà một take khác còn chưa rõ trên cùng node có thể sở hữu (trước khi `POST` cạnh take như vậy: đọc lại danh sách job, đọc không được → không gửi), và bỏ qua job đã có trong lần đọc danh sách trước `POST`. Test: `canvasapp-mapping`, `canvasapp-adapter`, `canvasapp-e2e` ("projects sharing scene ids"), `dev-e2e` ("a duplicated project", "a lost answer next to a duplicated project" — lỗi `lost-response` / `network` + công tắc dedupe của máy chủ giả lập); Bảng phát triển › Job & đơn nạp ghi node của mỗi job ("node S03" / "node cũ S03" / "node khác").
-- [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
+- [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không; API của canvasapp có trả 3xx không (hết phiên, chưa đăng nhập, host chuẩn, dấu `/` cuối) — SanoVids không theo chuyển hướng nào ở API (`redirect: 'error'`): một 3xx như vậy thành lỗi `network` chứ không phải 401, nên lời nhắc đăng nhập không hiện. (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
 - [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không).
 - [x] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá, hỏi xác nhận trước) thay vì tạo take mới: `actions.rerunTake` (take node, hàng đợi, xem take).
 - [ ] Video tham chiếu `@video_N`: tìm cách canvasapp nhận video (nếu có) rồi mở `maxRefVideos`.
@@ -573,7 +581,7 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 
 1. **Mặc định an toàn** — mở Cài đặt: "Phát triển (giả lập)" đang chọn. Chạy 1 cảnh → video giả (nhãn DEV) từ canvasapp giả lập, credit dev bị trừ, không gọi mạng.
 2. **Bản web** — mở bản web: nút "canvasapp.io.vn" bị khoá, có dòng giải thích chỉ dùng trong bản desktop.
-3. **Đăng nhập** — bấm "Đăng nhập canvasapp": cửa sổ trang thật canvasapp mở ra; đăng nhập; cửa sổ tự đóng; Cài đặt hiện "Đã đăng nhập" + số credit đúng như trên canvasapp.
+3. **Đăng nhập** — bấm "Đăng nhập canvasapp": cửa sổ trang thật canvasapp mở ra; đăng nhập; cửa sổ tự đóng; Cài đặt hiện "Đã đăng nhập" + số credit đúng như trên canvasapp. Trước khi đăng nhập (và sau bước 10, hết phiên): Cài đặt phải hiện "Chưa đăng nhập" / lời nhắc đăng nhập, **không** phải "canvasapp.io.vn chuyển hướng yêu cầu…" — nếu thấy câu đó, API trả 3xx (ghi lại route nào, §8 VERIFY).
 4. **Đóng giữa chừng** — Đăng xuất, bấm Đăng nhập rồi đóng cửa sổ khi chưa đăng nhập → trạng thái "Chưa đăng nhập", không lỗi.
 5. **Một video t2v** — chọn canvasapp.io.vn; cảnh Seedance 2.5, 5 s, 480p, không ảnh. Chạy → take "đang tạo", % cập nhật khoảng 20 s/lần. Trên canvasapp.io.vn thấy phiên "SanoVids bridge" và job mới. Khi xong: take có poster + video MP4 phát được, nút "Tải video" lưu file .mp4. Credit canvasapp giảm đúng giá; credit dev (giả lập) **không** đổi.
 6. **Ảnh tham chiếu** — cảnh có 2 nhân vật (`@image_1`, `@image_2`). Chạy → trên canvasapp, job có 2 ảnh đúng thứ tự. Chạy lại lần 2 → ảnh **không** bị tải lên lại (xem phiên bridge chỉ có 2 upload).

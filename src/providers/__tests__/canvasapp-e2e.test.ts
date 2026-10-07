@@ -55,6 +55,7 @@ import {
   memoryStorage,
   PROFILES_TTL_MS,
   STATE_KEY,
+  LOOKUP_FAILED_TEXT,
   STILL_SENDING_TEXT,
   type KeyValueStorage,
 } from '../canvasapp/adapter'
@@ -1102,6 +1103,27 @@ describe('gateway e2e: app restart', () => {
       expect(fake.state.jobs.map((j) => j.client_request_id)).toEqual([clientRequestIdFor(t.id)])
       expect(take(t.id).remoteId).toBe('proj1:job1')
     }
+  })
+
+  it('“Chạy lại” while the job list cannot be read: held back with the reason, still “không rõ”, nothing sent', async () => {
+    fake.state.fault = (req) => (req.method === 'POST' && req.path === '/api/video-jobs' ? { kind: 'hang', process: false } : undefined)
+    const [t] = enqueue('s1')
+    await run(300)
+    const onDisk = saved()
+    fake.state.fault = null
+    restart(onDisk)
+    await run(60_000)
+    expect(take(t.id)).toMatchObject({ status: 'failed', error: UNKNOWN_SUBMIT_ERROR, remoteId: null })
+    // long after: that request is surely over — but the job list cannot be read to look for its job
+    await run(6 * 60_000)
+    fake.state.fault = (req) => (req.method === 'GET' && req.path.startsWith('/api/video-jobs?') ? { kind: 'response', status: 503, json: { detail: 'down' } } : undefined)
+    useRuns.getState().retry(t.id)
+    await run(1_000)
+    const after = take(t.id)
+    expect(after).toMatchObject({ status: 'failed', remoteId: null, submitUnknown: true })
+    expect(after.error!.startsWith(`${heldBackSubmitError('canvasapp', LOOKUP_FAILED_TEXT)} (`)).toBe(true)
+    expect(isUncertainSubmit(after)).toBe(true)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(1) // only the request that hung
   })
 })
 

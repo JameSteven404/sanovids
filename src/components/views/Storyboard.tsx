@@ -10,6 +10,7 @@ import { useDownloadPrefs } from '../../lib/downloads'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { takeDurationText, takesRuntime } from '../runs/importedTake'
 import { useSceneRunBlock } from '../runs/shared'
 import { formatRuntime, isEditingTarget, isSelectAllKey, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
 import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
@@ -75,7 +76,8 @@ export function Storyboard() {
     [scenes, byScene],
   )
 
-  const starredRuntime = cards.reduce((t, c) => t + (c.starred?.settings.duration ?? 0), 0)
+  // an imported ★ take whose duration canvasapp did not say (placeholder) or that was only guessed: the total is a guess
+  const { seconds: starredRuntime, guessed: runtimeGuessed } = takesRuntime(cards.flatMap((c) => (c.starred ? [c.starred] : [])))
   const plannedRuntime = cards.reduce((t, c) => t + c.scene.settings.duration, 0)
   const missing = cards.filter((c) => !c.starred)
   // Same pick as actions.chosenTakeIds(): the ★ take, else the newest finished take of each scene.
@@ -102,6 +104,7 @@ export function Storyboard() {
         title: c.scene.title,
         take: c.show ?? null,
         duration: c.show?.settings.duration ?? c.scene.settings.duration,
+        ...(c.show?.imported ? { durationText: takeDurationText(c.show) } : {}),
       })),
     [cards],
   )
@@ -270,8 +273,11 @@ export function Storyboard() {
         <div className="vw-head-title">
           <h2>Storyboard</h2>
           <span className="badge">{scenes.length} cảnh</span>
-          <span className="vw-sb-stat" title="Tổng thời lượng các take được đánh dấu ★ / tổng thời lượng dự kiến của mọi cảnh">
-            <Star size={12} className="vw-star-ico" /> Thời lượng take chọn <b>{formatRuntime(starredRuntime)}</b>
+          <span
+            className="vw-sb-stat"
+            title={`Tổng thời lượng các take được đánh dấu ★ / tổng thời lượng dự kiến của mọi cảnh${runtimeGuessed ? ' — ≈: có take nhập từ canvasapp mà thời lượng không rõ hoặc chỉ là đoán' : ''}`}
+          >
+            <Star size={12} className="vw-star-ico" /> Thời lượng take chọn <b>{runtimeGuessed ? '≈' : ''}{formatRuntime(starredRuntime)}</b>
             <span className="faint"> / {formatRuntime(plannedRuntime)} dự kiến</span>
           </span>
         </div>
@@ -428,7 +434,7 @@ const StoryCard = memo(function StoryCard({
             {show.starred && <Star size={11} fill="currentColor" />}T{show.number}
           </span>
         )}
-        <span className="vw-card-dur">{(show?.settings ?? scene.settings).duration}s</span>
+        <span className="vw-card-dur">{show ? takeDurationText(show) : `${scene.settings.duration}s`}</span>
         {running && (
           <div className="vw-card-running">
             <span>

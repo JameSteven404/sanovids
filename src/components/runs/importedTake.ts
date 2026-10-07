@@ -50,6 +50,20 @@ export function takeDurationText(t: Pick<Take, 'settings' | 'imported'>): string
   return s === 'unknown' ? '?s' : s === 'inferred' ? `≈${t.settings.duration}s` : `${t.settings.duration}s`
 }
 
+/**
+ * The total length of these takes (the Storyboard's ★ runtime): `guessed` when one of them is an imported take that
+ * does not know its duration for sure (a placeholder, or only inferred) — the total is then shown "≈".
+ */
+export function takesRuntime(takes: readonly Pick<Take, 'settings' | 'imported'>[]): { seconds: number; guessed: boolean } {
+  let seconds = 0
+  let guessed = false
+  for (const t of takes) {
+    seconds += t.settings.duration
+    if (fieldState(t, 'duration') !== 'known') guessed = true
+  }
+  return { seconds, guessed }
+}
+
 /** The mode's name for a take ("Khung đầu → cuối"); "chế độ ?" when an imported take does not know it. */
 export function takeModeText(t: Pick<Take, 'settings' | 'imported'>): string {
   const label = modeLabel(t.settings.mode, t.settings.model)

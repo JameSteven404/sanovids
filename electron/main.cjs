@@ -355,8 +355,10 @@ function registerAppBridge() {
 // SanoVids never sees the password or the cookies: the renderer can only ask the main process to call a short
 // allowlist of canvasapp endpoints through that session. The main process adds the X-CSRF-Token header from the
 // partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low (2 API calls + 2 video
-// downloads at a time, whatever the number of running jobs) and caches the job list so it is never fetched more than
-// once every 15 s. Finished videos are pulled by the page in pieces of ≤ 4 MiB (canvasapp:downloadOpen / downloadRead /
+// downloads at a time, whatever the number of running jobs) and caches the job list: polls are answered from it for
+// 15 s (from when the cached read was sent), but every job POST drops it — the page reads the list right before each
+// POST, so a run of N submits costs N list reads besides the polls (<canvasapp-job-list-cache>). Finished videos are
+// pulled by the page in pieces of ≤ 4 MiB (canvasapp:downloadOpen / downloadRead /
 // downloadClose, <canvasapp-downloads>): ≤ 1 GB, stopped after 60 s without data, continued with Range when canvasapp
 // allows it. No Origin/Referer spoofing, no Cloudflare workarounds.
 // ---------------------------------------------------------------------------------------------------------------
@@ -435,7 +437,7 @@ let canvasappLoginPromise = null
 
 // <canvasapp-job-list-cache> (pure; src/providers/__tests__/gatewayLanes.test.ts runs this block as-is)
 /**
- * GET /api/video-jobs at most once per `ttlMs` per query: an answer is reused that long, timed from when its request was
+ * GET /api/video-jobs at most once per `ttlMs` per query between job POSTs: an answer is reused that long, timed from when its request was
  * SENT — the adapter trusts a read to show every job made `ttlMs` before IT was sent (adapter.ts SentRecord.beforeAt,
  * gatewayListCacheMs); timed from the answer's arrival, a slow answer would be served as fresher than it is. Every POST
  * /api/video-jobs drops it (when it starts and when it ends, whatever came of it), and so does a logout; a read that
@@ -491,10 +493,36 @@ function gatewayError(code, message) {
 const CANVASAPP_LANE_SIZE = { api: 2, download: 2 }
 const canvasappLanes = { api: { active: 0, waiters: [] }, download: { active: 0, waiters: [] } }
 
-/** Runs `fn` when its lane ('api' or 'download') has a free slot (first come, first served). */
-async function withCanvasappSlot(laneName, fn) {
+/**
+ * Runs `fn` when its lane ('api' or 'download') has a free slot (first come, first served). `signal` (optional): aborted
+ * while waiting → leaves the line at once and rejects without running `fn` (a slot it was woken for goes to the next).
+ */
+async function withCanvasappSlot(laneName, fn, signal) {
   const lane = canvasappLanes[laneName]
-  while (lane.active >= CANVASAPP_LANE_SIZE[laneName]) await new Promise((resolve) => lane.waiters.push(resolve))
+  const size = CANVASAPP_LANE_SIZE[laneName]
+  const gone = () => !!(signal && signal.aborted)
+  while (lane.active >= size && !gone()) {
+    await new Promise((resolve) => {
+      const leave = () => {
+        const i = lane.waiters.indexOf(wake)
+        if (i >= 0) lane.waiters.splice(i, 1)
+        resolve()
+      }
+      const wake = () => {
+        if (signal) signal.removeEventListener('abort', leave)
+        resolve()
+      }
+      lane.waiters.push(wake)
+      if (signal) signal.addEventListener('abort', leave, { once: true })
+    })
+  }
+  if (gone()) {
+    if (lane.active < size) {
+      const next = lane.waiters.shift()
+      if (next) next()
+    }
+    throw new Error('aborted')
+  }
   lane.active++
   try {
     return await fn()
@@ -967,7 +995,8 @@ function createDownloadSessions(deps) {
     const s = { id, owner, key: m.key, controller: new AbortController(), pump: null, release: null, ended: false, reading: false, headerTimer: null, pullTimer: null, maxTimer: null, timedOut: false, validator: null }
     sessions.set(id, s)
 
-    // One slot of the 'download' lane for the whole download. Closed while waiting: the slot is let go at once.
+    // One slot of the 'download' lane for the whole download. Closed while waiting: out of the line at once (never
+    // left queued: the session cap counts only what is open or waiting); a slot it was given is let go at once.
     const got = await new Promise((resolve) => {
       const held = () => {
         if (s.ended) {
@@ -981,7 +1010,8 @@ function createDownloadSessions(deps) {
       }
       let slot
       try {
-        slot = Promise.resolve(deps.withSlot(held))
+        // closed while waiting (end(s) aborts the controller): leaves the lane's line at once, open() answers 'gone'
+        slot = Promise.resolve(deps.withSlot(held, s.controller.signal))
       } catch (e) {
         slot = Promise.reject(e)
       }
@@ -1141,7 +1171,8 @@ async function canvasappRequest(req) {
   if (!match) return gatewayError('not-allowed', `SanoVids không được phép gọi ${method} ${String(req.path).slice(0, 80)}.`)
   const { route, url } = match
 
-  // Job list: at most once every 15 s per project, whatever the renderer asks.
+  // Job list: answered from the cache for 15 s (from when the cached read was sent), whatever the renderer asks — until
+  // a job POST drops it (the adapter then reads the list right before each POST: N submits = N reads besides the polls).
   const cacheKey = method === 'GET' && url.pathname === '/api/video-jobs' ? url.search : null
   if (cacheKey !== null) {
     const hit = canvasappJobListCache.get(cacheKey)
@@ -1307,7 +1338,7 @@ function downloadRedirectOk(url) {
 /** Video downloads of the gateway (<canvasapp-downloads>): the 'download' lane, the canvasapp partition, the allowlist. */
 const canvasappDownloads = createDownloadSessions({
   fetch: (url, init) => canvasappNetGet({ request: (opts) => net.request(opts), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),
-  withSlot: (fn) => withCanvasappSlot('download', fn),
+  withSlot: (fn, signal) => withCanvasappSlot('download', fn, signal),
   matchRoute: (rawPath) => {
     const m = matchCanvasappRoute('GET', rawPath)
     return m ? { binary: !!m.route.binary, url: m.url.toString(), key: m.url.pathname } : null

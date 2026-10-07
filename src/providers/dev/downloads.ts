@@ -401,7 +401,8 @@ export interface DownloadLimits {
 
 export interface DownloadDeps {
   fetch(url: string, init: { headers: Record<string, string>; signal: AbortSignal }): Promise<ResponseLike>
-  withSlot(fn: () => Promise<unknown>): Promise<unknown> | unknown
+  /** `signal` aborted while waiting → out of the line at once, `fn` never runs (main: withCanvasappSlot's third argument). */
+  withSlot(fn: () => Promise<unknown>, signal?: AbortSignal): Promise<unknown> | unknown
   matchRoute(path: unknown): { binary: boolean; url: string; key: string } | null
   setTimer: SetTimer
   clearTimer: ClearTimer
@@ -563,7 +564,8 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
       }
       let slot: Promise<unknown>
       try {
-        slot = Promise.resolve(deps.withSlot(held))
+        // closed while waiting (end(s) aborts the controller): leaves the lane's line at once, open() answers 'gone'
+        slot = Promise.resolve(deps.withSlot(held, s.controller.signal))
       } catch (e) {
         slot = Promise.reject(e)
       }
@@ -701,11 +703,34 @@ export function createDownloadSessions(deps: DownloadDeps): DownloadSessions {
 // ---- development-mode only ----
 
 /** The 'download' lane of main's <canvasapp-lanes> (size slots, first come first served) for the dev bridge. */
-export function createDevLane(size: number): { withSlot: (fn: () => Promise<unknown>) => Promise<unknown>; active: () => number } {
+export function createDevLane(size: number): {
+  withSlot: (fn: () => Promise<unknown>, signal?: AbortSignal) => Promise<unknown>
+  active: () => number
+  waiting: () => number
+} {
   let active = 0
   const waiters: (() => void)[] = []
-  async function withSlot(fn: () => Promise<unknown>): Promise<unknown> {
-    while (active >= size) await new Promise<void>((resolve) => waiters.push(resolve))
+  async function withSlot(fn: () => Promise<unknown>, signal?: AbortSignal): Promise<unknown> {
+    const gone = () => !!signal?.aborted
+    while (active >= size && !gone()) {
+      await new Promise<void>((resolve) => {
+        const leave = () => {
+          const i = waiters.indexOf(wake)
+          if (i >= 0) waiters.splice(i, 1)
+          resolve()
+        }
+        const wake = () => {
+          signal?.removeEventListener('abort', leave)
+          resolve()
+        }
+        waiters.push(wake)
+        signal?.addEventListener('abort', leave, { once: true })
+      })
+    }
+    if (gone()) {
+      if (active < size) waiters.shift()?.()
+      throw new Error('aborted')
+    }
     active++
     try {
       return await fn()
@@ -715,5 +740,5 @@ export function createDevLane(size: number): { withSlot: (fn: () => Promise<unkn
       if (next) next()
     }
   }
-  return { withSlot, active: () => active }
+  return { withSlot, active: () => active, waiting: () => waiters.length }
 }

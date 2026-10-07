@@ -13,10 +13,17 @@ export interface ImportWords {
   site: string
   /** "credit" | "credit dev" */
   credit: string
+  /**
+   * How long a job just made on the site may take to show: the gateway answers the job list from its cache — main for
+   * 15 s (CANVASAPP_JOBS_MIN_MS), the simulated bridge for 2 s (DEV_JOB_LIST_CACHE_MS).
+   */
+  listDelay: string
 }
 
 export const importWords = (simulated: boolean): ImportWords =>
-  simulated ? { simulated, site: 'canvasapp giả lập', credit: 'credit dev' } : { simulated, site: 'canvasapp.io.vn', credit: 'credit' }
+  simulated
+    ? { simulated, site: 'canvasapp giả lập', credit: 'credit dev', listDelay: 'vài giây' }
+    : { simulated, site: 'canvasapp.io.vn', credit: 'credit', listDelay: '~15 giây' }
 
 export const importTitle = (w: ImportWords) => (w.simulated ? 'Nhập job từ canvasapp giả lập' : 'Nhập job từ canvasapp')
 
@@ -29,7 +36,7 @@ export const noBridgeText = (w: ImportWords) =>
   `Chưa có phiên “SanoVids bridge” trên ${w.site} — chưa có job nào để nhập. Phiên được tạo khi bạn chạy cảnh đầu tiên.`
 
 export const emptyText = (w: ImportWords) =>
-  `Không có job mới nào để nhập. Job vừa tạo trên ${w.site} có thể mất tới ~15 giây mới hiện ở đây — bấm “Quét lại”.`
+  `Không có job mới nào để nhập. Job vừa tạo trên ${w.site} có thể mất tới ${w.listDelay} mới hiện ở đây — bấm “Quét lại”.`
 
 /** The button that answers a 401: log in, then scan again. */
 export const loginButtonText = (w: ImportWords) => (w.simulated ? 'Đăng nhập' : 'Đăng nhập canvasapp')

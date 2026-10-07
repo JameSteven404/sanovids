@@ -154,6 +154,20 @@ export function SettingsFields({
     () => selectionIssues(limits, settings.map((s, i) => ({ settings: s, code: codes?.[i] }))),
     [limits, settings, codes],
   )
+  /** Options turned off now that the selection does not use (it is not refused itself): named, with "Đọc lại". */
+  const offLabels = useMemo(() => {
+    if (issues) return []
+    const out: string[] = []
+    const add = (field: LimitField, label: (v: FieldValue) => string) => {
+      for (const [v, l] of lims[field]) if (l.state === 'off') out.push(label(v))
+    }
+    add('model', (v) => MODELS[v as ModelId]?.name ?? String(v))
+    add('mode', (v) => modeLabel(v as Mode, model ?? undefined))
+    add('duration', (v) => fmtDuration(Number(v)))
+    add('resolution', (v) => fmtResolution(String(v)))
+    add('ratio', (v) => String(v))
+    return out
+  }, [issues, lims, model])
 
   return (
     <>
@@ -283,6 +297,17 @@ export function SettingsFields({
         </div>
       </div>
       {issues && <LimitsNote provider={provider} limits={limits} info={info} issues={issues} multi={settings.length > 1} site={site} />}
+      {offLabels.length > 0 && (
+        <div className="in-note in-limits-note in-limits-off" role="status">
+          <span className="in-limits-foot">
+            <span>
+              {site.short} đang tắt: {offLabels.slice(0, 4).join(', ')}
+              {offLabels.length > 4 ? '…' : ''}
+            </span>
+            <RereadButton provider={provider} info={info} site={site} />
+          </span>
+        </div>
+      )}
     </>
   )
 }
@@ -311,19 +336,6 @@ function LimitsNote({
   multi: boolean
   site: LimitsSiteName
 }) {
-  const [busy, setBusy] = useState(false)
-  const reread = async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      const result = await refreshProviderLimits(provider, { force: true })
-      const t = refreshToast(result, site, providerLimitsInfo(provider))
-      const gw = gatewayFor(provider)
-      toast(t.text, { tone: t.tone, action: t.login && gw ? { label: 'Đăng nhập', run: () => void loginToCanvasapp(gw) } : undefined })
-    } finally {
-      setBusy(false)
-    }
-  }
   const who = multi ? `${issues.count} cảnh${issues.codes.length ? ` (${codeList(issues.codes)})` : ''}` : 'Cảnh này'
   const head = issues.sure
     ? multi
@@ -344,18 +356,38 @@ function LimitsNote({
         </ul>
         <span className="in-limits-foot">
           {issues.sure ? `Đổi lựa chọn ở trên, hoặc đọc lại nếu ${site.short} vừa mở lại.` : 'Đổi lựa chọn ở trên, hoặc đọc lại ngay.'}
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost in-mini"
-            onClick={() => void reread()}
-            disabled={busy}
-            title={`Đọc lại cấu hình model từ ${site.full}${info.at !== null ? ` (lần trước: ${clockTime(info.at)})` : ''}`}
-          >
-            <RefreshCw size={11} className={busy ? 'in-spin' : undefined} /> Đọc lại
-          </button>
+          <RereadButton provider={provider} info={info} site={site} />
         </span>
       </div>
     </div>
+  )
+}
+
+/** "Đọc lại": a forced read of the gateway's model settings (at most every few seconds), its outcome as a toast. */
+function RereadButton({ provider, info, site }: { provider: ProviderId; info: LimitsInfo; site: LimitsSiteName }) {
+  const [busy, setBusy] = useState(false)
+  const reread = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const result = await refreshProviderLimits(provider, { force: true })
+      const t = refreshToast(result, site, providerLimitsInfo(provider))
+      const gw = gatewayFor(provider)
+      toast(t.text, { tone: t.tone, action: t.login && gw ? { label: 'Đăng nhập', run: () => void loginToCanvasapp(gw) } : undefined })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-sm btn-ghost in-mini"
+      onClick={() => void reread()}
+      disabled={busy}
+      title={`Đọc lại cấu hình model từ ${site.full}${info.at !== null ? ` (lần trước: ${clockTime(info.at)})` : ''}`}
+    >
+      <RefreshCw size={11} className={busy ? 'in-spin' : undefined} /> Đọc lại
+    </button>
   )
 }
 

@@ -625,6 +625,34 @@ describe('runs engine: downloading a finished video (abort, progress, refusals)'
     expect(remoteVideoReady(id)).toBe(false)
   })
 
+  it('a submit deferred for that take alone (retryAfterMs): it waits back in the queue, the takes behind it start meanwhile', async () => {
+    const f = fakeProvider('dev')
+    const submit = f.p.submit
+    let deferS1 = true
+    f.p.submit = async (req, opts) => {
+      if (deferS1 && req.sceneId === 's1') {
+        deferS1 = false
+        // e.g. another take of s1 was just sent without a known answer (canvasapp adapter: RIVAL_PENDING_TEXT)
+        throw Object.assign(new Error('chờ take khác của cảnh này'), { code: 'deferred', retryAfterMs: 5_000 })
+      }
+      return submit(req, opts)
+    }
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s1'])
+    await vi.advanceTimersByTimeAsync(1)
+    useRuns.getState().enqueue(['s2'])
+    const idOf = (sceneId: string) => useRuns.getState().takes.find((t) => t.sceneId === sceneId)!.id
+    await vi.advanceTimersByTimeAsync(1_000)
+    // s1 went back to the queue (nothing sent, never failed); s2, queued after it, was sent at once
+    expect(take(idOf('s1'))).toMatchObject({ status: 'queued', remoteId: null, error: null })
+    expect(take(idOf('s2'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s2') })
+    await vi.advanceTimersByTimeAsync(3_500)
+    expect(take(idOf('s1')).status).toBe('queued')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(take(idOf('s1'))).toMatchObject({ status: 'processing', remoteId: 'r_' + idOf('s1') })
+    expect(f.submitted.map((r) => r.sceneId)).toEqual(['s2', 's1'])
+  })
+
   it('"too many downloads at once" (deferred) is never counted as a failed try: five of them never fail the take', async () => {
     const f = fakeProvider('dev')
     let tries = 0

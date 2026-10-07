@@ -2,8 +2,9 @@
 // never send the user to canvasapp.io.vn for a job that only exists in the simulation.
 import { describe, expect, it } from 'vitest'
 import { CanvasappError, errorFromResponse } from '../canvasapp/api'
+import { LOOKUP_FAILED_TEXT, STILL_SENDING_TEXT } from '../canvasapp/adapter'
 import { devError, devResult, devWording, withDevWording } from '../dev/wording'
-import { downloadFailedError, DEV_UNKNOWN_SUBMIT_ERROR, hasUncertainSubmitText, unknownSubmitError, UNKNOWN_SUBMIT_ERROR } from '../../store/runs'
+import { downloadFailedError, DEV_UNKNOWN_SUBMIT_ERROR, hasUncertainSubmitText, heldBackSubmitError, unknownSubmitError, UNKNOWN_SUBMIT_ERROR } from '../../store/runs'
 
 describe('devWording', () => {
   it('points to the Bảng phát triển and names the simulation; idempotent', () => {
@@ -18,6 +19,22 @@ describe('devWording', () => {
       expect(devWording(t)).not.toContain('canvasapp.io.vn')
       expect(devWording(devWording(t))).toBe(devWording(t))
     }
+  })
+
+  it('the reasons a "Chạy lại" was held back name the simulation and credit dev, like the dev "không rõ" text they follow', () => {
+    for (const t of [STILL_SENDING_TEXT, `${LOOKUP_FAILED_TEXT} (Không kết nối được tới canvasapp.io.vn.)`]) {
+      const dev = devWording(t)
+      expect(dev).toContain('trên canvasapp giả lập')
+      expect(dev).toContain('credit dev')
+      expect(dev).not.toMatch(/canvasapp(?! giả lập)/)
+      expect(dev).not.toMatch(/credit(?! dev)/)
+      expect(devWording(dev)).toBe(dev)
+    }
+    const shown = heldBackSubmitError('dev', devWording(STILL_SENDING_TEXT))
+    expect(shown.startsWith(DEV_UNKNOWN_SUBMIT_ERROR)).toBe(true)
+    expect(shown).not.toMatch(/canvasapp(?! giả lập)|credit(?! dev)/)
+    // the real gateway keeps its words
+    expect(heldBackSubmitError('canvasapp', STILL_SENDING_TEXT)).toContain('trên canvasapp, nhưng')
   })
 
   it('devError keeps the error (code, status, flags) and only changes its words; devResult rewrites error / reason', () => {

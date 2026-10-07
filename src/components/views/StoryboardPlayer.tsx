@@ -17,6 +17,8 @@ export interface PlayerItem {
   take: Take | null
   /** Seconds (take or scene setting). Stills are shown for duration / 5 in the demo. */
   duration: number
+  /** How the duration is shown when it is not sure ("?s" / "≈5s": a take imported with "Nhập job", importedTake). */
+  durationText?: string
 }
 
 /** Length of a fake clip (development mode / old demo, lib/mockProvider) when the webm has no duration metadata. */
@@ -321,7 +323,7 @@ export function StoryboardPlayer({ items, start, onClose }: { items: PlayerItem[
               className={`vw-seg ${i === index ? 'current' : ''} ${it.take ? '' : 'is-empty'}`}
               style={{ flexGrow: Math.max(1, it.duration) }}
               onClick={() => jump(i)}
-              title={`${it.code}${it.title ? ' · ' + it.title : ''} · ${it.duration}s${it.take ? ` · T${it.take.number}` : ' · chưa có take'}`}
+              title={`${it.code}${it.title ? ' · ' + it.title : ''} · ${it.durationText ?? `${it.duration}s`}${it.take ? ` · T${it.take.number}` : ' · chưa có take'}`}
             >
               <i style={{ width: `${segProgress(i) * 100}%` }} />
             </button>

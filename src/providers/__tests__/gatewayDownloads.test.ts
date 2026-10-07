@@ -47,16 +47,18 @@ function block(name: string): string {
 const main = new Function(`${block('canvasapp-downloads')}\nreturn { ${NAMES.join(', ')} }`)() as Impl
 
 interface Lane {
-  withSlot: (fn: () => Promise<unknown>) => Promise<unknown>
+  withSlot: (fn: () => Promise<unknown>, signal?: AbortSignal) => Promise<unknown>
   active: () => number
+  /** Downloads in the line for a slot. */
+  waiting: () => number
 }
 /** A fresh 'download' lane of main's <canvasapp-lanes> block (as-is). */
 function mainLane(): Lane {
   const l = new Function(`${block('canvasapp-lanes')}\nreturn { withSlot: withCanvasappSlot, lanes: canvasappLanes }`)() as {
-    withSlot: (lane: string, fn: () => Promise<unknown>) => Promise<unknown>
-    lanes: { download: { active: number } }
+    withSlot: (lane: string, fn: () => Promise<unknown>, signal?: AbortSignal) => Promise<unknown>
+    lanes: { download: { active: number; waiters: unknown[] } }
   }
-  return { withSlot: (fn) => l.withSlot('download', fn), active: () => l.lanes.download.active }
+  return { withSlot: (fn, signal) => l.withSlot('download', fn, signal), active: () => l.lanes.download.active, waiting: () => l.lanes.download.waiters.length }
 }
 
 const IMPLS: [string, Impl, () => Lane][] = [
@@ -493,6 +495,37 @@ describe('gateway downloads: sessions (main.cjs ≡ dev port, with the real lane
       return { t3, t4: t4.ok && 'id' in t4 ? 'open' : t4, active, end: lane.active(), sent: site.calls.length }
     })
     expect(r).toEqual({ t3: { ok: false, code: 'gone', message: 'Lượt tải video này đã kết thúc.' }, t4: 'open', active: 2, end: 0, sent: 3 })
+  })
+
+  it('SLOT SAFETY: a download closed while it waits for a slot leaves the line at once — open() answers “gone” then, nothing stays queued', async () => {
+    const r = await both(async (impl, laneOf) => {
+      const lane = laneOf()
+      const site = fakeSite(() => 'hang') // both slots held: headers that take their time
+      const s = sessionsOf(impl, lane, site.fetch, { maxSessions: 3 })
+      void s.open('page', { id: ID(1), path: PATH })
+      void s.open('page', { id: ID(2), path: PATH })
+      await vi.advanceTimersByTimeAsync(0)
+      const answers = new Set<string>()
+      for (let i = 0; i < 200; i++) {
+        const opening = s.open('page', { id: ID(3), path: PATH })
+        await vi.advanceTimersByTimeAsync(0)
+        s.close('page', { id: ID(3) })
+        await vi.advanceTimersByTimeAsync(0)
+        const a = await Promise.race([opening, Promise.resolve('still waiting')])
+        answers.add(typeof a === 'string' ? a : a.ok ? 'ok' : a.code)
+      }
+      const waiting = lane.waiting()
+      const size = s.size()
+      // the session cap still has room for one that really waits
+      const fourth = s.open('page', { id: ID(4), path: PATH })
+      await vi.advanceTimersByTimeAsync(0)
+      const counted = { waiting: lane.waiting(), size: s.size() }
+      s.closeAll('page')
+      await vi.advanceTimersByTimeAsync(0)
+      const last = await fourth
+      return { answers: [...answers], waiting, size, counted, last: last.ok ? 'ok' : last.code, end: { active: lane.active(), waiting: lane.waiting() }, sent: site.calls.length }
+    })
+    expect(r).toEqual({ answers: ['gone'], waiting: 0, size: 2, counted: { waiting: 1, size: 3 }, last: 'gone', end: { active: 0, waiting: 0 }, sent: 2 })
   })
 
   it('logout with 2 downloading and 3 waiting: every slot comes back, nothing more is sent', async () => {

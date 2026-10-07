@@ -1239,6 +1239,10 @@
   align-items: center;
   gap: 4px 8px;
 }
+/* options the gateway turns off that the selection does not use: one quiet line with "Đọc lại" */
+.in-note.in-limits-off {
+  padding: 4px 10px;
+}
 .in-spin {
   animation: app-spin 0.8s linear infinite;
 }

@@ -4,12 +4,12 @@
 import { describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 
-type Slot = <T>(lane: 'api' | 'download', fn: () => Promise<T>) => Promise<T>
+type Slot = <T>(lane: 'api' | 'download', fn: () => Promise<T>, signal?: { aborted: boolean } & Pick<AbortSignal, 'addEventListener' | 'removeEventListener'>) => Promise<T>
 
-function loadLanes(): { withSlot: Slot; size: { api: number; download: number } } {
+function loadLanes(): { withSlot: Slot; size: { api: number; download: number }; lanes: Record<'api' | 'download', { active: number; waiters: unknown[] }> } {
   const m = /\/\/ <canvasapp-lanes>[^\n]*\n([\s\S]*?)\/\/ <\/canvasapp-lanes>/.exec(mainSource)
   if (!m) throw new Error('canvasapp-lanes block not found in electron/main.cjs')
-  return new Function(`${m[1]}\nreturn { withSlot: withCanvasappSlot, size: CANVASAPP_LANE_SIZE }`)() as { withSlot: Slot; size: { api: number; download: number } }
+  return new Function(`${m[1]}\nreturn { withSlot: withCanvasappSlot, size: CANVASAPP_LANE_SIZE, lanes: canvasappLanes }`)() as ReturnType<typeof loadLanes>
 }
 
 /** A request that stays in flight until `finish()` is called. */
@@ -65,6 +65,56 @@ describe('canvasapp gateway lanes (electron/main.cjs)', () => {
     expect(order).toEqual(['a', 'b', 'c'])
     a.finish()
     await Promise.all([p1, p3])
+  })
+})
+
+describe('canvasapp gateway lanes: giving up while waiting (a download closed before its turn)', () => {
+  it('leaves the line at once and never runs; the ones behind it keep their turn', async () => {
+    const { withSlot, lanes } = loadLanes()
+    const a = pending()
+    const b = pending()
+    const order: string[] = []
+    void withSlot('download', async () => (order.push('a'), a.done))
+    void withSlot('download', async () => (order.push('b'), b.done))
+    const quit = new AbortController()
+    const c = withSlot('download', async () => order.push('c'), quit.signal)
+    const d = withSlot('download', async () => order.push('d'))
+    await flush()
+    expect(lanes.download.waiters).toHaveLength(2)
+    quit.abort()
+    await expect(c).rejects.toThrow('aborted')
+    expect(lanes.download.waiters).toHaveLength(1) // only d still waits
+    a.finish()
+    await d
+    expect(order).toEqual(['a', 'b', 'd'])
+    // already given up: never waits, never runs
+    await expect(withSlot('download', async () => order.push('e'), quit.signal)).rejects.toThrow('aborted')
+    b.finish()
+    await flush()
+    expect(order).toEqual(['a', 'b', 'd'])
+    expect(lanes.download).toEqual({ active: 0, waiters: [] })
+  })
+
+  it('woken for a slot but given up before its turn ran: the slot goes on to the next one (never lost)', async () => {
+    const { withSlot, lanes } = loadLanes()
+    const a = pending()
+    const b = pending()
+    const order: string[] = []
+    void withSlot('download', async () => (order.push('a'), a.done))
+    void withSlot('download', async () => (order.push('b'), b.done))
+    // a signal that turns aborted without telling (the abort lands between the wake-up and its turn)
+    const quiet = { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined }
+    const c = withSlot('download', async () => order.push('c'), quiet)
+    const d = withSlot('download', async () => order.push('d'))
+    await flush()
+    quiet.aborted = true
+    a.finish() // wakes c, which gives up: d gets the slot
+    await expect(c).rejects.toThrow('aborted')
+    await d
+    expect(order).toEqual(['a', 'b', 'd'])
+    b.finish()
+    await flush()
+    expect(lanes.download).toEqual({ active: 0, waiters: [] })
   })
 })
 

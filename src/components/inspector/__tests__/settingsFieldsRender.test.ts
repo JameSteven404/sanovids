@@ -60,6 +60,17 @@ describe('SettingsFields rendered against the gateway’s limits', () => {
     expect(html).toContain('Đọc lại')
   })
 
+  it('an option turned off that the selection does not use: named in one line with "Đọc lại" (the site may have opened it again)', () => {
+    const html = render([{ ...SD, duration: 15 }], { source: 'server', firm: true, issues: (s) => profileIssues(s, PROFILES) })
+    expect(optionOf(html, 'MiniMax-H3')).toContain('disabled=""')
+    expect(html).not.toContain('cảnh chưa chạy được') // the scene itself is fine: no refusal note
+    expect(html).toContain('in-limits-off')
+    expect(html).toContain('canvasapp giả lập đang tắt: MiniMax-H3, 30s')
+    expect(html).toContain('Đọc lại')
+    // nothing off (a guess only marks): no line
+    expect(render([{ ...SD, duration: 15 }], { source: 'fallback', firm: false, issues: (s) => profileIssues(s, PROFILES) })).not.toContain('in-limits-off')
+  })
+
   it('several scenes: the note names how many and which (codes); a value fine for some stays pickable', () => {
     const html = render([SD, H3, { ...SD, duration: 5 }], { source: 'server', firm: true, issues: (s) => profileIssues(s, PROFILES) })
     expect(html).toContain('2 cảnh (S01, S02)')

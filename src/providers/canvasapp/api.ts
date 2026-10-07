@@ -88,10 +88,12 @@ export class CanvasappError extends Error {
   readonly heldBack?: boolean
   /** Refused for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance): message NOT_ENOUGH_CREDITS_TEXT. */
   readonly noCredit?: boolean
+  /** 'deferred' for this take alone: try it again after this long (providers/types submitDeferredFor). */
+  readonly retryAfterMs?: number
   constructor(
     code: CanvasappErrorCode,
     message: string,
-    opts: { status?: number; detail?: string; uncertain?: boolean; heldBack?: boolean; noCredit?: boolean } = {},
+    opts: { status?: number; detail?: string; uncertain?: boolean; heldBack?: boolean; noCredit?: boolean; retryAfterMs?: number } = {},
   ) {
     super(message)
     this.name = 'CanvasappError'
@@ -101,6 +103,7 @@ export class CanvasappError extends Error {
     if (opts.uncertain) this.uncertain = true
     if (opts.uncertain && opts.heldBack) this.heldBack = true
     if (opts.noCredit) this.noCredit = true
+    if (code === 'deferred' && opts.retryAfterMs !== undefined && Number.isFinite(opts.retryAfterMs)) this.retryAfterMs = Math.max(0, opts.retryAfterMs)
   }
 }
 

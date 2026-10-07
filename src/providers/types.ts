@@ -264,6 +264,17 @@ export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'o
  */
 export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
 
+/**
+ * A deferred submit that concerns that take alone (`retryAfterMs`; e.g. another take of its scene was just sent without
+ * a known answer): how long THAT take waits before it is tried again — other takes of the provider start meanwhile.
+ * null = the provider as a whole asks to wait (isSubmitDeferred alone).
+ */
+export function submitDeferredFor(e: unknown): number | null {
+  if (!isSubmitDeferred(e)) return null
+  const ms = (e as { retryAfterMs?: unknown }).retryAfterMs
+  return typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? ms : null
+}
+
 /** fetchResult() refused a video bigger than SanoVids can take (1 GB): trying again gives the same answer. */
 export const isResultTooLarge = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-large'
 

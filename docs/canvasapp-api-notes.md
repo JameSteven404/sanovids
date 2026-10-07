@@ -19,7 +19,7 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `input`) and appends which request was refused and its status, ids and query left out:
   `… [PUT /api/projects/{id}/canvas · HTTP 422]` (`errorFromResponse` / `requestLabel` in `api.ts`).
 - `GET /api/auth/state` → `{ authenticated: boolean, topup_enabled, google_login_enabled, simple_mode: {...} }`.
-- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency (SanoVids: up to 10 jobs, but one job-list read per poll for all of them, submits one at a time, at most 2 API requests + 2 video downloads in flight), polling ≥ 15 s.
+- Cloudflare sits in front; `robots.txt` disallows `/api/` for crawlers. Be gentle: low concurrency (SanoVids: up to 10 jobs, but one job-list read per poll for all of them — plus one right before each job POST, which drops the gateway's 15 s cache —, submits one at a time, at most 2 API requests + 2 video downloads in flight), polling ≥ 15 s.
 
 ## Account
 - `GET /api/me` → `{ credits_balance: number, ... }` (1 credit ≈ 1.000đ).
@@ -154,6 +154,10 @@ e2e test so a request outside it fails the tests): `GET/POST /api/projects`, `GE
 (`?project_id=` only), `GET /api/video-jobs/{id}/prompt|stream`, `DELETE /api/video-jobs/{id}`, plus `/api/me`,
 `/api/auth/state`, `/api/video-profiles`, top-up and credit history. JSON bodies ≤ 2 MB, uploads ≤ 20 MB, path ids
 `[A-Za-z0-9_-]{1,80}` (UUIDs fit).
+API calls (`canvasapp:request`) go through the partition's `session.fetch` with `redirect: 'error'`: no redirect is
+followed, https → http included (the X-CSRF-Token never goes elsewhere); a 3xx answer fails as `network`
+("canvasapp.io.vn chuyển hướng yêu cầu…"), not as 401. VERIFY on the live site: whether any API route answers 3xx (an
+expired session, not logged in, a canonical host or trailing-slash rule) — the login prompt keys on 401.
 Videos (`GET /api/video-jobs/{id}/stream`, the only `binary` route) are pulled by the page in pieces through
 `canvasapp:downloadOpen / downloadRead / downloadClose` (block `<canvasapp-downloads>`) — `canvasapp:request` refuses
 that route (`matchCanvasappRequest`): no video ever comes in one IPC message. The page sends a download id it chose

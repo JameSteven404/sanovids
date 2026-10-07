@@ -59,6 +59,7 @@ import {
   isSubmitCancelled,
   isSubmitDeferred,
   isSubmitHeldBack,
+  submitDeferredFor,
   isSubmitUncertain,
   providerOf,
   type JobFrame,
@@ -220,6 +221,8 @@ const lastPoll = new Map<ProviderId, number>()
 const pollPausedUntil = new Map<ProviderId, number>()
 /** A submit was deferred (provider: "try later", nothing sent): provider → time before which no queued take starts. */
 const startPausedUntil = new Map<ProviderId, number>()
+/** ...for that take alone (provider: `retryAfterMs`, submitDeferredFor): take id → time before which it does not start. */
+const takeStartAfter = new Map<string, number>()
 const pollFailures = new Map<ProviderId, number>()
 /** Bumped by loadRuns: async work started for a previous project is ignored. */
 let generation = 0
@@ -694,6 +697,7 @@ function resetEngineState() {
   lastPoll.clear()
   pollPausedUntil.clear()
   startPausedUntil.clear()
+  takeStartAfter.clear()
   pollFailures.clear()
   ownedHere.clear()
   fetchFailures.clear()
@@ -914,6 +918,12 @@ function tick() {
   // An app update is about to restart SanoVids (holdNewSubmits): nothing new is sent meanwhile.
   for (const t of submitHold ? [] : queued) {
     if (!scenes.has(t.sceneId)) continue
+    // a take deferred on its own (e.g. next to another take of its scene in doubt) waits; the ones behind it may start
+    const after = takeStartAfter.get(t.id)
+    if (after !== undefined) {
+      if (now < after) continue
+      takeStartAfter.delete(t.id)
+    }
     const pid = providerOf(t)
     const n = running.get(pid) ?? 0
     if (n >= concurrencyFor(pid)) continue
@@ -1061,8 +1071,11 @@ async function submitTake(id: string) {
     if (gen !== generation) return
     const deferred = isSubmitDeferred(e)
     if (deferred) {
-      // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while.
-      startPausedUntil.set(pid, Date.now() + pollIntervalFor(pid))
+      // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while —
+      // or, when only this take has to wait (submitDeferredFor), this take alone.
+      const wait = submitDeferredFor(e)
+      if (wait !== null) takeStartAfter.set(id, Date.now() + wait)
+      else startPausedUntil.set(pid, Date.now() + pollIntervalFor(pid))
     }
     if (deferred || isSubmitCancelled(e)) {
       // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").

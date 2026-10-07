@@ -168,7 +168,7 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
             },
           )
       }),
-    withSlot: (fn) => downloadLane.withSlot(fn),
+    withSlot: (fn, signal) => downloadLane.withSlot(fn, signal),
     matchRoute: (rawPath) => {
       const m = matchDevRoute('GET', rawPath)
       return m ? { binary: m.binary, url: String(rawPath), key: m.pathname } : null
