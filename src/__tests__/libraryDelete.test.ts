@@ -15,6 +15,7 @@ import { canvasEvents, edgeId, WIRES_CUT_EVENT, type WireCutDetail } from '../ac
 import { imageSlotsFor, parseTokens } from '../core/compile'
 import type { Project, Scene } from '../core/types'
 import {
+  assetDragEnded,
   deleteLibraryAssets,
   deleteLibrarySelection,
   isLibraryKeyTarget,
@@ -292,14 +293,23 @@ describe('selections and what Delete takes', () => {
     expect(confirm).not.toHaveBeenCalled()
   })
 
-  it('library collapsed or not mounted: nothing at all', () => {
+  it('library collapsed: nothing deleted or selected, but a hint says why (one toast, replaced, never silent)', () => {
     useUI.setState({ librarySelection: ['d'] })
     collapsed = true
     expect(deleteLibrarySelection()).toBe(false)
+    expect(toasts().map((t) => t.text)).toEqual(['Thư viện đang thu gọn — mở Thư viện để xoá các thẻ đã chọn, hoặc bấm vào canvas để xoá trên canvas.'])
     expect(selectAllInLibrary()).toBe(false)
+    expect(toasts().map((t) => t.text)).toEqual(['Thư viện đang thu gọn — mở Thư viện để chọn thẻ, hoặc bấm vào canvas để chọn mọi cảnh.'])
+    expect(assetIds()).toContain('d')
+    expect(useUI.getState().librarySelection).toEqual(['d'])
+    expect(history().pastStates).toHaveLength(0)
+  })
+
+  it('library not mounted: nothing at all', () => {
+    useUI.setState({ librarySelection: ['d'] })
     unregister()
-    collapsed = false
     expect(deleteLibrarySelection()).toBe(false)
+    expect(selectAllInLibrary()).toBe(false)
     expect(assetIds()).toContain('d')
     expect(toasts()).toHaveLength(0)
   })
@@ -382,6 +392,36 @@ describe('where the delete keys act', () => {
     expect(libraryArea()).toBe('app')
     expect(isLibraryKeyTarget(BODY as unknown as EventTarget)).toBe(false)
     expect(assetIds()).toContain('b')
+  })
+
+  it('a card drag that ends on a drop target outside the library (dropEffect ≠ none): canvas keys, used group cleared', () => {
+    const card = el('.sb-library')
+    vi.stubGlobal('document', { activeElement: card })
+    noteLibraryPointer(card as unknown as EventTarget)
+    useUI.setState({ librarySelection: ['b', 'c'], draggingAssetIds: ['b', 'c'] })
+    assetDragEnded('copy')
+    expect(useUI.getState().draggingAssetIds).toBeNull()
+    expect(libraryArea()).toBe('app')
+    expect(card.blur).toHaveBeenCalledTimes(1)
+    expect(useUI.getState().librarySelection).toEqual([])
+    // a single dragged card stays selected (only a multi-card group is "used up")
+    noteLibraryPointer(card as unknown as EventTarget)
+    useUI.setState({ librarySelection: ['b'], draggingAssetIds: ['b'] })
+    assetDragEnded('link')
+    expect(libraryArea()).toBe('app')
+    expect(useUI.getState().librarySelection).toEqual(['b'])
+  })
+
+  it('a card drag dropped nowhere or back on the library (dropEffect none): the library keeps the keys and the group', () => {
+    const card = el('.sb-library')
+    vi.stubGlobal('document', { activeElement: card })
+    noteLibraryPointer(card as unknown as EventTarget)
+    useUI.setState({ librarySelection: ['b', 'c'], draggingAssetIds: ['b', 'c'] })
+    assetDragEnded('none')
+    expect(useUI.getState().draggingAssetIds).toBeNull()
+    expect(libraryArea()).toBe('library')
+    expect(card.blur).not.toHaveBeenCalled()
+    expect(useUI.getState().librarySelection).toEqual(['b', 'c'])
   })
 
   it('unmounting the library forgets the area', () => {

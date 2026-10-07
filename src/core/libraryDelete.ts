@@ -9,7 +9,7 @@
 // - One removeAssets = one undo step; media blobs are never deleted here (duplicated projects share them, queued takes
 //   read them by imageKeysSnapshot, the undo history still points at them).
 import { textsFor } from '../lib/platformText'
-import type { Project } from './types'
+import type { Project, Scene } from './types'
 
 export interface LibraryDeletePlan {
   /** Asset ids to delete: selected ∩ visible ∩ existing, in library order. */
@@ -68,6 +68,23 @@ export function assetUsage(project: Pick<Project, 'scenes'>, ids: Iterable<strin
     frameScenes: used.filter((u) => u.frames).map((u) => u.id),
     usingAssets,
   }
+}
+
+/**
+ * How many scenes use each asset (reference image or first / last frame; a scene counts once per asset): the library
+ * card's "dùng ở N cảnh" badge. Same rule as assetUsage, so a card that says "chưa dùng" is deleted without a question.
+ */
+export function assetSceneCounts(scenes: readonly Pick<Scene, 'refs' | 'firstFrame' | 'lastFrame'>[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  const seen = new Set<string>()
+  for (const s of scenes) {
+    seen.clear()
+    for (const id of s.refs) seen.add(id)
+    if (s.firstFrame) seen.add(s.firstFrame)
+    if (s.lastFrame) seen.add(s.lastFrame)
+    for (const id of seen) counts[id] = (counts[id] ?? 0) + 1
+  }
+  return counts
 }
 
 /**
@@ -176,6 +193,16 @@ export function libraryDeleteText(plan: LibraryDeletePlan, nameOf: (id: string) 
 export function libraryNothingToDeleteHint(mac: boolean, hiddenOnly: boolean): string {
   if (hiddenOnly) return 'Các thẻ đã chọn đang bị ẩn bởi ô tìm / thẻ lọc — xoá ô tìm hoặc chọn “Tất cả” để thấy chúng.'
   return `Chưa chọn thẻ nào trong Thư viện — bấm vào thẻ (${textsFor(mac ? 'mac' : 'win').modShiftClick} để chọn nhiều) rồi bấm ${deleteKeyLabel(mac)}.`
+}
+
+/**
+ * Delete / Ctrl+A aimed at the library while its section is collapsed: nothing happens there (no card is on screen) and
+ * the key never falls through to the canvas — say how to go on.
+ */
+export function libraryCollapsedHint(action: 'delete' | 'select-all'): string {
+  return action === 'delete'
+    ? 'Thư viện đang thu gọn — mở Thư viện để xoá các thẻ đã chọn, hoặc bấm vào canvas để xoá trên canvas.'
+    : 'Thư viện đang thu gọn — mở Thư viện để chọn thẻ, hoặc bấm vào canvas để chọn mọi cảnh.'
 }
 
 /** Plain Backspace in the library on Windows (it never deletes: Vietnamese input tools send it). */

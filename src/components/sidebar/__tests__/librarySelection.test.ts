@@ -14,8 +14,12 @@ describe('libraryClick', () => {
     expect(libraryClick(['a', 'c'], visible, 'a', 'b', plain)).toEqual({ selection: ['b'], anchor: 'b' })
   })
 
-  it('a plain click on the only selected card clears the selection', () => {
-    expect(libraryClick(['b'], visible, 'b', 'b', plain)).toEqual({ selection: [], anchor: 'b' })
+  it('a plain click on the only selected card keeps it selected (click it, then Delete deletes it)', () => {
+    expect(libraryClick(['b'], visible, 'b', 'b', plain)).toEqual({ selection: ['b'], anchor: 'b' })
+    // a card just added is selected already: clicking it to act on it must not deselect it
+    expect(libraryClick(['e'], visible, null, 'e', plain)).toEqual({ selection: ['e'], anchor: 'e' })
+    // deselecting stays on Ctrl / ⌘ + click
+    expect(libraryClick(['b'], visible, 'b', 'b', ctrl)).toEqual({ selection: [], anchor: 'b' })
   })
 
   it('Ctrl / ⌘ + click adds or removes one card, keeping the others', () => {

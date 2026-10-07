@@ -12,7 +12,7 @@ import {
   selectedSceneIds,
   undo,
 } from '../actions'
-import { cancelLibraryKey, handleLibraryKey } from '../libraryActions'
+import { cancelLibraryKey, handleLibraryKey, noteCanvasCommand } from '../libraryActions'
 import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { useProject } from '../store/project'
 import { flush } from '../store/persist'
@@ -122,10 +122,12 @@ export function useShortcuts(): void {
           redo()
         } else if (key === 'd') {
           e.preventDefault()
+          noteCanvasCommand()
           duplicateSelection()
         } else if (key === 'a') {
           if (ui.view !== 'canvas') return
           e.preventDefault()
+          noteCanvasCommand()
           ui.select(useProject.getState().project.scenes.map((s) => s.id))
         } else if (key === 'k') {
           e.preventDefault()
@@ -141,6 +143,7 @@ export function useShortcuts(): void {
         const step = sceneOrderKey(e)
         if (step) {
           e.preventDefault()
+          noteCanvasCommand()
           moveSelectedScene(step)
         }
         return
@@ -169,6 +172,8 @@ export function useShortcuts(): void {
       switch (key) {
         case 'n':
           e.preventDefault()
+          // Canvas commands move the delete keys to the canvas (libraryActions): Delete then acts on the new scene.
+          noteCanvasCommand()
           nextScene()
           break
         case 'c':

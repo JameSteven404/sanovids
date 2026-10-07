@@ -8,9 +8,12 @@
 //   (toasts and dialogs are neutral: a click on "Hoàn tác" does not move the area). A pointerdown outside also takes
 //   the keyboard focus away from a library card that kept it, so a stale focus never carries Delete to the library.
 // - a library card dropped outside the library (canvas, scene, inspector, text field) is 'app' too: HTML5 drag & drop
-//   sends no pointerdown where it drops and leaves the focus on the dragged card (noteAssetDropOutside).
+//   sends no pointerdown where it drops and leaves the focus on the dragged card (assetDragEnded → noteAssetDropOutside).
+// - so is a keyboard command that acts on the canvas (N, Ctrl+D, Ctrl+A on the canvas, Alt+↑/↓ — hooks/useShortcuts →
+//   noteCanvasCommand): the user just worked on the canvas, even though the focus may still sit on a library card.
 // - isLibraryKeyTarget(target): focus inside `.sb-library`, or on the page itself (body) / a neutral area while
-//   lastArea is 'library'. Such a Delete never falls through to the canvas, even with nothing selected in the library.
+//   lastArea is 'library'. Such a Delete never falls through to the canvas, even with nothing selected in the library
+//   or with the section collapsed (both show a hint instead).
 //
 // What a delete does: the selected cards on screen (search / kind tab applied; hidden ones stay selected), one
 // removeAssets = one undo step with a "Hoàn tác" toast. Items no scene uses go at once; items scenes use ask one
@@ -22,6 +25,7 @@ import { changedPrompts } from './components/sidebar/shared'
 import { selectAllVisible } from './components/sidebar/librarySelection'
 import {
   BACKSPACE_HINT,
+  libraryCollapsedHint,
   libraryDeleteQuestion,
   libraryDeleteText,
   libraryNothingToDeleteHint,
@@ -56,7 +60,8 @@ const NEUTRAL = '.toasts, .modal-backdrop, [data-top-overlay]'
 
 let view: LibraryView | null = null
 let lastArea: LibraryArea = null
-let tracking = false
+/** The pointerdown listener installed on window by the first registerLibraryView (removed only by the test reset). */
+let tracked: { win: Window; fn: (e: Event) => void } | null = null
 let pending: ReturnType<typeof setTimeout> | null = null
 let hintId: number | null = null
 
@@ -99,18 +104,47 @@ export function noteLibraryPointer(target: EventTarget | null): void {
   blurLibraryFocus()
 }
 
-/** Library cards were dropped outside the library: the next Delete acts where they went (the canvas), not here. */
-export function noteAssetDropOutside(): void {
+function keysToCanvas(): void {
   lastArea = 'app'
   blurLibraryFocus()
+}
+
+/** Library cards were dropped outside the library: the next Delete acts where they went (the canvas), not here. */
+export function noteAssetDropOutside(): void {
+  keysToCanvas()
+}
+
+/**
+ * A keyboard command acted on the canvas (new / duplicated / moved scene, every scene selected): the next Delete acts
+ * on the canvas — the scene just made, not a library card that only kept the focus.
+ */
+export function noteCanvasCommand(): void {
+  keysToCanvas()
+}
+
+/**
+ * A library card drag ended (AssetLibrary onDragEnd). `dropEffect` 'none' = dropped nowhere, or back on the library
+ * (its own drop zone takes files only); anything else = dropped outside the library.
+ */
+export function assetDragEnded(dropEffect: string): void {
+  const ui = useUI.getState()
+  ui.setDraggingAssets(null)
+  if (dropEffect === 'none') return
+  // The next Delete acts where the cards went, never on the library: an HTML5 drop sends no pointerdown there and
+  // leaves the focus on the dragged card.
+  noteAssetDropOutside()
+  // A multi-card selection that was dropped somewhere has been used: forget it, so a later drag or "C" does not
+  // silently carry the same cards again.
+  if (ui.librarySelection.length > 1) ui.setLibrarySelection([])
 }
 
 /** Called by AssetLibrary while mounted. Returns the unregister function. */
 export function registerLibraryView(v: LibraryView): () => void {
   view = v
-  if (!tracking && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    tracking = true
-    window.addEventListener('pointerdown', (e) => noteLibraryPointer(e.target), true)
+  if (!tracked && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const fn = (e: Event) => noteLibraryPointer(e.target)
+    window.addEventListener('pointerdown', fn, true)
+    tracked = { win: window, fn }
   }
   return () => {
     if (view !== v) return
@@ -144,9 +178,13 @@ export function showBackspaceHint(): void {
 }
 
 // ---------------- commands ----------------
-/** Ctrl+A / ⌘A in the library: select every card on screen. */
+/** Ctrl+A / ⌘A in the library: select every card on screen (section collapsed: a hint, nothing selected). */
 export function selectAllInLibrary(): boolean {
-  if (!view || view.collapsed()) return false
+  if (!view) return false
+  if (view.collapsed()) {
+    showHint(libraryCollapsedHint('select-all'))
+    return false
+  }
   const ids = selectAllVisible(view.visibleIds())
   if (!ids.length) return false
   useUI.getState().setLibrarySelection(ids)
@@ -154,11 +192,16 @@ export function selectAllInLibrary(): boolean {
 }
 
 /**
- * Delete key / the footer's trash button: delete the selected cards on screen. With nothing on screen to delete, a
- * hint (the section collapsed or not mounted: nothing at all). Returns whether something was deleted.
+ * Delete key / the footer's trash button: delete the selected cards on screen. With nothing on screen to delete (none
+ * selected, all hidden, the section collapsed), a hint; the library not mounted: nothing at all. Returns whether
+ * something was deleted.
  */
 export function deleteLibrarySelection(): boolean {
-  if (!view || view.collapsed()) return false
+  if (!view) return false
+  if (view.collapsed()) {
+    showHint(libraryCollapsedHint('delete'))
+    return false
+  }
   const visible = view.visibleIds()
   const plan = planLibraryDelete(useProject.getState().project, useUI.getState().librarySelection, visible)
   if (!plan.ids.length) {
@@ -300,10 +343,18 @@ export function handleLibraryKey(e: LibraryKeyEvent, mac: boolean = IS_MAC, chor
   return true
 }
 
-/** Forget the registered view, the area and any waiting key (tests). */
+/** Forget the registered view, the area, any waiting key and the pointerdown listener (tests). */
 export function resetLibraryActionsForTests(): void {
   view = null
   lastArea = null
   cancelLibraryKey()
   hintId = null
+  if (tracked) {
+    try {
+      tracked.win.removeEventListener('pointerdown', tracked.fn, true)
+    } catch {
+      // a test window stub without removeEventListener: forgetting it is enough
+    }
+    tracked = null
+  }
 }

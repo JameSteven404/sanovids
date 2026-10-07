@@ -2,10 +2,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset, Project, Scene } from '../types'
 import {
+  assetSceneCounts,
   assetUsage,
   BACKSPACE_HINT,
   deleteButtonState,
   hiddenSuffix,
+  libraryCollapsedHint,
   libraryDeleteQuestion,
   libraryDeleteText,
   libraryFooterHint,
@@ -81,6 +83,23 @@ describe('planLibraryDelete', () => {
 
   it('assetUsage of nothing is empty', () => {
     expect(assetUsage(project, [])).toEqual({ usedBy: [], refScenes: [], frameScenes: [], usingAssets: new Set() })
+  })
+})
+
+describe('assetSceneCounts (the card badge "dùng ở N cảnh")', () => {
+  it('counts reference images AND first / last frames, a scene once per item', () => {
+    expect(assetSceneCounts(project.scenes)).toEqual({ elara: 3, lumi: 1, cave: 1, door: 2 })
+  })
+
+  it('agrees with what a delete asks about: a card saying "chưa dùng" never gets the in-use question', () => {
+    const counts = assetSceneCounts(project.scenes)
+    for (const a of project.assets) {
+      const plan = planLibraryDelete(project, [a.id], null)
+      expect(counts[a.id] ?? 0, a.id).toBe(plan.usedBy.length)
+      expect(!!libraryDeleteQuestion(plan, names, false), a.id).toBe((counts[a.id] ?? 0) > 0)
+    }
+    // a frame-only item is in use (it was "chưa dùng" when only refs were counted)
+    expect(assetSceneCounts([scene('x', 1, { lastFrame: 'spare' })])).toEqual({ spare: 1 })
   })
 })
 
@@ -162,6 +181,11 @@ describe('hints', () => {
   it('every selected card hidden: how to see them', () => {
     expect(libraryNothingToDeleteHint(false, true)).toContain('đang bị ẩn bởi ô tìm / thẻ lọc')
   })
+  it('the section collapsed: nothing happens there, and the hint says how to go on (per command)', () => {
+    expect(libraryCollapsedHint('delete')).toBe('Thư viện đang thu gọn — mở Thư viện để xoá các thẻ đã chọn, hoặc bấm vào canvas để xoá trên canvas.')
+    expect(libraryCollapsedHint('select-all')).toBe('Thư viện đang thu gọn — mở Thư viện để chọn thẻ, hoặc bấm vào canvas để chọn mọi cảnh.')
+  })
+
   it('Backspace names the Delete key and why', () => {
     expect(BACKSPACE_HINT).toBe('Bấm phím Delete (Del) để xoá — Backspace dành cho bộ gõ tiếng Việt.')
   })

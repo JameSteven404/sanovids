@@ -42,6 +42,17 @@ const KEY_GROUPS: Group[] = [
     ],
   },
   {
+    // Library scope of the same keys (libraryActions): only after a click in the library, never the canvas selection.
+    title: 'Thư viện',
+    rows: [
+      [
+        IS_MAC ? 'Delete / ⌫' : 'Delete',
+        'Sau khi bấm vào Thư viện: xoá các thẻ đang chọn (đang thấy) khỏi thư viện và mọi cảnh. Thẻ chưa dùng xoá ngay, thẻ đang dùng ở cảnh hỏi một lần · hoàn tác được.',
+      ],
+      ['Ctrl+A', 'Sau khi bấm vào Thư viện: chọn mọi thẻ đang thấy'],
+    ],
+  },
+  {
     title: 'Canvas',
     rows: [
       ['F', 'Vừa màn hình (vùng chọn hoặc tất cả)'],

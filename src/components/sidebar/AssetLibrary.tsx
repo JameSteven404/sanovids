@@ -3,14 +3,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
+import { assetSceneCounts, deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
 import { ASSETS_MIME } from '../../lib/dnd'
 import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { cachedUrl } from '../../lib/imageStore'
 import { IS_MAC } from '../../lib/platform'
-import { deleteLibrarySelection, noteAssetDropOutside, registerLibraryView } from '../../libraryActions'
+import { assetDragEnded, deleteLibrarySelection, registerLibraryView } from '../../libraryActions'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
@@ -79,12 +79,8 @@ function useColumnCount(): [number, (el: HTMLElement | null) => void] {
   return [cols, ref]
 }
 
-/** Number of scenes whose refs include each asset. */
-const usageSelector = (s: ProjectState) => {
-  const m: Record<string, number> = {}
-  for (const sc of s.project.scenes) for (const r of sc.refs) m[r] = (m[r] ?? 0) + 1
-  return m
-}
+/** Number of scenes using each asset (reference image or first / last frame) — what a delete asks about. */
+const usageSelector = (s: ProjectState) => assetSceneCounts(s.project.scenes)
 
 // ---------------- drag & drop (HTML5) ----------------
 function dragIdsFor(id: string): string[] {
@@ -120,16 +116,9 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   useUI.getState().setDraggingAssets(list.map((a) => a.id))
 }
 
+/** Dropped outside the library (dropEffect not 'none'): the delete keys go to the canvas, a used multi-selection clears. */
 function endAssetDrag(e: DragEvent<HTMLElement>) {
-  const ui = useUI.getState()
-  ui.setDraggingAssets(null)
-  if (e.dataTransfer.dropEffect === 'none') return
-  // Dropped outside the library (its own drop zone takes files only): the next Delete acts where the cards went, never
-  // on the library — an HTML5 drop sends no pointerdown there and leaves the focus on the dragged card.
-  noteAssetDropOutside()
-  // A multi-card selection that was dropped somewhere has been used: forget it, so a later drag or "C" does not
-  // silently carry the same cards again.
-  if (ui.librarySelection.length > 1) ui.setLibrarySelection([])
+  assetDragEnded(e.dataTransfer.dropEffect)
 }
 
 /** Keyboard focus on a library card (after a delete: the next card, nothing selected). */
@@ -404,7 +393,7 @@ const AssetCard = memo(function AssetCard({
           </span>
         )}
         <div className="sb-card-name">{asset.name || <span className="faint">Chưa đặt tên</span>}</div>
-        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Là ảnh tham chiếu của ${usage} cảnh` : 'Chưa nối vào cảnh nào'}>
+        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Đang dùng ở ${usage} cảnh (ảnh tham chiếu hoặc khung đầu / cuối)` : 'Chưa nối vào cảnh nào'}>
           {usage ? `dùng ở ${usage} cảnh` : 'chưa dùng'}
         </div>
       </div>

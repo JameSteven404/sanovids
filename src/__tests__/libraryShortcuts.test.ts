@@ -32,12 +32,14 @@ vi.mock('../store/persist', () => ({ flush: async () => true }))
 
 import type { Project, Scene } from '../core/types'
 import { useShortcuts } from '../hooks/useShortcuts'
-import { handleLibraryKey, noteLibraryPointer, registerLibraryView, resetLibraryActionsForTests } from '../libraryActions'
+import { handleLibraryKey, libraryArea, noteLibraryPointer, registerLibraryView, resetLibraryActionsForTests } from '../libraryActions'
 import { useProject } from '../store/project'
 import { useUI } from '../store/ui'
 
 type Listener = (e: KeyboardEvent) => void
 let listeners: Listener[] = []
+/** The pointerdown listeners installed on the window stub, with their capture flag. */
+let pointerListeners: Array<{ fn: (e: { target: unknown }) => void; capture: unknown }> = []
 
 const scene = (id: string, order: number, refs: string[] = []): Scene => ({
   id, order, title: '', prompt: '', refs, videoRefs: [], presetId: null,
@@ -92,14 +94,22 @@ function press(init: FakeKey): boolean {
   return e.defaultPrevented
 }
 
+/** A pointerdown through the listeners the library installed (as the browser would dispatch it). */
+function click(target: unknown): void {
+  for (const l of pointerListeners) l.fn({ target })
+}
+
 const assetIds = () => useProject.getState().project.assets.map((a) => a.id)
 const toastTexts = () => useUI.getState().toasts.map((t) => t.text)
 let confirm: Mock<(question: string) => boolean>
 let unregister: () => void
+let collapsed: boolean
 
 beforeEach(() => {
   vi.useFakeTimers()
   listeners = []
+  pointerListeners = []
+  collapsed = false
   h.deleteSelection.mockReset()
   resetLibraryActionsForTests()
   useProject.getState().loadProject(project())
@@ -108,15 +118,17 @@ beforeEach(() => {
   confirm = vi.fn((_question: string) => true)
   vi.stubGlobal('window', {
     confirm,
-    addEventListener: (type: string, fn: Listener) => {
+    addEventListener: (type: string, fn: Listener, capture?: unknown) => {
       if (type === 'keydown') listeners.push(fn)
+      if (type === 'pointerdown') pointerListeners.push({ fn: fn as unknown as (e: { target: unknown }) => void, capture })
     },
     removeEventListener: (type: string, fn: Listener) => {
       if (type === 'keydown') listeners = listeners.filter((x) => x !== fn)
+      if (type === 'pointerdown') pointerListeners = pointerListeners.filter((x) => x.fn !== (fn as unknown))
     },
     dispatchEvent: () => true,
   })
-  unregister = registerLibraryView({ visibleIds: () => ['a', 'b', 'c'], collapsed: () => false })
+  unregister = registerLibraryView({ visibleIds: () => ['a', 'b', 'c'], collapsed: () => collapsed })
   useShortcuts()
   expect(listeners).toHaveLength(1)
 })
@@ -197,11 +209,86 @@ describe('Delete in the library', () => {
     expect(h.deleteSelection).not.toHaveBeenCalled()
   })
 
+  it('library collapsed (focus on its header): a hint, nothing deleted, and still never the canvas', () => {
+    collapsed = true
+    useUI.setState({ librarySelection: ['c'] })
+    expect(press({ key: 'Delete', target: inLibrary('BUTTON') })).toBe(true)
+    expect(toastTexts()).toEqual(['Thư viện đang thu gọn — mở Thư viện để xoá các thẻ đã chọn, hoặc bấm vào canvas để xoá trên canvas.'])
+    expect(assetIds()).toEqual(['a', 'b', 'c'])
+    expect(h.deleteSelection).not.toHaveBeenCalled()
+    // Ctrl+A too: a hint, neither the library nor every scene gets selected
+    expect(press({ key: 'a', code: 'KeyA', ctrlKey: true, target: inLibrary('BUTTON') })).toBe(true)
+    expect(toastTexts()).toEqual(['Thư viện đang thu gọn — mở Thư viện để chọn thẻ, hoặc bấm vào canvas để chọn mọi cảnh.'])
+    expect(useUI.getState().librarySelection).toEqual(['c'])
+    expect(useUI.getState().selectedIds).toEqual(['s2'])
+  })
+
   it('while a card is dragged: swallowed, nothing deleted', () => {
     useUI.setState({ librarySelection: ['c'], draggingAssetIds: ['c'] })
     expect(press({ key: 'Delete', target: inLibrary() })).toBe(true)
     expect(assetIds()).toEqual(['a', 'b', 'c'])
     expect(h.deleteSelection).not.toHaveBeenCalled()
+  })
+})
+
+describe('the area follows real pointerdowns (the listener registerLibraryView installs)', () => {
+  it('one capture listener on window', () => {
+    expect(pointerListeners).toHaveLength(1)
+    expect(pointerListeners[0].capture).toBe(true)
+  })
+
+  it('click in the library, Delete on the page: library items go; click on the canvas: the canvas', () => {
+    useUI.setState({ librarySelection: ['c'] })
+    click(inLibrary())
+    expect(libraryArea()).toBe('library')
+    press({ key: 'Delete', target: BODY })
+    expect(assetIds()).toEqual(['a', 'b'])
+    expect(h.deleteSelection).not.toHaveBeenCalled()
+    useUI.setState({ librarySelection: ['b'] })
+    click(outside())
+    expect(libraryArea()).toBe('app')
+    press({ key: 'Delete', target: BODY })
+    expect(h.deleteSelection).toHaveBeenCalledTimes(1)
+    expect(assetIds()).toEqual(['a', 'b'])
+  })
+})
+
+describe('a canvas command from the keyboard moves the delete keys to the canvas', () => {
+  const commands: Array<[string, FakeKey]> = [
+    ['N (next scene)', { key: 'n', code: 'KeyN' }],
+    ['Ctrl+D (duplicate)', { key: 'd', code: 'KeyD', ctrlKey: true }],
+    ['Alt+Up (move scene)', { key: 'ArrowUp', code: 'ArrowUp', altKey: true }],
+  ]
+  for (const [name, init] of commands) {
+    it(name + ' with the focus left on a library card: the card loses it, the next Delete acts on the canvas', () => {
+      const card = inLibrary()
+      vi.stubGlobal('document', { activeElement: card })
+      useUI.setState({ librarySelection: ['c'] })
+      click(card)
+      press({ ...init, target: card })
+      expect(libraryArea()).toBe('app')
+      expect(card.blur).toHaveBeenCalledTimes(1)
+      // the browser moved the focus to the page when the card was blurred
+      press({ key: 'Delete', target: BODY })
+      expect(h.deleteSelection).toHaveBeenCalledTimes(1)
+      expect(assetIds()).toEqual(['a', 'b', 'c'])
+    })
+  }
+
+  it('Ctrl+A on the canvas (focus on a canvas node after a click in the library) too', () => {
+    useUI.setState({ librarySelection: ['c'] })
+    click(inLibrary())
+    press({ key: 'a', code: 'KeyA', ctrlKey: true, target: outside() })
+    expect(useUI.getState().selectedIds).toEqual(['s1', 's2'])
+    press({ key: 'Delete', target: BODY })
+    expect(h.deleteSelection).toHaveBeenCalledTimes(1)
+    expect(assetIds()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('N without any library focus still makes the next scene (the command itself is unchanged)', () => {
+    const before = useProject.getState().project.scenes.length
+    press({ key: 'n', code: 'KeyN', target: BODY })
+    expect(useProject.getState().project.scenes.length).toBe(before + 1)
   })
 })
 
@@ -291,7 +378,7 @@ describe('wiring (source guards)', () => {
     expect(lib).not.toContain('không xoá mục thư viện')
     expect(lib).not.toContain("'block'")
     const drag = lib.slice(lib.indexOf('function endAssetDrag'), lib.indexOf('function focusLibraryCard'))
-    expect(drag).toContain('noteAssetDropOutside()')
+    expect(drag).toContain('assetDragEnded(e.dataTransfer.dropEffect)')
     expect(lib).toContain('registerLibraryView(')
     expect(lib).toContain('data-asset-id={asset.id}')
   })
@@ -300,6 +387,23 @@ describe('wiring (source guards)', () => {
     expect(dlg).toContain('deleteLibraryAssets([asset.id])')
     expect(dlg).not.toContain('ConfirmButton')
     expect(dlg).not.toContain('removeAssets(')
+  })
+  it('the dispatcher marks canvas commands (N, Ctrl+D, canvas Ctrl+A, Alt+Up/Down) right before running them', () => {
+    const code = src('hooks/useShortcuts.ts')
+    const onKey = code.slice(code.indexOf('const onKey'))
+    for (const call of ['duplicateSelection()', 'ui.select(useProject', 'moveSelectedScene(step)', 'nextScene()']) {
+      const at = onKey.indexOf(call)
+      expect(at, call).toBeGreaterThan(0)
+      expect(onKey.slice(Math.max(0, at - 40), at), call).toContain('noteCanvasCommand()')
+    }
+  })
+  it('the shortcuts help has a library group with its Delete and Ctrl+A', () => {
+    const dlg = src('components/dialogs/ShortcutsDialog.tsx')
+    const at = dlg.indexOf("title: 'Thư viện'")
+    expect(at).toBeGreaterThan(0)
+    const group = dlg.slice(at, dlg.indexOf("title: 'Canvas'"))
+    expect(group).toContain("IS_MAC ? 'Delete / ⌫' : 'Delete'")
+    expect(group).toContain("['Ctrl+A', 'Sau khi bấm vào Thư viện: chọn mọi thẻ đang thấy']")
   })
   it('a library delete never deletes media blobs', () => {
     expect(src('libraryActions.ts')).not.toMatch(/deleteMedia|imageStore/)
