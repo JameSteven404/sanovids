@@ -366,7 +366,7 @@ function DevButton() {
 // One computation per store change for every button that shows the count ("Phát liền" and the .zip button both
 // subscribe): the results are remembered by input identity, so the second subscriber reuses the first one's loop.
 let sceneKeyMemo: { scenes: Scene[] | null; key: string } = { scenes: null, key: '' }
-function sceneKeyOf(scenes: Scene[]): string {
+export function sceneKeyOf(scenes: Scene[]): string {
   if (sceneKeyMemo.scenes !== scenes) sceneKeyMemo = { scenes, key: scenes.map((x) => x.id).join('|') }
   return sceneKeyMemo.key
 }

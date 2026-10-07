@@ -2,6 +2,7 @@
 import type { LucideIcon } from 'lucide-react'
 import { Check, ChevronDown, MapPin, Package, Palette, Search, User } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { sceneMapOf } from '../../core/sceneIndex'
 import type { Asset, AssetKind, Scene } from '../../core/types'
 import { useProject } from '../../store/project'
 import { AssetAvatar } from '../common/Media'
@@ -55,12 +56,18 @@ export function usePref<T>(key: string, fallback: T): [T, (v: T) => void] {
   return [v, set]
 }
 
+/**
+ * One field of a scene of `scenes` (the selector of useSceneField): looked up in the map shared by every selector of
+ * this scenes array (core/sceneIndex) — a dozen inspector fields never scan 1000 scenes each on every keystroke.
+ */
+export function sceneFieldOf<T>(scenes: Scene[], sceneId: string, pick: (s: Scene) => T): T | undefined {
+  const sc = sceneMapOf(scenes).get(sceneId)
+  return sc ? pick(sc) : undefined
+}
+
 /** Subscribe to one field of a scene. `pick` must return a primitive or an existing object (stable). */
 export function useSceneField<T>(sceneId: string, pick: (s: Scene) => T): T | undefined {
-  return useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    return sc ? pick(sc) : undefined
-  })
+  return useProject((s) => sceneFieldOf(s.project.scenes, sceneId, pick))
 }
 
 // ---------------- collapsible section ----------------

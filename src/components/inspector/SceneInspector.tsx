@@ -5,9 +5,10 @@ import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type Dr
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, downloadTake, focusNodes, linkAssets, nextScene, requestRun, revealNodes } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { sceneMapOf } from '../../core/sceneIndex'
 import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
 import { foreignModelReason } from '../../core/runRules'
-import type { Asset } from '../../core/types'
+import type { Asset, Scene } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { useCanvasPrefs } from '../../lib/canvasPrefs'
@@ -41,7 +42,7 @@ const FOREIGN_BADGE_STYLE: CSSProperties = { minWidth: 0, maxWidth: '60%' }
 const ELLIPSIS_STYLE: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
 export function SceneInspector({ sceneId }: { sceneId: string }) {
-  const exists = useProject((s) => s.project.scenes.some((x) => x.id === sceneId))
+  const exists = useProject((s) => sceneMapOf(s.project.scenes).has(sceneId))
   if (!exists) return null
   return (
     <div className="in-scene">
@@ -87,9 +88,25 @@ interface SceneOpt {
 }
 const SEP = '\u0001'
 
+let optionMemo: { scenes: readonly Scene[]; keys: string[] } = { scenes: [], keys: [] }
+/**
+ * One key per scene (order, id, title): what the header's scene picker lists (shallow-compared). The last answer comes
+ * back as is while no scene's order / id / title changed — typing in a prompt builds no new string per scene.
+ */
+export function sceneOptionKeys(scenes: Scene[]): string[] {
+  const prev = optionMemo.scenes
+  if (prev === scenes) return optionMemo.keys
+  if (prev.length === scenes.length && scenes.every((s, i) => s === prev[i] || (s.id === prev[i].id && s.order === prev[i].order && s.title === prev[i].title))) {
+    optionMemo = { scenes, keys: optionMemo.keys }
+    return optionMemo.keys
+  }
+  optionMemo = { scenes, keys: scenes.map((x) => `${x.order}${SEP}${x.id}${SEP}${x.title}`) }
+  return optionMemo.keys
+}
+
 /** Stable list of all scenes (id/order/title), sorted by order. */
 function useSceneOptions(): SceneOpt[] {
-  const keys = useProject(useShallow((s) => s.project.scenes.map((x) => `${x.order}${SEP}${x.id}${SEP}${x.title}`)))
+  const keys = useProject(useShallow((s) => sceneOptionKeys(s.project.scenes)))
   return useMemo(
     () =>
       keys

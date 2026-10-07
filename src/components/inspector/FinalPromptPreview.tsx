@@ -5,6 +5,7 @@ import { ChevronDown, Copy, Download, Info, TriangleAlert } from 'lucide-react'
 import { memo, useDeferredValue, useMemo } from 'react'
 import { copyCompiledPrompt, downloadSceneZip } from '../../actions'
 import { compileScene } from '../../core/compile'
+import { sceneMapOf } from '../../core/sceneIndex'
 import type { Asset, Project, Scene } from '../../core/types'
 import { useProject } from '../../store/project'
 import { fmt, usePref } from './shared'
@@ -17,7 +18,7 @@ function compileFor(assets: Asset[], scene: Scene) {
 }
 
 export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
-  const liveScene = useProject((s) => s.project.scenes.find((x) => x.id === sceneId))
+  const liveScene = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId))
   const liveAssets = useProject((s) => s.project.assets)
   // Compiling on every keystroke is cheap but not free with 6k+ char prompts: let React defer it.
   const scene = useDeferredValue(liveScene)

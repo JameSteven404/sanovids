@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { assetSceneCounts, deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
+import { deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
 import { ASSETS_MIME } from '../../lib/dnd'
@@ -14,6 +14,7 @@ import { assetDragEnded, deleteLibrarySelection, registerLibraryView } from '../
 import { linkToastWithFill } from '../../placeholderActions'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
+import { sceneCountsOf, sceneMapOf } from '../canvas/canvasModel'
 import { FullImage } from '../common/Media'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
@@ -80,8 +81,21 @@ function useColumnCount(): [number, (el: HTMLElement | null) => void] {
   return [cols, ref]
 }
 
-/** Number of scenes using each asset (reference image or first / last frame) — what a delete asks about. */
-const usageSelector = (s: ProjectState) => assetSceneCounts(s.project.scenes)
+/**
+ * Number of scenes using each asset (reference image or first / last frame): the badge. Recounted only when the scene
+ * graph changed (canvasModel sceneCountsOf) — typing in a prompt never recounts it, and the same object comes back.
+ */
+const usageSelector = (s: ProjectState) => sceneCountsOf(s.project.scenes)
+
+const labelCache = new WeakMap<string[], { assets: Asset[]; labels: Record<string, string> }>()
+/** imageTokenLabels per refs array + assets array: the same object while only the prompt is typed (no rebuild). */
+export function tokenLabelsOf(assets: Asset[], refs: string[]): Record<string, string> {
+  const hit = labelCache.get(refs)
+  if (hit && hit.assets === assets) return hit.labels
+  const labels = imageTokenLabels(assets, refs)
+  labelCache.set(refs, { assets, labels })
+  return labels
+}
 
 // ---------------- drag & drop (HTML5) ----------------
 function dragIdsFor(id: string): string[] {
@@ -440,8 +454,8 @@ export function AssetLibrary({
   const tokens = useProject(
     useShallow((s) => {
       if (!singleId) return EMPTY_LABELS
-      const sc = s.project.scenes.find((x) => x.id === singleId)
-      return sc ? imageTokenLabels(s.project.assets, sc.refs) : EMPTY_LABELS
+      const sc = sceneMapOf(s.project.scenes).get(singleId)
+      return sc ? tokenLabelsOf(s.project.assets, sc.refs) : EMPTY_LABELS
     }),
   )
   const [kind, setKind] = usePrefState<KindFilter>('sb-kind', 'all')

@@ -5,6 +5,8 @@ import { create } from 'zustand'
 import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
+import { assetSceneCounts } from '../../core/libraryDelete'
+import { sceneMapOf } from '../../core/sceneIndex'
 import { foldLabel } from '../../core/tokenLabels'
 import { chooseTake, videoUsageOf } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
@@ -32,15 +34,8 @@ export function isAutoSlot(auto: XY, pos: XY): boolean {
 }
 
 // ---------------- cached lookups (keyed by array identity) ----------------
-const sceneMaps = new WeakMap<Scene[], Map<string, Scene>>()
-export function sceneMapOf(scenes: Scene[]): Map<string, Scene> {
-  let m = sceneMaps.get(scenes)
-  if (!m) {
-    m = new Map(scenes.map((s) => [s.id, s]))
-    sceneMaps.set(scenes, m)
-  }
-  return m
-}
+/** Scenes by id (core/sceneIndex: one map per scenes array, shared with the inspector and the library). */
+export { sceneMapOf }
 
 const assetMaps = new WeakMap<Asset[], Map<string, Asset>>()
 export function assetMapOf(assets: Asset[]): Map<string, Asset> {
@@ -150,16 +145,34 @@ export function wireNearViewport(source: string, target: string, near: ReadonlyS
 export const canvasViewports = new Map<string, { x: number; y: number; zoom: number }>()
 export const PREVIEW_DELAY_MS = 200
 
-const usageMaps = new WeakMap<Scene[], Map<string, number>>()
+// Counts derived from the scene GRAPH (refs, frames…), cached per graph signature (sceneGraphOf: the same array while
+// no graph field changed): typing in a prompt replaces the scenes array on every commit, but never recounts these.
+const usageMaps = new WeakMap<readonly string[], Map<string, number>>()
 /** asset id -> number of scenes whose refs include it. */
 export function usageOf(scenes: Scene[]): Map<string, number> {
-  let m = usageMaps.get(scenes)
+  const sig = sceneGraphOf(scenes)
+  let m = usageMaps.get(sig)
   if (!m) {
     m = new Map()
     for (const s of scenes) for (const r of s.refs) m.set(r, (m.get(r) ?? 0) + 1)
-    usageMaps.set(scenes, m)
+    usageMaps.set(sig, m)
   }
   return m
+}
+
+const sceneCounts = new WeakMap<readonly string[], Record<string, number>>()
+/**
+ * core/libraryDelete assetSceneCounts (scenes using each asset as reference image or first / last frame: the library's
+ * "dùng ở N cảnh" badge) of a scenes array, recomputed only when the scene graph changed (not on every keystroke).
+ */
+export function sceneCountsOf(scenes: Scene[]): Record<string, number> {
+  const sig = sceneGraphOf(scenes)
+  let c = sceneCounts.get(sig)
+  if (!c) {
+    c = assetSceneCounts(scenes)
+    sceneCounts.set(sig, c)
+  }
+  return c
 }
 
 // ---------------- takes (video nodes) ----------------

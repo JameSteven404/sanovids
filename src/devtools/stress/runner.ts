@@ -187,9 +187,21 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     env.drainErrors() // errors from before the run are not ours
 
     let imageN = 0
+    /**
+     * Pauses an action asks for itself (env.advance: "Gõ nhanh" waits 40 ms every 10 keys, "Chờ" waits on purpose) —
+     * not counted in its time: metrics.perAction measures the app's work (before, scene.type's p95 was mostly sleep).
+     */
+    let waited = 0
+    const actionEnv: StressEnv = {
+      ...env,
+      advance: (ms: number) => {
+        waited += Math.max(0, ms)
+        return env.advance(ms)
+      },
+    }
     const ctx: StressContext = {
       rng,
-      env,
+      env: actionEnv,
       options: { checkEvery: report.spec.checkEvery, stopOnFirst: opts.stopOnFirst, expectVideoRetired: opts.expectVideoRetired !== false, tokenKeep: opts.tokenKeep !== false },
       tier: plan.tier,
       step: 0,
@@ -353,6 +365,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         args = action.args(rng, ctx)
       }
       const before = action.structural ? useProject.getState().project : null
+      waited = 0
       const start = env.clock()
       let stack: string | undefined
       try {
@@ -369,7 +382,8 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
         stack = (e as Error)?.stack
         pending.push({ invariant: 'action', severity: 'error', kind: 'app', message: `Thao tác “${action.label}” ném lỗi: ${(e as Error)?.message ?? String(e)}` })
       }
-      const ms = env.clock() - start
+      // the action's own time: its requested pauses taken out (what the page did meanwhile still counts)
+      const ms = Math.max(0, env.clock() - start - waited)
       await env.advance(env.kind === 'headless' ? 250 : 0)
 
       const after = useProject.getState().project

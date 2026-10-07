@@ -3,6 +3,7 @@ import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, Loader
 import { useEffect, useMemo, useState } from 'react'
 import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
+import { sceneMapOf } from '../../core/sceneIndex'
 import type { JobStatus, ModelId, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
 import {
@@ -90,7 +91,8 @@ export function useSettingsRunBlock(settings: VideoSettings | undefined): string
 export function useSceneRunBlock(target: Scene | string | undefined): string | null {
   const id = typeof target === 'string' ? target : undefined
   const given = typeof target === 'string' ? undefined : target
-  const pick = (scenes: readonly Scene[]) => (id === undefined ? given : scenes.find((x) => x.id === id))
+  // by id: the map shared by every selector of this scenes array (core/sceneIndex), never a scan per keystroke
+  const pick = (scenes: readonly Scene[]) => (id === undefined ? given : sceneMapOf(scenes).get(id))
   const provider = useActiveProvider()
   // re-renders (and so re-selects below) when what the gateway refuses was read again
   useProviderLimits((s) => s.rev[provider] ?? 0)

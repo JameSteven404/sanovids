@@ -60,6 +60,21 @@ describe('stress tester: every headless scenario runs', () => {
   }
 })
 
+describe('stress tester: action timings', () => {
+  it('an action\'s own pauses (env.advance) are not counted in its time — "Gõ nhanh" waits 40 ms every 10 keys', async () => {
+    h = createHeadless('7177e5e1')
+    // a clock that only moves when time is asked to pass, like the app's real sleeps would make it
+    let now = 0
+    const base = h.env
+    const env = { ...base, clock: () => now, advance: async (ms: number) => { now += Math.max(0, ms); await base.advance(ms) } }
+    const r = await runStress({ scenarios: ['typing-storm'], seed: '7177e5e1', steps: 60, maxMs: 0, checkEvery: 10, stopOnFirst: true, tier: 'S' }, env)
+    const typing = r.metrics.perAction['scene.type']
+    expect(typing?.n ?? 0).toBeGreaterThan(5)
+    // before: up to 8 pauses of 40 ms each → p95 ≥ 40 on this clock; now the app's work only (0 on this clock)
+    expect(typing!.max).toBeLessThan(40)
+  }, 120_000)
+})
+
 describe('stress tester: reproducible and safe', () => {
   it('same seed → same steps; replay reproduces the run', async () => {
     const a = await run('monkey', 'abad1dea', 200)
