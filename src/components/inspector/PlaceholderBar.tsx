@@ -5,11 +5,8 @@
 // not fit its slot ("@image_2(Lumi)" while 2 is Làng) offers "Giữ @image_2 = Làng", keeping the bracket text as plain
 // text (one space before the "(", first: nothing deleted) or deleting it. Every command is an explicit click
 // and ONE undo step (src/placeholderActions.ts); nothing is filled by itself.
-// The same menu is the picker of both prompt editors (usePlaceholderPicker: the inspector's PromptEditor and the scene
-// node's field): it shows while the caret rests inside red text (a click or a caret move, never typing; the "@" list
-// never opens there), Enter or Alt+↓ moves into it, Esc closes it, and it adds "Nối & gắn từ Thư viện".
 import { ChevronDown, TriangleAlert } from 'lucide-react'
-import { Fragment, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { fillChoices, placeholderGroups, planFill, type PlaceholderGroup } from '../../core/placeholders'
 import { MODELS } from '../../core/models'
@@ -39,6 +36,10 @@ import {
   type PickerState,
 } from './mentions'
 import { EMPTY_IDS, useDismiss, useSceneField } from './shared'
+
+// The same menu is the picker of both prompt editors (usePlaceholderPicker: the inspector's PromptEditor and the scene
+// node's field): it shows while the caret rests inside red text (a click or a caret move, never typing; the "@" list
+// never opens there), Enter or Alt+↓ moves into it, Esc closes it, and it adds "Nối & gắn từ Thư viện".
 
 /** One fill command of a red-text menu: the picture, whether a real token already names it, its section. */
 export interface PlaceholderChoice {
@@ -429,30 +430,29 @@ export function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets,
             </button>
           </>
         )}
-        {plans.map(({ asset, named, section, plan }, i) => {
+        {plans.flatMap(({ asset, named, section, plan }, i) => {
           const name = asset.name || asset.tag
-          return (
-            <Fragment key={asset.id}>
-              {headings[i] && <div className="in-ph-sub">{headings[i]}</div>}
-              <button
-                type="button"
-                role="menuitem"
-                className="in-picker-item"
-                disabled={!plan.ok}
-                title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (Ctrl+Z để hoàn tác)` : fillRefusalText(plan.why, name, plan.token)}
-                onClick={() => run(() => fillPlaceholderAction(sceneId, group.key, asset.id))}
-              >
-                <AssetAvatar asset={asset} size={22} />
-                <span className="in-picker-text">
-                  <span className="in-picker-label">{name}</span>
-                  <span className="in-picker-sub">
-                    {!plan.ok ? fillRefusalText(plan.why, name, plan.token) : section === FROM_LIBRARY ? 'Nối & gắn' : named ? 'đã nhắc trong prompt' : 'đã nối, chưa nhắc'}
-                    {plan.ok ? ` → ${plan.token}` : ''}
-                  </span>
+          const item = (
+            <button
+              type="button"
+              role="menuitem"
+              key={asset.id}
+              className="in-picker-item"
+              disabled={!plan.ok}
+              title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (Ctrl+Z để hoàn tác)` : fillRefusalText(plan.why, name, plan.token)}
+              onClick={() => run(() => fillPlaceholderAction(sceneId, group.key, asset.id))}
+            >
+              <AssetAvatar asset={asset} size={22} />
+              <span className="in-picker-text">
+                <span className="in-picker-label">{name}</span>
+                <span className="in-picker-sub">
+                  {!plan.ok ? fillRefusalText(plan.why, name, plan.token) : section === FROM_LIBRARY ? 'Nối & gắn' : named ? 'đã nhắc trong prompt' : 'đã nối, chưa nhắc'}
+                  {plan.ok ? ` → ${plan.token}` : ''}
                 </span>
-              </button>
-            </Fragment>
+              </span>
+            </button>
           )
+          return headings[i] ? [<div key={`h:${asset.id}`} className="in-ph-sub">{headings[i]}</div>, item] : [item]
         })}
         {more > 0 && <div className="in-ph-sub">+{more} ảnh khác trong Thư viện — kéo thẻ thả lên chữ đỏ để gắn</div>}
         {!plans.length && <div className="in-picker-empty">Nối ảnh thay thế vào cảnh trước (kéo dây), rồi chọn ở đây</div>}
