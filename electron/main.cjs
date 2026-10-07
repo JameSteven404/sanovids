@@ -10,6 +10,7 @@ const path = require('node:path')
 const { Readable } = require('node:stream')
 const { setupUpdater } = require('./updater.cjs')
 const { setupDevAccess, readTestDevLock } = require('./devaccess.cjs')
+const { setupSeedvis } = require('./seedvis.cjs')
 
 const SCHEME = 'app'
 const HOST = 'bdp'
@@ -136,6 +137,8 @@ let mainWindow = null
 let updater = null
 /** The development-mode lock (electron/devaccess.cjs), set up on ready before the first window. */
 let devAccess = null
+/** The seedvis.com gateway (electron/seedvis.cjs: requests, the encrypted API key, the close guard), set up on ready. */
+let seedvis = null
 /** The main window reached its first ready-to-show (it shows itself then: nothing shows it earlier). */
 let mainWindowShown = false
 /**
@@ -186,6 +189,11 @@ if (!app.requestSingleInstanceLock()) {
     registerDownloads()
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
+    try {
+      seedvis = setupSeedvis({ isAppSender: fromApp, getMainWindow: () => mainWindow, userDataDir: app.getPath('userData'), placement: () => appPlacement().kind, packaged: PACKAGED, createPump: createDownloadPump })
+    } catch (e) {
+      console.error('[SanoVids] seedvis gateway disabled:', (e && e.message) || e)
+    }
     registerFileBridge()
     registerAppBridge()
     try {
@@ -213,8 +221,10 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== 'darwin') app.quit()
   })
   if (process.platform === 'darwin') {
-    // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
-    app.on('before-quit', () => {
+    // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it) — unless a scene is
+    // being sent to seedvis: the user is asked first (seedvisCloseGuard).
+    app.on('before-quit', (event) => {
+      if (seedvisCloseGuard(event, 'quit', null)) return
       quitting = true
       if (mainWindowWork) mainWindowWork.stop()
     })
@@ -222,6 +232,14 @@ if (!app.requestSingleInstanceLock()) {
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
   // the updater records the attempt there (notice on the next launch). 'quit' never fires for a quit a window vetoed.
   app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
+}
+
+/**
+ * The seedvis close guard (electron/seedvis.cjs): true when it vetoed this close / quit to ask "Chờ gửi xong / Thoát"
+ * because a scene is being sent to seedvis. Never while an update quits the app; never a renderer beforeunload.
+ */
+function seedvisCloseGuard(event, phase, win) {
+  return !!seedvis && seedvis.closeGuard(event, { phase, win, quittingForUpdate: macQuitForUpdate || !!(updater && updater.isQuittingForUpdate()) })
 }
 
 /** app://bdp/<path> → dist/<path>. Unknown paths without an extension fall back to index.html (SPA). */
@@ -329,6 +347,8 @@ function createWindow() {
     if (work) work.stop()
     if (mainWindowWork === work) mainWindowWork = null
   })
+  // Closing while a scene is being sent to seedvis asks first (Windows / Linux; macOS asks when the app quits).
+  win.on('close', (event) => seedvisCloseGuard(event, 'window-close', win))
   if (process.platform === 'darwin') {
     // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
     // ⌘Q or an update quits it; the Dock icon brings it back (app 'activate' → showMainWindow).
