@@ -1,4 +1,4 @@
-import { MODELS, usesRefs } from './models'
+import { frameSlots, modeLabel, modelLabel, MODELS, specOf, usesRefs } from './models'
 import { labelFitsSlot, splitLabel } from './tokenLabels'
 import type { Asset, CompiledImage, CompiledPrompt, Project, Scene } from './types'
 
@@ -417,29 +417,39 @@ export interface CompileOptions {
  * The text is the scene prompt as written; legacy @Tag mentions are converted to @image_N.
  */
 export function compileScene(project: Project, scene: Scene, _opts: CompileOptions = {}): CompiledPrompt {
-  const spec = MODELS[scene.settings.model]
+  const spec = MODELS[scene.settings.model] ?? specOf(scene.settings.model)
   const limit = spec.promptLimit(scene.settings.mode)
   const warnings: string[] = []
   const notes: string[] = []
   const sendsImages = usesRefs(scene.settings)
   const assetMap = new Map(project.assets.map((a) => [a.id, a]))
+  // "Seedance 2.5 · seedvis" where the family name alone is ambiguous; the mode by its name, never "FIRST"
+  const model = modelLabel(spec.id, { withService: true })
+  const modeName = modeLabel(scene.settings.mode, scene.settings.model)
+  const mode = `“${modeName}”`
 
   // Images
   const allSlots = imageSlots(project, scene)
   const images: CompiledImage[] = sendsImages ? allSlots.slice(0, spec.maxRefImages).map(({ n, assetId, imageId }) => ({ n, assetId, imageId })) : []
   if (sendsImages && allSlots.length > spec.maxRefImages) {
-    warnings.push(`${spec.name} nhận tối đa ${spec.maxRefImages} ảnh; ${allSlots.length - spec.maxRefImages} ảnh cuối sẽ không được gửi.`)
+    warnings.push(`${model} nhận tối đa ${spec.maxRefImages} ảnh; ${allSlots.length - spec.maxRefImages} ảnh cuối sẽ không được gửi.`)
   }
   for (const id of scene.refs) {
     const a = assetMap.get(id)
     if (a && !a.imageIds.length) warnings.push(`“${a.name}” chưa có ảnh nên không được gửi.`)
   }
-  if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
-  if (!sendsImages && scene.refs.length) notes.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh tham chiếu.`)
-
-  if (scene.settings.mode === 'transform' && (!scene.firstFrame || !scene.lastFrame)) {
-    warnings.push('Chế độ Khung đầu → cuối cần đủ Khung đầu và Khung cuối.')
+  if (scene.settings.mode === 'i2v' && images.length === 0) warnings.push(`Chế độ ${modeName} cần ít nhất 1 ảnh tham chiếu.`)
+  if (!sendsImages && scene.refs.length) notes.push(`Chế độ ${mode} của ${model} không gửi ảnh tham chiếu.`)
+  // seedvis notes (never blocking): what the service does not promise about the pictures it receives
+  if (sendsImages && images.length) {
+    if (spec.notes?.undocumentedTokens) notes.push('seedvis chưa xác nhận hiểu @image_N — thứ tự ảnh gửi đi vẫn đúng @image_1, @image_2…')
+    if (spec.notes?.firstImageStart) notes.push(`@image_1 có thể được ${model} dùng làm khung mở đầu.`)
+    if (spec.notes?.humanRefs) notes.push(`${model} hay từ chối ảnh có người thật (kể cả ảnh bối cảnh có người).`)
   }
+
+  const frames = frameSlots(spec, scene.settings.mode)
+  if (frames.last && (!scene.firstFrame || !scene.lastFrame)) warnings.push(`Chế độ ${modeName} cần đủ Khung đầu và Khung cuối.`)
+  else if (frames.first && !scene.firstFrame) warnings.push(`Chế độ ${modeName} cần Khung đầu.`)
 
   // Legacy @Tag mentions -> @image_N
   const unknown = new Set<string>()
@@ -464,7 +474,7 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
   const tokens = parseTokens(text)
   const usedImages = new Set<number>()
   if (!sendsImages && tokens.some((t) => t.kind === 'image')) {
-    warnings.push(`Chế độ ${scene.settings.mode.toUpperCase()} của ${spec.name} không gửi ảnh: các @image_N sẽ chỉ là chữ trong prompt.`)
+    warnings.push(`Chế độ ${mode} của ${model} không gửi ảnh: các @image_N sẽ chỉ là chữ trong prompt.`)
   }
   const unsent = new Set<string>()
   // Retired @video tokens (kept as written, never sent): blocked by name, and as tokens with no media (two layers).
@@ -481,7 +491,7 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
       warnings.push(`${tok} không tồn tại (cảnh có ${allSlots.length} ảnh).`)
       unsent.add(tok)
     } else if (sendsImages && t.n > images.length) {
-      warnings.push(`${tok} sẽ không được gửi (${spec.name} nhận tối đa ${spec.maxRefImages} ảnh) — nhân vật đó không có trong video.`)
+      warnings.push(`${tok} sẽ không được gửi (${model} nhận tối đa ${spec.maxRefImages} ảnh) — nhân vật đó không có trong video.`)
       unsent.add(tok)
     } else if (!sendsImages) unsent.add(tok)
   }

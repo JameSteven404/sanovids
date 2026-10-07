@@ -2,7 +2,7 @@
 // the pure cleaning of ids and settings objects. Used by core/migrate (loading a project / file) and store/project
 // (restoring a take's settings onto a scene). No store import (store/project imports this module).
 import { isModelId, MODELS, normalizeSettings } from './models'
-import type { ForeignSettings, VideoSettings } from './types'
+import type { ForeignSettings, ServiceId, VideoSettings } from './types'
 
 /** Longest model / provider id kept from a newer build (real ids are short; a longer one is cut and still blocks). */
 export const FOREIGN_ID_MAX = 64
@@ -47,31 +47,40 @@ export function cleanForeignSettings(raw: unknown, omit: readonly string[] = [])
 export const CONFIG_KEYS = ['mode', 'duration', 'resolution', 'ratio'] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
-/** Every value some model of this build offers, per key (none of these lists ever shrank). */
-const OFFERED: Record<ConfigKey, ReadonlySet<string | number>> = {
-  mode: new Set(Object.values(MODELS).flatMap((m) => m.modes)),
-  duration: new Set(Object.values(MODELS).flatMap((m) => m.durations)),
-  resolution: new Set(Object.values(MODELS).flatMap((m) => m.resolutions)),
-  ratio: new Set(Object.values(MODELS).flatMap((m) => m.ratios)),
+/**
+ * Every value some model of this build offers, per service and key (none of these lists ever shrank). Per service:
+ * seedvis's values (21:9, 4 / 6 / 8 / 20 / 25 s, 'first', 'auto') must not make a canvasapp scene carrying one from a
+ * newer build look like an older build's own mix (quietly fixed) — it is marked.
+ */
+const offeredBy = (service: ServiceId): Record<ConfigKey, ReadonlySet<string | number>> => {
+  const specs = Object.values(MODELS).filter((m) => m.service === service)
+  return {
+    mode: new Set(specs.flatMap((m) => m.modes)),
+    duration: new Set(specs.flatMap((m) => m.durations)),
+    resolution: new Set(specs.flatMap((m) => m.resolutions)),
+    ratio: new Set(specs.flatMap((m) => m.ratios)),
+  }
 }
+const OFFERED: Record<ServiceId, Record<ConfigKey, ReadonlySet<string | number>>> = { canvasapp: offeredBy('canvasapp'), seedvis: offeredBy('seedvis') }
 
 /**
  * The saved values (non-empty string mode / resolution / ratio, finite number duration) of a KNOWN model's settings that
  * normalizeSettings replaces — the ones a newer build must have written: every one when `strict` (a file of a newer
- * schema, a take), else only values no model of this build has ever offered (an older build's own mix, e.g. a Seedance
- * scene left on an H3-only mode, is still quietly fixed as before). [] = nothing lost (or not a known model).
+ * schema, a take), else only values no model of the same service has ever offered (an older build's own mix, e.g. a
+ * Seedance scene left on an H3-only mode, is still quietly fixed as before). [] = nothing lost (or not a known model).
  */
 export function lostConfigValues(raw: unknown, strict: boolean): { key: ConfigKey; value: string | number }[] {
   if (!raw || typeof raw !== 'object') return []
   const r = raw as Record<string, unknown>
   if (!isModelId(r.model)) return []
   const normalized = normalizeSettings(r as Partial<VideoSettings>)
+  const offered = OFFERED[MODELS[r.model].service]
   const out: { key: ConfigKey; value: string | number }[] = []
   for (const key of CONFIG_KEYS) {
     const v = r[key]
     const typed = key === 'duration' ? typeof v === 'number' && Number.isFinite(v) : typeof v === 'string' && v.trim() !== ''
     if (!typed || v === normalized[key]) continue
-    if (strict || !OFFERED[key].has(v as string | number)) out.push({ key, value: v as string | number })
+    if (strict || !offered[key].has(v as string | number)) out.push({ key, value: v as string | number })
   }
   return out
 }

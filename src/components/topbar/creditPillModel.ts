@@ -13,7 +13,7 @@
 //               mode locked and the canvasapp gateway not turned on: nothing is read, nothing is sent).
 //   demo        neutral dashed pill  [flask] 1.000 credit DEMO        legacy: the old demo's local wallet (only when a
 //               caller passes kind 'demo' — new takes never use it).
-import { CREDIT_HINT, creditUnitLabel, formatCreditNumber, formatCredits, formatVnd, type CreditKind } from '../../lib/credits'
+import { CREDIT_HINT, creditUnitLabel, formatCreditNumber, formatCredits, formatVnd } from '../../lib/credits'
 import type { CreditInfo } from '../../store/credits'
 
 /** Below this the balance number turns red (a 1080p 15 s video costs 20). */
@@ -116,7 +116,8 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
     }
   }
 
-  const w = WORDS[info.kind as Exclude<CreditKind, 'demo'>] ?? WORDS.canvasapp
+  // TODO(B4): the seedvis pill (its own CreditInfo, plan §12.7); only canvasapp's wallets reach this pill so far
+  const w = WORDS[info.kind as keyof typeof WORDS] ?? WORDS.canvasapp
   const source = w.source
   const sim = w.sim
   const when = has && info.updatedAt ? ` (cập nhật lúc ${clockText(info.updatedAt, opts.now)})` : ''

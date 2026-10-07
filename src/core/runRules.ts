@@ -5,9 +5,12 @@
 //
 // Order = the engine's; the first reason wins:
 //   1. model of a newer SanoVids build (scene.foreignModel, kept by migrate), or values of a newer build for a model
-//      this build knows (a config marker: scene.foreignSettings without foreignModel)
+//      this build knows (a config marker: scene.foreignSettings without foreignModel); then a discontinued route
+//      (ModelSpec.hidden, kind 'settings')
 //   2. empty prompt                      3. prompt over the model's limit
-//   4. i2v without any image             5. transform without both frames     6. a frame without an image
+//   4. i2v without any image (the upper bound is rule 8: tokens past the model's cap are unsent)
+//   5. a mode's frames missing           6. a frame without an image — per route (models frameSlots: canvasapp
+//      "Khung đầu → cuối" both, Veo 3.1 "Khung đầu → Video" the first only)
 //   7. retired @video text left in the prompt (compiled.retiredTokens — reference videos were retired in 0.6.0: the
 //      text is kept verbatim but never sent; named before rule 8 so the specific reason wins)
 //   8. red placeholders left by a removed picture ("@image_?2(Lumi)": waitingReason, 3 names shown + "…"), then
@@ -20,7 +23,7 @@
 import { compileScene, PLACEHOLDER_RE, retiredTokenList } from './compile'
 import { labelledTokens } from './placeholders'
 import { lostConfigValues, type ConfigKey } from './foreignMark'
-import { MODELS, type ModelSpec } from './models'
+import { frameSlots, MODELS, modelLabel, specOf, type ModelSpec } from './models'
 import type { Asset, CompiledPrompt, Project, Scene } from './types'
 
 export interface RunRuleInput {
@@ -29,7 +32,7 @@ export interface RunRuleInput {
   assets: readonly Asset[]
   /** compileScene(project, scene): what would be sent. */
   compiled: CompiledPrompt
-  /** Model of the scene (default MODELS[scene.settings.model]); reserved for the route rules of other providers. */
+  /** Model of the scene (default specOf(scene.settings.model)): its frames (rules 5 / 6) and whether it is discontinued. */
   spec?: ModelSpec
   /** The gateway's sure refusal of the scene's settings (providers/limits settingsRunBlock); null / omitted = none. */
   settingsBlock?: string | null
@@ -44,6 +47,14 @@ export const LONG_PROMPT_REASON = 'Prompt quá dài'
 export const NO_IMAGE_REASON = 'Thiếu ảnh tham chiếu'
 export const NO_FRAMES_REASON = 'Thiếu khung đầu/cuối'
 export const FRAME_IMAGE_REASON = 'Khung đầu/cuối chưa có ảnh'
+/** A mode that sends only the opening frame (Veo 3.1 "Khung đầu → Video"). */
+export const NO_FIRST_FRAME_REASON = 'Thiếu khung đầu'
+export const FIRST_FRAME_IMAGE_REASON = 'Khung đầu chưa có ảnh'
+
+/** The scene's route was discontinued (ModelSpec.hidden): it is kept, never run. */
+export function retiredModelReason(model: string): string {
+  return `${modelLabel(model, { withService: true })} đã ngừng — chọn model khác để chạy`
+}
 
 /** The scene uses a model of a newer SanoVids build (scene.foreignModel). */
 export function foreignModelReason(model: string): string {
@@ -111,18 +122,23 @@ export function isRedTextBlock(block: RunBlock | null | undefined): boolean {
 }
 
 /** The first rule that fails, with its kind (runBlockReason = its reason), or null when the scene can run. */
-export function runBlock({ scene, assets, compiled, settingsBlock }: RunRuleInput): RunBlock | null {
+export function runBlock({ scene, assets, compiled, settingsBlock, spec: given }: RunRuleInput): RunBlock | null {
   const block = (kind: RunBlockKind, reason: string): RunBlock => ({ kind, reason })
   if (typeof scene.foreignModel === 'string' && scene.foreignModel) return block('foreign', foreignModelReason(scene.foreignModel))
   if (scene.foreignSettings && typeof scene.foreignSettings === 'object') return block('foreign', foreignConfigReason(scene.foreignSettings))
+  const spec = given ?? specOf(scene.settings.model)
+  if (spec.hidden) return block('settings', retiredModelReason(scene.settings.model))
   if (!scene.prompt.trim()) return block('empty', EMPTY_PROMPT_REASON)
   if (compiled.charCount > compiled.limit) return block('long', LONG_PROMPT_REASON)
   const mode = scene.settings.mode
   if (mode === 'i2v' && compiled.images.length === 0) return block('no-image', NO_IMAGE_REASON)
-  if (mode === 'transform') {
-    if (!scene.firstFrame || !scene.lastFrame) return block('frames', NO_FRAMES_REASON)
-    const frames = [scene.firstFrame, scene.lastFrame]
-    if (frames.some((id) => !assets.find((a) => a.id === id)?.imageIds[0])) return block('frames', FRAME_IMAGE_REASON)
+  // frames per route (models frameSlots): canvasapp "Khung đầu → cuối" both, Veo "Khung đầu → Video" the first only
+  const slots = frameSlots(spec, mode)
+  if (slots.first || slots.last) {
+    const firstOnly = !slots.last
+    if ((slots.first && !scene.firstFrame) || (slots.last && !scene.lastFrame)) return block('frames', firstOnly ? NO_FIRST_FRAME_REASON : NO_FRAMES_REASON)
+    const frames = [slots.first ? scene.firstFrame : null, slots.last ? scene.lastFrame : null].filter((id): id is string => !!id)
+    if (frames.some((id) => !assets.find((a) => a.id === id)?.imageIds[0])) return block('frames', firstOnly ? FIRST_FRAME_IMAGE_REASON : FRAME_IMAGE_REASON)
   }
   if (compiled.retiredTokens.length) return block('retired', retiredVideoReason(compiled.retiredTokens))
   const retired = new Set(compiled.retiredTokens)

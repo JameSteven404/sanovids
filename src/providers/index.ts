@@ -7,7 +7,10 @@
 //                                          builds) → always 'canvasapp' (blocked until the user turns the gateway on).
 //                                          Never 'mock'.
 //   providerOf(take): ProviderId            provider a take ran on (take.provider, 'mock' for old takes). Re-exported here.
-//   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ".
+//   PROVIDER_LABEL[id]                      'dev' "Phát triển (giả lập)" | 'canvasapp' "canvasapp.io.vn" | 'mock' "Demo cũ"
+//                                          | 'seedvis-dev' "seedvis giả lập" | 'seedvis' "seedvis.com".
+//   providerForModel(model): ProviderId     provider a scene of that model runs on now (wallet, limits): canvasapp's
+//                                          routes → activeProviderId(); seedvis's → 'seedvis-dev' open / 'seedvis' locked.
 //   selectableProviders()                   the Settings choices now: ['dev', 'canvasapp'] open, ['canvasapp'] locked
 //                                          (SELECTABLE_PROVIDERS: the open list, deprecated).
 //   useProviderPrefs                        { provider, active, setProvider } — `provider` = the saved Settings choice
@@ -53,6 +56,7 @@
 // chosen for new takes.
 // NOTE: do not import lib/pwa or store/* here (runs.ts imports this module; avoid import cycles).
 import { create } from 'zustand'
+import { serviceOf } from '../core/models'
 import { getBlob } from '../lib/imageStore'
 import { createCanvasappApi, type CanvasappApi } from './canvasapp/api'
 import { browserStorage, createCanvasappProvider, JOBS_KEY, STATE_KEY, type CanvasappProvider } from './canvasapp/adapter'
@@ -86,6 +90,8 @@ export const CANVASAPP_NEEDS_OPT_IN = true
 
 export const DEV_LOCKED_REASON = 'Take giả lập chỉ gửi được khi chế độ Phát triển đang mở.'
 export const CANVASAPP_OFF_REASON = 'Chưa bật cổng canvasapp.io.vn — mở Cài đặt → Nhà cung cấp video để bật.'
+/** No seedvis executor runs in this build yet (track B2 wires them): nothing is sent to seedvis. */
+export const SEEDVIS_UNAVAILABLE_REASON = 'Bản SanoVids này chưa gửi được tới seedvis.com — chưa gửi gì, không bị trừ credit.'
 
 /**
  * Pure: the provider new takes use. Open (build / unlocked): the saved choice, 'canvasapp' only with the desktop
@@ -260,6 +266,8 @@ export function activeProviderId(): ProviderId {
 
 /** Synchronous pre-check used by enqueue / retry (login is checked when the job is submitted). Null = OK. */
 export function providerBlockedReason(id: ProviderId): string | null {
+  // TODO(B2): the key / dev-lock reasons of plan §5.1. Until the seedvis executors are wired, nothing is sent to them.
+  if (id === 'seedvis' || id === 'seedvis-dev') return SEEDVIS_UNAVAILABLE_REASON
   if (id === 'dev' && !devAllowed()) return DEV_LOCKED_REASON
   if (id === 'canvasapp') {
     if (!hasCanvasappBridge()) return WEB_UNAVAILABLE
@@ -273,7 +281,24 @@ export function canvasappOff(): boolean {
   return hasCanvasappBridge() && !canvasappEnabled()
 }
 
-export const PROVIDER_LABEL: Record<ProviderId, string> = { dev: DEV_PROVIDER_LABEL, canvasapp: 'canvasapp.io.vn', mock: 'Demo cũ' }
+export const PROVIDER_LABEL: Record<ProviderId, string> = {
+  dev: DEV_PROVIDER_LABEL,
+  canvasapp: 'canvasapp.io.vn',
+  mock: 'Demo cũ',
+  'seedvis-dev': 'seedvis giả lập',
+  seedvis: 'seedvis.com',
+}
+
+/**
+ * The provider that runs a scene of `model` now — its wallet, its limits (plan §1.2). canvasapp's routes:
+ * activeProviderId(). seedvis's: 'seedvis-dev' while development mode is open, 'seedvis' when locked.
+ * TODO(B2): seedvis reads the pref bdp:pref:provider:seedvis ('dev' | 'real') + the desktop bridge (seedvisEffective),
+ * and providerBlockedReason / getProvider learn both seedvis executors. Nothing runs on seedvis before that: the routes
+ * are not offered while SEEDVIS_ENABLED is false (core/models).
+ */
+export function providerForModel(model: string): ProviderId {
+  return serviceOf(model) === 'seedvis' ? (devAllowed() ? 'seedvis-dev' : 'seedvis') : activeProviderId()
+}
 
 // ---- gateways ----
 
@@ -324,7 +349,7 @@ export async function resetDevMode(): Promise<void> {
 // ---- what the gateways run right now (/api/video-profiles) ----
 
 /** Revision of what each provider's limits are (see the API notes at the top). Select `s.rev[id]` — a number. */
-export const useProviderLimits = create<{ rev: Record<ProviderId, number> }>()(() => ({ rev: { dev: 0, canvasapp: 0, mock: 0 } }))
+export const useProviderLimits = create<{ rev: Record<ProviderId, number> }>()(() => ({ rev: { dev: 0, canvasapp: 0, mock: 0, 'seedvis-dev': 0, seedvis: 0 } }))
 
 /** While watched, a firm read is renewed this long before it expires (no moment where it reads as a guess). */
 export const LIMITS_RENEW_EARLY_MS = 30_000
