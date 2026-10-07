@@ -1,11 +1,12 @@
 import { MODELS, usesRefs } from './models'
+import { labelFitsSlot, splitLabel } from './tokenLabels'
 import type { Asset, CompiledImage, CompiledPrompt, Project, Scene } from './types'
 
 /**
  * Legacy @Tag mention: letters (incl. Vietnamese), digits, underscore. Never a numbered token: "@image_1", "@Image 1",
- * "@image1" are media tokens, not tags.
+ * "@image1" are media tokens, not tags — and never the start of a placeholder ("@image_?2(Lumi)" is no "@image_" tag).
  */
-export const MENTION_RE = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])[ _]?\d)([\p{L}\p{N}_]+)/gu
+export const MENTION_RE = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])(?:[ _]?\d|_\?))([\p{L}\p{N}_]+)/gu
 /**
  * Numbered media token. Group 1 = kind, group 2 = number. Any case, and "_", a space or nothing before the number:
  * "@image_1", "@Image 1", "@IMAGE1" all name image 1 (prompts written elsewhere use all of these). `video` stays in
@@ -22,6 +23,22 @@ export const withTokenNumber = (token: string, n: number) => token.replace(/\d+$
 /** Placeholder for a number that has no image yet (e.g. left over by an edit or an import): "@image_?3". */
 export const UNBOUND_RE = /@(image|video)_\?(\d+)/gi
 export const unboundToken = (kind: 'image' | 'video', n: number | string) => `@${kind}_?${n}`
+/**
+ * A red placeholder with its optional label glued to it: "@image_?2(Lumi)" = the token "@image_2" whose picture
+ * (Lumi) was removed from the scene (core/placeholders removalLabels). Group 1 = kind, 2 = the old number, 3 = the
+ * label. The "(" must follow the number directly: in "@image_?2 (cười)" only "@image_?2" is the placeholder. Every
+ * build since 0.2.0 blocks it (their UNBOUND_RE reads its "@image_?2" start) and it is never renumbered. `video` stays
+ * so an old "@video_?1(…)" is read (it is retired text, see retiredVideoTokens); the app writes image ones only.
+ */
+export const PLACEHOLDER_RE = /@(image|video)_\?(\d+)(?:\(([^()\n]{1,120})\))?/giu
+/** "@image_?2(Lumi)" (no label: "@image_?2"). The label must already be sanitized (core/tokenLabels sanitizeLabel). */
+export const placeholderToken = (kind: 'image' | 'video', n: number | string, label?: string | null) => `@${kind}_?${n}${label ? `(${label})` : ''}`
+/**
+ * A real @image token with a label glued to it: "@image_2(Lumi)" (typically a placeholder whose "?" was deleted by
+ * hand). Group 2 = number, 3 = label. compileScene blocks it unless the label fits the picture the number names now
+ * (core/tokenLabels labelFitsSlot): deleting the "?" must never send Làng where the prompt says Lumi.
+ */
+export const LABELLED_TOKEN_RE = /@(image)[ _]?(\d+)\(([^()\n]{1,120})\)/giu
 
 // ---------------------------------------------------------------------------------------------
 // Retired reference videos (@video_N)
@@ -281,20 +298,41 @@ const isAppend = (before: string[], after: string[]) => after.length >= before.l
 /** Asset id of an image key ("assetId:imageId"). */
 const ownerOfKey = (key: string) => key.slice(0, key.indexOf(':'))
 
+/** A label glued right after a token / placeholder: "(Lumi)" at the start of the rest of the text. */
+const GLUED_LABEL = /^\([^()\n]{1,120}\)/u
+
+export interface RemapOptions {
+  /**
+   * Tokens whose picture is still in the scene keep their number exactly as written (automatic renumbering off,
+   * Settings: the switch promises not to renumber). Only a token whose picture is gone changes (`placeholder`).
+   * Typed-ahead numbers are kept too.
+   */
+  keepNumbers?: boolean
+  /**
+   * A token whose picture is gone becomes a red placeholder "@image_?N(label)" (N = its number as written, label =
+   * `placeholder(key, N)`, null = a bare "@image_?N") instead of `fallback`'s text: no prompt text is ever lost and the
+   * scene cannot run until the user fills it (core/placeholders). A token that already has a label glued to it
+   * ("@image_2(Lumi)") keeps that label: it becomes "@image_?2" followed by its own "(Lumi)".
+   */
+  placeholder?: (key: string, n: number) => string | null
+}
+
 /**
  * Rewrite @image_N tokens after the references changed so every token keeps pointing at the same image. Tokens whose
- * image disappeared are replaced with `fallback(key)` (e.g. the asset name). A token that pointed at nothing before
- * (typed ahead: "write the prompt first, link the pictures later") keeps its number only when the change is a pure
- * append of NEW assets: it then names the newly linked one by position, or still waits for one. Any other change
- * (insert, removal, reorder, a character getting more pictures) would shift it onto a picture it never meant — wrong
- * character — so it becomes a visible "@image_?N" placeholder. Retired @video tokens are never touched (kept byte for
- * byte, see retiredVideoTokens).
+ * image disappeared become a red placeholder (`opts.placeholder`, what every removal in the app uses) or, without it,
+ * `fallback(key, n)` as plain text (the asset name — only the explicit "undo auto link" of the prompt editor keeps
+ * that). A token that pointed at nothing before (typed ahead: "write the prompt first, link the pictures later") keeps
+ * its number only when the change is a pure append of NEW assets: it then names the newly linked one by position, or
+ * still waits for one. Any other change (insert, removal, reorder, a character getting more pictures) would shift it
+ * onto a picture it never meant — wrong character — so it becomes a visible "@image_?N" placeholder. Placeholders are
+ * not tokens (never renumbered). Retired @video tokens are never touched (kept byte for byte, see retiredVideoTokens).
  */
 export function remapTokens(
   text: string,
   before: { images: string[] },
   after: { images: string[] },
-  fallback: (key: string) => string,
+  fallback: (key: string, n: number) => string,
+  opts: RemapOptions = {},
 ): { text: string; dropped: number; changed: boolean } {
   let dropped = 0
   let changed = false
@@ -311,12 +349,13 @@ export function remapTokens(
       out += whole
       continue
     }
+    const n = Number(rawN)
     const oldKeys = before.images
     const newKeys = after.images
-    const key = oldKeys[Number(rawN) - 1]
+    const key = oldKeys[n - 1]
     if (key === undefined) {
-      const target = newKeys[Number(rawN) - 1]
-      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(k) === ownerOfKey(target)))) {
+      const target = newKeys[n - 1]
+      if (opts.keepNumbers || (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(k) === ownerOfKey(target))))) {
         out += whole
         continue
       }
@@ -326,12 +365,17 @@ export function remapTokens(
     }
     const idx = newKeys.indexOf(key)
     let next: string
-    if (idx >= 0) next = withTokenNumber(whole, idx + 1)
-    else {
+    if (idx >= 0) next = opts.keepNumbers ? whole : withTokenNumber(whole, idx + 1)
+    else if (opts.placeholder) {
+      dropped++
+      // a label already glued after the token stays (it is what the user / an earlier removal wrote)
+      const glued = GLUED_LABEL.test(text.slice(last))
+      next = placeholderToken('image', n, glued ? null : opts.placeholder(key, n))
+    } else {
       dropped++
       // never an "@" in it (a name like "@Lumi" / "@image_1" would point at another picture), never glued to an open
       // "@…" before it (fallbackGap)
-      const plain = fallback(key).replace(/@/g, '')
+      const plain = fallback(key, n).replace(/@/g, '')
       next = fallbackGap(out, plain) + plain
     }
     if (next !== whole) changed = true
@@ -339,6 +383,16 @@ export function remapTokens(
   }
   out += text.slice(last)
   return { text: out, dropped, changed }
+}
+
+/**
+ * `before` + `plain` + `after` with `plain` (text that replaces a token / placeholder, e.g. "Đổi thành chữ “Lumi”")
+ * never reading as a mention / token / placeholder of another picture: "@" removed from it, a space put between it and
+ * an open "@…" before it (see fallbackGap).
+ */
+export function joinPlain(before: string, plain: string, after: string): string {
+  const clean = plain.replace(/@/g, '')
+  return before + fallbackGap(before, clean) + clean + after
 }
 
 /** Keys of a scene's reference images before/after a change — input for remapTokens. */
@@ -428,12 +482,35 @@ export function compileScene(project: Project, scene: Scene, _opts: CompileOptio
       unsent.add(tok)
     } else if (!sendsImages) unsent.add(tok)
   }
-  for (const m of text.matchAll(UNBOUND_RE)) {
+  // Red placeholders (a removed picture, an import, a typed-ahead number that could not keep its picture): verbatim,
+  // label included — they never reach a request (core/runRules blocks the run).
+  for (const m of text.matchAll(PLACEHOLDER_RE)) {
     if (m[1].toLowerCase() !== 'image') continue // a waiting @video_?N is a retired token (above)
     const tok = m[0]
     if (unsent.has(tok)) continue
     unsent.add(tok)
-    warnings.push(`${tok} chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng (vd. @image_1).`)
+    warnings.push(
+      m[3]
+        ? `${tok}: ảnh “${m[3]}” đã bị bỏ nối khỏi cảnh — nối ảnh thay thế rồi chọn ở dải “Chữ đỏ chờ ảnh” dưới ô prompt, hoặc bấm “Đổi thành chữ” nếu không cần nhân vật đó.`
+        : `${tok} chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng (vd. @image_1).`,
+    )
+  }
+  // A real token with a label glued to it ("@image_2(Lumi)", e.g. a placeholder whose "?" was deleted): sent only
+  // when the label fits the picture that number names now; otherwise it would send Làng where the prompt says Lumi.
+  for (const m of text.matchAll(LABELLED_TOKEN_RE)) {
+    const n = Number(m[2])
+    const slot = allSlots[n - 1]
+    const asset = slot && assetMap.get(slot.assetId)
+    if (!slot || !asset) continue // out of range: already blocked above ("không tồn tại")
+    const label = m[3]
+    if (labelFitsSlot(label, asset, slot.imageIndex, project.assets)) {
+      notes.push(`${m[0]}: chữ “(${label})” sẽ được gửi cùng prompt — xoá nếu không cần.`)
+      continue
+    }
+    const now = asset.name || asset.tag
+    const base = splitLabel(label).base
+    unsent.add(m[0])
+    warnings.push(`@image_${n} bây giờ là “${now}”, không phải “${label}” — nối ảnh thay thế rồi bấm “Gắn vào chỗ ${base}”, hoặc xoá chữ “(${label})” nếu đúng là ${now}.`)
   }
   const unusedImages = images.filter((i) => !usedImages.has(i.n)).map((i) => `@image_${i.n}`)
   if (unusedImages.length) notes.push(`${unusedImages.join(', ')} chưa được nhắc trong prompt (vẫn được gửi).`)

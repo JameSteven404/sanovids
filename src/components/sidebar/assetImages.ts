@@ -4,25 +4,22 @@
 // remove / reorder made during the wait is not overwritten when the new images are appended.
 import { create } from 'zustand'
 import { addImagesToAsset } from '../../actions'
+import { pictureSlotOffer, reportMediaChange } from '../../placeholderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast } from '../../store/ui'
-import { changedPrompts, scenesWithShiftedImageTokens, scenesWithStaleTokens, staleTokenNote } from './shared'
+import { changedPrompts, scenesWithShiftedImageTokens, staleTokenNote } from './shared'
 
 /**
  * Run a change to an asset's images or links. The store renumbers the @image_N tokens of the scenes using it in the
- * same undo step (their prompts are not visible from the asset panels): say so, with "Hoàn tác" (spec §2). With
- * automatic renumbering off (Settings) the prompts are left as written: warn about the scenes whose numbers now point
- * elsewhere. `done` is always announced when `always`, else only when prompts were rewritten (or left stale).
+ * same undo step and turns the tokens of removed pictures into red placeholders (their prompts are not visible from the
+ * asset panels): say so, with "Hoàn tác" (core/staleTokens mediaChangeNote — red placeholders left, numbers left stale
+ * with renumbering off, or prompts renumbered). `done` is always announced when `always`, else only when a prompt
+ * changed meaning.
  */
 export function withRenumberToast(run: () => void, done: string, always = false) {
   const before = useProject.getState().project
   run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  const rewritten = changedPrompts(before.scenes, after.scenes).length
-  if (stale.length) toast(`${done}${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-  else if (rewritten) toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { tone: 'info', action: undoToastAction() })
-  else if (always) toast(`${done}.`, { action: undoToastAction() })
+  reportMediaChange(before, done, { always })
 }
 
 /** Number of image batches being stored, per asset id. */
@@ -98,8 +95,12 @@ async function storeImages(assetId: string, images: File[]) {
   // Only count scenes using this asset: other prompts may have been edited while the files were being stored.
   const using = new Set(now.scenes.filter((s) => s.refs.includes(assetId)).map((s) => s.id))
   const rewritten = changedPrompts(start.scenes, now.scenes).filter((id) => using.has(id)).length
+  // One picture added while scenes still wait for this character's "(Tên · ảnh k)": offer to put it there (a click).
+  const added = images.length === 1 ? after.imageIds[after.imageIds.length - 1] : undefined
+  const offer = added && !asset.imageIds.includes(added) ? pictureSlotOffer(assetId, added) : null
   toast(`Đã thêm ${images.length} ảnh cho “${name}”${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, {
     tone: 'success',
-    action: undoToastAction(),
+    action: offer ?? undoToastAction(),
+    ...(offer ? { ms: 12000 } : {}),
   })
 }

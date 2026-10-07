@@ -1,6 +1,6 @@
 // "Prompt cuối": the exact text that would be sent (the prompt as written, legacy @Tag converted to @image_N),
-// with @image_N tokens highlighted (retired @video text struck through in red), char count, warnings (amber) and
-// notes (grey).
+// with @image_N tokens highlighted (red placeholders "@image_?2(Lumi)" and labels that do not fit their slot in red,
+// retired @video text struck through in red), char count, warnings (amber) and notes (grey).
 import { ChevronDown, Copy, Download, Info, TriangleAlert } from 'lucide-react'
 import { memo, useDeferredValue, useMemo } from 'react'
 import { copyCompiledPrompt, downloadSceneZip } from '../../actions'
@@ -8,7 +8,7 @@ import { compileScene } from '../../core/compile'
 import type { Asset, Project, Scene } from '../../core/types'
 import { useProject } from '../../store/project'
 import { fmt, usePref } from './shared'
-import { imageOptsFor, invalidTokenTitle, segmentPrompt } from './tokens'
+import { imageOptsFor, invalidTokenTitle, labelChecker, segmentPrompt, type LabelCheck } from './tokens'
 
 /** compileScene only reads the assets and the scene: avoid subscribing to the whole project. */
 function compileFor(assets: Asset[], scene: Scene) {
@@ -30,6 +30,8 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
     if (scene) for (const o of imageOptsFor(assets, scene.refs)) images.set(o.n, o.name)
     return images
   }, [assets, scene])
+
+  const labels = useMemo(() => (scene ? labelChecker(assets, scene.refs) : undefined), [assets, scene])
 
   if (!scene || !compiled) return null
   const over = compiled.charCount > compiled.limit
@@ -86,7 +88,7 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
               ))}
             </ul>
           )}
-          <FinalText text={compiled.text} imageCount={names.size} sentImages={compiled.images.length} names={names} />
+          <FinalText text={compiled.text} imageCount={names.size} sentImages={compiled.images.length} names={names} labels={labels} />
         </div>
       )}
     </section>
@@ -98,6 +100,7 @@ const FinalText = memo(function FinalText({
   imageCount,
   sentImages,
   names,
+  labels,
 }: {
   text: string
   imageCount: number
@@ -105,8 +108,10 @@ const FinalText = memo(function FinalText({
   sentImages: number
   /** Asset name of each @image_N. */
   names: Map<number, string>
+  /** Checks a label glued to a token ("@image_2(Lumi)") against the picture that number names now. */
+  labels?: LabelCheck
 }) {
-  const segs = useMemo(() => segmentPrompt(text, imageCount, undefined, { images: sentImages }), [text, imageCount, sentImages])
+  const segs = useMemo(() => segmentPrompt(text, imageCount, undefined, { images: sentImages }, labels), [text, imageCount, sentImages, labels])
   if (!text) return <div className="empty">Chưa có nội dung — viết prompt cho cảnh.</div>
   return (
     <div className="in-final-text">

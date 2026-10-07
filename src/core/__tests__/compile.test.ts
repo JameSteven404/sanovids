@@ -162,3 +162,38 @@ describe('tags', () => {
     expect(extractMentions('@Elara and @elara and @image_2 @BeAn')).toEqual(['Elara', 'BeAn'])
   })
 })
+
+describe('red placeholders in compile (GT1)', () => {
+  it('remapTokens: the fallback gets the old number; keepNumbers keeps every number whose picture is still there', () => {
+    const before = mediaKeys(project([]).assets, ['a', 'b', 'c']) // a = 1, 2  b = 3  c = 4
+    const after = mediaKeys(project([]).assets, ['a', 'c'])
+    const seen: [string, number][] = []
+    const out = remapTokens('@image_3 and @image_4', before, after, (key, n) => {
+      seen.push([key, n])
+      return 'x'
+    })
+    expect(out.text).toBe('x and @image_3')
+    expect(seen).toEqual([['b:i3', 3]])
+    expect(remapTokens('@image_1 @image_3 @image_4 @image_9', before, after, () => 'x', { keepNumbers: true, placeholder: () => 'Bé An' }).text).toBe(
+      '@image_1 @image_?3(Bé An) @image_4 @image_9',
+    )
+  })
+  it('placeholder mode: never a name, the label is optional, a glued label stays the label', () => {
+    const before = mediaKeys(project([]).assets, ['b', 'c'])
+    const after = mediaKeys(project([]).assets, ['c'])
+    expect(remapTokens('@image_1 x', before, after, () => 'NAME', { placeholder: () => null }).text).toBe('@image_?1 x')
+    expect(remapTokens('@Image 1(Lumi) x', before, after, () => 'NAME', { placeholder: () => 'Bé An' }).text).toBe('@image_?1(Lumi) x')
+  })
+  it('unsentTokens holds placeholders verbatim, label included, with the bar sentence', () => {
+    const s = scene({ prompt: '@image_1 hugs @image_?2(Bé An) and @image_?3', refs: ['c'] })
+    const out = compileScene(project([s]), s)
+    expect(out.unsentTokens).toEqual(['@image_?2(Bé An)', '@image_?3'])
+    expect(out.warnings).toContain(
+      '@image_?2(Bé An): ảnh “Bé An” đã bị bỏ nối khỏi cảnh — nối ảnh thay thế rồi chọn ở dải “Chữ đỏ chờ ảnh” dưới ô prompt, hoặc bấm “Đổi thành chữ” nếu không cần nhân vật đó.',
+    )
+    expect(out.warnings).toContain('@image_?3 chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng (vd. @image_1).')
+  })
+  it('MENTION_RE never reads the "@image_" of a placeholder as a tag (a tag named "image_" would otherwise steal it)', () => {
+    expect([...'@image_?2(Lumi) @Elara @image_x'.matchAll(MENTION_RE)].map((m) => m[1])).toEqual(['Elara', 'image_x'])
+  })
+})

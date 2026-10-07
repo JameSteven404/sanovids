@@ -204,7 +204,7 @@ describe('renumbering feedback', () => {
     useProject.getState().updateAsset('a', { imageIds: ['a2'] })
     const after = useProject.getState().project.scenes
     expect(changedPrompts(before, after)).toEqual(['s1'])
-    expect(after[0].prompt).toBe('Elara and @image_2')
+    expect(after[0].prompt).toBe('@image_?1(Elara · ảnh 1) and @image_2')
   })
 
   it('reports nothing when no prompt changed', () => {

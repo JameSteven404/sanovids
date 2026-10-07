@@ -19,6 +19,7 @@ import {
   foreignConfigReason,
   foreignModelReason,
   LONG_PROMPT_REASON,
+  mismatchReason,
   NO_FRAMES_REASON,
   NO_IMAGE_REASON,
   refStatusLookup,
@@ -26,6 +27,7 @@ import {
   runBlockReason,
   sceneRunBlockReason,
   unsentTokensReason,
+  waitingReason,
 } from '../runRules'
 import type { Asset, Project, Scene, VideoSettings } from '../types'
 
@@ -250,5 +252,29 @@ describe('UI helpers', () => {
     expect(gate.sceneRunBlock(v, ASSETS, 'X')).toBe(retiredVideoReason(['@video_1']))
     expect(gate.sceneRunBlock(scene({ legacyVideoRefs: ['t1'] }), ASSETS, 'X')).toBe('X')
     expect(gate.runBlockReason(scene(), compileScene(project(scene()), scene()), ASSETS, { settingsBlock: 'X' })).toBe('X')
+  })
+})
+
+describe('runBlockReason — red placeholders (GT1)', () => {
+  it('8a. labelled placeholders name who they wait for (3, then "…") before any other unsent token', () => {
+    expect(reasonOf(scene({ prompt: '@image_?2(Lumi) waves at @image_1', refs: ['a'] }))).toBe(waitingReason([{ name: 'Lumi', token: '@image_?2' }]))
+    expect(waitingReason([{ name: 'Lumi', token: '@image_?2' }])).toBe(
+      'Còn chữ đỏ chờ ảnh: Lumi (@image_?2) — nối ảnh thay thế rồi bấm “Gắn vào chỗ…”, hoặc bấm “Đổi thành chữ” nếu không cần nhân vật đó',
+    )
+    const many = reasonOf(scene({ prompt: '@image_?1(A) @image_?2(B) @image_?3(C · ảnh 2) @image_?4(D) @image_9' }))
+    expect(many).toBe('Còn chữ đỏ chờ ảnh: A (@image_?1), B (@image_?2), C · ảnh 2 (@image_?3)… — nối ảnh thay thế rồi bấm “Gắn vào chỗ…”, hoặc bấm “Đổi thành chữ” nếu không cần nhân vật đó')
+  })
+  it('8a\'. a labelled token whose label does not fit its picture ("?" deleted by hand) keeps blocking', () => {
+    // a = Elara (1, 2), b = Cave (3)
+    expect(reasonOf(scene({ prompt: '@image_3(Lumi) walks', refs: ['a', 'b'] }))).toBe(mismatchReason(3, 'Cave', 'Lumi'))
+    expect(mismatchReason(3, 'Cave', 'Lumi')).toBe('@image_3 đang là “Cave”, không phải “Lumi” — kiểm tra ở dải “Chữ đỏ chờ ảnh” dưới ô prompt')
+    expect(reasonOf(scene({ prompt: '@image_3(Cave) walks', refs: ['a', 'b'] }))).toBeNull()
+    expect(reasonOf(scene({ prompt: '@image_1(Elara · ảnh 2) walks', refs: ['a'] }))).toBe(mismatchReason(1, 'Elara', 'Elara · ảnh 2'))
+  })
+  it('8b. a bare placeholder keeps the old generic sentence', () => {
+    expect(reasonOf(scene({ prompt: '@image_1 and @image_?2', refs: ['b'] }))).toBe(unsentTokensReason(['@image_?2']))
+  })
+  it('the retired @video sentence still wins over placeholders', () => {
+    expect(reasonOf(scene({ prompt: '@image_?2(Lumi) @video_1' }))).toBe(retiredVideoReason(['@video_1']))
   })
 })

@@ -138,24 +138,64 @@ describe('token renumbering', () => {
     st().moveRef('s1', 2, 0) // c, a, b → c=1 a=2,3 b=4
     expect(sc('s1').prompt).toBe('@image_2 @image_3 with @image_4 in @image_1')
   })
-  it('removing a ref renumbers the rest and names the removed one', () => {
+  it('removing a ref renumbers the rest and leaves red placeholders (old number + label) — no text is lost', () => {
     st().removeRef('s1', 'a')
-    expect(sc('s1').prompt).toBe('Elara Elara with @image_1 in @image_2')
+    expect(sc('s1').prompt).toBe('@image_?1(Elara) @image_?2(Elara · ảnh 2) with @image_1 in @image_2')
     undo()
     expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_4')
+  })
+  it('removing ONE picture of a character still linked: "Tên · ảnh k" for every k, the first one included', () => {
+    st().updateAsset('a', { imageIds: ['i2'] })
+    expect(sc('s1').prompt).toBe('@image_?1(Elara · ảnh 1) @image_1 with @image_2 in @image_3')
+    undo()
+    st().updateAsset('a', { imageIds: ['i1'] })
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Elara · ảnh 2) with @image_2 in @image_3')
   })
   it('adding an image to an asset shifts the following numbers in every scene using it', () => {
     st().updateAsset('a', { imageIds: ['i1', 'i2', 'i9'] })
     expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_4 in @image_5')
   })
-  it('deleting an asset from the library renumbers', () => {
+  it('deleting an asset from the library renumbers and leaves its placeholder', () => {
     st().removeAssets(['b'])
-    expect(sc('s1').prompt).toBe('@image_1 @image_2 with Lumi in @image_3')
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_?3(Lumi) in @image_3')
   })
   it('can be turned off', () => {
     st().updateProjectSettings({ autoRenumber: false })
     st().moveRef('s1', 2, 0)
     expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_4')
+  })
+  it('turned off: a removal still turns the removed picture red, the other numbers stay as written', () => {
+    st().updateProjectSettings({ autoRenumber: false })
+    st().removeRef('s1', 'b')
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_?3(Lumi) in @image_4')
+    expect(sc('s1').refs).toEqual(['a', 'c'])
+  })
+  it('removeRefs in several scenes, deleteItems (Delete on wires) and moveRefToScene: one undo step each', () => {
+    st().addRefs(['s2'], ['b', 'c'])
+    st().updateScene('s2', { prompt: '@image_1 near @image_2' })
+    const steps = history().pastStates.length
+    st().removeRefs([
+      { sceneId: 's1', assetId: 'b' },
+      { sceneId: 's2', assetId: 'b' },
+    ])
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_?3(Lumi) in @image_3')
+    expect(sc('s2').prompt).toBe('@image_?1(Lumi) near @image_1')
+    expect(history().pastStates.length).toBe(steps + 1)
+    undo()
+    st().deleteItems({ refs: [{ sceneId: 's2', assetId: 'c' }] })
+    expect(sc('s2').prompt).toBe('@image_1 near @image_?2(Cave)')
+    undo()
+    st().moveRefToScene('c', 's1', 's3')
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_?4(Cave)')
+    expect(sc('s3').refs).toEqual(['c'])
+    undo()
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_3 in @image_4')
+    expect(sc('s3').refs).toEqual([])
+  })
+  it('linking after a cut never fills a placeholder by itself (not even the same character)', () => {
+    st().removeRef('s1', 'b')
+    st().addRefs(['s1'], ['b'])
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 with @image_?3(Lumi) in @image_3')
   })
 })
 
@@ -174,7 +214,7 @@ describe('reference videos retired (0.6.0)', () => {
     expect(sc('s1').prompt).toBe('Continue from @video_1: @image_1 meets @Video 2 and @video_?3(S01·T1)')
     st().moveRef('s1', 0, 0)
     st().removeAssets(['b'])
-    expect(sc('s1').prompt).toBe('Continue from @video_1: Lumi meets @Video 2 and @video_?3(S01·T1)')
+    expect(sc('s1').prompt).toBe('Continue from @video_1: @image_?1(Lumi) meets @Video 2 and @video_?3(S01·T1)')
   })
   it('deleting takes everywhere only drops folder links, keeps prompts, and is not an undo step', () => {
     st().loadProject({ ...project(), folders: [{ id: 'f1', name: 'A', path: 'D:\\A', position: { x: 0, y: 0 }, mode: 'copy', takes: ['t1', 't2'] }] })
@@ -347,7 +387,7 @@ describe('names are kept the way migrate reads them back (core/names): save + re
   })
 })
 
-describe('removed images fall back to a readable name', () => {
+describe('removed images leave a labelled placeholder', () => {
   it('blank asset name → tag', () => {
     st().loadProject({
       ...project(1),
@@ -355,7 +395,113 @@ describe('removed images fall back to a readable name', () => {
       scenes: [scene(0, { refs: ['a'], prompt: '@image_1 walks' })],
     })
     st().removeRef('s1', 'a')
-    expect(sc('s1').prompt).toBe('Elara walks')
+    expect(sc('s1').prompt).toBe('@image_?1(Elara) walks')
+  })
+  it('two characters with the same name: each placeholder gets the (unique) tag', () => {
+    st().loadProject({
+      ...project(1),
+      assets: [
+        { id: 'a', kind: 'character', name: 'Lumi', tag: 'Lumi', description: '', imageIds: ['i1'], color: '#fff', position: null },
+        { id: 'b', kind: 'character', name: 'lumi ', tag: 'LumiNho', description: '', imageIds: ['i2'], color: '#fff', position: null },
+      ],
+      scenes: [scene(0, { refs: ['a', 'b'], prompt: '@image_1 and @image_2' })],
+    })
+    st().removeRefs([
+      { sceneId: 's1', assetId: 'a' },
+      { sceneId: 's1', assetId: 'b' },
+    ])
+    expect(sc('s1').prompt).toBe('@image_?1(Lumi) and @image_?2(LumiNho)')
+  })
+  it('a long or odd name is sanitized (no parentheses / @ / ?, ≤ 40 code points + …)', () => {
+    st().loadProject({
+      ...project(1),
+      assets: [{ id: 'a', kind: 'character', name: 'Bé (An) @nhà? ' + 'rất dài '.repeat(8), tag: 'BeAn', description: '', imageIds: ['i1'], color: '#fff', position: null }],
+      scenes: [scene(0, { refs: ['a'], prompt: '@image_1 cười' })],
+    })
+    st().removeRef('s1', 'a')
+    const p = sc('s1').prompt
+    expect(p).toMatch(/^@image_\?1\(Bé An nhà rất dài[^()@?]*…\) cười$/u)
+    expect([...p.slice(p.indexOf('(') + 1, p.indexOf(')'))].length).toBeLessThanOrEqual(41)
+  })
+  it('a label glued to a removed token stays its label ("@image_2(Lumi)" → "@image_?2(Lumi)")', () => {
+    st().loadProject({ ...project(1), scenes: [scene(0, { refs: ['b', 'c'], prompt: '@image_1 @image_2(Lumi) end' })] })
+    st().removeRef('s1', 'c')
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Lumi) end')
+  })
+})
+
+describe('filling placeholders (always explicit, one undo step each)', () => {
+  beforeEach(() => {
+    st().addRefs(['s1'], ['b', 'c'])
+    st().updateScene('s1', { prompt: '@image_1 hugs @image_2 here' })
+  })
+  const mira = { id: 'm', kind: 'character' as const, name: 'Mira', tag: 'Mira', description: '', imageIds: ['m1'], color: '#fff', position: null }
+
+  it('fillPlaceholder puts the character at the removed one\'s place and renumbers the rest', () => {
+    st().removeRef('s1', 'b') // '@image_?1(Lumi) hugs @image_1 here', refs [c]
+    st().addAsset({ ...mira })
+    st().addRefs(['s1'], ['m']) // appended: [c, m]
+    expect(sc('s1').prompt).toBe('@image_?1(Lumi) hugs @image_1 here')
+    const steps = history().pastStates.length
+    const res = st().fillPlaceholder('s1', '@image_?1(Lumi)', 'm')
+    expect(res).toEqual({ ok: true, token: '@image_1', filled: 1, left: 0 })
+    expect(sc('s1').refs).toEqual(['m', 'c'])
+    expect(sc('s1').prompt).toBe('@image_1 hugs @image_2 here')
+    expect(history().pastStates.length).toBe(steps + 1)
+    undo()
+    expect(sc('s1').prompt).toBe('@image_?1(Lumi) hugs @image_1 here')
+    expect(sc('s1').refs).toEqual(['c', 'm'])
+  })
+  it('a refused fill changes nothing and adds no undo step', () => {
+    st().removeRef('s1', 'b')
+    st().addAsset({ ...mira, id: 'n', imageIds: [] })
+    const before = st().project
+    const steps = history().pastStates.length
+    expect(st().fillPlaceholder('s1', 'L:Lumi', 'n')).toEqual({ ok: false, why: 'no-image' })
+    expect(st().fillPlaceholder('s1', 'L:Nobody', 'c')).toEqual({ ok: false, why: 'gone' })
+    expect(st().project).toBe(before)
+    expect(history().pastStates.length).toBe(steps)
+  })
+  it('fillPlaceholders fills the same label in several scenes in ONE step and reports refusals', () => {
+    st().addRefs(['s2'], ['b'])
+    st().updateScene('s2', { prompt: 'only @image_1' })
+    st().removeRefs([
+      { sceneId: 's1', assetId: 'b' },
+      { sceneId: 's2', assetId: 'b' },
+    ])
+    st().addAsset({ ...mira })
+    st().addRefs(['s1', 's2'], ['m'])
+    const steps = history().pastStates.length
+    const res = st().fillPlaceholders(['s1', 's2', 's3'], 'Lumi', 'm')
+    expect(res.filled).toEqual(['s1', 's2'])
+    expect(res.refused).toEqual([{ sceneId: 's3', why: 'gone' }])
+    expect(sc('s1').prompt).toBe('@image_1 hugs @image_2 here')
+    expect(sc('s2').prompt).toBe('only @image_1')
+    expect(history().pastStates.length).toBe(steps + 1)
+  })
+  it('fillPictureSlot: a new picture of the character fills its own "(Tên · ảnh k)" only', () => {
+    st().loadProject({ ...project(2), scenes: [scene(0, { refs: ['a', 'b'], prompt: '@image_1 @image_2 + @image_3' }), scene(1, { refs: ['b'], prompt: '@image_1' })] })
+    st().updateAsset('a', { imageIds: ['i1'] })
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Elara · ảnh 2) + @image_2')
+    st().updateAsset('a', { imageIds: ['i1', 'i7'] })
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Elara · ảnh 2) + @image_3')
+    const steps = history().pastStates.length
+    expect(st().fillPictureSlot('a', 2, 'i7')).toEqual(['s1'])
+    expect(sc('s1').prompt).toBe('@image_1 @image_2 + @image_3')
+    expect(history().pastStates.length).toBe(steps + 1)
+    expect(st().fillPictureSlot('a', 2, 'i7')).toEqual([])
+  })
+  it('replaceRef: same picture count keeps the prompt byte for byte; fewer pictures leave "(Tên · ảnh k)"', () => {
+    st().addAsset({ ...mira })
+    expect(st().replaceRef('s1', 'b', 'm')).toEqual({ ok: true })
+    expect(sc('s1').refs).toEqual(['m', 'c'])
+    expect(sc('s1').prompt).toBe('@image_1 hugs @image_2 here')
+    undo()
+    st().loadProject({ ...project(1), assets: [...project().assets, mira], scenes: [scene(0, { refs: ['a', 'c'], prompt: '@image_1 @image_2 @image_3' })] })
+    expect(st().replaceRef('s1', 'a', 'm')).toEqual({ ok: true })
+    expect(sc('s1').prompt).toBe('@image_1 @image_?2(Elara · ảnh 2) @image_2')
+    expect(st().replaceRef('s1', 'a', 'm')).toEqual({ ok: false, why: 'not-linked' })
+    expect(st().replaceRef('s1', 'm', 'c')).toEqual({ ok: false, why: 'already-linked' })
   })
 })
 

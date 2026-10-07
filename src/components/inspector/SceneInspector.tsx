@@ -12,15 +12,17 @@ import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
+import { reportMediaChange } from '../../placeholderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { appliedPresetId, costTitle, creditTone } from '../sidebar/shared'
 import { useSceneRunBlock } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
+import { PlaceholderBar } from './PlaceholderBar'
 import { flushPromptEditor, PromptEditor } from './PromptEditor'
 import { SceneOrderControl } from './SceneOrderControl'
 import { SettingsFields } from './SettingsFields'
@@ -44,6 +46,7 @@ export function SceneInspector({ sceneId }: { sceneId: string }) {
       <SettingsSection sceneId={sceneId} />
       <Section id="prompt" title="Prompt">
         <PromptEditor sceneId={sceneId} />
+        <PlaceholderBar sceneId={sceneId} />
       </Section>
       <RefsSection sceneId={sceneId} />
       <FinalPromptPreview sceneId={sceneId} />
@@ -57,21 +60,16 @@ export function SceneInspector({ sceneId }: { sceneId: string }) {
 const promptOf = (sceneId: string) => useProject.getState().project.scenes.find((s) => s.id === sceneId)?.prompt
 
 /**
- * Run a refs change (the store renumbers @image_N tokens in the same undo step) and tell the user what it did to the
- * prompt: renumbered it, or — automatic renumbering off (Settings) — left tokens that now point at another image
- * (warning). Pending typing is committed first so it is renumbered too.
- * `done`: what was changed ("Đã bỏ nối Elara"); announced on its own only when `plain`.
+ * Run a refs change (the store renumbers @image_N tokens in the same undo step, the token of a removed picture becomes
+ * a red placeholder) and tell the user what it did to the prompt (core/staleTokens mediaChangeNote: red placeholders
+ * left, numbers left stale with renumbering off, or renumbered). Pending typing is committed first so it is renumbered
+ * too. `done`: what was changed ("Đã bỏ nối Elara"); announced on its own only when `plain`.
  */
-function changeMedia(sceneId: string, run: () => void, msg: { done: string; renumbered: string; plain?: boolean }) {
+function changeMedia(sceneId: string, run: () => void, msg: { done: string; plain?: boolean }) {
   flushPromptEditor(sceneId)
   const before = useProject.getState().project
   run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  const promptBefore = before.scenes.find((s) => s.id === sceneId)?.prompt
-  if (stale.length) toast(`${msg.done}${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-  else if (promptOf(sceneId) !== promptBefore) toast(msg.renumbered, { tone: 'info', action: undoToastAction() })
-  else if (msg.plain) toast(`${msg.done}.`, { action: undoToastAction() })
+  reportMediaChange(before, msg.done, { always: msg.plain })
 }
 
 /** Tooltip of a reorder grip: the token numbers follow only while automatic renumbering is on. */
@@ -235,13 +233,12 @@ function tokensLabel(ns: number[]): string {
   return `@image_${ns[0]}…${ns[ns.length - 1]}`
 }
 
-/** Remove a ref (tokens renumber); offer to turn a remaining legacy @Tag into the name (it would re-link). */
+/**
+ * Remove a ref (tokens renumber, its own tokens turn into red placeholders — no text is lost); offer to turn a
+ * remaining legacy @Tag into the name (it would re-link).
+ */
 function removeRef(sceneId: string, asset: Asset) {
-  changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), {
-    done: `Đã bỏ nối ${asset.name}`,
-    renumbered: `Đã bỏ nối ${asset.name} — đã đánh lại số trong prompt (ảnh của ${asset.name} đổi thành tên).`,
-    plain: true,
-  })
+  changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), { done: `Đã bỏ nối ${asset.name}`, plain: true })
   const prompt = promptOf(sceneId) ?? ''
   if (!legacyAssets(prompt, [asset]).length) return
   toast(`Prompt vẫn nhắc @${asset.tag} nên sẽ tự nối lại khi sửa prompt.`, {
@@ -282,10 +279,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   )
   const moveRow = (from: number, to: number) => {
     if (from === to || !rows[from] || !rows[to]) return
-    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), {
-      done: 'Đã đổi thứ tự ảnh tham chiếu',
-      renumbered: 'Đã đánh lại số trong prompt.',
-    })
+    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), { done: 'Đã đổi thứ tự ảnh tham chiếu' })
   }
   const reorder = useReorder(rows.length, REF_MIME, moveRow)
   const preview = useImagePreview()

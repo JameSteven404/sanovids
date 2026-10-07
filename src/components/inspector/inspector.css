@@ -719,6 +719,102 @@
   gap: 4px;
 }
 
+/* "Chữ đỏ chờ ảnh" (PlaceholderBar): red placeholders a removed picture left in the prompt + their explicit fixes. */
+.in-ph {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.in-ph-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.in-pop-host.in-ph-host {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 0;
+}
+.in-ph-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 6px 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: var(--panel);
+  color: var(--danger-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s ease-out;
+}
+.in-ph-chip:hover,
+.in-ph-chip[aria-expanded='true'] {
+  background: var(--hover);
+}
+.in-ph-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.in-ph-chip.is-mismatch {
+  border-style: dashed;
+}
+.in-ph-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.in-ph-count {
+  font-family: inherit;
+  color: var(--text-faint);
+}
+.in-ph-empty {
+  flex: 1 1 100%;
+  color: var(--text-faint);
+}
+.in-ph-menu {
+  min-width: 248px;
+}
+.in-ph-sub {
+  padding: 6px 8px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+}
+.in-ph-foot {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--border);
+}
+.in-ph-foot .in-picker-item {
+  min-height: 30px;
+  font-size: 12px;
+}
+.in-picker-item.is-danger {
+  color: var(--danger-text);
+}
+.in-ph.is-node {
+  margin-top: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
 /* token legend under the editor: soft tinted chips */
 .in-legend {
   display: flex;

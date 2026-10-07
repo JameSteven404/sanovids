@@ -127,7 +127,7 @@ const GROUPS: Group[] = [
       {
         id: 'autoRenumber',
         label: 'Tự đánh lại số @image khi đổi tham chiếu',
-        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh/video (hoàn tác được). Tắt nếu muốn tự quản lý số.',
+        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh (hoàn tác được). Ảnh bị bỏ luôn để lại chữ đỏ @image_?N(tên) chặn Chạy — bật hay tắt đều không mất chữ. Tắt nếu muốn tự quản lý số.',
         keywords: 'token image video đánh số renumber tham chiếu',
         C: AutoRenumberSetting,
       },

@@ -13,7 +13,7 @@ import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, type EdgeKind }
 import { sceneCode } from '../../core/compile'
 import { offUnlinkText, SAVE_CUT_BUTTON_TITLE, saveWireTitle } from '../../core/folderTrash'
 import { folderMapOf } from '../../core/folders'
-import { staleNoteSince } from '../../core/staleTokens'
+import { mediaChangeNote } from '../../core/staleTokens'
 import { afterSaveUnlinked } from '../../folderActions'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -60,8 +60,10 @@ const CUT_LABEL: Record<EdgeKind, string> = {
 /**
  * Cut one link (one undo step) and say so — naming what was cut, with Undo. Every canvas way of removing a reference
  * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar, a wire end dropped on empty
- * canvas). The prompt's @image_N tokens are renumbered in the same step (SPEC §2): the toast says so when it happened. 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation
- * splits the wire (default: its middle).
+ * canvas). The prompt's @image_N tokens are renumbered in the same step and the cut picture's token becomes a red
+ * placeholder "@image_?N(label)" (no text is lost; the scene is blocked until it is filled): the toast says so.
+ * 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation splits the wire
+ * (default: its middle).
  */
 export function cutEdge(id: string, silent = false, at?: { x: number; y: number }) {
   const e = parseEdgeId(id)
@@ -80,17 +82,15 @@ export function cutEdge(id: string, silent = false, at?: { x: number; y: number 
   const what = assetMapOf(p.project.assets).get(e.from)?.name
   if (e.kind === 'ref') p.removeRef(e.to, e.from)
   else p.setFrame(e.to, e.kind, null)
-  const after = sceneMapOf(useProject.getState().project.scenes).get(e.to)
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
   if (silent) return
-  const renumbered = !!after && after.prompt !== before.prompt
-  // Renumbering off: the prompt kept its numbers, which may now name another picture — say where to fix them.
-  const stale = staleNoteSince(projectBefore, useProject.getState().project)
-  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}${stale}.`, {
+  // Red placeholders left / numbers left stale (renumbering off) / prompt renumbered (core/staleTokens mediaChangeNote).
+  const note = mediaChangeNote(projectBefore, useProject.getState().project)
+  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${note?.text ?? ''}.`, {
     action: undoToastAction(),
-    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
+    ...(note && note.tone === 'warning' ? { tone: 'warning' as const, ms: note.ms ?? 8000 } : {}),
   })
 }
 

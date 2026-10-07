@@ -9,6 +9,7 @@
 // normalizeConnections(), createVideoNode(), newId()) key for key — the server refuses anything else
 // ("Invalid canvas payload"). See docs/canvasapp-api-notes.md.
 import { retiredTokenList, retiredVideoTokens } from '../../core/compile'
+import { imagePlaceholders } from '../../core/placeholders'
 import { isModelId, modeLabel } from '../../core/models'
 import type { Mode, ModelId, VideoSettings } from '../../core/types'
 import type { JobRequest, RemoteStatus, SettingsIssue } from '../types'
@@ -330,6 +331,11 @@ export function retiredVideoRequestText(tokens: readonly string[]): string {
   return `Prompt còn ${retiredTokenList(tokens)} — SanoVids không còn gửi video tham chiếu nên chưa gửi lần này (không bị trừ credit). Sửa prompt rồi bấm ▶ ở cảnh; “Thử lại” sẽ gửi lại đúng prompt cũ.`
 }
 
+/** validateRequest's refusal of a prompt that still holds red placeholders "@image_?N(…)" (nothing sent, nothing billed). */
+export function placeholderRequestText(tokens: readonly string[]): string {
+  return `Prompt còn chữ đỏ chờ ảnh ${retiredTokenList(tokens)} — chưa gửi lần này (không bị trừ credit). Gắn ảnh thay thế ở dải “Chữ đỏ chờ ảnh” rồi bấm ▶ ở cảnh.`
+}
+
 /**
  * Problems that make a request impossible through the gateway (Vietnamese). Empty = OK.
  * `profiles`: /api/video-profiles as read ([] = could not be read → canvasapp's fallbacks, like its client);
@@ -349,6 +355,10 @@ export function validateRequest(req: JobRequest, profiles?: readonly VideoProfil
   // ledger lookups of the adapter's submit, so an earlier uncertain send of this key is still looked for first.
   const retired = [...new Set(retiredVideoTokens(req.prompt).map((t) => t.text))]
   if (retired.length) out.push(retiredVideoRequestText(retired))
+  // A red placeholder (a removed picture, core/placeholders) never reaches canvasapp: the run check blocks it before the
+  // queue; this is the last line for a take whose prompt holds one anyway (an imported or older take, "Thử lại").
+  const waiting = [...new Set(imagePlaceholders(req.prompt).map((p) => p.text))]
+  if (waiting.length) out.push(placeholderRequestText(waiting))
   if (req.images.length > MAX_REF_IMAGES_PER_NODE) out.push(`canvasapp nhận tối đa ${MAX_REF_IMAGES_PER_NODE} ảnh tham chiếu.`)
   if (req.mode === 'i2v' && !req.images.length) out.push('Chế độ Ảnh → Video cần ít nhất 1 ảnh tham chiếu.')
   if (req.mode === 'transform' && (!req.firstFrame || !req.lastFrame)) out.push('Chế độ Khung đầu → cuối cần đủ khung đầu và khung cuối.')

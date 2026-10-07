@@ -1,10 +1,13 @@
 // Pure helpers for the @image_N prompt editor (no React / DOM / store imports — unit-tested).
-// - segmentPrompt: split a prompt into plain text and token runs for the highlight backdrop (retired @video text is
-//   marked wherever core/compile retiredVideoTokens finds it — exactly what blocks the run).
+// - segmentPrompt / segmentForScene: split a prompt into plain text and token runs for every highlighter (prompt
+//   backdrop, final prompt, the scene card of the canvas): red placeholders "@image_?2(Lumi)" (label included) and
+//   labelled tokens whose label does not fit their slot are red exactly where core/compile blocks them; retired
+//   @video text is marked wherever core/compile retiredVideoTokens finds it. No component needs its own token regex.
 // - suggestMedia: what the "@" popup lists for a typed query (linked images, library assets).
 // - insertAt: insert a token at a selection with sensible spacing.
 // - legacy @Tag helpers for the "Đổi @Tên → @image_N" quick fix.
 import { imageSlotsFor, mediaKeys, remapTokens, retiredVideoTokens } from '../../core/compile'
+import { labelFitsSlot, placeholderTitle } from '../../core/placeholders'
 import type { Asset, AssetKind } from '../../core/types'
 import { fold } from './mentions'
 
@@ -18,32 +21,58 @@ export interface Seg {
   /** 'video' = retired @video text (always invalid, reason 'retired'). */
   kind: SegKind
   text: string
-  /** N of @image_N. */
+  /** N of @image_N (the old number of a placeholder "@image_?N"). */
   n?: number
   /** No picture behind this token in the request (see `reason`). */
   invalid?: boolean
   /**
    * Why it is invalid: 'missing' = number outside the scene's images, 'unsent' = linked but not sent (over the model's
-   * limit, or a mode that sends no images), 'unbound' = an "@image_?N" placeholder waiting for the right number,
-   * 'retired' = @video text (reference videos were retired: kept as written, never sent, the scene does not run).
+   * limit, or a mode that sends no images), 'unbound' = a red placeholder "@image_?N(label)" (a removed picture, or a
+   * number waiting for its picture), 'mismatch' = a real token whose glued label names another picture than its
+   * number does now ("@image_2(Lumi)" while 2 is Làng), 'retired' = @video text (reference videos were retired: kept
+   * as written, never sent, the scene does not run).
    */
-  reason?: 'missing' | 'unsent' | 'unbound' | 'retired'
+  reason?: 'missing' | 'unsent' | 'unbound' | 'mismatch' | 'retired'
+  /** The label glued to the token / placeholder ("Lumi · ảnh 2"), part of `text`. */
+  label?: string
+  /** 'mismatch': who the number names now ("Làng"). */
+  now?: string
 }
 
 /** Tooltip for an invalid token. */
 export function invalidTokenTitle(seg: Seg): string {
   if (seg.reason === 'retired') return `${seg.text}: video tham chiếu không còn được hỗ trợ — xoá hoặc viết lại bằng lời để chạy cảnh này.`
-  if (seg.reason === 'unbound') return `${seg.text}: chưa gắn ảnh nào — nối vào cảnh rồi sửa thành số đúng`
+  if (seg.reason === 'unbound') return placeholderTitle({ kind: 'image', n: seg.n ?? 0, text: seg.text, ...(seg.label ? { label: seg.label } : {}) })
+  if (seg.reason === 'mismatch') return `@image_${seg.n} bây giờ là “${seg.now ?? '?'}”, không phải “${seg.label ?? ''}” — gắn ảnh đúng ở dải “Chữ đỏ chờ ảnh” dưới ô prompt, hoặc xoá chữ “(${seg.label ?? ''})”.`
   if (seg.reason === 'unsent') return `${seg.text}: sẽ không được gửi (vượt giới hạn của model, hoặc chế độ này không gửi tham chiếu)`
   return `${seg.text} không tồn tại`
 }
 
 /**
- * One pass: numbered tokens (or "@image_?N" placeholders) first, otherwise any @Word (legacy tag in `legacyTags`).
- * `video` stays in it so "@video1" is never read as a @Tag; the @video segments themselves come from
- * retiredVideoTokens (any match overlapping one of those is left to it).
+ * One pass: red placeholders "@image_?N" with their glued label (core/compile PLACEHOLDER_RE: groups 1, 2, 3, 4),
+ * numbered tokens with an optional glued label (TOKEN_RE / LABELLED_TOKEN_RE: groups 1, 5, 6), otherwise any @Word
+ * (group 7, a legacy tag when in `legacyTags`). `video` stays in it so "@video1" is never read as a @Tag; the @video
+ * segments themselves come from retiredVideoTokens (any match overlapping one of those is left to it).
  */
-const SEG_RE = /@(?:(image|video)(?:_(\?)|[ _])?(\d+)\b|([\p{L}\p{N}_]+))/giu
+const SEG_RE = /@(?:(image|video)(?:_(\?)(\d+)(?:\(([^()\n]{1,120})\))?|[ _]?(\d+)\b(?:\(([^()\n]{1,120})\))?)|([\p{L}\p{N}_]+))/giu
+
+/** Does a label glued to token N fit the picture N names now? (labelChecker) */
+export type LabelCheck = (n: number, label: string) => { fits: boolean; now?: string }
+
+/**
+ * The label check of a scene (core/tokenLabels labelFitsSlot, the rule core/compile blocks with): `assets` = the
+ * project's, `refs` = the scene's.
+ */
+export function labelChecker(assets: readonly Asset[], refs: readonly string[]): LabelCheck {
+  const slots = imageSlotsFor(assets as Asset[], refs as string[])
+  const byId = new Map(assets.map((a) => [a.id, a]))
+  return (n, label) => {
+    const slot = slots[n - 1]
+    const asset = slot && byId.get(slot.assetId)
+    if (!asset) return { fits: false }
+    return { fits: labelFitsSlot(label, asset, slot.imageIndex, assets), now: asset.name || asset.tag }
+  }
+}
 
 /**
  * Split `text` into segments for the backdrop highlighter. Concatenating every `seg.text` gives back `text`.
@@ -52,7 +81,7 @@ const SEG_RE = /@(?:(image|video)(?:_(\?)|[ _])?(\d+)\b|([\p{L}\p{N}_]+))/giu
  * the model would never see that picture (wrong character in the video). Retired @video text is a 'video' segment
  * (invalid, 'retired') exactly where core/compile retiredVideoTokens finds it — labels of "@video_?N(…)" included.
  */
-export function segmentPrompt(text: string, imageCount: number, legacyTags?: ReadonlySet<string>, sent?: { images: number }): Seg[] {
+export function segmentPrompt(text: string, imageCount: number, legacyTags?: ReadonlySet<string>, sent?: { images: number }, labels?: LabelCheck): Seg[] {
   const marks: { start: number; seg: Seg }[] = retiredVideoTokens(text).map((t) => ({
     start: t.start,
     seg: { kind: 'video', text: t.text, invalid: true, reason: 'retired' },
@@ -65,11 +94,25 @@ export function segmentPrompt(text: string, imageCount: number, legacyTags?: Rea
     if (overlapsRetired(idx, idx + whole.length)) continue
     let seg: Seg | null = null
     if (m[1] && m[1].toLowerCase() === 'image') {
-      const n = Number(m[3])
-      const sentMax = sent ? sent.images : imageCount
-      const reason = m[2] ? 'unbound' : n < 1 || n > imageCount ? 'missing' : n > sentMax ? 'unsent' : undefined
-      seg = reason ? { kind: 'image', text: whole, n, invalid: true, reason } : { kind: 'image', text: whole, n, invalid: false }
-    } else if (!m[1] && legacyTags && m[4] && legacyTags.has(m[4].toLowerCase())) {
+      if (m[2]) {
+        // a red placeholder, its label included: one segment
+        seg = { kind: 'image', text: whole, n: Number(m[3]), invalid: true, reason: 'unbound', ...(m[4] ? { label: m[4] } : {}) }
+      } else {
+        const n = Number(m[5])
+        const label = m[6]
+        const sentMax = sent ? sent.images : imageCount
+        let reason: Seg['reason'] = n < 1 || n > imageCount ? 'missing' : n > sentMax ? 'unsent' : undefined
+        let now: string | undefined
+        if (!reason && label && labels) {
+          const check = labels(n, label)
+          if (!check.fits) {
+            reason = 'mismatch'
+            now = check.now
+          }
+        }
+        seg = { kind: 'image', text: whole, n, invalid: !!reason, ...(reason ? { reason } : {}), ...(label ? { label } : {}), ...(now !== undefined ? { now } : {}) }
+      }
+    } else if (!m[1] && legacyTags && m[7] && legacyTags.has(m[7].toLowerCase())) {
       seg = { kind: 'legacy', text: whole }
     }
     if (seg) marks.push({ start: idx, seg })
@@ -90,6 +133,17 @@ export function segmentPrompt(text: string, imageCount: number, legacyTags?: Rea
   }
   if (last < text.length) push({ kind: 'text', text: text.slice(last) })
   return out
+}
+
+/**
+ * segmentPrompt for a scene, everything derived from its data — for a highlighter that has the project's `assets` and
+ * the scene's `refs` (the canvas scene card, the inspector): numbers past the scene's pictures are 'missing', past
+ * `sentImages` (the request's real picture count: compileScene images.length; default all) 'unsent', labelled tokens
+ * checked (labelChecker), red placeholders 'unbound', retired @video text 'retired'.
+ */
+export function segmentForScene(text: string, assets: readonly Asset[], refs: readonly string[], opts: { sentImages?: number; legacyTags?: ReadonlySet<string> } = {}): Seg[] {
+  const count = imageSlotsFor(assets as Asset[], refs as string[]).length
+  return segmentPrompt(text, count, opts.legacyTags, opts.sentImages === undefined ? undefined : { images: opts.sentImages }, labelChecker(assets, refs))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -304,7 +358,7 @@ export function remapOffset(prev: string, next: string, pos: number): number {
 // Legacy @Tag mentions
 // ---------------------------------------------------------------------------------------------
 
-const MENTION = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])[ _]?\d)([\p{L}\p{N}_]+)/gu
+const MENTION = /@(?!(?:[iI][mM][aA][gG][eE]|[vV][iI][dD][eE][oO])(?:[ _]?\d|_\?))([\p{L}\p{N}_]+)/gu
 const RAW_TOKEN = /^(image|video)_?\d+$/i
 
 /** Library assets mentioned with a legacy @Tag in `text`, in order of first appearance. */

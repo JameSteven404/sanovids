@@ -12,7 +12,8 @@ import { limitsSite } from '../../providers/limits'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { appliedPresetId, changedPrompts, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote, totalCost } from '../sidebar/shared'
+import { appliedPresetId, costTitle, creditTone, totalCost } from '../sidebar/shared'
+import { reportMediaChange } from '../../placeholderActions'
 import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
@@ -24,20 +25,13 @@ import { removeRetiredTextFromScenes } from '../../videoRetired'
 const flushAll = (ids: string[]) => ids.forEach(flushPromptEditor)
 
 /**
- * Run a batch image removal and report it: prompts renumbered by the store, or — automatic renumbering off —
- * prompts left with @image numbers that now point elsewhere (warning naming the scenes).
+ * Run a batch image removal and report it (core/staleTokens mediaChangeNote): red placeholders left in the scenes'
+ * prompts (they stay blocked until filled), numbers left stale with renumbering off, or prompts renumbered.
  */
-function removeAndReport(run: () => void, done: string, what: '@image') {
+function removeAndReport(run: () => void, done: string) {
   const before = useProject.getState().project
   run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  if (stale.length) {
-    toast(`${done}${staleTokenNote(after, stale, what)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-    return
-  }
-  const rewritten = changedPrompts(before.scenes, after.scenes).length
-  toast(`${done}${rewritten ? ` · đánh lại số ${what} trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
+  reportMediaChange(before, done, { always: true })
 }
 
 export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
@@ -161,7 +155,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   const removeFromAll = (a: Asset) => {
     flushAll(ids)
     const pairs = scenes.filter((s) => s.refs.includes(a.id)).map((s) => ({ sceneId: s.id, assetId: a.id }))
-    removeAndReport(() => useProject.getState().removeRefs(pairs), `Đã bỏ ${a.name} khỏi ${pairs.length} cảnh`, '@image')
+    removeAndReport(() => useProject.getState().removeRefs(pairs), `Đã bỏ ${a.name} khỏi ${pairs.length} cảnh`)
   }
 
   return (

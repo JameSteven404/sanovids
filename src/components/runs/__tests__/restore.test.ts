@@ -44,7 +44,8 @@ describe('restoredFromTake', () => {
   it('restores @video text of an older take exactly as it was written (reference videos were retired) and lists it', () => {
     const old = { ...take('Continue from @video_2, echoing @video_1 and @image_2', ['a', 'b']), videoRefsSnapshot: ['t1', 't2'], legacyVideoRefsSnapshot: ['t1'] }
     const r = restoredFromTake(old, [dog], { renumber: true })
-    expect(r.prompt).toBe('Continue from @video_2, echoing @video_1 and @image_1')
+    // Elara ('a') is gone and the take has no image snapshot: from her slot on nothing is guessed (bare placeholder)
+    expect(r.prompt).toBe('Continue from @video_2, echoing @video_1 and @image_?2')
     expect(r.retired).toEqual(['@video_2', '@video_1'])
     expect(r).not.toHaveProperty('videoRefs')
     expect(r.gone).toBe(1)
@@ -52,10 +53,26 @@ describe('restoredFromTake', () => {
     expect(plain.prompt).toBe('From @video_1')
     expect(plain.renumbered).toBe(false)
   })
-  it('renumbers @image tokens when a referenced asset was deleted (deleted asset → "ảnh")', () => {
+  it('a character deleted since: its token and every @image after it (older take: unknown count) become bare placeholders', () => {
     const r = restoredFromTake(take('@image_1 pets @image_2 near @image_3', ['a', 'b', 'c']), [elara, light], { renumber: true })
     expect(r.refs).toEqual(['a', 'c'])
-    expect(r.prompt).toBe('@image_1 pets ảnh near @image_2')
+    expect(r.prompt).toBe('@image_1 pets @image_?2 near @image_?3')
+    expect(r.uncertain).toBe(1)
+    expect(r.placeholders).toBe(2)
+  })
+  it('with the exact snapshot: deleted character → bare placeholder, the rest renumbered exactly', () => {
+    const t = { ...take('@image_1 pets @image_2 near @image_3', ['a', 'b', 'c']), imageKeysSnapshot: ['a:a-img0', 'b:b-img0', 'c:c-img0'] }
+    const r = restoredFromTake(t, [elara, light], { renumber: true })
+    expect(r.prompt).toBe('@image_1 pets @image_?2 near @image_2')
+    expect(r.uncertain).toBe(0)
+    expect(r.placeholders).toBe(1)
+  })
+  it('a character that still exists but lost the picture: labelled "(Tên · ảnh k)"', () => {
+    const now = { ...asset('a', 'Elara', 1) } // had a-img0 + a-img1 when the take ran
+    const t = { ...take('@image_1 @image_2 + @image_3', ['a', 'b']), imageKeysSnapshot: ['a:a-img0', 'a:a-img1', 'b:b-img0'] }
+    const r = restoredFromTake(t, [now, dog], { renumber: true })
+    expect(r.prompt).toBe('@image_1 @image_?2(Elara · ảnh 2) + @image_2')
+    expect(r.placeholders).toBe(1)
   })
   it('keeps the prompt as written when nothing is gone or renumbering is off', () => {
     const text = '@image_2 and @video_1'
@@ -65,15 +82,20 @@ describe('restoredFromTake', () => {
       gone: 0,
       renumbered: false,
       uncertain: 0,
+      placeholders: 0,
       stale: false,
       retired: ['@video_1'],
     })
-    const off = restoredFromTake(take(text, ['a', 'b']), [elara], { renumber: false })
-    expect(off.prompt).toBe(text)
+    // renumbering off: the dog's token still turns red (never left pointing at nothing), other numbers are kept
+    const off = restoredFromTake(take('@image_1 and @image_2', ['a', 'b']), [elara], { renumber: false })
+    expect(off.prompt).toBe('@image_1 and @image_?2')
     expect(off.refs).toEqual(['a'])
     expect(off.gone).toBe(1)
-    // @image_2 (the dog) now points at nothing: the user is told to check the numbers
-    expect(off.stale).toBe(true)
+    const exact = { ...take('@image_2 and @image_1', ['b', 'a', 'c']), imageKeysSnapshot: ['b:b-img0', 'a:a-img0', 'c:c-img0'] }
+    const shifted = restoredFromTake(exact, [elara, light], { renumber: false })
+    // Dog (1) is gone: Elara (2) is now 1, Lighthouse 2 — the kept numbers point elsewhere (stale), Dog's token is red
+    expect(shifted.prompt).toBe('@image_2 and @image_?1')
+    expect(shifted.stale).toBe(true)
   })
   it('flags the tokens after a deleted multi-image asset of an older take as uncertain', () => {
     // A had 2 images when the take ran: @image_2 was A's second picture, @image_3 was B. Without an image
@@ -82,16 +104,17 @@ describe('restoredFromTake', () => {
     const r = restoredFromTake(take('@image_1 then @image_2 then @image_3', ['m', 'b']), [dog], { renumber: true })
     expect(r.refs).toEqual(['b'])
     expect(r.uncertain).toBe(2)
-    expect(r.prompt.startsWith('ảnh then')).toBe(true)
+    // never a guess: every @image from the deleted character on is a bare red placeholder
+    expect(r.prompt).toBe('@image_?1 then @image_?2 then @image_?3')
     // Before the deleted asset the numbers are certain.
     const sure = restoredFromTake(take('@image_1 near @image_2', ['b', 'm']), [dog], { renumber: true })
-    expect(sure.prompt).toBe('@image_1 near ảnh')
+    expect(sure.prompt).toBe('@image_1 near @image_?2')
     expect(sure.uncertain).toBe(0)
   })
   it('uses the exact image snapshot when the take has one', () => {
     const t = { ...take('@image_1 then @image_2 then @image_3', ['m', 'b']), imageKeysSnapshot: ['m:m-img0', 'm:m-img1', 'b:b-img0'] }
     const r = restoredFromTake(t, [dog], { renumber: true })
-    expect(r.prompt).toBe('ảnh then ảnh then @image_1')
+    expect(r.prompt).toBe('@image_?1 then @image_?2 then @image_1')
     expect(r.uncertain).toBe(0)
   })
   it('with the exact snapshot, renumbers when an asset gained images since the run', () => {
@@ -109,7 +132,9 @@ describe('restoredFromTake', () => {
     )
   })
   it('turns tokens that were already out of range into placeholders', () => {
-    const r = restoredFromTake(take('@image_9 and @image_2', ['a', 'b']), [dog], { renumber: true })
-    expect(r.prompt).toBe('@image_?9 and @image_1')
+    const r = restoredFromTake(take('@image_9 and @image_2', ['a', 'b']), [elara, dog], { renumber: true, }) // nothing gone: as written
+    expect(r.prompt).toBe('@image_9 and @image_2')
+    const t = { ...take('@image_9 and @image_2', ['a', 'b']), imageKeysSnapshot: ['a:a-img0', 'b:b-img0'] }
+    expect(restoredFromTake(t, [dog], { renumber: true }).prompt).toBe('@image_?9 and @image_1')
   })
 })

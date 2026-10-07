@@ -3,7 +3,9 @@
 import { compileScene, retiredTokenList, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { TRASH_CONFIRM_MIN, trashBusyDeleteText, trashConfirmText } from './core/folderTrash'
-import { staleNoteSince } from './core/staleTokens'
+import { mediaChangeNote } from './core/staleTokens'
+import { hasImagePlaceholder, imagePlaceholders } from './core/placeholders'
+import { linkToastWithFill } from './placeholderActions'
 import { isModelId, MODELS, normalizeSettings } from './core/models'
 import { nameDate, nameTime, renderNameTemplate, type NameValues } from './core/nameTemplate'
 import { chargedDemo, creditKindOf, formatCredits } from './lib/credits'
@@ -175,13 +177,14 @@ export function linkAssets(sceneIds: string[], assetIds: string[]) {
   if (!sceneIds.length || !assetIds.length) return
   // Commit the prompt being typed first: it is renumbered with the change instead of overwriting it a moment later.
   flushScenes(sceneIds)
+  const before = useProject.getState().project
   const res = useProject.getState().addRefs(sceneIds, assetIds)
   const names = assetIds.map((id) => useProject.getState().project.assets.find((a) => a.id === id)?.name).filter(Boolean)
   if (res.added) {
-    toast(
-      `Đã nối ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''} → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped} vì vượt giới hạn ảnh)` : ''}`,
-      { tone: 'success', action: undoToastAction() },
-    )
+    const text = `Đã nối ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''} → ${res.scenes} cảnh${res.skipped ? ` (bỏ qua ${res.skipped} vì vượt giới hạn ảnh)` : ''}`
+    // Scenes still holding red placeholders: offer "Gắn vào chỗ…" (never filled by itself).
+    if (linkToastWithFill(before, useProject.getState().project, assetIds, text)) return
+    toast(text, { tone: 'success', action: undoToastAction() })
   } else if (res.skipped) {
     toast(`Không nối được: vượt giới hạn ảnh của model (${res.skipped}).`, { tone: 'warning' })
   } else {
@@ -427,11 +430,12 @@ export function deleteSelection() {
   ].filter(Boolean)
   const said = [deleted.length && `Đã xoá ${deleted.join(', ')}`, hideAssetIds.length && `${deleted.length ? 'đã ẩn' : 'Đã ẩn'} ${hideAssetIds.length} thẻ khỏi canvas`]
   const undoable = sceneIds.length || hideAssetIds.length || folderIds.length || links
-  // Renumbering off: prompts that kept numbers now naming another picture.
-  const stale = staleNoteSince(projectBefore, useProject.getState().project)
-  toast(`${said.filter(Boolean).join('; ')}${stale}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, {
+  // Cut image wires leave red placeholders (and, renumbering off, numbers that may now name another picture).
+  const note = refs.length ? mediaChangeNote(projectBefore, useProject.getState().project) : null
+  const tail = note?.tone === 'warning' ? note.text : ''
+  toast(`${said.filter(Boolean).join('; ')}${tail}.${takesDeleted ? ' ' + TAKES_GONE_NOTE : ''}`, {
     ...(undoable ? { action: undoToastAction() } : {}),
-    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
+    ...(tail ? { tone: 'warning' as const, ms: note?.ms ?? 8000 } : {}),
   })
 }
 
@@ -667,17 +671,18 @@ export function restoreFromTake(takeId: string) {
   // One store mutation = one undo step, so the toast's "Hoàn tác" reverts everything together.
   useProject.getState().restoreScene(take.sceneId, { prompt: r.prompt, refs: r.refs, settings: plan.settings })
   const importNotes = restoreNotes(take, plan)
-  const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && 'đã đánh lại số @image', ...importNotes].filter(Boolean)
-  // An older take does not know how many images a deleted asset had: the numbers after it are a best guess.
-  const check = r.uncertain
-    ? ` Hãy kiểm tra lại ${r.uncertain} token @image nằm sau ảnh đã xoá — số của chúng có thể lệch.`
-    : r.stale
-      ? ' Tự đánh lại số đang tắt — số @image trong prompt có thể không còn đúng ảnh, hãy kiểm tra.'
+  const notes = [r.gone && `bỏ ${r.gone} tham chiếu không còn tồn tại`, r.renumbered && !r.placeholders && 'đã đánh lại số @image', ...importNotes].filter(Boolean)
+  // Pictures that are gone left red placeholders (an older take: every @image after a deleted character — never a guess).
+  const red = r.uncertain
+    ? ` · ${r.uncertain} chữ @image sau nhân vật đã xoá thành chữ đỏ — gắn lại ảnh đúng`
+    : r.placeholders
+      ? ` · prompt giữ ${r.placeholders} chữ đỏ chờ ảnh (chặn Chạy) — gắn ảnh thay thế ở dải dưới ô prompt`
       : ''
+  const check = `${red}.${r.stale ? ' Tự đánh lại số đang tắt — số @image trong prompt có thể không còn đúng ảnh, hãy kiểm tra.' : ''}`
   // @video text of an older prompt is back as it was written: it blocks the run until the user edits it.
   const retired = r.retired.length ? ` Prompt còn ${retiredTokenList(r.retired)}: SanoVids đã bỏ video tham chiếu — xoá hoặc viết lại chữ đó để chạy.` : ''
-  const warn = !!check || !!retired || importNotes.length > 0
-  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}.${check}${retired}`, {
+  const warn = !!red || r.stale || !!retired || importNotes.length > 0
+  toast(`Đã khôi phục prompt & tham chiếu của T${take.number}${notes.length ? ` (${notes.join(', ')})` : ''}${check}${retired}`, {
     tone: warn ? 'warning' : 'success',
     action: undoToastAction(),
     ms: warn ? 9000 : undefined,
@@ -685,6 +690,13 @@ export function restoreFromTake(takeId: string) {
 }
 
 // ---------------- copy / export ----------------
+/** " · còn 2 chữ đỏ — sửa trước khi dán sang nơi khác" when the prompt still holds red placeholders, else ''. */
+function redNote(text: string): string {
+  if (!hasImagePlaceholder(text)) return ''
+  const n = imagePlaceholders(text).length
+  return ` · còn ${n} chữ đỏ — sửa trước khi dán sang nơi khác`
+}
+
 function compiledFor(sceneId: string) {
   const project = useProject.getState().project
   const scene = project.scenes.find((s) => s.id === sceneId)
@@ -697,7 +709,8 @@ export async function copyCompiledPrompt(sceneId: string) {
   if (!c) return
   try {
     await navigator.clipboard.writeText(c.compiled.text)
-    toast(`Đã copy prompt ${sceneCode(c.scene.order)} (${c.compiled.charCount.toLocaleString('vi-VN')} ký tự).`, { tone: 'success' })
+    const red = redNote(c.compiled.text)
+    toast(`Đã copy prompt ${sceneCode(c.scene.order)} (${c.compiled.charCount.toLocaleString('vi-VN')} ký tự)${red}.`, { tone: red ? 'warning' : 'success' })
   } catch {
     toast('Trình duyệt chặn clipboard. Hãy copy thủ công trong ô xem trước.', { tone: 'error' })
   }
@@ -725,6 +738,8 @@ export async function downloadSceneZip(sceneId: string) {
   a.download = `${sceneCode(scene.order)}${scene.title ? '_' + scene.title.replace(/[<>:"/\\|?*]/g, '-') : ''}.zip`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
+  const red = redNote(compiled.text)
+  if (red) toast(`Đã tải tham chiếu + prompt ${sceneCode(scene.order)}${red}.`, { tone: 'warning' })
 }
 
 // ---------------- downloading videos ----------------

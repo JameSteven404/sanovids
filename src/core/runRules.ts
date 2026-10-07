@@ -10,11 +10,15 @@
 //   4. i2v without any image             5. transform without both frames     6. a frame without an image
 //   7. retired @video text left in the prompt (compiled.retiredTokens — reference videos were retired in 0.6.0: the
 //      text is kept verbatim but never sent; named before rule 8 so the specific reason wins)
-//   8. tokens with no picture in the request (compiled.unsentTokens without the retired ones: 3 shown + "…")
+//   8. red placeholders left by a removed picture ("@image_?2(Lumi)": waitingReason, 3 names shown + "…"), then
+//      a labelled token whose label does not fit the picture its number names now ("@image_2(Lumi)" while 2 is
+//      Làng: mismatchReason — a placeholder whose "?" was deleted by hand), then any other token with no picture in
+//      the request (compiled.unsentTokens without those: bare "@image_?N", numbers out of range…, 3 shown + "…")
 //   9. settings the gateway surely refuses now (settingsBlock = providers/limits settingsRunBlock, a firm
 //      /api/video-profiles read; last, like the profile checks of the submit's validateRequest)
 // A scene that once used reference videos but whose prompt no longer names one runs with its images only.
-import { compileScene, retiredTokenList } from './compile'
+import { compileScene, PLACEHOLDER_RE, retiredTokenList } from './compile'
+import { labelledTokens } from './placeholders'
 import { lostConfigValues, type ConfigKey } from './foreignMark'
 import { MODELS, type ModelSpec } from './models'
 import type { Asset, CompiledPrompt, Project, Scene } from './types'
@@ -72,6 +76,20 @@ export function unsentTokensReason(tokens: readonly string[]): string {
   return `Prompt nhắc ${retiredTokenList(tokens)} nhưng không có ảnh đó trong lần gửi — sửa số hoặc nối thêm ảnh`
 }
 
+/**
+ * Red placeholders with a label ("@image_?2(Lumi)") still in the prompt: who they waited for (the first 3, then "…")
+ * and their placeholders.
+ */
+export function waitingReason(items: readonly { name: string; token: string }[]): string {
+  const shown = items.slice(0, 3).map((x) => `${x.name} (${x.token})`).join(', ')
+  return `Còn chữ đỏ chờ ảnh: ${shown}${items.length > 3 ? '…' : ''} — nối ảnh thay thế rồi bấm “Gắn vào chỗ…”, hoặc bấm “Đổi thành chữ” nếu không cần nhân vật đó`
+}
+
+/** A labelled token whose label does not fit the picture its number names now ("@image_2(Lumi)" while 2 is Làng). */
+export function mismatchReason(n: number, now: string, label: string): string {
+  return `@image_${n} đang là “${now}”, không phải “${label}” — kiểm tra ở dải “Chữ đỏ chờ ảnh” dưới ô prompt`
+}
+
 /** Why the scene cannot run (the first rule that fails), or null when it can. */
 export function runBlockReason({ scene, assets, compiled, settingsBlock }: RunRuleInput): string | null {
   if (typeof scene.foreignModel === 'string' && scene.foreignModel) return foreignModelReason(scene.foreignModel)
@@ -88,7 +106,20 @@ export function runBlockReason({ scene, assets, compiled, settingsBlock }: RunRu
   if (compiled.retiredTokens.length) return retiredVideoReason(compiled.retiredTokens)
   const retired = new Set(compiled.retiredTokens)
   const unsent = compiled.unsentTokens.filter((t) => !retired.has(t))
-  if (unsent.length) return unsentTokensReason(unsent)
+  if (unsent.length) {
+    // labelled placeholders first (the usual case right after a cut), then labels that do not fit, then the rest
+    const waiting: { name: string; token: string }[] = []
+    for (const t of unsent) {
+      for (const m of t.matchAll(PLACEHOLDER_RE)) if (m.index === 0 && m[0] === t && m[3] && m[1].toLowerCase() === 'image') waiting.push({ name: m[3], token: `@image_?${m[2]}` })
+    }
+    if (waiting.length) return waitingReason(waiting)
+    const labelled = new Set(unsent.filter((t) => t.endsWith(')')))
+    if (labelled.size) {
+      const bad = labelledTokens(compiled.text, assets, scene.refs).find((x) => !x.fits && x.slotName !== undefined && labelled.has(x.text))
+      if (bad) return mismatchReason(bad.n, bad.slotName!, bad.label)
+    }
+    return unsentTokensReason(unsent)
+  }
   return settingsBlock || null
 }
 

@@ -11,10 +11,11 @@ import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, FullImage } from '../common/Media'
 import { Modal } from '../common/Modal'
-import { addImageFiles, staleNote, staleTokenScenes, useAddingImages, withRenumberToast } from './assetImages'
+import { assetDeleteImpact, assetDeleteQuestion } from '../../core/placeholders'
+import { reportMediaChange } from '../../placeholderActions'
+import { addImageFiles, useAddingImages, withRenumberToast } from './assetImages'
 import { ColorSwatches, ConfirmButton } from './bits'
 import {
-  changedPrompts,
   checkTag,
   countMentions,
   hasFiles,
@@ -25,8 +26,6 @@ import {
   kindMeta,
   nextAssetPosition,
   renameAssetTag,
-  scenesWithStaleTokens,
-  staleTokenNote,
   undoToastAction,
   useDialogUndoKeys,
   useFileDropGuard,
@@ -56,21 +55,20 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
   // only once the edit ends.
   const [nameDraft, setNameDraft] = useState<string | null>(null)
 
+  // Prompts naming this character would keep red placeholders (blocked until filled): ask first (core/placeholders).
+  const deleteQuestion = useProject((s) => assetDeleteQuestion(asset.name || asset.tag, 1, assetDeleteImpact(s.project, [asset.id])))
   const remove = () => {
     const name = asset.name || asset.tag
     const before = useProject.getState().project
+    const question = assetDeleteQuestion(name, 1, assetDeleteImpact(before, [asset.id]))
+    if (question && !window.confirm(question)) return
     useProject.getState().removeAssets([asset.id])
-    const after = useProject.getState().project
-    const rewritten = changedPrompts(before.scenes, after.scenes).length
-    // Renumbering off (Settings): the numbers after this asset's images now point at other pictures.
-    const stale = scenesWithStaleTokens(before, after)
-    const action = undoToastAction()
     const ui = useUI.getState()
     ui.setLibrarySelection(ui.librarySelection.filter((x) => x !== asset.id))
     if (ui.selectedIds.includes(asset.id)) ui.select(ui.selectedIds.filter((x) => x !== asset.id))
     onClose()
-    if (stale.length) toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${staleTokenNote(after, stale)}.`, { tone: 'warning', ms: 8000, action })
-    else toast(`Đã xoá “${name}” khỏi thư viện và mọi cảnh${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action })
+    // red placeholders left in the scenes / numbers left stale (renumbering off) / prompts renumbered
+    reportMediaChange(before, `Đã xoá “${name}” khỏi thư viện và mọi cảnh`, { always: true })
   }
 
   const title = (
@@ -88,7 +86,14 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
       size="wide"
       footer={
         <>
-          <ConfirmButton icon={<Trash2 size={13} />} label="Xoá khỏi thư viện" confirmLabel="Xoá cả các nối? Bấm lần nữa" className="btn btn-danger" onConfirm={remove} />
+          {deleteQuestion ? (
+            <button type="button" className="btn btn-danger" onClick={remove} title={deleteQuestion}>
+              <Trash2 size={13} />
+              Xoá khỏi thư viện
+            </button>
+          ) : (
+            <ConfirmButton icon={<Trash2 size={13} />} label="Xoá khỏi thư viện" confirmLabel="Xoá cả các nối? Bấm lần nữa" className="btn btn-danger" onConfirm={remove} />
+          )}
           <span className="sb-spacer" />
           <span className="faint sb-live-note">Thay đổi được lưu ngay · Ctrl+Z để hoàn tác</span>
           <button className="btn btn-primary" onClick={onClose}>
@@ -249,24 +254,15 @@ function TagField({ asset }: { asset: Asset }) {
 
 // ---------------- images ----------------
 /**
- * Change the images of an asset (remove / reorder). The project store renumbers the @image tokens of every
- * scene using it in the same undo step; tell the user when prompts were rewritten so the toast can undo it. With
- * renumbering off (Settings) the tokens are left as written: warn about the scenes whose numbers now point elsewhere.
- * `from` / `to`: range of image indexes whose numbers change (`to` omitted = every number after `from`).
+ * Change the images of an asset (remove / reorder). The project store renumbers the @image tokens of every scene
+ * using it in the same undo step and turns the tokens of a removed picture into red placeholders "(Tên · ảnh k)"; tell
+ * the user what happened to the prompts so the toast can undo it (core/staleTokens mediaChangeNote; with renumbering
+ * off the other numbers stay as written and the scenes whose numbers now point elsewhere are named).
  */
-function setAssetImages(asset: Asset, imageIds: string[], what: 'remove' | 'move', from: number, to?: number) {
-  const before = useProject.getState().project.scenes
-  const stale = staleTokenScenes(asset.id, from, to)
+function setAssetImages(asset: Asset, imageIds: string[], what: 'remove' | 'move') {
+  const before = useProject.getState().project
   useProject.getState().updateAsset(asset.id, { imageIds })
-  const rewritten = changedPrompts(before, useProject.getState().project.scenes).length
-  const done = what === 'remove' ? `Đã bỏ 1 ảnh của “${asset.name}”` : 'Đã đổi thứ tự ảnh'
-  if (stale.length) {
-    toast(`${done}${staleNote(stale)}.`, { tone: 'warning', action: undoToastAction() })
-  } else if (what === 'remove') {
-    toast(`${done}${rewritten ? ` · đánh lại số @image trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
-  } else if (rewritten) {
-    toast(`${done} · đánh lại số @image trong ${rewritten} prompt.`, { action: undoToastAction() })
-  }
+  reportMediaChange(before, what === 'remove' ? `Đã bỏ 1 ảnh của “${asset.name}”` : 'Đã đổi thứ tự ảnh', { always: what === 'remove' })
 }
 
 /**
@@ -313,7 +309,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
     const next = [...ids]
     const [x] = next.splice(from, 1)
     next.splice(to, 0, x)
-    setAssetImages(asset, next, 'move', Math.min(from, to), Math.max(from, to))
+    setAssetImages(asset, next, 'move')
   }
   const add = (files: File[]) => addImageFiles(asset.id, files)
   // Images are being stored: keep the list as is until they are appended (a change made now would be lost).
@@ -342,7 +338,7 @@ function ImagesEditor({ asset, over }: { asset: Asset; over: boolean }) {
               <button className="sb-card-btn" title="Sang phải" disabled={busy || i === ids.length - 1} onClick={() => move(i, i + 1)}>
                 <ArrowRight size={12} />
               </button>
-              <button className="sb-card-btn danger" title="Bỏ ảnh này" disabled={busy} onClick={() => setAssetImages(asset, ids.filter((x) => x !== id), 'remove', i)}>
+              <button className="sb-card-btn danger" title="Bỏ ảnh này" disabled={busy} onClick={() => setAssetImages(asset, ids.filter((x) => x !== id), 'remove')}>
                 <X size={12} />
               </button>
             </div>

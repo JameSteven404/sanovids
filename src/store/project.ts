@@ -3,11 +3,14 @@
 // Runs/takes live in ./runs.ts and UI-only state in ./ui.ts (not undoable).
 //
 // Whenever a scene's image refs change (or the images of an asset change), the @image_N tokens in the affected
-// prompts are renumbered in the same undo step (project.settings.autoRenumber). Reference videos were retired
-// (0.6.0): no action links a take to a scene any more, Scene.videoRefs stays [] and @video text is never rewritten.
+// prompts are renumbered in the same undo step (project.settings.autoRenumber) and the token of a removed picture
+// becomes a red placeholder "@image_?N(label)" — no prompt text is ever deleted (withMedia, core/placeholders). Filling
+// a placeholder is always an explicit click (fillPlaceholder…). Reference videos were retired (0.6.0): no action links
+// a take to a scene any more, Scene.videoRefs stays [] and @video text is never rewritten.
 import { temporal } from 'zundo'
 import { create } from 'zustand'
-import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { assetByTag, extractMentions, HAS_TOKEN_RE, imageSlotsFor, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { groupKeyOf, imagePlaceholders, labelFitsSlot, planFill, planReplace, removalLabels, type FillOptions, type FillRefusal, type ReplaceRefusal } from '../core/placeholders'
 import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
@@ -345,21 +348,31 @@ export function refImageCount(project: Project, assetIds: string[]): number {
 }
 
 /**
- * Return `scene` with a new image refs list; renumbers its prompt's @image_N tokens when enabled (@video text is kept
- * as written). `project.assets` resolves names of removed images, `assetsAfter` numbers the new list.
+ * Return `scene` with a new image refs list (every removal / reorder of reference pictures goes through here). The
+ * prompt never loses text: the token of a removed picture becomes a red placeholder "@image_?N(label)" that blocks the
+ * run until the user fills it (core/placeholders); the other @image_N tokens are renumbered so each keeps its picture —
+ * with automatic renumbering off (Settings) they keep their numbers as written and only the removed picture's token
+ * turns red. @video text is kept as written. `project.assets` labels removed pictures, `assetsAfter` numbers the new list.
  */
 function withMedia(project: Project, scene: Scene, next: { refs?: string[] }, assetsAfter: Asset[] = project.assets): Scene {
   const refs = next.refs ?? scene.refs
   if (refs === scene.refs && assetsAfter === project.assets) return scene
   let prompt = scene.prompt
-  if (project.settings.autoRenumber && HAS_TOKEN_RE.test(prompt)) {
+  if (HAS_TOKEN_RE.test(prompt)) {
     const before = mediaKeys(project.assets, scene.refs)
     const after = mediaKeys(assetsAfter, refs)
-    const nameOf = imageFallbackNames(project.assets)
-    prompt = remapTokens(prompt, before, after, (key) => nameOf(key.slice(0, key.indexOf(':')))).text
+    const placeholder = removalLabels(project.assets, { beforeKeys: before.images, refsAfter: refs, assetsAfter })
+    prompt = remapTokens(prompt, before, after, () => '', { keepNumbers: !project.settings.autoRenumber, placeholder }).text
   }
   return { ...scene, refs, prompt }
 }
+
+/** The project's renumbering switch and the scene's image limit: what every fill plan needs. */
+const fillOpts = (p: Project, s: Scene, place?: FillOptions['place']): FillOptions => ({
+  renumber: p.settings.autoRenumber,
+  maxImages: MODELS[s.settings.model].maxRefImages,
+  ...(place ? { place } : {}),
+})
 
 /** The video settings of a preset (without id / name). */
 export function presetSettings(p: Preset): VideoSettings {
@@ -414,6 +427,14 @@ export interface DeleteItems {
   folderLinks?: { folderId: string; kind: FolderLinkKind; from: string }[]
 }
 
+export type FillResult = { ok: true; token: string; filled: number; left: number } | { ok: false; why: FillRefusal }
+
+export interface FillManyResult {
+  /** Scenes filled (in the order given). */
+  filled: string[]
+  refused: { sceneId: string; why: FillRefusal }[]
+}
+
 /** A new folder node (addFolder): the id may be given (its browser folder handle is stored under it first). */
 export type NewFolder = Pick<SaveFolder, 'name' | 'path' | 'position'> & Partial<Pick<SaveFolder, 'id' | 'autoScenes' | 'takes'>>
 
@@ -449,7 +470,8 @@ export interface ProjectState {
   setScenePrompt: (id: string, prompt: string) => string[]
   /**
    * Replace the prompts of several scenes as given, in ONE undo step (never merged with typing; no @Tag auto-link):
-   * the explicit quick fixes of retired @video text (src/videoRetired.ts). Unknown ids / unchanged prompts are skipped.
+   * the explicit quick fixes of retired @video text (src/videoRetired.ts) and of red placeholders ("Đổi thành chữ",
+   * "Xoá chữ đỏ", src/placeholderActions.ts). Unknown ids / unchanged prompts are skipped (no step).
    */
   setPrompts: (byScene: Record<string, string>) => void
   /**
@@ -481,6 +503,23 @@ export interface ProjectState {
   removeRefs: (pairs: { sceneId: string; assetId: string }[]) => void
   moveRef: (sceneId: string, fromIndex: number, toIndex: number) => void
   moveRefToScene: (assetId: string, fromSceneId: string, toSceneId: string) => void
+
+  // red placeholders "@image_?N(label)" (core/placeholders) — always an explicit click, never automatic. Each call that
+  // changes something is ONE undo step; a refused one changes nothing and adds no step.
+  /**
+   * Fill one group of a scene's prompt (`group` = a group key of placeholderGroups, or the text of one of its members,
+   * e.g. "@image_?2(Lumi)") with a character, linking it at the removed one's place when needed (planFill).
+   */
+  fillPlaceholder: (sceneId: string, group: string, assetId: string, opts?: { place?: FillOptions['place'] }) => FillResult
+  /** The same label (base, e.g. "Lumi") filled in several scenes at once: one undo step for all that could be filled. */
+  fillPlaceholders: (sceneIds: string[], base: string, assetId: string) => FillManyResult
+  /**
+   * A picture added to a character: in every scene linking it, placeholders "(Tên · ảnh k)" of that character become
+   * the token of `imageId`. Returns the scenes changed.
+   */
+  fillPictureSlot: (assetId: string, k: number, imageId: string) => string[]
+  /** Swap a linked character for another at the same place (planReplace: same picture count = prompt unchanged). */
+  replaceRef: (sceneId: string, oldAssetId: string, newAssetId: string) => { ok: true } | { ok: false; why: ReplaceRefusal }
 
   /** Takes were deleted: folder nodes forget them, in the project and its whole undo history (not an undo step). */
   removeTakesEverywhere: (takeIds: string[]) => void
@@ -903,6 +942,64 @@ export const useProject = create<ProjectState>()(
               return s
             }),
           }))
+        },
+
+        // ---------------- red placeholders (explicit fills) ----------------
+        fillPlaceholder: (sceneId, group, assetId, opts = {}) => {
+          const p = get().project
+          const scene = p.scenes.find((s) => s.id === sceneId)
+          if (!scene) return { ok: false, why: 'gone' }
+          const key = /^[LTM]:/.test(group) ? group : groupKeyOf(group)
+          const plan = planFill(scene, p.assets, key, assetId, fillOpts(p, scene, opts.place))
+          if (!plan.ok) return plan
+          mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (s.id === sceneId ? { ...s, prompt: plan.prompt, refs: plan.refs } : s)) }))
+          return { ok: true, token: plan.token, filled: plan.filled, left: plan.left }
+        },
+        fillPlaceholders: (sceneIds, base, assetId) => {
+          const p = get().project
+          const result: FillManyResult = { filled: [], refused: [] }
+          const next = new Map<string, { prompt: string; refs: string[] }>()
+          for (const id of new Set(sceneIds)) {
+            const scene = p.scenes.find((s) => s.id === id)
+            if (!scene) continue
+            const plan = planFill(scene, p.assets, 'L:' + base, assetId, fillOpts(p, scene))
+            if (!plan.ok) {
+              result.refused.push({ sceneId: id, why: plan.why })
+              continue
+            }
+            next.set(id, { prompt: plan.prompt, refs: plan.refs })
+            result.filled.push(id)
+          }
+          if (next.size) mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (next.has(s.id) ? { ...s, ...next.get(s.id)! } : s)) }))
+          return result
+        },
+        fillPictureSlot: (assetId, k, imageId) => {
+          const p = get().project
+          const asset = p.assets.find((a) => a.id === assetId)
+          if (!asset || !asset.imageIds.includes(imageId) || k < 1) return []
+          const next = new Map<string, string>()
+          for (const s of p.scenes) {
+            if (!s.refs.includes(assetId)) continue
+            const slot = imageSlotsFor(p.assets, s.refs).find((x) => x.assetId === assetId && x.imageId === imageId)
+            if (!slot) continue
+            // only this character's own "(Tên · ảnh k)" (name / tag, per labelFitsSlot): never another one's by chance
+            const own = imagePlaceholders(s.prompt).filter((ph) => ph.label && ph.imageNo === k && labelFitsSlot(ph.label, asset, k - 1, p.assets))
+            if (!own.length) continue
+            let prompt = s.prompt
+            for (const ph of [...own].reverse()) prompt = prompt.slice(0, ph.start) + `@image_${slot.n}` + prompt.slice(ph.end)
+            next.set(s.id, prompt)
+          }
+          if (next.size) mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (next.has(s.id) ? { ...s, prompt: next.get(s.id)! } : s)) }))
+          return [...next.keys()]
+        },
+        replaceRef: (sceneId, oldAssetId, newAssetId) => {
+          const p = get().project
+          const scene = p.scenes.find((s) => s.id === sceneId)
+          if (!scene) return { ok: false, why: 'not-linked' }
+          const plan = planReplace(scene, p.assets, oldAssetId, newAssetId, fillOpts(p, scene))
+          if (!plan.ok) return plan
+          mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (s.id === sceneId ? { ...s, prompt: plan.prompt, refs: plan.refs } : s)) }))
+          return { ok: true }
         },
 
         // ---------------- deleted takes ----------------

@@ -54,6 +54,8 @@ import {
   type EdgeKind,
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { mediaChangeNote } from '../../core/staleTokens'
+import { flushScenes } from '../../lib/promptDrafts'
 import { folderMapOf } from '../../core/folders'
 import { MODELS } from '../../core/models'
 import { keepsSlot } from '../../core/takes'
@@ -1341,17 +1343,23 @@ function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
     toast(`Không chuyển được ${asset.name} sang ${sceneCode(target.order)} (vượt giới hạn ảnh) — giữ nguyên nối cũ.`, { tone: 'warning' })
     return
   }
+  // The prompt being typed in the source scene is committed first (the moved picture's token turns red in it).
+  flushScenes([fromSceneId])
+  const before = useProject.getState().project
   useProject.getState().moveRefToScene(assetId, fromSceneId, newTarget)
   const after = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
   const added = !!after?.refs.includes(assetId)
   useUI.getState().setSelectedEdges([])
+  // red placeholders left in the source scene (core/staleTokens mediaChangeNote)
+  const note = mediaChangeNote(before, useProject.getState().project)
+  const red = note?.tone === 'warning' ? note.text : ''
   toast(
-    already
-      ? `${sceneCode(target.order)} đã có ${asset.name} — bỏ nối ở cảnh cũ.`
+    (already
+      ? `${sceneCode(target.order)} đã có ${asset.name} — bỏ nối ở cảnh cũ`
       : added
-        ? `Đã chuyển ${asset.name} sang ${sceneCode(target.order)}.`
-        : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
-    { tone: added || already ? 'success' : 'warning', action: undoToastAction() },
+        ? `Đã chuyển ${asset.name} sang ${sceneCode(target.order)}`
+        : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh)`) + `${red}.`,
+    { tone: red ? 'warning' : added || already ? 'success' : 'warning', action: undoToastAction(), ...(red ? { ms: note?.ms } : {}) },
   )
 }
 

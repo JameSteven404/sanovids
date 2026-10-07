@@ -45,6 +45,7 @@ import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
 import {
   imageOptsFor,
   insertAt,
+  labelChecker,
   legacyAssets,
   legacyFixMessage,
   mediaCountLabel,
@@ -556,7 +557,9 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   // What the request really carries: a token past the model's limit (or in a mode without references) is shown
   // invalid, like a missing one — the model would never see that picture.
   const sentImages = settings && usesRefs(settings) ? Math.min(imageOpts.length, MODELS[settings.model].maxRefImages) : 0
-  const segs = useMemo(() => segmentPrompt(text, imageOpts.length, legacyTags, { images: sentImages }), [text, imageOpts.length, legacyTags, sentImages])
+  // A label glued to a token ("@image_2(Lumi)") that does not fit its picture is red too (core/compile blocks it).
+  const labels = useMemo(() => labelChecker(assets, refs), [assets, refs])
+  const segs = useMemo(() => segmentPrompt(text, imageOpts.length, legacyTags, { images: sentImages }, labels), [text, imageOpts.length, legacyTags, sentImages, labels])
   // Everything else may lag behind fast typing.
   const deferredText = useDeferredValue(text)
   const charCount = useMemo(() => [...deferredText].length, [deferredText])
