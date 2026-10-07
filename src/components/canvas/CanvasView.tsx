@@ -86,6 +86,9 @@ import {
   clientPoint,
   drawerInset,
   fallbackNodeSize,
+  estimatedGeometry,
+  initialViewport,
+  LOD_ZOOM,
   FIT_EVENT,
   focusViewport,
   hasAssetDrag,
@@ -143,7 +146,6 @@ const nodeTypes = { scene: SceneNode, asset: AssetNode, take: TakeNode, folder: 
 const NO_FOLDERS: SaveFolder[] = []
 const SNAP_GRID: [number, number] = [16, 16]
 const MULTI_KEYS = ['Control', 'Meta', 'Shift']
-const FIT_OPTIONS = { padding: 0.12, maxZoom: 1 }
 /** Toolbar band above the queue drawer (toolbar sits at drawer + 12px, ~44px tall). */
 const TOOLBAR_ROOM = 56
 /** Room kept below the ConnectMenu's top edge (tallest menu ≈ 3 items) so it stays above the queue drawer. */
@@ -183,6 +185,7 @@ function CanvasInner() {
   const [savedViewport] = useState(() => canvasViewports.get(projectId))
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
+  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
   const stageRef = useRef<HTMLDivElement>(null)
 
   const sceneSig = useProject((s) => sceneGraphOf(s.project.scenes))
@@ -362,10 +365,12 @@ function CanvasInner() {
   }, [scenes, assets, folders, takeLayout])
 
   const liveCache = useRef(new Map<string, CanvasNode>())
+  const estimateState = useRef({ far, scenes })
   const nodes = useMemo(() => {
     const selected = new Set(selectedIds)
     const local = useCanvasLocal.getState()
     const sm = sceneMapOf(scenes)
+    const previousScenes = sceneMapOf(estimateState.current.scenes)
     const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
     const hasResize = Object.keys(resizing).length > 0
     const slots = hasResize ? takeSlots(takeLayout.items, widthOf, (id, slotX) => {
@@ -393,15 +398,35 @@ function CanvasInner() {
       const measured = local.measured[id]
       const width = live?.w ?? base.width, height = live?.h ?? base.height
       const isSelected = selected.has(id), dragging = id in dragPos
-      const node = prev && prev.data === base.data && prev.type === base.type && samePos(prev.position, position) &&
+      const sameEstimate = measured || (far === estimateState.current.far && sm.get(id)?.settings.mode === previousScenes.get(id)?.settings.mode)
+      const node = prev && sameEstimate && prev.data === base.data && prev.type === base.type && samePos(prev.position, position) &&
         prev.measured === measured && prev.width === width && prev.height === height && prev.selected === isSelected && prev.dragging === dragging
-        ? prev : { ...base, position, measured, width, height, selected: isSelected, dragging }
+        ? prev : { ...base, position, measured, width, height, selected: isSelected, dragging,
+          ...(!measured ? estimatedGeometry(base.type, width && height ? { w: width, h: height } : null, far, sm.get(id)?.settings.mode) : {}) }
       next.set(id, node)
       return node
     })
     liveCache.current = next
+    estimateState.current = { far, scenes }
     return out
-  }, [baseNodes, scenes, takeLayout, dragPos, resizing, selectedIds, measuredVersion])
+  }, [baseNodes, scenes, takeLayout, dragPos, resizing, selectedIds, measuredVersion, far])
+
+  const initialFit = useRef<{ done: boolean; off?: () => void }>({ done: !!savedViewport })
+  const onInit = useCallback(() => {
+    const fit = () => {
+      if (initialFit.current.done) return true
+      const { width, height } = rfStore.getState()
+      if (!(width > 0 && height > 0)) return false
+      initialFit.current.done = true
+      const viewport = initialViewport(rf.getNodes(), width, height)
+      if (viewport) void rf.setViewport(viewport)
+      return true
+    }
+    if (!fit()) initialFit.current.off = rfStore.subscribe(() => {
+      if (fit()) initialFit.current.off?.()
+    })
+  }, [rf, rfStore])
+  useEffect(() => () => initialFit.current.off?.(), [])
 
   const [wasBig, setWasBig] = useState(() => useCanvasLocal.getState().big)
   const big = bigCanvasState(baseNodes.length, wasBig, bigPref)
@@ -1143,8 +1168,7 @@ function CanvasInner() {
         nodeClickDistance={2}
         elevateEdgesOnSelect={false}
         defaultViewport={savedViewport}
-        fitView={!savedViewport}
-        fitViewOptions={FIT_OPTIONS}
+        onInit={onInit}
         colorMode={theme}
         attributionPosition="top-right"
       >

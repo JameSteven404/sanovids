@@ -5,18 +5,16 @@ import { useEffect, useState } from 'react'
 import { newId } from '../core/ids'
 
 const store = createStore('ban-dung-phim', 'media')
-const urlCache = new Map<string, string>()
-const pending = new Map<string, Promise<string | null>>()
+interface MediaUrl { refs: number; url: string | null; pending?: Promise<string | null>; deleted?: boolean; deleting?: boolean }
+const urlCache = new Map<string, MediaUrl>()
 
 /** Number of live cached object URLs (performance harness). */
-export const urlCount = () => urlCache.size
+export const urlCount = () => [...urlCache.values()].filter((entry) => entry.url).length
 
 export async function putBlob(blob: Blob, prefix = 'img'): Promise<string> {
   const id = newId(prefix)
   await set(id, blob, store)
-  // Pictures are shown right away, so keep a URL ready. A video's URL is made on first use (getUrl): caching it
-  // here would keep the whole in-memory recording alive for the session.
-  if (blob.type.startsWith('image/')) urlCache.set(id, URL.createObjectURL(blob))
+  // Create URLs only for readers: importing a project must not pin every image in memory.
   return id
 }
 
@@ -25,31 +23,49 @@ export async function getBlob(id: string): Promise<Blob | null> {
 }
 
 export function cachedUrl(id: string | null | undefined): string | null {
-  return id ? urlCache.get(id) ?? null : null
+  return id ? urlCache.get(id)?.url ?? null : null
 }
 
+/** Acquire one reader, paired with releaseUrl even when loading fails or is cancelled. */
 export function getUrl(id: string): Promise<string | null> {
-  const hit = urlCache.get(id)
-  if (hit) return Promise.resolve(hit)
-  let p = pending.get(id)
-  if (!p) {
-    p = getBlob(id).then((blob) => {
-      pending.delete(id)
-      if (!blob) return null
-      const url = URL.createObjectURL(blob)
-      urlCache.set(id, url)
-      return url
-    })
-    pending.set(id, p)
+  let entry = urlCache.get(id)
+  if (!entry) urlCache.set(id, entry = { refs: 0, url: null })
+  entry.refs++
+  if (entry.deleted) return Promise.resolve(null)
+  if (entry.url) return Promise.resolve(entry.url)
+  const current = entry
+  if (!current.pending) {
+    current.pending = getBlob(id).then((blob) => {
+      // A project switch / deletion may have released every reader while IndexedDB was loading.
+      if (!blob || current.deleted || urlCache.get(id) !== current) return null
+      return current.url = URL.createObjectURL(blob)
+    }).finally(() => { current.pending = undefined })
   }
-  return p
+  return current.pending
+}
+
+/** The last reader owns revocation, including a reader still showing deleted media. */
+export function releaseUrl(id: string): void {
+  const entry = urlCache.get(id)
+  if (!entry || --entry.refs > 0) return
+  if (entry.url) URL.revokeObjectURL(entry.url)
+  entry.url = null
+  if (!entry.deleting) urlCache.delete(id)
 }
 
 export async function deleteMedia(id: string): Promise<void> {
-  const url = urlCache.get(id)
-  if (url) URL.revokeObjectURL(url)
-  urlCache.delete(id)
-  await del(id, store)
+  let entry = urlCache.get(id)
+  if (!entry) urlCache.set(id, entry = { refs: 0, url: null })
+  entry.deleted = entry.deleting = true
+  try {
+    await del(id, store)
+  } catch (error) {
+    entry.deleted = false
+    throw error
+  } finally {
+    entry.deleting = false
+    if (!entry.refs) urlCache.delete(id)
+  }
 }
 
 export function dataUrlToBlob(dataUrl: string): Blob {
@@ -64,24 +80,18 @@ export function dataUrlToBlob(dataUrl: string): Blob {
 
 /** React hook: object URL for a stored image key (null while loading / missing). */
 export function useMediaUrl(id: string | null | undefined): string | null {
-  const [url, setUrl] = useState<string | null>(() => cachedUrl(id))
+  const [media, setMedia] = useState<{ id: string; url: string | null } | null>(null)
   useEffect(() => {
-    if (!id) {
-      setUrl(null)
-      return
-    }
-    const hit = cachedUrl(id)
-    if (hit) {
-      setUrl(hit)
-      return
-    }
+    if (!id) return
     let alive = true
-    getUrl(id).then((u) => alive && setUrl(u))
+    getUrl(id).then((url) => { if (alive) setMedia({ id, url }) }, () => { if (alive) setMedia({ id, url: null }) })
     return () => {
       alive = false
+      releaseUrl(id)
     }
   }, [id])
-  return url
+  // Never render the old id's URL during the render before its effect cleans up.
+  return media && media.id === id && media.url === cachedUrl(id) ? media.url : null
 }
 
 /** Generated placeholder portrait (SVG) used by the demo seed and by assets without photos. */

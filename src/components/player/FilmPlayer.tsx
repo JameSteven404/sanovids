@@ -7,7 +7,7 @@ import { downloadTake } from '../../actions'
 import { filmRuntimeOf, runtimeText, type PlayerItem } from '../../core/filmItems'
 import { escapeDecision, frameDelta, transportKey, type TransportOp } from '../../core/transportKeys'
 import { useTransport } from '../../hooks/useTransport'
-import { cachedUrl, getUrl } from '../../lib/imageStore'
+import { cachedUrl, getUrl, releaseUrl } from '../../lib/imageStore'
 import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
@@ -95,11 +95,12 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
     }
     const hit = cachedUrl(videoId)
     setVideo({ id: videoId, url: hit, failed: false })
-    if (hit) return
     let alive = true
-    getUrl(videoId).then((url) => alive && setVideo({ id: videoId, url, failed: !url }))
+    getUrl(videoId).then((url) => alive && setVideo({ id: videoId, url, failed: !url }),
+      () => alive && setVideo({ id: videoId, url: null, failed: true }))
     return () => {
       alive = false
+      releaseUrl(videoId)
     }
   }, [videoId])
 

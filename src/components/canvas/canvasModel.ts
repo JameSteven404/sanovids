@@ -2,6 +2,7 @@
 // and a tiny hover store.
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
+import { getNodesBounds, getViewportForBounds, Position, type Node, type NodeHandle } from '@xyflow/react'
 import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
@@ -859,6 +860,39 @@ export function fallbackNodeSize(type: string | undefined): { w: number; h: numb
   if (type === 'folder') return { w: FOLDER_W, h: FOLDER_H }
   if (type === 'asset') return { w: ASSET_TILE.w, h: ASSET_TILE.h }
   return { w: LAYOUT.sceneW, h: LAYOUT.sceneH }
+}
+
+/** Initial geometry only: React Flow replaces it with DOM measurements, never persisted sizes. */
+export function estimatedGeometry(type: string | undefined, size?: Size | null, far = false, mode?: string) {
+  const box = type === 'scene' ? drawnSceneSize(size) : size
+  const { w, h } = box ?? fallbackNodeSize(type)
+  const handles: NodeHandle[] = []
+  // Handles have zero-sized boxes (canvas.css); the card's border adds 1px to CSS top.
+  const dot = (id: string, kind: 'source' | 'target', right: boolean, y: number) => handles.push({
+    id, type: kind, position: right ? Position.Right : Position.Left,
+    x: right ? w - 0.5 : 0.5, y, width: 0, height: 0,
+  })
+  if (type === 'asset') dot('out', 'source', true, h / 2)
+  else if (type === 'folder') dot('in', 'target', false, (far ? 40 : 25) + 1)
+  else if (type === 'take') {
+    const y = takeDotTop(box ?? null, far) + 1
+    dot('in', 'target', false, y)
+    dot('out', 'source', true, y)
+  } else {
+    dot('ref', 'target', false, DOT_TOP + 1)
+    dot('take', 'source', true, DOT_TOP + 1)
+    if (mode === 'transform') {
+      dot('first', 'target', false, h - 53)
+      dot('last', 'target', false, h - 29)
+    }
+  }
+  return { initialWidth: w, initialHeight: h, handles }
+}
+
+/** Fit once from estimates; a zero-sized stage waits for its first real size. */
+export function initialViewport(nodes: Node[], width: number, height: number): Viewport | null {
+  if (!nodes.length || !(width > 0 && height > 0)) return null
+  return getViewportForBounds(getNodesBounds(nodes), width, height, 0.1, 1, 0.12)
 }
 
 /**
