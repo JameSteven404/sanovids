@@ -572,8 +572,8 @@
   padding: 0;
   border-radius: 50%;
   border: 1px solid var(--panel);
-  background: var(--danger);
-  color: var(--cv-on-solid);
+  background: var(--danger-soft);
+  color: var(--danger-text);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }

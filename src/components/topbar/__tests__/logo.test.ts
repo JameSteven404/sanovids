@@ -9,6 +9,7 @@ import { Logo } from '../../common/Logo'
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 const topbarCss = read('../topbar.css')
+const dialogsCss = read('../../dialogs/dialogs.css')
 const topbarTsx = read('../TopBar.tsx')
 const baseCss = read('../../../styles/base.css')
 
@@ -75,7 +76,7 @@ describe('top bar brand', () => {
   it('paints the tile with the brand tokens only (no hex colours in topbar.css)', () => {
     expect(topbarCss).not.toMatch(/#[0-9a-f]{3,8}\b/i)
     const { body } = ruleBody(topbarCss, '.tb-logo {')
-    expect(body).toContain('background: var(--brand-gradient);')
+    expect(body).toContain('background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));')
     expect(body).toContain('color: var(--brand-ink);')
     expect(body).toContain('width: 24px;')
     expect(body).toContain('height: 24px;')
@@ -85,6 +86,20 @@ describe('top bar brand', () => {
     expect(body).toContain('box-shadow:')
     expect(topbarCss).toContain('.tb-logo svg {\n  display: block;\n}')
     expect(topbarCss).not.toContain('.tb-logo .lucide')
+  })
+
+  it('paints the top-bar and Giới thiệu tiles like the app icon plate: top→bottom, never the diagonal --brand-gradient', () => {
+    const tile = 'background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));'
+    expect(ruleBody(topbarCss, '.tb-logo {').body).toContain(tile)
+    expect(ruleBody(dialogsCss, '.dg-about-logo {').body).toContain(tile)
+    // every plate in build/icon-source runs top (x1=0 y1=0) → bottom (x2=0 y2=1), #E60000 → #FF3D14 = the brand tokens
+    for (const file of ['icon-master', 'icon-small', 'icon-24', 'icon-20']) {
+      const svg = read(`../../../../build/icon-source/${file}.svg`)
+      const plate = svg.match(/<linearGradient id="sv-plate"([^>]*)>(.*?)<\/linearGradient>/)
+      expect(plate, file).not.toBeNull()
+      expect(plate![1], file).toBe(' x1="0" y1="0" x2="0" y2="1"')
+      expect(plate![2], file).toBe('<stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/>')
+    }
   })
 
   it('defines each brand token once, in the dark (default) block only', () => {

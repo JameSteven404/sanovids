@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BACKGROUND_PREFS, parseBackgroundPref } from '../theme'
+import { BACKGROUND_COLOR, BACKGROUND_PREFS, LIGHT_COLOR, parseBackgroundPref, themeColor } from '../theme'
 
 const html = readFileSync(new URL('../../../index.html', import.meta.url), 'utf8')
 const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]
@@ -50,6 +50,24 @@ describe('background preference', () => {
     }
   })
 
+  it('paints first with the very colour the CSS gives each background (--bg), and the runtime agrees', () => {
+    const block = (selector: string) => {
+      const at = css.indexOf(selector)
+      expect(at, selector).toBeGreaterThanOrEqual(0)
+      return css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at))
+    }
+    const bgOf = (body: string) => body.match(/--bg:\s*(#[0-9a-f]{6})\s*;/i)?.[1].toLowerCase()
+    expect(bgOf(block(":root,\n:root[data-theme='dark'] {"))).toBe(BACKGROUND_COLOR.than)
+    expect(bgOf(block(":root[data-bg='deep']:not([data-theme='light']) {"))).toBe(BACKGROUND_COLOR.deep)
+    expect(bgOf(block(":root[data-bg='slate']:not([data-theme='light']) {"))).toBe(BACKGROUND_COLOR.slate)
+    expect(bgOf(block(":root[data-theme='light'] {"))).toBe(LIGHT_COLOR)
+    expect(BACKGROUND_COLOR).toEqual(colors)
+    for (const bg of BACKGROUND_PREFS) {
+      expect(themeColor('dark', bg)).toBe(colors[bg])
+      expect(themeColor('light', bg)).toBe(LIGHT_COLOR)
+    }
+  })
+
   it('uses one inline script before the body for the first paint', () => {
     expect(html.match(/<script>/g)).toHaveLength(1)
     expect(html.indexOf(script)).toBeLessThan(html.indexOf('<body>'))
@@ -71,7 +89,7 @@ describe('background preference', () => {
         const { initTheme, useTheme } = await import('../theme')
         initTheme()
         expect(useTheme.getState()).toMatchObject({ pref, background: bg, theme: dark ? 'dark' : 'light' })
-        expect(d.root.style.background).toBe(color)
+        expect(d.root.dataset).toEqual({ theme: dark ? 'dark' : 'light', bg })
         expect(d.meta.setAttribute).toHaveBeenLastCalledWith('content', color)
       }
     }
@@ -85,27 +103,35 @@ describe('background preference', () => {
     const { initTheme, useTheme } = await import('../theme')
     initTheme()
     const state = useTheme.getState()
+    const chrome = () => d.meta.setAttribute.mock.lastCall?.[1]
     state.setBackground('slate')
     expect(d.stored.get('bdp:pref:background')).toBe('"slate"')
-    expect(d.root.style.background).toBe(colors.slate)
+    expect(d.root.dataset).toEqual({ theme: 'dark', bg: 'slate' })
+    expect(chrome()).toBe(colors.slate)
     const onChange = d.media.addEventListener.mock.calls[0][1]
     d.media.matches = false
     onChange()
     expect(d.root.dataset).toEqual({ theme: 'light', bg: 'slate' })
-    expect(d.root.style.background).toBe('#f5f5f7')
+    expect(chrome()).toBe('#f5f5f7')
     state.setBackground('deep')
-    expect(d.root.style.background).toBe('#f5f5f7')
+    expect(d.root.dataset).toEqual({ theme: 'light', bg: 'deep' })
+    expect(chrome()).toBe('#f5f5f7')
     d.media.matches = true
     onChange()
-    expect(d.root.style.background).toBe(colors.deep)
+    expect(chrome()).toBe(colors.deep)
     state.setPref('light')
     onChange()
-    expect(d.root.style.background).toBe('#f5f5f7')
+    expect(d.root.dataset.theme).toBe('light')
+    expect(chrome()).toBe('#f5f5f7')
     state.setPref('dark')
-    expect(d.root.style.background).toBe(colors.deep)
+    expect(d.root.dataset).toEqual({ theme: 'dark', bg: 'deep' })
+    expect(chrome()).toBe(colors.deep)
     state.setBackground('pink' as never)
     expect(useTheme.getState().background).toBe('deep')
     expect(d.stored.get('bdp:pref:background')).toBe('"deep"')
+    // The page colour is the CSS's job: the runtime never writes an inline <html> background (main.tsx drops the one
+    // index.html painted before the stylesheets loaded, and nothing puts it back).
+    expect(d.root.style).toEqual({ colorScheme: 'dark' })
   })
 
   it.each([false, true])('survives corrupt or blocked storage (blocked=%s)', async (blocked) => {
@@ -120,6 +146,7 @@ describe('background preference', () => {
     expect(useTheme.getState()).toMatchObject({ pref: 'system', background: 'than', theme: 'light' })
     useTheme.getState().setBackground('slate')
     useTheme.getState().setPref('dark')
-    expect(d.root.style.background).toBe(colors.slate)
+    expect(d.root.dataset).toEqual({ theme: 'dark', bg: 'slate' })
+    expect(d.meta.setAttribute).toHaveBeenLastCalledWith('content', colors.slate)
   })
 })

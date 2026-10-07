@@ -108,8 +108,9 @@
   border-radius: 5.25px; /* 22 %, the app icon's corner */
   display: inline-flex;
   flex: none;
-  /* The brand plate and white mark stay the same in both themes. */
-  background: var(--brand-gradient);
+  /* The app icon's plate and white mark (base.css --brand-* tokens), the same in both themes: top→bottom like
+     build/icon-source/icon-master.svg, so the tile matches the taskbar icon. */
+  background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
   color: var(--brand-ink);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 12%, transparent), var(--shadow-sm);
 }

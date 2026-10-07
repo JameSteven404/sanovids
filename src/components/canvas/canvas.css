@@ -198,7 +198,8 @@
 .cv-stage .cv-h-takes,
 .cv-stage .cv-h-take-in {
   --h: 8px;
-  --h-c: var(--video);
+  /* the colour of the scene → take wire (edges.tsx KIND_STROKE.out) */
+  --h-c: var(--seq);
   cursor: default;
 }
 .cv-stage .cv-h-takes::after,

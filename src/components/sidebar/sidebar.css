@@ -1162,7 +1162,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* model badge: soft tint of the model's own color (--sb-m, set inline) */
+/* model badge: neutral (design D). PresetsPanel still sets the model's colour inline as --sb-m; it is not painted. */
 .sb-model {
   flex: none;
   height: 16px;
@@ -1177,7 +1177,8 @@
 }
 /* a preset of a newer SanoVids build's model (Preset.foreignModel): warning tint, shrinks with an ellipsis */
 .sb-model.is-foreign {
-  --sb-m: var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn);
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;

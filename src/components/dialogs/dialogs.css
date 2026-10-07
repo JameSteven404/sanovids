@@ -1210,7 +1210,7 @@
   width: 40px;
   height: 40px;
   border-radius: 22%;
-  background: var(--brand-gradient);
+  background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
   color: var(--brand-ink);
   box-shadow: var(--shadow-sm);
 }

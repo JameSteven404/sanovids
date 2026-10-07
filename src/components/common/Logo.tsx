@@ -1,6 +1,13 @@
 import { useId } from 'react'
 
-/** Option D: rounded play mark with an S-shaped cutout. Decorative unless given a title. */
+/**
+ * The SanoVids mark (design D): a rounded play triangle with an S-shaped wire cut out of it, ending in a source dot.
+ * One colour: it paints with `currentColor`. Same 512-unit glyph as build/icon-source/*.svg (logo-mark, icon-24 = this
+ * glyph scaled to 24 on the top→bottom brand plate), so inside the 24 px `.tb-logo` tile it matches the taskbar icon.
+ * The cut-out is a mask with a per-instance id (useId): the top bar and Giới thiệu can render it at the same time.
+ *
+ * Decorative by default (aria-hidden): the brand name is always written next to it. Pass `title` to make it an image.
+ */
 export function Logo({ size = 24, className, title }: { size?: number; className?: string; title?: string }) {
   const cut = useId()
   return (

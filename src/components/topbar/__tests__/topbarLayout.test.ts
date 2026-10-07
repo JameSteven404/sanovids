@@ -47,17 +47,19 @@ describe('top bar: the project name keeps room', () => {
     const [brand, labels, divider] = rules.map((r) => r.px)
     expect(brand).toBeGreaterThan(labels)
     expect(labels).toBeGreaterThan(divider)
-    // Each threshold leaves the name about 112px or more next to what is still shown (cluster widths in topbar.css).
-    const BRAND = 85.4
+    // Each threshold leaves the name about 108px or more next to what is still shown (cluster widths in topbar.css).
+    // Text widths are Be Vietnam Pro, the bundled --font of design D (advance widths of the @fontsource files; Segoe UI
+    // was 1 to 7px narrower per label): "SanoVids" 13px/600 60.8, "Đã lưu" 12px/400 36.8, "Dự án" 13px/500 36.4.
+    const BRAND = 92.8
     const LOGO = 24
     const DIVIDER = 13
-    const SAVE = 60.6
+    const SAVE = 62.8
     const SAVE_DOT = 20
-    const PROJECTS = 73.4
+    const PROJECTS = 74.4
     const PROJECTS_ICON = 32
     const GAPS = 16
     expect(brand - (BRAND + DIVIDER + SAVE + PROJECTS + GAPS)).toBeGreaterThanOrEqual(112)
-    expect(labels - (LOGO + DIVIDER + SAVE + PROJECTS + GAPS)).toBeGreaterThanOrEqual(112)
+    expect(labels - (LOGO + DIVIDER + SAVE + PROJECTS + GAPS)).toBeGreaterThanOrEqual(108)
     expect(divider - (LOGO + DIVIDER + SAVE_DOT + PROJECTS_ICON + GAPS)).toBeGreaterThanOrEqual(110)
   })
 

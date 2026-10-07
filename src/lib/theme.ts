@@ -1,6 +1,7 @@
-// Light / dark appearance (Apple-style: "Sáng", "Tối", "Theo hệ thống").
-// The resolved theme lives on <html data-theme="light|dark"> so CSS tokens in styles/base.css switch instantly.
-// index.html applies the saved choice before React mounts (no flash).
+// Light / dark appearance (Apple-style: "Sáng", "Tối", "Theo hệ thống") and the dark background ("Màu nền": Than /
+// Đen sâu / Xám xanh, device pref bdp:pref:background, ignored by the light theme).
+// The resolved theme lives on <html data-theme="light|dark">, the background on <html data-bg>, so the CSS tokens in
+// styles/base.css switch instantly. index.html applies both saved choices before React mounts (no flash).
 import { create } from 'zustand'
 
 export type ThemePref = 'system' | 'light' | 'dark'
@@ -11,7 +12,15 @@ export const THEME_KEY = 'bdp:pref:theme'
 export const BACKGROUND_KEY = 'bdp:pref:background'
 export const BACKGROUND_PREFS: readonly BackgroundPref[] = ['than', 'deep', 'slate']
 export const BACKGROUND_LABEL: Record<BackgroundPref, string> = { than: 'Than', deep: 'Đen sâu', slate: 'Xám xanh' }
-const BACKGROUND_COLOR: Record<BackgroundPref, string> = { than: '#161618', deep: '#0c0c0d', slate: '#14171c' }
+/** The window colour of each background (= base.css --bg of that variant; index.html paints it before the CSS loads). */
+export const BACKGROUND_COLOR: Record<BackgroundPref, string> = { than: '#161618', deep: '#0c0c0d', slate: '#14171c' }
+/** The light theme's window colour (base.css --bg); the background choice does not apply to it. */
+export const LIGHT_COLOR = '#f5f5f7'
+
+/** Window colour for the browser / OS chrome (meta theme-color). */
+export function themeColor(theme: Theme, background: BackgroundPref): string {
+  return theme === 'dark' ? BACKGROUND_COLOR[background] : LIGHT_COLOR
+}
 const KEY = THEME_KEY
 export const THEME_PREFS: readonly ThemePref[] = ['system', 'light', 'dark']
 
@@ -66,9 +75,9 @@ function apply(theme: Theme, background: BackgroundPref) {
   root.dataset.theme = theme
   root.dataset.bg = background
   root.style.colorScheme = theme
-  const color = theme === 'dark' ? BACKGROUND_COLOR[background] : '#f5f5f7'
-  root.style.background = color
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color)
+  // The page colour itself comes from the CSS tokens (body: var(--bg), :root[data-bg]); the inline <html> background
+  // index.html paints before the CSS loads is removed by main.tsx once the stylesheets are in.
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor(theme, background))
 }
 
 interface ThemeState {
