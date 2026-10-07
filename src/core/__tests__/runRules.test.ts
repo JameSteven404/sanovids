@@ -22,7 +22,6 @@ import {
   mismatchReason,
   NO_FRAMES_REASON,
   NO_IMAGE_REASON,
-  refStatusLookup,
   retiredVideoReason,
   runBlockReason,
   sceneRunBlockReason,
@@ -173,15 +172,6 @@ describe('runBlockReason — each rule', () => {
     expect(reasonOf(scene({ prompt: '@image_1 @video_1', settings: H3('i2v') }))).toBe(NO_IMAGE_REASON)
     expect(reasonOf(scene({ prompt: '@image_5 @video_1', settings: H3('transform') }))).toBe(NO_FRAMES_REASON)
     expect(reasonOf(scene({ prompt: '@image_5 @video_1' }))).toBe(retiredVideoReason(['@video_1']))
-  })
-
-  it('old call shapes still compile and the retired inputs are ignored', () => {
-    const s = scene({ prompt: '@video_1' })
-    const compiled = compileScene(project(s), s)
-    const old = runBlockReason({ scene: s, assets: ASSETS, compiled, takeStatus: () => 'completed', providerVideoCap: 10 })
-    expect(old).toBe(retiredVideoReason(['@video_1']))
-    expect(runBlockReason({ scene: scene(), assets: ASSETS, compiled: compileScene(project(scene()), scene()), takeStatus: () => undefined, providerVideoCap: 0 })).toBeNull()
-    expect(refStatusLookup(['t1'], 'completed')('t1')).toBeUndefined()
   })
 })
 

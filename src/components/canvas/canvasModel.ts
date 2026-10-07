@@ -8,7 +8,7 @@ import { FOLDER_H, FOLDER_W } from '../../core/folders'
 import { assetSceneCounts } from '../../core/libraryDelete'
 import { sceneMapOf } from '../../core/sceneIndex'
 import { foldLabel } from '../../core/tokenLabels'
-import { chooseTake, videoUsageOf } from '../../core/takes'
+import { chooseTake } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { defaultTakePosition, drawnSceneSize, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
@@ -48,8 +48,8 @@ export function assetMapOf(assets: Asset[]): Map<string, Asset> {
 }
 
 /** Every Scene field is classified, including individual settings fields (guarded by graphSig.test). */
-export const GRAPH_FIELDS = ['id', 'order', 'position', 'size', 'refs', 'videoRefs', 'settings.mode', 'firstFrame', 'lastFrame', 'color'] as const
-export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings', 'legacyVideoRefs'] as const
+export const GRAPH_FIELDS = ['id', 'order', 'position', 'size', 'refs', 'settings.mode', 'firstFrame', 'lastFrame', 'color'] as const
+export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings', 'videoRefs', 'legacyVideoRefs'] as const
 
 /** Array identities are weakly cached; only the most recent graph is retained for comparison. */
 function graphCache<T extends object>(fieldsOf: (item: T) => unknown[]) {
@@ -206,7 +206,7 @@ export function takeIndexOf(takes: Take[]): TakeIndex {
   return idx
 }
 
-export { chooseTake, videoUsageOf }
+export { chooseTake }
 
 export interface TakeSummary {
   count: number
@@ -267,19 +267,13 @@ export function takeLayoutSig(takes: Take[]): string {
 
 export interface TakeLayoutItem {
   id: string
-  /** The take's own scene (for an orphan: the deleted scene's id). */
+  /** The take's own scene. `items` lists a scene's shown takes in row order (by number); see takeSlots. */
   sceneId: string
-  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene); orphans: slot among the orphans of `anchorId`. */
-  index: number
   /** Position the user dragged the node to; null = auto. */
   explicit: XY | null
   /** Takes of the same scene hidden by the "chosen only" display (badge "+N"; only on the chosen take). */
   hidden: number
   status: JobStatus
-  /** Its scene was deleted but a scene still uses it as @video: no 'out' wire and no auto slot. */
-  orphan: boolean
-  /** Scene the node is placed next to: its own scene, or (orphan) the first scene that uses it. */
-  anchorId: string
   /** Size set by the user (resize handle); null = default (LAYOUT.takeW × auto). */
   size: Size | null
 }
@@ -290,14 +284,10 @@ export interface TakeLayout {
 
 /**
  * Which take nodes are shown and where. `all`: every take of every existing scene. `chosen`: the chosen take of
- * each scene, plus takes that some scene uses as @video (so their wires stay visible). In both modes a take whose
- * scene was deleted stays (as an orphan) while some scene uses it as @video: its wire, and the node to select or
- * delete it, must not vanish while the video is still sent.
+ * each existing scene. Takes of deleted scenes stay in the queue, never on the canvas.
  */
 export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): TakeLayout {
   const idx = takeIndexOf(takes)
-  const usage = videoUsageOf(scenes)
-  const used = mode === 'chosen' ? usage : null
   const items: TakeLayoutItem[] = []
   const byId = new Map<string, TakeLayoutItem>()
   const add = (item: TakeLayoutItem) => {
@@ -308,52 +298,24 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
     const list = idx.byScene.get(s.id)
     if (!list) continue
     const chosen = idx.chosen.get(s.id)
-    const shown = used ? list.filter((t) => t === chosen || used.has(t.id)) : list
+    const shown = mode === 'chosen' ? list.filter((t) => t === chosen) : list
     const hidden = list.length - shown.length
-    shown.forEach((t, index) =>
+    for (const t of shown)
       add({
         id: t.id,
         sceneId: s.id,
-        index,
         explicit: t.position,
         hidden: t === chosen ? hidden : 0,
         status: t.status,
-        orphan: false,
-        anchorId: s.id,
         size: t.size ?? null,
-      }),
-    )
-  }
-  let byOrder: Scene[] | null = null
-  const perAnchor = new Map<string, number>()
-  for (const takeId of usage.keys()) {
-    const t = idx.byId.get(takeId)
-    if (!t || sceneMapOf(scenes).has(t.sceneId)) continue
-    byOrder ??= [...scenes].sort((a, b) => a.order - b.order)
-    const anchor = byOrder.find((s) => s.videoRefs.includes(takeId))!
-    const index = perAnchor.get(anchor.id) ?? 0
-    perAnchor.set(anchor.id, index + 1)
-    add({ id: t.id, sceneId: t.sceneId, index, explicit: t.position, hidden: 0, status: t.status, orphan: true, anchorId: anchor.id, size: t.size ?? null })
+      })
   }
   return { items, byId }
 }
 
 /**
- * Fallback spot of the `index`-th orphan take of a scene (when it has no dragged or previously shown position): left
- * of the scene that uses it, so its @video wire into the scene's left handle stays short.
- */
-export function orphanTakePosition(
-  anchorPos: XY,
-  index: number,
-  slotX: number = index * (LAYOUT.takeW + LAYOUT.takeGapX),
-  width: number = LAYOUT.takeW,
-): XY {
-  return { x: anchorPos.x - LAYOUT.takeOffsetX - slotX - width, y: anchorPos.y }
-}
-
-/**
  * Horizontal offset of each take node inside its row: the summed widths (+ gaps) of the auto-placed takes before it
- * next to the same scene (orphans: left of their anchor, counted separately). Takes may have different widths
+ * next to the same scene. Takes may have different widths
  * (resized), so slots are accumulated instead of `index × (takeW + gap)`.
  * A take the user dragged away (`explicit`) leaves the row and reserves no room, so the next new take lands right
  * next to the scene instead of after every video ever made (10 takes, 9 dragged away: the 10th used to land ~2,200px
@@ -362,14 +324,14 @@ export function orphanTakePosition(
  * it there makes it auto-placed again, see isAutoSlot).
  */
 export function takeSlots(
-  items: readonly (Pick<TakeLayoutItem, 'id' | 'anchorId' | 'orphan'> & { explicit?: XY | null })[],
+  items: readonly (Pick<TakeLayoutItem, 'id' | 'sceneId'> & { explicit?: XY | null })[],
   widthOf: (id: string) => number,
   keeps?: (id: string, slotX: number) => boolean,
 ): Map<string, number> {
   const acc = new Map<string, number>()
   const out = new Map<string, number>()
   for (const item of items) {
-    const key = (item.orphan ? 'o:' : 's:') + item.anchorId
+    const key = item.sceneId
     const x = acc.get(key) ?? 0
     out.set(item.id, x)
     if (!item.explicit || keeps?.(item.id, x)) acc.set(key, x + widthOf(item.id) + LAYOUT.takeGapX)
@@ -386,12 +348,12 @@ export function autoTakePosition(scenePos: XY, sceneW: number, slotX: number): X
  * Row heights for project.autoLayout ("Sắp xếp"): per scene, its tallest node — the card (stored size, else the
  * height React Flow measured) and the take nodes shown in its row (same). Every take goes back to its auto slot next
  * to its scene, so a take resized to 420px makes its row 420px tall instead of covering the next scene. Takes hidden
- * by "Chỉ take chọn" and orphans (placed next to a scene that uses them, outside any row) do not count; unknown
+ * by "Chỉ take chọn" do not count; unknown
  * heights are left out (autoLayout keeps its default row height).
  */
 export function layoutRowHeights(
   scenes: readonly Pick<Scene, 'id' | 'size'>[],
-  layout: { items: readonly Pick<TakeLayoutItem, 'id' | 'sceneId' | 'orphan' | 'size'>[] },
+  layout: { items: readonly Pick<TakeLayoutItem, 'id' | 'sceneId' | 'size'>[] },
   measuredH: (id: string) => number | undefined,
 ): Record<string, number> {
   const out: Record<string, number> = {}
@@ -399,7 +361,7 @@ export function layoutRowHeights(
     if (h && h > (out[sceneId] ?? 0)) out[sceneId] = Math.ceil(h)
   }
   for (const s of scenes) bump(s.id, drawnSceneSize(s.size)?.h ?? measuredH(s.id))
-  for (const item of layout.items) if (!item.orphan) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
+  for (const item of layout.items) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
   return out
 }
 
@@ -926,14 +888,6 @@ export const readAssetIds = (dt: DataTransfer | null): string[] | null => (dt &&
 /** Take ids of a drop (only readable in `drop`); empty when it is not a take drag. */
 export const readTakeIds = (dt: DataTransfer | null): string[] => (dt && hasTakeDrag(dt) ? readIds(dt, TAKES_MIME) : [])
 export const imageFiles = (dt: DataTransfer | null) => (dt ? Array.from(dt.files).filter((f) => /^image\//.test(f.type)) : [])
-
-/**
- * @deprecated Always false: a dragged video never becomes @video of a scene any more (reference videos were retired
- * in 0.6.0). Kept so older callers still compile (a scene card no longer lights up for a dragged video).
- */
-export function takesUsableFor(_takeIds: string[], _sceneId: string): boolean {
-  return false
-}
 
 /** A drag over this element would land on empty canvas (not on a node, the minimap or another overlay). */
 export function isEmptyCanvasTarget(target: EventTarget | null): boolean {

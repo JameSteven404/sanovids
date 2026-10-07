@@ -213,20 +213,6 @@ export function wireHitPath(d: string, trim = WIRE_HIT_TRIM): string {
 }
 
 /**
- * @deprecated Color of a scene's reference dot when @video wires were drawn into it. Reference videos were retired
- * (0.6.0): only image wires reach the dot, so refDotTones never returns a tone. Kept so older callers still compile.
- */
-export type RefDotTone = 'video' | 'mixed'
-
-/**
- * @deprecated Always an empty map: reference videos were retired (0.6.0), every wire into a scene's reference dot is
- * an image wire (teal). Kept so older callers still compile.
- */
-export function refDotTones(_wires: Iterable<{ kind: EdgeKind; target: string; targetHandle?: string | null }>): Map<string, RefDotTone> {
-  return new Map()
-}
-
-/**
  * Stacking of a wire among the others (edge zIndex). All ≤ 0: the cards come later in the same stacking context at
  * z 0, so every wire stays under the cards and their dots. Where many wires meet at one dot, the one in focus is drawn
  * (and hit) on top: selected > hovered > lit (touches the hovered / selected card) > the rest.
@@ -244,10 +230,6 @@ export type WireSourceType = 'asset' | 'take' | 'scene' | 'folder'
 export interface WireSource {
   type: WireSourceType
   id: string
-  /** @deprecated Ignored: a video is never wired to a scene any more (reference videos were retired in 0.6.0). */
-  takeReady?: boolean
-  /** @deprecated Ignored (see takeReady). */
-  takeSceneId?: string | null
   /**
    * The scene end of an existing image wire is being moved (reconnect): it can only go to another scene — never into
    * a folder.

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
 import { sceneMapOf } from '../../core/sceneIndex'
-import type { JobStatus, ModelId, Scene, Take, VideoSettings } from '../../core/types'
+import type { JobStatus, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
 import {
   activeProviderId,
@@ -30,14 +30,6 @@ import { useRuns } from '../../store/runs'
 export function useActiveProvider(): ProviderId {
   useProviderPrefs((s) => s.active)
   return activeProviderId()
-}
-
-/**
- * @deprecated Reference videos were retired (0.6.0): no gateway takes a video, nothing asks for its cap. Always 0 (no
- * store subscription); kept so code written before the retirement still compiles.
- */
-export function useGatewayRefVideoCap(_model: ModelId): number {
-  return 0
 }
 
 // ---- what the gateway runs right now (/api/video-profiles; providers/index useProviderLimits) ----

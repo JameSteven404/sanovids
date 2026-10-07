@@ -33,10 +33,6 @@ export interface RunRuleInput {
   spec?: ModelSpec
   /** The gateway's sure refusal of the scene's settings (providers/limits settingsRunBlock); null / omitted = none. */
   settingsBlock?: string | null
-  /** @deprecated Ignored: reference videos were retired (0.6.0). Kept so older callers still compile. */
-  takeStatus?: (takeId: string) => string | undefined
-  /** @deprecated Ignored: reference videos were retired (0.6.0). Kept so older callers still compile. */
-  providerVideoCap?: number | null
 }
 
 export const EMPTY_PROMPT_REASON = 'Prompt trống'
@@ -179,12 +175,4 @@ export function compiledOf(assets: readonly Asset[], scene: Scene): CompiledProm
 /** runBlockReason of a scene of the store (cached compile). */
 export function sceneRunBlockReason(assets: readonly Asset[], scene: Scene, settingsBlock: string | null = null): string | null {
   return runBlockReason({ scene, assets, compiled: compiledOf(assets, scene), settingsBlock, spec: MODELS[scene.settings.model] })
-}
-
-/**
- * @deprecated Reference videos were retired (0.6.0): no take status matters to a run any more. Returns a lookup that
- * knows no take; kept so older callers still compile.
- */
-export function refStatusLookup(_videoRefs: readonly string[], _joined: string): (takeId: string) => string | undefined {
-  return () => undefined
 }

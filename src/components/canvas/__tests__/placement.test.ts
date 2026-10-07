@@ -32,16 +32,16 @@ import { readFileSync } from 'node:fs'
 describe('take slots', () => {
   const pos = { x: 900, y: 300 }
   it('[P3a] videos dragged away leave the row: the 10th take lands next to its scene (was 2160px into the row)', () => {
-    const items = Array.from({ length: 10 }, (_, i) => ({ id: 't' + (i + 1), anchorId: 's1', orphan: false, explicit: i < 9 ? { x: 5000, y: 100 * i } : null }))
+    const items = Array.from({ length: 10 }, (_, i) => ({ id: 't' + (i + 1), sceneId: 's1', explicit: i < 9 ? { x: 5000, y: 100 * i } : null }))
     const slots = takeSlots(items, () => LAYOUT.takeW)
     expect(slots.get('t10')).toBe(0)
     expect(autoTakePosition(pos, LAYOUT.sceneW, slots.get('t10')!)).toEqual({ x: 900 + LAYOUT.sceneW + 64, y: 300 }) // was (3404, 300)
   })
   it('a take only nudged on its slot keeps it, so the next one does not slide under it', () => {
     const items = [
-      { id: 'a', anchorId: 's1', orphan: false, explicit: null },
-      { id: 'b', anchorId: 's1', orphan: false, explicit: { x: 1, y: 2 } },
-      { id: 'c', anchorId: 's1', orphan: false, explicit: null },
+      { id: 'a', sceneId: 's1', explicit: null },
+      { id: 'b', sceneId: 's1', explicit: { x: 1, y: 2 } },
+      { id: 'c', sceneId: 's1', explicit: null },
     ]
     expect(takeSlots(items, () => 224, (id) => id === 'b').get('c')).toBe(480)
     // dragged away: c takes b's place, b's own slot is where it would go back (dropping it there re-attaches it)

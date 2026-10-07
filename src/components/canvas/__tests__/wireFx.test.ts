@@ -15,7 +15,6 @@ import {
   newWireIds,
   parseCubicPath,
   pickNodeAt,
-  refDotTones,
   setWireReconnecting,
   snapHandleFor,
   splitCubic,
@@ -161,7 +160,7 @@ describe('dragging a wire: verdict, color, snap handle', () => {
     expect(wireVerdict(src, { id: 'a1', type: 'asset' })).toBe('idle')
   })
   it('a video goes into a folder only — never onto a scene (reference videos were retired)', () => {
-    const src = { type: 'take' as const, id: 't1', takeReady: true, takeSceneId: 's1' }
+    const src = { type: 'take' as const, id: 't1' }
     expect(wireVerdict(src, scene2)).toBe('invalid')
     expect(wireVerdict(src, scene)).toBe('invalid')
     expect(wireVerdict({ type: 'take', id: 't1' }, scene2)).toBe('invalid')
@@ -324,12 +323,5 @@ describe('wires on the dots', () => {
     expect(z(false, false, true)).toBeLessThan(z(false, true, true))
     expect(z(false, false, false)).toBeLessThan(z(false, false, true))
     for (const a of [true, false]) for (const b of [true, false]) for (const c of [true, false]) expect(z(a, b, c)).toBeLessThanOrEqual(0)
-  })
-})
-
-describe('refDotTones (deprecated): only image wires reach a scene, so no scene gets a tone', () => {
-  it('always an empty map', () => {
-    const w = (kind: 'ref' | 'first' | 'out' | 'save', target: string, targetHandle = kind === 'ref' ? 'ref' : 'in') => ({ kind, target, targetHandle })
-    expect(refDotTones([w('ref', 'img'), w('first', 's1', 'first'), w('save', 's3'), w('out', 's4')]).size).toBe(0)
   })
 })

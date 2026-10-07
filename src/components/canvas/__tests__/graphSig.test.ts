@@ -45,11 +45,16 @@ describe('scene graph signatures', () => {
 
   it.each([
     { id: 'other' }, { order: 3 }, { position: { x: 16, y: 32 } }, { size: { w: 300, h: 220 } },
-    { refs: ['a1'] }, { videoRefs: ['t1'] }, { settings: { ...scene.settings, mode: 'transform' as const } },
+    { refs: ['a1'] }, { settings: { ...scene.settings, mode: 'transform' as const } },
     { firstFrame: 'a1' }, { lastFrame: 'a1' }, { color: 'var(--accent)' },
   ])('invalidates graph for %j', (patch) => {
     const before = sceneGraphOf([scene])
     expect(sceneGraphOf([{ ...scene, ...patch }])).not.toBe(before)
+  })
+
+  it('ignores retired video links, including raw legacy data', () => {
+    const before = sceneGraphOf([scene])
+    expect(sceneGraphOf([{ ...scene, videoRefs: ['t1'], legacyVideoRefs: ['t2'] }])).toBe(before)
   })
 
   it('tracks actual move, resize, reorder and undo; arrays and unchanged value copies are cached', () => {

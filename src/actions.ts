@@ -210,14 +210,6 @@ export function refuseTakesAsReference() {
   toast(`${VIDEO_NOT_REFERENCE_TEXT}.`, { tone: 'info' })
 }
 
-/**
- * @deprecated Reference videos were retired (0.6.0): links nothing, only shows the hint (refuseTakesAsReference).
- * Kept so code written before the retirement still compiles.
- */
-export function linkTakes(sceneIds: string[], takeIds: string[]) {
-  if (sceneIds.length && takeIds.length) refuseTakesAsReference()
-}
-
 /** "C" — connect every selected asset to every selected scene (matrix connect). */
 export function connectSelection() {
   const scenes = selectedSceneIds()
@@ -342,9 +334,6 @@ export function createSceneFromVideo(takeId: string, position?: XY) {
   return id
 }
 
-/** @deprecated Renamed createSceneFromVideo (the scene no longer uses the video as @video_1). */
-export const createSceneFromTake = createSceneFromVideo
-
 export function duplicateSelection() {
   const ids = selectedSceneIds()
   if (!ids.length) return
@@ -462,8 +451,6 @@ export interface DeleteTakesOptions {
   confirm?: TakeDeleteConfirm
   /** Show the result toast (default true). */
   toast?: boolean
-  /** @deprecated Ignored: no scene uses a take as @video any more (reference videos were retired in 0.6.0). */
-  ignoreScenes?: ReadonlySet<string>
 }
 
 /**
