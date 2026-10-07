@@ -8,6 +8,9 @@
 //   kind 'installer'  NSIS install: checks at startup (+15 s) and every 4 h, downloads (auto or on request), installs
 //                     on "Khởi động lại để cập nhật" (quitAndInstall) or silently when the app quits;
 //   kind 'portable'   portable .exe / win-unpacked: check only (the renderer offers the download page);
+//   kind 'mac-manual' the macOS app (ad-hoc signed: Squirrel.Mac could never install over it): check only, no NSIS
+//                     signature hooks, never a download or an install. A newest release without latest-mac.yml is
+//                     "no newer Mac build there" (not-available + noMacBuild), never an error;
 //   kind 'dev'        `electron .`: electron-updater is never loaded.
 //
 // Never a dialog or a notification from here: every status reaches the page as an 'updates:state' push, and the page
@@ -391,17 +394,23 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
       updater.disableWebInstaller = true
       updater.disableDifferentialDownload = false
       // Never: updater.channel (it turns allowDowngrade on), setFeedURL, addAuthHeader, requestHeaders, forceDevUpdateConfig.
-      // Our pinned verifier on both hooks: the setter (used by electron-updater's default verifySignature) and an
-      // instance override of NsisUpdater.verifySignature, the method doDownloadUpdate actually awaits — electron-updater's
-      // own one returns "OK" without checking anything when app-update.yml lacks publisherName.
-      const verifyHook = (_publisherNames, target) => verifyForUpdater(target)
-      const verifyMethod = (target) => verifyForUpdater(target)
-      updater.verifyUpdateCodeSignature = verifyHook
-      updater.verifySignature = verifyMethod
-      if (updater.verifyUpdateCodeSignature !== verifyHook) log.error('signature hook verifyUpdateCodeSignature not installed: downloads refused')
-      else if (updater.verifySignature !== verifyMethod) log.error('signature override verifySignature not installed: downloads refused')
-      else if (!pins.length) log.error('signature verifier has no pinned signer: downloads refused')
-      else verifierOk = true
+      if (kind === 'mac-manual') {
+        // MacUpdater hands downloads to Squirrel.Mac, which never installs over an ad-hoc signed app: check only. The
+        // NSIS hooks would only be idle properties there (and verifierOk would claim a check that never runs).
+        log.info('mac: check only (no download, no install)')
+      } else {
+        // Our pinned verifier on both hooks: the setter (used by electron-updater's default verifySignature) and an
+        // instance override of NsisUpdater.verifySignature, the method doDownloadUpdate actually awaits — electron-updater's
+        // own one returns "OK" without checking anything when app-update.yml lacks publisherName.
+        const verifyHook = (_publisherNames, target) => verifyForUpdater(target)
+        const verifyMethod = (target) => verifyForUpdater(target)
+        updater.verifyUpdateCodeSignature = verifyHook
+        updater.verifySignature = verifyMethod
+        if (updater.verifyUpdateCodeSignature !== verifyHook) log.error('signature hook verifyUpdateCodeSignature not installed: downloads refused')
+        else if (updater.verifySignature !== verifyMethod) log.error('signature override verifySignature not installed: downloads refused')
+        else if (!pins.length) log.error('signature verifier has no pinned signer: downloads refused')
+        else verifierOk = true
+      }
       updater.on('checking-for-update', () => dispatch({ type: 'checking' }))
       updater.on('update-not-available', () => dispatch({ type: 'not-available' }))
       updater.on('update-available', (info) => {
@@ -569,6 +578,14 @@ function setupUpdater({ isAppSender, getMainWindow, profileSource, portableFile,
       lastErrorCode = null
       return OK
     } catch (e) {
+      // The Mac build: the newest release has no latest-mac.yml (a Windows-only release). Not an error — and not
+      // "Bản mới nhất" either: the state says noMacBuild (a known update stays announced).
+      if (kind === 'mac-manual' && rules.macFeedMissing(e)) {
+        log.info('check: the newest release has no Mac build (latest-mac.yml missing)')
+        lastErrorCode = null
+        dispatch({ type: 'not-available', noMacBuild: true })
+        return OK
+      }
       log.error(`check failed: ${rawError(e)}`)
       const error = rules.mapUpdaterError(e, 'check')
       lastErrorCode = error.code

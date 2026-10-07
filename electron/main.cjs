@@ -55,7 +55,7 @@ const PACKAGED = hardening.isPackagedApp({ isPackaged: app.isPackaged, appPath: 
 // packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
 // fsMod lets the check see through junctions / symlinks / short names to the real %APPDATA%\SanoVids.
 const bakedProfileDir = readBakedProfileDir()
-const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), platform: process.platform, pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
 if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
 /** A test-identity build (its package.json, inside the integrity-checked app.asar, has a baked test profile). Never the official build. */
 const TEST_BUILD = typeof bakedProfileDir === 'string' && bakedProfileDir !== ''
@@ -88,7 +88,9 @@ const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: 
 const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
-app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
+// The taskbar / notification identity exists on Windows only (app.setAppUserModelId is not defined on macOS: calling it
+// there would throw before any window exists).
+if (process.platform === 'win32') app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
 
 /** `sanovidsTestProfileDir` of the app's own package.json (only test builds have it), else undefined. */
 function readBakedProfileDir() {
@@ -134,6 +136,16 @@ let mainWindow = null
 let updater = null
 /** The development-mode lock (electron/devaccess.cjs), set up on ready before the first window. */
 let devAccess = null
+/** The main window reached its first ready-to-show (it shows itself then: nothing shows it earlier). */
+let mainWindowShown = false
+/**
+ * macOS: ⌘Q / app.quit() is under way ('before-quit'), or an update quits the app ('before-quit-for-update': Squirrel.Mac
+ * closes every window BEFORE 'before-quit'). Until then the main window's close button only hides it.
+ */
+let quitting = false
+let macQuitForUpdate = false
+/** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
+let mainWindowWork = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -146,13 +158,8 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  })
+  // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
+  app.on('second-instance', () => showMainWindow())
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
   // Web Bluetooth never picks a device (Electron would otherwise select the first one). Exactly one handler each.
   app.on('web-contents-created', (_event, wc) => {
@@ -161,10 +168,22 @@ if (!app.requestSingleInstanceLock()) {
       event.preventDefault()
       callback('')
     })
+    // Right-click on text (Windows and macOS): the native Cắt / Sao chép / Dán / Chọn tất cả menu, roles only
+    // (hardening-rules textContextMenu: no "Inspect", no spelling items). Electron only emits it when the page did not
+    // handle the right-click itself, so the app's own menus never stack with it.
+    wc.on('context-menu', (_e, params) => {
+      const template = hardening.textContextMenu(params)
+      if (!template) return
+      const win = BrowserWindow.fromWebContents(wc)
+      Menu.buildFromTemplate(template).popup(win ? { window: win } : {})
+    })
   })
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null)
+    // Windows: no application menu (the page owns every key). macOS: the app / Sửa / Cửa sổ menus, roles only
+    // (hardening-rules macMenuTemplate) — without an Edit menu ⌘C / ⌘V / ⌘A never reach a text field, ⌘Q does nothing.
+    Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate(hardening.macMenuTemplate({ appName: app.getName() })) : null)
     restrictDefaultSessionPermissions()
+    registerDownloads()
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
     registerFileBridge()
@@ -180,13 +199,26 @@ if (!app.requestSingleInstanceLock()) {
       console.error('[SanoVids] development-mode lock unavailable:', e)
     }
     createWindow()
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    })
+    // macOS: the Dock icon brings the hidden window back (or opens one when there is none).
+    app.on('activate', () => showMainWindow())
+    if (process.platform === 'darwin') {
+      // Phase 2 (Squirrel.Mac installing an update) closes every window before 'before-quit': never hide then.
+      require('electron').autoUpdater.on('before-quit-for-update', () => {
+        macQuitForUpdate = true
+      })
+      if (!PACKAGED) setDevDockIcon()
+    }
   })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+  if (process.platform === 'darwin') {
+    // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
+    app.on('before-quit', () => {
+      quitting = true
+      if (mainWindowWork) mainWindowWork.stop()
+    })
+  }
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
   // the updater records the attempt there (notice on the next launch). 'quit' never fires for a quit a window vetoed.
   app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
@@ -289,9 +321,27 @@ function createWindow() {
 
   mainWindow = win
   if (devAccess) devAccess.attachWindow(win)
+  mainWindowShown = false
+  const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null
+  mainWindowWork = work
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+    if (work) work.stop()
+    if (mainWindowWork === work) mainWindowWork = null
   })
+  if (process.platform === 'darwin') {
+    // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
+    // ⌘Q or an update quits it; the Dock icon brings it back (app 'activate' → showMainWindow).
+    win.on('close', (event) => {
+      const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
+      if (!hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
+      event.preventDefault()
+      hideMainWindow(win, work)
+    })
+    win.on('show', () => work.show())
+    // A page that crashed or reloads says again what it is doing ('app:busy' when it starts): nothing is being made now.
+    win.webContents.on('render-process-gone', () => work.setBusy(false))
+  }
 
   // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
   // portableRelaunch: packaged win32 with a valid PORTABLE_EXECUTABLE_FILE only; nothing is set otherwise).
@@ -312,6 +362,7 @@ function createWindow() {
   }
 
   win.once('ready-to-show', () => {
+    if (mainWindow === win) mainWindowShown = true
     win.maximize()
     win.show()
     if (updater) updater.onWindowReady()
@@ -334,6 +385,10 @@ function createWindow() {
       if ((input.control || input.meta) && input.shift && key === 'i') {
         webContents.toggleDevTools()
         event.preventDefault()
+      } else if (input.meta && input.alt && input.code === 'KeyI') {
+        // macOS ⌘⌥I (⌥I is a dead key there: input.key is not 'i', the physical key is).
+        webContents.toggleDevTools()
+        event.preventDefault()
       } else if (key === 'f12') {
         webContents.toggleDevTools()
         event.preventDefault()
@@ -352,11 +407,97 @@ function createWindow() {
     if (isExternal(url)) void shell.openExternal(url)
   })
 
-  // Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder
-  // without a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file"
-  // uses files:saveAs (native save dialog) instead. The renderer is told (bdp:downloaded) when a file is saved.
-  // Only blobs made by the page itself (blob:app://bdp/…) with the types SanoVids produces: never a program or a script.
-  webContents.session.on('will-download', (_event, item) => {
+  void win.loadURL(`${ORIGIN}/index.html`)
+  return win
+}
+
+/**
+ * Brings the SanoVids window back (a second launch, the Dock icon): restored, shown, focused — never before its first
+ * ready-to-show (it shows itself then). macOS keeps running without a window: a new one opens (never during an update's
+ * quit). Being asked means the app is still running: a quit that another window vetoed is over (`quitting` reset).
+ */
+function showMainWindow() {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) {
+    if (process.platform === 'darwin' && app.isReady() && !macQuitForUpdate) {
+      quitting = false
+      createWindow()
+    }
+    return
+  }
+  if (!mainWindowShown) return
+  if (process.platform === 'darwin' && !macQuitForUpdate) quitting = false
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  // macOS: sound back on, full-speed work let go — also when no 'show' event follows (the window was not hidden).
+  if (mainWindowWork) mainWindowWork.show()
+}
+
+/**
+ * macOS: hides the main window instead of closing it (close button / ⌘W). A full-screen window leaves full screen first:
+ * hiding it there would leave an empty black Space behind. Sound off at once; the takes being made keep going at full
+ * speed only while there are some (createHiddenWork).
+ */
+function hideMainWindow(win, work) {
+  if (win.isDestroyed()) return
+  const hide = () => {
+    if (win.isDestroyed()) return
+    work.hide()
+    win.hide()
+  }
+  if (win.isFullScreen()) {
+    win.once('leave-full-screen', hide)
+    win.setFullScreen(false)
+  } else hide()
+}
+
+/**
+ * macOS: the hidden-work rules of one main window (hardening-rules createHiddenWork) with Electron's effects: its
+ * page's background throttling and sound, one 'prevent-app-suspension' blocker (powerSaveBlocker is loaded here only).
+ */
+function hiddenWorkOf(win) {
+  const page = () => (!win.isDestroyed() && !win.webContents.isDestroyed() ? win.webContents : null)
+  return hardening.createHiddenWork({
+    setThrottling: (on) => {
+      const wc = page()
+      if (wc) wc.setBackgroundThrottling(on)
+    },
+    setMuted: (on) => {
+      const wc = page()
+      if (wc) wc.setAudioMuted(on)
+    },
+    startBlocker: () => require('electron').powerSaveBlocker.start('prevent-app-suspension'),
+    stopBlocker: (id) => {
+      const { powerSaveBlocker } = require('electron')
+      if (typeof id === 'number' && powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)
+    },
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: (t) => clearTimeout(t),
+  })
+}
+
+/** From the sources on macOS the Dock shows Electron's icon (a window's `icon` is ignored there): ours instead. */
+function setDevDockIcon() {
+  if (process.platform !== 'darwin' || !app.dock || typeof app.dock.setIcon !== 'function') return
+  try {
+    app.dock.setIcon(path.join(DIST, 'icons', 'icon-512.png'))
+  } catch {
+    // cosmetic only
+  }
+}
+
+/**
+ * Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder without
+ * a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file" uses
+ * files:saveAs (native save dialog) instead. Only blobs made by the page itself (blob:app://bdp/…) with the types
+ * SanoVids produces: never a program or a script. Registered ONCE on the default session (the SanoVids window's) when
+ * the app is ready — not per window (macOS may create the window again). The page is not told about finished
+ * downloads. macOS: a download the system refused (SanoVids not allowed into Downloads) is said in a dialog instead of
+ * failing silently; Windows stays silent as before.
+ */
+function registerDownloads() {
+  session.defaultSession.on('will-download', (_event, item) => {
     if (!hardening.downloadAllowed(item.getURL(), item.getFilename())) {
       item.cancel()
       console.warn(`[SanoVids] download refused: ${hardening.downloadLogLabel(item.getURL(), item.getFilename())}`)
@@ -367,13 +508,24 @@ function createWindow() {
     let target = path.join(dir, parsed.base)
     for (let i = 2; fs.existsSync(target) && i < 1000; i++) target = path.join(dir, `${parsed.name} (${i})${parsed.ext}`)
     item.setSavePath(target)
-    item.once('done', (_e, state) => {
-      if (state === 'completed' && !webContents.isDestroyed()) webContents.send('bdp:downloaded', target)
-    })
+    if (process.platform === 'darwin') {
+      item.once('done', (_e, state) => {
+        if (state === 'interrupted') void showDownloadFailed()
+      })
+    }
   })
+}
 
-  void win.loadURL(`${ORIGIN}/index.html`)
-  return win
+/** macOS: a plain download could not be written (most often: SanoVids is not allowed into the Downloads folder). */
+async function showDownloadFailed() {
+  const win = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null
+  const opts = { type: 'warning', buttons: ['OK'], message: 'Không lưu được file vào thư mục Tải về', detail: saveErrorText({ code: 'EPERM' }, 'darwin') }
+  try {
+    if (win) await dialog.showMessageBox(win, opts)
+    else await dialog.showMessageBox(opts)
+  } catch {
+    // shutting down
+  }
 }
 
 function isExternal(url) {
@@ -412,12 +564,38 @@ async function computeAppSignature() {
 }
 
 // Where this SanoVids runs from (Cài đặt → Ứng dụng / Giới thiệu hints: Portable, or a leftover copy in the temp folder
-// that Windows may delete). Only the kind crosses ('app:placement', no argument): never a path.
+// that Windows may delete; on macOS: outside Applications). Only the kind crosses ('app:placement', no argument): never
+// a path.
 let placementPayload = null
+let inApplicationsMemo = null
 
-/** → { kind: 'installer' | 'portable' | 'temp-copy' | 'dev' } (updater-rules.placement), computed once. Never throws. */
+/**
+ * macOS: does the packaged app run from an Applications folder (app.isInApplicationsFolder)? false everywhere else.
+ * That API exists on macOS only: asked behind the platform guard, in its own try — never inside appPlacement's try,
+ * whose fallback would swallow a TypeError and turn every Windows Setup into 'portable'. Asked once.
+ */
+function macInApplications() {
+  if (inApplicationsMemo === null) {
+    let inApplications = false
+    if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {
+      try {
+        inApplications = app.isInApplicationsFolder() === true
+      } catch {
+        inApplications = false
+      }
+    }
+    inApplicationsMemo = inApplications
+  }
+  return inApplicationsMemo
+}
+
+/**
+ * → { kind: 'installer' | 'portable' | 'temp-copy' | 'dev' | 'mac-applications' | 'mac-translocated' | 'mac-volume' |
+ * 'mac-other' } (updater-rules.placement), computed once. Never throws.
+ */
 function appPlacement() {
   if (!placementPayload) {
+    const inApplications = macInApplications() // outside the try below (see macInApplications)
     let kind
     try {
       // PACKAGED, not app.isPackaged (see its definition): only differs for a renamed exe running the real app.asar,
@@ -432,6 +610,7 @@ function appPlacement() {
         exists: fs.existsSync,
         realpath: fs.realpathSync.native,
         pathMod: path,
+        inApplications,
       })
     } catch {
       kind = PACKAGED ? 'portable' : 'dev'
@@ -444,6 +623,14 @@ function appPlacement() {
 function registerAppBridge() {
   ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))
   ipcMain.handle('app:placement', (event) => (fromApp(event) ? appPlacement() : { kind: 'unknown' }))
+  // macOS: the SanoVids page says whether takes are queued / being made (only a boolean crosses); a hidden window keeps
+  // working at full speed only then (createHiddenWork). Windows: nothing listens (mainWindowWork is null).
+  ipcMain.handle('app:busy', (event, busy) => {
+    const win = mainWindow
+    if (!fromApp(event) || !win || win.isDestroyed() || event.sender !== win.webContents || !mainWindowWork) return false
+    mainWindowWork.setBusy(busy === true)
+    return true
+  })
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1743,21 +1930,12 @@ async function storeCanvasappKeepPrefs(keepLogin) {
 }
 
 /**
- * The placement the keep-login default reads (keepLoginRules.keepLoginPlacement): appPlacement().kind, except a packaged
- * macOS app installed in Applications ('mac-applications', on — updater-rules has no Mac placement kinds yet).
- * app.isInApplicationsFolder exists on macOS only: asked behind the platform guard, in its own try, never inside
- * appPlacement's (a throw there would turn every Windows install into 'portable').
+ * The placement the keep-login default reads (keepLoginRules.keepLoginPlacement): appPlacement().kind — on macOS
+ * 'mac-applications' for an app installed in Applications (on), any other Mac place off. The Applications answer is
+ * macInApplications' (platform guard + its own try, never inside appPlacement's try).
  */
 function keepLoginPlacementKind() {
-  let inApplications = false
-  if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {
-    try {
-      inApplications = app.isInApplicationsFolder() === true
-    } catch {
-      inApplications = false
-    }
-  }
-  return keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications })
+  return keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications: macInApplications() })
 }
 
 /**
@@ -2004,7 +2182,8 @@ async function canvasappCheckout(parent, args) {
     minWidth: 420,
     minHeight: 520,
     parent: parent || undefined,
-    modal: !!parent,
+    // Not modal on macOS: a modal window becomes a sheet there, without a close button (stuck until the timeout).
+    modal: process.platform !== 'darwin' && !!parent,
     title: 'Thanh toán nạp credit',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
@@ -2020,7 +2199,8 @@ async function canvasappCheckout(parent, args) {
     },
   })
   checkoutWin = win
-  win.setMenu(null)
+  // win.setMenu exists on Windows / Linux only (macOS has one application menu): a throw here would leave checkoutWin set.
+  if (process.platform !== 'darwin') win.setMenu(null)
   const wc = win.webContents
 
   return new Promise((resolve) => {
@@ -2152,6 +2332,21 @@ const SAVE_MAX_FILES = 4
 const SAVE_MAX_FILE_BYTES = 1024 * 1024 * 1024 // 1 GB per file
 const SAVE_MAX_TEXT_CHARS = 2_000_000
 const SAVE_MAX_NAME = 180
+/**
+ * macOS only: the same name in bytes / in decomposed form. APFS allows 255 UTF-8 bytes per name, HFS+ and exFAT 255
+ * UTF-16 units after decomposition (NFD: "ệ" takes 3): a long title full of Vietnamese letters (3 bytes each) passes the
+ * 180-unit cut and still fails there with ENAMETOOLONG. 224 leaves room for " (n)" (SAVE_LEDGER_MAX_NAME). Windows (NTFS:
+ * 255 UTF-16 units, nothing decomposed) keeps the 180-unit cut alone: the page builds names well below it, so main never
+ * shortens one there (the page would report the changed name as a clash with an existing file).
+ */
+const SAVE_MAX_NAME_BYTES = 224
+/** Whether names also get the macOS byte / decomposed budget (configureSaveNames; off = the Windows rules). */
+let saveNameByteBudget = false
+
+/** Set once by main.cjs at start (process.platform): the budget above applies on macOS only. */
+function configureSaveNames(o) {
+  saveNameByteBudget = !!(o && typeof o === 'object' && o.platform === 'darwin')
+}
 const SAVE_MAX_PATH = 1024
 const SAVE_MAX_FOLDERS = 200
 // Windows device names, also as "nul .txt" / "Con ...x" (spaces before the first dot are ignored there too).
@@ -2186,18 +2381,29 @@ function saveNameExt(name) {
 /**
  * A plain file name to write, or null. Separators and forbidden characters become "-" (so no path can be named),
  * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", names longer than `max`
- * are cut keeping their extension.
+ * UTF-16 units — or, on macOS, than the byte / decomposed budget (SAVE_MAX_NAME_BYTES, + the same slack as `max` above
+ * SAVE_MAX_NAME) — are cut keeping their extension. `tailRoom`: the room kept for the extension when it is longer than
+ * this name's own (checkSaveFiles: the files of one group are cut alike, so a video and its .txt keep the same base).
  */
-function sanitizeSaveName(raw, max = SAVE_MAX_NAME) {
+function sanitizeSaveName(raw, max = SAVE_MAX_NAME, tailRoom = 0) {
   if (typeof raw !== 'string') return null
   let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
   s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
   s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (!s) return null
-  if (s.length > max) {
-    const ext = saveNameExt(s)
-    const tail = ext && ext.length <= 8 ? '.' + ext : ''
-    s = cutSaveText(s, max - tail.length).replace(/[.\s]+$/, '') + tail
+  const ext = saveNameExt(s)
+  const tail = ext && ext.length <= 8 ? '.' + ext : ''
+  const room = Math.max(tail.length, tailRoom)
+  if (s.length - tail.length + room > max) s = cutSaveText(s.slice(0, s.length - tail.length), max - room).replace(/[.\s]+$/, '') + tail
+  if (saveNameByteBudget) {
+    const budget = SAVE_MAX_NAME_BYTES + Math.max(0, max - SAVE_MAX_NAME)
+    const tailCost = Math.max(Buffer.byteLength(tail, 'utf8'), tail.normalize('NFD').length, tailRoom)
+    const base = s.slice(0, s.length - tail.length)
+    if (!saveNameFits(base, budget - tailCost)) {
+      s = fitSaveText(base, budget - tailCost).replace(/[.\s]+$/, '')
+      if (!s) return null
+      s += tail
+    }
   }
   if (SAVE_RESERVED_RE.test(s)) s = '_' + s
   return s
@@ -2209,6 +2415,51 @@ function cutSaveText(s, max) {
   const out = s.slice(0, max)
   return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out
 }
+
+/** Within `budget` UTF-8 bytes AND `budget` UTF-16 units once decomposed (APFS / HFS+ / exFAT name limits)? */
+function saveNameFits(s, budget) {
+  return Buffer.byteLength(s, 'utf8') <= budget && s.normalize('NFD').length <= budget
+}
+
+/**
+ * The longest start of `s` within the byte / decomposed budget, cut between whole characters only: never inside a
+ * surrogate pair, never between a letter and the combining marks that follow it.
+ */
+function fitSaveText(s, budget) {
+  const parts = s.match(/\P{M}\p{M}*|\p{M}+/gu) || []
+  let out = ''
+  for (const part of parts) {
+    if (!saveNameFits(out + part, budget)) break
+    out += part
+  }
+  return out
+}
+
+/** Vietnamese text for a file-system error; macOS says how to allow SanoVids into a folder it refused (EPERM). */
+function saveErrorText(e, platform) {
+  switch (e && e.code) {
+    case 'ENOSPC':
+      return 'Ổ đĩa đã đầy.'
+    case 'EPERM':
+      if (platform === 'darwin') return SAVE_MAC_PERMISSION_TEXT
+      return 'Không có quyền ghi vào thư mục này.'
+    case 'EACCES':
+      return 'Không có quyền ghi vào thư mục này.'
+    case 'EBUSY':
+      return 'File đang bị chương trình khác mở hoặc khoá.'
+    case 'ENOENT':
+    case 'ENOTDIR':
+      return 'Không tìm thấy thư mục.'
+    case 'EROFS':
+      return 'Ổ đĩa chỉ cho đọc.'
+    default:
+      return `Không ghi được file (${(e && (e.code || e.message)) || e}).`
+  }
+}
+
+/** macOS privacy protection (TCC) refused a folder: where the user allows SanoVids into it. */
+const SAVE_MAC_PERMISSION_TEXT =
+  'macOS chưa cho SanoVids ghi vào thư mục này — mở Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Tệp và Thư mục (hoặc Ổ đĩa ngoài / Ổ mạng), bật SanoVids rồi thử lại.'
 
 /** "clip.mp4", 2 → "clip (2).mp4" (same rule as the web app). */
 function numberedSaveName(name, n) {
@@ -2260,9 +2511,12 @@ function checkSaveFiles(files) {
   if (!Array.isArray(files) || files.length < 1 || files.length > SAVE_MAX_FILES) return { error: 'Danh sách file không hợp lệ.' }
   const out = []
   const seen = new Set()
+  // One cut for the whole group: a video and its prompt .txt keep the same base name when it has to be shortened (alone,
+  // the file with the shorter extension would keep a longer base). The room is that of the longest allowed extension.
+  const room = Math.max(0, ...files.map((f) => saveTailRoom(f && typeof f === 'object' ? sanitizeSaveName(f.name) : null)))
   for (const f of files) {
     if (!f || typeof f !== 'object') return { error: 'File không hợp lệ.' }
-    const name = sanitizeSaveName(f.name)
+    const name = sanitizeSaveName(f.name, SAVE_MAX_NAME, room)
     if (!name) return { error: 'Tên file không hợp lệ.' }
     // Never a program, a shortcut or a settings file of Windows (.exe, .lnk, .url, desktop.ini…), whatever the page says.
     if (!SAVE_ALLOWED_EXT.has(saveNameExt(name))) return { error: 'Loại file này không được phép lưu.' }
@@ -2277,6 +2531,12 @@ function checkSaveFiles(files) {
     } else return { error: 'File không có nội dung.' }
   }
   return { files: out }
+}
+
+/** ".mp4" → 4: the room of a sanitized name's extension when SanoVids may write that type (ASCII), else 0. */
+function saveTailRoom(name) {
+  const ext = name ? saveNameExt(name) : ''
+  return SAVE_ALLOWED_EXT.has(ext) ? ext.length + 1 : 0
 }
 
 /** files:saveAs arguments → { suggestedName, title, files } or { error }. */
@@ -2864,6 +3124,7 @@ async function trashSavedGroups(dir, groups, { fsp, hashFile, trash, pathMod, si
   return { results, keep, removeIds }
 }
 // </save-rules>
+configureSaveNames({ platform: process.platform })
 
 const SAVE_STATE_FILE = 'save-locations.json'
 let saveState = null
@@ -3056,24 +3317,9 @@ function fileError(code, message) {
   return { ok: false, code, message }
 }
 
-/** Vietnamese text for a file-system error. */
+/** Vietnamese text for a file-system error (save-rules saveErrorText, for this platform). */
 function fsErrorText(e) {
-  switch (e && e.code) {
-    case 'ENOSPC':
-      return 'Ổ đĩa đã đầy.'
-    case 'EACCES':
-    case 'EPERM':
-      return 'Không có quyền ghi vào thư mục này.'
-    case 'EBUSY':
-      return 'File đang bị chương trình khác mở hoặc khoá.'
-    case 'ENOENT':
-    case 'ENOTDIR':
-      return 'Không tìm thấy thư mục.'
-    case 'EROFS':
-      return 'Ổ đĩa chỉ cho đọc.'
-    default:
-      return `Không ghi được file (${(e && (e.code || e.message)) || e}).`
-  }
+  return saveErrorText(e, process.platform)
 }
 
 async function isDirectory(p) {
@@ -3088,6 +3334,8 @@ async function filesPickFolder(win) {
   const st = loadSaveState()
   const opts = {
     title: 'Chọn thư mục lưu video',
+    // macOS's folder panel shows `message`, never `title`
+    message: 'Chọn thư mục lưu video',
     buttonLabel: 'Chọn thư mục này',
     properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
     ...(st.lastSaveDir ? { defaultPath: st.lastSaveDir } : {}),
@@ -3211,6 +3459,9 @@ async function filesSaveAs(win, args) {
   const dir = st.lastSaveDir && (await isDirectory(st.lastSaveDir)) ? st.lastSaveDir : app.getPath('downloads')
   const opts = {
     title: checked.title,
+    // macOS's save panel shows `message`, not `title`; no Finder tag field (macOS only, ignored elsewhere)
+    message: checked.title,
+    showsTagField: false,
     defaultPath: path.join(dir, checked.suggestedName),
     buttonLabel: 'Lưu',
     filters: saveDialogFilters(primary.name),

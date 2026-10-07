@@ -11,6 +11,7 @@ import { Sidebar } from './components/sidebar/Sidebar'
 import { useFileDropGuard } from './components/sidebar/shared'
 import { TopBar } from './components/topbar/TopBar'
 import { useShortcuts } from './hooks/useShortcuts'
+import { startDesktopBusy } from './lib/desktopBusy'
 import { activeProviderId, useProviderPrefs } from './providers'
 import { closeDevPrompts, useDevPrompts } from './providers/dev/prompts'
 import { bootstrap, useSave } from './store/persist'
@@ -118,6 +119,8 @@ function Shell() {
   // App updates (desktop: the main process updater; development mode in a browser: its simulation): state mirror,
   // "download ready" / "updated" toasts. Ref-counted.
   useEffect(() => startUpdates(), [])
+  // macOS desktop: a window hidden by its close button keeps working at full speed only while takes are being made.
+  useEffect(() => startDesktopBusy(), [])
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
   const root = useRef<HTMLDivElement>(null)

@@ -108,11 +108,16 @@ function compareVersions(a, b) {
 
 // ---- data folder (test-only isolation) ----
 
-function profileKey(p, pathMod) {
+/**
+ * Comparable key of a folder: resolved, no trailing separator; case-folded on Windows, and on macOS (APFS / HFS+ are
+ * case-insensitive by default and compare names in normalized form: NFC + lower case there).
+ */
+function profileKey(p, pathMod, platform) {
   let r = pathMod.resolve(p)
   const root = pathMod.parse(r).root
   if (r.length > root.length) r = r.replace(/[\\/]+$/, '')
-  return pathMod.sep === '\\' ? r.toLowerCase() : r
+  if (pathMod.sep === '\\') return r.toLowerCase()
+  return platform === 'darwin' ? r.normalize('NFC').toLowerCase() : r
 }
 
 /**
@@ -148,7 +153,7 @@ function overlapProblem(key, realKey, sep) {
 }
 
 /** Why `candidate` may not be used as the data folder ('' when it may). */
-function profileDirProblem(candidate, real, pathMod, fsMod) {
+function profileDirProblem(candidate, real, pathMod, fsMod, platform) {
   if (candidate.length > PROFILE_DIR_MAX) return `longer than ${PROFILE_DIR_MAX} characters`
   if (candidate.includes('\u0000')) return 'contains a NUL character'
   if (!pathMod.isAbsolute(candidate)) return 'not an absolute path'
@@ -165,12 +170,12 @@ function profileDirProblem(candidate, real, pathMod, fsMod) {
     if (parts.some((s) => /[. ]$/.test(s))) return 'a folder name ends with a dot or a space'
     if (parts.some((s) => s.includes('~'))) return 'contains "~" (8.3 short names are refused)'
   }
-  const lexical = overlapProblem(profileKey(resolved, pathMod), profileKey(real, pathMod), pathMod.sep)
+  const lexical = overlapProblem(profileKey(resolved, pathMod, platform), profileKey(real, pathMod, platform), pathMod.sep)
   if (lexical) return lexical
   if (fsMod && typeof fsMod.existsSync === 'function' && typeof fsMod.realpathSync === 'function') {
     const canonical = overlapProblem(
-      profileKey(canonicalPath(resolved, pathMod, fsMod), pathMod),
-      profileKey(canonicalPath(real, pathMod, fsMod), pathMod),
+      profileKey(canonicalPath(resolved, pathMod, fsMod), pathMod, platform),
+      profileKey(canonicalPath(real, pathMod, fsMod), pathMod, platform),
       pathMod.sep,
     )
     if (canonical) return `${canonical} (after resolving links)`
@@ -184,10 +189,10 @@ function profileDirProblem(candidate, real, pathMod, fsMod) {
  * package.json by test builds. Such a folder must be absolute, not a root, never the real folder, inside it or one of
  * its parents — also through Windows aliases (UNC / \\?\ paths, trailing dots or spaces, 8.3 names, streams) and, with
  * `fsMod` ({ existsSync, realpathSync }), through junctions / symlinks: otherwise { ok: false } and the app refuses to
- * start (fail closed).
+ * start (fail closed). `platform` (process.platform): on macOS the comparison ignores case and normalization too.
  * → { ok: true, dir, source: 'env' | 'baked' | 'default' } | { ok: false, error }
  */
-function resolveProfileDir({ env, baked, appData, appName, pathMod, fsMod }) {
+function resolveProfileDir({ env, baked, appData, appName, platform, pathMod, fsMod }) {
   const real = pathMod.join(appData, 'SanoVids')
   const fromEnv = typeof env === 'string' && env !== ''
   const candidate = fromEnv ? env : typeof baked === 'string' && baked !== '' ? baked : null
@@ -197,7 +202,7 @@ function resolveProfileDir({ env, baked, appData, appName, pathMod, fsMod }) {
     if (/^\.*$/.test(leaf)) leaf = 'SanoVids-other' // never '', '.' or '..'
     return { ok: true, dir: pathMod.join(appData, leaf), source: 'default' }
   }
-  const problem = profileDirProblem(candidate, real, pathMod, fsMod)
+  const problem = profileDirProblem(candidate, real, pathMod, fsMod, platform)
   if (problem) return { ok: false, error: `SANOVIDS_PROFILE_DIR / sanovidsTestProfileDir is invalid: ${problem}` }
   return { ok: true, dir: pathMod.resolve(candidate), source: fromEnv ? 'env' : 'baked' }
 }
@@ -209,14 +214,18 @@ function appUserModelId(appName) {
 }
 
 /**
- * 'dev'       not packaged (`electron .`): never checks;
- * 'portable'  the portable .exe (PORTABLE_EXECUTABLE_FILE, see trustedPortableFile), win-unpacked or a copied exe:
- *             check only;
- * 'installer' an NSIS install (its uninstaller sits next to the exe — whatever the environment says): check, download,
- *             install.
+ * 'dev'        not packaged (`electron .`): never checks;
+ * 'mac-manual' the packaged macOS app: check only — it is signed ad hoc, and Squirrel.Mac only installs an update that
+ *              meets the running app's designated requirement (with an ad-hoc signature: that very build's cdhash), so
+ *              it never downloads nor installs; the user replaces the app from the new .dmg;
+ * 'portable'   the portable .exe (PORTABLE_EXECUTABLE_FILE, see trustedPortableFile), win-unpacked or a copied exe:
+ *              check only;
+ * 'installer'  an NSIS install (its uninstaller sits next to the exe — whatever the environment says): check, download,
+ *              install.
  */
 function detectKind({ platform, isPackaged, execPath, appName, exists, pathMod }) {
   if (!isPackaged) return 'dev'
+  if (platform === 'darwin') return 'mac-manual'
   if (platform === 'win32' && typeof execPath === 'string' && execPath !== '') {
     let found = false
     try {
@@ -284,6 +293,10 @@ function isInsideDir(parent, child, pathMod) {
 /**
  * Where this SanoVids runs from (main.cjs IPC 'app:placement' → Cài đặt → Ứng dụng / Giới thiệu hints). Only a kind
  * ever leaves the main process, never a path.
+ *   macOS (decided first, see macPlacement): 'mac-applications' | 'mac-translocated' | 'mac-volume' | 'mac-other'
+ *               when packaged, else 'dev'. Never detectKind's 'mac-manual' (an updater kind, not a place), and never
+ *               'temp-copy' (a translocated app runs from inside $TMPDIR/AppTranslocation, i.e. the temp folder).
+ *               `inApplications` = app.isInApplicationsFolder(), asked by main.cjs behind its own platform guard;
  *   'installer' | 'portable' | 'dev'  exactly detectKind (the kind of the updater's UpdateState);
  *   'temp-copy' a portable-kind exe WITHOUT a trusted PORTABLE_EXECUTABLE_FILE (`portableFile` = trustedPortableFile's
  *               answer) running from inside the Windows temp folder — a
@@ -292,7 +305,8 @@ function isInsideDir(parent, child, pathMod) {
  * The containment test compares the REAL paths of both (realpath = fs.realpathSync.native: TEMP is often an 8.3 short
  * path such as C:\Users\MINHM~1\…); any failure → not 'temp-copy'. Never throws.
  */
-function placement({ platform, isPackaged, portableFile, execPath, tmpDir, appName, exists, realpath, pathMod }) {
+function placement({ platform, isPackaged, portableFile, execPath, tmpDir, appName, exists, realpath, pathMod, inApplications }) {
+  if (platform === 'darwin') return isPackaged ? macPlacement({ execPath, inApplications }) : 'dev'
   let kind
   try {
     kind = detectKind({ platform, isPackaged, portableFile, execPath, appName, exists, pathMod })
@@ -312,6 +326,26 @@ function placement({ platform, isPackaged, portableFile, execPath, tmpDir, appNa
     return isInsideDir(pathMod.resolve(realTmp), pathMod.resolve(realExec), pathMod) ? 'temp-copy' : 'portable'
   } catch {
     return 'portable'
+  }
+}
+
+/**
+ * Where the packaged macOS app runs from, in this order (never throws; anything odd → 'mac-other'):
+ *   'mac-applications'  app.isInApplicationsFolder() said so (/Applications or ~/Applications): the normal place;
+ *   'mac-translocated'  Gatekeeper moved it to a temporary read-only copy (…/AppTranslocation/…): opened straight from
+ *                       a downloaded .dmg or from the Downloads folder;
+ *   'mac-volume'        straight from a mounted volume (/Volumes/…: the .dmg itself, a USB drive);
+ *   'mac-other'         anywhere else outside Applications.
+ */
+function macPlacement({ execPath, inApplications }) {
+  try {
+    if (inApplications === true) return 'mac-applications'
+    const p = typeof execPath === 'string' && execPath.length <= 4096 ? execPath : ''
+    if (/\/AppTranslocation\//i.test(p)) return 'mac-translocated'
+    if (/^\/Volumes\//i.test(p)) return 'mac-volume'
+    return 'mac-other'
+  } catch {
+    return 'mac-other'
   }
 }
 
@@ -345,6 +379,18 @@ function portableRelaunch({ platform, isPackaged, portableFile, appName, exists,
 }
 
 // ---- errors ----
+
+/**
+ * The newest release has no latest-mac.yml (a Windows-only release, or its Mac files were not uploaded):
+ * electron-updater's GitHubProvider reads only the newest release and reports a 404 of the channel file as
+ * ERR_UPDATER_CHANNEL_FILE_NOT_FOUND. For 'mac-manual' that means "no newer Mac build there" — not an error, and not
+ * "this is the newest version" either (updater.cjs dispatches not-available with noMacBuild: true). Only that code,
+ * and never when its text shows a network failure (mapUpdaterError calls that 'offline' first, like here).
+ */
+function macFeedMissing(err) {
+  if (!err || typeof err !== 'object' || err.code !== 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return false
+  return !OFFLINE_RE.test(typeof err.message === 'string' ? err.message : '')
+}
 
 /** Error of electron-updater → { code, message } with a fixed Vietnamese message. phase: 'check' | 'download' | 'install'. */
 function mapUpdaterError(err, phase) {
@@ -531,8 +577,18 @@ function validError(error, fallbackCode) {
 /**
  * The updater state machine (docs: SPEC A.4). Pure: returns the same object when nothing changes.
  * `event.info` is the output of normalizeInfo; `event.error` the output of mapUpdaterError.
+ * `noMacBuild: true` (src/lib/updateTypes.ts) only ever sits on a 'mac-manual' + 'none' state: set by a not-available
+ * event that carries it (the newest release has no Mac build), dropped by every other transition.
  */
 function reduceUpdateState(state, event, now) {
+  const next = reduceUpdateEvent(state, event, now)
+  if (next !== state && next.noMacBuild !== undefined && !(next.kind === 'mac-manual' && next.status === 'none' && next.noMacBuild === true)) {
+    return without(next, ['noMacBuild'])
+  }
+  return next
+}
+
+function reduceUpdateEvent(state, event, now) {
   if (!event || typeof event !== 'object') return state
   const busy = state.status === 'downloading' || state.status === 'ready'
   switch (event.type) {
@@ -541,9 +597,16 @@ function reduceUpdateState(state, event, now) {
       // always emits checking-for-update first) keeps it instead of turning it into an error.
       if (busy || state.status === 'available') return state
       return { ...without(state, ['error']), status: 'checking' }
-    case 'not-available':
+    case 'not-available': {
       if (busy) return { ...state, lastCheck: now }
-      return { ...without(state, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'none', lastCheck: now }
+      const noMacBuild = event.noMacBuild === true && state.kind === 'mac-manual'
+      // A newest release without Mac files says nothing about a Mac update already found: it stays announced (like
+      // after a failed re-check); only the time of the check changes.
+      if (noMacBuild && state.status === 'available') return { ...state, lastCheck: now }
+      const next = { ...without(state, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error', 'noMacBuild']), status: 'none', lastCheck: now }
+      if (noMacBuild) next.noMacBuild = true
+      return next
+    }
     case 'available': {
       const info = event.info
       if (!info || !isVersion(info.version)) return state
@@ -1021,6 +1084,8 @@ module.exports = {
   resolveProfileDir,
   appUserModelId,
   detectKind,
+  macPlacement,
+  macFeedMissing,
   PORTABLE_ENV,
   portableEnvOf,
   trustedPortableFile,

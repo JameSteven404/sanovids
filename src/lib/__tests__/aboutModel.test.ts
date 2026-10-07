@@ -1,5 +1,7 @@
 // "Cài đặt → Giới thiệu" texts (lib/aboutModel): every signature row, thumbprint formatting, the version line, and the
 // author / partner / copyright / pinned-thumbprint constants matching package.json (NFC, Sano Group only as a partner).
+// The Windows rows are asked for 'win' explicitly (the default is this device's platform: a Mac test runner would get
+// the Mac texts); the Mac build (ad hoc, no author verification) has its own block below.
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import pkg from '../../../package.json'
@@ -13,22 +15,31 @@ import {
   ABOUT_KEYWORDS,
   ABOUT_OFFICIAL_THUMBPRINT,
   ABOUT_OPEN_SOURCE,
+  ABOUT_OPEN_SOURCE_MAC,
   ABOUT_PARTNER_LINE,
+  aboutOpenSource,
   borrowsAuthorName,
   buildLabel,
   formatThumbprint,
+  MAC_SIGNATURE_DETAIL,
+  MAC_SIGNATURE_TITLE,
   officialThumbprintLine,
   PLACEMENT_KEYWORDS,
   PLACEMENT_PORTABLE_TEXT,
   PLACEMENT_TEMP_TEXT,
   placementNote,
-  signatureView,
+  signatureView as signatureViewOn,
   thumbprintLine,
-  thumbprintRows,
+  thumbprintRows as thumbprintRowsOn,
   versionLine,
 } from '../aboutModel'
 import type { AppSignature } from '../appSignature'
+import { PLATFORM } from '../platform'
 import { UPDATE_RELEASES_PAGE_LABEL } from '../updateTypes'
+
+/** The Windows rows (every test below that names Windows texts). */
+const signatureView = (sig: AppSignature | null) => signatureViewOn(sig, 'win')
+const thumbprintRows = (sig: AppSignature | null) => thumbprintRowsOn(sig, 'win')
 
 const AUTHOR = 'Nguyễn Giang Minh (Jame Steven)'
 const COPYRIGHT_BUILD = '© 2026 Nguyễn Giang Minh (Jame Steven) · Đồng hành: Sano Group'
@@ -238,5 +249,60 @@ describe('placementNote (Portable / temp-copy reminder in Ứng dụng and Giớ
 
   it('search words', () => {
     for (const w of ['icon', 'lối tắt', 'shortcut', 'desktop', 'start menu', 'ghim', 'portable', 'setup']) expect(PLACEMENT_KEYWORDS).toContain(w)
+  })
+})
+
+describe('the Mac build: ad hoc, never presented as a verified author', () => {
+  /** Words of the Windows signature rows that must never show on a Mac (and claims an ad-hoc signature cannot make). */
+  const NOT_ON_MAC = /PowerShell|Windows|DLL|Setup|cài đè|Đã ký số|✓|Bản gốc|dấu vân tay|thumbprint/i
+
+  it('every packaged answer reads "Bản cho Mac — chưa có chữ ký của Apple", neutral', () => {
+    expect(MAC_SIGNATURE_TITLE).toBe('Bản cho Mac — chưa có chữ ký của Apple')
+    expect(MAC_SIGNATURE_DETAIL).toBe(
+      'Bản Mac hiện chưa được Apple ký và công chứng, nên lần đầu mở (và mỗi bản mới) macOS sẽ cảnh báo. Chỉ tải SanoVids ở trang tải về chính thức và đối chiếu mã SHA-256 với tác giả qua một nguồn khác trang tải về.',
+    )
+    // what main really sends on a Mac is { status: 'unknown', packaged: true }; anything else packaged reads the same
+    for (const sig of SIGS.filter((s) => s?.packaged)) {
+      expect(signatureViewOn(sig, 'mac'), JSON.stringify(sig)).toEqual({ tone: 'neutral', title: MAC_SIGNATURE_TITLE, detail: MAC_SIGNATURE_DETAIL })
+    }
+  })
+
+  it('from the sources: a development build; still checking: the same as Windows', () => {
+    for (const sig of SIGS.filter((s) => s && !s.packaged)) {
+      expect(signatureViewOn(sig, 'mac')).toEqual({ tone: 'neutral', title: 'Bản phát triển (chưa ký số)', detail: 'Chạy từ mã nguồn nên không có chữ ký số — bình thường khi phát triển.' })
+    }
+    expect(signatureViewOn(null, 'mac')).toEqual(signatureView(null))
+  })
+
+  it('never the Windows texts, never a claim the ad-hoc signature cannot make; no Windows thumbprint rows', () => {
+    for (const sig of SIGS) {
+      const v = signatureViewOn(sig, 'mac')
+      expect(`${v.title} ${v.detail}`, JSON.stringify(sig)).not.toMatch(NOT_ON_MAC)
+      expect(v.tone).not.toBe('ok')
+      expect(thumbprintRowsOn(sig, 'mac')).toEqual([])
+    }
+    // the same SHA-256 advice as the licence / release notes: compared through a source other than the download page
+    expect(MAC_SIGNATURE_DETAIL).toContain('đối chiếu mã SHA-256 với tác giả qua một nguồn khác trang tải về')
+  })
+
+  it('the open-source note: inside the app bundle on a Mac, same licence files as LICENSE.txt clause 6', () => {
+    expect(aboutOpenSource('win')).toBe(ABOUT_OPEN_SOURCE)
+    expect(aboutOpenSource('mac')).toBe(ABOUT_OPEN_SOURCE_MAC)
+    expect(ABOUT_OPEN_SOURCE_MAC).toContain('Contents/Resources')
+    expect(ABOUT_OPEN_SOURCE_MAC).not.toMatch(/thư mục cài đặt|Windows/)
+    const license = readFileSync(new URL('../../../LICENSE.txt', import.meta.url), 'utf8')
+    const files = license.split('\n').find((l) => l.startsWith('6. '))?.match(/[A-Za-z.-]+\.(?:txt|html)/g) ?? []
+    expect(files.length).toBeGreaterThanOrEqual(2)
+    for (const f of files) expect(ABOUT_OPEN_SOURCE_MAC, f).toContain(f)
+  })
+
+  it('version line names the Mac build; the default platform is this device’s', () => {
+    expect(versionLine('0.6.0', 'mac-manual', true)).toBe('Phiên bản 0.6.0 · Bản cho Mac')
+    expect(buildLabel('mac-manual', false)).toBe('Bản cho Mac')
+    for (const sig of SIGS) {
+      expect(signatureViewOn(sig)).toEqual(signatureViewOn(sig, PLATFORM))
+      expect(thumbprintRowsOn(sig)).toEqual(thumbprintRowsOn(sig, PLATFORM))
+    }
+    expect(aboutOpenSource()).toBe(aboutOpenSource(PLATFORM))
   })
 })

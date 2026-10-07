@@ -4,8 +4,8 @@
 //   node scripts/make-icons.mjs --out tmp  (write the same tree under ./tmp instead of the repo)
 //   node scripts/make-icons.mjs --src dir  (read the SVG sources from another folder)
 //
-// One devDependency: @resvg/resvg-js (SVG rasteriser). PNG comes from resvg; ICO and BMP are encoded here with
-// node built-ins only.
+// One devDependency: @resvg/resvg-js (SVG rasteriser). PNG comes from resvg; ICO, ICNS and BMP are encoded here with
+// node built-ins only (the .icns is committed, so electron-builder never downloads an icon converter on the Mac).
 //
 // Sources (build/icon-source/):
 //   icon-master.svg       512 master: 96 px and up, web icons, installer art. Plate inset 16, play cut-out in the disc.
@@ -25,6 +25,10 @@
 //   build/installerSidebar.bmp    164x314, 24-bit
 //   build/uninstallerSidebar.bmp  164x314, 24-bit
 //   build/installerHeader.bmp     150x57, 24-bit
+//   build/icon.icns               macOS app icon (package.json build.mac.icon): PNG entries 16…1024 on Apple's macOS 11+
+//                                 grid (824 px plate at 100,100 on a 1024 canvas, soft shadow below)
+//   build/dmg-background.png      540x380 (+ @2x 1080x760, dmg-builder joins them into a HiDPI tiff): light background
+//                                 with an arrow from the app to Applications, no text (Finder draws the labels)
 //   public/favicon.svg
 //   public/icons/icon.ico         same as build/icon.ico (BrowserWindow icon on Windows, ships inside dist/)
 //   public/icons/icon-192.png, icon-512.png      rounded plate, transparent corners (PWA purpose "any")
@@ -192,6 +196,83 @@ function encodeBmp24({ width: w, height: h, rgba }) {
   return file
 }
 
+// ---------------------------------------------------------------- macOS
+/** An SVG's inner markup (its outer <svg …> tag removed), to nest it in another drawing. */
+const innerSvg = (svg) => svg.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '')
+
+/**
+ * The macOS app icon at `size` px, on Apple's macOS 11+ grid (1024 canvas): the plate is 824 wide at (100, 100) with a
+ * soft shadow below it. The master's plate (inset 16, rx 108 / 480 = 22.5 %) already has Apple's corner ratio
+ * (185 / 824), so it is only re-framed; 64 px and below use the 32-unit cut.
+ */
+function macIconSvg(size) {
+  const small = size <= 64
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs><filter id="mac-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/></filter></defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#mac-shadow)" opacity="0.9"/>
+<svg x="100" y="100" width="824" height="824" viewBox="${small ? '0 0 32 32' : '16 16 480 480'}">${innerSvg(small ? SVG.small : SVG.master)}</svg>
+</svg>`
+}
+
+/** .icns entries: OSType → pixel size (PNG data; iconutil's own set for an iconset with every size). */
+const ICNS_ENTRIES = [
+  ['icp4', 16],
+  ['icp5', 32],
+  ['ic11', 32],
+  ['icp6', 64],
+  ['ic12', 64],
+  ['ic07', 128],
+  ['ic13', 256],
+  ['ic08', 256],
+  ['ic14', 512],
+  ['ic09', 512],
+  ['ic10', 1024],
+]
+
+/** .icns: 'icns' + big-endian total length, then per entry its OSType + big-endian length (8-byte header included) + PNG. */
+function encodeIcns() {
+  const pngs = new Map()
+  const parts = ICNS_ENTRIES.map(([type, px]) => {
+    if (!pngs.has(px)) pngs.set(px, Buffer.from(rasterize(macIconSvg(px), px).png))
+    const data = pngs.get(px)
+    const head = Buffer.alloc(8)
+    head.write(type, 0, 'latin1')
+    head.writeUInt32BE(data.length + 8, 4)
+    return Buffer.concat([head, data])
+  })
+  const body = Buffer.concat(parts)
+  const head = Buffer.alloc(8)
+  head.write('icns', 0, 'latin1')
+  head.writeUInt32BE(body.length + 8, 4)
+  return Buffer.concat([head, body])
+}
+
+/** Reads an .icns back (self-check after writing): every entry a PNG of the announced size. */
+function readIcns(buf) {
+  if (buf.toString('latin1', 0, 4) !== 'icns' || buf.readUInt32BE(4) !== buf.length) throw new Error('icon.icns: bad header')
+  const out = []
+  for (let o = 8; o < buf.length; ) {
+    const type = buf.toString('latin1', o, o + 4)
+    const len = buf.readUInt32BE(o + 4)
+    if (len < 8 || o + len > buf.length) throw new Error(`icon.icns: entry ${type} overflows the file`)
+    const png = buf.subarray(o + 8, o + len)
+    if (png.readUInt32BE(0) !== 0x89504e47) throw new Error(`icon.icns: entry ${type} is not a PNG`)
+    out.push({ type, width: png.readUInt32BE(16), height: png.readUInt32BE(20) })
+    o += len
+  }
+  return out
+}
+
+/** DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190). */
+function dmgBackgroundSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbf7f1"/><stop offset="1" stop-color="#f1e9de"/></linearGradient></defs>
+<rect width="540" height="380" fill="url(#bg)"/>
+<path d="M212 190 H318" stroke="#ff9f0a" stroke-width="6" stroke-linecap="round" fill="none"/>
+<path d="M306 174 L328 190 L306 206" stroke="#ff9f0a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>`
+}
+
 /** Reads an .ico directory back (used as a self-check after writing). */
 function readIcoDirectory(buf) {
   if (buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) throw new Error('not an .ico')
@@ -237,6 +318,16 @@ write('build/installerSidebar.bmp', encodeBmp24(rasterize(withIcons(sidebar), 16
 write('build/uninstallerSidebar.bmp', encodeBmp24(rasterize(withIcons(unSidebar), 164)))
 write('build/installerHeader.bmp', encodeBmp24(rasterize(withIcons(source('installer-header.svg')), 150)))
 
+const icns = encodeIcns()
+const icnsDir = readIcns(icns)
+for (const [i, e] of icnsDir.entries()) {
+  const [type, want] = ICNS_ENTRIES[i]
+  if (e.type !== type || e.width !== want || e.height !== want) throw new Error(`icon.icns entry ${i} is ${e.type} ${e.width}x${e.height}, expected ${type} ${want}`)
+}
+write('build/icon.icns', icns)
+write('build/dmg-background.png', rasterize(dmgBackgroundSvg(), 540).png)
+write('build/dmg-background@2x.png', rasterize(dmgBackgroundSvg(), 1080).png)
+
 write('public/favicon.svg', source('favicon.svg'))
 write('public/icons/icon-192.png', iconPng(192))
 write('public/icons/icon-512.png', iconPng(512))
@@ -247,4 +338,5 @@ write('public/icons/apple-touch-icon-180.png', rasterize(fullBleed(0.92), 180).p
 console.log(`make-icons: ${written.length} files -> ${OUT}`)
 for (const [rel, n] of written) console.log(`  ${rel.padEnd(34)} ${String(n).padStart(7)} B`)
 console.log('  icon.ico entries: ' + dir.map((e) => `${e.size}${e.format === 'png' ? ' (png)' : ''}`).join(', '))
+console.log('  icon.icns entries: ' + icnsDir.map((e) => `${e.type}=${e.width}`).join(', '))
 if (!HAVE_SEGOE) console.warn('  note: Segoe UI not found; installer text used a fallback system font')
