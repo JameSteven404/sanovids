@@ -912,10 +912,29 @@ async function storeCanvasappKeepPrefs(keepLogin) {
 }
 
 /**
+ * The placement the keep-login default reads (keepLoginRules.keepLoginPlacement): appPlacement().kind, except a packaged
+ * macOS app installed in Applications ('mac-applications', on — updater-rules has no Mac placement kinds yet).
+ * app.isInApplicationsFolder exists on macOS only: asked behind the platform guard, in its own try, never inside
+ * appPlacement's (a throw there would turn every Windows install into 'portable').
+ */
+function keepLoginPlacementKind() {
+  let inApplications = false
+  if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {
+    try {
+      inApplications = app.isInApplicationsFolder() === true
+    } catch {
+      inApplications = false
+    }
+  }
+  return keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications })
+}
+
+/**
  * Creates the keep-login object (on ready). Reads only the small prefs file: the copy is read, and safeStorage touched,
  * at the first canvasapp use (ensureCanvasappRestored) or when a confirmed login is saved — a user who never logs in
  * to canvasapp never reaches DPAPI / the Keychain. Async safeStorage only (never blocks main on a Keychain prompt);
- * Linux's plain-text backend counts as unavailable (nothing kept).
+ * Linux's plain-text backend counts as unavailable (nothing kept). The start-up sweep only stats the copy: an expired
+ * one (or one the switch / Đăng xuất said to forget) is deleted unread, even if canvasapp is never used in this run.
  */
 function startCanvasappKeepLogin() {
   canvasappKeepPrefs = readCanvasappKeepPrefs()
@@ -937,8 +956,9 @@ function startCanvasappKeepLogin() {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     setTimer: setTimeout,
     clearTimer: clearTimeout,
-    enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, appPlacement().kind),
+    enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind()),
   })
+  void canvasappKeep.sweep()
 }
 
 /** canvasapp:keepLogin → { ok: true, keepLogin, available, chosen } (booleans only). */

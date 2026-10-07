@@ -10,7 +10,9 @@ import {
   KEEP_LOGIN_HINT_PORTABLE,
   KEEP_LOGIN_LABEL,
   KEEP_LOGIN_UNAVAILABLE,
+  KEEP_LOGIN_UNAVAILABLE_ON,
   keepLoginChecked,
+  keepLoginDisabled,
   keepLoginHint,
   loginSuccessToast,
   logoutOutcome,
@@ -63,16 +65,23 @@ describe('"Giữ đăng nhập canvasapp trên máy này"', () => {
 
   it('the hint says why: unavailable, on, off by choice, off by the Portable default', () => {
     const v = (keepLogin: boolean, available: boolean, chosen: boolean) => ({ ok: true as const, keepLogin, available, chosen })
-    expect(keepLoginHint(v(true, false, true))).toBe(KEEP_LOGIN_UNAVAILABLE)
+    expect(keepLoginHint(v(true, false, true))).toBe(`${KEEP_LOGIN_UNAVAILABLE} ${KEEP_LOGIN_UNAVAILABLE_ON}`)
+    expect(keepLoginHint(v(false, false, true))).toBe(KEEP_LOGIN_UNAVAILABLE)
     expect(keepLoginHint(v(true, true, false))).toBe(KEEP_LOGIN_HINT_ON)
     expect(keepLoginHint(v(false, true, true))).toBe(KEEP_LOGIN_HINT_OFF)
     expect(keepLoginHint(v(false, true, false))).toBe(`${KEEP_LOGIN_HINT_OFF} ${KEEP_LOGIN_HINT_PORTABLE}`)
     expect(KEEP_LOGIN_HINT_ON).toContain('30 ngày')
     expect(KEEP_LOGIN_HINT_ON).toContain('mã hoá')
-    // checked only when keeping really happens
+    // the switch shows the choice; when this computer cannot encrypt, only switching ON is refused — an "on" choice
+    // can always be switched OFF (the hint says nothing is kept meanwhile)
     expect(keepLoginChecked(v(true, true, true))).toBe(true)
-    expect(keepLoginChecked(v(true, false, true))).toBe(false)
+    expect(keepLoginChecked(v(true, false, true))).toBe(true)
     expect(keepLoginChecked(v(false, true, true))).toBe(false)
+    expect(keepLoginDisabled(v(true, false, true))).toBe(false)
+    expect(keepLoginDisabled(v(true, false, false))).toBe(false)
+    expect(keepLoginDisabled(v(false, false, true))).toBe(true)
+    expect(keepLoginDisabled(v(false, true, false))).toBe(false)
+    expect(keepLoginDisabled(v(true, true, true))).toBe(false)
     expect(KEEP_LOGIN_LABEL).toBe('Giữ đăng nhập canvasapp trên máy này')
   })
 
@@ -99,6 +108,10 @@ describe('"Giữ đăng nhập canvasapp trên máy này"', () => {
     expect(doLogout).toContain('const outcome = logoutOutcome(await bridgeLogout(bridge))')
     expect(doLogout).toMatch(/if \(!outcome\.ok\) showLogoutProblem\(outcome, bridge\)\s+else toast\(/)
     expect(gatewaySource).toContain("typeof gwBridge.keepLogin === 'function' && <KeepLoginRow")
+    // disabled only for switching ON; re-read when the login state changes (a login may flip "available")
+    expect(gatewaySource).toContain('disabled={keepLoginDisabled(view) || saving}')
+    expect(gatewaySource).toContain('loginState={login.state}')
+    expect(gatewaySource).toContain('}, [bridge, loginState])')
     expect(creditPillSource).toContain('const t = loginSuccessToast(name, st)')
   })
 

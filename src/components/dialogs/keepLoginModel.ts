@@ -14,6 +14,8 @@ export const KEEP_LOGIN_HINT_ON = `Tắt rồi mở lại SanoVids không phải
 export const KEEP_LOGIN_HINT_OFF = 'Mỗi lần mở SanoVids cần đăng nhập canvasapp lại. Nên tắt khi dùng máy chung, hoặc khi nhiều người dùng chung một tài khoản Windows.'
 export const KEEP_LOGIN_HINT_PORTABLE = 'Bản Portable (hoặc chạy từ thư mục tạm) mặc định không giữ đăng nhập — hay được chạy trên máy người khác.'
 export const KEEP_LOGIN_UNAVAILABLE = 'Máy này không mã hoá được phiên đăng nhập nên SanoVids không giữ — mỗi lần mở app cần đăng nhập lại.'
+/** Added while the choice stays on: SanoVids tries again (the switch can still be turned off). */
+export const KEEP_LOGIN_UNAVAILABLE_ON = 'SanoVids sẽ thử lại ở lần đăng nhập sau; tắt nếu không muốn giữ đăng nhập trên máy này.'
 export const KEEP_LOGIN_TOAST_ON = 'Đã bật giữ đăng nhập canvasapp trên máy này.'
 export const KEEP_LOGIN_TOAST_OFF = 'Đã tắt: lần mở SanoVids sau sẽ cần đăng nhập canvasapp lại. Phiên hiện tại vẫn dùng được.'
 const BAD_STATE = 'Không đọc được cài đặt giữ đăng nhập.'
@@ -36,13 +38,19 @@ export function parseKeepLoginState(raw: unknown): KeepLoginState {
 
 /** The hint under the switch: why it is on / off / disabled (the Portable default when the user never chose). */
 export function keepLoginHint(v: KeepLoginView): string {
-  if (!v.available) return KEEP_LOGIN_UNAVAILABLE
+  if (!v.available) return v.keepLogin ? `${KEEP_LOGIN_UNAVAILABLE} ${KEEP_LOGIN_UNAVAILABLE_ON}` : KEEP_LOGIN_UNAVAILABLE
   if (v.keepLogin) return KEEP_LOGIN_HINT_ON
   return v.chosen ? KEEP_LOGIN_HINT_OFF : `${KEEP_LOGIN_HINT_OFF} ${KEEP_LOGIN_HINT_PORTABLE}`
 }
 
-/** The switch shows "on" only when keeping really happens (on AND this computer can encrypt). */
-export const keepLoginChecked = (v: KeepLoginView): boolean => v.keepLogin && v.available
+/**
+ * The switch shows the choice — also when encryption failed in this run (the hint then says nothing is kept), so it can
+ * always be switched OFF.
+ */
+export const keepLoginChecked = (v: KeepLoginView): boolean => v.keepLogin
+
+/** Only switching ON is refused when this computer cannot encrypt (switching OFF always works). */
+export const keepLoginDisabled = (v: KeepLoginView): boolean => !v.available && !v.keepLogin
 
 /**
  * What logout() answered → ok, or the message to show (never "Đã đăng xuất" then). `notCleared`: logged out, but the

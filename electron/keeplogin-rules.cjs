@@ -35,7 +35,8 @@ const KEEP_LOGIN_CHAIN_CAP_MS = 5000
 const KEEP_LOGIN_DEBOUNCE_MS = 500
 const COOKIE_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$/
 const COOKIE_SAME_SITE = ['unspecified', 'no_restriction', 'lax', 'strict']
-const KEEP_LOGIN_PLACEMENTS_ON = ['installer', 'dev']
+/** Placements whose default is on: the Windows installer, a source run, a packaged macOS app installed in Applications. */
+const KEEP_LOGIN_PLACEMENTS_ON = ['installer', 'dev', 'mac-applications']
 
 /** Đăng xuất worked, but the copy could not be deleted nor emptied (an antivirus holds the file): said, never hidden. */
 const KEEP_LOGIN_NOT_CLEARED_TEXT =
@@ -77,6 +78,17 @@ function isKeptCookieChange(c, host) {
  */
 function defaultKeepLogin(placementKind) {
   return KEEP_LOGIN_PLACEMENTS_ON.includes(placementKind)
+}
+
+/**
+ * The placement the default reads. updater-rules.placement has no macOS kinds yet (a packaged darwin build is
+ * 'portable', or 'temp-copy' when Gatekeeper translocated it into $TMPDIR): a packaged macOS app that
+ * app.isInApplicationsFolder() places in Applications is the Mac "installed" case → 'mac-applications' (on). Every other
+ * macOS run (translocated, on a mounted .dmg / USB volume, a copy elsewhere) keeps its kind (off). Other platforms: as is.
+ */
+function keepLoginPlacement({ platform, kind, inApplications }) {
+  if (platform === 'darwin' && kind !== 'dev' && inApplications === true) return 'mac-applications'
+  return typeof kind === 'string' ? kind : 'unknown'
 }
 
 /** A session cookie of `host` that a restart would lose → the plain entry SanoVids keeps, else null. */
@@ -273,13 +285,20 @@ function keepLoginPayload({ enabled, available, chosen }) {
  *   cookies   Session.cookies of the canvasapp partition (get, set, flushStore),
  *   crypto    safeStorage-like: isEncryptionAvailable() → boolean | Promise<boolean>, encryptStringAsync(text) → bytes,
  *             decryptStringAsync(bytes) → { result, shouldReEncrypt },
- *   fsp       fs.promises-like: readFile, writeFile, rm,   rename (from, to) (default fsp.rename),
+ *   fsp       fs.promises-like: readFile, writeFile, rm, stat (sweep only; optional),   rename (from, to) (default fsp.rename),
  *   file      absolute path of the copy (userData/canvasapp-login.bin),
  *   host, origin, now, sleep(ms), setTimer(fn, ms), clearTimer(t),
  *   enabled = true, debounceMs = 500, capMs = KEEP_LOGIN_CHAIN_CAP_MS
  * }
  * Writes happen only while armed: canvasapp confirmed THIS login (loggedIn / confirmed) or a kept copy was put back.
  * File writes / deletes are serialized on one chain. Never throws out of a listener; never logs.
+ *
+ * Status answers are ordered by the kept-cookie generation `gen` their request carried (mark): a refusal about cookies
+ * older than the login canvasapp confirmed since (armedGen) says nothing; any other refusal disarms (nothing is written
+ * until canvasapp confirms again — a refusal may itself set cookies, e.g. a new canvas_csrf, and those must never be
+ * saved as a renewal) and deletes the copy when the refused cookies are still the kept ones or the copy was written
+ * after the refused request left; a confirmation about cookies canvasapp refused at the same or a later generation
+ * (deniedGen) never re-arms.
  */
 function createCanvasappKeepLogin(deps) {
   const { cookies, crypto, fsp, file, host, origin, now, sleep, setTimer, clearTimer } = deps
@@ -293,6 +312,9 @@ function createCanvasappKeepLogin(deps) {
   let paused = false // Đăng xuất is clearing the partition
   let epoch = 0 // bumped by forget / setEnabled: saves, restores and answers that started before never write or arm
   let gen = 0 // bumped by every change of a cookie the snapshot keeps (isKeptCookieChange) — never judged by time
+  let armedGen = -1 // gen when canvasapp last confirmed the session (loggedIn / confirmed / a restore)
+  let deniedGen = -1 // highest gen canvasapp refused
+  let writes = 0 // successful writes of the copy (a mark remembers it: written after the request left?)
   let timer = null
   let fileKey = null // key of the login in the file ('' = no file, null = unknown)
   let unavailable = false // encryption reported unavailable / failed in this run
@@ -361,30 +383,49 @@ function createCanvasappKeepLogin(deps) {
     await Promise.resolve(fsp.writeFile(forgetMarker, new Uint8Array(0))).catch(() => undefined)
     return false
   }
+  /**
+   * Encrypts `snap` and writes it (tmp + rename) while still writable. When safeStorage fails the old copy goes too:
+   * nothing stays kept that the Settings row says is not kept. → written?
+   */
+  async function writeSnap(snap, at) {
+    let bytes
+    try {
+      bytes = await crypto.encryptStringAsync(JSON.stringify(snap))
+    } catch (e) {
+      unavailable = true
+      await dropFile()
+      throw e // nothing written (caught by run); the next change retries
+    }
+    if (!writable(at)) return false // forgotten / switched off while encrypting
+    await fsp.writeFile(file + '.tmp', bytes)
+    await rename(file + '.tmp', file)
+    fileKey = loginSnapshotKey(snap)
+    writes++
+    await Promise.resolve(fsp.rm(forgetMarker, { force: true })).catch(() => undefined)
+    return true
+  }
   function save(at) {
     return run(async () => {
       if (!writable(at)) return
       const list = await cookies.get({ domain: host })
       if (!writable(at)) return
       const snap = loginSnapshot(list, host, now())
-      const key = loginSnapshotKey(snap)
       if (!snap || !(await encryption())) {
         if (fileKey !== '') await dropFile()
-      } else if (key !== fileKey) {
-        let bytes
-        try {
-          bytes = await crypto.encryptStringAsync(JSON.stringify(snap))
-        } catch (e) {
-          unavailable = true
-          throw e // nothing written (caught by run); the next change retries
-        }
-        if (!writable(at)) return // forgotten / switched off while encrypting
-        await fsp.writeFile(file + '.tmp', bytes)
-        await rename(file + '.tmp', file)
-        fileKey = key
-        await Promise.resolve(fsp.rm(forgetMarker, { force: true })).catch(() => undefined)
+      } else if (loginSnapshotKey(snap) !== fileKey) {
+        await writeSnap(snap, at)
       }
       await flush() // persistent canvasapp cookies reach the disk now, not ~30 s later
+    })
+  }
+  /**
+   * shouldReEncrypt: the SAME snapshot, its savedAt included, written again with the new key — re-encrypting is not a
+   * renewal (else a key provider that keeps asking would extend a kept login forever). Skipped once anything else wrote.
+   */
+  function reseal(snap, at) {
+    return run(async () => {
+      if (!writable(at) || fileKey !== null) return
+      await writeSnap(snap, at)
     })
   }
   async function restoreNow() {
@@ -432,11 +473,44 @@ function createCanvasappKeepLogin(deps) {
     gen++ // answers to requests sent before the restore say nothing about these cookies
     if (at === epoch) {
       armed = true // the copy came from a login canvasapp confirmed; a refusal disarms it
-      if (reEncrypt) void save(epoch)
+      armedGen = gen
+      if (reEncrypt) void reseal(snap, epoch)
     }
     return restored
   }
+  /**
+   * Start-up sweep, before any use: deletes the copy WITHOUT reading or decrypting it when it must not be used — a
+   * "forget" marker, the switch is off, an empty / oversized file, or last written more than KEEP_LOGIN_DAYS ago (the
+   * copy is rewritten at every renewal and savedAt is never newer than the write, so such a copy is expired anyway).
+   * A copy left by a user who moved to "Phát triển (giả lập)" without Đăng xuất never outlives the limit on disk.
+   * Never touches safeStorage. Without fsp.stat: nothing.
+   */
+  async function sweepNow() {
+    if (typeof fsp.stat !== 'function') return
+    let marker = false
+    try {
+      await fsp.stat(forgetMarker)
+      marker = true
+    } catch {
+      marker = false
+    }
+    let st
+    try {
+      st = await fsp.stat(file)
+    } catch {
+      if (marker) await dropFile()
+      return
+    }
+    const size = st && Number.isFinite(st.size) ? st.size : -1
+    const mtime = st && Number.isFinite(st.mtimeMs) ? st.mtimeMs : NaN
+    const old = !Number.isFinite(mtime) || now() - mtime > KEEP_LOGIN_DAYS * KEEP_LOGIN_DAY_MS
+    if (marker || !enabled || size <= 0 || size > KEEP_LOGIN_MAX_FILE_BYTES || old) await dropFile()
+  }
   return {
+    /** On ready: the start-up sweep (stat only — never reads the copy, never safeStorage). Never throws. */
+    sweep() {
+      return run(sweepNow)
+    },
     /** First canvasapp use (lazy, once, on the chain). Never throws, never touches the network. → { restored } */
     restore() {
       if (!restoring) restoring = run(restoreNow).then((n) => ({ restored: n || 0 }))
@@ -459,30 +533,50 @@ function createCanvasappKeepLogin(deps) {
       }
     },
     /** Taken just before a status request (GET /api/me, GET /api/auth/state) is sent. */
-    mark: () => ({ gen, epoch }),
-    /** canvasapp accepted the session for a request marked `m`: arms (once) and saves. */
+    mark: () => ({ gen, epoch, writes }),
+    /**
+     * canvasapp accepted the session for a request marked `m`: arms and saves — unless canvasapp refused the same or
+     * newer cookies since (deniedGen: a late 200 never brings back a copy a refusal dropped).
+     */
     confirmed(m) {
-      if (!m || m.epoch !== epoch || armed) return Promise.resolve()
+      if (!m || m.epoch !== epoch || !Number.isFinite(m.gen) || m.gen <= deniedGen) return Promise.resolve()
+      if (armed) {
+        if (m.gen > armedGen) armedGen = m.gen
+        return Promise.resolve()
+      }
       armed = true
+      armedGen = m.gen
       return save(epoch)
     },
-    /** canvasapp said "not logged in" for a request marked `m`: drops the copy unless the kept cookies changed since. */
+    /**
+     * canvasapp said "not logged in" for a request marked `m`. Older than the confirmed login → nothing. Otherwise:
+     * disarm at once (no renewal saved — the refusal may have set cookies itself), and delete the copy when the kept
+     * cookies did not change since `m` or the copy was written after `m` (it may hold what the refusal set).
+     */
     rejected(m) {
-      if (!m || m.epoch !== epoch || m.gen !== gen) return Promise.resolve()
+      if (!m || m.epoch !== epoch || !Number.isFinite(m.gen)) return Promise.resolve()
+      if (armed && m.gen < armedGen) return Promise.resolve()
+      if (m.gen > deniedGen) deniedGen = m.gen
+      armed = false
+      stopTimer()
+      const unchanged = m.gen === gen
       return run(async () => {
-        if (m.epoch !== epoch || m.gen !== gen) return
-        armed = false
-        stopTimer()
-        if (fileKey !== '') await dropFile()
+        if (m.epoch !== epoch || fileKey === '') return
+        if (unchanged || m.writes !== writes) await dropFile()
       })
     },
-    /** After a successful login (login `finish`): arm, write now and flush (a kill right after login keeps it). → { kept } */
+    /**
+     * After a successful login (login `finish`): arm, write now and flush (a kill right after login keeps it). A login is
+     * a new generation: answers to requests sent before it say nothing about it. → { kept } (a copy is on disk now)
+     */
     async loggedIn() {
+      gen++
       armed = true
+      armedGen = gen
       stopTimer()
       await save(epoch)
       await flush()
-      return { kept: enabled && !unavailable }
+      return { kept: enabled && !unavailable && typeof fileKey === 'string' && fileKey !== '' }
     },
     /** Đăng xuất: disarm, delete the copy FIRST, write nothing while fn clears. → { copyRemoved, result } */
     async forget(fn) {
@@ -530,6 +624,7 @@ module.exports = {
   isHostCookie,
   isKeptCookieChange,
   defaultKeepLogin,
+  keepLoginPlacement,
   keptCookieEntry,
   loginSnapshot,
   loginSnapshotKey,

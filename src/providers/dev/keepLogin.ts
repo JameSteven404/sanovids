@@ -19,9 +19,12 @@ export const DEV_ENCRYPTIONS: readonly DevEncryption[] = ['ok', 'unavailable', '
 /** localStorage key of the simulated switch (the real one lives in the main process: userData/canvasapp-prefs.json). */
 export const DEV_KEEP_LOGIN_KEY = 'bdp:dev:keepLogin'
 
-/** Same default as electron/keeplogin-rules.cjs defaultKeepLogin: installed / source on, Portable / temp copy / unknown off. */
+/**
+ * Same default as electron/keeplogin-rules.cjs defaultKeepLogin: installed (Windows installer, a macOS app in
+ * Applications) / source on, Portable / temp copy / unknown off.
+ */
 export function defaultKeepLogin(placementKind: string | null | undefined): boolean {
-  return placementKind === 'installer' || placementKind === 'dev'
+  return placementKind === 'installer' || placementKind === 'dev' || placementKind === 'mac-applications'
 }
 
 /** Same text as electron/keeplogin-rules.cjs KEEP_LOGIN_NOT_CLEARED_TEXT (the fault "Đăng xuất: không xoá được bản sao"). */

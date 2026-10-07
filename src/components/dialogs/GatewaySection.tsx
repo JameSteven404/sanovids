@@ -23,6 +23,7 @@ import {
   KEEP_LOGIN_TOAST_OFF,
   KEEP_LOGIN_TOAST_ON,
   keepLoginChecked,
+  keepLoginDisabled,
   keepLoginHint,
   logoutOutcome,
   parseKeepLoginState,
@@ -52,9 +53,10 @@ function showLogoutProblem(outcome: { message: string; notCleared: boolean }, br
 
 /**
  * "Giữ đăng nhập canvasapp trên máy này" — held by the main process (or the simulated bridge in development mode), read
- * when the section mounts. Hidden with a desktop build that does not have it.
+ * when the section mounts and again whenever the login state changes (`loginState`: a login may have shown that this
+ * computer can / cannot encrypt). Hidden with a desktop build that does not have it.
  */
-function KeepLoginRow({ bridge, dev }: { bridge: CanvasappBridge; dev: boolean }) {
+function KeepLoginRow({ bridge, dev, loginState }: { bridge: CanvasappBridge; dev: boolean; loginState: string }) {
   const [view, setView] = useState<KeepLoginView | null>(null)
   const [saving, setSaving] = useState(false)
   useEffect(() => {
@@ -71,7 +73,7 @@ function KeepLoginRow({ bridge, dev }: { bridge: CanvasappBridge; dev: boolean }
     return () => {
       alive = false
     }
-  }, [bridge])
+  }, [bridge, loginState])
   if (!view || !bridge.setKeepLogin) return null
   const change = async (on: boolean) => {
     if (saving || !bridge.setKeepLogin) return
@@ -95,7 +97,7 @@ function KeepLoginRow({ bridge, dev }: { bridge: CanvasappBridge; dev: boolean }
     <div className="dg-gw-keep">
       <Toggle
         checked={keepLoginChecked(view)}
-        disabled={!view.available || saving}
+        disabled={keepLoginDisabled(view) || saving}
         onChange={(on) => void change(on)}
         label={
           <>
@@ -325,7 +327,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {gwBridge && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} />}
+      {gwBridge && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
 
       {issue && (
         <div className="dg-callout warn">

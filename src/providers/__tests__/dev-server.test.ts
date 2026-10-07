@@ -218,7 +218,9 @@ describe('dev server: "Giữ đăng nhập" and a simulated restart of the deskt
   it('mirrors main: 30 days, the placement default and the "not cleared" text', () => {
     expect(KEEP_LOGIN_DAYS).toBe(keepRules.KEEP_LOGIN_DAYS)
     expect(KEEP_LOGIN_NOT_CLEARED_TEXT).toBe(keepRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
-    for (const k of ['installer', 'dev', 'portable', 'temp-copy', 'unknown', undefined, null, '']) expect(defaultKeepLogin(k as string)).toBe(keepRules.defaultKeepLogin(k))
+    for (const k of ['installer', 'dev', 'mac-applications', 'portable', 'temp-copy', 'mac-translocated', 'mac-volume', 'mac-other', 'unknown', undefined, null, '']) {
+      expect(defaultKeepLogin(k as string), String(k)).toBe(keepRules.defaultKeepLogin(k))
+    }
   })
 
   it('every login cookie × switch × encryption: the login survives exactly when the rule says so', async () => {

@@ -39,8 +39,10 @@ interface Snap {
 interface Mark {
   gen: number
   epoch: number
+  writes: number
 }
 interface KeepLogin {
+  sweep(): Promise<void>
   restore(): Promise<{ restored: number }>
   onChanged(event: unknown, cookie: unknown, cause?: string, removed?: boolean): void
   mark(): Mark
@@ -65,6 +67,7 @@ interface Rules {
   isHostCookie(c: unknown, host: string): boolean
   isKeptCookieChange(c: unknown, host: string): boolean
   defaultKeepLogin(kind: unknown): boolean
+  keepLoginPlacement(o: { platform: string; kind: unknown; inApplications: boolean }): string
   keptCookieEntry(c: unknown, host: string): Entry | null
   loginSnapshot(cookies: unknown, host: string, savedAt: number): Snap | null
   loginSnapshotKey(snap: Snap | null): string
@@ -237,8 +240,25 @@ describe('keep-login rules: which cookies are kept', () => {
     expect(R.isKeptCookieChange(csrf(), HOST)).toBe(true)
     expect(R.isKeptCookieChange(ck({ session: false }), HOST)).toBe(false)
     expect(R.isKeptCookieChange(ck({ domain: '.google.com', hostOnly: false }), HOST)).toBe(false)
-    for (const k of ['installer', 'dev']) expect(R.defaultKeepLogin(k)).toBe(true)
-    for (const k of ['portable', 'temp-copy', 'unknown', undefined, null, '', 'INSTALLER']) expect(R.defaultKeepLogin(k)).toBe(false)
+    for (const k of ['installer', 'dev', 'mac-applications']) expect(R.defaultKeepLogin(k)).toBe(true)
+    for (const k of ['portable', 'temp-copy', 'mac-translocated', 'mac-volume', 'mac-other', 'unknown', undefined, null, '', 'INSTALLER']) expect(R.defaultKeepLogin(k)).toBe(false)
+  })
+
+  it('macOS default: a packaged app in Applications counts as installed (on); translocated / on a volume / elsewhere stays off', () => {
+    const def = (platform: string, kind: unknown, inApplications: boolean) => R.resolveKeepLogin(null, R.keepLoginPlacement({ platform, kind, inApplications }))
+    // updater-rules.placement has no Mac kinds yet: a packaged darwin build is 'portable' ('temp-copy' when translocated)
+    expect(R.keepLoginPlacement({ platform: 'darwin', kind: 'portable', inApplications: true })).toBe('mac-applications')
+    expect(def('darwin', 'portable', true)).toBe(true)
+    for (const kind of ['portable', 'temp-copy', 'mac-translocated', 'mac-volume', 'mac-other', 'unknown']) expect(def('darwin', kind, false), kind).toBe(false)
+    expect(R.keepLoginPlacement({ platform: 'darwin', kind: 'mac-applications', inApplications: false })).toBe('mac-applications')
+    expect(R.keepLoginPlacement({ platform: 'darwin', kind: 'dev', inApplications: true })).toBe('dev')
+    // other platforms: the kind as is (never 'mac-applications', whatever the flag says)
+    expect(R.keepLoginPlacement({ platform: 'win32', kind: 'installer', inApplications: false })).toBe('installer')
+    expect(R.keepLoginPlacement({ platform: 'win32', kind: 'portable', inApplications: true })).toBe('portable')
+    expect(R.keepLoginPlacement({ platform: 'linux', kind: 'portable', inApplications: true })).toBe('portable')
+    expect(R.keepLoginPlacement({ platform: 'win32', kind: undefined, inApplications: false })).toBe('unknown')
+    expect(def('win32', 'installer', false)).toBe(true)
+    expect(def('win32', 'portable', false)).toBe(false)
   })
 
   it('statusVerdict: canvasapp decides — only an explicit answer accepts or refuses', () => {
@@ -437,13 +457,21 @@ function fakeCrypto() {
   }
 }
 
-function fakeFs() {
+function fakeFs(now: () => number = () => T0) {
   const files = new Map<string, Uint8Array>()
+  const mtimes = new Map<string, number>()
   const st = { rmFails: new Set<string>(), writeFails: new Set<string>(), ops: [] as string[] }
   const err = (code: string) => Object.assign(new Error(code), { code })
   return {
     files,
+    mtimes,
     st,
+    async stat(p: string) {
+      st.ops.push(`stat ${p}`)
+      const b = files.get(p)
+      if (!b) throw err('ENOENT')
+      return { size: b.length, mtimeMs: mtimes.get(p) ?? now() }
+    },
     async readFile(p: string) {
       st.ops.push(`read ${p}`)
       const b = files.get(p)
@@ -454,18 +482,22 @@ function fakeFs() {
       st.ops.push(`write ${p}`)
       if (st.writeFails.has(p)) throw err('EPERM')
       files.set(p, typeof data === 'string' ? enc.encode(data) : new Uint8Array(data))
+      mtimes.set(p, now())
     },
     async rm(p: string) {
       st.ops.push(`rm ${p}`)
       if (st.rmFails.has(p)) throw err('EPERM')
       files.delete(p)
+      mtimes.delete(p)
     },
     async rename(from: string, to: string) {
       st.ops.push(`rename ${from} ${to}`)
       const b = files.get(from)
       if (!b) throw err('ENOENT')
       files.set(to, b)
+      mtimes.set(to, mtimes.get(from) ?? now())
       files.delete(from)
+      mtimes.delete(from)
     },
   }
 }
@@ -502,9 +534,9 @@ type World = ReturnType<typeof world>
 function world(opts: { fsp?: ReturnType<typeof fakeFs>; crypto?: ReturnType<typeof fakeCrypto>; clock?: { t: number }; enabled?: boolean } = {}) {
   const cookies = fakeCookies()
   const crypto = opts.crypto ?? fakeCrypto()
-  const fsp = opts.fsp ?? fakeFs()
-  const timers = fakeTimers()
   const clock = opts.clock ?? { t: T0 }
+  const fsp = opts.fsp ?? fakeFs(() => clock.t)
+  const timers = fakeTimers()
   const caps: (() => void)[] = []
   const sleeps: number[] = []
   const keep = R.createCanvasappKeepLogin({
@@ -676,16 +708,47 @@ describe('keep-login: restore at the first canvasapp use', () => {
     expect(await v1.restart().keep.restore()).toEqual({ restored: 2 })
   })
 
-  it('shouldReEncrypt → the copy is written again', async () => {
+  it('shouldReEncrypt → the same copy is written again with the new key — savedAt kept (re-encrypting is not a renewal)', async () => {
     const w1 = world()
     await loggedIn(w1)
+    let w = w1
+    // a key provider that asks at every start (key rotation, a Keychain identity change) never extends the 30 days
+    for (const day of [10, 20, 29]) {
+      w.clock.t = T0 + day * DAY
+      w = w.restart()
+      w.crypto.st.reEncrypt = true
+      const encBefore = w.crypto.st.calls.enc
+      expect(await w.keep.restore()).toEqual({ restored: 2 })
+      await tick()
+      expect(w.crypto.st.calls.enc, `day ${day}`).toBe(encBefore + 1)
+      expect(w.copy()!.savedAt, `day ${day}`).toBe(T0)
+      expect(w.copy()!.cookies).toHaveLength(2)
+    }
+    w.clock.t = T0 + 30 * DAY + 1
+    const late = w.restart()
+    expect(await late.keep.restore()).toEqual({ restored: 0 })
+    expect(late.fsp.files.has(FILE)).toBe(false)
+  })
+
+  it('a re-encryption never overwrites a login written meanwhile', async () => {
+    const w1 = world()
+    await loggedIn(w1)
+    w1.clock.t = T0 + 5 * DAY
     const w2 = w1.restart()
     w2.crypto.st.reEncrypt = true
-    const encBefore = w2.crypto.st.calls.enc
-    await w2.keep.restore()
+    const g = gate()
+    w2.crypto.st.decryptGate = g.promise
+    const restoring = w2.keep.restore()
     await tick()
-    expect(w2.crypto.st.calls.enc).toBe(encBefore + 1)
-    expect(w2.copy()!.cookies).toHaveLength(2)
+    // a new login finishes while the restore waits (its save queues before the re-encryption)
+    w2.put(ck({ value: 'SECRET-sid-new-login' }))
+    const login = w2.keep.loggedIn()
+    g.open()
+    await restoring
+    await login
+    await tick()
+    expect(w2.copy()!.savedAt).toBe(T0 + 5 * DAY)
+    expect(w2.copy()!.cookies.find((e) => e.name === 'sid')!.value).toBe('SECRET-sid-new-login')
   })
 
   it('a logout started while the restore waits for the decryption: never armed, nothing put back', async () => {
@@ -847,6 +910,37 @@ describe('keep-login: saving', () => {
     expect(() => w.keep.onChanged({}, { domain: 7 })).not.toThrow()
   })
 
+  it('safeStorage failing while saving deletes the previous copy too: nothing stays kept that Cài đặt says is not kept', async () => {
+    const w = world()
+    await loggedIn(w)
+    expect(w.fsp.files.has(FILE)).toBe(true)
+    w.crypto.st.encryptThrows = true // e.g. a Keychain "Deny", a DPAPI error
+    w.put(ck({ value: 'SECRET-sid-renewed' }))
+    w.timers.fire()
+    await tick()
+    expect(w.fsp.files.has(FILE)).toBe(false)
+    expect(w.keep.state().available).toBe(false)
+    expect(await w.restart().keep.restore()).toEqual({ restored: 0 })
+    // encryption works again: the next change keeps the login again
+    w.crypto.st.encryptThrows = false
+    w.put(ck({ value: 'SECRET-sid-3' }))
+    w.timers.fire()
+    await tick()
+    expect(w.copy()!.cookies.find((e) => e.name === 'sid')!.value).toBe('SECRET-sid-3')
+    expect(w.keep.state().available).toBe(true)
+  })
+
+  it('loggedIn reports kept only when a copy is really on disk (a failed write, no session cookie → kept: false)', async () => {
+    const w = world()
+    w.fsp.st.writeFails.add(FILE + '.tmp')
+    expect(await loggedIn(w)).toEqual({ kept: false })
+    const p = world()
+    p.put(ck({ name: 'auth', session: false, expirationDate: T0 / 1000 + 86_400 })) // only a persistent login cookie
+    await p.keep.restore()
+    expect(await p.keep.loggedIn()).toEqual({ kept: false })
+    expect(p.fsp.files.has(FILE)).toBe(false)
+  })
+
   it('loggedIn writes and flushes at once (no debounce); switched off → kept: false', async () => {
     const w = world()
     w.put(ck())
@@ -969,15 +1063,100 @@ describe('keep-login: canvasapp refuses (rejected) — judged by the kept-cookie
     expect(w.fsp.files.has(FILE)).toBe(true)
   })
 
-  it('a kept cookie changed between the request and the refusal → ignored (the refusal was about the old one)', async () => {
+  it('a kept cookie changed between the request and the refusal → the copy stays, but nothing is written until canvasapp confirms the new cookie', async () => {
     const w = world()
     await loggedIn(w)
     const m = w.keep.mark()
-    w.put(ck({ value: 'NEWER' }))
+    w.put(ck({ value: 'NEWER' })) // a renewal by another answer — or set by the refusal itself: cannot tell
     await w.keep.rejected(m)
     w.timers.fire()
     await tick()
-    expect(w.copy()!.cookies.find((e) => e.name === 'sid')!.value).toBe('NEWER')
+    const sid = () => w.copy()!.cookies.find((e) => e.name === 'sid')!.value
+    expect(sid()).toBe('SECRET-sid-1') // not deleted, not rewritten
+    await w.keep.confirmed(m) // about the refused cookies: never re-arms
+    w.put(ck({ value: 'NEWER' }))
+    w.timers.fire()
+    await tick()
+    expect(sid()).toBe('SECRET-sid-1')
+    await w.keep.confirmed(w.keep.mark()) // canvasapp accepts the newer cookie
+    expect(sid()).toBe('NEWER')
+  })
+
+  it('a refusal that itself sets a kept cookie (a new canvas_csrf): the dead login is never saved again, savedAt unchanged, and it ages out', async () => {
+    const w1 = world()
+    await loggedIn(w1)
+    let w = w1
+    for (const day of [10, 20]) {
+      w.clock.t = T0 + day * DAY
+      w = w.restart()
+      expect(await w.keep.restore()).toEqual({ restored: 2 })
+      const writes0 = writesOf(w)
+      const m = w.keep.mark()
+      w.put(csrf(`SECRET-csrf-anon-${day}`)) // Set-Cookie of the refusal: 'changed' fires before the body is read
+      await w.keep.rejected(m)
+      w.timers.fire()
+      await tick()
+      expect(writesOf(w), `day ${day}`).toBe(writes0)
+      expect(w.copy()!.savedAt, `day ${day}`).toBe(T0)
+      // a confirmation sent earlier with the same cookies never re-arms it
+      await w.keep.confirmed(m)
+      w.put(csrf(`SECRET-csrf-anon-${day}-2`))
+      w.timers.fire()
+      await tick()
+      expect(writesOf(w), `day ${day}`).toBe(writes0)
+    }
+    w.clock.t = T0 + 30 * DAY + 1
+    expect(await w.restart().keep.restore()).toEqual({ restored: 0 })
+  })
+
+  it('a copy rewritten after the refused request left (a slow answer) is deleted by the refusal: it may hold what the refusal set', async () => {
+    const w1 = world()
+    await loggedIn(w1)
+    w1.clock.t = T0 + 10 * DAY
+    const w = w1.restart()
+    await w.keep.restore()
+    const m = w.keep.mark()
+    w.put(csrf('SECRET-csrf-anon'))
+    w.timers.fire() // the debounce ran out before the body was read
+    await tick()
+    expect(w.copy()!.savedAt).toBe(T0 + 10 * DAY)
+    await w.keep.rejected(m)
+    expect(w.fsp.files.has(FILE)).toBe(false)
+    w.put(csrf('SECRET-csrf-anon-2'))
+    w.timers.fire()
+    await tick()
+    expect(w.fsp.files.has(FILE)).toBe(false)
+  })
+
+  it('a confirmation sent before a refusal (same cookies) never brings the dropped copy back', async () => {
+    const w = world()
+    await loggedIn(w)
+    const mA = w.keep.mark() // GET /api/me sent
+    const mB = w.keep.mark() // GET /api/auth/state sent; the session dies in between on canvasapp's side
+    await w.keep.rejected(mB) // B answers first: refused
+    expect(w.fsp.files.has(FILE)).toBe(false)
+    await w.keep.confirmed(mA) // A's late 200
+    await tick()
+    expect(w.fsp.files.has(FILE)).toBe(false)
+    w.put(ck({ value: 'SECRET-sid-x' }))
+    w.timers.fire()
+    await tick()
+    expect(w.fsp.files.has(FILE)).toBe(false)
+  })
+
+  it('a refusal sent before a login and answered after it never drops or disarms that login (even with a persistent login cookie)', async () => {
+    const w = world()
+    w.put(csrf())
+    await w.keep.restore()
+    const stale = w.keep.mark() // the login window's /api/auth/state poll, sent while still logged out
+    w.put(ck({ name: 'auth', value: 'SECRET-auth', session: false, expirationDate: T0 / 1000 + 86_400 }))
+    expect(await w.keep.loggedIn()).toEqual({ kept: true })
+    await w.keep.rejected(stale)
+    expect(w.fsp.files.has(FILE)).toBe(true)
+    w.put(csrf('SECRET-csrf-2'))
+    w.timers.fire()
+    await tick()
+    expect(w.copy()!.cookies.find((e) => e.name === 'canvas_csrf')!.value).toBe('SECRET-csrf-2') // still armed
   })
 
   it('a Cloudflare / persistent / other-host cookie set by the 401 itself does NOT hide the refusal', async () => {
@@ -1000,6 +1179,67 @@ describe('keep-login: canvasapp refuses (rejected) — judged by the kept-cookie
     await w2.keep.rejected(early)
     expect(w2.fsp.files.has(FILE)).toBe(true)
     await w2.keep.rejected(null)
+  })
+})
+
+describe('keep-login: start-up sweep (stat only — never reads or decrypts the copy)', () => {
+  const readsOf = (w: World) => w.fsp.st.ops.filter((o) => o === `read ${FILE}`).length
+
+  it('a copy last written more than 30 days ago is deleted at start, even if canvasapp is never used in that run', async () => {
+    const w1 = world()
+    await loggedIn(w1)
+    w1.clock.t = T0 + 30 * DAY - 1000
+    const w2 = w1.restart()
+    const calls0 = { ...w2.crypto.st.calls }
+    const reads0 = readsOf(w2)
+    await w2.keep.sweep()
+    expect(w2.fsp.files.has(FILE)).toBe(true) // within the limit: left alone
+    w2.clock.t = T0 + 30 * DAY + 1
+    const w3 = w2.restart()
+    await w3.keep.sweep()
+    expect(w3.fsp.files.has(FILE)).toBe(false)
+    expect(w3.crypto.st.calls).toEqual(calls0) // no safeStorage at all
+    expect(readsOf(w3)).toBe(reads0) // never read
+  })
+
+  it('switched off, a forget marker, an empty or oversized copy → deleted at start; a fresh copy is restored as usual', async () => {
+    const off = world()
+    await loggedIn(off)
+    const offNext = off.restart({ enabled: false })
+    await offNext.keep.sweep()
+    expect(offNext.fsp.files.has(FILE)).toBe(false)
+
+    const marked = world()
+    await loggedIn(marked)
+    marked.fsp.files.set(MARKER, new Uint8Array(0))
+    const markedNext = marked.restart()
+    await markedNext.keep.sweep()
+    expect(markedNext.fsp.files.has(FILE)).toBe(false)
+    expect(markedNext.fsp.files.has(MARKER)).toBe(false)
+
+    for (const bytes of [new Uint8Array(0), new Uint8Array(R.KEEP_LOGIN_MAX_FILE_BYTES + 1)]) {
+      const w = world()
+      w.fsp.files.set(FILE, bytes)
+      await w.keep.sweep()
+      expect(w.fsp.files.has(FILE)).toBe(false)
+    }
+
+    const fresh = world()
+    await loggedIn(fresh)
+    const freshNext = fresh.restart()
+    await freshNext.keep.sweep()
+    expect(await freshNext.keep.restore()).toEqual({ restored: 2 })
+  })
+
+  it('no copy, or an fs without stat → nothing happens, never throws', async () => {
+    const w = world()
+    await expect(w.keep.sweep()).resolves.toBeUndefined()
+    const bare = fakeFs()
+    const noStat = Object.assign(bare, { stat: undefined }) as unknown as ReturnType<typeof fakeFs>
+    const v = world({ fsp: noStat })
+    v.fsp.files.set(FILE, new Uint8Array(0))
+    await expect(v.keep.sweep()).resolves.toBeUndefined()
+    expect(v.fsp.files.has(FILE)).toBe(true)
   })
 })
 
@@ -1114,7 +1354,18 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(cryptoObj).toContain('await safeStorage.isAsyncEncryptionAvailable()')
     expect(mainCode).not.toMatch(/encryptString\(|decryptString\(|setUsePlainTextEncryption/)
     expect(cryptoObj).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'")
-    expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, appPlacement().kind)')
+    expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind())')
+    // the start-up sweep only stats the copy (after the object exists)
+    order(start, ['canvasappKeep = keepLoginRules.createCanvasappKeepLogin({', 'void canvasappKeep.sweep()'])
+    // macOS "installed" = in Applications: asked behind the darwin guard, in its own try, never inside appPlacement
+    const kind = fnBody('keepLoginPlacementKind')
+    order(kind, [
+      "if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {",
+      'inApplications = app.isInApplicationsFolder() === true',
+      'keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications })',
+    ])
+    expect(fnBody('appPlacement')).not.toContain('isInApplicationsFolder')
+    expect(count(mainCode, 'isInApplicationsFolder()')).toBe(1)
     expect(start).toContain('canvasappKeepPrefs = readCanvasappKeepPrefs()')
     expect(start).toContain("file: path.join(app.getPath('userData'), CANVASAPP_LOGIN_FILE)")
     expect(mainCode).toContain("const CANVASAPP_LOGIN_FILE = 'canvasapp-login.bin'")
