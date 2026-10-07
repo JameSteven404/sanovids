@@ -7,13 +7,18 @@ import {
   createDevUpdatesBridge,
   DEV_CHECK_MS,
   DEV_INSTALL_MS,
+  DEV_NEXT_CHECK_LABEL,
+  DEV_NEXT_CHECKS,
+  DEV_UPDATE_KIND_OPTIONS,
   DEV_UPDATE_SIZE,
   DEV_UPDATES_DRAFT_DEFAULT,
   devUpdatesInitialState,
+  keepMacFlag,
   nextPatchVersion,
   reduceDevUpdateState,
   type DevUpdatesStore,
 } from '../dev/updates'
+import { parseUpdateState, UPDATE_KINDS } from '../../lib/updateModel'
 import type { UpdateState } from '../../lib/updateTypes'
 import pkg from '../../../package.json'
 
@@ -222,5 +227,165 @@ describe('simulated updater', () => {
     expect(reduceDevUpdateState(s, { type: 'install-error', error: { code: 'install-failed', message: 'x' } }, 1)).toMatchObject({ status: 'ready', error: { code: 'install-failed' } })
     expect(nextPatchVersion('0.5.9')).toBe('0.5.10')
     expect(nextPatchVersion('1.2.3-beta.1')).toBe('1.2.4')
+  })
+})
+
+describe('simulated updater: the Mac build (mac-manual) only checks', () => {
+  async function check(sim: ReturnType<typeof setup>['sim']) {
+    const p = sim.check()
+    await vi.advanceTimersByTimeAsync(DEV_CHECK_MS)
+    return p
+  }
+
+  it('finds the update but never downloads or installs (auto-download on or not)', async () => {
+    const { sim, state } = setup()
+    sim.simulate({ kind: 'mac-manual' })
+    expect(state()).toEqual({ kind: 'mac-manual', current: CUR, status: 'idle', autoDownload: true })
+    expect(await check(sim)).toEqual({ ok: true })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'available', version: NEW })
+    expect(await sim.download()).toEqual({ ok: false, code: 'unsupported', message: 'Chỉ bản cài mới tự tải được bản cập nhật.' })
+    expect(await sim.install()).toEqual({ ok: false, code: 'unsupported', message: 'Bản này không tự cài được.' })
+    expect(await sim.setPrefs({ autoDownload: true })).toEqual({ ok: true })
+    sim.announce()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(state().status).toBe('available')
+  })
+
+  it('"Bản mới chỉ có cho Windows": the Mac build gets none + noMacBuild, Windows builds see the update', async () => {
+    const { sim, state } = setup()
+    sim.setNextCheck('windows-only')
+    expect(DEV_NEXT_CHECK_LABEL['windows-only']).toBe('Bản mới chỉ có cho Windows')
+    sim.simulate({ kind: 'mac-manual' })
+    expect(await check(sim)).toEqual({ ok: true })
+    expect(state()).toEqual({ kind: 'mac-manual', current: CUR, status: 'none', autoDownload: true, lastCheck: expect.any(Number), noMacBuild: true })
+    sim.simulate({ kind: 'portable' })
+    expect(await check(sim)).toEqual({ ok: true })
+    expect(state()).toMatchObject({ kind: 'portable', status: 'available', version: NEW })
+    expect(state()).not.toHaveProperty('noMacBuild')
+    sim.simulate({ kind: 'installer' })
+    expect(await check(sim)).toEqual({ ok: true })
+    expect(state()).toMatchObject({ kind: 'installer', status: 'downloading', version: NEW })
+    expect(state()).not.toHaveProperty('noMacBuild')
+  })
+
+  it('the noMacBuild flag is reset by every other state (check, error, another kind, markNone)', async () => {
+    const { sim, state, pushes } = setup()
+    sim.markNoMacBuild()
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'none', noMacBuild: true })
+    // a new check: 'checking' already drops it, a plain "nothing newer" never brings it back
+    sim.setNextCheck('none')
+    const n = pushes.length
+    expect(await check(sim)).toEqual({ ok: true })
+    expect(pushes.slice(n).map((s) => [s.status, 'noMacBuild' in s])).toEqual([
+      ['checking', false],
+      ['none', false],
+    ])
+    // the Mac feed is back with a newer version
+    sim.markNoMacBuild()
+    sim.setNextCheck('available')
+    await check(sim)
+    expect(state()).toMatchObject({ status: 'available', version: NEW })
+    expect(state()).not.toHaveProperty('noMacBuild')
+    // a failed check
+    sim.markNoMacBuild()
+    sim.setNextCheck('offline')
+    expect(await check(sim)).toMatchObject({ ok: false, code: 'offline' })
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'error' })
+    expect(state()).not.toHaveProperty('noMacBuild')
+    sim.markNoMacBuild()
+    sim.failNetwork()
+    expect(state()).not.toHaveProperty('noMacBuild')
+    sim.markNoMacBuild()
+    sim.markNone()
+    expect(state()).toEqual({ kind: 'mac-manual', current: CUR, status: 'none', autoDownload: true, lastCheck: expect.any(Number) })
+    // another kind of build is another launch
+    sim.markNoMacBuild()
+    sim.simulate({ kind: 'installer' })
+    expect(state()).toEqual({ kind: 'installer', current: CUR, status: 'idle', autoDownload: true })
+    // a patch can only set it where it may live
+    sim.simulate({ status: 'none', noMacBuild: true })
+    expect(state()).not.toHaveProperty('noMacBuild')
+    sim.simulate({ kind: 'mac-manual', status: 'none', noMacBuild: true })
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'none', noMacBuild: true })
+    sim.simulate({ status: 'available', version: '9.9.9' })
+    expect(state()).not.toHaveProperty('noMacBuild')
+    sim.reset()
+    expect(state()).toEqual(devUpdatesInitialState())
+  })
+
+  it('downloading / ready / a refused download need the installer: Portable and Mac become the installer', () => {
+    const { sim, state } = setup()
+    for (const kind of ['mac-manual', 'portable'] as const) {
+      sim.simulate({ kind })
+      sim.runDownload()
+      expect(state()).toMatchObject({ kind: 'installer', status: 'downloading' })
+      sim.simulate({ kind })
+      sim.markReady()
+      expect(state()).toMatchObject({ kind: 'installer', status: 'ready' })
+      sim.simulate({ kind })
+      sim.failSignature()
+      expect(state()).toMatchObject({ kind: 'installer', status: 'error', error: { code: 'signature' } })
+    }
+    // a direct patch cannot make a check-only build download either
+    sim.simulate({ kind: 'mac-manual', status: 'downloading', percent: 40 })
+    expect(state()).toEqual({ kind: 'mac-manual', current: CUR, status: 'idle', autoDownload: true })
+    // the check-only states stay with their build
+    sim.announce()
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'available' })
+    sim.simulate({ status: 'ready' })
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'available' })
+    sim.failNetwork()
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'error', error: { code: 'offline' } })
+    sim.reset()
+    sim.markNoMacBuild() // from the dev build
+    expect(state()).toMatchObject({ kind: 'mac-manual', status: 'none', noMacBuild: true })
+  })
+
+  it('every simulated state is a valid contract state (parseUpdateState keeps it as it is)', async () => {
+    const { sim, state, pushes } = setup()
+    const fallback: UpdateState = { kind: 'dev', status: 'unsupported', current: '', autoDownload: false }
+    sim.simulate({ kind: 'mac-manual' })
+    for (const o of DEV_NEXT_CHECKS) {
+      sim.setNextCheck(o)
+      await check(sim)
+    }
+    sim.markNoMacBuild()
+    sim.announce()
+    sim.failNetwork()
+    sim.markNone()
+    sim.simulate({ kind: 'portable' })
+    await check(sim)
+    sim.runDownload()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(state().status).toBe('ready')
+    expect(pushes.length).toBeGreaterThan(10)
+    for (const s of pushes) expect(parseUpdateState(s, fallback), JSON.stringify(s)).toEqual(s)
+  })
+
+  it('reducer: the flag only on a mac-manual "not-available", kept while the state stays none', () => {
+    const none: UpdateState = { kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, noMacBuild: true }
+    const checking: UpdateState = { kind: 'mac-manual', current: '0.6.0', status: 'checking', autoDownload: true }
+    expect(reduceDevUpdateState(checking, { type: 'not-available', noMacBuild: true }, 5)).toEqual({ ...none, lastCheck: 5 })
+    expect(reduceDevUpdateState(none, { type: 'prefs', autoDownload: false }, 5)).toEqual({ ...none, autoDownload: false })
+    expect(reduceDevUpdateState(none, { type: 'checking' }, 5)).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'checking', autoDownload: true })
+    expect(reduceDevUpdateState(none, { type: 'not-available' }, 6)).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: 6 })
+    const win: UpdateState = { kind: 'installer', current: '0.6.0', status: 'checking', autoDownload: true }
+    expect(reduceDevUpdateState(win, { type: 'not-available', noMacBuild: true }, 7)).toEqual({ ...win, status: 'none', lastCheck: 7 })
+    expect(keepMacFlag({ ...win, status: 'none', noMacBuild: true })).toEqual({ ...win, status: 'none' })
+    const plain: UpdateState = { kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true }
+    expect(keepMacFlag(plain)).toBe(plain)
+    expect(keepMacFlag(none)).toBe(none)
+  })
+
+  it('controls: the next-check list, the kind list and garbage refused', () => {
+    expect(DEV_NEXT_CHECKS).toEqual(Object.keys(DEV_NEXT_CHECK_LABEL))
+    expect(DEV_UPDATE_KIND_OPTIONS.map((o) => o.id)).toEqual(UPDATE_KINDS)
+    expect(DEV_UPDATE_KIND_OPTIONS.find((o) => o.id === 'mac-manual')?.label).toBe('Bản cho Mac')
+    const { sim, store } = setup()
+    sim.setNextCheck('windows-only')
+    sim.setNextCheck('mac' as never)
+    sim.setNextCheck(undefined as never)
+    expect(store.getState().nextCheck).toBe('windows-only')
   })
 })

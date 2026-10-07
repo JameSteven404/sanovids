@@ -1,6 +1,11 @@
 // Shared contract of the desktop auto-updater: electron/updater.cjs (main) ⇄ electron/preload.cjs ⇄ renderer.
 // Plain data only. Main validates every call; the renderer validates every state it receives (updateModel.parseUpdateState).
-export type UpdateKind = 'installer' | 'portable' | 'dev'
+/**
+ * 'installer': the Windows Setup build (downloads and installs updates). 'portable': the Windows Portable build (check
+ * only). 'mac-manual': the Mac build (check only — an ad-hoc signed app cannot install updates: never downloads or
+ * installs; the user replaces the app from the new .dmg). 'dev': running from the sources (no updates).
+ */
+export type UpdateKind = 'installer' | 'portable' | 'mac-manual' | 'dev'
 export type UpdateStatus = 'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'ready' | 'error' | 'unsupported'
 /**
  * 'signature': the update is NOT signed by a pinned certificate (another signer, a modified file, no signature) — it was
@@ -46,6 +51,12 @@ export interface UpdateState {
   /** Main's copy of the device pref (renderer lib/updatePrefs is the source of truth and pushes it). */
   autoDownload: boolean
   notice?: UpdateNotice
+  /**
+   * Only with kind 'mac-manual' + status 'none': the newest release has no Mac build (a Windows-only release, or its
+   * latest-mac.yml is missing). It does NOT mean this is the newest version — just that no newer Mac build exists.
+   * Exactly `true` or absent; main drops it on every other state, the renderer drops anything else (parseUpdateState).
+   */
+  noMacBuild?: true
 }
 export type UpdateResult = { ok: true } | { ok: false; code: UpdateResultCode; message: string }
 export interface UpdatePrefsArg { autoDownload: boolean }

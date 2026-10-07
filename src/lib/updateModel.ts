@@ -2,7 +2,9 @@
 // stores, no React, no bridge. Tested in __tests__/updateModel.test.ts. The contract is lib/updateTypes.ts.
 //
 // ---- API ----
-//   KIND_LABEL / STATUS_LABEL                 'Bản cài' / 'Bản portable' / 'Bản phát triển'; short status words.
+//   KIND_LABEL / STATUS_LABEL                 'Bản cài' / 'Bản portable' / 'Bản cho Mac' / 'Bản phát triển'; short status words.
+//   statusLabel(state)                        the short status word of a state (no Mac build ≠ "Bản mới nhất").
+//   isCheckOnly(kind)                         'portable' / 'mac-manual': finds updates, never downloads or installs them.
 //   UPDATE_ERROR_TEXT                         the fixed Vietnamese error texts (same as electron/updater-rules.cjs).
 //   parseUpdateState(raw, fallback)           untrusted state (IPC / dev bridge) → a valid UpdateState.
 //   noteBlocks(notes)                         release notes → text blocks (heading / list item / paragraph). Never HTML.
@@ -10,7 +12,9 @@
 //   installBlockers(counts)                   "đang có việc chưa xong" lines shown before restarting.
 //   pillView(state, ctx)                      the top-bar pill (null = hidden).
 //   dialogView(state, ctx)                    status text, hint, callout and buttons of the dialog.
-//   settingsStatusLine / settingsIntroTitle / autoDownloadNote   Settings → Cập nhật texts.
+//   settingsStatusLine / settingsStatusNote / settingsIntroTitle / autoDownloadNote   Settings → Cập nhật texts.
+//   NO_MAC_BUILD_LABEL / NO_MAC_BUILD_NOTE    what a Mac build says when the newest release has no Mac build.
+//   MAC_MANUAL_UPDATE_TEXT                    how a Mac build is updated by hand (the dialog of an available update).
 //   manualCheckToast(state, result)           the toast after "Kiểm tra ngay" (automatic checks never toast).
 //   noticeToast(notice)                       the toast after a restart that installed (or failed to install) an update.
 //   isSignatureError(error) / signatureToastKey(state)   an update refused / not verifiable for its code signature.
@@ -26,7 +30,7 @@ import {
   type UpdateStatus,
 } from './updateTypes'
 
-export const UPDATE_KINDS: readonly UpdateKind[] = ['installer', 'portable', 'dev']
+export const UPDATE_KINDS: readonly UpdateKind[] = ['installer', 'portable', 'mac-manual', 'dev']
 export const UPDATE_STATUSES: readonly UpdateStatus[] = ['idle', 'checking', 'none', 'available', 'downloading', 'ready', 'error', 'unsupported']
 export const UPDATE_ERROR_CODES: readonly UpdateErrorCode[] = [
   'offline',
@@ -40,7 +44,15 @@ export const UPDATE_ERROR_CODES: readonly UpdateErrorCode[] = [
   'failed',
 ]
 
-export const KIND_LABEL: Record<UpdateKind, string> = { installer: 'Bản cài', portable: 'Bản portable', dev: 'Bản phát triển' }
+export const KIND_LABEL: Record<UpdateKind, string> = { installer: 'Bản cài', portable: 'Bản portable', 'mac-manual': 'Bản cho Mac', dev: 'Bản phát triển' }
+
+/**
+ * Builds that only check for updates: the Windows Portable build and the Mac build (ad-hoc signed, so the system would
+ * refuse an automatic update). They never download or install — the dialog points to the download page.
+ */
+export function isCheckOnly(kind: UpdateKind): kind is 'portable' | 'mac-manual' {
+  return kind === 'portable' || kind === 'mac-manual'
+}
 
 export const STATUS_LABEL: Record<UpdateStatus, string> = {
   idle: 'Chưa kiểm tra',
@@ -51,6 +63,15 @@ export const STATUS_LABEL: Record<UpdateStatus, string> = {
   ready: 'Sẵn sàng cập nhật',
   error: 'Lỗi',
   unsupported: 'Không tự cập nhật',
+}
+
+/** A Mac build whose newest release has no Mac build: never "Bản mới nhất" (a newer Windows-only release may exist). */
+export const NO_MAC_BUILD_LABEL = 'Chưa có bản cho Mac mới hơn bản đang dùng'
+export const NO_MAC_BUILD_NOTE = 'Bản mới nhất trên trang tải về chưa có file cho Mac. Bạn vẫn đang dùng được bản hiện tại.'
+
+/** The short status word of a state (STATUS_LABEL, except a Mac build with no newer Mac build). */
+export function statusLabel(state: Pick<UpdateState, 'status' | 'noMacBuild'>): string {
+  return state.status === 'none' && state.noMacBuild === true ? NO_MAC_BUILD_LABEL : STATUS_LABEL[state.status]
 }
 
 /** Fixed error texts (main sends the same ones; the development-mode simulation uses these). */
@@ -113,10 +134,13 @@ function parseNotice(v: unknown): UpdateNotice | undefined {
 /**
  * An update state received over IPC (or from the development-mode bridge) → a valid UpdateState. Enums are checked,
  * strings capped, numbers finite and ≥ 0 (percent 0..100); a wrong optional field is dropped. A wrong root, kind or
- * status gives `fallback` (the state the UI already shows).
+ * status gives `fallback` (the state the UI already shows), and so does a check-only build (Portable, Mac) said to be
+ * downloading or ready — those builds never download. `noMacBuild` is kept only as exactly `true` on a 'mac-manual' +
+ * 'none' state (anything else drops the field, never the state).
  */
 export function parseUpdateState(raw: unknown, fallback: UpdateState): UpdateState {
   if (!isObj(raw) || !inList(UPDATE_KINDS, raw.kind) || !inList(UPDATE_STATUSES, raw.status)) return fallback
+  if (isCheckOnly(raw.kind) && (raw.status === 'downloading' || raw.status === 'ready')) return fallback
   const out: UpdateState = {
     kind: raw.kind,
     current: typeof raw.current === 'string' ? raw.current.slice(0, 64) : fallback.current,
@@ -140,6 +164,7 @@ export function parseUpdateState(raw: unknown, fallback: UpdateState): UpdateSta
   if (error) out.error = error
   const notice = parseNotice(raw.notice)
   if (notice) out.notice = notice
+  if (raw.noMacBuild === true && out.kind === 'mac-manual' && out.status === 'none') out.noMacBuild = true
   return out
 }
 
@@ -301,7 +326,7 @@ const waitWhat = (activeJobs: number | undefined) => (activeJobs && activeJobs >
 export function pillView(state: UpdateState, ctx: { installWhenIdle: boolean; activeJobs: number }): PillView | null {
   const v = state.version
   if (state.kind === 'dev' || !v) return null
-  if (state.kind === 'portable') {
+  if (isCheckOnly(state.kind)) {
     return state.status === 'available' ? { tone: 'available', long: 'Bản mới ', short: v, title: `Có bản SanoVids ${v} — bấm để xem cách tải`, version: v } : null
   }
   switch (state.status) {
@@ -402,6 +427,11 @@ export const SIGNATURE_CHECK_CALLOUT = {
   note: 'Cùng tên tác giả mà khác dấu vân tay là bản giả mạo: đừng cài, hãy báo cho tác giả.',
 } as const
 const SIGNATURE_RETRY_HINT = 'Nếu vẫn lỗi sau khi thử lại, có thể tải bộ cài ở trang tải về — nhớ kiểm tra chữ ký số trước khi cài.'
+const PORTABLE_AVAILABLE_TEXT =
+  'Bản portable không tự cài được. Tải bản mới ở trang tải về rồi dùng file đó thay file cũ — dự án và cài đặt giữ nguyên. Muốn từ nay tự cập nhật, hãy cài bản Setup.'
+/** How a Mac user updates by hand (the Mac build is not signed by Apple, so it cannot update itself). */
+export const MAC_MANUAL_UPDATE_TEXT =
+  'Bản cho Mac chưa tự cập nhật được (chưa có chữ ký của Apple). Thoát SanoVids (⌘Q), tải file .dmg mới ở trang tải về, mở ra rồi kéo SanoVids vào thư mục Applications và chọn “Thay thế” — dự án và cài đặt giữ nguyên. Lần đầu mở bản mới, macOS sẽ hỏi lại: vào Cài đặt hệ thống → Quyền riêng tư & Bảo mật → “Vẫn mở”.'
 
 /** "Đang tải về… 42% · 41 MB / 98 MB · 2,1 MB/giây" (unknown parts left out). */
 export function downloadLine(state: Pick<UpdateState, 'percent' | 'transferred' | 'total' | 'bytesPerSecond'>): string {
@@ -424,6 +454,7 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
     case 'checking':
       return { ...base, statusText: 'Đang kiểm tra bản mới…', actions: [CLOSE] }
     case 'none':
+      if (state.noMacBuild === true) return { ...base, statusText: `${NO_MAC_BUILD_LABEL} (${state.current}).`, hint: NO_MAC_BUILD_NOTE, actions: [CLOSE] }
       return { ...base, statusText: `Bạn đang dùng bản mới nhất (${state.current}).`, actions: [CLOSE] }
     case 'error':
       // Refused for its signature: never retried automatically, its notes are not shown (they come from whoever
@@ -434,7 +465,8 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
           ...base,
           headline: state.version ? `Bản ${state.version} bị chặn — không phải bản cập nhật hợp lệ của tác giả` : undefined,
           statusText: state.error.message,
-          callout: { ...SIGNATURE_CHECK_CALLOUT, lines: [...SIGNATURE_CHECK_CALLOUT.lines] },
+          // The certificate check is a Windows procedure (a Mac build never downloads, so it never gets here).
+          callout: state.kind === 'mac-manual' ? undefined : { ...SIGNATURE_CHECK_CALLOUT, lines: [...SIGNATURE_CHECK_CALLOUT.lines] },
           actions: [{ id: 'openPage', label: 'Mở trang tải về', title: OPEN_PAGE_TITLE }, { id: 'retry', label: 'Thử lại' }, CLOSE],
         }
       }
@@ -455,12 +487,11 @@ export function dialogView(state: UpdateState, ctx: UpdateDialogCtx): UpdateDial
         actions: [{ id: 'retry', label: 'Thử lại', primary: true }, CLOSE],
       }
     case 'available':
-      if (state.kind === 'portable') {
+      if (isCheckOnly(state.kind)) {
         return {
           ...base,
           showNotes: true,
-          statusText:
-            'Bản portable không tự cài được. Tải bản mới ở trang tải về rồi dùng file đó thay file cũ — dự án và cài đặt giữ nguyên. Muốn từ nay tự cập nhật, hãy cài bản Setup.',
+          statusText: state.kind === 'mac-manual' ? MAC_MANUAL_UPDATE_TEXT : PORTABLE_AVAILABLE_TEXT,
           actions: [{ id: 'openPage', label: 'Tải bản mới', primary: true, title: OPEN_PAGE_TITLE }, LATER],
         }
       }
@@ -535,7 +566,7 @@ export function settingsStatusLine(state: UpdateState, ctx: { web: boolean; auto
     case 'checking':
       return 'Đang kiểm tra…'
     case 'none':
-      return 'Bạn đang dùng bản mới nhất.'
+      return state.noMacBuild === true ? `${NO_MAC_BUILD_LABEL}.` : 'Bạn đang dùng bản mới nhất.'
     case 'available':
       if (state.kind === 'installer') return ctx.autoDownload ? `Có bản ${v} — đang tải về.` : `Có bản ${v} — bấm “Xem chi tiết” để tải.`
       return `Có bản ${v} — tải ở trang tải về.`
@@ -554,10 +585,17 @@ export function settingsStatusLine(state: UpdateState, ctx: { web: boolean; auto
   }
 }
 
+/** A second line under the status line (null = none): why a Mac build reads "no newer Mac build". */
+export function settingsStatusNote(state: UpdateState): string | null {
+  return state.status === 'none' && state.noMacBuild === true ? NO_MAC_BUILD_NOTE : null
+}
+
 /** Why "Tự động tải bản cập nhật" is disabled (null when it applies: installer builds). */
 export function autoDownloadNote(kind: UpdateKind): string | null {
   if (kind === 'installer') return null
-  return kind === 'portable' ? 'Bản portable không tự cài — chỉ báo có bản mới.' : 'Chỉ có ở bản cài (Setup).'
+  if (kind === 'portable') return 'Bản portable không tự cài — chỉ báo có bản mới.'
+  if (kind === 'mac-manual') return 'Bản cho Mac chỉ báo có bản mới, chưa tự tải và cài.'
+  return 'Chỉ có ở bản cài (Setup).'
 }
 
 /** "Xem chi tiết" is offered for these statuses (and for a known version refused / not verified for its signature: the dialog explains what to do). */
@@ -593,6 +631,8 @@ export function manualCheckToast(state: UpdateState, result: UpdateResult): Manu
   const v = state.version ?? ''
   switch (state.status) {
     case 'none':
+      // A Mac build whose newest release has no Mac build: never "bản mới nhất" (this answers the click; no notice).
+      if (state.noMacBuild === true) return { text: `${NO_MAC_BUILD_LABEL} (${state.current}).`, tone: 'info' }
       return { text: `Bạn đang dùng bản mới nhất (${state.current}).`, tone: 'success' }
     case 'available':
     case 'downloading':

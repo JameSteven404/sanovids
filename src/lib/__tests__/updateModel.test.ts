@@ -5,6 +5,16 @@ import { describe, expect, it } from 'vitest'
 import {
   autoDownloadNote,
   dialogView,
+  isCheckOnly,
+  KIND_LABEL,
+  MAC_MANUAL_UPDATE_TEXT,
+  NO_MAC_BUILD_LABEL,
+  NO_MAC_BUILD_NOTE,
+  settingsStatusNote,
+  STATUS_LABEL,
+  statusLabel,
+  UPDATE_KINDS,
+  UPDATE_STATUSES,
   formatBytes,
   formatPercent,
   formatReleaseDate,
@@ -199,7 +209,7 @@ describe('pillView', () => {
 
   it('hidden for idle / checking / none / error / unsupported, and for every dev build', () => {
     for (const status of ['idle', 'checking', 'none', 'error', 'unsupported'] as UpdateStatus[]) {
-      for (const kind of ['installer', 'portable', 'dev'] as UpdateKind[]) expect(pillView(st({ kind, status, version: '0.5.1' }), ctx)).toBeNull()
+      for (const kind of ['installer', 'portable', 'mac-manual', 'dev'] as UpdateKind[]) expect(pillView(st({ kind, status, version: '0.5.1' }), ctx)).toBeNull()
     }
     for (const status of statuses) {
       expect(pillView(st({ kind: 'dev', status, version: '0.5.1' }), ctx)).toBeNull()
@@ -533,5 +543,158 @@ describe('toasts', () => {
       tone: 'warning',
       action: 'openPage',
     })
+  })
+})
+
+describe('Mac build (kind mac-manual): check only, never download or install', () => {
+  const mac = (patch: Partial<UpdateState>): UpdateState => st({ kind: 'mac-manual', ...patch })
+  const ctx: UpdateDialogCtx = { blockers: [], installWhenIdle: false, autoDownload: true, busy: null }
+  const ids = (v: ReturnType<typeof dialogView>) => v.actions.map((a) => a.id)
+
+  it('is a known kind with its own label; Portable and Mac are the check-only kinds', () => {
+    expect(UPDATE_KINDS).toEqual(['installer', 'portable', 'mac-manual', 'dev'])
+    expect(KIND_LABEL['mac-manual']).toBe('Bản cho Mac')
+    expect(UPDATE_KINDS.filter(isCheckOnly)).toEqual(['portable', 'mac-manual'])
+    expect(settingsIntroTitle(mac({}), false)).toBe('Phiên bản 0.5.0 · Bản cho Mac')
+    expect(autoDownloadNote('mac-manual')).toBe('Bản cho Mac chỉ báo có bản mới, chưa tự tải và cài.')
+  })
+
+  it('parseUpdateState: noMacBuild only as exactly true on mac-manual + none (else the field goes, the state stays)', () => {
+    const fallback = st({ status: 'none' })
+    expect(parseUpdateState(mac({ status: 'none', noMacBuild: true }), fallback)).toEqual(mac({ status: 'none', noMacBuild: true }))
+    for (const noMacBuild of [false, 'true', 1, {}, null, [true]]) {
+      const parsed = parseUpdateState({ ...mac({ status: 'none' }), noMacBuild }, fallback)
+      expect(parsed, JSON.stringify(noMacBuild)).toEqual(mac({ status: 'none' }))
+      expect(parsed).not.toHaveProperty('noMacBuild')
+    }
+    // a flag on any other state is meaningless: dropped (main clears it on every other state too)
+    for (const s of [mac({ status: 'checking' }), mac({ status: 'available', version: '0.6.1' }), mac({ status: 'error', error: { code: 'offline', message: 'x' } })]) {
+      expect(parseUpdateState({ ...s, noMacBuild: true }, fallback)).toEqual(s)
+    }
+    for (const kind of ['installer', 'portable', 'dev'] as UpdateKind[]) {
+      expect(parseUpdateState({ ...st({ kind, status: 'none' }), noMacBuild: true }, fallback)).toEqual(st({ kind, status: 'none' }))
+    }
+  })
+
+  it('parseUpdateState: a check-only build is never downloading or ready (the state is refused)', () => {
+    const fallback = mac({ status: 'available', version: '0.6.1' })
+    for (const kind of ['mac-manual', 'portable'] as UpdateKind[]) {
+      for (const status of ['downloading', 'ready'] as UpdateStatus[]) {
+        expect(parseUpdateState(st({ kind, status, version: '0.6.1', percent: 100 }), fallback)).toBe(fallback)
+      }
+    }
+    // the installer still downloads
+    expect(parseUpdateState(st({ status: 'ready', version: '0.6.1' }), fallback).status).toBe('ready')
+  })
+
+  it('no newer Mac build: never "Bản mới nhất" — dialog, Settings, status word, manual check', () => {
+    const none = mac({ status: 'none', noMacBuild: true })
+    expect(NO_MAC_BUILD_LABEL).toBe('Chưa có bản cho Mac mới hơn bản đang dùng')
+    expect(statusLabel(none)).toBe(NO_MAC_BUILD_LABEL)
+    expect(statusLabel(mac({ status: 'none' }))).toBe(STATUS_LABEL.none)
+    expect(statusLabel(mac({ status: 'available' }))).toBe('Có bản mới')
+    const v = dialogView(none, ctx)
+    expect(v.statusText).toBe('Chưa có bản cho Mac mới hơn bản đang dùng (0.5.0).')
+    expect(v.hint).toBe(NO_MAC_BUILD_NOTE)
+    expect(ids(v)).toEqual(['close'])
+    expect(v.showNotes).toBe(false)
+    expect(settingsStatusLine(none, { web: false, autoDownload: true })).toBe('Chưa có bản cho Mac mới hơn bản đang dùng.')
+    expect(settingsStatusNote(none)).toBe('Bản mới nhất trên trang tải về chưa có file cho Mac. Bạn vẫn đang dùng được bản hiện tại.')
+    // the answer to "Kiểm tra ngay" (the only toast; automatic checks never toast)
+    expect(manualCheckToast(none, { ok: true })).toEqual({ text: 'Chưa có bản cho Mac mới hơn bản đang dùng (0.5.0).', tone: 'info' })
+    expect(pillView(none, { installWhenIdle: false, activeJobs: 0 })).toBeNull()
+    expect(hasUpdateDetails(none)).toBe(false)
+    for (const text of [v.statusText, settingsStatusLine(none, { web: false, autoDownload: true }), manualCheckToast(none, { ok: true })?.text]) {
+      expect(text).not.toContain('mới nhất (')
+      expect(text).not.toBe('Bạn đang dùng bản mới nhất.')
+    }
+    // without the flag (the Mac feed exists, nothing newer): the usual "bản mới nhất"
+    expect(dialogView(mac({ status: 'none' }), ctx).statusText).toBe('Bạn đang dùng bản mới nhất (0.5.0).')
+    expect(settingsStatusNote(mac({ status: 'none' }))).toBeNull()
+    expect(settingsStatusNote(st({ status: 'none' }))).toBeNull()
+  })
+
+  it('an available update: the manual steps, "Tải bản mới" opens the download page, nothing to download', () => {
+    const v = dialogView(mac({ status: 'available', version: '0.6.1' }), ctx)
+    expect(v.statusText).toBe(MAC_MANUAL_UPDATE_TEXT)
+    expect(v.statusText).toContain('⌘Q')
+    expect(v.statusText).toContain('Applications')
+    expect(v.statusText).toContain('“Vẫn mở”')
+    expect(v.actions).toEqual([
+      { id: 'openPage', label: 'Tải bản mới', primary: true, title: 'Mở trang tải về trên GitHub trong trình duyệt' },
+      { id: 'later', label: 'Để sau' },
+    ])
+    expect(v.showNotes).toBe(true)
+    // auto-download on or off changes nothing for a Mac build
+    expect(dialogView(mac({ status: 'available', version: '0.6.1' }), { ...ctx, autoDownload: false })).toEqual(v)
+    expect(pillView(mac({ status: 'available', version: '0.6.1' }), { installWhenIdle: false, activeJobs: 0 })).toEqual({
+      tone: 'available',
+      long: 'Bản mới ',
+      short: '0.6.1',
+      title: 'Có bản SanoVids 0.6.1 — bấm để xem cách tải',
+      version: '0.6.1',
+    })
+    expect(settingsStatusLine(mac({ status: 'available', version: '0.6.1' }), { web: false, autoDownload: true })).toBe('Có bản 0.6.1 — tải ở trang tải về.')
+    expect(manualCheckToast(mac({ status: 'available', version: '0.6.1' }), { ok: true })).toEqual({ text: 'Có bản 0.6.1.', tone: 'info', action: 'open' })
+    expect(hasUpdateDetails(mac({ status: 'available', version: '0.6.1' }))).toBe(true)
+    // Portable keeps its own text
+    expect(dialogView(st({ kind: 'portable', status: 'available', version: '0.6.1' }), ctx).statusText).toMatch(/^Bản portable không tự cài được\./)
+  })
+
+  // Every text a Mac build can show, for every status / error / flag the contract allows.
+  function macTexts(s: UpdateState): string[] {
+    const out: string[] = []
+    for (const autoDownload of [true, false]) {
+      const v = dialogView(s, { ...ctx, autoDownload })
+      out.push(v.statusText, v.hint ?? '', v.headline ?? '', v.busyText ?? '')
+      if (v.callout) out.push(v.callout.title, ...v.callout.lines, v.callout.code ?? '', v.callout.note ?? '')
+      for (const a of v.actions) out.push(a.label, a.title ?? '')
+      out.push(settingsStatusLine(s, { web: false, autoDownload }))
+    }
+    const pill = pillView(s, { installWhenIdle: false, activeJobs: 0 })
+    if (pill) out.push(pill.long, pill.short, pill.title)
+    out.push(settingsIntroTitle(s, false), settingsStatusNote(s) ?? '', autoDownloadNote(s.kind) ?? '', statusLabel(s))
+    out.push(manualCheckToast(s, { ok: true })?.text ?? '')
+    if (s.error) out.push(manualCheckToast(s, { ok: false, code: s.error.code, message: s.error.message })?.text ?? '')
+    return out
+  }
+
+  function macStates(): UpdateState[] {
+    const fallback = mac({ status: 'idle' })
+    const out: UpdateState[] = []
+    for (const status of UPDATE_STATUSES) {
+      for (const error of [undefined, ...UPDATE_ERROR_CODES.map((code) => ({ code, message: UPDATE_ERROR_TEXT[code] }))]) {
+        for (const noMacBuild of [undefined, true]) {
+          const raw = { ...mac({ status, version: '0.6.1', notes: '- x', size: 99 * MB }), ...(error ? { error } : {}), ...(noMacBuild ? { noMacBuild } : {}) }
+          const parsed = parseUpdateState(raw, fallback)
+          if (parsed !== fallback) out.push(parsed)
+        }
+      }
+    }
+    return out
+  }
+
+  it('never offers to download, install or restart, in any state the contract allows', () => {
+    const states = macStates()
+    expect(states.length).toBeGreaterThan(50)
+    expect(states.some((s) => s.status === 'downloading' || s.status === 'ready')).toBe(false)
+    for (const s of states) {
+      for (const autoDownload of [true, false]) {
+        for (const installWhenIdle of [true, false]) {
+          const v = dialogView(s, { ...ctx, autoDownload, installWhenIdle, blockers: ['1 video đang tạo'] })
+          expect(ids(v).filter((id) => ['download', 'restart', 'installNow', 'installWhenIdle', 'cancelWait'].includes(id)), JSON.stringify(s)).toEqual([])
+          expect(v.showProgress).toBe(false)
+        }
+      }
+      expect(pillView(s, { installWhenIdle: true, activeJobs: 2 })?.tone ?? 'available').toBe('available')
+      expect(manualCheckToast(s, { ok: true })?.action).not.toBe('restart')
+    }
+  })
+
+  it('never shows Windows-only words (Windows, PowerShell, Setup, Portable, Properties…)', () => {
+    const windowsOnly = /Windows|PowerShell|Setup|[Pp]ortable|Properties|Digital Signatures|Thumbprint|\.exe\b|Ctrl/
+    for (const s of macStates()) {
+      for (const text of macTexts(s)) expect(text, `${JSON.stringify(s)} → ${text}`).not.toMatch(windowsOnly)
+    }
   })
 })

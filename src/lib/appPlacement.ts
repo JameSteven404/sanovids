@@ -4,6 +4,12 @@
 //   'temp-copy'  a copy running straight from Windows' temp folder (left by an interrupted Setup / Portable run) —
 //                Windows may delete it any time;
 //   'dev'        running from the sources.
+// Mac builds (main's darwin branch, decided before any Windows rule):
+//   'mac-applications'  in the Applications folder (the normal place: no reminder);
+//   'mac-translocated'  moved by Gatekeeper to a temporary read-only place (opened straight from the .dmg or the
+//                       Downloads folder) — reminder on every launch;
+//   'mac-volume'        straight from an external drive or a mounted .dmg (/Volumes/…) — reminder on every launch;
+//   'mac-other'         anywhere else outside Applications.
 // Sources: 'desktop' = window.bdpDesktop.app.placement() (electron/preload.cjs → IPC 'app:placement'; the main process
 // answers { kind } only — never a path); 'none' = a desktop build without it (older preload) → unknown; 'sim' = outside
 // Electron (`npm run dev`): development mode's simulated answer (providers/dev/appPlacement), driven from "Bảng phát
@@ -11,6 +17,9 @@
 //
 // ---- API ----
 //   parseAppPlacement(raw)            untrusted payload → { kind } (anything else → { kind: 'unknown' }).
+//   MAC_PLACEMENT_KINDS / isMacPlacementKind(kind)   the Mac kinds.
+//   placementToastsOnLaunch(kind)     the kinds whose reminder is also a toast at every launch (Mac, run from a .dmg /
+//                                     Downloads / an external drive).
 //   appPlacementSource()              'desktop' | 'none' | 'sim'.
 //   useAppPlacement                   zustand store { placement: AppPlacement | null } (null = not asked yet).
 //   loadAppPlacement()                ask once (one promise in flight / kept after success); never throws.
@@ -19,7 +28,8 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { devPlacementBridge, useDevPlacement } from '../providers/dev/appPlacement'
 import { isDesktop } from './pwa'
 
-export type AppPlacementKind = 'installer' | 'portable' | 'temp-copy' | 'dev'
+export type MacPlacementKind = 'mac-applications' | 'mac-translocated' | 'mac-volume' | 'mac-other'
+export type AppPlacementKind = 'installer' | 'portable' | 'temp-copy' | 'dev' | MacPlacementKind
 
 export interface AppPlacement {
   kind: AppPlacementKind | 'unknown'
@@ -32,7 +42,17 @@ export interface DesktopPlacementBridge {
 
 export type AppPlacementSource = 'desktop' | 'none' | 'sim'
 
-export const APP_PLACEMENT_KINDS: readonly AppPlacementKind[] = ['installer', 'portable', 'temp-copy', 'dev']
+export const MAC_PLACEMENT_KINDS: readonly MacPlacementKind[] = ['mac-applications', 'mac-translocated', 'mac-volume', 'mac-other']
+export const APP_PLACEMENT_KINDS: readonly AppPlacementKind[] = ['installer', 'portable', 'temp-copy', 'dev', ...MAC_PLACEMENT_KINDS]
+
+export function isMacPlacementKind(kind: unknown): kind is MacPlacementKind {
+  return typeof kind === 'string' && (MAC_PLACEMENT_KINDS as readonly string[]).includes(kind)
+}
+
+/** Mac runs from a temporary / removable place: the reminder is also a toast at every launch (not only in Settings). */
+export function placementToastsOnLaunch(kind: AppPlacementKind | 'unknown' | null | undefined): boolean {
+  return kind === 'mac-translocated' || kind === 'mac-volume'
+}
 
 const unknownPlacement = (): AppPlacement => ({ kind: 'unknown' })
 

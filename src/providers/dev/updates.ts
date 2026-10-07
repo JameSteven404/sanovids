@@ -5,25 +5,34 @@
 //
 // It follows the main process rules (electron/updater-rules.cjs reduceUpdateState and the IPC checks): download only
 // for an installer build with status 'available' (or 'error' after a failed download), install only when 'ready', no
-// check at all for the 'dev' kind. Driven from "Bảng phát triển → Cập nhật" (components/dev/DevUpdatesTab.tsx).
+// check at all for the 'dev' kind. The Portable and Mac ('mac-manual') builds only check: they never download or
+// install, and no state of theirs is ever 'downloading' / 'ready'. `noMacBuild` (the newest release has no Mac build)
+// exists only on a 'mac-manual' + 'none' state and is dropped by every other state. Driven from "Bảng phát triển →
+// Cập nhật" (components/dev/DevUpdatesTab.tsx).
 //
 // ---- API ----
 //   useDevUpdates                     zustand store { state, nextCheck, draft } (select fields).
 //   devUpdatesBridge()                the app's simulated bridge (created on first use) — DesktopUpdatesBridge + controls.
 //   devUpdates.simulate(patch)        set state fields directly. Another kind is another launch: status 'idle' ('dev' ⇒
 //                                     'unsupported'), release / progress / error / last check / notice dropped.
-//   devUpdates.setNextCheck(o)        what the next check finds: 'none' | 'available' | 'offline' | 'no-release'.
+//   devUpdates.setNextCheck(o)        what the next check finds: 'none' | 'available' | 'windows-only' (the newest
+//                                     release has no Mac build: a Mac build gets 'none' + noMacBuild, Windows builds see
+//                                     the update) | 'offline' | 'no-release'.
 //   devUpdates.setDraft(d)            running version / new version / release notes used by the next "available".
-//   devUpdates.announce() / runDownload() / markReady() / failNetwork() / failSignature(code?) / markNone()   one-click states.
+//   devUpdates.announce() / runDownload() / markReady() / failNetwork() / failSignature(code?) / markNone() /
+//   markNoMacBuild()                  one-click states ('dev' becomes the installer; downloading / ready / a signature
+//                                     refusal need the installer, markNoMacBuild the Mac build).
 //   devUpdates.reset()                back to the initial state (timers stopped; the auto-download pref is kept).
 //   createDevUpdatesBridge(opts)      a separate instance (tests).
+//   DEV_NEXT_CHECKS / DEV_NEXT_CHECK_LABEL / DEV_UPDATE_KIND_OPTIONS   the controls' options.
+//   reduceDevUpdateState / keepMacFlag   the pure state machine (tests).
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { version as APP_VERSION } from '../../../package.json'
-import { isUpdateVersion, UPDATE_ERROR_TEXT, UPDATE_UNSUPPORTED_TEXT } from '../../lib/updateModel'
-import { UPDATE_NOTES_MAX, type DesktopUpdatesBridge, type UpdateError, type UpdateResult, type UpdateState } from '../../lib/updateTypes'
+import { isCheckOnly, isUpdateVersion, UPDATE_ERROR_TEXT, UPDATE_UNSUPPORTED_TEXT } from '../../lib/updateModel'
+import { UPDATE_NOTES_MAX, type DesktopUpdatesBridge, type UpdateError, type UpdateKind, type UpdateResult, type UpdateState } from '../../lib/updateTypes'
 import { toast } from '../../store/ui'
 
-export type DevNextCheck = 'none' | 'available' | 'offline' | 'no-release'
+export type DevNextCheck = 'none' | 'available' | 'windows-only' | 'offline' | 'no-release'
 
 export interface DevUpdatesDraft {
   /** "Phiên bản đang chạy". */
@@ -43,9 +52,19 @@ export interface DevUpdatesStore {
 export const DEV_NEXT_CHECK_LABEL: Record<DevNextCheck, string> = {
   none: 'Không có bản mới',
   available: 'Có bản mới',
+  'windows-only': 'Bản mới chỉ có cho Windows',
   offline: 'Lỗi mạng',
   'no-release': 'Chưa có bản phát hành',
 }
+export const DEV_NEXT_CHECKS: readonly DevNextCheck[] = ['none', 'available', 'windows-only', 'offline', 'no-release']
+
+/** "Loại bản". */
+export const DEV_UPDATE_KIND_OPTIONS: readonly { id: UpdateKind; label: string; title: string }[] = [
+  { id: 'installer', label: 'Bản cài', title: 'Bản cài (Setup): tự tải và tự cài bản mới' },
+  { id: 'portable', label: 'Bản portable', title: 'Bản portable: chỉ báo có bản mới' },
+  { id: 'mac-manual', label: 'Bản cho Mac', title: 'Bản cho Mac: chỉ báo có bản mới, không tự tải và cài' },
+  { id: 'dev', label: 'Bản phát triển', title: 'Chạy từ mã nguồn: không tự cập nhật' },
+]
 
 /** "0.5.1" → "0.5.2" (last number + 1; a suffix is dropped). */
 export function nextPatchVersion(v: string): string {
@@ -91,7 +110,8 @@ interface ReleaseInfo {
 
 type SimEvent =
   | { type: 'checking' }
-  | { type: 'not-available' }
+  /** noMacBuild: the newest release has no Mac build (main: latest-mac.yml missing) — kept for a 'mac-manual' build only. */
+  | { type: 'not-available'; noMacBuild?: boolean }
   | { type: 'available'; info: ReleaseInfo }
   | { type: 'progress'; p: { percent: number; transferred: number; total: number; bytesPerSecond: number } }
   | { type: 'downloaded'; info: { version: string } }
@@ -112,6 +132,12 @@ function without(s: UpdateState, keys: readonly (keyof UpdateState)[]): UpdateSt
 
 const clampNum = (n: number, max = Number.MAX_SAFE_INTEGER) => (Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : 0)
 
+/** `noMacBuild` lives only on a 'mac-manual' + 'none' state, as exactly `true`: dropped anywhere else. */
+export function keepMacFlag(s: UpdateState): UpdateState {
+  if (!('noMacBuild' in s)) return s
+  return s.kind === 'mac-manual' && s.status === 'none' && s.noMacBuild === true ? s : without(s, ['noMacBuild'])
+}
+
 function withRelease(s: UpdateState, info: ReleaseInfo): UpdateState {
   const out: UpdateState = { ...s, version: info.version, notes: info.notes.slice(0, UPDATE_NOTES_MAX) }
   if (info.releaseDate) out.releaseDate = info.releaseDate.slice(0, 40)
@@ -121,14 +147,20 @@ function withRelease(s: UpdateState, info: ReleaseInfo): UpdateState {
 
 /** The updater state after an event (pure). */
 export function reduceDevUpdateState(s: UpdateState, e: SimEvent, now: number): UpdateState {
+  return keepMacFlag(reduceEvent(s, e, now))
+}
+
+function reduceEvent(s: UpdateState, e: SimEvent, now: number): UpdateState {
   const busy = s.status === 'downloading' || s.status === 'ready'
   switch (e.type) {
     case 'checking':
       // A known update stays announced while it is checked again (a failed re-check keeps it).
       return busy || s.status === 'available' ? s : { ...without(s, ['error']), status: 'checking' }
-    case 'not-available':
+    case 'not-available': {
       if (busy) return { ...s, lastCheck: now }
-      return { ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'none', lastCheck: now }
+      const none: UpdateState = { ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error', 'noMacBuild']), status: 'none', lastCheck: now }
+      return e.noMacBuild === true && s.kind === 'mac-manual' ? { ...none, noMacBuild: true } : none
+    }
     case 'available':
       if (busy && e.info.version === s.version) return { ...s, lastCheck: now }
       return withRelease({ ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'available', lastCheck: now }, e.info)
@@ -181,6 +213,8 @@ export interface DevUpdatesSim extends DesktopUpdatesBridge {
   failSignature(code?: 'signature' | 'signature-unverified'): void
   /** "Không có bản mới". */
   markNone(): void
+  /** "Chưa có bản cho Mac": the Mac build's check found a newest release without a Mac build ('none' + noMacBuild). */
+  markNoMacBuild(): void
   reset(): void
 }
 
@@ -206,7 +240,7 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
   let installTimer: ReturnType<typeof setTimeout> | null = null
 
   const get = () => store.getState()
-  const setState = (state: UpdateState) => store.setState({ state })
+  const setState = (state: UpdateState) => store.setState({ state: keepMacFlag(state) })
   const dispatch = (e: SimEvent) => setState(reduceDevUpdateState(get().state, e, now()))
 
   function stopTimers() {
@@ -270,6 +304,13 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
       announceInfo(draftInfo())
       return OK
     }
+    if (nextCheck === 'windows-only') {
+      // The newest release only has Windows files: the Mac build finds no newer Mac build (main maps the missing
+      // latest-mac.yml to not-available + noMacBuild), the Windows builds see that release as usual.
+      if (get().state.kind === 'mac-manual') dispatch({ type: 'not-available', noMacBuild: true })
+      else announceInfo(draftInfo())
+      return OK
+    }
     const error: UpdateError = { code: nextCheck, message: UPDATE_ERROR_TEXT[nextCheck] }
     dispatch({ type: 'check-error', error })
     return fail(error.code, error.message)
@@ -278,6 +319,11 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
   /** The state buttons need a build that updates: the 'dev' kind becomes the installer. */
   function ensureUpdatable() {
     if (get().state.kind === 'dev') sim.simulate({ kind: 'installer' })
+  }
+
+  /** Downloading / ready / a refused download exist only for the installer build (Portable and Mac never download). */
+  function ensureInstaller() {
+    if (get().state.kind !== 'installer') sim.simulate({ kind: 'installer' })
   }
 
   const sim: DevUpdatesSim = {
@@ -354,11 +400,13 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
         kind !== cur.kind ? { kind, current: cur.current, status: kind === 'dev' ? 'unsupported' : 'idle', autoDownload: cur.autoDownload } : cur
       let next: UpdateState = { ...base, ...patch, kind }
       if (kind === 'dev') next = { ...without(next, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'unsupported' }
+      // Portable and Mac builds never download: a 'downloading' / 'ready' patch keeps the status they had.
+      else if (isCheckOnly(kind) && (next.status === 'downloading' || next.status === 'ready')) next = { ...without(next, PROGRESS_KEYS), status: base.status }
       setState(next)
     },
 
     setNextCheck: (o) => {
-      if (o === 'none' || o === 'available' || o === 'offline' || o === 'no-release') store.setState({ nextCheck: o })
+      if ((DEV_NEXT_CHECKS as readonly unknown[]).includes(o)) store.setState({ nextCheck: o })
     },
 
     setDraft: (d) => {
@@ -382,7 +430,7 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
 
     runDownload: () => {
       stopTimers()
-      ensureUpdatable()
+      ensureInstaller()
       const s = get().state
       const info = s.version ? null : draftInfo()
       setState({ ...without(info ? withRelease(s, info) : s, [...PROGRESS_KEYS, 'error']), status: 'downloading', percent: 0 })
@@ -391,7 +439,7 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
 
     markReady: () => {
       stopTimers()
-      ensureUpdatable()
+      ensureInstaller()
       const s = get().state
       const base = s.version ? s : withRelease(s, draftInfo())
       setState({ ...without(base, ['error', 'transferred', 'bytesPerSecond']), status: 'ready', percent: 100, lastCheck: now() })
@@ -406,7 +454,7 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
 
     failSignature: (code = 'signature') => {
       stopTimers()
-      ensureUpdatable()
+      ensureInstaller()
       const s = get().state
       const base = withRelease(without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), draftInfo())
       setState({ ...base, status: 'error', error: { code, message: UPDATE_ERROR_TEXT[code] }, lastCheck: now() })
@@ -416,7 +464,14 @@ export function createDevUpdatesBridge(opts: DevUpdatesOptions = {}): DevUpdates
       stopTimers()
       ensureUpdatable()
       const s = get().state
-      setState({ ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'none', lastCheck: now() })
+      setState({ ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error', 'noMacBuild']), status: 'none', lastCheck: now() })
+    },
+
+    markNoMacBuild: () => {
+      stopTimers()
+      if (get().state.kind !== 'mac-manual') sim.simulate({ kind: 'mac-manual' })
+      const s = get().state
+      setState({ ...without(s, [...RELEASE_KEYS, ...PROGRESS_KEYS, 'error']), status: 'none', noMacBuild: true, lastCheck: now() })
     },
 
     reset: () => {
@@ -448,5 +503,6 @@ export const devUpdates = {
   failNetwork: () => devUpdatesBridge().failNetwork(),
   failSignature: (code?: 'signature' | 'signature-unverified') => devUpdatesBridge().failSignature(code),
   markNone: () => devUpdatesBridge().markNone(),
+  markNoMacBuild: () => devUpdatesBridge().markNoMacBuild(),
   reset: () => devUpdatesBridge().reset(),
 }
