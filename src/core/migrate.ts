@@ -30,9 +30,25 @@ function archivedVideoIds(kept: unknown, current: unknown): string[] | undefined
 }
 const text = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : v == null ? fallback : String(v))
 
-/** Replace legacy @Tag mentions with @image_N of the scene's refs (unlinked tags become the asset name). */
-export function tagsToTokens(prompt: string, assets: Asset[], refs: string[]): string {
-  const slots = imageSlotsFor(assets, refs)
+/**
+ * What a v1 (schema 1) build sent as reference images, frozen as it was (ae04bea core/models): Seedance 2.5 in every
+ * mode, MiniMax-H3 only in i2v, at most this many pictures. A later change of MODELS must not change what an old
+ * prompt meant.
+ */
+const V1_MAX_REF_IMAGES: Readonly<Record<string, number>> = { seedance_2_5: 30, minimax_h3: 9 }
+const v1SentRefs = (s: Pick<VideoSettings, 'model' | 'mode'>): number => (s.model === 'seedance_2_5' || s.mode === 'i2v' ? (V1_MAX_REF_IMAGES[s.model] ?? 0) : 0)
+
+/**
+ * Replace legacy @Tag mentions with @image_N of the scene's refs (unlinked tags become the asset name).
+ * `settings` (a v1 scene's): the mention becomes what v1 compiled it to — @image_N of the asset's first picture only
+ * when that scene sent its reference images and that picture was within the model's cap; otherwise v1 sent the asset
+ * NAME, and so does the migrated prompt (an @image_N there would be a token with no picture: red, the run blocked, the
+ * character's name gone from the text). Without `settings`, every linked asset with a picture gets its slot.
+ */
+export function tagsToTokens(prompt: string, assets: Asset[], refs: string[], settings?: Pick<VideoSettings, 'model' | 'mode'>): string {
+  const all = imageSlotsFor(assets, refs)
+  const cap = settings ? v1SentRefs(settings) : Infinity
+  const slots = all.filter((s) => s.n <= cap)
   return prompt.replace(MENTION_RE, (whole, tag: string) => {
     if (/^(image|video)_\d+$/i.test(tag)) return whole
     const asset = assetByTag(assets, tag)
@@ -163,7 +179,8 @@ export function normalizePresets(raw: unknown, newerFile = false): Preset[] {
 /**
  * Bring any saved project up to schema v2 (and repair what other sources may leave out).
  * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
- * @Tag mentions become @image_N, continuity links and block data are dropped.
+ * @Tag mentions become @image_N (the asset's name where v1 sent no picture for it, see tagsToTokens), continuity links
+ * and block data are dropped.
  * Always: unique ids, dense scene order (S01, S02… never "Sundefined"), a position and a title for every scene.
  * Reference videos (retired in 0.6.0): a scene's old `videoRefs` move to `legacyVideoRefs` (kept inert, only the
  * open-project notice reads them) and `videoRefs` is always [] — never dropped through the `...rest` of unknown keys.
@@ -209,7 +226,8 @@ export function migrateProject(raw: unknown): Project {
       const before = blocks.filter((b) => b.placement === 'before' && on(b) && b.text.trim()).map((b) => b.text.trim())
       const after = blocks.filter((b) => b.placement === 'after' && on(b) && b.text.trim()).map((b) => b.text.trim())
       prompt = [...before, prompt.trim(), ...after].filter(Boolean).join('\n\n')
-      prompt = tagsToTokens(prompt, assets, refs)
+      // As v1 compiled it: a mention its mode / model cap did not send stays the asset's name (see tagsToTokens).
+      prompt = tagsToTokens(prompt, assets, refs, settings)
     }
     let id = typeof s.id === 'string' && s.id ? s.id : newId('scn')
     if (sceneIds.has(id)) id = newId('scn')
