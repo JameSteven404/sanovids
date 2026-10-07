@@ -115,6 +115,8 @@ export interface SentLike {
   nodeId: string
   at: number
   before?: string[]
+  /** The jobs a read that surely showed its job, if any, listed (adapter SentRecord.covered): no later job is its own. */
+  covered?: string[]
 }
 
 export interface SiteJobLedger {
@@ -277,14 +279,18 @@ const jobIdsOf = (records: Readonly<Record<string, { remoteId: string }>>): Set<
 
 /**
  * Could the unanswered POST of take `key` (ledger.sent record `rec`) have made `job`? With client_request_id in the
- * list: exactly when it carries that take's key. Without: a job on the node the POST named, not listed before it,
- * created within the window of it (inPostWindow) — an unknown creation time: it could.
+ * list: exactly when it carries that take's key. Without: a job on the node the POST named, not listed before it, not
+ * made after a read that surely showed that POST's job (rec.covered: such a job is listed there, if it exists), created
+ * within the window of it (inPostWindow) — an unknown creation time: it could.
  * Broader than the lookup itself (adapter findJob) on purpose inside the window: a job it could own is never imported.
  * The lookup uses the same window and also skips every imported job: a job claimed here is never that POST's.
  */
 export function sentMayOwn(job: CanvasJob, key: string, rec: SentLike, projectId: string, listHasKeys: boolean): boolean {
-  if (listHasKeys) return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key
+  // (a job the list shows without its key, next to others with theirs — VERIFY — is judged by node and time like in a
+  // list without keys: it could be that POST's)
+  if (listHasKeys && typeof job.client_request_id === 'string') return job.client_request_id === clientRequestIdFor(key) || job.client_request_id === key
   if (rec.projectId !== projectId || job.canvas_node_id !== rec.nodeId || rec.before?.includes(job.job_id)) return false
+  if (Array.isArray(rec.covered) && !rec.covered.includes(job.job_id)) return false
   return inPostWindow(job.created_at, rec.at) ?? true
 }
 
@@ -337,7 +343,8 @@ export function classifySiteJobs(jobs: readonly unknown[], ctx: SiteJobContext):
     else if (made.has(jobId)) skip('sanovids')
     else {
       const pending = pendingOwnerOf(job, ctx.ledger, ctx.projectId, listHasKeys)
-      if (pending) skip('maybe-pending', pending, listHasKeys || !Number.isFinite(createdTime(job.created_at)) ? undefined : Math.round(createdSkewOf(job.created_at) / 3600_000))
+      const keyed = listHasKeys && typeof job.client_request_id === 'string'
+      if (pending) skip('maybe-pending', pending, keyed || !Number.isFinite(createdTime(job.created_at)) ? undefined : Math.round(createdSkewOf(job.created_at) / 3600_000))
       else if (listHasKeys && typeof job.client_request_id === 'string' && ownKeys.has(job.client_request_id)) skip('sanovids')
       else if (!nodeId || !sceneId) skip('no-scene')
       else if (ENDED.has(String(job.status))) skip('ended')

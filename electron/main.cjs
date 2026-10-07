@@ -447,10 +447,11 @@ function createJobListCache(ttlMs, now) {
   const entries = new Map() // query string -> { at, result }
   let epoch = 0
   return {
-    /** A kept answer for `key`, or null. */
+    /** A kept answer for `key`, or null — never one stamped later than now (the clock was set back since: its age is unknown). */
     get(key) {
       const hit = entries.get(key)
-      return hit && now() - hit.at < ttlMs ? hit.result : null
+      const age = hit ? now() - hit.at : -1
+      return hit && age >= 0 && age < ttlMs ? hit.result : null
     },
     /** A read of `key` is about to wait for its slot: what put() needs to know nothing dropped the cache since. */
     ticket() {

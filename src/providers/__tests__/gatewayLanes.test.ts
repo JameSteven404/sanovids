@@ -160,6 +160,21 @@ describe('canvasapp job-list cache (electron/main.cjs)', () => {
     expect(cache.get('a')).toBe(3)
   })
 
+  it('the clock set back: an entry stamped later than now is never served (its age is unknown) — not for the minutes or hours the jump spans', () => {
+    // fuzz root cause (canvasapp-fuzz.test.ts, clock set back): served while `now - at < ttl`, a read from before the
+    // jump looked fresh until the clock caught up — a lookup after a lost answer then took it for a read that surely
+    // shows the POST's job, found nothing and posted it again (a second charge)
+    const clock = { t: 10_000_000 }
+    const cache = loadListCache(clock)
+    cache.put('a', cache.ticket(), clock.t, 1)
+    clock.t -= 2 * 3600_000 // the user sets the clock back two hours
+    expect(cache.get('a')).toBeNull()
+    clock.t += 2 * 3600_000 + 5_000 // ...and the clock has caught up again: an ordinary 5 s old answer
+    expect(cache.get('a')).toBe(1)
+    clock.t -= 1 // a second ago, 1 ms earlier: still not from the future
+    expect(cache.get('a')).toBe(1)
+  })
+
   it('canvasappRequest times an entry from the moment its request goes out (inside its slot), not from the answer', () => {
     const body = /async function canvasappRequest\(req\) \{([\s\S]*?)\n\}\n/.exec(mainSource)?.[1] ?? ''
     const slot = body.indexOf("withCanvasappSlot('api'")

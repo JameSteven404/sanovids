@@ -796,6 +796,19 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     await api.listVideoJobs(projectId)
     expect(reads()).toBe(before + 2)
   })
+
+  it('the clock set back: a kept answer stamped later than now is never served again (like main.cjs)', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    const bridge = createDevBridge(() => s.server, { now: () => s.clock.t, jobListCacheMs: 2_000 })
+    const api = createCanvasappApi(createDesktopTransport(() => bridge))
+    const reads = () => useDevLog.getState().entries.filter((e) => e.endpoint === 'jobs-list' && e.fault === null).length
+    const before = reads()
+    await api.listVideoJobs(projectId)
+    s.clock.t -= 10 * 60_000 // set back ten minutes: that answer's age is unknown now
+    await api.listVideoJobs(projectId)
+    expect(reads()).toBe(before + 2)
+  })
 })
 
 describe('dev bridge: logout and the job-list cache', () => {

@@ -234,7 +234,9 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     const cacheKey = method === 'GET' && match.pathname === '/api/video-jobs' ? match.query.toString() : null
     if (cacheKey !== null && cacheMs > 0) {
       const hit = listCache.get(cacheKey)
-      if (hit && now() - hit.at < cacheMs) {
+      // (never one stamped later than now: the clock was set back since, its age is unknown — main.cjs the same)
+      const age = hit ? now() - hit.at : -1
+      if (hit && age >= 0 && age < cacheMs) {
         logGateway(req, hit.result, 'gateway-cache')
         return clone(hit.result)
       }

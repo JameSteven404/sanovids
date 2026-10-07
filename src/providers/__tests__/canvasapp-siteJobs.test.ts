@@ -221,6 +221,20 @@ describe('sentMayOwn: a job an unanswered POST may have made is never offered (n
     expect(may({ created_at: 'not a date' })).toBe(true)
   })
 
+  it('a list that keys only some jobs (VERIFY): a job shown WITHOUT its key is judged by node and time — never offered while it may be that POST’s', () => {
+    // fuzz root cause (canvasapp-fuzz.test.ts, partial keys): "the list has keys" made every job without one importable
+    expect(sentMayOwn(job({ created_at: new Date(T + 5000).toISOString() }), 'take_lost', rec, P, true)).toBe(true)
+    expect(sentMayOwn(job({ canvas_node_id: node('s1') }), 'take_lost', rec, P, true)).toBe(false)
+    // a job shown with another key is never that POST's; one with its key always is
+    expect(sentMayOwn(job({ client_request_id: '0b9d3c55-1d2a-4a6e-9f7e-000000000001' }), 'take_lost', rec, P, true)).toBe(false)
+    expect(sentMayOwn(job({ client_request_id: clientRequestIdFor('take_lost'), canvas_node_id: node('s1') }), 'take_lost', rec, P, true)).toBe(true)
+  })
+
+  it('a job made after a read that surely showed that POST’s job (its record’s `covered`) is never reserved for it', () => {
+    expect(may({ job_id: 'job_late' }, { ...rec, covered: ['job1'] } as typeof rec)).toBe(false)
+    expect(may({ job_id: 'job1' }, { ...rec, covered: ['job1'] } as typeof rec)).toBe(true)
+  })
+
   /** Run `fn` with this computer in time zone `tz` (Node re-reads TZ at once). */
   const inZone = (tz: string, fn: () => void) => {
     const old = process.env.TZ
