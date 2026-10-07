@@ -16,6 +16,8 @@ import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { sceneCountsOf, sceneMapOf } from '../canvas/canvasModel'
 import { FullImage } from '../common/Media'
+import { openLibraryCardMenu, type LibraryCardCommands } from '../contextmenu/libraryMenu'
+import { isMenuKey } from '../contextmenu/menuModel'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
 import { libraryClick } from './librarySelection'
@@ -166,6 +168,9 @@ function toggleOnCanvas(id: string) {
   }
 }
 
+/** What the card's right-click menu (contextmenu/libraryMenu) runs from here: the same toasts as the card buttons. */
+const CARD_COMMANDS: LibraryCardCommands = { toggleOnCanvas }
+
 function linkCardToSelection(id: string) {
   const scenes = selectedSceneIds()
   if (!scenes.length) {
@@ -269,6 +274,10 @@ const AssetCard = memo(function AssetCard({
       onKeyDown={(e) => {
         // Delete / ⌫ / Ctrl+A go up to the global shortcuts: their library scope acts on the library selection.
         if (e.target !== e.currentTarget) return
+        if (isMenuKey(e)) {
+          openLibraryCardMenu(e.nativeEvent, asset.id, CARD_COMMANDS, 'keyboard')
+          return
+        }
         const action = libraryCardKey(e.key)
         if (action === 'open') {
           e.preventDefault()
@@ -278,6 +287,7 @@ const AssetCard = memo(function AssetCard({
           useUI.getState().toggleLibrary(asset.id, e.ctrlKey || e.metaKey || e.shiftKey)
         }
       }}
+      onContextMenu={(e) => openLibraryCardMenu(e, asset.id, CARD_COMMANDS)}
       onDoubleClick={(e) => {
         e.stopPropagation()
         openAsset(asset.id)

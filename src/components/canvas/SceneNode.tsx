@@ -722,6 +722,10 @@ function RefThumb({ asset, badge, named, sceneId }: { asset: Asset; badge: strin
     <span
       className={`cv-sn-th nodrag${named ? ' is-named' : ''}${hasImage ? ' is-viewable' : ''}`}
       style={{ ['--av-c' as string]: asset.color }}
+      // Right-click target of the canvas context menu (contextmenu/canvasContextMenu reads these; no handler here).
+      data-ctx="ref"
+      data-asset-id={asset.id}
+      data-scene-id={sceneId}
       title={hasImage ? undefined : `${asset.name} · ${label}`}
       draggable={hasImage}
       onDragStart={(e) => {
