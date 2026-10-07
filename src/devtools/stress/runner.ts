@@ -134,6 +134,9 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   const seenLog = new Set<number>()
   let offLog: () => void = () => undefined
   let stopping = false
+  /** The project open before the run, and the one the run opened once its load was done (null until then). */
+  const projectBefore = useProject.getState().project.id
+  let runProject: string | null = null
 
   const note = (text: string) => {
     if (report.notes.length < 200) report.notes.push(text)
@@ -155,6 +158,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
       clearHistory()
       useRuns.getState().loadRuns({ takes: gen.takes, credits: 1000, spent: 0 })
     }
+    runProject = useProject.getState().project.id
     note(`Dự án thử nghiệm: ${gen.project.scenes.length} cảnh, ${gen.project.assets.length} nhân vật, ${gen.takes.length} video${scenesWithVideoTokens(gen.project) ? `, ${scenesWithVideoTokens(gen.project)} cảnh còn @video cũ` : ''}.`)
 
     // Requests the simulated gateway refused (outside its allowlist) — must never happen.
@@ -392,11 +396,16 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     harness(`Lỗi của bộ thử nghiệm: ${(e as Error)?.message ?? String(e)}`, (e as Error)?.stack)
   } finally {
     offLog()
-    // Stop the engine before the session's provider goes away (in-flight work of this generation is then ignored).
-    try {
-      useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
-    } catch {
-      /* the caller restores the user's data anyway */
+    // Stop the engine before the session's provider goes away (in-flight work of this generation is then ignored) —
+    // only on the run's own project. A load that failed before opening it leaves the project that was open before
+    // (the user's, in the app) open: emptying ITS takes would be autosaved over the user's videos.
+    const open = useProject.getState().project.id
+    if (open === runProject || open !== projectBefore) {
+      try {
+        useRuns.getState().loadRuns({ takes: [], credits: 1000, spent: 0 })
+      } catch {
+        /* nothing running */
+      }
     }
     session?.stop()
   }

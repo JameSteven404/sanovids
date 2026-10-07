@@ -108,6 +108,13 @@ export interface SubmitOptions {
    * before the request that creates (and bills) the job; it then gives up with a ProviderError code 'cancelled'.
    */
   isCancelled?: () => boolean
+  /**
+   * True when this take was submitted before and that request's outcome is unknown — an explicit retry of a "maybe
+   * billed" take (Take.submitUnknown). A paying provider that finds no record of the earlier request (its own records
+   * lost or trimmed) must not send it again: no record is no proof it was never sent. It fails with `uncertain` +
+   * `unverifiable` (isSubmitUnverifiable) instead.
+   */
+  resend?: boolean
 }
 
 export interface VideoProvider {
