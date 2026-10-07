@@ -163,6 +163,41 @@ describe('effective provider', () => {
     expect(canvasappOff()).toBe(true)
   })
 
+  it('a DEV take whose submit is uncertain: never re-sent while locked (store + "Chạy lại" toast, no question asked)', async () => {
+    const { useRuns, DEV_UNKNOWN_SUBMIT_ERROR } = await import('../../store/runs')
+    const { rerunTake, DEV_LOCKED_RETRY } = await import('../../actions')
+    const take = {
+      id: 'tk-dev-1',
+      sceneId: 's1',
+      provider: 'dev',
+      status: 'failed',
+      error: DEV_UNKNOWN_SUBMIT_ERROR,
+      submitUnknown: true,
+      remoteId: null,
+      cost: 20,
+      progress: 0,
+      createdAt: 1,
+      startedAt: null,
+      finishedAt: null,
+    } as unknown as ReturnType<typeof useRuns.getState>['takes'][number]
+    const before = useRuns.getState().takes
+    useRuns.setState({ takes: [take] })
+    try {
+      applyDevAccessState(bareState('locked'))
+      expect(useRuns.getState().retry('tk-dev-1')).toMatchObject({ queued: 0, error: DEV_LOCKED_REASON })
+      expect(useRuns.getState().takes[0].status).toBe('failed')
+      const confirm = vi.fn(() => true)
+      vi.stubGlobal('window', { confirm })
+      rerunTake('tk-dev-1')
+      expect(confirm).not.toHaveBeenCalled()
+      const t = useUI.getState().toasts.at(-1)
+      expect(t?.text).toBe(DEV_LOCKED_RETRY)
+      expect(t?.action?.label).toBe('Chạy lại')
+    } finally {
+      useRuns.setState({ takes: before })
+    }
+  })
+
   it('open development mode keeps today’s behaviour (Bảng phát triển opens)', () => {
     openDevPanel('log')
     expect(useUI.getState().dialog).toMatchObject({ kind: 'dev', tab: 'log' })
