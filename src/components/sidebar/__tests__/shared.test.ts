@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { assetDefaultLayout } from '../../canvas/canvasModel'
+import { ASSET_TILE } from '../../canvas/canvasModel'
 import type { Asset, Project, Scene, Take } from '../../../core/types'
-import { useProject } from '../../../store/project'
+import { LAYOUT, useProject } from '../../../store/project'
 import {
   changedPrompts,
   checkTag,
@@ -175,18 +175,18 @@ describe('tag validation + rename', () => {
   })
 
   it('places new canvas assets under the existing asset column', () => {
-    // Default card height follows the image (square images here): name/meta rows + the image box.
-    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + assetDefaultLayout(1).h + 28 })
+    // 0.6.0: every default image tile has one size (220 × 275), whatever the picture's shape.
+    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + ASSET_TILE.h + LAYOUT.assetGapY })
   })
 
   it('places new canvas assets below a resized (taller) asset node, not over it', () => {
     const p = project()
     p.assets = [
       { ...asset('a', 'A', 'A', [], { x: 40, y: 60 }), size: { w: 300, h: 480 } },
-      asset('b', 'B', 'B', [], { x: 40, y: 300 }),
+      asset('b', 'B', 'B', [], { x: 40, y: 240 }),
     ]
-    // a's bottom edge (60 + 480) is lower than b's (300 + default card height).
-    expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 480 + 28 })
+    // a's bottom edge (60 + 480) is lower than b's (240 + the default tile's 275).
+    expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 480 + LAYOUT.assetGapY })
   })
 })
 

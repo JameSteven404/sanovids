@@ -1,47 +1,50 @@
-// Scene card on the canvas. Memoized; reads its own scene from the store by id.
-// Its takes are separate Take nodes to the right (wired from the 'take' handle); the card only shows a status line.
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
-import { Ban, Clapperboard, Film, ImagePlus, Link2, Play, TriangleAlert, X } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
+// Scene node on the canvas — the node IS the editor (approved design E0 v3, like canvasapp's video node): head (code,
+// name, take status) · one settings line that opens in place · the prompt · image references + the costed Run button.
+// Memoized; reads its own scene from the store by id. At rest every node draws its prompt as STATIC text with the same
+// box, insets, wrapping and token marks as the live field, so nothing moves when it turns into one: a click on the
+// text opens the field with the caret where it was clicked (store/sceneEditor, only ONE node mounts the field).
+// Below LOD_ZOOM the far view: big code and name, two prompt lines, pictures, ▶.
+// Its takes are separate Take nodes to the right (wired from the 'take' handle at 62px = the middle of their poster).
+import { Handle, Position, useReactFlow, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { ChevronDown, ImagePlus, Link2, Lock, Play, Plus, TriangleAlert, X } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, edgeId, linkAssets, linkTakes, requestRun, takeLabel, viewImages } from '../../actions'
-import { assetByTag, compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
-import { costOf, foreignModelBadge, MODELS, settingsLabel } from '../../core/models'
-import { foreignModelReason, refStatusLookup, runBlockReason } from '../../core/runRules'
+import { edgeId, linkAssets, requestRun, viewImages } from '../../actions'
+import { compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
+import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { foreignModelReason, refStatusLookup, runBlockReason, unsentTokensReason } from '../../core/runRules'
 import type { Asset, CompiledPrompt, Project, Scene, Size } from '../../core/types'
+import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { CREDIT_MARK, formatCredits } from '../../lib/credits'
+import { ASSETS_MIME } from '../../lib/dnd'
 import { measureImage } from '../../lib/imageMeta'
 import { useMediaUrl } from '../../lib/imageStore'
+import { flushScenes } from '../../lib/promptDrafts'
 import { useCreditKind } from '../../store/credits'
-import { LAYOUT, useProject } from '../../store/project'
+import { LAYOUT, undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { useUI } from '../../store/ui'
+import { useInPanel, useIsEditing, useSceneEditor } from '../../store/sceneEditor'
+import { toast, useUI } from '../../store/ui'
 import { perfCount } from '../../perf/probe'
 import { MediaImg } from '../common/Media'
+import { insertAt, segmentPrompt, snapToWordEnd } from '../inspector/tokens'
+import { AssetPicker } from '../inspector/shared'
 import { useGatewayRefVideoCap, useSettingsRunBlock } from '../runs/shared'
-import { costTitle, creditTone } from '../sidebar/shared'
+import { appliedPresetId } from '../sidebar/shared'
 import {
-  assetMapOf,
-  avatarSlots,
   countScenes,
   DOT_TOP,
-  excerptChars,
   hasAssetDrag,
   hasFileDrag,
-  hasTakeDrag,
   imageFiles,
   inlineEditKeyBubbles,
   inlineEditSavesDraft,
   LOD_ZOOM,
-  promptLines,
   readAssetIds,
-  readTakeIds,
   sceneMapOf,
   sceneAssetsOf,
-  STATUS_COLOR,
-  STATUS_LABEL,
+  sceneNodeSize,
   takeIndexOf,
-  takesUsableFor,
   takeSummary,
   targetScenesFor,
   type TakeSummary,
@@ -49,32 +52,36 @@ import {
 import { cutEdge } from './edges'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
+import { filesToSceneTiles, legacyTagsOf, NodePromptField, planNodeLinks, PromptSegments, staticTextBefore } from './SceneNodeEditor'
+import { SceneNodeSettings } from './SceneNodeSettings'
+import { caretFromExcerptHit, enterOpensEditor } from './sceneEditorModel'
+import {
+  compactStatus,
+  farSummary,
+  farTone,
+  footLayout,
+  imageBadge,
+  nodeCounter,
+  promptBoxHeight,
+  promptLinesFor,
+  promptTextWidth,
+  runButtonView,
+  settingsSummary,
+  staticExcerpt,
+} from './sceneNodeModel'
 import type { RefDotTone } from './wireFx'
 import './canvas.css'
+import './sceneNode.css'
 
 /** `refDot`: what the wires drawn into the reference dot carry (CanvasView, wireFx.refDotTones); absent = images only / none. */
 export type SceneNodeData = { refDot?: RefDotTone }
 export type SceneFlowNode = Node<SceneNodeData, 'scene'>
 
-const MAX_VIDEO_THUMBS = 4
 const EMPTY_ASSETS: Asset[] = []
+const PLACEHOLDER = 'Bấm để viết prompt… Gõ @ để chèn ảnh tham chiếu (@image_1).'
 
-/** The scene's two dots sit at the height of an unresized take's dots: the scene → take wire runs straight. */
+/** The scene's two dots sit at 62px: the top of the prompt box = the middle of an unresized take's poster. */
 const DOT_STYLE = { top: DOT_TOP }
-/**
- * Model badge of a scene on a newer build's model (Scene.foreignModel): warning tint; unlike the short "SD 2.5" the id
- * can be long, so it is capped and may shrink (ellipsis; the full text is in the title) instead of squeezing the title
- * out.
- */
-const FOREIGN_BADGE_STYLE = {
-  ['--model-c' as string]: 'var(--warn)',
-  flex: '0 1 auto',
-  minWidth: 0,
-  maxWidth: '40%',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-} as CSSProperties
 
 function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   perfCount('SceneNodeView')
@@ -83,37 +90,59 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
   const status = useRuns((s) => takeSummary(s.takes, id).status)
   const progress = useRuns((s) => (takeSummary(s.takes, id).status === 'processing' ? takeSummary(s.takes, id).progress : 0))
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
-  // A video (take) is being dragged from the library / a take strip: light up the scenes that can use it as @video.
-  const takeTarget = useUI((s) => !!s.draggingTakeIds && takesUsableFor(s.draggingTakeIds, id))
   const multi = useUI((s) => (selected ? countScenes(s.selectedIds) : 0))
-  const box = useNodeBox(id, scene?.size)
+  const single = useUI((s) => s.selectedIds.length === 1 && s.selectedIds[0] === id)
+  const editing = useIsEditing(id)
+  const box = useNodeBox(id, sceneNodeSize(scene?.size))
   const transform = scene?.settings.mode === 'transform'
   // Handles are added/removed with the H3 transform mode: re-measure them.
   useRemeasureOn(id, transform)
 
-  // ---- HTML5 drop: library cards (asset ids), generated videos (take ids → @video) or OS image files ----
+  // Enter on the only selected node (canvas focused, nothing being typed, no dialog): type in its prompt, caret at the end.
+  // Also when its field is already mounted but not focused (pref "Tự mở khi chọn 1 cảnh"); Enter inside the field is a newline.
+  useEffect(() => {
+    if (!single || far) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat || e.defaultPrevented || e.isComposing) return
+      if (useUI.getState().dialog.kind !== 'none' || useCanvasPrefs.getState().nodeEditor === 'off') return
+      if (!enterOpensEditor(e.target instanceof Element ? e.target : null)) return
+      e.preventDefault()
+      const cur = sceneMapOf(useProject.getState().project.scenes).get(id)
+      useSceneEditor.getState().open(id, 'prompt', cur?.prompt.length ?? null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [single, far, id])
+
+  // ---- HTML5 drop: library cards / image tiles (asset ids) or OS image files ----
   const [dropHint, setDropHint] = useState<DropHint | null>(null)
   const depth = useRef(0)
-  const accepts = (e: DragEvent) => hasTakeDrag(e.dataTransfer) || hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)
+  const accepts = (e: DragEvent) => hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)
+  const hintFor = (e: DragEvent): DropHint => {
+    const n = targetScenesFor(id).length
+    if (!hasAssetDrag(e.dataTransfer)) return { kind: 'file', text: n > 1 ? `Thêm ô ảnh & nối vào ${n} cảnh` : 'Thả ảnh: thêm ô ảnh & nối vào cảnh' }
+    if (n === 1 && (e.target as Element | null)?.closest?.('.cv-sn-text')) return { kind: 'text', text: '' }
+    return { kind: 'asset', text: n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối' }
+  }
   const onDragEnter = (e: DragEvent) => {
     if (!accepts(e)) return
     e.preventDefault()
     depth.current++
-    setDropHint(dropHintFor(id, e.dataTransfer))
+    setDropHint(hintFor(e))
   }
   const onDragOver = (e: DragEvent) => {
     if (!accepts(e)) return
-    // Always swallow it here so a refused video never falls through to the canvas (which would create a scene).
     e.preventDefault()
     e.stopPropagation()
-    if (dropHint?.kind === 'bad') e.dataTransfer.dropEffect = 'none'
+    const next = hintFor(e)
+    if (next.kind !== dropHint?.kind) setDropHint(next)
   }
   const onDragLeave = (e: DragEvent) => {
     if (!accepts(e)) return
     depth.current = Math.max(0, depth.current - 1)
     if (!depth.current) setDropHint(null)
   }
-  // A cancelled or refused drop (Esc, "bad" video) may skip the matching dragleave: reset when any drag ends.
+  // A cancelled drop (Esc) may skip the matching dragleave: reset when any drag ends.
   const hinting = !!dropHint
   useEffect(() => {
     if (!hinting) return
@@ -135,36 +164,34 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
     depth.current = 0
     setDropHint(null)
     const targets = targetScenesFor(id)
-    if (hasTakeDrag(e.dataTransfer)) {
-      const takeIds = readTakeIds(e.dataTransfer)
-      useUI.getState().setDraggingTakes(null)
-      // linkTakes checks readiness, own-scene loops and model limits, and reports (multi-target like assets).
-      if (takeIds.length) linkTakes(targets, takeIds)
-      return
-    }
     const ids = readAssetIds(e.dataTransfer)
     useUI.getState().setDraggingAssets(null)
     if (ids && ids.length) {
+      // On the static text of this one node: link + insert the @image_N where it was dropped (one undo step).
+      const text = targets.length === 1 ? (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-text') : null
+      if (text && insertAtStaticPoint(id, text, e.clientX, e.clientY, ids)) return
       linkAssets(targets, ids)
       return
     }
     const files = imageFiles(e.dataTransfer)
-    if (files.length) void createAssetsFromFiles(files, { position: null }).then((created) => linkAssets(targets, created))
+    // New image files: tiles in the image column next to this row, wired (= linked as @image_N) to the scene(s).
+    if (files.length) void filesToSceneTiles(id, files).then((created) => created.length && linkAssets(targets, created))
   }
 
   if (!scene) return null
   const running = status === 'processing'
-  // The reference dot takes the color of the wires drawn into it: teal images, purple videos, two-tone for both.
+  // The reference dot takes the color of the wires drawn into it.
   const refDot = data?.refDot ? ` is-${data.refDot}` : ''
   const cls = [
     'cv-scene',
+    'cv-sn',
     selected && 'is-selected',
-    dropHint && 'is-drop',
-    dropHint && dropHint.kind !== 'asset' && `is-drop-${dropHint.kind}`,
+    dropHint && dropHint.kind !== 'text' && 'is-drop',
+    dropHint?.kind === 'text' && 'is-drop-text',
     libraryDrag && 'is-drop-target',
-    takeTarget && 'is-take-target',
     running && 'is-running',
     far && 'is-far',
+    editing && 'is-editing',
     box && 'is-sized',
   ]
     .filter(Boolean)
@@ -173,24 +200,20 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
     <>
       <div className={cls} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
         {scene.color && <span className="cv-scene-stripe" style={{ background: scene.color }} />}
-        {running && (
+        {running && !far && (
           <div className="cv-run-bar">
             <i style={{ width: `${Math.max(3, progress)}%` }} />
           </div>
         )}
-        {far ? <SceneFar scene={scene} status={status} /> : <SceneFull scene={scene} status={status} box={box} />}
+        {far ? <SceneFar scene={scene} status={status} progress={progress} /> : <SceneFull scene={scene} status={status} box={box} editing={editing} selected={!!selected} />}
 
         <div className="cv-drop-hint">
-          {dropHint?.kind === 'take' ? <Film size={14} /> : dropHint?.kind === 'bad' ? <Ban size={14} /> : <Link2 size={14} />}
+          {dropHint?.kind === 'file' ? <ImagePlus size={14} /> : <Link2 size={14} />}
           {dropHint?.text}
         </div>
         <div className="cv-conn-hint asset">
           <Link2 size={14} />
           {multi > 1 ? `Nối vào ${multi} cảnh đã chọn` : 'Thả để nối'}
-        </div>
-        <div className="cv-conn-hint take">
-          <Film size={14} />
-          {multi > 1 ? `Dùng làm @video cho ${multi} cảnh` : 'Dùng làm @video'}
         </div>
 
         <Handle
@@ -200,7 +223,7 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
           className={`cv-h cv-h-ref${refDot}`}
           style={DOT_STYLE}
           isConnectableStart={false}
-          title="Tham chiếu: kéo nhân vật hoặc video vào bất kỳ đâu trên thẻ"
+          title="Ảnh tham chiếu: kéo chấm phải của ô ảnh vào bất kỳ đâu trên node"
         />
         {/*
           Takes are created by running the scene, never by wiring: this handle anchors the 'out' wires. Dragged to a
@@ -235,229 +258,328 @@ function SceneNodeView({ id, selected, data }: NodeProps<SceneFlowNode>) {
 export const SceneNode = memo(SceneNodeView)
 
 interface DropHint {
-  /** asset: images / library cards (teal) · take: video → @video (purple) · bad: this video cannot be used here. */
-  kind: 'asset' | 'take' | 'bad'
+  /** asset: library cards / tiles (link) · file: new image files (tiles + link) · text: onto the static text (insert). */
+  kind: 'asset' | 'file' | 'text'
   text: string
 }
 
-/** What dropping this drag on the scene would do. Payload ids are unreadable before `drop`, so take drags are judged
- *  by `ui.draggingTakeIds` (announced by the drag source); without it the drop is accepted and linkTakes reports. */
-function dropHintFor(sceneId: string, dt: DataTransfer): DropHint {
-  const targets = targetScenesFor(sceneId)
-  const n = targets.length
-  if (hasTakeDrag(dt)) {
-    const dragging = useUI.getState().draggingTakeIds
-    if (dragging?.length && !targets.some((sid) => takesUsableFor(dragging, sid))) {
-      const byId = takeIndexOf(useRuns.getState().takes).byId
-      const ready = dragging.some((t) => byId.get(t)?.status === 'completed')
-      return { kind: 'bad', text: ready ? 'Video của chính cảnh này — không dùng được' : 'Video chưa tạo xong' }
-    }
-    return { kind: 'take', text: n > 1 ? `Dùng làm @video cho ${n} cảnh đã chọn` : 'Thả để dùng làm @video' }
-  }
-  if (!hasAssetDrag(dt)) return { kind: 'asset', text: n > 1 ? `Tạo & nối ảnh vào ${n} cảnh` : 'Thả ảnh để tạo & nối' }
-  return { kind: 'asset', text: n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối' }
+/** Link `ids` and insert their @image_N into the prompt at the static text's point (x, y). false = not on the text. */
+function insertAtStaticPoint(sceneId: string, el: HTMLElement, x: number, y: number, ids: string[]): boolean {
+  const before = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
+  const at0 = before ? caretFromExcerptHit(before.prompt, staticTextBefore(el, x, y)) : null
+  if (at0 === null) return false
+  flushScenes([sceneId])
+  const plan = planNodeLinks(sceneId, ids)
+  const cur = sceneMapOf(useProject.getState().project.scenes).get(sceneId)
+  if (!plan || !cur) return true
+  if (!plan.tokens.length) return true
+  const at = snapToWordEnd(cur.prompt, Math.min(at0, cur.prompt.length))
+  const { next } = insertAt(cur.prompt, at, at, plan.tokens.join(' '))
+  useProject.getState().restoreScene(sceneId, { prompt: next, refs: plan.refs ?? cur.refs, videoRefs: cur.videoRefs, settings: cur.settings })
+  toast(plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`, { tone: 'success', action: undoToastAction() })
+  return true
 }
 
 // ---------------------------------------------------------------------------------------------
-function SceneFar({ scene, status }: { scene: Scene; status: TakeSummary['status'] }) {
-  const posterId = useRuns((s) => takeSummary(s.takes, scene.id).posterId)
-  const st = status
-  return (
-    <div className="cv-far">
-      <div className="cv-far-bar" style={{ background: st ? STATUS_COLOR[st] : 'var(--border-strong)' }} />
-      <div className="cv-far-poster">{posterId ? <MediaImg id={posterId} /> : <span className="cv-far-code-bg">{sceneCode(scene.order)}</span>}</div>
-      <div className="cv-far-meta">
-        <span className="cv-far-code">{sceneCode(scene.order)}</span>
-        <span className="cv-far-title">{scene.title || 'Chưa đặt tên'}</span>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------------------------
-/** `box`: size of a resized card (null = default): more prompt lines when taller, more avatars when wider. */
-function SceneFull({ scene, status, box }: { scene: Scene; status: TakeSummary['status']; box: Size | null }) {
+/**
+ * What the scene would send and why it cannot run yet: the engine's rule list (core/runRules = store/runs check()):
+ * @video against the gateway's cap, only for the videos this model / mode really sends ('' in the status string = the
+ * take no longer exists); settings the gateway surely refuses now (/api/video-profiles, a string selection).
+ */
+function useSceneRun(scene: Scene) {
   const assets = useProject(useShallow((s) => sceneAssetsOf(s.project.assets, scene)))
-  const presetName = useProject((s) => (scene.presetId ? s.project.presets.find((p) => p.id === scene.presetId)?.name : undefined))
   // Status of each @video ref as one string: stable while takes only make progress.
   const videoStatus = useRuns((s) => {
     if (!scene.videoRefs.length) return ''
     const byId = takeIndexOf(s.takes).byId
     return scene.videoRefs.map((t) => byId.get(t)?.status ?? '').join(',')
   })
-
   const takeStatus = useMemo(() => refStatusLookup(scene.videoRefs, videoStatus), [scene.videoRefs, videoStatus])
   const compiled = useMemo<CompiledPrompt>(() => {
     const project: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], assets, settings: { autoRenumber: true }, scenes: [scene] }
     return compileScene(project, scene, { takeStatus })
   }, [assets, scene, takeStatus])
-
-  const refAssets = useMemo(() => {
-    const map = assetMapOf(assets)
-    const out = scene.refs.map((r) => map.get(r)).filter((a): a is Asset => !!a)
-    return out.length ? out : EMPTY_ASSETS
-  }, [assets, scene.refs])
-  /** First @image number of each linked asset (every image of an asset gets its own number) + total images. */
-  const slots = useMemo(() => {
-    const first = new Map<string, number>()
-    const all = imageSlotsFor(assets, scene.refs)
-    for (const s of all) if (!first.has(s.assetId)) first.set(s.assetId, s.n)
-    return { first, total: all.length }
-  }, [assets, scene.refs])
-
   const spec = MODELS[scene.settings.model]
-  const cost = costOf(scene.settings)
-  // Wallet of the next run: simulated credit dev (development mode) or real canvasapp credits (docs/SPEC-v2.md §9, §11).
-  const creditKind = useCreditKind()
-  // The engine's rule list (core/runRules, = store/runs check()): a newer build's model / values first; @video against
-  // the gateway's cap (useGatewayRefVideoCap re-renders the card when the provider changes), and only the videos this
-  // model/mode really sends — a leftover reference of an H3 t2v / transform scene does not block it ('' in videoStatus
-  // = the take no longer exists, e.g. an undo brought back a reference to a deleted video); settings the gateway surely
-  // refuses now (/api/video-profiles, selected as a string: this card re-renders only when it changes).
   const videoCap = useGatewayRefVideoCap(scene.settings.model)
   const settingsBlock = useSettingsRunBlock(scene.settings)
   const reason = runBlockReason({ scene, assets, compiled, takeStatus, settingsBlock, spec, providerVideoCap: videoCap })
+  return { assets, compiled, reason, spec }
+}
 
-  const hasTakes = useRuns((s) => takeSummary(s.takes, scene.id).count > 0)
-  const hasMedia = refAssets.length > 0 || scene.videoRefs.length > 0
-  const maxAvatars = avatarSlots(box?.w ?? LAYOUT.sceneW, Math.min(scene.videoRefs.length, MAX_VIDEO_THUMBS))
-  const lines = box ? promptLines(box.h, hasTakes) : 2
-  const maxChars = box ? excerptChars(lines, box.w) : 280
+/** Linked assets in refs order, the first @image number of each and the image count. */
+function useRefSlots(assets: Asset[], refs: string[]) {
+  return useMemo(() => {
+    const map = new Map(assets.map((a) => [a.id, a]))
+    const list = refs.map((r) => map.get(r)).filter((a): a is Asset => !!a)
+    const first = new Map<string, number>()
+    const all = imageSlotsFor(assets, refs)
+    for (const s of all) if (!first.has(s.assetId)) first.set(s.assetId, s.n)
+    return { list: list.length ? list : EMPTY_ASSETS, first, total: all.length }
+  }, [assets, refs])
+}
+
+// ---------------------------------------------------------------------------------------------
+/** Zoomed out (< 55%): code ≈ 18px on screen, the name in 2 lines, 2 prompt lines, pictures and ▶ (grey when blocked). */
+function SceneFar({ scene, status, progress }: { scene: Scene; status: TakeSummary['status']; progress: number }) {
+  const { assets, compiled, reason, spec } = useSceneRun(scene)
+  const slots = useRefSlots(assets, scene.refs)
+  // the red label "Chữ đỏ" when red placeholders block it (like the node's strip), else "Chưa chạy"
+  const red = !!reason && reason === unsentTokensReason(compiled.unsentTokens) && compiled.unsentTokens.some((t) => t.includes('?'))
+  const pill = status === 'processing' || !!reason
+  const hasVideo = useRuns((s) => takeSummary(s.takes, scene.id).posterId !== null)
+  const creditKind = useCreditKind()
+  const rf = useReactFlow()
+  const tone = farTone(status, hasVideo, !!reason)
+  const cost = costOf(scene.settings)
+  const lines = scene.prompt.trim().split('\n').slice(0, 2).join('\n')
   return (
-    <div className="cv-scene-body">
-      <div className="cv-scene-head">
-        <span className="cv-code">{sceneCode(scene.order)}</span>
-        <EditableTitle sceneId={scene.id} title={scene.title} />
-        {scene.foreignModel ? (
-          // A newer build's model (migrate keeps it): its id instead of the stand-in "SD 2.5"; Run is blocked (reason).
-          <span className="cv-model" style={FOREIGN_BADGE_STYLE} title={foreignModelReason(scene.foreignModel)}>
-            {foreignModelBadge(scene.foreignModel)}
+    <div
+      className="cv-snf"
+      title="Bấm đúp để phóng tới cảnh này và gõ prompt"
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        const n = rf.getInternalNode(scene.id)
+        if (!n) return
+        const w = n.measured.width ?? LAYOUT.sceneW
+        const h = n.measured.height ?? LAYOUT.sceneH
+        const duration = motionLevel(useCanvasPrefs.getState().animations) === 'full' ? 300 : 0
+        void rf.setCenter(n.internals.positionAbsolute.x + w / 2, n.internals.positionAbsolute.y + h / 2, { zoom: 1, duration })
+        setTimeout(() => useSceneEditor.getState().open(scene.id, 'prompt', scene.prompt.length), duration + 40)
+      }}
+    >
+      <div className={`cv-snf-bar is-${tone}`}>{tone === 'going' && <i style={{ width: `${Math.max(4, progress)}%` }} />}</div>
+      <div className="cv-snf-top">
+        <span className="cv-snf-code">{sceneCode(scene.order)}</span>
+        <span className={`cv-snf-dot is-${tone}`} />
+        <span className="cv-snf-sum">{scene.foreignModel ? foreignModelBadge(scene.foreignModel) : farSummary(spec.short, scene.settings.duration)}</span>
+      </div>
+      <div className={`cv-snf-ttl${scene.title ? '' : ' is-empty'}`}>{scene.title || 'Chưa đặt tên'}</div>
+      <div className="cv-snf-ex">{lines || 'Chưa có prompt'}</div>
+      <div className="cv-snf-bot">
+        <span className="cv-snf-av">
+          {slots.list.slice(0, pill ? 2 : 3).map((a) => (
+            <MediaImg key={a.id} id={a.imageIds[0] ?? null} className="cv-snf-img" />
+          ))}
+        </span>
+        <span className="cv-snf-sp" />
+        {status === 'processing' ? (
+          <span className="cv-snf-pill is-going">{progress}%</span>
+        ) : reason ? (
+          <span className="cv-snf-pill is-bad" title={`Chưa chạy được: ${reason}`}>
+            {red ? 'Chữ đỏ' : 'Chưa chạy'}
           </span>
         ) : (
-          <span className="cv-model" style={{ ['--model-c' as string]: spec.color }} title={spec.name}>
-            {spec.short}
+          <span className="cv-snf-cost">
+            {formatCredits(cost, creditKind, { short: true })}
+            {CREDIT_MARK[creditKind] && <span className="cv-snf-mark">{CREDIT_MARK[creditKind]}</span>}
           </span>
         )}
-        <span className={`status-dot ${status ?? ''}`} title={status ? `Take mới nhất: ${STATUS_LABEL[status]}` : 'Chưa chạy'} />
-      </div>
-
-      <div className="cv-refs">
-        {hasMedia ? (
-          <>
-            {refAssets.slice(0, maxAvatars).map((a) => (
-              <RefAvatar key={a.id} asset={a} n={slots.first.get(a.id)} sceneId={scene.id} />
-            ))}
-            {refAssets.length > maxAvatars && (
-              <span className="cv-av-more" title={refAssets.slice(maxAvatars).map((a) => a.name).join(', ')}>
-                +{refAssets.length - maxAvatars}
-              </span>
-            )}
-            {scene.videoRefs.length > 0 && <VideoRefs sceneId={scene.id} videoRefs={scene.videoRefs} />}
-          </>
-        ) : (
-          <span className="cv-refs-empty">
-            <ImagePlus size={13} /> Kéo nhân vật hoặc video vào đây
-          </span>
-        )}
-      </div>
-
-      <div className="cv-prompt-box">
-        <div className="cv-prompt" style={box ? { WebkitLineClamp: lines } : undefined}>
-          {scene.prompt.trim() ? (
-            <Excerpt text={scene.prompt} assets={assets} images={slots.total} videos={scene.videoRefs.length} maxChars={maxChars} />
-          ) : (
-            <span className="faint">Chưa có prompt</span>
-          )}
-        </div>
-      </div>
-
-      <div className="cv-scene-foot">
-        <span className="cv-settings" title={presetName ? `${settingsLabel(scene.settings)} · Preset: ${presetName}` : settingsLabel(scene.settings)}>
-          {settingsLabel(scene.settings)}
-        </span>
-        {presetName && <span className="cv-preset">{presetName}</span>}
-        <span className="cv-spacer" />
-        {compiled.warnings.length > 0 && (
-          <span className="cv-warn" title={compiled.warnings.map((w) => '• ' + w).join('\n')}>
-            <TriangleAlert size={13} />
-            {compiled.warnings.length > 1 ? compiled.warnings.length : null}
-          </span>
-        )}
-        <span className={`cv-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind)}>
-          {formatCredits(cost, creditKind, { short: true })}
-          {CREDIT_MARK[creditKind] && <span className="cv-cost-mark">{CREDIT_MARK[creditKind]}</span>}
-        </span>
-        <span className="cv-run-wrap" title={reason ? `Chưa chạy được: ${reason}` : costTitle(cost, creditKind, `Chạy ${sceneCode(scene.order)} · `)}>
+        {/* the wrapper carries the title: a disabled button gets no pointer events */}
+        <span className="cv-snf-run-wrap" title={reason ? `Chưa chạy được: ${reason}` : `Tạo video cho ${sceneCode(scene.order)}`}>
           <button
-            className="cv-run nodrag"
+            type="button"
+            className="cv-snf-run nodrag"
             disabled={!!reason}
-            aria-label="Chạy cảnh"
+            aria-label={reason ? `Chưa chạy được: ${reason}` : `Tạo video cho ${sceneCode(scene.order)}`}
             onClick={(e) => {
               e.stopPropagation()
               requestRun([scene.id])
             }}
           >
-            <Play size={12} fill="currentColor" />
+            <Play size={24} fill="currentColor" />
           </button>
         </span>
       </div>
-
-      <TakeLine sceneId={scene.id} />
     </div>
   )
 }
 
-/** "3 take · ★ T2 · đang chạy 45%" — the takes themselves are nodes to the right of the card. */
-function TakeLine({ sceneId }: { sceneId: string }) {
-  const count = useRuns((s) => takeSummary(s.takes, sceneId).count)
-  const starred = useRuns((s) => takeSummary(s.takes, sceneId).starredNumber)
-  const active = useRuns((s) => takeSummary(s.takes, sceneId).active)
-  const progress = useRuns((s) => {
-    const sum = takeSummary(s.takes, sceneId)
-    return sum.status === 'processing' ? sum.progress : -1
+// ---------------------------------------------------------------------------------------------
+/** `box`: size of a resized node (null = default 352 × 304). */
+function SceneFull({ scene, status, box, editing, selected }: { scene: Scene; status: TakeSummary['status']; box: Size | null; editing: boolean; selected: boolean }) {
+  const { assets, compiled, reason, spec } = useSceneRun(scene)
+  const slots = useRefSlots(assets, scene.refs)
+  const inPanel = useInPanel(scene.id)
+  const nodeEditor = useCanvasPrefs((s) => s.nodeEditor)
+  const presetName = useProject((s) => {
+    const id = appliedPresetId(scene.presetId, scene.settings, s.project.presets)
+    return id ? (s.project.presets.find((p) => p.id === id)?.name ?? null) : null
   })
-  if (!count) return null
-  return (
-    <div className="cv-take-line">
-      <Clapperboard size={12} />
-      <span>{count} take</span>
-      {starred !== null && <span className="cv-take-line-star">★ T{starred}</span>}
-      {active > 0 && <span className="cv-take-line-run">{progress >= 0 ? `đang chạy ${progress}%` : `${active} đang chờ`}</span>}
-    </div>
-  )
-}
+  const summary = useRuns(useShallow((s) => {
+    const t = takeSummary(s.takes, scene.id)
+    return { count: t.count, status: t.status, progress: t.status === 'processing' ? t.progress : 0, starredNumber: t.starredNumber, active: t.active }
+  }))
+  const creditKind = useCreditKind()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  // The opened settings line belongs to the selected node: it closes with the selection.
+  useEffect(() => {
+    if (!selected) setSettingsOpen(false)
+  }, [selected])
 
-/**
- * Small purple thumbs of the scene's @video refs: v1, v2… × removes the reference like cutting its wire (tokens are
- * renumbered, toast with Undo).
- */
-function VideoRefs({ sceneId, videoRefs }: { sceneId: string; videoRefs: string[] }) {
-  const posters = useRuns(
-    useShallow((s) => {
-      const byId = takeIndexOf(s.takes).byId
-      return videoRefs.map((id) => byId.get(id)?.posterId ?? null)
+  const code = sceneCode(scene.order)
+  const cost = costOf(scene.settings)
+  const off = nodeEditor === 'off'
+  const placeholders = compiled.unsentTokens.filter((t) => t.includes('?'))
+  const red = placeholders.length > 0 && reason === unsentTokensReason(compiled.unsentTokens)
+  const w = box?.w ?? LAYOUT.sceneW
+  const h = box?.h ?? LAYOUT.sceneH
+  const full = runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, placeholders: red })
+  const foot = footLayout(w, slots.list.map((a) => a.name), full.label)
+  const run = foot.compact && !full.blocked ? runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, compact: true }) : full
+  const lines = promptLinesFor(promptBoxHeight(h, { strip: placeholders.length > 0, why: !!run.why, settingsOpen }))
+  // What the request really carries: tokens past it are invalid like a missing one (the model would never see them).
+  const sent = useMemo(
+    () => ({
+      images: usesRefs(scene.settings) ? Math.min(slots.total, spec.maxRefImages) : 0,
+      videos: usesVideoRefs(scene.settings) ? Math.min(scene.videoRefs.length, spec.maxRefVideos) : 0,
     }),
+    [scene.settings, slots.total, spec, scene.videoRefs.length],
   )
+  const excerpt = staticExcerpt(scene.prompt, lines, promptTextWidth(w))
+  const segs = useMemo(() => segmentPrompt(excerpt, slots.total, scene.videoRefs.length, legacyTagsOf(assets), sent), [excerpt, slots.total, scene.videoRefs.length, assets, sent])
+  const counter = nodeCounter(scene.prompt, compiled.limit)
+  const live = editing && !inPanel
+  const modelShort = scene.foreignModel ? foreignModelBadge(scene.foreignModel) : spec.short
+  const [, ...rest] = settingsSummary(scene.settings, modelShort, scene.foreignModel ? 1 : spec.modes.length, presetName).split(' · ')
+  const st = compactStatus({ ...summary, status: summary.status ?? status })
+
   return (
-    <span className="cv-vrefs">
-      {videoRefs.slice(0, MAX_VIDEO_THUMBS).map((takeId, i) => (
-        <span key={takeId} className="cv-vref" title={`@video_${i + 1} · ${takeLabel(takeId)}`}>
-          <MediaImg id={posters[i]} className="cv-vref-img" />
-          <span className="cv-vref-n">v{i + 1}</span>
+    <div className="cv-sn-body">
+      <div className="cv-sn-head">
+        <span className="cv-sn-code">{code}</span>
+        <EditableTitle sceneId={scene.id} title={scene.title} />
+        <span className={`cv-sn-st is-${st.tone}`} title={st.title}>
+          <i />
+          {st.text}
+        </span>
+      </div>
+
+      {settingsOpen && !off ? (
+        <SceneNodeSettings sceneId={scene.id} settings={scene.settings} storedPresetId={scene.presetId} foreignModel={scene.foreignModel} onClose={() => setSettingsOpen(false)} />
+      ) : (
+        <button
+          type="button"
+          className="cv-sn-sum nodrag"
+          disabled={off}
+          aria-expanded={false}
+          title={
+            scene.foreignModel
+              ? foreignModelReason(scene.foreignModel)
+              : `${spec.name}${spec.modes.length > 1 ? ` · ${modeLabel(scene.settings.mode, scene.settings.model)}` : ''} — bấm để đổi model, thời lượng, độ phân giải, tỉ lệ`
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            setSettingsOpen(true)
+          }}
+        >
+          <span className={`cv-sn-sum-m${scene.foreignModel ? ' is-foreign' : ''}`} style={{ ['--model-c' as string]: scene.foreignModel ? 'var(--warn)' : spec.color } as CSSProperties}>
+            {modelShort}
+          </span>
+          <span className="cv-sn-sum-t">{rest.join(' · ')}</span>
+          {!off && <ChevronDown size={12} strokeWidth={2.4} className="cv-sn-sum-chev" />}
+        </button>
+      )}
+
+      <div
+        className={`cv-sn-pr${live ? ' is-live' : ''}${counter.over ? ' is-over' : ''}${off ? ' is-off' : ''}`}
+        title={inPanel ? 'Đang soạn prompt này ở bảng bên phải — bấm để gõ tiếp trên node' : undefined}
+        // A plain click on the static text types there (caret where clicked); on the box below the text: at the end.
+        // Not a drag (React Flow suppresses the click after one), never with Shift / Ctrl (they select nodes).
+        onClick={
+          live
+            ? undefined
+            : (e) => {
+                if (off || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return
+                const text = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.cv-sn-text')
+                const onText = !!text && e.target instanceof Element && text.contains(e.target)
+                const caret = onText ? caretFromExcerptHit(scene.prompt, staticTextBefore(text, e.clientX, e.clientY)) : null
+                useSceneEditor.getState().open(scene.id, 'prompt', caret ?? scene.prompt.length)
+              }
+        }
+      >
+        {live ? (
+          <NodePromptField scene={scene} assets={assets} sent={sent} imageCount={slots.total} placeholder={PLACEHOLDER} />
+        ) : (
+          <div className="cv-sn-text" style={{ WebkitLineClamp: lines }}>
+            {scene.prompt ? <PromptSegments segs={segs} /> : <span className="cv-sn-ph">{off ? 'Chưa có prompt' : PLACEHOLDER}</span>}
+          </div>
+        )}
+        <span className="cv-sn-count" title="Số ký tự / giới hạn của model">
+          {counter.text}
+        </span>
+      </div>
+
+      {placeholders.length > 0 && (
+        <div className="cv-sn-hole" title="Ảnh của các chữ đỏ này đã bị cắt dây: nối lại ảnh vào cảnh rồi sửa thành số đúng (vd. @image_1)">
+          <TriangleAlert size={12} />
+          <span className="cv-sn-hole-l">Chữ đỏ chờ ảnh:</span>
+          {placeholders.slice(0, 3).map((t) => (
+            <span key={t} className="cv-sn-hole-c">
+              {t}
+            </span>
+          ))}
+          {placeholders.length > 3 && <span className="cv-sn-hole-more">+{placeholders.length - 3}</span>}
+        </div>
+      )}
+
+      <div className="cv-sn-foot">
+        <div className="cv-sn-refs">
+          {slots.list.slice(0, foot.shown).map((a) => (
+            <RefThumb key={a.id} asset={a} badge={imageBadge(slots.first.get(a.id), a.imageIds.length)} named={foot.names} sceneId={scene.id} />
+          ))}
+          {foot.more > 0 && (
+            <span className="cv-sn-more" title={slots.list.slice(foot.shown).map((a) => a.name).join(', ')}>
+              +{foot.more}
+            </span>
+          )}
+          <AddRef sceneId={scene.id} refs={scene.refs} images={slots.total} max={spec.maxRefImages} />
+        </div>
+        {/* the wrapper carries the full sentence as its title: a disabled button gets no pointer events */}
+        <span className={`cv-sn-run-wrap${foot.compact ? ' is-compact' : ''}`} title={run.title}>
           <button
-            className="cv-av-x nodrag"
-            title={`Bỏ @video_${i + 1}`}
-            aria-label={`Bỏ video tham chiếu ${i + 1}`}
+            type="button"
+            className={`cv-sn-run nodrag${run.blocked ? ' is-blocked' : ''}`}
+            disabled={!!reason}
+            aria-label={run.blocked ? run.title : `Tạo video cho ${code} · ${scene.settings.duration} giây · ${run.label}`}
             onClick={(e) => {
               e.stopPropagation()
-              cutEdge(edgeId('vref', takeId, sceneId))
+              requestRun([scene.id])
             }}
           >
-            <X size={9} strokeWidth={3} />
+            {run.blocked ? <Lock size={13} strokeWidth={2.2} /> : <Play size={11} fill="currentColor" />}
+            <span>{run.label}</span>
           </button>
         </span>
-      ))}
-      {videoRefs.length > MAX_VIDEO_THUMBS && <span className="cv-av-more">+{videoRefs.length - MAX_VIDEO_THUMBS}</span>}
+      </div>
+      {run.why && (
+        <div className="cv-sn-why" title={run.title}>
+          {run.why}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** "+": link one more library image to the scene (x/30 counts images: a character with 2 pictures counts 2). */
+function AddRef({ sceneId, refs, images, max }: { sceneId: string; refs: string[]; images: number; max: number }) {
+  const [open, setOpen] = useState(false)
+  const btn = useRef<HTMLButtonElement>(null)
+  return (
+    <span className="cv-sn-add in-pop-host nodrag nowheel nopan">
+      <button
+        ref={btn}
+        type="button"
+        className="cv-sn-add-btn"
+        title={`Nối thêm ảnh tham chiếu (${images}/${max} ảnh) — hoặc kéo ô ảnh / nhân vật vào node`}
+        aria-label="Nối thêm ảnh tham chiếu"
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((o) => !o)
+        }}
+      >
+        <Plus size={13} strokeWidth={2.2} />
+      </button>
+      {open && <AssetPicker exclude={refs} ignoreRef={btn} title={`Nối vào cảnh · ${images}/${max} ảnh`} onClose={() => setOpen(false)} onPick={(id) => linkAssets([sceneId], [id])} />}
     </span>
   )
 }
@@ -471,7 +593,7 @@ function saveTitleDraft(sceneId: string, text: string) {
 function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
-  // Unsaved draft while editing. The card can unmount mid-edit (zoomed out to the LOD card, or culled off-screen) and
+  // Unsaved draft while editing. The node can unmount mid-edit (zoomed out to the far view, or culled off-screen) and
   // React drops the blur fired during that commit, so the draft is saved on unmount instead of being lost.
   const pending = useRef<string | null>(null)
   useEffect(
@@ -507,7 +629,7 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   if (editing) {
     return (
       <input
-        className="cv-title-input nodrag nopan"
+        className="cv-sn-title-input nodrag nopan nokey"
         autoFocus
         value={draft}
         placeholder="Tên cảnh"
@@ -536,8 +658,8 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   }
   return (
     <span
-      className={`cv-title${title ? '' : ' is-empty'}`}
-      title={title ? 'Bấm đúp để đổi tên' : 'Bấm đúp để đặt tên cảnh (không bắt buộc)'}
+      className={`cv-sn-title${title ? '' : ' is-empty'}`}
+      title={title ? `${title} — bấm đúp để đổi tên` : 'Bấm đúp để đặt tên cảnh (không bắt buộc)'}
       onDoubleClick={(e) => {
         e.stopPropagation()
         setDraft(title)
@@ -549,19 +671,20 @@ function EditableTitle({ sceneId, title }: { sceneId: string; title: string }) {
   )
 }
 
-/** Hover this long before the preview opens (moving across a row of avatars does not flash previews). */
+/** Hover this long before the preview opens (moving across a row of pictures does not flash previews). */
 const PREVIEW_DELAY = 140
-/** A press that moved further than this is a drag of the card, not a click on the avatar. */
+/** A press that moved further than this is a drag, not a click on the picture. */
 const CLICK_SLOP = 4
 
 /**
- * Square avatar of a linked asset with its first @image number as a badge. Hovering it shows the whole picture
- * (RefPreview, only for the hovered avatar); a click opens the full-screen viewer.
+ * A linked image in the foot: its picture with the @image number(s) as a badge ("2–3" = a character with 2 pictures),
+ * and its name when there is room. Hover = the whole picture (RefPreview); click = full-screen viewer; drag it onto
+ * the prompt text = insert its tag there; × = unlink (like cutting its wire: numbers renumber, toast with Undo).
  */
-function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined; sceneId: string }) {
+function RefThumb({ asset, badge, named, sceneId }: { asset: Asset; badge: string; named: boolean; sceneId: string }) {
   const url = useMediaUrl(asset.imageIds[0])
-  const range = n !== undefined && asset.imageIds.length > 1 ? `@image_${n}…${n + asset.imageIds.length - 1}` : n !== undefined ? `@image_${n}` : 'chưa có ảnh'
   const hasImage = asset.imageIds.length > 0
+  const label = badge ? `@image_${badge.replace('–', '…@image_')}` : 'chưa có ảnh'
   const [anchor, setAnchor] = useState<PreviewAnchor | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const down = useRef<{ x: number; y: number } | null>(null)
@@ -588,14 +711,19 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
   }, [showing])
   return (
     <span
-      className={`cv-av${hasImage ? ' is-viewable' : ''}`}
+      className={`cv-sn-th nodrag${named ? ' is-named' : ''}${hasImage ? ' is-viewable' : ''}`}
       style={{ ['--av-c' as string]: asset.color }}
-      title={hasImage ? undefined : `${asset.name} · ${range}`}
+      title={hasImage ? undefined : `${asset.name} · ${label}`}
+      draggable={hasImage}
+      onDragStart={(e) => {
+        hide()
+        e.dataTransfer.effectAllowed = 'link'
+        e.dataTransfer.setData(ASSETS_MIME, JSON.stringify([asset.id]))
+        e.dataTransfer.setData('text/plain', asset.name)
+      }}
       onPointerEnter={(e) => {
-        // Not while a wire, a card or a selection box is being dragged across it.
         if (!hasImage || e.buttons) return
         const el = e.currentTarget
-        // Measure the picture during the delay, so the preview opens at its real aspect ratio (no square → resize jump).
         void measureImage(asset.imageIds[0])
         cancel()
         timer.current = setTimeout(() => {
@@ -612,17 +740,20 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
       onClick={(e) => {
         const d = down.current
         down.current = null
+        e.stopPropagation()
         if (!hasImage || e.shiftKey || e.ctrlKey || e.metaKey) return
         if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > CLICK_SLOP) return
         hide()
         viewImages(asset.imageIds, 0, asset.name)
       }}
     >
-      {url ? <img src={url} alt={asset.name} draggable={false} /> : <i style={{ background: asset.color }}>{asset.name.slice(0, 1).toUpperCase()}</i>}
-      {anchor && <RefPreview asset={asset} label={range} anchor={anchor} />}
-      {n !== undefined && <b className="cv-av-n">{n}</b>}
+      <span className="cv-sn-th-i">{url ? <img src={url} alt={asset.name} draggable={false} /> : <i style={{ background: asset.color }}>{asset.name.slice(0, 1).toUpperCase()}</i>}</span>
+      {badge && <b className="cv-sn-th-n">{badge}</b>}
+      {named && <span className="cv-sn-th-name">{asset.name}</span>}
+      {anchor && <RefPreview asset={asset} label={label} anchor={anchor} />}
       <button
-        className="cv-av-x nodrag"
+        type="button"
+        className="cv-sn-th-x nodrag"
         title={`Bỏ nối ${asset.name}`}
         aria-label={`Bỏ nối ${asset.name}`}
         onClick={(e) => {
@@ -635,39 +766,4 @@ function RefAvatar({ asset, n, sceneId }: { asset: Asset; n: number | undefined;
       </button>
     </span>
   )
-}
-
-const SPLIT_RE = /(@(?:image|video)[ _]?\d+(?![\p{L}\p{N}_])|@[\p{L}\p{N}_]+)/iu
-const TOKEN_ONLY = /^@(image|video)[ _]?(\d+)$/i
-/** Prompt excerpt: @image_N teal, @video_N purple, numbers without media red, legacy @Tag of a library asset teal. */
-function Excerpt({ text, assets, images, videos, maxChars }: { text: string; assets: Asset[]; images: number; videos: number; maxChars: number }) {
-  const parts = useMemo(() => {
-    const src = text.length > maxChars ? text.slice(0, maxChars) : text
-    const out: ReactNode[] = []
-    src.split(SPLIT_RE).forEach((part, i) => {
-      if (i % 2 === 0) {
-        if (part) out.push(part)
-        return
-      }
-      const tok = TOKEN_ONLY.exec(part)
-      if (tok) {
-        const video = tok[1].toLowerCase() === 'video'
-        const n = Number(tok[2])
-        const ok = n >= 1 && n <= (video ? videos : images)
-        out.push(
-          <span key={i} className={`cv-m ${video ? 'vid' : 'img'}${ok ? '' : ' bad'}`} title={ok ? undefined : `Cảnh không có ${video ? 'video' : 'ảnh'} số ${n}`}>
-            {part}
-          </span>,
-        )
-      } else if (assetByTag(assets, part.slice(1))) {
-        out.push(
-          <span key={i} className="cv-m">
-            {part}
-          </span>,
-        )
-      } else out.push(part)
-    })
-    return out
-  }, [text, assets, images, videos, maxChars])
-  return <>{parts}</>
 }

@@ -8,8 +8,7 @@ import { FOLDER_H, FOLDER_W } from '../../core/folders'
 import { chooseTake, videoUsageOf } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
-import { aspectOf, useImageMeta } from '../../lib/imageMeta'
-import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
+import { defaultTakePosition, drawnSceneSize, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
@@ -357,7 +356,7 @@ export function layoutRowHeights(
   const bump = (sceneId: string, h: number | undefined) => {
     if (h && h > (out[sceneId] ?? 0)) out[sceneId] = Math.ceil(h)
   }
-  for (const s of scenes) bump(s.id, s.size?.h ?? measuredH(s.id))
+  for (const s of scenes) bump(s.id, drawnSceneSize(s.size)?.h ?? measuredH(s.id))
   for (const item of layout.items) if (!item.orphan) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
   return out
 }
@@ -403,30 +402,16 @@ export function livePosition(id: string, base: XY, drag: Record<string, XY>, res
   return box?.x !== undefined && box.y !== undefined ? { x: box.x, y: box.y } : drag[id] ?? base
 }
 
-/** Prompt line height of the scene card (12px × 1.42). */
-export const PROMPT_LINE_H = 17
-/** Scene card chrome around the prompt: head, refs row, footer (+ the take status line when the scene has takes). */
-export const SCENE_CHROME = 118
-export const SCENE_TAKE_LINE_H = 22
-/** Prompt lines that fit a scene card `h` px tall (at least 2, like the default card). */
-export function promptLines(h: number, hasTakeLine = false): number {
-  const avail = h - SCENE_CHROME - (hasTakeLine ? SCENE_TAKE_LINE_H : 0)
-  return Math.max(2, Math.floor(avail / PROMPT_LINE_H))
-}
-/** Characters of the prompt worth rendering for `lines` lines in a card `w` px wide (never below the default 280). */
-export function excerptChars(lines: number, w: number): number {
-  return Math.max(280, Math.ceil(lines * Math.max(1, (w - 22) / 5.5)))
+/** Detail level of nodes at a zoom: below LOD_ZOOM (0.55) the far view (big code and title, no editing controls). */
+export function lodOf(zoom: number): 'far' | 'near' {
+  return zoom < LOD_ZOOM ? 'far' : 'near'
 }
 
-export const DEFAULT_AVATARS = 6
-const AVATAR_STEP = 19
-/** Avatars shown before "+N" in a scene card `w` px wide, leaving room for `videoThumbs` @video thumbs. */
-export function avatarSlots(w: number, videoThumbs = 0): number {
-  const videoW = videoThumbs ? 12 + videoThumbs * 38 : 0
-  const fit = Math.floor((w - 22 - videoW - 40) / AVATAR_STEP)
-  const wanted = DEFAULT_AVATARS + Math.floor((w - LAYOUT.sceneW) / AVATAR_STEP)
-  return Math.max(2, Math.min(wanted, fit))
-}
+/**
+ * Stored size of a scene node as drawn: null (= the default 352 × 304) for no size or a size from before 0.6.0 that is
+ * below today's minimum (cards were 280 × 200: such a size reads as the default, never as a squeezed node).
+ */
+export const sceneNodeSize = drawnSceneSize
 
 /** Take node: chrome below the poster (footer + big download button). */
 export const TAKE_CHROME = 74
@@ -481,46 +466,125 @@ export function resizeEdgeClip(dotYs: readonly number[], gap: number = RESIZE_DO
   return `polygon(${pts.join(', ')})`
 }
 
-// ---------------- asset node: the WHOLE reference image at its own aspect ratio ----------------
+// ---------------- asset node: an image tile of one size, like canvasapp ----------------
 /**
- * Default width of an asset node (no size set by the user). Kept at the asset column width: a square card is then
- * 162 + 65 = 227px tall and still fits the LAYOUT.assetH + assetGapY (238px) slots that the seed, saved projects and
- * the "add to canvas" placement use. 200px made every square card ~247px tall, overlapping the card below it.
+ * Default image tile (the user has not resized it): 220 × 275 whatever the picture's shape (choice 3L, = canvasapp's
+ * tile), so dropped images line up instead of stacking at their own heights. The picture is shown WHOLE (contain) in
+ * a 204 × 240 frame — portrait characters fill it, wide images get bands — above one caption line (name · use).
  */
 export const ASSET_DEFAULT_W = LAYOUT.assetW
-/** Asset node: left + right borders and padding beside the image (1 + 8 + 8 + 1). */
-export const ASSET_PAD_X = 18
-/** Asset node: borders + padding + name + meta rows around the image (2 + 8+9 + 8+19 + 3+16). */
-export const ASSET_CHROME = 65
-/** Aspect ratio (w / h) clamp of the image in an asset node: extreme panoramas / strips stay usable. */
-export const ASSET_MIN_ASPECT = 0.4
-export const ASSET_MAX_ASPECT = 2.6
+export const ASSET_TILE = { w: LAYOUT.assetW, h: LAYOUT.assetH, pad: 7, caption: 26 } as const
+/** Frame of the picture in a tile `w` × `h` (1px borders, padding on top and sides, the caption line below). */
+export function assetFrame(w: number = ASSET_TILE.w, h: number = ASSET_TILE.h): { w: number; h: number } {
+  return { w: Math.max(0, w - 2 - 2 * ASSET_TILE.pad), h: Math.max(0, h - 2 - ASSET_TILE.pad - ASSET_TILE.caption) }
+}
 
-/**
- * Default asset node (the user has not resized it): the image takes the card's inner width at its own aspect ratio
- * `aspect` (w / h, already clamped by aspectOf) and the card is image + name/meta rows tall, within NODE_SIZE.asset.
- * A very wide image in a card that would be shorter than minH gets a slightly taller (letterboxed) image box.
- */
-export function assetDefaultLayout(aspect: number, w: number = ASSET_DEFAULT_W): { w: number; h: number; imgW: number; imgH: number } {
-  const l = NODE_SIZE.asset
-  const cw = Math.max(l.minW, Math.min(l.maxW, Math.round(w)))
-  const imgW = cw - ASSET_PAD_X
-  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1
-  const imgH = Math.round(Math.max(l.minH - ASSET_CHROME, Math.min(l.maxH - ASSET_CHROME, imgW / a)))
-  return { w: cw, h: imgH + ASSET_CHROME, imgW, imgH }
+/** The default tile and its picture frame (the image's aspect ratio no longer changes the tile). */
+export function assetDefaultLayout(): { w: number; h: number; imgW: number; imgH: number } {
+  const f = assetFrame()
+  return { w: ASSET_TILE.w, h: ASSET_TILE.h, imgW: f.w, imgH: f.h }
+}
+
+/** Height an asset node is drawn at (layout of the asset column): its stored size, else the tile. */
+export function assetNodeHeight(asset: Pick<Asset, 'size'>, _measuredH?: number): number {
+  return asset.size?.h ?? ASSET_TILE.h
+}
+
+// ---------------- where dropped image tiles go ----------------
+/** Room for the reference wires between the image column and the scene column (40 + 220 + 204 = 464 = scenesX). */
+export const WIRE_GAP = LAYOUT.scenesX - LAYOUT.assetX - LAYOUT.assetW
+/** Least wire room kept between the image column and the scene column (old projects: after their one-time spacing). */
+export const MIN_WIRE_ROOM = 200
+/** One tile + a gap, across and down (the tiles' grid and the image column's step). */
+export const TILE_STEP = { x: LAYOUT.assetW + LAYOUT.assetGapY, y: LAYOUT.assetH + LAYOUT.assetGapY }
+/** Tiles never closer than this vertically to what is already there (half a gap). */
+const TILE_TOUCH = LAYOUT.assetGapY / 2
+
+type SceneBox = Pick<Scene, 'id' | 'position' | 'size'>
+
+/** Left edge of the scene column: the leftmost scene (none: LAYOUT.scenesX). */
+export function sceneColumnLeft(scenes: readonly SceneBox[]): number {
+  return scenes.length ? Math.min(...scenes.map((s) => s.position.x)) : LAYOUT.scenesX
 }
 
 /**
- * Height an asset node is drawn at (layout of the asset column): its stored size, else the default card for its
- * image's aspect ratio when that is known (measured once per session), else the size React Flow last measured
- * (`measuredH`, possibly from before the image was measured), else a square card. Works for culled nodes too.
+ * x of the image column for a scene column starting at `scenesLeft`: the default column (LAYOUT.assetX), moved left
+ * only as far as needed to keep MIN_WIRE_ROOM to the scenes (a 0.5.x project's scenes at x 420 → tiles at x 0, where
+ * its one-time spacing put the old tiles).
  */
-export function assetNodeHeight(asset: Pick<Asset, 'size' | 'imageIds'>, measuredH?: number): number {
-  if (asset.size) return asset.size.h
-  const id = asset.imageIds[0]
-  const known = id ? useImageMeta.getState().sizes[id] : undefined
-  if (!id || known) return assetDefaultLayout(aspectOf(known, 1, ASSET_MIN_ASPECT, ASSET_MAX_ASPECT)).h
-  return measuredH && measuredH > 0 ? measuredH : assetDefaultLayout(1).h
+export function imageColumnX(scenesLeft: number): number {
+  return Math.min(LAYOUT.assetX, scenesLeft - MIN_WIRE_ROOM - LAYOUT.assetW)
+}
+
+const touches = (a: Box, b: Box, gy = TILE_TOUCH) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h + gy && b.y < a.y + a.h + gy
+const tileAt = (p: XY): Box => ({ x: p.x, y: p.y, w: LAYOUT.assetW, h: LAYOUT.assetH })
+
+/**
+ * `count` tiles in one column at `x`, the first one at `top`: each steps down by TILE_STEP.y past whatever it would
+ * cover (cards, take rows, other tiles), so the column goes on below what is there.
+ */
+export function columnSpots(x: number, top: number, count: number, obstacles: readonly Box[]): XY[] {
+  const out: XY[] = []
+  const taken = [...obstacles]
+  let y = top
+  for (let i = 0; i < count; i++) {
+    for (let g = 0; g < 2000 && taken.some((o) => touches(o, tileAt({ x, y }))); g++) y += TILE_STEP.y
+    out.push({ x, y })
+    taken.push(tileAt({ x, y }))
+    y += TILE_STEP.y
+  }
+  return out
+}
+
+/** Row band of a scene (its card or its takes, whichever is taller, + the gap below): `rowH` gives the height. */
+function rowAt(scenes: readonly SceneBox[], p: XY, rowH: (s: SceneBox) => number): SceneBox | null {
+  let best: SceneBox | null = null
+  for (const s of scenes) {
+    if (p.y < s.position.y || p.y >= s.position.y + rowH(s) + LAYOUT.gapY || s.position.x < p.x) continue
+    if (!best || s.position.x < best.position.x) best = s
+  }
+  return best
+}
+
+/**
+ * Where `count` image tiles dropped at flow point `p` go (one undo step for the caller to apply):
+ * - in the image column's band left of the scene column (from the column to the scenes) → one column at
+ *   imageColumnX, its first tile at the top of the scene row under the pointer
+ *   (no row there: centred on the pointer), stepping down past what is there;
+ * - elsewhere → a 2-column grid (TILE_STEP) from snap(p − half a tile); when the block would cover a node, the whole
+ *   block slides to the nearest free spot (down / right first).
+ * `rowH(scene)` = the height of that scene's row (project.rowHeightOf).
+ */
+export function imageDropSpots(p: XY, count: number, scenes: readonly SceneBox[], obstacles: readonly Box[], rowH: (s: SceneBox) => number): XY[] {
+  if (count <= 0) return []
+  const left = sceneColumnLeft(scenes)
+  const colX = imageColumnX(left)
+  if (scenes.length && p.x < left && p.x < colX + LAYOUT.assetW + MIN_WIRE_ROOM) {
+    const row = rowAt(scenes, p, rowH)
+    return columnSpots(colX, row ? row.position.y : snap(p.y - LAYOUT.assetH / 2), count, obstacles)
+  }
+  const origin = { x: snap(p.x - LAYOUT.assetW / 2), y: snap(p.y - LAYOUT.assetH / 2) }
+  const cols = Math.min(2, count)
+  const rows = Math.ceil(count / 2)
+  const block = (o: XY): Box => ({ x: o.x, y: o.y, w: cols * TILE_STEP.x - LAYOUT.assetGapY, h: rows * TILE_STEP.y - LAYOUT.assetGapY })
+  const free = (o: XY) => !obstacles.some((b) => touches(b, block(o)))
+  let at = origin
+  if (!free(origin)) {
+    search: for (let d = GRID * 2; d <= 4000; d += GRID * 2) {
+      for (const o of [{ x: origin.x, y: origin.y + d }, { x: origin.x + d, y: origin.y }, { x: origin.x, y: origin.y - d }, { x: origin.x - d, y: origin.y }]) {
+        if (free(o)) {
+          at = o
+          break search
+        }
+      }
+    }
+  }
+  return Array.from({ length: count }, (_, i) => ({ x: at.x + (i % 2) * TILE_STEP.x, y: at.y + Math.floor(i / 2) * TILE_STEP.y }))
+}
+
+/** Tiles for image FILES dropped on a scene node: the image column next to the scene column, from that scene's row. */
+export function sceneRowImageSpots(scene: SceneBox, count: number, scenes: readonly SceneBox[], obstacles: readonly Box[]): XY[] {
+  return columnSpots(imageColumnX(sceneColumnLeft(scenes)), scene.position.y, count, obstacles)
 }
 
 // ---------------- hover preview of a reference image (scene card avatars) ----------------
@@ -732,8 +796,8 @@ export function focusViewport(box: Box, vp: Viewport, stage: StageSize, readable
 export function fallbackNodeSize(type: string | undefined): { w: number; h: number } {
   if (type === 'take') return { w: LAYOUT.takeW, h: LAYOUT.takeH }
   if (type === 'folder') return { w: FOLDER_W, h: FOLDER_H }
-  if (type === 'asset') return { w: ASSET_DEFAULT_W, h: assetDefaultLayout(1).h }
-  return { w: LAYOUT.sceneW, h: NODE_SIZE.scene.minH }
+  if (type === 'asset') return { w: ASSET_TILE.w, h: ASSET_TILE.h }
+  return { w: LAYOUT.sceneW, h: LAYOUT.sceneH }
 }
 
 /**

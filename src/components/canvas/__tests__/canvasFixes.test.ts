@@ -90,7 +90,7 @@ describe('live canvas placement', () => {
 
 describe('layoutRowHeights', () => {
   it('per scene: the tallest of its card and the takes shown in its row (stored size, else measured)', () => {
-    const scenes = [scene('s1', 1), scene('s2', 2, { size: { w: 280, h: 330 } }), scene('s3', 3)]
+    const scenes = [scene('s1', 1), scene('s2', 2, { size: { w: 360, h: 330 } }), scene('s3', 3)]
     const takes = [
       take('t1', 's1', 1, { size: { w: 224, h: 420 } }),
       take('t2', 's1', 2),
@@ -103,6 +103,9 @@ describe('layoutRowHeights', () => {
     expect(all).toEqual({ s1: 420, s2: 330, s3: 500 })
     const chosen = layoutRowHeights(scenes, layoutTakes(takes, scenes, 'chosen'), (id) => measured[id])
     expect(chosen.s3).toBe(190) // t5 is hidden: it does not make the row taller
+    // a size of the 0.5.x cards (below today's minimum) is drawn as the default node: the measured height counts
+    const old = [scene('old', 1, { size: { w: 280, h: 200 } })]
+    expect(layoutRowHeights(old, layoutTakes([], old, 'all'), () => 304)).toEqual({ old: 304 })
   })
   it('leaves out rows with nothing known and ignores orphans (they sit next to another scene)', () => {
     const scenes = [scene('s2', 1, { videoRefs: ['t1'] })]

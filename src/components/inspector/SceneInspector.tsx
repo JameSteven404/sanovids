@@ -1,7 +1,7 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
-import { memo, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
+import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Maximize2, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
@@ -10,10 +10,12 @@ import { foreignModelReason, refVideosProblem } from '../../core/runRules'
 import type { Asset } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { useCanvasPrefs } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
+import { useInPanel, useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { appliedPresetId, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
@@ -46,9 +48,7 @@ export function SceneInspector({ sceneId }: { sceneId: string }) {
     <div className="in-scene">
       <SceneHeader sceneId={sceneId} />
       <SettingsSection sceneId={sceneId} />
-      <Section id="prompt" title="Prompt">
-        <PromptEditor sceneId={sceneId} />
-      </Section>
+      <PromptSection sceneId={sceneId} />
       <RefsSection sceneId={sceneId} />
       <VideoRefsSection sceneId={sceneId} />
       <FinalPromptPreview sceneId={sceneId} />
@@ -206,6 +206,8 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
     <Section
       id="settings"
       title="Cấu hình video"
+      // Picked on the scene node day to day (its settings line): collapsed here until opened.
+      defaultOpen={false}
       meta={
         <span className="in-meta">
           {foreignModel && (
@@ -229,6 +231,52 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
         onPatch={(patch) => useProject.getState().updateSettings([sceneId], patch)}
         onPreset={(id) => useProject.getState().applyPreset(id, [sceneId])}
       />
+    </Section>
+  )
+})
+
+// ---------------- 2b. prompt: typed on the scene node; here the wide composer ----------------
+/**
+ * The prompt is typed on the scene node itself. The panel keeps the wide composer for very long prompts, opened on
+ * demand: while it is open the node shows static text (store/sceneEditor: one place to type per scene). With the
+ * node editor turned off (Settings), the prompt is always typed here.
+ */
+const PromptSection = memo(function PromptSection({ sceneId }: { sceneId: string }) {
+  const always = useCanvasPrefs((s) => s.nodeEditor === 'off')
+  const inPanel = useInPanel(sceneId)
+  // Leaving this scene (another selection, deleted) closes its composer.
+  useEffect(
+    () => () => {
+      if (useSceneEditor.getState().panelSceneId === sceneId) useSceneEditor.getState().closePanel()
+    },
+    [sceneId],
+  )
+  if (always || inPanel) {
+    return (
+      <Section
+        id="prompt"
+        title="Prompt"
+        extra={
+          !always && (
+            <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => useSceneEditor.getState().open(sceneId)} title="Đóng khung soạn rộng và gõ tiếp trên node cảnh">
+              Gõ trên node
+            </button>
+          )
+        }
+      >
+        <PromptEditor sceneId={sceneId} />
+      </Section>
+    )
+  }
+  return (
+    <Section id="prompt" title="Prompt">
+      <div className="in-note">
+        <Info size={13} />
+        <span>Gõ prompt ngay trên node cảnh: bấm vào chữ, hoặc chọn cảnh rồi nhấn Enter. Prompt rất dài thì mở khung soạn rộng ở đây.</span>
+      </div>
+      <button type="button" className="btn btn-sm btn-ghost in-add" onClick={() => useSceneEditor.getState().openPanel(sceneId)}>
+        <Maximize2 size={13} /> Mở khung soạn rộng
+      </button>
     </Section>
   )
 })
@@ -657,13 +705,8 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
   const settings = useSceneField(sceneId, (s) => s.settings)
   // Hooks stay above the early return below (a deleted scene renders nothing).
   const videoCap = useGatewayRefVideoCap(settings?.model ?? 'seedance_2_5')
-  // Why Run is off: the engine's rule list (core/runRules, = store/runs check()) on a cached compile of this scene, same
-  // as the head's Run button. A string selected by id, so typing in the prompt does not re-render this section.
-  const reason = useSceneRunBlock(sceneId)
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
-  const creditKind = useCreditKind()
   if (!settings) return null
-  const cost = costOf(settings)
   // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
   const acceptsVideo = usesVideoRefs(settings)
   const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
@@ -723,17 +766,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
           ))}
         </div>
       )}
-      <button
-        type="button"
-        className="btn btn-primary btn-lg in-run"
-        onClick={() => requestRun([sceneId])}
-        disabled={!!reason}
-        title={reason ?? costTitle(cost, creditKind, 'Xem chi phí và chạy (Ctrl+Enter) · ')}
-      >
-        <Play size={14} fill="currentColor" />
-        Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
-      </button>
-      {reason && <div className="in-run-reason">Chưa chạy được: {reason}</div>}
+      {/* The costed Run button and its reason live on the scene node (and the head's "Chạy" above). */}
     </Section>
   )
 })

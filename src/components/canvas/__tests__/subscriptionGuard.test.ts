@@ -28,4 +28,20 @@ describe('canvas subscription boundaries', () => {
     const baseMemo = view.slice(view.indexOf('const baseNodes = useMemo'), view.indexOf('const liveCache'))
     expect(baseMemo).not.toMatch(/dragPos|measuredVersion|selectedIds|resizing\[/)
   })
+
+  it('the node is the editor: static text everywhere, ONE live field (the editing node), never the old .cv-m marks', () => {
+    const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
+    // the live field is mounted only behind `live` (= this node is the one being edited, not open in the panel)
+    expect(scene).toMatch(/const live = editing && !inPanel/)
+    expect(scene).toMatch(/\{live \? \(\s*<NodePromptField /)
+    expect(scene.match(/<NodePromptField /g)).toHaveLength(1)
+    // static text and the field's backdrop render tokens through the shared helpers (tokens.ts) and .in-tk marks
+    expect(scene).toMatch(/segmentPrompt\(/)
+    expect(scene).not.toMatch(/cv-m\b/)
+    expect(scene).not.toMatch(/new RegExp|\/@\(\?:image/)
+    const field = readFileSync(new URL('SceneNodeEditor.tsx', canvas), 'utf8')
+    expect(field).toMatch(/className="cv-sn-ta nodrag nowheel nokey/)
+    expect(field).toMatch(/className=\{`in-tk is-\$\{s\.kind\}/)
+    expect(field).not.toMatch(/import[^\n]*\bPromptEditor\b/)
+  })
 })

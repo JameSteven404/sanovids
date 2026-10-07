@@ -509,22 +509,40 @@ export function deleteTakesForever(takeIds: string[]): number {
 }
 
 // ---------------- assets from files ----------------
-export async function createAssetsFromFiles(files: File[], opts: { kind?: AssetKind; position?: XY | null } = {}): Promise<string[]> {
+/**
+ * New assets from image files, all in ONE undo step. Where they go on the canvas: `spots` (one per image, computed by
+ * the drop target — canvasModel imageDropSpots / sceneRowImageSpots: the image column or a 2-column grid), else
+ * `position` (+24px per image), else the library only. Tiles placed on the canvas are selected (ready to be dragged
+ * elsewhere) unless `select: false`; `quiet` leaves the message to the caller (a drop on a scene says "Đã nối").
+ */
+export async function createAssetsFromFiles(
+  files: File[],
+  opts: { kind?: AssetKind; position?: XY | null; spots?: readonly XY[]; select?: boolean; quiet?: boolean } = {},
+): Promise<string[]> {
   const images = files.filter((f) => /^image\//.test(f.type))
   if (!images.length) {
     toast('Chỉ nhận file ảnh (JPG, PNG, WEBP).', { tone: 'warning' })
     return []
   }
-  const ids: string[] = []
-  let i = 0
-  for (const file of images) {
-    const imageId = await putBlob(file, 'img')
-    const name = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 40) || 'Ảnh'
-    const position = opts.position ? { x: opts.position.x + i * 24, y: opts.position.y + i * 24 } : (opts.position ?? null)
-    ids.push(useProject.getState().addAsset({ name, kind: opts.kind ?? 'character', imageIds: [imageId], position }))
-    i++
+  const imageIds: string[] = []
+  for (const file of images) imageIds.push(await putBlob(file, 'img'))
+  const placeAt = (i: number): XY | null => opts.spots?.[i] ?? (opts.position ? { x: opts.position.x + i * 24, y: opts.position.y + i * 24 } : null)
+  const ids = useProject.getState().addAssets(
+    images.map((file, i) => ({
+      name: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, 40) || 'Ảnh',
+      kind: opts.kind ?? 'character',
+      imageIds: [imageIds[i]],
+      position: placeAt(i),
+    })),
+  )
+  const onCanvas = ids.length > 0 && placeAt(0) !== null
+  if (onCanvas && opts.select !== false) useUI.getState().select(ids)
+  if (!opts.quiet) {
+    toast(onCanvas ? `Đã thêm ${ids.length} ảnh lên canvas. Kéo chấm bên phải ảnh vào node cảnh để nối.` : `Đã thêm ${ids.length} mục vào thư viện.`, {
+      tone: 'success',
+      action: undoToastAction(),
+    })
   }
-  toast(`Đã thêm ${ids.length} mục vào thư viện.`, { tone: 'success' })
   return ids
 }
 
