@@ -65,6 +65,16 @@ export function buildFilmItems(scenes: readonly Scene[], takes: readonly Take[])
   })
 }
 
+/**
+ * Seconds of the takes the film plays — the "tổng" of the player (header, end screen). The same figure as the top-bar
+ * tooltip's (filmSummary.totalS): scenes without a take (shown as a short slate) do not count.
+ */
+export function filmRuntime(items: readonly PlayerItem[]): number {
+  let total = 0
+  for (const item of items) if (item.take) total += item.duration
+  return total
+}
+
 export interface FilmSummary {
   /** Scenes in the project. */
   scenes: number
@@ -72,7 +82,7 @@ export interface FilmSummary {
   withTake: number
   /** Scenes without a ★ take, in scene order. */
   missingStarIds: string[]
-  /** Seconds of the takes the film plays. */
+  /** Seconds of the takes the film plays (= filmRuntime of buildFilmItems: the player shows the same "tổng"). */
   totalS: number
   /** Seconds the scenes are set to (what the film would last once every scene has its take). */
   plannedS: number

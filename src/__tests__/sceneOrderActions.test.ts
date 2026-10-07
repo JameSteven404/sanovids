@@ -127,15 +127,59 @@ describe('moveSceneBy / moveSceneTo', () => {
     }
     expect(steps()).toBe(5)
     const oldest = useProject.temporal.getState().pastStates[0]
+    // Back and forth between places 2 and 1, never back to 3 (where it started: that would end the burst, see below).
     for (let i = 0; i < 300; i++) {
-      moveSceneBy('s3', i % 2 ? 1 : -1)
+      moveSceneBy('s3', i > 0 && i % 2 === 0 ? 1 : -1)
       later(30)
     }
+    expect(order()[0]).toBe('s3')
     expect(steps()).toBe(6)
     expect(useProject.temporal.getState().pastStates[0]).toBe(oldest)
-    expect(moveToasts()).toHaveLength(1)
+    expect(moveToasts()).toEqual(['Đã dời cảnh: S03 → S01.'])
     undo()
     expect(order()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+  })
+
+  it('a burst that ends where it started leaves no undo step and offers no Hoàn tác', () => {
+    useProject.getState().updateScene('s1', { note: 'older edit' })
+    later(MOVE_BURST_MS + 100)
+    expect(steps()).toBe(1)
+    useUI.getState().select(['s5'])
+    moveSelectedScene(-1) // Alt + ↑: S05 → S04
+    later(300)
+    moveSelectedScene(1) // Alt + ↓: back to S05
+    expect(order()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+    // The burst's step is gone (the older edit is still the newest step) and nothing offers to undo a no-op.
+    expect(steps()).toBe(1)
+    expect(moveToasts()).toEqual([])
+    const shown = useUI.getState().toasts
+    expect(shown.map((t) => t.text)).toEqual(['S05 đã về chỗ cũ.'])
+    expect(shown[0].action).toBeUndefined()
+    // Ctrl+Z takes back the older edit at once, not an invisible step.
+    undo()
+    expect(useProject.getState().project.scenes.find((s) => s.id === 's1')!.note).toBe('')
+    expect(order()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+  })
+
+  it('after a round trip the next move gets its own step, never merged into an older burst of the same scene', () => {
+    useUI.getState().select(['s5'])
+    moveSelectedScene(-1) // burst A: S05 → S04 (step 1)
+    later(MOVE_BURST_MS + 100)
+    moveSelectedScene(-1) // burst B: S04 → S03 (step 2)
+    later(300)
+    moveSelectedScene(1) // back to S04: burst B changed nothing, its step goes
+    expect(steps()).toBe(1)
+    later(300)
+    moveSelectedScene(1) // S04 → S05, still inside the window of the dropped step: a new step all the same
+    expect(order()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+    expect(steps()).toBe(2)
+    // The "về chỗ cũ" toast made way for the new burst's.
+    expect(toasts()).toEqual(['Đã dời cảnh: S04 → S05.'])
+    undo()
+    expect(order()).toEqual(['s1', 's2', 's3', 's5', 's4', 's6'])
+    undo()
+    expect(order()).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
+    expect(steps()).toBe(0)
   })
 })
 

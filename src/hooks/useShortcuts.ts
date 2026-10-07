@@ -12,7 +12,7 @@ import {
   selectedSceneIds,
   undo,
 } from '../actions'
-import { moveSelectedScene } from '../sceneOrderActions'
+import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { useProject } from '../store/project'
 import { flush } from '../store/persist'
 import { toast, useUI } from '../store/ui'
@@ -130,11 +130,13 @@ export function useShortcuts(): void {
         return
       }
       if (e.altKey) {
-        // Fixed keys Alt + ↑ / ↓: move the single selected scene one place in the scene order (codes renumber). Held
-        // down it keeps moving; the whole burst is one undo step and one toast (sceneOrderActions).
-        if (!e.shiftKey && (key === 'ArrowUp' || key === 'ArrowDown')) {
+        // Fixed keys Alt + ↑ / ↓ (sceneOrderActions.sceneOrderKey): move the single selected scene one place in the
+        // scene order (codes renumber). Held down it keeps moving; the whole burst is one undo step and one toast.
+        // Keep this ahead of any plain ↑ / ↓ handling (src/__tests__/sceneOrderKeys.test.ts drives this handler).
+        const step = sceneOrderKey(e)
+        if (step) {
           e.preventDefault()
-          moveSelectedScene(key === 'ArrowUp' ? -1 : 1)
+          moveSelectedScene(step)
         }
         return
       }

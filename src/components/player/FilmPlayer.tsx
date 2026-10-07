@@ -4,7 +4,7 @@
 import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, SquareMousePointer, Star, Volume2, VolumeX, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
-import { formatRuntime, type PlayerItem } from '../../core/filmItems'
+import { filmRuntime, formatRuntime, type PlayerItem } from '../../core/filmItems'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
@@ -196,7 +196,8 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
 
   if (!item) return null
 
-  const totalS = items.reduce((t, i) => t + i.duration, 0)
+  // The takes' seconds, as the top-bar tooltip says (a slate of a scene without a take is not film length).
+  const totalS = filmRuntime(items)
   // Development-mode (and old demo) takes are ~3 s fake clips; takes from canvasapp play at their own length. So do
   // takes of a newer build's provider (provider 'mock' + foreignProvider): real videos, not fakes.
   const hasFake = items.some((i) => i.take && !i.take.foreignProvider && (providerOf(i.take) === 'dev' || providerOf(i.take) === 'mock'))

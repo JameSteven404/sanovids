@@ -4,9 +4,12 @@
 // them out again).
 //
 // A burst — moves of the same scene less than 1.5 s apart, e.g. Alt + ↑ held down — is ONE undo step (store
-// coalescing, key 'move:<id>') and ONE toast "Đã dời cảnh: S05 → S02." whose Hoàn tác undoes the whole burst.
+// coalescing, key 'move:<id>') and ONE toast "Đã dời cảnh: S05 → S02." whose Hoàn tác undoes the whole burst. A burst
+// that brings the scene back to where it started changed nothing: its step is dropped and no Hoàn tác is offered.
 import { sceneCode } from './core/compile'
-import { sortedScenes, undoToastAction, useProject } from './store/project'
+import type { KeyEventLike } from './core/keymap'
+import type { Project } from './core/types'
+import { dropBurstStep, sortedScenes, undoToastAction, useProject } from './store/project'
 import { toast, useUI } from './store/ui'
 
 /** Same window as the project store's undo coalescing. */
@@ -46,9 +49,23 @@ function moveTo(id: string, to: number): boolean {
   const ui = useUI.getState()
   // One toast for the latest burst (its Hoàn tác undoes exactly that burst; an older one would be stale anyway).
   if (burst) ui.dismissToast(burst.toastId)
+  if (merged && target === fromOrder) {
+    // Away and back within one burst (Alt + ↑ then Alt + ↓): the order is the one before the burst. Its step would be
+    // an invisible Ctrl+Z, so drop it, and offer no Hoàn tác for a no-op. The next move starts a new burst (new step).
+    dropBurstStep('move:' + id, sameOrder)
+    burst = { id, fromOrder, toastId: toast(`${sceneCode(target)} đã về chỗ cũ.`) }
+    return true
+  }
   const toastId = toast(`Đã dời cảnh: ${sceneCode(fromOrder)} → ${sceneCode(target)}.`, { action: undoToastAction() })
   burst = { id, fromOrder, toastId }
   return true
+}
+
+/** Same scenes at the same places (a burst of moves changes nothing but `order`). */
+function sameOrder(a: Project, b: Project): boolean {
+  if (a.scenes.length !== b.scenes.length) return false
+  const was = new Map(a.scenes.map((s) => [s.id, s.order]))
+  return b.scenes.every((s) => was.get(s.id) === s.order)
 }
 
 /** Move one scene `delta` places in the scene order (−1 = earlier). False at the first / last place (nothing moved). */
@@ -62,6 +79,18 @@ export function moveSceneBy(id: string, delta: number): boolean {
 /** Move one scene to the 1-based place `n` (clamped to [1, N]). False when it is already there. */
 export function moveSceneTo(id: string, n: number): boolean {
   return moveTo(id, n)
+}
+
+/**
+ * The fixed scene-order keys (core/keymap FIXED_KEYS "Thứ tự cảnh"): Alt + ↑ → −1 (one place earlier), Alt + ↓ → +1,
+ * anything else → null. Never with Shift or Ctrl / ⌘ (AltGr on Windows arrives as Ctrl + Alt). Key repeat counts: a
+ * held key keeps moving (one undo step per burst). The global dispatcher (hooks/useShortcuts) asks after its typing /
+ * dialog guards and before it gives up on other Alt chords; keymap.decideShortcut never returns these keys. Pure (lives
+ * here, not in core/keymap, so the main bundle does not pull the keymap engine in for it).
+ */
+export function sceneOrderKey(e: KeyEventLike): -1 | 1 | null {
+  if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || e.altGraph || e.isComposing) return null
+  return e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : null
 }
 
 /** Alt + ↑ / ↓: moves the single selected scene, else explains (a hint toast, not repeated while a key is held). */

@@ -1219,6 +1219,24 @@ export const redo = () => historyJump('redo')
 export const clearHistory = () => useProject.temporal.getState().clear()
 
 /**
+ * Takes back the newest undo step when it holds a coalesced burst of `key` (the last tracked edit had that key, so no
+ * other step came after it) and `unchanged(before, now)` says the burst ended where it started, e.g. a scene moved away
+ * and back (sceneOrderActions). The project stays as it is (it differs from the step's snapshot only by `updatedAt`):
+ * Ctrl+Z must not spend a keystroke on a step that changes nothing. The burst ends, so the next edit with `key` gets
+ * its own step instead of merging into the older, unrelated one. (The redo stack the burst dropped stays dropped.)
+ * Returns whether the step was dropped.
+ */
+export function dropBurstStep(key: string, unchanged: (before: Project, now: Project) => boolean): boolean {
+  if (!key || key !== lastKey) return false
+  const history = useProject.temporal.getState()
+  const before = history.pastStates[history.pastStates.length - 1]?.project
+  if (!before || !unchanged(before, useProject.getState().project)) return false
+  useProject.temporal.setState({ pastStates: history.pastStates.slice(0, -1) })
+  lastKey = null
+  return true
+}
+
+/**
  * Toast action that undoes the edit that was just made — but only if nothing changed since.
  * (A plain undo() from a stale toast would revert an unrelated, newer step.)
  */

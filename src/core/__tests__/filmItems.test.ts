@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { chosenTakeIds } from '../../actions'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { buildFilmItems, filmSummary, formatRuntime, pickShowcaseTake, starredTake } from '../filmItems'
+import { buildFilmItems, filmRuntime, filmSummary, formatRuntime, pickShowcaseTake, starredTake } from '../filmItems'
 import type { JobStatus, Project, Scene, Take } from '../types'
 
 const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
@@ -123,4 +123,19 @@ it('filmSummary: scenes with a take, scenes without ★ (in scene order), second
   const takes = [take('t1', 's1', 1, { starred: true, duration: 6 }), take('t2', 's2', 1, { duration: 4 }), take('t3', 's3', 1, { status: 'failed', starred: true })]
   expect(filmSummary(scenes, takes)).toEqual({ scenes: 3, withTake: 2, missingStarIds: ['s2', 's3'], totalS: 10, plannedS: 35 })
   expect(filmSummary([], [])).toEqual({ scenes: 0, withTake: 0, missingStarIds: [], totalS: 0, plannedS: 0 })
+})
+
+it('filmRuntime: the player says the same "tổng" as the top-bar tooltip (scenes without a take do not count)', () => {
+  // Two scenes with 5 s takes, one without a take set to 10 s: the film is 0:10 long, not 0:20.
+  const scenes = [scene(0), scene(1), scene(2, { settings: { ...scene(2).settings, duration: 10 } })]
+  const takes = [take('t1', 's1', 1, { duration: 5 }), take('t2', 's2', 1, { duration: 5, starred: true }), take('t3', 's3', 1, { status: 'failed', duration: 7 })]
+  const items = buildFilmItems(scenes, takes)
+  expect(items.map((i) => i.duration)).toEqual([5, 5, 10])
+  expect(filmRuntime(items)).toBe(10)
+  expect(filmRuntime(items)).toBe(filmSummary(scenes, takes).totalS)
+  // A ★ take shorter than a newer one: both count what plays.
+  const more = [...takes, take('t4', 's2', 2, { duration: 12 })]
+  expect(filmRuntime(buildFilmItems(scenes, more))).toBe(filmSummary(scenes, more).totalS)
+  expect(filmRuntime(buildFilmItems(scenes, []))).toBe(0)
+  expect(filmRuntime([])).toBe(0)
 })
