@@ -329,9 +329,10 @@ describe('canvasapp adapter', () => {
     expect(server.state.jobs[0].body.client_request_id).toBe(clientRequestIdFor('take_1'))
     // the old "sent" record (v0.2.0 node id) is still looked up by its own node id — no job there → nothing adopted
     expect(await provider.recover!(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))).toBeNull()
-    // an explicit retry of it: nothing found on that node → sent on the scene's node of its project (never "sv_…")
-    await provider.submit(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))
-    expect(server.state.jobs[1].body.canvas_node_id).toBe(node('scene_z'))
+    // an explicit retry of it: nothing found, but a v0.2.0 record proves nothing about the list (no anchors) and is
+    // long past → never posted again (neither on "sv_…" nor on any other node)
+    await expect(provider.submit(req({ key: 'take_old', takeId: 'take_old', sceneId: 'scene_z' }))).rejects.toMatchObject({ uncertain: true, unverifiable: true })
+    expect(server.state.jobs).toHaveLength(1)
   })
 
   it('a lost answer is matched by the UUID client_request_id — or by the bare take id v0.2.0 sent', async () => {
@@ -721,7 +722,12 @@ describe('canvasapp adapter', () => {
     const server = fakeServer()
     const { provider, storage } = setup(server)
     await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] })) // bridge project
-    storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_1: { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [] } } }))
+    server.state.jobs[0].status = 'completed'
+    // the job list provably reaches back to that POST (job1 had already ended before it and is still listed): no job
+    // was created → the take may go again, and its PUT is what fails here
+    const warmup = { remoteId: 'proj1:job1', at: 1_000_000, nodeId: canvasNodeId('scene_w') }
+    const lost = { projectId: 'proj1', nodeId: canvasNodeId('scene_a'), at: 1, before: [], anchors: { ended: ['job1'], open: [] } }
+    storage.set(JOBS_KEY, JSON.stringify({ jobs: { warmup }, sent: { take_1: lost } }))
     server.state.extra = (r) => (isPut(r) ? json({ detail: 'Invalid canvas payload' }, 422) : undefined)
     const again = createCanvasappProvider({ api: createCanvasappApi(server.transport), getBlob: async (id) => blobs[id] ?? null, storage })
     const message = (await again.submit(req()).catch((e: Error) => e.message)) as string
@@ -1263,29 +1269,32 @@ describe('canvasapp adapter: one video node per scene of a project', () => {
     ['server deduplicates client_request_id', true],
     ['server does not deduplicate', false],
   ])('a lookup never takes the job of a take whose answer is still on its way (same node, %s): one job', async (_label, dedupe) => {
-    // take_a: an older take of the scene whose POST was cut off (page closed) and never reached canvasapp
+    // take_a: an older take of the scene whose POST was cut off (page closed) and never reached canvasapp; the list read
+    // before it showed `old`, a job that had already ended (its anchor: a later list that still shows it reaches back)
     const { provider, server, storage, clock, waiting, wake } = restarted({
-      ledger: { sent: { take_a: { projectId: 'proj1', nodeId: node('scene_a'), at: 10_000_000 - 60_000, before: [] } } },
+      ledger: { sent: { take_a: { projectId: 'proj1', nodeId: node('scene_a'), at: 10_000_000 - 60_000, before: [], anchors: { ended: ['old'], open: [] } } } },
     })
+    server.state.jobs.push({ job_id: 'old', status: 'completed', project_id: 'proj1', canvas_node_id: node('scene_w'), created_at: new Date(9_000_000).toISOString(), body: {} })
     server.state.dedupe = dedupe
     server.state.loseAnswers = 1
     // take_b, a new take of the same scene: canvasapp creates its job, the answer is lost → it waits, then looks
     const b = provider.submit(req({ key: 'take_b', takeId: 'take_b' }))
     await waiting()
-    expect(server.state.jobs).toHaveLength(1)
+    expect(server.state.jobs).toHaveLength(2)
     // meanwhile the page reopens and looks for take_a's job: the new job on that node may be take_b's → not adopted
     clock.t += 5_000
     expect(await provider.recover!(req({ key: 'take_a', takeId: 'take_a' }))).toBeNull()
     wake()
-    expect(await b).toEqual({ remoteId: 'proj1:job1' })
+    expect(await b).toEqual({ remoteId: 'proj1:job2' })
     expect(jobPosts(server)).toHaveLength(1) // never posted again
-    expect(server.state.jobs).toHaveLength(1)
-    // take_b's job is known now: take_a finds nothing of its own — an explicit retry sends it, once, and it gets its own job
+    expect(server.state.jobs).toHaveLength(2)
+    // take_b's job is known now: take_a finds nothing of its own, and the list still shows `old` (it reaches back to
+    // take_a's POST) — an explicit retry sends it, once, and it gets its own job
     expect(await provider.recover!(req({ key: 'take_a', takeId: 'take_a' }))).toBeNull()
-    expect(await provider.submit(req({ key: 'take_a', takeId: 'take_a' }))).toEqual({ remoteId: 'proj1:job2' })
+    expect(await provider.submit(req({ key: 'take_a', takeId: 'take_a' }))).toEqual({ remoteId: 'proj1:job3' })
     expect(jobPosts(server)).toHaveLength(2)
     expect(jobPosts(server)[1].json).toMatchObject({ canvas_node_id: node('scene_a'), client_request_id: clientRequestIdFor('take_a') })
-    expect(server.state.jobs).toHaveLength(2)
+    expect(server.state.jobs).toHaveLength(3)
     expect(sentRecords(storage)).toEqual({})
   })
 
@@ -1825,9 +1834,20 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
      * take_b's POST lost its answer at t0 (nothing known before it on the node); 15 h later — past what that POST may own
      * (CREATED_SKEW_MS + POST_WINDOW_MS) — the user makes a job on that node on canvasapp's page and imports it.
      */
-    const importLater = async (w: ReturnType<typeof world>) => {
+    /**
+     * A job that had already ended when take_b's POST was sent (another session's node, never importable here): with
+     * `anchored` take_b's record names it (`anchors`, the read before the POST) — a later list that still shows it
+     * reaches back to that POST, so "not listed" there means "never created".
+     */
+    const endedBefore = (w: ReturnType<typeof world>, anchored: boolean) => {
+      if (!anchored) return {}
+      w.server.state.jobs.push({ job_id: 'old', status: 'completed', project_id: 'proj1', canvas_node_id: canvasNodeId('elsewhere'), created_at: new Date(w.clock.t - 3600_000).toISOString(), body: {} })
+      return { anchors: { ended: ['old'], open: [] } }
+    }
+    const importLater = async (w: ReturnType<typeof world>, anchored = false) => {
       const t0 = w.clock.t
-      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
+      const anchors = endedBefore(w, anchored)
+      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [], ...anchors } }, imported: {} }))
       w.restart()
       w.clock.t = t0 + 15 * 3600_000
       const site = siteJob(w.server)
@@ -1838,13 +1858,21 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       return { t0, site }
     }
 
-    it('(d) imported long after a POST that never arrived: "Chạy lại" never takes the imported job — posted once, its own job', async () => {
+    it('(d) imported long after a POST that never arrived: "Chạy lại" never takes the imported job — posted once (the list reaches back), its own job', async () => {
+      const w = world()
+      const { site } = await importLater(w, true)
+      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
+      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job3' })
+      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual(['old', site.job_id, 'job3'])
+      expect(jobPosts(w.server)).toHaveLength(1)
+    })
+
+    it('(d2) the same without anything older than that POST in the list (it may be cut): never posted again — "Tạo lại"', async () => {
       const w = world()
       const { site } = await importLater(w)
-      expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
-      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
-      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual([site.job_id, 'job2'])
-      expect(jobPosts(w.server)).toHaveLength(1)
+      await expect(w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).rejects.toMatchObject({ uncertain: true, unverifiable: true })
+      expect(w.server.state.jobs.map((j) => j.job_id)).toEqual([site.job_id])
+      expect(jobPosts(w.server)).toHaveLength(0)
     })
 
     it('(e) imported long after a POST whose answer was lost: the take still finds its own job (never “không rõ” for good)', async () => {
@@ -1909,21 +1937,170 @@ describe('canvasapp adapter: "Nhập job" (jobs made on canvasapp’s own page)'
       expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
     })
 
-    it('(h) a site job made long after a POST that never arrived, not imported: "Chạy lại" never takes it — posted once, its own job', async () => {
+    it.each([
+      ['the list reaches back to that POST: posted once, its own job', true],
+      ['nothing older than that POST is listed (the list may be cut): never posted again — the stress tester’s double charge', false],
+    ])('(h) a site job made long after a POST that never arrived, not imported: "Chạy lại" never takes it — %s', async (_label, anchored) => {
       const w = world()
       const t0 = w.clock.t
-      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [] } }, imported: {} }))
+      const anchors = endedBefore(w, anchored)
+      w.storage.set(JOBS_KEY, JSON.stringify({ jobs: {}, sent: { take_b: { projectId: 'proj1', nodeId: NODE, at: t0, before: [], ...anchors } }, imported: {} }))
       w.restart()
       // a day later — past what that POST may own (inPostWindow) — the user runs the node on canvasapp's page
       w.clock.t = t0 + 24 * 3600_000
       const site = siteJob(w.server)
       expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
       expect(await w.p.recover!(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toBeNull()
-      expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job2' })
-      expect(jobPosts(w.server)).toHaveLength(1)
+      if (anchored) {
+        expect(await w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).toEqual({ remoteId: 'proj1:job3' })
+        expect(jobPosts(w.server)).toHaveLength(1)
+      } else {
+        await expect(w.p.submit(req({ key: 'take_b', takeId: 'take_b', images: [] }))).rejects.toMatchObject({ uncertain: true, unverifiable: true })
+        expect(jobPosts(w.server)).toHaveLength(0)
+      }
       // the lookup and the import agree: still importable, never both a POST's and a new take's
       expect((await w.p.scanSiteJobs(input())).candidates.map((c) => c.jobId)).toEqual([site.job_id])
     })
+  })
+})
+
+describe('canvasapp adapter: "not in the job list" proves "never created" only when the list reaches back', () => {
+  const NODE_A = node('scene_a')
+  const NODE_W = node('scene_w')
+  const isList = (r: TransportRequest) => r.method === 'GET' && r.path.startsWith('/api/video-jobs?')
+  const isPost = (r: TransportRequest) => r.method === 'POST' && r.path === '/api/video-jobs'
+  const posts = (server: ReturnType<typeof fakeServer>) => server.calls.filter(isPost).length
+  /** warmup's job (job1, scene_w) as this computer's ledger holds it. */
+  const warmupJob = { remoteId: 'proj1:job1', at: 1_000_000, nodeId: NODE_W }
+  /** A POST of take_1 (scene_a) whose answer was lost long ago. */
+  const lost = (over: Record<string, unknown> = {}) => ({ projectId: 'proj1', nodeId: NODE_A, at: 1, before: [], ...over })
+  const unverifiable = { code: 'network', uncertain: true, unverifiable: true }
+
+  /** The bridge project exists and job1 (warmup) ran there; then the app restarts with `ledger` persisted. */
+  async function restartWith(ledger: Record<string, unknown>, list?: unknown[]) {
+    const s = setup()
+    await s.provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+    s.server.state.jobs[0].status = 'completed'
+    if (list) s.server.state.extra = (r) => (isList(r) ? json(list) : undefined)
+    s.storage.set(JOBS_KEY, JSON.stringify(ledger))
+    const provider = createCanvasappProvider({
+      api: createCanvasappApi(s.server.transport),
+      getBlob: async (id) => blobs[id] ?? null,
+      storage: s.storage,
+      now: () => s.clock.t,
+      sleep: async () => undefined,
+    })
+    return { ...s, provider }
+  }
+
+  it('retry long after: an ended job older than the request is still listed → sent again with the SAME key', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } })
+    expect((await s.provider.submit(req())).remoteId).toBe('proj1:job2')
+    expect(s.server.state.jobs[1].body.client_request_id).toBe(clientRequestIdFor('take_1'))
+  })
+
+  it('retry long after: the list no longer shows anything older than the request (cut) → never posted again', async () => {
+    // job1 had ended before the POST, but the list now shows only newer jobs (cut to its newest)
+    const newer = [{ job_id: 'job7', status: 'completed', canvas_node_id: NODE_W, created_at: new Date(2_000_000).toISOString() }]
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } }, newer)
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1) // warmup only
+    expect(JSON.parse(s.storage.get(JOBS_KEY)!).sent.take_1).toBeTruthy() // still remembered
+  })
+
+  it('a record written before anchors existed (older builds), retried long after → never posted again; damaged anchors count as none', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost() } })
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+    const d = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: 'job1' }) } })
+    await expect(d.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    const e = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: [1, null, 'job1'] } }) } })
+    expect((await e.provider.submit(req())).remoteId).toBe('proj1:job2') // the one valid id is used
+  })
+
+  it('an empty list proves nothing when this computer knows a job of that project', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: [], open: [] } }) } }, [])
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('one of this computer’s jobs made after the request is missing from the list (cut / out of order) → never posted again', async () => {
+    const later = { remoteId: 'proj1:job9', at: 3_000_000, nodeId: NODE_W }
+    const s = await restartWith({ jobs: { warmup: warmupJob, later }, sent: { take_1: lost({ at: 2_000_000, anchors: { ended: ['job1'], open: [] } }) } })
+    s.clock.t = 4_000_000
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('a job the list cannot tell apart (no canvas_node_id, no time) is never read as "not there"', async () => {
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent: { take_1: lost({ anchors: { ended: ['job1'], open: [] } }) } }, [
+      { job_id: 'job1', status: 'completed' },
+      { job_id: 'mystery', status: 'queued' }, // could be take_1's: no node, no time
+    ])
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(1)
+  })
+
+  it('right after a lost answer: no resend while an unknown job cannot be told apart; ONE resend (same key) when the list reaches back', async () => {
+    for (const listed of [[{ job_id: 'mystery', status: 'queued' }], []]) {
+      const s = setup()
+      const provider = createCanvasappProvider({
+        api: createCanvasappApi(s.server.transport),
+        getBlob: async (id) => blobs[id] ?? null,
+        storage: s.storage,
+        now: () => s.clock.t,
+        sleep: async () => undefined,
+      })
+      await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+      // the next POST is answered 502 without reaching canvasapp; the list shows job1 (this computer's, older) + `listed`
+      s.server.state.extra = (r) =>
+        isPost(r) && posts(s.server) === 2 ? json({ detail: 'Bad gateway' }, 502) : isList(r) ? json([{ job_id: 'job1', status: 'completed' }, ...listed]) : undefined
+      if (listed.length) {
+        await expect(provider.submit(req())).rejects.toMatchObject({ uncertain: true })
+        expect(posts(s.server)).toBe(2)
+      } else {
+        expect((await provider.submit(req())).remoteId).toBe('proj1:job2')
+        expect(posts(s.server)).toBe(3) // the lost one + ONE resend
+        const keys = s.server.calls.filter(isPost).slice(1).map((c) => (c.json as { client_request_id: string }).client_request_id)
+        expect(new Set(keys)).toEqual(new Set([clientRequestIdFor('take_1')]))
+      }
+    }
+  })
+
+  it('a POST records the last list read as anchors: the newest ended / not-ended jobs, at most 6 of each', async () => {
+    const { provider, server, storage } = setup()
+    await provider.submit(req({ key: 'warmup', takeId: 'warmup', sceneId: 'scene_w', images: [] }))
+    const at = (n: number) => new Date(1_000_000 + n * 1000).toISOString()
+    const listed = [
+      ...Array.from({ length: 8 }, (_, i) => ({ job_id: `done${i}`, status: i % 2 ? 'failed' : 'completed', created_at: at(i) })),
+      { job_id: 'run1', status: 'processing', created_at: at(20) },
+      { job_id: 'run0', status: 'queued', created_at: at(10) },
+    ]
+    server.state.extra = (r) => (isList(r) ? json(listed) : undefined)
+    await provider.poll(['proj1:job1']) // a job-list read
+    let sent: Record<string, { anchors?: unknown }> = {}
+    server.state.extra = (r) => {
+      if (isPost(r)) sent = JSON.parse(storage.get(JOBS_KEY)!).sent
+      return undefined
+    }
+    await provider.submit(req({ key: 'take_2', takeId: 'take_2', sceneId: 'scene_b' }))
+    expect(sent.take_2.anchors).toEqual({ ended: ['done7', 'done6', 'done5', 'done4', 'done3', 'done2'], open: ['run1', 'run0'] })
+  })
+
+  it('a key whose ledger record was trimmed is never posted again (also after a restart)', async () => {
+    // 100 newer "sent" records push take_1's out as soon as the ledger is saved again
+    const sent: Record<string, unknown> = { take_1: lost() }
+    for (let i = 0; i < 100; i++) sent[`other_${i}`] = lost({ at: 10 + i })
+    const s = await restartWith({ jobs: { warmup: warmupJob }, sent })
+    expect((await s.provider.submit(req({ key: 'take_x', takeId: 'take_x', sceneId: 'scene_x', images: [] }))).remoteId).toBe('proj1:job2')
+    const ledger = JSON.parse(s.storage.get(JOBS_KEY)!)
+    expect(ledger.sent.take_1).toBeUndefined()
+    expect(ledger.dropped).toContain('take_1')
+    await expect(s.provider.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(2) // warmup + take_x
+    const again = createCanvasappProvider({ api: createCanvasappApi(s.server.transport), getBlob: async (id) => blobs[id] ?? null, storage: s.storage })
+    await expect(again.submit(req())).rejects.toMatchObject(unverifiable)
+    expect(posts(s.server)).toBe(2)
   })
 })
 
