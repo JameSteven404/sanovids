@@ -18,8 +18,17 @@
 // "unknown" (UNKNOWN_SUBMIT_ERROR) is re-sent only by an explicit retry(takeId), as THE SAME take (same key; the
 // provider looks for the job first, and sends again only when it can prove no job was created — otherwise the take
 // fails with UNVERIFIABLE_SUBMIT_ERROR and only a NEW take, "Tạo lại", can run). A take cancelled before its job
-// was created is never billed (submit checks isCancelled before posting). A finished remote video that fails to
-// download is retried, never failed at once (only a video over the gateway's size cap, or one whose download outlived
+// was created is never billed (submit checks isCancelled before posting). A take cancelled WHILE its request may have
+// reached the provider (its POST out or its answer lost — the provider says so: mayHaveSent — or a request of an
+// earlier page) stays "maybe billed" (submitUnknown) until that request ends: job id → kept on the cancelled take;
+// answer lost → the cancelled take keeps the "unknown" text, so its "Chạy lại" is the same-key retry (or "Tạo lại"),
+// never a silent new take; nothing sent → unmarked. Meanwhile "Chạy lại" waits (requestInFlight), and the request treats
+// the take as cancelled even once another project is open (outcomes reach the take when that project is opened again,
+// also one that came while a switch was replacing the runs: lateOutcome). A "maybe billed" take is never part of
+// "Dọn job lỗi/đã huỷ" (clearableTakes), and a run of its scene says so first (check(): maybeBilledRunWarning — also
+// paidCancelledRunWarning for a cancelled take whose job exists: billed, still made there, not followed here).
+// A finished remote video that fails to download is retried, never failed at once (only a video over the gateway's
+// size cap, or one whose download outlived
 // the gateway's time limit without being able to continue, is: another try gives the same end). Its download reports
 // progress (store/takeTransfers) and stops when the take is cancelled / deleted or the project is switched
 // (fetchAborts) — not counted as a failure. remoteVideoReady() tells the UI a running take's video is already made
@@ -68,6 +77,7 @@ import {
   type JobRequest,
   type ProviderId,
   type RemoteStatus,
+  type VideoProvider,
 } from '../providers/types'
 import { browserLocks, createEngineLock, engineLockName, type LockManagerLike } from './engineLock'
 import { clearTakeTransfer, clearTakeTransfers, reportTakeTransfer } from './takeTransfers'
@@ -237,12 +247,133 @@ const fetchRetryAt = new Map<string, number>()
 const fetchAborts = new Map<string, AbortController>()
 
 /**
+ * A request of a remote take still on its way: its submit (submitTake) or the look-up of an earlier one (recoverTake).
+ * Kept by take id across loadRuns — a reload or another project opened does not stop a request already sent; a take
+ * reloaded while its submit is on its way gets a look-up beside it (both are kept, each removed when it ends).
+ *   kind:     'submit' (this session sends it: its provider knows whether its POST may have gone out, mayHaveSent) or
+ *             'recover' (the look-up of a request of an earlier page / engine: it may have gone out).
+ *   provider: the provider instance it went to (a new one — "Xoá dữ liệu máy chủ giả lập" — knows nothing of it).
+ *   stopped:  the take was cancelled / deleted meanwhile. The provider gives up before posting even once another
+ *             project is open (isCancelled can no longer see the take there), and what the request still learns is
+ *             kept for the take (lateOutcome).
+ *   marked:   that cancel marked the take "maybe billed" (submitUnknown, see cancel()); undone when the submit ends
+ *             with nothing sent.
+ */
+interface Flight {
+  kind: 'submit' | 'recover'
+  projectId: string
+  pid: ProviderId
+  /** Set once the provider is known (getProvider may throw: then nothing went out). */
+  provider: VideoProvider | null
+  stopped: boolean
+  marked: boolean
+}
+const inFlight = new Map<string, Set<Flight>>()
+
+function startFlight(id: string, kind: Flight['kind'], projectId: string, pid: ProviderId): Flight {
+  const flight: Flight = { kind, projectId, pid, provider: null, stopped: false, marked: false }
+  inFlight.set(id, (inFlight.get(id) ?? new Set()).add(flight))
+  return flight
+}
+function endFlight(id: string, flight: Flight) {
+  const all = inFlight.get(id)
+  if (all?.delete(flight) && !all.size) inFlight.delete(id)
+}
+
+/**
+ * Cancelling a running remote take without a job id: may its request have reached the provider (→ "maybe billed")?
+ * A request of an earlier page / another tab's engine, or the look-up of one (recoverTake), may have: yes. This
+ * session's own submit: its provider tells (mayHaveSent) — one still before its POST stops at its next isCancelled()
+ * check with nothing sent, so the take is not marked (a mark it did not earn would turn its "Chạy lại" into a look-up
+ * that, with no record of a request, can only end "Tạo lại" — after an app restart, say). A provider that cannot tell: yes.
+ */
+function mayHaveBeenSent(takeId: string): boolean {
+  const flights = [...(inFlight.get(takeId) ?? [])]
+  if (!flights.length) return true
+  return flights.some((f) => {
+    if (f.kind === 'recover') return true
+    if (!f.provider) return false // getProvider threw: nothing went out
+    try {
+      return f.provider.mayHaveSent?.(takeId) ?? true
+    } catch {
+      return true
+    }
+  })
+}
+
+/**
+ * What the request of a take cancelled while it was on its way learned (see Flight.stopped): its job id; its answer was
+ * lost ("không rõ" / unverifiable text); or nothing was sent / it was refused (nothing created) — `unmark`: the mark its
+ * own cancel put on the take goes (a take "maybe billed" by an earlier request keeps it).
+ */
+type LateOutcome = { kind: 'job'; remoteId: string } | { kind: 'uncertain'; error: string } | { kind: 'nothing-sent'; unmark: boolean }
+/** Which outcome wins when two requests of a take report (a submit and the look-up beside it): what is known best. */
+const LATE_RANK: Record<LateOutcome['kind'], number> = { 'nothing-sent': 0, uncertain: 1, job: 2 }
+/**
+ * Every outcome of a request of a cancelled / deleted take, kept by take id until its project's runs are loaded again
+ * (this session): put on the take then — again, if it was already. A change made to the open runs can still be thrown
+ * away: a switch to another project writes them (persist: flush) BEFORE it loads the next one, so an outcome that
+ * comes in between (same generation, same project open) reaches only runs that are about to be replaced. Putting it
+ * on again is harmless (applyLateOutcome only changes a cancelled take that still has no job id).
+ */
+const lateOutcomes = new Map<string, { projectId: string; outcome: LateOutcome }>()
+
+/**
+ * A request of this take (its submit, or the look-up of an earlier one) is still on its way — also one started before
+ * the runs were reloaded. Its outcome is not known yet: "Chạy lại" waits for it (requestInFlightText), whatever the take
+ * shows (a take cancelled meanwhile shows "Đã huỷ" at once).
+ */
+export function requestInFlight(takeId: string): boolean {
+  const projectId = useProject.getState().project.id
+  const current = (pid: ProviderId) => {
+    try {
+      return getProvider(pid)
+    } catch {
+      return null
+    }
+  }
+  return [...(inFlight.get(takeId) ?? [])].some((f) => f.projectId === projectId && !!f.provider && current(f.pid) === f.provider)
+}
+
+/** "Chạy lại" / retry() while requestInFlight(take): nothing new is sent before that request's outcome is known. */
+export const requestInFlightText = (pid: ProviderId): string =>
+  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
+
+/**
+ * check() warning (the run dialog's row) of a scene whose newest take may already be billed (isUncertainSubmit): a run
+ * of the scene is a NEW take (new key) that may pay again — that take's own "Chạy lại" looks its job up first, unless
+ * its earlier request can no longer be checked (`unverifiable`: then only the gateway's own history tells).
+ */
+export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiable: boolean): string {
+  const credit = pid === 'dev' ? 'credit dev' : 'credit'
+  if (unverifiable) {
+    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : 'lịch sử credit trên canvasapp.io.vn'
+    return `${label}: lần gửi trước có thể đã bị trừ ${credit} (SanoVids không kiểm tra được) — xem ${where} trước; chạy ở đây là take MỚI, có thể trừ thêm.`
+  }
+  return `${label}: lần gửi trước không rõ đã bị trừ ${credit} chưa — “Chạy lại” trên ${label} tìm job cũ trước khi gửi; chạy ở đây là take MỚI, có thể trừ thêm.`
+}
+
+/**
+ * check() warning of a scene whose newest take was cancelled in SanoVids although its job exists at the gateway (a job
+ * id: cancelled while running, or its answer came after "Huỷ"): that job was billed and goes on there — SanoVids does
+ * not follow it any more (a canvasapp cancel is local) — so a run of the scene is a NEW take that pays again.
+ */
+export function paidCancelledRunWarning(label: string, pid: ProviderId): string {
+  return pid === 'dev'
+    ? `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp giả lập (đã trừ credit dev) — job vẫn còn trong Bảng phát triển; chạy ở đây là take MỚI, trừ thêm credit dev.`
+    : `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp (đã trừ credit) — video của job đó vẫn tải được trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy ở đây là take MỚI, trừ thêm credit.`
+}
+
+/**
  * The remote job of this running take is finished (so paid) and SanoVids is downloading its video, or waits to try
  * again: cancelling the take now drops a video that exists. Read at click time (not a store value).
  */
 export function remoteVideoReady(takeId: string): boolean {
   return fetching.has(takeId) || fetchAborts.has(takeId) || fetchRetryAt.has(takeId) || fetchFailures.has(takeId)
 }
+
+/** Error of a take cancelled in SanoVids ("Huỷ"). */
+const CANCELLED_ERROR = 'Đã huỷ'
 
 /**
  * Error of a remote take whose submit ended without a job id although the request may have reached the provider
@@ -381,9 +512,14 @@ export { isForeignTake }
  */
 export const isParkedTake = (t: Pick<Take, 'foreignStatus'>): boolean => !!t.foreignStatus
 
-/** Takes "Dọn job lỗi/đã huỷ" deletes: failed / cancelled ones, never a parked take of a newer build (isParkedTake). */
-export function clearableTakes<T extends Pick<Take, 'status' | 'foreignStatus'>>(takes: readonly T[]): T[] {
-  return takes.filter((t) => (t.status === 'failed' || t.status === 'cancelled') && !isParkedTake(t))
+/**
+ * Takes "Dọn job lỗi/đã huỷ" deletes: failed / cancelled ones — never a parked take of a newer build (isParkedTake), nor
+ * a "maybe billed" one (isUncertainSubmit): it is the only trace of a request that may have made — and billed — a job
+ * (its "Chạy lại" finds that job; deleted, a run of its scene could pay again). The user deletes those one by one, after
+ * a question (core/deletePlan).
+ */
+export function clearableTakes<T extends Pick<Take, 'status' | 'foreignStatus' | 'provider' | 'remoteId' | 'error' | 'submitUnknown'>>(takes: readonly T[]): T[] {
+  return takes.filter((t) => (t.status === 'failed' || t.status === 'cancelled') && !isParkedTake(t) && !isUncertainSubmit(t))
 }
 
 /** Error of a take whose model this build does not know when it was about to be sent (never sent, nothing charged). */
@@ -449,6 +585,21 @@ export const useRuns = create<RunsState>()((set, get) => ({
     const credits = finite(data?.credits) ?? DEMO_CREDITS_DEFAULT
     const spent = finite(data?.spent) ?? 0
     set({ takes, credits, spent, providerIssue: null, engineElsewhere: false })
+    // What a cancelled take's request learned (lateOutcomes: while another project was open, or just before a switch
+    // replaced the runs it was put on): put on the take — right after this load, so the change is saved like any other
+    // (persist counts what loadRuns sets as already saved).
+    const projectId = useProject.getState().project.id
+    if ([...lateOutcomes.values()].some((l) => l.projectId === projectId)) {
+      const gen = generation
+      queueMicrotask(() => {
+        if (gen !== generation || useProject.getState().project.id !== projectId) return
+        for (const [id, late] of lateOutcomes) {
+          if (late.projectId !== projectId) continue
+          lateOutcomes.delete(id)
+          applyLateOutcome(id, late.outcome)
+        }
+      })
+    }
     ensureEngine()
   },
 
@@ -458,6 +609,16 @@ export const useRuns = create<RunsState>()((set, get) => ({
     // What the gateway runs right now, as last read (/api/video-profiles) — synchronous, never a request: a sure
     // refusal skips the scene (nothing sent, no credit), a guess / an older read only warns (the submit reads again).
     const limits = providerLimits(providerId)
+    // The newest take of each scene: when it may already be billed ("không rõ", isUncertainSubmit) — answer lost, or
+    // cancelled while its request was on its way —, or was cancelled although its job exists (billed, still made
+    // there), the run is a NEW take that may pay again: said first.
+    const wanted = new Set(sceneIds)
+    const newest = new Map<string, Take>()
+    for (const t of get().takes) {
+      if (!wanted.has(t.sceneId)) continue
+      const had = newest.get(t.sceneId)
+      if (!had || t.number > had.number) newest.set(t.sceneId, t)
+    }
     return sceneIds
       .map((id) => project.scenes.find((s) => s.id === id))
       .filter((s): s is Scene => !!s)
@@ -468,7 +629,17 @@ export const useRuns = create<RunsState>()((set, get) => ({
         const settingsBlock = settingsRunBlock(limits, scene.settings)
         const reason = runBlockReason({ scene, assets: project.assets, compiled, settingsBlock, spec: MODELS[scene.settings.model] })
         const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
-        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: warning ? [...compiled.warnings, warning] : compiled.warnings }
+        const before = reason ? undefined : newest.get(scene.id)
+        const label = before ? takeCode(scene.order, before.number) : ''
+        const billed = !before
+          ? null
+          : isUncertainSubmit(before)
+            ? maybeBilledRunWarning(label, providerOf(before), isUnverifiableSubmit(before))
+            : before.status === 'cancelled' && providerOf(before) !== 'mock' && remoteIdOf(before)
+              ? paidCancelledRunWarning(label, providerOf(before))
+              : null
+        const warnings = billed || warning ? [...(billed ? [billed] : []), ...compiled.warnings, ...(warning ? [warning] : [])] : compiled.warnings
+        return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings }
       })
   },
 
@@ -547,9 +718,22 @@ export const useRuns = create<RunsState>()((set, get) => ({
         /* provider gone: nothing to stop */
       }
     }
+    // A remote take running without a job id whose request may have reached the provider (its POST on its way or its
+    // answer lost, or one of a page that closed before the answer — mayHaveBeenSent): it may already be billed.
+    // Cancelling never forgets that ("maybe billed", submitUnknown): "Chạy lại" then re-sends THE SAME take (its job
+    // looked up first), never a new take that could pay twice — also when the app closes before the answer comes. The
+    // request's end refines it (a job id, the "không rõ" text, or nothing sent → unmarked). A submit of this session
+    // still before its POST is not marked: it stops at its next isCancelled() check, nothing sent.
+    const maybeSent = providerOf(take) !== 'mock' && take.status === 'processing' && !remoteId && mayHaveBeenSent(takeId)
+    for (const flight of inFlight.get(takeId) ?? []) {
+      flight.stopped = true
+      if (maybeSent && !take.submitUnknown) flight.marked = true
+    }
     const refund = isCharged(take) ? take.cost : 0
     set((s) => ({
-      takes: s.takes.map((t) => (t.id === takeId ? { ...t, status: 'cancelled', finishedAt: Date.now(), error: 'Đã huỷ' } : t)),
+      takes: s.takes.map((t) =>
+        t.id === takeId ? { ...t, status: 'cancelled', finishedAt: Date.now(), error: CANCELLED_ERROR, ...(maybeSent ? { submitUnknown: true } : {}) } : t,
+      ),
       credits: s.credits + refund,
       spent: s.spent - refund,
     }))
@@ -559,6 +743,9 @@ export const useRuns = create<RunsState>()((set, get) => ({
   retry: (takeId) => {
     const take = get().takes.find((t) => t.id === takeId)
     if (!take) return null
+    // Its earlier request has no outcome yet (cancelled while it was on its way): a new send now — of this take or a new
+    // one — could pay twice. Asked again once that request ends.
+    if (requestInFlight(takeId)) return { queued: 0, cost: 0, skipped: [], error: requestInFlightText(providerOf(take)) }
     if (isUncertainSubmit(take)) {
       // Never a new take (new key) here: the first request may have been billed. The same take goes again.
       const blocked = providerBlockedReason(providerOf(take))
@@ -903,6 +1090,52 @@ function failTake(id: string, error: string, progress?: number) {
   emitRun('failed', t)
 }
 
+/** A cancelled remote take whose request's outcome is still to be put on it (no job id stored). */
+const cancelledUnsent = (t: Take | undefined): t is Take => !!t && t.status === 'cancelled' && providerOf(t) !== 'mock' && !remoteIdOf(t)
+
+/**
+ * The request of a cancelled take ended with nothing sent (given up before the POST) or refused (nothing created): never
+ * billed by it — the take reads "huỷ trước khi gửi" (startedAt null), and the "maybe billed" mark its own cancel put on
+ * it goes (`unmark`). A take "maybe billed" by an EARLIER request (a retried "không rõ" take) keeps that mark.
+ */
+function settleNothingSent(id: string, unmark: boolean) {
+  const t = findTake(id)
+  if (!cancelledUnsent(t) || (t.submitUnknown && !unmark)) return
+  if (!t.submitUnknown && t.startedAt === null) return
+  const { submitUnknown: _was, ...rest } = t
+  useRuns.setState((s) => ({ takes: s.takes.map((x) => (x.id === id ? { ...rest, startedAt: null } : x)) }))
+}
+
+/**
+ * Put what the request of a cancelled take learned on it (a take sent again or ended otherwise since is left alone): its
+ * job id; or its answer was lost — it stays cancelled and keeps the "không rõ" text ("maybe billed"): "Chạy lại" re-sends
+ * THE SAME take (same key, the job looked up first) — or offers only "Tạo lại" when that can no longer be checked —,
+ * never a new take behind the user's back (the first job may be billed: paying twice); or nothing was sent.
+ */
+function applyLateOutcome(id: string, outcome: LateOutcome) {
+  const t = findTake(id)
+  if (!cancelledUnsent(t)) return
+  if (outcome.kind === 'job') patchTake(id, { remoteId: outcome.remoteId })
+  else if (outcome.kind === 'uncertain') {
+    if (!t.submitUnknown || t.error !== outcome.error) patchTake(id, { submitUnknown: true, error: outcome.error })
+  } else settleNothingSent(id, outcome.unmark)
+}
+
+/**
+ * The request of a take cancelled / deleted while it was on its way ended (whatever was opened since): its outcome is
+ * kept (lateOutcomes — the best known of its requests) and put on the take now when its project is open, and again
+ * when that project's runs are loaded next (a switch may already have written the runs this change reached). Without
+ * that (the app closed first), the take keeps the "maybe billed" mark its cancel put on it — safe: "Chạy lại" looks for
+ * the job before any send.
+ */
+function lateOutcome(id: string, flight: Flight, outcome: LateOutcome) {
+  if (!flight.stopped || flight.pid === 'mock') return
+  const had = lateOutcomes.get(id)
+  const best = had && had.projectId === flight.projectId && LATE_RANK[had.outcome.kind] > LATE_RANK[outcome.kind] ? had.outcome : outcome
+  lateOutcomes.set(id, { projectId: flight.projectId, outcome: best })
+  if (useProject.getState().project.id === flight.projectId && findTake(id)) applyLateOutcome(id, best)
+}
+
 function concurrencyFor(pid: ProviderId): number {
   if (pid === 'mock') return Math.max(1, useRuns.getState().mock.concurrency)
   try {
@@ -1077,40 +1310,58 @@ async function submitTake(id: string) {
   ownedHere.add(id)
   const pid = providerOf(t)
   const projectId = useProject.getState().project.id
+  const flight = startFlight(id, 'submit', projectId, pid)
   // Cancelled or deleted in SanoVids (the take, or its scene) → the provider stops before creating (billing) the
   // job. Another project opened meanwhile is no reason to stop: the job is found again when this project is
-  // reopened (recoverTake).
+  // reopened (recoverTake) — unless the take had been cancelled / deleted before that (flight.stopped).
   const isCancelled = () => {
+    if (flight.stopped) return true
     const p = useProject.getState().project
     return p.id === projectId && (findTake(id)?.status !== 'processing' || !p.scenes.some((s) => s.id === t.sceneId))
   }
   try {
-    const provider = getProvider(pid)
+    const provider = (flight.provider = getProvider(pid))
     // retryOfUnknown: a retried "maybe billed" take (retry() marks it) — the provider never sends it again without proof
     const { remoteId } = await provider.submit(buildRequest(t), { isCancelled, retryOfUnknown: !!t.submitUnknown })
+    // Cancelled / deleted while it was on its way (also when another project was opened since): the provider has the
+    // job anyway (canvasapp may have charged the account) — the cancelled take keeps its id so the UI can say so
+    // (lateOutcome), and it is stopped there when possible.
+    if (flight.stopped && pid !== 'mock') {
+      lateOutcome(id, flight, { kind: 'job', remoteId })
+      void provider.cancel?.(remoteId)
+      return void emitRun('submitted', t)
+    }
     // Runs reloaded meanwhile: the new engine adopts the take and asks the provider for this job (recoverTake).
     if (gen !== generation) return void emitRun('submitted', t)
     const cur = findTake(id)
     if (cur?.status === 'processing') patchTake(id, { remoteId })
     else {
-      // Cancelled / removed while submitting: stop it at the provider when possible. A remote provider has the job
-      // anyway (canvasapp may have charged the account): the cancelled take keeps its id so the UI can say so.
+      // Not running any more otherwise (an old demo take cancelled / removed meanwhile): stop it there when possible.
       if (cur && pid !== 'mock') patchTake(id, { remoteId })
       void provider.cancel?.(remoteId)
     }
     emitRun('submitted', t)
   } catch (e) {
-    if (gen !== generation) return
     const deferred = isSubmitDeferred(e)
+    const nothingSent = deferred || isSubmitCancelled(e)
+    // No job id although the request may have reached the provider ("maybe billed"); null = it surely did not
+    // (given up before the POST, or refused: nothing was created).
+    const lost = isSubmitUncertain(e) ? (isSubmitUnverifiable(e) ? unverifiableSubmitError(pid) : unknownSubmitError(pid)) : null
+    // Cancelled / deleted while it was on its way (also when another project was opened since): the take stays
+    // cancelled and gets what its request learned (lateOutcome) — its answer lost: never forgetting it may be billed
+    // ("Chạy lại" = the same take, or only "Tạo lại"); nothing sent or refused (nothing created): "huỷ trước khi gửi",
+    // the mark its own cancel put on it goes (a take re-sent after a lost answer keeps it: the first may be charged).
+    const stopped = flight.stopped && pid !== 'mock'
+    if (stopped) lateOutcome(id, flight, lost ? { kind: 'uncertain', error: lost } : { kind: 'nothing-sent', unmark: flight.marked })
+    if (gen !== generation) return
     if (deferred) {
       // The provider asks to try later (e.g. no room until a running job ends): no take of it starts for a while.
       startPausedUntil.set(pid, Date.now() + pollIntervalFor(pid))
     }
-    if (deferred || isSubmitCancelled(e)) {
+    if (nothingSent) {
       // Given up before anything was sent: the take never started at the provider (UI: "không bị trừ credit").
       const cur = findTake(id)
-      // (A take re-sent after a lost answer keeps its "maybe billed" state: the first request may have been charged.)
-      if (cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
+      if (!stopped && cur?.status === 'cancelled' && !remoteIdOf(cur) && !cur.submitUnknown) patchTake(id, { startedAt: null })
       else if (cur?.status === 'processing' && !remoteIdOf(cur)) {
         // Deferred, or its scene was deleted: back to the queue (it waits there for its turn, or until an Undo brings
         // the scene back).
@@ -1119,13 +1370,15 @@ async function submitTake(id: string) {
       }
       return
     }
-    if (isSubmitUncertain(e)) return failTake(id, isSubmitUnverifiable(e) ? unverifiableSubmitError(pid) : unknownSubmitError(pid))
+    // (failTake leaves a cancelled take alone: handled above)
+    if (lost) return failTake(id, lost)
     failTake(id, errorText(e))
     const code = (e as { code?: unknown })?.code
     if (pid !== 'mock' && code === 'login-required') {
       useRuns.setState({ providerIssue: { provider: pid, code, message: errorText(e), at: Date.now() } })
     }
   } finally {
+    endFlight(id, flight)
     if (gen === generation) submitting.delete(id)
   }
 }
@@ -1147,20 +1400,25 @@ async function recoverTake(id: string) {
   }
   submitting.add(id)
   ownedHere.add(id)
+  // Never posts, so nothing to stop; a cancel meanwhile (flight.stopped) only keeps the outcome for the take.
+  const flight = startFlight(id, 'recover', useProject.getState().project.id, providerOf(t))
+  const unknown = unknownSubmitError(providerOf(t))
   try {
-    const provider = getProvider(providerOf(t))
+    const provider = (flight.provider = getProvider(providerOf(t)))
     const found = provider.recover ? await provider.recover(buildRequest(t)) : null
+    // Cancelled / deleted during the look-up (also once another project is open): a job found stays on the cancelled
+    // take; none found = not known to exist, never "not billed" — it stays "maybe billed" (lateOutcome).
+    if (flight.stopped) return void lateOutcome(id, flight, found ? { kind: 'job', remoteId: found.remoteId } : { kind: 'uncertain', error: unknown })
     if (gen !== generation) return
     const cur = findTake(id)
-    if (!found) {
-      failTake(id, unknownSubmitError(providerOf(t)))
-      return
-    }
+    if (!found) return failTake(id, unknown)
     if (cur && !remoteIdOf(cur)) patchTake(id, { remoteId: found.remoteId })
     if (cur?.status === 'processing') emitRun('submitted', t)
   } catch {
-    if (gen === generation) failTake(id, unknownSubmitError(providerOf(t)))
+    if (flight.stopped) lateOutcome(id, flight, { kind: 'uncertain', error: unknown })
+    else if (gen === generation) failTake(id, unknown)
   } finally {
+    endFlight(id, flight)
     if (gen === generation) submitting.delete(id)
   }
 }

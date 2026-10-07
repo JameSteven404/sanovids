@@ -266,6 +266,31 @@ lịch sử credit trên canvasapp; muốn thử lại thì “Tạo lại”"),
 đó (khung xem take ghi **“Tạo lại”**) thành `actions.rerunTake`: cảnh báo rồi mở hộp chi phí cho một take **mới** = khoá
 mới — người dùng tự chọn, có thể trả thêm một lần.
 
+**Huỷ lúc đang gửi** (take `processing` chưa có mã job; PAY-H, `store/runs.ts`): take thành `cancelled`. Nếu lần gửi
+**có thể đã tới canvasapp** thì take **giữ** `submitUnknown` ngay lúc bấm Huỷ (app tắt trước khi có câu trả lời vẫn không
+quên "có thể đã bị trừ"): `POST` đã đi / đang chờ câu trả lời / đang tìm job sau câu trả lời mất — adapter trả lời đồng
+bộ qua `mayHaveSent(key)` (có bản ghi `sent` / `jobs` / `imported` / `dropped`: `sent[key]` được ghi trong cùng một
+bước đồng bộ với lần `checkCancelled()` cuối và chính `POST`) — hoặc là take còn lại từ phiên trước / tab khác / đang
+được `recoverTake` tìm lại (không biết được: coi như đã gửi). Lần gửi của phiên này còn ở trước `POST` (đang tải ảnh,
+đang lưu canvas, đang chờ lượt) thì **không** bị đánh dấu: nó dừng ở `checkCancelled()` kế tiếp, không gửi gì — kể cả
+khi app tắt ngay lúc đó (cài bản cập nhật không chờ take đã huỷ), "Chạy lại" sau khi mở lại là take mới qua hộp chi
+phí, không bao giờ thành “Tạo lại” cho một take chưa từng rời máy. Kết thúc của lần gửi quyết định: có mã job → take
+huỷ giữ mã đó; câu trả lời mất (`uncertain`) → vẫn `cancelled` với `UNKNOWN_SUBMIT_ERROR` /
+`UNVERIFIABLE_SUBMIT_ERROR`, nên "Chạy lại" = gửi lại **chính take đó** (tìm job trước, `listCovers`) hoặc chỉ “Tạo lại”
+— không bao giờ lặng lẽ thành take mới; bỏ trước `POST` hoặc bị từ chối (không tạo gì) → bỏ dấu, "huỷ trước khi gửi —
+không bị trừ credit". Trong lúc lần gửi đó chưa xong (`requestInFlight`), "Chạy lại" chỉ báo "đợi vài giây" (không gửi
+gì, kể cả take mới). Huỷ rồi mở dự án khác: lần gửi đó vẫn coi take là đã huỷ (không `POST` lại sau khi đổi dự án).
+Kết quả của mọi lần gửi đã huỷ được giữ (`lateOutcomes`) và ghi lại vào take khi dự án của nó được nạp lại — kể cả kết
+quả về **giữa** lúc chuyển dự án ghi các take (`flush`) và lúc nạp dự án kế tiếp (thay đổi đó chỉ chạm các take sắp bị
+thay). Huỷ trong lúc tìm lại job của take bị bỏ dở khi mở app (`recoverTake`): không thấy → vẫn "có thể đã bị trừ",
+không bao giờ "chưa gửi". Take "có thể đã bị trừ" (`isUncertainSubmit`) không bị "Dọn job lỗi/đã huỷ" xoá
+(`clearableTakes`); xoá riêng từng take thì hỏi trước (`core/deletePlan`: mất dấu job, chạy lại cảnh có thể trừ lần
+nữa); hộp "Chạy" của cảnh có take mới nhất như vậy ghi cảnh báo đầu tiên (`maybeBilledRunWarning`: chạy ở đây là take
+MỚI — “Chạy lại” trên take đó tìm job cũ trước); take mới nhất đã huỷ mà **đã có mã job** (huỷ lúc job đang chạy, hoặc
+mã job về sau khi bấm Huỷ) cũng vậy (`paidCancelledRunWarning`: job đó đã trừ credit và vẫn được tạo trên canvasapp —
+video tải trên canvasapp.io.vn, phiên “SanoVids bridge”; chạy ở đây là take MỚI, trừ thêm). Còn lại (0.7.0): SanoVids
+không theo dõi / tải về job của take đã huỷ (huỷ canvasapp chỉ là huỷ trong máy) — "Theo dõi lại" thuộc kế hoạch 0.7.0.
+
 Hai take trên **cùng một node** (hai take của một cảnh trong một dự án, hoặc take gửi lại trên node cũ) mà đều chưa rõ
 câu trả lời: job nào cũng có thể là của take kia. Lần đọc danh sách job ngay trước `POST` (bước 5: `before` + `beforeAt`
 trong sổ `sent`) khi đó là **bắt buộc**: đọc không được → **không gửi** (take `failed`, "chưa

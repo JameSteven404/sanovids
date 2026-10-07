@@ -46,7 +46,7 @@ import { PROVIDER_LABEL, providerOf } from '../../providers'
 import { useDevAllowed } from '../../providers/devAccess'
 import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { useProject } from '../../store/project'
-import { isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
+import { hasUncertainSubmitText, isUncertainSubmit, isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { keyForTopOverlay } from '../common/focus'
 import { AssetChip } from '../common/Media'
@@ -664,11 +664,14 @@ function Stage({
       <div className="rq-stage-state">
         <Ban size={30} />
         <div className="rq-stage-msg">Job đã huỷ</div>
+        {/* cancelled while its request was on its way and no job id came back: it may be billed (store/runs) */}
+        {isUncertainSubmit(take) && hasUncertainSubmitText(take.error) && <div className="rq-stage-dim">{take.error}</div>}
         {refundNote}
         {onRerun && (
           <button type="button" className="btn btn-sm" onClick={onRerun}>
             <RotateCcw size={13} />
-            Chạy lại
+            {/* the earlier request can no longer be checked: only a NEW take can run (actions.rerunTake) */}
+            {isUnverifiableSubmit(take) ? 'Tạo lại' : 'Chạy lại'}
           </button>
         )}
       </div>

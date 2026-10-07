@@ -41,6 +41,7 @@ import {
   DEV_UNVERIFIABLE_SUBMIT_ERROR,
   isUncertainSubmit,
   onRunEvent,
+  requestInFlightText,
   setEngineHooks,
   setEngineLockManager,
   useRuns,
@@ -713,6 +714,54 @@ describe('dev mode e2e: idempotency', () => {
     expect(take(t.id).error).not.toContain('canvasapp.io.vn')
     expect(server.balance()).toBe(balance) // no second charge
     expect(server.snapshot().jobs.some((j) => j.client_request_id === key)).toBe(false) // no second job either
+  })
+
+  it('PAY-H: answer lost, list down, "Huỷ" during the look-up → stays "không rõ"; "Chạy lại" re-sends THE SAME take — one job, one charge', async () => {
+    server.login()
+    server.setConfig({ dedupe: false }) // a second POST would be a second charge
+    server.addFault({ endpoint: 'job-create', fault: { kind: 'processed-then', status: 502, json: { detail: 'Bad gateway' } } })
+    const listDown = server.addFault({ endpoint: 'jobs-list', fault: { kind: 'network' }, sticky: true })
+    const [t] = enqueue('s1')
+    await run(5_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    expect(server.snapshot().jobs).toHaveLength(1) // made and billed
+    useRuns.getState().cancel(t.id)
+    // while the look-up runs, nothing new goes (neither this take nor a new one)
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 0, error: requestInFlightText('dev') })
+    await run(60_000)
+    const after = take(t.id)
+    expect(after).toMatchObject({ status: 'cancelled', error: DEV_UNKNOWN_SUBMIT_ERROR, submitUnknown: true, remoteId: null })
+    expect(isUncertainSubmit(after)).toBe(true)
+    expect(takeCostLine(after).note).toContain('không rõ')
+    expect(logOf('job-create')).toHaveLength(1)
+
+    server.removeFault(listDown.id)
+    expect(useRuns.getState().retry(t.id)).toMatchObject({ queued: 1 })
+    expect(takes()).toHaveLength(1)
+    await run(30_000)
+    const [job] = server.snapshot().jobs
+    expect(take(t.id)).toMatchObject({ status: 'completed', remoteId: `${job.project_id}:${job.job_id}` })
+    expect(logOf('job-create')).toHaveLength(1)
+    expect(server.snapshot().jobs).toHaveLength(1)
+    expect(server.balance()).toBe(1000 - S1_COST)
+  })
+
+  it('PAY-H: "Huỷ" while the canvas is still being saved (nothing posted yet) → not "maybe billed", never posted, "huỷ trước khi gửi"', async () => {
+    server.login()
+    server.setConfig({ dedupe: false })
+    server.addFault({ endpoint: 'canvas-put', fault: { kind: 'slow', ms: 10_000 } })
+    const [t] = enqueue('s1')
+    await run(2_000)
+    expect(take(t.id)).toMatchObject({ status: 'processing', remoteId: null })
+    useRuns.getState().cancel(t.id)
+    expect(take(t.id).submitUnknown).toBeUndefined()
+    expect(isUncertainSubmit(take(t.id))).toBe(false)
+    await run(30_000)
+    expect(logOf('job-create')).toHaveLength(0)
+    expect(server.snapshot().jobs).toHaveLength(0)
+    expect(server.balance()).toBe(1000)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', startedAt: null })
+    expect(takeCostLine(take(t.id))).toMatchObject({ struck: true })
   })
 })
 

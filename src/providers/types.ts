@@ -215,6 +215,15 @@ export interface VideoProvider {
    * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown".
    */
   recover?(req: JobRequest): Promise<{ remoteId: string } | null>
+  /**
+   * Synchronous, never a request, never throws: may a request of `key` have reached the provider — the request that
+   * creates (bills) its job sent or about to be sent in the same synchronous step, its answer pending or lost, a job
+   * known for it, or a record of it trimmed? False only when nothing of `key` can have gone out from here: a submit
+   * still before that request then stops at its next isCancelled() check (SubmitOptions) with nothing sent. The engine
+   * asks it when a take is cancelled while its submit is on its way (store/runs cancel(): "maybe billed" or not).
+   * Optional: without it every such cancel counts as "maybe billed".
+   */
+  mayHaveSent?(key: string): boolean
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
   /**

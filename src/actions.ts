@@ -32,7 +32,7 @@ import {
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
 import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type AddRefsResult, type Box, type PlaceHint } from './store/project'
-import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, useRuns } from './store/runs'
+import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -474,10 +474,17 @@ export interface DeleteTakesOptions {
  */
 /**
  * Takes as checkTakeDelete sees them: a running take whose video is already made and paid (remoteVideoReady:
- * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video.
+ * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video;
+ * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed.
  */
-function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; provider: string }[] {
-  return takes.map((t) => ({ id: t.id, status: t.status, videoReady: t.status === 'processing' && remoteVideoReady(t.id), provider: providerOf(t) }))
+function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; uncertain: boolean; provider: string }[] {
+  return takes.map((t) => ({
+    id: t.id,
+    status: t.status,
+    videoReady: t.status === 'processing' && remoteVideoReady(t.id),
+    uncertain: isUncertainSubmit(t),
+    provider: providerOf(t),
+  }))
 }
 
 export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
@@ -650,6 +657,12 @@ export const DEV_LOCKED_RETRY = 'Take giả lập chỉ gửi lại được khi
 export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
   if (!take) return
+  // Cancelled while its request was on its way, whose outcome is not known yet: neither the same take nor a new one is
+  // sent before it is (a new take now could pay twice).
+  if (requestInFlight(takeId)) {
+    toast(requestInFlightText(providerOf(take)), { tone: 'warning', ms: 7000 })
+    return
+  }
   if (!isUncertainSubmit(take)) {
     requestRun([take.sceneId], opts)
     return
