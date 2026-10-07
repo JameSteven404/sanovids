@@ -14,6 +14,7 @@
   position: relative;
   z-index: 20;
   user-select: none;
+  background: var(--panel);
 }
 /* Toolbar glyphs: lucide at 16px, stroke 1.75, secondary color until hover / active. */
 .tb .lucide {
@@ -107,9 +108,8 @@
   border-radius: 5.25px; /* 22 %, the app icon's corner */
   display: inline-flex;
   flex: none;
-  /* Brand colours (base.css --brand-* tokens), fixed in both themes: the app icon's plate and ink. The light theme's
-     accent tokens are a deeper orange with WHITE ink, which would turn the mark into a low-contrast white S. */
-  background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
+  /* The brand plate and white mark stay the same in both themes. */
+  background: var(--brand-gradient);
   color: var(--brand-ink);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 12%, transparent), var(--shadow-sm);
 }
@@ -261,7 +261,8 @@
   grid-auto-columns: 1fr;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--panel-2);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .tb-seg-thumb {
   position: absolute;
@@ -271,13 +272,13 @@
   width: calc((100% - 4px) / var(--seg-n));
   transform: translateX(calc(var(--seg-i) * 100%));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
-  box-shadow: var(--shadow-sm), 0 0 0 0.5px var(--border);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-sm);
   transition: transform 0.15s cubic-bezier(0.3, 0.7, 0.2, 1);
   pointer-events: none;
 }
 :root[data-theme='light'] .tb-seg-thumb {
-  background: var(--panel);
+  background: var(--accent-soft);
 }
 .tb-seg-btn {
   position: relative;
@@ -320,7 +321,7 @@
   background: var(--pressed);
 }
 .tb-seg-btn.active {
-  color: var(--text);
+  color: var(--accent-ink);
 }
 
 /* right side */
@@ -473,8 +474,8 @@
   height: 15px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--warn);
-  color: var(--bg);
+  background: var(--warn-soft);
+  color: var(--warn);
   box-shadow: 0 0 0 1.5px var(--bg);
   font-family: var(--mono);
   font-size: 9px;
@@ -495,8 +496,8 @@
   height: 15px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--video);
-  color: var(--on-accent);
+  background: var(--video-soft);
+  color: var(--video-ink);
   box-shadow: 0 0 0 1.5px var(--bg);
   font-family: var(--mono);
   font-size: 9px;

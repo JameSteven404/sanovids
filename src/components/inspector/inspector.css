@@ -8,15 +8,15 @@
 .in-mention,
 .in-hover-preview {
   /* inset group fill: a touch off the panel in both themes */
-  --in-group: color-mix(in srgb, var(--panel-2) 50%, var(--panel));
+  --in-group: var(--panel);
   /* readable tints: system colors pulled toward the text color so small tinted text keeps its contrast */
-  --in-ref-ink: color-mix(in srgb, var(--ref) 72%, var(--text));
+  --in-ref-ink: var(--ref-ink);
   /* 72% like the others: at 82% the light orange ink stayed under 4:1 on white / on --accent-soft */
-  --in-accent-ink: color-mix(in srgb, var(--accent) 72%, var(--text));
+  --in-accent-ink: var(--accent-ink);
   /* real canvasapp credits (docs/SPEC-v2.md §9): --info like the top bar credit pill */
   --in-credit-ink: color-mix(in srgb, var(--info) 80%, var(--text));
   /* solid teal behind --on-accent text: a touch deeper in light (white text) and lighter in dark (dark text) */
-  --in-ref-fill: color-mix(in srgb, var(--ref) 80%, var(--text));
+  --in-ref-fill: var(--ref-soft);
 }
 .in-root {
   flex: 1;
@@ -321,7 +321,7 @@
   height: 28px;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--panel-2);
+  background: var(--bg-elev);
   box-shadow: inset 0 0 0 1px var(--border);
 }
 /* the raised selected segment; slides between equal-width segments (--i of --n) */
@@ -333,14 +333,14 @@
   width: calc((100% - 4px) / var(--n, 1));
   transform: translateX(calc(var(--i, 0) * 100%));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
+  background: var(--accent-soft);
   box-shadow: var(--shadow-sm);
   transition: transform 0.15s ease-out;
   pointer-events: none;
 }
 /* white thumb on the light gray track: a hairline keeps its edge visible (the light shadow alone is very faint) */
 :root[data-theme='light'] .in-seg-thumb {
-  background: var(--panel);
+  background: var(--accent-soft);
   box-shadow:
     0 0 0 1px var(--border),
     var(--shadow-sm);
@@ -370,7 +370,7 @@
   background: var(--hover);
 }
 .in-seg-btn.on {
-  color: var(--text);
+  color: var(--accent-ink);
   font-weight: 600;
   cursor: default;
 }
@@ -499,7 +499,7 @@
 /* Tokens must stand out in a long prompt: a stronger tint + a thin ring of the same hue (box-shadow: no metric change). */
 .in-tk.is-image {
   color: var(--in-ref-ink);
-  background: color-mix(in srgb, var(--ref) 26%, transparent);
+  background: var(--ref-soft);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ref) 55%, transparent);
 }
 .in-tk.is-legacy {
@@ -667,7 +667,7 @@
     color 0.12s ease-out;
 }
 .in-hint-btn:hover {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 .in-hint-btn:focus-visible {
@@ -1030,7 +1030,7 @@
 }
 .in-mention-item.active .in-mention-link {
   background: var(--in-ref-fill);
-  color: var(--on-accent);
+  color: var(--ref-ink);
 }
 
 /* ---------- references (rounded rows inside the group) ---------- */
@@ -1542,8 +1542,8 @@
   cursor: pointer;
 }
 .in-check.on {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--action-gradient);
+  border-color: transparent;
 }
 .in-check.partial {
   border-color: var(--accent);
@@ -2015,8 +2015,8 @@ button.in-code-chip:focus-visible {
   opacity: 1;
 }
 .in-image-x:hover:not(:disabled) {
-  background: var(--danger);
-  color: var(--on-accent);
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 .in-image-make:focus-visible,
 .in-image-x:focus-visible {

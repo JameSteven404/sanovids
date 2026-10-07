@@ -18,13 +18,13 @@
  */
 .cv-stage,
 .cv-ref-preview {
-  /* cards (DESIGN.md "Cards on the canvas"): radius 14, hairline, soft depth; hover lifts; selected = 2px accent ring */
-  --cv-radius: 14px;
+  /* Design D cards: token radius, soft depth and a coral selection ring. */
+  --cv-radius: var(--radius-card);
   --cv-card-border: var(--border);
-  --cv-card-shadow: var(--shadow-sm);
+  --cv-card-shadow: var(--shadow);
   --cv-lift-shadow: var(--shadow);
   --cv-hover-border: var(--border-strong);
-  --cv-ring: 0 0 0 1px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 16%, transparent);
+  --cv-ring: 0 0 0 1px var(--selection), 0 0 0 5px var(--accent-soft);
   --cv-ease: cubic-bezier(0.2, 0, 0, 1);
   /* veils over a card while something is dropped / wired onto it (hide the card content, keep its tint) */
   --cv-ref-veil: color-mix(in srgb, color-mix(in srgb, var(--panel) 86%, var(--ref)) 90%, transparent);
@@ -146,7 +146,7 @@
   --h: 12px;
   --h-c: var(--ref);
   --h-glow: var(--ref-soft);
-  --h-ring: var(--cv-handle-line);
+  --h-ring: 0 0 0 1px var(--h-c);
   --h-grab: 28px;
   width: 0;
   height: 0;
@@ -198,7 +198,7 @@
 .cv-stage .cv-h-takes,
 .cv-stage .cv-h-take-in {
   --h: 8px;
-  --h-c: var(--seq);
+  --h-c: var(--video);
   cursor: default;
 }
 .cv-stage .cv-h-takes::after,
@@ -282,7 +282,7 @@
   box-shadow: var(--cv-lift-shadow);
 }
 .cv-scene.is-selected {
-  border-color: var(--accent);
+  border-color: var(--selection);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
 .cv-scene-stripe {
@@ -308,7 +308,7 @@
 .cv-run-bar > i {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-strong), var(--accent));
+  background: var(--brand-gradient);
   background-size: 200% 100%;
   animation: cv-run 1.2s linear infinite;
   transition: width 0.25s linear;
@@ -464,7 +464,7 @@
   box-shadow: var(--cv-lift-shadow);
 }
 .cv-asset.is-selected {
-  border-color: var(--accent);
+  border-color: var(--selection);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
 
@@ -627,9 +627,9 @@ button.cv-asset-count:hover {
     color 0.15s var(--cv-ease);
 }
 .cv-edge-cut:hover {
-  background: var(--danger);
+  background: var(--danger-soft);
   border-color: var(--danger);
-  color: var(--cv-on-solid);
+  color: var(--danger-text);
 }
 
 /* ============================== floating UI ============================== */
@@ -645,13 +645,14 @@ button.cv-asset-count:hover {
   gap: 2px;
   max-width: calc(100% - 24px);
   padding: 5px;
-  border-radius: var(--cv-radius);
+  border-radius: var(--radius-toolbar);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
   transition: bottom 0.2s var(--cv-ease);
   /* narrow center panel: scroll the toolbar instead of spilling over the panels */
   overflow-x: auto;
   scrollbar-width: none;
+  border-color: var(--border-strong);
 }
 .cv-toolbar::-webkit-scrollbar {
   display: none;
@@ -699,12 +700,12 @@ button.cv-asset-count:hover {
 }
 /* the ONE tinted action of the canvas */
 .cv-tb-btn.run:not(:disabled) {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   font-weight: 600;
 }
 .cv-tb-btn.run:hover:not(:disabled) {
-  background: var(--accent-strong);
+  background: var(--action-gradient);
 }
 .cv-tb-btn .kbd {
   min-width: 16px;
@@ -749,7 +750,7 @@ button.cv-asset-count:hover {
 }
 .cv-tb-icon.on {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 .cv-tb-sep {
   width: 1px;
@@ -791,8 +792,8 @@ button.cv-asset-count:hover {
   color: var(--text);
 }
 .cv-seg button.on {
-  background: var(--cv-seg-on);
-  color: var(--text);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }

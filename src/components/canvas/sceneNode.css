@@ -645,7 +645,7 @@
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 9px;
-  background: linear-gradient(115deg, var(--accent), var(--accent-strong));
+  background: var(--action-gradient);
   color: var(--on-accent);
   font: inherit;
   font-size: 12px;
@@ -884,7 +884,7 @@
   padding: 0 0 0 4px;
   border: 0;
   border-radius: 50%;
-  background: linear-gradient(115deg, var(--accent), var(--accent-strong));
+  background: var(--action-gradient);
   color: var(--on-accent);
   cursor: pointer;
 }

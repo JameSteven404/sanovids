@@ -1,14 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <title>SanoVids</title>
-  <!-- Browser tab icon: the 32-unit pixel-hinted cut (crisp at 16 px and 32 px). Same drawing as icon-small.svg. -->
-  <defs>
-    <linearGradient id="sv-fav" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffb340"/>
-      <stop offset="1" stop-color="#ff9f0a"/>
-    </linearGradient>
-  </defs>
-  <rect width="32" height="32" rx="7" fill="url(#sv-fav)"/>
-  <path d="M18 6H16A6 4.4 0 0 0 12.29 13.86L19.71 18.14A6 4.4 0 0 1 16 26H8" fill="none" stroke="#1d1206" stroke-width="4"/>
-  <circle cx="24" cy="6" r="4" fill="#1d1206"/>
-  <circle cx="8" cy="26" r="4" fill="#1d1206"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" ><defs><linearGradient id="brand"><stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="#292423"/><path d="M7 7Q7 3 11 5L27 13Q31 16 27 19L11 28Q7 30 7 25Z" fill="url(#brand)"/><path d="M24 11H15C10 11 10 16 15 16H18C22 16 22 21 18 21H5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/><circle cx="5" cy="21" r="2" fill="white"/></svg>

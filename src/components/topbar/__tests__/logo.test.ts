@@ -1,4 +1,4 @@
-// The top-bar brand mark: the SanoVids "S-wire" Logo (inline SVG, currentColor) inside the orange tile painted with the
+// The top-bar brand mark: Design D play/S Logo (inline SVG, currentColor) inside the red tile painted with the
 // fixed brand tokens of base.css, in place of the old lucide Clapperboard.
 import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
@@ -24,9 +24,9 @@ function ruleBody(css: string, selector: string): { start: number; end: number; 
 }
 
 describe('Logo', () => {
-  it('is a decorative 24-unit SVG painted with currentColor by default', () => {
+  it('is a decorative 512-unit SVG painted with currentColor at 24 px by default', () => {
     const html = renderToStaticMarkup(createElement(Logo))
-    expect(html).toContain('viewBox="0 0 24 24"')
+    expect(html).toContain('viewBox="0 0 512 512"')
     expect(html).toContain('aria-hidden="true"')
     expect(html).toContain('fill="currentColor"')
     expect(html).toContain('width="24"')
@@ -45,6 +45,24 @@ describe('Logo', () => {
     expect(html).toContain('width="40"')
     expect(html).toContain('class="x"')
   })
+
+  it('keeps the cutout masks distinct when the top bar and About render together', () => {
+    const html = renderToStaticMarkup(createElement('div', null, createElement(Logo), createElement(Logo)))
+    const ids = [...html.matchAll(/<mask id="([^"]+)"/g)].map((m) => m[1])
+    expect(new Set(ids).size).toBe(2)
+    for (const id of ids) expect(html).toContain(`mask="url(#${id})"`)
+  })
+
+  it('shares its play and S paths with every packaged icon source', () => {
+    const html = renderToStaticMarkup(createElement(Logo))
+    const paths = [...html.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1])
+    expect(paths).toHaveLength(2)
+    for (const file of ['logo-mark', 'icon-master', 'icon-small', 'icon-24', 'icon-20']) {
+      const svg = read(`../../../../build/icon-source/${file}.svg`)
+      for (const d of paths) expect(svg, file).toContain(`d="${d}"`)
+    }
+    expect(read('../../../../public/favicon.svg')).toBe(read('../../../../build/icon-source/favicon.svg'))
+  })
 })
 
 describe('top bar brand', () => {
@@ -57,7 +75,7 @@ describe('top bar brand', () => {
   it('paints the tile with the brand tokens only (no hex colours in topbar.css)', () => {
     expect(topbarCss).not.toMatch(/#[0-9a-f]{3,8}\b/i)
     const { body } = ruleBody(topbarCss, '.tb-logo {')
-    expect(body).toContain('background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));')
+    expect(body).toContain('background: var(--brand-gradient);')
     expect(body).toContain('color: var(--brand-ink);')
     expect(body).toContain('width: 24px;')
     expect(body).toContain('height: 24px;')
@@ -80,9 +98,9 @@ describe('top bar brand', () => {
       expect(at > dark.start && at < dark.end, `${token} in the dark block`).toBe(true)
       expect(light.body).not.toContain(token)
     }
-    expect(dark.body).toMatch(/--brand-plate-top:\s*#ffb340;/)
-    expect(dark.body).toMatch(/--brand-plate-bottom:\s*#ff9f0a;/)
-    expect(dark.body).toMatch(/--brand-ink:\s*#1d1206;/)
+    expect(dark.body).toMatch(/--brand-plate-top:\s*#E60000;/)
+    expect(dark.body).toMatch(/--brand-plate-bottom:\s*#FF3D14;/)
+    expect(dark.body).toMatch(/--brand-ink:\s*#FFFFFF;/)
   })
 
   it('credits the author in index.html (NFC)', () => {
