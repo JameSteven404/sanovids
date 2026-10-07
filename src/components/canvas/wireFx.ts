@@ -238,6 +238,18 @@ export function wireZ(o: { selected: boolean; hovered: boolean; highlight: boole
   return -3
 }
 
+/**
+ * Which ends of an image reference wire can be dragged (React Flow `reconnectable`): the scene end moves the
+ * reference to another scene, the image end replaces the picture. Every wire at one dot ends at its center, so their
+ * reconnect grips sit on top of each other and the last-drawn wire would always be the one moved: an end is grabbable
+ * only when the wire is alone at that dot, or selected (clicked first; selected wires are drawn last, on top).
+ */
+export function refWireGrips(o: { selected: boolean; sharedAtScene: boolean; sharedAtImage: boolean }): boolean | 'source' | 'target' {
+  const sceneEnd = o.selected || !o.sharedAtScene
+  const imageEnd = o.selected || !o.sharedAtImage
+  return sceneEnd && imageEnd ? true : sceneEnd ? 'target' : imageEnd ? 'source' : false
+}
+
 // ---------------------------------------------------------------- dragging a wire
 export type WireSourceType = 'asset' | 'take' | 'scene' | 'folder'
 
@@ -249,16 +261,17 @@ export interface WireSource {
   /** @deprecated Ignored (see takeReady). */
   takeSceneId?: string | null
   /**
-   * The scene end of an existing image wire is being moved (reconnect): it can only go to another scene — never into
-   * a folder.
+   * An existing image wire is being moved: its fixed end is an asset (move scene) or a scene (replace image).
    */
   reconnect?: boolean
 }
 
-// The scene end of a wire is being dragged (CanvasView onReconnectStart → onReconnectEnd): the connection line reads it.
+// CanvasView onReconnectStart → onReconnectEnd: the connection line reads the same eligibility check as the drop.
 let reconnectingWire = false
-export function setWireReconnecting(on: boolean): void {
+let reconnectAccepts: ((nodeId: string) => boolean) | undefined
+export function setWireReconnecting(on: boolean, accepts?: (nodeId: string) => boolean): void {
   reconnectingWire = on
+  reconnectAccepts = on ? accepts : undefined
 }
 export function isWireReconnecting(): boolean {
   return reconnectingWire
@@ -269,12 +282,15 @@ export type WireVerdict = 'valid' | 'invalid' | 'idle'
 /**
  * What releasing a wire over this card would do — the same rules as CanvasView.onConnectEnd: images go to scenes;
  * a video goes into a folder only (never onto a scene: reference videos were retired in 0.6.0); a scene's right dot
- * goes into a folder (auto-save); a folder's dot goes to a video or a scene. 'idle' = over nothing / its own card
- * (release opens the menu or does nothing).
+ * goes into a folder (auto-save); a folder's dot goes to a video or a scene. Reconnecting an image wire instead
+ * accepts a scene at its scene end or an eligible asset at its image end. 'idle' = over nothing / its own card.
  */
 export function wireVerdict(src: WireSource, over: { id: string; type?: string | null } | null): WireVerdict {
   if (!over || over.id === src.id) return 'idle'
-  if (src.reconnect && over.type !== 'scene') return 'invalid'
+  if (src.reconnect) {
+    const type = src.type === 'scene' ? 'asset' : src.type === 'asset' ? 'scene' : null
+    return type !== null && over.type === type && (!reconnectAccepts || reconnectAccepts(over.id)) ? 'valid' : 'invalid'
+  }
   switch (src.type) {
     case 'asset':
       return over.type === 'scene' ? 'valid' : 'invalid'
@@ -289,6 +305,7 @@ export function wireVerdict(src: WireSource, over: { id: string; type?: string |
 
 /** Color of a wire being dragged (theme tokens): images teal (H3 frame handles their own color), a video's purple, saving indigo. */
 export function wireDragColor(type: string | undefined, toHandleId?: string | null): string {
+  if (reconnectingWire && type === 'scene') return 'var(--ref)'
   if (type === 'take') return 'var(--video)'
   if (type === 'scene' || type === 'folder') return 'var(--save)'
   if (toHandleId === 'first') return 'var(--first)'
@@ -298,6 +315,7 @@ export function wireDragColor(type: string | undefined, toHandleId?: string | nu
 
 /** The handle a valid wire will be drawn to on the card under the pointer (where the line end "snaps"). */
 export function snapHandleFor(srcType: WireSourceType, overType: string | undefined): { type: 'source' | 'target'; id: string } | null {
+  if (reconnectingWire && srcType === 'scene' && overType === 'asset') return { type: 'source', id: 'out' }
   if (overType === 'folder') return srcType === 'take' || srcType === 'scene' ? { type: 'target', id: 'in' } : null
   if (srcType === 'folder') {
     if (overType === 'take') return { type: 'source', id: 'out' }

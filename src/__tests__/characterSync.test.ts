@@ -11,6 +11,9 @@ import { toVideoJobBody, validateRequest } from '../providers/canvasapp/mapping'
 import type { JobRequest } from '../providers/types'
 import { redo, undo, useProject } from '../store/project'
 import { requestImages } from '../store/runs'
+import { canReplaceRefEdge, replaceRefEdge } from '../components/canvas/CanvasView'
+import { register } from '../lib/promptDrafts'
+import { useUI } from '../store/ui'
 
 const asset = (id: string, name: string, imageIds: string[]): Asset => ({ id, kind: 'character', name, tag: name, description: '', imageIds, color: '#fff', position: null })
 
@@ -276,6 +279,87 @@ describe('character sync: a removed picture leaves a red placeholder that never 
     expect(s1().prompt).toBe('@image_1 hugs @image_2 in front of @image_3')
     const snap = enqueueSnapshot(p, s1())
     expect(charactersSent(snap.promptSnapshot, requestImages(snap, p.assets, 30), p.assets)).toEqual(['Elara', 'Mira', 'Village'])
+  })
+
+  it.each([true, false])('wire replacement keeps prompt bytes and the slot, with one undo step (renumber=%s)', (renumber) => {
+    const prompt = '  @Image 1\n@image_2 + @IMAGE3; @image_?7(Mira)  '
+    load([...base(), asset('mira', 'Mira', ['m1'])], { prompt }, renumber)
+    const before = s1()
+    expect(canReplaceRefEdge('ref:lumi->s1', 'mira')).toBe(true)
+    replaceRefEdge('ref:lumi->s1', 'mira')
+    expect(s1().refs).toEqual(['elara', 'mira', 'village'])
+    expect(s1().prompt).toBe(prompt)
+    expect(useProject.temporal.getState().pastStates).toHaveLength(1)
+    const note = useUI.getState().toasts.at(-1)!
+    expect(note.text).toBe('Đã thay Lumi bằng Mira ở S01 — prompt giữ nguyên.')
+    expect(note.tone).toBe('success')
+    expect(note.action?.label).toBe('Hoàn tác')
+    note.action!.run()
+    expect(s1()).toEqual(before)
+    redo()
+    expect(s1().refs).toEqual(['elara', 'mira', 'village'])
+    expect(s1().prompt).toBe(prompt)
+  })
+
+  it('wire replacement flushes a draft before making missing pictures red, and undo restores that draft', () => {
+    load([asset('elara', 'Elara', ['e1', 'e2']), asset('mira', 'Mira', ['m1']), asset('lumi', 'Lumi', ['l1'])], {
+      refs: ['elara', 'lumi'], prompt: 'old prompt',
+    })
+    const prompt = 'face @image_1, outfit @image_2, friend @image_3'
+    let historyAfterFlush = 0
+    const unregister = register('s1', () => {
+      st().setScenePrompt('s1', prompt)
+      historyAfterFlush = useProject.temporal.getState().pastStates.length
+    })
+    try {
+      replaceRefEdge('ref:elara->s1', 'mira')
+    } finally {
+      unregister()
+    }
+    expect(s1().prompt).toBe('face @image_1, outfit @image_?2(Elara · ảnh 2), friend @image_2')
+    expect(s1().refs).toEqual(['mira', 'lumi'])
+    expect(blockOf(st().project, s1())).not.toBeNull()
+    expect(useProject.temporal.getState().pastStates).toHaveLength(historyAfterFlush + 1)
+    expect(useUI.getState().toasts.at(-1)?.text).toContain('@image_?2(Elara · ảnh 2)')
+    undo()
+    expect(s1().prompt).toBe(prompt)
+    expect(s1().refs).toEqual(['elara', 'lumi'])
+  })
+
+  it('invalid replacement drops preserve project, draft, selection, toasts and undo history', () => {
+    load([...base(), asset('empty', 'Empty', []), asset('big', 'Big', Array.from({ length: 40 }, (_, i) => `b${i}`))])
+    const before = st().project
+    const ui = useUI.getState()
+    let flushed = false
+    const unregister = register('s1', () => { flushed = true })
+    try {
+      for (const [wire, target] of [
+        ['ref:lumi->s1', ''], ['ref:lumi->s1', 's1'], ['ref:lumi->s1', 'missing'],
+        ['ref:lumi->s1', 'lumi'], ['ref:lumi->s1', 'elara'], ['ref:lumi->s1', 'empty'],
+        ['ref:lumi->s1', 'big'], ['ref:missing->s1', 'big'], ['ref:lumi->gone', 'big'],
+        ['first:lumi->s1', 'big'],
+      ]) {
+        expect(canReplaceRefEdge(wire, target)).toBe(false)
+        replaceRefEdge(wire, target)
+      }
+    } finally {
+      unregister()
+    }
+    expect(flushed).toBe(false)
+    expect(st().project).toBe(before)
+    expect(useUI.getState()).toBe(ui)
+    expect(useProject.temporal.getState().pastStates).toHaveLength(0)
+  })
+
+  it('replacing with more pictures renumbers later refs and leaves the extra picture unnamed', () => {
+    load([...base(), asset('mira', 'Mira', ['m1', 'm2'])])
+    replaceRefEdge('ref:lumi->s1', 'mira')
+    expect(s1().prompt).toBe('@image_1 hugs @image_2 in front of @image_4')
+    const p = st().project
+    const snap = enqueueSnapshot(p, s1())
+    expect(charactersSent(snap.promptSnapshot, requestImages(snap, p.assets, 30), p.assets)).toEqual(['Elara', 'Mira', 'Village'])
+    undo()
+    expect(s1().refs).toEqual(['elara', 'lumi', 'village'])
   })
 
   it('every removal path leaves the same placeholder: wire cut, Delete on the wire, unlink in many scenes, move to another scene, delete from the library', () => {

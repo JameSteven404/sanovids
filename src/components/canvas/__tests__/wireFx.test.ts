@@ -16,6 +16,7 @@ import {
   parseCubicPath,
   pickNodeAt,
   refDotTones,
+  refWireGrips,
   setWireReconnecting,
   snapHandleFor,
   splitCubic,
@@ -180,6 +181,26 @@ describe('dragging a wire: verdict, color, snap handle', () => {
     expect(isWireReconnecting()).toBe(true)
     setWireReconnecting(false)
   })
+  it('moving the image end accepts only eligible assets, snaps to their output and keeps the image color', () => {
+    const src = { type: 'scene' as const, id: 's1', reconnect: true }
+    setWireReconnecting(true, (id) => id === asset.id)
+    try {
+      expect(wireVerdict(src, asset)).toBe('valid')
+      for (const over of [scene2, folder, takeNode, { id: 'empty', type: 'asset' }]) {
+        expect(wireVerdict(src, over)).toBe('invalid')
+      }
+      expect(wireVerdict(src, null)).toBe('idle')
+      expect(wireVerdict(src, scene)).toBe('idle')
+      expect(wireVerdict({ type: 'take', id: 't1', reconnect: true }, { id: asset.id, type: null })).toBe('invalid')
+      expect(snapHandleFor('scene', 'asset')).toEqual({ type: 'source', id: 'out' })
+      expect(wireDragColor('scene')).toBe('var(--ref)')
+    } finally {
+      setWireReconnecting(false)
+    }
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, scene2)).toBe('valid')
+    expect(snapHandleFor('scene', 'asset')).toBeNull()
+    expect(wireDragColor('scene')).toBe('var(--save)')
+  })
   it("a scene's right dot goes into folders; a folder's dot to videos and scenes", () => {
     expect(wireVerdict({ type: 'scene', id: 's1' }, folder)).toBe('valid')
     expect(wireVerdict({ type: 'scene', id: 's1' }, scene2)).toBe('invalid')
@@ -324,6 +345,16 @@ describe('wires on the dots', () => {
     expect(z(false, false, true)).toBeLessThan(z(false, true, true))
     expect(z(false, false, false)).toBeLessThan(z(false, false, true))
     for (const a of [true, false]) for (const b of [true, false]) for (const c of [true, false]) expect(z(a, b, c)).toBeLessThanOrEqual(0)
+  })
+
+  it('refWireGrips: an end is grabbable only when the wire is alone at that dot, or selected', () => {
+    const g = (selected: boolean, sharedAtScene: boolean, sharedAtImage: boolean) => refWireGrips({ selected, sharedAtScene, sharedAtImage })
+    expect(g(false, false, false)).toBe(true)
+    // A character used in many scenes: its wires all leave one asset dot, only their scene ends can be grabbed.
+    expect(g(false, false, true)).toBe('target')
+    expect(g(false, true, false)).toBe('source')
+    expect(g(false, true, true)).toBe(false)
+    for (const a of [true, false]) for (const b of [true, false]) expect(g(true, a, b)).toBe(true)
   })
 })
 
