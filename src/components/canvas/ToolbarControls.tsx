@@ -4,9 +4,10 @@ import { useKeymap } from '../../lib/keymapPrefs'
 import { useOverlayFocus } from '../common/focus'
 import { placeToolbarPanel, type ToolbarRect, type ToolbarSize, type toolbarSide } from './toolbarModel'
 
+/** Only the navigation keys stop here: N, C, Delete, Ctrl+Z… still reach the global shortcuts after a toolbar click. */
 export function toolbarArrowKey(e: KeyboardEvent<HTMLElement>) {
-  e.stopPropagation()
   if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return
+  e.stopPropagation()
   const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([data-grip])')]
   if (!buttons.length) return
   e.preventDefault()
@@ -59,7 +60,9 @@ export function ToolbarMenu({ label, items, anchor, stage, side, onClose }: {
     <div ref={ref} className="cv-menu cv-toolbar-menu material" role="menu" aria-label={label} tabIndex={-1}
       style={{ maxWidth: Math.max(0, stage.w - 24), maxHeight: Math.max(0, stage.h - 24) }}
       onKeyDown={(e) => {
-        if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); onClose(); return }
+        // An open menu keeps every key to itself (no global shortcut fires behind it).
+        e.stopPropagation()
+        if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); onClose(); return }
         toolbarArrowKey(e)
       }}>
       <div className="cv-toolbar-menu-label">{label}</div>

@@ -143,4 +143,15 @@ describe('keyboard toolbar', () => {
     expect(buttons[2].focus).toHaveBeenCalledOnce()
     expect(e.stopPropagation).toHaveBeenCalledTimes(2)
   })
+  it('lets other keys reach the global shortcuts after a toolbar button was clicked', () => {
+    const buttons = [{ tabIndex: 0, focus: vi.fn() }]
+    vi.stubGlobal('document', { activeElement: buttons[0] })
+    for (const key of ['n', 'c', 'Delete', 'z', 'Enter', 'Escape']) {
+      const e = { key, currentTarget: { querySelectorAll: () => buttons }, preventDefault: vi.fn(), stopPropagation: vi.fn() }
+      toolbarArrowKey(e as unknown as KeyboardEvent<HTMLElement>)
+      expect(e.stopPropagation).not.toHaveBeenCalled()
+      expect(e.preventDefault).not.toHaveBeenCalled()
+    }
+    expect(buttons[0].focus).not.toHaveBeenCalled()
+  })
 })

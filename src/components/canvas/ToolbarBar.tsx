@@ -143,8 +143,9 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     } },
     { id: 'shortcuts', label: 'Phím tắt', shortcut: 'help.shortcuts', run: () => ui.openDialog({ kind: 'shortcuts' }) },
   ])
-  return <div ref={host} className="cv-toolbar-host" data-dock={fit.dock} data-dragging={dragging || undefined}
-    onKeyDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}
+  // `nokey`: React Flow ignores plain keys typed here (Space on a button must not start panning); global shortcuts still run.
+  return <div ref={host} className="cv-toolbar-host nokey" data-dock={fit.dock} data-dragging={dragging || undefined}
+    onDoubleClick={(e) => e.stopPropagation()}
     onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'none' }}
     onDrop={(e) => { e.preventDefault(); e.stopPropagation() }}>
     <div ref={barRef} className="cv-toolbar cv-toolbar-bar material nodrag nopan" role="toolbar" aria-label="Công cụ canvas"
@@ -158,8 +159,11 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); positionMenu() }}
         onClick={() => { if (Date.now() >= placement.suppressClick.current) positionMenu() }}
         onKeyDown={(e) => {
-          e.stopPropagation()
-          if (e.key.startsWith('Arrow') || e.key === 'Home') { e.preventDefault(); useToolbarPrefs.getState().setPlace(nudgeToolbar(place, e.key, stage, e.shiftKey, e.altKey)) }
+          if (e.key.startsWith('Arrow') || e.key === 'Home') {
+            e.stopPropagation()
+            e.preventDefault()
+            useToolbarPrefs.getState().setPlace(nudgeToolbar(place, e.key, stage, e.shiftKey, e.altKey))
+          }
         }}><GripVertical size={16} strokeWidth={1.75} /></ToolbarButton>
       {fit.shown.map((id, index) => {
         const item = entries[id]
