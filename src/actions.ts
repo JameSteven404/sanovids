@@ -15,7 +15,7 @@ import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
 import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
-import type { AssetKind, Take, XY } from './core/types'
+import type { AssetKind, Project, Take, XY } from './core/types'
 import {
   prepareFolderAccess,
   prepareSaveAs,
@@ -31,7 +31,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
-import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type Box, type PlaceHint } from './store/project'
+import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type AddRefsResult, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
@@ -252,27 +252,32 @@ export function ensureAssetToken(sceneId: string, assetId: string): string | nul
 }
 
 // ---------------- create / delete / duplicate ----------------
+/** `reveal: false`: the caller brings the new node on screen itself (canvas typeOnNode zooms in to type in it). */
+interface NewSceneOptions {
+  reveal?: boolean
+}
+
 /**
  * New empty scene. `position` (a double-click on the canvas): there, moved down just enough not to cover a node.
  * Otherwise next to where the user works (placementHint).
  */
-export function newScene(position?: XY) {
+export function newScene(position?: XY, opts: NewSceneOptions = {}) {
   const st = useProject.getState()
   const id = st.addScene({}, position ? { position: freeSpotFrom(st.project, position) } : { hint: placementHint() })
   useUI.getState().select([id])
-  revealNodes([id])
+  if (opts.reveal !== false) revealNodes([id])
   return id
 }
 
 /** "N" — create the next scene after the (last) selected scene, inheriting its references and settings. */
-export function nextScene(position?: XY) {
+export function nextScene(position?: XY, opts: NewSceneOptions = {}) {
   const sel = selectedSceneIds()
   const project = useProject.getState().project
   const from = sel.length ? project.scenes.filter((s) => sel.includes(s.id)).sort((a, b) => b.order - a.order)[0] : undefined
-  if (!from) return newScene(position)
+  if (!from) return newScene(position, opts)
   const id = useProject.getState().createNextScene(from.id, position)
   useUI.getState().select([id])
-  revealNodes([id])
+  if (opts.reveal !== false) revealNodes([id])
   toast(`Đã tạo cảnh tiếp theo sau ${sceneCode(from.order)} (giữ ảnh tham chiếu và cấu hình).`, { tone: 'success', action: undoToastAction() })
   return id
 }
@@ -563,6 +568,36 @@ export async function createAssetsFromFiles(
       action: undoToastAction(),
     })
   }
+  return ids
+}
+
+/**
+ * Image files dropped on a scene's "Ảnh tham chiếu" list (right panel): new library items linked to the scene in ONE
+ * undo step with ONE toast, whose "Hoàn tác" takes back both (the items and the link). Returns the new item ids.
+ */
+export async function filesToSceneRefs(sceneId: string, files: File[]): Promise<string[]> {
+  const link: { before?: Project; res?: AddRefsResult } = {}
+  const ids = await createAssetsFromFiles(files, {
+    quiet: true,
+    select: false,
+    flush: [sceneId],
+    inSameStep: (added) => {
+      const st = useProject.getState()
+      if (!st.project.scenes.some((s) => s.id === sceneId)) return
+      link.before = st.project
+      link.res = st.addRefs([sceneId], added)
+    },
+  })
+  if (!ids.length) return ids
+  const after = useProject.getState().project
+  const scene = after.scenes.find((s) => s.id === sceneId)
+  const items = `${ids.length} mục vào thư viện`
+  if (!scene || !link.res) toast(`Đã thêm ${items}.`, { tone: 'success', action: undoToastAction() })
+  else if (link.res.added) {
+    const text = `Đã thêm ${items} và nối vào ${sceneCode(scene.order)}${link.res.skipped ? ` (bỏ qua ${link.res.skipped} vì vượt giới hạn ảnh)` : ''}`
+    // A new item named like a removed character: offer "Gắn vào chỗ…" (never filled by itself), as linkAssets does.
+    if (!(link.before && linkToastWithFill(link.before, after, ids, text))) toast(`${text}.`, { tone: 'success', action: undoToastAction() })
+  } else toast(`Đã thêm ${items} nhưng chưa nối được vào ${sceneCode(scene.order)}: vượt giới hạn ảnh của model.`, { tone: 'warning', action: undoToastAction() })
   return ids
 }
 

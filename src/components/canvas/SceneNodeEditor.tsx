@@ -29,13 +29,13 @@ import { createPortal } from 'react-dom'
 import { canvasEvents, createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
 import { assetByTag, sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
-import { placeholderGroups } from '../../core/placeholders'
+import { groupAtOffset, placeholderGroups } from '../../core/placeholders'
 import { fillPlaceholderAction } from '../../placeholderActions'
 import type { Asset, Scene } from '../../core/types'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
 import { canvasObstacles, oneUndoStep, undoToastAction, useProject } from '../../store/project'
-import { useSceneEditor } from '../../store/sceneEditor'
+import { markPromptFocused, promptFocusedSeqNow, useSceneEditor } from '../../store/sceneEditor'
 import { toast } from '../../store/ui'
 import { MediaImg, AssetAvatar } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from '../inspector/caret'
@@ -59,11 +59,6 @@ import { caretFromExcerptHit, nodeEditorKeyBubbles } from './sceneEditorModel'
 import '../inspector/inspector.css'
 
 const COMMIT_MS = 160
-/**
- * The last focus request (useSceneEditor.seq) a field acted on. The field of the edited node remounts when the node is
- * culled off-screen or zoomed out and back: that must not pull the focus back to it (only a new click / Enter does).
- */
-let focusedSeq = -1
 /** Longest pause during which an "@Tag" still being typed holds the commit (a half-typed legacy tag would auto-link). */
 const HOLD_MAX_MS = 1500
 const isTagWord = (word: string) => !!assetByTag(useProject.getState().project.assets, word)
@@ -217,29 +212,43 @@ export function fillFromDrop(sceneId: string, groupKey: string | null, assetId: 
   const groups = placeholderGroups(scene.prompt, project.assets, scene.refs)
   const key = groupKey && groups.some((g) => g.key === groupKey) ? groupKey : groups.length === 1 ? groups[0].key : null
   if (!key) return false
-  oneUndoStep(() => {
-    if (fillPlaceholderAction(sceneId, key, assetId)) placeLinkedTiles(sceneId, [assetId])
-  })
+  // The tile goes in the fill's own undo step, before its toast: that toast's "Hoàn tác" takes back both.
+  fillPlaceholderAction(sceneId, key, assetId, () => placeLinkedTiles(sceneId, [assetId]))
   return true
+}
+
+/**
+ * ONE library card / tile dropped right on red text (offset `at` strictly inside a placeholder or a label that does not
+ * fit: core/placeholders groupAtOffset) fills that group like a drop on its chip (fillFromDrop). false = not on red
+ * text, or several pictures: the caller inserts (never inside the red text: snapToWordEnd).
+ */
+export function fillAtOffset(sceneId: string, at: number, ids: readonly string[]): boolean {
+  if (ids.length !== 1) return false
+  const { project } = useProject.getState()
+  const scene = project.scenes.find((s) => s.id === sceneId)
+  const group = scene && groupAtOffset(scene.prompt, project.assets, scene.refs, at)
+  return !!group && fillFromDrop(sceneId, group.key, ids[0])
 }
 
 /**
  * Library cards / tiles dropped on the STATIC prompt text of a node: link them and insert their @image_N where they
  * were dropped (`textBefore` = the static text up to the drop point: staticTextBefore) — the link, the tags and the
- * tiles of cards not on the canvas yet in ONE undo step. false = the point is not on the text (the caller links only).
+ * tiles of cards not on the canvas yet in ONE undo step. One card dropped on red text fills it instead (fillAtOffset).
+ * false = the point is not on the text (the caller links only).
  */
 export function insertLinksAtExcerpt(sceneId: string, textBefore: string | null, ids: string[]): boolean {
   const before = useProject.getState().project.scenes.find((s) => s.id === sceneId)
   const at0 = before ? caretFromExcerptHit(before.prompt, textBefore) : null
   if (at0 === null) return false
   flushScenes([sceneId])
+  if (fillAtOffset(sceneId, at0, ids)) return true
   const plan = planNodeLinks(sceneId, ids)
   const cur = useProject.getState().project.scenes.find((s) => s.id === sceneId)
   if (!plan || !cur || !plan.tokens.length) return true
   const at = snapToWordEnd(cur.prompt, Math.min(at0, cur.prompt.length))
   const { next } = insertAt(cur.prompt, at, at, plan.tokens.join(' '))
   oneUndoStep(() => {
-    useProject.getState().restoreScene(sceneId, { prompt: next, refs: plan.refs ?? cur.refs, settings: cur.settings })
+    useProject.getState().setPromptAndRefs(sceneId, next, plan.refs ?? cur.refs)
     placeLinkedTiles(sceneId, ids)
   })
   toast(plan.done ?? `Đã chèn ${plan.tokens.join(' ')} vào ${sceneCode(cur.order)}.`, { tone: 'success', action: undoToastAction() })
@@ -339,7 +348,7 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
       const cur = st.project.scenes.find((s) => s.id === sceneId)
       if (!cur) return
       committedRef.current = textRef.current
-      st.restoreScene(sceneId, { prompt: textRef.current, refs, settings: cur.settings })
+      st.setPromptAndRefs(sceneId, textRef.current, refs)
     },
     [sceneId],
   )
@@ -400,8 +409,9 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
   // ---------- focus requests (click on the static text, Enter, double-click when zoomed out) ----------
   useLayoutEffect(() => {
     const ta = taRef.current
-    if (!ta || focusReq !== 'prompt' || seq === focusedSeq) return
-    focusedSeq = seq
+    // A remount (culled / zoomed out and back) must not pull the focus back: only a new request does (store/sceneEditor).
+    if (!ta || focusReq !== 'prompt' || seq === promptFocusedSeqNow()) return
+    markPromptFocused(seq)
     // preventScroll: focusing inside the canvas must never scroll React Flow's pane.
     ta.focus({ preventScroll: true })
     const c = caretReq ?? ta.value.length
@@ -499,14 +509,15 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
 
   // ---------- drops: library cards / image tiles (@image_N) and image files ----------
   const [drop, setDrop] = useState<{ left: number; top: number; height: number } | null>(null)
-  const dropOffset = useCallback((x: number, y: number): number => {
+  /** Offset of the text under (x, y) (else the last selection's end), not snapped. */
+  const pointOffset = useCallback((x: number, y: number): number => {
     const ta = taRef.current
     const value = textRef.current
     if (!ta) return value.length
-    let at = offsetFromPoint(ta, backRef.current, x, y)
-    if (at === null) at = lastSel.current?.end ?? value.length
-    return snapToWordEnd(value, Math.min(at, value.length))
+    const at = offsetFromPoint(ta, backRef.current, x, y) ?? lastSel.current?.end ?? value.length
+    return Math.min(at, value.length)
   }, [])
+  const dropOffset = useCallback((x: number, y: number): number => snapToWordEnd(textRef.current, pointOffset(x, y)), [pointOffset])
   const accepts = (dt: DataTransfer) => Array.from(dt.types).some((t) => t === ASSETS_MIME || t === 'Files')
   const onDragOver = (e: ReactDragEvent<HTMLTextAreaElement>) => {
     if (!accepts(e.dataTransfer)) return
@@ -527,7 +538,8 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     e.preventDefault()
     e.stopPropagation()
     setDrop(null)
-    const at = dropOffset(e.clientX, e.clientY)
+    const point = pointOffset(e.clientX, e.clientY)
+    const at = snapToWordEnd(textRef.current, point)
     commit()
     // Link + insert the tags where dropped, and a tile for each card not on the canvas yet: one undo step.
     const insertLinks = (ids: string[]) => {
@@ -542,7 +554,8 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     }
     const ids = readIds(e.dataTransfer, ASSETS_MIME)
     if (ids.length) {
-      insertLinks(ids)
+      // One card right on red text fills it (the strip's fill path); otherwise insert, never inside the red text.
+      if (!fillAtOffset(sceneId, point, ids)) insertLinks(ids)
       return
     }
     const files = imageFiles(e.dataTransfer)

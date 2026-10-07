@@ -47,10 +47,14 @@ const USED_MAX = 64
 const LINK_WINDOW_MS = 5 * 60_000
 /** The clock went back more than this before the unlock time → locked. */
 const CLOCK_BACK_MS = 5 * 60_000
-/** A code whose use-by lies further ahead than this means this computer's date is days behind. */
-const MAX_USEBY_AHEAD_MS = 14 * DAY_MS
 /** Owner tool limits: a code that allows linking lives 4 h by default (≤ 24 h); one that does not, 48 h (≤ 336 h). */
 const CODE_HOURS = Object.freeze({ linkDefault: 4, linkMax: 24, plainDefault: 48, plainMax: 336 })
+/**
+ * A code whose use-by lies further ahead than this means this computer's date is days behind. The longest code the
+ * owner tool makes (CODE_HOURS.plainMax = 14 days) has its use-by rounded UP to the next whole hour (useByHoursOf):
+ * up to 1 h more, plus 1 h for two clocks that disagree a little — still far below "days behind".
+ */
+const MAX_USEBY_AHEAD_MS = (CODE_HOURS.plainMax + 2) * HOUR_MS
 const TOTP_PERIOD_S = 30
 const TOTP_DIGITS = 6
 /** A code matching this many steps away (but not ±1) means the clock is off: never accepted, counted as wrong. */

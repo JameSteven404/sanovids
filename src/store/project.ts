@@ -503,6 +503,12 @@ export interface ProjectState {
   updateSettings: (sceneIds: string[], patch: Partial<VideoSettings>) => void
   /** Restore prompt, refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
   restoreScene: (id: string, data: { prompt: string; refs: string[]; settings: VideoSettings }) => void
+  /**
+   * Prompt and refs together in ONE undo step (never merged with typing): a link + insert ("Nối & chèn", a card dropped
+   * on the prompt, "Đổi @Tên → @image_N"). The caller's text already holds the right numbers (new refs are appended).
+   * Settings, preset and a newer build's marker stay exactly as they are. Dangling ids are dropped; no change = no step.
+   */
+  setPromptAndRefs: (id: string, prompt: string, refs: string[]) => void
   removeScenes: (ids: string[]) => void
   duplicateScenes: (ids: string[]) => string[]
   /**
@@ -848,6 +854,16 @@ export const useProject = create<ProjectState>()(
               }),
             }
           }),
+        setPromptAndRefs: (id, prompt, refs) => {
+          const p = get().project
+          const scene = p.scenes.find((s) => s.id === id)
+          if (!scene) return
+          const alive = new Set(p.assets.map((a) => a.id))
+          const nextRefs = refs.filter((r) => alive.has(r))
+          const sameRefs = nextRefs.length === scene.refs.length && nextRefs.every((r, i) => r === scene.refs[i])
+          if (scene.prompt === prompt && sameRefs) return
+          mapScenes([id], (s) => ({ ...s, prompt, refs: sameRefs ? s.refs : nextRefs }))
+        },
         removeScenes: (ids) => {
           const dead = new Set(ids)
           mutate((p) => {

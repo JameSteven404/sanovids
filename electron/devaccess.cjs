@@ -26,6 +26,10 @@ const LOG_MAX_BYTES = 128 * 1024
 const RECHECK_MS = 10 * 60_000
 /** setTimeout fires at once past 2^31-1 ms: long waits are re-armed. */
 const TIMER_MAX_MS = 24 * 24 * 3600_000
+/** A rename / write refused like this is often only for a moment (antivirus or the indexer reading a file just written). */
+const RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+/** Pauses before the retries of a write that takes an unlock away (ms; only ever on that failure path). */
+const REVOKE_PAUSES_MS = Object.freeze([30, 80, 160])
 const CHANNELS = Object.freeze(['getState', 'unlock', 'lock', 'setKeep', 'totpBegin', 'totpConfirm', 'linkCancel', 'totpRemove'].map((c) => `devAccess:${c}`))
 
 /** The app's own package.json (inside app.asar when packaged), or {} when unreadable. */
@@ -100,6 +104,8 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
   let record = null
   /** false = the file cannot be written: unlocks last for this run only, no authenticator link. */
   let persist = true
+  /** The file may still hold an unlock this run took away (writeRevoke failed): written again at every re-check. */
+  let revokePending = false
   let deviceId = null
   let deviceCode = ''
   /** The authenticator link window: { until, started, pending (secret bytes | null), timer } | null. Memory only. */
@@ -114,22 +120,76 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
   const verify = (pin, message, signature) => ed25519Verify(pin, message, signature)
   const short = () => (deviceCode ? deviceCode.slice(0, 4) : '----')
 
-  function writeRecord() {
-    if (!persist || !record) return false
+  /** One attempt: the record into a .part file, then renamed over the real one. Throws the fs error. */
+  function writeOnce() {
     const part = `${file}.part`
     try {
       fs.mkdirSync(userDataDir, { recursive: true })
       fs.writeFileSync(part, rules.serializeRecord(record), platform === 'win32' ? { encoding: 'utf8' } : { encoding: 'utf8', mode: 0o600 })
       fs.renameSync(part, file)
-      return true
     } catch (e) {
-      persist = false
-      log(`write-failed session-only (${(e && e.code) || 'error'})`)
       try {
         fs.rmSync(part, { force: true })
       } catch {
         /* nothing to clean */
       }
+      throw e
+    }
+  }
+
+  function writeRecord() {
+    if (!persist || !record) return false
+    try {
+      writeOnce()
+      return true
+    } catch (e) {
+      persist = false
+      log(`write-failed session-only (${(e && e.code) || 'error'})`)
+      return false
+    }
+  }
+
+  /** A short synchronous pause (main process, failure path only). */
+  function pause(ms) {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    } catch {
+      /* no pause: retry at once */
+    }
+  }
+
+  /**
+   * A write that takes an unlock away or shortens it (lock, a shorter keep, an unlock that ran out / no longer
+   * verifies, the authenticator removed) — fail closed: the file must never keep an unlock the page no longer shows,
+   * or the next start would open development mode again. So it runs even after an earlier write failed (`persist`
+   * false), retries a refused rename, and when the record still cannot be written the stored file is removed (the next
+   * start makes a new device: codes made for this one, and its authenticator, no longer match). When even that fails it
+   * is retried at every re-check and when the app ends (`revokePending`). false = the file still holds the old record.
+   */
+  function writeRevoke() {
+    if (open || !record) return true
+    let errCode = 'error'
+    for (let i = 0; i <= REVOKE_PAUSES_MS.length; i++) {
+      if (i) pause(REVOKE_PAUSES_MS[i - 1])
+      try {
+        writeOnce()
+        revokePending = false
+        return true
+      } catch (e) {
+        errCode = (e && e.code) || 'error'
+        if (!RETRY_CODES.has(errCode)) break
+      }
+    }
+    if (persist) log(`write-failed session-only (${errCode})`)
+    persist = false
+    try {
+      fs.rmSync(file, { force: true })
+      revokePending = false
+      log('revoke record-removed')
+      return true
+    } catch (e) {
+      revokePending = true
+      log(`revoke failed (${(e && e.code) || 'error'})`)
       return false
     }
   }
@@ -230,7 +290,7 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
     const acc = rules.accessOf({ buildOpen: open, record, nowMs: now(), pins, verify, deviceId })
     if (acc.reason && record && record.unlock) {
       record.unlock = null
-      writeRecord()
+      writeRevoke()
       log(`locked ${acc.reason}`)
     }
     if (acc.access !== 'unlocked') closeLink()
@@ -266,6 +326,7 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
 
   /** Re-reads the access (timers, wake-up, every getState); tells the page when it changed. */
   function reconcile() {
+    if (revokePending) writeRevoke()
     const before = lastAccess
     const acc = accessNow()
     lastAccess = acc.access
@@ -359,7 +420,7 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
   function lock() {
     if (!open && record && record.unlock) {
       record.unlock = null
-      writeRecord()
+      writeRevoke()
       log('lock')
     }
     closeLink()
@@ -375,9 +436,13 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
     const days = Number(arg && arg.days)
     const k = rules.keepUntil({ nowMs: t, days, capUntil: record.unlock.capUntil })
     if (!k.ok) return fail(k.error)
+    // A shorter unlock than the stored one (or an end where there was none) must reach the file: writeRevoke.
+    const old = record.unlock.until
+    const shorter = k.until !== null && (old === null || k.until < old)
     record.keepDays = days
     record.unlock = { ...record.unlock, until: k.until }
-    writeRecord()
+    if (shorter) writeRevoke()
+    else writeRecord()
     log(`keep ${days}`)
     changed()
     return { ok: true, state: view() }
@@ -448,7 +513,7 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
     if (allowed !== true) return fail(allowed)
     record.totp = null
     totpLost = false
-    writeRecord()
+    writeRevoke()
     log('link-remove')
     changed()
     return { ok: true, state: view() }
@@ -499,6 +564,7 @@ function setupDevAccess({ userDataDir, pkgJsonPath, buildOpen, isAppSender, getM
       win.on('hide', onHide)
     },
     dispose() {
+      if (revokePending) writeRevoke()
       if (expiryTimer) clearTimeout(expiryTimer)
       clearInterval(recheck)
       closeLink()

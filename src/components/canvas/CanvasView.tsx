@@ -66,7 +66,6 @@ import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
 import { canvasObstacles, LAYOUT, refImageCount, rowHeightOf, undoToastAction, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
@@ -130,6 +129,7 @@ import {
 } from './canvasModel'
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
+import { typeOnNode } from './SceneNodeEditor'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import { isWireClick, markFreshWires, newWireIds, setWireReconnecting, wireClickAction, wireZ, type WirePress } from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
@@ -980,10 +980,14 @@ function CanvasInner() {
   const emptyActionAt = useRef(-Infinity)
   // A scene made on purpose where the user points (double-click, the empty canvas' "Cảnh mới" button) is ready to
   // type in: its node opens its prompt field (N and the toolbar's + do not — they make several scenes in a row).
+  // typeOnNode, not a plain open: zoomed out (far view) the node has no field until the view zooms in, and it is
+  // typeOnNode that brings it near (the scene's own reveal is skipped: it would race that zoom and stop it far).
+  // With the node editor off there is no field: the new scene is only revealed.
   const onEmptyAction = () => {
     emptyActionAt.current = performance.now()
-    const id = nextScene()
-    if (id) useSceneEditor.getState().open(id, 'prompt', 0)
+    const typing = useCanvasPrefs.getState().nodeEditor !== 'off'
+    const id = nextScene(undefined, { reveal: !typing })
+    if (id && typing) typeOnNode(id, 0)
   }
   const onDoubleClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement
@@ -991,7 +995,9 @@ function CanvasInner() {
     if (performance.now() - emptyActionAt.current < 600) return
     if (performance.now() - wireCutAt.current < 500) return
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    useSceneEditor.getState().open(newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) }), 'prompt', 0)
+    const typing = useCanvasPrefs.getState().nodeEditor !== 'off'
+    const id = newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) }, { reveal: !typing })
+    if (typing) typeOnNode(id, 0)
   }
 
   const onDragOver = (e: DragEvent) => {

@@ -3,7 +3,7 @@
 import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, Download, Film, FlaskConical, GripVertical, Info, Maximize2, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, downloadTake, focusNodes, linkAssets, nextScene, requestRun, revealNodes } from '../../actions'
+import { downloadTake, filesToSceneRefs, focusNodes, linkAssets, nextScene, requestRun, revealNodes } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { sceneMapOf } from '../../core/sceneIndex'
 import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
@@ -387,11 +387,10 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         onDrop={(e) => {
           if (!isLibDrag(e)) {
             if (!hasFiles(e.dataTransfer)) return
-            // Image files: add them to the library, then link them here (same as dropping on the scene card).
+            // Image files: new library items linked here — one undo step, one toast (its "Hoàn tác" takes back both).
             e.preventDefault()
             setLibOver(null)
-            const files = Array.from(e.dataTransfer.files)
-            void createAssetsFromFiles(files).then((created) => linkAssets([sceneId], created))
+            void filesToSceneRefs(sceneId, Array.from(e.dataTransfer.files))
             return
           }
           e.preventDefault()

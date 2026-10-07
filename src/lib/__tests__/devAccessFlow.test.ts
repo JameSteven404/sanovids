@@ -364,6 +364,98 @@ describe('devaccess.cjs flow (fake electron, real files and crypto)', () => {
     expect(nodeFs.existsSync(nodePath.join(dir, 'dev-access.json'))).toBe(false)
   })
 
+  // ---- writes that take an unlock away fail closed (a refused write must never leave the file unlocking the next start)
+  /** fs.renameSync throws `code` for files of `dir` (the next `times` calls); returns the restore. */
+  function failRenames(dir: string, code: string, times = Number.POSITIVE_INFINITY): () => void {
+    const real = nodeFs.renameSync
+    let left = times
+    nodeFs.renameSync = ((from: nodeFs.PathLike, to: nodeFs.PathLike) => {
+      if (left > 0 && String(to).startsWith(dir)) {
+        left--
+        throw Object.assign(new Error(code), { code })
+      }
+      return real(from, to)
+    }) as typeof nodeFs.renameSync
+    return () => {
+      nodeFs.renameSync = real
+    }
+  }
+  /** fs.rmSync throws EPERM for `target` (not for its .part file); returns the restore. */
+  function failRemove(target: string): () => void {
+    const real = nodeFs.rmSync
+    nodeFs.rmSync = ((p: nodeFs.PathLike, o?: nodeFs.RmOptions) => {
+      if (nodePath.resolve(String(p)) === nodePath.resolve(target)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+      return real(p, o)
+    }) as typeof nodeFs.rmSync
+    return () => {
+      nodeFs.rmSync = real
+    }
+  }
+  const restoreFs: (() => void)[] = []
+  afterEach(() => {
+    for (const r of restoreFs.splice(0).reverse()) r()
+  })
+
+  it('"Khoá lại ngay" while every write is refused: this run is locked AND the next start too (the stored unlock is removed)', async () => {
+    const first = boot()
+    const dc = String((await first.call('getState')).deviceCode)
+    await first.call('unlock', { code: makeCode(dc) })
+    expect(file(first.dir).unlock).toMatchObject({ method: 'code' })
+    restoreFs.push(failRenames(first.dir, 'EPERM'))
+    expect(await first.call('lock')).toMatchObject({ access: 'locked' })
+    restoreFs.pop()!()
+    first.d.dispose()
+    handlers.clear()
+    const again = boot({ dir: first.dir, clock: first.clock })
+    expect(again.d.initialArg()).toBe('--bdp-dev-access=locked')
+    // the record could not be rewritten, so it was removed: a new device (codes made for the old one no longer match)
+    expect((await again.call('getState')).deviceCode).not.toBe(dc)
+    again.clock.now += 1500
+    expect(await again.call('unlock', { code: makeCode(dc, { nowMs: again.clock.now }) })).toMatchObject({ ok: false, error: 'other-device' })
+  })
+
+  it('a rename refused for a moment (antivirus, indexer) is retried: the lock reaches the file, same device', async () => {
+    const first = boot()
+    const dc = String((await first.call('getState')).deviceCode)
+    await first.call('unlock', { code: makeCode(dc) })
+    restoreFs.push(failRenames(first.dir, 'EBUSY', 2))
+    await first.call('lock')
+    expect(file(first.dir).unlock).toBeNull()
+    expect(file(first.dir).used).toHaveLength(1)
+    first.d.dispose()
+    handlers.clear()
+    const again = boot({ dir: first.dir, clock: first.clock })
+    expect(again.d.initialArg()).toBe('--bdp-dev-access=locked')
+    expect((await again.call('getState')).deviceCode).toBe(dc)
+  })
+
+  it('after a failed write (session only), a SHORTER keep still reaches the file; a longer one never does', async () => {
+    const { dir, call, clock } = boot()
+    const dc = String((await call('getState')).deviceCode)
+    await call('unlock', { code: makeCode(dc, { link: false }) })
+    expect(file(dir).unlock.until).toBe(T0 + 7 * R.DAY_MS)
+    restoreFs.push(failRenames(dir, 'ENOSPC', 1))
+    const longer = await call('setKeep', { days: 30 })
+    expect(longer).toMatchObject({ ok: true, state: { until: T0 + 30 * R.DAY_MS, persist: false } })
+    expect(file(dir).unlock.until).toBe(T0 + 7 * R.DAY_MS) // the file keeps the shorter one: fail closed
+    expect(await call('setKeep', { days: 1 })).toMatchObject({ ok: true })
+    expect(file(dir).unlock.until).toBe(clock.now + R.DAY_MS)
+    await call('lock')
+    expect(file(dir).unlock).toBeNull()
+  })
+
+  it('when neither the write nor the removal works, the lock is written again at the next check once the file frees up', async () => {
+    const { dir, call } = boot()
+    const dc = String((await call('getState')).deviceCode)
+    await call('unlock', { code: makeCode(dc) })
+    restoreFs.push(failRenames(dir, 'EPERM'), failRemove(nodePath.join(dir, 'dev-access.json')))
+    expect(await call('lock')).toMatchObject({ access: 'locked' })
+    expect(file(dir).unlock).not.toBeNull() // stuck for now
+    for (const r of restoreFs.splice(0).reverse()) r()
+    expect(await call('getState')).toMatchObject({ access: 'locked' })
+    expect(file(dir).unlock).toBeNull()
+  })
+
   it('Mac / other: the authenticator secret is stored plainly (0600), never through safeStorage', async () => {
     const { dir, call, clock } = boot({ platform: 'darwin' })
     const dc = String((await call('getState')).deviceCode)

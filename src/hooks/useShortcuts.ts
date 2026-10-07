@@ -15,6 +15,7 @@ import {
 import { cancelLibraryKey, handleLibraryKey, noteCanvasCommand } from '../libraryActions'
 import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { useProject } from '../store/project'
+import { promptFocusPending } from '../store/sceneEditor'
 import { flush } from '../store/persist'
 import { toast, useUI } from '../store/ui'
 
@@ -108,6 +109,9 @@ export function useShortcuts(): void {
         return
       }
       if (typing || dialogOpen) return
+      // A node's prompt field asked for but not focused yet (a far node zooming in to type in it, a new scene made by
+      // double-click): plain letters, ⌫ and Delete were meant for that field — never N / C / F / E / H / V / M or a delete.
+      if (!mod && !e.altKey && (e.key.length === 1 || key === 'Backspace' || key === 'Delete') && promptFocusPending()) return
       // Library scope first (libraryActions): while the library is where the user works, Delete / ⌫ / Ctrl+A act on
       // the library selection and never reach the canvas rules below — not even with nothing selected there.
       if (handleLibraryKey(e, IS_MAC)) return

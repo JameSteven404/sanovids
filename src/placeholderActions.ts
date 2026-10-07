@@ -18,7 +18,7 @@ import {
 import { mediaChangeNote } from './core/staleTokens'
 import type { Project } from './core/types'
 import { flushScenes } from './lib/promptDrafts'
-import { undoToastAction, useProject } from './store/project'
+import { oneUndoStep, undoToastAction, useProject } from './store/project'
 import { toast } from './store/ui'
 
 /** "S02, S05" (in order, at most 4, then "… (N cảnh)"). */
@@ -69,15 +69,25 @@ export function reportMediaChange(before: Project, done: string, opts: { always?
   toast(`${done}${note?.text ?? ''}.`, { action: undoToastAction(), ...(note ? { tone: note.tone, ...(note.ms ? { ms: note.ms } : {}) } : {}) })
 }
 
-/** "Gắn ảnh đã nối": fill one group of a scene with a linked character (one undo step). */
-export function fillPlaceholderAction(sceneId: string, groupKey: string, assetId: string): boolean {
+/**
+ * "Gắn ảnh đã nối": fill one group of a scene with a linked character (one undo step). `inSameStep` runs right after a
+ * fill that went through, inside the same undo step and BEFORE the toast, so the toast's "Hoàn tác" takes back both
+ * (a dropped library card's tile, SceneNodeEditor fillFromDrop).
+ */
+export function fillPlaceholderAction(sceneId: string, groupKey: string, assetId: string, inSameStep?: () => void): boolean {
   flushScenes([sceneId])
   const st = useProject.getState()
   const before = st.project
   const scene = before.scenes.find((s) => s.id === sceneId)
   const group = scene && groupOf(scene.prompt, before.assets, scene.refs, groupKey)
   const name = assetName(before, assetId)
-  const res = st.fillPlaceholder(sceneId, groupKey, assetId)
+  const res = inSameStep
+    ? oneUndoStep(() => {
+        const r = st.fillPlaceholder(sceneId, groupKey, assetId)
+        if (r.ok) inSameStep()
+        return r
+      })
+    : st.fillPlaceholder(sceneId, groupKey, assetId)
   if (!res.ok) {
     toast(fillRefusalText(res.why, name, res.token), { tone: 'warning', ...(res.why === 'number-taken' ? { ms: 10000 } : {}) })
     return false

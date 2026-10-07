@@ -136,6 +136,20 @@ describe('tao-ma: codes', () => {
     expect(() => makeCode({ privateKey, kid: 1, deviceCode: DEVICE, nowMs: NOW, maxDays: 256 })).toThrow(/1–255/)
   })
 
+  it('the longest code (336 h, use-by rounded up to the hour) is accepted right after it is made, whatever the minute', () => {
+    const deviceId = R.parseDeviceCode(DEVICE)
+    const hour = Date.UTC(2026, 9, 7, 10, 0, 0)
+    for (const minute of [0, 1, 20, 59]) {
+      const at = hour + minute * 60_000 + 7_000
+      const made = makeCode({ privateKey, kid: 1, deviceCode: DEVICE, nowMs: at, link: false, hours: 336 })
+      expect(made.useByMs - at).toBeGreaterThan(335 * R.HOUR_MS)
+      const r = R.judgeSignedCode({ bytes: R.classifyInput(made.code).bytes, pins, deviceId, nowMs: at + 5 * 60_000, used: [], verify })
+      expect(r, `minute ${minute}`).toMatchObject({ ok: true, link: false })
+      // a clock that is really days behind is still told so
+      expect(R.judgeSignedCode({ bytes: R.classifyInput(made.code).bytes, pins, deviceId, nowMs: at - 2 * R.DAY_MS, used: [], verify }).error).toBe('clock')
+    }
+  })
+
   it('another computer: c → a normal code, k → no link + max days (default 2), anything else cancels', () => {
     expect(otherDeviceChoice('c')).toEqual({ link: true, maxDays: 0 })
     expect(otherDeviceChoice('K', '')).toEqual({ link: false, maxDays: 2 })

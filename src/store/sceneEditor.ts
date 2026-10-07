@@ -37,6 +37,36 @@ let closing = false
 /** open() is selecting its scene: the 'select'-mode observer must not open it a second time. */
 let opening = false
 
+/**
+ * How long a prompt field asked for with open(…, 'prompt') still counts as coming before it took the focus: a far node
+ * (zoomed out) has no field until typeOnNode zoomed in (300 ms, plus React Flow placing a node made a moment ago).
+ */
+export const PROMPT_FOCUS_WAIT_MS = 1200
+/** When the last prompt focus request was made (performance.now()). */
+let promptAskedAt = Number.NEGATIVE_INFINITY
+/**
+ * The last focus request (`seq`) a node field acted on. The field of the edited node remounts when the node is culled
+ * off-screen or zoomed out and back: that must not pull the focus back to it (only a new click / Enter does).
+ */
+let promptFocusedSeq = -1
+
+/** The node field took the focus for request `seq` (SceneNodeEditor). */
+export function markPromptFocused(seq: number): void {
+  promptFocusedSeq = seq
+}
+
+/** The request the node fields last acted on. */
+export const promptFocusedSeqNow = (): number => promptFocusedSeq
+
+/**
+ * A node's prompt field was asked for (typeOnNode, a new scene made to type in) and has not taken the focus yet, for at
+ * most PROMPT_FOCUS_WAIT_MS: the letters typed meanwhile were meant for it — never canvas keys (hooks/useShortcuts).
+ */
+export function promptFocusPending(now: number = performance.now()): boolean {
+  const s = useSceneEditor.getState()
+  return s.sceneId !== null && s.focus === 'prompt' && s.seq !== promptFocusedSeq && now - promptAskedAt < PROMPT_FOCUS_WAIT_MS
+}
+
 export const useSceneEditor = create<SceneEditorState>()((set, get) => ({
   sceneId: null,
   focus: null,
@@ -61,6 +91,7 @@ export const useSceneEditor = create<SceneEditorState>()((set, get) => ({
     }
     projectId = project.id
     const prompt = useProject.getState().project.scenes.find((s) => s.id === sceneId)?.prompt ?? scene.prompt
+    if (focus === 'prompt') promptAskedAt = performance.now()
     set((s) => ({ sceneId, focus, caret: caret === null || !Number.isFinite(caret) ? null : Math.max(0, Math.min(prompt.length, Math.trunc(caret))), seq: s.seq + 1 }))
   },
   close: () => {

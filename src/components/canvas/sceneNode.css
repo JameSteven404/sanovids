@@ -416,14 +416,14 @@
  * Same 6 + 22px the layout reserves (sceneNodeModel promptBoxHeight `strip`): the chips shrink (ellipsis) instead of
  * wrapping, and the line never clips — each chip's menu (.in-picker) opens UPWARD over the node's own prompt, and a
  * click on a chip selects the node, which React Flow lifts above its neighbours. */
-.cv-sn-ph {
+.cv-sn-strip {
   display: flex;
   flex: none;
   height: 22px;
   margin-top: 6px;
   min-width: 0;
 }
-.cv-sn-ph .in-ph.is-node {
+.cv-sn-strip .in-ph.is-node {
   flex: 1 1 auto;
   flex-wrap: nowrap;
   gap: 5px;
@@ -437,26 +437,26 @@
   font-size: 11px;
   line-height: 20px;
 }
-.cv-sn-ph .in-ph-title {
+.cv-sn-strip .in-ph-title {
   flex: none;
   white-space: nowrap;
 }
-.cv-sn-ph .in-ph-host {
+.cv-sn-strip .in-ph-host {
   flex: 0 1 auto;
   min-width: 34px;
 }
-.cv-sn-ph .in-ph-chip {
+.cv-sn-strip .in-ph-chip {
   height: 16px;
   min-width: 0;
   padding: 0 4px 0 6px;
   font-size: 10.5px;
 }
-.cv-sn-ph .in-picker {
+.cv-sn-strip .in-picker {
   top: auto;
   bottom: calc(100% + 4px);
 }
 /* a library card / image tile dragged over the strip: it takes the red text's place */
-.cv-sn.is-drop-fill .cv-sn-ph .in-ph {
+.cv-sn.is-drop-fill .cv-sn-strip .in-ph {
   border-style: solid;
   border-color: var(--ref);
   box-shadow: 0 0 0 3px var(--ref-soft);

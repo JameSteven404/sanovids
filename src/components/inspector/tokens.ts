@@ -319,10 +319,32 @@ const OPENERS = /[\s([{"'“‘]$/
 const CLOSERS = /^[\s.,;:!?)\]}"'’”]/
 
 const WORD_CH = /[\p{L}\p{M}\p{N}_@]/u
+/**
+ * Spans an insertion must never split, as the token parsers read them (core/compile): a red placeholder with its glued
+ * label ("@image_?2(Lumi)", PLACEHOLDER_RE), a numbered token — also written with a space ("@Image 2", TOKEN_RE) — with
+ * its glued label ("@image_2(Lumi)", LABELLED_TOKEN_RE), retired @video text. Their "?", " " and "(" are no word
+ * characters, so the word rule alone would land inside them.
+ */
+const UNIT_RE = /@(?:image|video)(?:_\?\d+(?:\([^()\n]{1,120}\))?|[ _]?\d+\b(?:\([^()\n]{1,120}\))?)/giu
 
-/** Where dropped media tokens go: a drop inside a word (or an @token) moves to the end of it, so it is never split. */
+/** End of the token / placeholder span `at` lies strictly inside of, or `at` itself. */
+function unitEnd(text: string, at: number): number {
+  if (!text.includes('@')) return at
+  for (const m of text.matchAll(UNIT_RE)) {
+    if (m.index >= at) break
+    const end = m.index + m[0].length
+    if (at < end) return end
+  }
+  return at
+}
+
+/**
+ * Where dropped / inserted media tokens go: a drop inside a word, an @token or a red placeholder (label included)
+ * moves to the end of it, so it is never split — splitting "@image_?2(Lumi)" would drop the red text that blocks the
+ * run and send a broken prompt.
+ */
 export function snapToWordEnd(text: string, at: number): number {
-  let i = Math.max(0, Math.min(at, text.length))
+  let i = unitEnd(text, Math.max(0, Math.min(at, text.length)))
   if (i === 0 || i === text.length || !WORD_CH.test(text[i - 1]) || !WORD_CH.test(text[i])) return i
   while (i < text.length && WORD_CH.test(text[i])) i++
   return i

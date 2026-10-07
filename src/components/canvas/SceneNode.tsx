@@ -135,7 +135,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     const n = targetScenesFor(id).length
     if (!hasAssetDrag(e.dataTransfer)) return { kind: 'file', text: n > 1 ? `Thêm ô ảnh & nối vào ${n} cảnh` : 'Thả ảnh: thêm ô ảnh & nối vào cảnh' }
     // onto the red placeholder strip: that picture goes in the red text's place (the fill path, one undo step)
-    if ((e.target as Element | null)?.closest?.('.cv-sn-ph')) return { kind: 'fill', text: 'Thả để gắn vào chỗ chữ đỏ' }
+    if ((e.target as Element | null)?.closest?.('.cv-sn-strip')) return { kind: 'fill', text: 'Thả để gắn vào chỗ chữ đỏ' }
     if (n === 1 && (e.target as Element | null)?.closest?.('.cv-sn-text')) return { kind: 'text', text: '' }
     return { kind: 'asset', text: n > 1 ? `Nối vào ${n} cảnh đã chọn` : 'Thả để nối' }
   }
@@ -184,7 +184,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     if (ids && ids.length) {
       // One picture on the red placeholder strip: it fills the chip it lands on (or the strip's only group) — linked
       // when it was not, its tile placed (4A), in one undo step. Several pictures: linked like anywhere on the node.
-      const strip = (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-ph')
+      const strip = (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-strip')
       if (strip && ids.length === 1 && fillFromDrop(id, (e.target as Element).closest<HTMLElement>('[data-ph-group]')?.dataset.phGroup ?? null, ids[0])) return
       // On the static text of this one node: link + insert the @image_N where it was dropped (one undo step).
       const text = targets.length === 1 ? (e.target as Element | null)?.closest?.<HTMLElement>('.cv-sn-text') : null
@@ -526,7 +526,7 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
         // The same bar as under the panel's prompt (one chip per group, its menu fills / turns into text / removes:
         // each one undo step). A library card or image tile dropped on it fills the chip it lands on (SceneNodeView
         // onDrop → fillFromDrop). `nodrag nopan nowheel`: clicks and the menu never move or zoom the canvas.
-        <div className="cv-sn-ph nodrag nopan nowheel">
+        <div className="cv-sn-strip nodrag nopan nowheel">
           <PlaceholderBar sceneId={scene.id} variant="node" />
         </div>
       )}

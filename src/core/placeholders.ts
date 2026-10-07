@@ -222,6 +222,17 @@ export function groupOf(prompt: string, assets: readonly Asset[], refs: readonly
   return placeholderGroups(prompt, assets, refs).find((g) => g.key === key)
 }
 
+/**
+ * The group (placeholderGroups) with a member that offset `at` of `prompt` lies strictly inside of, or null: ONE
+ * picture dropped right on red text fills that group through the explicit fill path (planFill) — it is never inserted
+ * into the middle of the red text.
+ */
+export function groupAtOffset(prompt: string, assets: readonly Asset[], refs: readonly string[], at: number): PlaceholderGroup | null {
+  if (!prompt.includes('_?') && !prompt.includes('(')) return null
+  for (const g of placeholderGroups(prompt, assets, refs)) if (g.members.some((m) => m.start < at && at < m.end)) return g
+  return null
+}
+
 /** Key of the group a placeholder / labelled token text belongs to ("@image_?2(Lumi)" → "L:Lumi"). */
 export function groupKeyOf(text: string): string {
   const ph = parsePlaceholders(text)[0]

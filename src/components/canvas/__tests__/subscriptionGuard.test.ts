@@ -87,4 +87,27 @@ describe('canvas subscription boundaries', () => {
     const view = readFileSync(new URL('CanvasView.tsx', canvas), 'utf8')
     expect(view).toContain("listen(TYPE_EVENT, 'type'")
   })
+
+  it('a scene made to type in (double-click, empty canvas "Cảnh mới") goes through typeOnNode, without its own reveal racing the zoom-in', () => {
+    const view = readFileSync(new URL('CanvasView.tsx', canvas), 'utf8')
+    const gestures = view.slice(view.indexOf('const onEmptyAction = '), view.indexOf('const onDragOver = '))
+    expect(gestures).not.toContain('useSceneEditor')
+    expect(gestures.match(/typeOnNode\(id, 0\)/g)).toHaveLength(2)
+    expect(gestures).toContain('nextScene(undefined, { reveal: !typing })')
+    expect(gestures).toMatch(/newScene\(\{ x: snap\(p\.x - LAYOUT\.sceneW \/ 2\), y: snap\(p\.y - 40\) \}, \{ reveal: !typing \}\)/)
+  })
+
+  it('the red strip and the empty-prompt hint never share a class (the strip drop / layout rules hit only the strip)', () => {
+    const scene = readFileSync(new URL('SceneNode.tsx', canvas), 'utf8')
+    const css = readFileSync(new URL('sceneNode.css', canvas), 'utf8')
+    expect(scene).toContain('<div className="cv-sn-strip nodrag nopan nowheel">')
+    expect(scene.match(/closest\?\.(?:<HTMLElement>)?\('\.cv-sn-strip'\)/g)).toHaveLength(2)
+    expect(scene).not.toMatch(/closest[^)]*cv-sn-ph/)
+    expect(scene.match(/cv-sn-ph/g)).toHaveLength(1) // the empty-prompt hint only
+    const hint = /\.cv-sn-ph\s*\{([^}]*)\}/g
+    const rules = [...css.matchAll(hint)].map((m) => m[1].trim())
+    expect(rules).toEqual(['color: var(--text-faint);'])
+    expect(css.match(/\.cv-sn-ph(?![\w-])/g)).toHaveLength(1) // no strip rule (descendant / state) on the hint's class
+    expect(css).toContain('.cv-sn-strip {')
+  })
 })

@@ -30,9 +30,11 @@ import { createPortal } from 'react-dom'
 import { refuseTakesAsReference, VIDEO_NOT_REFERENCE_TEXT } from '../../actions'
 import { assetByTag, continueStarterOf, sceneCode } from '../../core/compile'
 import { MODELS, usesRefs } from '../../core/models'
+import { groupAtOffset } from '../../core/placeholders'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { flushAll, flushScenes, register as registerDraft } from '../../lib/promptDrafts'
+import { fillPlaceholderAction } from '../../placeholderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast } from '../../store/ui'
 import { removeContinueStarter, removeRetiredTokenFromScene, retiredTokenCounts } from '../../videoRetired'
@@ -112,7 +114,7 @@ function undoAutoLink(sceneId: string, linked: string[]) {
   // Dropping refs moves the numbers after them (a token inserted meanwhile, or "Đổi @Tên → @image_N"): renumber
   // like every other refs change, in the same undo step.
   if (st.project.settings.autoRenumber) text = renumberImageTokens(text, st.project.assets, scene.refs, refs)
-  st.restoreScene(sceneId, { prompt: text, refs, settings: scene.settings })
+  st.setPromptAndRefs(sceneId, text, refs)
   toast(`Đã bỏ nối ${assets.map((a) => '@' + a.tag).join(', ')} — giữ tên trong prompt.`, { action: undoToastAction() })
 }
 
@@ -225,7 +227,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       if (!scene) return
       committedRef.current = textRef.current
       // New refs are appended, so the existing @image_N numbers do not move.
-      st.restoreScene(sceneId, { prompt: textRef.current, refs: media.refs ?? scene.refs, settings: scene.settings })
+      st.setPromptAndRefs(sceneId, textRef.current, media.refs ?? scene.refs)
     },
     [sceneId],
   )
@@ -445,22 +447,30 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   /** Last dragover point and the text offset it maps to (dragover fires continuously while still). */
   const dropPoint = useRef<{ x: number; y: number; at: number } | null>(null)
 
-  /** Text offset where tokens dropped at (x, y) go: under the pointer, else the current / last selection. */
-  const dropOffset = useCallback((x: number, y: number): number => {
+  /** Text offset under (x, y), else the current / last selection's end — not snapped. */
+  const pointOffset = useCallback((x: number, y: number): number => {
     const ta = taRef.current
     const value = textRef.current
     if (!ta) return value.length
-    const cached = dropPoint.current
-    if (cached && cached.x === x && cached.y === y) return cached.at
     let at = offsetFromPoint(ta, backRef.current, x, y)
     if (at === null) {
       const sel = document.activeElement === ta ? { start: ta.selectionStart, end: ta.selectionEnd } : lastSel.current
       at = sel ? sel.end : value.length
     }
-    at = snapToWordEnd(value, Math.min(at, value.length))
-    dropPoint.current = { x, y, at }
-    return at
+    return Math.min(at, value.length)
   }, [])
+
+  /** Text offset where tokens dropped at (x, y) go: under the pointer, else the current / last selection; never inside a word, a token or red text. */
+  const dropOffset = useCallback(
+    (x: number, y: number): number => {
+      const cached = dropPoint.current
+      if (cached && cached.x === x && cached.y === y) return cached.at
+      const at = snapToWordEnd(textRef.current, pointOffset(x, y))
+      dropPoint.current = { x, y, at }
+      return at
+    },
+    [pointOffset],
+  )
 
   const endDrop = useCallback(() => {
     dropPoint.current = null
@@ -503,10 +513,21 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       return
     }
     const ids = readIds(e.dataTransfer, ASSETS_MIME)
+    const point = pointOffset(e.clientX, e.clientY)
     const at = dropOffset(e.clientX, e.clientY)
     endDrop()
     if (!ids.length) return
     commit()
+    // One card right on red text fills that red text (the bar's "Gắn ảnh" path, one undo step) — never inserted into it.
+    if (ids.length === 1) {
+      const st = useProject.getState()
+      const scene = st.project.scenes.find((s) => s.id === sceneId)
+      const group = scene && groupAtOffset(scene.prompt, st.project.assets, scene.refs, point)
+      if (group) {
+        fillPlaceholderAction(sceneId, group.key, ids[0])
+        return
+      }
+    }
     // Appending refs never renumbers existing tokens, so `at` stays valid.
     const plan = planAssets(sceneId, ids)
     if (!plan?.tokens.length) return
@@ -581,7 +602,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     }
     const { text: next, replaced } = replaceLegacyTags(scene.prompt, tokens)
     // Links + renamed mentions in one undo step (the toast's "Hoàn tác" undoes both).
-    if (replaced) st.restoreScene(sceneId, { prompt: next, refs: plan.refs, settings: scene.settings })
+    if (replaced) st.setPromptAndRefs(sceneId, next, plan.refs)
     else if (plan.overLimit) toast('Không nối được: vượt giới hạn ảnh của model.', { tone: 'warning' })
     const msg = legacyFixMessage(replaced, plan.noImage, plan.overLimit)
     if (msg) toast(msg.text, { tone: msg.tone, ...(replaced ? { action: undoToastAction() } : {}) })
