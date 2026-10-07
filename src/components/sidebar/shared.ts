@@ -139,14 +139,13 @@ export function imageRenumberNote(autoRenumber: boolean, used: number): { text: 
 
 // ---------------- library cards ----------------
 /**
- * What a key pressed on a focused library card does. Delete / Backspace are swallowed ('block'): the global
- * shortcut would delete the canvas selection (scenes, generated videos), a different selection than the
- * library's — a library item is deleted from its dialog.
+ * What a key pressed on a focused library card does itself. Delete / Backspace / Ctrl+A are not the card's: they go up
+ * to the global shortcuts, whose library scope (libraryActions.handleLibraryKey, asked before any canvas rule) acts on
+ * the library selection — the canvas selection (scenes, generated videos) is never touched from a card.
  */
-export function libraryCardKey(key: string): 'open' | 'toggle' | 'block' | null {
+export function libraryCardKey(key: string): 'open' | 'toggle' | null {
   if (key === 'Enter') return 'open'
   if (key === ' ') return 'toggle'
-  if (key === 'Delete' || key === 'Backspace') return 'block'
   return null
 }
 

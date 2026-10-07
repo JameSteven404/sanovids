@@ -31,9 +31,9 @@ const asset = (id: string, imageIds: string[]): Asset => ({
 })
 
 describe('library card keys', () => {
-  it('never lets Delete / Backspace reach the global shortcut (it deletes the canvas selection)', () => {
-    expect(libraryCardKey('Delete')).toBe('block')
-    expect(libraryCardKey('Backspace')).toBe('block')
+  it('Delete / Backspace are not the card’s: they go up to the shortcuts’ library scope (libraryActions)', () => {
+    expect(libraryCardKey('Delete')).toBeNull()
+    expect(libraryCardKey('Backspace')).toBeNull()
   })
   it('keeps Enter = open, Space = toggle, other keys untouched', () => {
     expect(libraryCardKey('Enter')).toBe('open')

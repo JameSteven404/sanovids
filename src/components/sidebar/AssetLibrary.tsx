@@ -1,18 +1,22 @@
-import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X, ZoomIn } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
+import { Check, ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, Trash2, X, ZoomIn } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { assetSceneCounts, deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
 import { ASSETS_MIME } from '../../lib/dnd'
 import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { cachedUrl } from '../../lib/imageStore'
+import { IS_MAC } from '../../lib/platform'
+import { assetDragEnded, deleteLibrarySelection, registerLibraryView } from '../../libraryActions'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
+import { libraryClick } from './librarySelection'
 import {
   imageTokenLabels,
   KIND_META,
@@ -75,12 +79,8 @@ function useColumnCount(): [number, (el: HTMLElement | null) => void] {
   return [cols, ref]
 }
 
-/** Number of scenes whose refs include each asset. */
-const usageSelector = (s: ProjectState) => {
-  const m: Record<string, number> = {}
-  for (const sc of s.project.scenes) for (const r of sc.refs) m[r] = (m[r] ?? 0) + 1
-  return m
-}
+/** Number of scenes using each asset (reference image or first / last frame) — what a delete asks about. */
+const usageSelector = (s: ProjectState) => assetSceneCounts(s.project.scenes)
 
 // ---------------- drag & drop (HTML5) ----------------
 function dragIdsFor(id: string): string[] {
@@ -116,13 +116,19 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   useUI.getState().setDraggingAssets(list.map((a) => a.id))
 }
 
+/** Dropped outside the library (dropEffect not 'none'): the delete keys go to the canvas, a used multi-selection clears. */
 function endAssetDrag(e: DragEvent<HTMLElement>) {
-  const ui = useUI.getState()
-  ui.setDraggingAssets(null)
-  // A multi-card selection that was dropped somewhere has been used: forget it, so a later drag or "C" does not
-  // silently carry the same cards again.
-  if (e.dataTransfer.dropEffect !== 'none' && ui.librarySelection.length > 1) ui.setLibrarySelection([])
+  assetDragEnded(e.dataTransfer.dropEffect)
 }
+
+/** Keyboard focus on a library card (after a delete: the next card, nothing selected). */
+function focusLibraryCard(id: string) {
+  const sel = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/["\\]/g, '\\$&')
+  document.querySelector<HTMLElement>(`.sb-library [data-asset-id="${sel}"]`)?.focus()
+}
+
+/** " · Delete để xoá" in a card's tooltip (⌫ on a Mac). */
+const DELETE_TIP = `${deleteKeyLabel(IS_MAC)} để xoá`
 
 // ---------------- card actions ----------------
 function openAsset(id: string) {
@@ -227,13 +233,14 @@ const AssetCard = memo(function AssetCard({
   const offNote = `${sceneModel || 'Model'} ở chế độ hiện tại của ${singleCode} không gửi ảnh tham chiếu`
   return (
     <div
-      className={`sb-card${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
+      className={`sb-card${selected ? ' selected' : ''}${many ? ' multi' : ''}${dragging ? ' dragging' : ''}`}
       style={{ '--sb-c': asset.color } as CSSProperties}
+      data-asset-id={asset.id}
       draggable
       role="option"
       tabIndex={0}
       aria-selected={selected}
-      title={`${asset.name} · @${asset.tag}\nKéo vào cảnh để nối · nháy đúp để sửa`}
+      title={`${asset.name} · @${asset.tag}\nKéo vào cảnh để nối · nháy đúp để sửa · ${DELETE_TIP}`}
       onClick={(e) => {
         e.stopPropagation()
         // The 2nd click of a double-click must not undo the selection made by the 1st.
@@ -241,16 +248,9 @@ const AssetCard = memo(function AssetCard({
         onSelect(e, asset.id)
       }}
       onKeyDown={(e) => {
-        const action = libraryCardKey(e.key)
-        if (action === 'block') {
-          // Also from the card's own buttons: the global Delete shortcut acts on the canvas selection (scenes,
-          // generated videos), not on this card — it must never run from here.
-          e.preventDefault()
-          e.stopPropagation()
-          if (!e.repeat) toast('Phím Delete không xoá mục thư viện — mở mục (Enter) rồi bấm “Xoá khỏi thư viện”.', { tone: 'info' })
-          return
-        }
+        // Delete / ⌫ / Ctrl+A go up to the global shortcuts: their library scope acts on the library selection.
         if (e.target !== e.currentTarget) return
+        const action = libraryCardKey(e.key)
         if (action === 'open') {
           e.preventDefault()
           openAsset(asset.id)
@@ -387,8 +387,13 @@ const AssetCard = memo(function AssetCard({
         </div>
       </div>
       <div className="sb-card-info">
+        {many && (
+          <span className="sb-card-check" aria-hidden="true">
+            <Check size={10} strokeWidth={3} />
+          </span>
+        )}
         <div className="sb-card-name">{asset.name || <span className="faint">Chưa đặt tên</span>}</div>
-        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Là ảnh tham chiếu của ${usage} cảnh` : 'Chưa nối vào cảnh nào'}>
+        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Đang dùng ở ${usage} cảnh (ảnh tham chiếu hoặc khung đầu / cuối)` : 'Chưa nối vào cảnh nào'}>
           {usage ? `dùng ở ${usage} cảnh` : 'chưa dùng'}
         </div>
       </div>
@@ -452,11 +457,29 @@ export function AssetLibrary({
     return c
   }, [matched])
   const visible = useMemo(() => (kind === 'all' ? matched : matched.filter((a) => a.kind === kind)), [matched, kind])
+  const visibleIds = useMemo(() => visible.map((a) => a.id), [visible])
   const selection = useMemo(() => {
     const exists = new Set(assets.map((a) => a.id))
     return librarySelection.filter((id) => exists.has(id))
   }, [assets, librarySelection])
   const selSet = useMemo(() => new Set(selection), [selection])
+  // Delete / the trash button take the selected cards on screen; selected cards hidden by the search / tab stay.
+  const selCounts = useMemo(() => librarySelectionCounts(selection, new Set(visibleIds)), [selection, visibleIds])
+
+  // What the library shows, for the delete / select-all commands and the keys (libraryActions).
+  const shown = useRef({ ids: visibleIds, collapsed })
+  useLayoutEffect(() => {
+    shown.current = { ids: visibleIds, collapsed }
+  })
+  useEffect(
+    () =>
+      registerLibraryView({
+        visibleIds: () => shown.current.ids,
+        collapsed: () => shown.current.collapsed,
+        focusCard: focusLibraryCard,
+      }),
+    [],
+  )
   const dragSet = useMemo(() => new Set(draggingIds ?? []), [draggingIds])
   const aspects = useCardAspects(visible)
   const columns = useMemo(
@@ -478,20 +501,11 @@ export function AssetLibrary({
   const onSelect = useCallback(
     (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) => {
       const ui = useUI.getState()
-      if (e.shiftKey && anchor.current && anchor.current !== id) {
-        const ids = visible.map((a) => a.id)
-        const from = ids.indexOf(anchor.current)
-        const to = ids.indexOf(id)
-        if (from >= 0 && to >= 0) {
-          const range = ids.slice(Math.min(from, to), Math.max(from, to) + 1)
-          ui.setLibrarySelection([...new Set([...ui.librarySelection, ...range])])
-          return
-        }
-      }
-      ui.toggleLibrary(id, e.ctrlKey || e.metaKey || e.shiftKey)
-      anchor.current = id
+      const next = libraryClick(ui.librarySelection, visibleIds, anchor.current, id, e)
+      anchor.current = next.anchor
+      ui.setLibrarySelection(next.selection)
     },
-    [visible],
+    [visibleIds],
   )
 
   const defaultKind: AssetKind = newAssetKind(kind, assets.length)
@@ -549,10 +563,11 @@ export function AssetLibrary({
     </>
   )
 
+  const del = deleteButtonState(selCounts, IS_MAC)
   const footer = selection.length ? (
     <div className="sb-libfoot sel">
       <span className="sb-libfoot-count">
-        <b>{selection.length}</b> đã chọn
+        <b>{selection.length}</b> đã chọn{hiddenSuffix(selCounts)}
       </span>
       <button
         className="btn btn-sm sb-link-btn"
@@ -563,14 +578,22 @@ export function AssetLibrary({
         <Link2 size={13} />
         {selectedScenes.length ? `Nối vào ${selectedScenes.length} cảnh` : 'Chưa chọn cảnh'}
       </button>
+      {/* aria-disabled, not disabled: the tooltip still says why, and a click explains it again (hint toast). */}
+      <button
+        className={`icon-btn sb-xs sb-libfoot-del${del.enabled ? '' : ' off'}`}
+        title={del.label}
+        aria-label={del.label}
+        aria-disabled={!del.enabled}
+        onClick={() => deleteLibrarySelection()}
+      >
+        <Trash2 size={13} />
+      </button>
       <button className="icon-btn sb-xs" title="Bỏ chọn" aria-label="Bỏ chọn" onClick={() => useUI.getState().setLibrarySelection([])}>
         <X size={13} />
       </button>
     </div>
   ) : (
-    <div className="sb-libfoot hint">
-      Kéo thả vào cảnh để nối · chọn nhiều + <span className="kbd">C</span> để nối hàng loạt
-    </div>
+    <div className="sb-libfoot hint">{libraryFooterHint(IS_MAC)}</div>
   )
 
   return (
@@ -675,7 +698,9 @@ export function AssetLibrary({
                   token={singleId ? tokens[a.id] : undefined}
                   sendsImages={media.images}
                   sceneModel={media.model}
-                  groupSize={selection.length}
+                  // Unselected cards get a constant: a selection change (Ctrl+A on hundreds of cards) re-renders only
+                  // the cards whose own state changed.
+                  groupSize={selSet.has(a.id) ? selection.length : 1}
                   onSelect={onSelect}
                 />
               ))}

@@ -7,14 +7,16 @@ import { MODELS } from '../../core/models'
 import { normalizeAssetName } from '../../core/names'
 import type { Asset, AssetKind } from '../../core/types'
 import { aspectOf, useImageSize } from '../../lib/imageMeta'
+import { IS_MAC } from '../../lib/platform'
+import { flushScenes } from '../../lib/promptDrafts'
+import { deleteLibraryAssets } from '../../libraryActions'
 import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { AssetAvatar, FullImage } from '../common/Media'
 import { Modal } from '../common/Modal'
-import { assetDeleteImpact, assetDeleteQuestion } from '../../core/placeholders'
 import { reportMediaChange } from '../../placeholderActions'
 import { addImageFiles, useAddingImages, withRenumberToast } from './assetImages'
-import { ColorSwatches, ConfirmButton } from './bits'
+import { ColorSwatches } from './bits'
 import {
   checkTag,
   countMentions,
@@ -55,20 +57,10 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
   // only once the edit ends.
   const [nameDraft, setNameDraft] = useState<string | null>(null)
 
-  // Prompts naming this character would keep red placeholders (blocked until filled): ask first (core/placeholders).
-  const deleteQuestion = useProject((s) => assetDeleteQuestion(asset.name || asset.tag, 1, assetDeleteImpact(s.project, [asset.id])))
+  // One click (libraryActions, same rule as the Delete key): an item no scene uses goes at once, one that scenes use
+  // asks once; "Hoàn tác" in the toast. Cancelled: the dialog stays open.
   const remove = () => {
-    const name = asset.name || asset.tag
-    const before = useProject.getState().project
-    const question = assetDeleteQuestion(name, 1, assetDeleteImpact(before, [asset.id]))
-    if (question && !window.confirm(question)) return
-    useProject.getState().removeAssets([asset.id])
-    const ui = useUI.getState()
-    ui.setLibrarySelection(ui.librarySelection.filter((x) => x !== asset.id))
-    if (ui.selectedIds.includes(asset.id)) ui.select(ui.selectedIds.filter((x) => x !== asset.id))
-    onClose()
-    // red placeholders left in the scenes / numbers left stale (renumbering off) / prompts renumbered
-    reportMediaChange(before, `Đã xoá “${name}” khỏi thư viện và mọi cảnh`, { always: true })
+    if (deleteLibraryAssets([asset.id])) onClose()
   }
 
   const title = (
@@ -86,16 +78,12 @@ function AssetEditor({ asset, onClose }: { asset: Asset; onClose: () => void }) 
       size="wide"
       footer={
         <>
-          {deleteQuestion ? (
-            <button type="button" className="btn btn-danger" onClick={remove} title={deleteQuestion}>
-              <Trash2 size={13} />
-              Xoá khỏi thư viện
-            </button>
-          ) : (
-            <ConfirmButton icon={<Trash2 size={13} />} label="Xoá khỏi thư viện" confirmLabel="Xoá cả các nối? Bấm lần nữa" className="btn btn-danger" onConfirm={remove} />
-          )}
+          <button type="button" className="btn btn-danger" title="Xoá khỏi thư viện và khỏi các cảnh đang dùng — hoàn tác được" onClick={remove}>
+            <Trash2 size={13} />
+            Xoá khỏi thư viện
+          </button>
           <span className="sb-spacer" />
-          <span className="faint sb-live-note">Thay đổi được lưu ngay · Ctrl+Z để hoàn tác</span>
+          <span className="faint sb-live-note">Thay đổi được lưu ngay · {IS_MAC ? '⌘Z' : 'Ctrl+Z'} để hoàn tác</span>
           <button className="btn btn-primary" onClick={onClose}>
             Xong
           </button>
@@ -393,12 +381,15 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
     if (ui.view === 'canvas') setTimeout(() => focusNodes([sceneId]), 30)
   }
 
-  const removeAll = () =>
+  // One click, "Hoàn tác" in the toast. The prompts being typed in those scenes are committed first.
+  const removeAll = () => {
+    flushScenes(refScenes.map((s) => s.id))
     withRenumberToast(
       () => useProject.getState().removeRefs(refScenes.map((s) => ({ sceneId: s.id, assetId: asset.id }))),
       `Đã bỏ “${asset.name}” khỏi ${refScenes.length} cảnh`,
       true,
     )
+  }
 
   const unlinkOne = (sceneId: string, order: number) =>
     withRenumberToast(() => useProject.getState().removeRef(sceneId, asset.id), `Đã bỏ “${asset.name}” khỏi ${sceneCode(order)}`)
@@ -415,13 +406,10 @@ function UsageList({ asset, onClose }: { asset: Asset; onClose: () => void }) {
           Dùng ở {refScenes.length} cảnh
         </span>
         {refScenes.length > 0 && (
-          <ConfirmButton
-            icon={<Unlink size={12} />}
-            label="Bỏ khỏi tất cả cảnh"
-            confirmLabel={`Bỏ khỏi ${refScenes.length} cảnh?`}
-            className="btn btn-ghost btn-sm"
-            onConfirm={removeAll}
-          />
+          <button type="button" className="btn btn-ghost btn-sm" title={`Bỏ khỏi ${refScenes.length} cảnh — hoàn tác được`} onClick={removeAll}>
+            <Unlink size={12} />
+            Bỏ khỏi tất cả cảnh
+          </button>
         )}
       </div>
       {!sorted.length ? (
