@@ -34,9 +34,9 @@ export const LAYOUT = {
   gapY: 48,
   scenesX: 420,
   scenesY: 60,
-  /** Take (video) nodes */
+  /** Take (video) nodes: picture + 30px player bar + footer + big button (canvasModel TAKE_CHROME), natural ≈ 228.9. */
   takeW: 224,
-  takeH: 200,
+  takeH: 230,
   takeGapX: 16,
   /** Distance between the scene card's right edge and its first take. */
   takeOffsetX: 64,
@@ -48,7 +48,7 @@ export const LAYOUT = {
 /** Resize limits of canvas nodes (React Flow NodeResizer min/max). Defaults are LAYOUT sizes. */
 export const NODE_SIZE = {
   scene: { minW: 240, maxW: 720, minH: 150, maxH: 760 },
-  take: { minW: 180, maxW: 640, minH: 150, maxH: 560 },
+  take: { minW: 180, maxW: 640, minH: 180, maxH: 560 },
   asset: { minW: 140, maxW: 520, minH: 150, maxH: 820 },
 }
 
@@ -57,7 +57,10 @@ export function clampSize(kind: keyof typeof NODE_SIZE, size: Size): Size {
   return { w: Math.round(Math.max(l.minW, Math.min(l.maxW, size.w))), h: Math.round(Math.max(l.minH, Math.min(l.maxH, size.h))) }
 }
 
-/** Height of one scene row (scene card or its takes, whichever is taller, plus the gap). */
+/**
+ * Height of one scene row (scene card or its takes, whichever is taller, plus the gap). Only seed / migrate positions
+ * use it (those scenes may get takes later); the layout of new nodes measures each row (rowHeightOf).
+ */
 export const ROW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH) + LAYOUT.gapY
 
 /** Default canvas position of the i-th take (0 = oldest) of a scene at `scenePos`. */
@@ -126,15 +129,18 @@ export function setTakeHeightSource(fn: (sceneId: string) => number) {
   takeSource = { rowHeight: fn }
 }
 
-/** Height of a scene's row without the gap: its card or its tallest take in the row, whichever is taller (resized ones included). */
+/**
+ * Height of a scene's row without the gap: its card or its tallest take in the row, whichever is taller (resized ones
+ * included). A row without takes is only as tall as its card (the take height never pads it).
+ */
 export function rowHeightOf(scene: Pick<Scene, 'id' | 'size'>): number {
-  return Math.max(scene.size?.h ?? LAYOUT.sceneH, LAYOUT.takeH, takeSource.rowHeight(scene.id))
+  return Math.max(scene.size?.h ?? LAYOUT.sceneH, takeSource.rowHeight(scene.id))
 }
 
 /** Area a scene's row takes in the card column (x, y, card width, row height). */
 const sceneBox = (s: Scene): Box => ({ x: s.position.x, y: s.position.y, w: s.size?.w ?? LAYOUT.sceneW, h: rowHeightOf(s) })
 /** Height of a new scene card's row (default size, no takes yet). */
-const NEW_H = Math.max(LAYOUT.sceneH, LAYOUT.takeH)
+const NEW_H = LAYOUT.sceneH
 /** A new scene card (default size, no takes yet). */
 const newBox = (pos: XY): Box => ({ x: pos.x, y: pos.y, w: LAYOUT.sceneW, h: NEW_H })
 /** Vertical distance under half a gap counts as touching (rows keep LAYOUT.gapY between them). */
@@ -190,8 +196,8 @@ export function slideDown(start: XY, taken: Box[]): XY {
   return { x: start.x, y }
 }
 
-/** How far a spot the user pointed at may move to be free: about one row and a gap (ROW_H + gapY). */
-export const NEAR_SPOT_MAX = ROW_H + LAYOUT.gapY
+/** How far a spot the user pointed at may move to be free: about one scene row and a gap (card + 2 gaps). */
+export const NEAR_SPOT_MAX = LAYOUT.sceneH + 2 * LAYOUT.gapY
 
 /**
  * Free spot for a new scene card near `start`, at most `maxDist` px away; null = none. `start` itself when it is free,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
 import { useImageMeta } from '../../../lib/imageMeta'
-import { defaultTakePosition, LAYOUT, NODE_SIZE } from '../../../store/project'
+import { defaultTakePosition, LAYOUT, NEAR_SPOT_MAX, NODE_SIZE, ROW_H, rowHeightOf, setTakeHeightSource } from '../../../store/project'
 import {
   ASSET_CHROME,
   ASSET_DEFAULT_W,
@@ -27,6 +27,7 @@ import {
   RESIZE_DOT_GAP,
   resizeEdgeClip,
   SCENE_CHROME,
+  TAKE_BAR_H,
   TAKE_CHROME,
   takeDotTop,
   takeLayoutSig,
@@ -171,6 +172,37 @@ describe('take / asset media', () => {
     expect(short.h).toBe(200 - 2 - TAKE_CHROME)
     expect(short.w / short.h).toBeCloseTo(16 / 9, 1)
     expect(fitMedia(10, 10, TAKE_CHROME)).toEqual({ w: 0, h: 0 })
+  })
+})
+
+describe('take node geometry (player bar under the picture)', () => {
+  afterEach(() => setTakeHeightSource(() => 0))
+  it('the 30px bar is part of the chrome below the poster; the default card holds poster + chrome', () => {
+    expect(TAKE_BAR_H).toBe(30)
+    // footer 30 + big button 34 + its 8px padding + 2px rounding room = 74, plus the bar
+    expect(TAKE_CHROME).toBe(TAKE_BAR_H + 74)
+    // natural height of the default card: 1px borders + poster + chrome (≈ 228.9), within LAYOUT.takeH
+    expect(LAYOUT.takeH).toBeGreaterThanOrEqual(2 + TAKE_POSTER_H + TAKE_CHROME - 2)
+    expect(LAYOUT.takeH - (2 + TAKE_POSTER_H + TAKE_CHROME - 2)).toBeLessThan(2)
+  })
+  it('the smallest take still shows a usable picture (as tall as before the bar)', () => {
+    expect(fitMedia(NODE_SIZE.take.minW, NODE_SIZE.take.minH, TAKE_CHROME).h).toBeGreaterThanOrEqual(74)
+  })
+  it('rows without takes keep the scene height; rows with takes grow with them', () => {
+    const s = { id: 's1', size: null }
+    setTakeHeightSource(() => 0)
+    expect(rowHeightOf(s)).toBe(LAYOUT.sceneH)
+    setTakeHeightSource(() => LAYOUT.takeH)
+    expect(rowHeightOf(s)).toBe(Math.max(LAYOUT.sceneH, LAYOUT.takeH))
+    // how far a pointed-at spot may move: one scene row and a gap, as before the bar
+    expect(NEAR_SPOT_MAX).toBe(LAYOUT.sceneH + 2 * LAYOUT.gapY)
+    expect(NEAR_SPOT_MAX).toBe(296)
+    // seed / migrate positions keep room for takes
+    expect(ROW_H).toBe(Math.max(LAYOUT.sceneH, LAYOUT.takeH) + LAYOUT.gapY)
+  })
+  it('an old row 248px apart still leaves room for the title line above the next row (17px)', () => {
+    const oldRow = 248
+    expect(oldRow - (2 + TAKE_POSTER_H + TAKE_CHROME - 2)).toBeGreaterThanOrEqual(17)
   })
 })
 

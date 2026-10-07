@@ -89,7 +89,9 @@ describe('placing new scenes', () => {
   it('next scene goes below its source and pushes the following rows down', () => {
     const id = st().createNextScene('s2')
     const created = sc(id)
-    expect(created.position).toEqual({ x: LAYOUT.scenesX, y: scenePosition(1).y + ROW_H })
+    // a row without takes is as tall as its card (ROW_H also counts a take: only seed / migrate positions use it)
+    expect(created.position).toEqual({ x: LAYOUT.scenesX, y: scenePosition(1).y + LAYOUT.sceneH + LAYOUT.gapY })
+    expect(ROW_H).toBeGreaterThanOrEqual(LAYOUT.sceneH + LAYOUT.gapY)
     expect(created.order).toBe(3)
     expect(overlapping(st().project.scenes)).toEqual([])
     expect(sc('s3').position.y).toBeGreaterThan(created.position.y)

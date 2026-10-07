@@ -266,7 +266,7 @@ describe('next scene below its source (N with a scene selected, "Tạo cảnh ti
     const takes = [take('t1', 's1', 1, { size: { w: 224, h: 560 } }), take('t2', 's1', 2)]
     load([scene('s1', 1, { x: 900, y: 300 })], [], takes)
     useUI.setState({ takeDisplay: 'chosen' }) // shows t2 only
-    expect(pos(st().createNextScene('s1'))).toEqual({ x: 900, y: 548 }) // was 908
+    expect(pos(st().createNextScene('s1'))).toEqual({ x: 900, y: 300 + LAYOUT.takeH + LAYOUT.gapY }) // was 908
     load([scene('s1', 1, { x: 900, y: 300 })], [], takes)
     useUI.setState({ takeDisplay: 'all' })
     expect(pos(st().createNextScene('s1'))).toEqual({ x: 900, y: 300 + 560 + 48 })
@@ -274,7 +274,7 @@ describe('next scene below its source (N with a scene selected, "Tạo cảnh ti
 
   it('a video placed by hand right below the source is stepped over, not covered', () => {
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 900, y: 560 } })])
-    expect(pos(st().createNextScene('s1'))).toEqual({ x: 900, y: 560 + 200 + 48 })
+    expect(pos(st().createNextScene('s1'))).toEqual({ x: 900, y: 560 + LAYOUT.takeH + LAYOUT.gapY })
   })
 
   it('[P2h] continuation of a video the user moved goes right of that video, not 2000px away below the source', () => {
@@ -282,16 +282,16 @@ describe('next scene below its source (N with a scene selected, "Tạo cảnh ti
     const id = createSceneFromTake('t1')!
     expect(pos(id)).toEqual({ x: 2600 + 224 + 64, y: 1800 }) // was (900, 548)
     expect(st().project.scenes.find((s) => s.id === id)!.videoRefs).toEqual(['t1'])
-    // a video still in its row: below the source as before
+    // a video still in its row: below the source (and its row of takes) as before
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1)])
-    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 })
+    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 300 + LAYOUT.takeH + LAYOUT.gapY })
   })
 
   it('continuation of a video only nudged or resized in its row: below the source, not in the lane of the next take', () => {
     // t1's slot is (1244, 300); nudged 32px down it keeps the slot. Right of it (1532, 332) is where the scene's next
     // take t2 goes (1484..1708 × 300..500): the new card would sit under it.
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 332 } })])
-    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 548 }) // was (1532, 332)
+    expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 300 + LAYOUT.takeH + LAYOUT.gapY }) // was (1532, 332)
     // resized from its top-left handle (explicit position on its slot), 400px tall: below its row
     load([scene('s1', 1, { x: 900, y: 300 })], [], [take('t1', 's1', 1, { position: { x: 1244, y: 300 }, size: { w: 300, h: 400 } })])
     expect(pos(createSceneFromTake('t1')!)).toEqual({ x: 900, y: 300 + 400 + 48 })
@@ -315,15 +315,15 @@ describe('take rows (what counts in a scene row)', () => {
       'all',
     )
     expect(rows.rows.get('s1')).toEqual({ h: 400, w: 64 + 224 + 16 + 300 })
-    expect(rows.placed).toEqual([{ x: 3000, y: 2000, w: 224, h: 200 } satisfies Box])
+    expect(rows.placed).toEqual([{ x: 3000, y: 2000, w: 224, h: LAYOUT.takeH } satisfies Box])
   })
   it('a take only nudged on its slot keeps it', () => {
     // t1's slot is (764, 60): nudged 30px down it still sits there
     const rows = computeTakeRows([take('t1', 's1', 1, { position: { x: 764, y: 90 } }), take('t2', 's1', 2)], [s1], 'all')
-    expect(rows.rows.get('s1')).toEqual({ h: 200, w: 64 + 224 + 16 + 224 })
+    expect(rows.rows.get('s1')).toEqual({ h: LAYOUT.takeH, w: 64 + 224 + 16 + 224 })
   })
   it('"Chỉ take chọn": hidden takes are nothing', () => {
     const rows = computeTakeRows([take('t1', 's1', 1, { size: { w: 600, h: 560 } }), take('t2', 's1', 2)], [s1], 'chosen')
-    expect(rows.rows.get('s1')).toEqual({ h: 200, w: 64 + 224 })
+    expect(rows.rows.get('s1')).toEqual({ h: LAYOUT.takeH, w: 64 + 224 })
   })
 })
