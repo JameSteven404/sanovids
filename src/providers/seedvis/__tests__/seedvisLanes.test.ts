@@ -3,7 +3,7 @@
 // submit breaker (≤ min(rate_limit_per_minute, 30) per minute) and same-key coalescing (same key + same bytes share one
 // request; same key + other bytes → a local idempotency conflict, nothing sent). Separate from canvasapp's lanes.
 import { afterEach, describe, expect, it } from 'vitest'
-import { type Any, type Ctl, type Harness, FAKE_KEY, UUID, accountInfo, completed, createReq, harness, incoming, jsonAnswer, mp4, queued202, rules, seedanceBody, settle } from './fakeElectron'
+import { type Any, type Ctl, type Harness, FAKE_KEY, OTHER_KEY, UUID, accountInfo, completed, createReq, harness, incoming, jsonAnswer, keyRules, mp4, queued202, rules, saveKeyUnverified, seedanceBody, settle } from './fakeElectron'
 
 const MIB = 1024 * 1024
 
@@ -171,7 +171,7 @@ describe('createSeedvisLanes', () => {
 describe('seedvis.cjs lanes', () => {
   let h: Harness
   afterEach(() => h.cleanup())
-  const withKey = async () => expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).ok).toBe(true)
+  const withKey = async () => expect((await saveKeyUnverified(h, FAKE_KEY)).ok).toBe(true)
 
   it('the same key + the same body asked twice while in flight → one POST, one answer; other body → conflict, not sent', async () => {
     h = harness()
@@ -212,6 +212,59 @@ describe('seedvis.cjs lanes', () => {
     holds[2]()
     expect((await Promise.all(all)).every((r: Any) => r.ok)).toBe(true)
     expect(h.gw.inFlightSubmits()).toBe(0)
+  })
+
+  it('Xoá key while a submit waits for a slot: it never leaves with the old key (no-key, not sent)', async () => {
+    h = harness()
+    await withKey()
+    const holds: (() => void)[] = []
+    h.net.server = (ctl) => void holds.push(() => ctl.reply(jsonAnswer(202, queued202(`gen_${holds.length}`))))
+    const keys = ['407822d1-ff74-44a5-b939-9e563102e771', '407822d1-ff74-44a5-b939-9e563102e772', '407822d1-ff74-44a5-b939-9e563102e773']
+    const all = keys.map((k) => h.call('seedvis:request', createReq({ idempotencyKey: k })))
+    await settle()
+    expect(holds).toHaveLength(2)
+    expect((await h.call('seedvis:clearKey')).ok).toBe(true)
+    holds[0]()
+    holds[1]()
+    const [a, b, c] = await Promise.all(all)
+    expect(a.ok && b.ok).toBe(true) // those had left before "Xoá key"
+    expect(c).toEqual({ ok: false, code: 'no-key', message: keyRules.SEEDVIS_KEY_TEXTS.keyChanged, sent: false })
+    expect(h.net.seen.filter((s) => s.method === 'POST')).toHaveLength(2)
+    expect(h.gw.inFlightSubmits()).toBe(0)
+  })
+
+  it('a new key while a submit waits for a slot: refused (not sent with the old key, not silently with the new one)', async () => {
+    h = harness()
+    await withKey()
+    const holds: (() => void)[] = []
+    h.net.server = (ctl) => void holds.push(() => ctl.reply(jsonAnswer(202, queued202(`gen_${holds.length}`))))
+    const keys = ['407822d1-ff74-44a5-b939-9e563102e771', '407822d1-ff74-44a5-b939-9e563102e772', '407822d1-ff74-44a5-b939-9e563102e773']
+    const all = keys.map((k) => h.call('seedvis:request', createReq({ idempotencyKey: k })))
+    await settle()
+    expect(holds).toHaveLength(2)
+    expect((await saveKeyUnverified(h, OTHER_KEY)).ok).toBe(true)
+    holds[0]()
+    holds[1]()
+    const [, , c] = await Promise.all(all)
+    expect(c).toEqual({ ok: false, code: 'no-key', message: keyRules.SEEDVIS_KEY_TEXTS.keyChanged, sent: false })
+    const posts = h.net.seen.filter((s) => s.method === 'POST')
+    expect(posts).toHaveLength(2)
+    for (const p of posts) expect(p.headers.Authorization).toBe(`Bearer ${FAKE_KEY}`)
+  })
+
+  it('Xoá key while a poll waits for an api slot: nothing leaves (no-key)', async () => {
+    h = harness()
+    await withKey()
+    const stuck: Ctl[] = []
+    h.net.server = (ctl) => void stuck.push(ctl)
+    const polls = ['g1', 'g2', 'g3', 'g4'].map((id) => h.call('seedvis:request', { route: 'generations.get', id }))
+    await settle()
+    expect(stuck).toHaveLength(3)
+    expect((await h.call('seedvis:clearKey')).ok).toBe(true)
+    for (const s of stuck) s.reply(jsonAnswer(200, completed(s.req.url.split('/').pop()!.split('?')[0])))
+    const last = await polls[3]
+    expect(last).toEqual({ ok: false, code: 'no-key', message: keyRules.SEEDVIS_KEY_TEXTS.noKey })
+    expect(h.net.seen).toHaveLength(3)
   })
 
   it('downloads have their own lane: a poll goes out while two videos are still downloading', async () => {

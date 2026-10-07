@@ -667,23 +667,25 @@ function logLine(route, outcome, ms) {
 // The upload clock of a submit (when it may have reached seedvis)
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Net errors that happen before any byte of the request is written (DNS, connect, proxy, TLS, our own block). */
+/**
+ * Net errors that can ONLY happen while the connection is being set up (DNS, connect, proxy / tunnel, the
+ * certificate check, our own webRequest block): with no byte of the body reported they prove nothing was written.
+ * Never listed: errors Chromium also reports on an established socket — ERR_INTERNET_DISCONNECTED (ENETDOWN /
+ * WSAENETDOWN on a read or write), ERR_ADDRESS_UNREACHABLE (EHOSTUNREACH / ENETUNREACH), ERR_CONNECTION_TIMED_OUT
+ * (ETIMEDOUT), ERR_SSL_PROTOCOL_ERROR (BoringSSL's catch-all), ERR_NETWORK_ACCESS_DENIED: those go through the upload
+ * clock like any other error (a lost answer after the body left must never read "not sent").
+ */
 const PRE_SEND_NET_ERRORS = Object.freeze([
   'ERR_NAME_NOT_RESOLVED',
   'ERR_NAME_RESOLUTION_FAILED',
-  'ERR_INTERNET_DISCONNECTED',
-  'ERR_ADDRESS_UNREACHABLE',
   'ERR_ADDRESS_INVALID',
   'ERR_CONNECTION_REFUSED',
-  'ERR_CONNECTION_TIMED_OUT',
   'ERR_PROXY_CONNECTION_FAILED',
   'ERR_TUNNEL_CONNECTION_FAILED',
   'ERR_BLOCKED_BY_CLIENT',
-  'ERR_NETWORK_ACCESS_DENIED',
   'ERR_CERT_AUTHORITY_INVALID',
   'ERR_CERT_COMMON_NAME_INVALID',
   'ERR_CERT_DATE_INVALID',
-  'ERR_SSL_PROTOCOL_ERROR',
 ])
 
 /** The Chromium net error name in an error text ("net::ERR_…"), or null. */
@@ -692,7 +694,10 @@ function netErrorName(text) {
   return m ? m[1] : null
 }
 
-/** An error that proves nothing of the request was written (so it cannot have reached seedvis). */
+/**
+ * A connection-setup error (PRE_SEND_NET_ERRORS). It proves nothing was written only while no byte of the body was
+ * reported: the upload clock (errorSent) asks it last, never after a complete or partly sent body.
+ */
 function preSendNetError(text) {
   const n = netErrorName(text)
   return !!n && PRE_SEND_NET_ERRORS.includes(n)
@@ -724,7 +729,9 @@ const SEEDVIS_ABORT_FLOOR_BPS = MIB
  *                     and the sample was taken: 256 KiB + (time since the sample + 1 s + 1 s staleness) at
  *                     max(4 × measured rate, 1 MiB/s). A small body is therefore never "not sent" on an abort: wrong
  *                     "not sent" could charge twice, wrong "may have arrived" only asks the user to check first.
- *   errorSent(text, t) → the same for a request that failed by itself (pre-send net errors → false).
+ *   errorSent(text, t) → the same for a request that failed by itself. The clock decides first: a body reported
+ *                     complete → true whatever the error says; a connection-setup error (PRE_SEND_NET_ERRORS) counts
+ *                     as "not sent" only while no byte was reported; every other error is judged like an abort.
  *   lastByteAt()    → a LOWER bound of when the last byte left (the last report of an incomplete body, minus its
  *                     staleness; never later than the real moment — the same-key gate measures the key memory from
  *                     it); null without progress.
@@ -804,8 +811,11 @@ function createUploadClock(o) {
       return !(total - current > margin(t))
     },
     errorSent(text, t) {
-      if (preSendNetError(text)) return false
-      if (!trusted || completeAt !== null) return true
+      // the whole body left: whatever fails afterwards (Wi-Fi gone while waiting for the 202), seedvis may have it
+      if (completeAt !== null) return true
+      // a DNS / connect / proxy / certificate error before any byte: nothing was written
+      if (current === 0 && preSendNetError(text)) return false
+      if (!trusted) return true
       return !(total - current > margin(t))
     },
     lastByteAt: () => (trusted ? incompleteAt : null),

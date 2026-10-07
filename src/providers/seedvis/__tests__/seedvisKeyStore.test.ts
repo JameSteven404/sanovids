@@ -3,10 +3,10 @@
 // key check, "Lưu mà chưa kiểm tra", Xoá key) through the fake Electron. The key never leaves main: no IPC answer and
 // no log line ever contains it, and no file holds it in plaintext. Only fake keys; userData is a fresh temp folder.
 import { createHash, createHmac } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, promises as fsPromises, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { type Any, type Harness, FAKE_KEY, FakeSafeStorage, OTHER_KEY, UUID, accountInfo, completed, createReq, harness, jsonAnswer, keyRules, queued202, settle } from './fakeElectron'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type Any, type Harness, FAKE_KEY, FakeSafeStorage, OTHER_KEY, UUID, accountInfo, completed, createReq, harness, jsonAnswer, keyRules, queued202, saveKeyUnverified, settle } from './fakeElectron'
 
 const hmacHex = (salt: Uint8Array, text: string) => createHmac('sha256', salt).update(text, 'utf8').digest('hex')
 
@@ -58,6 +58,47 @@ describe('key rules (pure)', () => {
     const st = keyRules.keyStatusPayload({ hasKey: true, meta: { hint: 'x123', tag: 'abcdef012345', savedAt: 1, verifiedAt: 2 }, storage: 'safeStorage', problem: null, key: FAKE_KEY })
     expect(st).toEqual({ hasKey: true, hint: 'x123', tag: 'abcdef012345', savedAt: 1, verifiedAt: 2, storage: 'safeStorage' })
     expect(keyRules.keyStatusPayload({ hasKey: false, meta: null, problem: 'unknown' })).toEqual({ hasKey: false, hint: null, tag: null, savedAt: null, verifiedAt: null, storage: 'safeStorage', problem: 'unknown' })
+  })
+
+  it('"Lưu mà chưa kiểm tra" is offered for the one candidate whose check failed on the network, for 2 minutes', () => {
+    let t = 1000
+    const digests: string[] = []
+    const offer = keyRules.createUnverifiedOffer({
+      now: () => t,
+      digest: (c: string) => {
+        digests.push(c)
+        return createHmac('sha256', 'per-run').update(c).digest('hex')
+      },
+    })
+    expect(offer.allows(FAKE_KEY)).toBe(false) // nothing failed yet
+    offer.offer(FAKE_KEY)
+    expect(offer.allows(FAKE_KEY)).toBe(true)
+    expect(offer.allows(OTHER_KEY)).toBe(false)
+    expect(offer.allows('ghp_' + 'A'.repeat(36))).toBe(false) // another service's token from the clipboard
+    expect(offer.allows('not a key')).toBe(false)
+    t += keyRules.SEEDVIS_UNVERIFIED_OFFER_MS
+    expect(offer.allows(FAKE_KEY)).toBe(true)
+    t += 1
+    expect(offer.allows(FAKE_KEY)).toBe(false) // expired, and forgotten
+    t -= 1
+    expect(offer.allows(FAKE_KEY)).toBe(false)
+    // a later failure replaces it; clear() forgets it
+    offer.offer(FAKE_KEY)
+    offer.offer(OTHER_KEY)
+    expect(offer.allows(FAKE_KEY)).toBe(false)
+    expect(offer.allows(OTHER_KEY)).toBe(true)
+    offer.clear()
+    expect(offer.allows(OTHER_KEY)).toBe(false)
+    // a clock that went backwards never extends it
+    offer.offer(FAKE_KEY)
+    t -= 5000
+    expect(offer.allows(FAKE_KEY)).toBe(false)
+    // only well-formed candidates are digested; a failing digest offers nothing
+    expect(digests.every((d) => keyRules.keyFormatOk(d))).toBe(true)
+    const broken = keyRules.createUnverifiedOffer({ now: () => t, digest: () => { throw new Error('x') } })
+    broken.offer(FAKE_KEY)
+    expect(broken.allows(FAKE_KEY)).toBe(false)
+    expect(keyRules.SEEDVIS_UNVERIFIED_OFFER_MS).toBe(120_000)
   })
 
   it('placement-aware texts (unreadable / unavailable)', () => {
@@ -350,6 +391,100 @@ describe('the key store', () => {
     expect((await s.getKey()).code).toBe('no-key')
   })
 
+  /** Holds the first-use read of a saved key at `where` (after the decrypt) until release(). */
+  function holdAfterDecrypt(fs: MemFs, safe: FakeSafeStorage, where: string) {
+    const st = { reached: false, release: () => undefined as void }
+    const gate = new Promise<void>((resolve) => (st.release = resolve))
+    const hold = async () => {
+      st.reached = true
+      await gate
+    }
+    if (where === 'salt') {
+      const read = fs.readFile.bind(fs)
+      fs.readFile = async (p: string, enc?: string) => {
+        if (p === F.salt) await hold()
+        return read(p, enc)
+      }
+    } else if (where === 'sidecar') {
+      fs.files.delete(F.meta) // the sidecar is rebuilt after the decrypt
+      const write = fs.writeFile.bind(fs)
+      fs.writeFile = async (p: string, d: string | Uint8Array) => {
+        if (p === `${F.meta}.tmp`) await hold()
+        return write(p, d)
+      }
+    } else {
+      safe.reEncrypt = true
+      const enc = safe.encryptStringAsync.bind(safe)
+      safe.encryptStringAsync = async (t: string) => {
+        await hold()
+        return enc(t)
+      }
+    }
+    return st
+  }
+  const realWaits = { capMs: 3000, sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }
+  const until = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((resolve) => setTimeout(resolve, 1))
+    expect(cond()).toBe(true)
+  }
+
+  it.each([['salt'], ['sidecar'], ['reencrypt']])(
+    'Xoá key while the first read of the key is past the decrypt (%s): no-key — never ok without a key — and nothing comes back',
+    async (where) => {
+      const fs = new MemFs()
+      const safe = new FakeSafeStorage()
+      await store(fs, safe).save(FAKE_KEY, { verifiedAt: 5 })
+      const held = holdAfterDecrypt(fs, safe, where)
+      const s = store(fs, safe, realWaits)
+      await s.start()
+      const reading = s.getKey()
+      await until(() => held.reached)
+      const clearing = s.clear()
+      held.release()
+      expect(await reading).toEqual({ ok: false, code: 'no-key', message: keyRules.SEEDVIS_KEY_TEXTS.noKey })
+      expect(await clearing).toMatchObject({ ok: true, status: { hasKey: false } })
+      expect(fs.files.has(F.bin)).toBe(false)
+      expect(fs.files.has(F.meta)).toBe(false)
+      expect(s.status()).toEqual({ hasKey: false, hint: null, tag: null, savedAt: null, verifiedAt: null, storage: 'safeStorage' })
+      expect(s.holds(FAKE_KEY)).toBe(false)
+      expect((await s.getKey()).code).toBe('no-key')
+    },
+  )
+
+  it('a new key saved while the old one is being read: the read answers no-key, the new key is the one in use', async () => {
+    const fs = new MemFs()
+    const safe = new FakeSafeStorage()
+    await store(fs, safe).save(FAKE_KEY, {})
+    const held = holdAfterDecrypt(fs, safe, 'salt')
+    const s = store(fs, safe, realWaits)
+    await s.start()
+    const reading = s.getKey()
+    await until(() => held.reached)
+    const saving = s.save(OTHER_KEY, {})
+    held.release()
+    expect(await reading).toMatchObject({ ok: false, code: 'no-key' })
+    expect((await saving).ok).toBe(true)
+    expect(await s.getKey()).toMatchObject({ ok: true, key: OTHER_KEY })
+    expect(s.holds(FAKE_KEY)).toBe(false)
+    expect(s.holds(OTHER_KEY)).toBe(true)
+  })
+
+  it('holds(): true only for the key in use; false after Xoá key, for junk, and before any read', async () => {
+    const fs = new MemFs()
+    const safe = new FakeSafeStorage()
+    const s = store(fs, safe)
+    await s.start()
+    expect(s.holds(FAKE_KEY)).toBe(false)
+    await s.save(FAKE_KEY, {})
+    expect(s.holds(FAKE_KEY)).toBe(true)
+    for (const bad of [OTHER_KEY, '', null, undefined, 42, `${FAKE_KEY} `]) expect(s.holds(bad), String(bad)).toBe(false)
+    const restarted = store(fs, safe)
+    await restarted.start()
+    expect(restarted.holds(FAKE_KEY)).toBe(false) // not decrypted yet
+    await s.clear()
+    expect(s.holds(FAKE_KEY)).toBe(false)
+  })
+
   it('markVerified updates the sidecar of the current key only', async () => {
     const fs = new MemFs()
     const s = store(fs, new FakeSafeStorage())
@@ -429,6 +564,92 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
     expect(h.clip.text).toBe('')
   })
 
+  it('"Lưu mà chưa kiểm tra" after the clipboard changed: refused — the other text is not saved, not sent, not cleared', async () => {
+    h = harness()
+    h.clip.text = FAKE_KEY
+    h.net.server = (ctl) => ctl.fail('net::ERR_CONNECTION_RESET')
+    expect(await h.call('seedvis:pasteKey')).toMatchObject({ ok: false, code: 'network' })
+    const n = h.net.seen.length
+    // the user copied something else meanwhile: another service's token matches the key charset
+    const other = `ghp_TESTONLY${'a'.repeat(28)}`
+    h.clip.text = other
+    expect(await h.call('seedvis:pasteKey', { unverified: true })).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    h.clip.text = OTHER_KEY
+    expect(await h.call('seedvis:pasteKey', { unverified: true })).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    expect(h.clip.text).toBe(OTHER_KEY)
+    expect(h.clip.cleared).toBe(0)
+    expect(existsSync(join(h.dir, 'seedvis-key.bin'))).toBe(false)
+    expect((await h.call('seedvis:keyStatus')).hasKey).toBe(false)
+    expect(h.net.seen).toHaveLength(n)
+    // the key that failed is still in the clipboard: allowed
+    h.clip.text = FAKE_KEY
+    expect(await h.call('seedvis:pasteKey', { unverified: true })).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: null } })
+    expect(h.net.seen).toHaveLength(n)
+  })
+
+  it('"Lưu mà chưa kiểm tra" needs a check that failed on the network: never first, never after a refusal, never twice', async () => {
+    h = harness()
+    // nothing was checked
+    h.clip.text = FAKE_KEY
+    expect(await h.call('seedvis:pasteKey', { unverified: true })).toMatchObject({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    expect(await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).toMatchObject({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    expect(h.net.seen).toHaveLength(0)
+    // seedvis said "wrong key" (401): not offered, even after an earlier network failure of the same key
+    h.net.server = (ctl) => ctl.fail('net::ERR_CONNECTION_RESET')
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY })).code).toBe('network')
+    h.net.server = (ctl) => ctl.reply(jsonAnswer(401, { success: false }))
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY })).message).toBe(keyRules.SEEDVIS_KEY_TEXTS.wrongKey)
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).code).toBe('bad-key')
+    // the fallback field: only the same key, once
+    h.net.server = (ctl) => ctl.fail('net::ERR_TIMED_OUT')
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY })).code).toBe('network')
+    expect((await h.call('seedvis:setKey', { key: OTHER_KEY, unverified: true })).code).toBe('bad-key')
+    expect(await h.call('seedvis:setKey', { key: `  ${FAKE_KEY}\n`, unverified: true })).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: null } })
+    await h.call('seedvis:clearKey')
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).code).toBe('bad-key')
+    expect((await h.call('seedvis:keyStatus')).hasKey).toBe(false)
+    // Xoá key also forgets an open offer
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY })).code).toBe('network')
+    await h.call('seedvis:clearKey')
+    expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).code).toBe('bad-key')
+  })
+
+  it('Xoá key while the first request decrypts the key: the submit sends nothing (never "Bearer null")', async () => {
+    h = harness()
+    expect((await saveKeyUnverified(h)).ok).toBe(true)
+    const dir = h.dir
+    h.gw.dispose()
+    h = harness({ dir }) // a restart: the key is decrypted on its first use
+    const real = fsPromises.readFile
+    let reached = false
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const spy = vi.spyOn(fsPromises, 'readFile').mockImplementation((async (...args: Any[]) => {
+      if (String(args[0]).endsWith('seedvis-key.salt')) {
+        reached = true
+        await gate
+      }
+      return (real as Any).apply(fsPromises, args)
+    }) as Any)
+    try {
+      h.net.server = (ctl) => ctl.reply(jsonAnswer(202, queued202('gen_x')))
+      const sending = h.call('seedvis:request', createReq())
+      for (let i = 0; i < 200 && !reached; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(reached).toBe(true)
+      const clearing = h.call('seedvis:clearKey')
+      release()
+      expect(await sending).toMatchObject({ ok: false, code: 'no-key', sent: false })
+      expect((await clearing).ok).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+    await settle()
+    expect(h.net.seen).toHaveLength(0)
+    expect(existsSync(join(h.dir, 'seedvis-key.bin'))).toBe(false)
+    expect(existsSync(join(h.dir, 'seedvis-key.json'))).toBe(false)
+    expect((await h.call('seedvis:keyStatus')).hasKey).toBe(false)
+  })
+
   it('refuses clipboard text that is not a key, without any request', async () => {
     h = harness()
     for (const t of ['', 'hello', `Bearer ${FAKE_KEY}`, `${FAKE_KEY} ${FAKE_KEY}`, `${FAKE_KEY}${'x'.repeat(1000)}`]) {
@@ -450,9 +671,10 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
       return r
     }
     h.clip.text = FAKE_KEY
+    let infoDown = false
     h.net.server = (ctl) => {
       const u = ctl.req.url
-      if (u.endsWith('/account/info')) return ctl.reply(jsonAnswer(200, accountInfo({ plan: `echo ${FAKE_KEY}` })))
+      if (u.endsWith('/account/info')) return infoDown ? ctl.fail('net::ERR_CONNECTION_RESET') : ctl.reply(jsonAnswer(200, accountInfo({ plan: `echo ${FAKE_KEY}` })))
       if (u.endsWith('/account/usage')) return ctl.reply(jsonAnswer(200, { success: true, data: { credit_balance: 3, note: FAKE_KEY } }))
       if (u.endsWith('/models')) return ctl.reply(jsonAnswer(200, { success: true, data: [{ id: 'Veo-3.1', echo: `Bearer ${FAKE_KEY}` }] }))
       if (u.endsWith('/developer/generations')) return ctl.reply(jsonAnswer(202, { ...queued202('gen_1'), echo: { authorization: `Bearer ${FAKE_KEY}` } }))
@@ -471,18 +693,25 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
     await call('seedvis:isOnline')
     await call('seedvis:clearKey')
     await call('seedvis:request', { route: 'models' })
+    infoDown = true
+    await call('seedvis:setKey', { key: FAKE_KEY })
+    await call('seedvis:setKey', { key: OTHER_KEY, unverified: true }) // refused: not the key whose check failed
     await call('seedvis:setKey', { key: FAKE_KEY, unverified: true })
     await call('seedvis:keyStatus')
     await settle()
     const all = JSON.stringify(results) + '\n' + h.logs.join('\n')
-    expect(all).not.toContain(FAKE_KEY)
-    expect(all).not.toContain(FAKE_KEY.slice(8, 30)) // not even the middle of it
-    expect(results.length).toBe(13)
+    for (const k of [FAKE_KEY, OTHER_KEY]) {
+      expect(all).not.toContain(k)
+      expect(all).not.toContain(k.slice(8, 30)) // not even the middle of it
+    }
+    expect(results.length).toBe(15)
+    expect(results[12]).toMatchObject({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    expect(results[13]).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: null } })
   })
 
   it('Xoá key: files gone, the next request says no-key and sends nothing', async () => {
     h = harness()
-    expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).ok).toBe(true)
+    expect((await saveKeyUnverified(h)).ok).toBe(true)
     expect(await h.call('seedvis:clearKey')).toMatchObject({ ok: true, status: { hasKey: false } })
     expect(existsSync(join(h.dir, 'seedvis-key.bin'))).toBe(false)
     expect(existsSync(join(h.dir, 'seedvis-key.json'))).toBe(false)
@@ -494,12 +723,12 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
   it('Linux plain-text backend: refused (never plaintext); a key this account cannot decrypt: requests refused, nothing sent', async () => {
     h = harness({ platform: 'linux' })
     h.safe.backend = 'basic_text'
-    expect(await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).toMatchObject({ ok: false, code: 'storage-unavailable' })
+    expect(await saveKeyUnverified(h)).toMatchObject({ ok: false, code: 'storage-unavailable' })
     expect(readdirSync(h.dir).filter((f) => f.startsWith('seedvis-key.bin'))).toEqual([])
     h.cleanup()
     // saved by one install, read by another Windows account
     h = harness()
-    expect((await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })).ok).toBe(true)
+    expect((await saveKeyUnverified(h)).ok).toBe(true)
     const dir = h.dir
     h.gw.dispose()
     const other = harness({ dir, placement: 'installer' })
@@ -515,7 +744,7 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
 
   it('a successful GET /account/info with the stored key refreshes verifiedAt (sidecar)', async () => {
     h = harness()
-    await h.call('seedvis:setKey', { key: FAKE_KEY, unverified: true })
+    expect((await saveKeyUnverified(h)).ok).toBe(true)
     expect((await h.call('seedvis:keyStatus')).verifiedAt).toBeNull()
     h.net.server = (ctl) => ctl.reply(jsonAnswer(200, accountInfo()))
     await h.call('seedvis:request', { route: 'account.info' })

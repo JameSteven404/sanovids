@@ -34,6 +34,8 @@ const SEEDVIS_SALT_BYTES = 32
 const SEEDVIS_TAG_HEX = 12
 const TAG_RE = /^[0-9a-f]{12}$/
 const HINT_RE = /^[A-Za-z0-9_-]{4}$/
+/** "Lưu mà chưa kiểm tra" stays possible this long after the candidate's check failed with a network error. */
+const SEEDVIS_UNVERIFIED_OFFER_MS = 2 * 60 * 1000
 
 const SEEDVIS_KEY_TEXTS = Object.freeze({
   noKey: 'Chưa nhập API key seedvis — mở Cài đặt › seedvis.com.',
@@ -45,6 +47,9 @@ const SEEDVIS_KEY_TEXTS = Object.freeze({
   verifyNetwork: 'Không kiểm tra được key vì lỗi mạng — chưa lưu. Nếu bạn chắc key đúng, bấm “Lưu mà chưa kiểm tra”.',
   verifyBusy: 'seedvis đang bận nên chưa kiểm tra được key — chưa lưu. Thử lại sau, hoặc bấm “Lưu mà chưa kiểm tra”.',
   verifyOdd: 'seedvis trả lời lạ khi kiểm tra key — chưa lưu. Thử lại sau.',
+  unverifiedRefused:
+    '“Lưu mà chưa kiểm tra” chỉ dùng được cho đúng key vừa bị lỗi mạng khi kiểm tra, trong vòng 2 phút — chưa lưu. Dán hoặc nhập lại key để SanoVids kiểm tra.',
+  keyChanged: 'API key seedvis vừa được xoá hoặc thay trong lúc cảnh chờ gửi — chưa gửi gì, không bị trừ credit. Chạy lại cảnh để gửi bằng key hiện tại.',
   saveFailed: 'Không ghi được key vào máy (lỗi ghi tệp) — chưa lưu. Thử lại.',
   superseded: 'Key vừa được xoá hoặc thay trong lúc lưu — chưa lưu key này.',
   notCleared:
@@ -177,6 +182,48 @@ function keyStatusPayload(s) {
   return out
 }
 
+/**
+ * "Lưu mà chưa kiểm tra" (plan §10.3) is offered only for the candidate whose key check just failed with a network
+ * error — never for whatever the clipboard / field holds later (another service's token would be saved and sent to
+ * seedvis as a Bearer key). Main remembers a keyed digest of that one candidate (never the key) for
+ * SEEDVIS_UNVERIFIED_OFFER_MS. deps: { now, digest(candidate) → string (main: HMAC with a per-run random key) }
+ *   offer(candidate)   its check failed with code 'network' (replaces any earlier offer)
+ *   allows(candidate)  → may it be saved without a check now?
+ *   clear()            any other check outcome, a save, Xoá key
+ */
+function createUnverifiedOffer(deps) {
+  const now = deps.now
+  let held = null // { digest, at }
+  const digestOf = (candidate) => {
+    if (!keyFormatOk(candidate)) return null
+    try {
+      const d = deps.digest(candidate)
+      return typeof d === 'string' && d.length >= 32 ? d : null
+    } catch {
+      return null
+    }
+  }
+  return {
+    offer(candidate) {
+      const d = digestOf(candidate)
+      held = d ? { digest: d, at: now() } : null
+    },
+    allows(candidate) {
+      if (!held) return false
+      const age = now() - held.at
+      if (!(age >= 0 && age <= SEEDVIS_UNVERIFIED_OFFER_MS)) {
+        held = null
+        return false
+      }
+      const d = digestOf(candidate)
+      return d !== null && d === held.digest
+    },
+    clear() {
+      held = null
+    },
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The key store
 // ---------------------------------------------------------------------------------------------------------------
@@ -193,7 +240,9 @@ function keyStatusPayload(s) {
  *   status()       → SeedvisKeyStatus ('unknown' until start() ran or while the key was not decrypted yet).
  *   getKey()       → { ok: true, key, tag, hint } | { ok: false, code: 'no-key' | 'key-unreadable', message }.
  *                    Decrypts lazily once (a Keychain prompt waits for the user); 'unreadable' sticks until a new
- *                    key is saved or the key is cleared.
+ *                    key is saved or the key is cleared. A clear / save while it awaits → 'no-key', nothing written.
+ *                    ok only with a well-formed key.
+ *   holds(key)     → is this still the key in use (not cleared / replaced since)? Synchronous.
  *   save(key, { verifiedAt }) → { ok: true, status } | { ok: false, code: 'bad-key' | 'storage-unavailable' |
  *                    'storage-failed', message }
  *   clear()        → { ok: true, status } | { ok: false, code: 'storage-failed', message } (the key is gone from memory
@@ -371,11 +420,16 @@ function createSeedvisKeyStore(deps) {
     problem = 'unknown'
   }
 
+  /** The key in memory as getKey's answer; never ok without a well-formed key. */
+  const keyAnswer = (k) => (keyFormatOk(k) ? { ok: true, key: k, tag: meta ? meta.tag : null, hint: keyHint(k) } : fail('no-key', SEEDVIS_KEY_TEXTS.noKey))
+
   async function getKeyNow() {
-    if (key) return { ok: true, key, tag: meta ? meta.tag : null, hint: keyHint(key) }
+    if (key) return keyAnswer(key)
     if (!hasFile) return fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
     if (problem === 'unreadable') return unreadable()
     const at = epoch
+    // "Xoá key" / a new save while this read awaits: nothing is written or adopted, and nothing is returned
+    const moved = () => at !== epoch
     if (await exists(marker)) {
       await dropAll()
       hasFile = false
@@ -412,30 +466,34 @@ function createSeedvisKeyStore(deps) {
     } catch {
       payload = null // another Windows account / a reset Local State / a damaged file / a refused Keychain prompt
     }
-    if (at !== epoch) return key ? { ok: true, key, tag: meta ? meta.tag : null, hint: keyHint(key) } : fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
+    if (moved()) return fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
     if (!payload) {
       problem = 'unreadable'
       return unreadable()
     }
-    key = payload.key
-    problem = null
-    const hint = keyHint(key)
+    const decrypted = payload.key // held locally until adopted (only while the epoch is unchanged)
+    const hint = keyHint(decrypted)
     const salt = await readSalt(true)
-    const tag = salt ? keyTag(salt, key, hmacHex) : meta && meta.hint === hint ? meta.tag : null
+    if (moved()) return fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
+    key = decrypted
+    problem = null
+    const tag = salt ? keyTag(salt, decrypted, hmacHex) : meta && meta.hint === hint ? meta.tag : null
     if (!meta || meta.hint !== hint || meta.tag !== tag) {
       meta = { hint, tag, savedAt: payload.savedAt, verifiedAt: Math.max(payload.verifiedAt || 0, (meta && meta.hint === hint && meta.verifiedAt) || 0) || null }
       await writeMeta(meta)
+      if (moved()) return fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
     }
     if (reEncrypt) {
       // the same payload under the new encryption key (not a new save: savedAt unchanged)
       try {
         const fresh = await crypto.encryptStringAsync(keyPayloadText(payload))
-        if (at === epoch) await writeAtomic(file, fresh)
+        if (!moved()) await writeAtomic(file, fresh)
       } catch {
         /* the old file still decrypts */
       }
+      if (moved()) return fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
     }
-    return { ok: true, key, tag: meta.tag, hint }
+    return key === decrypted ? keyAnswer(decrypted) : fail('no-key', SEEDVIS_KEY_TEXTS.noKey)
   }
 
   async function saveNow(candidate, opts, at) {
@@ -495,6 +553,13 @@ function createSeedvisKeyStore(deps) {
     getKey() {
       return run(getKeyNow, fail('key-unreadable', keyUnreadableText(platform, placement())))
     },
+    /**
+     * Is `candidate` (a getKey() answer) still the key in use — not cleared ("Xoá key") or replaced since? Checked
+     * right before a request leaves (a submit may wait minutes for a slot). Synchronous; never returns the key.
+     */
+    holds(candidate) {
+      return key !== null && keyFormatOk(candidate) && candidate === key
+    },
     save(candidate, opts) {
       const at = ++epoch
       return run(() => saveNow(candidate, opts, at), fail('storage-failed', SEEDVIS_KEY_TEXTS.saveFailed))
@@ -533,6 +598,7 @@ module.exports = {
   SEEDVIS_KEY_INPUT_MAX,
   SEEDVIS_SALT_BYTES,
   SEEDVIS_TAG_HEX,
+  SEEDVIS_UNVERIFIED_OFFER_MS,
   SEEDVIS_KEY_TEXTS,
   keyUnavailableText,
   keyUnreadableText,
@@ -546,5 +612,6 @@ module.exports = {
   parseKeyPayload,
   keyPayloadText,
   keyStatusPayload,
+  createUnverifiedOffer,
   createSeedvisKeyStore,
 }

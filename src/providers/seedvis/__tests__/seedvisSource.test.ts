@@ -102,7 +102,7 @@ describe('electron/seedvis.cjs', () => {
     // the only use of an exception's text is recognising a net error name (other .message are our own fixed texts)
     expect([...gateway.matchAll(/\b(?:e|err|error|ex)\.message\b/g)]).toHaveLength(1)
     expect(gateway).toContain("const errorText = (e) => String((e && e.message) || e || '')")
-    for (const m of gateway.matchAll(/rules\.failure\(\w+\.code, (\w+)\.message/g)) expect(['k', 'checked', 'saved', 'r']).toContain(m[1])
+    for (const m of gateway.matchAll(/rules\.failure\(\w+\.code, (\w+)\.message/g)) expect(['k', 'again', 'checked', 'saved', 'r']).toContain(m[1])
     for (const m of gateway.matchAll(/errorText\(e\)/g)) expect(gateway.slice(m.index! - 40, m.index!)).toMatch(/(const text = |offlineNetError\()$/)
     // log lines: the fixed rule line, or a host only
     for (const m of gateway.matchAll(/\blog\((.*)\)\s*$/gm)) expect(m[1]).toMatch(/^rules\.logLine\(|^`\[SanoVids\] seedvis (result host|download) \$\{rules\.hostOf\(/)

@@ -11,7 +11,7 @@ import {
 } from '../contract'
 import {
   type Any, type Ctl, type Harness, FAKE_KEY, UUID, accountInfo, completed, createReq, flush, harness, incoming, jpeg,
-  jsonAnswer, mainPump, mp4, png, queued202, rules, seedanceBody, seedvisModule, settle, veoBody, webp,
+  jsonAnswer, mainPump, mp4, png, queued202, rules, saveKeyUnverified, seedanceBody, seedvisModule, settle, veoBody, webp,
 } from './fakeElectron'
 
 const MIB = 1024 * 1024
@@ -500,21 +500,49 @@ describe('the upload clock (when a submit may have reached seedvis)', () => {
     expect(rules.abortFailure('no-progress-timeout', true, null)).toMatchObject({ code: 'timeout', sent: true, lastByteAt: null })
   })
 
-  it('errors: pre-send net errors are "not sent"; anything after a complete upload "may have arrived"', () => {
+  /** Errors Chromium also reports on an established socket (MapSystemError on a read / write, BoringSSL's catch-all). */
+  const MID_STREAM_ERRORS = ['net::ERR_INTERNET_DISCONNECTED', 'net::ERR_ADDRESS_UNREACHABLE', 'net::ERR_SSL_PROTOCOL_ERROR', 'net::ERR_CONNECTION_TIMED_OUT', 'net::ERR_NETWORK_ACCESS_DENIED']
+  const SETUP_ERRORS = ['net::ERR_NAME_NOT_RESOLVED', 'net::ERR_CONNECTION_REFUSED', 'net::ERR_BLOCKED_BY_CLIENT', 'net::ERR_CERT_AUTHORITY_INVALID', 'net::ERR_PROXY_CONNECTION_FAILED']
+
+  it('errors: connection-setup errors before any byte are "not sent"; the clock decides everything else', () => {
     const total = 30 * MIB
     const c = rules.createUploadClock({ ...base, total, startedAt: 0 })
-    for (const e of ['net::ERR_NAME_NOT_RESOLVED', 'net::ERR_INTERNET_DISCONNECTED', 'net::ERR_CONNECTION_REFUSED', 'net::ERR_BLOCKED_BY_CLIENT', 'net::ERR_CERT_AUTHORITY_INVALID']) {
-      expect(c.errorSent(e, 100), e).toBe(false)
-    }
+    for (const e of SETUP_ERRORS) expect(c.errorSent(e, 100), e).toBe(false)
+    // errors that can also end an established connection prove nothing without a trusted sample
+    for (const e of MID_STREAM_ERRORS) expect(c.errorSent(e, 100), e).toBe(true)
     expect(c.errorSent('net::ERR_CONNECTION_RESET', 100)).toBe(true) // nothing trusted yet
     c.sample(p(MIB, total), 1000)
     expect(c.errorSent('net::ERR_CONNECTION_RESET', 1100)).toBe(false) // 29 MiB left
+    for (const e of MID_STREAM_ERRORS) expect(c.errorSent(e, 1100), e).toBe(false) // far from complete: not sent
+    // a byte was reported: even a "setup" name goes through the clock (here: still far from complete)
+    expect(c.errorSent('net::ERR_NAME_NOT_RESOLVED', 1100)).toBe(false)
     c.sample(p(total, total), 2000)
     expect(c.errorSent('net::ERR_CONNECTION_RESET', 2100)).toBe(true)
-    expect(c.errorSent('net::ERR_NAME_NOT_RESOLVED', 2100)).toBe(false)
     expect(rules.netErrorName('Error: net::ERR_TIMED_OUT x')).toBe('ERR_TIMED_OUT')
     expect(rules.offlineNetError('net::ERR_INTERNET_DISCONNECTED')).toBe(true)
     expect(rules.offlineNetError('net::ERR_CONNECTION_RESET')).toBe(false)
+  })
+
+  it('anything after a complete upload "may have arrived" — whatever the net error name (small and big bodies)', () => {
+    for (const total of [2048, 30 * MIB]) {
+      const c = rules.createUploadClock({ ...base, total, startedAt: 0 })
+      c.sample(p(0, total, false), 250)
+      c.sample(p(total, total), 1000) // body fully uploaded, waiting for the 202
+      for (const e of [...MID_STREAM_ERRORS, ...SETUP_ERRORS, 'net::ERR_CONNECTION_RESET', 'net::ERR_NETWORK_CHANGED', 'net::ERR_FAILED', 'odd']) {
+        expect(c.errorSent(e, 1100), `${total} ${e}`).toBe(true)
+        expect(c.errorSent(e, 60_000), `${total} ${e} later`).toBe(true)
+      }
+    }
+    // the list holds connection-setup errors only
+    for (const e of MID_STREAM_ERRORS) expect(rules.PRE_SEND_NET_ERRORS, e).not.toContain(rules.netErrorName(e))
+    for (const e of SETUP_ERRORS) expect(rules.preSendNetError(e), e).toBe(true)
+  })
+
+  it('a partly sent body near its end is "may have arrived" even with a setup error name', () => {
+    const total = 20 * MIB
+    const c = rules.createUploadClock({ ...base, total, startedAt: 0 })
+    c.sample(p(total - 100_000, total), 1000)
+    for (const e of [...SETUP_ERRORS, ...MID_STREAM_ERRORS]) expect(c.errorSent(e, 1100), e).toBe(true)
   })
 
   it('stale progress reports never move lastByteAt past the real last byte (property, 500 uploads)', () => {
@@ -674,9 +702,9 @@ describe('result downloads (createSeedvisDownloads, main’s pump)', () => {
 // The wiring (electron/seedvis.cjs) with a fake Electron
 // ---------------------------------------------------------------------------------------------------------------
 
-/** Saves the fake key without a network check (the fallback field, "Lưu mà chưa kiểm tra"). */
+/** Saves the fake key without a reachable seedvis (the field's check fails on the network, "Lưu mà chưa kiểm tra"). */
 async function withKey(h: Harness, key = FAKE_KEY) {
-  const r = await h.call('seedvis:setKey', { key, unverified: true })
+  const r = await saveKeyUnverified(h, key)
   expect(r.ok, JSON.stringify(r)).toBe(true)
 }
 
@@ -973,6 +1001,49 @@ describe('seedvis.cjs: timeouts and the same-key deadline (fake timers)', () => 
     expect(total).toBeGreaterThan(30 * MIB)
     expect(r).toEqual({ ok: false, code: 'deadline', message: rules.SEEDVIS_TEXTS.deadline, sent: false })
     expect(h.net.requests[0].aborted).toBe(true)
+  })
+
+  /** A submit whose server reports the body fully uploaded, then fails with `name` once the clock sampled it. */
+  async function failAfterUpload(name: string, over: Record<string, unknown>, current?: (total: number) => number) {
+    let ctl: Ctl | null = null
+    h.net.server = (c) => {
+      const total = c.req.body.length
+      c.progress({ active: true, started: true, current: current ? current(total) : total, total })
+      ctl = c
+    }
+    let r: Any = null
+    void h.call('seedvis:request', createReq(over)).then((x) => (r = x))
+    await tickUntil(() => ctl !== null || r !== null, 2000)
+    expect(r).toBeNull() // the POST is out
+    await vi.advanceTimersByTimeAsync(500) // two progress samples (every 250 ms) reached the clock
+    await flush()
+    ctl!.fail(name)
+    await tickUntil(() => r !== null, 2000)
+    return r
+  }
+
+  it('the connection drops while waiting for the 202 (body fully uploaded) → lost answer, sent: true — never "offline" / not sent', async () => {
+    await withKey(h)
+    const names = ['net::ERR_INTERNET_DISCONNECTED', 'net::ERR_ADDRESS_UNREACHABLE', 'net::ERR_SSL_PROTOCOL_ERROR', 'net::ERR_CONNECTION_TIMED_OUT', 'net::ERR_NETWORK_ACCESS_DENIED', 'net::ERR_NAME_NOT_RESOLVED']
+    for (const [i, name] of names.entries()) {
+      const r = await failAfterUpload(name, { idempotencyKey: `407822d1-ff74-44a5-b939-9e563102e7${10 + i}` })
+      expect(r, name).toMatchObject({ ok: false, code: 'network', sent: true, message: rules.SEEDVIS_TEXTS.lostAnswer })
+      expect('lastByteAt' in r, name).toBe(true)
+    }
+    // a body over 30 MiB too
+    const imgs = [0, 1, 2].map((i) => ({ field: 'reference_images', index: i, mime: 'image/png', bytes: png(8 * MIB) }))
+    const big = await failAfterUpload('net::ERR_INTERNET_DISCONNECTED', { idempotencyKey: '407822d1-ff74-44a5-b939-9e563102e799', body: seedanceBody({ mode: 'image-to-video' }), images: imgs })
+    expect(big).toMatchObject({ ok: false, code: 'network', sent: true, message: rules.SEEDVIS_TEXTS.lostAnswer })
+    expect(h.net.seen.at(-1)!.body.length).toBeGreaterThan(30 * MIB)
+    // main never re-sends: one POST per submit
+    expect(h.net.seen.filter((s) => s.method === 'POST')).toHaveLength(names.length + 1)
+  })
+
+  it('the connection drops with most of a big body still to upload → offline, not sent (the clock proves it)', async () => {
+    await withKey(h)
+    const imgs = [0, 1, 2].map((i) => ({ field: 'reference_images', index: i, mime: 'image/png', bytes: png(8 * MIB) }))
+    const r = await failAfterUpload('net::ERR_INTERNET_DISCONNECTED', { body: seedanceBody({ mode: 'image-to-video' }), images: imgs }, () => 256 * 1024)
+    expect(r).toEqual({ ok: false, code: 'offline', message: rules.SEEDVIS_TEXTS.offline, sent: false })
   })
 
   it('an upload stalled for 60 s with most of a big body left → timeout, not sent', async () => {

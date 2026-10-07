@@ -405,6 +405,27 @@ export function harness(o: HarnessOptions = {}): Harness {
   return h
 }
 
+/**
+ * Saves `key` the way a user can while seedvis is unreachable: the field's key check fails with a network error,
+ * then "Lưu mà chưa kiểm tra" sends the same key. The failed check is removed from net.seen / net.requests / logs so a
+ * test counts only its own requests. → the second setKey answer (or the first one when it did not fail with 'network').
+ */
+export async function saveKeyUnverified(h: Harness, key: string = FAKE_KEY): Promise<Any> {
+  const server = h.net.server
+  const counts = { seen: h.net.seen.length, requests: h.net.requests.length, logs: h.logs.length }
+  h.net.server = (ctl) => ctl.fail('net::ERR_CONNECTION_RESET')
+  try {
+    const checked = await h.call('seedvis:setKey', { key })
+    if (checked.ok || checked.code !== 'network') return checked
+    return await h.call('seedvis:setKey', { key, unverified: true })
+  } finally {
+    h.net.server = server
+    h.net.seen.splice(counts.seen)
+    h.net.requests.splice(counts.requests)
+    h.logs.splice(counts.logs)
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Sample data
 // ---------------------------------------------------------------------------------------------------------------

@@ -128,6 +128,9 @@ function setupSeedvis(deps) {
     placement: deps.placement,
   })
   void keyStore.start()
+  /** "Lưu mà chưa kiểm tra": only for the candidate whose check just failed with a network error (keyed digest). */
+  const offerSecret = crypto.randomBytes(32) // this run only, never stored
+  const unverifiedOffer = keyRules.createUnverifiedOffer({ now, digest: (c) => crypto.createHmac('sha256', offerSecret).update(c, 'utf8').digest('hex') })
 
   const lanes = rules.createSeedvisLanes({ now })
   /** generationId → { urls, at }: the result URLs of the last answers (downloads only ever use these). */
@@ -380,13 +383,15 @@ function setupSeedvis(deps) {
       if (blocked > 0) res = rules.failure('rate-limited', T.rateLimited, { sent: false, retryAfterMs: blocked })
       else {
         const k = await keyStore.getKey()
-        if (!k.ok) res = rules.failure(k.code, k.message, { sent: false })
+        if (!k.ok || !keyRules.keyFormatOk(k.key)) res = rules.failure(k.ok ? 'no-key' : k.code, k.ok ? KT.noKey : k.message, { sent: false })
         else {
           key = k
           res = await lanes.run(
             'submit',
             async () => {
               if (quitPending) return rules.failure('busy', T.quitting, { sent: false })
+              // "Xoá key" (or a new key) while this waited for a slot: nothing leaves with the old key
+              if (!keyStore.holds(k.key)) return rules.failure('no-key', KT.keyChanged, { sent: false })
               const b = lanes.blockedFor('submit')
               if (b > 0) return rules.failure('rate-limited', T.rateLimited, { sent: false, retryAfterMs: b })
               const wait = lanes.submitWaitMs()
@@ -434,17 +439,24 @@ function setupSeedvis(deps) {
     const blocked = lanes.blockedFor(m.lane)
     if (blocked > 0) return rules.failure('rate-limited', T.rateLimited, { retryAfterMs: blocked })
     const k = await keyStore.getKey()
-    if (!k.ok) return rules.failure(k.code, k.message)
+    if (!k.ok || !keyRules.keyFormatOk(k.key)) return k.ok ? rules.failure('no-key', KT.noKey) : rules.failure(k.code, k.message)
+    let used = k
     const res = await lanes.run(m.lane, async () => {
       const b = lanes.blockedFor(m.lane)
       if (b > 0) return rules.failure('rate-limited', T.rateLimited, { retryAfterMs: b })
-      return apiRequest({ method: m.method, url: m.url, key: k.key, timeoutMs: TIMEOUTS.apiMs })
+      // "Xoá key" / a new key while this waited for a slot: the current key, or nothing leaves
+      if (!keyStore.holds(used.key)) {
+        const again = await keyStore.getKey()
+        if (!again.ok || !keyStore.holds(again.key)) return again.ok ? rules.failure('no-key', KT.noKey) : rules.failure(again.code, again.message)
+        used = again
+      }
+      return apiRequest({ method: m.method, url: m.url, key: used.key, timeoutMs: TIMEOUTS.apiMs })
     })
-    const out = finishAnswer(m.name, m.lane, res, k.key, m.hasId ? raw.id : null)
+    const out = finishAnswer(m.name, m.lane, res, used.key, m.hasId ? raw.id : null)
     if (out.ok && m.name === 'account.info' && out.status >= 200 && out.status < 300 && out.json) {
       const d = out.json.data
       if (Number.isFinite(d.rate_limit_per_minute)) lanes.setSubmitLimit(d.rate_limit_per_minute)
-      if (d.api_enabled !== false) void keyStore.markVerified(k.tag, now())
+      if (d.api_enabled !== false) void keyStore.markVerified(used.tag, now())
     }
     note(m.name, out, t0)
     return out
@@ -469,15 +481,26 @@ function setupSeedvis(deps) {
     return { ok: true }
   }
 
+  /**
+   * Checks then saves a candidate. `unverified` ("Lưu mà chưa kiểm tra") skips the check ONLY for the candidate whose
+   * check just failed with a network error (≤ 2 min ago): anything else the clipboard / field holds now is refused.
+   */
   async function adoptKey(candidate, unverified) {
     let verifiedAt = null
-    if (!unverified) {
+    if (unverified) {
+      if (!unverifiedOffer.allows(candidate)) return rules.failure('bad-key', KT.unverifiedRefused)
+    } else {
+      unverifiedOffer.clear() // a new check: only its own outcome may offer "Lưu mà chưa kiểm tra"
       const v = await verifyKey(candidate)
-      if (!v.ok) return v
+      if (!v.ok) {
+        if (v.code === 'network') unverifiedOffer.offer(candidate)
+        return v
+      }
       verifiedAt = now()
     }
     const saved = await keyStore.save(candidate, { verifiedAt })
     if (!saved.ok) return rules.failure(saved.code, saved.message)
+    unverifiedOffer.clear()
     return { ok: true, status: keyStore.status() }
   }
 
@@ -502,7 +525,10 @@ function setupSeedvis(deps) {
     return r
   }
 
-  /** The fallback field: the key crosses once (then the page clears its field and state). */
+  /**
+   * The fallback field: the key crosses once (then the page clears its field and state). "Lưu mà chưa kiểm tra" sends
+   * the same key again with `unverified` — accepted only within 2 min of that key's check failing with a network error.
+   */
   async function setKey(arg) {
     const raw = isPlainObject(arg) && typeof arg.key === 'string' ? arg.key : ''
     const candidate = keyRules.normalizeKeyInput(raw)
@@ -511,6 +537,7 @@ function setupSeedvis(deps) {
   }
 
   async function clearKey() {
+    unverifiedOffer.clear()
     const r = await keyStore.clear()
     return r.ok ? { ok: true, status: keyStore.status() } : rules.failure(r.code, r.message)
   }
