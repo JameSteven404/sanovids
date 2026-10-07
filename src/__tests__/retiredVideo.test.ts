@@ -117,7 +117,8 @@ describe('nothing links a video to a scene any more', () => {
     expect(parseEdgeId(edgeId('ref', 'a', 's1'))).toEqual({ kind: 'ref', from: 'a', to: 's1' })
     expect(parseEdgeId(edgeId('save', 't1', 'f1'))).toEqual({ kind: 'save', from: 't1', to: 'f1' })
   })
-  it('refusing a video dropped on a scene links nothing and says where a video goes', () => {
+  // Only the refusal itself (what a video wire / prompt-editor drop calls): no drop handler is exercised here.
+  it('refuseTakesAsReference links nothing and says where a video goes', () => {
     load(project([scene('s1', 1), scene('s2', 2)]), [take('t1', 's1')])
     const before = st().project
     refuseTakesAsReference()

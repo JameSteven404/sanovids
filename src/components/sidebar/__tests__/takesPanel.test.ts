@@ -31,7 +31,7 @@ describe('windowed take row actions', () => {
     vi.useRealTimers()
   })
 
-  it('carries selected completed takes even when their rows are not mounted; dropping them on a scene links nothing', () => {
+  it('carries selected completed takes even when their rows are not mounted; the reference refusal links nothing', () => {
     useUI.getState().select(['older', 'newer', 'running', 'target'])
     const data = new Map<string, string>()
     const dt = { effectAllowed: 'none', setData: (key: string, value: string) => data.set(key, value), getData: (key: string) => data.get(key) ?? '' } as unknown as DataTransfer
@@ -39,7 +39,8 @@ describe('windowed take row actions', () => {
     expect(dt.effectAllowed).toBe('all')
     expect(readIds(dt, TAKES_MIME)).toEqual(['older', 'newer'])
     expect(useUI.getState().draggingTakeIds).toEqual(['older', 'newer'])
-    // Reference videos were retired: dropping a video on a scene only says where it goes.
+    // Reference videos were retired: the refusal (called by a video wire / prompt-editor drop; no drop handler is
+    // exercised here) only says where a video goes.
     refuseTakesAsReference()
     expect(useProject.getState().project.scenes[1].videoRefs).toEqual([])
     expect(useUI.getState().toasts.at(-1)?.text).toBe(`${VIDEO_NOT_REFERENCE_TEXT}.`)

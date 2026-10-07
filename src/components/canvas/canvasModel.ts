@@ -267,10 +267,8 @@ export function takeLayoutSig(takes: Take[]): string {
 
 export interface TakeLayoutItem {
   id: string
-  /** The take's own scene. */
+  /** The take's own scene. `items` lists a scene's shown takes in row order (by number); see takeSlots. */
   sceneId: string
-  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene). */
-  index: number
   /** Position the user dragged the node to; null = auto. */
   explicit: XY | null
   /** Takes of the same scene hidden by the "chosen only" display (badge "+N"; only on the chosen take). */
@@ -302,17 +300,15 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
     const chosen = idx.chosen.get(s.id)
     const shown = mode === 'chosen' ? list.filter((t) => t === chosen) : list
     const hidden = list.length - shown.length
-    shown.forEach((t, index) =>
+    for (const t of shown)
       add({
         id: t.id,
         sceneId: s.id,
-        index,
         explicit: t.position,
         hidden: t === chosen ? hidden : 0,
         status: t.status,
         size: t.size ?? null,
-      }),
-    )
+      })
   }
   return { items, byId }
 }

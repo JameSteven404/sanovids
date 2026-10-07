@@ -217,14 +217,17 @@ describe('layoutTakes', () => {
   const scenes = [scene('s1'), scene('s2', { videoRefs: ['a1'] })]
   const takes = [take('a1', 's1', 1), take('a2', 's1', 2), take('a3', 's1', 3, { status: 'failed' }), take('b1', 's2', 1), take('orphan', 'gone', 1)]
 
-  it('all: every take of an existing scene, slot = rank by number', () => {
+  it('all: every take of an existing scene, in row order (scene order, then take number)', () => {
     const l = layoutTakes(takes, scenes, 'all')
-    expect(l.items.map((i) => [i.id, i.index])).toEqual([
-      ['a1', 0],
-      ['a2', 1],
-      ['a3', 2],
-      ['b1', 0],
+    expect(l.items.map((i) => [i.id, i.sceneId])).toEqual([
+      ['a1', 's1'],
+      ['a2', 's1'],
+      ['a3', 's1'],
+      ['b1', 's2'],
     ])
+    // Row order follows the take number, not the order the takes are stored in (takeSlots relies on it).
+    const shuffled = [takes[2], takes[3], takes[0], takes[1]]
+    expect(layoutTakes(shuffled, scenes, 'all').items.map((i) => i.id)).toEqual(['a1', 'a2', 'a3', 'b1'])
     expect(l.byId.has('orphan')).toBe(false)
     expect(l.items.every((i) => i.hidden === 0)).toBe(true)
   })
@@ -232,9 +235,9 @@ describe('layoutTakes', () => {
   it('chosen: only the chosen take, with the hidden count on it (an old @video link keeps nothing: reference videos were retired)', () => {
     const l = layoutTakes(takes, scenes, 'chosen')
     // s1: chosen = a2 (latest completed); a1 and a3 are hidden even though s2 once used a1 as @video.
-    expect(l.items.map((i) => [i.id, i.index, i.hidden])).toEqual([
-      ['a2', 0, 2],
-      ['b1', 0, 0],
+    expect(l.items.map((i) => [i.id, i.hidden])).toEqual([
+      ['a2', 2],
+      ['b1', 0],
     ])
   })
 
@@ -253,7 +256,7 @@ describe('layoutTakes', () => {
     const list = [take('a1', 's1', 1), take('o1', 'gone', 1, { position: { x: 7, y: 8 } }), take('o2', 'gone', 2), take('o3', 'gone', 3)]
     for (const mode of ['all', 'chosen'] as const) {
       const l = layoutTakes(list, withOldLinks, mode)
-      expect(l.items.map((i) => [i.id, i.sceneId, i.index, i.hidden])).toEqual([['a1', 's1', 0, 0]])
+      expect(l.items.map((i) => [i.id, i.sceneId, i.hidden])).toEqual([['a1', 's1', 0]])
       for (const id of ['o1', 'o2', 'o3']) expect(l.byId.has(id)).toBe(false)
     }
   })

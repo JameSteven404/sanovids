@@ -107,8 +107,9 @@ describe('layoutRowHeights', () => {
     const old = [scene('old', 1, { size: { w: 280, h: 200 } })]
     expect(layoutRowHeights(old, layoutTakes([], old, 'all'), () => 304)).toEqual({ old: 304 })
   })
-  it('leaves out rows with nothing known and ignores orphans (they sit next to another scene)', () => {
-    const scenes = [scene('s2', 1, { videoRefs: ['t1'] })]
+  it('leaves out rows with nothing known; a take of a deleted scene adds no row, whatever old @video links name it', () => {
+    // Old link kept inert (core/migrate moves a pre-0.6.0 `videoRefs` here); also the raw unmigrated field.
+    const scenes = [scene('s2', 1, { legacyVideoRefs: ['t1'], videoRefs: ['t1'] })]
     const takes = [take('t1', 'gone', 1, { size: { w: 224, h: 520 } })]
     expect(layoutRowHeights(scenes, layoutTakes(takes, scenes, 'all'), () => undefined)).toEqual({})
   })
