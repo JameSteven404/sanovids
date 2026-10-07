@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { createRng, parseSeed, randomSeed, at } from '../rng'
 import { cpLength, textOfLength, edgeName } from '../corpus'
 import { generateProject, TIER_SIZE, imageIdOf } from '../synth'
-import { checkProject, checkStructural, isSubsequence, videoTokens, checkMigrate } from '../invariants'
+import { allowlistBreach, checkProject, checkStructural, isSubsequence, videoTokens, checkMigrate } from '../invariants'
 import { summaryText, toMarkdown, toJSON, reportFileName } from '../report'
 import { SCENARIOS, SCENARIO_BY_ID } from '../scenarios'
 import { ACTION_BY_ID } from '../actions'
@@ -113,6 +113,26 @@ describe('invariants', () => {
   it('isSubsequence', () => {
     expect(isSubsequence('ace', 'abcde')).toBe(true)
     expect(isSubsequence('aec', 'abcde')).toBe(false)
+  })
+})
+
+describe('S2 on the request log (allowlistBreach)', () => {
+  const stream = '/api/video-jobs/j1/stream'
+  it('a request refused as outside the allowlist is a breach', () => {
+    const seen = new Set<string>()
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: null, path: '/api/admin' }, seen)).toBe(true)
+    // the video stream asked through canvasapp:request (never allowed there) is one too
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
+    expect(allowlistBreach({ fault: null, endpoint: 'jobs', path: '/api/video-jobs' }, seen)).toBe(false)
+  })
+  it('the gateway refusing an injected redirect to plain http of that download is not — once per redirect', () => {
+    const seen = new Set<string>()
+    expect(allowlistBreach({ fault: 'http-redirect', endpoint: 'job-stream', path: stream }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
+    // another path's redirect excuses nothing here
+    expect(allowlistBreach({ fault: 'http-redirect', endpoint: 'job-stream', path: '/api/video-jobs/j2/stream' }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
   })
 })
 

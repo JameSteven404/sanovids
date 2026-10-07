@@ -8,7 +8,7 @@ import { useDevLog } from '../../providers/dev'
 import { clearHistory, useProject } from '../../store/project'
 import { currentRestartWork, useRuns } from '../../store/runs'
 import { ACTION_BY_ID, ACTIONS } from './actions'
-import { checkEngine, checkHistorySize, checkProject, checkStructural, JobAudit, scenesWithVideoTokens } from './invariants'
+import { allowlistBreach, checkEngine, checkHistorySize, checkProject, checkStructural, JobAudit, scenesWithVideoTokens } from './invariants'
 import { createRng, parseSeed, randomSeed, type Seed } from './rng'
 import { FAULT_SCALE, NOT_IMPLEMENTED, SCENARIO_BY_ID } from './scenarios'
 import { goodImage, startSession, type Session } from './session'
@@ -157,12 +157,14 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     }
     note(`Dự án thử nghiệm: ${gen.project.scenes.length} cảnh, ${gen.project.assets.length} nhân vật, ${gen.takes.length} video${scenesWithVideoTokens(gen.project) ? `, ${scenesWithVideoTokens(gen.project)} cảnh còn @video cũ` : ''}.`)
 
-    // Requests the simulated gateway refused (outside its allowlist) — must never happen.
+    // Requests the simulated gateway refused (outside its allowlist) — must never happen. Not one: the gateway refusing
+    // the injected "Tải video bị chuyển sang http" redirect of a download (invariants allowlistBreach).
+    const httpRedirected = new Set<string>()
     offLog = useDevLog.subscribe((st) => {
       for (const e of st.entries) {
         if (seenLog.has(e.id)) continue
         seenLog.add(e.id)
-        if (e.fault === 'not-allowed') pending.push({ invariant: 'S2', severity: 'error', kind: 'app', message: `Cổng giả lập chặn một yêu cầu ngoài danh sách cho phép (${String(e.endpoint)}).`, detail: e })
+        if (allowlistBreach(e, httpRedirected)) pending.push({ invariant: 'S2', severity: 'error', kind: 'app', message: `Cổng giả lập chặn một yêu cầu ngoài danh sách cho phép (${String(e.endpoint)}).`, detail: e })
       }
     })
     env.drainErrors() // errors from before the run are not ours

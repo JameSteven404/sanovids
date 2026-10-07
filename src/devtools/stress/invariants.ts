@@ -20,6 +20,21 @@ import { useProject } from '../../store/project'
 import { MAX_REMOTE_CONCURRENCY, requestImages } from '../../store/runs'
 import type { Violation } from './types'
 
+/**
+ * S2 on the request log (entries in order): a request the simulated gateway refused as outside its allowlist
+ * ('not-allowed'). Not one: the gateway refusing to follow the injected redirect of a video download to plain http (the
+ * server's entry has fault 'http-redirect', then the gateway logs 'not-allowed' for the same stream path, as main.cjs
+ * does) — that refusal is the safe behaviour. `httpRedirected` = the stream paths seen redirected (each used once).
+ */
+export function allowlistBreach(e: { fault: string | null; endpoint: string | null; path: string }, httpRedirected: Set<string>): boolean {
+  if (e.fault === 'http-redirect') {
+    httpRedirected.add(e.path)
+    return false
+  }
+  if (e.fault !== 'not-allowed') return false
+  return !(e.endpoint === 'job-stream' && httpRedirected.delete(e.path))
+}
+
 const err = (invariant: string, message: string, detail?: unknown, kind: Violation['kind'] = 'app'): Violation => ({ invariant, severity: 'error', message, kind, detail })
 const warn = (invariant: string, message: string, detail?: unknown, kind: Violation['kind'] = 'app'): Violation => ({ invariant, severity: 'warning', message, kind, detail })
 
