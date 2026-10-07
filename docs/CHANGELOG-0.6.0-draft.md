@@ -2,6 +2,13 @@
 
 Chưa phải thông báo đã phát hành. Đối chiếu mã đến `0d7f3cb` ngày 07/10/2026 và kế hoạch đợt 3. Các mục ghi **(khi bản thử có tính năng này)** đang chờ ghép hoặc thử trên bản đóng gói; chỉ bỏ nhãn sau khi đã kiểm tra. Ngày phát hành bên dưới chưa chốt. Bước phát hành sẽ đưa phần đã xác nhận vào CHANGELOG.md.
 
+Ghi chú cho bước phát hành (phần này không đưa vào CHANGELOG.md):
+- Mọi thứ từ dòng `## [0.6.0]` trở xuống được `scripts/update-notes.mjs` chép vào latest.yml: đó là mục **Có gì mới** trong hộp cập nhật và trên trang tải công khai. Chỉ viết cho người dùng; không đưa đường dẫn tới danh sách kiểm tra hay lời dặn người thử vào đó.
+- Hộp cập nhật chỉ giữ khoảng 7.900 ký tự đầu (`NOTES_CAP` trong `scripts/releaseLib.mjs`). Bản nháp này dài hơn: rút gọn khi đưa vào CHANGELOG.md và bỏ các mục chưa có trong bản phát hành.
+- Chế độ Phát triển: theo câu 11a của kế hoạch ẩn chế độ Phát triển, ghi chú công khai chỉ có một câu. Cách mở khoá chỉ nằm trong tài liệu riêng của chủ ứng dụng (docs/DEV-UNLOCK.md và bước 9 của [danh sách kiểm tra 0.6.0](TEST-0.6.0.md)).
+- Trước khi phát hành, làm [danh sách kiểm tra 0.6.0](TEST-0.6.0.md) riêng cho Setup và Portable. Các phần chưa có trong bản thử phải thử lại sau khi ghép. Muốn thử trọn luồng tự cập nhật từ 0.6.0 thì cần một bản kế tiếp hợp lệ.
+- `scripts/__tests__/releaseNotes060.test.mjs` kiểm tra phần dành cho người dùng: của bản nháp này, rồi của mục [0.6.0] trong CHANGELOG.md sau khi gộp.
+
 ---
 
 ## [0.6.0] — Chưa chốt ngày — Sửa cảnh ngay trên canvas, xem video rõ hơn, giữ đúng ảnh tham chiếu
@@ -11,11 +18,14 @@ Chưa phải thông báo đã phát hành. Đối chiếu mã đến `0d7f3cb` n
 - Enter khi chọn một cảnh đưa con trỏ vào prompt; Enter trong ô gõ xuống dòng, Esc rời ô và giữ chữ. Ctrl+Enter mở xác nhận tạo video cho đúng cảnh đang sửa.
 - Nút **Tạo video · … credit** nói rõ chi phí. Cảnh chưa đủ điều kiện hiện lý do ngay trên thẻ, như **Chưa chạy · còn chữ đỏ**.
 - Giữ chữ đang gõ khi đổi cảnh, lưu hoặc đóng app. Prompt trên thẻ và bảng bên phải dùng cùng nội dung.
+- Lựa chọn model, chế độ, thời lượng, độ phân giải, tỉ lệ mà canvasapp đang tắt hiện mờ kèm lý do và không chọn được. Cảnh đang dùng chúng chưa chạy được (bị bỏ qua khi chạy nhiều cảnh, không tốn credit); cấu hình đã lưu của cảnh không bị đổi. Chưa đọc được cấu hình từ canvasapp thì chỉ ghi “có thể bị từ chối”; bấm **Đọc lại** để cập nhật ngay.
 
 ✨ **Cắt ảnh tham chiếu không làm mất chỗ nhắc trong prompt**
 - Ví dụ cắt ảnh Lumi thì `@image_2` thành chữ đỏ **`@image_?2(Lumi)`**. Bạn vẫn biết câu đó cần ảnh nào; app **chặn tạo video** cho tới khi điền đủ hoặc chủ động sửa đoạn chữ.
 - Dải **Chữ đỏ chờ ảnh** giúp gắn ảnh đã nối vào đúng chỗ; có thể kéo ảnh vào chỗ chờ trên thẻ. Không tự lấy ảnh khác vừa dồn lên cùng số để thay nhân vật.
 - Muốn bỏ tham chiếu có chủ ý thì chọn **Đổi thành chữ “Lumi”**. Hoàn tác trả lại thay đổi. Xoá riêng dấu `?` vẫn không cho chạy nếu tên đi kèm không khớp ảnh.
+- Bấm vào chữ đỏ trong ô prompt để chọn **Gắn ảnh đã nối…**, **Đổi thành chữ** hoặc **Xoá chữ đỏ**. Nối ảnh từ Thư viện (nút nối hoặc kéo thẻ vào cảnh) cũng gợi ý **Gắn vào chỗ …**. App không bao giờ tự gắn theo tên. (khi bản thử có tính năng này)
+- Thay ảnh ngay: kéo đầu dây phía ảnh sang một ảnh khác trên canvas. Cảnh giữ đúng số `@image_N`, prompt không đổi chữ nào; nếu ảnh mới có ít tấm hơn thì chỗ thiếu thành chữ đỏ. Thả ra chỗ không hợp lệ thì không có gì thay đổi. Có Hoàn tác. (khi bản thử có tính năng này)
 
 ✨ **Xem video trọn hình**
 - Thanh thời gian nằm **dưới hình**. Mã take, tên, DEV và ★ nằm ngoài hình; video dọc, vuông và ngang được hiển thị trọn khung.
@@ -25,8 +35,10 @@ Chưa phải thông báo đã phát hành. Đối chiếu mã đến `0d7f3cb` n
 
 ✨ **Giữ đăng nhập canvasapp sau khi mở lại**
 - Công tắc **Giữ đăng nhập canvasapp trên máy này** trong Cài đặt → Cổng canvasapp.io.vn. Mặc định **bật ở Setup**, **tắt ở Portable** nếu chưa tự chọn trước đó.
+- Setup và Portable trên cùng tài khoản Windows dùng chung lựa chọn này. Nếu dùng cả hai bản, hãy tự bật hoặc tắt công tắc một lần để hai bản cùng theo lựa chọn của bạn.
 - Phiên được lưu có mã hoá, tối đa **30 ngày** hoặc đến khi canvasapp kết thúc phiên. Máy không giữ phiên an toàn được sẽ báo rõ và yêu cầu đăng nhập lại.
 - Tắt công tắc vẫn dùng được phiên hiện tại; lần mở sau phải đăng nhập lại. **Đăng xuất** xoá phiên đã giữ ngay.
+- Đăng nhập canvasapp bằng Google: sau khi canvasapp xác nhận đăng nhập, SanoVids xoá cookie tài khoản Google khỏi app. Lần sau đăng nhập bằng Google trong SanoVids sẽ phải nhập lại mật khẩu Google.
 
 🛠️ **Thận trọng hơn khi chưa rõ canvasapp đã nhận lượt tạo video**
 - Sau khi mất phản hồi, SanoVids tìm job cũ trước. Không thấy trong danh sách chưa đủ để kết luận chưa bị trừ credit; thiếu bằng chứng thì app từ chối gửi lại take đó.
@@ -45,24 +57,26 @@ Chưa phải thông báo đã phát hành. Đối chiếu mã đến `0d7f3cb` n
 
 🛠️ **Thư viện: chọn nhiều, xoá nhanh**
 - Bấm chọn thẻ rồi **Delete** để xoá; Ctrl+bấm chọn rời, Shift+bấm chọn dải, Ctrl+A chọn các thẻ đang hiện trong Thư viện. Có nút xoá cho nhóm đã chọn.
-- Ảnh chưa dùng được xoá ngay và có Hoàn tác. Nếu xoá làm cảnh thiếu ảnh hoặc để lại chữ đỏ, app hỏi tác động trước.
+- Ảnh chưa dùng, hoặc chỉ được nối mà prompt không nhắc tới, được xoá ngay (có Hoàn tác). Nếu xoá để lại chữ đỏ hoặc làm mất khung đầu/cuối, app hỏi trước.
 - Đang lọc thì không xoá kèm thẻ bị ẩn. Sau khi xoá, không tự chọn thẻ kế tiếp để một lần Delete nữa xoá nhầm.
 - Delete theo vùng bạn vừa dùng. Trên canvas, xoá thẻ ảnh chỉ ẩn thẻ; trong Thư viện mới xoá mục khỏi thư viện. Backspace trên Windows không dùng để xoá thẻ, tránh xung đột bộ gõ tiếng Việt.
 
 🛠️ **Tập trung vào Canvas, Phát liền dễ tìm hơn**
 - Ẩn **Bảng cảnh** và **Storyboard**, bỏ các phím chuyển sang hai màn này. **Phát liền** chuyển ra giữa thanh trên cùng.
+- Dự án, cảnh, video và thứ tự cảnh giữ nguyên. Nếu lần trước bạn tắt app ở Bảng cảnh / Storyboard, app mở lại ở Canvas.
 - Đổi thứ tự cảnh bằng ▲/▼, nhập vị trí ở mã cảnh trên bảng bên phải hoặc Alt+↑/↓. Mã cảnh, Phát liền và .zip đi theo thứ tự mới; thẻ trên canvas giữ vị trí.
 - Dời cùng một cảnh nhiều lần nhanh liên tiếp được gom thành một lần Hoàn tác. Phát liền không tính chắc chắn thời lượng của take nhập khi chưa có đủ thông tin.
 
 🛠️ **Bỏ video tham chiếu**
 - Không còn nối video vào cảnh để làm `@video`. Ảnh tham chiếu và khung đầu/cuối theo model vẫn dùng được.
-- Dự án cũ còn chữ `@video` sẽ hiện đỏ và chặn chạy cảnh đó cho tới khi sửa prompt. Video kết quả của các cảnh còn trong dự án vẫn dùng để xem, chọn take và lưu.
+- Chữ `@video` cũ được giữ nguyên, tô đỏ và chặn chạy cảnh đó cho tới khi bạn sửa prompt. Sửa nhanh: nút **Xoá @video_1** dưới ô prompt ở bảng bên phải, hoặc chọn nhiều cảnh rồi **Xoá chữ @video ở N cảnh đang chọn** (có Hoàn tác). App không tự xoá chữ nào.
+- **Cảnh từng nối video mà prompt không nhắc `@video` nay chạy được và chỉ gửi ảnh**, vẫn tính credit như thường. Lần đầu mở một dự án cũ trên máy này, thông báo cho biết số cảnh mỗi loại; bấm **Xem** để chọn các cảnh đó và kiểm tra trước khi chạy.
+- Kéo một video đã tạo xong ra chỗ trống trên canvas → **Tạo cảnh tiếp theo từ video này**: cảnh mới cạnh video, cùng ảnh tham chiếu và cấu hình của video đó, prompt để trống. Video không được gửi kèm làm tham chiếu.
+- Video kết quả của các cảnh còn trong dự án vẫn dùng để xem, chọn take và lưu.
 
-🛠️ **Chế độ Phát triển được khoá trong bản phát hành**
-- Người dùng thường không còn thấy Bảng phát triển hay lựa chọn giả lập cho take mới. Cổng canvasapp thật vẫn cần tự bật và xác nhận chi phí khi tạo video.
-- Chủ ứng dụng mở hộp mã bằng **Cài đặt → Giới thiệu → bấm phiên bản 5 lần trong 3 giây**. Lần đầu dùng mã **SV1-…** cho đúng máy; sau khi liên kết có thể dùng mã 6 số từ app xác thực. Mã SV1 chỉ dùng một lần; chưa có nút tự gửi mã Gmail.
-- Mở khoá không tự đổi nhà cung cấp. Muốn thử miễn phí phải chọn Phát triển (giả lập), kiểm tra chữ **DEV / credit dev** trước khi chạy. Take DEV cũ giữ nhãn của nó.
-- Chủ ứng dụng có **Test giới hạn** trong Bảng phát triển để thử các tình huống trên dự án tạm bằng giả lập; không phải bài gây lỗi bằng credit thật.
+🛠️ **Chế độ Phát triển chỉ dành cho nhà phát triển**
+- Chế độ Phát triển (canvasapp giả lập) nay chỉ dành cho nhà phát triển.
+- Video DEV tạo trước đây giữ nhãn DEV và vẫn xem được. Tạo video mới cần bật cổng canvasapp.io.vn (Cài đặt → Nhà cung cấp video) và xác nhận chi phí mỗi lần chạy; khi cổng chưa bật, bấm tạo video sẽ báo và có nút **Mở Cài đặt**.
 
 ✨ **Menu chuột phải và ngắt nối nhanh (khi bản thử có tính năng này)**
 - Menu riêng cho cảnh, video, ảnh, Thư mục, dây, nền canvas, nhóm chọn và thẻ Thư viện; chỉ các lệnh phù hợp với chỗ vừa bấm.
@@ -86,21 +100,21 @@ Chưa phải thông báo đã phát hành. Đối chiếu mã đến `0d7f3cb` n
 - Bộ mặc định đổi **Nháp → Bản nháp**, **Final → Bản chốt**, **H3 nháp → H3 từ ảnh**. Giữ nguyên thông số. Bộ người dùng đã đổi tên hoặc sửa thông số không bị đổi theo.
 
 ✨ **Giao diện mới và ba nền tối (khi bản thử có tính năng này)**
-- Kiểu giao diện và biểu tượng mới theo mẫu D đã chọn. Cài đặt → Giao diện có **Màu nền: Than / Đen sâu / Xám xanh**, mặc định **Than**.
+- Giao diện và bộ biểu tượng được làm mới. Cài đặt → Giao diện có **Màu nền: Than / Đen sâu / Xám xanh**, mặc định **Than**.
 - Màu nền chỉ áp dụng khi dùng giao diện Tối; giao diện Sáng có nền riêng. App nhớ lựa chọn, đưa vào xuất/nhập và khôi phục cài đặt.
 
-🛠️ **Lưu file, mở dự án và thao tác dự án lớn**
-- Khi bật **Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác**, cắt dây lưu sẽ chuyển file do app lưu vào **Thùng rác**. Hoàn tác nối lại và ghi một bản mới; bản cũ vẫn trong Thùng rác. Hãy thử với thư mục mẫu trước.
+🛠️ **Lưu file, mở dự án và dự án lớn**
+- **Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác** (Cài đặt → Tải video) **mặc định bật**, kể cả khi cập nhật từ bản cũ. Cắt dây video → Thư mục (mặc định, bấm một lần vào dây là cắt) sẽ chuyển vào Thùng rác file video và file .txt prompt mà chính dây đó đã lưu từ bản này và chưa bị sửa; file khác không bị đụng tới. Hoàn tác nối lại và ghi một bản mới; bản cũ vẫn trong Thùng rác. Không muốn thì tắt công tắc này.
+- Dự án lớn (từ khoảng 800 thẻ, tức khoảng 300 cảnh) tự tạm ẩn bản đồ thu nhỏ và, khi hiện **Tất cả dây**, chỉ vẽ dây gần vùng đang xem. Hiện lại bản đồ bằng nút trên thanh công cụ; đổi ở Cài đặt → Dây nối & canvas → **Tối ưu khi dự án lớn**.
 - Nhắc rõ khi chạy Portable hoặc bản sao trong thư mục tạm. Mở dự án có model/thông số của bản mới hơn thì giữ dữ liệu chưa hiểu và chặn chạy phần liên quan, tránh âm thầm thay cấu hình.
-- Giảm việc tính lại khi gõ prompt và hiển thị danh sách dài. Sửa lỗi lưu/mở lại dự án sau khi xoá Thư mục cuối cùng. Chưa coi các thay đổi này là cam kết tốc độ trên mọi máy.
+- Gõ prompt và hiển thị danh sách dài nhẹ hơn ở dự án nhiều cảnh. Sửa lỗi lưu/mở lại dự án sau khi xoá Thư mục cuối cùng.
 
 ⚠️ **Bản Mac thử nghiệm (khi bản thử có tính năng này)**
-- Dành cho **Apple Silicon**, cần thử trên máy Mac thật. Chưa có chữ ký Developer ID và xác nhận của Apple; không coi kiểm tra Windows là kết quả của bản Mac.
+- Dành cho máy Mac **Apple Silicon**. Chưa có chữ ký Developer ID và xác nhận của Apple.
 - Dùng ký hiệu phím và tên thao tác của Mac: ⌘, Finder, Keychain. Phím tải video là **⌘E** để ⌘M vẫn thu nhỏ cửa sổ.
-- Nên đặt app trong Applications. Bản Mac **chỉ báo và mở trang tải bản mới, cập nhật bằng tay**. Nếu lần phát hành mới chỉ có Windows, app phải nói chưa có bản Mac mới hơn.
+- Nên đặt app trong Applications. Bản Mac **chỉ báo và mở trang tải bản mới, cập nhật bằng tay**. Nếu lần phát hành mới chỉ có bản Windows, app báo chưa có bản Mac mới hơn.
 
-⚠️ **Trước khi dùng cho phim thật**
-- Làm [danh sách kiểm tra 0.6.0](TEST-0.6.0.md) riêng cho Setup và Portable. Các phần chưa có trong bản thử phải được thử lại sau khi ghép, chưa được coi là đã hoàn tất.
-- Xuất bản sao dự án trước khi thử bản mới. Chữ đỏ chờ ảnh và `@video` cũ có thể làm cảnh chưa chạy được; hãy kiểm tra tham chiếu trước khi xác nhận chi phí.
-- Tự cập nhật đã có từ 0.5.0: **Setup** tải/cài bản kế tiếp, **Portable** chỉ báo để tải và thay bản bằng tay. Cần có bản kế tiếp hợp lệ mới kiểm tra được trọn luồng cập nhật từ 0.6.0.
-- Không cố gây lỗi với credit thật. Nếu không rõ đã bị trừ hay có job trùng, dừng tạo video và kiểm tra lịch sử; không hứa mọi trường hợp huỷ/lỗi đều được hoàn tiền.
+⚠️ **Lưu ý khi cập nhật**
+- Mở dự án cũ, hãy xem chữ đỏ chờ ảnh, chữ `@video` cũ và các cảnh từng nối video trước khi xác nhận chi phí.
+- Muốn giữ bản sao trước khi cập nhật: file **Xuất dự án** (Cài đặt → Dữ liệu dự án) chỉ chứa cảnh, prompt và ảnh, **không chứa video đã tạo**. Hãy tải các video cần giữ (Tải video, .zip hoặc Thư mục) trước.
+- Nếu không rõ đã bị trừ credit hay có job trùng, dừng tạo video và kiểm tra lịch sử credit; huỷ hay lỗi không phải lúc nào cũng được hoàn credit.
