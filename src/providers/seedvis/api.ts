@@ -134,9 +134,11 @@ export function isJsonJobNotFound(status: number, json: unknown): boolean {
 
 /** One seedvis generation (a job), as far as SanoVids needs it. Never any URL. */
 export interface SeedvisGeneration {
-  /** null when the answer carried no usable id. */
+  /** null when the answer carried no usable id (a safe non-negative integer id is taken as its decimal string). */
   id: string | null
   status: SeedvisRemoteStatus | 'unknown'
+  /** The status as seedvis wrote it (sanitized code, lower case), kept for a status SanoVids does not know. */
+  rawStatus: string | null
   isFinal: boolean
   error: { code: string | null; message: string | null } | null
   queue: { position: number | null; estimatedStartSeconds: number | null } | null
@@ -158,9 +160,8 @@ export function parseGeneration(json: unknown): SeedvisGeneration | null {
   const root = obj(json)
   if (!root) return null
   const d = obj(root.data) ?? root
-  const rawId = d.id ?? d.generation_id
-  const id = typeof rawId === 'string' && SEEDVIS_ID_RE.test(rawId) ? rawId : null
-  const rawStatus = typeof d.status === 'string' ? d.status.trim().toLowerCase() : null
+  const id = generationId(d.id ?? d.generation_id)
+  const rawStatus = typeof d.status === 'string' ? sanitizeCode(d.status.trim().toLowerCase()) : null
   const status: SeedvisGeneration['status'] = rawStatus && (STATUSES as readonly string[]).includes(rawStatus) ? (rawStatus as SeedvisRemoteStatus) : 'unknown'
   const isFinal = d.is_final === true || status === 'completed' || status === 'failed'
   const e = obj(d.error)
@@ -186,7 +187,30 @@ export function parseGeneration(json: unknown): SeedvisGeneration | null {
     ? { outcome: sanitizeCode(c.outcome), runningOutputs: finite(c.running_outputs) && c.running_outputs >= 0 ? Math.floor(c.running_outputs) : null }
     : null
   const progress = finite(d.progress) && d.progress >= 0 && d.progress <= 100 ? d.progress : null
-  return { id, status, isFinal, error, queue, nextAfterSeconds, outputCount: outputs.length, references: refs, cancellation, progress }
+  return { id, status, rawStatus, isFinal, error, queue, nextAfterSeconds, outputCount: outputs.length, references: refs, cancellation, progress }
+}
+
+/** A job id as SanoVids keeps it: a string matching SEEDVIS_ID_RE, or a safe non-negative integer as its decimal string. */
+function generationId(v: unknown): string | null {
+  const s = typeof v === 'string' ? v : typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? String(v) : null
+  return s !== null && SEEDVIS_ID_RE.test(s) ? s : null
+}
+
+/**
+ * The shape of an answer that carried no usable job id, for the log (never a value: only the type of the id field
+ * and the field names, sanitized) — so the live test notices how seedvis really answers.
+ */
+export function idShape(json: unknown): string {
+  const root = obj(json)
+  if (!root) return json === undefined ? 'no body' : `body ${Array.isArray(json) ? 'array' : typeof json}`
+  const d = obj(root.data)
+  const where = d ?? root
+  const raw = where.id ?? where.generation_id
+  const type = raw === undefined ? 'missing' : raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
+  const keys = Object.keys(where)
+    .map((k) => sanitizeCode(k) ?? '?')
+    .slice(0, 12)
+  return `${d ? 'data.' : ''}id=${type} keys=[${keys.join(',')}]`
 }
 
 /** /account/info → the allowlisted fields (main already strips everything else; decimals tolerated). */

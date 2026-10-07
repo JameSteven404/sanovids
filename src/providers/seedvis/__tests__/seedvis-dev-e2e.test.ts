@@ -7,7 +7,8 @@
 //   - build the provider like index.ts seedvisProviderFor('seedvis-dev') will: createSeedvisProvider({ id: 'seedvis-dev',
 //     bridge: the A-SIM bridge over a memory state, words: wording.ts (simulated variant), prepare: mapping
 //     .toGenerationBody + prepareImages, echo: mapping.echoCheck, limitsFromModels: mapping.limitsFromModels,
-//     now / sleep: the sim clock, keyMemoryMs: 120_000 (the sim's key memory, plan §7.3), storage: memoryStorage() });
+//     now / sleep / monotonic: the sim clock, keyMemoryMs: 120_000 (the sim's key memory, plan §7.3),
+//     storage: memoryStorage() });
 //   - count jobs per Idempotency-Key on the sim server: "0 duplicate jobs" = no key with two jobs;
 //   - replace each it.todo below with the test; keep the names (they are the acceptance list).
 import { describe, it } from 'vitest'
@@ -38,6 +39,14 @@ describe.skip('seedvis-dev e2e — adapter on the A-SIM simulation (integration)
     it.todo('invalid_image keyed reference_images[i] / referenceImages[i] / image / lastFrame → the slot named in the text')
     it.todo('the three error formats (native errors map, OpenAI error.param, Google error.status) parse to the same SeedvisApiErrorInfo')
     it.todo('cancel during the first upload → submit ends uncertain when the body was sent, cancelled when it was not')
+    it.todo('another account\'s key pasted after a lost answer (DevPanel "another account\'s key"): "Chạy lại" sends nothing (uncertain, key-changed) — the sim scopes keys per account: 0 duplicate jobs; the original key back inside the window → the same job')
+    it.todo('key swapped during the automatic +15 / +45 / +90 s re-sends → they stop, no POST under the other key (0 duplicate jobs)')
+    it.todo('key status unreadable at the first POST, then a lost answer → unverifiable at once (key-unknown), never re-sent')
+    it.todo('sim key memory counted from the request start (not the last byte): slow first upload, lost answer → no re-send fits, 0 duplicate jobs')
+    it.todo('wall clock stepped back during the window: the gate uses the monotonic clock (no stretched window), mustFinishBy moved earlier by the step')
+    it.todo('development mode locked after a lost answer → "Chạy lại" is uncertain / unverifiable, never a plain "unavailable" (M6)')
+    it.todo('2xx with a numeric job id → the job; 2xx without any id → unverifiable, detail created-no-id, the shape logged without values')
+    it.todo('a take deleted (gone) while its POST is in flight → orphan + awaited cancel; a take merely cancelled / its scene deleted → no orphan')
   })
 
   describe('poll', () => {
@@ -47,17 +56,21 @@ describe.skip('seedvis-dev e2e — adapter on the A-SIM simulation (integration)
     it.todo('HTML 404 (maintenance) for hours → never ends the take (M22)')
     it.todo('JSON generation_not_found forever → ends only after ≥ 3 answers over ≥ 30 min with the same key → failed not_found (M22)')
     it.todo('job of another key (DevPanel "another account\'s key") → held, never polled, never failed; re-pasting the key releases it (M23)')
-    it.todo('401 / 403 / no key on a poll → login-required thrown, takes kept')
+    it.todo('401 / no key on a poll → login-required thrown, takes kept; 403 on every job → login-required; 403 on one job only → that take keeps running with a note, the others are polled')
+    it.todo('a final answer with an unknown status ("succeeded") → the take keeps running (never failed, never remembered); a plain "cancelled" status → cancelled (refunded)')
   })
 
   describe('cancel', () => {
     it.todo('queued → refunded; processing → 409 not_cancellable → running; finished → finished')
     it.todo('409 + Retry-After: 2 → one retry; 503 cancel_unavailable → ≤ 3 retries then unknown; partial with running_outputs → running')
+    it.todo('a 2xx cancel without evidence (empty body / no cancellation / a running job) → the job is read: refunded only when it shows failed + cancelled')
   })
 
   describe('downloads', () => {
-    it.todo('expired CDN link → fresh GET → download; expired again → definitive expired-link (isResultExpired)')
-    it.todo('download failing N times → counted failures; failing while offline → deferred, not counted (M27)')
+    it.todo('expired CDN link → fresh GET → download; expired again on a job completed ≥ 24 h ago → definitive expired-link (isResultExpired)')
+    it.todo('expired twice right after completion (CDN not replicated yet) → a plain, retried failure; the take stays fetchable (M27)')
+    it.todo('a finished job of another key: fetchResult is held (deferred + held.keyHint), no request, until that key is back (M23)')
+    it.todo('download failing N times → counted failures; failing while offline (even after bytes) or a network failure before any byte → deferred, not counted (M27)')
     it.todo('completed with empty outputs → one more round, then no-output')
     it.todo('application/octet-stream video → mime sniffed (video/mp4), never .webm')
     it.todo('CDN requests carry no Authorization / X-API-Key / x-goog-api-key (sim check, S8)')

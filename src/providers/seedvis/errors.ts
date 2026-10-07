@@ -52,6 +52,8 @@ export interface SeedvisErrorOptions {
   bodyBytes?: number
   /** fetchResult: the link is provably gone (§6.8 rule 5). */
   definitive?: boolean
+  /** fetchResult: not tried, the job belongs to another API key (M23; contractExt isResultHeld). */
+  held?: { keyHint: string } | null
   field?: string | null
   requestId?: string | null
 }
@@ -66,6 +68,7 @@ export class SeedvisError extends Error {
   readonly retryAfterMs?: number
   readonly bodyBytes?: number
   readonly definitive?: boolean
+  readonly held?: { keyHint: string }
   readonly field?: string
   readonly requestId?: string
   constructor(code: SeedvisErrorCode, message: string, opts: SeedvisErrorOptions = {}) {
@@ -80,6 +83,7 @@ export class SeedvisError extends Error {
     if (typeof opts.retryAfterMs === 'number' && opts.retryAfterMs > 0) this.retryAfterMs = opts.retryAfterMs
     if (typeof opts.bodyBytes === 'number') this.bodyBytes = opts.bodyBytes
     if (opts.definitive) this.definitive = true
+    if (opts.held) this.held = { keyHint: opts.held.keyHint }
     if (opts.field) this.field = opts.field
     if (opts.requestId) this.requestId = opts.requestId
   }

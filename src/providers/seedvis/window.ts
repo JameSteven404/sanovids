@@ -7,15 +7,25 @@
 // arrive inside the window:
 //
 //   memory       = SEEDVIS_KEY_MEMORY_MS                                  null → no same-key POST at all
-//   start        = sent.firstLastByteAt ?? sent.at                        never later than seedvis stored the key
+//   start        = sent.at                                                (KEY_MEMORY_FROM 'request', the default)
+//                  sent.firstLastByteAt ?? sent.at                        ('last-byte': only once seedvis confirms it)
 //   estMs        = bodyBytes / max(16 KiB/s, sent.uploadBps / 1.5) + 2 s  a pessimistic upload time
 //   allowed      = now + estMs + margin (20 s) ≤ start + memory
 //   mustFinishBy = start + memory − margin                                main aborts an upload not done by then
 //
-// `start` uses the client's own clock: the client sends its last byte no later than seedvis receives it, so the window
-// is measured from a moment that is never later than the real one. A clock that went backwards (now < sent.at) closes
-// the gate: nothing measured against it can be trusted.
+// `start` uses the client's own clock and is never later than the moment seedvis stored the key: the first POST starts
+// before seedvis sees any of it. seedvis has not said whether its key memory counts from the request's arrival or from
+// its completion; measuring from the last byte would overestimate the window by the whole first upload if it counts
+// from the arrival (≈ 2.7 min for 39 MiB at 2 Mbps), so the default is the POST start. 'last-byte' may be used only when
+// seedvis confirms in writing (with SEEDVIS_KEY_MEMORY_MS) that the memory counts from the completed request.
+// A clock that went backwards (now < sent.at) closes the gate: nothing measured against it can be trusted. (Within one
+// session the adapter also measures elapsed time on a monotonic clock, so a smaller backward step cannot stretch it.)
 import { SEEDVIS_KEY_MEMORY_MS, SEEDVIS_RESEND_SCHEDULE_MS, SEEDVIS_SAME_KEY_MARGIN_MS } from './contract'
+
+/** From which moment of the first POST seedvis' key memory is counted (see above). */
+export type KeyMemoryFrom = 'request' | 'last-byte'
+/** Until seedvis confirms otherwise: from the request (the POST start) — the earliest it could have stored the key. */
+export const KEY_MEMORY_FROM: KeyMemoryFrom = 'request'
 
 /** Slowest upload rate the estimate assumes, whatever was measured (bytes / s). */
 export const MIN_UPLOAD_BPS = 16 * 1024
@@ -70,9 +80,12 @@ export function estUploadMs(bodyBytes: number, uploadBps: number | null): number
   return Math.ceil((bytes / rate) * 1000) + UPLOAD_FIXED_MS
 }
 
-/** The moment the window is measured from: the first attempt's last byte, else the start of the first POST. */
-export function gateStart(rec: Pick<GateRecord, 'at' | 'firstLastByteAt'>): number {
-  return finite(rec.firstLastByteAt) ? rec.firstLastByteAt : rec.at
+/**
+ * The moment the window is measured from: the start of the first POST ('request', the default); with 'last-byte' the
+ * first attempt's last byte when it was reported, else the start of the first POST.
+ */
+export function gateStart(rec: Pick<GateRecord, 'at' | 'firstLastByteAt'>, from: KeyMemoryFrom = KEY_MEMORY_FROM): number {
+  return from === 'last-byte' && finite(rec.firstLastByteAt) ? rec.firstLastByteAt : rec.at
 }
 
 /** start + memory − margin, or null when same-key re-sends are disabled / the record is unusable. */
@@ -80,10 +93,11 @@ export function sameKeyDeadline(
   rec: Pick<GateRecord, 'at' | 'firstLastByteAt'> | null | undefined,
   memoryMs: number | null = SEEDVIS_KEY_MEMORY_MS,
   marginMs: number = SEEDVIS_SAME_KEY_MARGIN_MS,
+  from: KeyMemoryFrom = KEY_MEMORY_FROM,
 ): number | null {
   const memory = effectiveMemoryMs(memoryMs)
   if (memory === null || !rec || !finite(rec.at)) return null
-  return gateStart(rec) + memory - Math.max(0, finite(marginMs) ? marginMs : SEEDVIS_SAME_KEY_MARGIN_MS)
+  return gateStart(rec, from) + memory - Math.max(0, finite(marginMs) ? marginMs : SEEDVIS_SAME_KEY_MARGIN_MS)
 }
 
 /**
@@ -95,18 +109,19 @@ export function sameKeyGate(
   now: number,
   memoryMs: number | null = SEEDVIS_KEY_MEMORY_MS,
   marginMs: number = SEEDVIS_SAME_KEY_MARGIN_MS,
+  from: KeyMemoryFrom = KEY_MEMORY_FROM,
 ): GateVerdict {
   const memory = effectiveMemoryMs(memoryMs)
   if (memory === null) return { allowed: false, reason: 'disabled', mustFinishBy: null, safeUntil: null, estMs: null }
   if (!rec || !finite(rec.at) || !finite(rec.bodyBytes) || rec.bodyBytes < 0) {
     return { allowed: false, reason: 'no-record', mustFinishBy: null, safeUntil: null, estMs: null }
   }
-  const mustFinishBy = sameKeyDeadline(rec, memory, marginMs)!
+  const mustFinishBy = sameKeyDeadline(rec, memory, marginMs, from)!
   const estMs = estUploadMs(rec.bodyBytes, rec.uploadBps)
   const safeUntil = mustFinishBy - estMs
   // The clock went backwards since the first POST (or the record is from the future): nothing measured against this
   // clock can be trusted — closed.
-  if (!finite(now) || now < rec.at || now < gateStart(rec)) return { allowed: false, reason: 'clock', mustFinishBy, safeUntil, estMs }
+  if (!finite(now) || now < rec.at || now < gateStart(rec, from)) return { allowed: false, reason: 'clock', mustFinishBy, safeUntil, estMs }
   const allowed = now <= safeUntil
   return { allowed, reason: allowed ? 'ok' : 'expired', mustFinishBy, safeUntil, estMs }
 }

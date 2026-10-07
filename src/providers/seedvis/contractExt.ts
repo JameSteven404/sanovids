@@ -3,10 +3,11 @@
 // gains the seedvis route ids, VideoProvider gains the optional methods below). Until then the seedvis files take them
 // from here, so no existing file has to change in wave A.
 //
-// TODO(B1): move CancelOutcome, RemoteStatusExt fields, SameKeyRetry, ProviderContractExt and isResultExpired into
-// providers/types.ts; make SeedvisJobRequest = JobRequest and SeedvisCapabilities = ProviderCapabilities; delete this file.
+// TODO(B1): move CancelOutcome, RemoteStatusExt fields, SameKeyRetry, ProviderContractExt, SubmitOptions.isGone,
+// isResultExpired and isResultHeld into providers/types.ts; make SeedvisJobRequest = JobRequest and
+// SeedvisCapabilities = ProviderCapabilities; delete this file.
 import type { Mode, ModelId, TakeProvider } from '../../core/services'
-import type { JobRequest, ProviderCapabilities, RemoteStatus } from '../types'
+import type { JobRequest, ProviderCapabilities, RemoteStatus, SubmitOptions } from '../types'
 
 /** The two executors of the seedvis service (core/services SERVICES.seedvis.executors). */
 export type SeedvisProviderId = Extract<TakeProvider, 'seedvis' | 'seedvis-dev'>
@@ -34,11 +35,27 @@ export interface RemoteStatusExt extends RemoteStatus {
   code?: string
 }
 
-export type SameKeyRetryReason = 'ok' | 'disabled' | 'expired' | 'no-record' | 'body-changed'
+/**
+ * SubmitOptions plus `isGone` (§6.4 b). `isCancelled` stays "stop before creating the job" (take cancelled, or its
+ * scene deleted while the take is kept); `isGone` = the take itself no longer exists anywhere the engine can reach (an
+ * orphan job nobody will poll or cancel). Only then does the adapter record `ledger.orphans` — the engine cancels and
+ * polls the job of a take that still exists itself. B2: `isGone = () => sameProject && !findTake(id)`.
+ */
+export interface SeedvisSubmitOptions extends SubmitOptions {
+  isGone?: () => boolean
+}
+
+/**
+ * 'key-changed': the API key saved now is not provably the one that sent the key's first POST (another key, no key,
+ * or the sending key's tag is unknown) — seedvis only replays a key it holds for the same account, so a same-key POST
+ * under another key could create (and bill) a second job.
+ */
+export type SameKeyRetryReason = 'ok' | 'disabled' | 'expired' | 'no-record' | 'body-changed' | 'key-changed'
 
 /**
  * Whether a same-key re-send started now would reach seedvis while it still remembers the key (§7.3 gate, ledger only).
- * `safeUntil` already includes the upload estimate: "now < safeUntil" = a re-send started now arrives in time.
+ * `safeUntil` already includes the upload estimate: "now < safeUntil" = a re-send started now arrives in time; it is
+ * null whenever no re-send may start at all (disabled, no record, body changed, key changed, clock went backwards).
  * POSITIVE_INFINITY when the key already has a known job (a submit returns it without any request).
  */
 export interface SameKeyRetry {
@@ -61,7 +78,20 @@ export interface ProviderContractExt {
 
 /**
  * fetchResult() proved the video can no longer be downloaded (a fresh GET of the job, then the CDN refused the fresh
- * link 401/403/404/410): the take ends, `fetchable` is dropped (§6.8 rule 5). Any other download error may pass.
+ * link 401/403/404/410, on a job that completed long enough ago — a CDN miss right after completion is never taken as
+ * an expiry): the take ends, `fetchable` is dropped (§6.8 rule 5). Any other download error may pass.
  */
 export const isResultExpired = (e: unknown): boolean =>
   !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'expired-link' && (e as { definitive?: unknown }).definitive === true
+
+/**
+ * fetchResult() did not try: the job was sent with another API key than the one saved now (M23). Code 'deferred' (not
+ * a counted try) plus `held.keyHint`; the engine waits for that key to be saved again (resumeProviderPolling), like a
+ * held poll.
+ */
+export const isResultHeld = (e: unknown): boolean =>
+  !!e &&
+  typeof e === 'object' &&
+  (e as { code?: unknown }).code === 'deferred' &&
+  !!(e as { held?: unknown }).held &&
+  typeof (e as { held: { keyHint?: unknown } }).held.keyHint === 'string'

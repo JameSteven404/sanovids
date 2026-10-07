@@ -17,18 +17,31 @@ import type { SeedvisAdapterWords, SeedvisPrepared, SeedvisPrepareInput } from '
 import type { SeedvisJobRequest } from '../contractExt'
 import { SEEDVIS_ROUTE_TABLE } from '../contract'
 
+/**
+ * A fake wall clock plus a fake monotonic clock. Time passing (sleep / advance / set forward) moves both; `step` moves
+ * only the wall clock (an NTP / user clock change), like a real system clock step.
+ */
 export function fakeClock(start = 1_800_000_000_000) {
   let t = start
+  let m = 1_000
   return {
     now: () => t,
+    mono: () => m,
     sleep: async (ms: number) => {
       t += Math.max(0, ms)
+      m += Math.max(0, ms)
     },
     advance: (ms: number) => {
       t += ms
+      m += Math.max(0, ms)
     },
     set: (v: number) => {
+      if (v > t) m += v - t
       t = v
+    },
+    /** The wall clock jumps by `ms` (negative = backwards); no time passes. */
+    step: (ms: number) => {
+      t += ms
     },
   }
 }
@@ -62,6 +75,8 @@ export interface FakeJob {
   errorCode?: string
   outputs: number
   polls: number
+  /** The account (API key tag) the job was created under: only that key sees it. */
+  account: string
   references?: { field: string; index: number; role: string | null; source?: string; url?: string }[]
 }
 
@@ -95,8 +110,13 @@ function serverHash(body: unknown, images: readonly SeedvisRequestImage[] | unde
 
 export interface FakeSeedvisOptions {
   clock: FakeClock
-  /** How long the fake seedvis remembers a key, from the arrival of the body's last byte (default 120 s). */
+  /** How long the fake seedvis remembers a key (default 120 s)… */
   keyMemoryMs?: number
+  /**
+   * …counted from the arrival of the first request's last byte ('last-byte', default), or from the moment its request
+   * started arriving ('request': seedvis stores the key on receipt — the window is then shorter by the first upload).
+   */
+  keyStoredAt?: 'request' | 'last-byte'
   /** Upload rate in bytes / s, per attempt of the key (1-based). Default 10 MB/s. */
   bandwidthBps?: number | ((attempt: number) => number)
   /** Main's wait for the answer after the last byte (default 45 s). */
@@ -163,17 +183,24 @@ export function createFakeSeedvis(opts: FakeSeedvisOptions) {
     }
   }
 
-  /** The server side of a complete body arriving at `at`: replay within the key memory, else a new (paid) job. */
-  function store(key: string, hash: string, at: number, status: FakeJob['status'] = 'queued', errorCode?: string): { job: FakeJob; replayed: boolean } | { conflict: true } {
-    const prev = state.keys.get(key)
+  /**
+   * The server side of a complete body arriving at `at` (its request started arriving at `startAt`): replay within the
+   * key memory, else a new (paid) job. Idempotency-Keys are scoped per account (the API key's tag): another account
+   * never sees them — the same key under another account's API key creates a second job.
+   */
+  function store(key: string, hash: string, at: number, startAt: number, status: FakeJob['status'] = 'queued', errorCode?: string): { job: FakeJob; replayed: boolean } | { conflict: true } {
+    const account = state.keyStatus?.tag ?? '-'
+    const scoped = `${account}|${key}`
+    const prev = state.keys.get(scoped)
     if (prev && at - prev.storedAt <= memory) {
       if (prev.hash !== hash) return { conflict: true }
       return { job: state.jobs.get(prev.jobId)!, replayed: true }
     }
     state.jobsPerKey.set(key, (state.jobsPerKey.get(key) ?? 0) + 1)
-    const job: FakeJob = { id: `gen_${++seq}`, key, hash, storedAt: at, status, outputs: 1, polls: 0, ...(errorCode ? { errorCode } : {}) }
+    const storedAt = opts.keyStoredAt === 'request' ? startAt : at
+    const job: FakeJob = { id: `gen_${++seq}`, key, hash, storedAt, status, outputs: 1, polls: 0, account, ...(errorCode ? { errorCode } : {}) }
     state.jobs.set(job.id, job)
-    state.keys.set(key, { storedAt: at, hash, jobId: job.id })
+    state.keys.set(scoped, { storedAt, hash, jobId: job.id })
     return { job, replayed: false }
   }
 
@@ -208,9 +235,9 @@ export function createFakeSeedvis(opts: FakeSeedvisOptions) {
         : s.replayed
           ? ok(200, genJson(s.job), { 'Idempotency-Replayed': 'true', 'X-Request-Id': `req_${attempt}` })
           : ok(202, genJson(s.job), { 'X-Request-Id': `req_${attempt}` })
-    if (fault === 'ok') return storeAnswer(store(key, hash, lastByteAt))
+    if (fault === 'ok') return storeAnswer(store(key, hash, lastByteAt, start))
     if (fault === 'lost-after-store' || fault === 'ipc-reject') {
-      store(key, hash, lastByteAt)
+      store(key, hash, lastByteAt, start)
       clock.advance(answerWait)
       if (fault === 'ipc-reject') throw new Error('IPC closed')
       return failure('timeout', { sent: true, lastByteAt })
@@ -220,12 +247,12 @@ export function createFakeSeedvis(opts: FakeSeedvisOptions) {
       return failure('timeout', { sent: true, lastByteAt })
     }
     if ('fail' in fault) {
-      if (fault.store) store(key, hash, lastByteAt)
+      if (fault.store) store(key, hash, lastByteAt, start)
       clock.advance(answerWait)
       return failure(fault.fail, { sent: true, lastByteAt })
     }
     if (fault.store) {
-      const s = store(key, hash, lastByteAt, fault.jobStatus, fault.errorCode)
+      const s = store(key, hash, lastByteAt, start, fault.jobStatus, fault.errorCode)
       if (fault.json === undefined && !('conflict' in s)) return ok(fault.status, genJson(s.job), fault.headers)
     }
     return ok(fault.status, fault.json, fault.headers)
@@ -237,7 +264,8 @@ export function createFakeSeedvis(opts: FakeSeedvisOptions) {
     const fb = state.getFallback?.(id)
     if (fb) return answer(fb)
     const job = state.jobs.get(id)
-    if (!job) return { ok: true, status: 404, json: { error: { code: 'generation_not_found', message: 'Generation not found' } }, headers: {} }
+    // another account's job is not found either (the key in use only sees its own account's jobs)
+    if (!job || job.account !== (state.keyStatus?.tag ?? '-')) return { ok: true, status: 404, json: { error: { code: 'generation_not_found', message: 'Generation not found' } }, headers: {} }
     job.polls++
     const res: SeedvisResponse = { ok: true, status: 200, json: genJson(job), headers: {} }
     if (state.autoAdvance) {
@@ -327,10 +355,9 @@ export function createFakeSeedvis(opts: FakeSeedvisOptions) {
     gets: () => state.calls.filter((c) => c.route === 'generations.get'),
     /** Jobs beyond the first created for one key: each one is a second charge. Must always be 0. */
     duplicates: () => [...state.jobsPerKey.values()].reduce((n, c) => n + Math.max(0, c - 1), 0),
-    jobOf: (key: string) => {
-      const k = state.keys.get(key)
-      return k ? state.jobs.get(k.jobId) ?? null : null
-    },
+    /** The first job created for an Idempotency-Key (any account). */
+    jobOf: (key: string) => [...state.jobs.values()].find((j) => j.key === key) ?? null,
+    jobsOf: (key: string) => [...state.jobs.values()].filter((j) => j.key === key),
   }
 }
 export type FakeSeedvis = ReturnType<typeof createFakeSeedvis>
@@ -369,6 +396,9 @@ export const fakeWords: SeedvisAdapterWords = {
     cancelledWhileResending: 'D:cancelled-resending',
     ledgerNotSavedResend: 'D:ledger-resend',
     prepareFailedResend: (why) => `D:prepare-resend ${why}`,
+    keyChanged: 'D:key-changed',
+    keyUnknown: 'D:key-unknown',
+    createdNoId: 'D:created-no-id',
   },
   poll: {
     queued: (p, s) => `P:queued ${p ?? '-'} ${s ?? '-'}`,
@@ -380,10 +410,13 @@ export const fakeWords: SeedvisAdapterWords = {
     cancelledRefunded: 'P:cancelled-refunded',
     badRemoteId: 'P:bad-id',
     echoShort: (r, s) => `P:echo ${r}/${s}`,
+    unknownFinal: (s) => `P:unknown-final ${s}`,
+    forbidden: 'P:forbidden',
   },
   fetch: {
     noOutput: 'F:no-output',
     expired: 'F:expired',
+    linkRefused: 'F:link-refused',
     offline: 'F:offline',
     tooLarge: 'F:too-large',
     failed: (why) => `F:failed ${why}`,

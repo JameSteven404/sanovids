@@ -6,17 +6,25 @@
 //   0. ledger.jobs[key] → that job, no request (M4).
 //   1. a seedvis route and mode, else refused (nothing sent).
 //   2. a key with a `sent` record (an earlier POST may have reached seedvis) goes again ONLY through the arrival gate
-//      (window.ts, M5) — decided before anything else; no record but `retryOfUnknown`, or a `dropped` key →
-//      `uncertain` + `unverifiable` (M8: no evidence ≠ never sent).
+//      (window.ts, M5) — decided before anything else (before the bridge check too: once something may have reached
+//      seedvis, a missing bridge is `uncertain`, never a plain 'unavailable'); no record but `retryOfUnknown`, or a
+//      `dropped` key → `uncertain` + `unverifiable` (M8: no evidence ≠ never sent).
+//      Every same-key POST also needs the API key saved NOW to be the one that sent the first POST (same key tag, both
+//      known): seedvis replays a key only for the account that holds it, so under another key it would create (and
+//      bill) a second job. Read again right before each POST; the sending key's tag unknown → never re-sent
+//      (`unverifiable`); another / no / unreadable key now → `uncertain` while the gate is open.
 //   3. prepare the exact bytes (injected; failures → "chưa gửi gì"); a re-send must hash to the same body (M7).
-//   4. markSent (read back; not stored → nothing posted, M3) → isCancelled() → POST.
+//   4. the key status read again → markSent (with that key's tag; read back; not stored → nothing posted, M3) →
+//      isCancelled() → POST.
 //   5. 2xx (200 or 202 queued, M14) with data.id → jobs[key]. A 2xx whose job already failed is recorded final (the
-//      poll reports it). Echo check warn-only (M19).
+//      poll reports it). Echo check warn-only (M19). The take gone meanwhile (`isGone`, not just cancelled) → the job
+//      is recorded as an orphan for the engine to cancel (§6.4 b).
 //   6. Lost answer (sent:true and no usable answer, non-JSON 5xx, network after sending, 2xx without id) or a JSON
 //      5xx (retry-safe with the same key) → automatic same-key re-sends at +15 / +45 / +90 s, each only while the gate
 //      allows, each after main says the network is up; main aborts any re-send not uploaded by `mustFinishBy`.
-//      Gate closed → `uncertain` + `unverifiable` (detail says why); schedule over with the gate still open →
-//      `uncertain` (the engine may dispatch the same key at once, §6.7, sameKeyRetry()).
+//      Gate closed → `uncertain` + `unverifiable` (detail says why; a 2xx without a usable id keeps its own detail:
+//      seedvis created it); schedule over with the gate still open → `uncertain` (the engine may dispatch the same key
+//      at once, §6.7, sameKeyRetry()).
 //   7. Priority rule (M6): once any attempt may have reached seedvis, the submit ends only in success or `uncertain`
 //      — never 'deferred' / 'cancelled' / a plain refusal. Cancel during the re-sends → `uncertain` at once.
 //   8. Only when nothing may have reached seedvis: 429 / 503 busy / 422 slots full / a maintenance page / main's lanes
@@ -25,13 +33,19 @@
 //   9. 409 → `uncertain`, never a new key (M9).
 // recover: ledger only, never a request (M4).
 // poll:    per job pacing (next.after_seconds, ≥ minPollMs), ≤ 2 GETs at once; HTTP 202 = 200 (M14); a final status is
-//          remembered and never asked again; a 404 keeps the take running with back-off and ends it only on JSON
-//          not-found ≥ 3 times over ≥ 30 min with the job's own key (M22); a job of another key is held, never polled
-//          and never failed (M23); 401 / 403 → 'login-required' thrown (the engine pauses, keeps the takes).
-// fetch:   GET the job (main records its outputs), then the chunked download by (generationId, index) — the renderer
-//          never names a URL. Offline → 'deferred' (not a try, M27); expired link → GET again for a fresh one, then the
-//          definitive 'expired-link'; empty outputs → one more round, then an error.
-// cancel:  → CancelOutcome (§7.5). concurrency(): min(10, concurrency_limit) from /account/info, unknown → 2 (M15).
+//          remembered and never asked again (a final answer with a status SanoVids does not know is not: the take keeps
+//          running, logged); a 404 keeps the take running with back-off and ends it only on JSON not-found ≥ 3 times
+//          over ≥ 30 min with the job's own key (M22); a job of another key is held, never polled and never failed
+//          (M23); 401 or a bad / missing key → 'login-required' thrown (the engine pauses, keeps the takes); a 403 on
+//          some jobs only keeps those running with a note (all due jobs 401 / 403 → thrown).
+// fetch:   a job of another key → 'deferred' + `held` (no request, not a try, M23). GET the job (main records its
+//          outputs), then the chunked download by (generationId, index) — the renderer never names a URL. Offline, or a
+//          network failure with nothing received → 'deferred' (not a try, M27); expired link → GET again for a fresh
+//          one, then 'expired-link' — definitive only for a job that completed ≥ 24 h ago (a CDN miss right after
+//          completion is a plain, retried failure); empty outputs → one more round, then an error.
+// cancel:  → CancelOutcome (§7.5): 'refunded' only on evidence (failed + cancelled, or a refunded outcome); a 2xx that
+//          proves nothing → the job is read and decides. concurrency(): min(10, concurrency_limit) from /account/info,
+//          unknown → 2 (M15).
 //
 // Texts come from the injected `words` (wording.ts, track A-MAP); the request body and prepared images from the
 // injected `prepare` (mapping.ts + prepareImages.ts). TODO(integration): index.ts wires both (and the A-SIM bridge for
@@ -50,11 +64,11 @@ import {
   type RefreshLimitsResult,
   type SettingsIssue,
   type SettingsLimits,
-  type SubmitOptions,
 } from '../types'
 import type { VideoSettings } from '../../core/types'
 import {
   createSeedvisApi,
+  idShape,
   isJsonJobNotFound,
   parseAccountInfo,
   parseApiError,
@@ -72,11 +86,11 @@ import type {
   SeedvisCapabilities,
   SeedvisJobRequest,
   SeedvisProviderId,
+  SeedvisSubmitOptions,
 } from './contractExt'
 import { classifyCreate, SeedvisError, type CreateClass } from './errors'
 import {
   createSeedvisLedger,
-  memoryStorage,
   SEEDVIS_DEV_LEDGER_KEY,
   SEEDVIS_LEDGER_KEY,
   type KeyValueStorage,
@@ -85,7 +99,16 @@ import {
   type LedgerSent,
   type SeedvisLedger,
 } from './ledger'
-import { deferDelayMs as backoffMs, nextStreak, notFoundDelayMs, notFoundEnds, sameKeyGate, type GateVerdict } from './window'
+import {
+  deferDelayMs as backoffMs,
+  KEY_MEMORY_FROM,
+  nextStreak,
+  notFoundDelayMs,
+  notFoundEnds,
+  sameKeyGate,
+  type GateVerdict,
+  type KeyMemoryFrom,
+} from './window'
 
 /** Floor between two polls of one job (seedvis' own pacing may ask for more). */
 export const MIN_POLL_MS = 15_000
@@ -111,6 +134,16 @@ export const CANCEL_UNAVAILABLE_RETRIES = 3
 export const CANCEL_CONFLICT_WAIT_MAX_MS = 10_000
 /** Prepared bytes / pins older than this are swept on start (§9). */
 export const PREP_SWEEP_MS = 60 * 60_000
+/**
+ * An expired link (after a fresh GET) ends a take for good only when its job completed at least this long ago: a CDN
+ * 403 / 404 right after `completed` (object not replicated yet, a signing / clock glitch) is a retried failure, never
+ * "the video is gone" — seedvis keeps results for days.
+ */
+export const EXPIRED_LINK_MIN_AGE_MS = 24 * 3_600_000
+/** A job answering 403 while the others answer: asked again after this long (it keeps running, with a note). */
+export const FORBIDDEN_RETRY_MS = 5 * 60_000
+/** cancellation.outcome values that prove the job was stopped and refunded ('partial' never does). */
+const REFUNDED_OUTCOMES: ReadonlySet<string> = new Set(['refunded', 'cancelled', 'canceled'])
 /** A Retry-After from a deferred submit still counts for deferDelayMs() this long. */
 const RETRY_AFTER_MEMORY_MS = 5 * 60_000
 /** Time-based progress: a seedvis job is assumed to take about this long once processing. */
@@ -158,6 +191,12 @@ export interface SeedvisAdapterWords {
     cancelledWhileResending: string
     ledgerNotSavedResend: string
     prepareFailedResend(why: string): string
+    /** The API key saved now is not the one that sent the first POST (another key, or none): no same-key re-send. */
+    keyChanged: string
+    /** The key that sent the first POST (or the one saved now) cannot be identified: no same-key re-send. */
+    keyUnknown: string
+    /** seedvis answered 2xx without a usable job id: it created the job — check its history, do not create again. */
+    createdNoId: string
   }
   poll: {
     queued(position: number | null, seconds: number | null): string
@@ -169,10 +208,17 @@ export interface SeedvisAdapterWords {
     cancelledRefunded: string
     badRemoteId: string
     echoShort(received: number, sent: number): string
+    /** A final answer with a status SanoVids does not know (sanitized code): the take keeps running. */
+    unknownFinal(status: string): string
+    /** 403 on this job while other jobs answer (another account's job?): kept running. */
+    forbidden: string
   }
   fetch: {
     noOutput: string
+    /** The definitive expiry (§6.8 rule 5): the take ends, "Tải lại video" goes. */
     expired: string
+    /** The CDN refused the link but it cannot have expired yet (job completed recently): retried, still recoverable. */
+    linkRefused: string
     offline: string
     tooLarge: string
     failed(why: string): string
@@ -216,13 +262,24 @@ export interface SeedvisAdapterDeps {
   limitsFromModels?: (json: unknown) => ((s: VideoSettings) => SettingsIssue[]) | null
   /** The saved key's status (store/seedvisKey); default: the bridge's keyStatus(). */
   keyStatus?: () => SeedvisKeyStatus | null | Promise<SeedvisKeyStatus | null>
-  storage?: KeyValueStorage
+  /**
+   * Where the money ledger lives (M3 / M4 / M8: it must survive a restart). Required: the integration passes
+   * browserStorage (localStorage); a memory storage only when explicitly wanted (tests, stress sandbox).
+   */
+  storage: KeyValueStorage
   /** Default by id: bdp:seedvis:ledger / bdp:dev:seedvis:ledger. */
   ledgerKey?: string
   now?: () => number
+  /**
+   * A monotonic clock (ms, any origin; default performance.now()): elapsed time since a key's first POST in this
+   * session is measured on it too, so a backward step of the wall clock cannot stretch the gate. null = wall clock only.
+   */
+  monotonic?: (() => number) | null
   sleep?: (ms: number) => Promise<void>
   /** Key memory the gate uses (default SEEDVIS_KEY_MEMORY_MS = null: no same-key POST at all). */
   keyMemoryMs?: number | null
+  /** From when that memory counts (default KEY_MEMORY_FROM = 'request'; 'last-byte' only once seedvis confirms it). */
+  keyMemoryFrom?: KeyMemoryFrom
   marginMs?: number
   resendScheduleMs?: readonly number[]
   /** Poll floor per job (default MIN_POLL_MS); declared to the engine only when given. */
@@ -241,7 +298,7 @@ export interface SeedvisProvider extends Required<Pick<ProviderContractExt, 'con
   minPollIntervalMs?: number
   available(): Promise<ProviderAvailability>
   capabilities(model: string): SeedvisCapabilities
-  submit(req: SeedvisJobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
+  submit(req: SeedvisJobRequest, opts?: SeedvisSubmitOptions): Promise<{ remoteId: string }>
   recover(req: SeedvisJobRequest): Promise<{ remoteId: string } | null>
   poll(remoteIds: string[]): Promise<RemoteStatusExt[]>
   fetchResult(remoteId: string, opts?: FetchResultOptions): Promise<JobResult>
@@ -333,13 +390,17 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const memoryMs = deps.keyMemoryMs === undefined ? SEEDVIS_KEY_MEMORY_MS : deps.keyMemoryMs
+  const memoryFrom: KeyMemoryFrom = deps.keyMemoryFrom ?? KEY_MEMORY_FROM
   const marginMs = deps.marginMs ?? SEEDVIS_SAME_KEY_MARGIN_MS
   const schedule = deps.resendScheduleMs ?? SEEDVIS_RESEND_SCHEDULE_MS
   const minPollMs = Math.max(0, deps.minPollMs ?? MIN_POLL_MS)
+  const monotonic: (() => number) | null =
+    deps.monotonic === undefined ? (typeof performance !== 'undefined' && typeof performance.now === 'function' ? () => performance.now() : null) : deps.monotonic
   const getBridge = () => (typeof deps.bridge === 'function' ? deps.bridge() : deps.bridge)
   const apiOf = (): SeedvisApi => createSeedvisApi(getBridge())
+  if (!deps.storage) throw new Error('seedvis adapter: a ledger storage is required')
   const ledger: SeedvisLedger = createSeedvisLedger({
-    storage: deps.storage ?? memoryStorage(),
+    storage: deps.storage,
     storageKey: deps.ledgerKey ?? (id === 'seedvis-dev' ? SEEDVIS_DEV_LEDGER_KEY : SEEDVIS_LEDGER_KEY),
     now,
   })
@@ -376,19 +437,69 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
   let endedAt: number | null = null
   let acceptedAt: number | null = null
   let epoch = 0
+  /** The first POST of a key in this session: its wall time (= sent.at) and the monotonic clock then. */
+  const sentClock = new Map<string, { at: number; mono: number }>()
+  /** The last key status read (sameKeyRetry is synchronous: it uses this; every submit reads the status again). */
+  let lastKs: SeedvisKeyStatus | null = null
 
-  const gate = (rec: LedgerSent | null): GateVerdict => sameKeyGate(rec, now(), memoryMs, marginMs)
-  const gateDetail = (g: GateVerdict): string =>
-    g.reason === 'disabled' ? words.detail.gateDisabled : g.reason === 'clock' ? words.detail.clockChanged : g.reason === 'no-record' ? words.detail.noRecord : words.detail.gateExpired
-
-  async function keyInfo(): Promise<SeedvisKeyStatus | null> {
+  const monoNow = (): number | null => {
+    if (!monotonic) return null
     try {
-      const ks = deps.keyStatus ? await deps.keyStatus() : await apiOf().keyStatus()
-      return ks && typeof ks.hasKey === 'boolean' ? ks : null
+      const v = monotonic()
+      return Number.isFinite(v) ? v : null
     } catch {
       return null
     }
   }
+
+  /**
+   * The arrival gate of a key (window.ts) at now + `aheadMs`. Within the session of its first POST, the time elapsed
+   * since then is also measured on the monotonic clock and the later of the two is used, so a backward step of the
+   * wall clock smaller than the elapsed time cannot stretch the window; `mustFinishBy` / `safeUntil` come back on the
+   * wall clock (main enforces mustFinishBy on it), moved earlier by that step.
+   */
+  function gate(key: string, rec: LedgerSent | null = ledger.sent(key), aheadMs = 0): GateVerdict {
+    const wall = now()
+    let eff = wall
+    const m = rec ? sentClock.get(key) : undefined
+    const mono = m && rec && m.at === rec.at ? monoNow() : null
+    if (m && mono !== null) eff = Math.max(wall, rec!.at + Math.max(0, mono - m.mono))
+    const g = sameKeyGate(rec, eff + Math.max(0, aheadMs), memoryMs, marginMs, memoryFrom)
+    const shift = eff - wall
+    if (shift <= 0) return g
+    return { ...g, mustFinishBy: g.mustFinishBy === null ? null : g.mustFinishBy - shift, safeUntil: g.safeUntil === null ? null : g.safeUntil - shift }
+  }
+  const gateDetail = (g: GateVerdict): string =>
+    g.reason === 'disabled' ? words.detail.gateDisabled : g.reason === 'clock' ? words.detail.clockChanged : g.reason === 'no-record' ? words.detail.noRecord : words.detail.gateExpired
+
+  async function keyInfo(): Promise<SeedvisKeyStatus | null> {
+    let ks: SeedvisKeyStatus | null
+    try {
+      const r = deps.keyStatus ? await deps.keyStatus() : await apiOf().keyStatus()
+      ks = r && typeof r.hasKey === 'boolean' ? r : null
+    } catch {
+      ks = null
+    }
+    lastKs = ks
+    return ks
+  }
+
+  /**
+   * May a POST of this key go out under the API key saved now (`cur`)? Only when the key that sent the first POST is
+   * known (`rec.keyTag`) and is the one saved now: seedvis replays an Idempotency-Key only for the account that holds
+   * it — under another account's key the same key creates (and bills) a second job.
+   *   'sender-unknown' — the first POST's key tag was never known: it can never be proven (unverifiable for good);
+   *   'unknown'        — the key saved now cannot be identified (unreadable, still loading, no tag);
+   *   'changed'        — another key, or none, is saved now.
+   */
+  function sameSender(rec: LedgerSent | null, cur: SeedvisKeyStatus | null): 'ok' | 'sender-unknown' | 'unknown' | 'changed' {
+    if (!rec?.keyTag) return 'sender-unknown'
+    if (!cur || cur.problem === 'unreadable' || (!cur.hasKey && cur.problem === 'unknown')) return 'unknown'
+    if (!cur.hasKey) return 'changed'
+    if (!cur.tag) return 'unknown'
+    return cur.tag === rec.keyTag ? 'ok' : 'changed'
+  }
+  const senderDetail = (v: 'sender-unknown' | 'unknown' | 'changed'): string => (v === 'changed' ? words.detail.keyChanged : words.detail.keyUnknown)
 
   // ---- prepared bytes and pins (§9 lifecycle) ----
 
@@ -410,7 +521,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
   }
   /** Prepared requests whose key can no longer be re-sent go (memory and ledger). */
   function sweepPlans() {
-    for (const key of [...plans.keys()]) if (ledger.job(key) || !gate(ledger.sent(key)).allowed) dropPrep(key)
+    for (const key of [...plans.keys()]) if (ledger.job(key) || !gate(key).allowed) dropPrep(key)
   }
 
   // ---- errors ----
@@ -427,7 +538,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
 
   // ---- submit ----
 
-  async function submitNow(req: SeedvisJobRequest, opts: SubmitOptions): Promise<{ remoteId: string }> {
+  async function submitNow(req: SeedvisJobRequest, opts: SeedvisSubmitOptions): Promise<{ remoteId: string }> {
     const key = seedvisIdempotencyKey(req.key)
     ledger.reload()
     // 0. A job already exists for this key: never posted again (M4).
@@ -443,24 +554,32 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       if (opts.isCancelled?.()) throw earlier ? uncertain(words.detail.cancelledWhileResending) : cancelledError()
     }
     checkCancelled()
-    if (!getBridge()) throw new SeedvisError('unavailable', words.webUnavailable)
     if (earlier) {
       if (earlier.bodyChangedAt) throw unverifiable(words.detail.bodyChanged)
-      const g = gate(earlier)
+      const g = gate(key, earlier)
       if (!g.allowed) {
         dropPrep(key)
         throw unverifiable(gateDetail(g))
+      }
+      // The key that sent it was never identified: a same-key POST can never be proven to reach the same account.
+      if (!earlier.keyTag) {
+        dropPrep(key)
+        throw unverifiable(words.detail.keyUnknown)
       }
     } else if (ledger.isDropped(key) || opts.retryOfUnknown) {
       // Sent before (the engine says so, or its record was trimmed / damaged) and no record is left: never again (M8).
       throw unverifiable(words.detail.noRecord)
     }
-    // The saved key: none / unreadable → nothing sent ('unknown' = still being read at start-up: main decides).
+    // Priority rule (M6): once something may have reached seedvis, no bridge (development mode locked meanwhile…) is
+    // "maybe billed", never a plain 'unavailable'.
+    if (!getBridge()) throw earlier ? uncertain(words.detail.lostAnswer) : new SeedvisError('unavailable', words.webUnavailable)
+    // The saved key: none / unreadable → nothing sent ('unknown' = still being read at start-up: main decides). A
+    // same-key POST needs the very key that sent the first one (read again right before every POST, postLoop).
     const ks = await keyInfo()
-    if (ks && !ks.hasKey && ks.problem !== 'unknown') {
-      if (earlier) throw uncertain(words.detail.lostAnswer)
-      throw loginError(ks)
-    }
+    if (earlier) {
+      const who = sameSender(earlier, ks)
+      if (who !== 'ok') throw uncertain(senderDetail(who))
+    } else if (ks && !ks.hasKey && ks.problem !== 'unknown') throw loginError(ks)
     // 3. The exact bytes: the same ones for every POST of this key.
     let entry = plans.get(key) ?? null
     if (!entry) {
@@ -485,15 +604,17 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       throw unverifiable(words.detail.bodyChanged)
     }
     checkCancelled()
-    return postLoop(req, key, entry, earlier, ks, opts)
+    return postLoop(req, key, entry, earlier, opts)
   }
 
-  async function postLoop(req: SeedvisJobRequest, key: string, entry: PlanEntry, earlier: LedgerSent | null, ks: SeedvisKeyStatus | null, opts: SubmitOptions): Promise<{ remoteId: string }> {
+  async function postLoop(req: SeedvisJobRequest, key: string, entry: PlanEntry, earlier: LedgerSent | null, opts: SeedvisSubmitOptions): Promise<{ remoteId: string }> {
     const api = apiOf()
     const { prepared, sig } = entry
     /** Some attempt of this key may have reached seedvis (an earlier record, or a lost answer now). */
     let reached = !!earlier
     let detail = words.detail.lostAnswer
+    /** A 2xx without a usable job id: seedvis created it — that fact stays the detail whatever ends the submit. */
+    let createdNoId = false
     /** The lost answer the automatic re-sends are counted from (this call). */
     let lostAt: number | null = null
     let next = 0
@@ -506,27 +627,39 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       note(req.takeId, null)
       if (closedWhy !== undefined) {
         dropPrep(key, prepared)
-        return unverifiable(closedWhy)
+        return unverifiable(createdNoId ? words.detail.createdNoId : closedWhy)
       }
-      const g = gate(ledger.sent(key))
+      const g = gate(key)
       if (!g.allowed) {
         dropPrep(key, prepared)
-        return unverifiable(gateDetail(g))
+        return unverifiable(createdNoId ? words.detail.createdNoId : gateDetail(g))
       }
       keepPrep(key, entry)
-      return uncertain(why)
+      return uncertain(createdNoId ? words.detail.createdNoId : why)
     }
     for (let attempt = 1; ; attempt++) {
       let mustFinishBy: number | undefined
+      // The key main will send this POST with, read right before it leaves.
+      const cur = await keyInfo()
       if (reached) {
         // Every same-key POST passes the arrival gate (M5) — checked right before it leaves.
-        const g = gate(ledger.sent(key))
+        const g = gate(key)
         if (!g.allowed || g.mustFinishBy === null) throw stop(detail, gateDetail(g))
+        // …and goes out only under the key that sent the first POST: under another account's key seedvis does not
+        // know this Idempotency-Key and would create (and bill) a second job.
+        const who = sameSender(ledger.sent(key), cur)
+        if (who === 'sender-unknown') throw stop(detail, words.detail.keyUnknown)
+        if (who !== 'ok') throw stop(senderDetail(who))
         mustFinishBy = g.mustFinishBy
         // its record first, read back (M3): not stored → not sent
         if (!ledger.updateSent(key, { lastAt: now(), attempts: (ledger.sent(key)?.attempts ?? 0) + 1 })) throw stop(words.detail.ledgerNotSavedResend)
       } else {
-        // 4. The record of this POST, stored and read back before it leaves (M3).
+        // The key was removed while the request was being prepared: nothing sent.
+        if (cur && !cur.hasKey && cur.problem !== 'unknown') {
+          dropPrep(key, prepared)
+          throw loginError(cur)
+        }
+        // 4. The record of this POST, stored and read back before it leaves (M3), with the key that sends it.
         const t = now()
         const rec: LedgerSent = {
           at: t,
@@ -542,16 +675,19 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
           lastStatus: null,
           lastCode: null,
           lastRequestId: null,
-          keyTag: ks?.tag ?? null,
-          keyHint: ks?.hint ?? null,
+          keyTag: cur?.hasKey ? cur.tag : null,
+          keyHint: cur?.hasKey ? cur.hint : null,
         }
         if (!ledger.markSent(key, rec)) {
           dropPrep(key, prepared)
           throw new SeedvisError('storage', words.ledgerNotSaved)
         }
+        const mono = monoNow()
+        if (mono !== null) sentClock.set(key, { at: t, mono })
         // Last chance to stop: the POST below is what seedvis bills.
         if (opts.isCancelled?.()) {
           ledger.clearSent(key)
+          sentClock.delete(key)
           dropPrep(key, prepared)
           throw cancelledError()
         }
@@ -562,10 +698,15 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       recordAttempt(key, attempt === 1 && !earlier, res, c, sig.bytes, startedAt)
       log(`create ${key.slice(0, 8)} #${ledger.sent(key)?.attempts ?? attempt} → ${c.kind}${res.ok ? ` ${res.status}` : ` ${res.code}`}`)
 
-      if (c.kind === 'created' || c.kind === 'failed-final') return accepted(req, key, c, entry, ks, opts)
+      if (c.kind === 'created' || c.kind === 'failed-final') return accepted(req, key, c, entry, cur, opts)
       if (c.kind === 'lost') {
         reached = true
         detail = c.why === 'server-json' || c.why === 'server-other' ? words.detail.serverAfterSend(c.info?.status ?? 0) : words.detail.lostAnswer
+        if (c.why === 'no-id' && res.ok) {
+          // A 2xx proves seedvis created it; how it answered is logged (shape only) for the live test.
+          createdNoId = true
+          log(`create ${key.slice(0, 8)} ${res.status} without a usable job id (${idShape(res.json)})`)
+        }
       } else if (c.kind === 'conflict') {
         // seedvis has seen this key (another body, or still on it): never a new key (M9).
         reached = true
@@ -578,7 +719,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
         detail = words.detail.refusedAfterSend(c.info?.status ?? 0, c.info?.code ?? c.failure?.code ?? null)
       } else {
         // not-sent: this attempt never fully left this computer
-        if (!reached) return notSentNow(key, c, prepared, ks, opts)
+        if (!reached) return notSentNow(key, c, prepared, cur, opts)
         // a re-send main stopped at mustFinishBy: the window is over
         if (c.why === 'deadline') throw stop(detail, words.detail.deadline)
       }
@@ -587,8 +728,10 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       const due = schedule[next++]
       if (due === undefined) throw stop(detail)
       // Decided for the moment it would leave: no wait (and no "đang gửi lại" note) for a re-send that cannot fit.
-      const open = sameKeyGate(ledger.sent(key), Math.max(now(), lostAt + due), memoryMs, marginMs)
+      const open = gate(key, ledger.sent(key), lostAt + due - now())
       if (!open.allowed) throw stop(detail, gateDetail(open))
+      // The key that sent it was never identified: no same-key re-send can ever go (no wait for one).
+      if (!ledger.sent(key)?.keyTag) throw stop(detail, words.detail.keyUnknown)
       // Keep the exact bytes while a re-send is possible (a pinned original survives a library delete meanwhile).
       keepPrep(key, entry)
       note(req.takeId, words.detail.resending)
@@ -599,7 +742,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       // Main must say the network is up; the gate is checked again meanwhile.
       while (!(await api.isOnline())) {
         if (opts.isCancelled?.()) throw stop(words.detail.cancelledWhileResending)
-        const g = gate(ledger.sent(key))
+        const g = gate(key)
         if (!g.allowed) throw stop(detail, gateDetail(g))
         await sleep(ONLINE_CHECK_MS)
       }
@@ -620,14 +763,16 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     })
   }
 
-  function accepted(req: SeedvisJobRequest, key: string, c: Extract<CreateClass, { kind: 'created' | 'failed-final' }>, entry: PlanEntry, ks: SeedvisKeyStatus | null, opts: SubmitOptions) {
+  function accepted(req: SeedvisJobRequest, key: string, c: Extract<CreateClass, { kind: 'created' | 'failed-final' }>, entry: PlanEntry, ks: SeedvisKeyStatus | null, opts: SeedvisSubmitOptions) {
     const remoteId = c.gen.id!
     const t = now()
+    // The key that sent the key's first POST (every same-key re-send was checked to go out under that very key).
+    const sent = ledger.sent(key)
     const job: LedgerJob = {
       remoteId,
       at: t,
-      keyTag: ks?.tag ?? ledger.sent(key)?.keyTag ?? null,
-      keyHint: ks?.hint ?? ledger.sent(key)?.keyHint ?? null,
+      keyTag: sent?.keyTag ?? (ks?.hasKey ? ks.tag : null),
+      keyHint: sent?.keyHint ?? (ks?.hasKey ? ks.hint : null),
       ...(c.replayed ? { replayed: true as const } : {}),
       ...(c.kind === 'failed-final' ? { final: { status: c.gen.error?.code === 'cancelled' ? ('cancelled' as const) : ('failed' as const), code: c.gen.error?.code ?? null, at: t } } : {}),
     }
@@ -643,12 +788,20 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     } catch {
       /* warn-only (M19): never fails a created job */
     }
-    // The take was cancelled / deleted while this POST was in flight: the job exists — the engine must cancel it (§6.4 b).
-    if (opts.isCancelled?.()) ledger.recordOrphan(key, { remoteId, at: t, outcome: null })
+    // The take itself disappeared while this POST was in flight (another tab deleted it…): the job exists and no take
+    // will poll or cancel it — recorded for the engine to cancel (§6.4 b). Not for a take merely cancelled, or whose
+    // scene was deleted while the take is kept: the engine still has that take and cancels / polls its job itself.
+    let gone = false
+    try {
+      gone = opts.isGone?.() === true
+    } catch {
+      gone = false
+    }
+    if (gone) ledger.recordOrphan(key, { remoteId, at: t, outcome: null })
     return { remoteId }
   }
 
-  function refusedNow(req: SeedvisJobRequest, key: string, c: Extract<CreateClass, { kind: 'refused' }>, prepared: SeedvisPrepared, opts: SubmitOptions): never {
+  function refusedNow(req: SeedvisJobRequest, key: string, c: Extract<CreateClass, { kind: 'refused' }>, prepared: SeedvisPrepared, opts: SeedvisSubmitOptions): never {
     // A definitive refusal: nothing was created, nothing billed.
     ledger.clearSent(key)
     dropPrep(key, prepared)
@@ -662,7 +815,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     throw new SeedvisError('refused', w.text, { status: c.info.status, remoteCode: c.info.code, detail: w.detail, field: c.info.field, requestId: c.info.requestId })
   }
 
-  function deferredNow(key: string, c: Extract<CreateClass, { kind: 'busy' }>, prepared: SeedvisPrepared, bodyBytes: number, opts: SubmitOptions): never {
+  function deferredNow(key: string, c: Extract<CreateClass, { kind: 'busy' }>, prepared: SeedvisPrepared, bodyBytes: number, opts: SeedvisSubmitOptions): never {
     ledger.clearSent(key)
     dropPrep(key, prepared)
     if (opts.isCancelled?.()) throw cancelledError()
@@ -679,7 +832,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     })
   }
 
-  function notSentNow(key: string, c: Extract<CreateClass, { kind: 'not-sent' }>, prepared: SeedvisPrepared, ks: SeedvisKeyStatus | null, opts: SubmitOptions): never {
+  function notSentNow(key: string, c: Extract<CreateClass, { kind: 'not-sent' }>, prepared: SeedvisPrepared, ks: SeedvisKeyStatus | null, opts: SeedvisSubmitOptions): never {
     ledger.clearSent(key)
     dropPrep(key, prepared)
     if (opts.isCancelled?.()) throw cancelledError()
@@ -708,7 +861,17 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     return { remoteId, state: 'failed', ...(f.code ? { code: f.code } : {}), error: words.poll.failed(f.code, null) }
   }
 
-  type PollOne = { kind: 'status'; status: RemoteStatusExt } | { kind: 'auth'; error: SeedvisError } | { kind: 'error'; error: SeedvisError }
+  /**
+   * 'auth': the key itself is missing / wrong (401, main's no-key / bad-key / key-unreadable) — polling pauses.
+   * 'forbidden': 403 on this job — another account's job, or the key lost its rights: decided over the whole batch.
+   */
+  type PollOne =
+    | { kind: 'status'; status: RemoteStatusExt }
+    | { kind: 'auth'; error: SeedvisError }
+    | { kind: 'forbidden'; error: SeedvisError }
+    | { kind: 'error'; error: SeedvisError }
+  /** Final answers with a status SanoVids does not know, already logged (remote id + status). */
+  const unknownLogged = new Set<string>()
 
   async function pollOne(api: SeedvisApi, remoteId: string, key: string | null, tag: string | null): Promise<PollOne> {
     const res = await api.get(remoteId)
@@ -728,12 +891,25 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       if (gen.status === 'completed') {
         status = { remoteId, state: 'completed', progress: 99 }
         if (key) ledger.setFinal(key, { status: 'completed', code: null, at: t })
-      } else if (gen.status === 'failed' || (gen.isFinal && gen.status === 'unknown')) {
+      } else if (gen.status === 'failed') {
         const code = gen.error?.code ?? null
         if (code === 'cancelled') status = { remoteId, state: 'cancelled', code, error: words.poll.cancelledRefunded }
         else if (code === 'not_started') status = { remoteId, state: 'failed', code, error: words.poll.notStarted }
         else status = { remoteId, state: 'failed', ...(code ? { code } : {}), error: words.poll.failed(code, gen.error?.message ?? null) }
         if (key) ledger.setFinal(key, { status: code === 'cancelled' ? 'cancelled' : 'failed', code, at: t })
+      } else if (gen.status === 'unknown' && (gen.rawStatus === 'cancelled' || gen.rawStatus === 'canceled')) {
+        // a plain "cancelled" status: the cancelled (refunded) outcome, like failed + error.code cancelled
+        status = { remoteId, state: 'cancelled', code: 'cancelled', error: words.poll.cancelledRefunded }
+        if (key) ledger.setFinal(key, { status: 'cancelled', code: 'cancelled', at: t })
+      } else if (gen.status === 'unknown' && gen.isFinal) {
+        // A final status SanoVids does not know ("succeeded"?): never taken as a failure (a paid, finished video would
+        // be reported failed and never downloaded) and never remembered — the take keeps running and is asked again.
+        const raw = gen.rawStatus ?? '?'
+        if (!unknownLogged.has(`${remoteId}|${raw}`)) {
+          unknownLogged.add(`${remoteId}|${raw}`)
+          log(`job ${remoteId.slice(0, 8)} is final with an unknown status "${raw}": kept running`)
+        }
+        status = { remoteId, state: 'processing', phase: 'processing', progress: progressOf(remoteId, gen), note: words.poll.unknownFinal(raw) }
       } else if (gen.status === 'queued') {
         status = { remoteId, state: 'queued', phase: 'queued', progress: progressOf(remoteId, gen), note: words.poll.queued(gen.queue?.position ?? null, gen.queue?.estimatedStartSeconds ?? null) }
       } else {
@@ -764,7 +940,8 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       return { kind: 'status', status }
     }
     const info = parseApiError(res.status, res.json, res.headers)
-    if (res.status === 401 || res.status === 403) return { kind: 'auth', error: new SeedvisError('login-required', words.badKey, { status: res.status, remoteCode: info.code }) }
+    if (res.status === 401) return { kind: 'auth', error: new SeedvisError('login-required', words.badKey, { status: res.status, remoteCode: info.code }) }
+    if (res.status === 403) return { kind: 'forbidden', error: new SeedvisError('login-required', words.badKey, { status: res.status, remoteCode: info.code }) }
     // 429 / 5xx / anything else: keep the take running; the engine backs off when nothing answered.
     if (info.retryAfterMs) pace.set(remoteId, { nextAt: t + Math.max(minPollMs, info.retryAfterMs), last: pace.get(remoteId)?.last ?? { remoteId, state: 'processing' } })
     return { kind: 'error', error: new SeedvisError(res.status >= 500 ? 'server' : 'network', words.poll.failed(info.code, info.message), { status: res.status, retryAfterMs: info.retryAfterMs }) }
@@ -818,13 +995,23 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       }
     }
     await Promise.all(Array.from({ length: Math.min(POLL_PARALLEL, due.length) }, worker))
+    // The key itself is missing / wrong (401 or main says so): polling pauses for every take (they are kept).
+    const auth = results.find((r): r is Extract<PollOne, { kind: 'auth' }> => r.kind === 'auth')
+    if (auth) throw auth.error
+    // 403 on every job asked: the key lost its rights — pause. 403 on some only: those jobs are another account's (a
+    // job whose sending key was never identified cannot be held) — they keep running, the others are not paused.
+    const forbidden = results.filter((r): r is Extract<PollOne, { kind: 'forbidden' }> => r.kind === 'forbidden')
+    if (forbidden.length && forbidden.length === due.length) throw forbidden[0].error
     let failed: SeedvisError | null = null
     let failures = 0
     for (let i = 0; i < due.length; i++) {
       const r = results[i]
-      if (r.kind === 'auth') throw r.error
       if (r.kind === 'status') out.push(r.status)
-      else {
+      else if (r.kind === 'forbidden') {
+        const status: RemoteStatusExt = { remoteId: due[i].remoteId, state: 'processing', note: words.poll.forbidden }
+        pace.set(due[i].remoteId, { nextAt: now() + Math.max(minPollMs, FORBIDDEN_RETRY_MS), last: status })
+        out.push(status)
+      } else {
         failures++
         failed = r.error
         out.push(pace.get(due[i].remoteId)?.last ?? { remoteId: due[i].remoteId, state: 'processing' })
@@ -862,6 +1049,19 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     const api = apiOf()
     const aborted = () => new SeedvisError('aborted', words.fetch.aborted)
     if (opts.signal?.aborted) throw aborted()
+    ledger.reload()
+    const key = ledger.keyOfRemote(remoteId)
+    // A job sent with another API key than the one saved now (a finished job's cached 'completed' skips the poll's
+    // hold): never asked with this key — it would answer 404 / 403 and use up a try of a paid video (M23). Not a try.
+    const sender = key ? ledger.job(key) : null
+    if (sender?.keyTag) {
+      const ks = await keyInfo()
+      const tag = ks?.hasKey ? ks.tag : null
+      if (tag && tag !== sender.keyTag) {
+        const hint = sender.keyHint ?? '????'
+        throw new SeedvisError('deferred', words.poll.held(hint), { held: { keyHint: hint } })
+      }
+    }
     // Offline does not count as a try (§6.8 rule 1).
     if (!(await api.isOnline())) throw new SeedvisError('deferred', words.fetch.offline)
     let gen = await readForFetch(api, remoteId)
@@ -878,7 +1078,14 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       // a fresh link: GET the job again (main records the new outputs), then once more
       gen = await readForFetch(api, remoteId)
       open = await api.downloadOpen({ generationId: remoteId, index: 0 })
-      if (!open.ok && open.code === 'expired-link') throw new SeedvisError('expired-link', words.fetch.expired, { definitive: true })
+      if (!open.ok && open.code === 'expired-link') {
+        // The fresh link refused too. Only a job that completed long ago can really have expired (§6.8 rule 5, M27): a
+        // CDN miss right after completion (not replicated yet, a signing / clock glitch) is a plain, retried failure.
+        const done = key ? ledger.job(key)?.final : undefined
+        const old = done?.status === 'completed' && now() - done.at >= EXPIRED_LINK_MIN_AGE_MS
+        if (old) throw new SeedvisError('expired-link', words.fetch.expired, { definitive: true })
+        throw new SeedvisError('expired-link', words.fetch.linkRefused)
+      }
     }
     if (!open.ok) throw await downloadFailure(api, open, 0)
     const limit = SEEDVIS_IPC_LIMITS.videoBytes
@@ -925,8 +1132,13 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     if (f.code === 'too-slow') return new SeedvisError('too-slow', words.fetch.failed(f.message || f.code))
     if (f.code === 'offline') return new SeedvisError('deferred', words.fetch.offline)
     if (f.code === 'busy' || f.code === 'rate-limited') return new SeedvisError('deferred', words.fetch.failed(f.code), { retryAfterMs: f.retryAfterMs ?? null })
-    if ((f.code === 'network' || f.code === 'timeout') && received === 0 && !(await api.isOnline())) return new SeedvisError('deferred', words.fetch.offline)
-    if (f.code === 'expired-link') return new SeedvisError('expired-link', words.fetch.expired)
+    if (f.code === 'network' || f.code === 'timeout') {
+      // §6.8 rule 1: offline (whatever was received), or a network failure before any byte arrived (a captive portal,
+      // the ISP down while net.isOnline() still says yes) → not one of the tries.
+      if (!(await api.isOnline())) return new SeedvisError('deferred', words.fetch.offline)
+      if (f.code === 'network' && received === 0) return new SeedvisError('deferred', words.fetch.failed(f.message || f.code))
+    }
+    if (f.code === 'expired-link') return new SeedvisError('expired-link', words.fetch.linkRefused)
     return new SeedvisError('network', words.fetch.failed(f.message || f.code))
   }
 
@@ -943,14 +1155,41 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
       log(`cancel ${remoteId.slice(0, 8)} → ${outcome}`)
       return outcome
     }
+    /**
+     * What a job answer proves about the cancel: 'refunded' only on evidence (failed + error.code cancelled, a
+     * cancelled status, or a refunded cancellation outcome); completed / failed otherwise → 'finished' (poll it); a job
+     * still queued / processing → `running` (the caller says what that means: not cancellable, or not proven yet).
+     */
+    const evidence = (gen: SeedvisGeneration | null, running: CancelOutcome): CancelOutcome | null => {
+      if (!gen) return null
+      const c = gen.cancellation
+      if (c?.outcome === 'partial' && (c.runningOutputs ?? 0) > 0) return 'running'
+      if (gen.status === 'completed') return 'finished'
+      if ((gen.status === 'failed' && gen.error?.code === 'cancelled') || gen.rawStatus === 'cancelled' || gen.rawStatus === 'canceled') return 'refunded'
+      if (gen.status === 'failed') return 'finished'
+      if (c?.outcome && REFUNDED_OUTCOMES.has(c.outcome)) return 'refunded'
+      if (gen.status === 'queued' || gen.status === 'processing') return running
+      return null
+    }
+    /** GET the job and decide from it. */
+    const fromJob = async (running: CancelOutcome): Promise<CancelOutcome> => {
+      const g = await api.get(remoteId)
+      const gen = g.ok && (g.status === 200 || g.status === 202) ? parseGeneration(g.json) : null
+      return evidence(gen, running) ?? 'unknown'
+    }
     let unavailable = 0
     let conflictWaited = false
     for (;;) {
       const res = await api.cancel(remoteId)
       if (!res.ok) return done('unknown')
       if (res.status >= 200 && res.status < 300) {
-        const c = parseGeneration(res.json)?.cancellation
-        return done(c?.outcome === 'partial' && (c.runningOutputs ?? 0) > 0 ? 'running' : 'refunded')
+        // A 2xx alone is no proof (an empty / unknown body, no cancellation, a job that went on): never 'refunded'
+        // without evidence — that would end the take, and a job that completes (billed) would never be downloaded.
+        const fromBody = evidence(parseGeneration(res.json), 'unknown')
+        if (fromBody && fromBody !== 'unknown') return done(fromBody)
+        log(`cancel ${remoteId.slice(0, 8)} ${res.status} without evidence (${idShape(res.json)}): reading the job`)
+        // still queued / processing after the cancel was accepted: not proven either way — the poll will tell
+        return done(await fromJob('unknown'))
       }
       const info = parseApiError(res.status, res.json, res.headers)
       if (res.status === 409) {
@@ -960,12 +1199,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
           continue
         }
         // not cancellable: what is the job doing?
-        const g = await api.get(remoteId)
-        const gen = g.ok && (g.status === 200 || g.status === 202) ? parseGeneration(g.json) : null
-        if (!gen) return done('unknown')
-        if (gen.status === 'queued' || gen.status === 'processing') return done('running')
-        if (gen.status === 'completed' || gen.status === 'failed') return done('finished')
-        return done('unknown')
+        return done(await fromJob('running'))
       }
       if (res.status === 503 && unavailable < CANCEL_UNAVAILABLE_RETRIES) {
         unavailable++
@@ -1089,9 +1323,15 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     const rec = ledger.sent(key)
     if (!rec) return { safeUntil: null, reason: 'no-record' }
     if (rec.bodyChangedAt) return { safeUntil: null, reason: 'body-changed' }
-    const g = gate(rec)
+    const g = gate(key, rec)
     if (g.reason === 'disabled') return { safeUntil: null, reason: 'disabled' }
     if (g.reason === 'no-record') return { safeUntil: null, reason: 'no-record' }
+    // The clock went backwards: no moment can be called safe (the submit refuses it too).
+    if (g.reason === 'clock') return { safeUntil: null, reason: 'expired' }
+    // Only under the key that sent it (the sending key never identified, or another / no key saved as last read). A
+    // key status not read yet / unreadable is left to the submit, which reads it again and refuses then.
+    const who = sameSender(rec, lastKs)
+    if (who === 'sender-unknown' || who === 'changed') return { safeUntil: null, reason: 'key-changed' }
     return { safeUntil: g.safeUntil, reason: g.allowed ? 'ok' : 'expired' }
   }
 
@@ -1135,7 +1375,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
   function sweepPrep() {
     sweepPlans()
     for (const [key, p] of Object.entries(ledger.data().prep)) {
-      if (ledger.job(key) || now() - p.at >= PREP_SWEEP_MS || !gate(ledger.sent(key)).allowed) dropPrep(key)
+      if (ledger.job(key) || now() - p.at >= PREP_SWEEP_MS || !gate(key).allowed) dropPrep(key)
     }
   }
 
@@ -1234,7 +1474,7 @@ export function createSeedvisProvider(deps: SeedvisAdapterDeps): SeedvisProvider
     pinnedImageIds: () => {
       const ids = new Set<string>()
       for (const [key, p] of Object.entries(ledger.data().prep)) {
-        if (!ledger.job(key) && gate(ledger.sent(key)).allowed) for (const x of p.pins) ids.add(x)
+        if (!ledger.job(key) && gate(key).allowed) for (const x of p.pins) ids.add(x)
       }
       return [...ids]
     },

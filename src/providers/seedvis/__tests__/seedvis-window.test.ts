@@ -8,6 +8,7 @@ import {
   estUploadMs,
   gateStart,
   KEY_MEMORY_CAP_MS,
+  KEY_MEMORY_FROM,
   MIN_UPLOAD_BPS,
   nextStreak,
   NO_STREAK,
@@ -71,21 +72,46 @@ describe('seedvis arrival gate — the estimate and the window', () => {
     expect(estUploadMs(MIN_UPLOAD_BPS, -5)).toBe(1000 + UPLOAD_FIXED_MS)
   })
 
-  it('measures the window from the first attempt last byte, else from the first POST start', () => {
-    expect(gateStart({ at: T0, firstLastByteAt: T0 + 7_000 })).toBe(T0 + 7_000)
+  it('by default measures the window from the first POST start — seedvis may store the key as the request arrives', () => {
+    expect(KEY_MEMORY_FROM).toBe('request')
+    expect(gateStart({ at: T0, firstLastByteAt: T0 + 7_000 })).toBe(T0)
     expect(gateStart({ at: T0, firstLastByteAt: null })).toBe(T0)
-    expect(sameKeyDeadline(rec({ firstLastByteAt: T0 + 7_000 }), MEM)).toBe(T0 + 7_000 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS)
+    expect(sameKeyDeadline(rec({ firstLastByteAt: T0 + 7_000 }), MEM)).toBe(T0 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS)
     expect(sameKeyDeadline(rec(), MEM)).toBe(T0 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS)
+  })
+
+  it('"last-byte" (only once seedvis confirms it): from the first attempt last byte, else from the first POST start', () => {
+    expect(gateStart({ at: T0, firstLastByteAt: T0 + 7_000 }, 'last-byte')).toBe(T0 + 7_000)
+    expect(gateStart({ at: T0, firstLastByteAt: null }, 'last-byte')).toBe(T0)
+    expect(sameKeyDeadline(rec({ firstLastByteAt: T0 + 7_000 }), MEM, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte')).toBe(T0 + 7_000 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS)
+  })
+
+  it('39 MiB at 2 Mbps: measuring from the last byte would overestimate the window by the whole first upload (~2.7 min) — the default never does', () => {
+    const upload = Math.ceil(((39 * MiB) / MBPS2) * 1000)
+    expect(upload).toBeGreaterThan(160_000)
+    const r = rec({ firstLastByteAt: T0 + upload, uploadBps: MBPS2, bodyBytes: 39 * MiB })
+    const memory = 10 * 60_000
+    expect(sameKeyDeadline(r, memory, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte')! - sameKeyDeadline(r, memory)!).toBe(upload)
+    // any re-send the default allows still arrives within `memory` of the first request's start
+    for (let t = T0 + upload; t < T0 + memory; t += 5_000) {
+      const g = sameKeyGate(r, t, memory)
+      if (g.allowed) expect(t + estUploadMs(r.bodyBytes, r.uploadBps)).toBeLessThanOrEqual(T0 + memory - SEEDVIS_SAME_KEY_MARGIN_MS)
+    }
   })
 
   it('allows exactly up to now + est + margin = start + memory, refuses 1 ms later', () => {
     const r = rec({ firstLastByteAt: T0 + 5_000, uploadBps: 1_500_000, bodyBytes: 3_000_000 })
     const est = estUploadMs(r.bodyBytes, r.uploadBps)
-    const edge = T0 + 5_000 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS - est
-    const at = sameKeyGate(r, edge, MEM)
-    expect(at).toEqual({ allowed: true, reason: 'ok', mustFinishBy: T0 + 5_000 + MEM - SEEDVIS_SAME_KEY_MARGIN_MS, safeUntil: edge, estMs: est })
-    expect(at.safeUntil! + at.estMs! + SEEDVIS_SAME_KEY_MARGIN_MS).toBe(T0 + 5_000 + MEM)
-    expect(sameKeyGate(r, edge + 1, MEM)).toMatchObject({ allowed: false, reason: 'expired', safeUntil: edge })
+    for (const [from, start] of [
+      ['request', T0],
+      ['last-byte', T0 + 5_000],
+    ] as const) {
+      const edge = start + MEM - SEEDVIS_SAME_KEY_MARGIN_MS - est
+      const at = sameKeyGate(r, edge, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, from)
+      expect(at).toEqual({ allowed: true, reason: 'ok', mustFinishBy: start + MEM - SEEDVIS_SAME_KEY_MARGIN_MS, safeUntil: edge, estMs: est })
+      expect(at.safeUntil! + at.estMs! + SEEDVIS_SAME_KEY_MARGIN_MS).toBe(start + MEM)
+      expect(sameKeyGate(r, edge + 1, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, from)).toMatchObject({ allowed: false, reason: 'expired', safeUntil: edge })
+    }
   })
 
   it('a bigger margin closes it earlier', () => {
@@ -94,15 +120,16 @@ describe('seedvis arrival gate — the estimate and the window', () => {
     expect(sameKeyGate(r, T0 + MEM - 20_000 - UPLOAD_FIXED_MS, MEM, 30_000).allowed).toBe(false)
   })
 
-  it('closes when the clock went backwards (now before the first POST or its last byte)', () => {
+  it('closes when the clock went backwards (now before the first POST, or before its last byte when measured from it)', () => {
     expect(sameKeyGate(rec(), T0 - 1, MEM)).toMatchObject({ allowed: false, reason: 'clock' })
-    expect(sameKeyGate(rec({ firstLastByteAt: T0 + 9_000 }), T0 + 8_000, MEM)).toMatchObject({ allowed: false, reason: 'clock' })
+    expect(sameKeyGate(rec({ firstLastByteAt: T0 + 9_000 }), T0 + 8_000, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte')).toMatchObject({ allowed: false, reason: 'clock' })
   })
 
-  it('without progress information the window starts at the POST start (earlier = safer)', () => {
-    const withProgress = sameKeyGate(rec({ firstLastByteAt: T0 + 30_000 }), T0 + 60_000, MEM)
-    const without = sameKeyGate(rec({ firstLastByteAt: null }), T0 + 60_000, MEM)
+  it('"last-byte" without progress information starts at the POST start (earlier = safer); the default ignores the last byte', () => {
+    const withProgress = sameKeyGate(rec({ firstLastByteAt: T0 + 30_000 }), T0 + 60_000, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte')
+    const without = sameKeyGate(rec({ firstLastByteAt: null }), T0 + 60_000, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte')
     expect(withProgress.safeUntil! - without.safeUntil!).toBe(30_000)
+    expect(sameKeyGate(rec({ firstLastByteAt: T0 + 30_000 }), T0 + 60_000, MEM).safeUntil).toBe(without.safeUntil)
   })
 })
 
@@ -111,9 +138,14 @@ describe('seedvis arrival gate — slow uploads and big bodies (plan §7.3 sim c
     const lastByte = T0 + Math.ceil(((8 * MiB) / MBPS2) * 1000)
     const r = rec({ firstLastByteAt: lastByte, uploadBps: MBPS2, bodyBytes: 8 * MiB })
     const lostAt = lastByte + 45_000
-    for (const t of resendSchedule(lostAt)) expect(sameKeyGate(r, t, MEM)).toMatchObject({ allowed: false, reason: 'expired' })
-    // the estimate alone is ~52 s: start + 120 s − 20 s − 52 s ≈ 48 s after the last byte
-    expect(sameKeyGate(r, lastByte + 47_000, MEM).allowed).toBe(true)
+    for (const from of ['request', 'last-byte'] as const) {
+      for (const t of resendSchedule(lostAt)) expect(sameKeyGate(r, t, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, from)).toMatchObject({ allowed: false, reason: 'expired' })
+    }
+    // the estimate alone is ~52 s: measured from the last byte, start + 120 s − 20 s − 52 s ≈ 48 s after it…
+    expect(sameKeyGate(r, lastByte + 47_000, MEM, SEEDVIS_SAME_KEY_MARGIN_MS, 'last-byte').allowed).toBe(true)
+    // …measured from the POST start (the default), ≈ 48 s after the start: before the first upload even ended
+    expect(sameKeyGate(r, lastByte + 47_000, MEM).allowed).toBe(false)
+    expect(sameKeyGate(r, lastByte, MEM).allowed).toBe(true)
   })
 
   it('30 MiB at 2 Mbps: an explicit "Chạy lại" at 1:30 is refused (and so is any moment: the upload alone outlasts the memory)', () => {
@@ -132,7 +164,7 @@ describe('seedvis arrival gate — slow uploads and big bodies (plan §7.3 sim c
     const r = rec({ firstLastByteAt: lastByte, uploadBps: bps, bodyBytes: 30 * MiB })
     const [first, second, third] = resendSchedule(lastByte + 45_000)
     expect(sameKeyGate(r, first, MEM).allowed).toBe(true)
-    // +90 s after the last byte, ~5.8 s upload, 20 s margin: 115.8 s ≤ 120 s
+    // +90 s after the last byte (≈ 92.5 s after the POST start), ~5.8 s upload, 20 s margin: 118.3 s ≤ 120 s
     expect(sameKeyGate(r, second, MEM).allowed).toBe(true)
     expect(sameKeyGate(r, third, MEM).allowed).toBe(false)
   })
