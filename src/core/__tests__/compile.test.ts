@@ -94,6 +94,16 @@ describe('tokens', () => {
     expect(out.text).toBe('[image:a:i1] @image_2 @image_1 @image_?9 @video_1 [video:t1]')
     expect(out.dropped).toBe(2)
   })
+  it('a removed token right after an "@" ("@@image_2") never glues its fallback to it (no new token / mention)', () => {
+    const p = project([])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'], ['t1'])
+    const after = mediaKeys(p.assets, ['b', 'c'], [])
+    const out = remapTokens('x @@image_1 y @@video_1 z @@image_3', before, after, (k) => (k === 'image' ? 'image 3' : 'Lumi'))
+    expect(out.text).toBe('x @ image 3 y @ Lumi z @@image_1')
+    // what is left points exactly where it did: one token, b's image (now @image_1)
+    expect(parseTokens(out.text)).toEqual([{ kind: 'image', n: 1, start: 24, end: 32 }])
+    expect(extractMentions(out.text)).toEqual([])
+  })
   it('token for an asset is its primary image number', () => {
     const s = scene({ refs: ['b', 'a'] })
     expect(tokenForAsset(project([s]), s, 'a')).toBe('@image_2')

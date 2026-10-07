@@ -120,10 +120,13 @@ export const imageKey = (s: { assetId: string; imageId: string }) => `${s.assetI
 
 /**
  * Text an @image_N token becomes when its image is removed from a scene: the asset name, else its tag, else "ảnh"
- * (a blank name must never leave an empty gap in the prompt).
+ * (a blank name must never leave an empty gap in the prompt). Without any "@": an asset named like a token ("@image_1")
+ * or a mention ("@Lumi", which compileScene turns into Lumi's @image_N) would otherwise make the text point at another
+ * picture — the character of that scene would change (Test giới hạn P3).
  */
 export function imageFallbackName(asset: Pick<Asset, 'name' | 'tag'> | null | undefined): string {
-  return asset?.name?.trim() || asset?.tag?.trim() || 'ảnh'
+  const inert = (s: string | undefined) => (typeof s === 'string' ? s.replace(/@/g, '').trim() : '')
+  return inert(asset?.name) || inert(asset?.tag) || 'ảnh'
 }
 
 /** Fallback text per asset id (see imageFallbackName); unknown ids give "ảnh". */
@@ -164,7 +167,7 @@ export function remapTokens(
 ): { text: string; dropped: number; changed: boolean } {
   let dropped = 0
   let changed = false
-  const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawN: string) => {
+  const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawN: string, offset: number, all: string) => {
     const kind = rawKind.toLowerCase() as 'image' | 'video'
     const oldKeys = kind === 'image' ? before.images : before.videos
     const newKeys = kind === 'image' ? after.images : after.videos
@@ -176,7 +179,9 @@ export function remapTokens(
       return unboundToken(kind, rawN)
     }
     const idx = newKeys.indexOf(key)
-    const next = idx >= 0 ? withTokenNumber(whole, idx + 1) : fallback(kind, key)
+    // A fallback after an "@" ("@@image_2"): kept apart from it — glued, "@" + "Lumi" / "image 3…" would be read as a
+    // mention / token of another picture.
+    const next = idx >= 0 ? withTokenNumber(whole, idx + 1) : (offset > 0 && all[offset - 1] === '@' ? ' ' : '') + fallback(kind, key)
     if (idx < 0) dropped++
     if (next !== whole) changed = true
     return next
