@@ -46,3 +46,5 @@ release/
 pw.txt
 *.pfx.txt
 .perf/
+# reports of the dev-only stress tester (node scripts/stress/run-stress.mjs)
+.stress/
