@@ -1,25 +1,35 @@
-# SanoVids design language (Apple-inspired)
+# SanoVids design language (Design D — Sano, en mouvement)
 
 User request (2026-10-02): "tối ưu lại giao diện người dùng tham khảo phong cách thiết kế của Apple, thêm chuyển chế độ sáng tối".
 Reference: Apple Human Interface Guidelines (macOS/iPadOS apps such as Final Cut Pro, Keynote, Freeform, Photos).
-Goal: calm, content-first, precise. The user's images and videos are the stars; chrome recedes.
+Goal: calm, content-first, precise. Design D keeps the Apple-inspired layout with neutral surfaces, Sano red branding and readable semantic colors. The user's images and videos are the stars; chrome recedes.
 
 ## Appearance
-- Two themes: **Tối** (default) and **Sáng**, plus **Theo hệ thống**. `src/lib/theme.ts` sets `<html data-theme>`; all colors come from tokens in `src/styles/base.css`. **No hard-coded colors in component CSS** (use `var(--…)`, `color-mix(in srgb, var(--x) N%, transparent)` for tints). Check every component in both themes.
+- Two themes: **Tối** and **Sáng**, plus **Theo hệ thống** (the stored preference defaults to `system`; dark is the base CSS appearance). `src/lib/theme.ts` sets `<html data-theme>`; all colors come from tokens in `src/styles/base.css`. **No hard-coded colors in component CSS** (use `var(--…)`, `color-mix(in srgb, var(--x) N%, transparent)` for tints).
+- **Màu nền** is a separate device preference, `bdp:pref:background`: `than` = **Than** (default, neutral charcoal `#161618`), `deep` = **Đen sâu** (`#0C0C0D`), `slate` = **Xám xanh** (`#14171C`). `<html data-bg>` selects the dark surface palette; light stays neutral `#F5F5F7` and retains the choice for the next switch to dark. `index.html` applies both saved choices before first paint. Settings export/import/reset includes the background; missing or invalid stored values fall back to `than`. Check all three dark backgrounds and light.
 - React Flow: pass `colorMode` from the theme; canvas background `var(--canvas-bg)` with dots `var(--canvas-dot)`.
+
+| Palette anchor | Tối / Than | Sáng |
+| --- | --- | --- |
+| Window / panel | `#161618` / `#1F1F22` | `#F5F5F7` / `#FFFFFF` |
+| Canvas / field | `#121214` / `#1A1A1D` | `#ECECF0` / `#FBFBFC` |
+| Text / secondary / placeholder | `#F5F5F7` / `#BDBDC6` / `#A6A6B0` | `#1D1D1F` / `#55555E` / `#5E5E68` |
+| Decorative accent / selection | `#FF775A` / `#FF8065` | `#C32B15` / `#CB351B` |
+| Brand plate, top → bottom / ink | `#E60000` → `#FF3D14` / `#FFFFFF` | Same fixed brand colors |
 
 ## Tokens (see base.css)
 - Surfaces: `--bg` window, `--panel` sidebars/cards, `--panel-2` raised controls, `--panel-3` hover/pressed, `--bg-elev` fields; `--hover`/`--pressed` overlays for rows and icon buttons.
-- Materials (vibrancy): `.material` (translucent + `backdrop-filter: var(--blur)`) for floating things: top bar, canvas toolbar, popovers, menus, toasts, hover previews, the queue drawer bar.
-- Lines: hairlines `--border` (1px); `--border-strong` only for inputs/controls.
+- Materials (vibrancy): `.material` (translucent + `backdrop-filter: var(--blur)`) for floating toolbars, popovers, menus and previews. D uses near-opaque `--material` / `--material-strong` and `--blur: saturate(110%) blur(16px)`; the top bar and toasts use `--panel`.
+- Lines: hairlines `--border` (1px); `--border-strong` for stronger control boundaries, floating canvas toolbar, dialogs and toasts.
 - Text: `--text` (primary), `--text-dim` (secondary), `--text-faint` (tertiary/placeholder).
-- Tint: `--accent` (system orange) for the ONE primary action per area (Run, Download, Create). Semantics: `--ref` teal (images), `--video` purple (videos), `--save` indigo (folder nodes and the wires that save videos into them), `--ok`, `--warn`, `--danger`, `--info`, each with a `-soft` fill. Text on accent fills uses `--on-accent`.
-- Radii: `--radius-xs 6` (chips, small thumbs), `--radius-sm 8` (buttons, inputs), `--radius 12` (cards, menus), `--radius-lg 16` (dialogs, large cards), `--radius-xl 20`.
-- Depth: `--shadow-sm` (cards at rest), `--shadow` (hover, popovers), `--shadow-lg` (dialogs). Prefer hairline + soft shadow over heavy borders.
-- Focus: `box-shadow: var(--focus-ring)` on `:focus-visible` for every interactive element.
+- Brand and actions: `--accent` is decorative coral, `--selection` marks selection, and `--accent-soft` + `--accent-ink` pair tinted surfaces with readable text. The ONE primary action per area (Run, Download, Create) uses `--action-gradient` (`115deg`, `#CB160C` → `#CA3819`) + white `--on-accent`. `--brand-gradient` (`120deg`, brand plate colors) is decorative, e.g. progress bars. The logo plate uses its own vertical gradient.
+- Semantics: `--ref` teal (images), `--video` purple (videos), `--save` indigo (folders/save wires), `--ok`, `--warn`, `--danger`, `--info`, each with a `-soft` fill. Image/video chips pair `--ref-soft` / `--video-soft` with `--ref-ink` / `--video-ink`; save/warning chips use their semantic color on the matching soft fill. `--danger` / `--danger-text` stay in the red-to-crimson hue, distinct from the coral accent/selection; blocking placeholders must read as **chữ đỏ**, never pastel pink. Destructive text uses `--danger-text` on `--danger-soft`. `--provider-canvasapp` / `--provider-seedvis` identify provider labels. Never place white `--on-accent` text on a solid light tint such as `--accent`, `--ref` or `--danger`.
+- Radii (px): `--radius-control 9` (shared buttons), `--radius-chip 7` (library filters), `--radius-card 13` (canvas cards), `--radius-toolbar 14` (floating canvas toolbar). Shared `--radius-xs 6` (small thumbs/badges), `--radius-sm 8` (inputs/segment tracks), `--radius 12` (menus/toasts), `--radius-lg 16`, `--radius-xl 24` (dialogs).
+- Depth: `--shadow-sm` (buttons, selected segments), `--shadow` (canvas cards at rest/hover, popovers), `--shadow-lg` (dialogs). Library cards have no resting shadow. Prefer hairline + soft shadow over heavy borders.
+- Focus: fields `.input` / `.select` / `.textarea` show `border-color: var(--info)` and `box-shadow: var(--focus-ring)` on focus (3px blue ring). Other interactive controls get a global `:focus-visible` outline, `2px solid var(--info)` with 3px offset, unless their component supplies its own focus treatment. The global rule excludes those fields to avoid a double ring. Keyboard focus is blue, separate from coral selection.
 
 ## Typography
-- System font stack `--font` (SF Pro on Apple, Segoe UI Variable on Windows, Be Vietnam Pro fallback; Vietnamese diacritics must render well). Display headings `--font-display`. Numbers/tokens `--mono`.
+- Bundled **Be Vietnam Pro** leads `--font` and `--font-display`, followed by platform fallbacks; Vietnamese diacritics must render well. Bundled **JetBrains Mono** leads `--mono` for numbers/codes/tokens, followed by Cascadia Mono, Consolas and system monospace. Fonts ship via `@fontsource` imports in `main.tsx`; no runtime font download.
 - Scale: 11 (caption/labels), 12 (secondary), 13 (body — default), 15 (section titles), 17 (dialog titles), 22+ (empty-state headlines). Weights 400/500/600 (avoid 700+ except big numbers). Section labels: 11px, 600, letter-spacing .02em, sentence case (not ALL CAPS shouting) — Apple uses small caps sparingly.
 - Line height 1.45 body, 1.25 headings. Truncate with ellipsis, never overflow.
 
@@ -29,17 +39,18 @@ Goal: calm, content-first, precise. The user's images and videos are the stars; 
 - Generous whitespace; group with spacing and subtle background, not boxes inside boxes.
 
 ## Components
-- **Buttons**: primary = filled tint, `--on-accent` text, radius 8; secondary = `--panel-2` fill, no border (light theme: subtle hairline); tertiary/plain = text-only tint; destructive = `--danger` text, `--danger-soft` on hover. Pressed state scales 0.98. Disabled 40% opacity.
-- **Segmented control** (view switch, edge mode, take display, theme): pill track `--panel-2`, selected segment raised (`--panel` light / `--panel-3` dark) with `--shadow-sm`, 6px inner radius, smooth 150 ms slide.
+- **Buttons**: primary = `--action-gradient` + `--on-accent`, `--radius-control` (9px), `--shadow-sm`, transparent border; hover keeps the gradient and uses a `--selection` border. Secondary = `--panel-2` + `--text`, hairline `--border`; tertiary/plain = ink on a quiet surface. Destructive = red `--danger-text` with `--danger-soft`, never white on a solid danger tint. Pressed state scales 0.98. Shared disabled buttons use 40% opacity.
+- **Segmented control** (view switch when shown, edge mode, take display, theme, background): rounded track (`--bg-elev` + inset hairline for top bar/inspector; `--panel-2` for settings/canvas), selected segment = `--accent-soft` + `--accent-ink` in both themes, `--shadow-sm`, 6px inner radius. Sliding thumbs move in 150 ms; canvas segments change their fill directly. No white selected pill in light mode.
 - **Inputs/selects/textareas**: `--bg-elev` fill, hairline border, radius 8, focus ring. Placeholder `--text-faint`.
-- **Lists/rows** (library, takes, queue, projects): rounded hover background (`--hover`), selected = `--accent-soft` fill + tint text/indicator; no zebra.
-- **Cards on the canvas**: radius 14, `--panel` fill, hairline border, `--shadow-sm`; hover lifts to `--shadow`; selected = 2px `--accent` ring (+ soft glow). Headers with quiet secondary text; one tinted primary action (Run / Tải video).
-- **Popovers, menus, hover previews, toasts**: `.material`, radius 12, `--shadow-lg`, 1px hairline, 8px padding, items 28px tall with rounded hover.
+- **Lists/rows** (library, takes, queue, projects): rounded hover background (`--hover`), selected = `--accent-soft` fill + `--accent-ink` text/indicator; no zebra. Library cards use `--selection` border/ring with a 4px `--accent-soft` halo. Model badges are neutral (`--panel-2` / `--text`); a model from a newer build keeps `--warn-soft` / `--warn`.
+- **Cards on the canvas**: `--radius-card` (13px), `--panel` fill, hairline `--border`, `--shadow` at rest/hover; hover strengthens the border. Selected = `--selection` border plus `0 0 0 1px var(--selection), 0 0 0 5px var(--accent-soft)` and the card shadow. Headers with quiet secondary text; one primary action (Run / Tải video) using the action gradient. Handle colors match their wires; scene → take uses `--seq`.
+- **Popovers, menus, hover previews**: `.material`, radius 12, `--shadow-lg`, 1px hairline, 8px padding, items 28px tall with rounded hover. Toasts keep radius 12 and `--shadow-lg`, with an opaque `--panel` surface and `--border-strong`; tone shows in the icon.
 - **Toasts** stack at the top center, just below the top bar (`--topbar-h` + 10px), newest closest to it, sliding down as they appear — never over the canvas toolbar or the queue drawer at the bottom.
-- **Dialogs (sheets)**: radius 16, `--panel`, `--shadow-lg`, title 17/600 left aligned, footer buttons right aligned (Cancel secondary, primary tinted), backdrop `--scrim` with slight blur.
-- **Top bar**: unified toolbar, `.material`, hairline bottom border, centered segmented view switch, quiet icon buttons; app mark + project name on the left.
+- **Dialogs (sheets)**: `--radius-xl` (24px), `--panel`, `--border-strong`, `--shadow-lg`, title 17/600 left aligned, footer buttons right aligned (Cancel secondary, primary action gradient), backdrop `--scrim` with slight blur.
+- **Top bar**: unified toolbar, `--panel` surface, hairline bottom border, quiet icon buttons; app mark + project name on the left. Canvas is the only shown view in 0.6.0; the centered segmented view switch appears only with 2+ shown views.
 - **Sidebar & inspector**: `--panel` with hairline separators; section headers collapsible with chevrons; inspector fields in grouped "inset" style (label above control, 12px gaps).
 - **Icons**: lucide at 16px (toolbar 16–18px), stroke 1.75, `--text-dim` until hover/active.
+- **Logo / app icons**: D is a rounded white play triangle with an S-shaped cutout and a source dot at the lower left. `Logo.tsx` / `logo-mark.svg` use the same 512-unit glyph as the packaged icon sources; the React mask has a per-instance `useId`. Top bar and Giới thiệu tiles use `linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom))` with `--brand-ink`, fixed in both themes, radius about 22%. The 512px master plate is inset 16px, 480px wide, radius 108px; 20/24/32-unit sources scale the same glyph onto full-size plates (no old pixel-hinted S-wire/disc). The favicon is a separate small drawing: red play triangle and white S on a dark tile. `scripts/make-icons.mjs` renders PNG/ICO/ICNS/installer assets with Node + `@resvg/resvg-js`; preserve glyph markers and generator geometry. The DMG background uses neutral charcoal and a Sano red arrow between the app and Applications, at 540×380 and 1080×760; Finder supplies the labels.
 - **Motion**: 120–200 ms ease-out for hovers/presses, 200–250 ms for panels/sheets; respect `prefers-reduced-motion`.
 - **Empty states**: centered SF-style glyph, 15px title, 13px secondary text, one primary action.
 
@@ -49,4 +60,4 @@ Goal: calm, content-first, precise. The user's images and videos are the stars; 
 - Wire motion (`components/canvas/wires.css`): a click on a wire cuts it (scissors cursor) — the wire splits at the click and both halves retract to their cards with a fading ring (~280 ms ease-out); a new wire draws itself from its source (~340 ms); a dragged wire marches dashes in its source color, turns solid with a ring when it snaps to a card that accepts it, grey when it cannot land. 'Giảm bớt' = fades only, 'Tắt' = none; OS reduce-motion = 'Giảm bớt'.
 - Storyboard reorder (`components/views/views.css`): the dragged card lifts (scale 1.03, `--shadow-lg`, accent ring) and follows the pointer; the others glide aside (~220 ms) around a dashed accent slot, with a `→ S05` pill for the code it will get; on drop it settles with a slight overshoot (~300 ms) and a fading accent ring. 'Giảm bớt': cards stay put, an accent insertion bar marks the place, no slides; 'Tắt': no transitions at all.
 - Settings sheet (`components/dialogs/SettingsDialog.tsx`): a sticky toolbar with the "Cơ bản / Nâng cao" segmented control and a search field (Ctrl+F); grouped inset sections in two columns (one under 760 px); while searching, matches from "Cơ bản" on the left and "Nâng cao" on the right. The sheet keeps one height while it is open (it never shrinks or re-centres under the caret as results change). Every row = label + one-line hint + a native control (switch, segmented, slider, field); changes apply at once, no Save button. Destructive rows ("Khôi phục cài đặt mặc định") confirm inline with Huỷ focused and offer Hoàn tác in a toast. "Hiệu ứng chuyển động" is app-wide: `<html data-motion>` 'reduced' keeps fades/colors only (sheets and toasts fade instead of sliding), 'off' removes every transition and animation.
-- Don't use pure black/white text on colored fills except `--on-accent`; don't stack borders; don't use ALL CAPS paragraphs.
+- Don't use white text on decorative/pastel fills; use `--action-gradient` + `--on-accent` for filled text actions and `*-soft` + the matching ink for chips. Keep red danger distinct from coral selection and blue keyboard focus; don't stack borders or use ALL CAPS paragraphs.
