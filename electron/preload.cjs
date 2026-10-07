@@ -48,8 +48,15 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     status: () => ipcRenderer.invoke('canvasapp:status'),
     /** Opens canvasapp.io.vn in its own window; resolves when logged in or when the window is closed. */
     login: () => ipcRenderer.invoke('canvasapp:login'),
-    /** Clears the canvasapp session (cookies, storage, cache) of the gateway partition. */
+    /**
+     * Đăng xuất: stops canvasapp requests in flight, deletes the kept (encrypted) login copy, asks canvasapp to end the
+     * session and clears the gateway partition. → { ok: true } | { ok: false, code: 'keep-login-not-cleared', message }
+     */
     logout: () => ipcRenderer.invoke('canvasapp:logout'),
+    /** → { ok: true, keepLogin, available, chosen } — whether SanoVids keeps the canvasapp login across restarts (encrypted). */
+    keepLogin: () => ipcRenderer.invoke('canvasapp:keepLogin'),
+    /** (on) → same; off deletes the kept copy now (this run stays logged in). Only a boolean crosses. */
+    setKeepLogin: (on) => ipcRenderer.invoke('canvasapp:setKeepLogin', on === true),
     /** { method, path, json?, form?, binary? } → { ok: true, status, contentType, json?, text?, bytes? } | { ok: false, code, message } */
     request: (req) => ipcRenderer.invoke('canvasapp:request', req),
     /**

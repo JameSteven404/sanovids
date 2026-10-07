@@ -9,7 +9,8 @@
 //                                        Settings, faults, balance, login, force a job…: see DevCanvasapp in server.ts.
 //                                        Every tab has its own copy on the SAME saved account: it re-reads it before
 //                                        each request / change, and on the window 'storage' event (another tab saved).
-//   devBridge(): CanvasappBridge         the simulated window.bdpDesktop.canvasapp (always available, web too).
+//   devBridge(): DevBridge               the simulated window.bdpDesktop.canvasapp (always available, web too) +
+//                                        simulateRestart() ("Giả lập tắt app rồi mở lại", keepLogin.ts).
 //   devVideoRenderer                     the in-page renderer the dev server draws finished videos with (WebM).
 //   useDevServer                         zustand store { snapshot: DevServerSnapshot | null } — refreshed on every
 //                                        server change; startDevSnapshotTicker() also refreshes it every second while
@@ -28,8 +29,7 @@ import { clear, createStore, del, get, set } from 'idb-keyval'
 import { create } from 'zustand'
 import { renderMockBlobs } from '../../lib/mockProvider'
 import type { KeyValueStorage } from '../canvasapp/adapter'
-import type { CanvasappBridge } from '../canvasapp/transport'
-import { createDevBridge } from './bridge'
+import { createDevBridge, type DevBridge } from './bridge'
 import { closeDevPrompts } from './prompts'
 import {
   createDevCanvasapp,
@@ -45,7 +45,8 @@ import {
 export * from './server'
 export * from './log'
 export * from './prompts'
-export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridgeOptions } from './bridge'
+export { createDevBridge, DEV_CHECKOUT_TIMEOUT_MS, DEV_JOB_LIST_CACHE_MS, type DevBridge, type DevBridgeOptions } from './bridge'
+export * from './keepLogin'
 export { DEV_ENDPOINT_LABEL, DEV_ENDPOINTS, matchDevRoute, type DevEndpoint } from './routes'
 export { canvasProblem, jobBodyProblem, jobKeyProblem, profileProblem, type DevProblem } from './validate'
 export { devError, devResult, devWording, withDevWording } from './wording'
@@ -164,7 +165,7 @@ export function setDevServer(s: DevCanvasapp | null): void {
 
 const bridge = createDevBridge(() => devServer())
 
-export function devBridge(): CanvasappBridge {
+export function devBridge(): DevBridge {
   return bridge
 }
 

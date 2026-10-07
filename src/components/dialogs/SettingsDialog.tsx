@@ -14,6 +14,7 @@ import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
 import { GatewaySection } from './GatewaySection'
+import { KEEP_LOGIN_KEYWORDS } from './keepLoginModel'
 import { Segmented } from './Segmented'
 import {
   BackupSetting,
@@ -294,7 +295,7 @@ const GROUPS: Group[] = [
       {
         id: 'resetAll',
         label: 'Khôi phục cài đặt mặc định',
-        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác).',
+        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác). Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.',
         keywords: 'reset mặc định đặt lại',
         C: ResetAllSetting,
       },
@@ -306,7 +307,7 @@ const GROUPS: Group[] = [
     col: 1,
     title: 'Cổng canvasapp.io.vn',
     desc: 'Nhà cung cấp video cho take mới, đăng nhập canvasapp và credit thật.',
-    keywords: 'canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền',
+    keywords: `canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền ${KEEP_LOGIN_KEYWORDS}`,
     Block: GatewaySection,
   },
   {

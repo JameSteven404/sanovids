@@ -2,6 +2,7 @@
 // (providers/dev/bridge.ts), driven through the REAL api client + desktop transport (providers/canvasapp). No network.
 // Endpoints and strict validation, idempotency, charging / refunds / history, the top-up lifecycle (simulated SePay
 // sheet), faults, the request log, persistence / reset — and the gateway allowlist checked against electron/main.cjs.
+import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../lib/imageStore', () => ({
@@ -28,9 +29,16 @@ import {
   closeDevPrompts,
   createDevBridge,
   createDevCanvasapp,
+  defaultKeepLogin,
   DEV_CHECKOUT_ORIGIN,
+  DEV_ENCRYPTIONS,
   DEV_ENDPOINTS,
   DEV_FAULT_PRESETS,
+  DEV_KEEP_LOGIN_KEY,
+  DEV_LOGIN_COOKIES,
+  KEEP_LOGIN_DAYS,
+  KEEP_LOGIN_NOT_CLEARED_TEXT,
+  loginSurvivesRestart,
   DEV_LOG_MAX,
   DEV_PAYMENT_DELAY_MS,
   DEV_SPEED_MS,
@@ -55,7 +63,10 @@ function loadMainRoutes(): (method: string, path: string) => unknown {
 
 const START = Date.parse('2026-10-02T10:00:00Z')
 
-function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typeof memoryStorage>; blobs?: ReturnType<typeof memoryBlobStore>; cacheMs?: number; t?: number } = {}) {
+function setup(
+  config: Partial<DevConfig> = {},
+  opts: { storage?: ReturnType<typeof memoryStorage>; blobs?: ReturnType<typeof memoryBlobStore>; cacheMs?: number; t?: number; placement?: string; keepStore?: ReturnType<typeof memoryStorage> } = {},
+) {
   const clock = { t: opts.t ?? START }
   const storage = opts.storage ?? memoryStorage()
   const blobs = opts.blobs ?? memoryBlobStore()
@@ -73,9 +84,10 @@ function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typ
     },
   })
   server.setConfig({ latencyMs: 0, ...config })
-  const bridge = createDevBridge(() => server, { now: () => clock.t, jobListCacheMs: opts.cacheMs ?? 0 })
+  const keepStore = opts.keepStore ?? memoryStorage()
+  const bridge = createDevBridge(() => server, { now: () => clock.t, jobListCacheMs: opts.cacheMs ?? 0, keepLoginStorage: keepStore, placement: () => opts.placement ?? 'installer' })
   const api = createCanvasappApi(createDesktopTransport(() => bridge))
-  return { clock, storage, blobs, server, bridge, api, renders, sleeps, advance: (ms: number) => void (clock.t += ms) }
+  return { clock, storage, blobs, server, bridge, api, renders, sleeps, keepStore, advance: (ms: number) => void (clock.t += ms) }
 }
 
 type Setup = ReturnType<typeof setup>
@@ -158,7 +170,8 @@ describe('dev server: account and login', () => {
     await until(() => useDevPrompts.getState().login !== null)
     expect(b).toBe(a)
     answerDevLogin(true)
-    expect(await a).toEqual({ ok: true, authenticated: true })
+    // like main: the login is kept on this (simulated) computer — installer default, encryption ok
+    expect(await a).toEqual({ ok: true, authenticated: true, keepLogin: true })
     expect(useDevPrompts.getState().login).toBeNull()
     expect(await s.bridge.status()).toEqual({ ok: true, authenticated: true })
     // already logged in: no sheet
@@ -191,6 +204,121 @@ describe('dev server: account and login', () => {
     expect(all[1]).toMatchObject({ display_name: 'MiniMax-H3', can_create: true, options: { modes: ['t2v', 'i2v', 'transform'], disabled_modes: [], durations: [5, 10, 15] } })
     s.server.setConfig({ models: { ...s.server.config().models, minimax_h3: { can_create: false, disabled_modes: ['transform'] } } })
     expect((await s.api.videoProfiles())[1]).toMatchObject({ can_create: false, enabled: false, options: { disabled_modes: ['transform'] } })
+  })
+})
+
+describe('dev server: "Giữ đăng nhập" and a simulated restart of the desktop app', () => {
+  const DAY = 86_400_000
+  const keepRules = createRequire(import.meta.url)('../../../electron/keeplogin-rules.cjs') as {
+    KEEP_LOGIN_DAYS: number
+    KEEP_LOGIN_NOT_CLEARED_TEXT: string
+    defaultKeepLogin: (k: unknown) => boolean
+  }
+
+  it('mirrors main: 30 days, the placement default and the "not cleared" text', () => {
+    expect(KEEP_LOGIN_DAYS).toBe(keepRules.KEEP_LOGIN_DAYS)
+    expect(KEEP_LOGIN_NOT_CLEARED_TEXT).toBe(keepRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+    for (const k of ['installer', 'dev', 'portable', 'temp-copy', 'unknown', undefined, null, '']) expect(defaultKeepLogin(k as string)).toBe(keepRules.defaultKeepLogin(k))
+  })
+
+  it('every login cookie × switch × encryption: the login survives exactly when the rule says so', async () => {
+    for (const loginCookie of DEV_LOGIN_COOKIES) {
+      for (const keep of [true, false]) {
+        for (const encryption of DEV_ENCRYPTIONS) {
+          const s = setup({ loginCookie, encryption })
+          s.server.login()
+          await s.bridge.setKeepLogin(keep)
+          const r = await s.bridge.simulateRestart()
+          const want = loginSurvivesRestart({ authenticated: true, loginCookie, keepLogin: keep, encryption, daysSinceSaved: 0 })
+          expect(r, `${loginCookie} ${keep} ${encryption}`).toMatchObject({ survived: want, keepLogin: keep })
+          expect(r.outcome).toBe(loginCookie === 'persistent' ? 'persistent' : !keep ? 'keep-off' : encryption === 'ok' ? 'kept' : encryption === 'unavailable' ? 'encryption-unavailable' : 'decrypt-fails')
+          expect(s.server.isAuthenticated()).toBe(want)
+          if (want) expect(await s.api.me()).toMatchObject({ credits_balance: 1000 })
+          else await expect(s.api.me()).rejects.toMatchObject({ code: 'login-required' })
+        }
+      }
+    }
+  })
+
+  it('30 days from the login, not from use; the login time survives a reload of the simulated site', async () => {
+    const storage = memoryStorage()
+    const s = setup({}, { storage })
+    s.server.login()
+    s.advance(KEEP_LOGIN_DAYS * DAY)
+    await s.api.me() // plain use does not extend it
+    const reloaded = setup({}, { storage, t: s.clock.t })
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: true, outcome: 'kept' })
+    reloaded.advance(1)
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: false, outcome: 'expired' })
+    expect(reloaded.server.isAuthenticated()).toBe(false)
+    // a new login starts a new 30 days
+    reloaded.server.login()
+    reloaded.advance(10 * DAY)
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: true })
+  })
+
+  it('logged out before: nothing changes (an armed "Hết phiên" stays armed); faults and settings are the site’s', async () => {
+    const s = setup({ loginCookie: 'persistent' })
+    expect(await s.bridge.simulateRestart()).toMatchObject({ survived: false, outcome: 'not-logged-in' })
+    s.server.login()
+    s.server.expireSession()
+    s.server.addFault({ endpoint: 'me', fault: { kind: 'network' }, sticky: true })
+    expect(await s.bridge.simulateRestart()).toMatchObject({ outcome: 'not-logged-in' })
+    expect(s.server.snapshot()).toMatchObject({ authenticated: false, sessionExpired: true, config: { loginCookie: 'persistent' } })
+    expect(s.server.faults()).toHaveLength(1)
+  })
+
+  it('the switch: placement default (installer / source on, Portable / temp copy off), the user’s choice, strict input', async () => {
+    for (const [placement, on] of [
+      ['installer', true],
+      ['dev', true],
+      ['portable', false],
+      ['temp-copy', false],
+      ['unknown', false],
+    ] as const) {
+      expect(await setup({}, { placement }).bridge.keepLogin(), placement).toEqual({ ok: true, keepLogin: on, available: true, chosen: false })
+    }
+    const s = setup({}, { placement: 'portable' })
+    expect(await s.bridge.setKeepLogin(true)).toEqual({ ok: true, keepLogin: true, available: true, chosen: true })
+    expect(s.keepStore.get(DEV_KEEP_LOGIN_KEY)).toBe('true')
+    expect(await s.bridge.setKeepLogin('yes' as unknown as boolean)).toMatchObject({ ok: false, code: 'bad-request' })
+    expect(await s.bridge.keepLogin()).toMatchObject({ keepLogin: true })
+    s.server.setConfig({ encryption: 'unavailable' })
+    expect(await s.bridge.keepLogin()).toEqual({ ok: true, keepLogin: true, available: false, chosen: true })
+    // a stored value that is not a boolean = never chose
+    s.keepStore.set(DEV_KEEP_LOGIN_KEY, '1')
+    expect(await s.bridge.keepLogin()).toMatchObject({ keepLogin: false, chosen: false })
+  })
+
+  it('login() says whether the login is kept (switch on AND the computer can encrypt)', async () => {
+    const login = async (s: ReturnType<typeof setup>) => {
+      const p = s.bridge.login()
+      await until(() => useDevPrompts.getState().login !== null)
+      answerDevLogin(true)
+      return p
+    }
+    expect(await login(setup({}, { placement: 'portable' }))).toEqual({ ok: true, authenticated: true, keepLogin: false })
+    expect(await login(setup({ encryption: 'unavailable' }))).toEqual({ ok: true, authenticated: true, keepLogin: false })
+    expect(await login(setup({ encryption: 'decrypt-fails' }))).toEqual({ ok: true, authenticated: true, keepLogin: true })
+  })
+
+  it('settings are checked: unknown login cookie / encryption values fall back to the defaults', () => {
+    const s = setup()
+    s.server.setConfig({ loginCookie: 'forever' as never, encryption: 'maybe' as never })
+    expect(s.server.config()).toMatchObject({ loginCookie: 'session', encryption: 'ok' })
+    s.server.setConfig({ loginCookie: 'persistent', encryption: 'decrypt-fails' })
+    expect(s.server.config()).toMatchObject({ loginCookie: 'persistent', encryption: 'decrypt-fails' })
+  })
+
+  it('fault "Đăng xuất: không xoá được bản sao": logged out all the same, the answer says so — once', async () => {
+    const s = setup()
+    s.server.login()
+    s.server.setJobFaults({ logoutCopyStuck: true })
+    expect(await s.bridge.logout()).toEqual({ ok: false, code: 'keep-login-not-cleared', message: KEEP_LOGIN_NOT_CLEARED_TEXT })
+    expect(s.server.isAuthenticated()).toBe(false)
+    expect(s.server.jobFaults().logoutCopyStuck).toBe(false)
+    s.server.login()
+    expect(await s.bridge.logout()).toEqual({ ok: true })
   })
 })
 
@@ -314,7 +442,7 @@ describe('dev server: video jobs', () => {
     s.server.setJobFaults({ expireNext: true })
     const expiring = jobIdOf(await s.api.createVideoJob(body({ client_request_id: clientRequestIdFor('b') }) as never))
     const forced = jobIdOf(await s.api.createVideoJob(body({ client_request_id: clientRequestIdFor('c') }) as never))
-    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0 })
+    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false })
     expect(s.server.snapshot().jobs.map((j) => j.planned)).toEqual([null, 'expire', 'fail'])
     expect(s.server.balance()).toBe(1000 - 3 * COST)
 
@@ -539,7 +667,7 @@ describe('dev server: faults', () => {
     s.server.setJobFaults({ failNext: 'x', streamFailures: 3 })
     s.server.clearFaults()
     expect(s.server.faults()).toEqual([])
-    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0 })
+    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false })
   })
 
   it('every preset targets a real endpoint and is accepted as is', () => {

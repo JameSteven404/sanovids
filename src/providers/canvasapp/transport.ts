@@ -8,8 +8,21 @@ import { checkoutUrlAllowed } from '../../core/topup'
 import type { ProviderAvailability } from '../types'
 import { CanvasappError, requestLabel, type Transport, type TransportRequest, type TransportResponse } from './api'
 
-/** Result of canvasapp:status / canvasapp:login. */
-export type BridgeStatus = { ok: true; authenticated: boolean } | { ok: false; code: string; message: string }
+/**
+ * Result of canvasapp:status / canvasapp:login. After a login, `keepLogin` = SanoVids keeps it across restarts on this
+ * computer ("Giữ đăng nhập canvasapp trên máy này"; missing in older desktop builds).
+ */
+export type BridgeStatus = { ok: true; authenticated: boolean; keepLogin?: boolean } | { ok: false; code: string; message: string }
+
+/** canvasapp:logout. `keep-login-not-cleared`: logged out, but the kept login copy could not be deleted (say so). */
+export type BridgeLogoutResult = { ok: true } | { ok: false; code: string; message: string }
+
+/**
+ * canvasapp:keepLogin / canvasapp:setKeepLogin — "Giữ đăng nhập canvasapp trên máy này" (held by the main process,
+ * never in the settings export): keepLogin = on; available = this computer can encrypt the copy; chosen = the user
+ * picked it (else the placement default: installer / source on, Portable / temp copy off). Booleans only.
+ */
+export type KeepLoginState = { ok: true; keepLogin: boolean; available: boolean; chosen: boolean } | { ok: false; code: string; message: string }
 
 export type BridgeResponse = ({ ok: true } & TransportResponse) | { ok: false; code: string; message: string }
 
@@ -37,11 +50,18 @@ export type BridgeCheckoutResponse =
 export interface CanvasappBridge {
   status(): Promise<BridgeStatus>
   login(): Promise<BridgeStatus>
-  logout(): Promise<{ ok: boolean }>
+  logout(): Promise<BridgeLogoutResult>
   request(req: TransportRequest): Promise<BridgeResponse>
   /** Opens the real checkout page in a modal window (main re-validates the URL). Missing in older desktop builds. */
   checkout?(args: CheckoutArgs): Promise<BridgeCheckoutResponse>
+  /** "Giữ đăng nhập canvasapp trên máy này" (missing in older desktop builds: the Settings row is hidden). */
+  keepLogin?(): Promise<KeepLoginState>
+  /** Switch it; off deletes the kept copy now (this run stays logged in). */
+  setKeepLogin?(on: boolean): Promise<KeepLoginState>
 }
+
+/** A kept login lives this long after the login / canvasapp's last renewal (= electron/keeplogin-rules.cjs KEEP_LOGIN_DAYS). */
+export const KEEP_LOGIN_DAYS = 30
 
 export const CHECKOUT_UNSUPPORTED = 'Bản SanoVids desktop này chưa hỗ trợ nạp credit trong app — cập nhật bản mới, hoặc nạp trực tiếp trên canvasapp.io.vn.'
 export const CHECKOUT_REFUSED = 'Trang thanh toán canvasapp trả về không phải SePay (https://…sepay.vn) — SanoVids không mở để giữ an toàn. Hãy nạp trực tiếp trên canvasapp.io.vn.'
@@ -68,6 +88,8 @@ export function createDesktopTransport(bridge: () => CanvasappBridge | null = ca
       if (!b) throw new CanvasappError('unavailable', WEB_UNAVAILABLE)
       const res = await b.request(req)
       if (!res.ok) {
+        // 'logged-out': refused BEFORE it was sent because Đăng xuất is running (nothing reached canvasapp) → like a 401.
+        if (res.code === 'logged-out') throw new CanvasappError('login-required', res.message || 'Đang đăng xuất canvasapp.')
         const code = res.code === 'not-allowed' ? 'forbidden' : res.code === 'too-large' ? 'bad-request' : 'network'
         const message = res.message || 'Không kết nối được tới canvasapp.io.vn.'
         // refused by SanoVids desktop itself (allowlist / size cap): say which request, like errorFromResponse does

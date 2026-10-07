@@ -12,11 +12,18 @@
 //     with the state once it is closed — concurrent calls share it;
 //   - checkout(): one window at a time ('busy'), the URL must be SePay's ('refused'), fields like main's; the simulated
 //     SePay sheet answers success / cancel / error (with the order id, as SePay's return to canvasapp does), closed or
-//     timeout (15 min) — and tells the dev server what canvasapp says about the order afterwards (paid ~2 s later…).
+//     timeout (15 min) — and tells the dev server what canvasapp says about the order afterwards (paid ~2 s later…);
+//   - "Giữ đăng nhập canvasapp trên máy này" (keepLogin.ts): keepLogin() / setKeepLogin(on) like main's IPC (the switch
+//     in localStorage 'bdp:dev:keepLogin', default from "Vị trí chạy": installer / source on, Portable / temp copy off;
+//     available unless the dev setting "Mã hoá trên máy" says unavailable); login() says whether the login is kept;
+//     logout() answers keep-login-not-cleared when the dev fault is armed; simulateRestart() = quit + start again.
 // JSON bodies cross it as JSON (a deep copy), like IPC + HTTP would: nothing is shared by reference with the server.
 import { checkoutUrlAllowed, parsePaymentReturn } from '../../core/topup'
 import type { TransportRequest } from '../canvasapp/api'
-import type { BridgeCheckoutResponse, BridgeResponse, BridgeStatus, CanvasappBridge, CheckoutArgs } from '../canvasapp/transport'
+import type { KeyValueStorage } from '../canvasapp/adapter'
+import type { BridgeCheckoutResponse, BridgeLogoutResult, BridgeResponse, BridgeStatus, CanvasappBridge, CheckoutArgs, KeepLoginState } from '../canvasapp/transport'
+import { useDevPlacement } from './appPlacement'
+import { defaultKeepLogin, DEV_KEEP_LOGIN_KEY, KEEP_LOGIN_NOT_CLEARED_TEXT, parseDevKeepLogin, type DevRestartOutcome } from './keepLogin'
 import { pushDevLog, summarizeForLog } from './log'
 import { answerDevCheckout, checkoutPromptOpen, closeDevPrompts, openCheckoutPrompt, openLoginPrompt } from './prompts'
 import { matchDevRoute, MAX_JSON_BYTES, MAX_UPLOAD_BYTES } from './routes'
@@ -40,6 +47,58 @@ export interface DevBridgeOptions {
   now?: () => number
   /** Write gateway refusals / cache hits to the request log (default true). */
   log?: boolean
+  /** Where the simulated switch "Giữ đăng nhập" is kept (default: localStorage when there is one, else memory). */
+  keepLoginStorage?: KeyValueStorage
+  /** "Vị trí chạy" for the switch's default (default: the dev panel's simulated placement). */
+  placement?: () => string
+}
+
+/** The simulated desktop gateway: CanvasappBridge (keepLogin / setKeepLogin always there) + the restart simulation. */
+export interface DevBridge extends CanvasappBridge {
+  logout(): Promise<BridgeLogoutResult>
+  keepLogin(): Promise<KeepLoginState>
+  setKeepLogin(on: boolean): Promise<KeepLoginState>
+  /** "Giả lập tắt app rồi mở lại": closes the simulated windows, forgets the gateway cache, decides the login (server). */
+  simulateRestart(): Promise<{ survived: boolean; outcome: DevRestartOutcome; keepLogin: boolean }>
+}
+
+/** localStorage when the page has one (a failed write is ignored: the switch then lasts until reload), else memory. */
+function defaultKeepLoginStorage(): KeyValueStorage {
+  const mem = new Map<string, string>()
+  const ls = (): Storage | null => {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage : null
+    } catch {
+      return null
+    }
+  }
+  return {
+    get: (k) => {
+      try {
+        const s = ls()
+        return s ? s.getItem(k) : (mem.get(k) ?? null)
+      } catch {
+        return mem.get(k) ?? null
+      }
+    },
+    set: (k, v) => {
+      try {
+        const s = ls()
+        if (s) s.setItem(k, v)
+        else mem.set(k, v)
+      } catch {
+        mem.set(k, v)
+      }
+    },
+    remove: (k) => {
+      try {
+        ls()?.removeItem(k)
+      } catch {
+        /* nothing to remove */
+      }
+      mem.delete(k)
+    },
+  }
 }
 
 type Fail = { ok: false; code: string; message: string }
@@ -69,8 +128,10 @@ function orderIdOf(checkoutUrl: string, fields: Record<string, string>): string 
   return m ? m[1] : null
 }
 
-export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptions = {}): CanvasappBridge {
+export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptions = {}): DevBridge {
   const now = opts.now ?? (() => Date.now())
+  const keepStore = opts.keepLoginStorage ?? defaultKeepLoginStorage()
+  const placement = opts.placement ?? (() => useDevPlacement.getState().kind)
   const cacheMs = opts.jobListCacheMs ?? DEV_JOB_LIST_CACHE_MS
   const timeoutMs = opts.checkoutTimeoutMs ?? DEV_CHECKOUT_TIMEOUT_MS
   const logging = opts.log !== false
@@ -167,25 +228,67 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, authenticated: j.authenticated === true }
   }
 
+  /** The switch: the user's choice, else the placement default (like main's canvasapp-prefs.json + defaultKeepLogin). */
+  function keepState(): { ok: true; keepLogin: boolean; available: boolean; chosen: boolean } {
+    let chosen: boolean | null = null
+    try {
+      chosen = parseDevKeepLogin(keepStore.get(DEV_KEEP_LOGIN_KEY))
+    } catch {
+      chosen = null
+    }
+    return { ok: true, keepLogin: chosen ?? defaultKeepLogin(placement()), available: server().config().encryption !== 'unavailable', chosen: chosen !== null }
+  }
+
+  async function keepLogin(): Promise<KeepLoginState> {
+    return keepState()
+  }
+
+  async function setKeepLogin(on: boolean): Promise<KeepLoginState> {
+    if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
+    try {
+      keepStore.set(DEV_KEEP_LOGIN_KEY, on ? 'true' : 'false')
+    } catch {
+      /* kept for this page only */
+    }
+    return keepState()
+  }
+
   function login(): Promise<BridgeStatus> {
     if (loginInFlight) return loginInFlight
-    loginInFlight = (async () => {
+    loginInFlight = (async (): Promise<BridgeStatus> => {
       const before = await status()
       if (before.ok && before.authenticated) return before
       const accepted = await openLoginPrompt(now())
       if (accepted) server().login()
-      return status()
+      const st = await status()
+      if (!st.ok || !st.authenticated) return st
+      // like main: a confirmed login is kept when the switch is on and the (simulated) computer can encrypt it
+      const k = keepState()
+      return { ...st, keepLogin: k.keepLogin && k.available }
     })().finally(() => {
       loginInFlight = null
     })
     return loginInFlight
   }
 
-  async function logout(): Promise<{ ok: boolean }> {
+  async function logout(): Promise<BridgeLogoutResult> {
     closeDevPrompts()
+    const stuck = server().jobFaults().logoutCopyStuck
     server().logout()
     listCache.clear()
+    if (stuck) {
+      server().setJobFaults({ logoutCopyStuck: false })
+      return gatewayError('keep-login-not-cleared', KEEP_LOGIN_NOT_CLEARED_TEXT)
+    }
     return { ok: true }
+  }
+
+  async function simulateRestart(): Promise<{ survived: boolean; outcome: DevRestartOutcome; keepLogin: boolean }> {
+    closeDevPrompts()
+    listCache.clear()
+    const k = keepState()
+    const r = server().simulateRestart(k.keepLogin)
+    return { ...r, keepLogin: k.keepLogin }
   }
 
   async function checkout(args: CheckoutArgs): Promise<BridgeCheckoutResponse> {
@@ -219,5 +322,5 @@ export function createDevBridge(server: () => DevCanvasapp, opts: DevBridgeOptio
     return { ok: true, result: a.choice, orderId, blockedHost: null }
   }
 
-  return { status, login, logout, request, checkout }
+  return { status, login, logout, request, checkout, keepLogin, setKeepLogin, simulateRestart }
 }

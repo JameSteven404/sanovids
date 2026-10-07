@@ -2,6 +2,7 @@
 // canvasapp.io.vn (providers/dev devServer()) that new takes run against while "Phát triển (giả lập)" is chosen:
 //   Trạng thái     login state, balance (set / ±100 / back to 1.000), speed, top-up switch, server behaviour
 //                  (dedupe, client_request_id in the job list, 402/400, latency, random failures), model profiles,
+//                  "Giữ đăng nhập (giả lập)" (login cookie kind, encryption, "Giả lập tắt app rồi mở lại"),
 //                  wipe the simulated server.
 //   Gây lỗi        one-click faults (one-shot, "giữ" = sticky), job-level faults, session end, a custom rule builder,
 //                  and the faults armed right now.
@@ -31,12 +32,14 @@ import {
   Gauge,
   Hourglass,
   ImageOff,
+  KeyRound,
   ListChecks,
   LogIn,
   LogOut,
   MapPin,
   Minus,
   Plus,
+  Power,
   RotateCcw,
   ScrollText,
   ShieldAlert,
@@ -63,19 +66,22 @@ import {
   DEV_INITIAL_BALANCE,
   DEV_SPEED_LABEL,
   DEV_TOPUP_OUTCOME_LABEL,
+  devBridge,
   devServer,
   startDevSnapshotTicker,
   useDevLog,
   useDevServer,
   type DevConfig,
+  type DevEncryption,
   type DevJobView,
+  type DevLoginCookie,
   type DevLogEntry,
   type DevServerSnapshot,
   type DevSpeed,
   type DevTopupOutcome,
   type DevTopupView,
 } from '../../providers/dev'
-import { refreshRealCredits } from '../../store/credits'
+import { refreshRealCredits, resetRealCredits } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI, type DevPanelTab } from '../../store/ui'
@@ -88,9 +94,13 @@ import {
   characterCheck,
   CUSTOM_FAULT_DEFAULT,
   customFaultInput,
+  DEV_ENCRYPTION_OPTIONS,
   DEV_FAULT_KIND_LABEL,
+  DEV_LOGIN_COOKIE_OPTIONS,
   DEV_UI_FAULTS,
   devPanelTabs,
+  devRestartText,
+  devRestartTone,
   endpointText,
   faultArmedText,
   faultRuleText,
@@ -318,6 +328,7 @@ function StatusTab({ snap }: { snap: DevServerSnapshot }) {
         </div>
       )}
       <AccountCard snap={snap} />
+      <KeepLoginCard config={c} />
       <BalanceCard snap={snap} />
       <Card title="Tốc độ tạo video" icon={<Clock size={15} />}>
         <Segmented<DevSpeed>
@@ -449,6 +460,50 @@ function AccountCard({ snap }: { snap: DevServerSnapshot }) {
           </button>
         )}
       </div>
+    </Card>
+  )
+}
+
+/**
+ * "Giữ đăng nhập (giả lập)": how the simulated site sets its login cookie, whether this (simulated) computer can encrypt
+ * the kept copy, and a restart of the desktop app (the switch itself is in Cài đặt → Cổng canvasapp.io.vn).
+ */
+function KeepLoginCard({ config }: { config: DevConfig }) {
+  const [busy, setBusy] = useState(false)
+  const restart = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const r = await devBridge().simulateRestart()
+      // a new run reads the balance / login state again from scratch
+      resetRealCredits()
+      if (activeProviderId() === 'dev') void refreshRealCredits({ force: true })
+      toast(devRestartText(r.outcome), { tone: devRestartTone(r.outcome) })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card title="Giữ đăng nhập (giả lập)" icon={<KeyRound size={15} />}>
+      <div className="dv-field">
+        <span className="label">Cookie đăng nhập (giả lập)</span>
+        <Segmented<DevLoginCookie>
+          label="Cookie đăng nhập (giả lập)"
+          value={config.loginCookie}
+          onChange={(loginCookie) => setConfig({ loginCookie })}
+          options={DEV_LOGIN_COOKIE_OPTIONS}
+        />
+      </div>
+      <div className="dv-field">
+        <span className="label">Mã hoá trên máy</span>
+        <Segmented<DevEncryption> label="Mã hoá trên máy" value={config.encryption} onChange={(encryption) => setConfig({ encryption })} options={DEV_ENCRYPTION_OPTIONS} />
+      </div>
+      <div className="dv-actions">
+        <button type="button" className="btn btn-sm" onClick={() => void restart()} disabled={busy} title="Như tắt SanoVids rồi mở lại: phiên theo cookie phiên chỉ còn nếu đang giữ đăng nhập">
+          <Power size={13} /> Giả lập tắt app rồi mở lại
+        </button>
+      </div>
+      <p className="dv-hint">Công tắc “Giữ đăng nhập canvasapp trên máy này” ở Cài đặt → Cổng canvasapp.io.vn (mặc định theo “Vị trí chạy”: bản cài / mã nguồn bật, Portable / thư mục tạm tắt).</p>
     </Card>
   )
 }
@@ -682,6 +737,9 @@ function ArmedFaults({ snap }: { snap: DevServerSnapshot }) {
     ...(j.streamFailures > 0
       ? [{ key: 'stream', text: <>{j.streamFailures} lần tải video kế tiếp sẽ lỗi (503)</>, remove: () => server.setJobFaults({ streamFailures: 0 }) }]
       : []),
+    ...(j.logoutCopyStuck
+      ? [{ key: 'logoutCopyStuck', text: <>Lần Đăng xuất kế tiếp không xoá được bản sao đăng nhập</>, remove: () => server.setJobFaults({ logoutCopyStuck: false }) }]
+      : []),
     ...(snap.sessionExpired
       ? [
           {
@@ -752,6 +810,9 @@ const FaultRow = memo(function FaultRow({ item }: { item: DevUiFault }) {
       case 'expire-session':
         server.expireSession()
         syncBalance()
+        break
+      case 'logout-copy-stuck':
+        server.setJobFaults({ logoutCopyStuck: true })
         break
     }
     toast(faultArmedText(item, sticky, Math.max(1, Math.min(20, Math.trunc(count) || 1))), { tone: 'warning' })

@@ -3,7 +3,7 @@
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, safeStorage, session, shell } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -439,13 +439,27 @@ function registerAppBridge() {
 // partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low (2 API calls + 2 video
 // downloads at a time, whatever the number of running jobs) and caches the job list so it is never fetched more than
 // once every 15 s. No Origin/Referer spoofing, no Cloudflare workarounds.
+//
+// Giữ đăng nhập (electron/keeplogin-rules.cjs): canvasapp's login cookies are session cookies, which Electron drops on
+// quit. Once canvasapp confirms a login, an encrypted copy (safeStorage) of canvasapp.io.vn's own session cookies is
+// kept in userData/canvasapp-login.bin and put back (as session cookies) before the first request of the next run —
+// only while "Giữ đăng nhập canvasapp trên máy này" is on (userData/canvasapp-prefs.json; default: installer / source
+// on, Portable / temp copy off). Đăng xuất refuses new requests, aborts and awaits the ones in flight, deletes the copy
+// (and says so when it cannot), asks canvasapp to end the session (POST /api/auth/logout, like its own button) and
+// clears the partition. No quit hook: saving happens when the cookies change.
 // ---------------------------------------------------------------------------------------------------------------
 
+const keepLoginRules = require('./keeplogin-rules.cjs')
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
+const CANVASAPP_HOST = 'canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
 const CANVASAPP_JOBS_MIN_MS = 15_000
+const CANVASAPP_LOGIN_FILE = 'canvasapp-login.bin'
+const CANVASAPP_PREFS_FILE = 'canvasapp-prefs.json'
+/** Main-only (never in CANVASAPP_ROUTES: the page cannot call it) — what canvasapp's own "Đăng xuất" button sends. */
+const CANVASAPP_LOGOUT_PATH = '/api/auth/logout'
 
-// <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it)
+// <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it — the one main-only exception is canvasappServerLogout's POST CANVASAPP_LOGOUT_PATH, sent only by Đăng xuất)
 const CANVASAPP_MAX_JSON_BYTES = 2 * 1024 * 1024
 const CANVASAPP_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 /** Ids in paths (project / job / order ids; canvasapp's are UUIDs). */
@@ -505,6 +519,19 @@ let canvasappLoginPromise = null
 const canvasappJobListCache = new Map() // query string -> { at, result }
 /** Bumped by every POST /api/video-jobs: a job list read that started before it is never cached. */
 let canvasappJobsEpoch = 0
+/** The keep-login object (keeplogin-rules createCanvasappKeepLogin), created on ready — reads nothing until first use. */
+let canvasappKeep = null
+/** The memoized restore of the kept login (ensureCanvasappRestored). */
+let canvasappRestore = null
+/** The user's choice of "Giữ đăng nhập canvasapp trên máy này" ({ keepLogin }), or null = never chose (placement default). */
+let canvasappKeepPrefs = null
+/** Đăng xuất is running: new canvasapp requests are refused. */
+let canvasappLoggingOut = false
+let canvasappLogoutPromise = null
+/** Bumped by every Đăng xuất: a request that started before never goes out after it. */
+let canvasappLogoutEpoch = 0
+/** Every canvasapp request from its start (lane wait included) to its end: Đăng xuất aborts and awaits them. */
+const canvasappInFlight = new Set()
 
 function canvasappSession() {
   return session.fromPartition(CANVASAPP_PARTITION)
@@ -569,6 +596,11 @@ async function canvasappRequest(req) {
   const match = matchCanvasappRoute(method, req.path)
   if (!match) return gatewayError('not-allowed', `SanoVids không được phép gọi ${method} ${String(req.path).slice(0, 80)}.`)
   const { route, url } = match
+  // Đăng xuất is running: nothing new goes out (a late answer could put a login cookie back after the clear).
+  if (canvasappLoggingOut) return gatewayError('logged-out', keepLoginRules.CANVASAPP_LOGGING_OUT_TEXT)
+  const logoutAt = canvasappLogoutEpoch
+  // The kept login (Giữ đăng nhập) is put back before the first request of the run: lazy, once, at most 3 s.
+  await ensureCanvasappRestored()
 
   // Job list: at most once every 15 s per project, whatever the renderer asks.
   const cacheKey = method === 'GET' && url.pathname === '/api/video-jobs' ? url.search : null
@@ -605,12 +637,26 @@ async function canvasappRequest(req) {
   }
   const epoch = canvasappJobsEpoch
   const controller = new AbortController()
+  // In flight from here (lane wait included) to the end: Đăng xuất aborts it and waits for it (drainCanvasappRequests).
+  let settle = () => undefined
+  const inFlight = { controller, done: new Promise((resolve) => (settle = resolve)) }
+  canvasappInFlight.add(inFlight)
+  const stopped = () => controller.signal.aborted || canvasappLoggingOut || logoutAt !== canvasappLogoutEpoch
+  // Status requests tell the kept login whether canvasapp still accepts the session (keepLoginRules.statusVerdict).
+  const statusReq = method === 'GET' && (url.pathname === '/api/me' || url.pathname === '/api/auth/state')
   let timer = null
+  let timedOut = false
   try {
     const result = await withCanvasappSlot(route.binary ? 'download' : 'api', async () => {
+      // Waited for a slot while Đăng xuất started: never sent.
+      if (stopped()) return gatewayError('logged-out', keepLoginRules.CANVASAPP_LOGGING_OUT_TEXT)
       // The clock starts when the request is really sent, not while it waits for a slot (e.g. behind other video
       // downloads): a timeout then means canvasapp did not answer, never "not sent yet".
-      timer = setTimeout(() => controller.abort(), route.binary ? 10 * 60_000 : 60_000)
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, route.binary ? 10 * 60_000 : 60_000)
+      const mark = statusReq && canvasappKeep ? canvasappKeep.mark() : null
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
@@ -636,15 +682,26 @@ async function canvasappRequest(req) {
           out.text = text.slice(0, 2000)
         }
       }
+      if (mark) {
+        // canvasapp decides: a refusal drops the kept copy (unless the kept cookies changed since `mark`), a
+        // confirmation arms it (only a login canvasapp accepted is ever written).
+        const verdict = keepLoginRules.statusVerdict(url.pathname, res.status, out.json)
+        if (verdict === 'denied') void canvasappKeep.rejected(mark)
+        else if (verdict === 'accepted') void canvasappKeep.confirmed(mark)
+      }
       return out
     })
-    if (cacheKey !== null && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: Date.now(), result })
+    if (cacheKey !== null && result.ok && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: Date.now(), result })
     return result
   } catch (e) {
     const aborted = e && e.name === 'AbortError'
+    // Aborted by Đăng xuất: 'network' on purpose (it may have reached canvasapp — a job is looked up, never re-posted).
+    if (aborted && !timedOut) return gatewayError('network', keepLoginRules.CANVASAPP_ABORTED_BY_LOGOUT_TEXT)
     return gatewayError('network', aborted ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
   } finally {
     if (timer) clearTimeout(timer)
+    canvasappInFlight.delete(inFlight)
+    settle()
     if (createsJob) {
       canvasappJobsEpoch++
       canvasappJobListCache.clear()
@@ -702,8 +759,11 @@ function canvasappLogin(parent) {
         done = true
         clearInterval(timer)
         const st = await canvasappStatus()
+        // A confirmed login: keep it now (encrypted, flushed — an app killed right after login stays logged in).
+        const kept = st.ok && st.authenticated && canvasappKeep ? (await canvasappKeep.loggedIn()).kept : false
+        if (DEVTOOLS) void logCanvasappCookieShape()
         if (closeWindow && !win.isDestroyed()) win.close()
-        resolve(st)
+        resolve(st.ok && st.authenticated ? { ...st, keepLogin: kept } : st)
       }
       const check = async () => {
         if (done || checking) return
@@ -728,14 +788,170 @@ function canvasappLogin(parent) {
   return canvasappLoginPromise
 }
 
-async function canvasappLogout() {
-  if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
-  if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
-  const ses = canvasappSession()
-  await ses.clearStorageData()
-  await ses.clearCache()
-  canvasappJobListCache.clear()
-  return { ok: true }
+/**
+ * Đăng xuất, in this order: close the login / checkout windows; refuse new requests, abort the ones in flight and wait
+ * for them (an answer arriving after the clear would put its session cookie back); delete the kept copy FIRST (the
+ * keep-login object writes nothing until the next confirmed login); ask canvasapp to end the session (best effort);
+ * clear the partition and flush. → { ok: true } | { ok: false, code: 'keep-login-not-cleared', message } (never "Đã
+ * đăng xuất" while a copy remains). Concurrent calls share one run.
+ */
+function canvasappLogout() {
+  if (!canvasappLogoutPromise) {
+    canvasappLogoutPromise = (async () => {
+      if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
+      if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
+      canvasappLoggingOut = true
+      canvasappLogoutEpoch++
+      try {
+        await drainCanvasappRequests(keepLoginRules.KEEP_LOGIN_DRAIN_CAP_MS)
+        const ses = canvasappSession()
+        const clear = async () => {
+          await canvasappServerLogout()
+          await ses.clearStorageData()
+          await ses.clearCache()
+          try {
+            await ses.cookies.flushStore()
+          } catch {
+            /* shutting down */
+          }
+        }
+        const { copyRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : (await clear(), { copyRemoved: true })
+        canvasappJobListCache.clear()
+        return copyRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+      } finally {
+        canvasappLoggingOut = false
+      }
+    })().finally(() => {
+      canvasappLogoutPromise = null
+    })
+  }
+  return canvasappLogoutPromise
+}
+
+/** Aborts every canvasapp request in flight (video downloads too) and waits for them to settle, at most `capMs`. */
+async function drainCanvasappRequests(capMs) {
+  const pending = [...canvasappInFlight]
+  for (const r of pending) r.controller.abort()
+  if (pending.length) await Promise.race([Promise.allSettled(pending.map((r) => r.done)), new Promise((resolve) => setTimeout(resolve, capMs))])
+}
+
+/**
+ * Best effort, main-only: the request canvasapp's own "Đăng xuất" button sends (POST /api/auth/logout + X-CSRF-Token),
+ * so a copy of the session taken earlier is not left usable on canvasapp's side (whether canvasapp revokes it on its
+ * server is canvasapp's business — never claimed). Skipped without a canvasapp.io.vn cookie; offline → skipped.
+ * Never throws; the answer is ignored. Not in CANVASAPP_ROUTES: the page cannot send it.
+ */
+async function canvasappServerLogout() {
+  try {
+    const ses = canvasappSession()
+    const cookies = await ses.cookies.get({ domain: CANVASAPP_HOST })
+    if (!cookies.some((c) => keepLoginRules.isHostCookie(c, CANVASAPP_HOST))) return
+    const csrf = await canvasappCsrf()
+    await ses.fetch(CANVASAPP_ORIGIN + CANVASAPP_LOGOUT_PATH, {
+      method: 'POST',
+      headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+      credentials: 'include',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5000),
+      bypassCustomProtocolHandlers: true,
+    })
+  } catch {
+    /* offline / refused: the local copy and the partition are cleared anyway */
+  }
+}
+
+/** The kept login is put back once, before the first canvasapp use of the run (at most 3 s), then changes are watched. */
+function ensureCanvasappRestored() {
+  if (!canvasappRestore) {
+    const done = canvasappKeep
+      ? canvasappKeep
+          .restore()
+          .then(() => canvasappSession().cookies.on('changed', canvasappKeep.onChanged))
+          .catch(() => undefined)
+      : Promise.resolve()
+    canvasappRestore = Promise.race([done, new Promise((resolve) => setTimeout(resolve, keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS))])
+  }
+  return canvasappRestore
+}
+
+function canvasappPrefsPath() {
+  return path.join(app.getPath('userData'), CANVASAPP_PREFS_FILE)
+}
+
+/** The user's choice ({ keepLogin }) from userData/canvasapp-prefs.json, or null (never chose / unreadable). */
+function readCanvasappKeepPrefs() {
+  try {
+    return keepLoginRules.parseKeepLoginPrefs(fs.readFileSync(canvasappPrefsPath(), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function storeCanvasappKeepPrefs(keepLogin) {
+  const file = canvasappPrefsPath()
+  const tmp = file + '.tmp'
+  await fs.promises.writeFile(tmp, keepLoginRules.keepLoginPrefsText(keepLogin))
+  await renameSaveFile(fs.promises, tmp, file)
+}
+
+/**
+ * Creates the keep-login object (on ready). Reads only the small prefs file: the copy is read, and safeStorage touched,
+ * at the first canvasapp use (ensureCanvasappRestored) or when a confirmed login is saved — a user who never logs in
+ * to canvasapp never reaches DPAPI / the Keychain. Async safeStorage only (never blocks main on a Keychain prompt);
+ * Linux's plain-text backend counts as unavailable (nothing kept).
+ */
+function startCanvasappKeepLogin() {
+  canvasappKeepPrefs = readCanvasappKeepPrefs()
+  const asyncSafeStorage = {
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable() && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
+    encryptStringAsync: (text) => safeStorage.encryptStringAsync(text),
+    decryptStringAsync: (bytes) => safeStorage.decryptStringAsync(bytes),
+  }
+  canvasappKeep = keepLoginRules.createCanvasappKeepLogin({
+    cookies: canvasappSession().cookies,
+    crypto: asyncSafeStorage,
+    fsp: fs.promises,
+    rename: (from, to) => renameSaveFile(fs.promises, from, to),
+    file: path.join(app.getPath('userData'), CANVASAPP_LOGIN_FILE),
+    host: CANVASAPP_HOST,
+    origin: CANVASAPP_ORIGIN,
+    now: Date.now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    setTimer: setTimeout,
+    clearTimer: clearTimeout,
+    enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, appPlacement().kind),
+  })
+}
+
+/** canvasapp:keepLogin → { ok: true, keepLogin, available, chosen } (booleans only). */
+function canvasappKeepLoginState() {
+  const st = canvasappKeep ? canvasappKeep.state() : { enabled: false, available: false }
+  return keepLoginRules.keepLoginPayload({ enabled: st.enabled, available: st.available, chosen: canvasappKeepPrefs !== null })
+}
+
+/** canvasapp:setKeepLogin (strict boolean). Off deletes the copy now; the choice is stored even when that failed. */
+async function canvasappSetKeepLogin(on) {
+  if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
+  if (!canvasappKeep) return gatewayError('unavailable', 'Chưa sẵn sàng — thử lại sau giây lát.')
+  const { copyRemoved } = await canvasappKeep.setEnabled(on)
+  canvasappKeepPrefs = { keepLogin: on }
+  try {
+    await storeCanvasappKeepPrefs(on)
+  } catch {
+    return gatewayError('prefs-not-saved', keepLoginRules.KEEP_LOGIN_PREFS_NOT_SAVED_TEXT)
+  }
+  if (!copyRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
+  return canvasappKeepLoginState()
+}
+
+/** DevTools runs only (source / test build): the SHAPE of canvasapp's cookies in the log (session or not) — never a value. */
+async function logCanvasappCookieShape() {
+  try {
+    const list = await canvasappSession().cookies.get({ domain: CANVASAPP_HOST })
+    for (const c of list) console.log(`[SanoVids] canvasapp cookie: ${keepLoginRules.cookieShapeLine(c, Date.now())}`)
+  } catch {
+    /* diagnostics only */
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -898,7 +1114,9 @@ const CANVASAPP_DENIED_PERMISSIONS = new Set([
  * canvasapp:checkout → { ok: true, result: 'success'|'cancel'|'error'|'closed'|'timeout', orderId, blockedHost }
  *                    | { ok: false, code, message }
  */
-function canvasappCheckout(parent, args) {
+async function canvasappCheckout(parent, args) {
+  // The kept login first (a top-up order POST through canvasappRequest normally came before and did it already).
+  await ensureCanvasappRestored()
   if (checkoutWin && !checkoutWin.isDestroyed()) {
     checkoutWin.show()
     checkoutWin.focus()
@@ -1011,6 +1229,11 @@ function restrictCanvasappPermissions() {
 
 function registerCanvasappGateway() {
   restrictCanvasappPermissions()
+  try {
+    startCanvasappKeepLogin()
+  } catch (e) {
+    console.error('[SanoVids] canvasapp keep-login disabled:', (e && e.message) || e) // as today: log in after each start
+  }
   const guard = (fn) => async (event, ...args) => {
     if (!fromApp(event)) return gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')
     try {
@@ -1024,6 +1247,8 @@ function registerCanvasappGateway() {
   ipcMain.handle('canvasapp:logout', guard(() => canvasappLogout()))
   ipcMain.handle('canvasapp:request', guard((_event, req) => canvasappRequest(req)))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
+  ipcMain.handle('canvasapp:keepLogin', guard(() => canvasappKeepLoginState()))
+  ipcMain.handle('canvasapp:setKeepLogin', guard((_event, on) => canvasappSetKeepLogin(on)))
 }
 
 // ---------------------------------------------------------------------------------------------------------------

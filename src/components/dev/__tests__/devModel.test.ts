@@ -1,5 +1,6 @@
 // Development-mode UI model (Bảng phát triển): fault catalog, rule texts, custom rules, request log, character check.
 import { describe, expect, it } from 'vitest'
+import { DEV_ENCRYPTIONS, DEV_LOGIN_COOKIES, KEEP_LOGIN_DAYS, type DevRestartOutcome } from '../../../providers/dev/keepLogin'
 import type { DevLogEntry } from '../../../providers/dev/log'
 import { DEV_CONFIG_DEFAULT, type DevServerSnapshot } from '../../../providers/dev/server'
 import {
@@ -7,9 +8,13 @@ import {
   characterCheck,
   CUSTOM_FAULT_DEFAULT,
   customFaultInput,
+  DEV_ENCRYPTION_OPTIONS,
+  DEV_LOGIN_COOKIE_OPTIONS,
   DEV_PANEL_TABS,
   DEV_UI_FAULTS,
   devPanelTabs,
+  devRestartText,
+  devRestartTone,
   faultArmedText,
   faultKindText,
   faultRuleText,
@@ -28,7 +33,7 @@ const snap = (patch: Partial<DevServerSnapshot> = {}): DevServerSnapshot => ({
   balance: 1000,
   config: DEV_CONFIG_DEFAULT,
   faults: [],
-  jobFaults: { failNext: null, expireNext: false, streamFailures: 0 },
+  jobFaults: { failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false },
   projects: [],
   jobs: [],
   uploads: [],
@@ -58,7 +63,7 @@ describe('activeFaultCount', () => {
     expect(activeFaultCount(null)).toBe(0)
     expect(activeFaultCount(snap())).toBe(0)
     const rule = { id: 'f1', endpoint: 'me' as const, fault: { kind: 'network' as const }, sticky: true, remaining: 0, hits: 0, label: null }
-    expect(activeFaultCount(snap({ faults: [rule], jobFaults: { failNext: 'x', expireNext: true, streamFailures: 2 } }))).toBe(4)
+    expect(activeFaultCount(snap({ faults: [rule], jobFaults: { failNext: 'x', expireNext: true, streamFailures: 2, logoutCopyStuck: true } }))).toBe(5)
   })
 
   it('counts a session ended by "Hết phiên (401)", not a plain logout', () => {
@@ -276,5 +281,33 @@ describe('devPanelTabs', () => {
     expect(DEV_PANEL_TABS.find((t) => t.id === 'updates')?.label).toBe('Cập nhật')
     expect(devPanelTabs({ simulatedUpdates: true }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs', 'updates'])
     expect(devPanelTabs({ simulatedUpdates: false }).map((t) => t.id)).toEqual(['status', 'faults', 'log', 'jobs'])
+  })
+})
+
+describe('"Giữ đăng nhập (giả lập)"', () => {
+  const outcomes: DevRestartOutcome[] = ['not-logged-in', 'persistent', 'kept', 'keep-off', 'encryption-unavailable', 'decrypt-fails', 'expired']
+
+  it('one Vietnamese toast per outcome: still logged in (success), lost (warning, with the reason), not logged in (info)', () => {
+    for (const o of outcomes) expect(devRestartText(o)).toMatch(/^Đã giả lập mở lại app/)
+    expect(new Set(outcomes.map(devRestartText)).size).toBe(outcomes.length)
+    expect(devRestartText('kept')).toBe('Đã giả lập mở lại app: vẫn đăng nhập (đang giữ đăng nhập).')
+    expect(devRestartText('keep-off')).toContain('phiên mất — cần đăng nhập lại')
+    expect(devRestartText('expired')).toContain(`${KEEP_LOGIN_DAYS} ngày`)
+    expect(outcomes.map(devRestartTone)).toEqual(['info', 'success', 'success', 'warning', 'warning', 'warning', 'warning'])
+  })
+
+  it('the two settings offer every simulated value, with labels', () => {
+    expect(DEV_LOGIN_COOKIE_OPTIONS.map((o) => o.id)).toEqual([...DEV_LOGIN_COOKIES])
+    expect(DEV_ENCRYPTION_OPTIONS.map((o) => o.id)).toEqual([...DEV_ENCRYPTIONS])
+    expect(DEV_LOGIN_COOKIE_OPTIONS[0].label).toBe('Theo phiên (mất khi tắt app)')
+    expect(DEV_ENCRYPTION_OPTIONS.map((o) => o.label)).toEqual(['Có', 'Không có', 'Giải mã lỗi'])
+  })
+
+  it('the fault "Đăng xuất: không xoá được bản sao đăng nhập" is offered, one-shot, and counted while armed', () => {
+    const f = DEV_UI_FAULTS.find((x) => x.id === 'logout-copy-stuck')!
+    expect(f).toMatchObject({ label: 'Đăng xuất: không xoá được bản sao đăng nhập', action: { type: 'logout-copy-stuck' }, canStick: false })
+    expect(uiFaultRule(f, true)).toBeNull()
+    expect(faultArmedText(f, false)).toBe('Đã bật lỗi giả: Đăng xuất: không xoá được bản sao đăng nhập.')
+    expect(activeFaultCount(snap({ jobFaults: { failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: true } }))).toBe(1)
   })
 })

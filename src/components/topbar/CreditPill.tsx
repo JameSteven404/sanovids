@@ -10,11 +10,12 @@
 // What it shows for each state: creditPillModel.ts (pure, tested).
 import { FlaskConical, LoaderCircle, LogIn, Plus, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
-import { openTopUp } from '../../actions'
+import { openSettings, openTopUp } from '../../actions'
 import { activeGateway, type Gateway } from '../../providers'
 import { refreshRealCredits, useCreditInfo } from '../../store/credits'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { GATEWAY_SETTINGS_GROUP, loginSuccessToast } from '../dialogs/keepLoginModel'
 import { creditPillView } from './creditPillModel'
 import './creditPill.css'
 
@@ -38,7 +39,11 @@ export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<bo
     try {
       const st = await bridge.login()
       const ok = st.ok && st.authenticated
-      if (ok) toast(`Đã đăng nhập ${name}.`, { tone: 'success' })
+      if (ok) {
+        // "SanoVids giữ đăng nhập trên máy này…" when it keeps the login across restarts (+ a Cài đặt button).
+        const t = loginSuccessToast(name, st)
+        toast(t.text, { tone: 'success', ...(t.settings ? { action: { label: 'Cài đặt', run: () => openSettings(GATEWAY_SETTINGS_GROUP) } } : {}) })
+      }
       else if (!st.ok) toast(`Không đăng nhập được ${name}: ${st.message}`, { tone: 'error' })
       await refreshRealCredits({ force: true })
       return ok
