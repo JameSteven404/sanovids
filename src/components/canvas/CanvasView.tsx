@@ -55,6 +55,7 @@ import {
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { planReplace } from '../../core/placeholders'
+import { replaceRefusalToast, replaceToast } from '../../core/replaceWire'
 import { mediaChangeNote } from '../../core/staleTokens'
 import { flushScenes } from '../../lib/promptDrafts'
 import { folderMapOf } from '../../core/folders'
@@ -132,7 +133,23 @@ import {
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
-import { isWireClick, markFreshWires, newWireIds, refWireGrips, setWireReconnecting, wireClickAction, wireZ, type WirePress } from './wireFx'
+import {
+  connectingKind,
+  draggedWireEnd,
+  imageEndValid,
+  isWireClick,
+  markFreshWires,
+  newWireIds,
+  reconnectDrop,
+  refWireGrips,
+  setWireReconnecting,
+  wireClickAction,
+  wireZ,
+  type ReconnectDrop,
+  type ReconnectNodeKind,
+  type WireEnd,
+  type WirePress,
+} from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
 import './wires.css'
@@ -207,7 +224,7 @@ function CanvasInner() {
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
   const resizing = useCanvasLocal((s) => s.resizing)
-  const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
+  const connecting = useConnection((c) => (c.inProgress ? `${connectingKind(c.fromNode.type, c.fromHandle?.type)}|${c.fromNode.id}` : null))
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
   const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
@@ -705,7 +722,7 @@ function CanvasInner() {
 
   // ---------------- connecting ----------------
   const handled = useRef(false)
-  const reconnecting = useRef<{ done: boolean; source: boolean; edge: LinkEdge } | null>(null)
+  const reconnecting = useRef<{ done: boolean; end: WireEnd; edge: LinkEdge } | null>(null)
 
   const onConnectStart: OnConnectStart = useCallback(() => {
     handled.current = false
@@ -771,7 +788,7 @@ function CanvasInner() {
   const isValidConnection = useCallback((c: LinkEdge | Connection) => {
     if (c.source === c.target) return false
     const r = reconnecting.current
-    if (r?.source) return c.target === r.edge.target && canReplaceRefEdge(r.edge.id, c.source)
+    if (r?.end === 'image') return imageEndValid(r.edge, c, (id) => canReplaceRefEdge(r.edge.id, id))
     const p = useProject.getState().project
     if (folderMapOf(p.folders).has(c.target)) {
       // Moving the scene end of an image wire: it only goes to another scene (moveEdge), never into a folder.
@@ -787,17 +804,18 @@ function CanvasInner() {
   }, [])
 
   const onReconnectStart = useCallback((_e: ReactMouseEvent, edge: LinkEdge, h: HandleType) => {
-    // React Flow supplies the FIXED handle type: 'target' means the image/source end is being dragged.
-    const source = h === 'target'
-    reconnecting.current = { done: false, source, edge }
-    setWireReconnecting(true, source ? (id) => canReplaceRefEdge(edge.id, id) : undefined)
+    const end = draggedWireEnd(h)
+    reconnecting.current = { done: false, end, edge }
+    setWireReconnecting(true, end === 'image' ? (id) => canReplaceRefEdge(edge.id, id) : undefined)
     setMenu(null)
   }, [])
+  // Released on a dot React Flow accepted (isValidConnection): the card of the moved end decides.
   const onReconnect = useCallback((oldEdge: LinkEdge, c: Connection) => {
+    const end = reconnecting.current?.end ?? 'scene'
     if (reconnecting.current) reconnecting.current.done = true
-    if (reconnecting.current?.source) replaceRefEdge(oldEdge.id, c.source)
-    else moveEdge(oldEdge.id, c.target)
+    applyReconnectDrop(oldEdge.id, reconnectDrop(end, { kind: 'node', id: end === 'image' ? c.source : c.target }, oldEdge, nodeKindOf))
   }, [])
+  // Released anywhere else: the card (or empty canvas) under the pointer decides (wireFx.reconnectDrop).
   const onReconnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, edge: LinkEdge, _h: HandleType, _state: FinalConnectionState) => {
       const r = reconnecting.current
@@ -805,22 +823,7 @@ function CanvasInner() {
       setWireReconnecting(false)
       if (!r || r.done) return
       const pt = clientPoint(event)
-      const hit = hitTest(pt.x, pt.y, stageRef.current)
-      if (!hit) return
-      if (r.source) {
-        if (hit.kind === 'node') replaceRefEdge(edge.id, hit.id)
-        return
-      }
-      if (hit.kind === 'node') {
-        const project = useProject.getState().project
-        if (hit.id !== edge.target && sceneMapOf(project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
-        else if (folderMapOf(project.folders).has(hit.id)) {
-          // Released on a folder: the wire stays where it was (and says why, instead of doing nothing).
-          toast('Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.', { tone: 'info', ms: 7000 })
-        }
-        return
-      }
-      // An empty drop cancels the reconnect; cutting is an explicit wire-click/Delete action.
+      applyReconnectDrop(edge.id, reconnectDrop(r.end, hitTest(pt.x, pt.y, stageRef.current), edge, nodeKindOf))
     },
     [],
   )
@@ -1355,36 +1358,74 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
   if (takeIndexOf(useRuns.getState().takes).byId.has(source)) refuseTakesAsReference()
 }
 
-/** Preview and drop share the store's replacement rules; refusals never flush a draft or add undo history. */
-export function canReplaceRefEdge(id: string, newSource: string): boolean {
-  const e = parseEdgeId(id)
-  if (!e || e.kind !== 'ref' || e.from === newSource) return false
+/** What a card of the canvas is, for wireFx.reconnectDrop. */
+function nodeKindOf(id: string): ReconnectNodeKind {
   const p = useProject.getState().project
-  const scene = sceneMapOf(p.scenes).get(e.to)
-  return !!scene && planReplace(scene, p.assets, e.from, newSource, {
-    renumber: p.settings.autoRenumber,
-    maxImages: MODELS[scene.settings.model].maxRefImages,
-  }).ok
+  if (sceneMapOf(p.scenes).has(id)) return 'scene'
+  if (assetMapOf(p.assets).has(id)) return 'asset'
+  return folderMapOf(p.folders).has(id) ? 'folder' : 'other'
 }
 
-/** Replace only the dragged reference, preserving its slot and flushing any prompt being typed first. */
+/** Apply a released wire end (wireFx.reconnectDrop). Anything but replace / move / cut leaves the wire as it was. */
+function applyReconnectDrop(edgeId: string, drop: ReconnectDrop) {
+  switch (drop.do) {
+    case 'replace':
+      replaceRefEdge(edgeId, drop.assetId)
+      return
+    case 'move':
+      moveEdge(edgeId, drop.sceneId)
+      return
+    case 'cut':
+      cutEdge(edgeId)
+      return
+    case 'explain':
+      toast(
+        drop.end === 'image'
+          ? 'Đầu dây phía ảnh chỉ thả được lên một ảnh khác (thay ảnh tại chỗ) — giữ nguyên nối cũ.'
+          : 'Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.',
+        { tone: 'info', ms: 7000 },
+      )
+      return
+    case 'none':
+      return
+  }
+}
+
+/** The store's replacement plan for the image end of reference wire `id` dropped on `newSource` (null: not a reference wire of a scene). */
+function replacePlanOf(id: string, newSource: string) {
+  const e = parseEdgeId(id)
+  if (!e || e.kind !== 'ref' || e.from === newSource) return null
+  const p = useProject.getState().project
+  const scene = sceneMapOf(p.scenes).get(e.to)
+  if (!scene) return null
+  return { e, plan: planReplace(scene, p.assets, e.from, newSource, { renumber: p.settings.autoRenumber, maxImages: MODELS[scene.settings.model].maxRefImages }) }
+}
+
+/** Preview and drop share the store's replacement rules; refusals never flush a draft or add undo history. */
+export function canReplaceRefEdge(id: string, newSource: string): boolean {
+  return !!replacePlanOf(id, newSource)?.plan.ok
+}
+
+/**
+ * Replace only the dragged reference, preserving its slot and flushing any prompt being typed first. A refused drop on
+ * a character (already in the scene, no picture, over the model's image limit) changes nothing and says why.
+ */
 export function replaceRefEdge(id: string, newSource: string): void {
-  if (!canReplaceRefEdge(id, newSource)) return
-  const e = parseEdgeId(id)!
+  const r = replacePlanOf(id, newSource)
+  if (!r) return
+  const { e, plan } = r
+  if (!plan.ok) {
+    const note = replaceRefusalToast(plan.why, useProject.getState().project, e.to, e.from, newSource)
+    if (note) toast(note.text, { tone: note.tone, ms: 7000 })
+    return
+  }
   flushScenes([e.to])
   const before = useProject.getState().project
   if (!useProject.getState().replaceRef(e.to, e.from, newSource).ok) return
-  const scene = sceneMapOf(before.scenes).get(e.to)!
-  const assets = assetMapOf(before.assets)
-  const after = useProject.getState().project
-  // A deliberate same-size swap changes media identity, not token numbering: it is never a stale-number warning.
-  const sameCount = assets.get(e.from)?.imageIds.length === assets.get(newSource)!.imageIds.length
-  const note = sameCount ? null : mediaChangeNote(before, after)
-  const unchanged = scene.prompt === sceneMapOf(after.scenes).get(e.to)?.prompt
   useUI.getState().setSelectedEdges([])
-  toast(`Đã thay ${assets.get(e.from)?.name} bằng ${assets.get(newSource)!.name} ở ${sceneCode(scene.order)}${note?.text ?? (unchanged ? ' — prompt giữ nguyên' : '')}.`, {
-    tone: note?.tone ?? 'success', action: undoToastAction(), ...(note?.ms ? { ms: note.ms } : {}),
-  })
+  // Judged against the swap's own mapping (core/replaceWire): the swapped slot naming the new character is not stale.
+  const note = replaceToast(before, useProject.getState().project, e.to, e.from, newSource)
+  toast(note.text, { tone: note.tone, action: undoToastAction(), ...(note.ms ? { ms: note.ms } : {}) })
 }
 
 /** Reconnect gesture: move an image reference wire to another scene. */

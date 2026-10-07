@@ -3,6 +3,7 @@
 // - the cut animation's geometry (split the drawn bezier where it was clicked),
 // - wires on the dots: the drawn path (dot center to dot center), its hit band (stops at the dots' rims), stacking,
 // - what a wire being dragged would do where it is (valid / invalid target, its color, the handle it snaps to),
+// - where a dragged end of an image wire lands (replace the picture, move to a scene, cut, or nothing),
 // - which wires just appeared (they draw themselves in once).
 import { getBezierPath, type Position } from '@xyflow/react'
 import type { EdgeKind } from '../../actions'
@@ -275,6 +276,66 @@ export function setWireReconnecting(on: boolean, accepts?: (nodeId: string) => b
 }
 export function isWireReconnecting(): boolean {
   return reconnectingWire
+}
+
+// ---------------------------------------------------------------- reconnecting an image wire (routing)
+/** The end of an image → scene wire being dragged: 'image' replaces the picture, 'scene' moves the reference. */
+export type WireEnd = 'image' | 'scene'
+
+/** React Flow's onReconnectStart / onReconnectEnd pass the type of the FIXED handle: 'target' = the image end moves. */
+export function draggedWireEnd(fixedHandle: 'source' | 'target'): WireEnd {
+  return fixedHandle === 'target' ? 'image' : 'scene'
+}
+
+/** What a card on the canvas is (CanvasView reads the project; videos and anything unknown are 'other'). */
+export type ReconnectNodeKind = 'scene' | 'asset' | 'folder' | 'other'
+
+/** What a released reconnect does. 'explain' = the wire stays and a toast says where that end can go. */
+export type ReconnectDrop =
+  | { do: 'replace'; assetId: string }
+  | { do: 'move'; sceneId: string }
+  | { do: 'cut' }
+  | { do: 'explain'; end: WireEnd }
+  | { do: 'none' }
+
+/**
+ * Where a dragged wire end lands (CanvasView onReconnect / onReconnectEnd; `hit` = canvasModel.hitTest under the
+ * pointer, null = outside the canvas or over a panel):
+ *  - image end: on another character → replace (refusals are explained by replaceRefEdge); on another card → explain;
+ *    on empty canvas, its own cards or outside → nothing (the wire stays, it is never cut);
+ *  - scene end: on another scene → move; on a folder → explain; on empty canvas → cut (Phím tắt: "Thả đầu dây ra chỗ
+ *    trống: cắt dây"); anything else → nothing.
+ */
+export function reconnectDrop(
+  end: WireEnd,
+  hit: { kind: 'node'; id: string } | { kind: 'pane' } | null,
+  edge: { source: string; target: string },
+  kindOf: (id: string) => ReconnectNodeKind,
+): ReconnectDrop {
+  if (!hit) return { do: 'none' }
+  if (hit.kind === 'pane') return end === 'scene' ? { do: 'cut' } : { do: 'none' }
+  if (hit.id === edge.source || hit.id === edge.target) return { do: 'none' }
+  const kind = kindOf(hit.id)
+  if (end === 'image') return kind === 'asset' ? { do: 'replace', assetId: hit.id } : { do: 'explain', end }
+  if (kind === 'scene') return { do: 'move', sceneId: hit.id }
+  return kind === 'folder' ? { do: 'explain', end } : { do: 'none' }
+}
+
+/**
+ * isValidConnection while the image end is dragged (React Flow snapped it to a handle): the scene end stays where it
+ * is and the new character passes the store's replacement rules (`canReplace` = CanvasView.canReplaceRefEdge).
+ */
+export function imageEndValid(edge: { source: string; target: string }, c: { source: string; target: string }, canReplace: (assetId: string) => boolean): boolean {
+  return c.target === edge.target && c.source !== edge.source && canReplace(c.source)
+}
+
+/**
+ * The stage's `cv-connecting-<kind>` while a wire is dragged (useConnection): the type of the card it comes from, or
+ * 'rewire' while the image end of a wire is moved — its fixed end is a scene's target dot, and the scene-drag rules
+ * (folders light up as targets) must not apply: only another character takes that end.
+ */
+export function connectingKind(fromNodeType: string | undefined, fromHandleType: string | null | undefined): string {
+  return fromHandleType === 'target' ? 'rewire' : fromNodeType ?? ''
 }
 
 export type WireVerdict = 'valid' | 'invalid' | 'idle'

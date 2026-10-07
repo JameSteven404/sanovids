@@ -320,15 +320,21 @@ describe('character sync: a removed picture leaves a red placeholder that never 
     expect(s1().refs).toEqual(['mira', 'lumi'])
     expect(blockOf(st().project, s1())).not.toBeNull()
     expect(useProject.temporal.getState().pastStates).toHaveLength(historyAfterFlush + 1)
-    expect(useUI.getState().toasts.at(-1)?.text).toContain('@image_?2(Elara · ảnh 2)')
+    // renumbering on: only the red placeholder is reported (the swapped slot is not a "stale number")
+    const note = useUI.getState().toasts.at(-1)!
+    expect(note.text).toBe('Đã thay Elara bằng Mira ở S01 — prompt giữ chữ đỏ @image_?2(Elara · ảnh 2) (chặn Chạy) để bạn gắn ảnh thay thế.')
+    expect(note.tone).toBe('warning')
+    expect(note.action?.label).toBe('Hoàn tác')
     undo()
     expect(s1().prompt).toBe(prompt)
     expect(s1().refs).toEqual(['elara', 'lumi'])
   })
 
-  it('invalid replacement drops preserve project, draft, selection, toasts and undo history', () => {
+  it('invalid replacement drops preserve project, draft, selection and undo history; a refused character says why', () => {
     load([...base(), asset('empty', 'Empty', []), asset('big', 'Big', Array.from({ length: 40 }, (_, i) => `b${i}`))])
     const before = st().project
+    useUI.getState().setSelectedEdges(['ref:lumi->s1'])
+    useUI.setState({ toasts: [] }) // at most 4 toasts are kept: start from none
     const ui = useUI.getState()
     let flushed = false
     const unregister = register('s1', () => { flushed = true })
@@ -347,8 +353,76 @@ describe('character sync: a removed picture leaves a red placeholder that never 
     }
     expect(flushed).toBe(false)
     expect(st().project).toBe(before)
-    expect(useUI.getState()).toBe(ui)
     expect(useProject.temporal.getState().pastStates).toHaveLength(0)
+    // only toasts were added (no Hoàn tác: nothing changed), one per refused character; the rest stays silent
+    expect({ ...useUI.getState(), toasts: ui.toasts }).toEqual(ui)
+    expect(useUI.getState().selectedEdgeIds).toEqual(['ref:lumi->s1'])
+    expect(useUI.getState().toasts.map((t) => [t.text, t.tone, t.action])).toEqual([
+      ['Không thay được Lumi bằng Elara: S01 đã có Elara — giữ nguyên nối cũ.', 'info', undefined],
+      ['Không thay được Lumi bằng Empty: Empty chưa có ảnh — giữ nguyên nối cũ.', 'info', undefined],
+      ['Không thay được Lumi bằng Big ở S01 (vượt giới hạn ảnh của model) — giữ nguyên nối cũ.', 'warning', undefined],
+    ])
+    useUI.getState().setSelectedEdges([])
+  })
+
+  // The swap is judged against its own mapping (picture k of the old character = picture k of the new one): the slot
+  // that now names the new character is never reported as a stale number.
+  const toastAfter = (wire: string, target: string) => {
+    replaceRefEdge(wire, target)
+    const t = useUI.getState().toasts.at(-1)!
+    return [t.text, t.tone, t.action?.label]
+  }
+
+  it.each([true, false])('more pictures, prompt unchanged → "prompt giữ nguyên", never a stale warning (renumber=%s)', (renumber) => {
+    load([...base(), asset('mira', 'Mira', ['m1', 'm2'])], { refs: ['elara', 'lumi'], prompt: '@image_1 hugs @image_2' }, renumber)
+    expect(toastAfter('ref:lumi->s1', 'mira')).toEqual(['Đã thay Lumi bằng Mira ở S01 — prompt giữ nguyên.', 'success', 'Hoàn tác'])
+    expect(s1().prompt).toBe('@image_1 hugs @image_2')
+    expect(s1().refs).toEqual(['elara', 'mira'])
+  })
+
+  it('more pictures with renumbering off: a later character that really moved is still reported', () => {
+    load([...base(), asset('mira', 'Mira', ['m1', 'm2'])], {}, false)
+    expect(toastAfter('ref:lumi->s1', 'mira')).toEqual([
+      'Đã thay Lumi bằng Mira ở S01 · tự đánh lại số đang tắt — hãy sửa số @image trong S01.', 'warning', 'Hoàn tác',
+    ])
+    expect(s1().prompt).toBe('@image_1 hugs @image_2 in front of @image_3')
+  })
+
+  it('more pictures with renumbering on: later numbers renumber → info', () => {
+    load([...base(), asset('mira', 'Mira', ['m1', 'm2'])])
+    expect(toastAfter('ref:lumi->s1', 'mira')).toEqual(['Đã thay Lumi bằng Mira ở S01 · đánh lại số @image trong prompt.', 'info', 'Hoàn tác'])
+  })
+
+  it('fewer pictures, prompt unchanged (renumbering on) → "prompt giữ nguyên"', () => {
+    load([asset('elara', 'Elara', ['e1', 'e2']), asset('mira', 'Mira', ['m1'])], { refs: ['elara'], prompt: '@image_1 walks' })
+    expect(toastAfter('ref:elara->s1', 'mira')).toEqual(['Đã thay Elara bằng Mira ở S01 — prompt giữ nguyên.', 'success', 'Hoàn tác'])
+    expect(s1().prompt).toBe('@image_1 walks')
+  })
+
+  it('fewer pictures, renumbering off: the red placeholder tail only — no false stale tail', () => {
+    load([asset('elara', 'Elara', ['e1', 'e2']), asset('mira', 'Mira', ['m1']), asset('lumi', 'Lumi', ['l1'])], { refs: ['elara'], prompt: '@image_1 and @image_2' }, false)
+    expect(toastAfter('ref:elara->s1', 'mira')).toEqual([
+      'Đã thay Elara bằng Mira ở S01 — prompt giữ chữ đỏ @image_?2(Elara · ảnh 2) (chặn Chạy) để bạn gắn ảnh thay thế.', 'warning', 'Hoàn tác',
+    ])
+    expect(s1().prompt).toBe('@image_1 and @image_?2(Elara · ảnh 2)')
+    // a later character left behind by the shorter one is a real stale number: reported after the placeholder
+    load([asset('elara', 'Elara', ['e1', 'e2']), asset('mira', 'Mira', ['m1']), asset('lumi', 'Lumi', ['l1'])], {
+      refs: ['elara', 'lumi'], prompt: '@image_1 and @image_2 with @image_3',
+    }, false)
+    expect(toastAfter('ref:elara->s1', 'mira')).toEqual([
+      'Đã thay Elara bằng Mira ở S01 — prompt giữ chữ đỏ @image_?2(Elara · ảnh 2) (chặn Chạy) để bạn gắn ảnh thay thế · tự đánh lại số đang tắt — hãy sửa số @image trong S01.',
+      'warning', 'Hoàn tác',
+    ])
+  })
+
+  it('same picture count: a labelled token of the old character no longer fits → warning, the scene is blocked', () => {
+    load([...base(), asset('mira', 'Mira', ['m1'])], { refs: ['elara', 'lumi'], prompt: '@image_1 hugs @image_2(Lumi)' })
+    expect(blockOf(st().project, s1())).toBeNull()
+    expect(toastAfter('ref:lumi->s1', 'mira')).toEqual(['Đã thay Lumi bằng Mira ở S01 — @image_2(Lumi) không còn khớp ảnh (chặn Chạy).', 'warning', 'Hoàn tác'])
+    expect(s1().prompt).toBe('@image_1 hugs @image_2(Lumi)')
+    expect(blockOf(st().project, s1())).toBe('@image_2 đang là “Mira”, không phải “Lumi” — kiểm tra ở dải “Chữ đỏ chờ ảnh” dưới ô prompt')
+    undo()
+    expect(blockOf(st().project, s1())).toBeNull()
   })
 
   it('replacing with more pictures renumbers later refs and leaves the extra picture unnamed', () => {
