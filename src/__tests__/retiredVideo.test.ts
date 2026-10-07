@@ -4,11 +4,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   connectSelection,
-  createSceneFromTake,
   createSceneFromVideo,
   deleteTakes,
   edgeId,
-  linkTakes,
+  refuseTakesAsReference,
   noteRecentScene,
   parseEdgeId,
   setCanvasViewSource,
@@ -118,10 +117,10 @@ describe('nothing links a video to a scene any more', () => {
     expect(parseEdgeId(edgeId('ref', 'a', 's1'))).toEqual({ kind: 'ref', from: 'a', to: 's1' })
     expect(parseEdgeId(edgeId('save', 't1', 'f1'))).toEqual({ kind: 'save', from: 't1', to: 'f1' })
   })
-  it('the old linkTakes entry point (scene card drop) links nothing and says where a video goes', () => {
+  it('refusing a video dropped on a scene links nothing and says where a video goes', () => {
     load(project([scene('s1', 1), scene('s2', 2)]), [take('t1', 's1')])
     const before = st().project
-    linkTakes(['s2'], ['t1'])
+    refuseTakesAsReference()
     expect(st().project).toBe(before)
     expect(steps()).toBe(0)
     expect(lastToast()?.text).toBe(`${VIDEO_NOT_REFERENCE_TEXT}.`)
@@ -170,13 +169,12 @@ describe('"Tạo cảnh tiếp theo từ video này" (createSceneFromVideo)', ()
       expect(lastToast()?.text).toContain('dùng ảnh và cấu hình hiện tại của S01 (cấu hình của video không dùng được ở bản này)')
     }
   })
-  it('refuses a video that is not finished, or whose scene was deleted; the old name is an alias', () => {
+  it('refuses a video that is not finished, or whose scene was deleted', () => {
     load(project([scene('s1', 1)]), [take('t1', 's1', { status: 'processing' }), take('t2', 'gone')])
     expect(createSceneFromVideo('t1')).toBeNull()
     expect(createSceneFromVideo('t2')).toBeNull()
     expect(createSceneFromVideo('nope')).toBeNull()
     expect(st().project.scenes).toHaveLength(1)
-    expect(createSceneFromTake).toBe(createSceneFromVideo)
   })
 })
 

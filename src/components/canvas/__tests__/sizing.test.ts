@@ -11,7 +11,6 @@ import {
   DOT_TOP,
   fitMedia,
   layoutTakes,
-  orphanTakePosition,
   placePopover,
   PREVIEW_MAX_H,
   PREVIEW_MAX_W,
@@ -73,9 +72,9 @@ describe('takeSlots / autoTakePosition', () => {
 
   it('matches defaultTakePosition when every take has the default width', () => {
     const items = [
-      { id: 'a', anchorId: 's', orphan: false },
-      { id: 'b', anchorId: 's', orphan: false },
-      { id: 'c', anchorId: 's', orphan: false },
+      { id: 'a', sceneId: 's' },
+      { id: 'b', sceneId: 's' },
+      { id: 'c', sceneId: 's' },
     ]
     const slots = takeSlots(items, () => LAYOUT.takeW)
     items.forEach((it, i) => expect(autoTakePosition(pos, LAYOUT.sceneW, slots.get(it.id)!)).toEqual(defaultTakePosition(pos, i)))
@@ -83,10 +82,10 @@ describe('takeSlots / autoTakePosition', () => {
 
   it('accumulates each take width so resized takes never overlap, per scene row', () => {
     const items = [
-      { id: 'a', anchorId: 's1', orphan: false },
-      { id: 'b', anchorId: 's1', orphan: false },
-      { id: 'c', anchorId: 's1', orphan: false },
-      { id: 'x', anchorId: 's2', orphan: false },
+      { id: 'a', sceneId: 's1' },
+      { id: 'b', sceneId: 's1' },
+      { id: 'c', sceneId: 's1' },
+      { id: 'x', sceneId: 's2' },
     ]
     const widths: Record<string, number> = { a: 400, b: 224, c: 300, x: 500 }
     const slots = takeSlots(items, (id) => widths[id])
@@ -103,24 +102,6 @@ describe('takeSlots / autoTakePosition', () => {
     const wide = autoTakePosition(pos, 600, 0)
     expect(wide).toEqual(defaultTakePosition(pos, 0, 600))
     expect(wide.x).toBe(pos.x + 600 + LAYOUT.takeOffsetX)
-  })
-
-  it('counts orphans separately and places them leftwards by their own width', () => {
-    const items = [
-      { id: 'a', anchorId: 's1', orphan: false },
-      { id: 'o1', anchorId: 's1', orphan: true },
-      { id: 'o2', anchorId: 's1', orphan: true },
-    ]
-    const slots = takeSlots(items, (id) => (id === 'o1' ? 360 : LAYOUT.takeW))
-    expect(slots.get('o1')).toBe(0)
-    expect(slots.get('o2')).toBe(360 + LAYOUT.takeGapX)
-    const anchor = { x: 420, y: 0 }
-    const o1 = orphanTakePosition(anchor, 0, slots.get('o1')!, 360)
-    const o2 = orphanTakePosition(anchor, 1, slots.get('o2')!, LAYOUT.takeW)
-    expect(o1.x + 360).toBe(anchor.x - LAYOUT.takeOffsetX)
-    expect(o2.x + LAYOUT.takeW + LAYOUT.takeGapX).toBe(o1.x)
-    // Defaults keep the previous fixed-width placement.
-    expect(orphanTakePosition(anchor, 1)).toEqual({ x: anchor.x - LAYOUT.takeOffsetX - 2 * LAYOUT.takeW - LAYOUT.takeGapX, y: 0 })
   })
 })
 

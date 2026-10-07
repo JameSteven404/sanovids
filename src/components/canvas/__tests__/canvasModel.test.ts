@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
 import { ASSETS_MIME, TAKES_MIME } from '../../../lib/dnd'
-import { defaultTakePosition, LAYOUT, useProject } from '../../../store/project'
+import { defaultTakePosition, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
 import {
@@ -23,14 +23,11 @@ import {
   isAutoSlot,
   isEmptyCanvasTarget,
   layoutTakes,
-  orphanTakePosition,
   readAssetIds,
   readTakeIds,
   takeIndexOf,
   takeLayoutSig,
-  takesUsableFor,
   takeSummary,
-  videoUsageOf,
 } from '../canvasModel'
 
 describe('large canvas defaults', () => {
@@ -244,7 +241,7 @@ describe('layoutTakes', () => {
   it('keeps explicit positions', () => {
     const l = layoutTakes([take('x', 's1', 1, { position: { x: 5, y: 6 } })], scenes, 'all')
     expect(l.items[0].explicit).toEqual({ x: 5, y: 6 })
-    expect(l.items[0]).toMatchObject({ orphan: false, anchorId: 's1' })
+    expect(l.items[0]).toMatchObject({ sceneId: 's1' })
   })
 
   it('takes of a deleted scene are never on the canvas, whatever old @video links name them (they stay in the queue)', () => {
@@ -256,20 +253,9 @@ describe('layoutTakes', () => {
     const list = [take('a1', 's1', 1), take('o1', 'gone', 1, { position: { x: 7, y: 8 } }), take('o2', 'gone', 2), take('o3', 'gone', 3)]
     for (const mode of ['all', 'chosen'] as const) {
       const l = layoutTakes(list, withOldLinks, mode)
-      expect(l.items.map((i) => [i.id, i.orphan, i.anchorId, i.index, i.hidden])).toEqual([['a1', false, 's1', 0, 0]])
+      expect(l.items.map((i) => [i.id, i.sceneId, i.index, i.hidden])).toEqual([['a1', 's1', 0, 0]])
       for (const id of ['o1', 'o2', 'o3']) expect(l.byId.has(id)).toBe(false)
     }
-  })
-})
-
-describe('orphanTakePosition', () => {
-  it('sits left of the scene that uses it, one slot further left per orphan', () => {
-    const anchor = { x: 420, y: 308 }
-    const first = orphanTakePosition(anchor, 0)
-    const second = orphanTakePosition(anchor, 1)
-    expect(first.y).toBe(anchor.y)
-    expect(first.x + LAYOUT.takeW).toBeLessThan(anchor.x)
-    expect(second.x + LAYOUT.takeW).toBeLessThanOrEqual(first.x)
   })
 })
 
@@ -346,15 +332,6 @@ describe('inlineKeyBubbles (keymap predicate injected)', () => {
   })
 })
 
-describe('videoUsageOf (deprecated)', () => {
-  it('is always empty, and one shared object (reference videos were retired)', () => {
-    const m = videoUsageOf([scene('a', { videoRefs: ['t1', 't2'], legacyVideoRefs: ['t1'] }), scene('b')])
-    expect(m.size).toBe(0)
-    expect(m.get('t1')).toBeUndefined()
-    expect(videoUsageOf([])).toBe(m)
-  })
-})
-
 /** Minimal DataTransfer stand-in (node test environment). */
 const transfer = (data: Record<string, string>) => ({ types: Object.keys(data), getData: (t: string) => data[t] ?? '' }) as unknown as DataTransfer
 
@@ -375,16 +352,5 @@ describe('drag payloads (shared MIME types)', () => {
 
   it('isEmptyCanvasTarget is false without a DOM element', () => {
     expect(isEmptyCanvasTarget(null)).toBe(false)
-  })
-})
-
-describe('takesUsableFor', () => {
-  const initial = useRuns.getState().takes
-  afterEach(() => useRuns.setState({ takes: initial }))
-
-  it('is always false: a dragged video never becomes @video of a scene (reference videos were retired)', () => {
-    useRuns.setState({ takes: [take('done', 's1', 1), take('busy', 's1', 2, { status: 'processing', progress: 30 })] })
-    expect(takesUsableFor(['done'], 's2')).toBe(false)
-    expect(takesUsableFor(['busy', 'done'], 's2')).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 // Pure helpers about takes (video nodes) shared by the canvas and the layout of new nodes (store/takeRows).
-import type { Scene, Take, XY } from './types'
+import type { Take, XY } from './types'
 
 /**
  * Does a take the user placed by hand (`at`) still sit on its row slot (`slot`), i.e. was it only nudged? Its box
@@ -18,13 +18,4 @@ export function chooseTake(list: Take[]): Take | undefined {
     if (!completed && t.status === 'completed') completed = t
   }
   return completed ?? list[list.length - 1]
-}
-
-const NO_USAGE: ReadonlyMap<string, number> = new Map()
-/**
- * @deprecated Reference videos were retired (0.6.0): no scene uses a take as @video any more, so this is always an
- * empty map (one shared object: a stable selector result). Kept so code written before the retirement still compiles.
- */
-export function videoUsageOf(_scenes: Scene[]): ReadonlyMap<string, number> {
-  return NO_USAGE
 }

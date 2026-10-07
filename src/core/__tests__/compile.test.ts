@@ -62,7 +62,7 @@ describe('compileScene', () => {
   })
   it('retired @video tokens: kept in the text, never sent, named in retiredTokens AND unsentTokens with one warning', () => {
     const s = scene({ prompt: 'Continue from @video_1 then @video_2 and @video_1', legacyVideoRefs: ['t1', 't2'] })
-    const out = compileScene(project([s]), s, { takeStatus: () => 'completed' })
+    const out = compileScene(project([s]), s)
     expect(out.text).toBe('Continue from @video_1 then @video_2 and @video_1')
     expect(out).not.toHaveProperty('videos')
     expect(out.retiredTokens).toEqual(['@video_1', '@video_2'])

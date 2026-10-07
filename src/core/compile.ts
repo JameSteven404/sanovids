@@ -407,16 +407,11 @@ export function mediaKeys(assets: Asset[], refs: string[]): { images: string[] }
 // Compile
 // ---------------------------------------------------------------------------------------------
 
-export interface CompileOptions {
-  /** @deprecated Ignored: reference videos were retired (0.6.0). Kept so older callers still compile. */
-  takeStatus?: (takeId: string) => string | undefined
-}
-
 /**
  * Compile the prompt that would be sent for one scene. Pure function.
  * The text is the scene prompt as written; legacy @Tag mentions are converted to @image_N.
  */
-export function compileScene(project: Project, scene: Scene, _opts: CompileOptions = {}): CompiledPrompt {
+export function compileScene(project: Project, scene: Scene): CompiledPrompt {
   const spec = MODELS[scene.settings.model]
   const limit = spec.promptLimit(scene.settings.mode)
   const warnings: string[] = []

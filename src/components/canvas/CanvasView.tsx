@@ -99,7 +99,6 @@ import {
   layoutTakes,
   livePosition,
   MINIMAP_LIFT_W,
-  orphanTakePosition,
   readAssetIds,
   readTakeIds,
   resetNodeSize,
@@ -328,27 +327,20 @@ function CanvasInner() {
     const widthOf = (id: string) => takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
     const slots = takeSlots(takeLayout.items, widthOf, (id, slotX) => {
       const item = takeLayout.byId.get(id)
-      const anchor = item && sm.get(item.anchorId)
+      const anchor = item && sm.get(item.sceneId)
       if (!item?.explicit || !anchor) return false
-      const slot = item.orphan
-        ? orphanTakePosition(anchor.position, item.index, slotX, widthOf(id))
-        : autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      const slot = autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
       return keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
     })
     const autos = new Map<string, XY>()
     for (const item of takeLayout.items) {
-      const anchor = sm.get(item.anchorId)!
+      const anchor = sm.get(item.sceneId)!
       const slot = slots.get(item.id) ?? 0
       const anchorPos = anchor.position
-      // An orphan (its scene was just deleted) stays where it was shown; without a previous spot it goes next to
-      // the scene that uses it. Live scene movement is applied separately below.
-      const auto = item.orphan ? null : autoTakePosition(anchorPos, sceneWidth(anchor), slot)
-      if (auto) autos.set(item.id, auto)
-      const base =
-        item.explicit ??
-        auto ??
-        prevCache.get(item.id)?.position ??
-        orphanTakePosition(anchor.position, item.index, slot, item.size?.w ?? LAYOUT.takeW)
+      // Live scene movement is applied separately below.
+      const auto = autoTakePosition(anchorPos, sceneWidth(anchor), slot)
+      autos.set(item.id, auto)
+      const base = item.explicit ?? auto
       let data = takeData.current.get(item.id)
       if (!data || data.hidden !== item.hidden || data.status !== item.status) data = { hidden: item.hidden, status: item.status }
       dataNext.set(item.id, data)
@@ -370,8 +362,8 @@ function CanvasInner() {
     const hasResize = Object.keys(resizing).length > 0
     const slots = hasResize ? takeSlots(takeLayout.items, widthOf, (id, slotX) => {
       const item = takeLayout.byId.get(id)!
-      const anchor = sm.get(item.anchorId)!
-      const slot = item.orphan ? orphanTakePosition(anchor.position, item.index, slotX, widthOf(id)) : autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      const anchor = sm.get(item.sceneId)!
+      const slot = autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
       return !!item.explicit && keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
     }) : slotsRef.current
     const next = new Map<string, CanvasNode>()
@@ -380,8 +372,8 @@ function CanvasInner() {
       const live = resizing[id]
       let position = base.position
       const item = takeLayout.byId.get(id)
-      if (item && !item.orphan && (hasResize || dragPos[item.anchorId])) {
-        const anchor = sm.get(item.anchorId)!
+      if (item && (hasResize || dragPos[item.sceneId])) {
+        const anchor = sm.get(item.sceneId)!
         const box = resizing[anchor.id]
         const pos = livePosition(anchor.id, anchor.position, dragPos, resizing)
         const auto = autoTakePosition(pos, sceneWidth(anchor, box), slots.get(id) ?? 0)
@@ -640,13 +632,12 @@ function CanvasInner() {
       for (const [id, pos] of Object.entries(commit)) {
         const item = layout.byId.get(id)
         if (item) {
-          const scene = item.orphan ? undefined : sm.get(item.sceneId)
+          const scene = sm.get(item.sceneId)
           const take = takes.get(id)
-          if (!take || (!scene && !item.orphan)) continue
+          if (!take || !scene) continue
           // Dropped on its auto slot (snapped to the grid): keep it auto-placed (it keeps following the scene).
-          // Orphans (scene deleted) have no auto slot: wherever they are dropped is kept.
-          const auto = scene ? autoTakePosition(commit[scene.id] ?? scene.position, sceneWidth(scene), slotsRef.current.get(id) ?? 0) : null
-          const next = auto && isAutoSlot(auto, pos) ? null : pos
+          const auto = autoTakePosition(commit[scene.id] ?? scene.position, sceneWidth(scene), slotsRef.current.get(id) ?? 0)
+          const next = isAutoSlot(auto, pos) ? null : pos
           takeCommit[id] = next
           if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
         } else {
@@ -1252,7 +1243,6 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
     }
   }
   for (const item of takes.items) {
-    if (item.orphan) continue // its scene was deleted
     out.push({
       id: edgeId('out', item.sceneId, item.id),
       kind: 'out',
