@@ -4,8 +4,11 @@
 //
 // v2: the prompt is exactly what the user writes. Media references are numbered tokens:
 //   @image_N — N-th reference image of the scene (scene.refs order, each image of an asset gets its own number)
-//   @video_N — N-th reference video of the scene (scene.videoRefs order, ids of completed takes)
 // Tokens are renumbered automatically when references are reordered/removed (see core/compile.ts remapTokens).
+// Reference videos (@video_N) were retired in 0.6.0: old links are kept inert (Scene.legacyVideoRefs,
+// Take.legacyVideoRefsSnapshot — never read except by the open-project notice, src/videoRetired.ts), and @video text
+// left in a prompt stays verbatim but blocks the run (core/compile retiredVideoTokens). Never reuse `videoRefs`,
+// `legacyVideoRefs`, `@video_N` or the `vref` wire kind with another meaning.
 
 export type ModelId = 'seedance_2_5' | 'minimax_h3'
 export type Mode = 't2v' | 'i2v' | 'transform'
@@ -69,12 +72,22 @@ export interface Scene {
   /** Display order, 1-based. S01, S02... Kept dense by the store. */
   order: number
   title: string
-  /** The prompt exactly as it will be sent, with @image_N / @video_N tokens. */
+  /** The prompt exactly as it will be sent, with @image_N tokens (old @video_N text is kept but blocks the run). */
   prompt: string
   /** Ordered asset ids used as reference images. Order decides @image_N numbering. */
   refs: string[]
-  /** Ordered take ids (completed videos) used as reference videos. Order decides @video_N numbering. */
+  /**
+   * @deprecated Always [] — reference videos were retired (0.6.0). Kept in the type and in saved files (a 0.5.0 build
+   * reads [] = no reference video) and so that code written before the retirement still compiles; nothing reads or
+   * writes take ids here any more (migrateProject moves old ones to `legacyVideoRefs`).
+   */
   videoRefs: string[]
+  /**
+   * Take ids this scene used as @video_N before reference videos were retired, kept inert (could be turned back on
+   * later with the same meaning). Only the open-project notice reads it (src/videoRetired.ts); never copied to a new
+   * scene, dropped on duplicate / import (the takes do not travel). Missing = none.
+   */
+  legacyVideoRefs?: string[]
   /** Preset the settings came from (informational; settings are copied, not linked). */
   presetId: string | null
   settings: VideoSettings
@@ -100,7 +113,7 @@ export interface Scene {
 }
 
 export interface ProjectSettings {
-  /** Rewrite @image_N / @video_N tokens when references are reordered or removed. */
+  /** Rewrite @image_N tokens when references are reordered or removed (@video text is never rewritten). */
   autoRenumber: boolean
 }
 
@@ -167,7 +180,10 @@ export interface Take {
   /** Scene prompt at the time of the run, for "restore prompt". */
   rawPromptSnapshot: string
   refsSnapshot: string[]
+  /** @deprecated Always [] — reference videos were retired (0.6.0); old ones are in `legacyVideoRefsSnapshot`. */
   videoRefsSnapshot: string[]
+  /** Reference videos the take was queued with before the retirement (inert, see Scene.legacyVideoRefs). */
+  legacyVideoRefsSnapshot?: string[]
   settings: VideoSettings
   cost: number
   starred: boolean
@@ -272,16 +288,9 @@ export interface CompiledImage {
   imageId: string
 }
 
-export interface CompiledVideo {
-  /** 1-based N in @video_N */
-  n: number
-  takeId: string
-}
-
 export interface CompiledPrompt {
   text: string
   images: CompiledImage[]
-  videos: CompiledVideo[]
   /** Assets in reference order (only those that send at least one image). */
   assetIds: string[]
   charCount: number
@@ -291,8 +300,14 @@ export interface CompiledPrompt {
   /** Low-priority hints (e.g. a connected image never mentioned in the prompt). */
   notes: string[]
   /**
-   * Tokens of the compiled prompt that have NO media behind them in this request (beyond the images/videos actually
-   * sent, in a mode that sends none, or unbound "@image_?N" placeholders). A take with any of these must not run.
+   * Tokens of the compiled prompt that have NO media behind them in this request (beyond the images actually sent, in
+   * a mode that sends none, unbound "@image_?N" placeholders, and every retired @video token). A take with any of
+   * these must not run.
    */
   unsentTokens: string[]
+  /**
+   * Retired @video tokens of the compiled prompt as written ("@video_1", "@Video 2", "@video_?3(S01·T1)"), in order,
+   * without duplicates (core/compile retiredVideoTokens). Also in `unsentTokens`; core/runRules names them first.
+   */
+  retiredTokens: string[]
 }

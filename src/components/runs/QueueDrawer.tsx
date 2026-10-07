@@ -206,8 +206,8 @@ function QueuePanel() {
 
   const clearable = useMemo(() => clearableTakes(takes), [takes])
 
-  // The shared delete (actions.deleteTakes): also drops the takes from @video references and the selection and
-  // deletes their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming. A newer
+  // The shared delete (actions.deleteTakes): also drops the takes from folder nodes and the selection and deletes
+  // their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming. A newer
   // build's take parked here (it may still be running, and paid, there) is never part of it (clearableTakes).
   const clearFailed = () => {
     const n = deleteTakes(
@@ -465,10 +465,9 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
 
 /**
  * Is this take node visible in the canvas "Chỉ take chọn" mode? Same rule as the canvas: the scene's chosen take
- * (starred, else the newest completed, else the newest) plus every take used as a @video reference.
+ * (starred, else the newest completed, else the newest).
  */
 function shownWhenChosenOnly(take: Take): boolean {
-  if (useProject.getState().project.scenes.some((s) => s.videoRefs.includes(take.id))) return true
   const list = useRuns
     .getState()
     .takes.filter((t) => t.sceneId === take.sceneId)

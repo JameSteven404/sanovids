@@ -19,7 +19,6 @@ const req = (over: Partial<JobRequest> = {}): JobRequest => ({
   prompt: 'x',
   rawPrompt: 'x',
   images: [],
-  videos: [],
   firstFrame: null,
   lastFrame: null,
   startedAt: 1000,

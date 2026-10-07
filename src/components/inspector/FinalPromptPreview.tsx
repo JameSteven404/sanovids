@@ -1,21 +1,19 @@
 // "Prompt cuối": the exact text that would be sent (the prompt as written, legacy @Tag converted to @image_N),
-// with @image_N / @video_N tokens highlighted, char count, warnings (amber) and notes (grey).
+// with @image_N tokens highlighted (red placeholders "@image_?2(Lumi)" and labels that do not fit their slot in red,
+// retired @video text struck through in red), char count, warnings (amber) and notes (grey).
 import { ChevronDown, Copy, Download, Info, TriangleAlert } from 'lucide-react'
 import { memo, useDeferredValue, useMemo } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 import { copyCompiledPrompt, downloadSceneZip } from '../../actions'
 import { compileScene } from '../../core/compile'
 import type { Asset, Project, Scene } from '../../core/types'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
-import { useTakeInfos } from './hooks'
-import { EMPTY_IDS, fmt, usePref } from './shared'
-import { imageOptsFor, invalidTokenTitle, segmentPrompt } from './tokens'
+import { fmt, usePref } from './shared'
+import { imageOptsFor, invalidTokenTitle, labelChecker, segmentPrompt, type LabelCheck } from './tokens'
 
 /** compileScene only reads the assets and the scene: avoid subscribing to the whole project. */
-function compileFor(assets: Asset[], scene: Scene, takeStatus: (id: string) => string | undefined) {
+function compileFor(assets: Asset[], scene: Scene) {
   const stub: Project = { id: '', name: '', schemaVersion: 2, createdAt: 0, updatedAt: 0, assets, presets: [], scenes: [scene], settings: { autoRenumber: true } }
-  return compileScene(stub, scene, { takeStatus })
+  return compileScene(stub, scene)
 }
 
 export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
@@ -24,22 +22,16 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
   // Compiling on every keystroke is cheap but not free with 6k+ char prompts: let React defer it.
   const scene = useDeferredValue(liveScene)
   const assets = useDeferredValue(liveAssets)
-  const videoRefs = scene?.videoRefs ?? EMPTY_IDS
-  const statuses = useRuns(useShallow((s) => videoRefs.map((id) => s.takes.find((t) => t.id === id)?.status ?? '')))
-  const takeInfos = useTakeInfos(videoRefs)
   const [open, setOpen] = usePref('finalOpen', true)
 
-  const compiled = useMemo(() => {
-    if (!scene) return null
-    const byId = new Map(videoRefs.map((id, i) => [id, statuses[i] || undefined]))
-    return compileFor(assets, scene, (id) => byId.get(id))
-  }, [assets, scene, videoRefs, statuses])
+  const compiled = useMemo(() => (scene ? compileFor(assets, scene) : null), [assets, scene])
   const names = useMemo(() => {
     const images = new Map<number, string>()
     if (scene) for (const o of imageOptsFor(assets, scene.refs)) images.set(o.n, o.name)
-    const videos = new Map<number, string>(takeInfos.map((t, i) => [i + 1, t.label]))
-    return { images, videos }
-  }, [assets, scene, takeInfos])
+    return images
+  }, [assets, scene])
+
+  const labels = useMemo(() => (scene ? labelChecker(assets, scene.refs) : undefined), [assets, scene])
 
   if (!scene || !compiled) return null
   const over = compiled.charCount > compiled.limit
@@ -71,7 +63,7 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
               type="button"
               className="btn btn-sm"
               onClick={() => void downloadSceneZip(sceneId)}
-              title="Ảnh / video tham chiếu đặt tên theo số (image_01_Elara.png, video_01_S03-T2.webm) + prompt.txt"
+              title="Ảnh tham chiếu đặt tên theo số (image_01_Elara.png) + prompt.txt"
             >
               <Download size={13} /> Tải tham chiếu + prompt (.zip)
             </button>
@@ -96,14 +88,7 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
               ))}
             </ul>
           )}
-          <FinalText
-            text={compiled.text}
-            imageCount={names.images.size}
-            videoCount={videoRefs.length}
-            sentImages={compiled.images.length}
-            sentVideos={compiled.videos.length}
-            names={names}
-          />
+          <FinalText text={compiled.text} imageCount={names.size} sentImages={compiled.images.length} names={names} labels={labels} />
         </div>
       )}
     </section>
@@ -113,31 +98,32 @@ export function FinalPromptPreview({ sceneId }: { sceneId: string }) {
 const FinalText = memo(function FinalText({
   text,
   imageCount,
-  videoCount,
   sentImages,
-  sentVideos,
   names,
+  labels,
 }: {
   text: string
   imageCount: number
-  videoCount: number
-  /** What the request really carries (compileScene's images / videos): tokens past it reach no picture. */
+  /** What the request really carries (compileScene's images): tokens past it reach no picture. */
   sentImages: number
-  sentVideos: number
-  names: { images: Map<number, string>; videos: Map<number, string> }
+  /** Asset name of each @image_N. */
+  names: Map<number, string>
+  /** Checks a label glued to a token ("@image_2(Lumi)") against the picture that number names now. */
+  labels?: LabelCheck
 }) {
-  const segs = useMemo(
-    () => segmentPrompt(text, imageCount, videoCount, undefined, { images: sentImages, videos: sentVideos }),
-    [text, imageCount, videoCount, sentImages, sentVideos],
-  )
+  const segs = useMemo(() => segmentPrompt(text, imageCount, undefined, { images: sentImages }, labels), [text, imageCount, sentImages, labels])
   if (!text) return <div className="empty">Chưa có nội dung — viết prompt cho cảnh.</div>
   return (
     <div className="in-final-text">
       {segs.map((s, i) => {
         if (s.kind === 'text') return s.text
-        const name = s.n !== undefined ? (s.kind === 'image' ? names.images : names.videos).get(s.n) : undefined
+        const name = s.n !== undefined && s.kind === 'image' ? names.get(s.n) : undefined
         return (
-          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''}`} title={s.invalid ? invalidTokenTitle(s) : name ? `${s.text} = ${name}` : s.text}>
+          <mark
+            key={i}
+            className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''} ${s.reason === 'retired' ? 'is-retired' : ''}`}
+            title={s.invalid ? invalidTokenTitle(s) : name ? `${s.text} = ${name}` : s.text}
+          >
             {s.text}
           </mark>
         )

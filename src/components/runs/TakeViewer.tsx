@@ -19,23 +19,20 @@ import {
   Undo2,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 import {
   cancelTake,
-  createSceneFromTake,
   defaultTakeFileBase,
   deleteTakes,
   downloadTake,
   focusNodes,
-  linkTakes,
   openDevPanel,
   renameTake,
   rerunTake,
   restoreFromTake,
   takeFileBase,
 } from '../../actions'
-import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../../core/compile'
-import { MODELS, modeLabel, settingsLabel, usesVideoRefs } from '../../core/models'
+import { compileScene, imageKey, imageSlotsFor, sceneCode } from '../../core/compile'
+import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, ImportedField, Scene, Take } from '../../core/types'
 import { chargedDemo, formatCredits } from '../../lib/credits'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -47,7 +44,7 @@ import { decodeRemoteId } from '../../providers/canvasapp/mapping'
 import { useProject } from '../../store/project'
 import { isUnverifiableSubmit, useRuns, useSceneTakes } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
-import { AssetChip, MediaImg } from '../common/Media'
+import { AssetChip } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { takeCostLine } from './creditText'
 import { fieldState, importedFieldsNote, importedSourceText, importSite, INFERRED_FIELD_TITLE, restoreBlock, takeModeText, takeSettingsText, unknownFieldTitle } from './importedTake'
@@ -243,8 +240,6 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
   }, [prev, next])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
-  // Scenes using this take as @video (a number: stable selector).
-  const usedCount = useProject((s) => s.project.scenes.reduce((n, x) => n + (x.videoRefs.includes(take.id) ? 1 : 0), 0))
   useEffect(() => {
     setConfirmDelete(false)
   }, [take.id])
@@ -256,11 +251,10 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
 
   /**
    * The shared delete (actions.deleteTakes — same as the canvas node menu, the queue and the Delete key). The
-   * two-click button is the confirmation that the video is lost, so deleteTakes only asks ('usedOnly') when other
-   * scenes use the take as @video: deleting it drops those references and rewrites their prompts, for good.
+   * two-click button is the confirmation that the video is lost, so deleteTakes asks nothing more ('usedOnly').
    */
   const remove = () => {
-    if (!usedCount && !confirmDelete) {
+    if (!confirmDelete) {
       setConfirmDelete(true)
       return
     }
@@ -328,11 +322,7 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
             type="button"
             className={`btn btn-danger${confirmDelete ? ' rq-confirming' : ''}`}
             onClick={remove}
-            title={
-              usedCount
-                ? `Đang là @video ở ${usedCount} cảnh — xoá sẽ bỏ các tham chiếu đó. Video đã xoá không hoàn tác được.`
-                : 'Xoá take này. Video đã xoá không hoàn tác được.'
-            }
+            title="Xoá take này. Video đã xoá không hoàn tác được."
           >
             <Trash size={14} />
             {confirmDelete ? 'Bấm lần nữa để xoá' : 'Xoá take'}
@@ -612,15 +602,14 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
     const refsAdded = refsSure ? scene.refs.filter((id) => !take.refsSnapshot.includes(id)).map(tagOf) : []
     const refsRemoved = refsSure ? take.refsSnapshot.filter((id) => !scene.refs.includes(id)).map(tagOf) : []
     const refsReordered = refsSure && !refsAdded.length && !refsRemoved.length && scene.refs.join('|') !== take.refsSnapshot.join('|')
-    const videosChanged = scene.videoRefs.join('|') !== take.videoRefsSnapshot.join('|')
     // Same assets in the same order, but a character got / lost / reordered pictures since the run: the same
     // @image_N may now be another picture. Only knowable for takes that carry the exact image list.
     const exact = exactImageKeys(take)
     const imagesChanged =
       refsSure && !!exact && !refsAdded.length && !refsRemoved.length && !refsReordered && imageSlotsFor(assets, scene.refs).map(imageKey).join('|') !== exact.join('|')
     const diff = promptChanged ? paragraphDiff(take.promptSnapshot, current.text) : { removed: [], added: [] }
-    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered || imagesChanged || videosChanged
-    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, imagesChanged, videosChanged, diff, any }
+    const any = promptChanged || settingsChanged || refsAdded.length > 0 || refsRemoved.length > 0 || refsReordered || imagesChanged
+    return { promptChanged, settingsChanged, refsAdded, refsRemoved, refsReordered, imagesChanged, diff, any }
   }, [scene, current, take, assets, comparable])
 
   const copy = async () => {
@@ -723,8 +712,6 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
         )}
       </dl>
 
-      <UseTake take={take} scene={scene} onClose={onClose} />
-
       <div className="rq-sec">
         <div className="section-title">
           <span>Ảnh tham chiếu lúc chạy</span>
@@ -748,22 +735,6 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           <div className="faint rq-small" title={INFERRED_FIELD_TITLE}>
             Đoán theo node trên canvas cầu nối — có thể khác lúc tạo.
           </div>
-        )}
-      </div>
-
-      <div className="rq-sec">
-        <div className="section-title">
-          <span>Video tham chiếu lúc chạy</span>
-          <span className="faint">{take.videoRefsSnapshot.length}</span>
-        </div>
-        {take.videoRefsSnapshot.length ? (
-          <div className="rq-vchips">
-            {take.videoRefsSnapshot.map((id, i) => (
-              <VideoRefChip key={id} takeId={id} n={i + 1} />
-            ))}
-          </div>
-        ) : (
-          <div className="faint rq-small">Không dùng video tham chiếu.</div>
         )}
       </div>
 
@@ -792,7 +763,6 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
                 changes.settingsChanged && 'cấu hình',
                 (changes.refsAdded.length || changes.refsRemoved.length || changes.refsReordered) && 'ảnh tham chiếu',
                 changes.imagesChanged && 'ảnh của nhân vật',
-                changes.videosChanged && 'video tham chiếu',
               ]
                 .filter(Boolean)
                 .join(', ')}
@@ -844,12 +814,6 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
                 <b>Ảnh của nhân vật:</b> đã thêm, bớt hoặc đổi thứ tự ảnh từ lúc chạy — cùng một @image_N giờ có thể là tấm khác.
               </div>
             )}
-            {changes.videosChanged && (
-              <div className="rq-diff-line">
-                <b>Video tham chiếu:</b> {take.videoRefsSnapshot.length} → {scene.videoRefs.length} video
-                {take.videoRefsSnapshot.length === scene.videoRefs.length ? ' (đã đổi video hoặc thứ tự @video)' : ''}.
-              </div>
-            )}
             {changes.diff.removed.map((p, i) => (
               <div key={'-' + i} className="rq-diff-para del">
                 <span className="rq-diff-sign">−</span>
@@ -889,99 +853,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
   )
 }
 
-
 // ---------------------------------------------------------------------------------------------------------------------
-
-/** "Dùng video này": continue the story from this take, or use it as @video for the selected scenes. */
-function UseTake({ take, scene, onClose }: { take: Take; scene: Scene | undefined; onClose: () => void }) {
-  const selectedIds = useUI((s) => s.selectedIds)
-  // Selected scenes other than the take's own scene (a scene cannot reference its own video).
-  const targets = useProject(
-    useShallow((s) => {
-      const sel = new Set(selectedIds)
-      return s.project.scenes.filter((x) => sel.has(x.id) && x.id !== take.sceneId).map((x) => x.id)
-    }),
-  )
-  const ownSelected = selectedIds.includes(take.sceneId)
-  const usedBy = useProject(
-    useShallow((s) =>
-      s.project.scenes
-        .filter((x) => x.videoRefs.includes(take.id))
-        .sort((a, b) => a.order - b.order)
-        .map((x) => `${sceneCode(x.order)} (@video_${x.videoRefs.indexOf(take.id) + 1})`),
-    ),
-  )
-  const ready = take.status === 'completed'
-  // The new scene copies the source scene's settings: a mode without reference videos would never send @video_1.
-  const acceptsVideo = !scene || usesVideoRefs(scene.settings)
-
-  const continueTitle = !ready
-    ? 'Video chưa tạo xong'
-    : !scene
-      ? 'Cảnh gốc của video này đã bị xoá'
-      : !acceptsVideo
-        ? `Chế độ ${modeLabel(scene.settings.mode, scene.settings.model)} của ${MODELS[scene.settings.model]?.name ?? scene.settings.model} ở ${sceneCode(scene.order)} không nhận video tham chiếu — đổi sang chế độ nhận video (vd. Ảnh → Video) rồi thử lại`
-        : `Cảnh mới ngay bên dưới ${sceneCode(scene.order)}: video này thành @video_1, giữ ảnh tham chiếu và cấu hình`
-  const linkTitle = !ready
-    ? 'Video chưa tạo xong'
-    : targets.length
-      ? `Thêm video này vào video tham chiếu của ${targets.length} cảnh đang chọn`
-      : ownSelected
-        ? 'Không thể dùng video của chính cảnh này — chọn cảnh khác trên canvas trước'
-        : 'Chưa chọn cảnh nào — chọn cảnh trên canvas trước'
-
-  return (
-    <div className="rq-sec rq-use">
-      <div className="section-title">
-        <span>Dùng video này</span>
-      </div>
-      <div className="rq-use-actions">
-        <button
-          type="button"
-          className="btn btn-sm"
-          disabled={!ready || !scene || !acceptsVideo}
-          title={continueTitle}
-          onClick={() => {
-            if (createSceneFromTake(take.id)) onClose()
-          }}
-        >
-          <Film size={13} />
-          Tạo cảnh tiếp nối
-        </button>
-        <button type="button" className="btn btn-sm" disabled={!ready || !targets.length} title={linkTitle} onClick={() => linkTakes(targets, [take.id])}>
-          <Link2 size={13} />
-          {targets.length > 1 ? `Dùng làm @video cho ${targets.length} cảnh đang chọn` : 'Dùng làm @video cho cảnh đang chọn'}
-        </button>
-      </div>
-      {ready && scene && !acceptsVideo && (
-        <div className="faint rq-small">Chế độ hiện tại của {sceneCode(scene.order)} không nhận video tham chiếu nên chưa tạo cảnh tiếp nối được.</div>
-      )}
-      {usedBy.length > 0 && <div className="faint rq-small">Đang là video tham chiếu ở: {usedBy.join(', ')}</div>}
-    </div>
-  )
-}
-
-/** One reference video of the take (v1 = @video_1): poster, label, click to open it. */
-const VideoRefChip = memo(function VideoRefChip({ takeId, n }: { takeId: string; n: number }) {
-  const ref = useRuns((s) => s.takes.find((t) => t.id === takeId))
-  const order = useProject((s) => (ref ? s.project.scenes.find((x) => x.id === ref.sceneId)?.order : undefined))
-  if (!ref) {
-    return (
-      <span className="rq-vchip missing" title="Video này đã bị xoá">
-        <span className="rq-vchip-thumb" />
-        <span className="rq-vchip-n">v{n}</span>
-        <span className="faint">đã xoá</span>
-      </span>
-    )
-  }
-  return (
-    <button type="button" className="rq-vchip" onClick={() => openTake(ref.id)} title={`@video_${n} · ${takeCode(order, ref.number)} — bấm để xem`}>
-      <span className="rq-vchip-thumb">{ref.posterId ? <MediaImg id={ref.posterId} className="rq-thumb-img" /> : null}</span>
-      <span className="rq-vchip-n">v{n}</span>
-      <span className="mono">{takeCode(order, ref.number)}</span>
-    </button>
-  )
-})
 
 /** Tooltip of a value an imported take does not know for sure (undefined = known). */
 function fieldTitle(take: Take, f: ImportedField): string | undefined {

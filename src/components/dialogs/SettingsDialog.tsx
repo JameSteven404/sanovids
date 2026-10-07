@@ -121,13 +121,13 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 0,
     title: 'Prompt',
-    desc: 'Prompt được gửi đúng như bạn viết. Ảnh và video tham chiếu được gọi bằng số: @image_1, @video_1…',
+    desc: 'Prompt được gửi đúng như bạn viết. Ảnh tham chiếu được gọi bằng số: @image_1, @image_2…',
     badge: <span className="badge" title="Lưu trong dự án đang mở, không phải cài đặt của máy">dự án này</span>,
     rows: [
       {
         id: 'autoRenumber',
-        label: 'Tự đánh lại số @image/@video khi đổi tham chiếu',
-        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh/video (hoàn tác được). Tắt nếu muốn tự quản lý số.',
+        label: 'Tự đánh lại số @image khi đổi tham chiếu',
+        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh (hoàn tác được). Ảnh bị bỏ luôn để lại chữ đỏ @image_?N(tên) chặn Chạy — bật hay tắt đều không mất chữ. Tắt nếu muốn tự quản lý số.',
         keywords: 'token image video đánh số renumber tham chiếu',
         C: AutoRenumberSetting,
       },
@@ -191,7 +191,7 @@ const GROUPS: Group[] = [
       {
         id: 'clickToCut',
         label: 'Bấm vào dây để cắt',
-        hint: `Một cú bấm vào dây tham chiếu, khung hình, @video hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
+        hint: `Một cú bấm vào dây tham chiếu, khung hình hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
         keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire',
         C: ClickToCutSetting,
       },

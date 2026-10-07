@@ -23,7 +23,7 @@ import { useProject } from '../../store/project'
 import { clearableTakes, isParkedTake, remoteVideoReady, setEngineHooks, setEngineLockManager, UNKNOWN_SUBMIT_ERROR, useRuns } from '../../store/runs'
 import type { LockManagerLike } from '../../store/engineLock'
 import { capabilitiesFromModels } from '../capabilities'
-import { NO_VIDEO_REFS_REASON } from '../../core/runGate'
+import { retiredVideoReason } from '../../core/runRules'
 import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
@@ -66,7 +66,7 @@ function fakeProvider(id: 'mock' | 'canvasapp' | 'dev', pollIntervalMs = 0) {
     label: id,
     ...(id === 'dev' ? { minPollIntervalMs: 0 } : {}),
     available: async () => ({ ok: true }),
-    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs, maxRefVideos: id === 'mock' ? 10 : 0 }),
+    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs }),
     submit: async (req) => {
       submitted.push(req)
       const remoteId = 'r_' + req.key
@@ -300,15 +300,15 @@ describe('runs engine with a provider', () => {
     expect(useRuns.getState().credits).toBe(100)
   })
 
-  it('remote provider: scenes with @video refs are skipped (unsupported)', () => {
+  it('remote provider: scenes with retired @video text are skipped (reference videos were retired)', () => {
     ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
     registerProvider(fakeProvider('canvasapp', 20_000).p)
     useProviderPrefs.setState({ provider: 'canvasapp' })
     useRuns.setState({ takes: [finishedTake('tk')] })
-    useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1), scene('s2', 2, { videoRefs: ['tk'], prompt: '@video_1 again' })] })
+    useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1), scene('s2', 2, { legacyVideoRefs: ['tk'], prompt: '@video_1 again' })] })
     const [c] = useRuns.getState().check(['s2'])
     expect(c.ok).toBe(false)
-    expect(c.reason).toBe(NO_VIDEO_REFS_REASON)
+    expect(c.reason).toBe(retiredVideoReason(['@video_1']))
   })
 
   describe('what the gateway runs now (settingsLimits): a sure refusal skips, a guess only warns', () => {
@@ -376,53 +376,46 @@ describe('runs engine with a provider', () => {
     })
   })
 
-  describe('@video: one gate (the gateway’s capabilities().maxRefVideos), only for videos really sent', () => {
+  describe('retired reference videos: @video text blocks, old links never do, no request carries a video', () => {
     const load = (...scenes: Scene[]) => {
       useRuns.setState({ takes: [finishedTake('tk')] })
       useProject.getState().loadProject({ ...project(), scenes })
     }
 
-    it('development mode: the reason names development mode (never "Cổng canvasapp chưa…" alone); nothing is submitted', async () => {
+    it('development mode: @video text is refused by name and never submitted; the scene that only had the link runs', async () => {
       const f = fakeProvider('dev')
       registerProvider(f.p)
-      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }), scene('s2', 2, { videoRefs: ['tk'], prompt: 'token removed' }))
+      load(scene('s1', 1, { legacyVideoRefs: ['tk'], prompt: '@video_1 again' }), scene('s2', 2, { legacyVideoRefs: ['tk'], prompt: 'token removed' }))
       const checks = useRuns.getState().check(['s1', 's2'])
-      // removing the @video token alone does not unblock: the reference itself is what would be sent
-      expect(checks.map((c) => c.reason)).toEqual([NO_VIDEO_REFS_REASON, NO_VIDEO_REFS_REASON])
-      expect(checks[0].reason).not.toMatch(/^Cổng canvasapp chưa/)
+      expect(checks.map((c) => c.reason)).toEqual([retiredVideoReason(['@video_1']), null])
       const r = useRuns.getState().enqueue(['s1', 's2'])
-      expect(r).toMatchObject({ queued: 0, skipped: [{ sceneId: 's1', reason: NO_VIDEO_REFS_REASON }, { sceneId: 's2', reason: NO_VIDEO_REFS_REASON }] })
+      expect(r).toMatchObject({ queued: 1, skipped: [{ sceneId: 's1', reason: retiredVideoReason(['@video_1']) }] })
+      expect(useRuns.getState().takes.find((t) => t.sceneId === 's2')?.videoRefsSnapshot).toEqual([])
       await vi.advanceTimersByTimeAsync(1000)
-      expect(f.submitted).toEqual([])
+      expect(f.submitted.map((q) => q.sceneId)).toEqual(['s2'])
+      expect(f.submitted[0]).not.toHaveProperty('videos')
     })
 
-    it('a gateway that takes videos (cap from capabilities) lets the same scene through', () => {
+    it('H3 t2v / transform with old links and no @video token run, and send no video', async () => {
       const f = fakeProvider('dev')
-      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0, maxRefVideos: 1 }) })
-      load(scene('s1', 1, { videoRefs: ['tk'], prompt: '@video_1 again' }))
-      expect(useRuns.getState().check(['s1'])[0]).toMatchObject({ ok: true, reason: null })
-    })
-
-    it('H3 t2v / transform with leftover references and no @video token run, and send no video', async () => {
-      const f = fakeProvider('dev')
-      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0, maxRefVideos: 0 }) })
+      registerProvider({ ...f.p, capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0 }) })
       load(
-        scene('s1', 1, { videoRefs: ['tk'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+        scene('s1', 1, { legacyVideoRefs: ['tk'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
         scene('s2', 2, {
-          videoRefs: ['tk'],
+          legacyVideoRefs: ['tk'],
           settings: { model: 'minimax_h3', mode: 'transform', duration: 5, resolution: '768p', ratio: '16:9' },
           firstFrame: 'a',
           lastFrame: 'a',
         }),
-        // a leftover reference to a deleted take is not sent either: pinned as runnable
-        scene('s3', 3, { videoRefs: ['deleted'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
+        // a link to a deleted take does not matter either: pinned as runnable
+        scene('s3', 3, { legacyVideoRefs: ['deleted'], settings: { model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '768p', ratio: '16:9' } }),
       )
       expect(useRuns.getState().check(['s1', 's2', 's3']).map((c) => c.reason)).toEqual([null, null, null])
       const r = useRuns.getState().enqueue(['s1', 's2', 's3'])
       expect(r.queued).toBe(3)
       await vi.advanceTimersByTimeAsync(1000)
       expect(f.submitted).toHaveLength(3)
-      for (const req of f.submitted) expect(req.videos).toEqual([])
+      for (const req of f.submitted) expect(req).not.toHaveProperty('videos')
     })
   })
 

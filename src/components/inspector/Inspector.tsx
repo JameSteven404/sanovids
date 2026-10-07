@@ -2,11 +2,9 @@
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
 // Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
-import { Bug, Cloud, CornerDownRight, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
+import { Bug, Cloud, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
-import { createSceneFromTake, focusNodes, newScene } from '../../actions'
-import { sceneCode } from '../../core/compile'
-import { MODELS, modeLabel, usesVideoRefs } from '../../core/models'
+import { newScene } from '../../actions'
 import { useCreditKind } from '../../store/credits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
@@ -77,25 +75,10 @@ function MultiAssetSummary({ assetIds }: { assetIds: string[] }) {
   )
 }
 
-/** Take (video) nodes selected on the canvas: what they are and how to continue from them. */
+/** Take (video) nodes selected on the canvas: what they are and what can be done with them. */
 function TakeSummary({ takeIds }: { takeIds: string[] }) {
   const infos = useTakeInfos(takeIds)
-  const usedBy = useProject(
-    useShallow((s) =>
-      s.project.scenes
-        .filter((sc) => sc.videoRefs.some((t) => takeIds.includes(t)))
-        .sort((a, b) => a.order - b.order)
-        .map((sc) => sc.id + '' + sc.order),
-    ),
-  )
   const single = infos.length === 1 ? infos[0] : null
-  // The continuing scene copies the source scene's settings: a mode without reference videos cannot use @video_1.
-  // Primitive selection: '' when it accepts videos (or the scene is gone), else why not.
-  const noVideo = useProject((s) => {
-    const sc = single?.sceneId ? s.project.scenes.find((x) => x.id === single.sceneId) : undefined
-    if (!sc || usesVideoRefs(sc.settings)) return ''
-    return `${MODELS[sc.settings.model]?.name ?? sc.settings.model} ở chế độ “${modeLabel(sc.settings.mode, sc.settings.model)}” của ${sceneCode(sc.order)} không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” rồi thử lại`
-  })
   return (
     <div className="in-empty in-take-sum">
       {single?.posterId ? (
@@ -114,48 +97,14 @@ function TakeSummary({ takeIds }: { takeIds: string[] }) {
           {single.status === 'processing' ? ` · ${single.progress}%` : ''}
         </p>
       )}
-      {usedBy.length > 0 && (
-        <div className="in-chip-wrap">
-          <span className="faint">Dùng làm @video ở</span>
-          {usedBy.map((k) => {
-            const [id, order] = k.split('')
-            return (
-              <button
-                type="button"
-                key={id}
-                className="in-code-chip mono"
-                onClick={() => {
-                  useUI.getState().select([id])
-                  focusNodes([id])
-                }}
-              >
-                {sceneCode(Number(order))}
-              </button>
-            )
-          })}
-        </div>
-      )}
       {single && (
         <div className="in-empty-actions">
           <button type="button" className="btn" onClick={() => useUI.getState().openDialog({ kind: 'take', takeId: single.id })}>
             <Eye size={14} /> Xem
           </button>
-          {single.status === 'completed' && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => createSceneFromTake(single.id)}
-              disabled={!!noVideo}
-              title={noVideo || 'Cảnh mới bên dưới cảnh gốc, dùng video này làm @video_1, giữ ảnh tham chiếu và cấu hình'}
-            >
-              <CornerDownRight size={14} /> Tạo cảnh tiếp nối
-            </button>
-          )}
         </div>
       )}
-      <p className="muted">
-        Kéo dây từ video sang một cảnh để dùng làm <span className="mono">@video_N</span>, hoặc chọn video + cảnh rồi bấm <span className="kbd">C</span>.
-      </p>
+      <p className="muted">Kéo video vào một Thư mục để lưu file, hoặc thả ra chỗ trống trên canvas để tạo cảnh tiếp theo từ video đó.</p>
     </div>
   )
 }
@@ -206,9 +155,9 @@ function EmptyInspector() {
             Chọn nhiều nhân vật + nhiều cảnh rồi bấm <span className="kbd">C</span> — nối tất cả một lần.
           </li>
           <li>
-            Gõ <span className="kbd">@</span> trong prompt để chèn <span className="mono">@image_1</span>, <span className="mono">@video_1</span>… hoặc nối & chèn từ thư viện.
+            Gõ <span className="kbd">@</span> trong prompt để chèn <span className="mono">@image_1</span>… hoặc nối & chèn từ thư viện.
           </li>
-          <li>Kéo dây từ một video (take) sang cảnh khác để dùng làm video tham chiếu.</li>
+          <li>Thả một video (take) ra chỗ trống trên canvas để tạo cảnh tiếp theo từ video đó.</li>
         </ul>
       </div>
 

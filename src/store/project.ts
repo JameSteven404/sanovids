@@ -1,16 +1,20 @@
 // Undoable project store (zustand + zundo).
-// Everything the user authors lives here: assets, presets, scenes (prompt, image refs, video refs), positions.
+// Everything the user authors lives here: assets, presets, scenes (prompt, image refs), positions.
 // Runs/takes live in ./runs.ts and UI-only state in ./ui.ts (not undoable).
 //
-// Whenever a scene's image refs / video refs change (or the images of an asset change), the @image_N / @video_N
-// tokens in the affected prompts are renumbered in the same undo step (project.settings.autoRenumber).
+// Whenever a scene's image refs change (or the images of an asset change), the @image_N tokens in the affected
+// prompts are renumbered in the same undo step (project.settings.autoRenumber) and the token of a removed picture
+// becomes a red placeholder "@image_?N(label)" — no prompt text is ever deleted (withMedia, core/placeholders). Filling
+// a placeholder is always an explicit click (fillPlaceholder…). Reference videos were retired (0.6.0): no action links
+// a take to a scene any more, Scene.videoRefs stays [] and @video text is never rewritten.
 import { temporal } from 'zundo'
 import { create } from 'zustand'
-import { assetByTag, extractMentions, HAS_TOKEN_RE, imageFallbackNames, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { assetByTag, extractMentions, HAS_TOKEN_RE, imageSlotsFor, mediaKeys, remapTokens, uniqueTag } from '../core/compile'
+import { groupKeyOf, imagePlaceholders, labelFitsSlot, planFill, planReplace, removalLabels, type FillOptions, type FillRefusal, type ReplaceRefusal } from '../core/placeholders'
 import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
-import { MODELS, normalizeSettings, usesVideoRefs } from '../core/models'
+import { MODELS, normalizeSettings } from '../core/models'
 import { normalizeAssetName, normalizeFolderName, normalizePresetName } from '../core/names'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
@@ -343,32 +347,32 @@ export function refImageCount(project: Project, assetIds: string[]): number {
   return assetIds.reduce((t, id) => t + Math.max(1, project.assets.find((a) => a.id === id)?.imageIds.length ?? 0), 0)
 }
 
-/** Text used in a prompt when the video a @video_N token pointed to is removed. */
-export type VideoLabel = (takeId: string) => string
-
 /**
- * Return `scene` with new media lists; renumbers its prompt tokens when enabled.
- * `assetsBefore` resolves names of removed images, `assetsAfter` numbers the new list.
+ * Return `scene` with a new image refs list (every removal / reorder of reference pictures goes through here). The
+ * prompt never loses text: the token of a removed picture becomes a red placeholder "@image_?N(label)" that blocks the
+ * run until the user fills it (core/placeholders); the other @image_N tokens are renumbered so each keeps its picture —
+ * with automatic renumbering off (Settings) they keep their numbers as written and only the removed picture's token
+ * turns red. @video text is kept as written. `project.assets` labels removed pictures, `assetsAfter` numbers the new list.
  */
-function withMedia(
-  project: Project,
-  scene: Scene,
-  next: { refs?: string[]; videoRefs?: string[] },
-  assetsAfter: Asset[] = project.assets,
-  videoLabel: VideoLabel = () => 'video',
-): Scene {
+function withMedia(project: Project, scene: Scene, next: { refs?: string[] }, assetsAfter: Asset[] = project.assets): Scene {
   const refs = next.refs ?? scene.refs
-  const videoRefs = next.videoRefs ?? scene.videoRefs
-  if (refs === scene.refs && videoRefs === scene.videoRefs && assetsAfter === project.assets) return scene
+  if (refs === scene.refs && assetsAfter === project.assets) return scene
   let prompt = scene.prompt
-  if (project.settings.autoRenumber && HAS_TOKEN_RE.test(prompt)) {
-    const before = mediaKeys(project.assets, scene.refs, scene.videoRefs)
-    const after = mediaKeys(assetsAfter, refs, videoRefs)
-    const nameOf = imageFallbackNames(project.assets)
-    prompt = remapTokens(prompt, before, after, (kind, key) => (kind === 'image' ? nameOf(key.slice(0, key.indexOf(':'))) : videoLabel(key))).text
+  if (HAS_TOKEN_RE.test(prompt)) {
+    const before = mediaKeys(project.assets, scene.refs)
+    const after = mediaKeys(assetsAfter, refs)
+    const placeholder = removalLabels(project.assets, { beforeKeys: before.images, refsAfter: refs, assetsAfter })
+    prompt = remapTokens(prompt, before, after, () => '', { keepNumbers: !project.settings.autoRenumber, placeholder }).text
   }
-  return { ...scene, refs, videoRefs, prompt }
+  return { ...scene, refs, prompt }
 }
+
+/** The project's renumbering switch and the scene's image limit: what every fill plan needs. */
+const fillOpts = (p: Project, s: Scene, place?: FillOptions['place']): FillOptions => ({
+  renumber: p.settings.autoRenumber,
+  maxImages: MODELS[s.settings.model].maxRefImages,
+  ...(place ? { place } : {}),
+})
 
 /** The video settings of a preset (without id / name). */
 export function presetSettings(p: Preset): VideoSettings {
@@ -416,12 +420,19 @@ export interface DeleteItems {
   sceneIds?: string[]
   hideAssetIds?: string[]
   refs?: { sceneId: string; assetId: string }[]
-  videoRefs?: { sceneId: string; takeId: string }[]
   frames?: { sceneId: string; which: 'first' | 'last' }[]
   /** Folder nodes to remove (the files already saved in the folder stay on disk). */
   folderIds?: string[]
   /** Wires into folder nodes to cut ('save': take -> folder, 'autosave': scene -> folder). */
   folderLinks?: { folderId: string; kind: FolderLinkKind; from: string }[]
+}
+
+export type FillResult = { ok: true; token: string; filled: number; left: number } | { ok: false; why: FillRefusal; token?: string }
+
+export interface FillManyResult {
+  /** Scenes filled (in the order given). */
+  filled: string[]
+  refused: { sceneId: string; why: FillRefusal; token?: string }[]
 }
 
 /** A new folder node (addFolder): the id may be given (its browser folder handle is stored under it first). */
@@ -454,23 +465,30 @@ export interface ProjectState {
   // scenes
   /** Without a position the card goes next to where the user works (`opts.hint`, see newScenePosition). */
   addScene: (partial?: Partial<Scene>, opts?: { afterId?: string; position?: XY; hint?: PlaceHint }) => string
-  updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs'>>) => void
+  updateScene: (id: string, patch: Partial<Omit<Scene, 'id' | 'settings' | 'refs' | 'videoRefs' | 'legacyVideoRefs'>>) => void
   /** Prompt edits are coalesced in the undo history; legacy @Tag mentions auto-link their asset. Returns newly linked asset ids. */
   setScenePrompt: (id: string, prompt: string) => string[]
+  /**
+   * Replace the prompts of several scenes as given, in ONE undo step (never merged with typing; no @Tag auto-link):
+   * the explicit quick fixes of retired @video text (src/videoRetired.ts) and of red placeholders ("Đổi thành chữ",
+   * "Xoá chữ đỏ", src/placeholderActions.ts). Unknown ids / unchanged prompts are skipped (no step).
+   */
+  setPrompts: (byScene: Record<string, string>) => void
   /**
    * A patch with `model` also drops a newer build's model marker (Scene.foreignModel / foreignSettings); any patch drops
    * a config marker (a newer build's values for a known model: foreignSettings alone).
    */
   updateSettings: (sceneIds: string[], patch: Partial<VideoSettings>) => void
-  /** Restore prompt, refs, video refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
-  restoreScene: (id: string, data: { prompt: string; refs: string[]; videoRefs?: string[]; settings: VideoSettings }, liveTakeIds?: Set<string>) => void
+  /** Restore prompt, refs and settings (e.g. from a take) in one undo step. Dangling ids are dropped. */
+  restoreScene: (id: string, data: { prompt: string; refs: string[]; settings: VideoSettings }) => void
   removeScenes: (ids: string[]) => void
   duplicateScenes: (ids: string[]) => string[]
   /**
-   * New scene right after `fromId` (placed below it), inheriting refs, video refs and settings (with a newer build's
-   * model marker), with an empty prompt.
+   * New scene right after `fromId` (placed below it), inheriting refs, settings (with a newer build's model marker),
+   * preset and frames, with an empty prompt. `overrides` replace the refs / settings / preset taken from `fromId`
+   * (actions.createSceneFromVideo: the ones a take was made with); unknown asset ids in `refs` are dropped.
    */
-  createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'prompt' | 'videoRefs' | 'title'>>) => string
+  createNextScene: (fromId: string, position?: XY, overrides?: Partial<Pick<Scene, 'refs' | 'settings' | 'presetId' | 'title'>>) => string
   /**
    * Move a scene to place `toOrder` (1-based, clamped) of the scene order; every scene code renumbers. Every call is an
    * undo step (even one that changes nothing: do not call it for a no-op). `coalesce`: moves made with the same key
@@ -486,15 +504,25 @@ export interface ProjectState {
   moveRef: (sceneId: string, fromIndex: number, toIndex: number) => void
   moveRefToScene: (assetId: string, fromSceneId: string, toSceneId: string) => void
 
-  // video references (takes used as @video_N)
-  /** `exclude(sceneId, takeId)` skips pairs (e.g. a take of the scene itself). */
-  addVideoRefs: (sceneIds: string[], takeIds: string[], exclude?: (sceneId: string, takeId: string) => boolean) => AddRefsResult
-  removeVideoRef: (sceneId: string, takeId: string, label?: string) => void
-  moveVideoRef: (sceneId: string, fromIndex: number, toIndex: number) => void
-  /** Move a video reference from one scene to another in one undo step (refused when the target is full). Returns false when refused. */
-  moveVideoRefToScene: (takeId: string, fromSceneId: string, toSceneId: string, label?: string) => boolean
-  /** A take was deleted: drop it from every scene (tokens become `labels[takeId]`). */
-  removeTakesEverywhere: (takeIds: string[], labels: Record<string, string>) => void
+  // red placeholders "@image_?N(label)" (core/placeholders) — always an explicit click, never automatic. Each call that
+  // changes something is ONE undo step; a refused one changes nothing and adds no step.
+  /**
+   * Fill one group of a scene's prompt (`group` = a group key of placeholderGroups, or the text of one of its members,
+   * e.g. "@image_?2(Lumi)") with a character, linking it at the removed one's place when needed (planFill).
+   */
+  fillPlaceholder: (sceneId: string, group: string, assetId: string, opts?: { place?: FillOptions['place'] }) => FillResult
+  /** The same label (base, e.g. "Lumi") filled in several scenes at once: one undo step for all that could be filled. */
+  fillPlaceholders: (sceneIds: string[], base: string, assetId: string) => FillManyResult
+  /**
+   * A picture added to a character: in every scene linking it, placeholders "(Tên · ảnh k)" of that character become
+   * the token of `imageId`. Returns the scenes changed.
+   */
+  fillPictureSlot: (assetId: string, k: number, imageId: string) => string[]
+  /** Swap a linked character for another at the same place (planReplace: same picture count = prompt unchanged). */
+  replaceRef: (sceneId: string, oldAssetId: string, newAssetId: string) => { ok: true } | { ok: false; why: ReplaceRefusal }
+
+  /** Takes were deleted: folder nodes forget them, in the project and its whole undo history (not an undo step). */
+  removeTakesEverywhere: (takeIds: string[]) => void
 
   // folder nodes
   /** Add a folder node (with its first wires, in the same undo step). Returns its id. */
@@ -510,8 +538,8 @@ export interface ProjectState {
   unlinkFolder: (folderId: string, kind: FolderLinkKind, fromId: string) => void
   removeFolders: (ids: string[]) => void
 
-  /** One undo step: delete scenes, hide assets from canvas, cut image / video / frame links. */
-  deleteItems: (items: DeleteItems, videoLabel?: VideoLabel) => void
+  /** One undo step: delete scenes, hide assets from canvas, cut image / frame / folder links. */
+  deleteItems: (items: DeleteItems) => void
 
   // layout
   setPositions: (positions: Record<string, XY>) => void
@@ -576,7 +604,8 @@ export const useProject = create<ProjectState>()(
           title: partial.title ?? '',
           prompt: partial.prompt ?? '',
           refs: partial.refs ?? [],
-          videoRefs: partial.videoRefs ?? [],
+          // reference videos were retired (0.6.0): never a take id here, whatever `partial` holds
+          videoRefs: [],
           presetId: partial.presetId !== undefined ? partial.presetId : partial.settings ? null : draftPreset?.id ?? null,
           settings: normalizeSettings(partial.settings ?? (draftPreset ? { ...draftPreset } : {})),
           firstFrame: partial.firstFrame ?? null,
@@ -736,6 +765,12 @@ export const useProject = create<ProjectState>()(
           mapScenes([id], (s) => ({ ...s, prompt, refs }))
           return linked
         },
+        setPrompts: (byScene) => {
+          const next = new Map(Object.entries(byScene).filter(([, v]) => typeof v === 'string'))
+          const differs = (s: Scene) => next.has(s.id) && next.get(s.id) !== s.prompt
+          if (!get().project.scenes.some(differs)) return
+          mutate((p) => ({ ...p, scenes: p.scenes.map((s) => (differs(s) ? { ...s, prompt: next.get(s.id)! } : s)) }))
+        },
         updateSettings: (sceneIds, patch) =>
           mapScenes(sceneIds, (s) => {
             const settings = normalizeSettings({ ...s.settings, ...patch })
@@ -746,7 +781,7 @@ export const useProject = create<ProjectState>()(
             const next = patch.model !== undefined || isConfigMark(s) ? withoutForeign(s) : s
             return same && next === s ? s : { ...next, presetId: null, settings: same ? s.settings : settings }
           }),
-        restoreScene: (id, { prompt, refs, videoRefs, settings }, liveTakeIds) =>
+        restoreScene: (id, { prompt, refs, settings }) =>
           mutate((p) => {
             const alive = new Set(p.assets.map((a) => a.id))
             // Settings of a newer build's model (a take made there, restored here): the scene takes its marker and
@@ -765,7 +800,6 @@ export const useProject = create<ProjectState>()(
                   ...marked,
                   prompt,
                   refs: refs.filter((r) => alive.has(r)),
-                  videoRefs: (videoRefs ?? s.videoRefs).filter((t) => !liveTakeIds || liveTakeIds.has(t)),
                   presetId: same && marked.foreignModel === s.foreignModel ? s.presetId : null,
                   settings: nextSettings,
                 }
@@ -786,8 +820,10 @@ export const useProject = create<ProjectState>()(
           const copies: Scene[] = sources.map((s, i) => {
             const id = newId('scn')
             created.push(id)
+            // The archived video links of the original stay with it (a copy never pretends it used those takes).
+            const { legacyVideoRefs: _legacy, ...src } = s
             return {
-              ...s,
+              ...src,
               id,
               order: s.order + 0.5 + i * 0.001,
               title: s.title ? `${s.title} (bản sao)` : '',
@@ -804,13 +840,13 @@ export const useProject = create<ProjectState>()(
           // Below the source row: a resized (taller) card or a tall take in its row puts the new card further down.
           // Asset nodes, other scenes' take rows and videos placed by hand right there are stepped over (not pushed).
           const pos = position ?? slideDown({ x: from.position.x, y: from.position.y + rowHeightOf(from) + LAYOUT.gapY }, otherBoxes(p))
-          // A newer build's model marker goes along with the settings (nextScene / createSceneFromTake must not turn
-          // a blocked scene into a runnable Seedance 2.5 one).
+          // A newer build's model marker goes along with the source scene (nextScene / createSceneFromVideo must not
+          // turn a blocked scene into a runnable Seedance 2.5 one).
+          const alive = new Set(p.assets.map((a) => a.id))
           const next = buildScene(
             p,
             {
               refs: from.refs,
-              videoRefs: from.videoRefs,
               settings: from.settings,
               presetId: from.presetId,
               firstFrame: from.firstFrame,
@@ -818,6 +854,7 @@ export const useProject = create<ProjectState>()(
               foreignModel: from.foreignModel,
               foreignSettings: from.foreignSettings,
               ...overrides,
+              ...(overrides.refs ? { refs: overrides.refs.filter((id) => alive.has(id)) } : {}),
             },
             pos,
             from.order + 0.5,
@@ -907,83 +944,76 @@ export const useProject = create<ProjectState>()(
           }))
         },
 
-        // ---------------- video references ----------------
-        addVideoRefs: (sceneIds, takeIds, exclude) => {
+        // ---------------- red placeholders (explicit fills) ----------------
+        fillPlaceholder: (sceneId, group, assetId, opts = {}) => {
           const p = get().project
-          const result: AddRefsResult = { added: 0, skipped: 0, scenes: 0 }
-          const ids = new Set(sceneIds)
-          const scenes = p.scenes.map((s) => {
-            if (!ids.has(s.id)) return s
-            const limit = usesVideoRefs(s.settings) ? MODELS[s.settings.model].maxRefVideos : 0
-            let videoRefs = s.videoRefs
-            for (const t of takeIds) {
-              if (exclude?.(s.id, t)) continue
-              if (videoRefs.includes(t)) continue
-              if (videoRefs.length >= limit) {
-                result.skipped++
-                continue
-              }
-              videoRefs = [...videoRefs, t]
-              result.added++
+          const scene = p.scenes.find((s) => s.id === sceneId)
+          if (!scene) return { ok: false, why: 'gone' }
+          const key = /^[LTM]:/.test(group) ? group : groupKeyOf(group)
+          const plan = planFill(scene, p.assets, key, assetId, fillOpts(p, scene, opts.place))
+          if (!plan.ok) return plan
+          mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (s.id === sceneId ? { ...s, prompt: plan.prompt, refs: plan.refs } : s)) }))
+          return { ok: true, token: plan.token, filled: plan.filled, left: plan.left }
+        },
+        fillPlaceholders: (sceneIds, base, assetId) => {
+          const p = get().project
+          const result: FillManyResult = { filled: [], refused: [] }
+          const next = new Map<string, { prompt: string; refs: string[] }>()
+          for (const id of new Set(sceneIds)) {
+            const scene = p.scenes.find((s) => s.id === id)
+            if (!scene) continue
+            const plan = planFill(scene, p.assets, 'L:' + base, assetId, fillOpts(p, scene))
+            if (!plan.ok) {
+              result.refused.push({ sceneId: id, why: plan.why, ...(plan.token ? { token: plan.token } : {}) })
+              continue
             }
-            if (videoRefs === s.videoRefs) return s
-            result.scenes++
-            return { ...s, videoRefs }
-          })
-          if (result.added) mutate((pp) => ({ ...pp, scenes }))
+            next.set(id, { prompt: plan.prompt, refs: plan.refs })
+            result.filled.push(id)
+          }
+          if (next.size) mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (next.has(s.id) ? { ...s, ...next.get(s.id)! } : s)) }))
           return result
         },
-        removeVideoRef: (sceneId, takeId, label = 'video') =>
-          mapScenes([sceneId], (s, p) => withMedia(p, s, { videoRefs: s.videoRefs.filter((t) => t !== takeId) }, p.assets, () => label)),
-        moveVideoRef: (sceneId, fromIndex, toIndex) =>
-          mapScenes([sceneId], (s, p) => {
-            const videoRefs = [...s.videoRefs]
-            const [t] = videoRefs.splice(fromIndex, 1)
-            if (t === undefined) return s
-            videoRefs.splice(Math.max(0, Math.min(videoRefs.length, toIndex)), 0, t)
-            return withMedia(p, s, { videoRefs })
-          }),
-        moveVideoRefToScene: (takeId, fromSceneId, toSceneId, label = 'video') => {
-          if (fromSceneId === toSceneId) return true
+        fillPictureSlot: (assetId, k, imageId) => {
           const p = get().project
-          const target = p.scenes.find((s) => s.id === toSceneId)
-          if (!target) return false
-          const already = target.videoRefs.includes(takeId)
-          const limit = usesVideoRefs(target.settings) ? MODELS[target.settings.model].maxRefVideos : 0
-          if (!already && target.videoRefs.length >= limit) return false
-          mutate((pp) => ({
-            ...pp,
-            scenes: pp.scenes.map((s) => {
-              if (s.id === fromSceneId) return withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => t !== takeId) }, pp.assets, () => label)
-              if (s.id === toSceneId && !already) return { ...s, videoRefs: [...s.videoRefs, takeId] }
-              return s
-            }),
-          }))
-          return true
+          const asset = p.assets.find((a) => a.id === assetId)
+          if (!asset || !asset.imageIds.includes(imageId) || k < 1) return []
+          const next = new Map<string, string>()
+          for (const s of p.scenes) {
+            if (!s.refs.includes(assetId)) continue
+            const slot = imageSlotsFor(p.assets, s.refs).find((x) => x.assetId === assetId && x.imageId === imageId)
+            if (!slot) continue
+            // only this character's own "(Tên · ảnh k)" (name / tag, per labelFitsSlot): never another one's by chance
+            const own = imagePlaceholders(s.prompt).filter((ph) => ph.label && ph.imageNo === k && labelFitsSlot(ph.label, asset, k - 1, p.assets))
+            if (!own.length) continue
+            let prompt = s.prompt
+            for (const ph of [...own].reverse()) prompt = prompt.slice(0, ph.start) + `@image_${slot.n}` + prompt.slice(ph.end)
+            next.set(s.id, prompt)
+          }
+          if (next.size) mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (next.has(s.id) ? { ...s, prompt: next.get(s.id)! } : s)) }))
+          return [...next.keys()]
         },
-        removeTakesEverywhere: (takeIds, labels) => {
+        replaceRef: (sceneId, oldAssetId, newAssetId) => {
+          const p = get().project
+          const scene = p.scenes.find((s) => s.id === sceneId)
+          if (!scene) return { ok: false, why: 'not-linked' }
+          const plan = planReplace(scene, p.assets, oldAssetId, newAssetId, fillOpts(p, scene))
+          if (!plan.ok) return plan
+          mutate((pp) => ({ ...pp, scenes: pp.scenes.map((s) => (s.id === sceneId ? { ...s, prompt: plan.prompt, refs: plan.refs } : s)) }))
+          return { ok: true }
+        },
+
+        // ---------------- deleted takes ----------------
+        removeTakesEverywhere: (takeIds) => {
           const dead = new Set(takeIds)
           if (!dead.size) return
-          const uses = (s: Scene) => s.videoRefs.some((t) => dead.has(t))
-          const clean = (pp: Project): Project => {
-            let out = pp
-            if (pp.scenes.some(uses)) {
-              out = {
-                ...out,
-                scenes: pp.scenes.map((s) =>
-                  uses(s) ? withMedia(pp, s, { videoRefs: s.videoRefs.filter((t) => !dead.has(t)) }, pp.assets, (id) => labels[id] ?? 'video') : s,
-                ),
-              }
-            }
-            // Folder nodes forget the deleted videos too ("N video đã nối" counts only what is there).
+          // Folder nodes forget the deleted videos ("N video đã nối" counts only what is there). Deleting a take is not
+          // undoable, so this must not become an undo step either, and no undo / redo may bring the links back: every
+          // snapshot in the history is cleaned the same way, not only the current project. (Prompts are never touched:
+          // reference videos were retired, @video text stays as written.)
+          applyEverywhere((pp) => {
             const folders = dropFolderLinks(pp.folders, { takes: dead })
-            if (folders !== pp.folders) out = { ...out, folders }
-            return out
-          }
-          // Deleting a take is not undoable, so dropping its references must not become an undo step either, and no
-          // undo/redo may bring them back (a @video pointing at nothing blocks the scene): every snapshot in the
-          // history is cleaned the same way, not only the current project.
-          applyEverywhere(clean)
+            return folders === pp.folders ? pp : { ...pp, folders }
+          })
         },
 
         // ---------------- folder nodes ----------------
@@ -1031,7 +1061,7 @@ export const useProject = create<ProjectState>()(
           mutate((p) => ({ ...p, folders: (p.folders ?? []).filter((f) => !dead.has(f.id)) }))
         },
 
-        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], videoRefs = [], frames = [], folderIds = [], folderLinks = [] }, videoLabel) =>
+        deleteItems: ({ sceneIds = [], hideAssetIds = [], refs = [], frames = [], folderIds = [], folderLinks = [] }) =>
           mutate((p) => {
             const dead = new Set(sceneIds)
             const hide = new Set(hideAssetIds)
@@ -1040,27 +1070,11 @@ export const useProject = create<ProjectState>()(
               if (!cutRefs.has(r.sceneId)) cutRefs.set(r.sceneId, new Set())
               cutRefs.get(r.sceneId)!.add(r.assetId)
             }
-            const cutVideos = new Map<string, Set<string>>()
-            for (const r of videoRefs) {
-              if (!cutVideos.has(r.sceneId)) cutVideos.set(r.sceneId, new Set())
-              cutVideos.get(r.sceneId)!.add(r.takeId)
-            }
             const scenes = p.scenes
               .filter((s) => !dead.has(s.id))
               .map((s) => {
                 let next = s
-                if (cutRefs.has(s.id) || cutVideos.has(s.id)) {
-                  next = withMedia(
-                    p,
-                    s,
-                    {
-                      refs: cutRefs.has(s.id) ? s.refs.filter((r) => !cutRefs.get(s.id)!.has(r)) : s.refs,
-                      videoRefs: cutVideos.has(s.id) ? s.videoRefs.filter((t) => !cutVideos.get(s.id)!.has(t)) : s.videoRefs,
-                    },
-                    p.assets,
-                    videoLabel,
-                  )
-                }
+                if (cutRefs.has(s.id)) next = withMedia(p, s, { refs: s.refs.filter((r) => !cutRefs.get(s.id)!.has(r)) })
                 for (const f of frames) {
                   if (f.sceneId !== s.id) continue
                   next = f.which === 'first' ? { ...next, firstFrame: null } : { ...next, lastFrame: null }

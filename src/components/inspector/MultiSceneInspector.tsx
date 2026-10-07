@@ -1,10 +1,10 @@
-// Inspector for several selected scenes: batch settings, common reference images and videos, run / duplicate / delete.
-import { ClipboardCopy, CopyPlus, Film, Info, Play, Plus, Trash, X } from 'lucide-react'
+// Inspector for several selected scenes: batch settings, common reference images, run / duplicate / delete (and the
+// explicit removal of retired @video text, src/videoRetired.ts).
+import { CircleAlert, ClipboardCopy, CopyPlus, Play, Plus, Trash, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { focusNodes, linkAssets, linkTakes, requestRun, takeLabel } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
-import { usesVideoRefs } from '../../core/models'
+import { focusNodes, linkAssets, requestRun } from '../../actions'
+import { compileScene, hasRetiredVideoToken, sceneCode } from '../../core/compile'
 import type { Asset, Scene } from '../../core/types'
 import { formatCredits } from '../../lib/credits'
 import { activeProviderId, providerLimits } from '../../providers'
@@ -12,34 +12,26 @@ import { limitsSite } from '../../providers/limits'
 import { useCreditKind } from '../../store/credits'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { MediaImg } from '../common/Media'
-import { appliedPresetId, changedPrompts, costTitle, creditTone, scenesWithStaleTokens, staleTokenNote, totalCost } from '../sidebar/shared'
-import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
+import { appliedPresetId, costTitle, creditTone, totalCost } from '../sidebar/shared'
+import { reportMediaChange } from '../../placeholderActions'
 import { RefThumb, useImagePreview } from './ImagePreview'
 import { flushPromptEditor } from './PromptEditor'
-import { TakePicker } from './TakePicker'
 import { patchFits, patchLabel, SettingsFields } from './SettingsFields'
 import { batchSkipText, patchFitsLimits } from './settingsLimits'
-import { AssetPicker, EMPTY_IDS, fmt, KIND_LABEL, Section } from './shared'
+import { AssetPicker, fmt, KIND_LABEL, Section } from './shared'
+import { removeRetiredTextFromScenes } from '../../videoRetired'
 
 /** Commit any prompt being typed before a batch change renumbers tokens. */
 const flushAll = (ids: string[]) => ids.forEach(flushPromptEditor)
 
 /**
- * Run a batch media removal and report it: prompts renumbered by the store, or — automatic renumbering off —
- * prompts left with @image / @video numbers that now point elsewhere (warning naming the scenes).
+ * Run a batch image removal and report it (core/staleTokens mediaChangeNote): red placeholders left in the scenes'
+ * prompts (they stay blocked until filled), numbers left stale with renumbering off, or prompts renumbered.
  */
-function removeAndReport(run: () => void, done: string, what: '@image' | '@video') {
+function removeAndReport(run: () => void, done: string) {
   const before = useProject.getState().project
   run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  if (stale.length) {
-    toast(`${done}${staleTokenNote(after, stale, what)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-    return
-  }
-  const rewritten = changedPrompts(before.scenes, after.scenes).length
-  toast(`${done}${rewritten ? ` · đánh lại số ${what} trong ${rewritten} prompt` : ''}.`, { action: undoToastAction() })
+  reportMediaChange(before, done, { always: true })
 }
 
 export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
@@ -57,7 +49,7 @@ export function MultiSceneInspector({ sceneIds }: { sceneIds: string[] }) {
       <MultiHeader scenes={sorted} />
       <MultiSettings scenes={sorted} ids={ids} />
       <MultiRefs scenes={sorted} ids={ids} />
-      <MultiVideoRefs scenes={sorted} ids={ids} />
+      <MultiRetired scenes={sorted} />
       <MultiActions scenes={sorted} ids={ids} />
     </div>
   )
@@ -163,7 +155,7 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   const removeFromAll = (a: Asset) => {
     flushAll(ids)
     const pairs = scenes.filter((s) => s.refs.includes(a.id)).map((s) => ({ sceneId: s.id, assetId: a.id }))
-    removeAndReport(() => useProject.getState().removeRefs(pairs), `Đã bỏ ${a.name} khỏi ${pairs.length} cảnh`, '@image')
+    removeAndReport(() => useProject.getState().removeRefs(pairs), `Đã bỏ ${a.name} khỏi ${pairs.length} cảnh`)
   }
 
   return (
@@ -210,85 +202,38 @@ const MultiRefs = memo(function MultiRefs({ scenes, ids }: { scenes: Scene[]; id
   )
 })
 
-const MultiVideoRefs = memo(function MultiVideoRefs({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
-  const [picker, setPicker] = useState(false)
-  const addBtn = useRef<HTMLButtonElement>(null)
-  const counts = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
-    return m
-  }, [scenes])
-  const takeIds = useMemo(() => [...counts.keys()], [counts])
-  const infos = useTakeInfos(takeIds)
-  const n = scenes.length
-  const allIds = useMemo(() => takeIds.filter((id) => counts.get(id) === n), [takeIds, counts, n])
-  const accepting = scenes.filter((s) => usesVideoRefs(s.settings)).length
-
-  const removeFromAll = (take: TakeInfo) => {
-    flushAll(ids)
-    const pairs = scenes.filter((s) => s.videoRefs.includes(take.id)).map((s) => ({ sceneId: s.id, takeId: take.id }))
-    // A deleted take has no "S03·T2" label (takeLabel falls back to "video"): its tokens become plain "video".
-    const label = take.status ? takeLabel(take.id) : 'đã xoá'
-    // One undo step; @video_N tokens of the removed video become "video S03·T2" and the others are renumbered.
-    removeAndReport(
-      () => useProject.getState().deleteItems({ videoRefs: pairs }, () => (take.status ? 'video ' + label : 'video')),
-      `Đã bỏ video ${label} khỏi ${pairs.length} cảnh`,
-      '@video',
-    )
-  }
-
+/**
+ * Retired @video text in the selected scenes (reference videos were retired in 0.6.0): kept as written, it blocks
+ * those scenes. One explicit button removes it from all of them in ONE undo step (src/videoRetired.ts) — the
+ * "Continue from @video_N: " starter older builds wrote first, then every remaining token; nothing else changes.
+ */
+const MultiRetired = memo(function MultiRetired({ scenes }: { scenes: Scene[] }) {
+  const blocked = useMemo(() => scenes.filter((s) => hasRetiredVideoToken(s.prompt)), [scenes])
+  if (!blocked.length) return null
+  const ids = blocked.map((s) => s.id)
+  const codes = blocked.map((s) => sceneCode(s.order))
   return (
-    <Section id="m-vrefs" title="Video tham chiếu chung" meta={<span className="badge">{takeIds.length}</span>}>
-      {takeIds.length === 0 && <div className="in-refs-empty">Các cảnh đang chọn chưa dùng video tham chiếu nào.</div>}
-      <div className="in-refs">
-        {infos.map((t) => {
-          const count = counts.get(t.id) ?? 0
-          return (
-            <div key={t.id} className="in-ref in-vref is-multi">
-              <span className="in-vref-thumb">{t.posterId ? <MediaImg id={t.posterId} className="media-img" /> : <Film size={13} />}</span>
-              <span className="in-ref-name is-static">
-                <span className="in-ref-title">{t.label}</span>
-                <span className="in-ref-tag">{t.status ? STATUS_TEXT[t.status] : 'Take đã bị xoá'}</span>
-              </span>
-              <span className={`in-token is-video ${count === n ? '' : 'is-partial'}`} title={`Có trong ${count}/${n} cảnh`}>
-                {count}/{n} cảnh
-              </span>
-              {count < n && t.status === 'completed' && (
-                <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => linkTakes(ids, [t.id])} title="Dùng cho tất cả cảnh đang chọn">
-                  <Plus size={12} /> Tất cả
-                </button>
-              )}
-              <button type="button" className="in-x" onClick={() => removeFromAll(t)} title="Bỏ khỏi tất cả cảnh đang chọn" aria-label={`Bỏ ${t.label} khỏi tất cả`}>
-                <X size={13} />
-              </button>
-            </div>
-          )
-        })}
-      </div>
-      {accepting < n && (
-        <div className="in-note">
-          <Info size={13} />
-          <span>{n - accepting} cảnh có model/chế độ không nhận video tham chiếu — sẽ được bỏ qua khi thêm.</span>
-        </div>
-      )}
-      {accepting > 0 && (
-        <div className="in-pop-host">
-          <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>
-            <Plus size={13} /> Thêm video vào {n} cảnh
+    <section className="in-section">
+      <div className="in-retired" role="note">
+        <span className="in-retired-text">
+          <CircleAlert size={12} />
+          <span>
+            {blocked.length} cảnh còn chữ @video ({codes.slice(0, 6).join(', ')}
+            {codes.length > 6 ? '…' : ''}): SanoVids đã bỏ video tham chiếu — các cảnh đó chưa chạy được cho tới khi sửa.
+          </span>
+        </span>
+        <span className="in-retired-actions">
+          <button
+            type="button"
+            className="in-hint-btn"
+            onClick={() => removeRetiredTextFromScenes(ids)}
+            title="Chỉ xoá chữ @video (và câu “Continue from @video_N:” bản cũ tự chèn) — chữ khác giữ nguyên, Ctrl+Z để hoàn tác"
+          >
+            Xoá chữ @video ở {blocked.length} cảnh đang chọn
           </button>
-          {picker && (
-            <TakePicker
-              excludeSceneIds={EMPTY_IDS}
-              exclude={allIds}
-              ignoreRef={addBtn}
-              title={`Dùng video cho ${n} cảnh`}
-              onClose={() => setPicker(false)}
-              onPick={(takeId) => linkTakes(ids, [takeId])}
-            />
-          )}
-        </div>
-      )}
-    </Section>
+        </span>
+      </div>
+    </section>
   )
 })
 

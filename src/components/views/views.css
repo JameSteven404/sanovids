@@ -347,10 +347,6 @@
   --vw-row-bg: color-mix(in srgb, var(--ref) 14%, var(--bg));
   box-shadow: inset 0 0 0 1px var(--ref);
 }
-.vw-row.take-over {
-  --vw-row-bg: color-mix(in srgb, var(--video) 14%, var(--bg));
-  box-shadow: inset 0 0 0 1px var(--video);
-}
 /* reorder: a 2px accent line where the dragged row will land */
 .vw-row.drop-above::after,
 .vw-row.drop-below::after {
@@ -448,17 +444,6 @@
   border-color: color-mix(in srgb, var(--ref) 50%, transparent);
   background: color-mix(in srgb, var(--ref) 6%, transparent);
 }
-/* a take (video) is being dragged: rows that can use it as @video light up */
-.vw-row.take-drag:not(.take-over):not(.selected) {
-  --vw-row-bg: color-mix(in srgb, var(--video) 4%, var(--bg));
-}
-.vw-row.take-drag .vw-cell-videos {
-  border-color: color-mix(in srgb, var(--video) 55%, transparent);
-  background: var(--video-soft);
-}
-.vw-row.take-drag .vw-cell-videos .vw-faint-cell {
-  color: var(--video);
-}
 .vw-avatars {
   display: flex;
   align-items: center;
@@ -512,117 +497,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.vw-drop-hint.video {
-  color: var(--video);
-}
-/* reference videos (v1 = @video_1) */
-.vw-cell-videos {
-  display: flex;
-  align-items: center;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  border: 1px dashed transparent;
-}
-.vw-vrefs {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.vw-vref {
-  position: relative;
-  flex: none;
-  display: inline-flex;
-}
-.vw-vref-open {
-  position: relative;
-  display: block;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  overflow: hidden;
-  border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--video) 55%, transparent);
-  background: var(--panel-3);
-  cursor: pointer;
-}
-.vw-vref-open:hover {
-  border-color: var(--video);
-}
-.vw-vref-open:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.vw-vref-open:disabled {
-  cursor: default;
-}
-.vw-vref.pending .vw-vref-open {
-  border-style: dashed;
-  opacity: 0.7;
-}
-.vw-vref.missing .vw-vref-open {
-  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
-}
-.vw-vref-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.vw-vref-ph {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.vw-vref-n {
-  position: absolute;
-  left: 1px;
-  bottom: 1px;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: var(--vw-media-chip);
-  color: color-mix(in srgb, var(--video) 70%, var(--vw-on-media));
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 12px;
-}
-/* Hidden with opacity (not display: none) so Tab can still reach it: it shows on hover and on keyboard focus. */
-.vw-vref-x {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border-radius: 50%;
-  border: 0;
-  background: var(--panel-3);
-  color: var(--text-dim);
-  box-shadow:
-    0 0 0 1px var(--border-strong),
-    var(--shadow-sm);
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s ease-out;
-}
-.vw-vref:hover .vw-vref-x,
-.vw-vref:focus-within .vw-vref-x {
-  opacity: 1;
-  pointer-events: auto;
-}
-/* opaque (it overlaps the thumbnail): a red tint mixed into the button color, not the translucent --danger-soft */
-.vw-vref-x:hover {
-  background: color-mix(in srgb, var(--danger) 22%, var(--panel-3));
-  color: var(--danger-text);
-}
-.vw-vref-x:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
 .vw-faint-cell {
   color: var(--text-faint);
   font-size: 12px;
@@ -647,8 +521,10 @@
   font-size: 11px;
   font-weight: 600;
 }
+/* retired @video text (reference videos were retired): kept as written, never sent — the scene does not run */
 .vw-mention.video {
-  color: var(--video);
+  color: var(--danger-text);
+  text-decoration: line-through var(--danger);
 }
 .vw-cell-settings {
   display: flex;
@@ -1462,7 +1338,6 @@
   .vw-row,
   .vw-handle,
   .vw-cell-input,
-  .vw-vref-x,
   .vw-run,
   .vw-card,
   .vw-card-hover,

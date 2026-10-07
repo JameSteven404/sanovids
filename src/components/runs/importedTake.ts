@@ -70,7 +70,7 @@ export function takeCostInferred(t: Pick<Take, 'imported'>): boolean {
 /** What "Khôi phục prompt này" puts back from a take (restorePlan). */
 export interface RestorePlan {
   /** What restoredFromTake (components/runs/restore.ts) rebuilds the prompt and the references from. */
-  source: Pick<Take, 'rawPromptSnapshot' | 'refsSnapshot' | 'videoRefsSnapshot'> & { imageKeysSnapshot?: readonly string[] }
+  source: Pick<Take, 'rawPromptSnapshot' | 'refsSnapshot'> & { imageKeysSnapshot?: readonly string[] }
   settings: VideoSettings
   /** Settings the scene keeps (an imported take does not know them for sure: unknown, or only inferred). */
   kept: ImportedField[]
@@ -81,18 +81,17 @@ export interface RestorePlan {
 }
 
 /**
- * "Khôi phục prompt này": takes SanoVids made come back as they ran (prompt, references, @video references, settings).
- * An imported take (restoreBlock first) restores its prompt and its known settings; the scene keeps its own value for
- * anything unknown or merely inferred (`kept`) and its @video references (canvasapp sends none, the take knows nothing
- * of them). References and mode go together: when the job sent reference images (usesRefs of the take's settings),
+ * "Khôi phục prompt này": takes SanoVids made come back as they ran (prompt, references, settings). An imported take
+ * (restoreBlock first) restores its prompt and its known settings; the scene keeps its own value for anything unknown
+ * or merely inferred (`kept`). References and mode go together: when the job sent reference images (usesRefs of the take's settings),
  * the ones read from the bridge node are restored WITH the mode they need, even an inferred one (`guessed`) — a kept
  * Text → Video would leave them unsent; when it sent none (MiniMax-H3 Text → Video / Khung đầu → cuối, maybe only
  * guessed) the scene keeps its references (`keepRefs`) — never emptied for a mode it may not even use. Frames are
  * never restored (like any take).
  */
 export function restorePlan(
-  t: Pick<Take, 'settings' | 'imported' | 'rawPromptSnapshot' | 'refsSnapshot' | 'videoRefsSnapshot' | 'imageKeysSnapshot'>,
-  scene: Pick<Scene, 'settings' | 'refs' | 'videoRefs'>,
+  t: Pick<Take, 'settings' | 'imported' | 'rawPromptSnapshot' | 'refsSnapshot' | 'imageKeysSnapshot'>,
+  scene: Pick<Scene, 'settings' | 'refs'>,
 ): RestorePlan {
   if (!t.imported) return { source: t, settings: t.settings, kept: [], guessed: [], keepRefs: false }
   const keepRefs = !usesRefs(t.settings)
@@ -102,8 +101,8 @@ export function restorePlan(
   for (const f of kept) (next as unknown as Record<string, unknown>)[f] = scene.settings[f]
   // the scene's own lists as the "snapshot" of what the take does not know: restored as they are, nothing renumbered
   const source: RestorePlan['source'] = keepRefs
-    ? { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: [...scene.refs], videoRefsSnapshot: [...scene.videoRefs] }
-    : { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: t.refsSnapshot, videoRefsSnapshot: [...scene.videoRefs], ...(t.imageKeysSnapshot ? { imageKeysSnapshot: t.imageKeysSnapshot } : {}) }
+    ? { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: [...scene.refs] }
+    : { rawPromptSnapshot: t.rawPromptSnapshot, refsSnapshot: t.refsSnapshot, ...(t.imageKeysSnapshot ? { imageKeysSnapshot: t.imageKeysSnapshot } : {}) }
   return { source, settings: normalizeSettings(next), kept, guessed, keepRefs }
 }
 

@@ -32,19 +32,20 @@ export function synthProject(spec: SynthSpec, seed = 20261006): { project: Proje
   }
   project.scenes = Array.from({ length: spec.scenes }, (_, n) => {
     const refs = Array.from({ length: 2 + Math.floor(random() * 2) }, (_, i) => id('asset', (n + i) % 12))
-    const videoRefs = (n + 1) % 10 === 0 ? [id('take', n - 1)] : []
-    const prefix = refs.map((_, i) => `@image_${i + 1}`).join(' ') + (videoRefs.length ? ' @video_1 ' : ' ')
+    // Every 10th scene is old data: it used a reference video before they were retired (archived link + @video text).
+    const legacyVideoRefs = (n + 1) % 10 === 0 ? [id('take', n - 1)] : []
+    const prefix = refs.map((_, i) => `@image_${i + 1}`).join(' ') + (legacyVideoRefs.length ? ' @video_1 ' : ' ')
     const length = 2000 + Math.floor(random() * 4001)
     const sentence = 'Ánh nắng xuyên qua rừng, nhân vật bước chậm về phía máy quay. Góc rộng điện ảnh, chuyển động tự nhiên. '
     return { id: id('scene', n), order: n + 1, title: `Cảnh thử ${n + 1}`, prompt: (prefix + sentence.repeat(70)).slice(0, length),
-      refs, videoRefs, presetId: id('preset', n % 2), settings: { ...settings, ...(n % 2 ? { resolution: '1080p', duration: 10 } : {}) }, firstFrame: null, lastFrame: null,
+      refs, videoRefs: [], ...(legacyVideoRefs.length ? { legacyVideoRefs } : {}), presetId: id('preset', n % 2), settings: { ...settings, ...(n % 2 ? { resolution: '1080p', duration: 10 } : {}) }, firstFrame: null, lastFrame: null,
       color: null, position: { x: 0, y: n * 248 }, note: '' }
   })
   const takes: Take[] = Array.from({ length: spec.takes }, (_, n) => {
     const scene = project.scenes[n % spec.scenes]
     return { id: id('take', n), sceneId: scene.id, number: Math.floor(n / spec.scenes) + 1, status: 'completed', progress: 100,
       createdAt: now + n, startedAt: now + n, finishedAt: now + n + 1, promptSnapshot: scene.prompt, rawPromptSnapshot: scene.prompt,
-      refsSnapshot: [...scene.refs], videoRefsSnapshot: [...scene.videoRefs], settings: { ...scene.settings }, cost: 0,
+      refsSnapshot: [...scene.refs], videoRefsSnapshot: [], settings: { ...scene.settings }, cost: 0,
       starred: random() < 0.2, posterId: id('media', n % 12), videoId: null, error: null, position: null,
       provider: 'dev', remoteId: null, charged: false }
   })

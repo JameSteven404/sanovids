@@ -21,8 +21,6 @@ export interface ProviderCapabilities {
   resolutions: string[]
   ratios: string[]
   maxRefImages: number
-  /** 0 = reference videos (@video_N) are not supported by this provider. */
-  maxRefVideos: number
   promptLimit: (mode: Mode) => number
   /** Max jobs this provider should run at the same time. */
   maxConcurrency: number
@@ -107,15 +105,6 @@ export interface JobImage {
   blob?: Blob
 }
 
-/** A reference video (a completed take), in @video_N order. */
-export interface JobVideo {
-  /** 1-based N in @video_N */
-  n: number
-  takeId: string
-  videoId: string | null
-  posterId: string | null
-}
-
 /** H3 transform frame (primary image of the chosen asset). */
 export interface JobFrame {
   assetId: string
@@ -145,12 +134,14 @@ export interface JobRequest {
   duration: number
   resolution: string
   ratio: string
-  /** Compiled prompt, sent as written (with @image_N / @video_N tokens). */
+  /**
+   * Compiled prompt, sent as written (with @image_N tokens). Never with a reference video: they were retired (0.6.0) —
+   * a prompt still holding @video text is refused before anything is sent (canvasapp mapping.validateRequest).
+   */
   prompt: string
   /** The scene prompt as typed (display only). */
   rawPrompt: string
   images: JobImage[]
-  videos: JobVideo[]
   firstFrame: JobFrame | null
   lastFrame: JobFrame | null
   /** Local time the take started processing (the mock uses it for wall-clock progress). */

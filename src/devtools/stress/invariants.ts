@@ -1,17 +1,21 @@
 // Invariants of the stress tester. Each returns Violations (empty = holds). Ids (used in reports):
 //   P1 scene order dense 1..n, unique scene / asset ids        P2 refs: no duplicates, every ref exists
-//   P3 character sync: after a structural change every @image_N still names the SAME picture (or became text)
+//   P3 character sync: after a structural change every @image_N still names the SAME picture (or became a red
+//      placeholder "@image_?N(label)")                         X3 image tokens keep their count (renumbered or red)
 //   P4 first / last frames name existing assets                 P5 video refs without duplicates (dangling allowed)
 //   P6 folder nodes: wired scenes exist, never a real path      T1 take ids unique (numbers per scene: warning)
 //   T3 no take may run on the real canvasapp                    X1 structural changes never lose prompt text
-//   X2 legacy @video tokens unchanged (warning until "Đợt V")   H1 undo → redo gives the same project
+//   X2 legacy @video tokens unchanged (an error since "Đợt V")   H1 undo → redo gives the same project
 //   H2 undo history ≤ 200                                       C1 a job's pictures = the take's @image order
-//   C2 a job prompt never names a picture it does not send      $1 one job (one charge) per take
+//   C2 a job prompt never names a picture it does not send (never a red placeholder)
+//   $1 one job (one charge) per take
 //   E1 ≤ MAX_REMOTE_CONCURRENCY running at once                 E2 the queue drains once faults are gone
 //   D1 a saved project reads back the same                      D2 migrate never throws and is idempotent
 //   R1 no console.error / unhandled error                       S1–S3 guards (sandbox / session)
 import { imageKey, imageSlotsFor, parseTokens, TOKEN_RE } from '../../core/compile'
-import { dropVideoRefs, migrateProject } from '../../core/migrate'
+import { retiredVideoTokens } from '../../core/compile'
+import { dropLegacyVideoRefs, migrateProject } from '../../core/migrate'
+import { imagePlaceholders } from '../../core/placeholders'
 import { MODELS, usesRefs } from '../../core/models'
 import type { Asset, Project, Scene, Take } from '../../core/types'
 import { clientRequestIdFor } from '../../providers/canvasapp/mapping'
@@ -70,7 +74,8 @@ export function checkProject(p: Project, takes: readonly Take[]): Violation[] {
       const f = s[which]
       if (f !== null && !assetIds.has(f)) out.push(err('P4', `Cảnh S${s.order}: ${which === 'firstFrame' ? 'khung đầu' : 'khung cuối'} trỏ tới nhân vật đã xoá.`, { assetId: f }))
     }
-    if (new Set(s.videoRefs).size !== s.videoRefs.length) out.push(err('P5', `Cảnh S${s.order}: một video tham chiếu bị nối hai lần.`, { videoRefs: s.videoRefs }))
+    // Reference videos were retired ("Đợt V"): no code path may put a take id back into a scene.
+    if (s.videoRefs.length) out.push(err('P5', `Cảnh S${s.order}: còn video tham chiếu (videoRefs) — tính năng đã bỏ, phải luôn rỗng.`, { videoRefs: s.videoRefs }))
     if (typeof s.prompt !== 'string') out.push(err('P1', `Cảnh S${s.order}: prompt không phải chuỗi.`))
   }
   for (const f of p.folders ?? []) {
@@ -116,13 +121,21 @@ export function isSubsequence(a: string, b: string): boolean {
   return j === a.length
 }
 
+/** Image tokens of a prompt counted the way X3 keeps them: real @image_N tokens + red placeholders "@image_?N(…)". */
+export function imageTokenCount(prompt: string): number {
+  return parseTokens(prompt).filter((t) => t.kind === 'image').length + imagePlaceholders(prompt).length
+}
+
 /**
  * After a change of references / pictures / scenes (not a prompt edit): for every scene that still exists and changed,
- *  P3 the pictures its tokens name are the same, in the same order (a token may only drop out, as text; a token may
- *     newly name a picture that was not in the scene before — typed ahead, then linked);
- *  X1 no prompt text was lost (the text without tokens before is kept, in order, in the text after).
+ *  P3 the pictures its tokens name are the same, in the same order (a token may only drop out, as a red placeholder; a
+ *     token may newly name a picture that was not in the scene before — typed ahead, then linked);
+ *  X1 no prompt text was lost (the text without tokens before is kept, in order, in the text after);
+ *  X3 (`tokenKeep`, the "giữ token" rule): every image token is still there — renumbered, or turned into a red
+ *     placeholder — never replaced by a name or deleted. Exempt by construction: renumbering off (checked below: the
+ *     whole check is skipped) and the prompt editor's explicit "undo auto link" (not a structural step).
  */
-export function checkStructural(before: Project, after: Project, label: string, strictVideo = false): Violation[] {
+export function checkStructural(before: Project, after: Project, label: string, strictVideo = false, tokenKeep = false): Violation[] {
   if (before === after) return []
   if (!before.settings.autoRenumber || !after.settings.autoRenumber) return []
   const out: Violation[] = []
@@ -132,7 +145,7 @@ export function checkStructural(before: Project, after: Project, label: string, 
     if (!b || b === s) continue
     if (b.prompt === s.prompt && b.refs === s.refs && before.assets === after.assets) continue
     if (b.prompt !== s.prompt) {
-      // X2: @video tokens (legacy data) stay byte for byte — until "Đợt V" a removed take / video ref rewrites them.
+      // X2: @video tokens (legacy data) stay byte for byte — since "Đợt V" nothing may rewrite them (an error then).
       const vb = videoTokens(b.prompt)
       const va = videoTokens(s.prompt)
       if (vb.length !== va.length || vb.some((t, i) => t !== va[i])) {
@@ -154,6 +167,14 @@ export function checkStructural(before: Project, after: Project, label: string, 
     if (b.prompt !== s.prompt && !isSubsequence(stripTokens(b.prompt), stripTokens(s.prompt))) {
       out.push(err('X1', `Mất chữ trong prompt S${s.order} sau “${label}”.`, { before: short(b.prompt, 300), after: short(s.prompt, 300) }))
     }
+    if (tokenKeep && b.prompt !== s.prompt && imageTokenCount(b.prompt) !== imageTokenCount(s.prompt)) {
+      out.push(
+        err('X3', `Token ảnh của S${s.order} bị đổi thành chữ hoặc mất sau “${label}” (${imageTokenCount(b.prompt)} → ${imageTokenCount(s.prompt)}).`, {
+          before: short(b.prompt, 300),
+          after: short(s.prompt, 300),
+        }),
+      )
+    }
   }
   return out
 }
@@ -162,8 +183,8 @@ export function checkStructural(before: Project, after: Project, label: string, 
 // Legacy video tokens (X2, see checkStructural)
 // ---------------------------------------------------------------------------------------------
 
-/** @video_N / @video_?N tokens of a prompt, in order (legacy data until "Đợt V"). */
-export const videoTokens = (prompt: string): string[] => prompt.match(/@video_\??\d+/gi) ?? []
+/** Retired @video tokens of a prompt as written, in order (core/compile retiredVideoTokens: what blocks a run). */
+export const videoTokens = (prompt: string): string[] => retiredVideoTokens(prompt).map((t) => t.text)
 
 /** How many scenes still carry @video tokens (report note). */
 export const scenesWithVideoTokens = (p: Project) => p.scenes.filter((s) => videoTokens(s.prompt).length).length
@@ -212,6 +233,8 @@ export class JobAudit {
       const named = parseTokens(job.prompt).filter((t) => t.kind === 'image')
       const over = named.filter((t) => t.n > sent)
       if (over.length) out.push(err('C2', `Job gửi prompt nhắc @image_${over[0].n} nhưng chỉ gửi ${sent} ảnh (nhân vật trỏ vào khoảng trống).`, { prompt: short(job.prompt, 300), sent }))
+      // C2: a red placeholder is never sent (a label that does not fit is blocked at enqueue: core/runRules, C3).
+      if (imagePlaceholders(job.prompt).length) out.push(err('C2', 'Job gửi prompt còn chữ đỏ chờ ảnh (@image_?N).', { prompt: short(job.prompt, 300) }))
       // C1: pictures sent = the take's @image order.
       if (usesRefs(take.settings)) {
         const spec = MODELS[take.settings.model] ?? MODELS.seedance_2_5
@@ -268,7 +291,7 @@ export function checkRoundTrip(p: Project): Violation[] {
   const b = JSON.parse(JSON.stringify(back))
   const d = firstDiff(a, b)
   if (d) out.push(warn('D1', `Dự án đọc lại khác bản đang mở ở ${d}.`, { path: d }))
-  const imported = dropVideoRefs(back)
+  const imported = dropLegacyVideoRefs(back)
   if (imported.scenes.length !== p.scenes.length || imported.assets.length !== p.assets.length) {
     out.push(err('D1', `Xuất/nhập làm mất cảnh hoặc nhân vật (${p.scenes.length}→${imported.scenes.length} cảnh).`))
   }

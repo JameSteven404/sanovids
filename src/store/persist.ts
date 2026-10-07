@@ -12,10 +12,9 @@
 // - other tabs are told about saves (BroadcastChannel) and reload a project they have no unsaved changes to.
 import { createStore, get, set, update } from 'idb-keyval'
 import { create } from 'zustand'
-import { takeCode } from '../core/compile'
 import { foldersForCopy } from '../core/folders'
 import { newId } from '../core/ids'
-import { dropVideoRefs, migrateProject } from '../core/migrate'
+import { dropLegacyVideoRefs, migrateProject } from '../core/migrate'
 import { createDemoProject } from '../core/seed'
 import { backupWins, isForeignWrite, nextStamp, sortByUpdated, upsertById, type BackupInfo, type RevStamp } from '../core/storageRules'
 import type { Project, Take } from '../core/types'
@@ -742,22 +741,15 @@ export async function createDemo(): Promise<void> {
   await openNewProject(await createDemoProject())
 }
 
-/** "video S03·T2" for every take id of a project (text that replaces @video tokens when the takes are gone). */
-function videoLabels(p: Project, takes: Take[]): Record<string, string> {
-  const order = new Map(p.scenes.map((s) => [s.id, s.order]))
-  return Object.fromEntries(takes.map((t) => [t.id, 'video ' + takeCode(order.get(t.sceneId), t.number)]))
-}
-
 export async function duplicateProject(id: string): Promise<void> {
   const current = useProject.getState().project
   const isCurrent = id === current.id
   const src = isCurrent ? current : (await loadProjectData(id))?.project
   if (!src) throw new Error('Không đọc được dự án này.')
-  // Takes (videos) are not copied, so the copy cannot keep video references: their @video tokens become text.
-  const takes = isCurrent ? useRuns.getState().takes : ((await readRuns(id))?.takes ?? [])
-  const labels = videoLabels(src, takes)
+  // Takes (videos) are not copied: the archived video links of the original (Scene.legacyVideoRefs) stay behind.
+  // Prompts are copied as written (@video text included: it blocks the run in the copy too).
   const now = Date.now()
-  const copy = dropVideoRefs(src, (t) => labels[t] ?? 'video')
+  const copy = dropLegacyVideoRefs(src)
   // Folder nodes get new ids (the copy must not share the original's folder access, waiting saves and counters) and
   // keep their folder on this computer (web: the same folder handle, copied below).
   const { folders, ids: folderIds } = foldersForCopy(copy.folders, { keepPath: true, taken: nodeIdsOf(copy) })
@@ -830,8 +822,8 @@ interface ExportFile {
   version: 1 | 2
   project: unknown
   media: Record<string, string> // image id -> data URL
-  /** take id -> "video S03·T2": takes are not exported, their @video tokens become this text on import. */
-  videoLabels?: Record<string, string>
+  // (Files of older builds may carry `videoLabels` — take id → "video S03·T2", for the @video tokens: ignored, the
+  // prompt is imported as written.)
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -853,7 +845,7 @@ export async function exportProjectFile(): Promise<void> {
       if (blob) media[id] = await blobToDataUrl(blob)
     }
   }
-  const file: ExportFile = { format: 'sanovids', version: 2, project: projectForExport(project), media, videoLabels: videoLabels(project, useRuns.getState().takes) }
+  const file: ExportFile = { format: 'sanovids', version: 2, project: projectForExport(project), media }
   const blob = new Blob([JSON.stringify(file)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -871,7 +863,7 @@ export async function importProjectFile(file: File): Promise<void> {
   for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
     idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
   }
-  const project = importedProject(data.project, data.videoLabels ?? {}, idMap)
+  const project = importedProject(data.project, idMap)
   await openNewProject(project)
   // Opened all the same (a warning, not a refusal): what this build does not know stays blocked (core/runRules).
   const warning = importWarning(data, project)
@@ -894,13 +886,13 @@ export function importWarning(file: { version?: unknown; project?: unknown }, im
 }
 
 /**
- * A project read from a .sanovids.json, ready to open as a new project: new id, images under their new ids, no video
- * references (takes are not exported: their tokens become plain text), and folder nodes with new ids and no place on
- * this computer — a file from elsewhere never chooses where this computer writes (not even a folder picked here before
- * for another project): each node asks "Chọn lại thư mục".
+ * A project read from a .sanovids.json, ready to open as a new project: new id, images under their new ids, no
+ * archived video links (takes are not exported; prompts — @video text included — come in exactly as written), and
+ * folder nodes with new ids and no place on this computer — a file from elsewhere never chooses where this computer
+ * writes (not even a folder picked here before for another project): each node asks "Chọn lại thư mục".
  */
-export function importedProject(raw: unknown, labels: Record<string, string>, imageIds: ReadonlyMap<string, string> = new Map()): Project {
-  const withoutVideos = dropVideoRefs(migrateProject(raw), (t) => labels[t] ?? 'video')
+export function importedProject(raw: unknown, imageIds: ReadonlyMap<string, string> = new Map()): Project {
+  const withoutVideos = dropLegacyVideoRefs(migrateProject(raw))
   const { folders } = foldersForCopy(withoutVideos.folders, { keepPath: false, taken: nodeIdsOf(withoutVideos) })
   return {
     ...withoutVideos,

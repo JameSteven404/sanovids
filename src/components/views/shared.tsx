@@ -76,7 +76,10 @@ export function useTakesByScene(): Map<string, Take[]> {
   }, [takes])
 }
 
-/** Text with @image_N (teal), @video_N (purple) and legacy @Tag mentions highlighted, truncated to `max` characters. */
+/**
+ * Text with @image_N (teal), legacy @Tag mentions and retired @video text (red, struck through: it blocks the run)
+ * highlighted, truncated to `max` characters.
+ */
 export function MentionText({ text, max }: { text: string; max?: number }) {
   const clipped = max && text.length > max ? text.slice(0, max).trimEnd() + '…' : text
   const parts: ReactNode[] = []

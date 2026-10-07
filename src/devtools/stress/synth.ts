@@ -1,6 +1,8 @@
 // Generated test projects: built as raw JSON (like a saved file) and brought in through migrateProject / migrateTake,
-// so they always have the shape the running build expects (before and after the "Đợt V" video-reference retirement).
+// so they always have the shape the running build expects (since the "Đợt V" video-reference retirement, a legacy
+// scene's raw `videoRefs` comes out archived as `legacyVideoRefs`, its @video text untouched).
 // Never a real project: ids and names say "stress" / "Thử nghiệm giới hạn".
+import { retiredVideoTokens } from '../../core/compile'
 import { migrateProject, migrateTake } from '../../core/migrate'
 import { MODELS } from '../../core/models'
 import type { Project, Take } from '../../core/types'
@@ -197,7 +199,7 @@ export function generateProject(rng: Rng, seed: string, tier: Tier, kind: NonNul
       const lead = rng.chance(0.5) ? 'Continue from @video_1: ' : ''
       const extra = rng.chance(0.3) ? ' @video_?2' : ''
       scene.prompt = `${lead}${scene.prompt} ${tokens.slice(lead ? 1 : 0).join(' ')}${extra}`.trim()
-      legacyTokens.set(scene.id, (scene.prompt.match(/@video_\??\d+/g) ?? []).slice())
+      legacyTokens.set(scene.id, retiredVideoTokens(scene.prompt).map((t) => t.text))
     }
   }
 

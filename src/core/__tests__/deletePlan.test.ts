@@ -14,27 +14,22 @@ describe('checkTakeDelete', () => {
     { id: 't2', status: 'failed' as const },
     { id: 't3', status: 'completed' as const },
   ]
-  const scenes = [
-    { id: 's2', order: 2, videoRefs: ['t1'] },
-    { id: 's1', order: 1, videoRefs: [] },
-    { id: 's3', order: 3, videoRefs: ['t1', 't3'] },
-  ]
 
-  it('asks when a finished video is lost, naming the scenes that use it', () => {
-    const c = checkTakeDelete(['t1'], takes, scenes, { label: 'S01·T1' })
+  it('asks when a finished video is lost (never about @video users: reference videos were retired)', () => {
+    const c = checkTakeDelete(['t1'], takes, { label: 'S01·T1' })
     expect(c.ids).toEqual(['t1'])
     expect(c.finished).toBe(1)
-    expect(c.usedBy.map((s) => s.id)).toEqual(['s2', 's3'])
-    expect(c.question).toContain('Xoá vĩnh viễn S01·T1?')
-    expect(c.question).toContain('S02, S03')
+    expect(c).not.toHaveProperty('usedBy')
+    expect(c.question).toBe('Xoá vĩnh viễn S01·T1? Video đã xoá không hoàn tác được.')
+    expect(c.question).not.toContain('@video')
   })
 
-  it('does not ask for failed takes nobody uses', () => {
-    expect(checkTakeDelete(['t2'], takes, scenes).question).toBeNull()
+  it('does not ask for failed takes', () => {
+    expect(checkTakeDelete(['t2'], takes).question).toBeNull()
   })
 
   it('counts finished ones among several and ignores unknown ids', () => {
-    const c = checkTakeDelete(['t1', 't2', 'nope'], takes, [], {})
+    const c = checkTakeDelete(['t1', 't2', 'nope'], takes, {})
     expect(c.ids).toEqual(['t1', 't2'])
     expect(c.question).toContain('2 video (1 video đã tạo xong)')
   })
@@ -46,22 +41,22 @@ describe('checkTakeDelete', () => {
       { id: 'd1', status: 'processing' as const, videoReady: true, provider: 'dev' },
       { id: 'm1', status: 'processing' as const, videoReady: true, provider: 'mock' },
     ]
-    const c = checkTakeDelete(['r1'], running, [], { label: 'S01·T2' })
+    const c = checkTakeDelete(['r1'], running, { label: 'S01·T2' })
     expect(c.paidPending).toBe(1)
     expect(c.question).toContain('Xoá vĩnh viễn S01·T2?')
     expect(c.question).toContain('S01·T2 đã tạo xong trên canvasapp và đã trừ credit')
     expect(c.question).toContain('vẫn tải được trên canvasapp.io.vn')
-    const dev = checkTakeDelete(['d1'], running, []).question!
+    const dev = checkTakeDelete(['d1'], running).question!
     expect(dev).toContain('credit dev')
     expect(dev).not.toContain('canvasapp.io.vn')
     // still being made (nothing paid yet known), or the old demo: nothing to ask
-    expect(checkTakeDelete(['r2', 'm1'], running, []).question).toBeNull()
-    expect(checkTakeDelete(['r1'], running, [], { confirm: 'usedOnly' }).question).toBeNull()
+    expect(checkTakeDelete(['r2', 'm1'], running).question).toBeNull()
+    expect(checkTakeDelete(['r1'], running, { confirm: 'usedOnly' }).question).toBeNull()
   })
 
-  it("'usedOnly' asks only for @video users; scenes deleted together do not count", () => {
-    expect(checkTakeDelete(['t3'], takes, scenes, { confirm: 'usedOnly', ignoreScenes: new Set(['s3']) }).question).toBeNull()
-    expect(checkTakeDelete(['t3'], takes, scenes, { confirm: 'usedOnly' }).question).toContain('S03')
-    expect(checkTakeDelete(['t1'], takes, scenes, { confirm: false }).question).toBeNull()
+  it("'usedOnly' (the caller already confirmed) and false never ask", () => {
+    expect(checkTakeDelete(['t3'], takes, { confirm: 'usedOnly' }).question).toBeNull()
+    expect(checkTakeDelete(['t1'], takes, { confirm: false }).question).toBeNull()
+    expect(checkTakeDelete(['t1'], takes, { confirm: 'usedOnly' }).ids).toEqual(['t1'])
   })
 })

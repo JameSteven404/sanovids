@@ -90,7 +90,7 @@ function fakeProvider() {
     label: 'dev',
     minPollIntervalMs: 0,
     available: async () => ({ ok: true }),
-    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0, maxRefVideos: 10 }),
+    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 3, pollIntervalMs: 0 }),
     submit: async (req) => {
       const remoteId = 'r_' + req.key
       statuses.set(remoteId, { remoteId, state: 'queued' })

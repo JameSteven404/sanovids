@@ -1,4 +1,5 @@
 // Pure helpers for the "@" popup of the prompt editor (no React / DOM / store imports — unit-tested).
+import { placeholderAt } from '../../core/placeholders'
 
 const WORD_CHAR = /[\p{L}\p{N}_]/u
 
@@ -30,6 +31,8 @@ const RAW_TOKEN = /^(image|video)_\d+$/i
  * at the caret: an "@" typed right before a plain word ("the @|slope") must not swallow that word.
  */
 export function findMention(text: string, caret: number, isToken?: (word: string) => boolean): MentionToken | null {
+  // Inside a red placeholder ("@image_|?2(Lumi)"): it is not an "@" being typed — the popup would replace part of it.
+  if (text.includes('_?') && placeholderAt(text, caret)) return null
   let i = caret - 1
   let n = 0
   while (i >= 0 && WORD_CHAR.test(text[i]) && n < 48) {

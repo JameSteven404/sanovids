@@ -41,7 +41,7 @@ import { create } from 'zustand'
 import { compileScene, imageKey, imageSlotsFor, sceneCode, takeCode } from '../core/compile'
 import { cleanTakeFileName } from '../core/fileNames'
 import { newId } from '../core/ids'
-import { costOf, isModelId, MODELS, usesRefs, usesVideoRefs } from '../core/models'
+import { costOf, isModelId, MODELS, usesRefs } from '../core/models'
 import { isForeignTake, migrateTake, parkForeignTake } from '../core/migrate'
 import { runBlockReason } from '../core/runRules'
 import type { Asset, ModelId, Scene, Size, Take, XY } from '../core/types'
@@ -148,7 +148,7 @@ export interface RunsState {
   importTakes: (input: ImportTakesInput) => ImportTakesResult
   toggleStar: (takeId: string) => void
   removeTake: (takeId: string) => void
-  /** Delete takes (cancelling running ones) and drop them from every scene's @video refs. */
+  /** Delete takes (cancelling running ones); folder nodes forget them. */
   removeTakes: (takeIds: string[]) => void
   /** Canvas positions of take nodes (null = back to auto placement). */
   setTakePositions: (positions: Record<string, XY | null>) => void
@@ -428,16 +428,6 @@ function savedMock(): MockSettings {
 const mockProvider = createMockProvider(() => useRuns.getState().mock)
 registerProvider(mockProvider)
 
-/**
- * Reference videos (@video_N) per request that the gateway of new takes accepts for this model — its
- * capabilities().maxRefVideos (canvasapp and development mode: 0) — or null for the old demo, which had no gateway
- * limit. The run-block rules (core/runRules) use it in check() and on every Run button; a component calling it must
- * re-render when the provider choice changes (useCreditKind() does).
- */
-export function providerVideoCapFor(model: ModelId, providerId: ProviderId = activeProviderId()): number | null {
-  return providerId === 'mock' ? null : getProvider(providerId).capabilities(model).maxRefVideos
-}
-
 /** Paid with demo credits (so refunded on failure / cancel). canvasapp takes never are, whatever the flag says. */
 const isCharged = (t: Take) => chargedDemo(t)
 const remoteIdOf = (t: Take) => t.remoteId ?? null
@@ -472,21 +462,11 @@ export const useRuns = create<RunsState>()((set, get) => ({
       .map((id) => project.scenes.find((s) => s.id === id))
       .filter((s): s is Scene => !!s)
       .map((scene) => {
-        const takes = get().takes
-        const takeStatus = (id: string) => takes.find((t) => t.id === id)?.status
-        const compiled = compileScene(project, scene, { takeStatus })
-        // The one rule list (core/runRules) shared with every Run button: the @video cap is the gateway's own
-        // (capabilities().maxRefVideos), its sure refusal of the settings comes last.
+        const compiled = compileScene(project, scene)
+        // The one rule list (core/runRules) shared with every Run button (retired @video text blocks the scene); the
+        // gateway's sure refusal of the settings comes last.
         const settingsBlock = settingsRunBlock(limits, scene.settings)
-        const reason = runBlockReason({
-          scene,
-          assets: project.assets,
-          compiled,
-          takeStatus,
-          settingsBlock,
-          spec: MODELS[scene.settings.model],
-          providerVideoCap: providerVideoCapFor(scene.settings.model, providerId),
-        })
+        const reason = runBlockReason({ scene, assets: project.assets, compiled, settingsBlock, spec: MODELS[scene.settings.model] })
         const warning = reason ? null : settingsRunWarning(limits, scene.settings, providerId)
         return { sceneId: scene.id, ok: !reason, reason, cost: costOf(scene.settings), warnings: warning ? [...compiled.warnings, warning] : compiled.warnings }
       })
@@ -531,7 +511,7 @@ export const useRuns = create<RunsState>()((set, get) => ({
         promptSnapshot: compiled.text,
         rawPromptSnapshot: scene.prompt,
         refsSnapshot: [...scene.refs],
-        videoRefsSnapshot: [...scene.videoRefs],
+        videoRefsSnapshot: [],
         // Every image of the refs in @image_N order (before the model's cap), so "restore prompt" renumbers exactly.
         imageKeysSnapshot: imageSlotsFor(project.assets, scene.refs).map(imageKey),
         settings: { ...scene.settings },
@@ -681,15 +661,9 @@ export const useRuns = create<RunsState>()((set, get) => ({
   removeTake: (takeId) => get().removeTakes([takeId]),
   removeTakes: (takeIds) => {
     const dead = new Set(takeIds)
-    const project = useProject.getState().project
-    const labels: Record<string, string> = {}
-    for (const t of get().takes) {
-      if (!dead.has(t.id)) continue
-      labels[t.id] = 'video ' + takeCode(project.scenes.find((s) => s.id === t.sceneId)?.order, t.number)
-      get().cancel(t.id)
-    }
+    for (const t of get().takes) if (dead.has(t.id)) get().cancel(t.id)
     set((s) => ({ takes: s.takes.filter((t) => !dead.has(t.id)) }))
-    useProject.getState().removeTakesEverywhere(takeIds, labels)
+    useProject.getState().removeTakesEverywhere(takeIds)
   },
   setTakeSizes: (sizes) =>
     set((s) => ({ takes: s.takes.map((t) => (t.id in sizes ? { ...t, size: sizes[t.id] ? clampSize('take', sizes[t.id]!) : null } : t)) })),
@@ -1046,19 +1020,16 @@ export function requestImages(t: Pick<Take, 'refsSnapshot' | 'imageKeysSnapshot'
     .map(({ n, assetId, imageId }) => ({ n, assetId, imageId }))
 }
 
-/** Request for a take, built from its snapshot (prompt, image keys, refs, video refs, frames). */
+/**
+ * Request for a take, built from its snapshot (prompt, image keys, refs, frames). Never a reference video: they were
+ * retired (0.6.0) — a take queued before with @video text in its prompt is refused by the gateway's validateRequest
+ * before anything is created or billed.
+ */
 function buildRequest(t: Take): JobRequest {
   const project = useProject.getState().project
   const scene = project.scenes.find((s) => s.id === t.sceneId)
   const spec = MODELS[t.settings.model] ?? MODELS.seedance_2_5
-  const takes = useRuns.getState().takes
   const images = usesRefs(t.settings) ? requestImages(t, project.assets, spec.maxRefImages) : []
-  const videos = usesVideoRefs(t.settings)
-    ? t.videoRefsSnapshot.slice(0, spec.maxRefVideos).map((takeId, i) => {
-        const v = takes.find((x) => x.id === takeId)
-        return { n: i + 1, takeId, videoId: v?.videoId ?? null, posterId: v?.posterId ?? null }
-      })
-    : []
   const frames = t.framesSnapshot ?? { first: scene?.firstFrame ?? null, last: scene?.lastFrame ?? null }
   const frame = (snap: string | null): JobFrame | null => {
     if (!snap || t.settings.mode !== 'transform') return null
@@ -1087,7 +1058,6 @@ function buildRequest(t: Take): JobRequest {
     prompt: t.promptSnapshot,
     rawPrompt: t.rawPromptSnapshot,
     images,
-    videos,
     firstFrame: frame(frames.first),
     lastFrame: frame(frames.last),
     startedAt: t.startedAt ?? Date.now(),

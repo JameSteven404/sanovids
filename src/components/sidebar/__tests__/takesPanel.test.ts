@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DragEvent } from 'react'
-import { linkTakes } from '../../../actions'
+import { linkTakes, VIDEO_NOT_REFERENCE_TEXT } from '../../../actions'
 import type { Scene, Take } from '../../../core/types'
 import { readIds, TAKES_MIME } from '../../../lib/dnd'
 import { useProject } from '../../../store/project'
@@ -31,7 +31,7 @@ describe('windowed take row actions', () => {
     vi.useRealTimers()
   })
 
-  it('carries selected completed takes even when their rows are not mounted, and links the same payload', () => {
+  it('carries selected completed takes even when their rows are not mounted; dropping them on a scene links nothing', () => {
     useUI.getState().select(['older', 'newer', 'running', 'target'])
     const data = new Map<string, string>()
     const dt = { effectAllowed: 'none', setData: (key: string, value: string) => data.set(key, value), getData: (key: string) => data.get(key) ?? '' } as unknown as DataTransfer
@@ -39,8 +39,10 @@ describe('windowed take row actions', () => {
     expect(dt.effectAllowed).toBe('all')
     expect(readIds(dt, TAKES_MIME)).toEqual(['older', 'newer'])
     expect(useUI.getState().draggingTakeIds).toEqual(['older', 'newer'])
+    // reference videos were retired: the old entry point only says where a video goes
     linkTakes(['target'], readIds(dt, TAKES_MIME))
-    expect(useProject.getState().project.scenes[1].videoRefs).toEqual(['older', 'newer'])
+    expect(useProject.getState().project.scenes[1].videoRefs).toEqual([])
+    expect(useUI.getState().toasts.at(-1)?.text).toBe(`${VIDEO_NOT_REFERENCE_TEXT}.`)
     endTakeDrag()
     expect(useUI.getState().draggingTakeIds).toBeNull()
     useUI.getState().select(['newer'])

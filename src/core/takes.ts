@@ -20,14 +20,11 @@ export function chooseTake(list: Take[]): Take | undefined {
   return completed ?? list[list.length - 1]
 }
 
-const videoUsage = new WeakMap<Scene[], Map<string, number>>()
-/** take id -> number of scenes that use it as @video. */
-export function videoUsageOf(scenes: Scene[]): Map<string, number> {
-  let m = videoUsage.get(scenes)
-  if (!m) {
-    m = new Map()
-    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
-    videoUsage.set(scenes, m)
-  }
-  return m
+const NO_USAGE: ReadonlyMap<string, number> = new Map()
+/**
+ * @deprecated Reference videos were retired (0.6.0): no scene uses a take as @video any more, so this is always an
+ * empty map (one shared object: a stable selector result). Kept so code written before the retirement still compiles.
+ */
+export function videoUsageOf(_scenes: Scene[]): ReadonlyMap<string, number> {
+  return NO_USAGE
 }

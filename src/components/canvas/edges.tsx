@@ -1,6 +1,6 @@
-// Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene),
-// video references (take -> scene, @video_N), take outputs (scene -> take, not deletable) and wires into folder
-// nodes: save (take -> folder) and autosave (scene -> folder, dashed).
+// Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene), take outputs (scene -> take,
+// not deletable) and wires into folder nodes: save (take -> folder) and autosave (scene -> folder, dashed). (Video
+// references, take -> scene as @video_N, were retired in 0.6.0: no such wire is drawn any more.)
 // Every wire runs from the center of its source dot to the center of its target dot: the handles React Flow measures
 // are 0×0 anchors at the dot centers (canvas.css "handles"), and wires into the same dot all converge there (no fan-out),
 // the dot painting over their ends. Each cuttable wire = its visible path (.cv-wire) + a wide transparent hit band on
@@ -9,11 +9,11 @@
 import { EdgeLabelRenderer, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState, type AnimationEvent, type CSSProperties } from 'react'
-import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
+import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { offUnlinkText, SAVE_CUT_BUTTON_TITLE, saveWireTitle } from '../../core/folderTrash'
 import { folderMapOf } from '../../core/folders'
-import { staleNoteSince } from '../../core/staleTokens'
+import { mediaChangeNote } from '../../core/staleTokens'
 import { afterSaveUnlinked } from '../../folderActions'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
@@ -35,7 +35,7 @@ export type LinkEdgeData = {
 }
 export type LinkEdge = Edge<LinkEdgeData>
 
-/** Purple of video wires / handles: the theme token (light and dark themes define their own value). */
+/** Purple of video (take) handles: the theme token (light and dark themes define their own value). */
 export const VIDEO_COLOR = 'var(--video)'
 
 /** Wire colors are theme tokens (styles/base.css), so they follow the light / dark theme. */
@@ -43,7 +43,6 @@ const KIND_STROKE: Record<EdgeKind, string> = {
   ref: 'var(--ref)',
   first: 'var(--first)',
   last: 'var(--last)',
-  vref: VIDEO_COLOR,
   out: 'var(--seq)',
   save: 'var(--save)',
   autosave: 'var(--save)',
@@ -53,7 +52,6 @@ const CUT_LABEL: Record<EdgeKind, string> = {
   ref: 'tham chiếu ảnh',
   first: 'khung đầu',
   last: 'khung cuối',
-  vref: 'video tham chiếu',
   out: '',
   save: 'lưu',
   autosave: 'tự lưu',
@@ -61,10 +59,11 @@ const CUT_LABEL: Record<EdgeKind, string> = {
 
 /**
  * Cut one link (one undo step) and say so — naming what was cut, with Undo. Every canvas way of removing a reference
- * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar / @video thumb, a wire end dropped
- * on empty canvas). The prompt's @image_N / @video_N tokens are renumbered in the same step (SPEC §2): the toast says so
- * when it happened. 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation
- * splits the wire (default: its middle).
+ * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar, a wire end dropped on empty
+ * canvas). The prompt's @image_N tokens are renumbered in the same step and the cut picture's token becomes a red
+ * placeholder "@image_?N(label)" (no text is lost; the scene is blocked until it is filled): the toast says so.
+ * 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation splits the wire
+ * (default: its middle).
  */
 export function cutEdge(id: string, silent = false, at?: { x: number; y: number }) {
   const e = parseEdgeId(id)
@@ -80,21 +79,18 @@ export function cutEdge(id: string, silent = false, at?: { x: number; y: number 
   const projectBefore = p.project
   const before = sceneMapOf(p.project.scenes).get(e.to)
   if (!before) return
-  const what = e.kind === 'vref' ? takeLabel(e.from) : assetMapOf(p.project.assets).get(e.from)?.name
+  const what = assetMapOf(p.project.assets).get(e.from)?.name
   if (e.kind === 'ref') p.removeRef(e.to, e.from)
-  else if (e.kind === 'vref') p.removeVideoRef(e.to, e.from, videoLabel(e.from))
   else p.setFrame(e.to, e.kind, null)
-  const after = sceneMapOf(useProject.getState().project.scenes).get(e.to)
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
   if (silent) return
-  const renumbered = !!after && after.prompt !== before.prompt
-  // Renumbering off: the prompt kept its numbers, which may now name another picture — say where to fix them.
-  const stale = staleNoteSince(projectBefore, useProject.getState().project)
-  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}${stale}.`, {
+  // Red placeholders left / numbers left stale (renumbering off) / prompt renumbered (core/staleTokens mediaChangeNote).
+  const note = mediaChangeNote(projectBefore, useProject.getState().project)
+  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${note?.text ?? ''}.`, {
     action: undoToastAction(),
-    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
+    ...(note && note.tone === 'warning' ? { tone: 'warning' as const, ms: note.ms ?? 8000 } : {}),
   })
 }
 
@@ -190,7 +186,7 @@ function LinkEdgeComponent({ id, source, target, sourceX, sourceY, targetX, targ
   const style: CSSProperties = {
     stroke,
     strokeWidth: selected ? 2.5 : hovered ? 2.25 : hl ? 2 : 1.5,
-    opacity: hl ? 1 : kind === 'vref' || kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
+    opacity: hl ? 1 : kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
     // A scene's "tự lưu" wire stands for every future video: dashed, unlike a one-video "lưu" wire.
     strokeDasharray: kind === 'autosave' && !drawing ? '6 5' : undefined,
     filter: selected
@@ -249,7 +245,6 @@ export const edgeTypes = {
   ref: LinkEdgeView,
   first: LinkEdgeView,
   last: LinkEdgeView,
-  vref: LinkEdgeView,
   out: LinkEdgeView,
   save: LinkEdgeView,
   autosave: LinkEdgeView,

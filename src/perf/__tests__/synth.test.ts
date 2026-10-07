@@ -20,7 +20,8 @@ describe('deterministic synthetic projects', () => {
         expect(scene.refs.length).toBeGreaterThanOrEqual(2)
         expect(scene.refs.length).toBeLessThanOrEqual(3)
         expect(scene.refs.every((id) => assets.has(id))).toBe(true)
-        expect(scene.videoRefs.every((id) => takes.has(id))).toBe(true)
+        expect(scene.videoRefs).toEqual([])
+        expect((scene.legacyVideoRefs ?? []).every((id) => takes.has(id))).toBe(true)
         expect(scene.prompt.includes('@video_1')).toBe(scene.order % 10 === 0)
       }
       expect(runs.takes.every((t) => t.id.startsWith('prf_') && t.provider === 'dev' && t.status === 'completed')).toBe(true)

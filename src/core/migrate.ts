@@ -1,6 +1,6 @@
 // Schema migrations for saved projects and takes. Pure functions (unit-tested).
 import { scenePosition } from '../store/project'
-import { assetByTag, imageSlotsFor, mediaKeys, MENTION_RE, remapTokens, uniqueTag } from './compile'
+import { assetByTag, imageSlotsFor, MENTION_RE, uniqueTag } from './compile'
 import { cleanTakeFileName } from './fileNames'
 import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
@@ -19,6 +19,15 @@ interface V1Block {
 const ASSET_KINDS: AssetKind[] = ['character', 'location', 'prop', 'style']
 const isXY = (v: unknown): v is XY => !!v && typeof v === 'object' && Number.isFinite((v as XY).x) && Number.isFinite((v as XY).y)
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : [])
+/**
+ * Reference videos were retired (0.6.0): the take ids a scene / take used as @video (`current`: the old field, still
+ * written by a 0.5.0 build) joined to the ones already archived (`kept`), without duplicates — undefined when none.
+ * Idempotent: archived once, migrating again gives the same list.
+ */
+function archivedVideoIds(kept: unknown, current: unknown): string[] | undefined {
+  const ids = [...new Set([...strings(kept), ...strings(current)])]
+  return ids.length ? ids : undefined
+}
 const text = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : v == null ? fallback : String(v))
 
 /** Replace legacy @Tag mentions with @image_N of the scene's refs (unlinked tags become the asset name). */
@@ -154,8 +163,11 @@ export function normalizePresets(raw: unknown, newerFile = false): Preset[] {
 /**
  * Bring any saved project up to schema v2 (and repair what other sources may leave out).
  * v1 → v2: enabled prompt blocks are written into each scene's prompt (so no text is lost),
- * @Tag mentions become @image_N, continuity links and block data are dropped, scenes get videoRefs.
+ * @Tag mentions become @image_N, continuity links and block data are dropped.
  * Always: unique ids, dense scene order (S01, S02… never "Sundefined"), a position and a title for every scene.
+ * Reference videos (retired in 0.6.0): a scene's old `videoRefs` move to `legacyVideoRefs` (kept inert, only the
+ * open-project notice reads them) and `videoRefs` is always [] — never dropped through the `...rest` of unknown keys.
+ * The prompt is never touched for it: @video text stays byte for byte (it blocks the run, core/compile).
  * A file of a newer build (schemaVersion > 2) is read as v2 and keeps its number (written back as 2, the newer build
  * would migrate its data again); scenes / presets on a model this build does not know — or with values it does not
  * offer — keep a marker that blocks running (Scene.foreignModel / foreignSettings, see migrateModelMark). Every other
@@ -187,7 +199,7 @@ export function migrateProject(raw: unknown): Project {
   )
   const scenes: Scene[] = rawScenes.map((s) => {
     const index = rank.get(s)!
-    const { blockOverrides, continueFrom: _c, foreignModel: _fm, foreignSettings: _fs, ...rest } = s
+    const { blockOverrides, continueFrom: _c, foreignModel: _fm, foreignSettings: _fs, videoRefs: rawVideoRefs, legacyVideoRefs: rawLegacy, ...rest } = s
     // Valid settings + the marker of a newer build's model (validated, never taken from the file as is).
     const { settings, ...marker } = migrateModelMark(s.settings, s, [], newerSchema !== null)
     const refs = strings(s.refs)
@@ -202,6 +214,7 @@ export function migrateProject(raw: unknown): Project {
     let id = typeof s.id === 'string' && s.id ? s.id : newId('scn')
     if (sceneIds.has(id)) id = newId('scn')
     sceneIds.add(id)
+    const legacyVideoRefs = archivedVideoIds(rawLegacy, rawVideoRefs)
     return {
       ...rest,
       id,
@@ -209,7 +222,8 @@ export function migrateProject(raw: unknown): Project {
       title: text(s.title),
       prompt,
       refs,
-      videoRefs: strings(s.videoRefs),
+      videoRefs: [],
+      ...(legacyVideoRefs ? { legacyVideoRefs } : {}),
       settings,
       firstFrame: s.firstFrame ?? null,
       lastFrame: s.lastFrame ?? null,
@@ -243,19 +257,18 @@ export function migrateProject(raw: unknown): Project {
 }
 
 /**
- * The project without any video reference (a copy or an imported file has none of the takes): every @video_N
- * becomes the plain text `label(takeId)` (e.g. "video S03·T2"), like removing the reference by hand.
- * @image_N tokens are unchanged.
+ * The project without the archived video links (Scene.legacyVideoRefs) — a copy or an imported file has none of the
+ * takes, so their ids would mean nothing there. Prompts are never touched (@video text stays as written). The same
+ * object when there is nothing to drop.
  */
-export function dropVideoRefs(p: Project, label: (takeId: string) => string = () => 'video'): Project {
-  if (!p.scenes.some((s) => s.videoRefs.length)) return p
+export function dropLegacyVideoRefs(p: Project): Project {
+  if (!p.scenes.some((s) => s.legacyVideoRefs !== undefined)) return p
   return {
     ...p,
     scenes: p.scenes.map((s) => {
-      if (!s.videoRefs.length) return s
-      const before = mediaKeys(p.assets, s.refs, s.videoRefs)
-      const prompt = remapTokens(s.prompt, before, { ...before, videos: [] }, (_kind, key) => label(key)).text
-      return { ...s, videoRefs: [], prompt }
+      if (s.legacyVideoRefs === undefined) return s
+      const { legacyVideoRefs: _l, ...rest } = s
+      return rest
     }),
   }
 }
@@ -330,10 +343,14 @@ export function migrateTake(raw: unknown): Take {
   // A newer build's model (the id stays in settings.model as it was saved; a blank / missing one is not a model).
   const newerModel = typeof model === 'string' && model.trim() && !isModelId(model) ? foreignId(model) : null
   const foreign = !!newer || !!newerModel
+  const { legacyVideoRefsSnapshot: _lv, ...plain } = t
+  const legacyVideoRefsSnapshot = archivedVideoIds(t.legacyVideoRefsSnapshot, t.videoRefsSnapshot)
   const out: Take = {
-    ...(t as Take),
+    ...(plain as Take),
     settings: takeSettings(rawSettings),
-    videoRefsSnapshot: Array.isArray(t.videoRefsSnapshot) ? t.videoRefsSnapshot : [],
+    // Reference videos were retired (0.6.0): the old snapshot is archived, never sent again.
+    videoRefsSnapshot: [],
+    ...(legacyVideoRefsSnapshot ? { legacyVideoRefsSnapshot } : {}),
     position: t.position ?? null,
     provider: t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock',
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,

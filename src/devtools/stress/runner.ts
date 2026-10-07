@@ -94,8 +94,8 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
       faults: 'none',
       checkEvery: Math.max(1, opts.checkEvery),
       stopOnFirst: opts.stopOnFirst,
-      expectVideoRetired: !!opts.expectVideoRetired,
-      tokenKeep: !!opts.tokenKeep,
+      expectVideoRetired: opts.expectVideoRetired !== false,
+      tokenKeep: opts.tokenKeep !== false,
     },
     result: 'pass',
     failure: null,
@@ -190,7 +190,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
     const ctx: StressContext = {
       rng,
       env,
-      options: { checkEvery: report.spec.checkEvery, stopOnFirst: opts.stopOnFirst, expectVideoRetired: !!opts.expectVideoRetired, tokenKeep: !!opts.tokenKeep },
+      options: { checkEvery: report.spec.checkEvery, stopOnFirst: opts.stopOnFirst, expectVideoRetired: opts.expectVideoRetired !== false, tokenKeep: opts.tokenKeep !== false },
       tier: plan.tier,
       step: 0,
       server: s.server,
@@ -373,7 +373,7 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
       await env.advance(env.kind === 'headless' ? 250 : 0)
 
       const after = useProject.getState().project
-      if (before) pending.push(...checkStructural(before, after, action.label, !!opts.expectVideoRetired))
+      if (before) pending.push(...checkStructural(before, after, action.label, opts.expectVideoRetired !== false, opts.tokenKeep !== false))
       pending.push(...checkHistorySize())
       pending.push(...checkEngine(useRuns.getState().takes))
       if (n % report.spec.checkEvery === 0) fullChecks()

@@ -126,10 +126,10 @@ describe('takes hidden by "Chỉ take chọn"', () => {
   it('shows every take in the "all" display', () => {
     for (const t of takes) expect(takeHiddenOnCanvas(t.id, takes, scenes, 'all')).toBe(false)
   })
-  it('keeps the chosen take of each scene and the takes used as @video', () => {
-    // s1: newest completed (T2) is chosen; T1 stays because S2 uses it as @video; failed T3 is hidden.
+  it('keeps only the chosen take of each scene (an old @video link keeps nothing: reference videos were retired)', () => {
+    // s1: newest completed (T2) is chosen; T1 is hidden although S2 once used it as @video; failed T3 is hidden.
     expect(takeHiddenOnCanvas('t2', takes, scenes, 'chosen')).toBe(false)
-    expect(takeHiddenOnCanvas('t1', takes, scenes, 'chosen')).toBe(false)
+    expect(takeHiddenOnCanvas('t1', takes, scenes, 'chosen')).toBe(true)
     expect(takeHiddenOnCanvas('t3', takes, scenes, 'chosen')).toBe(true)
     // s2: the starred take wins over the newer one.
     expect(takeHiddenOnCanvas('t4', takes, scenes, 'chosen')).toBe(false)
@@ -204,7 +204,7 @@ describe('renumbering feedback', () => {
     useProject.getState().updateAsset('a', { imageIds: ['a2'] })
     const after = useProject.getState().project.scenes
     expect(changedPrompts(before, after)).toEqual(['s1'])
-    expect(after[0].prompt).toBe('Elara and @image_2')
+    expect(after[0].prompt).toBe('@image_?1(Elara · ảnh 1) and @image_2')
   })
 
   it('reports nothing when no prompt changed', () => {

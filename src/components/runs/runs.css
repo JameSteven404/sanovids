@@ -18,7 +18,6 @@
    literal colors in this file. */
 .rq-thumb,
 .rq-row-thumb,
-.rq-vchip-thumb,
 .rq-stage {
   --rq-on-media: var(--on-media, white);
   --rq-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
@@ -47,9 +46,11 @@
   padding: 0 2px;
   font-weight: 600;
 }
-.rq-tok.video {
-  background: var(--video-soft);
-  color: var(--video);
+/* Retired @video text (reference videos were retired): kept as written, never sent — the prompt does not run. */
+.rq-tok.is-retired {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  text-decoration: line-through var(--danger);
 }
 
 /* ---------- status badge ---------- */
@@ -1069,9 +1070,6 @@
 .rq-table col.rq-w-refs {
   width: 84px;
 }
-.rq-table col.rq-w-videos {
-  width: 56px;
-}
 .rq-table col.rq-w-credit {
   width: 56px;
 }
@@ -1154,16 +1152,6 @@
   display: block;
   font-size: 10.5px;
   color: var(--text-dim);
-}
-.rq-vcount {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--video);
-  font-weight: 600;
-}
-.rq-vcount.pending {
-  color: var(--warn);
 }
 .rq-cell-status {
   white-space: normal;
@@ -1692,59 +1680,6 @@
 .rq-chips > .chip {
   border-radius: 7px;
 }
-/* take viewer: "Dùng video này" + reference videos */
-.rq-use-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.rq-vchips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.rq-vchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 9px 0 3px;
-  border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in srgb, var(--video) 40%, transparent);
-  background: var(--panel-2);
-  color: var(--text);
-  font-size: 11.5px;
-  cursor: pointer;
-  transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out;
-}
-button.rq-vchip:hover {
-  border-color: var(--video);
-  background: var(--video-soft);
-}
-button.rq-vchip:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.rq-vchip.missing {
-  cursor: default;
-  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-}
-.rq-vchip-thumb {
-  display: block;
-  width: 36px;
-  height: 20px;
-  overflow: hidden;
-  border-radius: 4px;
-  background: var(--panel-3);
-}
-.rq-vchip-n {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--video);
-}
 .rq-diff-flag {
   display: flex;
   align-items: center;
@@ -1869,7 +1804,6 @@ button.rq-vchip:focus-visible {
   .rq-thumb-star,
   .rq-thumb-bar > i,
   .rq-table td,
-  .rq-vchip,
   .rq-ring {
     transition: none;
   }

@@ -30,7 +30,7 @@ const KEY_GROUPS: Group[] = [
   {
     title: 'Cảnh & chọn',
     rows: [
-      ['N', 'Cảnh tiếp theo, đặt ngay bên dưới cảnh đang chọn (giữ ảnh/video tham chiếu và cấu hình) · cảnh mới khi chưa chọn gì'],
+      ['N', 'Cảnh tiếp theo, đặt ngay bên dưới cảnh đang chọn (giữ ảnh tham chiếu và cấu hình) · cảnh mới khi chưa chọn gì'],
       ['Ctrl+D', 'Nhân bản cảnh đang chọn'],
       [
         IS_MAC ? 'Delete / ⌫' : 'Delete',
@@ -92,21 +92,21 @@ const GESTURES: Group[] = [
         'Kéo từ chấm teal của nhân vật, thả ở bất kỳ đâu trên thẻ cảnh (không cần trúng chấm): thêm ảnh tham chiếu @image_N. Kéo từ một nhân vật trong nhóm đang chọn → nối cả nhóm; thả vào cảnh đang được chọn cùng cảnh khác → nối vào mọi cảnh đang chọn.',
       ],
       [
-        'Chấm tím của video → cảnh',
-        'Kéo từ video (take) đã tạo xong, thả ở bất kỳ đâu trên thẻ cảnh khác: dùng làm video tham chiếu @video_N. Cùng quy tắc nhóm như trên; video chưa xong hoặc của chính cảnh đó không nối được.',
+        'Chấm tím của video → Thư mục',
+        'Kéo từ video (take) vào một Thư mục để lưu file. Video không dùng làm tham chiếu cho cảnh được nữa (thả lên cảnh: không nối gì).',
       ],
       [
         'Thả ra chỗ trống',
-        'Từ nhân vật: “Tạo cảnh mới có @Tag” hoặc “Nối vào N cảnh đang chọn”. Từ video: “Tạo cảnh tiếp nối từ video này” (cảnh mới bên dưới, video thành @video_1) hoặc “Dùng làm @video cho N cảnh đang chọn”.',
+        'Từ nhân vật: “Tạo cảnh mới có @Tag” hoặc “Nối vào N cảnh đang chọn”. Từ video: “Tạo cảnh tiếp theo từ video này” (cảnh mới cạnh video, cùng ảnh tham chiếu và cấu hình của video đó, prompt để trống).',
       ],
-      ['Thư viện → cảnh', 'Kéo thẻ nhân vật hoặc video (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas.'],
+      ['Thư viện → cảnh', 'Kéo thẻ nhân vật (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas.'],
       ['Thư viện → nền', 'Đặt nhân vật lên canvas tại điểm thả. Thả file ảnh → tạo nhân vật mới.'],
       ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
       [
         'Bấm dây',
-        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${IS_MAC ? '⌘' : 'Ctrl'}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image/@video trong prompt tự đánh lại (hoàn tác được).`,
+        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${IS_MAC ? '⌘' : 'Ctrl'}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image trong prompt tự đánh lại (hoàn tác được).`,
       ],
-      ['Gõ @', 'Trong prompt: chọn ảnh/video để chèn @image_N / @video_N (ảnh chưa nối sẽ được nối luôn).'],
+      ['Gõ @', 'Trong prompt: chọn ảnh để chèn @image_N (ảnh chưa nối sẽ được nối luôn).'],
       ['ĐẦU / CUỐI', 'MiniMax-H3 chế độ Khung đầu → cuối: thả nhân vật vào chấm ĐẦU hoặc CUỐI.'],
     ],
   },

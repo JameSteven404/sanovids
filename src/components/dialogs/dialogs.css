@@ -419,9 +419,11 @@
   font-size: 0.95em;
   font-weight: 600;
 }
+/* retired @video text (reference videos were retired): imported as written, blocks the run */
 .dg-tok.video {
-  background: var(--video-soft);
-  color: var(--video);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  text-decoration: line-through var(--danger);
 }
 .dg-tok.bad {
   background: var(--danger-soft);
@@ -508,8 +510,8 @@
   color: var(--ref);
 }
 .dg-tok-count.video {
-  background: var(--video-soft);
-  color: var(--video);
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 /* side panel */

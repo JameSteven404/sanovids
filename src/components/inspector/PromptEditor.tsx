@@ -1,14 +1,17 @@
-// Scene prompt editor. The prompt is sent exactly as written; media are referenced with numbered tokens
-// @image_N (scene.refs order) and @video_N (scene.videoRefs order).
+// Scene prompt editor. The prompt is sent exactly as written; reference images are named with numbered tokens
+// @image_N (scene.refs order).
 // - The textarea is controlled by LOCAL state so typing in a 6k+ char prompt stays instant; the store is
 //   updated through a short throttle (and immediately on blur / token insert / Ctrl shortcuts).
 // - Tokens are highlighted INSIDE the textarea: the textarea text is transparent and a backdrop mirror layer
 //   (same font metrics, scroll synced) draws the colored text behind it.
-// - Typing "@" opens a caret-anchored popup: linked images, linked videos, library assets ("Nối & chèn").
-// - Legend under the textarea: one chip per image / video; click inserts, hover highlights occurrences.
-// - Library cards / generated videos dropped on the textarea are linked to the scene and their @image_N /
-//   @video_N tokens inserted where they were dropped (plain text drops keep the browser's behavior).
-import { AtSign, Film, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
+// - Typing "@" opens a caret-anchored popup: linked images, library assets ("Nối & chèn").
+// - Legend under the textarea: one chip per image; click inserts, hover highlights occurrences.
+// - Library cards dropped on the textarea are linked to the scene and their @image_N tokens inserted where they were
+//   dropped (plain text drops keep the browser's behavior). A generated video dropped here links nothing (reference
+//   videos were retired in 0.6.0): only a hint.
+// - Retired @video text (older projects) is struck through in red — exactly where core/compile retiredVideoTokens
+//   finds what blocks the run — and offered explicit, undoable quick fixes (RetiredFix, src/videoRetired.ts).
+import { AtSign, Ban, CircleAlert, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -24,30 +27,29 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { takeLabel } from '../../actions'
-import { assetByTag, sceneCode } from '../../core/compile'
-import { MODELS, usesRefs, usesVideoRefs } from '../../core/models'
+import { refuseTakesAsReference, VIDEO_NOT_REFERENCE_TEXT } from '../../actions'
+import { assetByTag, continueStarterOf, sceneCode } from '../../core/compile'
+import { MODELS, usesRefs } from '../../core/models'
 import type { Asset } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
 import { flushAll, flushScenes, register as registerDraft } from '../../lib/promptDrafts'
 import { undoToastAction, useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
 import { toast } from '../../store/ui'
+import { removeContinueStarter, removeRetiredTokenFromScene, retiredTokenCounts } from '../../videoRetired'
 import { sceneMapOf } from '../canvas/canvasModel'
 import { AssetAvatar, MediaImg } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from './caret'
-import { useTakeInfos } from './hooks'
 import { useImagePreview } from './ImagePreview'
 import { findMention, popupPlacement, sameToken, type MentionToken } from './mentions'
 import { EMPTY_IDS, fmt, KIND_LABEL, usePref } from './shared'
 import {
   imageOptsFor,
   insertAt,
+  labelChecker,
   legacyAssets,
   legacyFixMessage,
   mediaCountLabel,
   planImageLinks,
-  planVideoLinks,
   remapOffset,
   renumberImageTokens,
   replaceLegacyTags,
@@ -59,7 +61,6 @@ import {
   type LibraryOpt,
   type MediaSuggestion,
   type Seg,
-  type VideoOpt,
 } from './tokens'
 
 const COMMIT_MS = 160
@@ -72,8 +73,8 @@ const isTagWord = (word: string) => !!assetByTag(useProject.getState().project.a
 
 /**
  * Commit the text being typed in every editor of `sceneId` (no-op when none is mounted). Mounted editors register
- * their flush in lib/promptDrafts; structural changes (actions.linkAssets / linkTakes / requestRun, edges.cutEdge)
- * call promptDrafts.flushScenes themselves.
+ * their flush in lib/promptDrafts; structural changes (actions.linkAssets / requestRun, edges.cutEdge, the retired
+ * @video quick fixes) call promptDrafts.flushScenes themselves.
  */
 export function flushPromptEditor(sceneId: string) {
   flushScenes([sceneId])
@@ -84,7 +85,7 @@ export function flushAllPromptEditors(): void {
   flushAll()
 }
 
-export type TokenHighlight = { kind: 'image' | 'video'; n: number } | null
+export type TokenHighlight = { kind: 'image'; n: number } | null
 
 /** Toast for assets auto-linked by legacy @Tag mentions (pasted text). "Hoàn tác" unlinks them and turns
  *  their @Tag mentions into plain names, in one undo step (otherwise the next edit would link them again). */
@@ -110,8 +111,8 @@ function undoAutoLink(sceneId: string, linked: string[]) {
   let { text } = replaceLegacyTags(scene.prompt, byTag)
   // Dropping refs moves the numbers after them (a token inserted meanwhile, or "Đổi @Tên → @image_N"): renumber
   // like every other refs change, in the same undo step.
-  if (st.project.settings.autoRenumber) text = renumberImageTokens(text, st.project.assets, scene.refs, refs, scene.videoRefs)
-  st.restoreScene(sceneId, { prompt: text, refs, videoRefs: scene.videoRefs, settings: scene.settings })
+  if (st.project.settings.autoRenumber) text = renumberImageTokens(text, st.project.assets, scene.refs, refs)
+  st.restoreScene(sceneId, { prompt: text, refs, settings: scene.settings })
   toast(`Đã bỏ nối ${assets.map((a) => '@' + a.tag).join(', ')} — giữ tên trong prompt.`, { action: undoToastAction() })
 }
 
@@ -123,7 +124,7 @@ interface DropCaret {
   height: number
 }
 
-/** Library cards / generated videos being dragged. Anything else (plain text, files) keeps the default behavior. */
+/** Library cards / generated videos (refused) being dragged. Anything else (plain text, files) keeps the default behavior. */
 function mediaDragKind(dt: DataTransfer | null): MediaDrag | null {
   if (!dt) return null
   const types = Array.from(dt.types)
@@ -145,8 +146,8 @@ function allowedEffect(dt: DataTransfer): DataTransfer['dropEffect'] {
 interface MediaPlan {
   /** Tokens to insert, in drop / pick order. */
   tokens: string[]
-  /** New refs / videoRefs of the scene, or null when nothing new is linked. */
-  media: { refs?: string[]; videoRefs?: string[] } | null
+  /** New refs of the scene, or null when nothing new is linked. */
+  media: { refs?: string[] } | null
   /** Success message once applied (null: nothing was linked). */
   done: string | null
 }
@@ -168,36 +169,14 @@ function planAssets(sceneId: string, ids: string[]): MediaPlan | null {
   }
 }
 
-/** Link dropped takes as reference videos (only finished ones, never the scene's own): their @video_N tokens. */
-function planTakes(sceneId: string, ids: string[]): MediaPlan | null {
-  const scene = useProject.getState().project.scenes.find((s) => s.id === sceneId)
-  if (!scene) return null
-  const limit = usesVideoRefs(scene.settings) ? MODELS[scene.settings.model].maxRefVideos : 0
-  const plan = planVideoLinks(sceneId, scene.videoRefs, ids, useRuns.getState().takes, limit)
-  if (plan.notReady) toast('Video chưa tạo xong nên chưa dùng làm tham chiếu được.', { tone: 'warning' })
-  if (plan.own) toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó.', { tone: 'warning' })
-  if (plan.overLimit) toast('Không nối được: model/chế độ của cảnh không nhận thêm video tham chiếu.', { tone: 'warning' })
-  return {
-    tokens: plan.tokens,
-    media: plan.linked.length ? { videoRefs: plan.videoRefs } : null,
-    done: plan.linked.length ? `Đã nối ${plan.linked.map(takeLabel).join(', ')} làm video tham chiếu của ${sceneCode(scene.order)} → ${plan.tokens.join(' ')}.` : null,
-  }
-}
-
 export function PromptEditor({ sceneId }: { sceneId: string }) {
   // sceneMapOf: one cached id → scene map per scenes array, shared by every selector (no scan of 600 scenes each).
   const storePrompt = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.prompt ?? '')
   const refs = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.refs) ?? EMPTY_IDS
-  const videoRefs = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.videoRefs) ?? EMPTY_IDS
   const assets = useProject((s) => s.project.assets)
   const settings = useProject((s) => sceneMapOf(s.project.scenes).get(sceneId)?.settings)
-  const takeInfos = useTakeInfos(videoRefs)
 
   const imageOpts = useMemo(() => imageOptsFor(assets, refs), [assets, refs])
-  const videoOpts = useMemo<VideoOpt[]>(
-    () => takeInfos.map((t, i) => ({ n: i + 1, takeId: t.id, label: t.label, posterId: t.posterId, status: t.status ?? 'deleted' })),
-    [takeInfos],
-  )
   const libraryOpts = useMemo<LibraryOpt[]>(
     () => assets.filter((a) => a.imageIds.length && !refs.includes(a.id)).map((a) => ({ assetId: a.id, name: a.name, tag: a.tag, kind: a.kind })),
     [assets, refs],
@@ -236,7 +215,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   )
   /** Commit the text together with newly linked media (MediaPlan.media): one store step, one undo. */
   const commitWithMedia = useCallback(
-    (media: { refs?: string[]; videoRefs?: string[] }) => {
+    (media: { refs?: string[] }) => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
         timerRef.current = null
@@ -245,13 +224,8 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       const scene = st.project.scenes.find((s) => s.id === sceneId)
       if (!scene) return
       committedRef.current = textRef.current
-      // New refs / videoRefs are appended, so the existing @image_N / @video_N numbers do not move.
-      st.restoreScene(sceneId, {
-        prompt: textRef.current,
-        refs: media.refs ?? scene.refs,
-        videoRefs: media.videoRefs ?? scene.videoRefs,
-        settings: scene.settings,
-      })
+      // New refs are appended, so the existing @image_N numbers do not move.
+      st.restoreScene(sceneId, { prompt: textRef.current, refs: media.refs ?? scene.refs, settings: scene.settings })
     },
     [sceneId],
   )
@@ -386,13 +360,13 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   )
 
   const suggestions = useMemo<MediaSuggestion[]>(
-    () => (mention ? suggestMedia(mention.query, imageOpts, videoOpts, libraryOpts) : []),
-    [mention, imageOpts, videoOpts, libraryOpts],
+    () => (mention ? suggestMedia(mention.query, imageOpts, libraryOpts) : []),
+    [mention, imageOpts, libraryOpts],
   )
 
   /**
    * Replace text[start, end) with `token` (+ spacing) through the native undo stack, then commit — with `media`
-   * (refs / videoRefs linked for these tokens) in the same store step.
+   * (refs linked for these tokens) in the same store step.
    */
   const replaceRange = useCallback(
     (start: number, end: number, token: string, media?: MediaPlan['media']) => {
@@ -466,7 +440,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     [replaceRange],
   )
 
-  // ---------- drops: library cards (@image_N) and generated videos (@video_N) ----------
+  // ---------- drops: library cards (@image_N); generated videos are refused (reference videos were retired) ----------
   const [drop, setDrop] = useState<{ kind: MediaDrag; caret: DropCaret | null } | null>(null)
   /** Last dragover point and the text offset it maps to (dragover fires continuously while still). */
   const dropPoint = useRef<{ x: number; y: number; at: number } | null>(null)
@@ -497,6 +471,12 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     const kind = mediaDragKind(e.dataTransfer)
     if (!kind) return
     e.preventDefault()
+    if (kind === 'takes') {
+      // Never a drop target for a video: no caret, only the hint (and the drop below says so too).
+      e.dataTransfer.dropEffect = 'none'
+      if (drop?.kind !== 'takes') setDrop({ kind, caret: null })
+      return
+    }
     e.dataTransfer.dropEffect = allowedEffect(e.dataTransfer)
     const ta = e.currentTarget
     const prevAt = dropPoint.current?.at
@@ -517,13 +497,18 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       return // plain text: the browser inserts it (onChange follows)
     }
     e.preventDefault()
-    const ids = readIds(e.dataTransfer, kind === 'assets' ? ASSETS_MIME : TAKES_MIME)
+    if (kind === 'takes') {
+      endDrop()
+      refuseTakesAsReference()
+      return
+    }
+    const ids = readIds(e.dataTransfer, ASSETS_MIME)
     const at = dropOffset(e.clientX, e.clientY)
     endDrop()
     if (!ids.length) return
     commit()
-    // Appending refs / videoRefs never renumbers existing tokens, so `at` stays valid.
-    const plan = kind === 'assets' ? planAssets(sceneId, ids) : planTakes(sceneId, ids)
+    // Appending refs never renumbers existing tokens, so `at` stays valid.
+    const plan = planAssets(sceneId, ids)
     if (!plan?.tokens.length) return
     const pos = Math.min(at, textRef.current.length)
     // replaceRange keeps the "@" popup closed for the last token when the caret ends right after it. The new links
@@ -572,15 +557,15 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
   // What the request really carries: a token past the model's limit (or in a mode without references) is shown
   // invalid, like a missing one — the model would never see that picture.
   const sentImages = settings && usesRefs(settings) ? Math.min(imageOpts.length, MODELS[settings.model].maxRefImages) : 0
-  const sentVideos = settings && usesVideoRefs(settings) ? Math.min(videoRefs.length, MODELS[settings.model].maxRefVideos) : 0
-  const segs = useMemo(
-    () => segmentPrompt(text, imageOpts.length, videoRefs.length, legacyTags, { images: sentImages, videos: sentVideos }),
-    [text, imageOpts.length, videoRefs.length, legacyTags, sentImages, sentVideos],
-  )
+  // A label glued to a token ("@image_2(Lumi)") that does not fit its picture is red too (core/compile blocks it).
+  const labels = useMemo(() => labelChecker(assets, refs), [assets, refs])
+  const segs = useMemo(() => segmentPrompt(text, imageOpts.length, legacyTags, { images: sentImages }, labels), [text, imageOpts.length, legacyTags, sentImages, labels])
   // Everything else may lag behind fast typing.
   const deferredText = useDeferredValue(text)
   const charCount = useMemo(() => [...deferredText].length, [deferredText])
   const legacy = useMemo(() => legacyAssets(deferredText, assets), [deferredText, assets])
+  const retired = useMemo(() => retiredTokenCounts(deferredText), [deferredText])
+  const starter = useMemo(() => (retired.length ? continueStarterOf(deferredText) : null), [retired.length, deferredText])
 
   const fixLegacy = useCallback(() => {
     commit({ silent: true })
@@ -596,7 +581,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
     }
     const { text: next, replaced } = replaceLegacyTags(scene.prompt, tokens)
     // Links + renamed mentions in one undo step (the toast's "Hoàn tác" undoes both).
-    if (replaced) st.restoreScene(sceneId, { prompt: next, refs: plan.refs, videoRefs: scene.videoRefs, settings: scene.settings })
+    if (replaced) st.restoreScene(sceneId, { prompt: next, refs: plan.refs, settings: scene.settings })
     else if (plan.overLimit) toast('Không nối được: vượt giới hạn ảnh của model.', { tone: 'warning' })
     const msg = legacyFixMessage(replaced, plan.noImage, plan.overLimit)
     if (msg) toast(msg.text, { tone: msg.tone, ...(replaced ? { action: undoToastAction() } : {}) })
@@ -612,7 +597,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
           value={text}
           spellCheck={false}
           rows={8}
-          placeholder={'Mô tả cảnh… Gõ @ để chèn ảnh (@image_1) hoặc video (@video_1) tham chiếu.\nVí dụ: At dusk @image_1 climbs the last rocky slope above @image_2…'}
+          placeholder={'Mô tả cảnh… Gõ @ để chèn ảnh tham chiếu (@image_1).\nVí dụ: At dusk @image_1 climbs the last rocky slope above @image_2…'}
           onChange={(e) => {
             const v = e.target.value
             textRef.current = v
@@ -657,7 +642,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
               </>
             ) : (
               <>
-                <Film size={12} /> Thả để dùng làm <b>@video_N</b> tại đây
+                <Ban size={12} /> {VIDEO_NOT_REFERENCE_TEXT}
               </>
             )}
           </div>
@@ -677,14 +662,15 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       <div className="in-pe-meta">
         <span className="in-pe-hint">
           <AtSign size={12} />
-          Gõ <span className="kbd">@</span> hoặc kéo nhân vật / video vào ô để chèn tham chiếu
+          Gõ <span className="kbd">@</span> hoặc kéo nhân vật vào ô để chèn ảnh tham chiếu
         </span>
         <span className="mono faint" title="Số ký tự của prompt (được gửi đúng như viết)">
           {fmt(charCount)} ký tự
         </span>
       </div>
+      {retired.length > 0 && <RetiredFix sceneId={sceneId} tokens={retired} starter={starter} />}
       {legacy.length > 0 && <LegacyFix assets={legacy} imageOpts={imageOpts} onFix={fixLegacy} />}
-      <TokenLegend images={imageOpts} videos={videoOpts} onInsert={insertAtCaret} onHover={setHl} />
+      <TokenLegend images={imageOpts} onInsert={insertAtCaret} onHover={setHl} />
     </div>
   )
 }
@@ -697,13 +683,50 @@ const Backdrop = memo(function Backdrop({ backRef, segs, hl }: { backRef: RefObj
         if (s.kind === 'text') return s.text
         const isHl = !!hl && hl.kind === s.kind && hl.n === s.n
         return (
-          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''} ${isHl ? 'is-hl' : ''}`}>
+          <mark key={i} className={`in-tk is-${s.kind} ${s.invalid ? 'is-invalid' : ''} ${s.reason === 'retired' ? 'is-retired' : ''} ${isHl ? 'is-hl' : ''}`}>
             {s.text}
           </mark>
         )
       })}
       {/* A trailing newline needs something after it to take up a line, like it does in the textarea. */}
       {'​'}
+    </div>
+  )
+})
+
+// ---------------- retired @video text: explicit quick fixes (one undo step each) ----------------
+const RetiredFix = memo(function RetiredFix({ sceneId, tokens, starter }: { sceneId: string; tokens: { text: string; count: number }[]; starter: string | null }) {
+  const keep = (e: { preventDefault: () => void }) => e.preventDefault() // the editor commits its text first (flushScenes)
+  const list = tokens.map((t) => t.text)
+  return (
+    <div className="in-retired" role="note">
+      <span className="in-retired-text">
+        <CircleAlert size={12} />
+        <span>
+          Prompt còn {list.slice(0, 3).join(', ')}
+          {list.length > 3 ? '…' : ''}: SanoVids đã bỏ video tham chiếu — cảnh chưa chạy được cho tới khi bạn xoá hoặc viết lại chữ đó bằng lời.
+        </span>
+      </span>
+      <span className="in-retired-actions">
+        {starter && (
+          <button type="button" className="in-hint-btn" onMouseDown={keep} onClick={() => removeContinueStarter(sceneId)} title="Chỉ xoá câu mở đầu mà bản cũ tự chèn (Ctrl+Z để hoàn tác)">
+            Xoá câu “{starter}”
+          </button>
+        )}
+        {tokens.map((t) => (
+          <button
+            type="button"
+            key={t.text}
+            className="in-hint-btn"
+            onMouseDown={keep}
+            onClick={() => removeRetiredTokenFromScene(sceneId, t.text)}
+            title={`Xoá ${t.text}${t.count > 1 ? ` (${t.count} chỗ)` : ''} khỏi prompt — chữ khác giữ nguyên (Ctrl+Z để hoàn tác)`}
+          >
+            Xoá {t.text}
+            {t.count > 1 ? ` (${t.count})` : ''}
+          </button>
+        ))}
+      </span>
     </div>
   )
 })
@@ -732,24 +755,22 @@ const LegacyFix = memo(function LegacyFix({ assets, imageOpts, onFix }: { assets
 // ---------------- legend ----------------
 const TokenLegend = memo(function TokenLegend({
   images,
-  videos,
   onInsert,
   onHover,
 }: {
   images: ImageOpt[]
-  videos: VideoOpt[]
   onInsert: (token: string) => void
   onHover: (h: TokenHighlight) => void
 }) {
   // Hovering an @image chip shows the whole picture (the chip's thumbnail is a tiny square crop).
   const preview = useImagePreview()
-  if (!images.length && !videos.length) {
-    return <div className="in-legend-empty faint">Chưa có ảnh / video tham chiếu — gõ @ để nối từ thư viện, hoặc kéo nhân vật / video vào cảnh.</div>
+  if (!images.length) {
+    return <div className="in-legend-empty faint">Chưa có ảnh tham chiếu — gõ @ để nối từ thư viện, hoặc kéo nhân vật vào cảnh.</div>
   }
   const keep = (e: { preventDefault: () => void }) => e.preventDefault() // keep the caret in the textarea
   return (
     <div className="in-legend" onMouseLeave={() => onHover(null)}>
-      <span className="in-legend-count">{mediaCountLabel(images.length, videos.length)}</span>
+      <span className="in-legend-count">{mediaCountLabel(images.length)}</span>
       {images.map((o) => (
         <button
           type="button"
@@ -777,23 +798,6 @@ const TokenLegend = memo(function TokenLegend({
           </span>
         </button>
       ))}
-      {videos.map((v) => (
-        <button
-          type="button"
-          key={'v' + v.n}
-          className={`in-legend-chip is-video ${v.status === 'completed' ? '' : 'is-off'}`}
-          onMouseDown={keep}
-          onClick={() => onInsert(`@video_${v.n}`)}
-          onMouseEnter={() => onHover({ kind: 'video', n: v.n })}
-          onFocus={() => onHover({ kind: 'video', n: v.n })}
-          onBlur={() => onHover(null)}
-          title={`Chèn @video_${v.n} (${v.label})`}
-        >
-          {v.posterId ? <MediaImg id={v.posterId} className="in-legend-thumb is-wide" /> : <Film size={12} className="in-legend-icon" />}
-          <span className="in-legend-tok">@video_{v.n}</span>
-          <span className="in-legend-name">· {v.label}</span>
-        </button>
-      ))}
       {preview.preview}
     </div>
   )
@@ -805,7 +809,6 @@ type PopPos = { left: number; top?: number; bottom?: number; maxHeight: number }
 
 const GROUP_LABEL: Record<MediaSuggestion['type'], string> = {
   image: 'Ảnh đã nối',
-  video: 'Video đã nối',
   link: 'Thư viện — nối & chèn',
 }
 
@@ -892,13 +895,13 @@ const MentionPopup = memo(function MentionPopup({
             Tìm <b>@{query}</b>…
           </span>
         ) : (
-          <span>Chèn ảnh / video tham chiếu</span>
+          <span>Chèn ảnh tham chiếu</span>
         )}
       </div>
       <div className="in-mention-list" ref={listRef} onMouseMove={onListMove}>
         {items.map((s, i) => (
           <MentionRow
-            key={s.type === 'image' ? 'i' + s.n : s.type === 'video' ? 'v' + s.n : 'l' + s.assetId}
+            key={s.type === 'image' ? 'i' + s.n : 'l' + s.assetId}
             s={s}
             idx={i}
             group={!query && (i === 0 || items[i - 1].type !== s.type) ? GROUP_LABEL[s.type] : null}
@@ -961,18 +964,6 @@ function MentionRow({
               </span>
             </span>
             <ImageIcon size={12} className="in-mention-kindicon" />
-          </>
-        )}
-        {s.type === 'video' && (
-          <>
-            {s.posterId ? <MediaImg id={s.posterId} className="in-mention-thumb is-wide" /> : <span className="in-mention-thumb is-wide in-mention-nothumb"><Film size={12} /></span>}
-            <span className="in-mention-text">
-              <span className="in-mention-name">
-                <span className="in-mention-tok">@video_{s.n}</span> · {s.label}
-              </span>
-              <span className="in-mention-tag">{s.status === 'completed' ? 'Video tham chiếu' : 'Video chưa sẵn sàng'}</span>
-            </span>
-            <Film size={12} className="in-mention-kindicon" />
           </>
         )}
         {s.type === 'link' && <LibraryRow s={s} />}

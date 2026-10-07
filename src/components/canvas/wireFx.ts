@@ -212,26 +212,18 @@ export function wireHitPath(d: string, trim = WIRE_HIT_TRIM): string {
   return t ? cubicPath(t) : d
 }
 
-/** Color of a scene's reference dot when wires other than images are drawn into it (canvas.css .cv-h-ref.is-…). */
+/**
+ * @deprecated Color of a scene's reference dot when @video wires were drawn into it. Reference videos were retired
+ * (0.6.0): only image wires reach the dot, so refDotTones never returns a tone. Kept so older callers still compile.
+ */
 export type RefDotTone = 'video' | 'mixed'
 
 /**
- * The color of each scene's reference dot, from the wires actually drawn into it ('ref' handle): only @video wires →
- * 'video' (purple), images and @video → 'mixed' (two-tone). Scenes with only image wires, or none, are left out (teal).
- * A reference that has no wire (an image that is not on the canvas, a deleted video) does not color the dot.
+ * @deprecated Always an empty map: reference videos were retired (0.6.0), every wire into a scene's reference dot is
+ * an image wire (teal). Kept so older callers still compile.
  */
-export function refDotTones(wires: Iterable<{ kind: EdgeKind; target: string; targetHandle?: string | null }>): Map<string, RefDotTone> {
-  const seen = new Map<string, { image: boolean; video: boolean }>()
-  for (const w of wires) {
-    if (w.targetHandle !== 'ref' || (w.kind !== 'ref' && w.kind !== 'vref')) continue
-    const s = seen.get(w.target) ?? { image: false, video: false }
-    if (w.kind === 'ref') s.image = true
-    else s.video = true
-    seen.set(w.target, s)
-  }
-  const out = new Map<string, RefDotTone>()
-  for (const [id, s] of seen) if (s.video) out.set(id, s.image ? 'mixed' : 'video')
-  return out
+export function refDotTones(_wires: Iterable<{ kind: EdgeKind; target: string; targetHandle?: string | null }>): Map<string, RefDotTone> {
+  return new Map()
 }
 
 /**
@@ -252,13 +244,13 @@ export type WireSourceType = 'asset' | 'take' | 'scene' | 'folder'
 export interface WireSource {
   type: WireSourceType
   id: string
-  /** Take sources: finished (only a finished video can become @video of a scene). */
+  /** @deprecated Ignored: a video is never wired to a scene any more (reference videos were retired in 0.6.0). */
   takeReady?: boolean
-  /** Take sources: its own scene (a scene cannot reference its own video). */
+  /** @deprecated Ignored (see takeReady). */
   takeSceneId?: string | null
   /**
-   * The scene end of an existing image / @video wire is being moved (reconnect): it can only go to another scene —
-   * never into a folder (that would neither move the wire nor save the video).
+   * The scene end of an existing image wire is being moved (reconnect): it can only go to another scene — never into
+   * a folder.
    */
   reconnect?: boolean
 }
@@ -276,8 +268,9 @@ export type WireVerdict = 'valid' | 'invalid' | 'idle'
 
 /**
  * What releasing a wire over this card would do — the same rules as CanvasView.onConnectEnd: images go to scenes;
- * a finished video goes to another scene (@video) or into a folder; a scene's right dot goes into a folder (auto-save);
- * a folder's dot goes to a video or a scene. 'idle' = over nothing / its own card (release opens the menu or does nothing).
+ * a video goes into a folder only (never onto a scene: reference videos were retired in 0.6.0); a scene's right dot
+ * goes into a folder (auto-save); a folder's dot goes to a video or a scene. 'idle' = over nothing / its own card
+ * (release opens the menu or does nothing).
  */
 export function wireVerdict(src: WireSource, over: { id: string; type?: string | null } | null): WireVerdict {
   if (!over || over.id === src.id) return 'idle'
@@ -286,9 +279,7 @@ export function wireVerdict(src: WireSource, over: { id: string; type?: string |
     case 'asset':
       return over.type === 'scene' ? 'valid' : 'invalid'
     case 'take':
-      if (over.type === 'folder') return 'valid'
-      if (over.type === 'scene') return src.takeReady && src.takeSceneId !== over.id ? 'valid' : 'invalid'
-      return 'invalid'
+      return over.type === 'folder' ? 'valid' : 'invalid'
     case 'scene':
       return over.type === 'folder' ? 'valid' : 'invalid'
     case 'folder':
@@ -296,7 +287,7 @@ export function wireVerdict(src: WireSource, over: { id: string; type?: string |
   }
 }
 
-/** Color of a wire being dragged (theme tokens): images teal (H3 frame handles their own color), videos purple, saving indigo. */
+/** Color of a wire being dragged (theme tokens): images teal (H3 frame handles their own color), a video's purple, saving indigo. */
 export function wireDragColor(type: string | undefined, toHandleId?: string | null): string {
   if (type === 'take') return 'var(--video)'
   if (type === 'scene' || type === 'folder') return 'var(--save)'
@@ -313,7 +304,8 @@ export function snapHandleFor(srcType: WireSourceType, overType: string | undefi
     if (overType === 'scene') return { type: 'source', id: 'take' }
     return null
   }
-  return overType === 'scene' ? { type: 'target', id: 'ref' } : null
+  // a video never wires into a scene (reference videos were retired in 0.6.0)
+  return overType === 'scene' && srcType !== 'take' ? { type: 'target', id: 'ref' } : null
 }
 
 /** What pickNodeAt needs of a React Flow internal node (structural: InternalNode fits). */

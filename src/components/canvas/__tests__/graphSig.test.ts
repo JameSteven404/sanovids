@@ -7,7 +7,7 @@ const scene: Scene = {
   id: 's1', order: 1, title: 'Cảnh', prompt: 'Rừng', note: '', refs: [], videoRefs: [], presetId: null,
   settings: { model: 'seedance_2_5', mode: 't2v', duration: 5, resolution: '720p', ratio: '16:9' },
   firstFrame: null, lastFrame: null, color: null, position: { x: 0, y: 0 }, size: null,
-  foreignModel: undefined, foreignSettings: undefined,
+  foreignModel: undefined, foreignSettings: undefined, legacyVideoRefs: undefined,
 }
 const asset: Asset = { id: 'a1', kind: 'character', name: 'An', tag: 'An', description: '', imageIds: ['img'], color: 'var(--ref)', position: { x: 0, y: 0 }, size: null }
 const initial = useProject.getState().project
