@@ -1,6 +1,6 @@
 import type { Project, Take, VideoSettings } from '../core/types'
 
-export const SIZES = { M: { scenes: 300, takes: 600 }, L: { scenes: 600, takes: 1200 }, XL: { scenes: 1000, takes: 3000 } } as const
+export const SIZES = { M: { scenes: 300, takes: 600 }, L: { scenes: 600, takes: 1200 }, XL: { scenes: 1000, takes: 3000 }, XXL: { scenes: 3000, takes: 6000 } } as const
 export type PerfSize = keyof typeof SIZES
 /**
  * The 0.6.0 canvas layout (store/project LAYOUT / ROW_H — literal here: this module stays free of the stores; synth.test
@@ -18,8 +18,8 @@ export function mulberry32(seed: number) {
   }
 }
 export function synthProject(spec: SynthSpec, seed = 20261006): { project: Project; runs: { takes: Take[]; credits: number; spent: number } } {
-  if (!Number.isInteger(spec.scenes) || spec.scenes < 1 || spec.scenes > 2000 || !Number.isInteger(spec.takes)
-    || spec.takes < spec.scenes || spec.takes > 6000 || !Number.isSafeInteger(seed)) throw new Error('Cỡ thử không hợp lệ (1–2.000 cảnh, tối đa 6.000 video).')
+  if (!Number.isInteger(spec.scenes) || spec.scenes < 1 || spec.scenes > 3000 || !Number.isInteger(spec.takes)
+    || spec.takes < spec.scenes || spec.takes > 6000 || !Number.isSafeInteger(seed)) throw new Error('Cỡ thử không hợp lệ (1–3.000 cảnh, tối đa 6.000 video).')
   const random = mulberry32(seed)
   const id = (kind: string, n = 0) => `prf_${seed}_${spec.scenes}_${spec.takes}_${kind}_${n}`
   const settings: VideoSettings = { model: 'seedance_2_5', mode: 'i2v', duration: 5, resolution: '720p', ratio: '16:9' }
@@ -60,4 +60,13 @@ export function synthProject(spec: SynthSpec, seed = 20261006): { project: Proje
       provider: 'dev', remoteId: null, charged: false }
   })
   return { project, runs: { takes, credits: 1000, spent: 0 } }
+}
+
+/** 200 unused library cards, sharing journalled media; no new blobs or canvas tiles to clean up. */
+export function libraryFixture(project: Project): Project {
+  const template = project.assets[0]
+  if (!template) throw new Error('Dự án thử cần ít nhất một ảnh thư viện.')
+  return { ...project, assets: [...project.assets, ...Array.from({ length: 200 }, (_, i) => ({
+    ...template, id: `${project.id}_library_${i}`, name: `Mục thử thư viện ${i + 1}`, tag: `PerfLibrary${i + 1}`, position: null,
+  }))] }
 }

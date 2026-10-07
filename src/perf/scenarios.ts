@@ -1,5 +1,5 @@
 import { flushSync } from 'react-dom'
-import { useProject } from '../store/project'
+import { undo, useProject } from '../store/project'
 import { useRuns, stopEngine } from '../store/runs'
 import { useSceneEditor } from '../store/sceneEditor'
 import { flush, switchProject } from '../store/persist'
@@ -7,6 +7,11 @@ import { useUI } from '../store/ui'
 import { flushAll } from '../lib/promptDrafts'
 import { frame, pause, settle, type work } from './measure'
 import { perfCanvas } from './probe'
+import { LOD_ZOOM } from '../components/canvas/canvasModel'
+import { cutEdge } from '../components/canvas/edges'
+import { edgeId } from '../actions'
+import { parsePlaceholders } from '../core/placeholders'
+import { libraryFixture } from './synth'
 
 export interface Scenario { id: string; label: string; run(sample: typeof work): Promise<void>; optional?: string }
 const element = <T extends HTMLElement>(selector: string): T => {
@@ -44,6 +49,60 @@ async function drag(sample: typeof work, count: number) {
   if (useProject.getState().project.scenes[0].position === scenes[0].position) throw new Error('Kéo thử chưa di chuyển thẻ; không có số đo hợp lệ.')
 }
 
+const nodeSelector = () => `.react-flow__node[data-id="${useProject.getState().project.scenes[0].id}"]`
+const nodeField = () => element<HTMLTextAreaElement>(`${nodeSelector()} .cv-sn-pr textarea`)
+function check(passed: boolean, message: string): asserts passed { if (!passed) throw new Error(message) }
+async function prepareNode() {
+  const scene = useProject.getState().project.scenes[0]
+  const api = perfCanvas()
+  check(!!api, 'Thiếu registerPerfCanvas.')
+  await api.setViewport({ x: 40 - scene.position.x, y: 40 - scene.position.y, zoom: 1 })
+  flushSync(() => useUI.getState().select([scene.id]))
+  await settle(nodeSelector())
+}
+function openNode() { element(`${nodeSelector()} .cv-sn-pr`).click() }
+function closeNode() {
+  nodeField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+}
+function checkEditor(open: boolean) {
+  check(document.querySelectorAll('.cv-sn-pr textarea').length === (open ? 1 : 0), 'Số khung sửa trên node không đúng.')
+  check(useSceneEditor.getState().sceneId === (open ? useProject.getState().project.scenes[0].id : null), 'Trạng thái khung sửa không đúng.')
+}
+async function typeText(sample: typeof work, textarea: HTMLTextAreaElement) {
+  textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+  const before = textarea.value
+  const text = ' Máy quay đi qua khu rừng xanh.'.repeat(5).slice(0, 120)
+  for (const character of text) {
+    await sample(() => { check(document.execCommand('insertText', false, character), 'Trình duyệt không chèn được chữ.') })
+    await pause(30)
+  }
+  check(textarea.value === before + text, 'Prompt chưa nhận đủ chữ thử.')
+  flushAll()
+  check(useProject.getState().project.scenes[0].prompt === before + text, 'Nháp chưa được ghi vào cảnh.')
+}
+async function prepareLibrary() {
+  const project = libraryFixture(useProject.getState().project)
+  flushSync(() => { useProject.setState({ project }); useUI.getState().setLibrarySelection([]) })
+  flushSync(() => {
+    document.querySelector<HTMLElement>('.sb-search-clear')?.click()
+    document.querySelector<HTMLElement>('.sb-library .sb-sec-toggle[aria-expanded="false"]')?.click()
+  })
+  flushSync(() => element('.sb-library .sb-kind').click()) // First tab: all kinds.
+  await settle('.sb-library .sb-grid')
+  const ids = project.assets.slice(-200).map((a) => a.id)
+  for (const id of ids) element(`.sb-library [data-asset-id="${id}"]`)
+  return ids
+}
+function selectLibrary(ids: string[]) {
+  element(`.sb-library [data-asset-id="${ids[0]}"]`).click()
+  element(`.sb-library [data-asset-id="${ids[199]}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+}
+function checkLibrary(ids: string[]) {
+  const selection = useUI.getState().librarySelection
+  check(selection.length === 200 && ids.every((id) => selection.includes(id)), 'Chưa chọn đúng 200 mục thư viện.')
+  check(document.querySelectorAll('.sb-library [aria-selected="true"][data-asset-id]').length === 200, 'Thư viện chưa hiển thị đủ 200 mục đã chọn.')
+}
+
 export function scenarios(projectId: string, alternateId: string): Scenario[] {
   const ids = () => useProject.getState().project.scenes.map((s) => s.id)
   return [
@@ -73,14 +132,7 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       // From 0.6.0 the prompt is typed on the scene node: the panel's prompt field is the wide composer, opened on demand.
       flushSync(() => useSceneEditor.getState().openPanel(ids()[0])); await frame()
       const textarea = element<HTMLTextAreaElement>('.app-right textarea[aria-label="Prompt của cảnh"]')
-      textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-      const before = textarea.value
-      for (const character of ' Máy quay đi qua khu rừng xanh.'.repeat(5).slice(0, 120)) {
-        await sample(() => { if (!document.execCommand('insertText', false, character)) throw new Error('Trình duyệt không chèn được chữ.') })
-        await pause(30)
-      }
-      flushAll()
-      if (textarea.value === before) throw new Error('Prompt chưa nhận chữ thử.')
+      await typeText(sample, textarea)
     } },
     { id: 'promptCommit', label: 'Commit prompt', run: async (sample) => {
       for (let i = 0; i < 40; i++) await sample(() => { useProject.getState().setScenePrompt(ids()[0], `Nháp đo ${i}`) })
@@ -110,8 +162,90 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
       useRuns.getState().toggleStar(useRuns.getState().takes[0].id)
       await sample(async () => { if (!await flush()) throw new Error('Không lưu được dữ liệu thử.') })
     } },
-    ...['typeNode', 'openEditor', 'closeEditor', 'panWithEditor', 'zoomWithEditor'].map((id) => ({ id,
-      label: ({ typeNode: 'Gõ trên thẻ', openEditor: 'Mở khung sửa', closeEditor: 'Đóng khung sửa', panWithEditor: 'Kéo khi sửa', zoomWithEditor: 'Zoom khi sửa' } as Record<string, string>)[id],
-      optional: 'Chờ giao diện E2 (ngoài Wave C Đợt 1).', run: async () => {} })),
+    { id: 'typeNode', label: 'Gõ trên thẻ', run: async (sample) => {
+      await prepareNode(); flushSync(openNode); await frame(); checkEditor(true)
+      await typeText(sample, nodeField())
+      checkEditor(true)
+    } },
+    ...(['openEditor', 'closeEditor'] as const).map((id) => ({ id,
+      label: id === 'openEditor' ? 'Mở khung sửa' : 'Đóng khung sửa', run: async (sample: typeof work) => {
+        await prepareNode()
+        for (let i = 0; i < 20; i++) {
+          if (id === 'openEditor') {
+            await sample(openNode); checkEditor(true)
+            flushSync(closeNode); await frame(); checkEditor(false)
+          } else {
+            flushSync(openNode); await frame(); checkEditor(true)
+            await sample(closeNode); checkEditor(false)
+          }
+        }
+      } })),
+    { id: 'expandSettings', label: 'Mở dòng cấu hình trên thẻ', run: async (sample) => {
+      await prepareNode()
+      for (let i = 0; i < 20; i++) {
+        await sample(() => element(`${nodeSelector()} .cv-sn-sum`).click())
+        element(`${nodeSelector()} .cv-sn-setx`)
+        check(useSceneEditor.getState().settingsSceneId === ids()[0], 'Dòng cấu hình chưa mở.')
+        flushSync(() => element(`${nodeSelector()} .cv-sn-setx-close`).click()); await frame()
+        check(useSceneEditor.getState().settingsSceneId === null, 'Dòng cấu hình chưa đóng.')
+      }
+    } },
+    ...(['panWithEditor', 'zoomWithEditor', 'lodSwitch'] as const).map((id) => ({ id,
+      label: ({ panWithEditor: 'Kéo khi sửa', zoomWithEditor: 'Zoom khi sửa', lodSwitch: 'Qua ngưỡng 55% hai chiều' })[id],
+      run: async (sample: typeof work) => {
+        await prepareNode()
+        if (id !== 'lodSwitch') { flushSync(openNode); await frame(); checkEditor(true) }
+        const api = perfCanvas()!, scene = useProject.getState().project.scenes[0]
+        // Keep the edited card in view; zoomWithEditor stays near, lodSwitch covers both sides and exactly 55%.
+        for (let i = 0; i < 30; i++) {
+          const zoom = id === 'lodSwitch' ? [LOD_ZOOM - 0.01, LOD_ZOOM, LOD_ZOOM + 0.01][i % 3]
+            : id === 'zoomWithEditor' ? 0.7 + (i % 10) * 0.03 : 1
+          await sample(() => { void api.setViewport({ x: 40 - scene.position.x * zoom + (id === 'panWithEditor' ? i * 2 : 0), y: 40 - scene.position.y * zoom, zoom }) })
+          check(element(`${nodeSelector()} .cv-scene`).classList.contains('is-far') === (zoom < LOD_ZOOM), 'Node chưa đổi mức chi tiết tại 55%.')
+          if (id !== 'lodSwitch') checkEditor(true)
+        }
+      } })),
+    ...(['librarySelect200', 'libraryDelete200'] as const).map((id) => ({ id,
+      label: id === 'librarySelect200' ? 'Chọn 200 mục thư viện' : 'Xoá 200 mục thư viện', run: async (sample: typeof work) => {
+        const selected = await prepareLibrary()
+        if (id === 'librarySelect200') {
+          await sample(() => selectLibrary(selected)); checkLibrary(selected)
+        } else {
+          flushSync(() => selectLibrary(selected)); await frame(); checkLibrary(selected)
+          const before = useProject.getState().project
+          await sample(() => element('.sb-library .sb-libfoot-del').click())
+          const after = useProject.getState().project
+          check(after.assets.length === before.assets.length - 200 && after.assets.every((a) => !selected.includes(a.id)), 'Chưa xoá đúng 200 mục thư viện.')
+          check(selected.every((assetId) => !document.querySelector(`.sb-library [data-asset-id="${assetId}"]`)), 'Card đã xoá vẫn còn trong thư viện.')
+          check(useUI.getState().librarySelection.length === 0, 'Lựa chọn thư viện chưa được xoá.')
+          check(before.scenes.every((scene, i) => after.scenes[i] === scene), 'Xoá ảnh chưa dùng làm thay đổi cảnh.')
+        }
+      } })),
+    ...(['cutWire', 'undoWire'] as const).map((id) => ({ id,
+      label: id === 'cutWire' ? 'Cắt dây, giữ chữ đỏ' : 'Hoàn tác dây và chữ đỏ', run: async (sample: typeof work) => {
+        await prepareNode()
+        const before = useProject.getState().project.scenes[0]
+        const wire = edgeId('ref', before.refs[0], before.id)
+        const wirePath = `.react-flow__edge[data-id="${wire}"] .cv-wire`
+        // Show both endpoints so the cut also measures the wire/placeholder render and cut animation.
+        await perfCanvas()!.setViewport({ x: 30, y: 30, zoom: 0.7 })
+        await settle('.react-flow')
+        check(!!document.querySelector(wirePath), 'Chưa có dây hiển thị để cắt.')
+        const label = useProject.getState().project.assets.find((a) => a.id === before.refs[0])!.name
+        for (let i = 0; i < 20; i++) {
+          if (id === 'cutWire') await sample(() => cutEdge(wire))
+          else { flushSync(() => cutEdge(wire)); await frame() }
+          const cut = useProject.getState().project.scenes[0]
+          check(!cut.refs.includes(before.refs[0]) && parsePlaceholders(cut.prompt).some((p) => p.label === label), 'Cắt dây chưa tạo chữ đỏ có tên ảnh.')
+          check(!document.querySelector(wirePath), 'Dây đã cắt vẫn còn trên canvas.')
+          element(`${nodeSelector()} .in-tk.is-invalid`)
+          if (id === 'undoWire') await sample(() => { undo() })
+          else { flushSync(() => { undo() }); await frame() }
+          const restored = useProject.getState().project.scenes[0]
+          check(restored.prompt === before.prompt && restored.refs.join() === before.refs.join(), 'Hoàn tác chưa phục hồi dây và prompt.')
+          check(!!document.querySelector(wirePath), 'Hoàn tác chưa vẽ lại dây.')
+          check(!document.querySelector(`${nodeSelector()} .in-tk.is-invalid`), 'Chữ đỏ vẫn còn sau hoàn tác.')
+        }
+      } })),
   ]
 }

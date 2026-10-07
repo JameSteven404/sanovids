@@ -24,8 +24,8 @@ export function parseArgs(args) {
       options[key] = key === 'runs' ? Number(value) : value
     }
   }
-  if (!['web', 'exe'].includes(options.target) || !['M', 'L', 'XL'].includes(options.size)
-    || !Number.isInteger(options.runs) || options.runs < 1 || options.runs > 10) throw new Error('Dùng --target web|exe --size M|L|XL --runs 1..10.')
+  if (!['web', 'exe'].includes(options.target) || !['M', 'L', 'XL', 'XXL'].includes(options.size)
+    || !Number.isInteger(options.runs) || options.runs < 1 || options.runs > 10) throw new Error('Dùng --target web|exe --size M|L|XL|XXL --runs 1..10.')
   return options
 }
 export function perfBuildConfig(build, profile) {

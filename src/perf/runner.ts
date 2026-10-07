@@ -6,6 +6,7 @@ import { deleteProject, forgetDeletedProject, installProject, switchProject, use
 import { clearHistory, useProject } from '../store/project'
 import { stopEngine, useRuns } from '../store/runs'
 import { useUI } from '../store/ui'
+import { useSceneEditor } from '../store/sceneEditor'
 import { SIZES, synthProject, type PerfSize, type SynthSpec } from './synth'
 import { synthMedia } from './synthMedia'
 import { budgetFor } from './budgets'
@@ -21,6 +22,11 @@ let busy = false
 let lastReport: PerfReport | null = null
 let previousReport: PerfReport | null = null
 const emptyProbe = (): ProbeSnapshot => ({ counts: {}, commits: {}, durations: {} })
+function closeEditors() {
+  flushAll()
+  const editor = useSceneEditor.getState()
+  editor.close(); editor.closePanel(); editor.closeSettings()
+}
 export function assertIsolated(): void {
   if (!__SANOVIDS_PERF__ || (location.origin !== 'http://127.0.0.1:5191' && window.__SANOVIDS_PERF_ISOLATED__ !== true)) {
     throw new Error('Bộ đo chỉ chạy tại 127.0.0.1:5191 hoặc hồ sơ thử do driver tạo.')
@@ -120,6 +126,7 @@ async function run(runs = 3): Promise<PerfReport> {
       try {
         for (let repetition = -1; repetition < runs; repetition++) {
           signal.throwIfAborted()
+          flushSync(closeEditors)
           await switchProject(project.id); stopEngine()
           flushSync(() => {
             useProject.setState({ project })
@@ -147,20 +154,20 @@ async function run(runs = 3): Promise<PerfReport> {
         result.status = verdict(result.workMs?.p95 ?? null, result.budget)
         result.frames = frameSamples ? { intervals: stats(intervals), over33: over33 / frameSamples, loafMax } : null
         const check = (label: string, passed: boolean) => result.assertions.push({ label, passed })
-        if (['typeInspector', 'promptCommit', 'runsTick'].includes(scenario.id)) check('CanvasInner không render', !result.renders.counts.CanvasInner)
+        if (['typeInspector', 'typeNode', 'promptCommit', 'runsTick'].includes(scenario.id)) check('CanvasInner không render', !result.renders.counts.CanvasInner)
         if (scenario.id === 'select') check('Tối đa 25 dòng video cho một lựa chọn', (result.maxRenders!.TakeRow ?? 0) <= 25)
         if (scenario.id === 'runsTick') check('Không ghi runs khi chỉ đổi tiến độ', !(result.renders.durations.autosaveRuns?.length))
         if (['drag', 'drag50'].includes(scenario.id)) check('Không commit ngoài canvas khi kéo', ['Sidebar', 'Inspector', 'TopBar'].every((id) => !result.renders.commits[id]))
-        if (result.frames && ['pan', 'pan04', 'panFar', 'zoom', 'drag', 'drag50', 'typeInspector'].includes(scenario.id)) {
+        if (result.frames && ['pan', 'pan04', 'panFar', 'zoom', 'drag', 'drag50', 'typeInspector', 'typeNode', 'panWithEditor', 'zoomWithEditor', 'lodSwitch'].includes(scenario.id)) {
           check('Trung vị khung hình ≤ 17 ms', (result.frames.intervals?.median ?? Infinity) <= 17)
           check('Tối đa 5% khung hình > 33 ms', result.frames.over33 <= 0.05)
-          check('Không có khung dài vượt ngân sách', result.frames.loafMax <= (scenario.id === 'typeInspector' ? 50 : 100))
+          check('Không có khung dài vượt ngân sách', result.frames.loafMax <= (['typeInspector', 'typeNode'].includes(scenario.id) ? 50 : 100))
         }
         if (result.assertions.some((a) => !a.passed)) result.status = 'fail'
       } catch (error) {
         result.reason = error instanceof Error ? error.message : String(error)
       } finally {
-        flushAll()
+        flushSync(closeEditors)
         await switchProject(project.id); stopEngine()
         flushSync(() => {
           useProject.setState({ project }); useRuns.setState({ takes: originalRuns.takes, credits: originalRuns.credits, spent: originalRuns.spent })
@@ -181,7 +188,7 @@ async function run(runs = 3): Promise<PerfReport> {
     await settle('.react-flow')
     const dom = document.querySelectorAll('*').length, budget = budgetFor('dom', record.size)
     results.push({ id: 'dom', label: 'Số phần tử DOM', workMs: stats([dom]), budget, status: verdict(dom, budget), estimated: false, renders: emptyProbe(), frames: null, assertions: [] })
-    report.complete = !signal.aborted && results.every((r) => r.status !== 'unavailable' || r.reason?.startsWith('Chờ giao diện E2'))
+    report.complete = !signal.aborted && results.every((r) => r.status !== 'unavailable')
     previousReport = lastReport
     lastReport = report
     return report

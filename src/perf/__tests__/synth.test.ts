@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { planRowSpacing, showsOldLayout } from '../../components/canvas/rowSpacing'
 import { LAYOUT, ROW_H } from '../../store/project'
-import { SIZES, SYNTH_LAYOUT, synthProject } from '../synth'
+import { libraryFixture, SIZES, SYNTH_LAYOUT, synthProject } from '../synth'
 
 describe('deterministic synthetic projects', () => {
   it('repeats byte-for-byte, changes with the seed, and matches all tiers', () => {
@@ -41,8 +41,17 @@ describe('deterministic synthetic projects', () => {
     }
   })
   it('bounds custom input before allocating', () => {
-    for (const spec of [{ scenes: 0, takes: 0 }, { scenes: 2001, takes: 4002 }, { scenes: 1, takes: 6001 }, { scenes: 2, takes: 1 }, { scenes: NaN, takes: 2 }]) {
+    for (const spec of [{ scenes: 0, takes: 0 }, { scenes: 3001, takes: 6000 }, { scenes: 1, takes: 6001 }, { scenes: 2, takes: 1 }, { scenes: NaN, takes: 2 }]) {
       expect(() => synthProject(spec)).toThrow()
     }
+  })
+  it('adds exactly 200 unused library cards without allocating unjournalled media or changing scenes', () => {
+    const { project } = synthProject(SIZES.M)
+    const fixture = libraryFixture(project)
+    expect(fixture.scenes).toBe(project.scenes)
+    expect(project.assets).toHaveLength(12)
+    expect(fixture.assets).toHaveLength(212)
+    expect(new Set(fixture.assets.map((a) => a.id)).size).toBe(212)
+    expect(fixture.assets.slice(-200).every((a) => a.position === null && a.imageIds === project.assets[0].imageIds)).toBe(true)
   })
 })
