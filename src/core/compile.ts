@@ -146,6 +146,29 @@ export function tokenForVideo(scene: Scene, takeId: string): string | null {
   return i >= 0 ? `@video_${i + 1}` : null
 }
 
+/**
+ * Text that a word glued after it would extend into a mention / token / placeholder: an "@" followed only by word
+ * characters or "?" ("@", "@Lu", "@image", "@image_", "@image_1", "@image_?9"), or a token written with a space,
+ * with or without its number yet ("@image ", "@Image 2"). The only characters these patterns allow after an "@" besides
+ * word characters are that space (TOKEN_RE) and "?" (UNBOUND_RE).
+ */
+const OPEN_AT_END = /@[\p{L}\p{N}_?]*$|@(?:image|video) \d*$/iu
+/** ...after which a digit would complete a numbered token ("@image " / "@Video_"). */
+const TOKEN_PREFIX_END = /@(?:image|video)[ _]?$/i
+
+/**
+ * What goes between the text written so far and a fallback that replaces a removed token, so that nothing glued at
+ * the join reads as a mention / token / placeholder of another picture ("@" + "Lumi" → mention "@Lumi", "@image " +
+ * "3 chị em" → "@image 3", "@image_1" + "3" → "@image_13", "@Lu" + "mi" → "@Lumi"). The fallback holds no "@", and the
+ * text after a token starts with a non-word character, so the join with what precedes is the only place one can form.
+ */
+function fallbackGap(before: string, fallback: string): string {
+  let gap = OPEN_AT_END.test(before) ? ' ' : ''
+  // "@image" + " " + "3…" would still be "@image 3": one more space (TOKEN_RE takes one separator at most)
+  if (TOKEN_PREFIX_END.test(before + gap) && /^[ _]?\d/.test(fallback)) gap += ' '
+  return gap
+}
+
 /** `after` starts with every key of `before`, in the same order (only new media added at the end). */
 const isAppend = (before: string[], after: string[]) => after.length >= before.length && before.every((k, i) => after[i] === k)
 /** Asset id of an image key ("assetId:imageId"); a video key is the take id itself. */
@@ -167,25 +190,42 @@ export function remapTokens(
 ): { text: string; dropped: number; changed: boolean } {
   let dropped = 0
   let changed = false
-  const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawN: string, offset: number, all: string) => {
+  let out = ''
+  let last = 0
+  // Built piece by piece: a fallback is checked against the text really written before it (an earlier token may
+  // have been renumbered or replaced right next to it).
+  for (const m of text.matchAll(TOKEN_RE)) {
+    const [whole, rawKind, rawN] = m
+    out += text.slice(last, m.index)
+    last = m.index + whole.length
     const kind = rawKind.toLowerCase() as 'image' | 'video'
     const oldKeys = kind === 'image' ? before.images : before.videos
     const newKeys = kind === 'image' ? after.images : after.videos
     const key = oldKeys[Number(rawN) - 1]
     if (key === undefined) {
       const target = newKeys[Number(rawN) - 1]
-      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(kind, k) === ownerOfKey(kind, target)))) return whole
+      if (isAppend(oldKeys, newKeys) && (target === undefined || !oldKeys.some((k) => ownerOfKey(kind, k) === ownerOfKey(kind, target)))) {
+        out += whole
+        continue
+      }
       changed = true
-      return unboundToken(kind, rawN)
+      out += unboundToken(kind, rawN)
+      continue
     }
     const idx = newKeys.indexOf(key)
-    // A fallback after an "@" ("@@image_2"): kept apart from it — glued, "@" + "Lumi" / "image 3…" would be read as a
-    // mention / token of another picture.
-    const next = idx >= 0 ? withTokenNumber(whole, idx + 1) : (offset > 0 && all[offset - 1] === '@' ? ' ' : '') + fallback(kind, key)
-    if (idx < 0) dropped++
+    let next: string
+    if (idx >= 0) next = withTokenNumber(whole, idx + 1)
+    else {
+      dropped++
+      // never an "@" in it (a name like "@Lumi" / "@image_1" would point at another picture), never glued to an open
+      // "@…" before it (fallbackGap)
+      const plain = fallback(kind, key).replace(/@/g, '')
+      next = fallbackGap(out, plain) + plain
+    }
     if (next !== whole) changed = true
-    return next
-  })
+    out += next
+  }
+  out += text.slice(last)
   return { text: out, dropped, changed }
 }
 

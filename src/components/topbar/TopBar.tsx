@@ -27,7 +27,7 @@ import {
 import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useStore } from 'zustand'
 import { downloadChosenTakesZip, openDevPanel } from '../../actions'
-import { filmSummary, formatRuntime } from '../../core/filmItems'
+import { filmSummary, runtimeText } from '../../core/filmItems'
 import { SHOWN_VIEW_LIST } from '../../core/shownViews'
 import type { Scene, Take, ViewMode } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
@@ -397,7 +397,7 @@ function filmTitle(): string {
   const f = filmSummary(useProject.getState().project.scenes, useRuns.getState().takes)
   if (!f.withTake) return FILM_EMPTY_TITLE
   const missing = f.missingStarIds.length ? ` · ${f.missingStarIds.length} cảnh chưa có take ★` : ''
-  return `Phát liền: xem lần lượt take ★ (hoặc take mới nhất đã xong) của ${f.withTake}/${f.scenes} cảnh theo thứ tự · tổng ${formatRuntime(f.totalS)}${missing}`
+  return `Phát liền: xem lần lượt take ★ (hoặc take mới nhất đã xong) của ${f.withTake}/${f.scenes} cảnh theo thứ tự · tổng ${runtimeText(f)}${missing}`
 }
 const FILM_EMPTY_TITLE = 'Chưa có cảnh nào có video xong để phát liền'
 

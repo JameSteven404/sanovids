@@ -220,12 +220,14 @@ describe('source guards', () => {
     expect(css).toMatch(/:root\[data-motion='reduced'\] \.vw-player-pp:active,\s*:root\[data-motion='off'\] \.vw-player-pp:active \{\s*transform: none;/)
   })
 
-  it('the player’s "tổng" is the figure the top-bar tooltip shows (filmRuntime = filmSummary.totalS)', () => {
+  it('the player’s "tổng" is the figure the top-bar tooltip shows (runtimeText of filmRuntimeOf = of filmSummary)', () => {
     const player = stripComments(read('components/player/FilmPlayer.tsx'))
-    expect(player).toMatch(/const totalS = filmRuntime\(items\)/)
-    // No second, different sum (the old one added the planned seconds of scenes without a take).
-    expect(player).not.toMatch(/items\.reduce\(/)
-    expect(read('components/topbar/TopBar.tsx')).toMatch(/tổng \$\{formatRuntime\(f\.totalS\)\}/)
+    expect(player).toMatch(/const runtime = runtimeText\(filmRuntimeOf\(items\)\)/)
+    expect(player.match(/tổng \{runtime\}/g)).toHaveLength(1)
+    expect(player).toMatch(/cảnh · \{runtime\}/)
+    // No second, different sum (the old one added the planned seconds of scenes without a take), no raw seconds shown.
+    expect(player).not.toMatch(/items\.reduce\(|formatRuntime\(/)
+    expect(read('components/topbar/TopBar.tsx')).toMatch(/tổng \$\{runtimeText\(f\)\}/)
   })
 
   it('the player names what plays in its top bar, never over the picture', () => {

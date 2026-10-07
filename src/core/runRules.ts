@@ -1,5 +1,5 @@
 // Why a scene cannot run yet: ONE rule list shared by the queue engine (store/runs check(), which RunConfirm shows),
-// the scene card's ▶, the inspector's "Chạy" (head + Take section), the scene table and the storyboard. Pure (no
+// the scene card's ▶, the inspector's "Chạy" (head + Take section) and the hidden, frozen storyboard. Pure (no
 // store, no provider): callers pass the gateway's @video cap, how to read a take's status and the gateway's sure
 // refusal of the settings. core/runGate.ts only keeps the positional call shapes of the one-scene Run buttons
 // (components/runs/shared useSceneRunBlock) over this same list.

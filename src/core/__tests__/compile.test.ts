@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileScene, extractMentions, mediaKeys, parseTokens, remapTokens, slugTag, tokenForAsset, uniqueTag } from '../compile'
+import { compileScene, extractMentions, mediaKeys, MENTION_RE, parseTokens, remapTokens, slugTag, TOKEN_RE, tokenForAsset, UNBOUND_RE, uniqueTag } from '../compile'
 import type { Project, Scene } from '../types'
 
 const scene = (over: Partial<Scene> = {}): Scene => ({
@@ -103,6 +103,47 @@ describe('tokens', () => {
     // what is left points exactly where it did: one token, b's image (now @image_1)
     expect(parseTokens(out.text)).toEqual([{ kind: 'image', n: 1, start: 24, end: 32 }])
     expect(extractMentions(out.text)).toEqual([])
+  })
+  it('a fallback never glues onto an open "@…" before it: no new token / mention / placeholder (and never an "@" of its own)', () => {
+    const p = project([])
+    // a = @image_1, @image_2 · b = @image_3 (cut) · c = @image_4 → @image_3
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'], [])
+    const after = mediaKeys(p.assets, ['a', 'c'], [])
+    const cut = (text: string, name: string) => remapTokens(text, before, after, () => name).text
+    // "@image " / "@image" + "3 chị em" would read "@image 3": a token of another picture
+    expect(cut('ảnh @image @image_3 đi', '3 chị em')).toBe('ảnh @image  3 chị em đi')
+    expect(cut('ảnh @image@image_3 đi', '3 chị em')).toBe('ảnh @image  3 chị em đi')
+    expect(cut('ảnh @image_@image_3 đi', '3 chị em')).toBe('ảnh @image_ 3 chị em đi')
+    expect(parseTokens(cut('ảnh @image @image_3 đi', '3 chị em'))).toEqual([])
+    // "@Lu" + "mi" would be the mention "@Lumi" (compileScene sends Lumi's picture)
+    expect(cut('cô @Lu@image_3 cười', 'mi')).toBe('cô @Lu mi cười')
+    expect(extractMentions(cut('cô @Lu@image_3 cười', 'mi'))).toEqual(['Lu'])
+    // a token kept right before it: "@image_1" + "3" would be "@image_13"; a placeholder: "@image_?9" + "4" → "@image_?94"
+    expect(cut('@image_1@image_3 x', '3 chị em')).toBe('@image_1 3 chị em x')
+    expect(cut('@image_?9@image_3', '4 mèo')).toBe('@image_?9 4 mèo')
+    // a renumbered token right before it is what it is checked against (built from the text really written)
+    expect(cut('@image_4@image_3', '1 cô')).toBe('@image_3 1 cô')
+    // whatever name a caller passes, no "@" is pasted
+    expect(cut('x @image_3 y', '@Lumi @image_1')).toBe('x Lumi image_1 y')
+    // nothing open before it: glued as before
+    expect(cut('abc@image_3 x', 'Mi')).toBe('abcMi x')
+  })
+  it('the join of a fallback with the text before it never forms a match of its own (every token / mention / placeholder)', () => {
+    const p = project([])
+    const before = mediaKeys(p.assets, ['a', 'b', 'c'], [])
+    const after = mediaKeys(p.assets, ['a', 'c'], [])
+    const cut = (text: string, name: string) => remapTokens(text, before, after, () => name).text
+    const found = (text: string) => [TOKEN_RE, MENTION_RE, UNBOUND_RE].map((re) => [...text.matchAll(re)].map((m) => m[0]))
+    const lefts = ['', 'x ', '@', '@@', 'ảnh @image ', 'ảnh @image', 'a @image_', '@Image_', '@VIDEO ', '@video', '@imag', '@Lu', 'cô @Lu', 'e@mail']
+    const keptLefts = ['@image_1', '@Image 2', '@IMAGE1', '@image_?9', '@image_?', '@image_1@']
+    const names = ['3 chị em', 'mi', 'image 3', '_3', ' 4', '9', '@Lumi', '@image_1', '', 'Elara', '?', '?2', 'e 3']
+    for (const left of [...lefts, ...keptLefts])
+      for (const name of names)
+        for (const right of ['', ' đi', '.', '?x']) {
+          const out = cut(`${left}@image_3${right}`, name)
+          const parts = found(cut(left, name)).map((list, i) => [...list, ...found(right)[i]])
+          expect(found(out), JSON.stringify({ left, name, right, out })).toEqual(parts)
+        }
   })
   it('token for an asset is its primary image number', () => {
     const s = scene({ refs: ['b', 'a'] })

@@ -20,6 +20,7 @@ import {
   LEDGER_NOT_SAVED_TEXT,
   LIST_NEEDED_TEXT,
   RIVAL_SETTLING_TEXT,
+  SESSION_CHANGED_TEXT,
   memoryStorage,
   MIN_POLL_MS,
   PROFILES_FALLBACK_TEXT,
@@ -47,7 +48,7 @@ import { createDesktopTransport, type CanvasappBridge } from '../canvasapp/trans
 import { CANVASAPP_MAX_REF_VIDEOS } from '../capabilities'
 import { MODELS } from '../../core/models'
 import type { VideoSettings } from '../../core/types'
-import { isSubmitUncertain, NO_LIMITS, type JobRequest } from '../types'
+import { isSubmitDeferred, isSubmitUncertain, NO_LIMITS, type JobRequest } from '../types'
 
 type Handler = (req: TransportRequest) => TransportResponse | undefined
 
@@ -916,6 +917,72 @@ describe('canvasapp adapter: the account the session state belongs to (noteAccou
     expect(again.noteAccount(a)).toBe(false)
     expect(storage.get(ACCOUNT_KEY)).toBe(a)
   })
+
+  it.each(['picture', 'upload', 'canvas PUT'] as const)(
+    'a reset while a submit is getting ready (%s) sends it back to the queue: nothing of it stored, PUT from the reset state or posted; the running node stays',
+    async (where) => {
+      const server = fakeServer()
+      /** The next `where` step of the submit waits here (the server already handled a request) until it is opened. */
+      let gate: { where: string; reached: () => void; open: Promise<void> } | null = null
+      const pass = async (step: string) => {
+        if (gate?.where !== step) return
+        const g = gate
+        gate = null
+        g.reached()
+        await g.open
+      }
+      const transport: Transport = {
+        available: async () => ({ ok: true }),
+        request: async (r) => {
+          const res = await server.transport.request(r)
+          if (isPut(r)) await pass('canvas PUT')
+          if (r.method === 'POST' && r.path === '/api/uploads/images') await pass('upload')
+          return res
+        },
+      }
+      const provider = createCanvasappProvider({
+        api: createCanvasappApi(transport),
+        getBlob: async (id) => {
+          await pass('picture')
+          return blobs[id] ?? null
+        },
+        storage: memoryStorage(),
+        now: () => 1_000_000,
+        imageSize: async () => ({ width: 1920, height: 1080 }),
+      })
+      const one = req({ prompt: '@image_1', rawPrompt: '@image_1', images: [{ n: 1, assetId: 'a', imageId: 'img_a' }] })
+      const two = req({ key: 'take_2', takeId: 'take_2', sceneId: 'scene_b', prompt: '@image_1', rawPrompt: '@image_1', images: [{ n: 1, assetId: 'b', imageId: 'img_b' }] })
+      expect(provider.noteAccount(accountKeyOf({ email: 'a@example.test' }))).toBe(false)
+      // take 1's job runs (queued) on scene_a's node
+      expect((await provider.submit(one)).remoteId).toBe('proj1:job1')
+      let open: () => void = () => undefined
+      const reached = new Promise<void>((resolve) => {
+        gate = { where, reached: resolve, open: new Promise<void>((r) => (open = r)) }
+      })
+      const second = provider.submit(two)
+      await reached
+      // another account confirmed (GET /api/me) while take 2 is getting ready → the session state is reset
+      expect(provider.noteAccount(accountKeyOf({ email: 'b@example.test' }))).toBe(true)
+      open()
+      const e = await second.then(
+        () => null,
+        (x: unknown) => x,
+      )
+      // every canvas saved while job1 runs still holds its node (a PUT built from the reset entries would drop it)
+      for (const put of server.calls.filter(isPut)) expect(videosOf(put.json)).toContain(node('scene_a'))
+      expect(isSubmitDeferred(e)).toBe(true)
+      expect((e as Error).message).toBe(SESSION_CHANGED_TEXT)
+      expect(jobPosts(server).length).toBe(1)
+      // nothing of the ended session is remembered as the new one's
+      expect(provider.bridgeProjectId()).toBeNull()
+      expect(provider.uploadCacheSize()).toBe(0)
+      // tried again (the engine's queue): the bridge is found by name, its canvas read back first → both nodes
+      expect((await provider.submit(two)).remoteId).toBe('proj1:job2')
+      expect(jobPosts(server).length).toBe(2)
+      for (const put of server.calls.filter(isPut)) expect(videosOf(put.json)).toContain(node('scene_a'))
+      expect(videosOf(server.calls.filter(isPut).at(-1)!.json)).toEqual(expect.arrayContaining([node('scene_a'), node('scene_b')]))
+    },
+  )
 })
 
 describe('canvasapp adapter: what canvasapp runs now for the UI (settingsLimits / refreshLimits)', () => {

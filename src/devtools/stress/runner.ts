@@ -131,7 +131,8 @@ export async function runStress(options: StressOptions, env: StressEnv, hooks: R
   const warnings = new Map<string, { invariant: string; count: number; firstStep: number; message: string }>()
   const pending: Violation[] = []
   const audit = new JobAudit()
-  const seenLog = new Set<number>()
+  // Request-log lines from before this run (another run's, the user's) are not this run's: never judged by S2.
+  const seenLog = new Set<number>(useDevLog.getState().entries.map((e) => e.id))
   let offLog: () => void = () => undefined
   let stopping = false
   // The project this run loaded (the app: the sandbox's temporary project) — once the load is done, or the first project

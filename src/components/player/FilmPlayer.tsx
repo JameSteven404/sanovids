@@ -4,7 +4,7 @@
 import { Download, LoaderCircle, Pause, Play, RotateCcw, SkipBack, SkipForward, SquareMousePointer, Star, Volume2, VolumeX, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { downloadTake } from '../../actions'
-import { filmRuntime, formatRuntime, type PlayerItem } from '../../core/filmItems'
+import { filmRuntimeOf, runtimeText, type PlayerItem } from '../../core/filmItems'
 import { cachedUrl, getUrl } from '../../lib/imageStore'
 import { playWithSound, toggleSound, usePlayback } from '../../lib/playback'
 import { providerOf } from '../../providers'
@@ -196,8 +196,9 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
 
   if (!item) return null
 
-  // The takes' seconds, as the top-bar tooltip says (a slate of a scene without a take is not film length).
-  const totalS = filmRuntime(items)
+  // The takes' seconds, as the top-bar tooltip says (a slate of a scene without a take is not film length; an imported
+  // take whose length canvasapp did not say is left out, and said so).
+  const runtime = runtimeText(filmRuntimeOf(items))
   // Development-mode (and old demo) takes are ~3 s fake clips; takes from canvasapp play at their own length. So do
   // takes of a newer build's provider (provider 'mock' + foreignProvider): real videos, not fakes.
   const hasFake = items.some((i) => i.take && !i.take.foreignProvider && (providerOf(i.take) === 'dev' || providerOf(i.take) === 'mock'))
@@ -261,7 +262,7 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
           </span>
           {item.title && <span className="vw-player-scene-title">{item.title}</span>}
           <span className="vw-player-count faint">
-            ({index + 1}/{items.length}) · tổng {formatRuntime(totalS)}
+            ({index + 1}/{items.length}) · tổng {runtime}
           </span>
           {take && mode === 'still' && <span className="vw-player-sub">Không có video — hiển thị poster</span>}
         </div>
@@ -303,7 +304,7 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
             <div className="vw-player-end">
               <h3>Hết phim</h3>
               <p>
-                {items.length} cảnh · {formatRuntime(totalS)}
+                {items.length} cảnh · {runtime}
               </p>
               <div>
                 <button className="btn btn-primary" onClick={() => jump(0)}>

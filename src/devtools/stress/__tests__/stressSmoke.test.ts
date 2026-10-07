@@ -23,7 +23,7 @@ vi.mock('../../../lib/imageStore', () => {
   }
 })
 
-import { useDevLog } from '../../../providers/dev'
+import { clearDevLog, pushDevLog, useDevLog } from '../../../providers/dev'
 import { getProvider, useProviderPrefs } from '../../../providers'
 import { runStress, shrinkFailure } from '../runner'
 import { SCENARIOS } from '../scenarios'
@@ -110,6 +110,19 @@ describe('stress tester: reproducible and safe', () => {
       else vi.unstubAllGlobals()
     }
   })
+
+  it('a request-log line from before the run (another run, the user) is never judged as this run\'s (S2)', async () => {
+    pushDevLog({ at: 0, method: 'GET', path: '/api/admin', endpoint: null, status: null, ms: 0, req: null, res: null, fault: 'not-allowed', processed: false })
+    try {
+      const r = await run('run-cancel', 'c0ffee01')
+      expect(r.failure?.invariant ?? null).not.toBe('S2')
+      expect(r.result).toBe('pass')
+      // the run did log requests of its own after that line (so they were looked at)
+      expect(useDevLog.getState().entries.length).toBeGreaterThan(1)
+    } finally {
+      clearDevLog()
+    }
+  }, 120_000)
 
   it('shrinking a passing run changes nothing', async () => {
     const base = await run('link-unlink', '13572468', 60)

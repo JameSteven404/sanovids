@@ -1,5 +1,5 @@
 // The run rules every place shares (core/runGate): store/runs check() and every one-scene Run button (scene card,
-// inspector head + Take section, Storyboard card, Bảng cảnh row).
+// inspector head + Take section; the hidden, frozen Storyboard card).
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { compileScene } from '../compile'

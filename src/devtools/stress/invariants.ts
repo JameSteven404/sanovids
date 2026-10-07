@@ -23,11 +23,12 @@ import type { Violation } from './types'
 /**
  * S2 on the request log (entries in order): a request the simulated gateway refused as outside its allowlist
  * ('not-allowed'). Not one: the gateway refusing to follow the injected redirect of a video download to plain http (the
- * server's entry has fault 'http-redirect', then the gateway logs 'not-allowed' for the same stream path, as main.cjs
- * does) — that refusal is the safe behaviour. `httpRedirected` = the stream paths seen redirected (each used once).
+ * server's entry has fault 'http-redirect' — alone, or joined with modifiers that fired with it: "slow 3000ms +
+ * http-redirect" —, then the gateway logs 'not-allowed' for the same stream path, as main.cjs does) — that refusal is the
+ * safe behaviour. `httpRedirected` = the stream paths seen redirected (each used once).
  */
 export function allowlistBreach(e: { fault: string | null; endpoint: string | null; path: string }, httpRedirected: Set<string>): boolean {
-  if (e.fault === 'http-redirect') {
+  if (e.fault?.split(' + ').includes('http-redirect')) {
     httpRedirected.add(e.path)
     return false
   }

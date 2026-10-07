@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { chosenTakeIds } from '../../actions'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
-import { buildFilmItems, filmRuntime, filmSummary, formatRuntime, pickShowcaseTake, starredTake } from '../filmItems'
-import type { JobStatus, Project, Scene, Take } from '../types'
+import { buildFilmItems, filmRuntime, filmRuntimeOf, filmSummary, formatRuntime, pickShowcaseTake, runtimeText, starredTake } from '../filmItems'
+import type { ImportedField, JobStatus, Project, Scene, Take } from '../types'
 
 const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
   id: 's' + (i + 1),
@@ -22,7 +22,12 @@ const scene = (i: number, over: Partial<Scene> = {}): Scene => ({
   note: '',
   ...over,
 })
-const take = (id: string, sceneId: string, number: number, over: { starred?: boolean; status?: JobStatus; duration?: number } = {}): Take => ({
+const take = (
+  id: string,
+  sceneId: string,
+  number: number,
+  over: { starred?: boolean; status?: JobStatus; duration?: number; unknown?: ImportedField[]; inferred?: ImportedField[] } = {},
+): Take => ({
   id,
   sceneId,
   number,
@@ -42,6 +47,8 @@ const take = (id: string, sceneId: string, number: number, over: { starred?: boo
   videoId: null,
   error: null,
   position: null,
+  // imported with "Nhập job": `unknown` fields hold placeholders (components/runs/importedTake)
+  ...(over.unknown || over.inferred ? { imported: { at: 0, jobName: null, unknown: over.unknown ?? [], inferred: over.inferred ?? [] } } : {}),
 })
 const project = (scenes: Scene[]): Project => ({
   id: 'p',
@@ -121,8 +128,8 @@ it('formatRuntime', () => {
 it('filmSummary: scenes with a take, scenes without ★ (in scene order), seconds played and planned', () => {
   const scenes = [scene(0, { order: 2 }), scene(1, { order: 1 }), scene(2, { order: 3, settings: { ...scene(2).settings, duration: 15 } })]
   const takes = [take('t1', 's1', 1, { starred: true, duration: 6 }), take('t2', 's2', 1, { duration: 4 }), take('t3', 's3', 1, { status: 'failed', starred: true })]
-  expect(filmSummary(scenes, takes)).toEqual({ scenes: 3, withTake: 2, missingStarIds: ['s2', 's3'], totalS: 10, plannedS: 35 })
-  expect(filmSummary([], [])).toEqual({ scenes: 0, withTake: 0, missingStarIds: [], totalS: 0, plannedS: 0 })
+  expect(filmSummary(scenes, takes)).toEqual({ scenes: 3, withTake: 2, missingStarIds: ['s2', 's3'], totalS: 10, unknown: 0, inferred: 0, plannedS: 35 })
+  expect(filmSummary([], [])).toEqual({ scenes: 0, withTake: 0, missingStarIds: [], totalS: 0, unknown: 0, inferred: 0, plannedS: 0 })
 })
 
 it('filmRuntime: the player says the same "tổng" as the top-bar tooltip (scenes without a take do not count)', () => {
@@ -138,4 +145,36 @@ it('filmRuntime: the player says the same "tổng" as the top-bar tooltip (scene
   expect(filmRuntime(buildFilmItems(scenes, more))).toBe(filmSummary(scenes, more).totalS)
   expect(filmRuntime(buildFilmItems(scenes, []))).toBe(0)
   expect(filmRuntime([])).toBe(0)
+})
+
+it('an imported take whose length canvasapp did not say is never counted as a fact (its placeholder stays out of "tổng")', () => {
+  // s1: 6 s take · s2: imported, duration unknown (placeholder 15) · s3: imported, duration guessed (≈8) · s4: no take
+  const scenes = [scene(0), scene(1, { settings: { ...scene(1).settings, duration: 12 } }), scene(2), scene(3)]
+  const takes = [
+    take('t1', 's1', 1, { duration: 6 }),
+    take('t2', 's2', 1, { duration: 15, unknown: ['duration', 'resolution'] }),
+    take('t3', 's3', 1, { duration: 8, inferred: ['duration'] }),
+    take('t4', 's4', 1, { status: 'failed' }),
+  ]
+  const items = buildFilmItems(scenes, takes)
+  // the still of the unknown one lasts the scene's duration / 5, never the placeholder's
+  expect(items.map((i) => [i.take?.id ?? null, i.duration, i.durationIs ?? 'known'])).toEqual([
+    ['t1', 6, 'known'],
+    ['t2', 12, 'unknown'],
+    ['t3', 8, 'inferred'],
+    [null, 10, 'known'],
+  ])
+  const runtime = filmRuntimeOf(items)
+  expect(runtime).toEqual({ totalS: 14, unknown: 1, inferred: 1 })
+  expect(filmRuntime(items)).toBe(14)
+  // the top-bar tooltip says the same as the player
+  expect(filmSummary(scenes, takes)).toMatchObject(runtime)
+  expect(runtimeText(runtime)).toBe('≈0:14 + 1 cảnh chưa rõ thời lượng')
+  expect(runtimeText(filmSummary(scenes, takes))).toBe(runtimeText(runtime))
+  // only unknown lengths: no figure at all
+  const onlyUnknown = filmRuntimeOf(buildFilmItems([scene(1)], [take('t2', 's2', 1, { unknown: ['duration'] })]))
+  expect(runtimeText(onlyUnknown)).toBe('chưa rõ (1 cảnh chưa rõ thời lượng)')
+  // takes SanoVids made (or an import that knows the length: another field unknown) read exactly as before
+  expect(runtimeText(filmRuntimeOf(buildFilmItems([scene(0)], [take('t1', 's1', 1, { duration: 95, unknown: ['ratio'] })])))).toBe('1:35')
+  expect(runtimeText({ totalS: 0, unknown: 0, inferred: 0 })).toBe('0:00')
 })

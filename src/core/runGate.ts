@@ -1,5 +1,5 @@
-// The call shapes of the one-scene Run buttons (scene card on the canvas, inspector head + Take section, Storyboard
-// card, Bảng cảnh row: components/runs/shared useSceneRunBlock or sceneRunBlock) over the ONE rule list of
+// The call shapes of the one-scene Run buttons (scene card on the canvas, inspector head + Take section — and the
+// hidden, frozen Storyboard card: components/runs/shared useSceneRunBlock or sceneRunBlock) over the ONE rule list of
 // core/runRules — the list store/runs check() uses too, so a button and the queue never disagree. No rule lives here.
 // Buttons that run a selection only open the run dialog, which lists the refused scenes with these texts.
 //

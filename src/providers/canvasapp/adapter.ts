@@ -210,6 +210,13 @@ export const CANVAS_FULL_TEXT = 'Canvas cầu nối trên canvasapp đang kín c
 export const RIVAL_SETTLING_TEXT =
   'Một take khác của cảnh này vừa gửi mà chưa rõ canvasapp đã nhận chưa — chờ vài giây để phân biệt được job của hai take rồi tự gửi (chưa gửi, không bị trừ credit).'
 /**
+ * The session state was reset (reset(): Đăng xuất, or noteAccount saw another account) while this submit was getting
+ * ready: what it read or uploaded belongs to the session that ended, and a canvas built from the reset entries could
+ * take a running job's node off. Back to the queue (code 'deferred') before anything more is stored, PUT or posted.
+ */
+export const SESSION_CHANGED_TEXT =
+  'Phiên canvasapp vừa thay đổi (đăng xuất hoặc tài khoản khác) trong lúc chuẩn bị gửi — lần này chưa gửi yêu cầu tạo video; take quay lại hàng chờ và tự gửi lại.'
+/**
  * The bridge project was found by name (after a logout, …) and its canvas could not be read: without it a PUT could take
  * a running job's node off, so none is sent. Followed by the cause; prefixed with CANVAS_NOT_SAVED_TEXT in the error.
  */
@@ -575,6 +582,12 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   let profilesEpoch = 0
   let limitsMemo: { sig: string; firm: boolean; value: SettingsLimits } | null = null
   let ensuring: Promise<string> | null = null
+  /**
+   * Bumped by resetSession(): a submit (or a bridge lookup) started before a reset never writes what it read or uploaded
+   * into the new session's state, never PUTs a canvas built from it and never posts (SESSION_CHANGED_TEXT).
+   */
+  let sessionEpoch = 0
+  const sessionChanged = () => new CanvasappError('deferred', SESSION_CHANGED_TEXT)
   /** Serialises submits: uploads + canvas PUT + job POST of one take never interleave with another's. */
   let chain: Promise<unknown> = Promise.resolve()
   /** Submits in progress by key (a second submit / recover of the same key joins it). */
@@ -836,7 +849,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
    * so the next PUT does not take them off. Nothing missing (the usual case) → no request. Not read again when the
    * last read is newer than that job-list read: a node it did not show is not on the canvas.
    */
-  async function keepRunningNodes(projectId: string) {
+  async function keepRunningNodes(projectId: string, checkSession: () => void) {
     const held = new Set(Object.values(state.entries).map(entryNodeId))
     const absent = absentNodes.get(projectId)
     const list = lastLists.get(projectId)
@@ -845,6 +858,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const read = readBack.get(projectId)
     if (read !== undefined && read >= (list?.at ?? -Infinity)) return
     const all = Object.values(await canvasEntries(projectId))
+    checkSession()
     const back = all.filter((e) => unheld.includes(entryNodeId(e)))
     const onCanvas = new Set(all.map(entryNodeId))
     const missing = unheld.filter((n) => !onCanvas.has(n))
@@ -858,6 +872,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     if (state.projectId) return state.projectId
     if (!ensuring) {
       ensuring = (async () => {
+        const epoch = sessionEpoch
         const existing = (await api.listProjects()).find((p) => p.name === BRIDGE_PROJECT_NAME)
         // Found by name (after a logout or a login to another account, a deleted remembered id, another computer…):
         // what is on its canvas is not known here — the entries remembered here (if any) belong to a forgotten
@@ -865,17 +880,23 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         // (whether canvasapp cancels or loses a job whose node leaves the canvas is not known). The id is remembered
         // only together with it: unreadable → nothing remembered, nothing PUT.
         const entries = existing ? await canvasEntries(existing.project_id) : {}
+        // Reset meanwhile (Đăng xuất, another account): nothing of it is remembered in the new session.
+        if (sessionEpoch !== epoch) throw sessionChanged()
         // canvasapp's page creates a project with an empty POST and names it with PATCH {name} ("Đổi tên phiên").
         const id = existing?.project_id ?? (await api.createProject())
-        state = { ...state, projectId: id, entries }
-        save()
+        if (sessionEpoch === epoch) {
+          state = { ...state, projectId: id, entries }
+          save()
+        }
         if (!existing) {
           try {
+            // (also after a reset during the POST: named, it is found by name next time instead of left unnamed)
             await api.renameProject(id, BRIDGE_PROJECT_NAME)
           } catch {
             // Only the name is missing (the id is remembered): the project still works as the bridge.
           }
         }
+        if (sessionEpoch !== epoch) throw sessionChanged()
         return id
       })().finally(() => {
         ensuring = null
@@ -893,7 +914,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     return 'ảnh tham chiếu'
   }
 
-  async function uploadMissing(req: JobRequest, checkCancelled: () => void) {
+  async function uploadMissing(req: JobRequest, checkCancelled: () => void, checkSession: () => void) {
     // Every picture must be on this computer BEFORE anything is uploaded or paid: a missing one fails loudly.
     const files: { imageId: string; blob: Blob; type: string }[] = []
     for (const imageId of imagesToUpload(req)) {
@@ -906,8 +927,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     }
     for (const f of files) {
       checkCancelled()
+      checkSession()
       // Sequential on purpose: gentle on the server.
       const uploadId = await api.uploadImage(f.blob, uploadFilename(f.imageId, f.type))
+      // an upload answered after a reset is never cached as one of the new session's
+      checkSession()
       state = { ...state, uploads: { ...state.uploads, [f.imageId]: uploadId } }
       save()
     }
@@ -1271,6 +1295,13 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const checkCancelled = () => {
       if (opts.isCancelled?.()) throw new CanvasappError('cancelled', CANCELLED_TEXT)
     }
+    // The session this submit reads, uploads and PUTs in: a reset meanwhile (Đăng xuất, noteAccount → another account)
+    // sends it back to the queue before anything more is stored, PUT or posted — a PUT built from the reset (empty)
+    // entries would take the nodes of jobs still running off the canvas.
+    const epoch = sessionEpoch
+    const checkSession = () => {
+      if (sessionEpoch !== epoch) throw sessionChanged()
+    }
     // A job already exists for this key (made by SanoVids, or imported from canvasapp's page): never post it again.
     const done = ledger.jobs[req.key] ?? ledger.imported[req.key]
     if (done) return { remoteId: done.remoteId }
@@ -1312,12 +1343,14 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
       throw e instanceof CanvasUnreadError ? notSaved(e) : e
     }
     let projectId = await ensureProject().catch(unread)
+    checkSession()
     // The earlier POST of this key went to another bridge project — another account is logged in now (its list of the
     // old bridge may well come back empty), or that bridge was deleted since: nothing read here can tell whether it was
     // billed there. Never posted again (also checked right before the POST: the bridge may be found again below).
     if (earlier && earlier.projectId !== projectId) throw unverifiableError()
-    await keepRunningNodes(projectId).catch(unread)
+    await keepRunningNodes(projectId, checkSession).catch(unread)
     checkCancelled()
+    checkSession()
     // The video node this take is sent on (its project's scene; a legacy node for a re-send, see nodeKeyFor) — the ONE
     // key every step below uses: the entry, the canvas, the job body. An entry read back from canvasapp's canvas for
     // that same node id (after a logout…) is replaced by it (withEntry), never doubled.
@@ -1354,7 +1387,8 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const draft = entryFromRequest(req, (imageId) => state.uploads[imageId] ?? `pending:${imageId}`, now(), frameRatio, nodeKey)
     if (!(await canvasOf(withEntry(state.entries, draft)))) throw noRoom()
     checkCancelled()
-    await uploadMissing(req, checkCancelled)
+    checkSession()
+    await uploadMissing(req, checkCancelled, checkSession)
     const entry = entryFromRequest(req, uploadIdFor, now(), frameRatio, nodeKey)
     /**
      * PUT the canvas made of `entries`; once canvasapp accepted it they are the remembered entries — without the ones
@@ -1364,7 +1398,11 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     const putCanvas = async (entries: Record<string, BridgeEntry>) => {
       const plan = await canvasOf(entries)
       if (!plan) throw noRoom()
+      // `entries` were taken before canvasOf's await: a reset since then emptied them (the PUT would drop running nodes)
+      checkSession()
       await api.putCanvas(projectId, plan.canvas)
+      // ...and a reset during the PUT: what it saved belongs to the session that ended — never remembered as the new one's
+      checkSession()
       const left = new Set(plan.dropped)
       state = { ...state, entries: left.size ? Object.fromEntries(Object.entries(entries).filter(([k]) => !left.has(k))) : entries }
       save()
@@ -1422,6 +1460,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     }
     // Last chance to stop: the POST below is what canvasapp bills.
     checkCancelled()
+    checkSession()
     if (earlier && earlier.projectId !== body.project_id) throw unverifiableError()
     // unknown (job list unreadable): the node counts as running — its entry stays
     return postJob(req, nodeKey, body, opts, !!earlier, async () => {
@@ -1442,6 +1481,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   // its canvas): the next submit finds the bridge by name and reads its canvas back first (ensureProject), so the
   // nodes of jobs still running stay on it.
   function resetSession() {
+    sessionEpoch++
     state = { projectId: null, uploads: {}, entries: {} }
     storage.remove(STATE_KEY)
     storage.remove(ACCOUNT_KEY) // the next confirmed account is the first one of the new state

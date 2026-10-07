@@ -134,6 +134,15 @@ describe('S2 on the request log (allowlistBreach)', () => {
     expect(allowlistBreach({ fault: 'http-redirect', endpoint: 'job-stream', path: '/api/video-jobs/j2/stream' }, seen)).toBe(false)
     expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
   })
+  it('...also when modifiers fired with the redirect (the server joins the labels: "slow 3000ms + http-redirect")', () => {
+    const seen = new Set<string>()
+    expect(allowlistBreach({ fault: 'slow 3000ms + http-redirect', endpoint: 'job-stream', path: stream }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
+    // a label that only looks like it does not count
+    expect(allowlistBreach({ fault: 'http-redirect-ish', endpoint: 'job-stream', path: stream }, seen)).toBe(false)
+    expect(allowlistBreach({ fault: 'not-allowed', endpoint: 'job-stream', path: stream }, seen)).toBe(true)
+  })
 })
 
 describe('scenarios & report', () => {
