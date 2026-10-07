@@ -69,7 +69,7 @@ import { useRuns } from '../../store/runs'
 import { useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
-import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
+import { CanvasToolbar } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
 import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
 import { FolderNode, type FolderFlowNode } from './FolderNode'
@@ -1092,6 +1092,7 @@ function CanvasInner() {
     >
       <HoverDim rawEdges={rawEdges} disabled={!!connecting || libraryDrag || takeDrag} />
       {ownSceneCss && <style>{ownSceneCss}</style>}
+      <CanvasToolbar density={density} big={big} />
       <ReactFlow<CanvasNode, LinkEdge>
         nodes={nodes}
         edges={edges}
@@ -1168,8 +1169,6 @@ function CanvasInner() {
           />
         )}
       </ReactFlow>
-      <SelectionHint />
-      <CanvasToolbar density={density} big={big} />
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
       {scenes.length === 0 && !folders.length && assets.every((a) => !a.position) && (
         <div className="cv-empty">
