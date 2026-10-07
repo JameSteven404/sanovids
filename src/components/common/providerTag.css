@@ -1,0 +1,24 @@
+.provider-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.provider-tag-canvasapp {
+  color: var(--provider-canvasapp);
+  background: var(--provider-canvasapp-soft);
+}
+.provider-tag-seedvis {
+  color: var(--provider-seedvis);
+  background: var(--provider-seedvis-soft);
+}
+.provider-tag[data-size='mini'] { padding: 1px 4px; }
+.provider-tag.is-simulated { border-style: dashed; }
+.provider-tag svg { flex: none; }
