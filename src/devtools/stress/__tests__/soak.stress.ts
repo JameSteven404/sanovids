@@ -13,6 +13,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+vi.mock('idb-keyval', () => import('./memoryDb'))
 
 const media = vi.hoisted(() => new Map<string, Blob>())
 vi.mock('../../../lib/imageStore', () => {
@@ -29,6 +30,7 @@ vi.mock('../../../lib/imageStore', () => {
     deleteMedia: vi.fn(async (id: string) => void media.delete(id)),
     dataUrlToBlob: () => new Blob(),
     useMediaUrl: () => null,
+    revokeUnusedUrls: () => undefined,
   }
 })
 

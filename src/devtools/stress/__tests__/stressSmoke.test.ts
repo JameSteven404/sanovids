@@ -4,6 +4,7 @@
 // Problems of the APP found here are reported as findings (see _antigravity/KET-QUA-1.md), not hidden: a scenario
 // whose known finding is listed in KNOWN is expected to report exactly that invariant.
 import { afterEach, describe, expect, it, vi } from 'vitest'
+vi.mock('idb-keyval', () => import('./memoryDb'))
 
 const media = vi.hoisted(() => new Map<string, Blob>())
 vi.mock('../../../lib/imageStore', () => {
@@ -20,15 +21,19 @@ vi.mock('../../../lib/imageStore', () => {
     deleteMedia: vi.fn(async (id: string) => void media.delete(id)),
     dataUrlToBlob: () => new Blob(),
     useMediaUrl: () => null,
+    revokeUnusedUrls: () => undefined,
   }
 })
 
 import { clearDevLog, pushDevLog, useDevLog } from '../../../providers/dev'
-import { getProvider, useProviderPrefs } from '../../../providers'
+import { devProvider, getProvider, useProviderPrefs } from '../../../providers'
+import { applyDevAccessState, bareState, useDevAccess } from '../../../providers/devAccess'
+import { getBlob } from '../../../lib/imageStore'
 import { runStress, shrinkFailure } from '../runner'
 import { SCENARIOS } from '../scenarios'
 import { summaryText, toMarkdown } from '../report'
-import { sessionActive } from '../session'
+import { createRng } from '../rng'
+import { matchesVideo, sessionActive, startSession, stopActiveSession, stressVideo } from '../session'
 import { createHeadless, type Headless } from './headlessEnv'
 
 let h: Headless | null = null
@@ -49,6 +54,7 @@ describe('stress tester: every headless scenario runs', () => {
       const r = await run(s.id, 'c0ffee01')
       if (r.result !== 'pass') console.log(s.id, summaryText(r), JSON.stringify(r.failure?.detail ?? null).slice(0, 800))
       expect(r.result).not.toBe('harness-error')
+      expect(r.result, summaryText(r)).toBe('pass')
       expect(r.steps).toBeGreaterThan(0)
       expect(r.log.length).toBeGreaterThan(0)
       expect(sessionActive()).toBe(false)
@@ -56,6 +62,17 @@ describe('stress tester: every headless scenario runs', () => {
       expect(getProvider('dev').label).not.toContain('thử nghiệm')
       expect(useDevLog.getState().entries.filter((e) => e.fault === 'not-allowed')).toEqual([])
       expect(toMarkdown(r)).toContain(r.seed)
+      const coverage: Record<string, string[]> = {
+        'placeholder-churn': ['placeholder.filled', 'placeholder.replaced'],
+        'editor-drafts': ['editor.persistPending', 'editor.persistSwitch', 'editor.operation.0', 'editor.operation.1', 'editor.operation.2', 'editor.operation.3', 'transport.checked', 'film.starred'],
+        'library-bulk': ['library.deleteUndo.1', 'library.deleteUndo.200'],
+        'download-chaos': ['download.cut', 'download.stall', 'download.oversize', 'download.resumed', 'download.savedVerified'],
+        // imported while an app POST was still unresolved (lost answer / 502 / slow site): the ownership window was open
+        'import-jobs': ['import.adopted', 'import.staleScanRetried', 'import.whileUnresolvedPost', 'import.forcedEnd'],
+        // a take waited (queued / mid-submit) while logged out: RL3 had something to catch
+        relogin: ['login.kept', 'login.notKept', 'login.workWhileOut'],
+      }
+      for (const key of coverage[s.id] ?? []) expect(r.coverage?.[key] ?? 0, key).toBeGreaterThan(0)
     }, 120_000)
   }
 })
@@ -76,6 +93,152 @@ describe('stress tester: action timings', () => {
 })
 
 describe('stress tester: reproducible and safe', () => {
+  it('refuses a locked development mode without opening a session', async () => {
+    h = createHeadless('deadbeef')
+    const before = useDevAccess.getState().state
+    try {
+      applyDevAccessState(bareState('locked'))
+      const r = await runStress({ scenarios: ['editor-drafts'], seed: 'deadbeef', steps: 10, maxMs: 0, checkEvery: 1, stopOnFirst: true }, h.env)
+      expect(r.result).toBe('harness-error')
+      expect(r.failure?.message).toContain('khoá')
+      expect(r.steps).toBe(0)
+      expect(sessionActive()).toBe(false)
+    } finally { applyDevAccessState(before) }
+  })
+
+  it('stops when development mode is locked mid-run: result stopped, a note, the session closed', async () => {
+    h = createHeadless('5eed10c4')
+    const before = useDevAccess.getState().state
+    try {
+      let n = 0
+      const r = await runStress(
+        { scenarios: ['monkey'], seed: '5eed10c4', steps: 200, maxMs: 0, checkEvery: 10, stopOnFirst: true, tier: 'S', onProgress: () => { if (++n === 12) applyDevAccessState(bareState('locked')) } },
+        h.env,
+      )
+      expect(r.result).toBe('stopped')
+      expect(r.steps).toBe(12)
+      expect(r.notes.some((t) => t.includes('khoá'))).toBe(true)
+      expect(sessionActive()).toBe(false)
+      expect(getProvider('dev').label).not.toContain('thử nghiệm')
+    } finally { applyDevAccessState(before) }
+  }, 120_000)
+
+  it('keep-going: a failure recorded before development mode is locked stays the result', async () => {
+    h = createHeadless('5eed10c5')
+    const base = h.env
+    const before = useDevAccess.getState().state
+    try {
+      let drains = 0
+      let n = 0
+      // drainErrors runs once before the loop, then once per step: the 5th call = an R1 error at step 4
+      const env = { ...base, drainErrors: () => [...base.drainErrors(), ...(++drains === 5 ? ['Lỗi giả lập của test'] : [])] }
+      const r = await runStress(
+        { scenarios: ['monkey'], seed: '5eed10c5', steps: 200, maxMs: 0, checkEvery: 10, stopOnFirst: false, tier: 'S', onProgress: () => { if (++n === 10) applyDevAccessState(bareState('locked')) } },
+        env,
+      )
+      expect(r.failure?.invariant).toBe('R1')
+      expect(r.result).toBe('fail')
+      expect(r.steps).toBe(10)
+      expect(sessionActive()).toBe(false)
+    } finally { applyDevAccessState(before) }
+  }, 120_000)
+
+  it('login.restart never resets the app\'s own dev gateway when the session is stopped during the action', async () => {
+    h = createHeadless('70ce1a57')
+    const base = h.env
+    const appReset = vi.spyOn(devProvider(), 'reset')
+    let stopped = false
+    try {
+      // what the in-app sandbox does when another project is opened / development mode locks mid-action
+      const env = {
+        ...base,
+        advance: async (ms: number) => {
+          await base.advance(ms)
+          if (!stopped) {
+            stopped = true
+            stopActiveSession()
+          }
+        },
+      }
+      const r = await runStress(
+        { scenarios: ['relogin'], seed: '70ce1a57', steps: 0, maxMs: 0, checkEvery: 10, stopOnFirst: true, tier: 'S', shouldStop: () => stopped, replay: [{ n: 1, id: 'login.restart', args: { s: 0, s2: 0, keep: false, logout: true, retry: false } }] },
+        env,
+      )
+      expect(stopped).toBe(true)
+      expect(r.result).not.toBe('harness-error')
+      expect(appReset).not.toHaveBeenCalled()
+      expect(sessionActive()).toBe(false)
+    } finally { appReset.mockRestore() }
+  }, 120_000)
+
+  it('the job audit runs after a job POST, not on every change of the simulated site', async () => {
+    h = createHeadless('0a0d17ed')
+    const s = startSession({ rng: createRng('0a0d17ed'), kind: 'headless' })
+    try {
+      let calls = 0
+      const off = s.onJobsChanged(() => calls++)
+      s.server.setConfig({ latencyMs: 0 })
+      s.server.logout()
+      s.server.login()
+      await s.server.request({ method: 'GET', path: '/api/me' })
+      expect(calls).toBe(0)
+      await s.server.request({ method: 'POST', path: '/api/video-jobs', json: {} })
+      expect(calls).toBe(1)
+      off()
+      await s.server.request({ method: 'POST', path: '/api/video-jobs', json: {} })
+      expect(calls).toBe(1)
+    } finally { s.stop() }
+    expect(sessionActive()).toBe(false)
+  })
+
+  it('RL3: a job POST is an error only once the app knows it is logged out', async () => {
+    h = createHeadless('0a0d17ee')
+    const s = startSession({ rng: createRng('0a0d17ee'), kind: 'headless' })
+    const rl3 = () => s.trips.filter((t) => t.invariant === 'RL3').length
+    try {
+      s.server.setConfig({ latencyMs: 0 })
+      // logged out on the site's side: the first refused request (here the POST itself) is how the app learns it
+      s.server.logout()
+      await s.server.request({ method: 'POST', path: '/api/video-jobs', json: {} })
+      expect(rl3()).toBe(0)
+      // ...after that answer, another POST is the bug
+      await s.server.request({ method: 'POST', path: '/api/video-jobs', json: {} })
+      expect(rl3()).toBe(1)
+      // a login starts afresh; the app's own Đăng xuất counts as knowing at once
+      s.server.login()
+      await s.bridge.logout()
+      await s.server.request({ method: 'POST', path: '/api/video-jobs', json: {} })
+      expect(rl3()).toBe(2)
+    } finally { s.stop() }
+  })
+
+  it('tiny videos unless the plan checks resumed downloads; the byte check catches any change', async () => {
+    const small = stressVideo(7)
+    expect(small.size).toBeLessThan(32)
+    expect(await matchesVideo(small, 7)).toBe(true)
+    expect(await matchesVideo(small, 8)).toBe(false)
+    const big = stressVideo(7, true)
+    // more than two 64 KB gateway chunks, and within one connection's 2 min even at "trickle 2 KB/s"
+    expect(big.size).toBeGreaterThan(2 * 64 * 1024)
+    expect(big.size).toBeLessThanOrEqual(2 * 1024 * 120)
+    expect(await matchesVideo(big, 7, true)).toBe(true)
+    expect(await matchesVideo(big, 7)).toBe(false)
+    expect(await matchesVideo(stressVideo(17, true), 7, true)).toBe(false)
+    const bytes = new Uint8Array(await big.arrayBuffer())
+    expect(await matchesVideo(new Blob([bytes.slice(0, bytes.length - 1)]), 7, true)).toBe(false)
+    bytes[bytes.length >> 1] ^= 1
+    expect(await matchesVideo(new Blob([bytes]), 7, true)).toBe(false)
+    expect(await matchesVideo(null, 7)).toBe(false)
+  })
+
+  it('detects corrupted persisted video bytes (DL1), not just a completed status', async () => {
+    vi.mocked(getBlob).mockImplementation(async (id) => id.startsWith('video_') ? new Blob(['truncated']) : media.get(id) ?? null)
+    try {
+      const r = await run('download-chaos', '5a17c0de', 30)
+      expect(r.result).toBe('fail')
+      expect(r.failure?.invariant).toBe('DL1')
+    } finally { vi.mocked(getBlob).mockImplementation(async (id) => media.get(id) ?? null) }
+  }, 120_000)
   it('same seed → same steps; replay reproduces the run', async () => {
     const a = await run('monkey', 'abad1dea', 200)
     h?.dispose()

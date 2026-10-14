@@ -18,6 +18,7 @@ import { checkMigrate, checkRoundTrip, firstDiff, ordered, projectKey } from './
 import { at, type Rng } from './rng'
 import { promptFor } from './synth'
 import type { StepArgs, StressAction, StressContext } from './types'
+import { FEATURE_ACTIONS } from './featureActions'
 
 // ---------------------------------------------------------------------------------------------
 // Helpers
@@ -109,6 +110,7 @@ const SETTINGS_PATCHES: Partial<VideoSettings>[] = [
 // ---------------------------------------------------------------------------------------------
 
 export const ACTIONS: StressAction[] = [
+  ...FEATURE_ACTIONS,
   // ---- scenes ----
   {
     id: 'scene.add',

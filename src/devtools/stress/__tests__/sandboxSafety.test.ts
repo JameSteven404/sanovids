@@ -18,6 +18,7 @@ vi.mock('../../../lib/imageStore', () => {
     deleteMedia: vi.fn(async (id: string) => void media.delete(id)),
     dataUrlToBlob: () => new Blob(),
     useMediaUrl: () => null,
+    revokeUnusedUrls: () => undefined,
   }
 })
 const persist = vi.hoisted(() => ({

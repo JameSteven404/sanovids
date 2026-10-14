@@ -172,12 +172,17 @@ export interface StressReport {
   server: { jobs: number; uploads: number; balance: number; faultsArmed: number; requests: number }
   /** Counters of the in-app guards (blocked writes / network / downloads). Empty in the headless runner. */
   guards: Record<string, number>
+  /** Observed outcomes, not merely attempted actions. */
+  coverage?: Record<string, number>
   notes: string[]
 }
 
 /** What a run needs from where it runs (vitest with fake timers, or the app with real time). */
 export interface StressEnv {
   kind: 'headless' | 'app'
+  /** Real persist.flush over isolated memory storage, only supplied by the headless harness. */
+  saveProject?: () => Promise<import('../../core/types').Project | null>
+  switchProjectRoundTrip?: () => Promise<void>
   /** Let simulated time pass: headless advances fake timers; the app waits for real (short) and yields. */
   advance: (ms: number) => Promise<void>
   /** Wall clock for measurements (never faked). */
@@ -207,6 +212,8 @@ export interface StressContext {
   step: number
   /** The session's simulated canvasapp (control API). */
   server: import('./session').SessionServer
+  bridge: import('../../providers/dev').DevBridge
+  hit: (event: string) => void
   /** Problems found by actions themselves (post-conditions). */
   report: (v: Violation) => void
   /** A free-form note for the report (Vietnamese). */

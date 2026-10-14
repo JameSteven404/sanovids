@@ -213,19 +213,28 @@ export class JobAudit {
   private perKey = new Map<string, number>()
   private forgotten = new Set<string>() // takes reported under $2 (once each)
   private unmarked = new Set<string>() // takes reported under $3 (once each)
+  /** take id → its client_request_id (a hash: computed once per take, the audit runs after every job POST). */
+  private keys = new Map<string, string>()
   jobs = 0
+
+  private keyOf(t: Take): string {
+    let key = this.keys.get(t.id)
+    if (key === undefined) this.keys.set(t.id, (key = clientRequestIdFor(t.id)))
+    return key
+  }
 
   audit(snap: DevServerSnapshot, takes: readonly Take[], assets: Asset[], dedupe: boolean): Violation[] {
     const out: Violation[] = []
-    const byKey = new Map<string, Take>()
-    for (const t of takes) byKey.set(clientRequestIdFor(t.id), t)
+    // $2 / $3 come first: they follow the takes (a cancel, an answer), not new jobs, so the "no new job" exit below
+    // must never skip them.
+    let billed: Set<string> | null = null
+    const isBilled = (t: Take) => (billed ??= new Set(snap.jobs.map((j) => j.client_request_id))).has(this.keyOf(t))
     // $2: the server made (and billed) a job for this take, yet it ended reading "not sent": no job id, not "maybe billed"
     // (e.g. cancelled while its POST lost its answer) — its "Chạy lại" would make a NEW take and pay again. Checked once
     // no request of the take is on its way (its answer may still bring the job id).
-    const billed = new Set(snap.jobs.map((j) => j.client_request_id))
     for (const t of takes) {
       if ((t.status !== 'failed' && t.status !== 'cancelled') || t.provider !== 'dev' || t.remoteId || isUncertainSubmit(t)) continue
-      if (this.forgotten.has(t.id) || !billed.has(clientRequestIdFor(t.id)) || requestInFlight(t.id)) continue
+      if (this.forgotten.has(t.id) || requestInFlight(t.id) || !isBilled(t)) continue
       this.forgotten.add(t.id)
       out.push(err('$2', `Take ${t.id} đã có job (đã trừ credit dev) trên máy chủ giả lập nhưng ghi là chưa gửi — “Chạy lại” sẽ tạo take mới, trả tiền lần nữa.`, { takeId: t.id, status: t.status, error: t.error }))
     }
@@ -234,11 +243,15 @@ export class JobAudit {
     // before that request ends: then only that mark keeps its "Chạy lại" from making a NEW take that pays again.
     for (const t of takes) {
       if (t.status !== 'cancelled' || t.provider !== 'dev' || t.remoteId || isUncertainSubmit(t)) continue
-      if (this.unmarked.has(t.id) || !billed.has(clientRequestIdFor(t.id)) || !requestInFlight(t.id)) continue
+      if (this.unmarked.has(t.id) || !requestInFlight(t.id) || !isBilled(t)) continue
       this.unmarked.add(t.id)
       out.push(err('$3', `Take ${t.id} bị huỷ lúc đang gửi, máy chủ giả lập đã tạo job (đã trừ credit dev) mà take không ghi “có thể đã bị trừ” — app tắt lúc này thì “Chạy lại” sẽ tạo take mới, trả tiền lần nữa.`, { takeId: t.id, error: t.error }))
     }
-    const uploadImage = new Map(snap.uploads.map((u) => [u.upload_id, u.imageId]))
+    if (snap.jobs.every((j) => this.seen.has(j.job_id))) return out
+    const byKey = new Map<string, Take>()
+    for (const t of takes) byKey.set(this.keyOf(t), t)
+    let uploads: Map<string, DevServerSnapshot['uploads'][number]['imageId']> | null = null
+    const uploadImage = () => (uploads ??= new Map(snap.uploads.map((u) => [u.upload_id, u.imageId])))
     for (const job of snap.jobs) {
       if (this.seen.has(job.job_id)) continue
       this.seen.set(job.job_id, job.client_request_id)
@@ -246,10 +259,9 @@ export class JobAudit {
       const count = (this.perKey.get(job.client_request_id) ?? 0) + 1
       this.perKey.set(job.client_request_id, count)
       const take = byKey.get(job.client_request_id)
-      if (count > 1) {
-        out.push((dedupe ? warn : err)('$1', `Một take bị tạo ${count} job (trả tiền ${count} lần)${take ? ` — take ${take.id}` : ''}.`, { key: job.client_request_id }))
-      }
+      if (count > 1) out.push(err('$1', `Một take bị tạo ${count} job (trả tiền ${count} lần)${take ? ` — take ${take.id}` : ''}.`, { key: job.client_request_id, dedupe }))
       if (!take) continue // deleted since: nothing to compare with
+      if (take.imported) out.push(err('IJ2', 'Take nhập từ trang bị POST tạo job mới.', { takeId: take.id, jobId: job.job_id }))
       if (take.provider === 'canvasapp') out.push(err('T3', 'Một take chạy trên canvasapp thật trong lúc thử nghiệm.', { takeId: take.id }))
       // C2: every @image_N of the prompt sent has a picture in the request.
       const sent = job.upload_ids.length
@@ -262,7 +274,7 @@ export class JobAudit {
       if (usesRefs(take.settings)) {
         const spec = MODELS[take.settings.model] ?? MODELS.seedance_2_5
         const expected = requestImages(take, assets, spec.maxRefImages).map((i) => i.imageId)
-        const got = job.upload_ids.map((u) => uploadImage.get(u))
+        const got = job.upload_ids.map((u) => uploadImage().get(u))
         if (got.every((g) => g !== undefined && g !== null)) {
           const same = expected.length === got.length && expected.every((id, i) => (got[i] ?? '') === id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60))
           if (!same) out.push(err('C1', `Ảnh gửi đi không đúng thứ tự @image của take (lệch nhân vật).`, { takeId: take.id, expected, got }))
@@ -275,10 +287,18 @@ export class JobAudit {
 }
 
 export function checkEngine(takes: readonly Take[]): Violation[] {
-  const running = takes.filter((t) => t.status === 'processing' && (t.provider === 'dev' || t.provider === 'canvasapp')).length
+  // Site jobs only poll and deliberately do not occupy an app submit slot (store/runs.tick).
+  const running = takes.filter((t) => !t.imported && t.status === 'processing' && (t.provider === 'dev' || t.provider === 'canvasapp')).length
   const out: Violation[] = []
   if (running > MAX_REMOTE_CONCURRENCY) out.push(err('E1', `${running} take chạy cùng lúc (giới hạn ${MAX_REMOTE_CONCURRENCY}).`))
   if (takes.some((t) => t.provider === 'canvasapp' && (t.status === 'queued' || t.status === 'processing'))) out.push(err('T3', 'Có take xếp hàng trên canvasapp thật.'))
+  const owners = new Set<string>()
+  for (const t of takes) {
+    if (!t.remoteId) continue
+    const key = `${t.provider}:${t.remoteId}`
+    if (owners.has(key)) out.push(err('IJ1', 'Một job có nhiều take nhận sở hữu.', { remoteId: t.remoteId }))
+    owners.add(key)
+  }
   return out
 }
 
