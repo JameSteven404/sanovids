@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { planRowSpacing, showsOldLayout } from '../../components/canvas/rowSpacing'
 import { LAYOUT, ROW_H } from '../../store/project'
-import { SIZES, SYNTH_LAYOUT, synthProject } from '../synth'
+import { TIER_SIZE } from '../../devtools/stress/synth'
+import { libraryFixture, SIZES, SYNTH_LAYOUT, SYNTH_MAX, synthProject } from '../synth'
 
 describe('deterministic synthetic projects', () => {
   it('repeats byte-for-byte, changes with the seed, and matches all tiers', () => {
@@ -41,8 +43,34 @@ describe('deterministic synthetic projects', () => {
     }
   })
   it('bounds custom input before allocating', () => {
-    for (const spec of [{ scenes: 0, takes: 0 }, { scenes: 2001, takes: 4002 }, { scenes: 1, takes: 6001 }, { scenes: 2, takes: 1 }, { scenes: NaN, takes: 2 }]) {
+    for (const spec of [{ scenes: 0, takes: 0 }, { scenes: 3001, takes: 6000 }, { scenes: 1, takes: 6001 }, { scenes: 2, takes: 1 }, { scenes: NaN, takes: 2 }]) {
       expect(() => synthProject(spec)).toThrow()
     }
+    expect(SYNTH_MAX).toEqual(SIZES.XXL)
+    expect(() => synthProject({ scenes: SYNTH_MAX.scenes, takes: SYNTH_MAX.scenes })).not.toThrow()
+  })
+  it('lets the Hiệu năng panel start every tier and the largest custom size (no stale E2 hint)', () => {
+    const panel = readFileSync('src/components/dev/DevPerfTab.tsx', 'utf8')
+    const vi = (n: number) => n.toLocaleString('vi-VN')
+    for (const [size, spec] of Object.entries(SIZES)) {
+      expect(panel).toMatch(new RegExp(`<option value="${size}">[^<]*· ${vi(spec.scenes)} cảnh · ${vi(spec.takes)} video</option>`))
+    }
+    expect(panel).toContain('max={SYNTH_MAX.scenes}')
+    expect(panel).toContain('max={SYNTH_MAX.takes}')
+    expect(panel).not.toMatch(/chờ giao diện E2/)
+  })
+  it('documents that its XXL (3,000 scenes) is not the stress tester\'s XXL (2,000 scenes)', () => {
+    expect(SIZES.XXL.scenes).toBe(3000)
+    expect(TIER_SIZE.XXL.scenes).toBe(2000)
+    expect(readFileSync('scripts/perf/README.md', 'utf8')).toMatch(/XXL[^\n]*3\.000 cảnh[^\n]*stress[^\n]*2\.000/)
+  })
+  it('adds exactly 200 unused library cards without allocating unjournalled media or changing scenes', () => {
+    const { project } = synthProject(SIZES.M)
+    const fixture = libraryFixture(project)
+    expect(fixture.scenes).toBe(project.scenes)
+    expect(project.assets).toHaveLength(12)
+    expect(fixture.assets).toHaveLength(212)
+    expect(new Set(fixture.assets.map((a) => a.id)).size).toBe(212)
+    expect(fixture.assets.slice(-200).every((a) => a.position === null && a.imageIds === project.assets[0].imageIds)).toBe(true)
   })
 })
