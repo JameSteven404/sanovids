@@ -263,3 +263,24 @@ describe('room kept for the toolbar on its actual dock', () => {
     expect(css).toMatch(/body:has\(\.cv-toolbar-host\[data-dock='top'\]\) \.toasts \{\s*top: calc\(var\(--topbar-h\) \+ 68px\);/)
   })
 })
+
+describe('review fixes wired in the components (source guards)', () => {
+  const read = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
+  it('an old project whose rows were spaced on open is fitted again once React Flow has the moved nodes', () => {
+    const view = read('CanvasView.tsx')
+    expect(view).toMatch(/if \(!maybeSpaceRows\(\) \|\| savedViewport\) return/)
+    expect(view).toMatch(/s\.nodes === before[\s\S]{0,200}initialViewport\(rf\.getNodes\(\), s\.width, s\.height\)/)
+  })
+  it('the "+" slot names what it does: the next scene (references and settings kept) when a scene is selected', () => {
+    expect(read('ToolbarBar.tsx')).toContain("label: sceneCount ? 'Cảnh tiếp theo (giữ ảnh tham chiếu và cấu hình)' : 'Cảnh mới'")
+  })
+  it('the help names both wire ends, and the queue hint reads the live run key', () => {
+    const help = read('../dialogs/ShortcutsDialog.tsx')
+    expect(help).toContain("'Đầu dây phía ảnh → ảnh khác'")
+    expect(help).not.toContain("'Đầu dây → cảnh khác'")
+    const queue = read('../runs/QueueDrawer.tsx')
+    expect(queue).toContain("useShortcutLabel('scene.run')")
+    expect(queue).not.toMatch(/platformText\.mod\}<\/span> \+ <span className="kbd">Enter/)
+    expect(read('../dialogs/SettingsDialog.tsx')).not.toContain('(phím E)')
+  })
+})

@@ -22,6 +22,7 @@ import type { VideoSettings } from '../../core/types'
 import { useProject } from '../../store/project'
 import {
   clearableTakes,
+  checkTakesKey,
   isParkedTake,
   isUncertainSubmit,
   isUnverifiableSubmit,
@@ -1244,9 +1245,15 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
 
   it('the run dialog names a scene whose newest take may already be billed (a run there is a NEW take); a newer take ends it', async () => {
     const { pp, id } = await sentAndLost(true)
+    // what the open dialog re-checks on (checkTakesKey): the newest take turning "maybe billed" changes it, progress does not
+    const sending = checkTakesKey(useRuns.getState().takes, ['s2'])
+    useRuns.setState((s) => ({ takes: s.takes.map((t) => (t.id === id ? { ...t, progress: (t.progress ?? 0) + 7 } : t)) }))
+    expect(checkTakesKey(useRuns.getState().takes, ['s2'])).toBe(sending)
+    expect(checkTakesKey(useRuns.getState().takes, ['s1'])).toBe('')
     useRuns.getState().cancel(id)
     pp.answer('uncertain')
     await vi.advanceTimersByTimeAsync(250)
+    expect(checkTakesKey(useRuns.getState().takes, ['s2'])).not.toBe(sending)
     const [c] = useRuns.getState().check(['s2'])
     expect(c.ok).toBe(true)
     expect(c.warnings[0]).toBe(maybeBilledRunWarning('S02·T1', 'dev', false))

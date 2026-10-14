@@ -43,7 +43,7 @@ export function premiereKeysNotice(fresh = FRESH_PROFILE): void {
   if (fresh) return
   const keys = ([['selection.connect', 'nối'], ['take.star', '★'], ['take.download', 'tải'], ['canvas.fit', 'vừa màn hình']] as const)
     .flatMap(([id, what]) => { const label = shortcutLabel(id); return label ? [`${label} ${what}`] : [] })
-  toast(`Phím tắt nay giống Premiere Pro${keys.length ? ` (${keys.join(', ')}…)` : ''}. Phím cũ vẫn dùng được.`, {
+  toast(`Phím tắt nay giống Premiere Pro${keys.length ? ` (${keys.join(', ')}…)` : ''}. Vài phím cũ đổi nghĩa — bấm Xem để biết.`, {
     ms: 9000, action: { label: 'Xem', run: () => useUI.getState().openDialog({ kind: 'shortcuts' }) },
   })
 }

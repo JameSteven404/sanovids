@@ -136,8 +136,8 @@ export function dropImported(takeIds: readonly string[], w: ImportWords): void {
   const live = new Set(useRuns.getState().takes.map((t) => t.id))
   const ids = takeIds.filter((id) => live.has(id))
   if (!ids.length) return
-  // the toast button is the confirmation: ask only when another scene uses one of them as @video
-  const n = deleteTakes(ids, { confirm: 'usedOnly', toast: false })
+  // the toast button is the confirmation; nothing is lost (a later scan offers these jobs again), so never ask
+  const n = deleteTakes(ids, { confirm: false, toast: false })
   if (n === null || !n) return
   toast(dropToastText(n, w), { tone: 'success' })
 }

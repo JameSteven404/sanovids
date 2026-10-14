@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_KEYMAP_BYTES, validateBindings } from '../../core/keymap'
 import { isTypingChord, KEYMAP_PREFS_KEY, matchesAction, parseKeymapPrefs, shortcutLabel, useKeymap, withShortcut } from '../keymapPrefs'
-import { assignKeys, changeKeys, heldModifiers, useKeyCapture, useKeyCaptureHost } from '../../components/dialogs/SettingsShortcuts'
+import { altKeysText, assignKeys, changeKeys, heldModifiers, useKeyCapture, useKeyCaptureHost } from '../../components/dialogs/SettingsShortcuts'
 import { useUI } from '../../store/ui'
 import { premiereNote } from '../../components/dialogs/ShortcutsDialog'
 
@@ -80,6 +80,16 @@ it('Thay thế takes the chord from the other command and says what is left of i
   expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gán E cho “Cảnh tiếp theo”. “Đổi cách hiện dây” không còn phím tắt.')
   useUI.getState().toasts.at(-1)?.action?.run()
   expect(shortcutLabel('canvas.cycleEdges')).toBe('E')
+})
+
+it('"Thêm phím phụ Alt + chữ" says what was really added (a refused one — taken, or a Mac dead key — is counted, not claimed)', () => {
+  expect(altKeysText(5, 0)).toBe('Đã thêm phím phụ Alt + chữ cho 5 lệnh.')
+  expect(altKeysText(3, 4, '⌥')).toBe('Đã thêm phím phụ ⌥ + chữ cho 3 lệnh. 4 lệnh bỏ qua (trùng phím hoặc phím không dùng được).')
+  expect(altKeysText(0, 2)).toBe('Không thêm được phím phụ Alt + chữ nào. 2 lệnh bỏ qua (trùng phím hoặc phím không dùng được).')
+  // the toast text is read after the change ran (the counts it reports are known only then)
+  let n = 0
+  changeKeys(() => { n = 7 }, () => `${n}`)
+  expect(useUI.getState().toasts.at(-1)?.text).toBe('7')
 })
 
 it('switches presets without retired views and Undo restores custom and foreign bindings', () => {

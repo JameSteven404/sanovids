@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { Take } from '../core/types'
 import { KEY_ACTIONS } from '../core/keymap'
@@ -131,6 +132,20 @@ it('restores the previous panel combination after canvas-only mode', () => {
   expect([useUI.getState().leftOpen, useUI.getState().rightOpen]).toEqual([true, false])
 })
 
+it('the toolbar\'s "Chỉ canvas" and the key share one memory (hidden by one, shown by the other); only the key toasts', () => {
+  useUI.setState({ leftOpen: true, rightOpen: false, toasts: [] })
+  toggleCanvasOnly({ toast: false }) // the toolbar's "⋯ › Chỉ canvas"
+  expect([useUI.getState().leftOpen, useUI.getState().rightOpen]).toEqual([false, false])
+  expect(useUI.getState().toasts).toHaveLength(0)
+  KEY_COMMANDS['panels.canvasOnly']()
+  expect([useUI.getState().leftOpen, useUI.getState().rightOpen]).toEqual([true, false])
+  KEY_COMMANDS['panels.canvasOnly']()
+  expect(useUI.getState().toasts.at(-1)?.text).toContain('Đã ẩn hai khung bên')
+  const bar = readFileSync(new URL('../components/canvas/ToolbarBar.tsx', import.meta.url), 'utf8')
+  expect(bar).toContain("toggleCanvasOnlyPanels({ toast: false })")
+  expect(bar).not.toMatch(/let hiddenPanels/)
+})
+
 it('a held Ctrl+L flips the link once: key repeat never toggles it back', () => {
   let keydown: (e: KeyboardEvent) => void = () => undefined
   vi.stubGlobal('window', { addEventListener: (type: string, fn: typeof keydown) => { if (type === 'keydown') keydown = fn }, removeEventListener: vi.fn() })
@@ -251,7 +266,7 @@ it('the one-time Premiere notice: live labels, "Xem" opens the shortcuts, never 
   useKeymap.getState().assign('take.star', ['KeyQ'])
   premiereKeysNotice(false)
   const notice = useUI.getState().toasts.at(-1)!
-  expect(notice.text).toBe('Phím tắt nay giống Premiere Pro (Ctrl+L nối, Q ★, Ctrl+M tải, \\ vừa màn hình…). Phím cũ vẫn dùng được.')
+  expect(notice.text).toBe('Phím tắt nay giống Premiere Pro (Ctrl+L nối, Q ★, Ctrl+M tải, \\ vừa màn hình…). Vài phím cũ đổi nghĩa — bấm Xem để biết.')
   expect(notice.action?.label).toBe('Xem')
   notice.action?.run()
   expect(useUI.getState().dialog).toEqual({ kind: 'shortcuts' })

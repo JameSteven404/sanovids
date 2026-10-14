@@ -8,8 +8,9 @@
 //     unknown keys) is refused before a byte is sent;
 //   - the request body: fixed key order and scene-neutral file names, so the same take always sends the same bytes;
 //   - the API key header only for the exact origin https://seedvis.com (never cdn.seedvis.com, never a redirect hop);
-//   - downloads only from URLs main read from a seedvis answer: https, default port, no credentials, no local /
-//     private / IP-literal host, ≤ 3 redirects, each hop checked; the type is sniffed from the first bytes;
+//   - downloads only from URLs main read from a seedvis answer: https, default port, no credentials, no IP-literal or
+//     local-looking host name (names are not resolved: a public name that points at a private address still passes),
+//     ≤ 3 redirects, each hop checked; the type is sniffed from the first bytes;
 //   - secret redaction (the exact stored key, Bearer, sv_live_ / sv_test_, header values, signed URL queries) and
 //     account-info sanitizing (never the e-mail, never the account id);
 //   - the upload clock of a submit: when it may have reached seedvis (`sent`), the earliest moment its last byte can
@@ -514,7 +515,9 @@ function pickResponseHeaders(get) {
 
 /**
  * Is `raw` a URL main may download a result from (and follow a redirect to)? https, default port, no credentials,
- * a DNS name (never an IP literal), not localhost / *.localhost / *.local / *.internal / a single-label name. The CDN
+ * a DNS name (never an IP literal), not localhost / *.localhost / *.local / *.internal / a single-label name. Only the
+ * name is checked, never what it resolves to (shortcut: 127.0.0.1.nip.io passes; resolve each hop in netGet and refuse
+ * private addresses if seedvis outputs ever come from untrusted hosts). The CDN
  * host list is log-only (SEEDVIS_CDN_HOSTS): an unconfirmed CDN must never block a paid video.
  */
 function outputUrlAllowed(raw) {

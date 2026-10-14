@@ -49,6 +49,7 @@ import {
   isUncertainSubmit,
   isUnverifiableSubmit,
   MAX_REMOTE_CONCURRENCY,
+  requestInFlight,
   onRunEvent,
   requestInFlightText,
   setEngineHooks,
@@ -1373,6 +1374,28 @@ describe('gateway e2e: project switches, deleted scenes, frames', () => {
     expect(fake.jobPosts()[0].canvas_node_id).toBe(nodeOf('s1'))
   })
 
+  it('switching away and back while the submit still uploads, then Huỷ: its own submit proved nothing was sent — not "maybe billed" by the look-up beside it', async () => {
+    const g1 = gate()
+    fake.state.fault = (req) => (req.path === '/api/uploads/images' ? { kind: 'wait', until: g1.until } : undefined)
+    const [t] = enqueue('s1')
+    await run(300)
+    const leftOnDisk = saved()
+    useProject.getState().loadProject({ ...project(), id: 'q', scenes: [scene('q1', 1)] })
+    useRuns.getState().loadRuns(null)
+    await run(1000)
+    useProject.getState().loadProject(project())
+    useRuns.getState().loadRuns({ takes: leftOnDisk, credits: 1000, spent: 0 })
+    await run(1000)
+    expect(requestInFlight(t.id)).toBe(true) // the submit, and the look-up started beside it
+    useRuns.getState().cancel(t.id)
+    g1.open()
+    await run(60_000)
+    expect(fake.count('POST', '/api/video-jobs')).toBe(0)
+    expect(isUncertainSubmit(take(t.id))).toBe(false)
+    expect(take(t.id)).toMatchObject({ status: 'cancelled', remoteId: null, startedAt: null, error: 'Đã huỷ' })
+    expect(take(t.id).submitUnknown).toBeFalsy()
+  })
+
   it('a queued take of a deleted scene is never sent; Undo of the delete lets it run (once)', async () => {
     const [t] = enqueue('s1')
     useProject.getState().removeScenes(['s1'])
@@ -1908,6 +1931,35 @@ describe('gateway e2e: cancel', () => {
     // the take says it was never sent (UI: "huỷ trước khi gửi sang canvasapp — không bị trừ credit")
     expect(take(a.id)).toMatchObject({ status: 'cancelled', remoteId: null, startedAt: null })
     expect(take(b.id)).toMatchObject({ status: 'cancelled', remoteId: null, startedAt: null })
+  })
+
+  it('deleting a running take asks first, also from the two-click buttons (usedOnly): its job keeps running (billed) there; one still before its POST asks nothing', async () => {
+    const w = g.window as { confirm?: unknown }
+    const confirm = vi.fn((_message: string) => false)
+    w.confirm = confirm
+    try {
+      const g1 = gate()
+      // the second submit waits at its canvas PUT (a new node for s2), before its POST
+      fake.state.fault = (req) => (req.method === 'PUT' && fake.state.jobs.length ? { kind: 'wait', until: g1.until } : undefined)
+      const [a] = enqueue('s1')
+      await run(300)
+      expect(take(a.id)).toMatchObject({ status: 'processing', remoteId: 'proj1:job1' })
+      expect(deleteTakes([a.id], { confirm: 'usedOnly' })).toBeNull()
+      expect(confirm).toHaveBeenCalledTimes(1)
+      expect(confirm.mock.calls[0][0]).toContain('đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit)')
+      expect(take(a.id)).toBeDefined()
+      // a submit still before its POST: nothing went out — deleted without a question, never posted
+      const [b] = enqueue('s2')
+      await run(300)
+      expect(take(b.id)).toMatchObject({ status: 'processing', remoteId: null })
+      expect(deleteTakes([b.id], { confirm: 'usedOnly' })).toBe(1)
+      expect(confirm).toHaveBeenCalledTimes(1)
+      g1.open()
+      await run(60_000)
+      expect(fake.count('POST', '/api/video-jobs')).toBe(1)
+    } finally {
+      delete w.confirm
+    }
   })
 
   it('cancelling a running take only stops tracking it (as the UI says): no DELETE, the job stays on canvasapp', async () => {

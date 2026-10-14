@@ -201,7 +201,7 @@ const GROUPS: Group[] = [
         keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire',
         C: ClickToCutSetting,
       },
-      { id: 'edgeMode', label: 'Hiển thị dây nối', hint: 'Cũng đổi được trên thanh công cụ canvas (phím E).', keywords: 'dây ẩn hiện tất cả đang chọn edge', C: EdgeModeSetting },
+      { id: 'edgeMode', label: 'Hiển thị dây nối', hint: 'Cũng đổi được trên thanh công cụ canvas (Hiển thị) hoặc bằng phím tắt “Đổi cách hiện dây”.', keywords: 'dây ẩn hiện tất cả đang chọn edge', C: EdgeModeSetting },
       {
         id: 'takeDisplay',
         label: 'Video trên canvas',

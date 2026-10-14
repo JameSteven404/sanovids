@@ -28,6 +28,16 @@ describe('key rules (pure)', () => {
     expect(keyRules.normalizeKeyInput(undefined)).toBeNull()
   })
 
+  it("normalizeKeyInput refuses another service's secret (never sent to seedvis as a Bearer key to check it)", () => {
+    const tail = 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'
+    for (const prefix of ['ghp_', 'github_pat_', 'gho_', 'sk-', 'sk-proj-', 'sk-ant-', 'sk_live_', 'rk_test_', 'AKIA', 'xoxb-', 'AIza', 'glpat-', 'hf_', 'npm_']) {
+      expect(keyRules.normalizeKeyInput(`${prefix}${tail}`)).toBeNull()
+    }
+    expect(keyRules.normalizeKeyInput(` ${FAKE_KEY} `)).toBe(FAKE_KEY)
+    expect(keyRules.normalizeKeyInput(`sv_test_${tail}`)).toBe(`sv_test_${tail}`)
+    expect(keyRules.normalizeKeyInput(tail)).toBe(tail) // no prefix is still accepted (S18)
+  })
+
   it('hint = last 4; tag = first 12 hex of HMAC-SHA256(install salt, key): stable per install, different across installs, never a bare hash', () => {
     expect(keyRules.keyHint(FAKE_KEY)).toBe(FAKE_KEY.slice(-4))
     expect(keyRules.keyHint('short')).toBeNull()
@@ -570,10 +580,13 @@ describe('seedvis.cjs: "Dán key", the key check, Xoá key — the key never com
     h.net.server = (ctl) => ctl.fail('net::ERR_CONNECTION_RESET')
     expect(await h.call('seedvis:pasteKey')).toMatchObject({ ok: false, code: 'network' })
     const n = h.net.seen.length
-    // the user copied something else meanwhile: another service's token matches the key charset
+    // the user copied something else meanwhile: another service's token matches the key charset — refused as not a
+    // seedvis key at all (normalizeKeyInput), before the offer is even looked at
     const other = `ghp_TESTONLY${'a'.repeat(28)}`
     h.clip.text = other
-    expect(await h.call('seedvis:pasteKey', { unverified: true })).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
+    expect(await h.call('seedvis:pasteKey', { unverified: true })).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.badClipboard })
+    expect(await h.call('seedvis:pasteKey')).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.badClipboard })
+    expect(h.net.seen).toHaveLength(n)
     h.clip.text = OTHER_KEY
     expect(await h.call('seedvis:pasteKey', { unverified: true })).toEqual({ ok: false, code: 'bad-key', message: keyRules.SEEDVIS_KEY_TEXTS.unverifiedRefused })
     expect(h.clip.text).toBe(OTHER_KEY)

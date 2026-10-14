@@ -96,11 +96,20 @@ function keyFormatOk(text) {
   return typeof text === 'string' && SEEDVIS_KEY_RE.test(text)
 }
 
-/** Pasted / typed text → the key (outer whitespace trimmed) or null. Text over 1000 characters is refused untouched. */
+/**
+ * Prefixes of other services' secrets (GitHub, OpenAI / Anthropic, Stripe, AWS, Slack, Google, GitLab, Hugging Face,
+ * npm): such text is never sent to seedvis to be checked as a Bearer key ("Dán key" reads whatever the clipboard holds).
+ */
+const FOREIGN_SECRET_RE = /^(?:gh[pousr]_|github_pat_|sk[-_]|[rp]k_(?:live|test)_|AKIA|ASIA|xox[abposr]-|AIza|glpat-|hf_|npm_)/
+
+/**
+ * Pasted / typed text → the key (outer whitespace trimmed) or null. Text over 1000 characters is refused untouched, and
+ * so is another service's secret (FOREIGN_SECRET_RE).
+ */
 function normalizeKeyInput(raw) {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > SEEDVIS_KEY_INPUT_MAX) return null
   const t = raw.trim()
-  return keyFormatOk(t) ? t : null
+  return keyFormatOk(t) && !FOREIGN_SECRET_RE.test(t) ? t : null
 }
 
 /** The last 4 characters ("…AB12" in the UI). */

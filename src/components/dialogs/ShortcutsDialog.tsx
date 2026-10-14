@@ -63,7 +63,8 @@ const GESTURES: Group[] = [
       ],
       ['Thư viện → cảnh', 'Kéo thẻ nhân vật (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas.'],
       ['Thư viện → nền', 'Đặt nhân vật lên canvas tại điểm thả. Thả file ảnh → tạo nhân vật mới.'],
-      ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
+      ['Đầu dây phía cảnh → cảnh khác', 'Kéo đầu dây phía cảnh sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây đó ra chỗ trống: cắt dây.'],
+      ['Đầu dây phía ảnh → ảnh khác', 'Kéo đầu dây phía ảnh sang một nhân vật khác: thay ảnh tham chiếu tại chỗ. Thả đầu dây đó ra chỗ trống: giữ nguyên dây.'],
       [
         'Bấm dây',
         `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${platformText.mod}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image trong prompt tự đánh lại (hoàn tác được).`,

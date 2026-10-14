@@ -18,7 +18,7 @@ import {
   type CreditInfo,
 } from '../../store/credits'
 import { useProject } from '../../store/project'
-import { useRuns, type SceneRunCheck } from '../../store/runs'
+import { checkTakesKey, useRuns, type SceneRunCheck } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetAvatar } from '../common/Media'
 import { Modal } from '../common/Modal'
@@ -75,6 +75,8 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   }, [demo])
   const [onlyNew, setOnlyNew] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
+  // check() also reads each scene's newest take ("maybe billed" / paid-cancelled warnings): re-check when one changes.
+  const takesKey = useMemo(() => checkTakesKey(takes, sceneIds), [takes, sceneIds])
 
   const rows = useMemo<Row[]>(() => {
     const checks = new Map(useRuns.getState().check(sceneIds).map((c) => [c.sceneId, c]))
@@ -93,7 +95,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
       })
     // provider / limits: the checks depend on what the provider accepts (/api/video-profiles) — `limits` keeps its
     // identity while what it refuses is unchanged, so a re-read with the same answer re-checks nothing.
-  }, [project, sceneIds, provider, limits])
+  }, [project, sceneIds, provider, limits, takesKey])
   // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
   const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
   const site = limitsSite(provider)

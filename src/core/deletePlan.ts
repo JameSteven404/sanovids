@@ -29,9 +29,9 @@ export function keyboardDeletePlan(
 }
 
 /**
- * When to ask before deleting takes: always when something is lost (or paid and not downloaded yet), or never.
- * 'usedOnly' (the caller already confirmed the loss, e.g. a two-click button) asked only when scenes used the take as
- * @video — reference videos were retired (0.6.0), so it never asks now; kept for its callers.
+ * When to ask before deleting takes: true = when something is lost (a finished video, or credit — see below); false =
+ * never. 'usedOnly' = the caller already confirmed that the FILE is lost (a two-click button): it still asks about
+ * credit (paidPending / maybeBilled / sentAway), which that click never mentioned.
  */
 export type TakeDeleteConfirm = boolean | 'usedOnly'
 
@@ -51,6 +51,13 @@ export interface TakeDeleteCheck {
    * "Chạy lại" looks that job up first; once it is deleted, a run of its scene may pay again).
    */
   maybeBilled: number
+  /**
+   * How many still run on canvasapp (or its simulation) with their job sent or maybe sent (`sent`: a job id, or a
+   * request that may have reached it — runs.mayHaveBeenSent): deleting one only stops following that job here; it keeps
+   * running (billed) there, and "Nhập job" never offers it (SanoVids made it). Imported takes are left out: "Nhập job"
+   * offers their jobs again.
+   */
+  sentAway: number
   /** Confirm text, or null when nothing needs asking. */
   question: string | null
 }
@@ -58,11 +65,12 @@ export interface TakeDeleteCheck {
 /**
  * What deleting `takeIds` loses, and the confirm question to ask (null = no need to ask). `label` names a single take
  * ("S03·T2"). confirm: true = ask when a finished video is lost, a paid video is still downloading (`videoReady` on
- * a running take) or a take is "maybe billed" (`uncertain`); 'usedOnly' / false = never.
+ * a running take), a take is "maybe billed" (`uncertain`) or its job runs there (`sent` on a running take);
+ * 'usedOnly' = only those credit cases; false = never.
  */
 export function checkTakeDelete(
   takeIds: readonly string[],
-  takes: readonly { id: string; status: JobStatus; videoReady?: boolean; uncertain?: boolean; provider?: string }[],
+  takes: readonly { id: string; status: JobStatus; videoReady?: boolean; uncertain?: boolean; sent?: boolean; imported?: boolean; provider?: string }[],
   opts: { confirm?: TakeDeleteConfirm; label?: string } = {},
 ): TakeDeleteCheck {
   const wanted = new Set(takeIds)
@@ -73,8 +81,12 @@ export function checkTakeDelete(
   const paidPending = pending.length
   const doubtful = found.filter((t) => t.uncertain === true && t.provider !== 'mock')
   const maybeBilled = doubtful.length
-  const ask = (opts.confirm ?? true) === true && (finished > 0 || paidPending > 0 || maybeBilled > 0)
-  if (!ask || !ids.length) return { ids, finished, paidPending, maybeBilled, question: null }
+  const away = found.filter((t) => t.status === 'processing' && t.sent === true && t.videoReady !== true && t.imported !== true && t.provider !== 'mock')
+  const sentAway = away.length
+  const confirm = opts.confirm ?? true
+  const credit = paidPending > 0 || maybeBilled > 0 || sentAway > 0
+  const ask = confirm === true ? finished > 0 || credit : confirm === 'usedOnly' && credit
+  if (!ask || !ids.length) return { ids, finished, paidPending, maybeBilled, sentAway, question: null }
   const one = ids.length === 1
   const what = one && opts.label ? opts.label : `${ids.length} video${finished && finished < ids.length ? ` (${finished} video đã tạo xong)` : ''}`
   const lines = [`Xoá vĩnh viễn ${what}? Video đã xoá không hoàn tác được.`]
@@ -97,5 +109,14 @@ export function checkTakeDelete(
         : `${who}: không rõ canvasapp đã nhận (và trừ credit) chưa — “Chạy lại” trên take tìm job cũ trước khi gửi; xoá thì SanoVids không còn tìm lại job đó, chạy lại cảnh có thể trừ credit lần nữa.`,
     )
   }
-  return { ids, finished, paidPending, maybeBilled, question: lines.join('\n') }
+  if (sentAway) {
+    const dev = away.every((t) => t.provider === 'dev')
+    const who = one && opts.label ? opts.label : `${sentAway} video`
+    lines.push(
+      dev
+        ? `${who} đang chạy trên canvasapp giả lập (job đã gửi hoặc đang gửi — có thể đã trừ credit dev): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trong Bảng phát triển; chạy lại cảnh có thể trừ credit dev lần nữa.`
+        : `${who} đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit): xoá chỉ bỏ theo dõi trong SanoVids, job vẫn chạy trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy lại cảnh có thể trừ credit lần nữa.`,
+    )
+  }
+  return { ids, finished, paidPending, maybeBilled, sentAway, question: lines.join('\n') }
 }

@@ -49,7 +49,7 @@ describe('arrange presentation contract', () => {
     expect(arrangeTitle({ ...LEGACY_ROWS, style: 'grid', gridCols: 4, video: 'chosen' })).toBe('Sắp xếp lại: lưới 4 cảnh mỗi hàng, chỉ take chọn')
     expect(arrangeTitle({ ...LEGACY_ROWS, style: 'grid', video: 'chosen' })).toBe('Sắp xếp lại: lưới tự động, chỉ take chọn')
     expect(arrangeTitle({ ...LEGACY_ROWS, style: 'strip' })).toBe('Sắp xếp lại: mọi cảnh trên một dải ngang')
-    expect(CHOSEN_NOTICE).toBe('Video khác, video đang tạo và dây vào Thư mục của chúng tạm ẩn, ở mọi dự án. Bấm “Tất cả” trên thanh công cụ để hiện lại — khi đó nên Sắp xếp lại.')
+    expect(CHOSEN_NOTICE).toBe('Video khác, video đang tạo và dây vào Thư mục của chúng tạm ẩn, ở mọi dự án. Mở “Hiển thị” (biểu tượng mắt) trên thanh công cụ › Video › Tất cả để hiện lại — khi đó nên Sắp xếp lại.')
   })
   it('toasts the exact sentences of the plan (§3.9)', () => {
     expect(arrangeToast({ cols: 1, stats: stats({ takesBack: 3 }) }, opts(), false)).toBe('Đã sắp xếp lại canvas (3 video về cạnh cảnh của nó).')

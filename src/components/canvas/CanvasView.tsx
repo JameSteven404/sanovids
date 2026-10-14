@@ -247,7 +247,17 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   const shownFor = useUI((s) => s.minimapShownFor.includes(projectId))
   // A project laid out for the 0.5.x cards (280 × 200, rows 248 apart): spread its rows once for the 352 × 304 node.
   useEffect(() => {
-    maybeSpaceRows()
+    if (!maybeSpaceRows() || savedViewport) return
+    // The opening fit (startViewport) was taken from the rows before they moved: fit once more when React Flow has the
+    // moved nodes. Not undone by the effect clean-up (StrictMode runs this twice; the second call spaces nothing).
+    const before = rfStore.getState().nodes
+    const off = rfStore.subscribe((s) => {
+      if (s.nodes === before || !(s.width > 0 && s.height > 0)) return
+      off()
+      const viewport = initialViewport(rf.getNodes(), s.width, s.height)
+      if (viewport) void rf.setViewport(viewport)
+    })
+    setTimeout(off, 3000)
   }, [projectId])
   useEffect(() => rfStore.subscribe((state) => {
     const [x, y, zoom] = state.transform

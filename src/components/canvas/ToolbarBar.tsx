@@ -5,6 +5,7 @@ import { connectSelection, downloadChosenTakesZip, newScene, nextScene, redo, re
 import { useArrangeMenu } from '../../arrangeActions'
 import type { ActionId } from '../../core/keymap'
 import { createFolderNode } from '../../folderActions'
+import { toggleCanvasOnly as toggleCanvasOnlyPanels } from '../../keyCommands'
 import { useMotionLevel } from '../../lib/canvasPrefs'
 import { IS_MAC } from '../../lib/platform'
 import { DEFAULT_TOOLBAR_PLACE, useToolbarPrefs, type ToolbarDock } from '../../lib/toolbarPrefs'
@@ -16,8 +17,8 @@ import { sceneMapOf } from './canvasModel'
 import { ensureRovingStop, ToolbarButton, ToolbarMenu, toolbarArrowKey, useFocusRescue, type ToolbarMenuItem } from './ToolbarControls'
 import { ToolbarTray } from './ToolbarTray'
 import {
-  canScrollBy, canvasOnlyLabel, gripHelpText, minimapPosition, nudgeToolbar, toggleCanvasOnly, toolbarSide, viewDiffers,
-  type PanelState, type ToolbarItemId,
+  canScrollBy, canvasOnlyLabel, gripHelpText, minimapPosition, nudgeToolbar, toolbarSide, viewDiffers,
+  type ToolbarItemId,
 } from './toolbarModel'
 import { useToolbarPlace } from './useToolbarPlace'
 import './toolbar.css'
@@ -27,16 +28,8 @@ const MENU = { place: 'Vị trí thanh công cụ', add: 'Thêm vào canvas', vi
 const ICON = { size: 16, strokeWidth: 1.75 } as const
 /** Where ArrangePopover opens, from the side toolbar panels open on (toolbarModel.toolbarSide). */
 const POPOVER_SIDE = { top: 'up', bottom: 'down', left: 'left', right: 'right' } as const
-// Which side panels "Chỉ canvas" hid, so pressing it again shows exactly those (kept across canvas remounts).
-let hiddenPanels: PanelState | null = null
-
-function toggleSidePanels() {
-  const ui = useUI.getState()
-  const { next, remember } = toggleCanvasOnly({ left: ui.leftOpen, right: ui.rightOpen }, hiddenPanels)
-  hiddenPanels = remember
-  ui.setLeftOpen(next.left)
-  ui.setRightOpen(next.right)
-}
+// "Chỉ canvas" shares the key's memory of which panels it hid (keyCommands.toggleCanvasOnly); no toast here.
+const toggleSidePanels = () => toggleCanvasOnlyPanels({ toast: false })
 
 export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { onArrange: () => void; onFit: (ids?: string[]) => void; big: boolean }) {
   const rf = useReactFlow()
@@ -160,7 +153,8 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   const hand = { label: 'Tay · kéo nền để di chuyển', shortcut: 'canvas.hand' as const, run: () => ui.setInteraction('hand'), pressed: interaction === 'hand' }
   const pick = { label: 'Chọn · kéo để chọn vùng', shortcut: 'canvas.select' as const, run: () => ui.setInteraction('select'), pressed: interaction === 'select' }
   const entries: Record<Exclude<ToolbarItemId, 'mouse' | 'arrange'>, { label: string; icon: ReactNode; run: () => void; shortcut?: ActionId; disabled?: boolean; menu?: string }> = {
-    new: { label: 'Cảnh mới', icon: <Plus {...ICON} />, run: () => { nextScene() }, shortcut: 'scene.next' },
+    // nextScene copies the selected scene's references and settings (Ctrl+N "Cảnh mới (trống)" never does): say so
+    new: { label: sceneCount ? 'Cảnh tiếp theo (giữ ảnh tham chiếu và cấu hình)' : 'Cảnh mới', icon: <Plus {...ICON} />, run: () => { nextScene() }, shortcut: 'scene.next' },
     add: { label: 'Thêm: cảnh trống, thư mục lưu video, nhập nhiều prompt', icon: <ChevronDown size={12} strokeWidth={2} />, run: addMenu, menu: MENU.add },
     run: { label: sceneCount ? `Chạy ${sceneCount} cảnh đang chọn · xác nhận chi phí` : 'Chạy · chọn ít nhất một cảnh', icon: <Play {...ICON} />, run: () => requestRun(selectedSceneIds()), shortcut: 'scene.run', disabled: !sceneCount },
     fit: { label: 'Vừa màn hình', icon: <Maximize {...ICON} />, run: () => onFit(useUI.getState().selectedIds), shortcut: 'canvas.fit' },

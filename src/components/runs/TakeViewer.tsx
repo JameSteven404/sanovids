@@ -356,7 +356,8 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
 
   /**
    * The shared delete (actions.deleteTakes — same as the canvas node menu, the queue and the Delete key). The
-   * two-click button is the confirmation that the video is lost, so deleteTakes asks nothing more ('usedOnly').
+   * two-click button is the confirmation that the video is lost, so deleteTakes asks only about credit ('usedOnly':
+   * a paid video still downloading, a "maybe billed" take, a job still running there).
    */
   const remove = () => {
     if (!confirmDelete) {

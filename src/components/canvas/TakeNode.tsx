@@ -58,8 +58,9 @@ function openTake(takeId: string) {
 }
 
 /**
- * Delete one take (not undoable) through actions.deleteTakes, never asking again: the node's trash button already
- * needed a second click (TakeDeleteButton), like the viewer's (no scene uses a video as a reference any more).
+ * Delete one take (not undoable) through actions.deleteTakes: the node's trash button already needed a second click
+ * (TakeDeleteButton), like the viewer's, so it asks only about credit ('usedOnly': a paid video still downloading, a
+ * "maybe billed" take, a job still running there).
  * deleteTakes also removes its media blobs, drops it from the selection and says so in a toast.
  */
 export function deleteTake(takeId: string) {

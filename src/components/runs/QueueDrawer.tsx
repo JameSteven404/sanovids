@@ -1,4 +1,4 @@
-import { platformText } from '../../lib/platformText'
+import { useShortcutLabel } from '../../lib/keymapPrefs'
 import {
   Bug,
   ChevronDown,
@@ -189,6 +189,7 @@ function QueuePanel() {
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
+  const runKey = useShortcutLabel('scene.run')
   // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
   const devOpen = useDevAllowed()
   const sceneMap = useProject((s) => sceneMapOf(s.project.scenes))
@@ -294,7 +295,7 @@ function QueuePanel() {
             <ListVideo size={22} />
             <div>Chưa có job nào.</div>
             <div className="faint">
-              Chọn cảnh rồi bấm <span className="kbd">{platformText.mod}</span> + <span className="kbd">Enter</span> hoặc nút ▶ trên thẻ cảnh.
+              Chọn cảnh rồi bấm {runKey && <><span className="kbd">{runKey}</span> hoặc </>}nút ▶ trên thẻ cảnh.
             </div>
           </div>
         )}

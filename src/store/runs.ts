@@ -287,7 +287,7 @@ function endFlight(id: string, flight: Flight) {
  * check with nothing sent, so the take is not marked (a mark it did not earn would turn its "Chạy lại" into a look-up
  * that, with no record of a request, can only end "Tạo lại" — after an app restart, say). A provider that cannot tell: yes.
  */
-function mayHaveBeenSent(takeId: string): boolean {
+export function mayHaveBeenSent(takeId: string): boolean {
   const flights = [...(inFlight.get(takeId) ?? [])]
   if (!flights.length) return true
   return flights.some((f) => {
@@ -307,8 +307,14 @@ function mayHaveBeenSent(takeId: string): boolean {
  * own cancel put on the take goes (a take "maybe billed" by an earlier request keeps it).
  */
 type LateOutcome = { kind: 'job'; remoteId: string } | { kind: 'uncertain'; error: string } | { kind: 'nothing-sent'; unmark: boolean }
-/** Which outcome wins when two requests of a take report (a submit and the look-up beside it): what is known best. */
+/**
+ * Which outcome wins when two requests of a take report (a submit and the look-up beside it): what is known best. The
+ * take's own submit proving nothing went out (`by` 'submit') outranks a look-up that found nothing: that look-up was
+ * started beside it (runs reloaded while it was on its way), was looking for that very submit and reports after it
+ * (the canvasapp adapter's recover waits for a submit of the key in flight).
+ */
 const LATE_RANK: Record<LateOutcome['kind'], number> = { 'nothing-sent': 0, uncertain: 1, job: 2 }
+const lateRank = (o: LateOutcome, by: Flight['kind']) => (o.kind === 'nothing-sent' && by === 'submit' ? 1.5 : LATE_RANK[o.kind])
 /**
  * Every outcome of a request of a cancelled / deleted take, kept by take id until its project's runs are loaded again
  * (this session): put on the take then — again, if it was already. A change made to the open runs can still be thrown
@@ -316,7 +322,7 @@ const LATE_RANK: Record<LateOutcome['kind'], number> = { 'nothing-sent': 0, unce
  * comes in between (same generation, same project open) reaches only runs that are about to be replaced. Putting it
  * on again is harmless (applyLateOutcome only changes a cancelled take that still has no job id).
  */
-const lateOutcomes = new Map<string, { projectId: string; outcome: LateOutcome }>()
+const lateOutcomes = new Map<string, { projectId: string; outcome: LateOutcome; by: Flight['kind'] }>()
 
 /**
  * A request of this take (its submit, or the look-up of an earlier one) is still on its way — also one started before
@@ -338,6 +344,17 @@ export function requestInFlight(takeId: string): boolean {
 /** "Chạy lại" / retry() while requestInFlight(take): nothing new is sent before that request's outcome is known. */
 export const requestInFlightText = (pid: ProviderId): string =>
   `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
+
+/**
+ * What check() reads from the takes of `sceneIds` (the newest take of each: its "maybe billed" / paid-cancelled warning),
+ * as one string: a view that keeps check()'s result re-checks when it changes (RunConfirmDialog), not on every progress.
+ */
+export function checkTakesKey(takes: readonly Take[], sceneIds: readonly string[]): string {
+  const wanted = new Set(sceneIds)
+  const newest = new Map<string, Take>()
+  for (const t of takes) if (wanted.has(t.sceneId) && t.number > (newest.get(t.sceneId)?.number ?? -Infinity)) newest.set(t.sceneId, t)
+  return [...newest.values()].map((t) => `${t.id}|${t.status}|${t.remoteId ?? ''}|${t.submitUnknown ? 1 : 0}|${t.error ?? ''}`).join('\n')
+}
 
 /**
  * check() warning (the run dialog's row) of a scene whose newest take may already be billed (isUncertainSubmit): a run
@@ -1131,9 +1148,9 @@ function applyLateOutcome(id: string, outcome: LateOutcome) {
 function lateOutcome(id: string, flight: Flight, outcome: LateOutcome) {
   if (!flight.stopped || flight.pid === 'mock') return
   const had = lateOutcomes.get(id)
-  const best = had && had.projectId === flight.projectId && LATE_RANK[had.outcome.kind] > LATE_RANK[outcome.kind] ? had.outcome : outcome
-  lateOutcomes.set(id, { projectId: flight.projectId, outcome: best })
-  if (useProject.getState().project.id === flight.projectId && findTake(id)) applyLateOutcome(id, best)
+  const best = had && had.projectId === flight.projectId && lateRank(had.outcome, had.by) > lateRank(outcome, flight.kind) ? had : { projectId: flight.projectId, outcome, by: flight.kind }
+  lateOutcomes.set(id, best)
+  if (useProject.getState().project.id === flight.projectId && findTake(id)) applyLateOutcome(id, best.outcome)
 }
 
 function concurrencyFor(pid: ProviderId): number {

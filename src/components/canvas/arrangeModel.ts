@@ -11,7 +11,7 @@ export const STYLE_HINT: Record<ArrangeStyle, string> = {
   grid: 'Nhiều cảnh mỗi hàng, đọc trái sang phải như bảng phân cảnh. Hợp dự án dài.',
   strip: 'Mọi cảnh trên một hàng. Hợp khi chỉ có vài cảnh, hoặc khi chỉ xếp các cảnh đang chọn.',
 }
-export const CHOSEN_NOTICE = 'Video khác, video đang tạo và dây vào Thư mục của chúng tạm ẩn, ở mọi dự án. Bấm “Tất cả” trên thanh công cụ để hiện lại — khi đó nên Sắp xếp lại.'
+export const CHOSEN_NOTICE = 'Video khác, video đang tạo và dây vào Thư mục của chúng tạm ẩn, ở mọi dự án. Mở “Hiển thị” (biểu tượng mắt) trên thanh công cụ › Video › Tất cả để hiện lại — khi đó nên Sắp xếp lại.'
 export const FOLDER_KEEP_HINT = 'Thư mục bị cảnh đè lên sẽ được đưa lên hàng phía trên.'
 export const FOLLOW_HINT = 'Video giữ khoảng cách với cảnh của nó, có thể đè lên thẻ khác.'
 export const TOO_WIDE = 'Quá rộng để thấy hết — sau khi xếp sẽ phóng tới vùng cảnh bạn làm gần nhất.'

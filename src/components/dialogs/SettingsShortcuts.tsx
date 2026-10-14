@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { actionById, changedBindingsCount, chordFromEvent, chordLabel, defaultsFor, formatChord, KEY_ACTIONS, refusalFor, warningsFor, type ActionId } from '../../core/keymap'
 import { eventLike, IS_MAC, isImeKey } from '../../lib/keyEvents'
 import { useKeymap } from '../../lib/keymapPrefs'
+import { platformText } from '../../lib/platformText'
 import { toast } from '../../store/ui'
 import type { RowProps } from './settingsUi'
 
@@ -14,15 +15,17 @@ export type Capture = { id: ActionId; index: number; message: string; chords?: s
 const useCapture = create<{ capture: Capture | null }>(() => ({ capture: null }))
 export { useCapture as useKeyCapture }
 const stopCapture = () => useCapture.setState({ capture: null })
+/** The Alt key as written in UI text ('⌥' on a Mac). */
+const ALT = IS_MAC ? '⌥' : 'Alt'
 /** The row element of a command (the recorder stays armed only while the user works inside it). */
 const rowSelector = (id: ActionId) => `[data-key-row="${id}"]`
 
-/** All edits use the same validated store as settings import; Undo includes displaced commands. */
-export function changeKeys(change: () => void, text: string): void {
+/** All edits use the same validated store as settings import; Undo includes displaced commands. `text` may read what `change` did. */
+export function changeKeys(change: () => void, text: string | (() => string)): void {
   const state = useKeymap.getState()
   const before = { ...state.foreign, ...state.bindings }
   change()
-  toast(text, { action: { label: 'Hoàn tác', run: () => { stopCapture(); useKeymap.getState().replace(before) } } })
+  toast(typeof text === 'function' ? text() : text, { action: { label: 'Hoàn tác', run: () => { stopCapture(); useKeymap.getState().replace(before) } } })
 }
 
 /** Assign the recorded chords (`replace`: Thay thế, taking them from the commands that had them). */
@@ -74,7 +77,7 @@ export function useKeyCaptureHost(): void {
         const modifier = /^(Control|Meta|Alt|Shift)$/.test(e.key)
         const held = modifier ? heldModifiers(e) : ''
         useCapture.setState({ capture: { ...capture, chords: undefined, message: !modifier
-          ? 'Bộ gõ đang bật hoặc phím không đọc được. Dùng tổ hợp có Ctrl / Alt hoặc tắt bộ gõ rồi bấm lại.'
+          ? `Bộ gõ đang bật hoặc phím không đọc được. Dùng tổ hợp có ${platformText.mod} / ${ALT} hoặc tắt bộ gõ rồi bấm lại.`
           : held ? `${held}… Bấm thêm một phím.` : `Phím ${IS_MAC ? 'Control' : 'Windows'} không dùng làm phím tắt — bấm tổ hợp khác.` } })
         return
       }
@@ -106,6 +109,12 @@ export function useKeyCaptureHost(): void {
   }, [])
 }
 
+/** The toast of "Thêm phím phụ Alt + chữ": what was really added, and how many were left out. */
+export function altKeysText(added: number, skipped: number, alt = ALT): string {
+  const head = added ? `Đã thêm phím phụ ${alt} + chữ cho ${added} lệnh.` : `Không thêm được phím phụ ${alt} + chữ nào.`
+  return skipped ? `${head} ${skipped} lệnh bỏ qua (trùng phím hoặc phím không dùng được).` : head
+}
+
 export function KeysIntro() {
   const bindings = useKeymap((s) => s.bindings)
   const [confirm, setConfirm] = useState<'premiere' | 'legacy05' | null>(null)
@@ -117,21 +126,26 @@ export function KeysIntro() {
   return <div className="dg-note">
     <p>Phím mặc định giống Adobe Premiere Pro; các phím quen của SanoVids vẫn có phím phụ.</p>
     <p>Bấm vào một phím để đổi. Mỗi lệnh có tối đa 2 tổ hợp phím. Lưu trên máy này — mang sang máy khác bằng “Xuất / nhập cài đặt”.</p>
-    <p>Unikey / EVKey có thể nuốt phím một chữ. Esc, Tab, Enter, Space, mũi tên và phím điều khiển video được giữ cố định.</p>
+    <p>Bộ gõ tiếng Việt ({platformText.inputTools}) có thể nuốt phím một chữ. Esc, Tab, Enter, Space, mũi tên và phím điều khiển video được giữ cố định.</p>
     <button className="btn" onClick={() => setConfirm('premiere')}>Premiere · Khôi phục mặc định ({changedBindingsCount(bindings, IS_MAC)} lệnh đã đổi)</button>{' '}
     <button className="btn" onClick={() => setConfirm('legacy05')} title="Dùng bộ phím kiểu SanoVids 0.5">Bản 0.5</button>{' '}
     <button className="btn" onClick={() => {
       stopCapture()
+      let added = 0
+      let skipped = 0
       changeKeys(() => {
         for (const a of KEY_ACTIONS) {
           const chords = useKeymap.getState().resolved.byAction[a.id]
           const plain = chords.find((c) => /^Key[A-Z]$/.test(c))
-          if (plain && chords.length < 2) useKeymap.getState().assign(a.id, [...chords, `Alt+${plain}`])
+          if (!plain || chords.length >= 2) continue
+          // refused (taken, or a Mac dead key: ⌥E / ⌥I / ⌥N / ⌥U) → counted, never claimed
+          if (useKeymap.getState().assign(a.id, [...chords, `Alt+${plain}`]).issues.length) skipped++
+          else added++
         }
-      }, 'Đã thêm phím phụ Alt + chữ cho các lệnh còn chỗ và không trùng phím.')
-    }}>Thêm phím phụ Alt + chữ</button>
+      }, () => altKeysText(added, skipped))
+    }}>Thêm phím phụ {ALT} + chữ</button>
     {confirm && <p role="status">
-      {confirm === 'legacy05' ? 'Đổi các phím về kiểu bản 0.5? Phím bạn tự gán cho các lệnh đó sẽ bị thay.' : 'Đưa mọi phím tắt về mặc định?'}{' '}
+      {confirm === 'legacy05' ? 'Đổi các phím về kiểu bản 0.5? Phím bạn tự gán cho các lệnh đó sẽ bị thay. Lưu ý: C nay bấm lần nữa khi mọi cặp đã nối thì bỏ nối (bản 0.5 chỉ báo “đã nối sẵn”).' : 'Đưa mọi phím tắt về mặc định?'}{' '}
       <button className="btn" onClick={() => apply(confirm)}>{confirm === 'legacy05' ? 'Đổi' : 'Khôi phục'}</button>{' '}
       <button className="btn" onClick={() => setConfirm(null)}>Huỷ</button>
     </p>}

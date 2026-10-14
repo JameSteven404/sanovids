@@ -51,7 +51,6 @@ describe('checkTakeDelete', () => {
     expect(dev).not.toContain('canvasapp.io.vn')
     // still being made (nothing paid yet known), or the old demo: nothing to ask
     expect(checkTakeDelete(['r2', 'm1'], running).question).toBeNull()
-    expect(checkTakeDelete(['r1'], running, { confirm: 'usedOnly' }).question).toBeNull()
   })
 
   it('asks before deleting a "maybe billed" take (its "Chạy lại" finds the job; deleted, a run of its scene may pay again)', () => {
@@ -75,9 +74,50 @@ describe('checkTakeDelete', () => {
     expect(checkTakeDelete(['u1'], doubtful, { confirm: false }).question).toBeNull()
   })
 
-  it("'usedOnly' (the caller already confirmed) and false never ask", () => {
+  it("'usedOnly' (a two-click button confirmed the file loss) never asks about the file; false never asks", () => {
     expect(checkTakeDelete(['t3'], takes, { confirm: 'usedOnly' }).question).toBeNull()
     expect(checkTakeDelete(['t1'], takes, { confirm: false }).question).toBeNull()
     expect(checkTakeDelete(['t1'], takes, { confirm: 'usedOnly' }).ids).toEqual(['t1'])
+  })
+
+  it("'usedOnly' still asks about credit: the node's trash / the viewer's button only said the file is lost", () => {
+    const money = [
+      { id: 'a', status: 'processing' as const, videoReady: true, provider: 'canvasapp' },
+      { id: 'b', status: 'cancelled' as const, uncertain: true, provider: 'canvasapp' },
+      { id: 'c', status: 'processing' as const, sent: true, provider: 'canvasapp' },
+    ]
+    const both = checkTakeDelete(['a', 'b'], money, { confirm: 'usedOnly' })
+    expect([both.paidPending, both.maybeBilled]).toEqual([1, 1])
+    expect(both.question).toContain('đã tạo xong trên canvasapp và đã trừ credit')
+    expect(both.question).toContain('không rõ canvasapp đã nhận')
+    expect(checkTakeDelete(['a'], money, { confirm: 'usedOnly', label: 'S01·T2' }).question).toContain('S01·T2 đã tạo xong')
+    expect(checkTakeDelete(['b'], money, { confirm: 'usedOnly' }).question).not.toBeNull()
+    expect(checkTakeDelete(['c'], money, { confirm: 'usedOnly' }).question).not.toBeNull()
+    expect(checkTakeDelete(['a', 'b', 'c'], money, { confirm: false }).question).toBeNull()
+  })
+
+  it('asks before deleting a take whose job runs there (job id, or its request may have gone out), like the "Huỷ" toast', () => {
+    const live = [
+      { id: 's1', status: 'processing' as const, sent: true, provider: 'canvasapp' },
+      { id: 's2', status: 'processing' as const, sent: true, provider: 'dev' },
+      { id: 'n1', status: 'processing' as const, sent: false, provider: 'canvasapp' },
+      { id: 'i1', status: 'processing' as const, sent: true, imported: true, provider: 'canvasapp' },
+      { id: 'm1', status: 'processing' as const, sent: true, provider: 'mock' },
+      { id: 'q1', status: 'queued' as const, sent: true, provider: 'canvasapp' },
+    ]
+    const c = checkTakeDelete(['s1'], live, { label: 'S02·T1' })
+    expect(c.sentAway).toBe(1)
+    expect(c.question).toContain('S02·T1 đang chạy trên canvasapp (job đã gửi hoặc đang gửi — có thể đã trừ credit)')
+    expect(c.question).toContain('job vẫn chạy trên canvasapp.io.vn')
+    const dev = checkTakeDelete(['s2'], live).question!
+    expect(dev).toContain('canvasapp giả lập')
+    expect(dev).toContain('Bảng phát triển')
+    expect(dev).not.toContain('canvasapp.io.vn')
+    // nothing sent yet (submit still before its POST), an imported job ("Nhập job" offers it again), the old demo,
+    // a queued take: nothing to ask
+    expect(checkTakeDelete(['n1', 'i1', 'm1', 'q1'], live).question).toBeNull()
+    // a paid video still downloading is said once (paidPending), not also as "still running"
+    const paid = checkTakeDelete(['p'], [{ id: 'p', status: 'processing', videoReady: true, sent: true, provider: 'canvasapp' }])
+    expect([paid.paidPending, paid.sentAway]).toEqual([1, 0])
   })
 })

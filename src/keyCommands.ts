@@ -3,6 +3,7 @@ import * as actions from './actions'
 import type { ActionId } from './core/keymap'
 import { mediaChangeNote } from './core/staleTokens'
 import { enterOpensEditor } from './components/canvas/sceneEditorModel'
+import { toggleCanvasOnly as canvasOnlyNext } from './components/canvas/toolbarModel'
 import { announceWireCuts, edgeId, parseEdgeId } from './actions'
 import { createFolderNode } from './folderActions'
 import { LIBRARY_ROOT, noteCanvasCommand } from './libraryActions'
@@ -28,17 +29,17 @@ export function openSelectedTake(e: KeyboardEvent): boolean {
   return true
 }
 
-export function toggleCanvasOnly(): void {
+/**
+ * "Chỉ canvas" (the key and the toolbar's "⋯" entry share this one memory, `panels`): hides both side panels and
+ * remembers which were open; again, shows exactly those (toolbarModel.toggleCanvasOnly). The toolbar passes toast: false.
+ */
+export function toggleCanvasOnly(opts: { toast?: boolean } = {}): void {
   const ui = useUI.getState()
-  if (ui.leftOpen || ui.rightOpen) {
-    panels = { left: ui.leftOpen, right: ui.rightOpen }
-    ui.setLeftOpen(false)
-    ui.setRightOpen(false)
-    toast(`Đã ẩn hai khung bên — bấm ${shortcutLabel('panels.canvasOnly') || 'Chỉ canvas'} để hiện.`)
-  } else {
-    ui.setLeftOpen(panels?.left ?? true)
-    ui.setRightOpen(panels?.right ?? true)
-  }
+  const { next, remember } = canvasOnlyNext({ left: ui.leftOpen, right: ui.rightOpen }, panels)
+  panels = remember
+  ui.setLeftOpen(next.left)
+  ui.setRightOpen(next.right)
+  if (!next.left && !next.right && opts.toast !== false) toast(`Đã ẩn hai khung bên — bấm ${shortcutLabel('panels.canvasOnly') || 'Chỉ canvas'} để hiện.`)
 }
 
 /**
@@ -222,7 +223,7 @@ export const KEY_COMMANDS: Record<Exclude<ActionId, 'settings.search'>, (e?: Key
   'take.download': downloadSelection,
   'panels.library': () => focusPanel('library'),
   'panels.inspector': () => focusPanel('inspector'),
-  'panels.canvasOnly': toggleCanvasOnly,
+  'panels.canvasOnly': () => toggleCanvasOnly(),
   'canvas.fit': () => actions.canvasEvents.dispatchEvent(new CustomEvent(actions.FIT_EVENT, { detail: useUI.getState().selectedIds })),
   'canvas.zoomIn': (e) => { actions.canvasEvents.dispatchEvent(new CustomEvent(ZOOM_EVENT, { detail: { dir: 1, repeat: !!e?.repeat } })) },
   'canvas.zoomOut': (e) => { actions.canvasEvents.dispatchEvent(new CustomEvent(ZOOM_EVENT, { detail: { dir: -1, repeat: !!e?.repeat } })) },

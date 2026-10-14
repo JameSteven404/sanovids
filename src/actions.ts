@@ -34,7 +34,7 @@ import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
 import { shortcutLabel } from './lib/keymapPrefs'
 import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type AddRefsResult, type Box, type PlaceHint } from './store/project'
-import { isForeignTake, isParkedTake, isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
+import { isForeignTake, isParkedTake, isUncertainSubmit, isUnverifiableSubmit, mayHaveBeenSent, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -475,8 +475,9 @@ export const TAKES_GONE_NOTE = '(Video đã xoá không hoàn tác được.)'
 
 export interface DeleteTakesOptions {
   /**
-   * Ask first (window.confirm). true (default) = when a finished video would be lost (or a paid one is still
-   * downloading); 'usedOnly' / false = never ('usedOnly': the caller already confirmed, e.g. a two-click button).
+   * Ask first (window.confirm). true (default) = when a finished video would be lost or credit may be (a paid video
+   * still downloading, a "maybe billed" take, a job still running there); 'usedOnly' = the caller already confirmed the
+   * file is lost (a two-click button): only the credit cases; false = never.
    */
   confirm?: TakeDeleteConfirm
   /** Show the result toast (default true). */
@@ -492,16 +493,22 @@ export interface DeleteTakesOptions {
 /**
  * Takes as checkTakeDelete sees them: a running take whose video is already made and paid (remoteVideoReady:
  * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video;
- * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed.
+ * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed;
+ * so is one still running there with its job sent or maybe sent (a job id, or mayHaveBeenSent) — like "Huỷ"'s toast.
  */
-function deleteFacts(takes: readonly Take[]): { id: string; status: Take['status']; videoReady: boolean; uncertain: boolean; provider: string }[] {
-  return takes.map((t) => ({
-    id: t.id,
-    status: t.status,
-    videoReady: t.status === 'processing' && remoteVideoReady(t.id),
-    uncertain: isUncertainSubmit(t),
-    provider: providerOf(t),
-  }))
+function deleteFacts(takes: readonly Take[]) {
+  return takes.map((t) => {
+    const running = t.status === 'processing' && providerOf(t) !== 'mock'
+    return {
+      id: t.id,
+      status: t.status,
+      videoReady: running && remoteVideoReady(t.id),
+      uncertain: isUncertainSubmit(t),
+      sent: running && (!!t.remoteId || mayHaveBeenSent(t.id)),
+      imported: !!t.imported,
+      provider: providerOf(t),
+    }
+  })
 }
 
 export function deleteTakes(takeIds: readonly string[], opts: DeleteTakesOptions = {}): number | null {
