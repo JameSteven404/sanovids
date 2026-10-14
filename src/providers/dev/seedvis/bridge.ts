@@ -4,11 +4,18 @@ import {
   type SeedvisDownloadRead, type SeedvisRequest,
 } from '../../seedvis/contract'
 import { createDevSeedvis, SEEDVIS_DEV_LOCKED, type DevSeedvis } from './server'
-import { SEEDVIS_DEV_KEYS } from './state'
+import { seedvisDevAccountOf, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_SAMPLE_KEYS_ONLY, type SeedvisDevAccount } from './state'
 import { SEEDVIS_ID_RE } from './routes'
 import { failure, isObj } from './validate'
 
 export interface SeedvisDevBridge extends SeedvisBridge { reset(): void }
+
+/** "Lưu mà chưa kiểm tra" stays possible this long after that key's check failed with a network error (main: 2 min). */
+export const SEEDVIS_DEV_UNVERIFIED_OFFER_MS = 2 * 60 * 1000
+export const SEEDVIS_DEV_KEY_TEXTS = {
+  verifyNetwork: 'Không kiểm tra được khoá giả lập vì seedvis giả lập đang mất mạng — chưa lưu. Nếu chắc khoá đúng, bấm “Lưu mà chưa kiểm tra”.',
+  unverifiedRefused: '“Lưu mà chưa kiểm tra” chỉ dùng được cho đúng khoá vừa bị lỗi mạng khi kiểm tra, trong vòng 2 phút — chưa lưu. Dán hoặc nhập lại khoá để kiểm tra.',
+} as const
 
 /** No URL or auth header from the caller ever reaches a download. No network/clipboard/shell APIs. */
 export function createDevSeedvisBridge(server: DevSeedvis = createDevSeedvis()): SeedvisDevBridge {
@@ -18,12 +25,39 @@ export function createDevSeedvisBridge(server: DevSeedvis = createDevSeedvis()):
   const clear = () => { outputs.clear(); sessions.clear() }
   async function stamp() { return server.sessionStamp() }
   const validId = (v: unknown): v is { id: string } => isObj(v) && Object.keys(v).length === 1 && typeof v.id === 'string' && SEEDVIS_ID_RE.test(v.id)
+  // Like main (seedvis.cjs adoptKey + seedvis-key-rules createUnverifiedOffer): only the key whose check just failed with
+  // a network error may be saved unchecked, within 2 min; any new check, a save or Xoá key withdraws the offer.
+  let offer: { account: SeedvisDevAccount; at: number } | null = null
+
+  async function adopt(key: unknown, unverified: boolean) {
+    if (!devAllowed()) return locked()
+    const account = seedvisDevAccountOf(key)
+    if (!account) return failure('bad-key', SEEDVIS_DEV_SAMPLE_KEYS_ONLY)
+    if (unverified) {
+      const age = offer ? server.now() - offer.at : -1
+      if (!offer || offer.account !== account || !(age >= 0 && age <= SEEDVIS_DEV_UNVERIFIED_OFFER_MS)) {
+        offer = null
+        return failure('bad-key', SEEDVIS_DEV_KEY_TEXTS.unverifiedRefused)
+      }
+    } else {
+      offer = null
+      // the key check (GET /account/info on the real gateway) cannot reach a simulation that is offline
+      if (!(await server.isOnline())) {
+        offer = { account, at: server.now() }
+        return failure('network', SEEDVIS_DEV_KEY_TEXTS.verifyNetwork)
+      }
+    }
+    const result = await server.setKey({ key }, { unchecked: unverified })
+    if (result.ok) { offer = null; clear() }
+    return result
+  }
 
   return {
     keyStatus: () => server.keyStatus(),
-    async pasteKey() { clear(); return server.setKey({ key: SEEDVIS_DEV_KEYS.A001 }) },
-    async setKey(args) { const result = await server.setKey(args); if (result.ok) clear(); return result },
-    async clearKey() { clear(); return server.clearKey() },
+    // The simulation has no clipboard: "Dán key" pastes the sample key of account A001.
+    pasteKey: (args) => adopt(SEEDVIS_DEV_KEYS.A001, isObj(args) && args.unverified === true),
+    setKey: (args) => adopt(isObj(args) ? args.key : undefined, isObj(args) && args.unverified === true),
+    async clearKey() { offer = null; clear(); return server.clearKey() },
     async request(args: SeedvisRequest) {
       if (!devAllowed()) return locked()
       // Like IPC, own a copy of the arguments before the first await: later renderer edits cannot change what is billed or hashed.

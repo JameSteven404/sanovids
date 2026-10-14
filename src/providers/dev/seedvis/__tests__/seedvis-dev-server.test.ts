@@ -3,7 +3,7 @@ import { applyDevAccessState, bareState } from '../../../devAccess'
 import { SEEDVIS_API_BASE, SEEDVIS_IPC_ROUTES, SEEDVIS_KEY_MEMORY_MS, type SeedvisRequest, type SeedvisResponse } from '../../../seedvis/contract'
 import { SEEDVIS_MODEL_IDS } from '../../../../core/services'
 import { SEEDVIS_ROUTE_TABLE } from '../../../../core/seedvisRoutes'
-import { createDevSeedvisBridge } from '../bridge'
+import { createDevSeedvisBridge, SEEDVIS_DEV_KEY_TEXTS, SEEDVIS_DEV_UNVERIFIED_OFFER_MS } from '../bridge'
 import { createDevSeedvis, SEEDVIS_SLOTS_FULL_MESSAGE, seedvisSizeLabel } from '../server'
 import { SEEDVIS_FAULT_PRESETS, type SeedvisFaultInput } from '../faults'
 import { initialSeedvisState, memorySeedvisStore, readSeedvisState, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_MAX_JOBS, type SeedvisStateStore } from '../state'
@@ -669,5 +669,62 @@ describe('review round 3: wording the mapping track relies on, money traces, fau
     advance(60_000)
     expect(await bridge.downloadOpen({ generationId: id, index: 0 })).toEqual({ ok: false, code: 'expired-link', message: 'Link video giả lập đã hết hạn.' })
     expect(await server.download('not a url')).toMatchObject({ code: 'not-allowed' })
+  })
+})
+
+describe('integration (A1 contract): "Lưu mà chưa kiểm tra" and drops after a complete upload, as main does', () => {
+  it('pasteKey / setKey save unchecked only the key whose check just failed with a network error, within 2 minutes', async () => {
+    const { server, bridge, advance } = harness()
+    expect(await bridge.clearKey()).toMatchObject({ ok: true })
+    // no earlier network failure: refused, nothing saved
+    expect(await bridge.pasteKey({ unverified: true })).toMatchObject({ ok: false, code: 'bad-key', message: SEEDVIS_DEV_KEY_TEXTS.unverifiedRefused })
+    expect((await bridge.keyStatus()).hasKey).toBe(false)
+    await server.configure({ online: false })
+    expect(await bridge.pasteKey()).toMatchObject({ ok: false, code: 'network', message: SEEDVIS_DEV_KEY_TEXTS.verifyNetwork })
+    expect((await bridge.keyStatus()).hasKey).toBe(false)
+    // another key than the one that failed: refused (and the offer is gone)
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002, unverified: true })).toMatchObject({ code: 'bad-key', message: SEEDVIS_DEV_KEY_TEXTS.unverifiedRefused })
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.A001, unverified: true })).toMatchObject({ code: 'bad-key' })
+    expect((await bridge.keyStatus()).hasKey).toBe(false)
+    // the same key, in time: saved without a check (verifiedAt null)
+    expect(await bridge.pasteKey()).toMatchObject({ code: 'network' })
+    advance(SEEDVIS_DEV_UNVERIFIED_OFFER_MS)
+    const saved = await bridge.pasteKey({ unverified: true })
+    expect(saved).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: null } })
+    // used once: a second unchecked save needs a new failed check
+    expect(await bridge.pasteKey({ unverified: true })).toMatchObject({ code: 'bad-key' })
+    // too late
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002 })).toMatchObject({ code: 'network' })
+    advance(SEEDVIS_DEV_UNVERIFIED_OFFER_MS + 1)
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002, unverified: true })).toMatchObject({ code: 'bad-key' })
+    // Xoá key withdraws it; a real-looking key is never kept, checked or not
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002 })).toMatchObject({ code: 'network' })
+    await bridge.clearKey()
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002, unverified: true })).toMatchObject({ code: 'bad-key' })
+    expect(await bridge.setKey({ key: 'sv_live_SUPERSECRET0123456789', unverified: true })).toMatchObject({ code: 'bad-key' })
+    expect(await bridge.setKey({ key: 'sv_live_SUPERSECRET0123456789' })).toMatchObject({ code: 'bad-key' })
+    // a new check withdraws the offer of an older one; a checked save is verified
+    expect(await bridge.pasteKey()).toMatchObject({ code: 'network' })
+    await server.configure({ online: true })
+    expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002 })).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: expect.any(Number) } })
+    expect(await bridge.pasteKey({ unverified: true })).toMatchObject({ code: 'bad-key' })
+    expect((await bridge.keyStatus()).tag).toBe('dev-seedvis:B002')
+    expect(JSON.stringify(await server.snapshot())).not.toMatch(/SUPERSECRET|dev-seedvis-account-/)
+    // the unchecked flag is part of the saved state (validated when loaded); a checked save clears it
+    expect(readSeedvisState({ ...initialSeedvisState(), keyUnchecked: true }).keyUnchecked).toBe(true)
+    expect(() => readSeedvisState({ ...initialSeedvisState(), keyUnchecked: 'yes' })).toThrow()
+    expect(await bridge.pasteKey()).toMatchObject({ ok: true, status: { verifiedAt: expect.any(Number) } })
+  })
+
+  it('a connection lost once the whole body was uploaded may have arrived (sent:true), never "offline / not sent"', async () => {
+    let time = 1_800_000_000_000
+    const server: ReturnType<typeof createDevSeedvis> = createDevSeedvis({ now: () => time, sleep: async (ms) => { time += ms; await server.configure({ online: false }) } })
+    const bridge = createDevSeedvisBridge(server)
+    const answer = await bridge.request(withImage())
+    expect(answer).toMatchObject({ ok: false, code: 'network', sent: true, lastByteAt: expect.any(Number) })
+    // nothing was created here, but the client cannot know it: the adapter must treat it as a lost answer
+    expect((await snapshot(server)).jobs).toHaveLength(0)
+    // offline BEFORE anything was sent stays "not sent"
+    expect(await bridge.request(create())).toMatchObject({ ok: false, code: 'offline', sent: false })
   })
 })

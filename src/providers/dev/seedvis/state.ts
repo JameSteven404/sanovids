@@ -12,6 +12,9 @@ export const SEEDVIS_DEV_KEYS = { A001: 'dev-seedvis-account-A001', B002: 'dev-s
 export type SeedvisDevAccount = keyof typeof SEEDVIS_DEV_KEYS
 export type SeedvisDevKeyState = 'verified' | 'none' | 'revoked' | 'forbidden' | 'unreadable'
 export const SEEDVIS_DEV_ACCOUNTS = Object.keys(SEEDVIS_DEV_KEYS) as SeedvisDevAccount[]
+/** The fake account a sample key opens, or null for anything else (a real key is never accepted). */
+export const seedvisDevAccountOf = (key: unknown): SeedvisDevAccount | null => SEEDVIS_DEV_ACCOUNTS.find(a => SEEDVIS_DEV_KEYS[a] === key) ?? null
+export const SEEDVIS_DEV_SAMPLE_KEYS_ONLY = 'Chỉ nhận khoá mẫu của seedvis giả lập; không dán khoá thật.'
 
 export interface SeedvisDevConfig {
   keyMemoryMs: number
@@ -93,6 +96,8 @@ export interface SeedvisDevState {
   account: SeedvisDevAccount
   keyState: SeedvisDevKeyState
   savedAt: number
+  /** The saved sample key was kept with "Lưu mà chưa kiểm tra" (no check reached the simulation): verifiedAt null. */
+  keyUnchecked?: true
   balances: Record<SeedvisDevAccount, number>
   /** Creation order, oldest first. */
   jobs: SeedvisDevJob[]
@@ -125,7 +130,7 @@ export function readSeedvisState(raw: unknown): SeedvisDevState {
   if (raw === undefined) return initialSeedvisState()
   if (!isObj(raw) || raw.version !== 1 || !shortText(raw.rev) || !shortText(raw.epoch) || !account(raw.account)
     || !['verified', 'none', 'revoked', 'forbidden', 'unreadable'].includes(String(raw.keyState))
-    || !finite(raw.savedAt) || !finite(raw.slotsFullUntil) || !finite(raw.clock) || !isObj(raw.balances) || !finite(raw.balances.A001) || !finite(raw.balances.B002)
+    || !finite(raw.savedAt) || (raw.keyUnchecked !== undefined && raw.keyUnchecked !== true) || !finite(raw.slotsFullUntil) || !finite(raw.clock) || !isObj(raw.balances) || !finite(raw.balances.A001) || !finite(raw.balances.B002)
     || !isObj(raw.trimmed) || !trimmedOk(raw.trimmed.A001) || !trimmedOk(raw.trimmed.B002)
     || !Array.isArray(raw.jobs) || !Array.isArray(raw.memory)) throw new Error('Invalid seedvis dev state')
   const owner = new Map<string, string>()

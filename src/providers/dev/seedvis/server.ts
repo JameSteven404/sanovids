@@ -8,7 +8,7 @@ import {
   type SeedvisDevFault, type SeedvisFaultInput, type SeedvisFaultKind, type SeedvisFaultRule,
 } from './faults'
 import {
-  indexedSeedvisStore, memorySeedvisStore, seedvisConfig, SEEDVIS_DEV_ACCOUNTS, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_MAX_JOBS,
+  indexedSeedvisStore, memorySeedvisStore, seedvisConfig, seedvisDevAccountOf, SEEDVIS_DEV_ACCOUNTS, SEEDVIS_DEV_MAX_JOBS, SEEDVIS_DEV_SAMPLE_KEYS_ONLY,
   type SeedvisStateStore, type SeedvisDevState, type SeedvisDevJob, type SeedvisDevConfig, type SeedvisDevAccount, type SeedvisDevKeyState,
 } from './state'
 import { failure, isObj, seedvisBodyHash, seedvisRequestProblem, seedvisUploadBytes, type SeedvisCreate } from './validate'
@@ -78,7 +78,7 @@ function auth(keyState: SeedvisDevKeyState): SeedvisResponse | null {
 function statusOfKey(s: Readonly<SeedvisDevState>): SeedvisKeyStatus {
   return { hasKey: s.keyState !== 'none', hint: s.keyState === 'none' ? null : s.account,
     tag: s.keyState === 'none' ? null : `dev-seedvis:${s.account}`, savedAt: s.keyState === 'none' ? null : s.savedAt,
-    verifiedAt: s.keyState === 'verified' ? s.savedAt : null, storage: 'safeStorage',
+    verifiedAt: s.keyState === 'verified' && !s.keyUnchecked ? s.savedAt : null, storage: 'safeStorage',
     ...(s.keyState === 'unreadable' ? { problem: 'unreadable' as const } : {}) }
 }
 
@@ -352,7 +352,9 @@ export function createDevSeedvis(deps: SeedvisDevDeps = {}) {
     if (!devAllowed()) return { ...locked(), sent: false }
     const result = await commit((s): SeedvisResponse => {
       if (s.epoch !== head.epoch || s.account !== head.account) return { ...failure('no-key', 'Tài khoản giả lập đã thay đổi; chưa gửi yêu cầu.'), sent: false }
-      if (!s.config.online) return { ...failure('offline'), sent: false }
+      // The connection dropped once the whole body was on the wire: like main (seedvis-rules errorSent), the client can
+      // no longer tell whether it arrived — never "not sent" after a complete upload.
+      if (!s.config.online) return req.route === 'generations.create' ? { ...failure('network'), sent: true, lastByteAt: lastByteAt ?? null } : failure('offline')
       const t = now()
       advance(s, t)
       if (fire(pick.outcome, 'revoke-key')) s.keyState = 'revoked'
@@ -444,12 +446,20 @@ export function createDevSeedvis(deps: SeedvisDevDeps = {}) {
       if (!devAllowed()) return { hasKey: false, hint: null, tag: null, savedAt: null, verifiedAt: null, storage: 'unavailable' }
       try { return await store.peek(statusOfKey) } catch { storageError(); return { hasKey: false, hint: null, tag: null, savedAt: null, verifiedAt: null, storage: 'unavailable', problem: 'unreadable' } }
     },
-    async setKey(raw: unknown): Promise<SeedvisKeyResult> {
+    /** Saves a sample key. `unchecked`: kept by "Lưu mà chưa kiểm tra" (the bridge decides when that is allowed) → verifiedAt null. */
+    async setKey(raw: unknown, opts: { unchecked?: boolean } = {}): Promise<SeedvisKeyResult> {
       if (!devAllowed()) return locked()
       if (!isObj(raw) || Object.keys(raw).length !== 1 || typeof raw.key !== 'string') return failure('bad-key')
-      const account = (Object.keys(SEEDVIS_DEV_KEYS) as SeedvisDevAccount[]).find(a => SEEDVIS_DEV_KEYS[a] === raw.key)
-      if (!account) return failure('bad-key', 'Chỉ nhận khoá mẫu của seedvis giả lập; không dán khoá thật.')
-      try { return await commit(s => { s.epoch = crypto.randomUUID(); s.account = account; s.keyState = 'verified'; s.savedAt = now(); return { ok: true as const, status: statusOfKey(s) } }) } catch { return storageError() }
+      const account = seedvisDevAccountOf(raw.key)
+      if (!account) return failure('bad-key', SEEDVIS_DEV_SAMPLE_KEYS_ONLY)
+      try {
+        return await commit(s => {
+          s.epoch = crypto.randomUUID(); s.account = account; s.keyState = 'verified'; s.savedAt = now()
+          if (opts.unchecked === true) s.keyUnchecked = true
+          else delete s.keyUnchecked
+          return { ok: true as const, status: statusOfKey(s) }
+        })
+      } catch { return storageError() }
     },
     async clearKey(): Promise<SeedvisKeyResult> {
       if (!devAllowed()) return locked()

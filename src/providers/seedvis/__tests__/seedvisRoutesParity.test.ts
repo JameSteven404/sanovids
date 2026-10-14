@@ -2,11 +2,14 @@
 //   1. (active) with the A0 catalogue (src/core/seedvisRoutes.ts SEEDVIS_ROUTE_TABLE) and contract: the same remote
 //      models, modes, image fields and counts, durations (integer / "Ns"), ratios, upscale values — so what the app
 //      lets a scene ask for is exactly what main lets through, and nothing more;
-//   2. (SKIPPED) with the development-mode simulation's TypeScript port src/providers/dev/seedvis/routes.ts (track
-//      A-SIM, built in parallel on cx/sv-sim): it has not landed on this branch yet.
+//   2. with the development-mode simulation (track A-SIM): src/providers/dev/seedvis/routes.ts matchSeedvisRoute(method,
+//      path) ↔ main's URL layer matchSeedvisUrl, and validate.ts seedvisRequestProblem(req) ↔ main's symbolic layer
+//      matchSeedvisRoute(req) / checkSubmit(req) — the simulation refuses exactly what main refuses.
 import { describe, expect, it } from 'vitest'
 import { SEEDVIS_ROUTE_TABLE } from '../../../core/seedvisRoutes'
 import { SEEDVIS_MODEL_IDS } from '../../../core/services'
+import { matchSeedvisRoute as simMatchPath } from '../../dev/seedvis/routes'
+import { seedvisRequestProblem } from '../../dev/seedvis/validate'
 import { type Any, UUID, jpeg, png, rules, webp } from './fakeElectron'
 
 const bytesFor = [png, jpeg, webp]
@@ -93,31 +96,81 @@ describe('seedvis-rules.cjs ↔ the A0 catalogue (src/core/seedvisRoutes.ts)', (
   })
 })
 
-// TODO(integration, A-SIM): enable once src/providers/dev/seedvis/routes.ts (the TypeScript port of seedvis-rules.cjs,
-// cx/sv-sim) is merged: replace `describe.skip` by `describe`, and map the names below to its exports if they differ.
-// It is loaded through import.meta.glob so this file compiles before the module exists.
-const simModules = import.meta.glob('../../dev/seedvis/routes.ts')
-
-describe.skip('seedvis-rules.cjs ↔ the simulation’s routes.ts (SKIPPED: A-SIM’s src/providers/dev/seedvis/routes.ts has not landed on this branch)', () => {
+describe('seedvis-rules.cjs ↔ the simulation (src/providers/dev/seedvis/routes.ts + validate.ts)', () => {
   const corpus: Any[] = [
     { route: 'models' },
     { route: 'account.info' },
     { route: 'account.usage' },
+    { route: 'models', id: 'gen_1' },
     { route: 'generations.get', id: 'gen_1' },
     { route: 'generations.get', id: '../x' },
+    { route: 'generations.get' },
+    { route: 'generations.get', id: 'x'.repeat(101) },
     { route: 'generations.cancel', id: 'gen_1' },
+    { route: 'generations.cancel', id: 'a/b' },
     { route: 'images.generations' },
-    ...SEEDVIS_MODEL_IDS.flatMap((id) => SEEDVIS_ROUTE_TABLE[id].requests.flatMap((r) => [sample(id, r.remoteMode, r.minImages), sample(id, r.remoteMode, r.maxImages + 1)])),
+    { route: 'toString' },
+    { route: '__proto__' },
+    ...SEEDVIS_MODEL_IDS.flatMap((id) =>
+      SEEDVIS_ROUTE_TABLE[id].requests.flatMap((r) => [
+        sample(id, r.remoteMode, r.minImages),
+        sample(id, r.remoteMode, r.maxImages),
+        sample(id, r.remoteMode, r.maxImages + 1),
+        ...(r.minImages > 0 ? [sample(id, r.remoteMode, r.minImages - 1)] : []),
+      ]),
+    ),
   ]
+  // a few create bodies each layer must refuse: another count, no prompt, a foreign model, a key that is not a UUID
+  const bad = (edit: (req: Any) => void) => {
+    const req = sample('seedvis/seedance_2.5', 'text-to-video', 0)
+    edit(req)
+    return req
+  }
+  corpus.push(
+    bad((r) => (r.body.count = 2)),
+    bad((r) => (r.body.prompt = '   ')),
+    bad((r) => (r.body.model = 'omni-flash')),
+    bad((r) => (r.idempotencyKey = 'not-a-uuid')),
+    bad((r) => (r.body.extra = true)),
+  )
 
-  it('the simulation refuses exactly what main refuses', async () => {
-    const load = simModules['../../dev/seedvis/routes.ts']
-    expect(load, 'src/providers/dev/seedvis/routes.ts').toBeDefined()
-    const sim = (await load()) as Any
+  it('the simulation refuses exactly the symbolic requests main refuses', () => {
+    let accepted = 0
     for (const req of corpus) {
       const mainVerdict = req.route === 'generations.create' ? rules.checkSubmit(req).ok : rules.matchSeedvisRoute(req) !== null
-      const simVerdict = req.route === 'generations.create' ? sim.checkSubmit(req).ok : sim.matchSeedvisRoute(req) !== null
-      expect(simVerdict, JSON.stringify({ route: req.route, mode: req.body?.mode, images: req.images?.length })).toBe(mainVerdict)
+      const simVerdict = seedvisRequestProblem(req) === null
+      expect(simVerdict, JSON.stringify({ route: req.route, id: req.id, mode: req.body?.mode, images: req.images?.length })).toBe(mainVerdict)
+      if (mainVerdict) accepted++
+    }
+    // the corpus really holds both kinds (never a parity of "everything refused")
+    expect(accepted).toBeGreaterThan(10)
+    expect(accepted).toBeLessThan(corpus.length)
+  })
+
+  it('the simulation’s path allowlist names the same route as main’s URL layer', () => {
+    const base = '/api/v1'
+    const cases: [string, string][] = [
+      ['GET', `${base}/models`],
+      ['GET', `${base}/account/info`],
+      ['GET', `${base}/account/usage`],
+      ['POST', `${base}/developer/generations`],
+      ['GET', `${base}/developer/generations/gen_1?wait=0`],
+      ['POST', `${base}/developer/generations/gen_1/cancel`],
+      ['GET', `${base}/developer/generations/gen_1`],
+      ['GET', `${base}/developer/generations/gen_1?wait=30`],
+      ['POST', `${base}/models`],
+      ['GET', `${base}/developer/generations`],
+      ['GET', `${base}/developer/generations/../models?wait=0`],
+      ['GET', `${base}/developer/generations/a%2Fb?wait=0`],
+      ['POST', `${base}/developer/generations/gen_1/cancel?x=1`],
+      ['GET', `${base}/models?x=1`],
+      ['GET', `/api/v2/models`],
+      ['GET', `${base}/images/generations`],
+    ]
+    for (const [method, path] of cases) {
+      const main = rules.matchSeedvisUrl(method, rules.SEEDVIS_ORIGIN + path)
+      const sim = simMatchPath(method, path)
+      expect(sim?.endpoint ?? null, `${method} ${path}`).toBe(main)
     }
   })
 })
