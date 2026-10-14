@@ -193,12 +193,13 @@ The client code these notes come from has **no video input anywhere**. These not
 - simple mode stores `images:[{slot, upload_id}]` and tags `@image_<slot>` only.
 
 The server refuses unknown keys, so guessing is not an option: a wrong key is a 422 (no charge), but a key the server
-accepts and ignores would bill a video made without its reference. SanoVids therefore sends no video and refuses a
-scene that would send one **before uploading or billing anything**, at three layers: `capabilities().maxRefVideos`
-= `CANVASAPP_MAX_REF_VIDEOS` = 0 (`providers/capabilities.ts`, read by store/runs `check()` and every one-scene
-Run button through `core/runRules.ts`, via `core/runGate.ts`'s call shapes), `validateRequest` in `mapping.ts` (refuses any `req.videos`, whatever the cap),
-and the strict dev / e2e validators (`providers/dev/validate.ts`: node types, handles and job keys). Development mode
-refuses it the same way (same adapter); it simulates no video endpoint, so no test passes against an invented shape.
+accepts and ignores would bill a video made without its reference. SanoVids 0.6.0 therefore retired reference
+videos altogether: requests carry no video, old links stay inert (`Scene.legacyVideoRefs`), and leftover `@video`
+text is refused **before uploading or billing anything** — by the run rules (`core/compile` `retiredVideoTokens` →
+`core/runRules.ts`, store/runs `check()` and every Run button), by `validateRequest` in `mapping.ts`, and by the strict
+dev / e2e validators (`providers/dev/validate.ts`: node types, handles and job keys). Development mode refuses it the
+same way (same adapter); it simulates no video endpoint, so no test passes against an invented shape. Supporting
+reference videos again would be a new feature built on the captured shape below, not a cap to raise.
 
 **What to capture before opening it** (functions of `canvas.js` / `simple-mode.js`, exact names and key order):
 1. `uploadCanvasFile()` and every `/api/uploads/` path: any video upload — path, multipart field, `accept=` / MIME
