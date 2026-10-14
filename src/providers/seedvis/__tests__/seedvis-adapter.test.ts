@@ -1386,6 +1386,11 @@ describe('classifyCreate — what one answer proves', () => {
     ['504 timeout', ok(504, { error: { code: 'timeout' } }), 'lost'],
     ['422 slots by message', ok(422, { error: { message: 'All concurrency slots are busy' } }), 'busy'],
     ['422 field error', ok(422, { errors: { 'referenceImages[3]': ['too many'] } }), 'refused'],
+    // seedvis answers "slots + queue full" as validation_error too: only a message naming both limits tells it apart
+    // (the same rule as mapping.errorOf SLOTS_FULL; the simulation's SEEDVIS_SLOTS_FULL_MESSAGE)
+    ['422 validation_error, streams + queue full', ok(422, { success: false, status: 422, code: 'validation_error', message: 'Concurrency + queue limit reached: all streams of your plan are busy and the queue is full.' }), 'busy'],
+    ['422 validation_error naming slots only', ok(422, { success: false, status: 422, code: 'validation_error', message: 'too many slots in reference_images' }), 'refused'],
+    ['422 validation_error, both limits but keyed to a field', ok(422, { success: false, code: 'validation_error', message: 'Concurrency limit reached and queue is full', errors: { prompt: ['x'] } }), 'refused'],
     ['404 html', ok(404), 'busy'],
     ['404 model', ok(404, { error: { code: 'model_not_found' } }), 'refused'],
     ['400', ok(400, { error: { code: 'invalid_value' } }), 'refused'],

@@ -14,6 +14,11 @@ export type SeedvisDevKeyState = 'verified' | 'none' | 'revoked' | 'forbidden' |
 export const SEEDVIS_DEV_ACCOUNTS = Object.keys(SEEDVIS_DEV_KEYS) as SeedvisDevAccount[]
 /** The fake account a sample key opens, or null for anything else (a real key is never accepted). */
 export const seedvisDevAccountOf = (key: unknown): SeedvisDevAccount | null => SEEDVIS_DEV_ACCOUNTS.find(a => SEEDVIS_DEV_KEYS[a] === key) ?? null
+/**
+ * The key tag of each fake account: 12 hex like main's (first 12 hex of a salted HMAC) — the adapter's ledger and
+ * migrate keep only that shape, so a tag of another shape would make every same-key re-send "sending key unknown".
+ */
+export const SEEDVIS_DEV_KEY_TAGS: Readonly<Record<SeedvisDevAccount, string>> = { A001: 'de5e0000a001', B002: 'de5e0000b002' }
 export const SEEDVIS_DEV_SAMPLE_KEYS_ONLY = 'Chỉ nhận khoá mẫu của seedvis giả lập; không dán khoá thật.'
 
 export interface SeedvisDevConfig {

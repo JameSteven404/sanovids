@@ -7,6 +7,7 @@
 // (contractExt) 'expired-link' + `definitive`.
 import type { SeedvisBridgeFailure, SeedvisResponse } from './contract'
 import { parseApiError, parseGeneration, type SeedvisApiErrorInfo, type SeedvisGeneration } from './api'
+import { SLOTS_FULL } from './mapping'
 import { failureNotSent } from './transport'
 
 export type SeedvisErrorCode =
@@ -165,7 +166,10 @@ export function classifyCreate(res: SeedvisResponse): CreateClass {
     return { kind: 'lost', why: info.json ? 'server-json' : 'server-other', info, failure: null }
   }
   if (status === 422) {
-    const slots = (!!info.code && SLOT_CODES.has(info.code)) || (!info.field && !!info.message && SLOT_MESSAGE.test(info.message) && info.code !== 'validation_error')
+    // A plain validation_error (no field) is "slots full" only when its message names both the streams and the queue —
+    // the same rule as mapping.errorOf (SLOTS_FULL); seedvis answers that state with 422 validation_error too.
+    const slotMessage = !info.field && !!info.message && SLOT_MESSAGE.test(info.message)
+    const slots = (!!info.code && SLOT_CODES.has(info.code)) || (slotMessage && (info.code !== 'validation_error' || SLOTS_FULL.test(info.message!)))
     if (slots) return { kind: 'busy', info, failure: null, retryAfterMs: info.retryAfterMs, slots: true }
     return { kind: 'refused', info, login: false, model: false }
   }

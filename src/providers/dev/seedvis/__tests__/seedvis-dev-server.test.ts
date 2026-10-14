@@ -6,7 +6,7 @@ import { SEEDVIS_ROUTE_TABLE } from '../../../../core/seedvisRoutes'
 import { createDevSeedvisBridge, SEEDVIS_DEV_KEY_TEXTS, SEEDVIS_DEV_UNVERIFIED_OFFER_MS } from '../bridge'
 import { createDevSeedvis, SEEDVIS_SLOTS_FULL_MESSAGE, seedvisSizeLabel } from '../server'
 import { SEEDVIS_FAULT_PRESETS, type SeedvisFaultInput } from '../faults'
-import { initialSeedvisState, memorySeedvisStore, readSeedvisState, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_MAX_JOBS, type SeedvisStateStore } from '../state'
+import { initialSeedvisState, memorySeedvisStore, readSeedvisState, SEEDVIS_DEV_KEY_TAGS, SEEDVIS_DEV_KEYS, SEEDVIS_DEV_MAX_JOBS, type SeedvisStateStore } from '../state'
 import { matchSeedvisRoute } from '../routes'
 import { SEEDVIS_DEV_FAILURE_TEXT, seedvisRequestProblem, seedvisUploadBytes, type SeedvisCreate } from '../validate'
 
@@ -81,7 +81,9 @@ describe('seedvis route and request boundary', () => {
 describe('seedvis lifecycle, account, faults and money', () => {
   it('starts with a fake verified key; supports both model shapes, balance, plan and usage', async () => {
     const { server, bridge } = harness()
-    expect(await bridge.keyStatus()).toMatchObject({ hasKey: true, hint: 'A001', tag: 'dev-seedvis:A001' })
+    expect(await bridge.keyStatus()).toMatchObject({ hasKey: true, hint: 'A001', tag: SEEDVIS_DEV_KEY_TAGS.A001 })
+    // the shape main gives (12 hex): the adapter's ledger and migrate keep nothing else
+    for (const tag of Object.values(SEEDVIS_DEV_KEY_TAGS)) expect(tag).toMatch(/^[0-9a-f]{12}$/)
     expect(data(await bridge.request({ route: 'account.info' }))).toMatchObject({ plan: 'Giả lập', credit_balance: 1000, concurrency_limit: 2, simulated: true })
     expect(data(await bridge.request({ route: 'models' }))[0].modes[0]).toBe('text-to-video')
     await server.configure({ modesShape: 'objects' })
@@ -708,7 +710,7 @@ describe('integration (A1 contract): "Lưu mà chưa kiểm tra" and drops after
     await server.configure({ online: true })
     expect(await bridge.setKey({ key: SEEDVIS_DEV_KEYS.B002 })).toMatchObject({ ok: true, status: { hasKey: true, verifiedAt: expect.any(Number) } })
     expect(await bridge.pasteKey({ unverified: true })).toMatchObject({ code: 'bad-key' })
-    expect((await bridge.keyStatus()).tag).toBe('dev-seedvis:B002')
+    expect((await bridge.keyStatus()).tag).toBe(SEEDVIS_DEV_KEY_TAGS.B002)
     expect(JSON.stringify(await server.snapshot())).not.toMatch(/SUPERSECRET|dev-seedvis-account-/)
     // the unchecked flag is part of the saved state (validated when loaded); a checked save clears it
     expect(readSeedvisState({ ...initialSeedvisState(), keyUnchecked: true }).keyUnchecked).toBe(true)

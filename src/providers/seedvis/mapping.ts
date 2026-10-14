@@ -188,7 +188,8 @@ export interface ErrorContext {
 // Moderation is never re-sent automatically (§7.7 retry policy). Input refusals are never "deferred".
 const MODERATION = ['content_policy', 'reference_image_missing', 'invalid_request']
 const INPUT_REFUSAL = [...MODERATION, 'invalid_image', 'image_rule', 'invalid_value']
-const SLOTS_FULL = /(?:slots?|streams?|concurrency).*(?:full|busy|limit).*(?:queue).*(?:full|limit|reached)|(?:queue).*(?:full|limit).*(?:slots?|streams?|concurrency).*(?:full|busy|limit|reached)/i
+/** A 422 message naming both the busy streams and the full queue: "slots full", told apart from a schema 422 (plan R9). */
+export const SLOTS_FULL = /(?:slots?|streams?|concurrency).*(?:full|busy|limit).*(?:queue).*(?:full|limit|reached)|(?:queue).*(?:full|limit).*(?:slots?|streams?|concurrency).*(?:full|busy|limit|reached)/i
 
 /** Native / OpenAI / Google error shapes; messages are plain text, never rendered as HTML. */
 export function errorOf(status: number, json: unknown, context: ErrorContext = {}): MappedError {

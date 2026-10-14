@@ -8,7 +8,7 @@ import {
   type SeedvisDevFault, type SeedvisFaultInput, type SeedvisFaultKind, type SeedvisFaultRule,
 } from './faults'
 import {
-  indexedSeedvisStore, memorySeedvisStore, seedvisConfig, seedvisDevAccountOf, SEEDVIS_DEV_ACCOUNTS, SEEDVIS_DEV_MAX_JOBS, SEEDVIS_DEV_SAMPLE_KEYS_ONLY,
+  indexedSeedvisStore, memorySeedvisStore, seedvisConfig, seedvisDevAccountOf, SEEDVIS_DEV_ACCOUNTS, SEEDVIS_DEV_KEY_TAGS, SEEDVIS_DEV_MAX_JOBS, SEEDVIS_DEV_SAMPLE_KEYS_ONLY,
   type SeedvisStateStore, type SeedvisDevState, type SeedvisDevJob, type SeedvisDevConfig, type SeedvisDevAccount, type SeedvisDevKeyState,
 } from './state'
 import { failure, isObj, seedvisBodyHash, seedvisRequestProblem, seedvisUploadBytes, type SeedvisCreate } from './validate'
@@ -77,7 +77,7 @@ function auth(keyState: SeedvisDevKeyState): SeedvisResponse | null {
 
 function statusOfKey(s: Readonly<SeedvisDevState>): SeedvisKeyStatus {
   return { hasKey: s.keyState !== 'none', hint: s.keyState === 'none' ? null : s.account,
-    tag: s.keyState === 'none' ? null : `dev-seedvis:${s.account}`, savedAt: s.keyState === 'none' ? null : s.savedAt,
+    tag: s.keyState === 'none' ? null : SEEDVIS_DEV_KEY_TAGS[s.account], savedAt: s.keyState === 'none' ? null : s.savedAt,
     verifiedAt: s.keyState === 'verified' && !s.keyUnchecked ? s.savedAt : null, storage: 'safeStorage',
     ...(s.keyState === 'unreadable' ? { problem: 'unreadable' as const } : {}) }
 }

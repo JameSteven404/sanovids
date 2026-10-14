@@ -182,7 +182,8 @@ export function parseGeneration(json: unknown): SeedvisGeneration | null {
         .filter((r): r is Record<string, unknown> => !!r && typeof r.field === 'string' && finite(r.index))
         .map((r) => ({ field: String(r.field).slice(0, 40), index: Math.floor(r.index as number), role: typeof r.role === 'string' ? r.role.slice(0, 40) : null }))
     : null
-  const c = obj(d.cancellation)
+  // a cancel answer documents `cancellation` beside `data` in the envelope ({success, status, data, cancellation})
+  const c = obj(d.cancellation) ?? obj(root.cancellation)
   const cancellation = c
     ? { outcome: sanitizeCode(c.outcome), runningOutputs: finite(c.running_outputs) && c.running_outputs >= 0 ? Math.floor(c.running_outputs) : null }
     : null
