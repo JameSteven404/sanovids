@@ -1,4 +1,3 @@
-import { platformText, shortcutText } from '../../lib/platformText'
 import {
   Bug,
   CirclePlay,
@@ -33,6 +32,7 @@ import { SHOWN_VIEW_LIST } from '../../core/shownViews'
 import type { Scene, Take, ViewMode } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { useDownloadPrefs } from '../../lib/downloads'
+import { useShortcutTitle } from '../../lib/keymapPrefs'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { activeProviderId, devAllowed, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
 import { useDevServer } from '../../providers/dev'
@@ -177,13 +177,14 @@ function SaveStatus() {
   const savedAt = useSave((s) => s.savedAt)
   const stale = useSave((s) => s.stale)
   const [busy, setBusy] = useState(false)
+  const saveTitle = useShortcutTitle('bấm để lưu ngay', 'project.save')
   if (stale) return <StaleStatus />
   const shown = busy ? 'saving' : status
   const label = shown === 'saving' ? 'Đang lưu…' : shown === 'error' ? 'Lỗi lưu' : shown === 'saved' ? 'Đã lưu' : 'Chưa lưu'
   const title =
     status === 'error'
       ? 'Không ghi được vào bộ nhớ của trình duyệt. Bấm để thử lưu lại, hoặc xuất dự án ra file trong Cài đặt.'
-      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — bấm để lưu ngay (${platformText.mod}+S)`
+      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — ${saveTitle}`
 
   const save = async () => {
     if (busy) return
@@ -282,12 +283,14 @@ function ViewSwitch() {
 function HistoryButtons() {
   const past = useStore(useProject.temporal, (s) => s.pastStates.length)
   const future = useStore(useProject.temporal, (s) => s.futureStates.length)
+  const undoTitle = useShortcutTitle('Hoàn tác', 'history.undo')
+  const redoTitle = useShortcutTitle('Làm lại', 'history.redo')
   return (
     <div className="tb-history">
-      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (${platformText.mod}+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
+      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `${undoTitle} · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
         <Undo2 size={16} />
       </button>
-      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? shortcutText('Làm lại (Ctrl+Shift+Z)') : 'Không có gì để làm lại'} aria-label="Làm lại">
+      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? redoTitle : 'Không có gì để làm lại'} aria-label="Làm lại">
         <Redo2 size={16} />
       </button>
     </div>

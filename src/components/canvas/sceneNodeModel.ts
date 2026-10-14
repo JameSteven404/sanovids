@@ -183,7 +183,7 @@ export interface RunView {
  */
 export function runButtonView(
   reason: string | null,
-  o: { cost: number | null; kind: CreditKind; code: string; duration: number; compact?: boolean; placeholders?: boolean },
+  o: { cost: number | null; kind: CreditKind; code: string; duration: number; compact?: boolean; placeholders?: boolean; shortcut?: string },
 ): RunView {
   const price = formatCredits(o.cost, o.kind)
   if (!reason) {
@@ -191,7 +191,7 @@ export function runButtonView(
       blocked: false,
       label: o.compact ? price : `Tạo video · ${price}`,
       why: null,
-      title: `Tạo video cho ${o.code} · ${o.duration} giây · ${price} (${platformText.mod}+Enter)`,
+      title: `Tạo video cho ${o.code} · ${o.duration} giây · ${price}${o.shortcut ? ` (${o.shortcut})` : ''}`,
       compact: !!o.compact,
     }
   }

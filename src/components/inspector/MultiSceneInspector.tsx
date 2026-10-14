@@ -1,6 +1,7 @@
 // Inspector for several selected scenes: batch settings, common reference images, run / duplicate / delete (and the
 // explicit removal of retired @video text, src/videoRetired.ts).
 import { shortcutText } from '../../lib/platformText'
+import { useShortcutLabel } from '../../lib/keymapPrefs'
 import { CircleAlert, ClipboardCopy, CopyPlus, Play, Plus, Trash, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -241,6 +242,7 @@ const MultiRetired = memo(function MultiRetired({ scenes }: { scenes: Scene[] })
 const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene[]; ids: string[] }) {
   const creditKind = useCreditKind()
   const total = totalCost(scenes)
+  const duplicateKey = useShortcutLabel('selection.duplicate')
   const onDuplicate = () => {
     const created = useProject.getState().duplicateScenes(ids)
     useUI.getState().select(created)
@@ -276,7 +278,7 @@ const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene
         <Play size={14} fill="currentColor" /> Chạy {ids.length} cảnh ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(total, creditKind)}</span>
       </button>
       <div className="in-action-row">
-        <button type="button" className="btn btn-sm" onClick={onDuplicate} title={shortcutText('Ctrl+D')}>
+        <button type="button" className="btn btn-sm" onClick={onDuplicate} title={duplicateKey || undefined}>
           <CopyPlus size={13} /> Nhân bản
         </button>
         <button type="button" className="btn btn-sm" onClick={() => void onCopyAll()}>

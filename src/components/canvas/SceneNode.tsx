@@ -48,7 +48,7 @@ import {
   type TakeSummary,
 } from './canvasModel'
 import { cutEdge } from './edges'
-import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft } from '../../lib/keymapPrefs'
+import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft, useShortcutLabel } from '../../lib/keymapPrefs'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
@@ -414,6 +414,7 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
     return { count: t.count, status: t.status, progress: t.status === 'processing' ? t.progress : 0, starredNumber: t.starredNumber, active: t.active }
   }))
   const creditKind = useCreditKind()
+  const runKey = useShortcutLabel('scene.run')
   // The opened settings line belongs to the only selected node (store/sceneEditor: opening it selects the node alone,
   // it closes with that selection) — never several open lines on nodes at rest.
   const settingsOpen = useSettingsOpen(scene.id)
@@ -433,9 +434,9 @@ function SceneFull({ scene, status, box, editing }: { scene: Scene; status: Take
   )
   const w = box?.w ?? LAYOUT.sceneW
   const h = box?.h ?? LAYOUT.sceneH
-  const full = runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, placeholders: red })
+  const full = runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, placeholders: red, shortcut: runKey })
   const foot = footLayout(w, slots.list.map((a) => a.name), full.label)
-  const run = foot.compact && !full.blocked ? runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, compact: true }) : full
+  const run = foot.compact && !full.blocked ? runButtonView(reason, { cost, kind: creditKind, code, duration: scene.settings.duration, compact: true, shortcut: runKey }) : full
   const lines = promptLinesFor(promptBoxHeight(h, { strip, why: !!run.why, settingsOpen }))
   // What the request really carries (compileScene: model limit, mode): tokens past it are invalid like a missing one.
   const sentImages = compiled.images.length

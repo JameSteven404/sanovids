@@ -30,11 +30,15 @@ describe.each(['win', 'mac'] as const)('%s renderer copy', (platform) => {
     if (platform === 'mac') expect([on, off, trash.FOLDER_UNLINK_TRASH_ROW.hint, trash.restoreToastText(false, 'S01', 'Video')].join(' ')).not.toMatch(/Windows|Ctrl|File Explorer/)
   })
 
-  it('the Run button names the platform key (⌘ on a Mac)', async () => {
+  it('the Run button names the platform key (⌘ on a Mac): the live keymap label of scene.run', async () => {
     vi.resetModules()
     vi.doMock('../platform', () => ({ PLATFORM: platform }))
     const node = await import('../../components/canvas/sceneNodeModel')
-    const title = node.runButtonView(null, { cost: 20, kind: 'canvasapp', code: 'S02', duration: 15 }).title
-    expect(title).toBe(`Tạo video cho S02 · 15 giây · 20 credit (${platform === 'mac' ? '⌘' : 'Ctrl'}+Enter)`)
+    const { resolveKeymap } = await import('../../core/keymap')
+    const shortcut = resolveKeymap({}, platform === 'mac').labels['scene.run']
+    const title = node.runButtonView(null, { cost: 20, kind: 'canvasapp', code: 'S02', duration: 15, shortcut }).title
+    expect(title).toBe(`Tạo video cho S02 · 15 giây · 20 credit (${shortcut})`)
+    if (platform === 'mac') expect(shortcut).toMatch(/^⌘/)
+    else expect(shortcut).toBe('Ctrl+Enter')
   })
 })

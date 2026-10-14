@@ -120,9 +120,12 @@ describe('head and settings line', () => {
 describe('Run button', () => {
   const base = { cost: 20, kind: 'canvasapp' as const, code: 'S02', duration: 15 }
   it('ready: "Tạo video · 20 credit", compact "20 credit"; the duration only in the title', () => {
-    const r = runButtonView(null, base)
+    const r = runButtonView(null, { ...base, shortcut: 'Ctrl+Enter' })
     expect(r).toMatchObject({ blocked: false, label: 'Tạo video · 20 credit', why: null, compact: false })
+    // the live keymap label of "scene.run" (SceneNode: useShortcutLabel); none bound → no "(…)"
     expect(r.title).toBe('Tạo video cho S02 · 15 giây · 20 credit (Ctrl+Enter)')
+    expect(runButtonView(null, { ...base, shortcut: 'Alt+R' }).title).toBe('Tạo video cho S02 · 15 giây · 20 credit (Alt+R)')
+    expect(runButtonView(null, base).title).toBe('Tạo video cho S02 · 15 giây · 20 credit')
     expect(runButtonView(null, { ...base, compact: true })).toMatchObject({ label: '20 credit', compact: true })
     expect(runButtonView(null, { ...base, kind: 'dev' }).label).toBe('Tạo video · 20 credit dev')
   })

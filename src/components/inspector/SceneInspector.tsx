@@ -1,6 +1,6 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import { platformText, shortcutText } from '../../lib/platformText'
+import { useShortcutTitle } from '../../lib/keymapPrefs'
 import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, Download, Film, FlaskConical, GripVertical, Info, Maximize2, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -131,6 +131,10 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
   // Same gate as the Run button of the Take section below (core/runRules = store/runs check()); selected by id as a
   // string, so typing in the prompt does not re-render the header.
   const reason = useSceneRunBlock(sceneId)
+  const nextTitle = useShortcutTitle('Tạo cảnh tiếp theo bên dưới', 'scene.next')
+  const duplicateTitle = useShortcutTitle('Nhân bản cảnh', 'selection.duplicate')
+  const deleteTitle = useShortcutTitle('Xoá cảnh', 'selection.delete')
+  const runTitle = useShortcutTitle('Chạy cảnh này', 'scene.run')
   const options = useSceneOptions()
   const idx = options.findIndex((o) => o.id === sceneId)
   const prev = idx > 0 ? options[idx - 1] : undefined
@@ -173,13 +177,13 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
       </div>
       <div className="in-head-row in-head-sub">
         <div className="in-head-actions">
-          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title="Tạo cảnh tiếp theo bên dưới (N) — giữ ảnh tham chiếu và cấu hình">
+          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title={`${nextTitle} — giữ ảnh tham chiếu và cấu hình`}>
             <ArrowRight size={14} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title={shortcutText('Nhân bản cảnh (Ctrl+D)')}>
+          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title={duplicateTitle}>
             <CopyPlus size={14} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title="Xoá cảnh (Delete)">
+          <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title={deleteTitle}>
             <Trash size={14} />
           </button>
           <button
@@ -187,7 +191,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
             className="btn btn-primary btn-sm in-head-run"
             onClick={() => requestRun([sceneId])}
             disabled={!!reason}
-            title={reason ? `Chưa chạy được: ${reason}` : `Chạy cảnh này (${platformText.mod}+Enter)`}
+            title={reason ? `Chưa chạy được: ${reason}` : runTitle}
           >
             <Play size={12} fill="currentColor" /> Chạy
           </button>

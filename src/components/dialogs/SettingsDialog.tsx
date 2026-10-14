@@ -9,7 +9,7 @@ import { platformText } from '../../lib/platformText'
 import { Search, X } from 'lucide-react'
 import { KEY_ACTIONS, type ActionId } from '../../core/keymap'
 import { isImeKey } from '../../lib/keyEvents'
-import { matchesAction, useKeymap } from '../../lib/keymapPrefs'
+import { matchesAction, useKeymap, useShortcutTitle } from '../../lib/keymapPrefs'
 import { KeysIntro, SHORTCUT_ROWS, useKeyCaptureHost } from './SettingsShortcuts'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
@@ -369,6 +369,7 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
   const [query, setQuery] = useState('')
   const [epoch, setEpoch] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
+  const searchTitle = useShortcutTitle('Tìm cài đặt', 'settings.search')
   const resultsRef = useRef<HTMLDivElement>(null)
   /** Group to bring into view once its level is shown (set by a deep link). */
   const pendingAnchor = useRef<Group | undefined>(target)
@@ -452,7 +453,7 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
                 options={SETTINGS_LEVELS.map((l) => ({ id: l, label: SETTINGS_LEVEL_LABEL[l], hint: LEVEL_HINT[l] }))}
               />
             </div>
-            <label className="dg-search dg-set-search" title={`Tìm cài đặt (${platformText.mod}+F)`}>
+            <label className="dg-search dg-set-search" title={searchTitle}>
               <Search size={14} aria-hidden />
               <input
                 ref={searchRef}
