@@ -212,7 +212,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     onDoubleClick={(e) => e.stopPropagation()}
     onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'none' }}
     onDrop={(e) => { e.preventDefault(); e.stopPropagation() }}>
-    <div ref={barRef} className="cv-toolbar cv-toolbar-bar material nodrag nopan" role="toolbar" aria-label="Công cụ canvas"
+    <div ref={barRef} className="cv-toolbar-bar material nodrag nopan" role="toolbar" aria-label="Công cụ canvas"
       aria-orientation={fit.vertical ? 'vertical' : 'horizontal'} data-orient={fit.vertical ? 'vertical' : 'horizontal'}
       style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} onKeyDown={toolbarArrowKey} onFocus={rescue.onFocus} onBlur={rescue.onBlur}>
       <ToolbarButton className="cv-toolbar-button cv-toolbar-grip" label="Kéo để dời thanh · bấm để mở menu của thanh" data-grip tabIndex={0}

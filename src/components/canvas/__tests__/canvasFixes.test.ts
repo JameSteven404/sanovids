@@ -18,8 +18,12 @@ import {
   MINIMAP_LIFT_W,
   selectionSeed,
   toolbarDensity,
+  toolbarInsets,
+  visibleFlowRect,
+  revealViewport,
   withAlpha,
 } from '../canvasModel'
+import { readFileSync } from 'node:fs'
 import { autoLayoutCanvas } from '../CanvasToolbar'
 
 const scene = (id: string, order: number, over: Partial<Scene> = {}): Scene => ({
@@ -228,8 +232,34 @@ describe('withAlpha', () => {
 })
 
 describe('DROP_BLOCKERS', () => {
-  it('includes the floating selection hint (a wire dropped on it must not cut / move the reference)', () => {
+  it('names the toolbar bar and its selection tray by their own classes (a wire dropped on them must not cut / move the reference)', () => {
     const list = DROP_BLOCKERS.split(',').map((s) => s.trim())
-    expect(list).toEqual(expect.arrayContaining(['.cv-toolbar', '.cv-sel-hint', '.cv-menu', '.react-flow__minimap']))
+    expect(list).toEqual(expect.arrayContaining(['.cv-toolbar-bar', '.cv-toolbar-tray', '.cv-menu', '.react-flow__minimap']))
+    const read = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
+    expect(read('ToolbarBar.tsx')).toMatch(/className="cv-toolbar-bar[ "]/)
+    expect(read('ToolbarTray.tsx')).toMatch(/className="cv-toolbar-tray[ "]/)
+  })
+})
+
+describe('room kept for the toolbar on its actual dock', () => {
+  const stage = { top: 100, left: 300, right: 1300, bottom: 800 }
+  it('reserves the edge the bar is docked on (bottom: drawer + bar), nothing for a free bar or none', () => {
+    expect(toolbarInsets('bottom', { top: 708, left: 600, right: 900, bottom: 754 }, stage, 36)).toEqual({ top: 0, left: 0, right: 0, bottom: 92 })
+    expect(toolbarInsets('top', { top: 112, left: 600, right: 900, bottom: 158 }, stage, 36)).toEqual({ top: 58, left: 0, right: 0, bottom: 36 })
+    expect(toolbarInsets('left', { top: 112, left: 312, right: 358, bottom: 600 }, stage, 36)).toEqual({ top: 0, left: 58, right: 0, bottom: 36 })
+    expect(toolbarInsets('right', { top: 112, left: 1242, right: 1288, bottom: 600 }, stage, 36)).toEqual({ top: 0, left: 0, right: 58, bottom: 36 })
+    expect(toolbarInsets('free', { top: 400, left: 600, right: 900, bottom: 446 }, stage, 36)).toEqual({ top: 0, left: 0, right: 0, bottom: 36 })
+    expect(toolbarInsets(undefined, null, stage, 272)).toEqual({ top: 0, left: 0, right: 0, bottom: 272 })
+  })
+  it('the covered bands are not "on screen": a node under a top / left bar is revealed below / right of it', () => {
+    const covered = { w: 1000, h: 700, bottom: 36, top: 58, left: 58, right: 0 }
+    expect(visibleFlowRect({ x: 0, y: 0, zoom: 1 }, covered)).toEqual({ x: 58, y: 58, w: 942, h: 606 })
+    const next = revealViewport({ x: 0, y: 0, w: 200, h: 100 }, { x: 0, y: 0, zoom: 1 }, covered)!
+    expect(next.x).toBeGreaterThanOrEqual(58)
+    expect(next.y).toBeGreaterThanOrEqual(58)
+  })
+  it('toasts drop below a bar docked at the top', () => {
+    const css = readFileSync(new URL('../toolbar.css', import.meta.url), 'utf8')
+    expect(css).toMatch(/body:has\(\.cv-toolbar-host\[data-dock='top'\]\) \.toasts \{\s*top: calc\(var\(--topbar-h\) \+ 68px\);/)
   })
 })

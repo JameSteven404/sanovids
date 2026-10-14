@@ -68,8 +68,7 @@ export const ToolbarTray = memo(function ToolbarTray({ anchor, stage, side, open
     // Batch delete is the shared cut path with a single undo step and the existing file-trash confirmation.
     cut: { label: `Bỏ nối ${cuttable.length} dây đang chọn`, icon: Scissors, run: () => cuttable.length === 1 ? cutEdge(cuttable[0]) : deleteSelection() },
   }
-  // `cv-sel-hint` is only the drop-blocker marker (canvasModel.DROP_BLOCKERS); toolbar.css styles the tray.
-  return <div ref={ref} className="cv-sel-hint cv-toolbar-tray material" role="toolbar" aria-label={`Thao tác với ${summary} đang chọn`}
+  return <div ref={ref} className="cv-toolbar-tray material" role="toolbar" aria-label={`Thao tác với ${summary} đang chọn`}
     style={{ maxWidth, maxHeight }} onKeyDown={toolbarArrowKey} onFocus={rescue.onFocus} onBlur={rescue.onBlur}>
     <span className="cv-toolbar-summary">{summary}</span>
     {contents.map((id, index) => {

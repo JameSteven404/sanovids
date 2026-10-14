@@ -716,18 +716,51 @@ export interface Viewport {
   y: number
   zoom: number
 }
-/** Stage of the canvas in px: `bottom` px at the bottom are covered (queue drawer + toolbar band). */
+/**
+ * Stage of the canvas in px: `bottom` px at the bottom are covered (queue drawer + a bottom-docked toolbar); `top` /
+ * `left` / `right` = a toolbar docked on that edge (toolbarInsets).
+ */
 export interface StageSize {
   w: number
   h: number
   bottom: number
+  top?: number
+  left?: number
+  right?: number
+}
+
+interface EdgeRect {
+  top: number
+  left: number
+  right: number
+  bottom: number
+}
+/**
+ * What the canvas toolbar covers on each edge of the stage (px), from the bar's real box and its ACTUAL dock (the host's
+ * data-dock: a side dock without the height falls back to the bottom); the queue drawer always covers the bottom. A free
+ * (floating) bar or none reserves nothing.
+ */
+export function toolbarInsets(dock: string | undefined, bar: EdgeRect | null, stage: EdgeRect, drawer: number): Required<Pick<StageSize, 'top' | 'left' | 'right' | 'bottom'>> {
+  const out = { top: 0, left: 0, right: 0, bottom: drawer }
+  if (!bar) return out
+  if (dock === 'top') out.top = Math.max(0, bar.bottom - stage.top)
+  else if (dock === 'left') out.left = Math.max(0, bar.right - stage.left)
+  else if (dock === 'right') out.right = Math.max(0, stage.right - bar.left)
+  else if (dock === 'bottom') out.bottom = Math.max(drawer, stage.bottom - bar.top)
+  return out
 }
 /** Room kept free around a revealed / focused node (px): the top keeps clear of the toasts below the top bar. */
 export const VIEW_MARGIN = { top: 64, side: 32, bottom: 24 }
 
-/** Visible part of the canvas in flow coordinates (without the covered bottom band). */
+/** Visible part of the canvas in flow coordinates (without the covered bands). */
 export function visibleFlowRect(vp: Viewport, stage: StageSize): Box {
-  return { x: -vp.x / vp.zoom, y: -vp.y / vp.zoom, w: stage.w / vp.zoom, h: Math.max(0, stage.h - stage.bottom) / vp.zoom }
+  const { top = 0, left = 0, right = 0 } = stage
+  return {
+    x: (left - vp.x) / vp.zoom,
+    y: (top - vp.y) / vp.zoom,
+    w: Math.max(0, stage.w - left - right) / vp.zoom,
+    h: Math.max(0, stage.h - top - stage.bottom) / vp.zoom,
+  }
 }
 
 /** Smallest box around all `boxes` (null when empty). */
@@ -754,9 +787,10 @@ export function boxOnScreen(box: Box, vp: Viewport, stage: StageSize): boolean {
 
 /** Free area of the stage (px) for a revealed / focused node. */
 function stageArea(stage: StageSize) {
-  const left = VIEW_MARGIN.side
-  const right = Math.max(left + 1, stage.w - VIEW_MARGIN.side)
-  const top = Math.min(VIEW_MARGIN.top, Math.max(0, (stage.h - stage.bottom) / 3))
+  const { top: covTop = 0, left: covLeft = 0, right: covRight = 0 } = stage
+  const left = covLeft + VIEW_MARGIN.side
+  const right = Math.max(left + 1, stage.w - covRight - VIEW_MARGIN.side)
+  const top = covTop + Math.min(VIEW_MARGIN.top, Math.max(0, (stage.h - covTop - stage.bottom) / 3))
   const bottom = Math.max(top + 1, stage.h - stage.bottom - VIEW_MARGIN.bottom)
   return { left, right, top, bottom }
 }
@@ -926,12 +960,12 @@ export function clientPoint(e: MouseEvent | TouchEvent): { x: number; y: number 
 }
 
 /** Overlays on the stage that block a wire drop (it must not fall through to the canvas or a card underneath). */
-export const DROP_BLOCKERS = '.cv-toolbar, .cv-sel-hint, .cv-menu, .react-flow__minimap, .react-flow__panel'
+export const DROP_BLOCKERS = '.cv-toolbar-bar, .cv-toolbar-tray, .cv-menu, .react-flow__minimap, .react-flow__panel'
 
 /**
  * The React Flow node under a screen point (ignores the connection line), or null. 'pane' when over empty canvas.
  * Anything on top of the canvas but outside `root` (queue drawer, toasts, panels) blocks the drop: null. So do the
- * stage's own overlays (DROP_BLOCKERS: toolbar, selection hint, menu, minimap).
+ * stage's own overlays (DROP_BLOCKERS: toolbar bar, its selection tray, menus, minimap).
  */
 export function hitTest(x: number, y: number, root: HTMLElement | null): { kind: 'node'; id: string } | { kind: 'pane' } | null {
   const els = document.elementsFromPoint(x, y)

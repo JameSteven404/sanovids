@@ -89,6 +89,7 @@ import {
   autoTakePosition,
   clientPoint,
   drawerInset,
+  toolbarInsets,
   fallbackNodeSize,
   estimatedGeometry,
   estimateDependsOnZoom,
@@ -167,8 +168,6 @@ const nodeTypes = { scene: SceneNode, asset: AssetNode, take: TakeNode, folder: 
 const NO_FOLDERS: SaveFolder[] = []
 const SNAP_GRID: [number, number] = [16, 16]
 const MULTI_KEYS = ['Control', 'Meta', 'Shift']
-/** Toolbar band above the queue drawer (toolbar sits at drawer + 12px, ~44px tall). */
-const TOOLBAR_ROOM = 56
 /** Room kept below the ConnectMenu's top edge (tallest menu ≈ 3 items) so it stays above the queue drawer. */
 const MENU_ROOM = 154
 const EMPTY_DATA: Record<string, unknown> = {}
@@ -901,11 +900,13 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   )
 
   // ---------------- focus / reveal / fit requests ----------------
-  /** Stage size and the band the queue drawer (36px bar, 272px open) and the toolbar above it cover at the bottom. */
+  /** Stage size and the bands the queue drawer (36px bar, 272px open) and the toolbar (on its actual dock) cover. */
   const stageSize = useCallback((): StageSize | null => {
     const stage = stageRef.current
     if (!stage || !stage.clientWidth || !stage.clientHeight) return null
-    return { w: stage.clientWidth, h: stage.clientHeight, bottom: drawerInset(stage) + TOOLBAR_ROOM }
+    const bar = stage.querySelector<HTMLElement>('.cv-toolbar-bar')
+    const dock = bar?.closest<HTMLElement>('.cv-toolbar-host')?.dataset.dock
+    return { w: stage.clientWidth, h: stage.clientHeight, ...toolbarInsets(dock, bar?.getBoundingClientRect() ?? null, stage.getBoundingClientRect(), drawerInset(stage)) }
   }, [])
 
   // New nodes are placed next to what the canvas shows (actions.placementHint → project.newScenePosition).
@@ -955,8 +956,9 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       const vp = rf.getViewport()
       let next: { x: number; y: number; zoom: number } | null
       if (mode === 'fit') {
-        // Same 0.25 padding as before on top/sides; the bottom also keeps the covered band clear.
-        const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(size.bottom + size.h * 0.1)}px` as const }
+        // 10% of the stage on every side (= React Flow's 0.25), plus the band the drawer / toolbar covers there.
+        const pad = (covered = 0, length: number) => `${Math.round(covered + length * 0.1)}px` as const
+        const padding = { top: pad(size.top, size.h), bottom: pad(size.bottom, size.h), left: pad(size.left, size.w), right: pad(size.right, size.w) }
         next = getViewportForBounds({ x: box.x, y: box.y, width: box.w, height: box.h }, size.w, size.h, 0.1, 1.2, padding)
       } else if (mode === 'reveal') next = revealViewport(box, vp, size)
       else if (mode === 'type') next = typingViewport(box, vp, size)

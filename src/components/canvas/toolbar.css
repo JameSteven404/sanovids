@@ -4,9 +4,14 @@
   z-index: 6;
   pointer-events: none;
 }
+/* A bar docked at the top sits where the toasts appear (common.css .toasts, below the top bar): they drop below the
+   bar (TOOLBAR_MARGIN 12 + bar 46 + the usual 10px). CanvasView.stageSize keeps fit / focus clear of the bar itself. */
+body:has(.cv-toolbar-host[data-dock='top']) .toasts {
+  top: calc(var(--topbar-h) + 68px);
+}
 /*
  * Paint order inside the host: tray 6 < bar 7 (its tooltips stay above a tray that overlaps them) < menu backdrop 8
- * < menu 9. `.cv-toolbar` (bar) and `.cv-sel-hint` (tray) only mark them for canvasModel.DROP_BLOCKERS.
+ * < menu 9. `.cv-toolbar-bar` and `.cv-toolbar-tray` are also canvasModel.DROP_BLOCKERS (a wire never drops through them).
  */
 .cv-toolbar-host .cv-toolbar-bar {
   position: absolute;
