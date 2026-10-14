@@ -8,7 +8,7 @@ import type { Project, Scene } from '../../../core/types'
 import { useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
-import { onCanvasContextMenu, onCanvasMenuKey, resolveTarget, type CanvasMenuBridge } from '../canvasContextMenu'
+import { loadCanvasMenu, onCanvasContextMenu, onCanvasMenuKey, resolveTarget, type CanvasMenuBridge } from '../canvasContextMenu'
 import { useContextMenu } from '../contextMenuStore'
 
 // ---- a tiny fake DOM: enough of Element for closest / getAttribute / classList ----
@@ -147,9 +147,10 @@ describe('resolveTarget', () => {
 })
 
 describe('right-click on the stage', () => {
-  it('empty canvas: the default menu is stopped and the canvas menu opens', () => {
+  it('empty canvas: the default menu is stopped at once and the canvas menu opens (its builders load on the first menu)', async () => {
     const e = rightClick(pane)
     expect(e.preventDefault).toHaveBeenCalled()
+    await loadCanvasMenu()
     expect(useContextMenu.getState().open?.spec.label).toBe('Menu nền canvas')
   })
   it('text fields (the card prompt, an input, contenteditable) and selected text keep the native text menu', () => {
@@ -177,13 +178,15 @@ describe('Menu key / Shift+F10', () => {
     expect(useContextMenu.getState().open).toBeNull()
   })
   // Last: the echo window is module state.
-  it('nothing focused: the empty-canvas menu opens; the browser contextmenu echo right after it opens nothing more', () => {
+  it('nothing focused: the empty-canvas menu opens; the browser contextmenu echo right after it opens nothing more', async () => {
     const e = menuKey()
     expect(e.preventDefault).toHaveBeenCalled()
+    await loadCanvasMenu()
     const opened = useContextMenu.getState().open
     expect(opened).toMatchObject({ origin: 'keyboard', spec: { label: 'Menu nền canvas' } })
     const echo = rightClick(pane)
     expect(echo.preventDefault).toHaveBeenCalled()
+    await loadCanvasMenu()
     expect(useContextMenu.getState().open?.seq).toBe(opened!.seq)
   })
 })

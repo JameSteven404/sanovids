@@ -1,7 +1,6 @@
 // Right-click menu of a library card ("Thư viện"): quick unlink / link against the scenes selected on the canvas, put
 // on / hide from the canvas, edit, delete (the same flow as the Delete key: libraryActions.deleteLibraryAssets asks in
 // the app when the items are used). Built from the stores once, when the menu opens.
-import type { MouseEvent as ReactMouseEvent } from 'react'
 import { linkAssets } from '../../actions'
 import type { Asset } from '../../core/types'
 import { deleteLibraryAssets } from '../../libraryActions'
@@ -10,7 +9,6 @@ import { oneUndoStep, undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { nextAssetPosition } from '../sidebar/shared'
 import { selectionLinkRows } from './canvasMenu'
-import { openContextMenu, type MenuOrigin } from './contextMenuStore'
 import { SEP, tidyEntries, type MenuEntry, type MenuSpec } from './menuModel'
 
 /** What the card offers that lives in the library component (passed in, so its toasts stay the same). */
@@ -92,32 +90,3 @@ export function libraryMenu(ids: readonly string[], commands: LibraryCardCommand
 }
 
 /** Keyboard focus after the menu closed and the card is gone (deleted): the library grid. */
-const libraryGrid = () => (typeof document !== 'undefined' ? document.querySelector<HTMLElement>('.sb-library [data-asset-id], .sb-library') : null)
-
-/**
- * Right-click (or Menu key / Shift+F10) on a library card. A card outside the library selection becomes the only
- * selected card (the canvas selection is kept: the quick unlink acts on its scenes); one inside acts on the whole
- * library selection. Text being selected keeps the native menu.
- */
-export function openLibraryCardMenu(e: ReactMouseEvent | KeyboardEvent, id: string, commands: LibraryCardCommands, origin: MenuOrigin = 'mouse'): void {
-  if (e.defaultPrevented) return
-  e.preventDefault()
-  const ui = useUI.getState()
-  if (ui.dialog.kind !== 'none') return
-  const inSel = ui.librarySelection.includes(id)
-  if (!inSel) ui.setLibrarySelection([id])
-  const ids = inSel ? ui.librarySelection : [id]
-  const spec = libraryMenu(ids, commands)
-  if (!spec) return
-  const card = (e.target as Element | null)?.closest?.('.sb-card') ?? null
-  const box = card?.getBoundingClientRect()
-  const mouse = 'clientX' in e && origin !== 'keyboard'
-  openContextMenu({
-    spec,
-    at: mouse ? { x: e.clientX, y: e.clientY } : undefined,
-    anchor: !mouse && box ? { left: box.left, top: box.top, right: box.right, bottom: box.bottom } : undefined,
-    origin,
-    target: card,
-    fallbackFocus: libraryGrid,
-  })
-}

@@ -12,6 +12,8 @@ import { useRuns } from '../../../store/runs'
 import { useSceneEditor } from '../../../store/sceneEditor'
 import { useUI } from '../../../store/ui'
 import { canvasMenu, deleteTakeAsking, wireStack, type CanvasTarget } from '../canvasMenu'
+import { useContextMenu } from '../contextMenuStore'
+import { openLibraryCardMenu } from '../libraryContextMenu'
 import { libraryMenu } from '../libraryMenu'
 import { firstIndex, isItem, MAX_ROOT_ITEMS, type MenuEntry, type MenuItem, type MenuSpec } from '../menuModel'
 
@@ -454,6 +456,16 @@ describe('library card menu', () => {
     expect(spec.title).toBe('2 mục đang chọn')
     expect(ids(spec)).toEqual(['lib.linkSelected', 'lib.unlinkSelected', 'lib.delete'])
     expect(get(spec, 'lib.delete').label).toBe('Xoá 2 mục khỏi thư viện')
+  })
+  it('the card opener stops the native menu and selects the card at once; the menu opens once its builder is loaded', async () => {
+    useUI.setState({ selectedIds: ['s1'], librarySelection: [] })
+    const e = { defaultPrevented: false, preventDefault: vi.fn(), target: null, clientX: 5, clientY: 6 }
+    openLibraryCardMenu(e as unknown as Parameters<typeof openLibraryCardMenu>[0], 'a', commands)
+    expect(e.preventDefault).toHaveBeenCalled()
+    expect(useUI.getState().librarySelection).toEqual(['a'])
+    await vi.dynamicImportSettled()
+    expect(useContextMenu.getState().open).toMatchObject({ at: { x: 5, y: 6 }, spec: { label: libraryMenu(['a'], commands)!.label } })
+    useContextMenu.setState({ open: null })
   })
 })
 

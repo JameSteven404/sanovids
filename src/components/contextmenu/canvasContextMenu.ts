@@ -11,7 +11,7 @@ import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { useCanvasLocal } from '../canvas/canvasModel'
 import { isTextEntry } from '../common/focus'
-import { canvasMenu, type CanvasTarget } from './canvasMenu'
+import type { CanvasTarget } from './canvasMenu'
 import { closeContextMenu, openContextMenu, type MenuOrigin } from './contextMenuStore'
 import { contextSelection, isMacSecondaryPress, isMenuKey, type ContextKind, type MenuItem } from './menuModel'
 
@@ -106,21 +106,32 @@ function highlightWire(item: MenuItem | null) {
 
 const stageEl = () => (typeof document !== 'undefined' ? document.querySelector<HTMLElement>('.cv-stage') : null)
 
-/** Open the canvas menu for a resolved target. */
+/** The menu builders (canvasMenu.ts): their own chunk, loaded on the first menu (App prefetches it when idle); a failed load is tried again on the next menu. */
+let builders: Promise<typeof import('./canvasMenu')> | null = null
+export function loadCanvasMenu(): Promise<typeof import('./canvasMenu')> {
+  return (builders ??= import('./canvasMenu').catch((e: unknown) => {
+    builders = null
+    throw e
+  }))
+}
+
+/** Open the canvas menu for a resolved target: the selection rule applies at once, the menu once its builders are loaded. */
 function openFor(resolved: ResolvedTarget, opts: { flow: XY; at?: { x: number; y: number }; anchor?: DOMRect; origin: MenuOrigin }) {
   const multi = applySelection(resolved.kind, resolved.id)
   const target: CanvasTarget = multi ? { kind: 'multi' } : resolved.target
-  const spec = canvasMenu(target, { flow: opts.flow, at: opts.at })
-  if (!spec || !spec.entries.length) return
-  openContextMenu({
-    spec,
-    at: opts.at,
-    anchor: opts.anchor ? { left: opts.anchor.left, top: opts.anchor.top, right: opts.anchor.right, bottom: opts.anchor.bottom } : undefined,
-    origin: opts.origin,
-    target: resolved.el ?? null,
-    fallbackFocus: stageEl,
-    onHighlight: highlightWire,
-  })
+  void loadCanvasMenu().then(({ canvasMenu }) => {
+    const spec = canvasMenu(target, { flow: opts.flow, at: opts.at })
+    if (!spec || !spec.entries.length) return
+    openContextMenu({
+      spec,
+      at: opts.at,
+      anchor: opts.anchor ? { left: opts.anchor.left, top: opts.anchor.top, right: opts.anchor.right, bottom: opts.anchor.bottom } : undefined,
+      origin: opts.origin,
+      target: resolved.el ?? null,
+      fallbackFocus: stageEl,
+      onHighlight: highlightWire,
+    })
+  }, () => undefined)
 }
 
 export interface CanvasMenuBridge {

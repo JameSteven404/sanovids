@@ -1,6 +1,6 @@
 import { useReactFlow, useStore } from '@xyflow/react'
 import { ChevronDown, Eye, GripVertical, Hand, Maximize, MoreHorizontal, MousePointer2, Play, Plus } from 'lucide-react'
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { connectSelection, downloadChosenTakesZip, newScene, nextScene, redo, requestRun, selectedSceneIds, selectScenesWithoutVideo, undo } from '../../actions'
 import { useArrangeMenu } from '../../arrangeActions'
 import type { ActionId } from '../../core/keymap'
@@ -11,7 +11,6 @@ import { IS_MAC } from '../../lib/platform'
 import { DEFAULT_TOOLBAR_PLACE, useToolbarPrefs, type ToolbarDock } from '../../lib/toolbarPrefs'
 import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
-import { ArrangePopover } from './ArrangePopover'
 import { ArrangeToolbarSlot } from './ArrangeToolbarSlot'
 import { sceneMapOf } from './canvasModel'
 import { ensureRovingStop, ToolbarButton, ToolbarMenu, toolbarArrowKey, useFocusRescue, type ToolbarMenuItem } from './ToolbarControls'
@@ -22,6 +21,9 @@ import {
 } from './toolbarModel'
 import { useToolbarPlace } from './useToolbarPlace'
 import './toolbar.css'
+
+// Opened from ▾ only: its own chunk (and arrange.css), loaded on the first open.
+const ArrangePopover = lazy(() => import('./ArrangePopover').then((m) => ({ default: m.ArrangePopover })))
 
 const DOCK_LABELS: Record<ToolbarDock, string> = { bottom: 'Cạnh dưới', top: 'Cạnh trên', left: 'Cạnh trái', right: 'Cạnh phải', free: 'Đặt tự do' }
 const MENU = { place: 'Vị trí thanh công cụ', add: 'Thêm vào canvas', view: 'Hiển thị', zoom: 'Thu phóng', more: 'Thêm thao tác' } as const
@@ -233,7 +235,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     </div>
     {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} openMenu={openMenu} focusBar={focusMore} />}
     {menu && <ToolbarMenu key={menu.label} {...menu} anchor={rect} stage={stage} side={side} onClose={closeMenu} />}
-    {arrangeOpen && !dragging && <ArrangePopover anchor={arrangeAnchor() ?? document.body} side={POPOVER_SIDE[side]} onClose={closeArrange} />}
+    {arrangeOpen && !dragging && <Suspense fallback={null}><ArrangePopover anchor={arrangeAnchor() ?? document.body} side={POPOVER_SIDE[side]} onClose={closeArrange} /></Suspense>}
     <span className="cv-toolbar-sr" id="cv-toolbar-grip-help">{gripHelpText(IS_MAC)}</span>
     <span className="cv-toolbar-sr" role="status">{dragging ? '' : `Thanh công cụ: ${DOCK_LABELS[fit.dock]}.`}</span>
   </div>

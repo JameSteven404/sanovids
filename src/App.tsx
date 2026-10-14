@@ -6,7 +6,7 @@ import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './compone
 import { ImageLightbox } from './components/common/ImageLightbox'
 import { ConfirmSheet } from './components/common/ConfirmSheet'
 import { Toasts } from './components/common/Toasts'
-import { ContextMenuHost } from './components/contextmenu/ContextMenuHost'
+import { useContextMenu } from './components/contextmenu/contextMenuStore'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
 import { Sidebar } from './components/sidebar/Sidebar'
@@ -40,6 +40,10 @@ const chunks = {
   updateDialog: () => import('./components/dialogs/UpdateDialog'),
   importJobsDialog: () => import('./components/runs/ImportJobsDialog'),
   filmPlayer: () => import('./components/player/FilmPlayerDialog'),
+  // right-click menus: the host (mounted while a menu is open) and the builders the openers load on the first menu
+  contextMenu: () => import('./components/contextmenu/ContextMenuHost'),
+  canvasMenu: () => import('./components/contextmenu/canvasMenu'),
+  libraryMenu: () => import('./components/contextmenu/libraryMenu'),
 }
 
 const ImportDialog = lazy(() => chunks.importDialog().then((m) => ({ default: m.ImportDialog })))
@@ -61,6 +65,7 @@ const StressHud = lazy(
     import('./devtools/stress/StressHud').then((m) => ({ default: m.StressHud })).catch(() => ({ default: () => null })),
 )
 const FilmPlayerDialog = lazy(() => chunks.filmPlayer().then((m) => ({ default: m.FilmPlayerDialog })))
+const ContextMenuHost = lazy(() => chunks.contextMenu().then((m) => ({ default: m.ContextMenuHost })))
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -166,9 +171,20 @@ function Shell() {
       <DevPrompts />
       <StressHudSlot />
       {/* Right-click menus of the canvas AND the library: outside every region boundary (a crashed canvas keeps the library's). */}
-      <ContextMenuHost />
+      <ContextMenuSlot />
       <Toasts />
     </div>
+  )
+}
+
+/** The one right-click menu host, mounted only while a menu is open (its chunk is prefetched when idle). */
+function ContextMenuSlot() {
+  const open = useContextMenu((s) => s.open !== null)
+  if (!open) return null
+  return (
+    <Suspense fallback={null}>
+      <ContextMenuHost />
+    </Suspense>
   )
 }
 
