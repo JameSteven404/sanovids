@@ -47,9 +47,10 @@
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   animation: cm-sheet-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-color: var(--border-strong);
 }
 .modal:focus,
 .modal:focus-visible {
@@ -155,7 +156,7 @@
   /* docs/DESIGN.md: popovers, menus, hover previews and toasts share radius 12 (multi-line toasts stay tidy). */
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--material-strong);
+  background: var(--panel);
   -webkit-backdrop-filter: var(--blur);
   backdrop-filter: var(--blur);
   box-shadow: var(--shadow-lg);
@@ -164,12 +165,13 @@
   font-weight: 500;
   line-height: 1.4;
   animation: cm-toast-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-color: var(--border-strong);
 }
 /* Tone shows in the icon only: the capsule itself stays calm. */
 .toast.success,
 .toast.warning,
 .toast.error {
-  border-color: var(--border);
+  border-color: var(--border-strong);
 }
 .toast-icon {
   flex: none;
@@ -195,9 +197,9 @@
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
@@ -208,7 +210,7 @@
 }
 /* Light appearance: orange text on a pale orange fill is only ~2.5:1; a deeper orange keeps the label readable. */
 :root[data-theme='light'] .toast .toast-action {
-  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+  color: var(--accent-ink);
 }
 .toast .toast-close {
   flex: none;

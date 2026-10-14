@@ -1,18 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <title>SanoVids</title>
-  <!-- 24 px cut (1 unit = 1 px): the Windows 11 taskbar size and the in-app top-bar logo.
-       Stroke 3; strokes y 3-6 / 18-21 and bowl sides x 6-9 / 15-18 sit on whole pixels.
-       Plug gap = the clean pixel column x 14. -->
-  <defs>
-    <linearGradient id="sv-plate-24" x1="0" y1="0" x2="0" y2="24" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffb340"/>
-      <stop offset="1" stop-color="#ff9f0a"/>
-    </linearGradient>
-  </defs>
-  <rect width="24" height="24" rx="5.25" fill="url(#sv-plate-24)"/>
-  <g fill="#1d1206">
-    <path d="M14 4.5H12A4.5 3.3 0 0 0 9.22 10.39L14.78 13.61A4.5 3.3 0 0 1 12 19.5H6" fill="none" stroke="#1d1206" stroke-width="3"/>
-    <circle cx="18" cy="4.5" r="3"/>
-    <circle cx="6" cy="19.5" r="3"/>
-  </g>
+  <defs><linearGradient id="sv-plate" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/></linearGradient><mask id="sv-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M370 181H228C173 181 173 251 228 251H269C325 251 325 323 269 323H93" fill="none" stroke="black" stroke-width="30" stroke-linecap="round"/></mask></defs>
+  <rect width="24" height="24" rx="5.28" fill="url(#sv-plate)"/>
+  <g fill="#FFFFFF" transform="scale(0.046875)"><path d="M119 107Q119 62 165 86L423 226Q469 252 423 281L165 427Q119 454 119 400Z" mask="url(#sv-cut)"/><circle cx="94" cy="323" r="25"/></g>
 </svg>

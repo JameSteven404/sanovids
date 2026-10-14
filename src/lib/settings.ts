@@ -20,7 +20,7 @@ import { EDGE_MODES, INTERACTION_MODES, TAKE_DISPLAYS, TOAST_TIMES, useUI, type 
 import { BIG_PROJECT_MODES, DEFAULT_CANVAS_PREFS, isEditorWidth, MOTION_LEVELS, NODE_EDITOR_MODES, useCanvasPrefs, type CanvasPrefs } from './canvasPrefs'
 import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
-import { isThemePref, useTheme, type ThemePref } from './theme'
+import { isBackgroundPref, isThemePref, useTheme, type BackgroundPref, type ThemePref } from './theme'
 import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
 import { changedBindingsCount, validateBindings, type BindingIssue } from '../core/keymap'
 import { IS_MAC } from './keyEvents'
@@ -29,6 +29,7 @@ import { ARRANGE_RULES, cleanArrangePrefs, DEFAULT_ARRANGE_PREFS, isArrangeVideo
 
 export interface PortableSettings {
   theme: ThemePref
+  background: BackgroundPref
   downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string; folderUnlinkTrash: boolean }
   playback: { sound: boolean; volume: number; rate: number }
   canvas: CanvasPrefs
@@ -40,10 +41,11 @@ export interface PortableSettings {
 }
 
 /** Some settings (what a file or a reset changes). */
-export type SettingsPatch = { theme?: ThemePref } & { [K in Exclude<keyof PortableSettings, 'theme'>]?: Partial<PortableSettings[K]> }
+export type SettingsPatch = { theme?: ThemePref; background?: BackgroundPref } & { [K in Exclude<keyof PortableSettings, 'theme' | 'background'>]?: Partial<PortableSettings[K]> }
 
 export const DEFAULT_SETTINGS: PortableSettings = {
   theme: 'system',
+  background: 'than',
   downloads: {
     askWhere: DEFAULT_DOWNLOAD_PREFS.askWhere,
     withPrompt: DEFAULT_DOWNLOAD_PREFS.withPrompt,
@@ -69,6 +71,7 @@ export function currentSettings(): PortableSettings {
   const u = useUI.getState()
   return {
     theme: useTheme.getState().pref,
+    background: useTheme.getState().background,
     downloads: {
       askWhere: d.askWhere,
       withPrompt: d.withPrompt,
@@ -98,7 +101,7 @@ const isVolume = (v: unknown): v is number => typeof v === 'number' && Number.is
 const isTemplate = (v: unknown): v is string => checkNameTemplate(v).ok
 
 type Check = (v: unknown) => boolean
-const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock' | 'keys' | 'arrange'>]: Record<keyof PortableSettings[K], Check> } = {
+const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'background' | 'mock' | 'keys' | 'arrange'>]: Record<keyof PortableSettings[K], Check> } = {
   downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
   canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
@@ -138,6 +141,12 @@ export function sanitizeSettings(input: unknown, mac = IS_MAC): SanitizedSetting
       patch.theme = input.theme
       accepted++
     } else rejected.push('theme')
+  }
+  if ('background' in input) {
+    if (isBackgroundPref(input.background)) {
+      patch.background = input.background
+      accepted++
+    } else rejected.push('background')
   }
   const groups: [keyof SettingsPatch, Record<string, Check>][] = [...Object.entries(RULES), ['mock', MOCK_RULES]] as [keyof SettingsPatch, Record<string, Check>][]
   for (const [group, rules] of groups) {
@@ -201,6 +210,7 @@ export function sanitizeSettings(input: unknown, mac = IS_MAC): SanitizedSetting
 /** Apply some settings to their stores (each store saves its own; every value is checked again there). */
 export function applySettings(patch: SettingsPatch): void {
   if (patch.theme) useTheme.getState().setPref(patch.theme)
+  if (patch.background) useTheme.getState().setBackground(patch.background)
   if (patch.downloads) useDownloadPrefs.getState().set(patch.downloads)
   if (patch.playback) {
     const p = usePlayback.getState()
@@ -265,6 +275,7 @@ export function resetAllSettings(): SettingsBackup {
 /** Number of settings that differ from the defaults (shown next to "Khôi phục cài đặt mặc định"). */
 export function changedSettingsCount(s: PortableSettings = currentSettings()): number {
   let n = s.theme === DEFAULT_SETTINGS.theme ? 0 : 1
+  if (s.background !== DEFAULT_SETTINGS.background) n++
   for (const group of ['downloads', 'playback', 'canvas', 'ui', 'mock', 'updates'] as const) {
     const cur = s[group] as Record<string, unknown>
     const def = DEFAULT_SETTINGS[group] as Record<string, unknown>

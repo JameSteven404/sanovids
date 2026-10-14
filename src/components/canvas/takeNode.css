@@ -30,7 +30,7 @@
   border-color: color-mix(in srgb, var(--warn) 50%, var(--cv-card-border));
 }
 .cv-take.is-selected {
-  border-color: var(--accent);
+  border-color: var(--selection);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
 
@@ -793,8 +793,8 @@
   gap: 3px;
   width: auto;
   padding: 0 7px 0 6px;
-  background: var(--danger);
-  color: var(--cv-on-solid);
+  background: var(--danger-soft);
+  color: var(--danger-text);
   font: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -822,7 +822,7 @@
   overflow: hidden;
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   font: inherit;
   font-size: 13px;
@@ -835,15 +835,16 @@
     color 0.15s var(--cv-ease),
     box-shadow 0.15s var(--cv-ease),
     transform 0.12s var(--cv-ease);
+  border-color: transparent;
 }
 .cv-take-main > span,
 .cv-take-main > svg {
   position: relative;
 }
 .cv-take-main:hover:not(:disabled) {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--action-gradient);
+  border-color: var(--selection);
+  box-shadow: var(--shadow-sm);
 }
 .cv-take-main:active:not(:disabled) {
   transform: scale(0.98);
@@ -878,7 +879,7 @@
   color: var(--accent);
 }
 .cv-take-main.is-retry:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 .cv-take-main.is-retry:disabled {

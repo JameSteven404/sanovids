@@ -85,14 +85,14 @@
   left: 2px;
   width: calc((100% - 4px - (var(--seg-n, 1) - 1) * 2px) / var(--seg-n, 1));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
+  background: var(--accent-soft);
   box-shadow: var(--shadow-sm);
   transform: translateX(calc(var(--seg-i, 0) * (100% + 2px)));
   transition: transform 0.15s ease-out;
   opacity: 0;
 }
 :root[data-theme='light'] .dg-seg::before {
-  background: var(--panel);
+  background: var(--accent-soft);
 }
 .dg-seg.has-value::before {
   opacity: 1;
@@ -125,7 +125,7 @@
   color: var(--text);
 }
 .dg-seg button.active {
-  color: var(--text);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 .dg-seg button:focus-visible {
@@ -202,7 +202,7 @@
   background: var(--accent-soft);
 }
 .dg-steps li.active > span {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: var(--accent);
   color: var(--on-accent);
 }
@@ -905,7 +905,7 @@
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--on-accent);
   box-shadow: var(--shadow-sm);
   transition: transform 0.18s ease-out;
   pointer-events: none;
@@ -918,7 +918,7 @@
     var(--shadow-sm);
 }
 .dg-switch.on {
-  background: var(--accent);
+  background: var(--action-gradient);
 }
 .dg-switch.on i {
   transform: translateX(16px);
@@ -1674,7 +1674,7 @@
   color: var(--text-dim);
 }
 .dg-project.current .dg-project-icon {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 .dg-project-info {
@@ -1941,4 +1941,8 @@
   .dg-spin {
     animation-duration: 2.4s;
   }
+}
+.dg-section:has(.dg-about-head) {
+  background: linear-gradient(150deg, var(--accent-soft), var(--panel));
+  border-color: var(--border-strong);
 }

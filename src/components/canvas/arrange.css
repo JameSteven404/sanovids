@@ -1,13 +1,13 @@
 /* above the dialogs (100) and the canvas chrome, below a confirm / dev sheet (140 / 150) and the toasts (200): their
    buttons (Hoàn tác, Sắp xếp lại) stay clickable while the popover is open */
 .cv-ar-backdrop { position: fixed; inset: 0; z-index: 120; }
-.cv-ar-popover { position: fixed; width: min(380px, calc(100vw - 16px)); max-height: min(560px, calc(100vh - 16px)); overflow-y: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); font-size: 12px; }
+.cv-ar-popover { position: fixed; width: min(380px, calc(100vw - 16px)); max-height: min(560px, calc(100vh - 16px)); overflow-y: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-toolbar); background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); font-size: 12px; }
 .cv-ar-popover header, .cv-ar-popover footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .cv-ar-popover footer { margin-top: 12px; }
 .cv-ar-styles { display: flex; gap: 6px; border: 0; padding: 0; margin: 12px 0 8px; }
 .cv-ar-styles legend { margin-bottom: 6px; color: var(--text-dim); }
 .cv-ar-styles label { flex: 1; min-width: 0; position: relative; border: 1px solid var(--border); border-radius: 8px; padding: 8px; cursor: pointer; background: var(--panel-2); text-align: center; }
-.cv-ar-styles label.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+.cv-ar-styles label.is-selected { border-color: var(--selection); background: var(--accent-soft); }
 .cv-ar-styles label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cv-ar-styles input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .cv-ar-styles svg { display: block; width: 100%; height: 42px; fill: currentColor; color: var(--accent); }

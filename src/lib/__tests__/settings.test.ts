@@ -45,6 +45,7 @@ function memoryStorage(initial: Record<string, string> = {}) {
 /** A device where the user changed nearly everything. */
 const CUSTOM = {
   theme: 'light',
+  background: 'slate',
   downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}', folderUnlinkTrash: false },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
   canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' },
@@ -251,6 +252,7 @@ describe('apply / reset / restore', () => {
     expect(storage.data.get('bdp:pref:toastTime')).toBe('"long"')
     expect(storage.data.get('bdp:pref:minimap')).toBe('false')
     expect(storage.data.get('bdp:pref:theme')).toBe('"light"')
+    expect(storage.data.get('bdp:pref:background')).toBe('"slate"')
     expect(useUpdatePrefs.getState().autoDownload).toBe(false)
     expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":false}')
     expect(changedSettingsCount()).toBeGreaterThan(15)
@@ -286,6 +288,22 @@ describe('apply / reset / restore', () => {
     applySettings({ canvas: { nodeEditor: 'off', bigProject: 'off', editorWidth: 400 } })
     expect(changedSettingsCount()).toBe(3)
     expect(currentSettings().canvas).toEqual({ ...DEFAULT_SETTINGS.canvas, nodeEditor: 'off', bigProject: 'off', editorWidth: 400 })
+  })
+
+  it('validates, counts and imports a background independently of the theme', () => {
+    for (const background of ['than', 'deep', 'slate'] as const) {
+      const read = readSettingsFile(JSON.stringify({ kind: SETTINGS_FILE_KIND, settings: { background } }))
+      expect(read).toEqual({ ok: true, patch: { background }, accepted: 1, rejected: [] })
+      if (read.ok) applySettings(read.patch)
+      expect(currentSettings().background).toBe(background)
+      expect(changedSettingsCount()).toBe(background === 'than' ? 0 : 1)
+    }
+    for (const background of ['light', 'neon', '', 1, null, {}, ['deep']]) {
+      expect(sanitizeSettings({ background })).toEqual({ patch: {}, accepted: 0, rejected: ['background'] })
+    }
+    // Older files leave this device's existing background alone.
+    applySettings(sanitizeSettings({ theme: 'light' }).patch)
+    expect(currentSettings().background).toBe('slate')
   })
 
   it('replaces the entire keys group, preserves foreign ids, and resets/restores overrides', () => {

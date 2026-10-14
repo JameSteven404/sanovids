@@ -59,7 +59,7 @@ import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
-import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { BACKGROUND_LABEL, BACKGROUND_PREFS, THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { openReleasePage, useUpdates } from '../../lib/updates'
@@ -97,6 +97,26 @@ export function ThemeSetting({ label, hint }: RowProps) {
       }
     >
       <Segmented label={label} size="lg" value={pref} onChange={setPref} options={THEMES.map((t) => ({ ...t, title: THEME_LABEL[t.id] }))} />
+    </Field>
+  )
+}
+
+export function BackgroundSetting({ label, hint }: RowProps) {
+  const background = useTheme((s) => s.background)
+  const setBackground = useTheme((s) => s.setBackground)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented
+        label={label}
+        size="lg"
+        value={background}
+        onChange={setBackground}
+        options={BACKGROUND_PREFS.map((id) => ({
+          id,
+          label: BACKGROUND_LABEL[id],
+          icon: <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><rect x="1" y="1" width="14" height="14" rx="4" fill={`var(--bg-swatch-${id})`} stroke="var(--border-strong)" /></svg>,
+        }))}
+      />
     </Field>
   )
 }

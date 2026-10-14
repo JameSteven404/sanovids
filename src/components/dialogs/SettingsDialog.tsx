@@ -38,6 +38,7 @@ import {
   AskWhereSetting,
   AutoDownloadSetting,
   AutoRenumberSetting,
+  BackgroundSetting,
   BigProjectSetting,
   ClickToCutSetting,
   DataBlock,
@@ -82,7 +83,10 @@ const GROUPS: Group[] = [
     col: 0,
     title: 'Giao diện',
     desc: 'Chế độ sáng hoặc tối cho toàn bộ ứng dụng.',
-    rows: [{ id: 'theme', label: 'Chế độ giao diện', hint: 'Lựa chọn được nhớ trên máy này.', keywords: 'sáng tối hệ thống dark light theme màu nền', C: ThemeSetting }],
+    rows: [
+      { id: 'theme', label: 'Chế độ giao diện', hint: 'Lựa chọn được nhớ trên máy này.', keywords: 'sáng tối hệ thống dark light theme', C: ThemeSetting },
+      { id: 'background', label: 'Màu nền', hint: 'Chỉ áp dụng cho giao diện tối. Giao diện sáng giữ nguyên; lựa chọn được nhớ trên máy này.', keywords: 'than đen sâu xám xanh màu nền background', C: BackgroundSetting },
+    ],
   },
   {
     id: 'downloads',

@@ -467,7 +467,8 @@
   padding: 0 3px;
   border-radius: 999px;
   background: var(--ref);
-  color: var(--on-accent);
+  /* dark ink on the light dark-mode teal / amber; near-white on the deeper light-mode fills */
+  color: var(--bg);
   font-family: var(--mono);
   font-size: 9.5px;
   font-weight: 600;
@@ -679,7 +680,7 @@
     transform 0.12s ease-out;
 }
 .vw-run:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: var(--accent);
   color: var(--on-accent);
 }
@@ -1059,7 +1060,7 @@
   height: 44px;
   border-radius: 50%;
   border: 0;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   display: inline-flex;
   align-items: center;
@@ -1257,7 +1258,7 @@
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   box-shadow: var(--shadow);
   font-family: var(--mono);

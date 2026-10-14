@@ -32,7 +32,7 @@
   box-shadow: var(--cv-lift-shadow);
 }
 .cv-folder.is-selected {
-  border-color: var(--accent);
+  border-color: var(--selection);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
 .cv-folder.needs-attention:not(.is-selected) {
@@ -229,14 +229,15 @@
   transform: scale(0.98);
 }
 .cv-folder-btn.primary {
-  background: var(--save);
-  color: var(--cv-on-media);
+  background: var(--save-soft);
+  color: var(--save);
 }
 .cv-folder-btn.primary > svg {
   color: inherit;
 }
 .cv-folder-btn.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--save) 85%, var(--text));
+  background: var(--save-soft);
+  box-shadow: inset 0 0 0 1px var(--save);
 }
 .cv-folder-btn:disabled {
   opacity: 0.4;
@@ -266,7 +267,7 @@
   top: 25px;
   --h-c: var(--save);
   --h-glow: var(--save-soft);
-  --h-ring: 0 0 0 3px color-mix(in srgb, var(--save) 22%, transparent);
+  --h-ring: 0 0 0 1px var(--save);
 }
 /* FolderNode re-measures the node when this changes (useRemeasureOn), so its wires follow the dot */
 .cv-stage .is-far .cv-h.cv-h-folder {

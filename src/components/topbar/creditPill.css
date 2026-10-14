@@ -12,7 +12,7 @@
   padding: 0 10px 0 8px;
   border-radius: 999px;
   border: 1px solid transparent;
-  background: transparent;
+  background: var(--bg-elev);
   color: var(--text-dim);
   font-family: inherit;
   font-size: 12px;
@@ -218,7 +218,7 @@
 }
 /* low balance: the "+" asks for attention */
 .tb-cp-add.low {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: transparent;
   color: var(--on-accent);
 }
@@ -241,7 +241,7 @@
 }
 .tb-cp-add.sim.low {
   border: 1px solid transparent;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 :root[data-theme='light'] .tb-cp-add.sim:not(.low) {
@@ -274,4 +274,8 @@
   .tb-cp-spin {
     animation: none;
   }
+}
+
+.tb-cp.real .tb-cp-src {
+  color: var(--provider-canvasapp);
 }

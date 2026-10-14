@@ -1,20 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <title>SanoVids</title>
-  <!-- Pixel-hinted cut for 16, 32, 40, 48 and 64 px (32-unit grid).
-       Stroke 4 = 2 px at 16. Strokes y 4-8 / 24-28, bowl sides x 8-12 / 20-24, dots 8 units wide on even centres:
-       every straight edge lands on a whole pixel at 16, 32, 40 (x1.25), 48 (x1.5) and 64.
-       Output disc (24,6) r4 is cut off the wire by a 2-unit plug gap (one clean pixel column at 16);
-       both dots keep at least 1.5 units of plate to the rounded corners. No play cut-out at these sizes. -->
-  <defs>
-    <linearGradient id="sv-plate-32" x1="0" y1="0" x2="0" y2="32" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffb340"/>
-      <stop offset="1" stop-color="#ff9f0a"/>
-    </linearGradient>
-  </defs>
-  <rect width="32" height="32" rx="7" fill="url(#sv-plate-32)"/>
-  <g fill="#1d1206">
-    <path d="M18 6H16A6 4.4 0 0 0 12.29 13.86L19.71 18.14A6 4.4 0 0 1 16 26H8" fill="none" stroke="#1d1206" stroke-width="4"/>
-    <circle cx="24" cy="6" r="4"/>
-    <circle cx="8" cy="26" r="4"/>
-  </g>
+  <defs><linearGradient id="sv-plate" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/></linearGradient><mask id="sv-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M370 181H228C173 181 173 251 228 251H269C325 251 325 323 269 323H93" fill="none" stroke="black" stroke-width="30" stroke-linecap="round"/></mask></defs>
+  <rect width="32" height="32" rx="7.04" fill="url(#sv-plate)"/>
+  <g fill="#FFFFFF" transform="scale(0.0625)"><path d="M119 107Q119 62 165 86L423 226Q469 252 423 281L165 427Q119 454 119 400Z" mask="url(#sv-cut)"/><circle cx="94" cy="323" r="25"/></g>
 </svg>
