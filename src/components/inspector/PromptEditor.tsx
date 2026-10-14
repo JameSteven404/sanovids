@@ -12,6 +12,7 @@
 // - Retired @video text (older projects) is struck through in red — exactly where core/compile retiredVideoTokens
 //   finds what blocks the run — and offered explicit, undoable quick fixes (RetiredFix, src/videoRetired.ts).
 import { AtSign, Ban, CircleAlert, Image as ImageIcon, Link2, Maximize2, Minimize2, WandSparkles } from 'lucide-react'
+import { isTypingChord } from '../../lib/keymapPrefs'
 import {
   memo,
   useCallback,
@@ -572,7 +573,7 @@ export function PromptEditor({ sceneId }: { sceneId: string }) {
       return
     }
     // Global shortcuts (Ctrl+Enter run, Ctrl+S save…) must see the latest text.
-    if (e.ctrlKey || e.metaKey) commit()
+    if (isTypingChord(e.nativeEvent)) commit()
   }
 
   // ---------- highlight + derived ----------

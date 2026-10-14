@@ -32,7 +32,8 @@ let listeners: Listener[] = []
 function press(key: string, init: Partial<KeyboardEvent> = {}): void {
   const e = {
     key,
-    code: key,
+    // the keymap reads the physical key (core/keyChord chordFromEvent)
+    code: /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : key === ' ' ? 'Space' : key,
     altKey: false,
     shiftKey: false,
     ctrlKey: false,

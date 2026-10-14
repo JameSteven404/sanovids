@@ -971,7 +971,8 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       canvasEvents.addEventListener(type, handler)
       return () => canvasEvents.removeEventListener(type, handler)
     }
-    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
+    const zoom = (e: Event) => { const { dir, repeat } = (e as CustomEvent<{ dir: number; repeat: boolean }>).detail; void (dir > 0 ? rf.zoomIn : rf.zoomOut)({ duration: repeat ? 0 : 120 }) }; canvasEvents.addEventListener('zoom', zoom)
+    const offs = [() => canvasEvents.removeEventListener('zoom', zoom), listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
     return () => offs.forEach((off) => off())
   }, [rf, rfStore, stageSize])
 

@@ -4,7 +4,7 @@
 // what a key means and only add what is theirs (Tab inside a fullscreen bar, a focused slider, Esc closing a dialog).
 // The canvas column is the contract for the canvas listener (J / K / L, ↑ / ↓ / Home / End; Space there is a tap,
 // core/spaceTap — not this table). Pure, no DOM: unit-tested in core/__tests__/transportKeys.test.ts.
-import { chordFromEvent, type KeyEventLike } from './keymap'
+import { chordFromEvent, type KeyEventLike } from './keyChord'
 
 export type Player = 'viewer' | 'node-full' | 'film' | 'canvas'
 
@@ -84,7 +84,7 @@ export interface TransportCtx {
  * What a key does in a player: an operation, or null when it is not a transport key there (the player's own rules
  * decide: a node's fullscreen player swallows it, the viewer lets it through, "Phát liền" swallows it). Exact
  * modifiers (Shift+J is not J); a key an input method is composing, a dead key or a Meta (Windows) / Control (Mac)
- * combination is never one (core/keymap chordFromEvent).
+ * combination is never one (core/keyChord chordFromEvent).
  */
 export function transportKey(e: KeyEventLike, ctx: TransportCtx): TransportOp | null {
   const chord = chordFromEvent(e, ctx.mac)

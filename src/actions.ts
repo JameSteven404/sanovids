@@ -31,6 +31,7 @@ import {
 } from './lib/downloads'
 import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
+import { shortcutLabel } from './lib/keymapPrefs'
 import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type AddRefsResult, type Box, type PlaceHint } from './store/project'
 import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
@@ -215,7 +216,7 @@ export function connectSelection() {
   const scenes = selectedSceneIds()
   const assets = selectedAssetIds()
   if (!scenes.length || !assets.length) {
-    toast('Chọn ít nhất 1 nhân vật/bối cảnh và 1 cảnh, rồi bấm C.', { tone: 'warning' })
+    toast(`Chọn ít nhất 1 nhân vật/bối cảnh và 1 cảnh, rồi bấm ${shortcutLabel('selection.connect') || 'Nối'}.`, { tone: 'warning' })
     return
   }
   linkAssets(scenes, assets)
@@ -983,7 +984,13 @@ export function chosenTakeIds(): string[] {
 
 /** Zip of the chosen take of every scene (S01_T2 - title.webm …) + prompts.txt (pref zipPrompts). */
 export async function downloadChosenTakesZip() {
-  const ids = chosenTakeIds()
+  return downloadTakesZip(chosenTakeIds())
+}
+
+/** Explicit take selection; uses the same save flow as the project ZIP. */
+export async function downloadTakesZip(takeIds: readonly string[]) {
+  const ready = new Map(useRuns.getState().takes.filter((t) => t.status === 'completed').map((t) => [t.id, t]))
+  const ids = [...new Set(takeIds)].filter((id) => ready.has(id))
   if (!ids.length) {
     toast('Chưa có video nào tạo xong.', { tone: 'warning' })
     return
@@ -1001,7 +1008,7 @@ export async function downloadChosenTakesZip() {
   // Two takes renamed alike must not overwrite each other inside the zip.
   const used = new Set<string>(['prompts.txt'])
   for (const id of ids) {
-    const take = useRuns.getState().takes.find((t) => t.id === id)!
+    const take = ready.get(id)!
     const base = takeFileBase(id)
     for (const f of await takeFiles(take, base, false)) zip.file(uniqueInSet(f.name, used), f.data)
     prompts.push(`=== ${base} ===\n${take.promptSnapshot}`)

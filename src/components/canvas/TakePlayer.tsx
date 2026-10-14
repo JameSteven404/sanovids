@@ -32,6 +32,8 @@ import {
 } from 'react'
 import { takeFileBase } from '../../actions'
 import { frameDelta, lastFrameTime, nodeFullKey, VOLUME_KEY_STEP, type TransportOp } from '../../core/transportKeys'
+import { useKeymap } from '../../lib/keymapPrefs'
+import { starSelection } from '../../keyCommands'
 import { describeFocus, useTransport } from '../../hooks/useTransport'
 import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { knownLength, playWithSound, resumePoint, savedPosition, saveLength, savePosition, toggleSound, usePlayback } from '../../lib/playback'
@@ -573,7 +575,7 @@ function TakePlayerView({ takeId, url, videoRef, stageRef, code, onFullChange }:
     const stage = stageRef.current
     const active = document.activeElement
     const inside = !!stage && active instanceof HTMLElement && stage.contains(active)
-    const d = nodeFullKey(eventLike(native), inside ? describeFocus(active) : 'none', { mac: IS_MAC })
+    const d = nodeFullKey(eventLike(native), inside ? describeFocus(active) : 'none', { mac: IS_MAC, starChords: useKeymap.getState().resolved.byAction['take.star'] })
     if (d.kind === 'tab') {
       if (stage) trapTabWithin(stage, native)
       return
@@ -616,7 +618,7 @@ function TakePlayerView({ takeId, url, videoRef, stageRef, code, onFullChange }:
       case 'exit':
         return exitFull()
       case 'star':
-        return useRuns.getState().toggleStar(takeId)
+        return starSelection(takeId)
       default: {
         const n = frameDelta(op)
         if (n) {

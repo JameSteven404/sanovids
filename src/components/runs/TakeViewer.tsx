@@ -33,6 +33,8 @@ import {
 } from '../../actions'
 import { compileScene, imageKey, imageSlotsFor, sceneCode } from '../../core/compile'
 import { escapeDecision, frameDelta, playerKey, type TransportOp } from '../../core/transportKeys'
+import { useKeymap } from '../../lib/keymapPrefs'
+import { starSelection } from '../../keyCommands'
 import { describeFocus, useTransport } from '../../hooks/useTransport'
 import { eventLike, IS_MAC } from '../../lib/keyEvents'
 import { MODELS, settingsLabel } from '../../core/models'
@@ -271,7 +273,7 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
       return
     }
     const focus = describeFocus(e.target instanceof Element ? e.target : null, { keyboard: tabbed.current })
-    const op = playerKey(eventLike(e), focus, { player: 'viewer', mac: IS_MAC })
+    const op = playerKey(eventLike(e), focus, { player: 'viewer', mac: IS_MAC, starChords: useKeymap.getState().resolved.byAction['take.star'], downloadChords: useKeymap.getState().resolved.byAction['take.download'] })
     if (!op || op === 'exit') return
     e.preventDefault()
     e.stopPropagation()
@@ -307,7 +309,7 @@ function TakeViewerInner({ take, onClose }: { take: Take; onClose: () => void })
         else if (v && document.fullscreenEnabled) void v.requestFullscreen().catch(() => undefined)
         return
       case 'star':
-        if (take.status === 'completed' || take.starred) toggleChosenTake(take.id)
+        if (take.status === 'completed' || take.starred) starSelection(take.id)
         return
       case 'download':
         void downloadTake(take.id)

@@ -9,7 +9,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return isTextEntry(el) || el?.tagName?.toUpperCase() === 'SELECT' || el?.tagName?.toUpperCase() === 'VIDEO'
 }
 
-type EventSource = Partial<KeyEventLike> & { nativeEvent?: Partial<KeyEventLike>; getModifierState?: (key: string) => boolean }
+type EventSource = Partial<KeyEventLike> & { nativeEvent?: Partial<KeyEventLike>; getModifierState?: (key: 'AltGraph') => boolean }
 
 /** React's composition flags live on nativeEvent. */
 export function isImeKey(e: EventSource): boolean {

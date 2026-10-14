@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { canvasEvents, connectSelection, nextScene, requestRun, selectedSceneIds, pickAssetSelection } from '../../actions'
 import type { EdgeMode, Project, XY } from '../../core/types'
 import { createFolderNode } from '../../folderActions'
+import { useShortcutLabel } from '../../lib/keymapPrefs'
 import { undoToastAction, useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI, type TakeDisplay } from '../../store/ui'
@@ -134,6 +135,7 @@ export function CanvasToolbar({ density = 'full', big = false }: { density?: Too
   const edgeMode = useUI((s) => s.edgeMode)
   const minimapHidden = useUI((s) => !!s.minimapAutoHiddenFor && !s.minimapShownFor.includes(s.minimapAutoHiddenFor))
   const showMinimap = useUI((s) => s.showMinimap) && !minimapHidden
+  const minimapKey = useShortcutLabel('canvas.minimap')
   const takeDisplay = useUI((s) => s.takeDisplay)
   const sceneCount = useUI((s) => countScenes(s.selectedIds))
   const ui = useUI.getState()
@@ -268,7 +270,7 @@ export function CanvasToolbar({ density = 'full', big = false }: { density?: Too
       <button
         className={`cv-tb-icon ${showMinimap ? 'on' : ''}`}
         onClick={() => ui.toggleMinimap()}
-        title={minimapHidden ? 'Bản đồ thu nhỏ đang tạm ẩn vì dự án lớn — bấm để hiện (M)' : 'Bản đồ thu nhỏ (M)'}
+        title={`${minimapHidden ? 'Bản đồ thu nhỏ đang tạm ẩn vì dự án lớn — bấm để hiện' : 'Bản đồ thu nhỏ'}${minimapKey ? ` (${minimapKey})` : ''}`}
         aria-label="Bản đồ thu nhỏ"
         aria-pressed={showMinimap}
       >

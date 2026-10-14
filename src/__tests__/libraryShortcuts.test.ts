@@ -372,8 +372,10 @@ describe('wiring (source guards)', () => {
     const onKey = code.slice(code.indexOf('const onKey'))
     const lib = onKey.indexOf('if (handleLibraryKey(e')
     expect(lib).toBeGreaterThan(0)
-    expect(lib).toBeGreaterThan(onKey.indexOf('if (typing || dialogOpen) return'))
-    const canvasRules = ["key === 'a'", 'deleteKeyAction(key', 'decideShortcut(e'].map((s) => onKey.indexOf(s)).filter((i) => i >= 0)
+    const guard = onKey.indexOf('if (typing || dialogOpen) {')
+    expect(guard).toBeGreaterThan(0)
+    expect(lib).toBeGreaterThan(guard)
+    const canvasRules = ["key === 'a'", 'deleteKeyAction(key', 'dispatch(e, false)'].map((s) => onKey.indexOf(s)).filter((i) => i >= 0)
     expect(canvasRules.length).toBeGreaterThan(0)
     for (const at of canvasRules) expect(lib).toBeLessThan(at)
     // any key cancels a waiting library ⌫ / Backspace, before the first early return
@@ -409,19 +411,17 @@ describe('wiring (source guards)', () => {
   it('the dispatcher marks canvas commands (N, Ctrl+D, canvas Ctrl+A, Alt+Up/Down) right before running them', () => {
     const code = src('hooks/useShortcuts.ts')
     const onKey = code.slice(code.indexOf('const onKey'))
-    for (const call of ['duplicateSelection()', 'ui.select(useProject', 'moveSelectedScene(step)', 'nextScene()']) {
-      const at = onKey.indexOf(call)
-      expect(at, call).toBeGreaterThan(0)
-      expect(onKey.slice(Math.max(0, at - 40), at), call).toContain('noteCanvasCommand()')
-    }
+    expect(onKey.indexOf('noteCanvasCommand(); moveSelectedScene(step)')).toBeGreaterThan(0)
+    const commands = src('keyCommands.ts')
+    expect(commands).toContain('noteCanvasCommand(); run()')
+    expect(commands).toContain("'scene.next': canvasCommand(actions.nextScene)")
+    expect(commands).toContain("'selection.duplicate': canvasCommand(actions.duplicateSelection)")
+    expect(commands).toContain("'selection.selectAll': canvasCommand(")
   })
   it('the shortcuts help has a library group with its Delete and Ctrl+A', () => {
     const dlg = src('components/dialogs/ShortcutsDialog.tsx')
-    const at = dlg.indexOf("title: 'Thư viện'")
-    expect(at).toBeGreaterThan(0)
-    const group = dlg.slice(at, dlg.indexOf("title: 'Canvas'"))
-    expect(group).toContain("IS_MAC ? 'Delete / ⌫' : 'Delete'")
-    expect(group).toContain("['Ctrl+A', 'Sau khi bấm vào Thư viện: chọn mọi thẻ đang thấy']")
+    expect(dlg).toContain("resolved.allLabels['selection.delete']")
+    expect(dlg).toContain("resolved.allLabels['selection.selectAll']")
   })
   it('a library delete never deletes media blobs', () => {
     expect(src('libraryActions.ts')).not.toMatch(/deleteMedia|imageStore/)

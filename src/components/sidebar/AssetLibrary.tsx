@@ -470,6 +470,7 @@ export function AssetLibrary({
   }, [assets.length, kind, setKind])
   const [fileOver, setFileOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  useEffect(() => { const add = () => fileInput.current?.click(); window.addEventListener('bdp:add-images', add); return () => window.removeEventListener('bdp:add-images', add) }, [])
   const anchor = useRef<string | null>(null)
   const [cols, gridRef] = useColumnCount()
 

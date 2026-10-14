@@ -38,8 +38,6 @@ import {
   hasAssetDrag,
   hasFileDrag,
   imageFiles,
-  inlineEditKeyBubbles,
-  inlineEditSavesDraft,
   LOD_ZOOM,
   readAssetIds,
   sceneMapOf,
@@ -50,6 +48,7 @@ import {
   type TakeSummary,
 } from './canvasModel'
 import { cutEdge } from './edges'
+import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft } from '../../lib/keymapPrefs'
 import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
