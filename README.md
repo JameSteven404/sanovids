@@ -66,7 +66,7 @@
 - **Bảng cảnh**: xem dạng bảng, sắp xếp thứ tự, sửa hàng loạt.
 - **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, **kéo-thả để sắp xếp lại** (hoặc Alt + mũi tên), nút **Phát liền**.
 - **Cài đặt** chia **Cơ bản / Nâng cao**, có ô tìm kiếm, sao lưu / khôi phục cài đặt. **Cài đặt → Giới thiệu**: phiên bản, tác giả, bản quyền và trạng thái chữ ký số của app.
-- Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh) để sao lưu hoặc chuyển máy.
+- Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh, **không kèm video đã tạo** — tải video cần giữ riêng) để sao lưu hoặc chuyển máy.
 - Giao diện kiểu Apple, chế độ **Sáng / Tối / Theo hệ thống**.
 
 ---

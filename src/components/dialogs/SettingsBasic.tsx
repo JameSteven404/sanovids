@@ -762,7 +762,7 @@ export function DataBlock() {
   const icon = (kind: DataJob, idle: ReactNode) => (busy === kind ? <LoaderCircle size={14} className="dg-spin" /> : idle)
 
   return (
-    <Section title="Dữ liệu dự án" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác.">
+    <Section title="Dữ liệu dự án" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác — file chứa cảnh, prompt và ảnh, không chứa video đã tạo.">
       <div className="dg-data-actions" aria-busy={!!busy}>
         <button className="btn" disabled={!!busy} onClick={() => void run('export', exportProjectFile, 'Đã xuất dự án (.sanovids.json).')}>
           {icon('export', <Download size={14} />)} {busy === 'export' ? 'Đang xuất…' : 'Xuất dự án'}

@@ -225,7 +225,7 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Dữ liệu dự án',
-    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác; nhập file .sanovids.json; tạo lại dự án mẫu.',
+    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác (không kèm video đã tạo); nhập file .sanovids.json; tạo lại dự án mẫu.',
     keywords: 'xuất nhập dự án sao lưu json mẫu demo backup',
     Block: DataBlock,
   },
