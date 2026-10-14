@@ -8,12 +8,13 @@
 // node built-ins only (the .icns is committed, so electron-builder never downloads an icon converter on the Mac).
 //
 // Sources (build/icon-source/):
-//   icon-master.svg       512 master: 96 px and up, web icons, installer art. Plate inset 16, play cut-out in the disc.
-//   icon-small.svg        32-unit pixel-hinted cut: 16, 32, 40, 48, 64 px (and the 64 px icon in the installer).
-//   icon-24.svg           24 px cut (taskbar at 100 %, in-app top-bar logo).
-//   icon-20.svg           20 px cut (title bar / small icons at 125 %).
-//   favicon.svg           browser tab icon, copied as is.
-//   logo-mark.svg         glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
+//   icon-master.svg       D 512 master: white play triangle with an S cutout + source dot on a vertical Sano red plate.
+//                         Plate inset 16, width 480, rx 108; used at 96 px and up, for web icons and installer art.
+//   icon-small.svg        Same 512-unit glyph scaled to 32 units: 16, 32, 40, 48, 64 px (also installer icon).
+//   icon-24.svg           Same glyph scaled to 24 units (taskbar at 100 %, in-app top-bar logo).
+//   icon-20.svg           Same glyph scaled to 20 units (title bar / small icons at 125 %).
+//   favicon.svg           Separate red play / white S on a dark tile, copied as is for browser tabs.
+//   logo-mark.svg         512-unit glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
 //   installer-sidebar.svg NSIS welcome / finish sidebar 164x314 (href="icon:N" = the N px app icon).
 //   installer-header.svg  NSIS header 150x57.
 //   uninstaller-sidebar.svg (optional) else the installer sidebar is reused.
@@ -27,8 +28,9 @@
 //   build/installerHeader.bmp     150x57, 24-bit
 //   build/icon.icns               macOS app icon (package.json build.mac.icon): PNG entries 16…1024 on Apple's macOS 11+
 //                                 grid (824 px plate at 100,100 on a 1024 canvas, soft shadow below)
-//   build/dmg-background.png      540x380 (+ @2x 1080x760, dmg-builder joins them into a HiDPI tiff): light background
-//                                 with an arrow from the app to Applications, no text (Finder draws the labels)
+//   build/dmg-background.png      540x380 (+ @2x 1080x760, dmg-builder joins them into a HiDPI tiff): neutral charcoal
+//                                 with a Sano red arrow from the app to Applications, no text (Finder draws the labels,
+//                                 black or white by appearance, on mid-grey plates readable either way)
 //   public/favicon.svg
 //   public/icons/icon.ico         same as build/icon.ico (BrowserWindow icon on Windows, ships inside dist/)
 //   public/icons/icon-192.png, icon-512.png      rounded plate, transparent corners (PWA purpose "any")
@@ -202,8 +204,8 @@ const innerSvg = (svg) => svg.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg
 
 /**
  * The macOS app icon at `size` px, on Apple's macOS 11+ grid (1024 canvas): the plate is 824 wide at (100, 100) with a
- * soft shadow below it. The master's plate (inset 16, rx 108 / 480 = 22.5 %) already has Apple's corner ratio
- * (185 / 824), so it is only re-framed; 64 px and below use the 32-unit cut.
+ * soft shadow below it. D keeps the master's plate geometry (inset 16, rx 108 / 480 = 22.5 %) and paints it Sano red
+ * top to bottom, with a white play/S glyph. It is only re-framed; 64 px and below use the same glyph on the 32-unit plate.
  */
 function macIconSvg(size) {
   const small = size <= 64
@@ -263,13 +265,21 @@ function readIcns(buf) {
   return out
 }
 
-/** DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190). */
+/**
+ * DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190).
+ * Finder draws the icon labels itself, black under the macOS Light appearance and white under Dark (a DMG cannot set
+ * their colour), so each label row (y 240-274, below the 96 pt icon) sits on a mid-grey plate #757579 that keeps
+ * about 4.6:1 contrast with both; on the bare charcoal a black label would vanish.
+ * scripts/__tests__/designDocs.test.mjs checks the committed PNGs.
+ */
 function dmgBackgroundSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
-<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbf7f1"/><stop offset="1" stop-color="#f1e9de"/></linearGradient></defs>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F1F22"/><stop offset="1" stop-color="#161618"/></linearGradient></defs>
 <rect width="540" height="380" fill="url(#bg)"/>
-<path d="M212 190 H318" stroke="#ff9f0a" stroke-width="6" stroke-linecap="round" fill="none"/>
-<path d="M306 174 L328 190 L306 206" stroke="#ff9f0a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<rect x="80" y="240" width="120" height="34" rx="12" fill="#757579"/>
+<rect x="340" y="240" width="120" height="34" rx="12" fill="#757579"/>
+<path d="M212 190 H318" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" fill="none"/>
+<path d="M306 174 L328 190 L306 206" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>`
 }
 
@@ -331,7 +341,7 @@ write('build/dmg-background@2x.png', rasterize(dmgBackgroundSvg(), 1080).png)
 write('public/favicon.svg', source('favicon.svg'))
 write('public/icons/icon-192.png', iconPng(192))
 write('public/icons/icon-512.png', iconPng(512))
-// maskable: the farthest ink point of the master glyph is 243 from the centre; x0.8 = 194 < 204.8 (the 80 % circle)
+// D maskable: glyph control points + source dot fit within radius 241; x0.8 < 193 < 204.8 (the 80 % safe circle).
 write('public/icons/maskable-512.png', rasterize(fullBleed(0.8), 512).png)
 write('public/icons/apple-touch-icon-180.png', rasterize(fullBleed(0.92), 180).png)
 
