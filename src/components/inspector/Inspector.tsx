@@ -2,6 +2,7 @@
 // 1 scene → SceneInspector · ≥2 scenes → MultiSceneInspector · else 1 asset (canvas or library) → AssetInspector
 // · several assets → short summary · take (video) nodes → TakeSummary · nothing → tips.
 // Library cards vs canvas nodes: the selection the user changed last wins (see selection.ts).
+import { shortcutText } from '../../lib/platformText'
 import { Bug, Cloud, Eye, FileText, Film, Keyboard, Link2, MousePointerClick, Plus, Sparkles } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { newScene } from '../../actions'
@@ -112,11 +113,11 @@ function TakeSummary({ takeIds }: { takeIds: string[] }) {
 const SHORTCUTS: [string, string][] = [
   ['N', 'Cảnh mới / cảnh tiếp theo'],
   ['C', 'Nối mục đang chọn vào cảnh'],
-  ['Ctrl+Enter', 'Chạy cảnh đang chọn'],
+  [shortcutText('Ctrl+Enter'), 'Chạy cảnh đang chọn'],
   ['F', 'Vừa màn hình'],
   ['E', 'Đổi chế độ hiện dây nối'],
   ['Del', 'Xoá / cắt dây nối'],
-  ['Ctrl+Z', 'Hoàn tác'],
+  [shortcutText('Ctrl+Z'), 'Hoàn tác'],
 ]
 
 function EmptyInspector() {

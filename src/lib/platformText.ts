@@ -48,6 +48,12 @@ export interface PlatformTexts {
   clockSync: string
   /** The desktop app (the same on both: there is one app). */
   desktopApp: string
+  /** Cài đặt → Ứng dụng: the desktop build of this platform (title of the AppBlock row). */
+  installTitle: string
+  /** …and how to install it. */
+  installHint: string
+  /** The delete-key note of the shortcuts dialog (ShortcutsDialog). */
+  deleteHint: string
 }
 
 export const PLATFORM_TEXTS: Readonly<Record<Platform, Readonly<PlatformTexts>>> = Object.freeze({
@@ -70,6 +76,9 @@ export const PLATFORM_TEXTS: Readonly<Record<Platform, Readonly<PlatformTexts>>>
     systemSettings: 'Cài đặt Windows',
     clockSync: 'Cài đặt Windows → Thời gian & ngôn ngữ → Đồng bộ ngay',
     desktopApp: 'bản desktop SanoVids',
+    installTitle: 'Bản cài Windows (.exe)',
+    installHint: 'Tải bản Setup ở trang tải về chính thức rồi mở để cài. Bản Portable chạy không cần cài.',
+    deleteHint: 'Chỉ phím Delete xoá: Backspace không xoá trên Windows vì bộ gõ tiếng Việt (Unikey, EVKey, OpenKey…) gửi Backspace khi bỏ dấu, kể cả khi không gõ trong ô nhập.',
   }),
   mac: Object.freeze({
     os: 'macOS',
@@ -90,6 +99,9 @@ export const PLATFORM_TEXTS: Readonly<Record<Platform, Readonly<PlatformTexts>>>
     systemSettings: 'Cài đặt hệ thống',
     clockSync: 'Cài đặt hệ thống → Chung → Ngày & Giờ',
     desktopApp: 'bản desktop SanoVids',
+    installTitle: 'Bản cho Mac (thử nghiệm) · Apple Silicon',
+    installHint: 'Tải file .dmg ở trang tải về chính thức, mở ra rồi kéo SanoVids vào Applications. Đẩy ổ ra (Eject) và mở lại từ Applications. Bản này chưa có chữ ký của Apple.',
+    deleteHint: 'Trên Mac: dùng ⌘ cho phím tắt; ⌫ (hoặc fn+⌫) để xoá — nếu ngay sau ⌫ có phím khác (bộ gõ tiếng Việt vừa bỏ dấu), không xoá gì.',
   }),
 })
 
@@ -100,3 +112,11 @@ export function textsFor(platform: Platform): Readonly<PlatformTexts> {
 
 /** The phrases of this device. */
 export const platformText: Readonly<PlatformTexts> = textsFor(PLATFORM)
+
+/** Display-only hints; never changes the key binding. */
+export function shortcutText(text: string, platform: Platform = PLATFORM): string {
+  return text.replace(/\bCtrl\b/g, textsFor(platform).mod)
+}
+
+export const MAC_EXPERIMENTAL = 'thử nghiệm'
+export const MAC_AD_HOC_NOTE = 'Chữ ký ad-hoc chỉ dùng để chạy ứng dụng, không xác minh tác giả và không phải chữ ký Apple Developer.'

@@ -1277,6 +1277,13 @@
   color: var(--text-dim);
   font-size: 11px;
 }
+/* Mac: what an ad-hoc signature does and does not prove (lib/platformText MAC_AD_HOC_NOTE). */
+.dg-about-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
 .dg-about-download {
   display: flex;
   flex-wrap: wrap;

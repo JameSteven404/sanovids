@@ -1,5 +1,6 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
+import { platformText, shortcutText } from '../../lib/platformText'
 import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, Download, Film, FlaskConical, GripVertical, Info, Maximize2, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -175,7 +176,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
           <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title="Tạo cảnh tiếp theo bên dưới (N) — giữ ảnh tham chiếu và cấu hình">
             <ArrowRight size={14} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title="Nhân bản cảnh (Ctrl+D)">
+          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title={shortcutText('Nhân bản cảnh (Ctrl+D)')}>
             <CopyPlus size={14} />
           </button>
           <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title="Xoá cảnh (Delete)">
@@ -186,7 +187,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
             className="btn btn-primary btn-sm in-head-run"
             onClick={() => requestRun([sceneId])}
             disabled={!!reason}
-            title={reason ? `Chưa chạy được: ${reason}` : 'Chạy cảnh này (Ctrl+Enter)'}
+            title={reason ? `Chưa chạy được: ${reason}` : `Chạy cảnh này (${platformText.mod}+Enter)`}
           >
             <Play size={12} fill="currentColor" /> Chạy
           </button>

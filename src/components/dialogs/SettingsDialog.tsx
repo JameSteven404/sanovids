@@ -5,6 +5,7 @@
 // the reset to defaults and the export / import of a settings file). Rows: SettingsBasic.tsx / SettingsAdvanced.tsx.
 // Deep link: `{ kind: 'settings', section: <group id> }` (actions.openSettings(section)) opens on that group's level and
 // scrolls the group into view (its <Section> carries data-set-anchor, settingsUi.tsx).
+import { platformText } from '../../lib/platformText'
 import { Search, X } from 'lucide-react'
 import { KEY_ACTIONS, type ActionId } from '../../core/keymap'
 import { isImeKey } from '../../lib/keyEvents'
@@ -143,7 +144,7 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 0,
     title: 'Cập nhật',
-    desc: 'Bản cài (Setup) tự tìm và tải bản mới, rồi cài khi bạn khởi động lại hoặc tắt app. Dự án và cài đặt giữ nguyên.',
+    desc: 'Bản cài Windows (Setup) tự tải và cài bản mới; bản Portable và bản cho Mac chỉ báo có bản mới. Dự án và cài đặt giữ nguyên.',
     keywords: 'update cập nhật nâng cấp phiên bản version bản mới tự động tải về khởi động lại github',
     Intro: UpdateStatusIntro,
     rows: [
@@ -162,9 +163,9 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 0,
     title: 'Ứng dụng',
-    desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.',
+    desc: 'Bản app desktop cho Windows và macOS, hoặc cài thành app trên trình duyệt.',
     // Also the Portable / temp-copy reminder (no Desktop / Start icon, no auto-update): lib/aboutModel placementNote.
-    keywords: `cài app desktop exe windows pwa ${PLACEMENT_KEYWORDS}`,
+    keywords: `cài app desktop exe windows pwa mac macos dmg applications finder thử nghiệm ${PLACEMENT_KEYWORDS}`,
     Block: AppBlock,
   },
   {
@@ -196,7 +197,7 @@ const GROUPS: Group[] = [
       {
         id: 'clickToCut',
         label: 'Bấm vào dây để cắt',
-        hint: `Một cú bấm vào dây tham chiếu, khung hình hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
+        hint: `Một cú bấm vào dây tham chiếu, khung hình hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. ${platformText.modShiftClick} để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
         keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire',
         C: ClickToCutSetting,
       },
@@ -451,7 +452,7 @@ export function SettingsDialog({ section }: { section?: string } = {}) {
                 options={SETTINGS_LEVELS.map((l) => ({ id: l, label: SETTINGS_LEVEL_LABEL[l], hint: LEVEL_HINT[l] }))}
               />
             </div>
-            <label className="dg-search dg-set-search" title="Tìm cài đặt (Ctrl+F)">
+            <label className="dg-search dg-set-search" title={`Tìm cài đặt (${platformText.mod}+F)`}>
               <Search size={14} aria-hidden />
               <input
                 ref={searchRef}

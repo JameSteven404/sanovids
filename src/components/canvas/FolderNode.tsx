@@ -2,6 +2,7 @@
 // Wires into it: take → folder ('save': that video now, or when it finishes) and scene → folder ('autosave': every
 // new video of the scene). Drag from its dot to a video or a scene, from a video's purple dot / a scene's right dot to
 // it, or drop videos from the library on it. Memoized; reads its folder and runtime state (lib/saveFolders) itself.
+import { platformText } from '../../lib/platformText'
 import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
@@ -225,7 +226,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
               <button
                 className="cv-folder-btn"
                 disabled={rt.access !== 'ok'}
-                title={path ? `Mở ${path} trong File Explorer` : 'Chưa chọn thư mục'}
+                title={path ? `Mở ${path} trong ${platformText.fileManager}` : 'Chưa chọn thư mục'}
                 onClick={(e) => {
                   e.stopPropagation()
                   void openFolderNode(id)

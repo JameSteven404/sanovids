@@ -1,5 +1,6 @@
 // Settings → "Nâng cao": motion & toasts, file names & .zip, side-panel layout, backup / restore of the settings,
 // the development mode summary (the canvasapp gateway is GatewaySection.tsx).
+import { platformText } from '../../lib/platformText'
 import { Braces, Bug, FileDown, FileUp, LayoutPanelLeft, RotateCcw, ScrollText, TriangleAlert, Zap } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FocusEvent } from 'react'
 import { DEFAULT_NAME_TEMPLATE, checkNameTemplate, nameDate, nameTime, NAME_TOKENS, renderNameTemplate, type NameValues } from '../../core/nameTemplate'
@@ -268,10 +269,10 @@ export function BackupSetting({ label, hint }: RowProps) {
         const res = await saveFilesAs([file], { title: 'Lưu file cài đặt' })
         if (res.to === 'canceled') return
         if (res.to === 'chosen') toast(`Đã xuất cài đặt${res.path ? ` → ${res.path}` : ` → “${res.names[0]}”`}.`, { tone: 'success', ms: 5000 })
-        else toast(`Đã tải “${SETTINGS_FILE_NAME}” về thư mục Tải xuống.`, { tone: 'success' })
+        else toast(`Đã tải “${SETTINGS_FILE_NAME}” về ${platformText.downloads}.`, { tone: 'success' })
       } else {
         browserDownload(file)
-        toast(`Đã tải “${SETTINGS_FILE_NAME}” về thư mục Tải xuống.`, { tone: 'success' })
+        toast(`Đã tải “${SETTINGS_FILE_NAME}” về ${platformText.downloads}.`, { tone: 'success' })
       }
     } catch (e) {
       toast(`Không xuất được cài đặt: ${errorText(e)}`, { tone: 'error' })

@@ -12,6 +12,7 @@
 // - other tabs are told about saves (BroadcastChannel) and reload a project they have no unsaved changes to.
 import { createStore, get, set, update } from 'idb-keyval'
 import { create } from 'zustand'
+import { cleanFileBase } from '../core/fileNames'
 import { foldersForCopy } from '../core/folders'
 import { newId } from '../core/ids'
 import { dropLegacyVideoRefs, migrateProject } from '../core/migrate'
@@ -852,7 +853,8 @@ export async function exportProjectFile(): Promise<void> {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${project.name.replace(/[<>:"/\\|?*]/g, '-')}.sanovids.json`
+  // Same cleaning as video names (core/fileNames): Windows device names, trailing dots, the UTF-8 / NFD byte caps.
+  a.download = `${cleanFileBase(project.name) || 'Dự án'}.sanovids.json`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }

@@ -1,5 +1,6 @@
 // High-level commands shared by toolbar buttons, keyboard shortcuts, context menus and panels.
 // Keep UI components thin: they call these, these call the stores.
+import { platformText } from './lib/platformText'
 import { compileScene, retiredTokenList, sceneCode, takeCode, tokenForAsset } from './core/compile'
 import { checkTakeDelete, keyboardDeletePlan, type TakeDeleteConfirm } from './core/deletePlan'
 import { TRASH_CONFIRM_MIN, trashBusyDeleteText, trashConfirmText } from './core/folderTrash'
@@ -13,7 +14,7 @@ import { activeProviderId, devAllowed, providerBlockedReason, providerOf } from 
 import { cancelQuestion, cancelToastText, type CancelFacts } from './components/runs/creditText'
 import { restoredFromTake } from './components/runs/restore'
 import { restoreBlock, restoreNotes, restorePlan } from './components/runs/importedTake'
-import { cleanTakeFileName, uniqueInSet } from './core/fileNames'
+import { cleanTakeFileName, safeFileName, uniqueInSet } from './core/fileNames'
 import type { FolderLinkKind } from './core/folders'
 import type { AssetKind, Project, Take, XY } from './core/types'
 import {
@@ -827,7 +828,8 @@ export async function downloadSceneZip(sceneId: string) {
   const url = URL.createObjectURL(out)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${sceneCode(scene.order)}${scene.title ? '_' + scene.title.replace(/[<>:"/\\|?*]/g, '-') : ''}.zip`
+  // The budgets of every saved name (core/fileNames: UTF-16, UTF-8 bytes, NFD units): a scene title has no length cap.
+  a.download = `${safeFileName(`${sceneCode(scene.order)}${scene.title ? '_' + scene.title : ''}`)}.zip`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
   const red = redNote(compiled.text)
@@ -947,12 +949,12 @@ function reportSavedAs(res: SaveAsResult, what: string) {
   if (res.to === 'canceled') return
   if (res.to === 'chosen') {
     const where = res.path ? ` → ${res.path}` : ` → “${res.names[0]}”`
-    const extra = res.names.length > 1 ? ` (kèm “${res.names.slice(1).join('”, “')}”${res.path ? ' cùng chỗ' : ' trong Tải xuống'})` : ''
+    const extra = res.names.length > 1 ? ` (kèm “${res.names.slice(1).join('”, “')}”${res.path ? ' cùng chỗ' : ` trong ${platformText.downloads}`})` : ''
     toast(`Đã lưu ${what}${where}${extra}.`, { tone: 'success', ms: 6000 })
     return
   }
   toast(
-    `Trình duyệt này không cho chọn nơi lưu nên đã tải ${what} về thư mục Tải xuống (Downloads). Dùng Chrome / Edge hoặc app SanoVids desktop để chọn nơi lưu và đặt tên.`,
+    `Trình duyệt này không cho chọn nơi lưu nên đã tải ${what} về ${platformText.downloads}. Dùng Chrome / Edge hoặc app SanoVids desktop để chọn nơi lưu và đặt tên.`,
     { tone: 'info', ms: 9000 },
   )
 }
@@ -995,7 +997,7 @@ export async function downloadTakesZip(takeIds: readonly string[]) {
     toast('Chưa có video nào tạo xong.', { tone: 'warning' })
     return
   }
-  const name = `${useProject.getState().project.name.replace(/[<>:"/\\|?*]/g, '-')} - video chọn.zip`
+  const name = `${safeFileName(`${useProject.getState().project.name} - video chọn`)}.zip`
   const askWhere = useDownloadPrefs.getState().askWhere
   // Ask now, while the click still counts as a user gesture (zipping takes a while): where to save the .zip, or
   // the permission for the chosen download folder.

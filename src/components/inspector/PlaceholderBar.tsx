@@ -5,6 +5,7 @@
 // not fit its slot ("@image_2(Lumi)" while 2 is Làng) offers "Giữ @image_2 = Làng", keeping the bracket text as plain
 // text (one space before the "(", first: nothing deleted) or deleting it. Every command is an explicit click
 // and ONE undo step (src/placeholderActions.ts); nothing is filled by itself.
+import { platformText, shortcutText } from '../../lib/platformText'
 import { ChevronDown, TriangleAlert } from 'lucide-react'
 import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
@@ -279,7 +280,7 @@ export const PlaceholderBar = memo(function PlaceholderBar({ sceneId, variant = 
         <PlaceholderChip key={g.key} sceneId={sceneId} group={g} choices={choices} prompt={prompt} refs={refs} assets={assets} />
       ))}
       {labelled > 1 && !node && (
-        <button type="button" className="in-hint-btn" onClick={() => allPlaceholdersToTextAction(sceneId)} title="Mọi chữ đỏ có tên thành chữ thường (Ctrl+Z để hoàn tác)">
+        <button type="button" className="in-hint-btn" onClick={() => allPlaceholdersToTextAction(sceneId)} title={shortcutText('Mọi chữ đỏ có tên thành chữ thường (Ctrl+Z để hoàn tác)')}>
           Đổi tất cả thành chữ
         </button>
       )}
@@ -412,7 +413,7 @@ export function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets,
               role="menuitem"
               className="in-picker-item"
               onClick={() => run(() => splitTokenAction(sceneId, group.key, `@image_${group.n}`))}
-              title="Chữ trong ngoặc được giữ và gửi như chữ thường: chỉ thêm một dấu cách trước “(” (Ctrl+Z để hoàn tác)"
+              title={shortcutText('Chữ trong ngoặc được giữ và gửi như chữ thường: chỉ thêm một dấu cách trước “(” (Ctrl+Z để hoàn tác)')}
             >
               <span className="in-picker-text">
                 <span className="in-picker-label">
@@ -421,7 +422,7 @@ export function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets,
                 <span className="in-picker-sub">thêm dấu cách trước “(”</span>
               </span>
             </button>
-            <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => keepTokenAction(sceneId, group.key, `@image_${group.n}`))} title="Ctrl+Z để hoàn tác">
+            <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => keepTokenAction(sceneId, group.key, `@image_${group.n}`))} title={shortcutText('Ctrl+Z để hoàn tác')}>
               <span className="in-picker-text">
                 <span className="in-picker-label">
                   Giữ @image_{group.n} = {group.slotName}, xoá chữ “({gluedLabel(group.text)})”
@@ -439,7 +440,7 @@ export function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets,
               key={asset.id}
               className="in-picker-item"
               disabled={!plan.ok}
-              title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (Ctrl+Z để hoàn tác)` : fillRefusalText(plan.why, name, plan.token)}
+              title={plan.ok ? `Gắn ${name} vào chỗ này → ${plan.token} (${platformText.mod}+Z để hoàn tác)` : fillRefusalText(plan.why, name, plan.token)}
               onClick={() => run(() => fillPlaceholderAction(sceneId, group.key, asset.id))}
             >
               <AssetAvatar asset={asset} size={22} />
@@ -459,12 +460,12 @@ export function PlaceholderMenu({ sceneId, group, choices, prompt, refs, assets,
       </div>
       <div className="in-ph-foot">
         {base && (
-          <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => placeholderToTextAction(sceneId, group.key, base))} title="Không cần nhân vật đó nữa: chữ đỏ thành chữ thường (Ctrl+Z để hoàn tác)">
+          <button type="button" role="menuitem" className="in-picker-item" onClick={() => run(() => placeholderToTextAction(sceneId, group.key, base))} title={shortcutText('Không cần nhân vật đó nữa: chữ đỏ thành chữ thường (Ctrl+Z để hoàn tác)')}>
             Đổi thành chữ “{base}”
           </button>
         )}
         {group.kind !== 'mismatch' && (
-          <button type="button" role="menuitem" className="in-picker-item is-danger" onClick={() => run(() => removePlaceholderAction(sceneId, group.key))} title="Xoá chữ đỏ khỏi prompt, chữ khác giữ nguyên (Ctrl+Z để hoàn tác)">
+          <button type="button" role="menuitem" className="in-picker-item is-danger" onClick={() => run(() => removePlaceholderAction(sceneId, group.key))} title={shortcutText('Xoá chữ đỏ khỏi prompt, chữ khác giữ nguyên (Ctrl+Z để hoàn tác)')}>
             Xoá chữ đỏ
           </button>
         )}

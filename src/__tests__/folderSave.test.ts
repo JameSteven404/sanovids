@@ -4,6 +4,10 @@
 // files:trashSaved ("Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác"). No network, no disk.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// These expectations are the Windows texts (lib/platformText): pin the platform whatever OS runs the suite (the Mac CI
+// runner reports navigator.platform 'MacIntel'). Both platforms: lib/__tests__/rendererPlatformCopy.test.ts.
+vi.mock('../lib/platform', async (importOriginal) => ({ ...(await importOriginal<typeof import('../lib/platform')>()), PLATFORM: 'win', IS_MAC: false }))
+
 const media = vi.hoisted(() => new Map<string, Blob>())
 vi.mock('../lib/imageStore', () => {
   let n = 0
@@ -24,6 +28,7 @@ vi.mock('../lib/imageStore', () => {
 
 import { deleteSelection, deleteTakes, downloadChosenTakesZip, downloadTake, edgeId, parseEdgeId, renameTake, takeFileBase } from '../actions'
 import { cutEdge } from '../components/canvas/edges'
+import { MAX_BASE_BYTES, MAX_BASE_LENGTH, MAX_BASE_NFD } from '../core/fileNames'
 import { DEFAULT_NAME_TEMPLATE } from '../core/nameTemplate'
 import type { Project, Scene, Take } from '../core/types'
 import { afterSaveUnlinked, chooseFolderPlace, linkScenesToFolder, linkTakesToFolder, refreshFolderNode, removeFolderNode, saveTakeToFolder } from '../folderActions'
@@ -459,6 +464,26 @@ describe('Cài đặt: "Cách đặt tên file", "Kèm file .txt", "Kèm prompts
     expect(await zipEntries()).toEqual(['S01_T1 - Mở đầu.mp4', 'S02_T1.mp4', 'prompts.txt'])
     useDownloadPrefs.getState().set({ zipPrompts: false })
     expect(await zipEntries()).toEqual(['S01_T1 - Mở đầu.mp4', 'S02_T1.mp4'])
+  })
+
+  it('the .zip name keeps the file-name budgets (UTF-8 bytes / NFD on a Mac), also for a long Vietnamese project name', async () => {
+    await runToCompletion('s1')
+    const zipName = async () => {
+      vi.useRealTimers()
+      try {
+        await downloadChosenTakesZip()
+        return desk.saveAs[desk.saveAs.length - 1].suggestedName
+      } finally {
+        vi.useFakeTimers()
+      }
+    }
+    expect(await zipName()).toBe('P - video chọn.zip')
+    useProject.getState().renameProject('Phim: ' + 'Đường về nhà ở Huế giữa mùa mưa '.repeat(6))
+    const name = await zipName()
+    expect(name).toMatch(/^Phim- Đường về nhà ở Huế .*\.zip$/)
+    expect(name.length).toBeLessThanOrEqual(MAX_BASE_LENGTH + '.zip'.length)
+    expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(MAX_BASE_BYTES + '.zip'.length)
+    expect(name.normalize('NFD').length).toBeLessThanOrEqual(MAX_BASE_NFD + '.zip'.length)
   })
 })
 

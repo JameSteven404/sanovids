@@ -1,6 +1,6 @@
 // core/folderTrash: which take → folder wires a jump cut / brought back, the main process's answer per take (checked,
 // then summed up), batching, and every sentence of "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác".
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { TrashSavedTakeResult } from '../../lib/desktopFiles'
 import {
   addedSaveLinks,
@@ -29,6 +29,10 @@ import {
   type UnlinkOutcome,
 } from '../folderTrash'
 import type { SaveFolder } from '../types'
+
+// These expectations are the Windows texts (lib/platformText): pin the platform whatever OS runs the suite (the Mac CI
+// runner reports navigator.platform 'MacIntel'). Both platforms: lib/__tests__/rendererPlatformCopy.test.ts.
+vi.mock('../../lib/platform', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../lib/platform')>()), PLATFORM: 'win', IS_MAC: false }))
 
 const folder = (id: string, over: Partial<SaveFolder> = {}): SaveFolder => ({ id, name: id, path: `D:\\${id}`, position: { x: 0, y: 0 }, mode: 'copy', ...over })
 

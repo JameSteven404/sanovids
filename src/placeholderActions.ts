@@ -203,7 +203,7 @@ export function linkToastWithFill(before: Project, after: Project, assetIds: rea
   if (offer) {
     const many = offer.sceneIds.length > 1
     const where = many ? `${offer.sceneIds.length} cảnh` : codesOf(after, offer.sceneIds)
-    toast(`${text}. ${where} còn chữ đỏ ${offer.example}. Ctrl+Z để bỏ nối.`, {
+    toast(`${text}. ${where} còn chữ đỏ ${offer.example}. ${platformText.mod}+Z để bỏ nối.`, {
       tone: 'success',
       ms: 12000,
       action: { label: `Gắn vào chỗ ${offer.base}${many ? ` (${offer.sceneIds.length} cảnh)` : ''}`, run: () => fillPlaceholdersAction(offer.sceneIds, offer.base, offer.assetId) },

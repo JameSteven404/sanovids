@@ -143,11 +143,11 @@ describe('Ứng dụng: the Portable / temp-copy reminder', () => {
     id: 'app',
     level: 'basic',
     title: 'Ứng dụng',
-    desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.',
-    keywords: `cài app desktop exe windows pwa ${PLACEMENT_KEYWORDS}`,
+    desc: 'Bản app desktop cho Windows và macOS, hoặc cài thành app trên trình duyệt.',
+    keywords: `cài app desktop exe windows pwa mac macos dmg applications finder thử nghiệm ${PLACEMENT_KEYWORDS}`,
   }
   it('is found by icon / shortcut / Start menu / portable words', () => {
-    for (const q of ['icon', 'lối tắt', 'loi tat', 'shortcut', 'start menu', 'ghim', 'portable', 'setup']) {
+    for (const q of ['icon', 'lối tắt', 'loi tat', 'shortcut', 'start menu', 'ghim', 'portable', 'setup', 'mac', 'macos', 'dmg', 'applications', 'finder', 'thu nghiem']) {
       expect(ids(matchSettings([...groups, app], 'advanced', q)), q).toEqual(['app:'])
     }
   })

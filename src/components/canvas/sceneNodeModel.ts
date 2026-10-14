@@ -1,5 +1,6 @@
 // Pure decisions of the scene node (the node IS the editor: approved design E0 v3, "Số đo cho người làm app").
 // Sizes are flow px at zoom 100%. No React / DOM / store imports (unit-tested in __tests__/sceneNodeModel.test.ts).
+import { platformText } from '../../lib/platformText'
 import { formatCredits, type CreditKind } from '../../lib/credits'
 import type { JobStatus, Mode, VideoSettings } from '../../core/types'
 import { transformFrameRatio } from '../../providers/canvasapp/mapping'
@@ -190,7 +191,7 @@ export function runButtonView(
       blocked: false,
       label: o.compact ? price : `Tạo video · ${price}`,
       why: null,
-      title: `Tạo video cho ${o.code} · ${o.duration} giây · ${price} (Ctrl+Enter)`,
+      title: `Tạo video cho ${o.code} · ${o.duration} giây · ${price} (${platformText.mod}+Enter)`,
       compact: !!o.compact,
     }
   }

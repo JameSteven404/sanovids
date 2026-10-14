@@ -1,6 +1,6 @@
 // The scene node = the editor (approved design E0 v3, section 6 "Số đo cho người làm app"): geometry, labels, foot
 // layout and the far view's tone — the numbers of the approved page.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { EMPTY_PROMPT_REASON, LONG_PROMPT_REASON, NO_FRAMES_REASON, NO_IMAGE_REASON, unsentTokensReason } from '../../../core/runRules'
 import type { VideoSettings } from '../../../core/types'
 import { LAYOUT } from '../../../store/project'
@@ -26,6 +26,10 @@ import {
   settingsSummary,
   staticExcerpt,
 } from '../sceneNodeModel'
+
+// These expectations are the Windows texts (lib/platformText): pin the platform whatever OS runs the suite (the Mac CI
+// runner reports navigator.platform 'MacIntel'). Both platforms: lib/__tests__/rendererPlatformCopy.test.ts.
+vi.mock('../../../lib/platform', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../../lib/platform')>()), PLATFORM: 'win', IS_MAC: false }))
 
 const SD: VideoSettings = { model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' }
 const H3: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 10, resolution: '2k', ratio: '16:9' }

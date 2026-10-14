@@ -2,7 +2,7 @@
 // Windows-only word (Windows, Ctrl, File Explorer, Unikey…) and Windows never reads a Mac-only one (Finder, ⌘, macOS…).
 import { describe, expect, it } from 'vitest'
 import { PLATFORM } from '../platform'
-import { PLATFORM_TEXTS, platformText, textsFor, type PlatformTexts } from '../platformText'
+import { MAC_AD_HOC_NOTE, MAC_EXPERIMENTAL, PLATFORM_TEXTS, platformText, shortcutText, textsFor, type PlatformTexts } from '../platformText'
 
 const KEYS = Object.keys(PLATFORM_TEXTS.win) as (keyof PlatformTexts)[]
 const WINDOWS_ONLY = /Windows|Ctrl|File Explorer|Explorer|PowerShell|Setup|Portable|Unikey|Tải xuống|Chuột phải|\.exe\b/
@@ -93,6 +93,20 @@ describe('the phrases of the plan (Mac plan §3.6.1)', () => {
 })
 
 describe('lookup', () => {
+  it('formats complete shortcut hints without touching unrelated words or bindings', () => {
+    const hint = 'Ctrl+Z / Ctrl+Shift+Z · Ctrl/Shift + bấm · Control'
+    expect(shortcutText(hint, 'win')).toBe(hint)
+    expect(shortcutText(hint, 'mac')).toBe('⌘+Z / ⌘+Shift+Z · ⌘/Shift + bấm · Control')
+    expect(shortcutText('Esc · Shift · Alt', 'mac')).toBe('Esc · Shift · Alt')
+  })
+
+  it('labels the Mac build experimental, Apple Silicon and ad-hoc without claiming author verification', () => {
+    expect(textsFor('mac').installTitle).toContain(MAC_EXPERIMENTAL)
+    expect(textsFor('mac').installTitle).toContain('Apple Silicon')
+    expect(textsFor('mac').installHint).toContain('Applications')
+    expect(MAC_AD_HOC_NOTE).toContain('không xác minh tác giả')
+    expect(MAC_AD_HOC_NOTE).toContain('không phải chữ ký Apple Developer')
+  })
   it('textsFor picks the platform; anything unexpected is the Windows default', () => {
     expect(textsFor('mac')).toBe(PLATFORM_TEXTS.mac)
     expect(textsFor('win')).toBe(PLATFORM_TEXTS.win)

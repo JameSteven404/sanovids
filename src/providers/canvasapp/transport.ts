@@ -10,6 +10,7 @@
 // connection main stopped after 60 min ('too-slow') — continues where it stopped when main says it can (`resumable`:
 // canvasapp sent a validator and takes Range); a reopen that cannot reach canvasapp is tried again a few times over
 // about a minute, keeping what came. Else it fails and the engine tries again later (a 'too-slow' one: not at all).
+import { platformText } from '../../lib/platformText'
 import { newId } from '../../core/ids'
 import { checkoutUrlAllowed } from '../../core/topup'
 import type { ProviderAvailability } from '../types'
@@ -108,7 +109,7 @@ export const KEEP_LOGIN_DAYS = 30
 export const CHECKOUT_UNSUPPORTED = 'Bản SanoVids desktop này chưa hỗ trợ nạp credit trong app — cập nhật bản mới, hoặc nạp trực tiếp trên canvasapp.io.vn.'
 export const CHECKOUT_REFUSED = 'Trang thanh toán canvasapp trả về không phải SePay (https://…sepay.vn) — SanoVids không mở để giữ an toàn. Hãy nạp trực tiếp trên canvasapp.io.vn.'
 
-export const WEB_UNAVAILABLE = 'Cổng canvasapp chỉ chạy trong bản desktop SanoVids (.exe): trình duyệt không được phép dùng phiên đăng nhập của trang khác.'
+export const WEB_UNAVAILABLE = `Cổng canvasapp chỉ chạy trong ${platformText.desktopApp} (Windows / Mac): trình duyệt không được phép dùng phiên đăng nhập của trang khác.`
 
 /** The desktop bridge, or null in a browser / older desktop build. */
 export function canvasappBridge(): CanvasappBridge | null {

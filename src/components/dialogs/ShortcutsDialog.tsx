@@ -5,6 +5,7 @@ import './dialogs.css'
 import { KEY_ACTIONS, FIXED_KEYS, chordLabel, defaultsFor, type ActionId, type KeyAction } from '../../core/keymap'
 import { IS_MAC } from '../../lib/keyEvents'
 import { useKeymap } from '../../lib/keymapPrefs'
+import { platformText } from '../../lib/platformText'
 
 const GROUP_TITLES = { keys: 'Chung', keysScene: 'Cảnh & chọn', keysTake: 'Video', keysCanvas: 'Canvas' }
 const UNBOUND = 'Chưa gán'
@@ -23,7 +24,7 @@ const GESTURES: Group[] = [
     rows: [
       ['Enter', 'Gõ prompt ngay trên node của cảnh đang chọn (khi chỉ chọn một cảnh)'],
       ['Esc', 'Đang gõ trên node: thôi gõ, cảnh vẫn được chọn'],
-      ['Ctrl+Enter / ⌘Enter', 'Chạy khi đang gõ trên node: chỉ cảnh đó'],
+      [`${platformText.mod}+Enter`, 'Chạy khi đang gõ trên node: chỉ cảnh đó'],
     ],
   },
   {
@@ -31,7 +32,7 @@ const GESTURES: Group[] = [
     rows: [
       ['Kéo nền', 'Di chuyển khung nhìn (chế độ Tay) · Shift+kéo để chọn vùng'],
       ['Chế độ Chọn', 'Kéo nền để chọn vùng · Space+kéo hoặc chuột giữa để di chuyển'],
-      ['Lăn chuột', 'Thu phóng (cả Ctrl+lăn và chụm hai ngón)'],
+      ['Lăn chuột', `Thu phóng (cả ${platformText.mod}+lăn và chụm hai ngón)`],
       ['Nhấp đúp nền', 'Tạo cảnh mới tại đó'],
     ],
   },
@@ -41,7 +42,7 @@ const GESTURES: Group[] = [
       ['▲ / ▼ cạnh mã cảnh', 'Ở bảng bên phải: dời cảnh đang chọn lên trước / ra sau một chỗ'],
       [
         'Bấm vào mã cảnh (S05)',
-        `Gõ vị trí mới để dời một lần tới đó. Các cảnh khác đánh số lại; Phát liền và file .zip đi theo thứ tự mới, thẻ trên canvas giữ chỗ cũ (bấm Sắp xếp để xếp lại). ${IS_MAC ? '⌘' : 'Ctrl'}+Z để hoàn tác.`,
+        `Gõ vị trí mới để dời một lần tới đó. Các cảnh khác đánh số lại; Phát liền và file .zip đi theo thứ tự mới, thẻ trên canvas giữ chỗ cũ (bấm Sắp xếp để xếp lại). ${platformText.mod}+Z để hoàn tác.`,
       ],
     ],
   },
@@ -65,7 +66,7 @@ const GESTURES: Group[] = [
       ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
       [
         'Bấm dây',
-        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${IS_MAC ? '⌘' : 'Ctrl'}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image trong prompt tự đánh lại (hoàn tác được).`,
+        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${platformText.mod}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image trong prompt tự đánh lại (hoàn tác được).`,
       ],
       ['Gõ @', 'Trong prompt: chọn ảnh để chèn @image_N (ảnh chưa nối sẽ được nối luôn).'],
       ['ĐẦU / CUỐI', 'MiniMax-H3 chế độ Khung đầu → cuối: thả nhân vật vào chấm ĐẦU hoặc CUỐI.'],
@@ -112,11 +113,7 @@ export function ShortcutsDialog() {
           <section className="dg-sc-group"><h4>Thư viện</h4>
             <p>Sau khi bấm vào Thư viện: {resolved.allLabels['selection.delete'] || UNBOUND}{IS_MAC ? ' / ⌫' : ''} xoá mục thư viện; {resolved.allLabels['selection.selectAll'] || UNBOUND} chọn mọi thẻ đang thấy. Không tác động lên cảnh trên canvas.</p>
           </section>
-          <p className="dg-note">
-            {IS_MAC
-              ? 'Trên Mac: ⌘ thay cho Ctrl; ⌫ (hoặc fn+⌫) để xoá — nếu ngay sau ⌫ có phím khác (bộ gõ tiếng Việt vừa bỏ dấu), không xoá gì.'
-              : 'Chỉ phím Delete xoá: Backspace không xoá trên Windows vì bộ gõ tiếng Việt (Unikey, EVKey, OpenKey…) gửi Backspace khi bỏ dấu, kể cả khi không gõ trong ô nhập. Trên Mac dùng ⌫.'}
-          </p>
+          <p className="dg-note">{platformText.deleteHint}</p>
         </div>
         <div className="dg-sc-col">
           {GESTURES.map((g) => (

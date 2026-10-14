@@ -1,5 +1,6 @@
 // Inspector for several selected scenes: batch settings, common reference images, run / duplicate / delete (and the
 // explicit removal of retired @video text, src/videoRetired.ts).
+import { shortcutText } from '../../lib/platformText'
 import { CircleAlert, ClipboardCopy, CopyPlus, Play, Plus, Trash, X } from 'lucide-react'
 import { memo, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -227,7 +228,7 @@ const MultiRetired = memo(function MultiRetired({ scenes }: { scenes: Scene[] })
             type="button"
             className="in-hint-btn"
             onClick={() => removeRetiredTextFromScenes(ids)}
-            title="Chỉ xoá chữ @video (và câu “Continue from @video_N:” bản cũ tự chèn) — chữ khác giữ nguyên, Ctrl+Z để hoàn tác"
+            title={shortcutText('Chỉ xoá chữ @video (và câu “Continue from @video_N:” bản cũ tự chèn) — chữ khác giữ nguyên, Ctrl+Z để hoàn tác')}
           >
             Xoá chữ @video ở {blocked.length} cảnh đang chọn
           </button>
@@ -275,7 +276,7 @@ const MultiActions = memo(function MultiActions({ scenes, ids }: { scenes: Scene
         <Play size={14} fill="currentColor" /> Chạy {ids.length} cảnh ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(total, creditKind)}</span>
       </button>
       <div className="in-action-row">
-        <button type="button" className="btn btn-sm" onClick={onDuplicate} title="Ctrl+D">
+        <button type="button" className="btn btn-sm" onClick={onDuplicate} title={shortcutText('Ctrl+D')}>
           <CopyPlus size={13} /> Nhân bản
         </button>
         <button type="button" className="btn btn-sm" onClick={() => void onCopyAll()}>
