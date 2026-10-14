@@ -134,6 +134,45 @@ describe('focus rings', () => {
   })
 })
 
+/** `color-mix(in srgb, a p%, b)` (gamma-encoded sRGB; over an opaque surface `transparent` acts as that surface). */
+function mix(a: string, b: string, p: number): string {
+  const [x, y] = [rgb(a), rgb(b)]
+  return '#' + x.map((v, i) => Math.round(v * p + y[i] * (1 - p)).toString(16).padStart(2, '0')).join('')
+}
+
+describe('contrast pairs the D port fixed', () => {
+  it.each(Object.keys(THEMES))('%s: the keyboard focus ring keeps 3:1 on video (--media-bg) and on the panels', (theme) => {
+    const t = THEMES[theme]
+    const ring = t['--focus-ring'].match(/#[0-9a-f]{6}\b/i)?.[0]
+    expect(ring, `${theme} --focus-ring colour`).toBeTruthy()
+    for (const surface of ['--media-bg', '--panel', '--bg']) {
+      expect(contrast(ring!, t[surface]), `${theme} focus ring on ${surface}`).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it.each(Object.keys(THEMES))('%s: the canvasapp label of the real credit pill keeps 4.5:1, hovered or not', (theme) => {
+    const t = THEMES[theme]
+    const css = read('components/topbar/creditPill.css').replace(/\/\*[\s\S]*?\*\//g, '')
+    const pct = (selector: string, re: RegExp) => {
+      const at = css.indexOf(`${selector} {`)
+      expect(at, selector).toBeGreaterThanOrEqual(0)
+      const n = css.slice(at, css.indexOf('}', at)).match(re)?.[1]
+      expect(n, selector).toBeTruthy()
+      return Number(n) / 100
+    }
+    const hoverFill = pct('.tb-cp.real:hover,\n.tb-cp.login:hover,\n.tb-cp.loading:hover', /background: color-mix\(in srgb, var\(--info\) (\d+)%, transparent\);/)
+    const label = t['--provider-canvasapp']
+    const hoverLabel = mix(label, t['--text'], pct('.tb-cp.real:hover .tb-cp-src', /color: color-mix\(in srgb, var\(--provider-canvasapp\) (\d+)%, var\(--text\)\);/))
+    expect(contrast(label, t['--info-soft']), `${theme} label on --info-soft`).toBeGreaterThanOrEqual(4.5)
+    // top bar = --panel; queue drawer bar = --material (≈ --panel) with the bar's own --hover under the pointer
+    const [r, g, b, a] = t['--hover'].match(/^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/)!.slice(1).map(Number)
+    const drawerBar = mix('#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join(''), t['--panel'], a)
+    for (const [where, surface] of [['top bar', t['--panel']], ['hovered queue drawer bar', drawerBar]]) {
+      expect(contrast(hoverLabel, mix(t['--info'], surface, hoverFill)), `${theme} hovered label in the ${where}`).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+})
+
 describe('fonts: the first face of each stack ships with the app', () => {
   const main = read('main.tsx')
   it.each([

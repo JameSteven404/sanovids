@@ -172,6 +172,13 @@ describe('Menu key / Shift+F10', () => {
     expect(e.stopPropagation).not.toHaveBeenCalled()
     expect(useContextMenu.getState().open).toBeNull()
   })
+  it('focus on the canvas toolbar (inside the stage): the key stays with the control, like its right-click', () => {
+    active = el('button', ['cv-tb-btn'], {}, el('div', ['cv-toolbar-host'], {}, stage))
+    const e = menuKey()
+    expect(e.preventDefault).not.toHaveBeenCalled()
+    expect(e.stopPropagation).not.toHaveBeenCalled()
+    expect(useContextMenu.getState().open).toBeNull()
+  })
   it('focus outside the canvas: not the canvas menu', () => {
     active = el('button', ['sb-card'])
     expect(menuKey().preventDefault).not.toHaveBeenCalled()

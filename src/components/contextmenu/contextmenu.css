@@ -138,12 +138,12 @@
 
 /* The object a menu is open for: outlined while the menu is open (set on the element, no re-render). */
 .react-flow__node[data-menu-target] {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--selection);
   outline-offset: 3px;
   border-radius: var(--radius);
 }
 .cv-sn-th[data-menu-target],
 .sb-card[data-menu-target] {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--selection);
   outline-offset: 1px;
 }

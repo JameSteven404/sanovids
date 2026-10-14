@@ -6,6 +6,7 @@ import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './compone
 import { ImageLightbox } from './components/common/ImageLightbox'
 import { ConfirmSheet } from './components/common/ConfirmSheet'
 import { Toasts } from './components/common/Toasts'
+import { ContextMenuBoundary } from './components/contextmenu/ContextMenuBoundary'
 import { useContextMenu } from './components/contextmenu/contextMenuStore'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
@@ -65,7 +66,8 @@ const StressHud = lazy(
     import('./devtools/stress/StressHud').then((m) => ({ default: m.StressHud })).catch(() => ({ default: () => null })),
 )
 const FilmPlayerDialog = lazy(() => chunks.filmPlayer().then((m) => ({ default: m.FilmPlayerDialog })))
-const ContextMenuHost = lazy(() => chunks.contextMenu().then((m) => ({ default: m.ContextMenuHost })))
+const lazyContextMenuHost = () => lazy(() => chunks.contextMenu().then((m) => ({ default: m.ContextMenuHost })))
+let ContextMenuHost = lazyContextMenuHost()
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -177,14 +179,19 @@ function Shell() {
   )
 }
 
-/** The one right-click menu host, mounted only while a menu is open (its chunk is prefetched when idle). */
+/**
+ * The one right-click menu host, mounted only while a menu is open (its chunk is prefetched when idle). A failed host
+ * closes the menu instead of blanking the window; a chunk that did not load is tried again on the next menu.
+ */
 function ContextMenuSlot() {
   const open = useContextMenu((s) => s.open !== null)
   if (!open) return null
   return (
-    <Suspense fallback={null}>
-      <ContextMenuHost />
-    </Suspense>
+    <ContextMenuBoundary onChunkError={() => (ContextMenuHost = lazyContextMenuHost())}>
+      <Suspense fallback={null}>
+        <ContextMenuHost />
+      </Suspense>
+    </ContextMenuBoundary>
   )
 }
 

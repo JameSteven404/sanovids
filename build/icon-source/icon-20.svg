@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
   <title>SanoVids</title>
-  <defs><linearGradient id="sv-plate" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/></linearGradient><mask id="sv-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M370 181H228C173 181 173 251 228 251H269C325 251 325 323 269 323H93" fill="none" stroke="black" stroke-width="30" stroke-linecap="round"/></mask></defs>
+  <defs><linearGradient id="sv-plate" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#E60000"/><stop offset="1" stop-color="#FF3D14"/></linearGradient><mask id="sv-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="white"/><path d="M370 181H228C173 181 173 251 228 251H269C325 251 325 323 269 323H93" fill="none" stroke="black" stroke-width="44" stroke-linecap="round"/></mask></defs>
   <rect width="20" height="20" rx="4.4" fill="url(#sv-plate)"/>
   <g fill="#FFFFFF" transform="scale(0.0390625)"><path d="M119 107Q119 62 165 86L423 226Q469 252 423 281L165 427Q119 454 119 400Z" mask="url(#sv-cut)"/><circle cx="94" cy="323" r="25"/></g>
 </svg>

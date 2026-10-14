@@ -8,7 +8,7 @@
 .cv-ar-styles legend { margin-bottom: 6px; color: var(--text-dim); }
 .cv-ar-styles label { flex: 1; min-width: 0; position: relative; border: 1px solid var(--border); border-radius: 8px; padding: 8px; cursor: pointer; background: var(--panel-2); text-align: center; }
 .cv-ar-styles label.is-selected { border-color: var(--selection); background: var(--accent-soft); }
-.cv-ar-styles label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cv-ar-styles label:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
 .cv-ar-styles input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .cv-ar-styles svg { display: block; width: 100%; height: 42px; fill: currentColor; color: var(--accent); }
 .cv-ar-mini-take { fill: var(--text-dim); }

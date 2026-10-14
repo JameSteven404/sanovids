@@ -10,9 +10,11 @@
 // Sources (build/icon-source/):
 //   icon-master.svg       D 512 master: white play triangle with an S cutout + source dot on a vertical Sano red plate.
 //                         Plate inset 16, width 480, rx 108; used at 96 px and up, for web icons and installer art.
-//   icon-small.svg        Same 512-unit glyph scaled to 32 units: 16, 32, 40, 48, 64 px (also installer icon).
+//   icon-small.svg        Same 512-unit glyph scaled to 32 units: 32, 40, 48, 64 px (also installer icon).
 //   icon-24.svg           Same glyph scaled to 24 units (taskbar at 100 %, in-app top-bar logo).
-//   icon-20.svg           Same glyph scaled to 20 units (title bar / small icons at 125 %).
+//   icon-20.svg           Same glyph scaled to 20 units (title bar / small icons at 125 %), S cut 44 wide (≈ 1.7 px).
+//   icon-16.svg           Same glyph scaled to 16 units (title bar / tray at 100 %), S cut 56 wide (≈ 1.75 px): the
+//                         master's 30 is under 1 px here and the S blurs into the triangle.
 //   favicon.svg           Separate red play / white S on a dark tile, copied as is for browser tabs.
 //   logo-mark.svg         512-unit glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
 //   installer-sidebar.svg NSIS welcome / finish sidebar 164x314 (href="icon:N" = the N px app icon).
@@ -60,10 +62,12 @@ const SVG = {
   small: source('icon-small.svg'),
   s24: source('icon-24.svg'),
   s20: source('icon-20.svg'),
+  s16: source('icon-16.svg'),
 }
 
 /** Which drawing a pixel size is rendered from. */
 function svgFor(size) {
+  if (size === 16) return SVG.s16
   if (size === 20) return SVG.s20
   if (size === 24) return SVG.s24
   if (size < 96) return SVG.small

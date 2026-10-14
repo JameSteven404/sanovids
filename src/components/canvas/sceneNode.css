@@ -7,7 +7,7 @@
  * selection / drop / wiring states in canvas.css and saving.css. */
 .cv-stage .cv-scene.cv-sn {
   /* the token inks of the field's marks (inspector.css defines them on .in-root only) */
-  --in-ref-ink: color-mix(in srgb, var(--ref) 72%, var(--text));
+  --in-ref-ink: var(--ref-ink);
   --in-video-ink: color-mix(in srgb, var(--video) 72%, var(--text));
   --sn-field: var(--panel-2);
   display: flex;

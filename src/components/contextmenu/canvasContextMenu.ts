@@ -163,7 +163,7 @@ export function onCanvasContextMenu(e: ReactMouseEvent, bridge: CanvasMenuBridge
 
 /**
  * Menu key / Shift+F10 (window capture) with the canvas in front (focus on the page or on the canvas, never in a text
- * field: the card's prompt keeps its keys and its native text menu) → menu of the selection, below its first card;
+ * field — the card's prompt keeps its keys and its native text menu — nor on the canvas' own controls) → menu of the selection, below its first card;
  * nothing selected → the empty-canvas menu at the middle of the canvas. Exported for tests.
  */
 export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): void {
@@ -173,6 +173,8 @@ export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): voi
   if (!stage) return
   if (active && active !== document.body && !stage.contains(active)) return
   if (active && isTextField(active)) return
+  // The canvas' own controls (toolbar, minimap…) keep the key, like their right-click (resolveTarget).
+  if (active && active.closest(NO_MENU)) return
   if (useUI.getState().view !== 'canvas' || useUI.getState().dialog.kind !== 'none' || otherOverlayOpen()) return
   e.preventDefault()
   e.stopPropagation()

@@ -58,11 +58,18 @@ describe('Logo', () => {
     const html = renderToStaticMarkup(createElement(Logo))
     const paths = [...html.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1])
     expect(paths).toHaveLength(2)
-    for (const file of ['logo-mark', 'icon-master', 'icon-small', 'icon-24', 'icon-20']) {
+    for (const file of ['logo-mark', 'icon-master', 'icon-small', 'icon-24', 'icon-20', 'icon-16']) {
       const svg = read(`../../../../build/icon-source/${file}.svg`)
       for (const d of paths) expect(svg, file).toContain(`d="${d}"`)
     }
     expect(read('../../../../public/favicon.svg')).toBe(read('../../../../build/icon-source/favicon.svg'))
+  })
+
+  it('keeps the S cutout at least ~1.5 px wide in every small cut (the master’s 30 blurs away at 16 / 20 px)', () => {
+    for (const [file, px] of [['icon-16', 16], ['icon-20', 20], ['icon-24', 24], ['icon-small', 32]] as const) {
+      const stroke = Number(read(`../../../../build/icon-source/${file}.svg`).match(/stroke="black" stroke-width="([\d.]+)"/)?.[1])
+      expect((stroke * px) / 512, file).toBeGreaterThanOrEqual(1.4)
+    }
   })
 })
 
@@ -93,7 +100,7 @@ describe('top bar brand', () => {
     expect(ruleBody(topbarCss, '.tb-logo {').body).toContain(tile)
     expect(ruleBody(dialogsCss, '.dg-about-logo {').body).toContain(tile)
     // every plate in build/icon-source runs top (x1=0 y1=0) → bottom (x2=0 y2=1), #E60000 → #FF3D14 = the brand tokens
-    for (const file of ['icon-master', 'icon-small', 'icon-24', 'icon-20']) {
+    for (const file of ['icon-master', 'icon-small', 'icon-24', 'icon-20', 'icon-16']) {
       const svg = read(`../../../../build/icon-source/${file}.svg`)
       const plate = svg.match(/<linearGradient id="sv-plate"([^>]*)>(.*?)<\/linearGradient>/)
       expect(plate, file).not.toBeNull()
