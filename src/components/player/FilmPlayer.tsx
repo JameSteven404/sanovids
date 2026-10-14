@@ -419,7 +419,7 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
               if (ended) jump(0)
               else setPaused((p) => !p)
             }}
-            title="Phát / tạm dừng (Space, K) · L nhanh dần, J lùi · ← → từng khung" aria-label="Phát / tạm dừng">
+            title="Phát / tạm dừng (Space, K) · L nhanh dần, J lùi · ← → từng khung" aria-label={ended ? 'Phát lại' : paused ? 'Phát' : 'Tạm dừng'}>
             {paused || ended ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
           </button>
           <button className="icon-btn" onClick={next} disabled={ended} title="Cảnh sau (↓)" aria-label="Cảnh sau">
@@ -431,6 +431,8 @@ export function FilmPlayer({ items, start, onClose, missingCount = 0, onSelectMi
             <button
               key={it.sceneId}
               className={`vw-seg ${i === index ? 'current' : ''} ${it.take ? '' : 'is-empty'}`}
+              aria-label={`Phát ${it.code}${it.title ? ' · ' + it.title : ''}`}
+              aria-current={i === index ? 'step' : undefined}
               style={{ flexGrow: Math.max(1, it.duration) }}
               onClick={() => jump(i)}
               title={`${it.code}${it.title ? ' · ' + it.title : ''} · ${it.duration}s${it.take ? ` · T${it.take.number}` : ' · chưa có take'}`}

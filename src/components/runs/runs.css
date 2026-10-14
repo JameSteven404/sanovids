@@ -19,9 +19,9 @@
 .rq-thumb,
 .rq-row-thumb,
 .rq-stage {
-  --rq-on-media: var(--on-media, white);
-  --rq-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
-  --rq-media-bg: var(--media-bg, black);
+  --rq-on-media: var(--on-media);
+  --rq-media-chip: var(--media-scrim);
+  --rq-media-bg: var(--media-bg);
 }
 
 .rq-spacer {
@@ -1889,6 +1889,11 @@
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.rq-imp-row:has(input:focus-visible),
+.rq-imp-skip summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 .rq-imp-settings {
   white-space: nowrap;
 }
@@ -1957,4 +1962,11 @@
 .rq-info-source .rq-imported {
   margin-right: 4px;
   vertical-align: 1px;
+}
+:root[data-motion='reduced'] .rq-spin {
+  animation-duration: 2.4s;
+}
+:root[data-motion='reduced'] .rq-stage.queued .rq-ring,
+:root[data-motion='reduced'] .rq-stage.queued .rq-ring > span {
+  animation: none;
 }

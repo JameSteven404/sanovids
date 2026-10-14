@@ -8,13 +8,13 @@
   /*
    * Media: dark letterbox and light text in BOTH themes, like Photos / QuickTime and the canvas take nodes — the
    * picture decides the background, not the theme. Theme-independent tokens from base.css (--media-bg /
-   * --media-scrim / --on-media); the keyword fallbacks are deliberate media scrims.
+   * --media-scrim / --on-media).
    */
-  --vw-on-media: var(--on-media, white);
+  --vw-on-media: var(--on-media);
   --vw-on-media-dim: color-mix(in srgb, var(--vw-on-media) 64%, transparent);
-  --vw-on-media-faint: color-mix(in srgb, var(--vw-on-media) 42%, transparent);
-  --vw-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
-  --vw-media-bg: var(--media-bg, black);
+  --vw-on-media-faint: var(--vw-on-media-dim);
+  --vw-media-chip: var(--media-scrim);
+  --vw-media-bg: var(--media-bg);
   /* glass buttons drawn on the stage (end screen, "Chọn N cảnh chưa có ★") */
   --vw-media-btn: color-mix(in srgb, var(--vw-on-media) 14%, transparent);
   --vw-media-btn-hover: color-mix(in srgb, var(--vw-on-media) 22%, transparent);
@@ -197,7 +197,7 @@
   -webkit-backdrop-filter: var(--blur);
   backdrop-filter: var(--blur);
   font-size: 11px;
-  color: var(--vw-on-media-dim);
+  color: var(--vw-on-media);
 }
 .vw-player-end {
   position: absolute;
@@ -220,7 +220,7 @@
 }
 .vw-player-end p {
   margin: 0 0 12px;
-  color: var(--vw-on-media-dim);
+  color: var(--vw-on-media);
 }
 .vw-player-end div {
   display: flex;
@@ -360,4 +360,7 @@
 :root[data-motion='reduced'] .vw-player-pp:active,
 :root[data-motion='off'] .vw-player-pp:active {
   transform: none;
+}
+:root[data-motion='reduced'] .vw-player-spin {
+  animation-duration: 2.4s;
 }

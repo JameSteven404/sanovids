@@ -762,6 +762,7 @@ function NodeMentionList({
       style={{ left: pos.left, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight, width: POP_W }}
       onMouseDown={(e) => e.preventDefault() /* keep the caret in the field */}
       role="listbox"
+      aria-label="Ảnh tham chiếu để chèn vào prompt"
     >
       <div className="in-mention-head">
         <AtSign size={11} />

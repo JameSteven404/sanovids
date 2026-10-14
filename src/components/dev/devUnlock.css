@@ -187,3 +187,6 @@
   color: var(--text);
   font-weight: 500;
 }
+:root[data-motion='reduced'] .dv-ul .dg-spin {
+  animation-duration: 2.4s;
+}

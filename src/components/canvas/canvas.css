@@ -33,12 +33,12 @@
   /*
    * Chips over posters/images use an opaque dark token with white text in both themes. No per-card backdrop blur.
    */
-  --cv-on-media: var(--on-media, white);
+  --cv-on-media: var(--on-media);
   --cv-media-chip-line: color-mix(in srgb, var(--cv-on-media) 16%, transparent);
   --cv-on-media-video: color-mix(in srgb, var(--video) 40%, var(--cv-on-media));
   /* bottom fade behind the take player's controls and the hairline glyph shadow on it (dark in both themes) */
-  --cv-media-fade: color-mix(in srgb, var(--media-bg, black) 72%, transparent);
-  --cv-media-shade: color-mix(in srgb, var(--media-bg, black) 45%, transparent);
+  --cv-media-fade: color-mix(in srgb, var(--media-bg) 72%, transparent);
+  --cv-media-shade: color-mix(in srgb, var(--media-bg) 45%, transparent);
   /* text / glyphs on a solid --danger fill or a user-picked asset color: white in both themes */
   --cv-on-solid: var(--cv-on-media);
   /* solid teal fill behind small text (@image number, hovered media chips) and the text on a solid teal / purple fill */
@@ -547,6 +547,10 @@ button.cv-asset-count:hover {
   box-shadow: var(--cv-handle-line);
   z-index: 5;
 }
+/*
+ * a 16px grab area (−5px around the 6px inside): it must stay clear of the take's ★ / "+N" (title line, right: 0) and
+ * the code chip (left: 9px). Under 24px: a documented exception, a bigger corner would cover those controls.
+ */
 .cv-stage .react-flow__resize-control.handle.cv-rs-handle::before {
   content: '';
   position: absolute;
@@ -584,7 +588,7 @@ button.cv-asset-count:hover {
   align-items: center;
   justify-content: center;
   width: 24px;
-  height: 22px;
+  height: 24px;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -599,6 +603,10 @@ button.cv-asset-count:hover {
 .cv-rs-reset:hover {
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--accent);
+}
+.cv-rs-reset:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ============================== edges ============================== */

@@ -2490,3 +2490,9 @@ button.in-code-chip:focus-visible {
     transition: none;
   }
 }
+
+/* Placeholder menus may also open on a node, outside .in-root. */
+@media (prefers-reduced-motion: reduce) {
+  .in-ph-menu { animation: none; }
+}
+:root:is([data-motion='reduced'], [data-motion='off']) .in-ph-menu { animation: none; }

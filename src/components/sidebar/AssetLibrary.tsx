@@ -263,6 +263,7 @@ const AssetCard = memo(function AssetCard({
       role="option"
       tabIndex={0}
       aria-selected={selected}
+      aria-label={asset.name || asset.tag}
       title={`${asset.name} · @${asset.tag}\nKéo vào cảnh để nối · nháy đúp để sửa · ${DELETE_TIP}`}
       onClick={(e) => {
         e.stopPropagation()
@@ -374,6 +375,7 @@ const AssetCard = memo(function AssetCard({
           <button
             className="sb-card-btn"
             title={asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}
+            aria-label={`${asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}: ${asset.name}`}
             onClick={(e) => {
               e.stopPropagation()
               toggleOnCanvas(asset.id)
@@ -386,6 +388,7 @@ const AssetCard = memo(function AssetCard({
             <button
               className={`sb-card-btn${selScenes ? ' ref' : ' off'}`}
               title={linkTitle}
+              aria-label={linkTitle}
               aria-disabled={!selScenes}
               onClick={(e) => {
                 e.stopPropagation()
@@ -399,6 +402,7 @@ const AssetCard = memo(function AssetCard({
           <button
             className="sb-card-btn"
             title="Sửa"
+            aria-label={`Sửa ${asset.name}`}
             onClick={(e) => {
               e.stopPropagation()
               openAsset(asset.id)
@@ -558,12 +562,12 @@ export function AssetLibrary({
 
   const toolbar = (
     <>
-      <div className="sb-kinds" role="tablist" aria-label="Lọc theo loại">
+      <div className="sb-kinds" role="group" aria-label="Lọc theo loại">
         {kinds.map((k) => {
           const meta = k === 'all' ? null : KIND_META[k]
           const Icon = meta?.Icon
           return (
-            <button key={k} role="tab" aria-selected={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
+            <button key={k} aria-pressed={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
               {Icon && <Icon size={11} />}
               <span>{meta ? meta.label : 'Tất cả'}</span>
               <span className="sb-kind-n">{counts[k]}</span>
@@ -641,7 +645,7 @@ export function AssetLibrary({
             <ImagePlus size={13} />
             Thêm
           </button>
-          <button className="icon-btn sb-xs" title={`Tạo ${kindLabel} trống (chưa có ảnh)`} onClick={createEmpty}>
+          <button className="icon-btn sb-xs" title={`Tạo ${kindLabel} trống (chưa có ảnh)`} aria-label={`Tạo ${kindLabel} trống (chưa có ảnh)`} onClick={createEmpty}>
             <Plus size={14} />
           </button>
           <input
