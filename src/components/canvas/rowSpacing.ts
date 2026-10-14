@@ -3,12 +3,15 @@
 // on the canvas spreads its rows ONCE — one undo step, a toast with "Hoàn tác":
 // - scene rows are pushed down only as far as needed, every scene below in the same column keeps its distance to the
 //   one above it (the user's own gaps stay);
+// - cards side by side in one row (the v1 grid: 280px cards 328px apart) are first pushed right, as far as needed, so
+//   the row stays level (each keeps its old gap, at most LAYOUT.gapY, to the card on its left);
 // - sizes below today's minimum (old cards) go back to the default size (they already draw as the default node);
-// - takes placed by hand follow their scene's row, and move right by the width the card gained (+72 for the default);
+// - takes placed by hand follow their scene (row and side shift), and move right by the width the card gained (+72 for the default);
 // - the image column on the left is re-spaced for the taller tiles, and default tiles keep their right edge (the wire
 //   room to the scene column) instead of growing into it;
 // - folder nodes and tiles elsewhere follow the scene row they sit beside (the same shift).
-// Nothing else moves horizontally. Only a project that still SHOWS the old layout is touched (showsOldLayout: old card
+// Nothing else moves horizontally (shortcut: folders / tiles right of a widened v1 row keep their x — v1 had neither
+// there; upgrade if such projects show up). Only a project that still SHOWS the old layout is touched (showsOldLayout: old card
 // sizes, or rows / tiles that fit the old sizes but overlap the new ones) — never one laid out for 0.6.0, even under a
 // new id (import, duplicate). Each project id is also remembered per device (localStorage, best effort): the step never
 // comes back, not even after its undo. Pure planner (planRowSpacing) + the runner the canvas calls when it opens.
@@ -73,6 +76,29 @@ function pushDown(items: { id: string; box: Box }[], gap: number): Map<string, n
 }
 
 /**
+ * Push cards that sat side by side in one row at their OLD size (old boxes overlap vertically, not across) right so
+ * they keep their old gap (at most `gap`) at the new width; each also inherits the shift of the cards on its left in
+ * its row. Returns the shifts (sorted left to right, so a row stays level).
+ */
+function pushRight(items: { id: string; old: Box; box: Box }[], gap: number): Map<string, number> {
+  const sorted = [...items].sort((a, b) => a.old.x - b.old.x || a.old.y - b.old.y)
+  const shift = new Map<string, number>()
+  const placed: typeof items = []
+  for (const it of sorted) {
+    let dx = 0
+    for (const p of placed) {
+      if (!(p.old.y < it.old.y + it.old.h && it.old.y < p.old.y + p.old.h) || p.old.x + p.old.w > it.old.x) continue
+      const ps = shift.get(p.id) ?? 0
+      const oldGap = it.old.x - (p.old.x + p.old.w)
+      dx = Math.max(dx, ps, p.box.x + ps + p.box.w + Math.min(oldGap, gap) - it.box.x)
+    }
+    shift.set(it.id, dx)
+    placed.push(it)
+  }
+  return shift
+}
+
+/**
  * Two boxes of `items` in one column (overlapping across) whose tops are `minStep` ≤ d < `maxStep` apart, the upper one
  * matching `grows` (drawn at the new default size): laid out for the old size, overlapping at the new one.
  */
@@ -104,12 +130,17 @@ function columnTiles<A extends Pick<Asset, 'id' | 'position' | 'size'>>(assets: 
  * - a stored scene size below today's minimum (the 280 × 200 cards);
  * - two scenes in one column, the upper drawn at the default size, whose rows fit the old card (≥ 200 apart) but
  *   overlap the 304px node — the 248px rows of 0.5.x;
+ * - two such scenes side by side in one row (old cards overlap vertically) whose lefts fit the old card (≥ 280 apart)
+ *   but overlap the 352px node — the v1 grid (328px apart);
  * - two default tiles in the image column that fit an old tile (≥ 150 apart) but overlap the 275px tile.
  */
 export function showsOldLayout(input: Pick<RowSpacingInput, 'scenes' | 'assets'>): boolean {
   if (input.scenes.some((s) => s.size && !validSize(s.size))) return true
   const scenes = input.scenes.map((s) => ({ x: s.position.x, y: s.position.y, w: drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW, grows: !validSize(s.size) }))
   if (fitsOldOverlapsNew(scenes, OLD_LAYOUT.sceneH, LAYOUT.sceneH, (s) => s.grows)) return true
+  // The same test across: x and y swapped, the old card height as the "width".
+  const across = input.scenes.map((s) => ({ x: s.position.y, y: s.position.x, w: s.size?.h ?? OLD_LAYOUT.sceneH, grows: !validSize(s.size) }))
+  if (fitsOldOverlapsNew(across, OLD_LAYOUT.sceneW, LAYOUT.sceneW, (s) => s.grows)) return true
   const tiles = columnTiles(input.assets, input.scenes)
     .filter((a) => !a.size)
     .map((a) => ({ x: a.position.x, y: a.position.y, w: LAYOUT.assetW }))
@@ -126,17 +157,26 @@ export function planRowSpacing(input: RowSpacingInput): RowSpacingPlan {
 
   // ---- scene rows ----
   for (const s of input.scenes) if (s.size && !validSize(s.size)) plan.sizes[s.id] = null
+  const sideShifts = pushRight(
+    input.scenes.map((s) => {
+      const size = newSize(s)
+      return { id: s.id, old: { x: s.position.x, y: s.position.y, w: oldW(s), h: s.size?.h ?? OLD_LAYOUT.sceneH }, box: { x: s.position.x, y: s.position.y, w: size.w, h: size.h } }
+    }),
+    LAYOUT.gapY,
+  )
+  const dxOfScene = (id: string) => sideShifts.get(id) ?? 0
   const shifts = pushDown(
     input.scenes.map((s) => {
       const size = newSize(s)
-      return { id: s.id, box: { x: s.position.x, y: s.position.y, w: size.w, h: Math.max(size.h, takeRowH(s.id)) } }
+      return { id: s.id, box: { x: s.position.x + dxOfScene(s.id), y: s.position.y, w: size.w, h: Math.max(size.h, takeRowH(s.id)) } }
     }),
     LAYOUT.gapY,
   )
   const byId = new Map(input.scenes.map((s) => [s.id, s]))
   for (const s of input.scenes) {
+    const dx = dxOfScene(s.id)
     const dy = shifts.get(s.id) ?? 0
-    if (dy) plan.scenes[s.id] = { x: s.position.x, y: s.position.y + dy }
+    if (dx || dy) plan.scenes[s.id] = { x: s.position.x + dx, y: s.position.y + dy }
   }
 
   // ---- the image column left of the scenes ----
@@ -167,7 +207,7 @@ export function planRowSpacing(input: RowSpacingInput): RowSpacingPlan {
     if (!s) continue
     const dy = shifts.get(s.id) ?? 0
     const right = t.position.x >= s.position.x + oldW(s) - 1
-    const dx = right ? newSize(s).w - oldW(s) : 0
+    const dx = dxOfScene(s.id) + (right ? newSize(s).w - oldW(s) : 0)
     if (dx || dy) plan.takes[t.id] = { x: t.position.x + dx, y: t.position.y + dy }
   }
 

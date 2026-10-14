@@ -94,6 +94,28 @@ describe('planRowSpacing', () => {
     expect(plan.scenes.s2).toEqual({ x: 420, y: 60 + 500 + LAYOUT.gapY })
   })
 
+  it('a v1 grid (280px cards 328px apart, rows 266 apart) spreads across and down: level rows, no overlap, idempotent', () => {
+    const grid: RowSpacingInput = {
+      scenes: [0, 1].flatMap((r) => [0, 1, 2].map((c) => scene(`r${r}c${c}`, { x: 420 + c * 328, y: 60 + r * 266 }))),
+      assets: [],
+      takes: [{ id: 't', sceneId: 'r0c1', position: { x: 748 + 280 + 40, y: 60 } }],
+    }
+    expect(showsOldLayout({ scenes: grid.scenes.slice(0, 3), assets: [] })).toBe(true)
+    const plan = planRowSpacing(grid)
+    const out = apply(grid, plan)
+    const pos = Object.fromEntries(out.scenes.map((s) => [s.id, s.position]))
+    expect([pos.r0c0, pos.r0c1, pos.r0c2]).toEqual([{ x: 420, y: 60 }, { x: 820, y: 60 }, { x: 1220, y: 60 }])
+    expect([pos.r1c0, pos.r1c1, pos.r1c2]).toEqual([{ x: 420, y: 412 }, { x: 820, y: 412 }, { x: 1220, y: 412 }])
+    // the hand-placed take follows its card across (+72) and gains the card's new width (+72)
+    expect(plan.takes.t).toEqual({ x: 1068 + 144, y: 60 })
+    expect(planRowSpacing(out).changed).toBe(false)
+    // cards that fit side by side at the new width (or overlapped already at the old one) never move across
+    const wide = [scene('a', { x: 420, y: 60 }), scene('b', { x: 820, y: 60 }), scene('c', { x: 1000, y: 60 })]
+    expect(showsOldLayout({ scenes: wide, assets: [] })).toBe(false)
+    const moved = planRowSpacing({ scenes: wide, assets: [asset('x', oldTile(0)), asset('y', oldTile(1))], takes: [] }).scenes
+    expect(Object.values(moved).map((p) => p.x)).toEqual(Object.keys(moved).map((id) => wide.find((s) => s.id === id)!.position.x))
+  })
+
   it('a project laid out for 0.6.0 (or already spaced) needs nothing — the step is idempotent', () => {
     const fresh: RowSpacingInput = {
       scenes: [0, 1, 2].map((i) => scene('s' + i, { x: LAYOUT.scenesX, y: 60 + i * ROW_H })),

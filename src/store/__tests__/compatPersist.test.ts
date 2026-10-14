@@ -259,10 +259,8 @@ describe('v1 grid layout (ae04bea: 5 scenes per row, 328px apart, rows 266px apa
     expect(showsOldLayout(project)).toBe(true)
   })
 
-  // KNOWN ISSUE, outside the compat boundary (components/canvas/rowSpacing.ts): v1 cards 328px apart no longer fit the
-  // 352px node side by side (24px overlap), and the one-time spacing only moves rows DOWN — pushDown turns a v1 row
-  // into a zig-zag (420,60 / 748,420 / 1076,60 / 1404,420). Flip to `it` when rowSpacing handles side-by-side cards.
-  it.fails('spaces a v1 grid row without overlapping cards and keeps it level', () => {
+  // v1 cards 328px apart no longer fit the 352px node side by side (24px overlap): the row is spread across, level.
+  it('spaces a v1 grid row without overlapping cards and keeps it level', () => {
     const project = migrateProject(jsonCopy(compatFixtures[0].autosave.project))
     const plan = planRowSpacing({ scenes: project.scenes, assets: project.assets, takes: [], folders: project.folders })
     expect(plan.changed).toBe(true)
