@@ -1,8 +1,7 @@
-import { ChevronDown, LayoutGrid, X } from 'lucide-react'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { X } from 'lucide-react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useShallow } from 'zustand/react/shallow'
-import { arrangeCanvas, arrangeTakesKey, buildArrangeInput, stageSize, useArrangeMenu } from '../../arrangeActions'
+import { arrangeCanvas, arrangeTakesKey, buildArrangeInput, stageSize } from '../../arrangeActions'
 import { arrange, type ArrangeOptions, type ArrangeStyle } from '../../core/arrange'
 import { cleanArrangePrefs, DEFAULT_ARRANGE_PREFS, resolveArrange, useArrangePrefs, type ArrangePrefs } from '../../lib/arrangePrefs'
 import { useProject } from '../../store/project'
@@ -10,7 +9,7 @@ import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import {
-  anchorRect, arrangeTitle, backdropHandlers, CHOSEN_NOTICE, FOLDER_KEEP_HINT, FOLLOW_HINT, handlePopoverKey, hiddenFolderTakes, hiddenLinkText,
+  anchorRect, backdropHandlers, CHOSEN_NOTICE, FOLDER_KEEP_HINT, FOLLOW_HINT, handlePopoverKey, hiddenFolderTakes, hiddenLinkText,
   placeBySide, previewBoxes, previewCaption, scopeCounts, scopeLabel, scopeTotal, stripWarning, STYLE_HINT, STYLE_LABEL, TOO_WIDE,
   type PopoverAnchor, type Side,
 } from './arrangeModel'
@@ -20,29 +19,6 @@ const STYLES: ArrangeStyle[] = ['rows', 'grid', 'strip']
 const ADVANCED_KEY = 'bdp:pref:arrange:advanced'
 /** Overlays that own the keyboard while they are up (dialogs, confirm / dev sheets, image viewer). */
 const OTHER_OVERLAYS = '.modal-backdrop, .lightbox, [data-top-overlay]'
-
-export const ArrangeButton = memo(function ArrangeButton() {
-  const anchor = useRef<HTMLButtonElement>(null), timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const held = useRef(false)
-  const open = useArrangeMenu((s) => s.open)
-  const prefs = useArrangePrefs(useShallow(({ style, gridCols, spacing, refs, folders, placedTakes, videoBy }) => ({ style, gridCols, spacing, refs, folders, placedTakes, videoBy })))
-  // The open flag lives in a store: a button that leaves the page (other view, toolbar rebuilt) closes its popover.
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); useArrangeMenu.getState().close() }, [])
-  const stopHold = () => { if (timer.current) clearTimeout(timer.current) }
-  const close = useCallback(() => { useArrangeMenu.getState().close(); anchor.current?.focus() }, [])
-  return <div className="cv-ar-split">
-    <button className="cv-tb-icon" aria-label="Sắp xếp" title={arrangeTitle(resolveArrange(prefs))}
-      onClick={() => { if (!held.current) arrangeCanvas(); held.current = false }}
-      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); useArrangeMenu.getState().toggle() }}
-      onPointerDown={(e) => { held.current = false; if (e.pointerType === 'touch') timer.current = setTimeout(() => { held.current = true; useArrangeMenu.getState().toggle() }, 500) }}
-      onPointerUp={stopHold} onPointerCancel={stopHold} onPointerLeave={stopHold}>
-      <LayoutGrid size={16} strokeWidth={1.75} />
-    </button>
-    <button ref={anchor} className="cv-tb-icon cv-ar-chevron" aria-label="Tuỳ chỉnh sắp xếp" title="Kiểu sắp xếp & tuỳ chỉnh" aria-haspopup="dialog" aria-expanded={open}
-      onClick={() => useArrangeMenu.getState().toggle()}><ChevronDown size={12} /></button>
-    {open && anchor.current && <ArrangePopover anchor={anchor.current} side="up" onClose={close} />}
-  </div>
-})
 
 function StylePreview({ style }: { style: ArrangeStyle }) {
   return <svg viewBox="0 0 100 48" aria-hidden="true">{Array.from({ length: 4 }, (_, i) => {

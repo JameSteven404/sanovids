@@ -34,7 +34,7 @@ import { deleteMedia, getBlob, putBlob } from './lib/imageStore'
 import { flushScenes } from './lib/promptDrafts'
 import { shortcutLabel } from './lib/keymapPrefs'
 import { freeSpotFrom, LAYOUT, oneUndoStep, presetSettings, redo, sameSettings, setTakeLayoutSource, undo, undoToastAction, useProject, type AddRefsResult, type Box, type PlaceHint } from './store/project'
-import { isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
+import { isForeignTake, isParkedTake, isUncertainSubmit, isUnverifiableSubmit, remoteVideoReady, requestInFlight, requestInFlightText, useRuns } from './store/runs'
 import { currentTakeRows, takeLayoutSource } from './store/takeRows'
 import { toast, useUI, type DevPanelTab, type TopUpTab } from './store/ui'
 
@@ -342,6 +342,34 @@ export function duplicateSelection() {
   const created = useProject.getState().duplicateScenes(ids)
   useUI.getState().select(created)
   toast(`Đã nhân bản ${created.length} cảnh.`, { tone: 'success', action: undoToastAction() })
+}
+
+/** Selection only: never turn a possibly paid or still-running take into a new submission. */
+export function selectScenesWithoutVideo(failedOnly = false) {
+  const byScene = new Map<string, Take[]>()
+  for (const take of useRuns.getState().takes) {
+    const own = byScene.get(take.sceneId) ?? []
+    own.push(take)
+    byScene.set(take.sceneId, own)
+  }
+  const ids: string[] = [], review: string[] = []
+  for (const scene of useProject.getState().project.scenes) {
+    const own = byScene.get(scene.id) ?? []
+    if (own.some((t) => isForeignTake(t) || isParkedTake(t) || t.foreignSettings || ['completed', 'queued', 'processing'].includes(t.status))) continue
+    if (own.some((t) => isUncertainSubmit(t) || (providerOf(t) !== 'mock' && t.remoteId &&
+      (t.status === 'cancelled' || (t.status === 'failed' && t.error?.startsWith('Video đã tạo xong')))))) {
+      review.push(scene.id)
+      continue
+    }
+    const latest = own.reduce<Take | undefined>((last, t) => !last || t.number > last.number || (t.number === last.number && t.createdAt > last.createdAt) ? t : last, undefined)
+    if (!failedOnly || latest?.status === 'failed') ids.push(scene.id)
+  }
+  // Nothing matched: keep the selection the user built (selection is not in the undo history).
+  if (ids.length) useUI.getState().select(ids)
+  const text = ids.length ? `Đã chọn ${ids.length} cảnh ${failedOnly ? 'có video lỗi' : 'chưa có video'} — bấm ▶ để xem chi phí rồi chạy.`
+    : failedOnly ? 'Không có cảnh nào bị lỗi.' : 'Không có cảnh chưa có video nào có thể chọn.'
+  toast(text + (review.length ? ` Bỏ qua ${review.length} cảnh cần xem lại trước (có thể đã trừ credit) — mở thẻ video lỗi để xem cách xử lý.` : ''))
+  return { ids, review }
 }
 
 export { keyboardDeletePlan, checkTakeDelete, type TakeDeleteConfirm } from './core/deletePlan'
@@ -920,6 +948,21 @@ export async function downloadTake(takeId: string, opts: { auto?: boolean } = {}
   } catch (e) {
     toast(`Không lưu được video: ${(e as Error).message}`, { tone: 'error' })
     return false
+  }
+}
+
+const savingTakes = new Set<string>()
+/**
+ * downloadTake for buttons without their own busy state (the canvas toolbar tray): one save per take at a time, so
+ * a double click — or a click while the files are still being built — never saves twice or opens two save dialogs.
+ */
+export async function downloadTakeOnce(takeId: string) {
+  if (savingTakes.has(takeId)) return false
+  savingTakes.add(takeId)
+  try {
+    return await downloadTake(takeId)
+  } finally {
+    savingTakes.delete(takeId)
   }
 }
 
