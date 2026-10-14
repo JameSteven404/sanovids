@@ -68,9 +68,12 @@ const known = (n: number | null | undefined): n is number => typeof n === 'numbe
 
 const clean = (s: string | null | undefined) => (s ?? '').trim().replace(/[.\s]+$/, '')
 
+/** A wallet the pill reads from a gateway (every kind but the old demo's). */
+type GatewayKind = Exclude<CreditKind, 'demo'>
+
 /** How each gateway is named on the pill. */
 interface PillWords {
-  kind: 'dev' | 'canvasapp'
+  kind: GatewayKind
   /** Shown before the value. */
   source: string
   /** "canvasapp" in sentences / aria labels. */
@@ -78,16 +81,24 @@ interface PillWords {
   /** The account, in sentences. */
   account: string
   sim: boolean
+  /** The "+" (Nạp credit) through this gateway: canvasapp's (real or simulated) only — seedvis has no in-app top-up. */
+  topUp: boolean
 }
 
-const WORDS: Record<'dev' | 'canvasapp', PillWords> = {
-  canvasapp: { kind: 'canvasapp', source: 'canvasapp', name: 'canvasapp', account: 'tài khoản canvasapp.io.vn', sim: false },
-  dev: { kind: 'dev', source: 'DEV', name: 'DEV', account: 'tài khoản canvasapp giả lập (chế độ Phát triển)', sim: true },
+/**
+ * A full Record over the gateway kinds: a new wallet is a type error here, never a silent canvasapp-looking pill (fake
+ * credits shown as real canvasapp money). seedvis's own states (a key instead of a login) come with its pill (B4).
+ */
+const WORDS: Record<GatewayKind, PillWords> = {
+  canvasapp: { kind: 'canvasapp', source: 'canvasapp', name: 'canvasapp', account: 'tài khoản canvasapp.io.vn', sim: false, topUp: true },
+  dev: { kind: 'dev', source: 'DEV', name: 'DEV', account: 'tài khoản canvasapp giả lập (chế độ Phát triển)', sim: true, topUp: true },
+  seedvis: { kind: 'seedvis', source: 'seedvis', name: 'seedvis', account: 'tài khoản seedvis.com', sim: false, topUp: false },
+  'seedvis-dev': { kind: 'seedvis-dev', source: 'seedvis · DEV', name: 'seedvis giả lập', account: 'tài khoản seedvis giả lập (chế độ Phát triển)', sim: true, topUp: false },
 }
 
-/** "1.234 credit ≈ 1.234.000đ" (real) | "1.234 credit dev" (dev — no đồng: it is not money). */
+/** "1.234 credit ≈ 1.234.000đ" (canvasapp) | "1.234 credit seedvis" | "1.234 credit dev" (đồng: canvasapp's rate only). */
 function amountText(n: number, w: PillWords): string {
-  return w.sim ? formatCredits(n, 'dev') : `${formatCredits(n, 'canvasapp')} ≈ ${formatVnd(n)}`
+  return w.kind === 'canvasapp' ? `${formatCredits(n, 'canvasapp')} ≈ ${formatVnd(n)}` : formatCredits(n, w.kind)
 }
 
 /** The pill for a CreditInfo (useCreditInfo()). `spent` = demo credits spent (shown in the demo tooltip). */
@@ -116,7 +127,8 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
     }
   }
 
-  const w = WORDS[info.kind as Exclude<CreditKind, 'demo'>] ?? WORDS.canvasapp
+  // TODO(B4): the seedvis pill's own states (plan §12.7); only canvasapp's wallets reach this pill so far
+  const w = WORDS[info.kind]
   const source = w.source
   const sim = w.sim
   const when = has && info.updatedAt ? ` (cập nhật lúc ${clockText(info.updatedAt, opts.now)})` : ''
@@ -164,7 +176,7 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
         low,
         busy: info.refreshing,
         action: 'refresh',
-        topUp: true,
+        topUp: w.topUp,
         title:
           `Không cập nhật được số credit ${w.name}: ${clean(info.error) || 'lỗi không rõ'}.` +
           (has ? `\nSố cuối cùng: ${amount}${when}.` : '') +
@@ -213,11 +225,11 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
       low,
       busy: info.refreshing,
       action: 'refresh',
-      topUp: true,
+      topUp: w.topUp,
       title:
-        `${CREDIT_HINT.dev}.\nSố dư ${w.account}: ${amount}${when}${refreshing}.\n` +
+        `${CREDIT_HINT[w.kind] ?? CREDIT_HINT.dev}.\nSố dư ${w.account}: ${amount}${when}${refreshing}.\n` +
         'Take mới trừ vào số này khi máy chủ giả lập nhận job. Bấm để cập nhật · đổi số dư hoặc gây lỗi trong Bảng phát triển.',
-      ariaLabel: `DEV: ${formatCredits(balance, 'dev')} (giả lập, không phải tiền thật) — bấm để cập nhật`,
+      ariaLabel: `${w.source}: ${formatCredits(balance, w.kind)} (giả lập, không phải tiền thật) — bấm để cập nhật`,
     }
   }
   return {
@@ -228,8 +240,8 @@ export function creditPillView(info: CreditPillInput, opts: { spent?: number; no
     low,
     busy: info.refreshing,
     action: 'refresh',
-    topUp: true,
-    title: `Credit thật của tài khoản canvasapp.io.vn: ${amount}${when}${refreshing}.\n` + 'Take mới trừ vào số này khi canvasapp nhận job. Bấm để cập nhật.',
-    ariaLabel: `canvasapp: ${formatCredits(balance, 'canvasapp')}, khoảng ${formatVnd(balance)} — bấm để cập nhật`,
+    topUp: w.topUp,
+    title: `Credit thật của ${w.account}: ${amount}${when}${refreshing}.\n` + `Take mới trừ vào số này khi ${w.name} nhận job. Bấm để cập nhật.`,
+    ariaLabel: `${w.name}: ${formatCredits(balance, w.kind)}${w.kind === 'canvasapp' ? `, khoảng ${formatVnd(balance)}` : ''} — bấm để cập nhật`,
   }
 }

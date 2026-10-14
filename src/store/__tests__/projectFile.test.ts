@@ -63,7 +63,7 @@ describe('export / import of a project file', () => {
 })
 
 describe('importing a file of a newer SanoVids build', () => {
-  const VEO = { model: 'seedvis/veo_3.1', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16' }
+  const VEO = { model: 'future/model_x', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16' }
 
   it('warns (never refuses) for a file version above 2', () => {
     const raw = project()
@@ -77,7 +77,7 @@ describe('importing a file of a newer SanoVids build', () => {
     const withScene = { ...project(), scenes: [{ ...scene('s1', 1), settings: VEO }] }
     const imported = importedProject(withScene)
     // the marker survives the import (the scene stays blocked)
-    expect(imported.scenes[0]).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+    expect(imported.scenes[0]).toMatchObject({ foreignModel: 'future/model_x', foreignSettings: VEO })
     expect(importWarning({ version: 2, project: withScene }, imported)).toBe(NEWER_FILE_WARNING)
     const withPreset = { ...project(), presets: [{ id: 'pv', name: 'Veo', ...VEO }] }
     expect(importWarning({ version: 2, project: withPreset }, importedProject(withPreset))).toBe(NEWER_FILE_WARNING)

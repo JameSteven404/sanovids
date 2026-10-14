@@ -1,18 +1,21 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
-import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles, Sprout } from 'lucide-react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
 import { sceneMapOf } from '../../core/sceneIndex'
 import type { JobStatus, Scene, Take, VideoSettings } from '../../core/types'
+import { creditKindOf, type CreditKind } from '../../lib/credits'
 import { getBlob } from '../../lib/imageStore'
 import {
   activeProviderId,
   PROVIDER_LABEL,
+  providerForModel,
   providerLimits,
   providerLimitsInfo,
   providerOf,
   refreshProviderLimits,
+  useDevAllowed,
   useProviderLimits,
   useProviderPrefs,
   watchProviderLimits,
@@ -26,10 +29,28 @@ import { useRuns } from '../../store/runs'
 
 // ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
 
-/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings or the lock change it. */
+/**
+ * Provider that NEW canvasapp takes will use (see providers/index activeProviderId); re-renders when Settings or the
+ * lock change it. canvasapp alias: a scene's own provider is useSceneProvider(model) (seedvis routes run elsewhere).
+ */
 export function useActiveProvider(): ProviderId {
   useProviderPrefs((s) => s.active)
   return activeProviderId()
+}
+
+/**
+ * The provider a scene of `model` runs on now (providers/index providerForModel): a primitive, re-rendered when Settings
+ * or the development-mode lock change it — cheap with a card per scene.
+ */
+export function useSceneProvider(model: string): ProviderId {
+  useProviderPrefs((s) => s.active)
+  useDevAllowed()
+  return providerForModel(model)
+}
+
+/** The wallet a scene of `model` is paid from (lib/credits creditKindOf of its provider): a primitive string. */
+export function useWalletKind(model: string): CreditKind {
+  return creditKindOf(useSceneProvider(model))
 }
 
 // ---- what the gateway runs right now (/api/video-profiles; providers/index useProviderLimits) ----
@@ -66,6 +87,8 @@ export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimit
  * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
  */
 export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+  // TODO(B3, before SEEDVIS_ENABLED flips): the limits of the scene's own provider (useSceneProvider(settings.model));
+  // the active canvasapp one judges a Veo 8 s scene by canvasapp's Seedance profile and blocks it
   const provider = useActiveProvider()
   return useProviderLimits((s) => {
     void s.rev[provider]
@@ -85,6 +108,8 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
   const given = typeof target === 'string' ? undefined : target
   // by id: the map shared by every selector of this scenes array (core/sceneIndex), never a scan per keystroke
   const pick = (scenes: readonly Scene[]) => (id === undefined ? given : sceneMapOf(scenes).get(id))
+  // TODO(B3, before SEEDVIS_ENABLED flips): settingsBlock from the scene's own provider (providerForModel), as
+  // useSettingsRunBlock above and store/runs check() (B2) — not the active canvasapp provider's limits
   const provider = useActiveProvider()
   // re-renders (and so re-selects below) when what the gateway refuses was read again
   useProviderLimits((s) => s.rev[provider] ?? 0)
@@ -99,12 +124,23 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
-const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp' }
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp', 'seedvis-dev': 'seedvis · DEV', seedvis: 'seedvis' }
 
 const PROVIDER_TITLE: Record<ProviderId, string> = {
   mock: 'Demo cũ — video giả, trả bằng credit demo (không phải tiền thật)',
   dev: 'Phát triển (giả lập) — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật)',
   canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
+  'seedvis-dev': 'seedvis giả lập (chế độ Phát triển) — seedvis giả lập trong máy, trả bằng credit dev seedvis (không phải tiền thật)',
+  seedvis: 'seedvis.com — video thật, trả bằng credit seedvis của tài khoản bạn',
+}
+
+/** Icon of each provider's chip: a distinct generic sign per service (never a logo), simulated ones a bug. */
+const PROVIDER_ICON: Record<ProviderId, ReactNode> = {
+  mock: <Sparkles size={10} />,
+  dev: <Bug size={10} />,
+  canvasapp: <Cloud size={10} />,
+  'seedvis-dev': <Bug size={10} />,
+  seedvis: <Sprout size={10} />,
 }
 
 /** Chip of a take made by a newer SanoVids build's provider (Take.foreignProvider) instead of "Demo cũ". */
@@ -130,8 +166,8 @@ export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'
       className={`rq-prov ${id}`}
       title={PROVIDER_TITLE[id] ?? PROVIDER_LABEL[id]}
     >
-      {id === 'mock' ? <Sparkles size={10} /> : id === 'dev' ? <Bug size={10} /> : <Cloud size={10} />}
-      {PROVIDER_SHORT[id]}
+      {PROVIDER_ICON[id] ?? <Cloud size={10} />}
+      {PROVIDER_SHORT[id] ?? PROVIDER_LABEL[id] ?? id}
     </span>
   )
 }
@@ -189,9 +225,8 @@ export function useNow(active: boolean, ms = 1000): number {
   return now
 }
 
-export function sameSettings(a: VideoSettings, b: VideoSettings): boolean {
-  return a.model === b.model && a.mode === b.mode && a.duration === b.duration && a.resolution === b.resolution && a.ratio === b.ratio
-}
+/** Same model, mode, duration, resolution and ratio (lives in core/models; re-exported for the runs area's imports). */
+export { sameSettings } from '../../core/models'
 
 /**
  * ★ = THE take chosen for its scene (Storyboard / Phát liền use it), so starring a take un-stars the

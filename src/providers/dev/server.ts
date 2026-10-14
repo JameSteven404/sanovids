@@ -39,9 +39,9 @@
 // ---- API ----
 //   createDevCanvasapp(deps?): DevCanvasapp      see the interface below (request() / openStream() are what the bridge calls).
 //   DEV_CONFIG_DEFAULT, DEV_SPEED_LABEL, DEV_FAULT_PRESETS, imageIdFromUploadFilename(filename)
-import { costOf, MODELS } from '../../core/models'
+import { CANVASAPP_MODELS, costOf, MODELS } from '../../core/models'
 import { creditsForAmount, formatVnd, isTopupHistoryKind, TOPUP_MAX_VND, TOPUP_MIN_VND, TOPUP_ORDER_TTL_MS, TOPUP_STEP_VND } from '../../core/topup'
-import type { Mode, ModelId } from '../../core/types'
+import type { CanvasappModelId, Mode, ModelId } from '../../core/types'
 import { memoryStorage, type KeyValueStorage } from '../canvasapp/adapter'
 import type { TransportRequest, VideoProfile } from '../canvasapp/api'
 import type { BridgeResponse } from '../canvasapp/transport'
@@ -103,7 +103,7 @@ export interface DevConfig {
    * continues where it stopped. Unknown on the live site: off by default (a cut download starts again later).
    */
   rangeSupport: boolean
-  models: Record<ModelId, DevModelToggle>
+  models: Record<CanvasappModelId, DevModelToggle>
   /** How the login cookie is set (keepLogin.ts): 'session' = lost when the app quits, like the real site as believed. */
   loginCookie: DevLoginCookie
   /** safeStorage on this simulated computer: the kept login copy can be written / read ('ok') or not. */
@@ -720,7 +720,7 @@ function mergeConfig(raw: unknown): DevConfig {
   const d = DEV_CONFIG_DEFAULT
   const models = { ...d.models }
   if (isObj(c.models)) {
-    for (const id of Object.keys(d.models) as ModelId[]) {
+    for (const id of Object.keys(d.models) as CanvasappModelId[]) {
       const m = c.models[id]
       if (!isObj(m)) continue
       const spec = MODELS[id]
@@ -751,9 +751,9 @@ function mergeConfig(raw: unknown): DevConfig {
   }
 }
 
-/** /api/video-profiles of the simulated site for these model toggles (every model of SanoVids' table). */
+/** /api/video-profiles of the simulated site for these model toggles (every canvasapp model of SanoVids' table). */
 export function devVideoProfiles(models: DevConfig['models']): VideoProfile[] {
-  return (Object.values(MODELS) as (typeof MODELS)[ModelId][]).map((m) => {
+  return Object.values(CANVASAPP_MODELS).map((m) => {
     const t = models[m.id] ?? DEV_CONFIG_DEFAULT.models[m.id]
     return {
       model_profile: m.id,

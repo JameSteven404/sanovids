@@ -78,10 +78,10 @@ describe('runBlockReason — each rule', () => {
   })
 
   it('1. a model of a newer SanoVids build blocks first, whatever else is wrong', () => {
-    const s = scene({ prompt: '', foreignModel: 'veo_3_1@seedvis' })
-    expect(reasonOf(s)).toBe(foreignModelReason('veo_3_1@seedvis'))
-    expect(foreignModelReason('veo_3_1@seedvis')).toBe(
-      'Cảnh dùng model của bản SanoVids mới hơn (veo_3_1@seedvis) — cập nhật SanoVids để chạy (hoặc chọn lại model để chạy bằng model này).',
+    const s = scene({ prompt: '', foreignModel: 'model_x@futurevendor' })
+    expect(reasonOf(s)).toBe(foreignModelReason('model_x@futurevendor'))
+    expect(foreignModelReason('model_x@futurevendor')).toBe(
+      'Cảnh dùng model của bản SanoVids mới hơn (model_x@futurevendor) — cập nhật SanoVids để chạy (hoặc chọn lại model để chạy bằng model này).',
     )
     expect(reasonOf(scene({ foreignModel: '' }))).toBeNull()
     expect(reasonOf(scene({ prompt: '@video_1', foreignModel: 'veo' }))).toBe(foreignModelReason('veo'))

@@ -10,8 +10,13 @@
 // left in a prompt stays verbatim but blocks the run (core/compile retiredVideoTokens). Never reuse `videoRefs`,
 // `legacyVideoRefs`, `@video_N` or the `vref` wire kind with another meaning.
 
-export type ModelId = 'seedance_2_5' | 'minimax_h3'
-export type Mode = 't2v' | 'i2v' | 'transform'
+// Catalogue ids (core/services is the one definition, shared with the seedvis contract): a model id carries its service
+// ('seedance_2_5' / 'minimax_h3' are canvasapp's and never renamed; 'seedvis/…' are seedvis.com's). ModelId is a closed
+// union, so tsc lists every Record<ModelId, …>. Which routes this build offers and runs: core/models (SEEDVIS_ENABLED).
+// Mode 'first' = "Khung đầu → Video" (Veo 3.1 on seedvis: one image as the opening frame).
+import type { CanvasappModelId, Mode, ModelId, SeedvisModelId, ServiceId, TakeProvider } from './services'
+export type { CanvasappModelId, Mode, ModelId, SeedvisModelId, ServiceId, TakeProvider }
+
 export type AssetKind = 'character' | 'location' | 'prop' | 'style'
 export type EdgeMode = 'hidden' | 'selected' | 'all'
 export type ViewMode = 'canvas' | 'table' | 'storyboard'
@@ -259,6 +264,29 @@ export interface Take {
    * importedTake.restorePlan). See providers/canvasapp/siteJobs.ts.
    */
   imported?: TakeImport
+  // ---- seedvis fields (optional; each one is omitted at its default; migrateTake keeps only valid values) ----
+  /** `cost` comes from the reference price table (models priceOf): shown with "≈". */
+  costEstimated?: true
+  /** No estimate for this combination (not measured): the price shows "—". */
+  costUnknown?: true
+  /** Phase at seedvis while the take is processing. */
+  remotePhase?: 'queued' | 'processing'
+  /** Live note from the adapter (queue position, downscaled images, echo, "held for key …"). */
+  remoteNote?: string
+  /** Final seedvis `error.code` (not_started, cancelled, insufficient_credits, content_policy, …): drives the cost line. */
+  remoteCode?: string
+  /** The case-specific explanation under a fixed money text (the error itself stays one fixed text per provider). */
+  remoteDetail?: string
+  /** A cancel was asked at the provider and is waiting for its outcome (only with a remoteId). */
+  cancelRequested?: true
+  /** The provider refused to cancel: the job runs (and is charged), its video is still downloaded. */
+  cancelBlocked?: true
+  /** Last 4 characters of the API key the job was sent with (runs record only, never in a .sanovids.json export). */
+  keyHint?: string
+  /** Per-install salted tag of that key (never the key, never a bare hash of it). */
+  keyTag?: string
+  /** The remote video is finished and paid but could not be downloaded yet: "Tải lại video" (only with a remoteId). */
+  fetchable?: true
 }
 
 /** Settings / data of an imported take that canvasapp's job list does not tell for sure. */
@@ -275,13 +303,15 @@ export interface TakeImport {
   inferred: ImportedField[]
 }
 
-/**
- * Provider that runs a take (same ids as providers/types ProviderId):
- *   'dev'        development mode — an in-app simulation of canvasapp.io.vn (no network, fake credits);
- *   'canvasapp'  the real canvasapp.io.vn gateway (desktop only, real credits);
- *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed.
+/*
+ * TakeProvider (defined in core/services, re-exported above) = providers/types ProviderId, the provider that runs a take:
+ *   'dev'          development mode — an in-app simulation of canvasapp.io.vn (no network, fake credits);
+ *   'canvasapp'    the real canvasapp.io.vn gateway (desktop only, real credits);
+ *   'seedvis-dev'  development mode — the seedvis adapter over a simulated seedvis.com (fake credits);
+ *   'seedvis'      the real seedvis.com gateway (desktop only, real credits);
+ *   'mock'         the old demo provider ("Demo cũ"): only takes saved before development mode existed.
+ * While core/models SEEDVIS_ENABLED is false, migrate treats both seedvis ids as a newer build's provider (parked).
  */
-export type TakeProvider = 'mock' | 'canvasapp' | 'dev'
 
 export interface CompiledImage {
   /** 1-based N in @image_N */

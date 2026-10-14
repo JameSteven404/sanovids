@@ -533,7 +533,7 @@ describe('runs engine with a provider', () => {
 describe('takes of a newer SanoVids build (foreignProvider)', () => {
   /** A take as a newer build saved it: a provider this build does not know, maybe still running there. */
   const newerTake = (id: string, status: Take['status'], over: Record<string, unknown> = {}) =>
-    ({ ...legacyTake(id, 's2'), status, provider: 'seedvis', remoteId: 'job-' + id, charged: true, ...over }) as unknown as Take
+    ({ ...legacyTake(id, 's2'), status, provider: 'futurevendor', remoteId: 'job-' + id, charged: true, ...over }) as unknown as Take
 
   it('loaded queued / running: parked as failed, never submitted, polled, refunded or counted as work', async () => {
     const f = fakeProvider('mock')
@@ -544,10 +544,10 @@ describe('takes of a newer SanoVids build (foreignProvider)', () => {
       spent: 0,
     })
     for (const id of ['q', 'p']) {
-      expect(take(id)).toMatchObject({ status: 'failed', foreignStatus: id === 'q' ? 'queued' : 'processing', foreignProvider: 'seedvis', provider: 'mock', charged: false, remoteId: 'job-' + id })
+      expect(take(id)).toMatchObject({ status: 'failed', foreignStatus: id === 'q' ? 'queued' : 'processing', foreignProvider: 'futurevendor', provider: 'mock', charged: false, remoteId: 'job-' + id })
       expect(take(id).error).toContain('SanoVids bản mới hơn')
     }
-    expect(take('done')).toMatchObject({ status: 'completed', foreignProvider: 'seedvis', charged: false })
+    expect(take('done')).toMatchObject({ status: 'completed', foreignProvider: 'futurevendor', charged: false })
     await vi.advanceTimersByTimeAsync(2000)
     expect(f.submitted).toEqual([])
     expect(f.polls()).toBe(0)
@@ -563,7 +563,7 @@ describe('takes of a newer SanoVids build (foreignProvider)', () => {
     registerProvider(f.p)
     const dev = fakeProvider('dev')
     registerProvider(dev.p)
-    const raw = { ...newerTake('x', 'processing'), provider: 'mock', foreignProvider: 'seedvis', charged: false } as Take
+    const raw = { ...newerTake('x', 'processing'), provider: 'mock', foreignProvider: 'futurevendor', charged: false } as Take
     const queued = { ...raw, id: 'y', status: 'queued', remoteId: null } as Take
     useRuns.setState({ takes: [raw, queued] })
     useRuns.getState().enqueue(['s1']) // starts the engine (a dev take of this build)
@@ -615,7 +615,7 @@ describe('takes of a newer build’s model on a provider this build knows (forei
         { ...legacyTake('f', 's2'), status: 'failed', error: 'boom' },
         { ...legacyTake('c', 's2'), status: 'cancelled' },
         { ...legacyTake('done', 's2'), status: 'completed' },
-        { ...legacyTake('newerDone', 's2'), status: 'failed', provider: 'seedvis' } as unknown as Take, // failed there: an ordinary failed take
+        { ...legacyTake('newerDone', 's2'), status: 'failed', provider: 'futurevendor' } as unknown as Take, // failed there: an ordinary failed take
       ],
       credits: 100,
       spent: 0,

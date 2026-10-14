@@ -33,7 +33,8 @@
 import { platformText } from '../../lib/platformText'
 import { parseTokens, sceneCode } from '../../core/compile'
 import { MODELS, normalizeSettings } from '../../core/models'
-import type { Asset, ModelId, Scene } from '../../core/types'
+import { CANVASAPP_MODEL_IDS } from '../../core/services'
+import type { Asset, Scene } from '../../core/types'
 import { canvasNodeId, sceneNodeId } from '../../providers/canvasapp/mapping'
 import type { LimitField, LimitsInfo, SettingsLimits } from '../../providers/types'
 import { fieldBlock } from '../inspector/settingsLimits'
@@ -642,7 +643,7 @@ export function limitsStatusText(info: LimitsInfo, limits: Pick<SettingsLimits, 
  */
 export function limitsDifferFromConfig(limits: SettingsLimits, models: DevConfig['models']): boolean {
   if (limits.source !== 'server') return false
-  for (const id of Object.keys(MODELS) as ModelId[]) {
+  for (const id of CANVASAPP_MODEL_IDS) {
     const spec = MODELS[id]
     const t = models[id]
     if (!t) continue

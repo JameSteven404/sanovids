@@ -11,7 +11,7 @@
 import { retiredTokenList, retiredVideoTokens } from '../../core/compile'
 import { imagePlaceholders } from '../../core/placeholders'
 import { isModelId, modeLabel } from '../../core/models'
-import type { Mode, ModelId, VideoSettings } from '../../core/types'
+import type { CanvasappModelId, Mode, ModelId, VideoSettings } from '../../core/types'
 import type { JobRequest, RemoteStatus, SettingsIssue } from '../types'
 import type { CanvasConnection, CanvasImageNode, CanvasJob, CanvasNode, CanvasPayload, CanvasVideoNode, VideoJobBody, VideoProfile } from './api'
 
@@ -37,11 +37,12 @@ export const VIDEO_NODE_H = 600
 export const MAX_BRIDGE_PROMPT_CHARS = 400_000
 export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
-const MODEL_PROFILE: Record<ModelId, string> = { seedance_2_5: 'seedance_2_5', minimax_h3: 'minimax_h3' }
+// canvasapp routes only (TODO B2: refuse every non-canvasapp route before anything is sent, plan §7.3 step 1).
+const MODEL_PROFILE: Readonly<Partial<Record<ModelId, string>>> & Readonly<Record<CanvasappModelId, string>> = { seedance_2_5: 'seedance_2_5', minimax_h3: 'minimax_h3' }
 
 /** canvasapp's model_profile of a model; undefined for a model this build does not know (never sent). */
 export function modelProfileOf(model: ModelId): string {
-  return isModelId(model) ? MODEL_PROFILE[model] : (undefined as unknown as string)
+  return (isModelId(model) ? MODEL_PROFILE[model] : undefined) as string
 }
 
 /** A request whose model this build does not know (a newer build's take): refused before anything is sent. */
@@ -203,7 +204,7 @@ const RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4']
  * /api/video-profiles, or for every model when that list cannot be read — Seedance on, MiniMax-H3 locked
  * (can_create false, transform off).
  */
-export const PROFILE_FALLBACKS: Readonly<Record<ModelId, VideoProfile>> = {
+export const PROFILE_FALLBACKS: Readonly<Partial<Record<ModelId, VideoProfile>>> & Readonly<Record<CanvasappModelId, VideoProfile>> = {
   seedance_2_5: {
     model_profile: 'seedance_2_5',
     display_name: 'Seedance 2.5',

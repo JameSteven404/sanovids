@@ -151,21 +151,21 @@ describe('migrateTake provider fields', () => {
 
 describe('takes of a newer build (foreignProvider / foreignStatus)', () => {
   const running = (status: string, over: Record<string, unknown> = {}) =>
-    migrateTake({ id: 't', sceneId: 's', number: 1, status, provider: 'seedvis', remoteId: 'job-42', charged: true, error: null, ...over })
+    migrateTake({ id: 't', sceneId: 's', number: 1, status, provider: 'futurevendor', remoteId: 'job-42', charged: true, error: null, ...over })
 
   it('only a non-blank unknown provider id is foreign; canvasapp / dev / mock / the old demo keep their charged flag', () => {
     expect(migrateTake({ id: 't', provider: 'canvasapp', charged: true })).toMatchObject({ provider: 'canvasapp', charged: true })
     expect(migrateTake({ id: 't', provider: 'dev' })).toMatchObject({ provider: 'dev', charged: true })
     expect(migrateTake({ id: 't', provider: 'mock' })).toMatchObject({ provider: 'mock', charged: true })
     expect(migrateTake({ id: 't', provider: 'mock', charged: false })).toMatchObject({ provider: 'mock', charged: false })
-    for (const provider of [undefined, null, '', '   ', 42, { id: 'seedvis' }]) {
+    for (const provider of [undefined, null, '', '   ', 42, { id: 'futurevendor' }]) {
       const t = migrateTake({ id: 't', provider })
       expect(t).toMatchObject({ provider: 'mock', charged: true })
       expect('foreignProvider' in t).toBe(false)
     }
     // a known provider is never "foreign", whatever a file says
     for (const provider of ['canvasapp', 'dev'] as const) {
-      const t = migrateTake({ id: 't', provider, foreignProvider: 'seedvis', foreignStatus: 'processing', status: 'failed' })
+      const t = migrateTake({ id: 't', provider, foreignProvider: 'futurevendor', foreignStatus: 'processing', status: 'failed' })
       expect(t.provider).toBe(provider)
       expect('foreignProvider' in t || 'foreignStatus' in t).toBe(false)
     }
@@ -179,7 +179,7 @@ describe('takes of a newer build (foreignProvider / foreignStatus)', () => {
       const t = running(status)
       expect(t).toMatchObject({
         provider: 'mock',
-        foreignProvider: 'seedvis',
+        foreignProvider: 'futurevendor',
         foreignStatus: status,
         status: 'failed',
         error: FOREIGN_RUNNING_ERROR,
@@ -189,7 +189,7 @@ describe('takes of a newer build (foreignProvider / foreignStatus)', () => {
     }
     expect(FOREIGN_RUNNING_ERROR).toBe('Video này đang tạo bằng SanoVids bản mới hơn — mở bằng bản đó để theo dõi.')
     // finished ones keep their status and their error
-    expect(running('completed')).toMatchObject({ status: 'completed', error: null, foreignProvider: 'seedvis' })
+    expect(running('completed')).toMatchObject({ status: 'completed', error: null, foreignProvider: 'futurevendor' })
     expect('foreignStatus' in running('completed')).toBe(false)
     expect(running('failed', { error: 'boom' })).toMatchObject({ status: 'failed', error: 'boom' })
   })
@@ -218,7 +218,7 @@ describe('takes of a newer build (foreignProvider / foreignStatus)', () => {
 })
 
 describe('projects of a newer build', () => {
-  const VEO = { model: 'seedvis/veo_3.1', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16', audio: true, seed: 7 }
+  const VEO = { model: 'future/model_x', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16', audio: true, seed: 7 }
   const newer = (over: Record<string, unknown> = {}) => ({
     id: 'p',
     name: 'Mới',
@@ -265,14 +265,14 @@ describe('projects of a newer build', () => {
   it('keeps an unknown model as a marker with the original settings; settings get valid stand-in values', () => {
     const p = migrateProject(newer())
     const s = p.scenes[0]
-    expect(s.foreignModel).toBe('seedvis/veo_3.1')
+    expect(s.foreignModel).toBe('future/model_x')
     expect(s.foreignSettings).toEqual(VEO)
     // valid for the stand-in model (what normalizeSettings keeps of the saved values: 1080p, 9:16)
     expect(s.settings).toEqual({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '9:16' })
     expect(s.settings).toEqual(normalizeSettings(VEO as never))
     expect(s.presetId).toBe('pv')
     // the preset too (its id / name are not settings)
-    expect(p.presets[0]).toEqual({ id: 'pv', name: 'Veo dọc', ...normalizeSettings(VEO as never), foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+    expect(p.presets[0]).toEqual({ id: 'pv', name: 'Veo dọc', ...normalizeSettings(VEO as never), foreignModel: 'future/model_x', foreignSettings: VEO })
   })
 
   it('is idempotent: a saved and reloaded project keeps the marker exactly', () => {
@@ -310,7 +310,7 @@ describe('projects of a newer build', () => {
       schemaVersion: 2,
       scenes: [
         // a kept marker on stand-in settings (saved by this build): validated and kept
-        { id: 's1', settings: normalizeSettings({}), foreignModel: 'seedvis/veo_3.1', foreignSettings: { ...VEO, nested: { a: 1 }, list: [1], none: null, inf: Infinity } },
+        { id: 's1', settings: normalizeSettings({}), foreignModel: 'future/model_x', foreignSettings: { ...VEO, nested: { a: 1 }, list: [1], none: null, inf: Infinity } },
         // settings without a model id are meaningless: dropped
         { id: 's2', settings: normalizeSettings({}), foreignSettings: VEO },
         // blank / non-string model ids are no marker
@@ -321,7 +321,7 @@ describe('projects of a newer build', () => {
       ],
     })
     const [s1, s2, s3, s4, s5] = p.scenes
-    expect(s1.foreignModel).toBe('seedvis/veo_3.1')
+    expect(s1.foreignModel).toBe('future/model_x')
     expect(s1.foreignSettings).toEqual(VEO)
     for (const s of [s2, s3, s4]) expect('foreignModel' in s || 'foreignSettings' in s).toBe(false)
     expect(s5.foreignModel).toBe('x-model')
@@ -341,7 +341,7 @@ describe('projects of a newer build', () => {
 
   it('a current unknown model wins over a marker saved with it', () => {
     const p = migrateProject({ schemaVersion: 3, scenes: [{ id: 's1', settings: VEO, foreignModel: 'older-x', foreignSettings: { a: 1 } }] })
-    expect(p.scenes[0]).toMatchObject({ foreignModel: 'seedvis/veo_3.1', foreignSettings: VEO })
+    expect(p.scenes[0]).toMatchObject({ foreignModel: 'future/model_x', foreignSettings: VEO })
   })
 
   it('inherited object names are unknown models, never a crash', () => {
@@ -463,20 +463,20 @@ describe('takes of a newer build’s model on a provider this build knows (forei
 
 describe('originals of a newer build are kept for the build that knows them', () => {
   it('a foreign provider take keeps its own charged (foreignCharged) and its error when parked (foreignError)', () => {
-    const t = migrateTake({ id: 't', provider: 'seedvis', charged: true, status: 'processing', remoteId: 'j', error: 'tạm dừng' })
+    const t = migrateTake({ id: 't', provider: 'futurevendor', charged: true, status: 'processing', remoteId: 'j', error: 'tạm dừng' })
     expect(t).toMatchObject({ provider: 'mock', charged: false, foreignCharged: true, foreignError: 'tạm dừng', error: FOREIGN_RUNNING_ERROR })
     expect(migrateTake(JSON.parse(JSON.stringify(t)))).toEqual(t)
     // nothing saved → nothing invented
-    const none = migrateTake({ id: 't', provider: 'seedvis', status: 'completed' })
+    const none = migrateTake({ id: 't', provider: 'futurevendor', status: 'completed' })
     expect('foreignCharged' in none || 'foreignError' in none).toBe(false)
-    expect(migrateTake({ id: 't', provider: 'seedvis', charged: false }).foreignCharged).toBe(false)
+    expect(migrateTake({ id: 't', provider: 'futurevendor', charged: false }).foreignCharged).toBe(false)
     // a known provider never gets them (a file's markers are not trusted)
     const odd = migrateTake({ id: 't', provider: 'dev', foreignCharged: true, foreignError: 'x', foreignSettings: { a: 1 } })
     expect('foreignCharged' in odd || 'foreignError' in odd || 'foreignSettings' in odd).toBe(false)
   })
 
   it('take settings: safe primitives for every reader (settingsLabel never throws), the saved values kept', () => {
-    const odd = migrateTake({ id: 't', provider: 'seedvis', status: 'completed', settings: { model: 'veo', duration: '8', resolution: 1080, extra: 'x' } })
+    const odd = migrateTake({ id: 't', provider: 'futurevendor', status: 'completed', settings: { model: 'veo', duration: '8', resolution: 1080, extra: 'x' } })
     expect(odd.settings).toEqual({ model: 'veo', mode: '', duration: 0, resolution: '', ratio: '', extra: 'x' })
     expect(odd.foreignSettings).toEqual({ model: 'veo', duration: '8', resolution: 1080, extra: 'x' })
     expect(() => settingsLabel(odd.settings)).not.toThrow()
@@ -573,6 +573,18 @@ describe('values of a newer build for a model this build knows (config marker)',
     const p = migrateProject({ ...project(2, offered), scenes: [scene({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' }, { foreignSettings: offered })] })
     expect(p.scenes[0].settings).toEqual(offered)
     expect('foreignSettings' in p.scenes[0]).toBe(false)
+  })
+
+  it('a model marker for a model known here, with values it still does not offer: a config marker, never quietly fixed', () => {
+    // a newer build's 4k value parked by a build without the model, opened by a build that knows the model, not 4k
+    const stand: Record<string, unknown> = { ...normalizeSettings({}) }
+    const p = migrateProject({ ...project(2, FOURK), presets: [{ id: 'k', name: 'K', ...stand, foreignModel: 'seedance_2_5', foreignSettings: FOURK }], scenes: [scene(stand, { foreignModel: 'seedance_2_5', foreignSettings: FOURK })] })
+    for (const x of [p.scenes[0], p.presets[0]]) {
+      expect(x.foreignSettings).toEqual(FOURK)
+      expect('foreignModel' in x).toBe(false)
+    }
+    expect(p.scenes[0].settings).toEqual({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '480p', ratio: '16:9' })
+    expect(migrateProject(JSON.parse(JSON.stringify(p)))).toEqual(p)
   })
 })
 

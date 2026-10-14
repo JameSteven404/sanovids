@@ -4,6 +4,7 @@
 //   'server' + firm   → a sure refusal: the scene cannot run (settingsRunBlock), skipped by the queue, no credit spent.
 //   'fallback' / older → a warning only (settingsRunWarning): the submit reads again first and decides then.
 //   'none'            → nothing (not read yet: the submit reads and decides).
+import { SERVICE_OF_PROVIDER } from '../core/services'
 import type { VideoSettings } from '../core/types'
 import type { ProviderId, SettingsLimits } from './types'
 
@@ -26,18 +27,28 @@ export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id:
   const issues = limits.issues(s)
   if (!issues.length) return null
   const why =
-    limits.source === 'fallback'
-      ? 'chưa đọc được cấu hình model nên đang theo cấu hình mặc định như trang canvasapp'
-      : 'theo lần đọc cấu hình model trước, SanoVids đọc lại trước khi gửi'
+    limits.source !== 'fallback'
+      ? 'theo lần đọc cấu hình model trước, SanoVids đọc lại trước khi gửi'
+      : SERVICE_OF_PROVIDER[id] === 'seedvis'
+        ? `chưa đọc được danh sách model của ${limitsSite(id).short} nên đang theo cấu hình có sẵn của SanoVids`
+        : 'chưa đọc được cấu hình model nên đang theo cấu hình mặc định như trang canvasapp'
   return `Có thể bị từ chối khi gửi (không tốn ${limitsSite(id).credit}): ${issues.map((i) => bare(i.reason)).join('; ')} — ${why}`
 }
 
+/** How the UI names a provider's site and its credits (a full Record: no provider borrows another's words). */
+const LIMITS_SITE: Readonly<Record<ProviderId, { short: string; full: string; credit: string }>> = {
+  dev: { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)', credit: 'credit dev' },
+  canvasapp: { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' },
+  // the old demo has no limits; it keeps canvasapp's words as before
+  mock: { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' },
+  'seedvis-dev': { short: 'seedvis giả lập', full: 'seedvis giả lập (chế độ Phát triển)', credit: 'credit dev seedvis' },
+  seedvis: { short: 'seedvis', full: 'seedvis.com', credit: 'credit seedvis' },
+}
+
 /**
- * How the UI names the site whose limits these are — the real canvasapp, or its simulation in development mode — and
- * its credits ("credit dev" in development mode, CLAUDE.md).
+ * How the UI names the site whose limits these are — the real canvasapp / seedvis, or its simulation in development
+ * mode — and its credits ("credit dev" in development mode, CLAUDE.md).
  */
 export function limitsSite(id: ProviderId): { short: string; full: string; credit: string } {
-  return id === 'dev'
-    ? { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)', credit: 'credit dev' }
-    : { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' }
+  return LIMITS_SITE[id] ?? LIMITS_SITE.canvasapp
 }

@@ -15,7 +15,7 @@ import { groupKeyOf, imagePlaceholders, labelFitsSlot, planFill, planReplace, re
 import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } from '../core/folders'
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
-import { MODELS, normalizeSettings } from '../core/models'
+import { MODELS, normalizeSettings, presetSettings, sameSettings } from '../core/models'
 import { factoryPresets, PRESET_NAMES_VERSION } from '../core/factoryPresets'
 import { normalizeAssetName, normalizeFolderName, normalizePresetName } from '../core/names'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
@@ -393,10 +393,8 @@ const fillOpts = (p: Project, s: Scene, place?: FillOptions['place']): FillOptio
   ...(place ? { place } : {}),
 })
 
-/** The video settings of a preset (without id / name). */
-export function presetSettings(p: Preset): VideoSettings {
-  return { model: p.model, mode: p.mode, duration: p.duration, resolution: p.resolution, ratio: p.ratio }
-}
+// presetSettings / sameSettings live in core/models (pure); re-exported for this store's existing importers.
+export { presetSettings, sameSettings }
 
 /** Marker of a model saved by a newer build that this build does not know (see Scene.foreignModel). */
 type ForeignMark = Pick<Scene, 'foreignModel' | 'foreignSettings'>
@@ -422,11 +420,6 @@ function withForeignOf<T extends ForeignMark>(x: T, src: ForeignMark | undefined
     ...(src.foreignModel !== undefined ? { foreignModel: src.foreignModel } : {}),
     ...(src.foreignSettings !== undefined ? { foreignSettings: src.foreignSettings } : {}),
   }
-}
-
-/** Same model, mode, duration, resolution and ratio. */
-export function sameSettings(a: VideoSettings, b: VideoSettings): boolean {
-  return a.model === b.model && a.mode === b.mode && a.duration === b.duration && a.resolution === b.resolution && a.ratio === b.ratio
 }
 
 export interface AddRefsResult {
