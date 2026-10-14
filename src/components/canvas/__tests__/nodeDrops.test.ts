@@ -2,6 +2,7 @@
 // real stores: every drop is ONE undo step (tiles + link + inserted tags — "Hoàn tác" never leaves half of it behind),
 // library cards without a tile get one in the image column, image files over the model's limit stay on the canvas,
 // and a node field's draft is committed on structural changes, hiding / closing the window and unmount.
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Asset, Project, Scene, XY } from '../../../core/types'
 import { draftCount, flushScenes } from '../../../lib/promptDrafts'
@@ -9,7 +10,9 @@ import { LAYOUT, oneUndoStep, undo, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
 import { imageColumnX } from '../canvasModel'
-import { bindNodeDraft, filesToSceneTiles, insertLinksAtExcerpt, linkCardsToNode, linkNewTiles, placeLinkedTiles } from '../SceneNodeEditor'
+import { VIDEO_NOT_REFERENCE_TEXT } from '../../../actions'
+import { ASSETS_MIME, TAKES_MIME } from '../../../lib/dnd'
+import { bindNodeDraft, filesToSceneTiles, insertLinksAtExcerpt, linkCardsToNode, linkNewTiles, placeLinkedTiles, takeDropOnNode } from '../SceneNodeEditor'
 
 // Image files are stored in IndexedDB in the app: here each one gets a fresh media id.
 let blobSeq = 0
@@ -136,6 +139,38 @@ describe('library cards / tiles dropped on a node', () => {
     expect(assetOf('lib')!.position).toBeNull()
     expect(history()).toBe(0)
     expect(placeLinkedTiles('s1', ['lib'])).toEqual([])
+  })
+})
+
+describe('a video dragged onto a scene node (reference videos retired)', () => {
+  const dragEvent = (type: string) => ({ dataTransfer: { types: [type] } as unknown as DataTransfer, preventDefault: vi.fn(), stopPropagation: vi.fn() })
+  it('is accepted (no no-drop cursor), links nothing and says why on drop', () => {
+    load([scene('s1', 1, S1)], [])
+    const before = project()
+    useUI.getState().setDraggingTakes(['t1'])
+    const over = dragEvent(TAKES_MIME)
+    expect(takeDropOnNode(over, false)).toBe(true)
+    expect(over.preventDefault).toHaveBeenCalled()
+    expect(over.stopPropagation).toHaveBeenCalled()
+    expect(useUI.getState().toasts).toHaveLength(0)
+    const drop = dragEvent(TAKES_MIME)
+    expect(takeDropOnNode(drop, true)).toBe(true)
+    expect(drop.preventDefault).toHaveBeenCalled()
+    expect(lastToast()?.text).toBe(`${VIDEO_NOT_REFERENCE_TEXT}.`)
+    expect(useUI.getState().draggingTakeIds).toBeNull()
+    expect(project()).toBe(before)
+    expect(history()).toBe(0)
+  })
+  it('SceneNode routes both its dragover and its drop through it', () => {
+    const src = readFileSync(new URL('../SceneNode.tsx', import.meta.url), 'utf8')
+    expect(src).toMatch(/const onDragOver = \(e: DragEvent\) => \{[^}]*if \(takeDropOnNode\(e, false\)\) return/)
+    expect(src).toMatch(/const onDrop = \(e: DragEvent\) => \{\s*if \(takeDropOnNode\(e, true\)\) return/)
+  })
+  it('any other drag is left to the node', () => {
+    const e = dragEvent(ASSETS_MIME)
+    expect(takeDropOnNode(e, true)).toBe(false)
+    expect(e.preventDefault).not.toHaveBeenCalled()
+    expect(useUI.getState().toasts).toHaveLength(0)
   })
 })
 

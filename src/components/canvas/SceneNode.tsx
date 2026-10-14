@@ -9,7 +9,7 @@ import { Handle, Position, useReactFlow, useStore, type Node, type NodeProps } f
 import { ChevronDown, ImagePlus, Link2, Lock, Play, Plus, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { edgeId, linkAssets, refuseTakesAsReference, requestRun, viewImages } from '../../actions'
+import { edgeId, linkAssets, requestRun, viewImages } from '../../actions'
 import { compileScene, imageSlotsFor, sceneCode } from '../../core/compile'
 import { costOf, foreignModelBadge, modeLabel, MODELS } from '../../core/models'
 import { foreignModelReason, isRedTextBlock, runBlock } from '../../core/runRules'
@@ -37,7 +37,6 @@ import {
   DOT_TOP,
   hasAssetDrag,
   hasFileDrag,
-  hasTakeDrag,
   imageFiles,
   LOD_ZOOM,
   readAssetIds,
@@ -62,6 +61,7 @@ import {
   NodePromptField,
   PromptSegments,
   staticTextBefore,
+  takeDropOnNode,
   typeOnNode,
 } from './SceneNodeEditor'
 import { SceneNodeSettings } from './SceneNodeSettings'
@@ -147,11 +147,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   }
   const onDragOver = (e: DragEvent) => {
     // A video is taken only to say why nothing is linked (reference videos were retired): onDrop below.
-    if (hasTakeDrag(e.dataTransfer)) {
-      e.preventDefault()
-      e.stopPropagation()
-      return
-    }
+    if (takeDropOnNode(e, false)) return
     if (!accepts(e)) return
     e.preventDefault()
     e.stopPropagation()
@@ -179,13 +175,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
     }
   }, [hinting])
   const onDrop = (e: DragEvent) => {
-    if (hasTakeDrag(e.dataTransfer)) {
-      e.preventDefault()
-      e.stopPropagation()
-      useUI.getState().setDraggingTakes(null)
-      refuseTakesAsReference()
-      return
-    }
+    if (takeDropOnNode(e, true)) return
     if (!accepts(e)) return
     e.preventDefault()
     e.stopPropagation()

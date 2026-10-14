@@ -27,7 +27,7 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { canvasEvents, createAssetsFromFiles, linkAssets, requestRun } from '../../actions'
+import { canvasEvents, createAssetsFromFiles, linkAssets, refuseTakesAsReference, requestRun } from '../../actions'
 import { assetByTag, removeTokenAt, sceneCode } from '../../core/compile'
 import { MODELS } from '../../core/models'
 import { placeholderGroups } from '../../core/placeholders'
@@ -37,7 +37,7 @@ import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
 import { canvasObstacles, oneUndoStep, undoToastAction, useProject } from '../../store/project'
 import { markPromptFocused, promptFocusedSeqNow, useSceneEditor } from '../../store/sceneEditor'
-import { toast } from '../../store/ui'
+import { toast, useUI } from '../../store/ui'
 import { MediaImg, AssetAvatar } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from '../inspector/caret'
 import { findMention, popupPlacement, sameToken, type MentionToken } from '../inspector/mentions'
@@ -56,7 +56,7 @@ import {
   type MediaSuggestion,
   type Seg,
 } from '../inspector/tokens'
-import { imageFiles, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
+import { hasTakeDrag, imageFiles, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
 import { isTypingChord } from '../../lib/keymapPrefs'
 import { caretFromExcerptHit, nodeEditorKeyBubbles } from './sceneEditorModel'
 import '../inspector/inspector.css'
@@ -207,6 +207,21 @@ export function linkCardsToNode(sceneId: string, targets: string[], ids: string[
  * canvas gets one (4A) — in ONE undo step; the prompt being typed is committed first, as its own step. false = no
  * group to fill (several groups and no chip under the pointer): the caller links the picture like any drop.
  */
+/**
+ * A video (take) dragged over / dropped on a scene node: taken (no "no-drop" cursor) only to say why nothing is linked —
+ * reference videos were retired (0.6.0). True = it was a video drag (the caller stops there).
+ */
+export function takeDropOnNode(e: Pick<ReactDragEvent, 'dataTransfer' | 'preventDefault' | 'stopPropagation'>, drop: boolean): boolean {
+  if (!hasTakeDrag(e.dataTransfer)) return false
+  e.preventDefault()
+  e.stopPropagation()
+  if (drop) {
+    useUI.getState().setDraggingTakes(null)
+    refuseTakesAsReference()
+  }
+  return true
+}
+
 export function fillFromDrop(sceneId: string, groupKey: string | null, assetId: string): boolean {
   flushScenes([sceneId])
   const { project } = useProject.getState()
