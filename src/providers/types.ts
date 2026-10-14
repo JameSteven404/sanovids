@@ -181,11 +181,13 @@ export type CancelOutcome = 'refunded' | 'running' | 'finished' | 'unknown'
 /**
  * Whether a same-key re-send of an uncertain take would arrive while the provider still remembers the key (seedvis
  * arrival gate, plan §7.3). `safeUntil` already includes the upload estimate: "now < safeUntil" = a re-send started now
- * arrives in time; null = never (see `reason`).
+ * arrives in time; null = never (see `reason`). 'key-changed': the API key saved now is not provably the one that sent
+ * the first POST (seedvis replays a key only for the account that holds it — a same-key POST under another key could
+ * create and bill a second job).
  */
 export interface SameKeyRetry {
   safeUntil: number | null
-  reason: 'ok' | 'disabled' | 'expired' | 'no-record' | 'body-changed'
+  reason: 'ok' | 'disabled' | 'expired' | 'no-record' | 'body-changed' | 'key-changed'
 }
 
 export interface JobResult {
