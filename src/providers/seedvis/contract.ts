@@ -163,11 +163,16 @@ export type SeedvisDownloadRead =
 export type SeedvisActionResult = { ok: true } | SeedvisBridgeFailure
 export type SeedvisKeyResult = { ok: true; status: SeedvisKeyStatus } | SeedvisBridgeFailure
 
-/** Contract only; main/transport/simulation implement it in later tracks. No key is ever returned. */
+/**
+ * Contract only; main/transport/simulation implement it in later tracks. No key is ever returned.
+ * `unverified: true` (A1, plan §10.3) = "Lưu mà chưa kiểm tra": save without GET /account/info, offered only after a
+ * key check failed with code 'network' (main never skips the check on its own). Main accepts it only for that same
+ * key (the clipboard / field must still hold it) within 2 minutes; otherwise 'bad-key' and nothing is saved.
+ */
 export interface SeedvisBridge {
   keyStatus(): Promise<SeedvisKeyStatus>
-  pasteKey(): Promise<SeedvisKeyResult>
-  setKey(args: { key: string }): Promise<SeedvisKeyResult>
+  pasteKey(args?: { unverified?: boolean }): Promise<SeedvisKeyResult>
+  setKey(args: { key: string; unverified?: boolean }): Promise<SeedvisKeyResult>
   clearKey(): Promise<SeedvisKeyResult>
   request(args: SeedvisRequest): Promise<SeedvisResponse>
   downloadOpen(args: SeedvisDownloadArgs): Promise<SeedvisDownloadOpen>
