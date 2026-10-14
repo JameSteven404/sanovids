@@ -1,16 +1,15 @@
 // Shared shortcut commands (KEY_COMMANDS: one handler per registry command, run by hooks/useShortcuts).
 import * as actions from './actions'
 import type { ActionId } from './core/keymap'
-import { mediaChangeNote } from './core/staleTokens'
 import { enterOpensEditor } from './components/canvas/sceneEditorModel'
 import { toggleCanvasOnly as canvasOnlyNext } from './components/canvas/toolbarModel'
-import { announceWireCuts, edgeId, parseEdgeId } from './actions'
 import { createFolderNode } from './folderActions'
 import { LIBRARY_ROOT, noteCanvasCommand } from './libraryActions'
 import { shortcutLabel } from './lib/keymapPrefs'
 import { flushAll, flushScenes } from './lib/promptDrafts'
+import { linkedPairs, unlinkAssetsFromScenes, unlinkWires } from './menuActions'
 import { flush } from './store/persist'
-import { undoToastAction, useProject } from './store/project'
+import { useProject } from './store/project'
 import { useRuns } from './store/runs'
 import { toast, useUI } from './store/ui'
 
@@ -58,80 +57,20 @@ export function focusPanel(which: 'library' | 'inspector'): void {
   })
 }
 
-/** A linked (image, scene) pair: the image is a reference of the scene or its first / last frame. */
-export interface LinkedPair { sceneId: string; assetId: string; how: 'ref' | 'first' | 'last' }
-
 /**
- * The linked pairs among these scenes and images. Same contract as the right-click menu's `linkedPairs`
- * (menuActions, plan "Menu chuột phải"): when both land, the keys call that one and this copy goes.
- */
-export function linkedPairs(sceneIds: readonly string[], assetIds: readonly string[]): LinkedPair[] {
-  const scenes = new Set(sceneIds), assets = new Set(assetIds)
-  return useProject.getState().project.scenes.filter((s) => scenes.has(s.id)).flatMap((s) => [
-    ...s.refs.filter((id) => assets.has(id)).map((assetId) => ({ sceneId: s.id, assetId, how: 'ref' as const })),
-    ...(s.firstFrame && assets.has(s.firstFrame) ? [{ sceneId: s.id, assetId: s.firstFrame, how: 'first' as const }] : []),
-    ...(s.lastFrame && assets.has(s.lastFrame) ? [{ sceneId: s.id, assetId: s.lastFrame, how: 'last' as const }] : []),
-  ])
-}
-
-/** The selected image wires (ref / first / last) that still exist, as pairs. */
-function selectedWirePairs(): LinkedPair[] {
-  const scenes = new Map(useProject.getState().project.scenes.map((s) => [s.id, s]))
-  return useUI.getState().selectedEdgeIds.flatMap((id): LinkedPair[] => {
-    const e = parseEdgeId(id)
-    const s = e ? scenes.get(e.to) : undefined
-    if (!e || !s) return []
-    if (e.kind === 'ref') return s.refs.includes(e.from) ? [{ sceneId: s.id, assetId: e.from, how: 'ref' }] : []
-    if (e.kind === 'first') return s.firstFrame === e.from ? [{ sceneId: s.id, assetId: e.from, how: 'first' }] : []
-    if (e.kind === 'last') return s.lastFrame === e.from ? [{ sceneId: s.id, assetId: e.from, how: 'last' }] : []
-    return []
-  })
-}
-
-/**
- * Cut these links in ONE undo step: drafts committed, the canvas animates the cut (before the store change), refs and
- * first / last frames go together (prompt tokens renumbered / red placeholders in the same step). The selection is
- * left alone (a wide composer of a selected scene stays open); only the cut wires leave the wire selection.
- */
-function cutPairs(pairs: readonly LinkedPair[]): void {
-  flushScenes([...new Set(pairs.map((p) => p.sceneId))])
-  const before = useProject.getState().project
-  const ids = pairs.map((p) => edgeId(p.how, p.assetId, p.sceneId))
-  announceWireCuts(ids)
-  useProject.getState().deleteItems({
-    refs: pairs.filter((p) => p.how === 'ref').map(({ sceneId, assetId }) => ({ sceneId, assetId })),
-    frames: pairs.flatMap((p) => (p.how === 'ref' ? [] : [{ sceneId: p.sceneId, which: p.how }])),
-  })
-  const ui = useUI.getState()
-  const cut = new Set(ids)
-  if (ui.selectedEdgeIds.some((id) => cut.has(id))) ui.setSelectedEdges(ui.selectedEdgeIds.filter((id) => !cut.has(id)))
-  // Cut image wires leave red placeholders (and, renumbering off, numbers that may now name another picture).
-  const note = pairs.some((p) => p.how === 'ref') ? mediaChangeNote(before, useProject.getState().project) : null
-  const tail = note?.tone === 'warning' ? note.text : ''
-  toast(`Đã bỏ nối ${pairs.length} dây${tail}.`, { action: undoToastAction(), ...(tail ? { tone: 'warning' as const, ms: note?.ms ?? 8000 } : {}) })
-}
-
-/**
- * Unlink the selected images from the selected scenes (refs and first / last frames). No such pair: the selected
- * wires — wires alone go through Delete itself (folder wires included); with nodes selected too, only the image wires.
+ * Unlink the selected images from the selected scenes (refs and first / last frames) — the right-click menu's own
+ * command (menuActions). No such pair: the selected wires — wires alone go through Delete itself (folder wires
+ * included); with nodes selected too, only the image wires. The selection is left alone.
  */
 export function unlinkSelection(): void {
-  const pairs = linkedPairs(actions.selectedSceneIds(), actions.selectedAssetIds())
-  if (pairs.length) {
-    cutPairs(pairs)
-    return
-  }
+  if (unlinkAssetsFromScenes(actions.selectedAssetIds(), actions.selectedSceneIds())) return
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.length && !ui.selectedIds.length) {
-    flushScenes(ui.selectedEdgeIds.flatMap((id) => { const edge = parseEdgeId(id); return edge ? [edge.to] : [] }))
+    flushScenes(ui.selectedEdgeIds.flatMap((id) => { const edge = actions.parseEdgeId(id); return edge ? [edge.to] : [] }))
     actions.deleteSelection()
     return
   }
-  const wires = selectedWirePairs()
-  if (wires.length) {
-    cutPairs(wires)
-    return
-  }
+  if (unlinkWires(ui.selectedEdgeIds)) return
   const label = shortcutLabel('unlinkSelection')
   toast(`Chọn ảnh và cảnh đã nối${label ? ` rồi bấm ${label}` : ''}.`)
 }
@@ -139,7 +78,8 @@ export function unlinkSelection(): void {
 /** Link toggle (Premiere's Link): every selected pair already linked → unlink them; anything else → link. */
 function toggleLink(): void {
   const scenes = actions.selectedSceneIds(), assets = actions.selectedAssetIds()
-  const linked = new Set(linkedPairs(scenes, assets).map((p) => `${p.sceneId}|${p.assetId}`))
+  const pairs = linkedPairs(assets, scenes)
+  const linked = new Set([...pairs.refs, ...pairs.frames].map((p) => `${p.sceneId}|${p.assetId}`))
   const allLinked = scenes.length > 0 && assets.length > 0 && scenes.every((s) => assets.every((a) => linked.has(`${s}|${a}`)))
   if (allLinked) unlinkSelection()
   else actions.connectSelection()

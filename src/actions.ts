@@ -496,7 +496,7 @@ export interface DeleteTakesOptions {
  * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed;
  * so is one still running there with its job sent or maybe sent (a job id, or mayHaveBeenSent) — like "Huỷ"'s toast.
  */
-function deleteFacts(takes: readonly Take[]) {
+export function deleteFacts(takes: readonly Take[]) {
   return takes.map((t) => {
     const running = t.status === 'processing' && providerOf(t) !== 'mock'
     return {
@@ -724,6 +724,21 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   else toast(`Đang gửi lại ${takeLabel(takeId)} (cùng mã yêu cầu, tìm job cũ trước).`, { tone: 'success' })
 }
 
+/** What "Huỷ" concerns, read now (cancelTake and the right-click menu's label share it). */
+export function cancelFactsOf(take: Take, status: 'queued' | 'processing'): CancelFacts {
+  const demoPaid = chargedDemo(take)
+  return {
+    label: takeLabel(take.id),
+    provider: providerOf(take),
+    status,
+    cost: take.cost,
+    demoPaid,
+    sentAway: !demoPaid && !!take.remoteId,
+    videoReady: remoteVideoReady(take.id),
+    imported: !!take.imported,
+  }
+}
+
 /**
  * "Huỷ" of a queued / running take (queue row, Xem take). When its video is already made and paid (the site's job is
  * finished, SanoVids is downloading it or waits to try again) it asks first: cancelling drops that video in SanoVids.
@@ -732,17 +747,7 @@ export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
 export function cancelTake(takeId: string): boolean {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
   if (!take || (take.status !== 'queued' && take.status !== 'processing')) return false
-  const demoPaid = chargedDemo(take)
-  const facts: CancelFacts = {
-    label: takeLabel(takeId),
-    provider: providerOf(take),
-    status: take.status,
-    cost: take.cost,
-    demoPaid,
-    sentAway: !demoPaid && !!take.remoteId,
-    videoReady: remoteVideoReady(takeId),
-    imported: !!take.imported,
-  }
+  const facts = cancelFactsOf(take, take.status)
   const question = cancelQuestion(facts)
   if (question && !window.confirm(question)) return false
   useRuns.getState().cancel(takeId)

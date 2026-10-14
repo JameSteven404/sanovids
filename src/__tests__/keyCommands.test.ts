@@ -183,7 +183,8 @@ it('unlinking leaves the selection alone, says which key to use, and cuts a sele
   // No selection change at all: the wide composer / node settings of a selected scene stay open.
   expect(seen).toEqual([])
   expect(useProject.getState().project.scenes.find((s) => s.id === scene)?.refs).toEqual([])
-  expect(useUI.getState().toasts.at(-1)?.text).toMatch(/^Đã bỏ nối 1 dây/)
+  // The right-click menu's own unlink (menuActions): names the image and the scene.
+  expect(useUI.getState().toasts.at(-1)?.text).toMatch(/^Đã bỏ nối .+ khỏi S0\d/)
   expect(useUI.getState().toasts.at(-1)?.action?.label).toBe('Hoàn tác')
   // Nothing linked selected.
   KEY_COMMANDS.unlinkSelection()

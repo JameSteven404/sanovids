@@ -75,6 +75,7 @@ import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
+import { useCanvasContextMenu } from '../contextmenu/canvasContextMenu'
 import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
 import { FolderNode, type FolderFlowNode } from './FolderNode'
 import {
@@ -1142,6 +1143,17 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     dropOffCanvasSelection()
     usePlayback.getState().unpin()
   }, [dropOffCanvasSelection])
+  // Right-click menus: one delegated handler on the stage (contextmenu/canvasContextMenu), none on the nodes.
+  const ctxMenu = useCanvasContextMenu({
+    toFlow: (p) => rf.screenToFlowPosition(p),
+    busy: () => !!connKind || libraryDrag || takeDrag,
+    closeOthers: closeMenu,
+  })
+  const ctxMoveStart = ctxMenu.onMoveStart
+  const onMoveStart = useCallback(() => {
+    closeMenu()
+    ctxMoveStart()
+  }, [closeMenu, ctxMoveStart])
 
   const handMode = interaction === 'hand'
   const stageCls = [
@@ -1161,8 +1173,13 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       ref={stageRef}
       className={stageCls}
       data-motion={motion}
-      onPointerDownCapture={onWirePress}
+      onPointerDownCapture={(e) => {
+        // ⌃+click on a Mac is a secondary click: kept away from React Flow (no selection box), the menu opens.
+        if (!ctxMenu.onSecondaryGuard(e)) onWirePress(e)
+      }}
+      onMouseDownCapture={ctxMenu.onSecondaryGuard}
       onClickCapture={onWireClick}
+      onContextMenu={ctxMenu.onContextMenu}
       onDoubleClick={onDoubleClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -1192,7 +1209,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
-        onMoveStart={closeMenu}
+        onMoveStart={onMoveStart}
         deleteKeyCode={null}
         // The app has its own keyboard layer (useShortcuts). React Flow's would move the focused (= last clicked)
         // node with the arrow keys even while a dialog is open over the canvas (TakeViewer / image viewer ←/→).
