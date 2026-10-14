@@ -514,16 +514,24 @@ describe.runIf(process.platform === 'win32')('updater.cjs flow (fake electron-up
     await vi.waitFor(() => expect(g.log()).toContain('pending update files not cleared (gave up)'), { timeout: 5000, interval: 5 })
     expect(g.au.cleared).toBe(2)
     expect(nodeFs.readdirSync(two.pending)).toEqual([`${APP}-Setup-0.5.0.exe`])
-    // A retry never runs under a download (electron-updater writes its temp file in pending\).
-    const three = prepare()
-    const d = boot({ userData: three.userData, version: '0.5.0', updaterJson: justUpdated, failingClears: 1, pendingClearRetryMs: [2000] }) // far beyond the check below starting
-    await vi.waitFor(() => expect(d.log()).toContain('pending update files not cleared yet'), { timeout: 5000, interval: 5 })
-    const bytes = installer(signed('0.5.1'), 'genuine 0.5.1')
-    d.au.served = { info: feed('0.5.1', bytes), bytes }
-    expect((await checkAndSettle(d)).status).toBe('ready')
-    await vi.waitFor(() => expect(d.log()).toContain('pending update files left to electron-updater'), { timeout: 20_000, interval: 5 })
-    expect(d.au.cleared).toBe(1)
-    expect(nodeFs.existsSync(nodePath.join(d.au.pending, `${APP}-Setup-0.5.1.exe`))).toBe(true)
+    // A retry never runs under a download (electron-updater writes its temp file in pending\). Fake timers: the retry
+    // fires only once the update is ready (an hour of fake time), never early because a loaded machine was slow.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const three = prepare()
+      const d = boot({ userData: three.userData, version: '0.5.0', updaterJson: justUpdated, failingClears: 1, pendingClearRetryMs: [3_600_000] })
+      await vi.waitFor(() => expect(d.log()).toContain('pending update files not cleared yet'), { timeout: 5000, interval: 5 })
+      const bytes = installer(signed('0.5.1'), 'genuine 0.5.1')
+      d.au.served = { info: feed('0.5.1', bytes), bytes }
+      expect((await checkAndSettle(d)).status).toBe('ready')
+      expect(d.log()).not.toContain('pending update files left to electron-updater')
+      await vi.advanceTimersByTimeAsync(3_600_000)
+      await vi.waitFor(() => expect(d.log()).toContain('pending update files left to electron-updater'), { timeout: 5000, interval: 5 })
+      expect(d.au.cleared).toBe(1)
+      expect(nodeFs.existsSync(nodePath.join(d.au.pending, `${APP}-Setup-0.5.1.exe`))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   }, 40_000)
 
   it('no pinned signer: nothing downloads, the error says the check could not run', async () => {
