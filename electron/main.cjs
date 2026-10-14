@@ -669,7 +669,8 @@ function registerAppBridge() {
 // quit. Once canvasapp confirms a login, an encrypted copy (safeStorage) of canvasapp.io.vn's own session cookies is
 // kept in userData/canvasapp-login.bin and put back (as session cookies) before the first request of the next run —
 // only while "Giữ đăng nhập canvasapp trên máy này" is on (userData/canvasapp-prefs.json; default: installer / source
-// on, Portable / temp copy off). Đăng xuất refuses new requests and new video downloads, aborts and awaits the ones in
+// on, Portable / temp copy off — an unset default off never deletes a copy the installed app kept, keepLoginCopyRule).
+// Đăng xuất refuses new requests and new video downloads, aborts and awaits the ones in
 // flight (API requests, and the net.requests of video downloads until Electron reports them over), deletes the copy
 // (and says so when it cannot), asks canvasapp to end the session (POST /api/auth/logout, like its own button) and
 // clears the partition. No quit hook: saving happens when the cookies change. Separately, once canvasapp confirms a
@@ -1986,6 +1987,8 @@ function startCanvasappKeepLogin() {
     setTimer: setTimeout,
     clearTimer: clearTimeout,
     enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind()),
+    // never chose: a default-off run (Portable shares userData with Setup) leaves the installed app's copy alone
+    chosen: canvasappKeepPrefs !== null,
   })
   void canvasappKeep.sweep()
 }

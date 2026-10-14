@@ -271,6 +271,16 @@ function resolveKeepLogin(prefs, placementKind) {
   return prefs && typeof prefs.keepLogin === 'boolean' ? prefs.keepLogin : defaultKeepLogin(placementKind)
 }
 
+/**
+ * What the switch does to a copy already on disk: 'use' (on), 'delete' (the user chose off) or 'leave' (never chose, the
+ * placement default is off). Setup and Portable share %APPDATA%\SanoVids, so a Portable / temp-copy run that never chose
+ * may find the copy the installed app keeps: it neither restores it nor deletes it (and saves nothing). Logout, expiry,
+ * a refusal of a copy this run put back or wrote, and a damaged file still delete it.
+ */
+function keepLoginCopyRule(enabled, chosen) {
+  return enabled ? 'use' : chosen ? 'delete' : 'leave'
+}
+
 /** IPC payload of canvasapp:keepLogin / canvasapp:setKeepLogin: booleans only (never a path, never a cookie). */
 function keepLoginPayload({ enabled, available, chosen }) {
   return { ok: true, keepLogin: enabled === true, available: available !== false, chosen: chosen === true }
@@ -288,7 +298,8 @@ function keepLoginPayload({ enabled, available, chosen }) {
  *   fsp       fs.promises-like: readFile, writeFile, rm, stat (sweep only; optional),   rename (from, to) (default fsp.rename),
  *   file      absolute path of the copy (userData/canvasapp-login.bin),
  *   host, origin, now, sleep(ms), setTimer(fn, ms), clearTimer(t),
- *   enabled = true, debounceMs = 500, capMs = KEEP_LOGIN_CHAIN_CAP_MS
+ *   enabled = true, chosen = true (enabled is the user's saved choice, not a placement default: keepLoginCopyRule),
+ *   debounceMs = 500, capMs = KEEP_LOGIN_CHAIN_CAP_MS
  * }
  * Writes happen only while armed: canvasapp confirmed THIS login (loggedIn / confirmed) or a kept copy was put back.
  * File writes / deletes are serialized on one chain. Never throws out of a listener; never logs.
@@ -308,6 +319,9 @@ function createCanvasappKeepLogin(deps) {
   /** Next to the copy when Đăng xuất could not delete / empty it: the next start deletes the copy and never restores it. */
   const forgetMarker = file + '.forget'
   let enabled = deps.enabled !== false
+  let chosen = deps.chosen !== false
+  /** The copy on disk is left alone ('leave'): maybe the installed app's, so a refusal in this run says nothing about it — until this run puts it back or writes its own. */
+  let foreign = keepLoginCopyRule(enabled, chosen) === 'leave'
   let armed = false // canvasapp confirmed THIS login, or a kept copy was put back: only then is anything written
   let paused = false // Đăng xuất is clearing the partition
   let epoch = 0 // bumped by forget / setEnabled: saves, restores and answers that started before never write or arm
@@ -401,6 +415,7 @@ function createCanvasappKeepLogin(deps) {
     await rename(file + '.tmp', file)
     fileKey = loginSnapshotKey(snap)
     writes++
+    foreign = false
     await Promise.resolve(fsp.rm(forgetMarker, { force: true })).catch(() => undefined)
     return true
   }
@@ -434,6 +449,7 @@ function createCanvasappKeepLogin(deps) {
       await dropFile() // Đăng xuất asked to forget it: never put back
       return 0
     }
+    if (foreign && !enabled) return 0 // never chose, default off: not read, not put back, not deleted
     let bytes
     try {
       bytes = await fsp.readFile(file)
@@ -474,13 +490,15 @@ function createCanvasappKeepLogin(deps) {
     if (at === epoch) {
       armed = true // the copy came from a login canvasapp confirmed; a refusal disarms it
       armedGen = gen
+      foreign = false
       if (reEncrypt) void reseal(snap, epoch)
     }
     return restored
   }
   /**
    * Start-up sweep, before any use: deletes the copy WITHOUT reading or decrypting it when it must not be used — a
-   * "forget" marker, the switch is off, an empty / oversized file, or last written more than KEEP_LOGIN_DAYS ago (the
+   * "forget" marker, the user switched it off (an unset default off leaves it: keepLoginCopyRule), an empty / oversized
+   * file, or last written more than KEEP_LOGIN_DAYS ago (the
    * copy is rewritten at every renewal and savedAt is never newer than the write, so such a copy is expired anyway).
    * A copy left by a user who moved to "Phát triển (giả lập)" without Đăng xuất never outlives the limit on disk.
    * Never touches safeStorage. Without fsp.stat: nothing.
@@ -504,7 +522,8 @@ function createCanvasappKeepLogin(deps) {
     const size = st && Number.isFinite(st.size) ? st.size : -1
     const mtime = st && Number.isFinite(st.mtimeMs) ? st.mtimeMs : NaN
     const old = !Number.isFinite(mtime) || now() - mtime > KEEP_LOGIN_DAYS * KEEP_LOGIN_DAY_MS
-    if (marker || !enabled || size <= 0 || size > KEEP_LOGIN_MAX_FILE_BYTES || old) await dropFile()
+    const off = keepLoginCopyRule(enabled, chosen) === 'delete'
+    if (marker || off || size <= 0 || size > KEEP_LOGIN_MAX_FILE_BYTES || old) await dropFile()
   }
   return {
     /** On ready: the start-up sweep (stat only — never reads the copy, never safeStorage). Never throws. */
@@ -551,7 +570,8 @@ function createCanvasappKeepLogin(deps) {
     /**
      * canvasapp said "not logged in" for a request marked `m`. Older than the confirmed login → nothing. Otherwise:
      * disarm at once (no renewal saved — the refusal may have set cookies itself), and delete the copy when the kept
-     * cookies did not change since `m` or the copy was written after `m` (it may hold what the refusal set).
+     * cookies did not change since `m` or the copy was written after `m` (it may hold what the refusal set). A copy this
+     * run left alone (foreign) is never judged: the refused cookies are not its.
      */
     rejected(m) {
       if (!m || m.epoch !== epoch || !Number.isFinite(m.gen)) return Promise.resolve()
@@ -561,7 +581,7 @@ function createCanvasappKeepLogin(deps) {
       stopTimer()
       const unchanged = m.gen === gen
       return run(async () => {
-        if (m.epoch !== epoch || fileKey === '') return
+        if (m.epoch !== epoch || fileKey === '' || foreign) return
         if (unchanged || m.writes !== writes) await dropFile()
       })
     },
@@ -591,9 +611,10 @@ function createCanvasappKeepLogin(deps) {
         paused = false
       }
     },
-    /** The switch. Off: the copy is deleted now (this run stays logged in). On: saved now if armed. → { copyRemoved } */
+    /** The switch (always the user's choice). Off: the copy is deleted now (this run stays logged in). On: saved now if armed. → { copyRemoved } */
     async setEnabled(on) {
       enabled = on === true
+      chosen = true
       epoch++
       stopTimer()
       if (!enabled) return { copyRemoved: (await capped(run(dropFile))) === true }
@@ -639,6 +660,7 @@ module.exports = {
   parseKeepLoginPrefs,
   keepLoginPrefsText,
   resolveKeepLogin,
+  keepLoginCopyRule,
   keepLoginPayload,
   createCanvasappKeepLogin,
 }

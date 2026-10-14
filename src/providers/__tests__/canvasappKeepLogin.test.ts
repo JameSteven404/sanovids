@@ -82,6 +82,7 @@ interface Rules {
   parseKeepLoginPrefs(text: unknown): { keepLogin: boolean } | null
   keepLoginPrefsText(keepLogin: boolean): string
   resolveKeepLogin(prefs: { keepLogin: boolean } | null, kind: unknown): boolean
+  keepLoginCopyRule(enabled: boolean, chosen: boolean): 'use' | 'delete' | 'leave'
   keepLoginPayload(o: { enabled: boolean; available: boolean; chosen: boolean }): Record<string, unknown>
   createCanvasappKeepLogin(deps: Record<string, unknown>): KeepLogin
 }
@@ -300,6 +301,14 @@ describe('keep-login rules: which cookies are kept', () => {
     expect(R.resolveKeepLogin(null, 'temp-copy')).toBe(false)
     expect(R.resolveKeepLogin({ keepLogin: true }, 'portable')).toBe(true)
     expect(R.resolveKeepLogin({ keepLogin: false }, 'installer')).toBe(false)
+    // what the switch does to a copy on disk, as main.cjs feeds it (enabled = resolveKeepLogin, chosen = prefs saved):
+    // only a CHOSEN off deletes; a never-chosen default off (Portable / temp copy / unknown) leaves Setup's copy alone
+    const rule = (prefs: { keepLogin: boolean } | null, kind: string) => R.keepLoginCopyRule(R.resolveKeepLogin(prefs, kind), prefs !== null)
+    expect(rule(null, 'installer')).toBe('use')
+    for (const kind of ['portable', 'temp-copy', 'unknown']) expect(rule(null, kind), kind).toBe('leave')
+    expect(rule({ keepLogin: false }, 'portable')).toBe('delete')
+    expect(rule({ keepLogin: false }, 'installer')).toBe('delete')
+    expect(rule({ keepLogin: true }, 'portable')).toBe('use')
     expect(R.keepLoginPayload({ enabled: true, available: true, chosen: false })).toEqual({ ok: true, keepLogin: true, available: true, chosen: false })
     expect(Object.values(R.keepLoginPayload({ enabled: false, available: false, chosen: true })).every((v) => typeof v === 'boolean')).toBe(true)
   })
@@ -531,7 +540,7 @@ const gate = () => {
 type World = ReturnType<typeof world>
 
 /** One SanoVids run: a fresh cookie store (session cookies are gone after a restart), the same disk / crypto key. */
-function world(opts: { fsp?: ReturnType<typeof fakeFs>; crypto?: ReturnType<typeof fakeCrypto>; clock?: { t: number }; enabled?: boolean } = {}) {
+function world(opts: { fsp?: ReturnType<typeof fakeFs>; crypto?: ReturnType<typeof fakeCrypto>; clock?: { t: number }; enabled?: boolean; chosen?: boolean } = {}) {
   const cookies = fakeCookies()
   const crypto = opts.crypto ?? fakeCrypto()
   const clock = opts.clock ?? { t: T0 }
@@ -556,6 +565,7 @@ function world(opts: { fsp?: ReturnType<typeof fakeFs>; crypto?: ReturnType<type
     clearTimer: timers.clearTimer,
     capMs: CAP,
     ...(opts.enabled === false ? { enabled: false } : {}),
+    ...(opts.chosen === false ? { chosen: false } : {}),
   })
   /** canvasapp sets / changes a cookie: the store changes and Electron's 'changed' event fires. */
   const put = (c: Ck) => {
@@ -575,7 +585,7 @@ function world(opts: { fsp?: ReturnType<typeof fakeFs>; crypto?: ReturnType<type
     const b = fsp.files.get(FILE)
     return b && b.length ? (JSON.parse(crypto.open(b)) as Snap) : null
   }
-  const restart = (over: { enabled?: boolean } = {}) => world({ fsp, crypto, clock, ...over })
+  const restart = (over: { enabled?: boolean; chosen?: boolean } = {}) => world({ fsp, crypto, clock, ...over })
   const releaseCaps = () => caps.splice(0).forEach((r) => r())
   return { keep, cookies, crypto, fsp, timers, clock, put, drop, copy, restart, releaseCaps, sleeps }
 }
@@ -1241,6 +1251,111 @@ describe('keep-login: start-up sweep (stat only — never reads or decrypts the 
     await expect(v.keep.sweep()).resolves.toBeUndefined()
     expect(v.fsp.files.has(FILE)).toBe(true)
   })
+
+  // Setup and Portable share %APPDATA%\SanoVids: the same copy, the same prefs file. Neither has chosen yet.
+  const setupRun = (w: World) => w.restart({ chosen: false }) // installer default: on
+  const portableRun = (w: World) => w.restart({ enabled: false, chosen: false }) // portable default: off
+
+  it('both placements, never chose: Setup keeps its copy; a Portable run neither reads, restores, deletes nor saves it', async () => {
+    const setup = world({ chosen: false })
+    expect(await loggedIn(setup)).toEqual({ kept: true })
+    const kept = setup.fsp.files.get(FILE)
+    const setupNext = setupRun(setup)
+    await setupNext.keep.sweep()
+    expect(setupNext.fsp.files.get(FILE)).toBe(kept)
+
+    const portable = portableRun(setupNext)
+    const reads0 = readsOf(portable)
+    const calls0 = { ...portable.crypto.st.calls }
+    await portable.keep.sweep()
+    expect(portable.fsp.files.get(FILE)).toBe(kept)
+    expect(await portable.keep.restore()).toEqual({ restored: 0 })
+    expect(portable.cookies.calls.set).toHaveLength(0)
+    expect(readsOf(portable)).toBe(reads0) // never read
+    expect(portable.crypto.st.calls).toEqual(calls0) // no safeStorage
+    // Portable is not logged in: canvasapp's 401 is about ITS cookies, never Setup's copy
+    await portable.keep.rejected(portable.keep.mark())
+    // logging in on Portable keeps nothing and leaves Setup's copy as it was
+    expect(await loggedIn(portable, 'PORTABLE-sid')).toEqual({ kept: false })
+    portable.put(ck({ value: 'PORTABLE-renewed' }))
+    portable.timers.fire()
+    await tick()
+    await portable.keep.rejected(portable.keep.mark())
+    expect(portable.fsp.files.get(FILE)).toBe(kept)
+    expect(portable.keep.state().enabled).toBe(false)
+
+    // back on Setup: still logged in
+    const again = setupRun(portable)
+    await again.keep.sweep()
+    expect(await again.keep.restore()).toEqual({ restored: 2 })
+    expect(again.cookies.list.find((c) => c.name === 'sid')!.value).toBe('SECRET-sid-1')
+  })
+
+  it('a Portable run that never chose still deletes on logout, expiry, a forget marker or a damaged file', async () => {
+    const make = async () => {
+      const setup = world({ chosen: false })
+      await loggedIn(setup)
+      return setup
+    }
+    const out = portableRun(await make())
+    expect((await out.keep.forget(async () => 'cleared')).copyRemoved).toBe(true)
+    expect(out.fsp.files.has(FILE)).toBe(false)
+
+    const old = await make()
+    old.clock.t = T0 + 30 * DAY + 1
+    const oldNext = portableRun(old)
+    await oldNext.keep.sweep()
+    expect(oldNext.fsp.files.has(FILE)).toBe(false)
+
+    const marked = await make()
+    marked.fsp.files.set(MARKER, new Uint8Array(0))
+    const markedNext = portableRun(marked)
+    await markedNext.keep.sweep()
+    expect(markedNext.fsp.files.has(FILE)).toBe(false)
+
+    const empty = await make()
+    empty.fsp.files.set(FILE, new Uint8Array(0))
+    const emptyNext = portableRun(empty)
+    await emptyNext.keep.sweep()
+    expect(emptyNext.fsp.files.has(FILE)).toBe(false)
+  })
+
+  it('an explicit off (on either placement) deletes it; switching on in a Portable run judges only what it puts back or writes', async () => {
+    const setup = world({ chosen: false })
+    await loggedIn(setup)
+    const off = portableRun(setup)
+    expect(await off.keep.setEnabled(false)).toEqual({ copyRemoved: true })
+    expect(off.fsp.files.has(FILE)).toBe(false)
+    // a saved off choice (the choice wins over either placement's default) deletes a copy found at start
+    const setup2 = world({ chosen: false })
+    await loggedIn(setup2)
+    const offNext = setup2.restart({ enabled: false, chosen: true })
+    await offNext.keep.sweep()
+    expect(offNext.fsp.files.has(FILE)).toBe(false)
+
+    // Portable, never chose, switched ON after its restore left the copy: a 401 before it logs in keeps Setup's copy …
+    const setup3 = world({ chosen: false })
+    await loggedIn(setup3)
+    const kept = setup3.fsp.files.get(FILE)
+    const on = portableRun(setup3)
+    await on.keep.restore()
+    expect(await on.keep.setEnabled(true)).toEqual({ copyRemoved: true })
+    await on.keep.rejected(on.keep.mark())
+    expect(on.fsp.files.get(FILE)).toBe(kept)
+    // … its own confirmed login replaces it, and from then on a refusal deletes it as usual
+    expect(await loggedIn(on, 'PORTABLE-sid')).toEqual({ kept: true })
+    expect(on.copy()!.cookies.find((e) => e.name === 'sid')!.value).toBe('PORTABLE-sid')
+    await on.keep.rejected(on.keep.mark())
+    expect(on.fsp.files.has(FILE)).toBe(false)
+
+    // switched on before the first canvasapp use: the copy is put back like on Setup
+    const setup4 = world({ chosen: false })
+    await loggedIn(setup4)
+    const early = portableRun(setup4)
+    await early.keep.sweep()
+    await early.keep.setEnabled(true)
+    expect(await early.keep.restore()).toEqual({ restored: 2 })
+  })
 })
 
 describe('keep-login: the switch (setEnabled)', () => {
@@ -1355,6 +1470,8 @@ describe('keep-login wiring (electron/main.cjs)', () => {
     expect(mainCode).not.toMatch(/encryptString\(|decryptString\(|setUsePlainTextEncryption/)
     expect(cryptoObj).toContain("safeStorage.getSelectedStorageBackend() === 'basic_text'")
     expect(start).toContain('enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind())')
+    // an unset default off (Portable shares userData with Setup) must not delete the installed app's copy
+    expect(start).toContain('chosen: canvasappKeepPrefs !== null')
     // the start-up sweep only stats the copy (after the object exists)
     order(start, ['canvasappKeep = keepLoginRules.createCanvasappKeepLogin({', 'void canvasappKeep.sweep()'])
     // macOS "installed" = in Applications: asked once behind the darwin guard, in its own try (macInApplications, shared

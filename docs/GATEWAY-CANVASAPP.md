@@ -188,6 +188,9 @@ sổ `https://canvasapp.io.vn/` (phân vùng `persist:canvasapp`, sandbox, khôn
 **Giữ đăng nhập** (`electron/keeplogin-rules.cjs`) — cookie đăng nhập của canvasapp là cookie phiên (mất khi tắt app);
 khi canvasapp đã xác nhận đăng nhập, main giữ một bản sao mã hoá (safeStorage) và đặt lại trước yêu cầu đầu tiên của
 lần chạy sau (tối đa 30 ngày; bản cài bật sẵn, Portable tắt sẵn; Cài đặt › "Giữ đăng nhập canvasapp trên máy này").
+Setup và Portable dùng chung `%APPDATA%\SanoVids`: Portable **chưa tự chọn** không đọc, không đặt lại, không lưu và không
+xoá bản sao bản cài đã giữ (`keepLoginCopyRule` → 'leave'; một lần 401 trong lần chạy đó cũng không xoá nó). Chỉ tự tắt
+công tắc, Đăng xuất, hết hạn, tệp hỏng hoặc canvasapp từ chối chính bản sao lần chạy đó đặt lại / ghi mới xoá nó.
 Mỗi lần đọc số dư thành công (`GET /api/me`, `store/credits`) cho adapter biết tài khoản (`accountKeyOf`: băm e-mail nếu
 canvasapp trả về, không lưu e-mail): **khác** tài khoản mà phiên cầu nối đã nhớ (bản sao của tài khoản khác được đặt lại
 sau khi mở app, hoặc đăng nhập tài khoản khác trên trang mà không Đăng xuất) → `noteAccount` gọi `reset()` như Đăng xuất
