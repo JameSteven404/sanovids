@@ -136,7 +136,7 @@
   --danger: #AE2155;
   --danger-soft: #FCE2EB;
   --danger-text: #9D194A;
-  --info: #4058A0;
+  --info: #4560A8;
   --info-soft: #E4EAFB;
   --checker-a: #EFEFF2;
   --checker-b: #E3E3E8;
@@ -149,7 +149,7 @@
   --shadow-sm: 0 2px 4px #0000000C;
   --shadow: 0 4px 14px #00000010;
   --shadow-lg: 0 24px 72px #00000030;
-  --focus-ring: 0 0 0 3px #4058A0;
+  --focus-ring: 0 0 0 3px #4560A8;
   --scrollbar: #8C8C96;
   color-scheme: light;
 }
