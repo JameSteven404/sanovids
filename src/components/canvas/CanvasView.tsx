@@ -72,7 +72,6 @@ import { AssetNode, type AssetFlowNode } from './AssetNode'
 import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
 import { useCanvasContextMenu } from '../contextmenu/canvasContextMenu'
-import { ContextMenuHost } from '../contextmenu/ContextMenuHost'
 import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
 import { FolderNode, type FolderFlowNode } from './FolderNode'
 import {
@@ -1189,8 +1188,6 @@ function CanvasInner() {
       <SelectionHint />
       <CanvasToolbar density={density} big={big} />
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
-      {/* Right-click menus of the canvas AND the library (portal on <body>; the canvas is always mounted). */}
-      <ContextMenuHost />
       {scenes.length === 0 && !folders.length && assets.every((a) => !a.position) && (
         <div className="cv-empty">
           <div className="cv-empty-glyph" aria-hidden>

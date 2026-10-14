@@ -16,7 +16,7 @@ import { closeContextMenu, openContextMenu, type MenuOrigin } from './contextMen
 import { contextSelection, isMacSecondaryPress, isMenuKey, type ContextKind, type MenuItem } from './menuModel'
 
 /** Parts of the stage that have their own behaviour (or none): a right-click there opens no canvas menu. */
-const NO_MENU = '.cv-toolbar, .cv-sel-hint, .react-flow__minimap, .react-flow__controls, .react-flow__attribution, .cv-menu, .cv-empty, .cv-ed, .react-flow__edgeupdater'
+const NO_MENU = '.cv-toolbar, .cv-sel-hint, .react-flow__minimap, .react-flow__controls, .react-flow__attribution, .cv-menu, .cv-empty, .cv-sn-mention, .react-flow__edgeupdater'
 const NODE_TYPES = new Set(['scene', 'take', 'asset', 'folder'])
 /** The browser may send its own contextmenu event after the Menu key / Shift+F10: ignored for this long. */
 const KEYBOARD_ECHO_MS = 600
@@ -132,6 +132,62 @@ export interface CanvasMenuBridge {
   closeOthers: () => void
 }
 
+/** The stage's `contextmenu` (bubble, delegated). Exported for tests. */
+export function onCanvasContextMenu(e: ReactMouseEvent, bridge: CanvasMenuBridge): void {
+  const target = e.target as Element | null
+  if (e.defaultPrevented || !target) return
+  // Text fields / selected text: the native text menu (CM-E) — never preventDefault there.
+  if (isTextField(target) || inTextSelection(target)) return
+  e.preventDefault()
+  // The browser's own contextmenu event right after the Menu key / Shift+F10 opened the menu: keep that one.
+  if (performance.now() - keyboardOpenedAt < KEYBOARD_ECHO_MS) return
+  if (useUI.getState().dialog.kind !== 'none' || otherOverlayOpen() || bridge.busy()) return
+  const resolved = resolveTarget(target, e.clientX, e.clientY)
+  if (!resolved) return
+  bridge.closeOthers()
+  const pointerType = (e.nativeEvent as PointerEvent).pointerType
+  const origin: MenuOrigin = pointerType === 'touch' ? 'touch' : pointerType === 'pen' ? 'pen' : 'mouse'
+  openFor(resolved, { flow: bridge.toFlow({ x: e.clientX, y: e.clientY }), at: { x: e.clientX, y: e.clientY }, origin })
+}
+
+/**
+ * Menu key / Shift+F10 (window capture) with the canvas in front (focus on the page or on the canvas, never in a text
+ * field: the card's prompt keeps its keys and its native text menu) → menu of the selection, below its first card;
+ * nothing selected → the empty-canvas menu at the middle of the canvas. Exported for tests.
+ */
+export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): void {
+  if (!isMenuKey(e) || e.defaultPrevented) return
+  const active = document.activeElement
+  const stage = stageEl()
+  if (!stage) return
+  if (active && active !== document.body && !stage.contains(active)) return
+  if (active && isTextField(active)) return
+  if (useUI.getState().view !== 'canvas' || useUI.getState().dialog.kind !== 'none' || otherOverlayOpen()) return
+  e.preventDefault()
+  e.stopPropagation()
+  const ui = useUI.getState()
+  const project = useProject.getState().project
+  const takes = useRuns.getState().takes
+  const first = ui.selectedIds[0]
+  const nodeEl = first ? stage.querySelector(`.react-flow__node[data-id="${CSS.escape(first)}"]`) : null
+  const box = (nodeEl ?? stage).getBoundingClientRect()
+  const center = { x: box.left + box.width / 2, y: box.top + Math.min(box.height / 2, 120) }
+  let resolved: ResolvedTarget = { target: { kind: 'pane' }, kind: 'pane' }
+  if (first && nodeEl) {
+    const kind: ContextKind = project.scenes.some((s) => s.id === first)
+      ? 'scene'
+      : takes.some((t) => t.id === first)
+        ? 'take'
+        : project.assets.some((a) => a.id === first)
+          ? 'asset'
+          : 'folder'
+    resolved = { target: { kind, id: first } as CanvasTarget, kind, id: first, el: nodeEl }
+  }
+  bridge.closeOthers()
+  keyboardOpenedAt = performance.now()
+  openFor(resolved, { flow: bridge.toFlow(center), anchor: nodeEl ? box : undefined, at: nodeEl ? undefined : center, origin: 'keyboard' })
+}
+
 /**
  * The canvas' right-click wiring. Returns stable handlers for the stage: `onContextMenu` (bubble, delegated) and
  * `onPointerDownCapture` / `onMouseDownCapture` guards for ⌃+click on a Mac (stopped so React Flow does not start a
@@ -141,22 +197,7 @@ export function useCanvasContextMenu(bridge: CanvasMenuBridge) {
   const ref = useRef(bridge)
   ref.current = bridge
 
-  const onContextMenu = useCallback((e: ReactMouseEvent) => {
-    const target = e.target as Element | null
-    if (e.defaultPrevented || !target) return
-    // Text fields / selected text: the native text menu (CM-E) — never preventDefault there.
-    if (isTextField(target) || inTextSelection(target)) return
-    e.preventDefault()
-    // The browser's own contextmenu event right after the Menu key / Shift+F10 opened the menu: keep that one.
-    if (performance.now() - keyboardOpenedAt < KEYBOARD_ECHO_MS) return
-    if (useUI.getState().dialog.kind !== 'none' || otherOverlayOpen() || ref.current.busy()) return
-    const resolved = resolveTarget(target, e.clientX, e.clientY)
-    if (!resolved) return
-    ref.current.closeOthers()
-    const pointerType = (e.nativeEvent as PointerEvent).pointerType
-    const origin: MenuOrigin = pointerType === 'touch' ? 'touch' : pointerType === 'pen' ? 'pen' : 'mouse'
-    openFor(resolved, { flow: ref.current.toFlow({ x: e.clientX, y: e.clientY }), at: { x: e.clientX, y: e.clientY }, origin })
-  }, [])
+  const onContextMenu = useCallback((e: ReactMouseEvent) => onCanvasContextMenu(e, ref.current), [])
 
   /** ⌃+click on a Mac: stop it before React Flow (returns true when stopped). */
   const onSecondaryGuard = useCallback((e: ReactPointerEvent | ReactMouseEvent): boolean => {
@@ -165,40 +206,8 @@ export function useCanvasContextMenu(bridge: CanvasMenuBridge) {
     return true
   }, [])
 
-  // Keyboard: Menu key / Shift+F10 with the canvas in front (focus on the page or in the canvas) → menu of the
-  // selection, below its first card; nothing selected → the empty-canvas menu at the middle of the canvas.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!isMenuKey(e) || e.defaultPrevented) return
-      const active = document.activeElement
-      const stage = stageEl()
-      if (!stage) return
-      if (active && active !== document.body && !stage.contains(active)) return
-      if (useUI.getState().view !== 'canvas' || useUI.getState().dialog.kind !== 'none' || otherOverlayOpen()) return
-      e.preventDefault()
-      e.stopPropagation()
-      const ui = useUI.getState()
-      const project = useProject.getState().project
-      const takes = useRuns.getState().takes
-      const first = ui.selectedIds[0]
-      const nodeEl = first ? stage.querySelector(`.react-flow__node[data-id="${CSS.escape(first)}"]`) : null
-      const box = (nodeEl ?? stage).getBoundingClientRect()
-      const center = { x: box.left + box.width / 2, y: box.top + Math.min(box.height / 2, 120) }
-      let resolved: ResolvedTarget = { target: { kind: 'pane' }, kind: 'pane' }
-      if (first && nodeEl) {
-        const kind: ContextKind = project.scenes.some((s) => s.id === first)
-          ? 'scene'
-          : takes.some((t) => t.id === first)
-            ? 'take'
-            : project.assets.some((a) => a.id === first)
-              ? 'asset'
-              : 'folder'
-        resolved = { target: { kind, id: first } as CanvasTarget, kind, id: first, el: nodeEl }
-      }
-      ref.current.closeOthers()
-      keyboardOpenedAt = performance.now()
-      openFor(resolved, { flow: ref.current.toFlow(center), anchor: nodeEl ? box : undefined, at: nodeEl ? undefined : center, origin: 'keyboard' })
-    }
+    const onKey = (e: KeyboardEvent) => onCanvasMenuKey(e, ref.current)
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])

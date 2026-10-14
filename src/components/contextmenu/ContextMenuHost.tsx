@@ -1,7 +1,7 @@
 // Draws the one open right-click menu (useContextMenu) in a portal on <body>: role="menu", roving focus, type-ahead,
 // one submenu level, every other key swallowed while it is open, closes on Esc / Tab / a click or wheel outside / the
-// window losing focus / a dialog opening / undo-redo. Mounted once (CanvasView: the canvas is always mounted) and used
-// by the canvas and the library alike.
+// window losing focus / a dialog opening / undo-redo. Mounted once at the App root (outside the region boundaries) and
+// used by the canvas and the library alike.
 import {
   ArrowRight,
   Check,

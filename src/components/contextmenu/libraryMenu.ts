@@ -5,7 +5,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import { linkAssets } from '../../actions'
 import type { Asset } from '../../core/types'
 import { deleteLibraryAssets } from '../../libraryActions'
-import { linkedPairs, unlinkAssetsFromScenes } from '../../menuActions'
+import { linkedPairs, scenesUsingAsset, unlinkAssetsFromScenes } from '../../menuActions'
 import { oneUndoStep, undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { nextAssetPosition } from '../sidebar/shared'
@@ -51,6 +51,11 @@ export function libraryMenu(ids: readonly string[], commands: LibraryCardCommand
     const rows = selectionLinkRows({ project, selected: ui.selectedIds }, asset, 'lib')
     const link = rows.find((r) => r.id === 'lib.linkSelected')
     if (link && cLinksThis) link.action = 'selection.connect'
+    // Quick unlink from every scene using it (as on the scene card's thumbnail), when that is more than the selected ones.
+    const users = scenesUsingAsset(asset.id, project)
+    if (users.length >= 2 && users.length !== S.filter((id) => users.includes(id)).length) {
+      rows.push({ type: 'item', id: 'lib.unlinkAll', label: `Bỏ nối ${name} khỏi mọi cảnh (${users.length})`, icon: 'unlink', run: () => void unlinkAssetsFromScenes([asset.id], users) })
+    }
     const entries: MenuEntry[] = [
       ...rows,
       {

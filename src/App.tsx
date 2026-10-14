@@ -6,6 +6,7 @@ import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './compone
 import { ImageLightbox } from './components/common/ImageLightbox'
 import { ConfirmSheet } from './components/common/ConfirmSheet'
 import { Toasts } from './components/common/Toasts'
+import { ContextMenuHost } from './components/contextmenu/ContextMenuHost'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
 import { Sidebar } from './components/sidebar/Sidebar'
@@ -164,6 +165,8 @@ function Shell() {
       <ConfirmSheet />
       <DevPrompts />
       <StressHudSlot />
+      {/* Right-click menus of the canvas AND the library: outside every region boundary (a crashed canvas keeps the library's). */}
+      <ContextMenuHost />
       <Toasts />
     </div>
   )

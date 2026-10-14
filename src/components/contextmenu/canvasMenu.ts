@@ -34,14 +34,18 @@ import { sceneRunBlockReason } from '../../core/runRules'
 import type { Asset, Project, Scene, Take, XY } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { chooseFolderPlace, createFolderNode, grantFolderAccess, linkScenesToFolder, linkTakesToFolder, openFolderNode, removeFolderNode } from '../../folderActions'
-import { creditKindOf, formatCredits } from '../../lib/credits'
+import { useCanvasPrefs } from '../../lib/canvasPrefs'
+import { chargedDemo, creditKindOf, formatCredits } from '../../lib/credits'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { canTrashSaved, folderRuntime } from '../../lib/saveFolders'
 import { hideAssets, linkedPairs, scenesUsingAsset, unlinkAllFromScene, unlinkAssetsFromScenes, unlinkSelection } from '../../menuActions'
-import { activeProviderId, providerBlockedReason, providerOf } from '../../providers'
+import { activeProviderId, PROVIDER_LABEL, providerBlockedReason, providerLimits, providerOf } from '../../providers'
+import { devAllowed } from '../../providers/devAccess'
+import { settingsRunBlock } from '../../providers/limits'
 import { freeSpotFrom, LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { isParkedTake, isUncertainSubmit, remoteVideoReady, useRuns } from '../../store/runs'
+import { useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { snap } from '../canvas/canvasModel'
 import { cutEdge } from '../canvas/edges'
@@ -117,6 +121,17 @@ export function linkPreviewToken(project: Project, scene: Scene, asset: Asset): 
 }
 /** The image fits in the scene's model limit (same rule as store addRefs). */
 const fits = (project: Project, scene: Scene, assetId: string) => refImageCount(project, [...scene.refs, assetId]) <= MODELS[scene.settings.model].maxRefImages
+/** Why the scene cannot run: the one rule list of every one-scene Run button, with the gateway's sure refusal of its settings. */
+const runBlockOf = (s: Snap, scene: Scene) => sceneRunBlockReason(s.project.assets, scene, settingsRunBlock(providerLimits(activeProviderId()), scene.settings))
+
+/** Node editor off (Settings): the prompt is typed in the right panel — opened, its prompt field focused. */
+function editInPanel(sceneId: string) {
+  const ui = useUI.getState()
+  ui.select([sceneId])
+  ui.setRightOpen(true)
+  // The inspector draws the scene on the next render.
+  setTimeout(() => (typeof document !== 'undefined' ? document.querySelector<HTMLTextAreaElement>('.in-pe-ta')?.focus() : undefined), 0)
+}
 
 // ---------------- entry ----------------
 export function canvasMenu(target: CanvasTarget, ctx: CanvasMenuContext): MenuSpec | null {
@@ -157,9 +172,10 @@ function sceneMenu(s: Snap, id: string): MenuSpec | null {
   if (!scene) return null
   const code = sceneCode(scene.order)
   const blocked = providerBlockedReason(activeProviderId())
-  const runBlock = sceneRunBlockReason(s.project.assets, scene)
+  const runBlock = runBlockOf(s, scene)
+  // Gateway blocked (login, top-up…): still clickable for that — requestRun says what to do — unless the scene itself cannot run.
   const run: MenuItem = blocked
-    ? { type: 'item', id: 'scene.run', label: `Chạy ${code}`, icon: 'play', hint: blocked, action: 'scene.run', run: () => requestRun([id]) }
+    ? { type: 'item', id: 'scene.run', label: `Chạy ${code}`, icon: 'play', hint: blocked, action: 'scene.run', disabled: runBlock ?? undefined, run: () => requestRun([id]) }
     : {
         type: 'item',
         id: 'scene.run',
@@ -170,9 +186,20 @@ function sceneMenu(s: Snap, id: string): MenuSpec | null {
         run: () => requestRun([id]),
       }
   const hasDone = s.takes.some((t) => t.status === 'completed')
+  // What Enter does on the selected card (SceneNode): type in its prompt, caret at the end. Node editor off: Enter does
+  // nothing there, so no key is shown and the prompt opens in the right panel.
+  const editorOff = useCanvasPrefs.getState().nodeEditor === 'off'
+  const promptEnd = () => useProject.getState().project.scenes.find((x) => x.id === id)?.prompt.length ?? null
   const entries: MenuEntry[] = [
     run,
-    { type: 'item', id: 'scene.edit', label: 'Sửa prompt và cấu hình', icon: 'edit', fixedKey: 'Enter', run: () => typeOnNode(id) },
+    {
+      type: 'item',
+      id: 'scene.edit',
+      label: 'Sửa prompt và cấu hình',
+      icon: 'edit',
+      fixedKey: editorOff ? undefined : 'Enter',
+      run: () => (editorOff ? editInPanel(id) : typeOnNode(id, promptEnd())),
+    },
     { type: 'item', id: 'scene.next', label: 'Thêm cảnh tiếp theo', icon: 'plus', action: 'scene.next', run: () => void nextScene() },
     { type: 'item', id: 'scene.duplicate', label: 'Nhân bản', icon: 'copy', action: 'selection.duplicate', run: () => duplicateSelection() },
     {
@@ -488,6 +515,45 @@ export function deleteTakeAsking(takeId: string): boolean {
   return (deleteTakes([takeId], { confirm: false }) ?? 0) > 0
 }
 
+/**
+ * "Huỷ" of a queued / running video (plan 3.6.5, words of TakeViewer / creditText): "Huỷ…" + a question once a job may
+ * have been sent (it keeps running — and billing — on the site), plain "Huỷ" before that.
+ */
+export function cancelPlan(take: Take): { label: string; hint?: string; question: string | null } {
+  const provider = providerOf(take)
+  if (chargedDemo(take)) return { label: `Huỷ · hoàn ${formatCredits(take.cost, 'demo')}`, question: null }
+  if (provider === 'mock' || (take.status === 'queued' && !take.remoteId && !take.submitUnknown)) return { label: 'Huỷ', hint: 'Chưa gửi đi, không trừ credit', question: null }
+  const dev = provider === 'dev'
+  const site = dev ? 'canvasapp giả lập' : PROVIDER_LABEL[provider]
+  const credit = dev ? 'credit dev' : 'credit'
+  const label = takeLabel(take.id)
+  if (take.remoteId && take.imported) {
+    return { label: 'Huỷ…', hint: `Job tạo trên ${site} vẫn chạy ở đó`, question: `Ngừng theo dõi ${label} trong SanoVids?\n\nJob tạo trên ${site} vẫn chạy ở đó.` }
+  }
+  if (take.remoteId) {
+    return { label: 'Huỷ…', hint: `Job đã gửi sang ${site} vẫn chạy ở đó`, question: `Huỷ ${label} trong SanoVids?\n\nJob đã gửi sang ${site} vẫn chạy ở đó và có thể đã trừ ${credit}.` }
+  }
+  if (take.submitUnknown) {
+    const checkWhere = !dev ? 'kiểm tra trên canvasapp.io.vn' : devAllowed() ? 'kiểm tra trong Bảng phát triển' : 'mở khoá chế độ Phát triển để kiểm tra'
+    return {
+      label: 'Huỷ…',
+      hint: `Không rõ lần gửi trước đã trừ ${credit} chưa`,
+      question: `Huỷ ${label} trong SanoVids?\n\nLần gửi trước sang ${site} không rõ đã bị trừ ${credit} chưa, ${checkWhere}.`,
+    }
+  }
+  return { label: 'Huỷ…', hint: `Đang gửi sang ${site}`, question: `Huỷ ${label} lúc đang gửi?\n\nNếu ${site} đã nhận job thì có thể đã trừ ${credit}.` }
+}
+
+/** Ask (cancelPlan), then cancel. A paid video being downloaded gets cancelTake's own question instead — never two. */
+export function cancelAsking(takeId: string): boolean {
+  const take = useRuns.getState().takes.find((t) => t.id === takeId)
+  if (!take || (take.status !== 'queued' && take.status !== 'processing')) return false
+  const { question } = cancelPlan(take)
+  const cancelTakeAsks = take.status === 'processing' && remoteVideoReady(takeId)
+  if (question && !cancelTakeAsks && !window.confirm(question)) return false
+  return cancelTake(takeId)
+}
+
 function takeMenu(s: Snap, id: string, ctx: CanvasMenuContext): MenuSpec | null {
   const take = s.takesById.get(id)
   if (!take) return null
@@ -507,21 +573,13 @@ function takeMenu(s: Snap, id: string, ctx: CanvasMenuContext): MenuSpec | null 
     return { label: `Menu video ${label}`, title: `${label} · đang chạy ở bản SanoVids mới hơn`, entries: [view, SEP, del] }
   }
   if (take.status === 'queued' || take.status === 'processing') {
-    const quiet = take.status === 'queued' && !take.remoteId && !take.submitUnknown
-    const cancel: MenuItem = {
-      type: 'item',
-      id: 'take.cancel',
-      label: quiet ? 'Huỷ' : 'Huỷ…',
-      icon: 'x',
-      hint: quiet ? 'Chưa gửi đi, không trừ credit' : take.remoteId ? 'Job đã gửi đi vẫn có thể chạy ở đó' : 'Có thể đã trừ credit',
-      // cancelTake asks itself when the cancel may cost (sent job, paid video) and says what it means in a toast.
-      run: () => void cancelTake(id),
-    }
+    const plan = cancelPlan(take)
+    const cancel: MenuItem = { type: 'item', id: 'take.cancel', label: plan.label, icon: 'x', hint: plan.hint, run: () => void cancelAsking(id) }
     return { label: `Menu video ${label}`, title: meta, entries: [view, cancel] }
   }
   const blocked = providerBlockedReason(activeProviderId())
   const uncertain = isUncertainSubmit(take)
-  const runBlock = scene ? sceneRunBlockReason(s.project.assets, scene) : 'Cảnh gốc đã bị xoá'
+  const runBlock = scene ? runBlockOf(s, scene) : 'Cảnh gốc đã bị xoá'
   const rerun: MenuItem = uncertain
     ? { type: 'item', id: 'take.rerun', label: `Gửi lại ${label}…`, icon: 'rerun', run: () => rerunTake(id) }
     : {
@@ -530,7 +588,7 @@ function takeMenu(s: Snap, id: string, ctx: CanvasMenuContext): MenuSpec | null 
         label: blocked || !scene ? `Chạy lại ${code}` : `Chạy lại ${code} · ${priceOf(costOf(scene.settings))}`,
         icon: 'rerun',
         hint: blocked ?? undefined,
-        disabled: blocked ? undefined : (runBlock ?? undefined),
+        disabled: runBlock ?? undefined,
         run: () => rerunTake(id),
       }
   if (take.status !== 'completed') {
@@ -681,7 +739,8 @@ function edgesMenu(s: Snap, rawIds: string[], ctx: CanvasMenuContext): MenuSpec 
     .sort((a, b) => Number(!!a.danger) - Number(!!b.danger))
   const entries: MenuEntry[] = [...links]
   if (saves.length) entries.push(SEP, ...saves)
-  return { label: `Menu ${ids.length} dây ở chỗ này`, title: `${ids.length} dây ở chỗ này`, entries: entries.slice(0, 12) }
+  // Every wire is listed (a long list scrolls: .cm-menu overflow + placeMenu maxHeight) — none silently out of reach.
+  return { label: `Menu ${ids.length} dây ở chỗ này`, title: `${ids.length} dây ở chỗ này`, entries }
 }
 
 // ---------------- empty canvas (3.6.8) ----------------
@@ -696,8 +755,8 @@ function paneMenu(s: Snap, ctx: CanvasMenuContext): MenuSpec {
         id: 'pane.newScene',
         label: 'Cảnh mới tại đây',
         icon: 'plus',
-        // Same as a double-click on the canvas: the scene is ready to type in.
-        run: () => typeOnNode(newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) })),
+        // Same as a double-click on the canvas (CanvasView.onDoubleClick): the scene is ready to type in.
+        run: () => useSceneEditor.getState().open(newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) }), 'prompt', 0),
       },
       {
         type: 'item',

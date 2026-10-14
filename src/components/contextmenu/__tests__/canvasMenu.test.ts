@@ -5,10 +5,13 @@ import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { edgeId } from '../../../actions'
 import type { Asset, Project, Scene, Take } from '../../../core/types'
+import { useCanvasPrefs } from '../../../lib/canvasPrefs'
+import { bareState, useDevAccess } from '../../../providers/devAccess'
 import { useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
+import { useSceneEditor } from '../../../store/sceneEditor'
 import { useUI } from '../../../store/ui'
-import { canvasMenu, deleteTakeAsking, wireStack, type CanvasTarget } from '../canvasMenu'
+import { cancelAsking, canvasMenu, deleteTakeAsking, wireStack, type CanvasTarget } from '../canvasMenu'
 import { libraryMenu } from '../libraryMenu'
 import { firstIndex, isItem, MAX_ROOT_ITEMS, type MenuEntry, type MenuItem, type MenuSpec } from '../menuModel'
 
@@ -101,6 +104,8 @@ beforeEach(() => {
   useUI.setState({ selectedIds: [], selectedEdgeIds: [], librarySelection: [], view: 'canvas', toasts: [], dialog: { kind: 'none' } })
 })
 afterEach(() => {
+  useSceneEditor.getState().close()
+  useCanvasPrefs.setState({ nodeEditor: 'click' })
   useRuns.setState({ takes: [] })
   vi.unstubAllGlobals()
 })
@@ -157,6 +162,34 @@ describe('scene card menu', () => {
     useProject.getState().loadProject(project())
     expect(ids(open({ kind: 'scene', id: 's4' }, ['s4']))).not.toContain('scene.unlink')
     expect(get(open({ kind: 'scene', id: 's4' }, ['s4']), 'scene.playFrom').disabled).toMatch(/Chưa có cảnh nào có video xong/)
+  })
+  it('"Sửa prompt và cấu hình" = Enter: types in the card prompt, caret at the end', () => {
+    get(open({ kind: 'scene', id: 's1' }, ['s1']), 'scene.edit').run!()
+    expect(useSceneEditor.getState()).toMatchObject({ sceneId: 's1', focus: 'prompt', caret: '@image_1 đi'.length })
+  })
+  it('node editor off: no Enter shown, the prompt opens in the right panel (the card editor stays closed)', () => {
+    useCanvasPrefs.setState({ nodeEditor: 'off' })
+    useUI.setState({ rightOpen: false })
+    const edit = get(open({ kind: 'scene', id: 's1' }, ['s1', 's2']), 'scene.edit')
+    expect(edit.fixedKey).toBeUndefined()
+    edit.run!()
+    expect(useUI.getState()).toMatchObject({ rightOpen: true, selectedIds: ['s1'] })
+    expect(useSceneEditor.getState().sceneId).toBeNull()
+  })
+  it('gateway blocked: "Chạy" stays clickable for that, but not when the scene itself cannot run', () => {
+    const access = useDevAccess.getState().state
+    useDevAccess.setState({ state: bareState('locked') })
+    try {
+      useProject.getState().loadProject({ ...project(), scenes: [scene('s1', 1, { refs: ['a'], prompt: '@image_1 đi' }), scene('s2', 2, { prompt: '' })] })
+      const ok = get(open({ kind: 'scene', id: 's1' }, ['s1']), 'scene.run')
+      expect(ok.hint).toBeTruthy()
+      expect(ok.disabled).toBeUndefined()
+      const bad = get(open({ kind: 'scene', id: 's2' }, ['s2']), 'scene.run')
+      expect(bad.hint).toBeTruthy()
+      expect(bad.disabled).toBeTruthy()
+    } finally {
+      useDevAccess.setState({ state: access })
+    }
   })
 })
 
@@ -226,15 +259,37 @@ describe('video menus', () => {
     expect(get(spec, 'take.delete')).toMatchObject({ label: 'Xoá video…', danger: true, hint: 'Không hoàn tác được' })
     expect(items(get(spec, 'take.save').submenu!).map((i) => i.label)).toEqual(['“Phim”', 'Thư mục mới…'])
   })
-  it('queued and not sent: "Huỷ" (not charged), no delete', () => {
-    useRuns.setState({ takes: [take('t1', 's1', { status: 'queued', progress: 0 })] })
+  it('queued and not sent: "Huỷ" (not charged), no delete, no question', () => {
+    useRuns.setState({ takes: [take('t1', 's1', { provider: 'dev', status: 'queued', progress: 0 })] })
     const spec = open({ kind: 'take', id: 't1' }, ['t1'])
     expect(ids(spec)).toEqual(['take.view', 'take.cancel'])
     expect(get(spec, 'take.cancel')).toMatchObject({ label: 'Huỷ', hint: 'Chưa gửi đi, không trừ credit' })
+    get(spec, 'take.cancel').run!()
+    expect(asked).toEqual([])
+    expect(useRuns.getState().takes[0].status).toBe('cancelled')
   })
-  it('sent / processing: "Huỷ…" (cancelTake asks)', () => {
-    useRuns.setState({ takes: [take('t1', 's1', { status: 'processing', remoteId: 'r1' })] })
-    expect(get(open({ kind: 'take', id: 't1' }, ['t1']), 'take.cancel').label).toBe('Huỷ…')
+  it.each([
+    ['sent (remote id)', { status: 'processing', remoteId: 'r1' }, 'Job đã gửi sang canvasapp giả lập vẫn chạy ở đó', 'Huỷ S01·T1 trong SanoVids?\n\nJob đã gửi sang canvasapp giả lập vẫn chạy ở đó và có thể đã trừ credit dev.'],
+    ['earlier send unknown', { status: 'queued', submitUnknown: true }, 'Không rõ lần gửi trước đã trừ credit dev chưa', 'Huỷ S01·T1 trong SanoVids?\n\nLần gửi trước sang canvasapp giả lập không rõ đã bị trừ credit dev chưa, kiểm tra trong Bảng phát triển.'],
+    ['being sent (no remote id yet)', { status: 'processing' }, 'Đang gửi sang canvasapp giả lập', 'Huỷ S01·T1 lúc đang gửi?\n\nNếu canvasapp giả lập đã nhận job thì có thể đã trừ credit dev.'],
+  ] as const)('%s: "Huỷ…" asks first; Cancel keeps the take running, OK cancels it', (_name, over, hint, question) => {
+    const access = useDevAccess.getState().state
+    useDevAccess.setState({ state: bareState('unlocked') })
+    try {
+      useRuns.setState({ takes: [take('t1', 's1', { provider: 'dev', progress: 10, ...over })] })
+      const cancel = get(open({ kind: 'take', id: 't1' }, ['t1']), 'take.cancel')
+      expect(cancel).toMatchObject({ label: 'Huỷ…', hint })
+      confirmAnswer = false
+      cancel.run!()
+      expect(asked).toEqual([question])
+      expect(useRuns.getState().takes[0].status).toBe(over.status)
+      confirmAnswer = true
+      expect(cancelAsking('t1')).toBe(true)
+      expect(asked).toHaveLength(2)
+      expect(useRuns.getState().takes[0].status).toBe('cancelled')
+    } finally {
+      useDevAccess.setState({ state: access })
+    }
   })
   it('failed: "Xem lỗi", run again, delete; parked (newer SanoVids): only view + delete', () => {
     useRuns.setState({ takes: [take('t1', 's1', { status: 'failed' }), take('t2', 's1', { number: 2, status: 'processing', foreignStatus: 'processing' })] })
@@ -313,6 +368,14 @@ describe('folder, wires, empty canvas', () => {
       expect.stringMatching(/^Bỏ (lưu|tự)/),
     ])
   })
+  it('20 wires under the pointer: every one listed (the menu scrolls), none cut off', () => {
+    const many = Array.from({ length: 20 }, (_, i) => scene(`m${i}`, i + 1, { refs: ['a'] }))
+    useProject.getState().loadProject({ ...project(), scenes: many })
+    const w = many.map((sc) => edgeId('ref', 'a', sc.id))
+    const spec = open({ kind: 'edges', ids: [...w, edgeId('save', 't9', 'f1')] })
+    expect(items(spec)).toHaveLength(21)
+    expect(items(spec).map((i) => i.edgeId)).toEqual([...w, edgeId('save', 't9', 'f1')])
+  })
   it('several selected wires (no card selected): "Bỏ nối 2 dây đang chọn" with the Delete key', () => {
     const w = [edgeId('ref', 'a', 's1'), edgeId('first', 'a', 's2')]
     const spec = open({ kind: 'edges', ids: [w[0]] }, [], w)
@@ -326,6 +389,17 @@ describe('folder, wires, empty canvas', () => {
     expect(get(spec, 'pane.fit')).toMatchObject({ label: 'Vừa màn hình', action: 'canvas.fit' })
     expect(get(open({ kind: 'pane' }, ['s1', 's2']), 'pane.fit')).toMatchObject({ label: 'Phóng tới 2 mục đang chọn', action: 'canvas.fit' })
   })
+  it('"Cảnh mới tại đây" = double-click: the new scene is selected and its card prompt open (none with the node editor off)', () => {
+    get(open({ kind: 'pane' }), 'pane.newScene').run!()
+    const made = useProject.getState().project.scenes.at(-1)!.id
+    expect(useUI.getState().selectedIds).toEqual([made])
+    expect(useSceneEditor.getState()).toMatchObject({ sceneId: made, focus: 'prompt', caret: 0 })
+    useSceneEditor.getState().close()
+    useCanvasPrefs.setState({ nodeEditor: 'off' })
+    get(open({ kind: 'pane' }), 'pane.newScene').run!()
+    expect(useProject.getState().project.scenes).toHaveLength(6)
+    expect(useSceneEditor.getState().sceneId).toBeNull()
+  })
 })
 
 describe('library card menu', () => {
@@ -334,10 +408,24 @@ describe('library card menu', () => {
     useUI.setState({ selectedIds: ['s1'] })
     const spec = libraryMenu(['a'], commands)!
     checkRules(spec)
-    expect(ids(spec)).toEqual(['lib.unlinkSelected', 'lib.canvas', 'lib.edit', 'lib.delete'])
+    expect(ids(spec)).toEqual(['lib.unlinkSelected', 'lib.unlinkAll', 'lib.canvas', 'lib.edit', 'lib.delete'])
     expect(get(spec, 'lib.unlinkSelected').label).toBe('Bỏ nối Elara khỏi S01')
     expect(get(spec, 'lib.canvas').label).toBe('Ẩn khỏi canvas')
     expect(get(spec, 'lib.delete').danger).toBe(true)
+  })
+  it('"Bỏ nối {tên} khỏi mọi cảnh (n)": cuts every scene using it (one undo step); absent when that is just the selection', () => {
+    useUI.setState({ selectedIds: ['s1'] })
+    const all = get(libraryMenu(['a'], commands)!, 'lib.unlinkAll')
+    expect(all.label).toBe('Bỏ nối Elara khỏi mọi cảnh (2)')
+    const before = useProject.temporal.getState().pastStates.length
+    all.run!()
+    const p = useProject.getState().project
+    expect(p.scenes.find((s) => s.id === 's1')!.refs).toEqual([])
+    expect(p.scenes.find((s) => s.id === 's2')!.firstFrame).toBeNull()
+    expect(useProject.temporal.getState().pastStates.length).toBe(before + 1)
+    useProject.getState().loadProject(project())
+    useUI.setState({ selectedIds: ['s1', 's2'] })
+    expect(ids(libraryMenu(['a'], commands)!)).not.toContain('lib.unlinkAll')
   })
   it('a card not linked to the selected scene offers the link with C', () => {
     useUI.setState({ selectedIds: ['s4'] })
@@ -360,7 +448,9 @@ describe('source guards', () => {
     for (const f of ['SceneNode.tsx', 'TakeNode.tsx', 'AssetNode.tsx', 'FolderNode.tsx']) expect(read(`../../canvas/${f}`), f).not.toMatch(/onContextMenu/)
     const view = read('../../canvas/CanvasView.tsx')
     expect(view.match(/onContextMenu=\{ctxMenu\.onContextMenu\}/g)).toHaveLength(1)
-    expect(view.match(/<ContextMenuHost \/>/g)).toHaveLength(1)
+    // One host, at the App root (outside the region boundaries): the library's menu works whatever the canvas does.
+    expect(view).not.toContain('<ContextMenuHost')
+    expect(read('../../../App.tsx').match(/<ContextMenuHost \/>/g)).toHaveLength(1)
     expect(read('../../canvas/SceneNode.tsx')).toContain('data-ctx="ref"')
   })
   it('the host is a portal with role="menu" and data-top-overlay, no innerHTML; menus never confirm inside menuActions', () => {
