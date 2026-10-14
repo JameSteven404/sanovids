@@ -163,7 +163,9 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     expect(project.presets).toEqual(migratedFile.presets)
     expect(project.scenes.map((s) => s.presetId)).toEqual(file.project.scenes.map((s) => s.presetId))
     expect(project.scenes[0].presetId).toBe('preset_draft')
-    expect(project).not.toHaveProperty('presetNames')
+    // the factory-name migration ran once (core/factoryPresets): untouched factory presets renamed, the mark kept
+    expect(project.presets.find((p) => p.id === 'preset_draft')?.name).toBe('Bản nháp')
+    expect(project.presetNames).toBe(2)
     for (const folder of project.folders ?? []) {
       expect(folder.id).not.toBe('folder-output')
       expect(folder.path).toBeNull()
@@ -177,7 +179,7 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     expect(importedAgain.scenes).toEqual(project.scenes)
     expect(importedAgain.assets).toEqual(project.assets)
     expect(importedAgain.presets).toEqual(project.presets)
-    expect(importedAgain).not.toHaveProperty('presetNames')
+    expect(importedAgain.presetNames).toBe(2)
     expect(JSON.stringify(file)).toBe(before)
     expect(db.values.get(`project:${project.id}`)).toEqual(project)
     await switchProject(fixture.autosave.project.id)

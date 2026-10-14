@@ -4,7 +4,7 @@
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
 //   theme (lib/theme) · downloads (lib/downloads, incl. the Recycle Bin on unlinking a folder wire) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
-//   animations, the editor on a scene card + its width, big-project optimisations) ·
+//   animations, the editor on a scene card + its width, big-project optimisations) · arrange (lib/arrangePrefs: last "Sắp xếp" style + options) ·
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
 //   updates (lib/updatePrefs: auto-download of app updates).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download
@@ -25,12 +25,14 @@ import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
 import { changedBindingsCount, validateBindings, type BindingIssue } from '../core/keymap'
 import { IS_MAC } from './keyEvents'
 import { useKeymap } from './keymapPrefs'
+import { ARRANGE_RULES, cleanArrangePrefs, DEFAULT_ARRANGE_PREFS, isArrangeVideo, useArrangePrefs, type ArrangePrefs } from './arrangePrefs'
 
 export interface PortableSettings {
   theme: ThemePref
   downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string; folderUnlinkTrash: boolean }
   playback: { sound: boolean; volume: number; rate: number }
   canvas: CanvasPrefs
+  arrange: ArrangePrefs
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
   mock: MockSettings
   updates: { autoDownload: boolean }
@@ -52,6 +54,7 @@ export const DEFAULT_SETTINGS: PortableSettings = {
   },
   playback: { sound: true, volume: 1, rate: 1 },
   canvas: { ...DEFAULT_CANVAS_PREFS },
+  arrange: cleanArrangePrefs(DEFAULT_ARRANGE_PREFS),
   ui: { edgeMode: 'selected', takeDisplay: 'all', showMinimap: true, interaction: 'hand', toastTime: 'normal' },
   mock: { ...DEFAULT_MOCK_SETTINGS },
   updates: { autoDownload: DEFAULT_UPDATE_PREFS.autoDownload },
@@ -76,6 +79,7 @@ export function currentSettings(): PortableSettings {
     },
     playback: { sound: p.sound, volume: p.volume, rate: p.rate },
     canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject },
+    arrange: cleanArrangePrefs(useArrangePrefs.getState()),
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
     updates: { autoDownload: useUpdatePrefs.getState().autoDownload },
@@ -94,7 +98,7 @@ const isVolume = (v: unknown): v is number => typeof v === 'number' && Number.is
 const isTemplate = (v: unknown): v is string => checkNameTemplate(v).ok
 
 type Check = (v: unknown) => boolean
-const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock' | 'keys'>]: Record<keyof PortableSettings[K], Check> } = {
+const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock' | 'keys' | 'arrange'>]: Record<keyof PortableSettings[K], Check> } = {
   downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
   canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
@@ -166,6 +170,30 @@ export function sanitizeSettings(input: unknown, mac = IS_MAC): SanitizedSetting
       accepted += Math.max(1, Object.keys(clean).length)
     }
   }
+  if ('arrange' in input) {
+    if (!isObj(input.arrange)) rejected.push('arrange')
+    else {
+      const src = input.arrange, out: Partial<ArrangePrefs> = {}
+      for (const [key, valid] of Object.entries(ARRANGE_RULES)) {
+        if (!(key in src)) continue
+        if (valid(src[key])) { Object.assign(out, { [key]: src[key] }); accepted++ }
+        else rejected.push(`arrange.${key}`)
+      }
+      if ('videoBy' in src) {
+        if (!isObj(src.videoBy)) rejected.push('arrange.videoBy')
+        else {
+          const videoBy: Partial<ArrangePrefs['videoBy']> = {}
+          for (const style of ['rows', 'grid', 'strip'] as const) {
+            if (!(style in src.videoBy)) continue
+            if (isArrangeVideo(src.videoBy[style])) { videoBy[style] = src.videoBy[style] as 'all' | 'chosen'; accepted++ }
+            else rejected.push(`arrange.videoBy.${style}`)
+          }
+          if (Object.keys(videoBy).length) out.videoBy = videoBy as ArrangePrefs['videoBy']
+        }
+      }
+      if (Object.keys(out).length) patch.arrange = out
+    }
+  }
   return { patch, accepted, rejected, ...(keyIssues.length ? { keyIssues } : {}) }
 }
 
@@ -181,6 +209,7 @@ export function applySettings(patch: SettingsPatch): void {
     if (patch.playback.rate !== undefined) p.setRate(patch.playback.rate)
   }
   if (patch.canvas) useCanvasPrefs.getState().set(patch.canvas)
+  if (patch.arrange) useArrangePrefs.getState().set(patch.arrange)
   if (patch.ui) {
     const u = useUI.getState()
     if (patch.ui.edgeMode !== undefined) u.setEdgeMode(patch.ui.edgeMode)
@@ -241,6 +270,8 @@ export function changedSettingsCount(s: PortableSettings = currentSettings()): n
     const def = DEFAULT_SETTINGS[group] as Record<string, unknown>
     for (const k of Object.keys(def)) if (cur[k] !== def[k]) n++
   }
+  for (const key of Object.keys(ARRANGE_RULES) as (keyof typeof ARRANGE_RULES)[]) if (s.arrange[key] !== DEFAULT_SETTINGS.arrange[key]) n++
+  for (const style of ['rows', 'grid', 'strip'] as const) if (s.arrange.videoBy[style] !== DEFAULT_SETTINGS.arrange.videoBy[style]) n++
   return n + changedBindingsCount(s.keys, IS_MAC)
 }
 

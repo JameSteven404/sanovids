@@ -2,6 +2,7 @@
 // `at()`, so a log replays even after steps are dropped) and drives the real stores / commands, exactly what the UI
 // calls. Lists are always ordered (scenes by `order`, others by array index) — never by id, ids differ between runs.
 import { deleteTakes, ensureAssetToken, linkAssets, renameTake } from '../../actions'
+import { arrangeCanvas } from '../../arrangeActions'
 import { compileScene, parseTokens } from '../../core/compile'
 import { cleanTakeFileName, safeFileName } from '../../core/fileNames'
 import { migrateTake } from '../../core/migrate'
@@ -275,7 +276,20 @@ export const ACTIONS: StressAction[] = [
       if (k === 0) P().setPositions({ [s.id]: { x: num(a, 'x'), y: num(a, 'y') } })
       else if (k === 1) P().setNodeSizes({ [s.id]: { w: num(a, 'w'), h: num(a, 'w') } })
       else if (k === 2) P().setNodeSizes({ [s.id]: null })
-      else P().autoLayout()
+      else {
+        // "Sắp xếp" through the real command (engine, one undo step, take / display records), options from the step's
+        // own numbers (no extra draw: older logs replay the same stream).
+        const x = Math.abs(num(a, 'x')), y = Math.abs(num(a, 'y')), w = Math.abs(num(a, 'w'))
+        arrangeCanvas({
+          style: (['rows', 'grid', 'strip'] as const)[y % 3],
+          video: y % 6 < 3 ? 'all' : 'chosen',
+          scope: y % 12 >= 9 ? 'selection' : 'all',
+          spacing: (['tight', 'normal', 'roomy'] as const)[x % 3],
+          folders: Math.floor(x / 3) % 2 ? 'top' : 'keep',
+          refs: (['column', 'byKind', 'keep'] as const)[w % 3],
+          placedTakes: Math.floor(w / 3) % 2 ? 'follow' : 'reset',
+        })
+      }
     },
   },
 

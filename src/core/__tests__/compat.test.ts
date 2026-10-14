@@ -18,18 +18,24 @@ describe.each(compatFixtures)('$source.version compatibility', (fixture) => {
     expect(project.schemaVersion).toBe(2)
     expect(project.assets).toEqual(raw.assets)
     expect(project.assets[1].name).toBe('Làng bên sông')
-    expect(project.presets).toEqual(raw.presets)
     // Every old project holds the factory presets as its build wrote them, one of them edited by the user, and a scene
-    // linked to "Nháp". This build keeps them as saved. A factory-name migration (cx/arrange: renameFactoryPresets +
-    // Project.presetNames) must replace these lines with its documented expectations — untouched factory presets
-    // renamed, the edited one kept, the mark written once and kept through export / import / reopen.
+    // linked to "Nháp". The factory-name migration (core/factoryPresets renameFactoryPresets + Project.presetNames):
+    // untouched factory presets get their 0.6 names, the edited one and the user's own presets stay as saved, nothing
+    // but a name changes, and the mark is written once (kept through export / import / reopen: compatPersist.test).
+    const unnamed = (list: typeof raw.presets) => list.map(({ name: _name, ...rest }) => rest)
+    expect(unnamed(project.presets)).toEqual(unnamed(raw.presets))
+    const oldFactory = Object.fromEntries(raw.presets.filter((p) => p.id in HISTORICAL_FACTORY_PRESETS).map((p) => [p.id, p]))
     const factory = Object.fromEntries(project.presets.filter((p) => p.id in HISTORICAL_FACTORY_PRESETS).map((p) => [p.id, p]))
     expect(Object.keys(factory)).toEqual(Object.keys(HISTORICAL_FACTORY_PRESETS))
-    expect(factory.preset_draft.name).toBe(HISTORICAL_FACTORY_PRESETS.preset_draft)
-    expect(factory.preset_h3.name).toBe(HISTORICAL_FACTORY_PRESETS.preset_h3)
+    expect(oldFactory.preset_draft.name).toBe(HISTORICAL_FACTORY_PRESETS.preset_draft)
+    expect(oldFactory.preset_h3.name).toBe(HISTORICAL_FACTORY_PRESETS.preset_h3)
+    expect(factory.preset_draft.name).toBe('Bản nháp')
+    expect(factory.preset_h3.name).toBe('H3 từ ảnh')
     // edited by the user (renamed, or its settings changed): never a factory preset to rename
-    expect(factory.preset_final.name !== HISTORICAL_FACTORY_PRESETS.preset_final || factory.preset_final.duration !== 15).toBe(true)
-    expect(project).not.toHaveProperty('presetNames')
+    expect(oldFactory.preset_final.name !== HISTORICAL_FACTORY_PRESETS.preset_final || oldFactory.preset_final.duration !== 15).toBe(true)
+    expect(factory.preset_final).toEqual(oldFactory.preset_final)
+    expect(project.presets.filter((p) => !(p.id in HISTORICAL_FACTORY_PRESETS))).toEqual(raw.presets.filter((p) => !(p.id in HISTORICAL_FACTORY_PRESETS)))
+    expect(project.presetNames).toBe(2)
     expect(project.scenes[0].presetId).toBe('preset_draft')
     expect(project.settings.autoRenumber).toBe('autoRenumber' in raw.settings ? raw.settings.autoRenumber : true)
     expect(project.scenes.map((s) => s.prompt)).toEqual(fixture.expected.prompts)

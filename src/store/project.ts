@@ -16,6 +16,7 @@ import { dropFolderLinks, FOLDER_H, FOLDER_W, withLink, type FolderLinkKind } fr
 import { newId, pickColor } from '../core/ids'
 import { foreignMarkOf } from '../core/foreignMark'
 import { MODELS, normalizeSettings } from '../core/models'
+import { factoryPresets, PRESET_NAMES_VERSION } from '../core/factoryPresets'
 import { normalizeAssetName, normalizeFolderName, normalizePresetName } from '../core/names'
 import type { Asset, Preset, Project, ProjectSettings, SaveFolder, Scene, Size, VideoSettings, XY } from '../core/types'
 import { toast } from './ui'
@@ -102,17 +103,14 @@ export function emptyProject(name = 'Dự án mới'): Project {
     updatedAt: now,
     assets: [],
     presets: defaultPresets(),
+    presetNames: PRESET_NAMES_VERSION,
     scenes: [],
     settings: defaultProjectSettings(),
   }
 }
 
 export function defaultPresets(): Preset[] {
-  return [
-    { id: 'preset_draft', name: 'Nháp', model: 'seedance_2_5', mode: 't2v', duration: 30, resolution: '480p', ratio: '16:9' },
-    { id: 'preset_final', name: 'Final', model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' },
-    { id: 'preset_h3', name: 'H3 nháp', model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' },
-  ]
+  return factoryPresets()
 }
 
 export function scenePosition(index: number): XY {
@@ -577,7 +575,11 @@ export interface ProjectState {
    * (resizing from the left/top edge) — and folder nodes (the one-time row spacing moves them with their row).
    */
   setNodeSizes: (sizes: Record<string, Size | null>, positions?: Record<string, XY>) => void
-  /** Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards). */
+  /**
+   * Scenes one per row in order, assets in a column. `rowHeights[sceneId]` = tallest node of that row (scene card or its takes); `rowHeights[assetId]` = measured height of an asset card (portrait images make tall cards).
+   * The 0.5 "Sắp xếp", kept only as the reference the arrange engine's LEGACY_ROWS is checked against (src/__tests__/arrangeActions.test.ts):
+   * the app arranges through arrangeActions.arrangeCanvas.
+   */
   autoLayout: (rowHeights?: Record<string, number>) => void
 
   // bulk
