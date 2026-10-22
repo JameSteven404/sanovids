@@ -447,8 +447,8 @@
   font-weight: 500;
   cursor: pointer;
   transition:
-    background 0.15s ease-out,
-    color 0.15s ease-out;
+    background var(--motion-state) var(--ease-ui),
+    color var(--motion-state) var(--ease-ui);
 }
 .dv-tabs button:hover:not(.active) {
   color: var(--text);
@@ -787,7 +787,7 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--panel);
-  transition: border-color 0.12s ease-out;
+  transition: border-color var(--motion-hover) var(--ease-ui);
 }
 .dv-fault:hover {
   border-color: var(--border-strong);
@@ -846,7 +846,7 @@
   display: none;
 }
 .dv-summary-chev {
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
 }
 .dv-custom[open] .dv-summary-chev {
   transform: rotate(90deg);

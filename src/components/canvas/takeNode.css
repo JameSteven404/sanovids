@@ -361,24 +361,22 @@
   left: 0;
   right: 0;
   top: 50%;
-  height: 3px;
-  margin-top: -1.5px;
+  /* 5 px drawn at 3 (scaleY .6) until hovered / scrubbed: it thickens by transform, never by height (UI-06) */
+  height: 5px;
+  margin-top: -2.5px;
   border-radius: 999px;
   overflow: hidden;
   background: color-mix(in srgb, var(--text) 16%, transparent);
-  transition:
-    height 0.12s var(--cv-ease),
-    margin-top 0.12s var(--cv-ease);
+  transform: scaleY(0.6);
+  transition: transform 0.12s var(--cv-ease);
 }
 .cv-tp-track:hover .cv-tp-rail,
 .cv-tp-track:focus-visible .cv-tp-rail,
 .cv-tp.is-scrub .cv-tp-rail {
-  height: 5px;
-  margin-top: -2.5px;
+  transform: none;
 }
 .cv-tp.is-rest .cv-tp-rail {
-  height: 3px;
-  margin-top: -1.5px;
+  transform: scaleY(0.6);
 }
 .cv-tp-buf,
 .cv-tp-fill {
@@ -870,8 +868,11 @@
   left: 0;
   top: 0;
   bottom: 0;
+  /* UI-06: full width, grown by transform (scaleX set inline) instead of width */
+  width: 100%;
+  transform-origin: left;
   background: var(--accent-soft);
-  transition: width 0.25s linear;
+  transition: transform 0.25s linear;
 }
 .cv-take-main.is-retry {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);

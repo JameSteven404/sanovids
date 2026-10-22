@@ -546,7 +546,7 @@ function TakeBusyButton({ takeId, progress }: { takeId: string; progress: number
   const label = transfer ?? `Đang tạo ${progress}%`
   return (
     <button className="cv-take-main is-busy" disabled aria-label={label}>
-      <i className="cv-take-main-fill" style={{ width: `${Math.max(3, transfer ? (pct ?? progress) : progress)}%` }} />
+      <i className="cv-take-main-fill" style={{ transform: `scaleX(${Math.max(3, transfer ? (pct ?? progress) : progress) / 100})` }} />
       <LoaderCircle size={14} className="cv-spin" />
       <span>{label}</span>
     </button>

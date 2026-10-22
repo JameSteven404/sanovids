@@ -66,7 +66,7 @@
   font-size: 11.5px;
   font-weight: 500;
   user-select: none;
-  transition: color 0.12s ease-out;
+  transition: color var(--motion-hover) var(--ease-ui);
 }
 .cv-sn:hover .cv-sn-title.is-empty,
 .cv-sn.is-selected .cv-sn-title.is-empty {
@@ -178,7 +178,7 @@
 .cv-sn-sum-chev {
   flex: none;
   opacity: 0;
-  transition: opacity 0.12s ease-out;
+  transition: opacity var(--motion-hover) var(--ease-ui);
 }
 .cv-sn-sum:hover .cv-sn-sum-chev,
 .cv-sn-sum:focus-visible .cv-sn-sum-chev {
@@ -678,8 +678,8 @@
   cursor: pointer;
   box-shadow: var(--shadow-sm);
   transition:
-    filter 0.12s ease-out,
-    transform 0.12s ease-out;
+    filter var(--motion-hover) var(--ease-ui),
+    transform var(--motion-hover) var(--ease-ui);
 }
 .cv-sn-run > span {
   min-width: 0;

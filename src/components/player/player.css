@@ -26,7 +26,7 @@
   flex-direction: column;
   background: var(--vw-media-bg);
   color: var(--vw-on-media);
-  animation: vw-player-fade 0.18s ease-out;
+  animation: vw-player-fade var(--motion-pop) var(--ease-ui);
 }
 @keyframes vw-player-fade {
   from {
@@ -264,8 +264,8 @@
   justify-content: center;
   cursor: pointer;
   transition:
-    opacity 0.12s ease-out,
-    transform 0.12s ease-out;
+    opacity var(--motion-hover) var(--ease-ui),
+    transform var(--motion-hover) var(--ease-ui);
 }
 .vw-player-pp:hover {
   opacity: 0.88;
@@ -313,7 +313,7 @@
   background: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
   overflow: hidden;
   cursor: pointer;
-  transition: height 0.12s ease-out;
+  transition: height var(--motion-hover) var(--ease-ui);
 }
 .vw-seg:hover {
   height: 12px;

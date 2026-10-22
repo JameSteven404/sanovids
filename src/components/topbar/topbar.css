@@ -78,7 +78,7 @@
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb .icon-btn {
   width: 30px;
@@ -157,7 +157,7 @@
   cursor: text;
   display: inline-flex;
   align-items: center;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-name:hover {
   background: var(--hover);
@@ -200,7 +200,7 @@
   color: var(--text-dim);
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb-save:hover {
   background: var(--hover);
@@ -315,7 +315,7 @@
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.15s ease-out;
+  transition: color var(--motion-state) var(--ease-ui);
 }
 /* Thin separators between unselected segments (hidden next to the thumb), as in macOS. */
 .tb-seg-btn + .tb-seg-btn::before {
@@ -326,7 +326,7 @@
   bottom: 7px;
   width: 1px;
   background: var(--border-strong);
-  transition: opacity 0.15s ease-out;
+  transition: opacity var(--motion-state) var(--ease-ui);
 }
 .tb-seg-btn.active::before,
 .tb-seg-btn.active + .tb-seg-btn::before {
@@ -363,7 +363,7 @@
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-running:hover {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -408,7 +408,7 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb-update-icon {
   flex: none;
@@ -460,7 +460,7 @@
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-provider:hover {
   background: color-mix(in srgb, var(--info) 22%, transparent);

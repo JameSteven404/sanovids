@@ -28,7 +28,7 @@
   color: var(--text-dim);
   font-size: 11px;
   cursor: pointer;
-  transition: background-color 120ms ease-out, color 120ms ease-out;
+  transition: background-color var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .cv-add-filters button:hover { background: var(--hover); color: var(--text); }
 .cv-add-filters button[aria-pressed='true'] { border-color: transparent; background: var(--accent-soft); color: var(--accent-ink); }
@@ -46,11 +46,11 @@
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: background-color 120ms ease-out;
+  transition: background-color var(--motion-hover) var(--ease-ui);
 }
 .cv-add-row:hover,
 .cv-add-row:focus-visible { background: var(--hover); }
-.cv-add-row:active { background: var(--pressed); transition-duration: 75ms; }
+.cv-add-row:active { background: var(--pressed); transition-duration: var(--motion-press); }
 .cv-add-row > svg { flex: none; color: var(--text-dim); }
 .cv-add-row b { display: block; font-size: 12.5px; font-weight: 500; }
 .cv-add-row small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 11px; line-height: 1.4; }

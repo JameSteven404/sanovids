@@ -21,9 +21,9 @@
   cursor: pointer;
   user-select: none;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out,
-    border-color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui);
 }
 .tb-cp:focus-visible {
   outline: none;
@@ -200,7 +200,7 @@
   background: var(--info-soft);
   color: var(--info);
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-cp-add.sm {
   width: 24px;

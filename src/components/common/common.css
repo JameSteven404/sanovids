@@ -203,7 +203,7 @@
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .toast .toast-action:hover {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -225,7 +225,7 @@
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .toast .toast-close:hover {
   background: var(--hover);
@@ -365,7 +365,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s ease-out, transform 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), transform var(--motion-hover) var(--ease-ui);
 }
 .lightbox-nav:hover {
   background: var(--panel-3);

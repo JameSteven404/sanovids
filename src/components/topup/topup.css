@@ -134,7 +134,7 @@
   background: var(--panel-3);
   box-shadow: var(--shadow-sm);
   transform: translateX(calc(var(--seg-i, 0) * (100% + 2px)));
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
 }
 :root[data-theme='light'] .tu-seg::before {
   background: var(--panel);
@@ -160,7 +160,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
-  transition: color 0.15s ease-out;
+  transition: color var(--motion-state) var(--ease-ui);
 }
 .tu-seg.sm button {
   min-height: 28px;
@@ -223,7 +223,7 @@
   background: var(--panel-2);
   color: var(--text);
   cursor: pointer;
-  transition: background 0.12s ease-out, border-color 0.12s ease-out, box-shadow 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), border-color var(--motion-hover) var(--ease-ui), box-shadow var(--motion-hover) var(--ease-ui);
 }
 .tu-preset b {
   font-size: 15px;
@@ -260,7 +260,7 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
-  transition: box-shadow 0.12s ease-out, border-color 0.12s ease-out;
+  transition: box-shadow var(--motion-hover) var(--ease-ui), border-color var(--motion-hover) var(--ease-ui);
 }
 .tu-amount:focus-within {
   box-shadow: var(--focus-ring);
@@ -537,7 +537,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  transition: opacity 0.15s ease-out;
+  transition: opacity var(--motion-state) var(--ease-ui);
 }
 .tu-hist-list.stale {
   opacity: 0.55;

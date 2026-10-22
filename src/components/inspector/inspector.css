@@ -108,9 +108,9 @@
   outline: none;
   text-overflow: ellipsis;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-title-input::placeholder {
   color: var(--text-faint);
@@ -215,7 +215,7 @@
   letter-spacing: 0.02em;
   color: var(--text-dim);
   white-space: nowrap;
-  transition: color 0.12s ease-out;
+  transition: color var(--motion-hover) var(--ease-ui);
 }
 .in-section-toggle:hover .in-section-title {
   color: var(--text);
@@ -223,7 +223,7 @@
 .in-chev {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
 }
 .in-section.is-collapsed .in-chev {
   transform: rotate(-90deg);
@@ -335,7 +335,7 @@
   border-radius: var(--radius-xs);
   background: var(--accent-soft);
   box-shadow: var(--shadow-sm);
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
   pointer-events: none;
 }
 /* white thumb on the light gray track: a hairline keeps its edge visible (the light shadow alone is very faint) */
@@ -362,8 +362,8 @@
   text-overflow: ellipsis;
   cursor: pointer;
   transition:
-    color 0.15s ease-out,
-    background 0.12s ease-out;
+    color var(--motion-state) var(--ease-ui),
+    background var(--motion-hover) var(--ease-ui);
 }
 .in-seg-btn:hover:not(.on) {
   color: var(--text);
@@ -468,8 +468,8 @@
   color: transparent;
   caret-color: var(--text);
   transition:
-    border-color 0.15s ease-out,
-    box-shadow 0.15s ease-out;
+    border-color var(--motion-state) var(--ease-ui),
+    box-shadow var(--motion-state) var(--ease-ui);
 }
 .textarea.in-pe-ta:focus {
   border-color: var(--border-strong);
@@ -663,8 +663,8 @@
   cursor: pointer;
   box-shadow: var(--shadow-sm);
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-hint-btn:hover {
   background: var(--action-gradient);
@@ -759,7 +759,7 @@
   font-family: var(--mono);
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-ph-chip:hover,
 .in-ph-chip[aria-expanded='true'] {
@@ -847,9 +847,9 @@
   cursor: pointer;
   white-space: nowrap;
   transition:
-    border-color 0.12s ease-out,
-    color 0.12s ease-out,
-    background 0.12s ease-out;
+    border-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui),
+    background var(--motion-hover) var(--ease-ui);
 }
 .in-legend-chip.is-image {
   background: var(--ref-soft);
@@ -1041,8 +1041,8 @@
   gap: 2px;
   border-radius: var(--radius-sm);
   transition:
-    background 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-refs.is-lib-over {
   background: var(--ref-soft);
@@ -1075,7 +1075,7 @@
   min-height: 42px;
   padding: 4px 4px 4px 0;
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-ref.is-multi {
   padding-left: 6px;
@@ -1210,8 +1210,8 @@
   color: var(--text-faint);
   cursor: pointer;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-x:hover {
   color: var(--danger-text);
@@ -1342,8 +1342,8 @@
   text-align: left;
   min-width: 0;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui);
 }
 .in-frame-btn > span.faint {
   display: inline-flex;
@@ -1438,8 +1438,8 @@
   background: var(--hover);
   color: var(--text-faint);
   transition:
-    background 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-picker-search:focus-within {
   border-color: var(--border-strong);
@@ -1625,7 +1625,7 @@ span.in-check {
   background: var(--bg-elev);
   font-size: 12.5px;
   line-height: 1.6;
-  transition: opacity 0.15s ease-out;
+  transition: opacity var(--motion-state) var(--ease-ui);
 }
 
 /* ---------- takes / run ---------- */
@@ -1747,8 +1747,8 @@ span.in-check {
   cursor: pointer;
   flex: none;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 button.in-code-chip:hover {
   background: var(--accent-soft);
@@ -1862,9 +1862,9 @@ button.in-code-chip:focus-visible {
   font-weight: 600;
   outline: none;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-asset-name::placeholder {
   color: var(--text-faint);
@@ -1919,8 +1919,8 @@ button.in-code-chip:focus-visible {
   cursor: pointer;
   padding: 0;
   transition:
-    transform 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    transform var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-swatch:hover {
   transform: scale(1.1);
@@ -2051,9 +2051,9 @@ button.in-code-chip:focus-visible {
   font-size: 11px;
   cursor: pointer;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-image-add:hover:not(:disabled) {
   border-color: var(--accent);
@@ -2078,7 +2078,7 @@ button.in-code-chip:focus-visible {
   align-items: center;
   gap: 4px;
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-usedin-row:hover {
   background: var(--hover);
@@ -2273,8 +2273,8 @@ button.in-code-chip:focus-visible {
   overflow: hidden;
   cursor: pointer;
   transition:
-    box-shadow 0.15s ease-out,
-    transform 0.15s ease-out;
+    box-shadow var(--motion-state) var(--ease-ui),
+    transform var(--motion-state) var(--ease-ui);
 }
 .in-take-poster:hover {
   box-shadow: var(--shadow);
@@ -2321,7 +2321,7 @@ button.in-code-chip:focus-visible {
   backdrop-filter: var(--blur);
   box-shadow: var(--shadow-lg);
   pointer-events: none;
-  animation: in-hover-in 0.12s ease-out;
+  animation: in-hover-in var(--motion-hover) var(--ease-ui);
 }
 .in-hover-preview .full-img {
   border-radius: var(--radius-sm);
@@ -2404,7 +2404,7 @@ button.in-code-chip:focus-visible {
   border: 0;
   font-family: var(--mono);
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-code.in-code-btn:hover:not([aria-disabled='true']),
 .in-code.in-code-btn[aria-expanded='true'] {

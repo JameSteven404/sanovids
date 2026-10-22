@@ -15,7 +15,7 @@
   font-size: 13px;
   outline: none;
   user-select: none;
-  animation: cm-pop 0.12s ease-out;
+  animation: cm-pop var(--motion-hover) var(--ease-ui);
 }
 :root[data-motion='reduced'] .cm-menu,
 :root[data-motion='off'] .cm-menu {

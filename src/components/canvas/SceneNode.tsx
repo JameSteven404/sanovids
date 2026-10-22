@@ -226,7 +226,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
         {scene.color && <span className="cv-scene-stripe" style={{ background: scene.color }} />}
         {running && !far && (
           <div className="cv-run-bar">
-            <i style={{ width: `${Math.max(3, progress)}%` }} />
+            <i style={{ transform: `scaleX(${Math.max(3, progress) / 100})` }} />
           </div>
         )}
         {/* the card keeps its fixed size while its body waits (useBodyReady): no re-measure, no wire jump */}

@@ -89,6 +89,13 @@
   --hairline: rgba(255,255,255,.08);
   --glass-shadow: 0 4px 20px rgba(0,0,0,.06);
   --radius-pill: 16px;
+  /* Motion (UI-06, docs/UI-MUOT.md): press 75 ms · hover 120 ms · state / selection 150 ms · popovers 180 ms, one easing;
+     only colour, opacity and transform move. "Hiệu ứng chuyển động" Giảm bớt / Tắt still apply on top (app.css). */
+  --motion-press: 75ms;
+  --motion-hover: 120ms;
+  --motion-state: 150ms;
+  --motion-pop: 180ms;
+  --ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
   /* Be Vietnam Pro and JetBrains Mono are bundled (main.tsx, @fontsource): the same faces on every platform. */
   --font: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;

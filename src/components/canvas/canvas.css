@@ -338,7 +338,9 @@
   background: var(--brand-gradient);
   background-size: 200% 100%;
   animation: cv-run 1.2s linear infinite;
-  transition: width 0.25s linear;
+  /* UI-06: progress grows by transform (scaleX set inline), never by width: no layout per frame */
+  transform-origin: left;
+  transition: transform 0.25s linear;
 }
 @keyframes cv-run {
   to {

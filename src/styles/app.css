@@ -143,7 +143,7 @@
   width: 2px;
   border-radius: 1px;
   background: transparent;
-  transition: background 0.15s ease-out;
+  transition: background var(--motion-state) var(--ease-ui);
 }
 .panel-resizer:hover::after {
   background: var(--accent);
