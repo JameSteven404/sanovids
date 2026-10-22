@@ -176,7 +176,8 @@ không phải UUID. Canvas tối thiểu giờ dựng **đúng từng khoá** nh
 | `failed` | failed, lỗi = `canvasapp: <error_message>` |
 | `expired` | failed ("đã hết hạn") |
 | `cancelled` | cancelled |
-| không thấy trong danh sách 3 lần liên tiếp | failed ("không thấy job…") |
+| không thấy trong danh sách 3 lần liên tiếp (phiên cầu nối thuộc tài khoản đang đăng nhập, hoặc take máy này không có trong sổ job) | failed ("không thấy job…") |
+| không thấy trong danh sách / danh sách bị từ chối (404, 403), phiên cầu nối **không** thuộc tài khoản đang đăng nhập (job do máy này gửi hoặc nhập) | processing, giữ nguyên — không bao giờ failed; báo "Sự cố" (`job-unreachable`) cho tới khi đăng nhập lại tài khoản đó |
 
 ## 4. Các luồng
 
@@ -208,8 +209,10 @@ job `bdp:canvasapp:jobs`) và chuyển về chế độ Phát triển (giả l�
 401 → báo đăng nhập lại, take không bị đánh lỗi. Đăng nhập lại rồi chạy thêm cảnh: phiên "SanoVids bridge" được tìm lại
 theo tên và canvas của nó được **đọc lại trước khi ghi** (§3.2), nên node của các job đang chạy vẫn ở trên canvas.
 Đăng nhập **tài khoản khác**: dùng phiên cầu nối của tài khoản đó (tạo nếu chưa có), không mang ảnh hay node nào của
-tài khoản trước; canvas cầu nối của tài khoản trước giữ nguyên. Take của tài khoản trước chỉ theo dõi được khi đăng nhập
-lại tài khoản đó (VERIFY §8).
+tài khoản trước; canvas cầu nối của tài khoản trước giữ nguyên. Take đang chạy của tài khoản trước chỉ theo dõi được khi
+đăng nhập lại tài khoản đó: trong lúc chờ, chúng **giữ nguyên "đang tạo"** (không bao giờ bị đánh lỗi "không thấy job" —
+job vẫn chạy và tính credit ở tài khoản trước) và SanoVids báo "Sự cố" với lý do (xem **Theo dõi** bên dưới). Đăng nhập
+lại tài khoản trước → các take đó được theo dõi tiếp, tải video về như thường.
 
 **Gửi (submit)** — runs engine chọn take `queued` (≤ 10 take canvasapp đang chạy; **mỗi lần một take**: take sau chỉ
 chuyển sang `processing` khi take trước đã có `remoteId`, nên các take phía sau vẫn `queued` thật — huỷ sạch, và nếu
@@ -338,6 +341,16 @@ lần tìm job sau một câu trả lời bị mất đọc `fresh`: main chỉ 
 `CANVASAPP_JOBS_FRESH_MS`, giả lập `DEV_JOB_LIST_FRESH_MS`).
 Lỗi khi poll (mạng, 401, 429…) **không** làm hỏng take: engine giữ take đang chạy, nghỉ 1 → 2 → 4 → … tối đa 10 phút, và
 đặt `useRuns.providerIssue` để UI báo. Sau 401, đăng nhập lại (đọc được số dư) → hết nghỉ, poll lại ở lượt kế.
+Job của **tài khoản khác**: khi danh sách job không có một job do máy này gửi hoặc nhập (sổ `jobs` / `imported`), hoặc
+canvasapp từ chối đọc danh sách của phiên đó (404 / 403), adapter đọc `GET /api/projects` (danh sách phiên của tài
+khoản đang đăng nhập — chỉ đọc lúc đó; "không phải của tài khoản này" được tin trong 5 phút, "của tài khoản này" được hỏi
+lại sau 15 s). Phiên **không** có trong đó → job thuộc tài khoản khác (đã đổi tài khoản; hoặc phiên đã bị xoá): take giữ
+"đang tạo", không tính là "không thấy", lần đọc đó không được dùng cho canvas (`runningNodes`), các phiên khác vẫn được
+theo dõi bình thường, và poll trả `waiting` → engine đặt `providerIssue` mã `job-unreachable`
+("Không theo dõi được N video đang tạo: chúng được tạo bằng tài khoản canvasapp.io.vn khác…", `otherAccountText`) tới khi
+mọi job lại theo dõi được. Phiên có trong đó → như cũ (3 lần không thấy → failed; danh sách bị từ chối → lỗi poll, nghỉ).
+Không đọc được `GET /api/projects` → lần đó không tính là "không thấy". Take mà sổ job máy này không biết (máy khác, mất
+dữ liệu, đặt lại chế độ Phát triển) → như cũ.
 
 **Tải kết quả** — `completed` → `GET /api/video-jobs/{job_id}/stream` → Blob `video/mp4` → engine cắt
 poster (≤ 640 px, `providers/poster.ts`) → `putBlob` → take `completed` (+ tự tải về máy nếu bật "Tự tải video").
@@ -572,7 +585,7 @@ SePay → kết quả `cancel`. 17. Để quá 10 phút → `expired`. 18. Lịc
   độ phân giải / tỉ lệ ngoài danh sách không, và danh sách có thể có giá trị SanoVids chưa biết (4K, 20 s, 21:9) không.
 - [x] Node video theo cảnh **của dự án**: `JobRequest.sanovidsProjectId` + `sceneId` → `sceneNodeKey` → `canvasNodeId` (trước đây chỉ theo `sceneId`: hai dự án có cùng id cảnh — nhân bản / nhập cùng tệp hai lần — dùng chung một node, và khi danh sách job không có `client_request_id`, take "không rõ" của dự án này có thể nhận nhầm job của dự án kia rồi take kia gửi lại → trả tiền hai lần nếu máy chủ không dedupe). Không chuyển đổi dữ liệu: job đang chạy / take gửi dở từ bản trước giữ node cũ, gửi lại cũng trên node cũ; bản cũ hơn vẫn đọc được mục mới. Thêm: mục canvas đã nhớ chỉ gồm các cảnh có trên canvas (≤ 40); khi tìm job của câu trả lời bị mất, không nhận job mà một take khác còn chưa rõ trên cùng node có thể sở hữu (trước khi `POST` cạnh take như vậy: đọc lại danh sách job, đọc không được → không gửi), và bỏ qua job đã có trong lần đọc danh sách trước `POST`. Test: `canvasapp-mapping`, `canvasapp-adapter`, `canvasapp-e2e` ("projects sharing scene ids"), `dev-e2e` ("a duplicated project", "a lost answer next to a duplicated project" — lỗi `lost-response` / `network` + công tắc dedupe của máy chủ giả lập); Bảng phát triển › Job & đơn nạp ghi node của mỗi job ("node S03" / "node cũ S03" / "node khác").
 - [ ] VERIFY với máy chủ thật: dạng phản hồi `POST /api/video-jobs`; máy chủ có dedupe `client_request_id` không; `/stream` có chuyển hướng không; `GET /api/projects/{id}` trả `{ canvas }` đúng như lần `PUT` gần nhất (SanoVids đọc lại nó sau Đăng xuất / đăng nhập lại — §3.2). (Đã đối chiếu với `canvas.js`: `order` bắt đầu từ 1; `GET /api/projects` trả mảng; dạng canvas / body job — xem `docs/canvasapp-api-notes.md`.)
-- [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không; có giới hạn / trường phân trang như `limit`, `total`, `has_more` không — trong lúc chưa rõ, SanoVids chỉ tin "không thấy" khi danh sách còn thấy job đã xong từ trước lúc gửi, xem §4); khi đăng nhập **tài khoản khác** trong lúc take của tài khoản trước còn chạy, `GET /api/video-jobs?project_id=<phiên của tài khoản trước>` trả gì (404/403 → poll lỗi, take giữ nguyên; danh sách rỗng → sau 3 lần poll take bị báo "không thấy job" dù job vẫn chạy và tính tiền trên tài khoản trước).
+- [ ] VERIFY (chống trả tiền hai lần): job trong `GET /api/video-jobs` có trường `client_request_id` không (có → khớp chính xác); `created_at` có múi giờ không; mã lỗi khi thiếu credit (400 hay 402) và `detail`; hai take của **cùng một cảnh** chạy song song trên cùng `canvas_node_id` có bị từ chối không; job có bị huỷ/xoá khi node của nó rơi khỏi canvas cầu nối (giới hạn 40 node) không — từ v0.2.5 node của job đang chạy không bao giờ bị gỡ (take mới chờ trong hàng đợi khi hết chỗ), nên nếu không bị huỷ thì có thể nới quy tắc này cho chạy được nhiều cảnh nhiều ảnh hơn; danh sách job có trường `canvas_node_id` không (không có → dùng node ghi trong sổ `jobs`, chỉ có với job tạo từ v0.2.5); danh sách job có bị cắt trang (job đang chạy cũ có biến mất không; có giới hạn / trường phân trang như `limit`, `total`, `has_more` không — trong lúc chưa rõ, SanoVids chỉ tin "không thấy" khi danh sách còn thấy job đã xong từ trước lúc gửi, xem §4); khi đăng nhập **tài khoản khác** trong lúc take của tài khoản trước còn chạy, `GET /api/video-jobs?project_id=<phiên của tài khoản trước>` trả gì (danh sách rỗng, 404 hay 403 — cả ba đều được xử lý: take giữ nguyên, báo "Sự cố", xem §4 **Theo dõi**; mã khác → lỗi poll, nghỉ như mọi lỗi poll) và `GET /api/projects` có chỉ liệt kê phiên của tài khoản đang đăng nhập không.
 - [x] UI: nút "Chạy lại" của take `UNKNOWN_SUBMIT_ERROR` gọi `useRuns.getState().retry(take.id)` (gửi lại CHÍNH take đó, cùng khoá, hỏi xác nhận trước) thay vì tạo take mới: `actions.rerunTake` (take node, hàng đợi, xem take).
 - [x] Video tham chiếu `@video_N`: **đã bỏ trong 0.6.0** ("bỏ video tham chiếu, giữ lại ảnh tham chiếu"; chưa từng thấy
   canvasapp nhận video — `docs/canvasapp-api-notes.md` "Reference videos (@video_N) — not observed"). Không còn cổng
@@ -633,7 +646,7 @@ Chuẩn bị: tài khoản canvasapp có ít credit (≥ 30), bản desktop mớ
 7. **Nhiều job cùng lúc** — chạy 3 cảnh: cả 3 take cùng "đang tạo" (tối đa 10 job cùng lúc; từ job thứ 11 trở đi thì chờ trong hàng đợi). Tiến độ vẫn cập nhật khoảng 20 s/lần.
 8. **Tắt app khi đang tạo** — trong lúc job chạy, đóng SanoVids, mở lại → take vẫn "đang tạo" và hoàn thành; trên canvasapp **không** có job trùng.
 9. **Video tham chiếu** — cảnh Seedance có video tham chiếu (`@video_1`): mọi nút Chạy của cảnh đó tắt (thẻ cảnh, cả hai nút trong inspector; di chuột lên nút để xem lý do), hộp xác nhận bỏ qua cảnh với lý do "Cổng canvasapp (cả chế độ Phát triển) chưa hỗ trợ video tham chiếu (@video) — bỏ video tham chiếu khỏi cảnh để chạy", không tốn credit. Bỏ video tham chiếu (nút × trong inspector hoặc cắt dây) thì chạy được; chỉ xoá chữ `@video_1` thì chưa. Cảnh MiniMax-H3 t2v còn sót video tham chiếu (không có `@video`) vẫn chạy, không gửi video.
-10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành. Trong lúc chúng còn chạy, chạy thêm một cảnh → trên canvasapp, phiên "SanoVids bridge" **vẫn còn** node của các take đang chạy (cạnh node mới) và các take đó vẫn hoàn thành.
+10. **Hết phiên** — Đăng xuất trong lúc có take đang chạy → Cài đặt hiện cảnh báo đăng nhập lại; take không bị đánh lỗi; đăng nhập lại → take tiếp tục và hoàn thành. Trong lúc chúng còn chạy, chạy thêm một cảnh → trên canvasapp, phiên "SanoVids bridge" **vẫn còn** node của các take đang chạy (cạnh node mới) và các take đó vẫn hoàn thành. Nếu có tài khoản thứ hai: Đăng xuất, đăng nhập tài khoản đó và để yên hơn 1 phút → take của tài khoản đầu vẫn "đang tạo" (không bị lỗi "không thấy job"), thanh trên cùng hiện "Sự cố" với lý do "tạo bằng tài khoản … khác"; đăng nhập lại tài khoản đầu → hết "Sự cố", các take đó hoàn thành.
 11. **Huỷ** — huỷ take đang chạy: SanoVids ghi "Đã huỷ"; ghi nhận job trên canvasapp vẫn chạy (đúng như cảnh báo).
 12. **Quay lại chế độ Phát triển** — chọn Phát triển (giả lập) → take mới chạy trên canvasapp giả lập, không gọi mạng.
 13. **Huỷ lúc đang gửi** — chạy 2 cảnh có ảnh, huỷ take thứ hai ngay (khi take đầu còn đang tải ảnh) → trên canvasapp chỉ có 1 job; take huỷ ghi "không bị trừ credit".

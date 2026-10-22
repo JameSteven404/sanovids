@@ -168,6 +168,12 @@ export interface RemoteStatus {
   progress?: number
   /** Vietnamese error text when state = failed. */
   error?: string
+  /**
+   * queued / processing only: the provider cannot follow this job right now, and why (Vietnamese) — e.g. it was made
+   * with another canvasapp account than the one logged in. The take keeps running; the engine shows the reason as the
+   * provider issue until a poll follows every job again.
+   */
+  waiting?: string
 }
 
 export interface JobResult {
