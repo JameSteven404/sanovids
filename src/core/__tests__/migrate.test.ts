@@ -248,6 +248,27 @@ describe('projects of a newer build', () => {
     ...over,
   })
 
+  it('a model unknown here whose values a build between kept in a config marker: that marker survives (scene + preset)', () => {
+    // the build between knew newsite/veo_3.1 but not 4K: stand-ins in settings, the real values in foreignSettings
+    const standIn = { ...VEO, resolution: '1080p' }
+    const real = { ...VEO, resolution: '4k' }
+    const p = migrateProject(
+      newer({
+        presets: [{ id: 'pv', name: 'Veo dọc', ...standIn, foreignSettings: real }],
+        scenes: [{ ...newer().scenes[0], settings: standIn, foreignSettings: real }],
+      }),
+    )
+    expect(p.scenes[0]).toMatchObject({ foreignModel: 'newsite/veo_3.1', foreignSettings: real })
+    expect(p.presets[0]).toMatchObject({ foreignModel: 'newsite/veo_3.1', foreignSettings: real })
+    // saved here and loaded again: unchanged
+    const again = migrateProject(JSON.parse(JSON.stringify(p)))
+    expect(again.scenes[0].foreignSettings).toEqual(real)
+    expect(again.presets[0].foreignSettings).toEqual(real)
+    // a marker of ANOTHER model is not this scene's: rebuilt from the saved settings
+    const other = migrateProject(newer({ scenes: [{ ...newer().scenes[0], settings: standIn, foreignSettings: { ...real, model: 'newsite/other' } }] }))
+    expect(other.scenes[0].foreignSettings).toEqual(standIn)
+  })
+
   it('schemaVersion 3 is not read as v1 (prompts are not rewritten); its number is kept (never relabelled 2)', () => {
     const p = migrateProject(newer())
     expect(p.schemaVersion).toBe(3)

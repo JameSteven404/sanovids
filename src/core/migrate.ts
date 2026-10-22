@@ -116,7 +116,8 @@ const markOf = (settings: VideoSettings, model: string | null, foreign: ForeignS
 /**
  * Valid settings of a scene / preset and its newer-build marker:
  * - the saved settings name a model this build does not know (non-blank string, not a MODELS key) → the marker is
- *   that id + the saved settings (cleanForeignSettings), `settings` the stand-in values of normalizeSettings;
+ *   that id + the saved settings (cleanForeignSettings) — or the config marker saved with them for that same model (a
+ *   build between knew the model, not one of its values) —, `settings` the stand-in values of normalizeSettings;
  * - a model it knows with a mode / duration / resolution / ratio it does not offer for it (lostConfigValues: a newer
  *   build added it) → a config marker: foreignSettings alone (no foreignModel) = the saved settings, `settings` the
  *   stand-in values — it blocks running too (core/runRules), and any settings change drops it (store/project);
@@ -136,7 +137,12 @@ function migrateModelMark(
   const raw = (rawSettings && typeof rawSettings === 'object' ? rawSettings : {}) as Partial<VideoSettings>
   const model: unknown = raw.model
   const settings = normalizeSettings(raw)
-  if (typeof model === 'string' && model.trim() && !isModelId(model)) return markOf(settings, foreignId(model), cleanForeignSettings(raw, omit))
+  if (typeof model === 'string' && model.trim() && !isModelId(model)) {
+    // A build between that knew the model but not one of its values saved its stand-ins in `settings` and the real
+    // values in a config marker: keep that marker (same model), never rebuild it from the stand-ins.
+    const marked = cleanForeignSettings(saved.foreignSettings)
+    return markOf(settings, foreignId(model), marked?.model === model ? marked : cleanForeignSettings(raw, omit))
+  }
   if (lostConfigValues(raw, newerFile).length) {
     // Only a marker that still holds a value it is made for: cleanForeignSettings skips an entry too big to keep (a
     // 5000-character "ratio" is no newer build's value), and a marker without its lost value would be restored — and
