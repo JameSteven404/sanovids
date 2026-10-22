@@ -1,6 +1,6 @@
 # 🎬 SanoVids
 
-**SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@video_1`, chạy tạo video hàng loạt, rồi lấy video vừa tạo để nối tiếp sang cảnh sau.
+**SanoVids** là ứng dụng dạng *canvas node* để làm phim AI theo từng cảnh: quản lý nhân vật, nối ảnh tham chiếu vào cảnh, viết prompt với `@image_1`, `@image_2`… ngay trên thẻ cảnh, chạy tạo video hàng loạt, rồi tạo cảnh tiếp theo từ video vừa làm.
 
 👤 Tác giả: **Nguyễn Giang Minh (Jame Steven)** · Đồng hành: Sano Group
 
@@ -11,7 +11,7 @@
 > 🖥️ **Chỉ còn bản app.** Từ 2026-10-02 bản web (sanovids.sanovids.workers.dev) đã **ngừng và tắt hẳn**. Mọi tính năng mới và bản sửa lỗi chỉ phát hành cho bản desktop — tải ở [trang tải về](https://github.com/JameSteven404/sanovids-releases/releases/latest).
 
 > ℹ️ **Hai cách tạo video:**
-> - **Chế độ Phát triển** (mặc định): chạy **đúng mã của cổng canvasapp thật** nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, không tốn tiền (credit dev giả lập). Có đủ đăng nhập, credit, nạp credit qua SePay giả, lịch sử credit, và **Bảng phát triển** để gây lỗi có chủ đích, xem nhật ký từng yêu cầu — dùng để làm quen và **tìm, sửa lỗi** trước khi dùng tiền thật. Xem mục [Chế độ Phát triển](#-chế-độ-phát-triển-tìm-và-sửa-lỗi).
+> - **Chế độ Phát triển** (mặc định khi chạy từ mã nguồn; từ 0.6.0 bản cài chỉ dành cho nhà phát triển): chạy **đúng mã của cổng canvasapp thật** nhưng tới một **canvasapp.io.vn giả lập ngay trong app** — không gọi mạng, không tốn tiền (credit dev giả lập). Có đủ đăng nhập, credit, nạp credit qua SePay giả, lịch sử credit, và **Bảng phát triển** để gây lỗi có chủ đích, xem nhật ký từng yêu cầu — dùng để làm quen và **tìm, sửa lỗi** trước khi dùng tiền thật. Xem mục [Chế độ Phát triển](#-chế-độ-phát-triển-tìm-và-sửa-lỗi).
 > - **Cổng canvasapp.io.vn** (thử nghiệm, **chỉ bản desktop `.exe`**): tạo video thật bằng **tài khoản canvasapp của chính bạn**, trừ **credit thật**. Xem mục [Tạo video thật qua canvasapp.io.vn](#-tạo-video-thật-qua-canvasappiovn-bản-desktop).
 
 ---
@@ -19,27 +19,31 @@
 ## ✨ Tính năng chính
 
 ### Canvas & nối node
+- **Thẻ cảnh là nơi sửa**: bấm vào prompt trên thẻ để gõ, bấm dòng thông số để đổi model / thời lượng / độ phân giải / tỉ lệ / preset tại chỗ; nút **Tạo video · … credit** ngay trên thẻ.
+- **Canvas mượt**: con lăn chuột di chuyển canvas, `Ctrl` + con lăn hoặc chụm hai ngón để thu phóng (đổi ở Cài đặt → **Con lăn chuột**). Kéo một thẻ thì hiện **đường gióng** và thẻ tự bám thẳng hàng.
+- Chọn một thẻ thì **thanh thao tác nổi** hiện trên thẻ (Chạy, Nhân bản, Xoá, ★, Tải…; "⋯" = menu chuột phải). Nút **+** trên thanh công cụ mở bảng **Thêm vào canvas** có ô tìm.
 - **Mỗi lần tạo video sinh ra một node Video** nối từ cảnh, xếp ngay bên phải cảnh. Có **nút "⬇ Tải video" to** ở dưới mỗi node.
-- **Kéo node Video sang cảnh khác** để dùng làm video tham chiếu `@video_1` (nối tiếp câu chuyện). Thả ra chỗ trống để **tạo cảnh tiếp nối**: giữ nhân vật, prompt bắt đầu bằng `Continue from @video_1:`.
+- **Kéo video đã xong ra chỗ trống** → **Tạo cảnh tiếp theo từ video này**: cảnh mới cùng ảnh tham chiếu và cấu hình, prompt để trống (video không được gửi kèm làm tham chiếu).
 - **Kéo dây từ nhân vật thả vào bất kỳ đâu trên thẻ cảnh** để nối ảnh tham chiếu. Kéo nhân vật từ Thư viện vào cảnh cũng được.
-- **Nối hàng loạt**: chọn nhiều nhân vật hoặc video cùng nhiều cảnh rồi bấm `C`.
+- **Nối hàng loạt**: chọn nhiều nhân vật cùng nhiều cảnh rồi bấm `C` (hoặc `Ctrl+L`).
 - **Dây ẩn mặc định**, chỉ hiện dây của cảnh đang chọn hoặc đang trỏ chuột vào (đổi được: Ẩn / Đang chọn / Tất cả).
 - **Bấm vào dây là cắt** (có Hoàn tác), hoặc phím `Delete`. Kéo đầu dây sang cảnh khác để nối lại. Hoạt ảnh kéo và cắt dây mượt, giảm được trong Cài đặt.
-- **Dây luôn chạm đúng tâm chấm tròn**: nhiều dây vào một cảnh thì chụm gọn vào một chấm, không xoè rộng. Chấm tham chiếu của cảnh mang màu của dây nối vào (xanh ngọc = ảnh, tím = video, hai màu khi có cả hai).
-- **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Y`), bản đồ thu nhỏ.
+- **Dây luôn chạm đúng tâm chấm tròn**: nhiều dây vào một cảnh thì chụm gọn vào một chấm, không xoè rộng. Chấm tham chiếu của cảnh mang màu của dây nối vào.
+- **Hoàn tác / Làm lại** (`Ctrl+Z` / `Ctrl+Shift+Z`), bản đồ thu nhỏ, **menu chuột phải** riêng cho cảnh, video, ảnh, Thư mục, dây, nền canvas và Thư viện (chọn cảnh rồi chuột phải ảnh để ngắt nối nhanh).
 - **Sắp xếp canvas** theo ba kiểu: **Theo hàng** (mỗi cảnh một hàng, video bên phải), **Lưới** (nhiều cảnh mỗi hàng, đọc trái sang phải như bảng phân cảnh) và **Dải ngang**. Bấm nút là xếp theo kiểu bạn dùng lần trước; mũi tên ▾ cạnh nút mở bảng tuỳ chỉnh có xem trước (khoảng cách, chỉ take chọn, chỉ các thẻ đang chọn…). Một lần `Ctrl+Z` trả lại tất cả, kể cả video bạn đã kéo tay.
 - **Node mới hiện ngay cạnh chỗ bạn đang làm**: cảnh mới nằm ngay dưới cảnh bạn vừa chọn (hoặc trong vùng đang nhìn), không đè lên thẻ khác; khung nhìn chỉ trượt vừa đủ để thấy node mới, **giữ nguyên mức zoom**. Thông báo hiện ở **giữa phía trên**, ngay dưới thanh trên cùng, không che thanh công cụ canvas.
 - Chế độ "Chỉ take chọn" chỉ hiện video ★ của mỗi cảnh cho gọn.
 - Kéo đổi độ rộng hai thanh bên (bấm đúp để về mặc định).
 
-### Viết prompt với `@image_N` / `@video_N`
-- Prompt gửi đi **đúng như bạn viết**. Ảnh nối vào cảnh được đánh số `@image_1`, `@image_2`… theo thứ tự nối; video tham chiếu là `@video_1`, `@video_2`…. Viết `@Image 1`, `@image1` hay `@IMAGE_1` cũng được hiểu y như `@image_1`.
-- Gõ `@` để chọn nhanh: ảnh đã nối, video đã nối, hoặc nhân vật chưa nối (ứng dụng tự nối rồi chèn số).
-- **Tự đánh lại số**: khi đổi thứ tự hoặc bỏ một ảnh/video, mọi `@image_N` / `@video_N` trong prompt được sửa theo, để không bị lệch nhân vật.
+### Viết prompt với `@image_N`
+- Prompt gửi đi **đúng như bạn viết**. Ảnh nối vào cảnh được đánh số `@image_1`, `@image_2`… theo thứ tự nối. Viết `@Image 1`, `@image1` hay `@IMAGE_1` cũng được hiểu y như `@image_1`.
+- Gõ `@` để chọn nhanh: ảnh đã nối hoặc nhân vật chưa nối (ứng dụng tự nối rồi chèn số).
+- **Tự đánh lại số**: khi đổi thứ tự ảnh, mọi `@image_N` trong prompt được sửa theo, để không bị lệch nhân vật. **Cắt một ảnh không làm mất chữ**: `@image_2` thành chữ đỏ `@image_?2(Lumi)` và chặn tạo video tới khi bạn gắn ảnh (kéo ảnh vào chỗ chờ, dải **Chữ đỏ chờ ảnh**) hoặc chủ động đổi thành chữ.
+- **Video tham chiếu `@video_N` đã bỏ từ 0.6.0**: chữ `@video` cũ được giữ nguyên, tô đỏ và chặn chạy cảnh đó tới khi bạn sửa (có nút xoá nhanh, có Hoàn tác).
 - Token được tô màu ngay trong ô prompt. Số không có ảnh thật trong lần gửi (vượt số ảnh, vượt giới hạn của model, hoặc dấu chờ `@image_?N`) tô đỏ và **chặn nút Chạy**, để không bao giờ gửi nhầm nhân vật. Dưới ô có bảng chú giải ảnh ↔ số.
 - Viết prompt trước rồi nối ảnh sau cũng được: `@image_1`, `@image_2` sẽ khớp với các nhân vật nối vào theo thứ tự.
 - Take đã bấm Chạy luôn gửi đúng bộ ảnh lúc bấm, dù bạn sửa thư viện trong lúc chờ.
-- Cảnh báo khi thiếu tham chiếu, vượt giới hạn ảnh/video của model, prompt quá dài.
+- Cảnh báo khi thiếu tham chiếu, vượt giới hạn ảnh của model, prompt quá dài.
 - **Copy prompt** và **Tải ảnh + video + prompt (.zip)** đã đánh số đúng thứ tự.
 - **Nhập prompt cũ**: dán nhiều prompt hoặc thả các file `.txt` để tạo cảnh hàng loạt. Có thể gán ảnh thư viện cho từng số `@image_N`.
 
@@ -60,20 +64,21 @@
 ### Xem video
 - **Rê chuột lên node Video** để xem ngay trên canvas, **có tiếng**. Thanh điều khiển ở đáy video: **thanh thời gian** (bấm hoặc kéo để tua), **phát/dừng**, **tốc độ** (0,5× → 2×), **âm lượng** (bấm loa để tắt/bật, kéo thanh hoặc lăn chuột để chỉnh).
 - Đã bấm vào điều khiển thì video **giữ mở** kể cả khi chuột rời node; bấm ra chỗ trống trên canvas để đóng. Rê sang node khác thì video đang mở tự dừng (không bao giờ hai video cùng kêu).
-- Âm lượng, tốc độ và bật/tắt tiếng được **nhớ trên máy**, dùng chung cho node, cửa sổ xem take và **Phát liền** ở Storyboard.
+- Âm lượng, tốc độ và bật/tắt tiếng được **nhớ trên máy**, dùng chung cho node, cửa sổ xem take và **Phát liền**. Nút **Phóng to** mở toàn màn hình; phím chung: Space, J/K/L, ←/→ từng khung hình, Home/End.
 
-### Các màn hình khác
-- **Bảng cảnh**: xem dạng bảng, sắp xếp thứ tự, sửa hàng loạt.
-- **Storyboard**: các cảnh theo thứ tự kèm take đã chọn, **kéo-thả để sắp xếp lại** (hoặc Alt + mũi tên), nút **Phát liền**.
+### Thứ tự cảnh, Phát liền & cài đặt
+- Từ 0.6.0 chỉ còn màn **Canvas** (Bảng cảnh và Storyboard đã ẩn). **Phát liền** ở giữa thanh trên cùng phát các cảnh theo thứ tự (take ★, không có thì take mới nhất).
+- Đổi thứ tự cảnh bằng ▲/▼ ở mã cảnh trên bảng bên phải, nhập vị trí, hoặc `Alt + ↑ / ↓`.
+- **Thư viện**: `Ctrl`/`Shift` + bấm, `Ctrl+A` để chọn nhiều rồi `Delete` (có Hoàn tác; xoá làm prompt có chữ đỏ thì app hỏi trước).
 - **Cài đặt** chia **Cơ bản / Nâng cao**, có ô tìm kiếm, sao lưu / khôi phục cài đặt. **Cài đặt → Giới thiệu**: phiên bản, tác giả, bản quyền và trạng thái chữ ký số của app.
 - Nhiều dự án; xuất/nhập `.sanovids.json` (kèm ảnh, **không kèm video đã tạo** — tải video cần giữ riêng) để sao lưu hoặc chuyển máy.
-- Giao diện kiểu Apple, chế độ **Sáng / Tối / Theo hệ thống**.
+- Giao diện **Sáng / Tối / Theo hệ thống**, ba màu nền tối **Than / Đen sâu / Xám xanh**.
 
 ---
 
 ## 🧪 Chế độ Phát triển (tìm và sửa lỗi)
 
-Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước của chế độ thật — đăng nhập, đọc số dư, tải ảnh tham chiếu lên, lưu canvas cầu nối, tạo job, theo dõi tiến độ, tải video về, nạp credit qua SePay, lịch sử credit — đều chạy bằng **chính mã của cổng canvasapp**, nhưng nói chuyện với một **canvasapp.io.vn giả lập nằm ngay trong app**. Không có yêu cầu mạng nào, không tốn tiền.
+Khi chạy từ mã nguồn, SanoVids mặc định ở **chế độ Phát triển** (từ 0.6.0, bản cài khoá chế độ này: chỉ dành cho nhà phát triển). Mọi bước của chế độ thật — đăng nhập, đọc số dư, tải ảnh tham chiếu lên, lưu canvas cầu nối, tạo job, theo dõi tiến độ, tải video về, nạp credit qua SePay, lịch sử credit — đều chạy bằng **chính mã của cổng canvasapp**, nhưng nói chuyện với một **canvasapp.io.vn giả lập nằm ngay trong app**. Không có yêu cầu mạng nào, không tốn tiền.
 
 **Nhận biết:** ô credit trên thanh trên cùng có viền nét đứt và chữ **DEV** (ví dụ `DEV 1.000 credit`), mọi chi phí ghi **credit dev**, node Video có nhãn **DEV**. Credit dev **không phải tiền thật**.
 
@@ -119,7 +124,6 @@ Mặc định SanoVids chạy ở **chế độ Phát triển**: mọi bước c
 
 **Giới hạn hiện tại**
 - Tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), cập nhật tiến độ khoảng 20 giây/lần.
-- **Chưa hỗ trợ video tham chiếu** `@video_N` qua cổng (cả chế độ Phát triển cũng từ chối giống vậy; chưa thấy canvasapp nhận video): bỏ video tham chiếu khỏi cảnh (nút × trong inspector hoặc cắt dây) để chạy cảnh tiếp nối — chỉ xoá chữ `@video_N` thì chưa đủ. Cảnh MiniMax-H3 ở chế độ không gửi video (Text → Video, Khung đầu → cuối) vẫn chạy dù còn nối video, miễn là prompt không còn chữ `@video_N` (cảnh tiếp nối bắt đầu bằng `Continue from @video_1:`: xoá chữ đó đi).
 - App dùng một phiên tên **"SanoVids bridge"** trên canvasapp để gửi job. **Chạy** một node ở đó (bấm "Tạo video") thì được — đưa video đó vào dự án bằng **Nhập job** (xem trên). **Sửa** node ở đó thì bị ghi đè ở lần gửi sau của SanoVids: nhập job trước khi chạy lại cảnh đó trong SanoVids, và đóng tab phiên này trước khi chạy cảnh trong SanoVids.
 - Huỷ trong SanoVids chỉ ngừng theo dõi: job đã gửi vẫn chạy và tính tiền trên canvasapp.
 
@@ -233,19 +237,26 @@ Chi tiết: [docs/UPDATES.md](docs/UPDATES.md).
 
 | Phím | Tác dụng |
 |---|---|
-| `N` | Tạo cảnh mới / cảnh tiếp theo (bên dưới cảnh đang chọn) |
-| `C` | Nối nhân vật hoặc video đang chọn vào các cảnh đang chọn |
-| `Ctrl + Enter` | Chạy các cảnh đang chọn |
-| `Ctrl + D` | Nhân bản cảnh |
+Mặc định theo kiểu **Adobe Premiere** (đổi được ở **Cài đặt → Phím tắt**, có bộ **Bản 0.5**).
+
+| Phím | Tác dụng |
+|---|---|
+| `N` | Cảnh tiếp theo (bên dưới cảnh đang chọn, giữ ảnh và cấu hình) |
+| `Ctrl + N` | Cảnh trống |
+| `Ctrl + L` / `C` | Nối / ngắt nhân vật đang chọn với các cảnh đang chọn |
+| `Ctrl + Enter` | Chạy các cảnh đang chọn (mở xác nhận chi phí) |
+| `Ctrl + D` | Nhân bản |
 | `Delete` | Xoá cảnh / video / cắt dây đang chọn |
-| `Ctrl + Z` / `Ctrl + Y` | Hoàn tác / Làm lại |
-| `Ctrl + A` | Chọn tất cả cảnh |
-| `F` | Vừa màn hình |
+| `Ctrl + Z` / `Ctrl + Shift + Z` | Hoàn tác / Làm lại |
+| `Ctrl + A` | Chọn tất cả |
+| `F` / `\` | Vừa màn hình |
 | `E` | Đổi chế độ hiện dây nối |
 | `H` / `V` | Công cụ Tay / Chọn |
-| `M` | Bật/tắt bản đồ thu nhỏ |
-| `1` `2` `3` | Canvas / Bảng cảnh / Storyboard |
-| `Ctrl + K` | Tìm trong thư viện |
+| `M` / `Ctrl + M` | Chọn ★ / Tải video |
+| `Shift + M` | Bật/tắt bản đồ thu nhỏ |
+| `Alt + ↑ / ↓` | Dời cảnh lên / xuống |
+| `Ctrl + F` | Tìm trong thư viện |
+| `Ctrl + I` | Thêm ảnh |
 | `Ctrl + S` | Lưu ngay |
 | `?` | Xem toàn bộ phím tắt |
 
@@ -255,7 +266,7 @@ Chi tiết: [docs/UPDATES.md](docs/UPDATES.md).
 
 ```
 src/
-├── core/          # Mô hình dữ liệu, xử lý prompt & đánh số @image/@video, model & giá, di trú dữ liệu (+ test)
+├── core/          # Mô hình dữ liệu, xử lý prompt & đánh số @image, model & giá, di trú dữ liệu (+ test)
 ├── store/         # Trạng thái: dự án (có hoàn tác), hàng đợi/take, giao diện, lưu trữ IndexedDB
 ├── lib/           # Lưu ảnh/video, tải về, kéo-thả, PWA, giao diện sáng/tối, phát video, credit
 ├── providers/     # Nhà cung cấp video: cổng canvasapp.io.vn (api, ánh xạ, cầu nối desktop), dev/ = canvasapp giả lập
@@ -265,7 +276,7 @@ src/
 │   ├── sidebar/   # Thư viện, Video đã tạo, Preset
 │   ├── inspector/ # Bảng chỉnh sửa, ô prompt có gợi ý @ và tô màu token
 │   ├── runs/      # Hàng đợi, xác nhận chạy, xem take
-│   ├── views/     # Bảng cảnh, Storyboard
+│   ├── views/     # Storyboard (đang ẩn từ 0.6.0)
 │   ├── dialogs/   # Nhập prompt, cài đặt (cổng canvasapp), dự án, phím tắt
 │   ├── topbar/    # Thanh trên cùng, ô credit (DEV / canvasapp)
 │   ├── topup/     # Nạp credit (QR SePay; SePay giả lập ở chế độ Phát triển), lịch sử credit
@@ -298,7 +309,7 @@ Chi tiết từng phiên bản: [CHANGELOG.md](CHANGELOG.md).
 - [x] Chế độ Phát triển thay cho demo: canvasapp giả lập trong app với đủ tính năng của chế độ thật, Bảng phát triển (gây lỗi, nhật ký, kiểm tra nhân vật, điều khiển job / đơn nạp)
 - [x] Tự cập nhật phiên bản (0.5.0)
 - [x] Ký số file .exe (0.5.0): bản cập nhật chỉ nhận chữ ký của tác giả, app tự kiểm tra chữ ký, chống can thiệp, icon mới
-- [ ] Video tham chiếu `@video_N` qua cổng canvasapp (chờ ghi lại cách trang canvasapp gửi video, nếu có: [docs/canvasapp-api-notes.md](docs/canvasapp-api-notes.md))
+- [x] 0.6.0: sửa cảnh ngay trên thẻ, canvas mượt (con lăn di chuyển, thanh thao tác nổi, bảng Thêm có ô tìm, đường gióng), chữ đỏ giữ chỗ khi cắt ảnh, bỏ video tham chiếu, menu chuột phải, phím kiểu Premiere, giao diện mới
 - [ ] Kết nối API thật (BytePlus ModelArk cho Seedance 2.5, MiniMax cho H3) qua lớp *provider adapter*, có giới hạn chi tiêu
 - [ ] So sánh nhiều take cạnh nhau, ghép cả phim thành một MP4
 
