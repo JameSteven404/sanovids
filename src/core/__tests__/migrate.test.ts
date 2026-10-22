@@ -496,6 +496,21 @@ describe('originals of a newer build are kept for the build that knows them', ()
     expect('foreignCharged' in odd || 'foreignError' in odd || 'foreignSettings' in odd).toBe(false)
   })
 
+  it('a later build that knows the provider gets the provider, charged, status and error back', () => {
+    const once = migrateTake({ id: 't', provider: 'newsite', charged: true, status: 'processing', remoteId: 'j', error: 'tạm dừng' })
+    // what a build that knows the provider does with the parked take (simulated: the kept id is one this build knows)
+    const back = migrateTake({ ...JSON.parse(JSON.stringify(once)), foreignProvider: 'dev' })
+    expect(back).toMatchObject({ provider: 'dev', charged: true, status: 'processing', error: 'tạm dừng', remoteId: 'j' })
+    for (const k of ['foreignProvider', 'foreignCharged', 'foreignStatus', 'foreignError']) expect(k in back, k).toBe(false)
+    expect(migrateTake(JSON.parse(JSON.stringify(back)))).toEqual(back)
+    // a finished parked take keeps its status, still gets its provider and charged back
+    const done = migrateTake({ ...migrateTake({ id: 't', provider: 'newsite', charged: true, status: 'completed' }), foreignProvider: 'canvasapp' })
+    expect(done).toMatchObject({ provider: 'canvasapp', charged: true, status: 'completed' })
+    // a model still unknown here: the provider comes back, the take stays parked (never sent)
+    const still = migrateTake({ ...JSON.parse(JSON.stringify(once)), foreignProvider: 'dev', settings: { ...once.settings, model: 'veo_9' } })
+    expect(still).toMatchObject({ provider: 'dev', charged: true, status: 'failed', foreignModel: 'veo_9', foreignStatus: 'processing', error: FOREIGN_RUNNING_ERROR })
+  })
+
   it('take settings: safe primitives for every reader (settingsLabel never throws), the saved values kept', () => {
     const odd = migrateTake({ id: 't', provider: 'newsite', status: 'completed', settings: { model: 'veo', duration: '8', resolution: 1080, extra: 'x' } })
     expect(odd.settings).toEqual({ model: 'veo', mode: '', duration: 0, resolution: '', ratio: '', extra: 'x' })

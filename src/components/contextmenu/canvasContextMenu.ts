@@ -164,7 +164,7 @@ export function onCanvasContextMenu(e: ReactMouseEvent, bridge: CanvasMenuBridge
 /**
  * Menu key / Shift+F10 (window capture) with the canvas in front (focus on the page or on the canvas, never in a text
  * field — the card's prompt keeps its keys and its native text menu — nor on the canvas' own controls) → menu of the selection, below its first card;
- * nothing selected → the empty-canvas menu at the middle of the canvas. Exported for tests.
+ * only wires selected → their menu at the middle of the canvas; nothing selected → the empty-canvas menu there. Exported for tests.
  */
 export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): void {
   if (!isMenuKey(e) || e.defaultPrevented) return
@@ -183,7 +183,9 @@ export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): voi
   const nodeEl = first ? stage.querySelector(`.react-flow__node[data-id="${CSS.escape(first)}"]`) : null
   const box = (nodeEl ?? stage).getBoundingClientRect()
   const center = { x: box.left + box.width / 2, y: box.top + Math.min(box.height / 2, 120) }
-  const resolved: ResolvedTarget = first && nodeEl ? nodeTarget(first, nodeEl) : { target: { kind: 'pane' }, kind: 'pane' }
+  const resolved: ResolvedTarget = first && nodeEl
+    ? nodeTarget(first, nodeEl)
+    : ui.selectedEdgeIds.length ? { target: { kind: 'edges', ids: [...ui.selectedEdgeIds] }, kind: 'edge' } : { target: { kind: 'pane' }, kind: 'pane' }
   bridge.closeOthers()
   keyboardOpenedAt = performance.now()
   openFor(resolved, { flow: bridge.toFlow(center), anchor: nodeEl ? box : undefined, at: nodeEl ? undefined : center, origin: 'keyboard' })

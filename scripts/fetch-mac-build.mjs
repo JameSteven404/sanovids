@@ -1,5 +1,7 @@
 // Brings the Mac build of ONE GitHub Actions run onto this Windows machine: `npm run mac:fetch -- --run <number>`.
-//   1. --run is required: the run number of the RC you tested ("mac-build #12" on the Actions page) — never "the latest".
+//   1. --run is required: the run number of the RC you tested ("mac-build #12" on the Actions page) — never "the latest";
+//      --attempt <n> (default 1) is the attempt you tested when that run was re-run. It must be the run's latest attempt
+//      (gh downloads that attempt's artifact) and the one mac-check.json was built by: a re-run keeps id, number, commit.
 //   2. `gh run list` (private repo, workflow mac-build.yml) finds that run; it must be a manual RC (workflow_dispatch,
 //      run-name "mac-build RC …"), completed and successful, on main, at the commit of tag v<version> when the tag
 //      exists, else at local main (releaseLib.checkMacRun).
@@ -24,21 +26,28 @@ const RUN_FIELDS = 'databaseId,number,attempt,event,status,conclusion,headBranch
 
 // ───────────────────────────── pure helpers (tested) ─────────────────────────────
 
-/** argv (after the script) → { run } | { error }. --run <n> / --run=<n>, a positive integer, nothing else. */
+/**
+ * argv (after the script) → { run, attempt } | { error }. --run <n> / --run=<n> (required) and --attempt <n> /
+ * --attempt=<n> (default 1), positive integers, nothing else.
+ */
 export function parseFetchArgs(argv) {
   const args = Array.isArray(argv) ? argv.map(String) : []
   let run = null
+  let attempt = 1
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
-    const m = /^--run(?:=(.*))?$/.exec(a)
+    const m = /^--(run|attempt)(?:=(.*))?$/.exec(a)
     if (m) {
-      const v = m[1] !== undefined ? m[1] : args[++i]
-      if (!/^[1-9]\d{0,9}$/.test(String(v ?? ''))) return { error: `--run cần số lần chạy (ví dụ --run 12), không phải "${v ?? ''}".` }
-      run = Number(v)
+      const v = m[2] !== undefined ? m[2] : args[++i]
+      if (!/^[1-9]\d{0,9}$/.test(String(v ?? ''))) {
+        return { error: m[1] === 'run' ? `--run cần số lần chạy (ví dụ --run 12), không phải "${v ?? ''}".` : `--attempt cần số lần thử (ví dụ --attempt 2), không phải "${v ?? ''}".` }
+      }
+      if (m[1] === 'run') run = Number(v)
+      else attempt = Number(v)
     } else return { error: `Tham số lạ: ${a}` }
   }
   if (run === null) return { error: 'Thiếu --run <số lần chạy>: ghi đúng số của lần chạy RC bạn đã thử ("mac-build #12" ở trang Actions). Không tự chọn lần chạy mới nhất.' }
-  return { run }
+  return { run, attempt }
 }
 
 /** gh argv: the runs of the workflow (newest first). */
@@ -63,6 +72,8 @@ export function checkFetchedCheck(check, run) {
   else {
     if (ci.runId !== run?.databaseId) p.push(`mac-check.json ghi lần chạy ${ci.runId ?? '—'}, artifact lấy từ lần chạy ${run?.databaseId ?? '—'}.`)
     if (ci.event !== 'workflow_dispatch' || ci.rc !== true) p.push('mac-check.json không phải của một bản RC chạy tay (workflow_dispatch, rc = true).')
+    // A re-run keeps the run id: only the attempt tells which build these bytes are.
+    if (ci.runAttempt !== run?.attempt) p.push(`mac-check.json ghi lần thử ${ci.runAttempt ?? '—'}, lần chạy đang ở lần thử ${run?.attempt ?? '—'}.`)
   }
   return p
 }
@@ -129,7 +140,7 @@ async function main() {
     runs = []
   }
   const found = (Array.isArray(runs) ? runs : []).find((r) => r && r.number === args.run)
-  const runProblems = checkMacRun(found, { runNumber: args.run, headSha })
+  const runProblems = checkMacRun(found, { runNumber: args.run, headSha, attempt: args.attempt })
   if (runProblems.length) die(`Không dùng được lần chạy mac-build #${args.run}:\n  - ${runProblems.join('\n  - ')}`)
 
   const macDir = path.join(root, 'release', 'mac')

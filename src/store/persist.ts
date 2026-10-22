@@ -701,8 +701,10 @@ async function writeNewProject(p: Project): Promise<boolean> {
   return (await guardedWrite(p.id, [[K.project(p.id), p]], metaOf(p))) === 'ok'
 }
 
+const NEW_PROJECT_WRITE_ERROR = 'Không tạo được dự án: không ghi được vào bộ nhớ trình duyệt (bộ nhớ đầy?).'
+
 async function openNewProject(p: Project) {
-  if (!(await writeNewProject(p))) throw new Error('Không tạo được dự án: không ghi được vào bộ nhớ trình duyệt (bộ nhớ đầy?).')
+  if (!(await writeNewProject(p))) throw new Error(NEW_PROJECT_WRITE_ERROR)
   openProject({ project: p, runs: null, rev: baseRevs.get(p.id) ?? null, unsaved: false })
 }
 
@@ -864,11 +866,19 @@ export async function importProjectFile(file: File): Promise<void> {
   if ((data?.format !== 'sanovids' && data?.format !== 'ban-dung-phim') || !data.project) throw new Error('File không đúng định dạng dự án SanoVids.')
   await leaveCurrentProject()
   const idMap = new Map<string, string>()
-  for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
-    idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
+  let project: Project
+  try {
+    for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
+      idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
+    }
+    project = importedProject(data.project, idMap)
+    if (!(await writeNewProject(project))) throw new Error(NEW_PROJECT_WRITE_ERROR)
+  } catch (error) {
+    // Until the project is saved nothing references the images written so far: a failed import leaves none behind.
+    for (const id of idMap.values()) void deleteMedia(id).catch(() => undefined)
+    throw error
   }
-  const project = importedProject(data.project, idMap)
-  await openNewProject(project)
+  openProject({ project, runs: null, rev: baseRevs.get(project.id) ?? null, unsaved: false })
   // Opened all the same (a warning, not a refusal): what this build does not know stays blocked (core/runRules).
   const warning = importWarning(data, project)
   if (warning) useUI.getState().toast(warning, { tone: 'warning', ms: 12000 })

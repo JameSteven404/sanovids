@@ -353,8 +353,9 @@ function takeSettings(raw: Record<string, unknown>): VideoSettings {
  * foreignProvider (the id) + charged false — never paid here, so never refunded; the saved `charged` is kept in
  * foreignCharged. A non-blank model id this build does not know, on ANY provider (a later canvasapp model too), marks
  * the take foreignModel: it is never sent here. Such takes keep their original settings (foreignSettings) and a running
- * one is parked (parkForeignTake). A take parked for a model this build knows now gets back what that build had
- * (status, error). Takes of 'canvasapp' / 'dev' / the old demo (missing provider) keep their `charged` as before.
+ * one is parked (parkForeignTake). A take parked for a model or provider this build knows now gets back what that build
+ * had (provider, charged, status, error, settings). Takes of 'canvasapp' / 'dev' / the old demo (missing provider) keep
+ * their `charged` as before.
  */
 export function migrateTake(raw: unknown): Take {
   const t = (raw ?? {}) as Partial<Take>
@@ -367,6 +368,10 @@ export function migrateTake(raw: unknown): Take {
     : (rawProvider === undefined || rawProvider === 'mock') && !KNOWN_PROVIDERS.includes(String(t.foreignProvider))
       ? foreignId(t.foreignProvider)
       : null
+  // Parked by a build that did not know this provider; this one does: the provider and its `charged` come back.
+  const knownNow = (rawProvider === undefined || rawProvider === 'mock') && KNOWN_PROVIDERS.includes(String(t.foreignProvider))
+    ? (t.foreignProvider as TakeProvider)
+    : null
   const rawSettings: Record<string, unknown> = isPlainObject(t.settings) ? t.settings : {}
   const model: unknown = rawSettings.model
   // A newer build's model (the id stays in settings.model as it was saved; a blank / missing one is not a model).
@@ -381,9 +386,9 @@ export function migrateTake(raw: unknown): Take {
     videoRefsSnapshot: [],
     ...(legacyVideoRefsSnapshot ? { legacyVideoRefsSnapshot } : {}),
     position: t.position ?? null,
-    provider: t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock',
+    provider: knownNow ?? (t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock'),
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
-    charged: newer ? false : t.charged !== false,
+    charged: newer ? false : knownNow && typeof t.foreignCharged === 'boolean' ? t.foreignCharged : t.charged !== false,
   }
   for (const k of ['foreignProvider', 'foreignModel', 'foreignStatus', 'foreignSettings', 'foreignCharged', 'foreignError'] as const) delete out[k]
   if (newer) out.foreignProvider = newer
@@ -403,8 +408,8 @@ export function migrateTake(raw: unknown): Take {
     if (settings) out.foreignSettings = settings
     const charged = firstMark ? t.charged : t.foreignCharged
     if (newer && typeof charged === 'boolean') out.foreignCharged = charged
-  } else if (typeof t.foreignModel === 'string' && t.foreignModel && !t.foreignProvider) {
-    // Parked by a build that did not know this model; this one does: what the newer build had comes back.
+  } else if (knownNow || (typeof t.foreignModel === 'string' && t.foreignModel && !t.foreignProvider)) {
+    // Parked by a build that did not know this model / provider; this one does: what the newer build had comes back.
     const kept = cleanForeignSettings(t.foreignSettings)
     if (kept) out.settings = takeSettings({ ...rawSettings, ...kept })
     if (parkedStatus && t.error === FOREIGN_RUNNING_ERROR) {

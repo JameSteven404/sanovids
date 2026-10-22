@@ -48,7 +48,7 @@ vi.mock('../../lib/imageStore', async (importOriginal) => {
     const id = `imported-image-${db.media.size + 1}`
     db.media.set(id, blob)
     return id
-  } }
+  }, deleteMedia: async (id: string) => { db.media.delete(id) } }
 })
 
 import { maybeSpaceRows, planRowSpacing, showsOldLayout } from '../../components/canvas/rowSpacing'
@@ -127,6 +127,18 @@ describe.each(compatFixtures)('$source.version persistence', (fixture) => {
     const after = db.writes.length
     expect(await flush()).toBe(true)
     expect(db.writes).toHaveLength(after)
+  })
+
+  it('a file that fails half-way (a malformed image entry) leaves none of the images it already wrote', async () => {
+    const file = jsonCopy(fixture.file)
+    const [first] = Object.keys(file.media)
+    const broken = { ...file, media: { [first]: file.media[first as keyof typeof file.media], bad: 42 } }
+    const mediaBefore = new Map(db.media)
+    const openBefore = useProject.getState().project.id
+    await expect(importProjectFile(new File([JSON.stringify(broken)], 'broken.sanovids.json', { type: 'application/json' }))).rejects.toThrow()
+    await Promise.resolve()
+    expect(new Map(db.media)).toEqual(mediaBefore)
+    expect(useProject.getState().project.id).toBe(openBefore)
   })
 
   it('imports the historical export envelope, preserves embedded image bytes and round-trips the portable project', async () => {

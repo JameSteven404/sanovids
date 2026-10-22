@@ -1,7 +1,7 @@
 import { useReactFlow, useStore } from '@xyflow/react'
 import { ChevronDown, Eye, GripVertical, Hand, Maximize, MoreHorizontal, MousePointer2, Play, Plus } from 'lucide-react'
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { connectSelection, downloadChosenTakesZip, newScene, nextScene, redo, requestRun, selectedSceneIds, selectScenesWithoutVideo, undo } from '../../actions'
+import { connectSelection, downloadChosenTakesZip, newScene, nextScene, pickImagesAt, redo, requestRun, selectedSceneIds, selectScenesWithoutVideo, undo } from '../../actions'
 import { useArrangeMenu } from '../../arrangeActions'
 import type { ActionId } from '../../core/keymap'
 import { createFolderNode } from '../../folderActions'
@@ -12,7 +12,7 @@ import { DEFAULT_TOOLBAR_PLACE, useToolbarPrefs, type ToolbarDock } from '../../
 import { useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { ArrangeToolbarSlot } from './ArrangeToolbarSlot'
-import { sceneMapOf } from './canvasModel'
+import { sceneMapOf, viewCenterSpot } from './canvasModel'
 import { ensureRovingStop, ToolbarButton, ToolbarMenu, toolbarArrowKey, useFocusRescue, type ToolbarMenuItem } from './ToolbarControls'
 import { ToolbarTray } from './ToolbarTray'
 import {
@@ -156,6 +156,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   ])
   const addItems: ToolbarMenuItem[] = [
     { id: 'add-empty', label: 'Cảnh trống', run: () => { newScene() } },
+    { id: 'add-images', label: 'Ảnh từ máy…', run: () => pickImagesAt(viewCenterSpot(rf.screenToFlowPosition)) },
     { id: 'add-folder', label: 'Thư mục lưu video…', run: () => { void createFolderNode() } },
     { id: 'add-import', label: 'Nhập nhiều prompt…', run: () => ui.openDialog({ kind: 'import' }) },
   ]

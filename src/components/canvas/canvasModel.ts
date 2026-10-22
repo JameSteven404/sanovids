@@ -481,6 +481,12 @@ export function resizeEdgeClip(dotYs: readonly number[], gap: number = RESIZE_DO
  */
 export const ASSET_DEFAULT_W = LAYOUT.assetW
 export const ASSET_TILE = { w: LAYOUT.assetW, h: LAYOUT.assetH, pad: 7, caption: 26 } as const
+/** Where "Ảnh từ máy…" (the "+ Thêm" popover and its "⋯" row) puts new images: the middle of the visible canvas. */
+export function viewCenterSpot(toFlow: (p: XY) => XY): XY {
+  const box = document.querySelector('.cv-stage')?.getBoundingClientRect()
+  const p = toFlow(box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : { x: 0, y: 0 })
+  return { x: Math.round(p.x - LAYOUT.assetW / 2), y: Math.round(p.y - 100) }
+}
 /** Frame of the picture in a tile `w` × `h` (1px borders, padding on top and sides, the caption line below). */
 export function assetFrame(w: number = ASSET_TILE.w, h: number = ASSET_TILE.h): { w: number; h: number } {
   return { w: Math.max(0, w - 2 - 2 * ASSET_TILE.pad), h: Math.max(0, h - 2 - ASSET_TILE.pad - ASSET_TILE.caption) }

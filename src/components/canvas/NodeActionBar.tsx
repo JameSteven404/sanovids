@@ -15,9 +15,9 @@ import { ensureRovingStop, ToolbarButton, toolbarArrowKey } from './ToolbarContr
 
 type Kind = 'scene' | 'take' | 'asset' | 'folder'
 
-/** The only selected node's kind (null: none / several / not a node). */
+/** The only selected node's kind (null: none / several / not a node / wires selected too — the tray acts on those). */
 function useSingleNode(): { id: string; kind: Kind } | null {
-  const id = useUI((s) => (s.selectedIds.length === 1 ? s.selectedIds[0] : null))
+  const id = useUI((s) => (s.selectedIds.length === 1 && !s.selectedEdgeIds.length ? s.selectedIds[0] : null))
   const projectKind = useProject((s) =>
     !id ? null : sceneMapOf(s.project.scenes).has(id) ? 'scene' : assetMapOf(s.project.assets).has(id) ? 'asset' : (s.project.folders ?? []).some((f) => f.id === id) ? 'folder' : null,
   )

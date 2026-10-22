@@ -184,6 +184,13 @@ describe('Menu key / Shift+F10', () => {
     expect(menuKey().preventDefault).not.toHaveBeenCalled()
     expect(useContextMenu.getState().open).toBeNull()
   })
+  it('only wires selected (no card): their menu at the middle of the canvas, not the empty-canvas one', async () => {
+    useUI.setState({ selectedEdgeIds: ['ref:a->s1'] })
+    menuKey()
+    await loadCanvasMenu()
+    expect(useContextMenu.getState().open).toMatchObject({ origin: 'keyboard', spec: { label: expect.stringMatching(/^Menu dây /) } })
+    expect(useUI.getState().selectedEdgeIds).toEqual(['ref:a->s1'])
+  })
   // Last: the echo window is module state.
   it('nothing focused: the empty-canvas menu opens; the browser contextmenu echo right after it opens nothing more', async () => {
     const e = menuKey()

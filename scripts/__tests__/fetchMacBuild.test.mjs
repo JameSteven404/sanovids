@@ -28,8 +28,11 @@ const check = {
 
 describe('--run is required (the run you tested, never "the latest")', () => {
   it('accepts --run N and --run=N only', () => {
-    expect(parseFetchArgs(['--run', '12'])).toEqual({ run: 12 })
-    expect(parseFetchArgs(['--run=7'])).toEqual({ run: 7 })
+    expect(parseFetchArgs(['--run', '12'])).toEqual({ run: 12, attempt: 1 })
+    expect(parseFetchArgs(['--run=7'])).toEqual({ run: 7, attempt: 1 })
+    expect(parseFetchArgs(['--run', '7', '--attempt', '2'])).toEqual({ run: 7, attempt: 2 })
+    expect(parseFetchArgs(['--attempt=3', '--run=7'])).toEqual({ run: 7, attempt: 3 })
+    expect(parseFetchArgs(['--run', '7', '--attempt', '0']).error).toMatch(/--attempt cần số/)
     expect(parseFetchArgs([]).error).toMatch(/Thiếu --run/)
     expect(parseFetchArgs(['--run']).error).toMatch(/--run cần số/)
     for (const bad of [['--run', '0'], ['--run', '-3'], ['--run', 'latest'], ['--run', '1.5'], ['--run=']]) expect(parseFetchArgs(bad).error, bad.join(' ')).toMatch(/--run cần số/)
@@ -66,6 +69,13 @@ describe('the run: a manual RC on main at the expected commit, finished and gree
     expect(checkMacRun(undefined, { runNumber: 12, headSha: A })).toHaveLength(1)
   })
 
+  it('a re-run RC: only the attempt you tested, and only while it is the latest one (its artifact is what gh downloads)', () => {
+    expect(checkMacRun(RUN, { runNumber: 12, headSha: A, attempt: 1 })).toEqual([])
+    expect(checkMacRun({ ...RUN, attempt: 2 }, { runNumber: 12, headSha: A, attempt: 1 })[0]).toMatch(/lần thử 2, không phải lần thử 1/)
+    expect(checkMacRun({ ...RUN, attempt: 2 }, { runNumber: 12, headSha: A, attempt: 2 })).toEqual([])
+    expect(checkFetchedCheck(check, { ...RUN, attempt: 2 })[0]).toMatch(/lần thử 1, lần chạy đang ở lần thử 2/)
+  })
+
   it('the downloaded mac-check.json must come from that very run, as an RC', () => {
     expect(checkFetchedCheck(check, RUN)).toEqual([])
     expect(checkFetchedCheck({ ...check, ci: { ...check.ci, runId: 1 } }, RUN)[0]).toMatch(/lần chạy 1/)
@@ -98,5 +108,7 @@ describe('mac-fetch.json → publish-release (k)', () => {
     expect(checkMacFetch(record, { ...ctx, files: swapped })[0]).toMatch(/SHA-512 của SanoVids-Mac-0\.6\.0-arm64\.dmg khác file trên máy/)
     // fetched for the right run, but the tag moved to another commit since
     expect(checkMacFetch(record, { ...ctx, commit: B })).toHaveLength(1)
+    // same run id, but mac-check.json of another attempt (the run was re-run after the fetch)
+    expect(checkMacFetch(record, { ...ctx, check: { ...check, ci: { ...check.ci, runAttempt: 2 } } })[0]).toMatch(/lần thử 1.*lần thử 2/)
   })
 })

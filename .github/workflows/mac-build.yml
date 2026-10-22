@@ -63,9 +63,10 @@ jobs:
 
       - run: npm run typecheck
 
-      # Bỏ continue-on-error sau lần chạy xanh đầu tiên trên macOS.
+      # Bản RC (workflow_dispatch, rc = true) dừng khi test hỏng: không có artifact nào để đăng. Lần dựng thử (push
+      # mac-ci/**, chạy tay không rc) vẫn đi tiếp để xem bản dựng.
       - run: npm test
-        continue-on-error: true
+        continue-on-error: ${{ !(github.event_name == 'workflow_dispatch' && inputs.rc) }}
 
       # update-notes → third-party-notices --check → vite build → electron-builder (--publish never) → mac-inspect
       - run: npm run dist:mac

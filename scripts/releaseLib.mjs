@@ -623,6 +623,8 @@ export function checkMacFetch(fetch, { version, commit, check, files } = {}) {
   if (typeof fetch.headSha !== 'string' || (commit && fetch.headSha !== commit)) p.push(`Lần chạy dựng commit ${String(fetch.headSha ?? '—').slice(0, 7)}, không phải commit phát hành ${String(commit ?? '—').slice(0, 7)}.`)
   const runId = check && check.ci && typeof check.ci === 'object' ? check.ci.runId : undefined
   if (!Number.isSafeInteger(fetch.runId) || fetch.runId !== runId) p.push(`mac-fetch.json (lần chạy ${fetch.runId ?? '—'}) và mac-check.json (lần chạy ${runId ?? '—'}) không cùng một lần chạy.`)
+  const runAttempt = check && check.ci && typeof check.ci === 'object' ? check.ci.runAttempt : undefined
+  if (!Number.isSafeInteger(fetch.runAttempt) || fetch.runAttempt !== runAttempt) p.push(`mac-fetch.json (lần thử ${fetch.runAttempt ?? '—'}) và mac-check.json (lần thử ${runAttempt ?? '—'}) không cùng một lần thử.`)
   const names = [...macBuildFiles(version), releaseFiles(version).macCheck]
   const listed = Array.isArray(fetch.files) ? fetch.files : []
   if (listed.length !== names.length || listed.some((f, i) => !f || f.name !== names[i])) p.push(`mac-fetch.json phải liệt kê đúng ${names.join(', ')}.`)
@@ -633,9 +635,10 @@ export function checkMacFetch(fetch, { version, commit, check, files } = {}) {
 /**
  * One run of `gh run list --workflow mac-build.yml --json …` → problems for publishing it: the requested run number,
  * finished and successful, started by hand (workflow_dispatch) as an RC (run-name "mac-build RC …"), on main, at
- * `headSha` (the tag's commit when the tag exists, else local main).
+ * `headSha` (the tag's commit when the tag exists, else local main), and — when `attempt` is given — still at the attempt
+ * you tested (a re-run keeps id, number and commit; gh downloads the latest attempt's artifact).
  */
-export function checkMacRun(run, { runNumber, headSha } = {}) {
+export function checkMacRun(run, { runNumber, headSha, attempt } = {}) {
   if (!run || typeof run !== 'object') return [`Không thấy lần chạy mac-build #${runNumber}.`]
   const p = []
   if (run.number !== runNumber) p.push(`Lần chạy là #${run.number}, cần #${runNumber}.`)
@@ -646,6 +649,9 @@ export function checkMacRun(run, { runNumber, headSha } = {}) {
   if (run.headBranch !== 'main') p.push(`Lần chạy #${runNumber} dựng trên nhánh "${run.headBranch}", không phải main.`)
   if (!COMMIT.test(String(headSha ?? ''))) p.push('Không biết commit cần đối chiếu (tag hoặc main trên máy).')
   else if (run.headSha !== headSha) p.push(`Lần chạy #${runNumber} dựng commit ${String(run.headSha ?? '—').slice(0, 7)}, khác ${String(headSha).slice(0, 7)} (tag / main trên máy: chạy git pull trên main).`)
+  if (attempt !== undefined && run.attempt !== attempt) {
+    p.push(`Lần chạy #${runNumber} đang ở lần thử ${run.attempt ?? '—'}, không phải lần thử ${attempt} bạn đã thử: thử bản của lần thử mới nhất rồi chạy npm run mac:fetch -- --run ${runNumber} --attempt ${run.attempt ?? '<n>'}.`)
+  }
   return p
 }
 

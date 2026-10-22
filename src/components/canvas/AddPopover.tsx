@@ -8,11 +8,11 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom'
 import { newScene, nextScene, pickImagesAt } from '../../actions'
 import { createFolderNode } from '../../folderActions'
-import { LAYOUT } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { trapTabWithin, useOverlayFocus } from '../common/focus'
 import { ADD_FILTERS, ADD_GROUP_LABEL, filterAddItems, type AddFilter, type AddItem, type AddItemId } from './addModel'
 import { anchorRect, backdropHandlers, handlePopoverKey, placeBySide, type PopoverAnchor, type Side } from './arrangeModel'
+import { viewCenterSpot } from './canvasModel'
 import './addPopover.css'
 
 const ICON: Record<AddItemId, LucideIcon> = { 'add-next': Plus, 'add-empty': SquarePlus, 'add-images': ImagePlus, 'add-import': FileText, 'add-folder': FolderPlus }
@@ -47,15 +47,9 @@ export const AddPopover = memo(function AddPopover({ anchor, side, onClose }: { 
     return () => window.removeEventListener('keydown', key, true)
   }, [onClose])
 
-  /** The middle of the visible canvas, in canvas coordinates (where new images land). */
-  const viewCenter = () => {
-    const box = document.querySelector('.cv-stage')?.getBoundingClientRect()
-    const p = rf.screenToFlowPosition(box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : { x: 0, y: 0 })
-    return { x: Math.round(p.x - LAYOUT.assetW / 2), y: Math.round(p.y - 100) }
-  }
   const run = (id: AddItemId) => {
     // The file picker needs this click's user gesture: started before the popover closes.
-    if (id === 'add-images') pickImagesAt(viewCenter())
+    if (id === 'add-images') pickImagesAt(viewCenterSpot(rf.screenToFlowPosition))
     else if (id === 'add-next') nextScene()
     else if (id === 'add-empty') newScene()
     else if (id === 'add-import') useUI.getState().openDialog({ kind: 'import' })
