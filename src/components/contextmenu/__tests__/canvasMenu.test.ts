@@ -3,7 +3,7 @@
 // and source guards (no handler on the node components, one host, a portal with role="menu").
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cancelTake, edgeId } from '../../../actions'
+import { cancelTake, edgeId, PARKED_RETRY_TEXT, rerunTake } from '../../../actions'
 import type { Asset, Project, Scene, Take } from '../../../core/types'
 import { useCanvasPrefs } from '../../../lib/canvasPrefs'
 import { bareState, useDevAccess } from '../../../providers/devAccess'
@@ -303,6 +303,20 @@ describe('video menus', () => {
     const parked = open({ kind: 'take', id: 't2' }, ['t2'])
     expect(ids(parked)).toEqual(['take.view', 'take.delete'])
     expect(parked.title).toBe('S01·T2 · đang chạy ở bản SanoVids mới hơn')
+  })
+  it('a parked video (newer SanoVids) asks the shared question once, the same one the Delete key asks', () => {
+    useRuns.setState({ takes: [take('t2', 's1', { number: 2, status: 'failed', foreignStatus: 'processing' })] })
+    confirmAnswer = false
+    expect(deleteTakeAsking('t2')).toBe(false)
+    expect(asked).toEqual(['Xoá vĩnh viễn S01·T2? Video đã xoá không hoàn tác được.\nS01·T2 có thể vẫn đang chạy (và tính credit) ở bản SanoVids mới hơn: xoá ở đây không huỷ job đó.'])
+    expect(useRuns.getState().takes).toHaveLength(1)
+  })
+  it('"Chạy lại" of a parked video (node / viewer / queue / tray buttons) is refused centrally: no question, no cost dialog', () => {
+    useRuns.setState({ takes: [take('t2', 's1', { number: 2, status: 'failed', foreignStatus: 'processing' })] })
+    rerunTake('t2')
+    expect(asked).toEqual([])
+    expect(useUI.getState().dialog).toEqual({ kind: 'none' })
+    expect(useUI.getState().toasts.at(-1)?.text).toBe(PARKED_RETRY_TEXT)
   })
   it('deleting a video from the menu ALWAYS asks first (failed too); Cancel keeps it', () => {
     useRuns.setState({ takes: [take('t1', 's1', { status: 'failed' }), take('t2', 's1', { number: 2 })] })

@@ -405,9 +405,9 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         {formatDuration(elapsed)}
       </span>
 
-      <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
+      <span className={`rq-row-cost ${cost.foreign ? '' : cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
         <span className="mono">{formatCredits(takeCostKnown(take), cost.kind, { short: true })}</span>
-        {CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
+        {!cost.foreign && CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
       </span>
 
       <div className="rq-row-actions">

@@ -57,7 +57,9 @@ export function takeModeText(t: Pick<Take, 'settings' | 'imported'>): string {
 }
 
 /** The take's cost, or null when it is not known (an imported take whose resolution / duration canvasapp did not say). */
-export function takeCostKnown(t: Pick<Take, 'cost' | 'imported'>): number | null {
+export function takeCostKnown(t: Pick<Take, 'cost' | 'imported'> & Partial<Pick<Take, 'foreignProvider'>>): number | null {
+  // a newer build's provider: `cost` is in that build's units, none of ours
+  if (t.foreignProvider) return null
   if (t.imported && (t.imported.unknown.includes('resolution') || t.imported.unknown.includes('duration'))) return null
   return t.cost
 }

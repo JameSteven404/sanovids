@@ -507,9 +507,7 @@ export function deleteTakeAsking(takeId: string): boolean {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
   if (!take) return false
   const label = takeLabel(takeId)
-  const question = isParkedTake(take)
-    ? `Xoá ${label} khỏi bản SanoVids này?\n\nVideo này có thể vẫn đang chạy (và tính credit) ở bản SanoVids mới hơn. Xoá ở đây không huỷ job đó và không hoàn tác được.`
-    : (checkTakeDelete([takeId], deleteFacts(useRuns.getState().takes), { confirm: true, label }).question ?? DELETE_TAKE_ALWAYS(label))
+  const question = checkTakeDelete([takeId], deleteFacts(useRuns.getState().takes), { confirm: true, label }).question ?? DELETE_TAKE_ALWAYS(label)
   if (!window.confirm(question)) return false
   return (deleteTakes([takeId], { confirm: false }) ?? 0) > 0
 }

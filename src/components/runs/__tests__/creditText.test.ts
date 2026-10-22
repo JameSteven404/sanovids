@@ -15,7 +15,7 @@ import type { Take } from '../../../core/types'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
 import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
 
-type T = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'>
+type T = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> & Partial<Pick<Take, 'foreignProvider' | 'foreignCharged' | 'foreignStatus'>>
 const take = (patch: Partial<T>): T => ({ provider: 'mock', charged: true, cost: 20, status: 'completed', remoteId: null, error: null, ...patch })
 
 describe('takeCreditKind / takeCostLabel', () => {
@@ -26,6 +26,20 @@ describe('takeCreditKind / takeCostLabel', () => {
     expect(takeCostLabel({ provider: 'canvasapp', cost: 20 })).toBe('20 credit canvasapp')
     expect(takeCreditKind({ provider: 'dev' })).toBe('dev')
     expect(takeCostLabel({ provider: 'dev', cost: 20 })).toBe('20 credit dev')
+  })
+})
+
+describe('takeCostLine / takeCostLabel — a newer build\'s provider (migrate: mock + foreignProvider)', () => {
+  it('never shows its cost as credit demo nor as "not charged": "—" with what the newer build saved', () => {
+    const paid = take({ provider: 'mock', charged: false, foreignProvider: 'newsite', foreignCharged: true })
+    expect(takeCostLine(paid)).toEqual({ kind: 'demo', amount: '—', note: 'đã trả ở bản SanoVids mới hơn (newsite) — xem chi phí ở bản đó', struck: false, foreign: true })
+    expect(takeCostLabel(paid)).toBe('—')
+    expect(takeCostLine(take({ provider: 'mock', foreignProvider: 'newsite', foreignCharged: false })).note).toBe('bản SanoVids mới hơn (newsite) ghi là chưa trừ credit')
+    expect(takeCostLine(take({ provider: 'mock', foreignProvider: 'newsite' })).note).toBe('chi phí do bản SanoVids mới hơn (newsite) ghi — mở bằng bản đó để xem')
+    const parked = take({ provider: 'mock', status: 'failed', foreignProvider: 'newsite', foreignStatus: 'processing', foreignCharged: true })
+    expect(takeCostLine(parked).note).toBe('có thể vẫn đang chạy và tính credit ở bản SanoVids mới hơn (newsite) — xem chi phí ở bản đó')
+    // an ordinary old demo take keeps its demo line
+    expect(takeCostLine(take({ provider: 'mock' })).foreign).toBeUndefined()
   })
 })
 

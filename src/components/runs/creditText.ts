@@ -17,7 +17,7 @@ export const takeCreditKind = (t: Pick<Take, 'provider'>): CreditKind => creditK
  * "20 credit dev" | "20 credit demo" | "20 credit canvasapp" — a take's cost naming its wallet (tooltips, toasts).
  * "—" when it is not known (an imported take whose resolution / duration canvasapp did not say); "≈ …" on a guess.
  */
-export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'> & Partial<Pick<Take, 'imported'>>): string {
+export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'> & Partial<Pick<Take, 'imported' | 'foreignProvider'>>): string {
   const kind = takeCreditKind(t)
   const amount = formatCredits(takeCostKnown(t), kind)
   const said = kind === 'canvasapp' && amount !== '—' ? `${amount} canvasapp` : amount
@@ -60,13 +60,20 @@ export interface TakeCostLine {
   note: string
   /** Not (or no longer) paid: show the amount struck through. */
   struck: boolean
+  /**
+   * A take of a newer build's provider (migrate: provider 'mock' + foreignProvider): `kind` is only that coercion, so
+   * show no wallet class / "demo" mark for it.
+   */
+  foreign?: true
 }
 
-type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> & Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported'>>
+type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> &
+  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
   const kind = takeCreditKind(t)
+  if (t.foreignProvider) return { kind, amount: '—', note: foreignCostNote(t), struck: false, foreign: true }
   const ended = t.status === 'failed' || t.status === 'cancelled'
   if (kind === 'demo') {
     const amount = formatCredits(t.cost, 'demo')
@@ -110,6 +117,15 @@ export function takeCostLine(t: CostTake): TakeCostLine {
       : { kind, amount, note: `huỷ trước khi gửi sang ${w.site} — không bị trừ credit`, struck: true }
   }
   return { kind, amount, note: `đã trả bằng ${w.credit}${w.paidNote}`, struck: false }
+}
+
+/** What SanoVids knows about the cost of a newer build's take: only what that build saved (its units are not ours). */
+function foreignCostNote(t: Pick<Take, 'foreignProvider' | 'foreignCharged' | 'foreignStatus'>): string {
+  const who = `bản SanoVids mới hơn (${t.foreignProvider})`
+  if (t.foreignStatus) return `có thể vẫn đang chạy và tính credit ở ${who} — xem chi phí ở bản đó`
+  if (t.foreignCharged === true) return `đã trả ở ${who} — xem chi phí ở bản đó`
+  if (t.foreignCharged === false) return `${who} ghi là chưa trừ credit`
+  return `chi phí do ${who} ghi — mở bằng bản đó để xem`
 }
 
 export interface RunCostPreview {

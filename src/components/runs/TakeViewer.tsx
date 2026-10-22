@@ -800,7 +800,7 @@ function Details({ take, scene, onGoto, onClose }: { take: Take; scene: Scene | 
           <span className="faint">{take.foreignProvider ? NEWER_BUILD_TITLE : PROVIDER_LABEL[provider]}</span>
         </dd>
         <dt>Chi phí</dt>
-        <dd className={`rq-info-cost ${cost.kind}`}>
+        <dd className={`rq-info-cost ${cost.foreign ? '' : cost.kind}`}>
           <span className={`mono${cost.struck ? ' rq-struck' : ''}`}>{cost.amount}</span>
           <span className="rq-cost-note"> · {cost.note}</span>
         </dd>
