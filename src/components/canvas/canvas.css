@@ -188,6 +188,14 @@
   transform: scale(1.35);
   box-shadow: 0 0 0 4px var(--h-glow);
 }
+/* UI-05 alignment guides (AlignGuides): a 1 screen-px line in the selection colour while a node is dragged. */
+.cv-guide {
+  position: absolute;
+  z-index: 5;
+  background: var(--selection);
+  pointer-events: none;
+}
+
 /* UI-03 typed ports: a selected node's dot becomes a 22 px circle with its type's icon (NodeSizer PortIcon), centred on
    the 0 × 0 anchor — wires never move. It replaces the plain dot, which would paint over it (::after comes later). */
 .cv-stage .cv-h-ico {

@@ -87,8 +87,11 @@ import {
   sceneGraphOf,
   wireViewport,
   wireNearViewport,
+  alignToGuides,
   autoTakePosition,
   clientPoint,
+  GUIDE_TOLERANCE_PX,
+  type GuideBox,
   drawerInset,
   toolbarInsets,
   fallbackNodeSize,
@@ -140,6 +143,7 @@ import {
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { typeOnNode } from './SceneNodeEditor'
+import { AlignGuides } from './AlignGuides'
 import { NodeActionBar } from './NodeActionBar'
 import { setCanvasMoving, useFarView } from './NodeSizer'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
@@ -699,7 +703,29 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
         }
       }
     }
-    if (Object.keys(drag).length) useCanvasLocal.getState().setDragPos(drag)
+    // UI-05 alignment guides: ONE dragged node snaps to the edges / centres of the others (canvasModel.alignToGuides),
+    // while it moves and where it is dropped (React Flow reports its own unsnapped end position).
+    const dragIds = Object.keys(drag)
+    const guideId = dragIds.length === 1 && !commitIds.length ? dragIds[0] : !dragIds.length && commitIds.length === 1 ? commitIds[0] : null
+    const self = guideId ? lookup.get(guideId) : undefined
+    const sw = self?.measured?.width ?? 0, sh = self?.measured?.height ?? 0
+    if (guideId && sw && sh) {
+      // Never against itself nor the auto-placed takes that move with a dragged scene.
+      const skip = new Set([guideId])
+      for (const [id, item] of layout.byId) if (!item.explicit && item.sceneId === guideId) skip.add(id)
+      const others: GuideBox[] = []
+      for (const n of lookup.values()) {
+        const w = n.measured?.width, h = n.measured?.height
+        if (skip.has(n.id) || n.hidden || !w || !h) continue
+        others.push({ x: n.internals.positionAbsolute.x, y: n.internals.positionAbsolute.y, w, h })
+      }
+      const raw = drag[guideId] ?? commit[guideId]
+      const snapped = alignToGuides({ x: raw.x, y: raw.y, w: sw, h: sh }, others, GUIDE_TOLERANCE_PX / rfStore.getState().transform[2])
+      if (drag[guideId]) drag[guideId] = { x: snapped.x, y: snapped.y }
+      else commit[guideId] = { x: snapped.x, y: snapped.y }
+      useCanvasLocal.getState().setGuides(drag[guideId] ? snapped.guides : null)
+    } else if (!dragIds.length) useCanvasLocal.getState().setGuides(null)
+    if (dragIds.length) useCanvasLocal.getState().setDragPos(drag)
     if (commitIds.length) {
       const project = useProject.getState().project
       const sm = sceneMapOf(project.scenes)
@@ -1253,6 +1279,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
         <WireCutLayer />
         <NodeActionBar />
+        <AlignGuides />
         {showMinimap && !minimapHidden && (
           <MiniMap<CanvasNode>
             position="bottom-right"

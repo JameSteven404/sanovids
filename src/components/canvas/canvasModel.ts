@@ -1057,6 +1057,48 @@ export function measuredOf(id: string): { width: number; height: number } | unde
 }
 
 // ---------------- hover store (edges + cut button need a little grace period) ----------------
+// ---------------- UI-05 alignment guides (docs/UI-MUOT.md) ----------------
+/** A node's box in canvas coordinates. */
+export interface GuideBox { x: number; y: number; w: number; h: number }
+/** The guide lines to draw while a node is dragged (canvas coordinates): a vertical one at x, a horizontal one at y. */
+export interface Guides { v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }
+/** How close (screen px) an edge or centre must come to snap; divided by the zoom for canvas units. */
+export const GUIDE_TOLERANCE_PX = 6
+
+/**
+ * Snap a dragged node's box to the others: on each axis its start / centre / end edge is compared with every other
+ * box's start / centre / end, and the nearest within `tolerance` wins (one snap per axis). Returns the snapped
+ * position and the guide segments, spanning both boxes. Pure; O(others).
+ */
+export function alignToGuides(box: GuideBox, others: readonly GuideBox[], tolerance: number): { x: number; y: number; guides: Guides } {
+  const near = (axis: 'x' | 'y') => {
+    const size = axis === 'x' ? 'w' : 'h'
+    let best: { delta: number; at: number; other: GuideBox } | null = null
+    for (const o of others) {
+      for (const a of [0, box[size] / 2, box[size]]) {
+        for (const b of [0, o[size] / 2, o[size]]) {
+          const delta = o[axis] + b - (box[axis] + a)
+          if (Math.abs(delta) <= tolerance && (!best || Math.abs(delta) < Math.abs(best.delta))) best = { delta, at: o[axis] + b, other: o }
+        }
+      }
+    }
+    return best
+  }
+  const nx = near('x'), ny = near('y')
+  const x = box.x + (nx?.delta ?? 0), y = box.y + (ny?.delta ?? 0)
+  return {
+    x,
+    y,
+    guides: {
+      v: nx ? { x: nx.at, y1: Math.min(y, nx.other.y), y2: Math.max(y + box.h, nx.other.y + nx.other.h) } : null,
+      h: ny ? { y: ny.at, x1: Math.min(x, ny.other.x), x2: Math.max(x + box.w, ny.other.x + ny.other.w) } : null,
+    },
+  }
+}
+
+const sameGuides = (a: Guides | null, b: Guides | null) =>
+  a === b || (!!a && !!b && JSON.stringify(a) === JSON.stringify(b))
+
 interface CanvasLocal {
   projectId: string | null
   big: boolean
@@ -1075,6 +1117,9 @@ interface CanvasLocal {
   resizing: Record<string, ResizeBox>
   setResizing: (boxes: Record<string, ResizeBox>) => void
   clearResizing: (id: string) => void
+  /** UI-05: the guide lines of the node being dragged (null: none). */
+  guides: Guides | null
+  setGuides: (guides: Guides | null) => void
 }
 let measureFrame: number | null = null
 export const useCanvasLocal = create<CanvasLocal>()((set) => ({
@@ -1085,8 +1130,10 @@ export const useCanvasLocal = create<CanvasLocal>()((set) => ({
     if (measureFrame !== null) cancelAnimationFrame(measureFrame)
     measureFrame = null
     keepHover()
-    set({ projectId, big: false, measured: {}, measuredVersion: 0, dragPos: {}, resizing: {}, hoveredId: null, hoveredEdgeId: null })
+    set({ projectId, big: false, measured: {}, measuredVersion: 0, dragPos: {}, resizing: {}, hoveredId: null, hoveredEdgeId: null, guides: null })
   },
+  guides: null,
+  setGuides: (guides) => set((s) => (sameGuides(s.guides, guides) ? s : { guides })),
   hoveredId: null,
   setHovered: (hoveredId) => set((s) => s.hoveredId === hoveredId ? s : { hoveredId }),
   dragPos: {},
