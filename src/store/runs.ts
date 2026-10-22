@@ -401,9 +401,13 @@ export const UNKNOWN_SUBMIT_ERROR =
 /** The same for a development-mode take: the simulated site never sent anything to canvasapp.io.vn. */
 export const DEV_UNKNOWN_SUBMIT_ERROR =
   'Không rõ yêu cầu đã tới canvasapp giả lập hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Xem tab “Job & đơn nạp” của Bảng phát triển trước khi chạy lại để không trả credit dev hai lần.'
+/** The same for a SANO take: sending it again uses the same idempotency key (the take id), so SANO keeps one job. */
+export const SANO_UNKNOWN_SUBMIT_ERROR =
+  'Không rõ yêu cầu đã tới máy chủ SANO hay chưa (mất kết nối, hoặc trang bị đóng/tải lại đúng lúc đang gửi). Bấm “Thử lại”: SanoVids gửi lại đúng take này nên máy chủ SANO không tạo — và không tính tiền — job thứ hai.'
 
 /** UNKNOWN_SUBMIT_ERROR in the words of the take's provider ('dev': the Bảng phát triển, not canvasapp.io.vn). */
-export const unknownSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR)
+export const unknownSubmitError = (pid: ProviderId): string =>
+  pid === 'dev' ? DEV_UNKNOWN_SUBMIT_ERROR : pid === 'sano-gateway' ? SANO_UNKNOWN_SUBMIT_ERROR : UNKNOWN_SUBMIT_ERROR
 
 /**
  * Error of a retried "unknown" take whose earlier request can no longer be checked (isSubmitUnverifiable: the job list
@@ -419,7 +423,11 @@ export const DEV_UNVERIFIABLE_SUBMIT_ERROR =
 export const unverifiableSubmitError = (pid: ProviderId): string => (pid === 'dev' ? DEV_UNVERIFIABLE_SUBMIT_ERROR : UNVERIFIABLE_SUBMIT_ERROR)
 const UNVERIFIABLE_PREFIX = 'Không kiểm tra được lần gửi trước'
 const isUnknownSubmitError = (error: string) =>
-  error === UNKNOWN_SUBMIT_ERROR || error === DEV_UNKNOWN_SUBMIT_ERROR || error === UNVERIFIABLE_SUBMIT_ERROR || error === DEV_UNVERIFIABLE_SUBMIT_ERROR
+  error === UNKNOWN_SUBMIT_ERROR ||
+  error === DEV_UNKNOWN_SUBMIT_ERROR ||
+  error === SANO_UNKNOWN_SUBMIT_ERROR ||
+  error === UNVERIFIABLE_SUBMIT_ERROR ||
+  error === DEV_UNVERIFIABLE_SUBMIT_ERROR
 
 /**
  * A remote take whose submit outcome is unknown (UNKNOWN_SUBMIT_ERROR, no job id): it may have been billed, so it is
@@ -432,7 +440,7 @@ export function isUncertainSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'statu
 
 /** Takes saved before `submitUnknown` existed: recognised by their error text (current and earlier wordings). */
 export function hasUncertainSubmitText(error: string | null | undefined): boolean {
-  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error.includes('không trả mã job') || error.startsWith(UNVERIFIABLE_PREFIX))
+  return !!error && (error.startsWith('Không rõ yêu cầu đã tới canvasapp') || error === SANO_UNKNOWN_SUBMIT_ERROR || error.includes('không trả mã job') || error.startsWith(UNVERIFIABLE_PREFIX))
 }
 
 /**
