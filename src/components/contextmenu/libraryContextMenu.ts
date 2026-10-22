@@ -2,7 +2,7 @@
 // libraryMenu.ts — its own chunk with the canvas menu builders, loaded on the first menu (App prefetches it when idle).
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useUI } from '../../store/ui'
-import { openContextMenu, type MenuOrigin } from './contextMenuStore'
+import { openContextMenu, openWhenLoaded, type MenuOrigin } from './contextMenuStore'
 import type { LibraryCardCommands } from './libraryMenu'
 
 let builder: Promise<typeof import('./libraryMenu')> | null = null
@@ -33,7 +33,7 @@ export function openLibraryCardMenu(e: ReactMouseEvent | KeyboardEvent, id: stri
   const card = (e.target as Element | null)?.closest?.('.sb-card') ?? null
   const box = card?.getBoundingClientRect()
   const at = 'clientX' in e && origin !== 'keyboard' ? { x: e.clientX, y: e.clientY } : undefined
-  void loadLibraryMenu().then(({ libraryMenu }) => {
+  openWhenLoaded(loadLibraryMenu(), ({ libraryMenu }) => {
     const spec = libraryMenu(ids, commands)
     if (!spec) return
     openContextMenu({
@@ -44,5 +44,5 @@ export function openLibraryCardMenu(e: ReactMouseEvent | KeyboardEvent, id: stri
       target: card,
       fallbackFocus: libraryGrid,
     })
-  }, () => undefined)
+  })
 }

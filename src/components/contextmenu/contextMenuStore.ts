@@ -62,6 +62,34 @@ export function closeContextMenu(restoreFocus = false): void {
   back?.focus({ preventScroll: true })
 }
 
+/** What makes a menu still waiting for its builder chunk stale: the user pressed, typed or scrolled meanwhile. */
+const STALE_EVENTS = ['pointerdown', 'keydown', 'wheel'] as const
+let requests = 0
+
+/**
+ * Open a menu once its builder chunk has loaded (the first menu waits for it, ~1–2 s; later ones open in the same
+ * task) — never a stale one: after another menu request, or a press / key / wheel in between, the load opens nothing
+ * (a menu built for the old selection would act on the new one).
+ */
+export function openWhenLoaded<T>(load: Promise<T>, open: (mod: T) => void): void {
+  const gen = ++requests
+  const stale = () => {
+    if (gen === requests) requests++
+  }
+  const win = typeof window !== 'undefined' && typeof window.addEventListener === 'function' ? window : null
+  for (const type of STALE_EVENTS) win?.addEventListener(type, stale, true)
+  const done = () => {
+    for (const type of STALE_EVENTS) win?.removeEventListener(type, stale, true)
+  }
+  void load.then(
+    (mod) => {
+      done()
+      if (gen === requests) open(mod)
+    },
+    done,
+  )
+}
+
 /** A context menu is open right now. */
 export function contextMenuOpen(): boolean {
   return !!useContextMenu.getState().open

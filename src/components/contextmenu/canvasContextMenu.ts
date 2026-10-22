@@ -12,7 +12,7 @@ import { useUI } from '../../store/ui'
 import { useCanvasLocal } from '../canvas/canvasModel'
 import { isTextEntry } from '../common/focus'
 import type { CanvasTarget } from './canvasMenu'
-import { closeContextMenu, openContextMenu, type MenuOrigin } from './contextMenuStore'
+import { closeContextMenu, openContextMenu, openWhenLoaded, type MenuOrigin } from './contextMenuStore'
 import { contextSelection, isMacSecondaryPress, isMenuKey, type ContextKind, type MenuItem } from './menuModel'
 
 /** Parts of the stage that have their own behaviour (or none): a right-click there opens no canvas menu. */
@@ -119,7 +119,7 @@ export function loadCanvasMenu(): Promise<typeof import('./canvasMenu')> {
 function openFor(resolved: ResolvedTarget, opts: { flow: XY; at?: { x: number; y: number }; anchor?: DOMRect; origin: MenuOrigin }) {
   const multi = applySelection(resolved.kind, resolved.id)
   const target: CanvasTarget = multi ? { kind: 'multi' } : resolved.target
-  void loadCanvasMenu().then(({ canvasMenu }) => {
+  openWhenLoaded(loadCanvasMenu(), ({ canvasMenu }) => {
     const spec = canvasMenu(target, { flow: opts.flow, at: opts.at })
     if (!spec || !spec.entries.length) return
     openContextMenu({
@@ -131,7 +131,7 @@ function openFor(resolved: ResolvedTarget, opts: { flow: XY; at?: { x: number; y
       fallbackFocus: stageEl,
       onHighlight: highlightWire,
     })
-  }, () => undefined)
+  })
 }
 
 export interface CanvasMenuBridge {
