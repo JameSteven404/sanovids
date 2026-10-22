@@ -36,7 +36,7 @@ import type { Asset, Scene } from '../../core/types'
 import { ASSETS_MIME, readIds } from '../../lib/dnd'
 import { flushScenes, register as registerDraft } from '../../lib/promptDrafts'
 import { canvasObstacles, oneUndoStep, undoToastAction, useProject } from '../../store/project'
-import { markPromptFocused, promptFocusedSeqNow, useSceneEditor } from '../../store/sceneEditor'
+import { markPromptFocused, promptFocusedSeqNow, takePromptKeys, useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg, AssetAvatar } from '../common/Media'
 import { caretCoordinates, offsetFromPoint } from '../inspector/caret'
@@ -58,7 +58,7 @@ import {
 } from '../inspector/tokens'
 import { hasTakeDrag, imageFiles, sceneRowImageSpots, TYPE_EVENT } from './canvasModel'
 import { isTypingChord } from '../../lib/keymapPrefs'
-import { caretFromExcerptHit, nodeEditorKeyBubbles } from './sceneEditorModel'
+import { caretFromExcerptHit, nodeEditorKeyBubbles, replayKeys } from './sceneEditorModel'
 import '../inspector/inspector.css'
 
 const COMMIT_MS = 160
@@ -434,12 +434,22 @@ export const NodePromptField = memo(function NodePromptField({ scene, assets, se
     markPromptFocused(seq)
     // preventScroll: focusing inside the canvas must never scroll React Flow's pane.
     ta.focus({ preventScroll: true })
-    const c = caretReq ?? ta.value.length
+    let c = caretReq ?? ta.value.length
+    // Typed while the canvas was still bringing this field near (hooks/useShortcuts): typed into it now.
+    const keys = takePromptKeys(seq)
+    if (keys.length) {
+      const typed = replayKeys(ta.value, c, keys)
+      c = typed.caret
+      ta.value = typed.value
+      textRef.current = typed.value
+      setText(typed.value)
+      schedule()
+    }
     ta.setSelectionRange(c, c)
     lastSel.current = { start: c, end: c }
     syncBackdrop()
     // seq: the same request twice (Enter again) focuses again.
-  }, [focusReq, caretReq, seq, syncBackdrop])
+  }, [focusReq, caretReq, seq, syncBackdrop, schedule])
 
   // ---------- "@" list ----------
   const [mention, setMention] = useState<MentionToken | null>(null)
