@@ -140,7 +140,7 @@ import {
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { typeOnNode } from './SceneNodeEditor'
-import { useFarView } from './NodeSizer'
+import { setCanvasMoving, useFarView } from './NodeSizer'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import {
   connectingKind,
@@ -1153,9 +1153,11 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   })
   const ctxMoveStart = ctxMenu.onMoveStart
   const onMoveStart = useCallback(() => {
+    setCanvasMoving(true)
     closeMenu()
     ctxMoveStart()
   }, [closeMenu, ctxMoveStart])
+  const onMoveEnd = useCallback(() => setCanvasMoving(false), [])
 
   const handMode = interaction === 'hand'
   const stageCls = [
@@ -1212,6 +1214,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
         onMoveStart={onMoveStart}
+        onMoveEnd={onMoveEnd}
         deleteKeyCode={null}
         // The app has its own keyboard layer (useShortcuts). React Flow's would move the focused (= last clicked)
         // node with the arrow keys even while a dialog is open over the canvas (TakeViewer / image viewer ←/→).

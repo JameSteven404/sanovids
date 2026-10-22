@@ -48,7 +48,7 @@ import {
 } from './canvasModel'
 import { cutEdge } from './edges'
 import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft, useShortcutLabel } from '../../lib/keymapPrefs'
-import { NodeSizer, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
+import { NodeSizer, useBodyReady, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
   filesToSceneTiles,
@@ -97,6 +97,7 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   perfCount('SceneNodeView')
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
   const far = useFarView()
+  const bodyReady = useBodyReady()
   const status = useRuns((s) => takeSummary(s.takes, id).status)
   const progress = useRuns((s) => (takeSummary(s.takes, id).status === 'processing' ? takeSummary(s.takes, id).progress : 0))
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
@@ -228,7 +229,8 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
             <i style={{ width: `${Math.max(3, progress)}%` }} />
           </div>
         )}
-        {far ? <SceneFar scene={scene} status={status} progress={progress} w={box?.w ?? LAYOUT.sceneW} /> : <SceneFull scene={scene} status={status} box={box} editing={editing} />}
+        {/* the card keeps its fixed size while its body waits (useBodyReady): no re-measure, no wire jump */}
+        {!bodyReady && !editing ? null : far ? <SceneFar scene={scene} status={status} progress={progress} w={box?.w ?? LAYOUT.sceneW} /> : <SceneFull scene={scene} status={status} box={box} editing={editing} />}
 
         <div className="cv-drop-hint">
           {dropHint?.kind === 'file' ? <ImagePlus size={14} /> : <Link2 size={14} />}

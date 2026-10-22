@@ -6,7 +6,7 @@
 // Also the node-geometry hooks shared by the node types: useNodeBox (drawn size) and useRemeasureOn (dots that move).
 import { NodeResizer, useStore, useUpdateNodeInternals, type Handle as HandleBounds, type ReactFlowState } from '@xyflow/react'
 import { RotateCcw } from 'lucide-react'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, type CSSProperties, type SyntheticEvent } from 'react'
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react'
 import type { Size } from '../../core/types'
 import { NODE_SIZE } from '../../store/project'
 import { useUI } from '../../store/ui'
@@ -23,6 +23,25 @@ const farOf = (s: ReactFlowState) => s.transform[2] < LOD_ZOOM
  */
 export function useFarView(): boolean {
   return useDeferredValue(useStore(farOf))
+}
+
+/** The canvas is being panned / zoomed right now (CanvasView onMoveStart / onMoveEnd). */
+let canvasMoving = false
+export function setCanvasMoving(moving: boolean): void {
+  canvasMoving = moving
+}
+
+/**
+ * False for a node that mounts while the canvas moves (it came into view during a pan / zoom): it draws its fixed-size
+ * frame at once and its body a moment later, in an interruptible background render — a wheel pan no longer pays for
+ * every card that scrolls in within one frame. True at once otherwise (opening a project, a new node, tests).
+ */
+export function useBodyReady(): boolean {
+  const [ready, setReady] = useState(() => !canvasMoving)
+  useEffect(() => {
+    if (!ready) startTransition(() => setReady(true))
+  }, [ready])
+  return ready
 }
 
 /** Size the node is drawn at: live box while resizing, else the stored size; null = default (auto). */
