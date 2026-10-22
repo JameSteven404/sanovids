@@ -21,9 +21,14 @@ body:has(.cv-toolbar-host[data-dock='top']) .toasts {
   padding: 6px;
   gap: 3px;
   box-sizing: border-box;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-toolbar);
-  box-shadow: var(--shadow);
+  /* "Viên nổi" (UI-02): glass instead of .material's denser fill, hairline edge, faint shadow; same 1 px border so the
+     bar keeps the 46 px toolbarModel measures */
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
   overflow: visible;
   pointer-events: auto;
 }
@@ -95,9 +100,12 @@ body:has(.cv-toolbar-host[data-dock='top']) .toasts {
   height: auto;
   padding: 6px;
   box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-toolbar);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
   pointer-events: auto;
   overflow: auto;
   animation: none;

@@ -82,6 +82,13 @@
   --radius-lg: 16px;
   --radius-xl: 24px;
   --blur: saturate(110%) blur(16px);
+  /* "Viên nổi" (docs/UI-MUOT.md, mockup UI-01): floating chrome = the panel at 90 % + 12 px blur, a hairline edge
+     instead of a hard border, a faint shadow, 16 px corners. --glass follows --panel (every background, light). */
+  --glass: color-mix(in srgb, var(--panel) 90%, transparent);
+  --glass-blur: blur(12px);
+  --hairline: rgba(255,255,255,.08);
+  --glass-shadow: 0 4px 20px rgba(0,0,0,.06);
+  --radius-pill: 16px;
   /* Be Vietnam Pro and JetBrains Mono are bundled (main.tsx, @fontsource): the same faces on every platform. */
   --font: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
@@ -144,6 +151,7 @@
   --shadow-lg: 0 24px 72px #00000030;
   --focus-ring: 0 0 0 3px #4560A8;
   --scrollbar: #8C8C96;
+  --hairline: rgba(0,0,0,.08);
   color-scheme: light;
 }
 

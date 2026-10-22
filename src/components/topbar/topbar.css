@@ -9,12 +9,11 @@
   align-items: center;
   gap: 12px;
   padding: 0 10px 0 14px;
-  /* background + backdrop blur: .material (base.css) */
-  border-bottom: 1px solid var(--border);
+  /* No strip of its own any more: each cluster floats as a glass pill (.tb-pill, UI-02 "viên nổi"). */
+  background: transparent;
   position: relative;
   z-index: 20;
   user-select: none;
-  background: var(--panel);
 }
 /* Toolbar glyphs: lucide at 16px, stroke 1.75, secondary color until hover / active. */
 .tb .lucide {
@@ -50,6 +49,24 @@
   margin: 0 6px;
   flex: none;
   background: var(--border);
+}
+
+/* "Viên nổi" (docs/UI-MUOT.md UI-02): the left cluster, the centre and the right cluster each float as a glass pill.
+   min-width: 0 lets the left one shrink with its container (the project name ellipsises, the container queries hide
+   the labels). */
+.tb-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
 }
 
 /* Quiet toolbar buttons: icon (+ label), no fill until hover. */

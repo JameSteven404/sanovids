@@ -59,7 +59,7 @@ Việc chỉ tính là đã giao khi có dòng ở đây (quy trình Zalo của 
 |---|---|---|---|---|---|---|
 | UI-00 | Claude | Đo độ mượt hiện tại: pan, zoom, kéo node, chọn nhiều với 100–300 node; tìm chỗ render lại khi pan / zoom | chỉ đọc code; `src/perf/**` nếu cần thêm kịch bản | Bảng p50 / p95 và danh sách điểm nghẽn (file:dòng) | `npm run perf:build`, `perf:serve`, `perf:run` cỡ M / L / XL | Đã đo M / L (mục 3) |
 | UI-01 | Codex | Mockup HTML tĩnh "canvas SanoVids kiểu mới" theo mục 1, giữ màu thiết kế D (đỏ Sano, 3 nền tối, nền sáng). Gồm: (a) thanh điều khiển nổi (tên dự án, nhóm phải trên, thanh công cụ, zoom ▾); (b) node cảnh / ảnh / video gọn, bo 16px, tên ngoài khung, thanh thao tác nổi khi chọn, cổng có icon; (c) popover "+ Thêm" có ô tìm, chip lọc, danh sách nhóm; (d) đường gióng khi kéo; (e) bảng thời gian chuyển động đề xuất | thư mục mockup riêng (không phải mã app) | `index.html` mở được không cần mạng + mục "Số đo cho người làm app" | Claude mở thử ở cả Tối / Sáng và bề rộng 1280 / 1920 | Xong, chờ Minh duyệt |
-| UI-02 | — | Token và kiểu "viên nổi" cho thanh trên cùng / thanh công cụ / zoom | `src/styles/base.css`, `toolbar.css`, `topbar.css` | Chờ Minh duyệt UI-01 | test màu (`noLiteralColors`, `designD`) | Chờ duyệt |
+| UI-02 | Claude | Token và kiểu "viên nổi" cho thanh trên cùng / thanh công cụ / zoom | `src/styles/base.css`, `toolbar.css`, `topbar.css`, `TopBar.tsx` (bọc cụm thành `.tb-pill`) | Thanh trên cùng trong suốt, 3 cụm nổi; thanh công cụ + khay cùng kiểu; bố cục giữ nguyên (thanh vẫn ở trên, không đè canvas) | test màu (`noLiteralColors`, `designD`), `topbarLayout`; xem Tối / Sáng, 1440 / 1100 px | Xong |
 | UI-03 | — | Thanh thao tác nổi trên node đang chọn + cổng có icon | `components/canvas/**` | Chờ Minh duyệt UI-01 | vitest + kiểm trong trình duyệt | Chờ duyệt |
 | UI-04 | — | Popover "+ Thêm" có tìm kiếm | `components/canvas/**` | Chờ Minh duyệt UI-01 | vitest + kiểm trong trình duyệt | Chờ duyệt |
 | UI-05 | — | Đường gióng khi kéo node | `components/canvas/**` | Chờ Minh duyệt UI-01 | vitest + perf không chậm hơn | Chờ duyệt |
@@ -86,5 +86,7 @@ Số là p95 `workMs` (React + layout của một bước, chưa tính vẽ). M�
 | `lodSwitch` (qua lại ngưỡng 55%) | 45,9 | 30,3 | 18 / 30 | |
 | `autosaveRuns` | 26,5 | 47,3 | 3,6 / 6 | |
 
-Hướng xử lý (làm cùng UI-02…UI-06, đo lại sau mỗi bước): rê chuột chỉ bằng CSS, không qua store; zoom / pan không làm
+Đã làm (22/10, theo yêu cầu "lăn chuột bị khựng"): con lăn mặc định kéo canvas (Ctrl + lăn để zoom, Cài đặt › Con lăn chuột); bỏ backdrop-filter lặp lại ở thẻ Thư viện (Layerize 168 → ~15 ms); mức xa / gần trì hoãn (`useFarView`); thẻ cảnh vào khung lúc đang di chuyển dựng khung trước (`useBodyReady`).
+
+Hướng xử lý còn lại (làm cùng UI-03…UI-06, đo lại sau mỗi bước): rê chuột chỉ bằng CSS, không qua store; zoom / pan không làm
 vẽ lại thẻ (chỉ thẻ vào / ra khung); thanh tiến độ dùng `transform: scaleX` thay cho `width`.

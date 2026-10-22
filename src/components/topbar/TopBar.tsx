@@ -61,50 +61,56 @@ export function TopBar() {
   // useCreditInfo() share this one sync.
   useEffect(() => startRealCreditsSync(), [])
   return (
-    <header className="tb material">
+    <header className="tb">
       <div className="tb-left">
-        <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
-          <span className="tb-logo" aria-hidden="true">
-            <Logo size={24} />
-          </span>
-          <span className="tb-brand-text">SanoVids</span>
+        <div className="tb-pill">
+          <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
+            <span className="tb-logo" aria-hidden="true">
+              <Logo size={24} />
+            </span>
+            <span className="tb-brand-text">SanoVids</span>
+          </div>
+          <span className="tb-divider" />
+          <ProjectName />
+          <SaveStatus />
+          <button type="button" className="tb-btn tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
+            <FolderOpen size={16} />
+            <span className="tb-hide-sm">Dự án</span>
+          </button>
         </div>
-        <span className="tb-divider" />
-        <ProjectName />
-        <SaveStatus />
-        <button type="button" className="tb-btn tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
-          <FolderOpen size={16} />
-          <span className="tb-hide-sm">Dự án</span>
-        </button>
       </div>
 
       {/* Kept even when it only holds the film button: the bar is a 3-column grid (topbar.css). */}
       <div className="tb-center">
-        {SHOWN_VIEW_LIST.length > 1 && <ViewSwitch />}
-        <FilmButton />
+        <span className="tb-pill">
+          {SHOWN_VIEW_LIST.length > 1 && <ViewSwitch />}
+          <FilmButton />
+        </span>
       </div>
 
       <div className="tb-right">
-        <HistoryButtons />
-        <RunningIndicator />
-        <UpdatePill />
-        <ProviderBadge />
-        <CreditPill />
-        <DevButton />
-        <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
-          <FileInput size={16} />
-          <span className="tb-hide-md">Nhập prompt</span>
-        </button>
-        <DownloadAllButton />
-        <span className="tb-divider" />
-        <AppearanceButton />
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video)" aria-label="Cài đặt">
-          <Settings size={16} />
-        </button>
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
-          <Keyboard size={16} />
-        </button>
-        <PanelToggles />
+        <div className="tb-pill">
+          <HistoryButtons />
+          <RunningIndicator />
+          <UpdatePill />
+          <ProviderBadge />
+          <CreditPill />
+          <DevButton />
+          <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
+            <FileInput size={16} />
+            <span className="tb-hide-md">Nhập prompt</span>
+          </button>
+          <DownloadAllButton />
+          <span className="tb-divider" />
+          <AppearanceButton />
+          <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video)" aria-label="Cài đặt">
+            <Settings size={16} />
+          </button>
+          <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
+            <Keyboard size={16} />
+          </button>
+          <PanelToggles />
+        </div>
       </div>
     </header>
   )
