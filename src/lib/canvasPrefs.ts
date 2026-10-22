@@ -11,12 +11,15 @@
 // - editorWidth (no Settings row: the editor's resize grip): width of that editor on screen, px, 340–640 (default 380).
 // - bigProject ("Tối ưu khi dự án lớn", default 'auto'): from 800 cards the minimap hides itself for the session and
 //   "Tất cả dây" draws only the wires near the view; 'off' = never. The minimap pref itself is never overwritten.
+// - wheel ("Con lăn chuột", default 'pan'): 'pan' = the wheel moves the canvas (Shift: sideways), Ctrl / ⌘ + wheel
+//   and a trackpad pinch zoom — like Magnific Spaces / ElevenLabs Flows; 'zoom' = the wheel zooms (0.5's behaviour).
 import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
 
 export type MotionLevel = 'full' | 'reduced' | 'off'
 export type NodeEditorMode = 'click' | 'select' | 'off'
 export type BigProjectMode = 'auto' | 'off'
+export type WheelMode = 'pan' | 'zoom'
 
 export interface CanvasPrefs {
   /** A click on a wire cuts it (default true). */
@@ -29,6 +32,8 @@ export interface CanvasPrefs {
   editorWidth: number
   /** Big-project optimisations of the canvas (default 'auto'). */
   bigProject: BigProjectMode
+  /** What the mouse wheel does on the canvas (default 'pan'). */
+  wheel: WheelMode
 }
 
 export const EDITOR_WIDTH_DEFAULT = 380
@@ -42,6 +47,7 @@ export const DEFAULT_CANVAS_PREFS: CanvasPrefs = {
   nodeEditor: 'click',
   editorWidth: EDITOR_WIDTH_DEFAULT,
   bigProject: 'auto',
+  wheel: 'pan',
 }
 export const MOTION_LEVELS: readonly MotionLevel[] = ['full', 'reduced', 'off']
 export const MOTION_LABEL: Record<MotionLevel, string> = { full: 'Đầy đủ', reduced: 'Giảm bớt', off: 'Tắt' }
@@ -53,6 +59,8 @@ export const NODE_EDITOR_LABEL: Record<NodeEditorMode, string> = {
 }
 export const BIG_PROJECT_MODES: readonly BigProjectMode[] = ['auto', 'off']
 export const BIG_PROJECT_LABEL: Record<BigProjectMode, string> = { auto: 'Tự động', off: 'Tắt' }
+export const WHEEL_MODES: readonly WheelMode[] = ['pan', 'zoom']
+export const WHEEL_LABEL: Record<WheelMode, string> = { pan: 'Kéo canvas', zoom: 'Thu phóng' }
 
 /** Texts of the Settings rows (SettingsDialog GROUPS 'canvas'), kept here so the settings search test reads the real ones. */
 export const NODE_EDITOR_ROW = {
@@ -66,6 +74,12 @@ export const BIG_PROJECT_ROW = {
   keywords: 'hiệu năng nhanh mượt lag giật chậm dự án lớn nhiều node nhiều cảnh tối ưu performance',
 } as const
 
+export const WHEEL_ROW = {
+  label: 'Con lăn chuột',
+  hint: 'Kéo canvas: lăn để di chuyển lên xuống (Shift + lăn: sang ngang), Ctrl + lăn hoặc chụm hai ngón trên touchpad để thu phóng — mượt hơn, giống Magnific và ElevenLabs. Thu phóng: lăn để phóng to / thu nhỏ như bản 0.5.',
+  keywords: 'con lăn chuột wheel cuộn scroll di chuyển kéo thu phóng zoom mượt giật khựng touchpad',
+} as const
+
 const oneOf =
   <T extends string>(list: readonly T[]) =>
   (v: unknown): v is T =>
@@ -73,6 +87,7 @@ const oneOf =
 const isMotion = oneOf(MOTION_LEVELS)
 export const isNodeEditorMode = oneOf(NODE_EDITOR_MODES)
 export const isBigProjectMode = oneOf(BIG_PROJECT_MODES)
+export const isWheelMode = oneOf(WHEEL_MODES)
 
 /** An editor width as this build stores it (an integer in range): the only values a settings file may bring. */
 export const isEditorWidth = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= EDITOR_WIDTH_MIN && (v as number) <= EDITOR_WIDTH_MAX
@@ -95,6 +110,7 @@ export function parseCanvasPrefs(raw: string | null | undefined): CanvasPrefs {
       nodeEditor: isNodeEditorMode(saved.nodeEditor) ? saved.nodeEditor : DEFAULT_CANVAS_PREFS.nodeEditor,
       editorWidth: clampEditorWidth(saved.editorWidth) ?? DEFAULT_CANVAS_PREFS.editorWidth,
       bigProject: isBigProjectMode(saved.bigProject) ? saved.bigProject : DEFAULT_CANVAS_PREFS.bigProject,
+      wheel: isWheelMode(saved.wheel) ? saved.wheel : DEFAULT_CANVAS_PREFS.wheel,
     }
   } catch {
     return { ...DEFAULT_CANVAS_PREFS }
@@ -119,11 +135,12 @@ export const useCanvasPrefs = create<CanvasPrefs & { set: (patch: Partial<Canvas
     const width = clampEditorWidth(patch.editorWidth)
     if (width !== null) next.editorWidth = width
     if (isBigProjectMode(patch.bigProject)) next.bigProject = patch.bigProject
+    if (isWheelMode(patch.wheel)) next.wheel = patch.wheel
     if (!Object.keys(next).length) return
     setState(next)
-    const { clickToCut, animations, nodeEditor, editorWidth, bigProject } = getState()
+    const { clickToCut, animations, nodeEditor, editorWidth, bigProject, wheel } = getState()
     try {
-      localStorage.setItem(CANVAS_PREFS_KEY, JSON.stringify({ clickToCut, animations, nodeEditor, editorWidth, bigProject }))
+      localStorage.setItem(CANVAS_PREFS_KEY, JSON.stringify({ clickToCut, animations, nodeEditor, editorWidth, bigProject, wheel }))
     } catch {
       /* storage unavailable: the choice lasts for this session */
     }

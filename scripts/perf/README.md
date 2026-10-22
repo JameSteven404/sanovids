@@ -68,7 +68,7 @@ So sánh baseline chỉ xét các ID có số đo ở cả hai báo cáo.
 | `expandSettings` | 20 lần click dòng cấu hình; kiểm nhóm cấu hình xuất hiện; thu gọn giữa các mẫu | 36 / 60 / 120 / 240 |
 | `panWithEditor` | 30 bước kéo viewport 40 px (bằng bước của `pan`), qua lại để thẻ đang sửa luôn trong màn hình và mép cắt (culling) thay đổi; kiểm viewport đã đổi và editor vẫn mở | 4,2 / 7 / 14 / 28 |
 | `zoomWithEditor` | 30 bước zoom 70–97%, kiểm viewport đã đổi, editor vẫn mở | 7,2 / 12 / 24 / 48 |
-| `lodSwitch` | 30 bước 54% → 55% → 56% → 54%…; kiểm viewport và class `is-far` ở mỗi bước, đúng 55% là near | 18 / 30 / 60 / 120 |
+| `lodSwitch` | 30 bước 54% → 55% → 56% → 54%…; kiểm viewport và class `is-far` ở mỗi bước, đúng 55% là near. Mức xa / gần là giá trị trì hoãn (`useFarView`): thẻ đổi dạng ở lượt vẽ nền sau bước đo, bài chờ tối đa 30 khung rồi mới kiểm | 18 / 30 / 60 / 120 |
 | `librarySelect200` | Click mục đầu + Shift-click mục cuối, kiểm đúng 200 ID và 200 card được chọn | 60 / 100 / 200 / 400 |
 | `libraryDelete200` | Chọn sẵn 200 mục, click nút xoá thư viện; kiểm đủ 200 mục biến mất, selection rỗng, cảnh giữ nguyên | 90 / 150 / 300 / 600 |
 | `cutWire` | 20 lần gọi lệnh cắt dây của UI, kiểm mất ref, placeholder có tên ảnh và mark đỏ; hoàn tác giữa mẫu | 18 / 30 / 60 / 120 |

@@ -3,7 +3,7 @@
 // new video of the scene). Drag from its dot to a video or a scene, from a video's purple dot / a scene's right dot to
 // it, or drop videos from the library on it. Memoized; reads its folder and runtime state (lib/saveFolders) itself.
 import { platformText } from '../../lib/platformText'
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
 import { FOLDER_TRASHING_TEXT, trashExpiredSuffix, trashPendingSuffix } from '../../core/folderTrash'
@@ -14,8 +14,8 @@ import { useFolderStatus, folderRuntime, type FolderRuntime } from '../../lib/sa
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
-import { hasTakeDrag, LOD_ZOOM, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
-import { useRemeasureOn } from './NodeSizer'
+import { hasTakeDrag, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
+import { useFarView, useRemeasureOn } from './NodeSizer'
 import './saving.css'
 
 export type FolderFlowNode = Node<Record<string, unknown>, 'folder'>
@@ -70,7 +70,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const autoN = useProject((s) => liveCount(folder?.autoScenes, sceneMapOf(s.project.scenes)))
   const takeN = useRuns((s) => liveCount(folder?.takes, takeIndexOf(s.takes).byId))
   const stored = useFolderStatus((s) => s.byId[id])
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   // The dot moves down in the far layout (saving.css): re-measure even when the card keeps its height.
   useRemeasureOn(id, far)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)

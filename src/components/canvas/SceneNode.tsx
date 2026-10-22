@@ -5,7 +5,7 @@
 // text opens the field with the caret where it was clicked (store/sceneEditor, only ONE node mounts the field).
 // Below LOD_ZOOM the far view: big code and name, two prompt lines, pictures, ▶.
 // Its takes are separate Take nodes to the right (wired from the 'take' handle at 62px = the middle of their poster).
-import { Handle, Position, useReactFlow, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useReactFlow, type Node, type NodeProps } from '@xyflow/react'
 import { ChevronDown, ImagePlus, Link2, Lock, Play, Plus, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -38,7 +38,6 @@ import {
   hasAssetDrag,
   hasFileDrag,
   imageFiles,
-  LOD_ZOOM,
   readAssetIds,
   sceneMapOf,
   sceneAssetsOf,
@@ -49,7 +48,7 @@ import {
 } from './canvasModel'
 import { cutEdge } from './edges'
 import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft, useShortcutLabel } from '../../lib/keymapPrefs'
-import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
+import { NodeSizer, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
   filesToSceneTiles,
@@ -97,7 +96,7 @@ const DOT_STYLE = { top: DOT_TOP }
 function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
   perfCount('SceneNodeView')
   const scene = useProject((s) => sceneMapOf(s.project.scenes).get(id))
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   const status = useRuns((s) => takeSummary(s.takes, id).status)
   const progress = useRuns((s) => (takeSummary(s.takes, id).status === 'processing' ? takeSummary(s.takes, id).progress : 0))
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)

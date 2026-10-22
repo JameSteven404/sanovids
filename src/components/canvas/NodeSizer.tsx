@@ -6,13 +6,24 @@
 // Also the node-geometry hooks shared by the node types: useNodeBox (drawn size) and useRemeasureOn (dots that move).
 import { NodeResizer, useStore, useUpdateNodeInternals, type Handle as HandleBounds, type ReactFlowState } from '@xyflow/react'
 import { RotateCcw } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, type CSSProperties, type SyntheticEvent } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, type CSSProperties, type SyntheticEvent } from 'react'
 import type { Size } from '../../core/types'
 import { NODE_SIZE } from '../../store/project'
 import { useUI } from '../../store/ui'
-import { resetNodeSize, resizeEdgeClip, useCanvasLocal, type SizedKind } from './canvasModel'
+import { LOD_ZOOM, resetNodeSize, resizeEdgeClip, useCanvasLocal, type SizedKind } from './canvasModel'
 
 const stop = (e: SyntheticEvent) => e.stopPropagation()
+
+const farOf = (s: ReactFlowState) => s.transform[2] < LOD_ZOOM
+
+/**
+ * The far view (zoom below LOD_ZOOM), deferred: crossing 55% re-renders every node on screen at once (50–150 ms with
+ * 300 scenes), so React does it in an interruptible background render and a wheel zoom keeps its frames. Every node
+ * and the canvas' geometry estimates read this same value, so they switch together.
+ */
+export function useFarView(): boolean {
+  return useDeferredValue(useStore(farOf))
+}
 
 /** Size the node is drawn at: live box while resizing, else the stored size; null = default (auto). */
 export function useNodeBox(id: string, size: Size | null | undefined): Size | null {

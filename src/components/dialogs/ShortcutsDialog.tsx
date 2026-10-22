@@ -32,7 +32,7 @@ const GESTURES: Group[] = [
     rows: [
       ['Kéo nền', 'Di chuyển khung nhìn (chế độ Tay) · Shift+kéo để chọn vùng'],
       ['Chế độ Chọn', 'Kéo nền để chọn vùng · Space+kéo hoặc chuột giữa để di chuyển'],
-      ['Lăn chuột', `Thu phóng (cả ${platformText.mod}+lăn và chụm hai ngón)`],
+      ['Lăn chuột', `Di chuyển lên xuống (Shift+lăn: sang ngang) · ${platformText.mod}+lăn hoặc chụm hai ngón: thu phóng. Muốn lăn để thu phóng như bản 0.5: Cài đặt › Con lăn chuột`],
       ['Nhấp đúp nền', 'Tạo cảnh mới tại đó'],
     ],
   },

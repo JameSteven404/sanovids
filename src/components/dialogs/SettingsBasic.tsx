@@ -54,7 +54,7 @@ import {
 } from '../../lib/aboutModel'
 import { loadAppPlacement, macPlacementNote, useAppPlacement } from '../../lib/appPlacement'
 import { appSignatureSource, loadAppSignature, useAppSignature } from '../../lib/appSignature'
-import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, type BigProjectMode, type NodeEditorMode } from '../../lib/canvasPrefs'
+import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, WHEEL_LABEL, type BigProjectMode, type NodeEditorMode, type WheelMode } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
@@ -373,6 +373,21 @@ export function BigProjectSetting({ label, hint }: RowProps) {
   return (
     <Field label={label} hint={hint}>
       <Segmented label={label} value={bigProject} onChange={(v) => set({ bigProject: v })} options={BIG_PROJECT_OPTIONS} />
+    </Field>
+  )
+}
+
+const WHEEL_OPTIONS: { id: WheelMode; label: string; title: string }[] = [
+  { id: 'pan', label: WHEEL_LABEL.pan, title: 'Lăn để di chuyển canvas; Ctrl + lăn để thu phóng' },
+  { id: 'zoom', label: WHEEL_LABEL.zoom, title: 'Lăn để phóng to / thu nhỏ (như bản 0.5)' },
+]
+
+export function WheelSetting({ label, hint }: RowProps) {
+  const wheel = useCanvasPrefs((s) => s.wheel)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={wheel} onChange={(v) => set({ wheel: v })} options={WHEEL_OPTIONS} />
     </Field>
   )
 }

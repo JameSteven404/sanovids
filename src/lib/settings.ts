@@ -17,7 +17,7 @@ import { DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../
 import { useProviderPrefs, type ProviderId } from '../providers'
 import { useRuns } from '../store/runs'
 import { EDGE_MODES, INTERACTION_MODES, TAKE_DISPLAYS, TOAST_TIMES, useUI, type InteractionMode, type TakeDisplay, type ToastTime } from '../store/ui'
-import { BIG_PROJECT_MODES, DEFAULT_CANVAS_PREFS, isEditorWidth, MOTION_LEVELS, NODE_EDITOR_MODES, useCanvasPrefs, type CanvasPrefs } from './canvasPrefs'
+import { BIG_PROJECT_MODES, DEFAULT_CANVAS_PREFS, isEditorWidth, MOTION_LEVELS, NODE_EDITOR_MODES, useCanvasPrefs, WHEEL_MODES, type CanvasPrefs } from './canvasPrefs'
 import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
 import { isBackgroundPref, isThemePref, useTheme, type BackgroundPref, type ThemePref } from './theme'
@@ -81,7 +81,7 @@ export function currentSettings(): PortableSettings {
       folderUnlinkTrash: d.folderUnlinkTrash,
     },
     playback: { sound: p.sound, volume: p.volume, rate: p.rate },
-    canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject },
+    canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject, wheel: c.wheel },
     arrange: cleanArrangePrefs(useArrangePrefs.getState()),
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
@@ -104,7 +104,7 @@ type Check = (v: unknown) => boolean
 const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'background' | 'mock' | 'keys' | 'arrange'>]: Record<keyof PortableSettings[K], Check> } = {
   downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
-  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES) },
+  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES), wheel: inList(WHEEL_MODES) },
   ui: { edgeMode: inList(EDGE_MODES), takeDisplay: inList(TAKE_DISPLAYS), showMinimap: isBool, interaction: inList(INTERACTION_MODES), toastTime: inList(TOAST_TIMES) },
   updates: { autoDownload: isBool },
 }

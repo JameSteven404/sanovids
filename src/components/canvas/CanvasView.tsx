@@ -140,6 +140,7 @@ import {
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { typeOnNode } from './SceneNodeEditor'
+import { useFarView } from './NodeSizer'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import {
   connectingKind,
@@ -215,7 +216,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   const [savedViewport] = useState(() => canvasViewports.get(projectId))
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   const stageRef = useRef<HTMLDivElement>(null)
 
   const sceneSig = useProject((s) => sceneGraphOf(s.project.scenes))
@@ -243,6 +244,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
   const theme = useTheme((s) => s.theme)
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
+  const wheel = useCanvasPrefs((s) => s.wheel)
   const motion = useMotionLevel()
   const bigPref = useCanvasPrefs((s) => s.bigProject)
   const shownFor = useUI((s) => s.minimapShownFor.includes(projectId))
@@ -1220,9 +1222,11 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
         panOnDrag={handMode ? true : [1]}
         selectionOnDrag={!handMode}
         selectionMode={SelectionMode.Partial}
-        zoomOnScroll
+        // Settings "Con lăn chuột": the wheel pans by default (Ctrl / ⌘ + wheel and a pinch zoom), or zooms (0.5).
+        zoomOnScroll={wheel === 'zoom'}
         zoomOnPinch
-        panOnScroll={false}
+        panOnScroll={wheel === 'pan'}
+        panOnScrollSpeed={1}
         zoomOnDoubleClick={false}
         minZoom={0.1}
         maxZoom={2}

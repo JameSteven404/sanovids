@@ -14,7 +14,7 @@ import { KeysIntro, SHORTCUT_ROWS, useKeyCaptureHost } from './SettingsShortcuts
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
-import { BIG_PROJECT_ROW, NODE_EDITOR_ROW } from '../../lib/canvasPrefs'
+import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
 import { useDevAllowed } from '../../providers'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
@@ -40,6 +40,7 @@ import {
   AutoRenumberSetting,
   BackgroundSetting,
   BigProjectSetting,
+  WheelSetting,
   ClickToCutSetting,
   DataBlock,
   DownloadFolderSetting,
@@ -220,6 +221,7 @@ const GROUPS: Group[] = [
         keywords: 'chuột tay chọn vùng pan kéo',
         C: InteractionSetting,
       },
+      { id: 'wheel', ...WHEEL_ROW, C: WheelSetting },
       { id: 'minimap', label: 'Bản đồ thu nhỏ', hint: 'Khung nhỏ ở góc canvas cho thấy toàn bộ dự án.', keywords: 'minimap bản đồ góc', C: MinimapSetting },
       { id: 'bigProject', ...BIG_PROJECT_ROW, C: BigProjectSetting },
     ],

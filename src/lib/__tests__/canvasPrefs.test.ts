@@ -17,8 +17,11 @@ import {
 } from '../canvasPrefs'
 
 describe('parseCanvasPrefs', () => {
-  it('defaults: click to cut on, full animations, editor opens on a click, 380 px wide, big-project optimisations on', () => {
-    expect(DEFAULT_CANVAS_PREFS).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto' })
+  it('defaults: click to cut on, full animations, editor opens on a click, 380 px wide, big-project optimisations on, the wheel pans', () => {
+    expect(DEFAULT_CANVAS_PREFS).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto', wheel: 'pan' })
+    // the wheel: 'pan' / 'zoom' only, anything else → the default
+    expect(parseCanvasPrefs('{"wheel":"zoom"}').wheel).toBe('zoom')
+    expect(parseCanvasPrefs('{"wheel":"scroll"}').wheel).toBe('pan')
     expect(parseCanvasPrefs(null)).toEqual(DEFAULT_CANVAS_PREFS)
     expect(parseCanvasPrefs('')).toEqual(DEFAULT_CANVAS_PREFS)
   })

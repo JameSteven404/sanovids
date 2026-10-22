@@ -288,7 +288,11 @@ export function scenarios(projectId: string, alternateId: string): Scenario[] {
           await sample(() => { void api.setViewport(target) })
           const now = api.getViewport()
           check(Math.abs(now.x - target.x) < 0.5 && Math.abs(now.y - target.y) < 0.5 && Math.abs(now.zoom - zoom) < 1e-3, 'Viewport chưa đổi theo bước đo.')
-          check(element(`${nodeSelector()} .cv-scene`).classList.contains('is-far') === (zoom < LOD_ZOOM), 'Node chưa đổi mức chi tiết tại 55%.')
+          // The far / near level is a deferred value (NodeSizer useFarView): the switch renders in the background, outside
+          // the measured step. Wait for it (a few frames at most), then check it happened.
+          const farNow = () => element(`${nodeSelector()} .cv-scene`).classList.contains('is-far') === (zoom < LOD_ZOOM)
+          for (let f = 0; f < 30 && !farNow(); f++) await frame()
+          check(farNow(), 'Node chưa đổi mức chi tiết tại 55%.')
           if (id !== 'lodSwitch') checkEditor(true)
         }
       } })),

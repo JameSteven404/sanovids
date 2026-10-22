@@ -48,7 +48,7 @@ const CUSTOM = {
   background: 'slate',
   downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}', folderUnlinkTrash: false },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
-  canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' },
+  canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off', wheel: 'zoom' },
   arrange: { style: 'grid', gridCols: 4, spacing: 'tight', refs: 'byKind', folders: 'top', placedTakes: 'follow', videoBy: { rows: 'all', grid: 'all', strip: 'chosen' } },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
@@ -272,7 +272,7 @@ describe('apply / reset / restore', () => {
     // the chosen download folder is a place, not a setting: kept
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
     expect(storage.data.get('bdp:pref:leftW')).toBe('300') // panel widths: resetPanelLayout, not this
-    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto' })
+    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto', wheel: 'pan' })
     expect(useUpdatePrefs.getState().autoDownload).toBe(true)
     expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":true}')
 

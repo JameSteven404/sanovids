@@ -2,7 +2,7 @@
 // One size for every picture, like canvasapp (choice 3L): 220 × 275 by default, the picture shown WHOLE (contain) in
 // its frame, one caption line (name · how many scenes use it). Resized tiles keep their size; the frame follows.
 // Zoomed out (< LOD_ZOOM): only the picture and a big name.
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Box, MapPin, Maximize2, Palette, User } from 'lucide-react'
 import { memo, type SyntheticEvent } from 'react'
 import { viewAssetImages } from '../../actions'
@@ -10,8 +10,8 @@ import type { AssetKind } from '../../core/types'
 import { useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
-import { assetMapOf, KIND_LABEL, LOD_ZOOM, usageOf } from './canvasModel'
-import { NodeSizer, useNodeBox } from './NodeSizer'
+import { assetMapOf, KIND_LABEL, usageOf } from './canvasModel'
+import { NodeSizer, useFarView, useNodeBox } from './NodeSizer'
 import './canvas.css'
 import './assetNode.css'
 
@@ -25,7 +25,7 @@ const stop = (e: SyntheticEvent) => e.stopPropagation()
 function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
   const asset = useProject((s) => assetMapOf(s.project.assets).get(id))
   const usage = useProject((s) => usageOf(s.project.scenes).get(id) ?? 0)
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   const primary = asset?.imageIds[0]
   const box = useNodeBox(id, asset?.size)
 

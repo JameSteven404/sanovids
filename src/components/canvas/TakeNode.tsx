@@ -8,7 +8,7 @@
 // the card above the picture: that would move DOT_TOP for the take AND scene dots. Far (zoomed out): the poster with
 // a big code chip and "+N", as before. The <video> lives in the picture box and the controls in the bar: one shared
 // ref, mounted in the same commit, never re-parented (the video would restart). Styles: takeNode.css.
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Ban, Bug, CircleAlert, Clock, Cloud, Download, Eye, LoaderCircle, PencilLine, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react'
 import { canvasEvents, defaultTakeFileBase, deleteTakes, downloadTake, renameTake, rerunTake, takeFileBase } from '../../actions'
@@ -29,7 +29,6 @@ import { importedChipTitle, takeSettingsText } from '../runs/importedTake'
 import {
   fitMedia,
   inlineKeyBubbles,
-  LOD_ZOOM,
   PREVIEW_DELAY_MS,
   sceneMapOf,
   STATUS_LABEL,
@@ -39,7 +38,7 @@ import {
   takeDotTop,
   takeIndexOf,
 } from './canvasModel'
-import { NodeSizer, useNodeBox, useRemeasureOn } from './NodeSizer'
+import { NodeSizer, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RENAME_TAKE_EVENT, takePendingRename, type RenameTakeDetail } from './takeEvents'
 import { footerTitle, starTitle, titleLine, TITLE_LINE_SELECTOR } from './takeNodeModel'
 import { TakeBarRest, TakePlayer } from './TakePlayer'
@@ -256,7 +255,7 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
   perfCount('TakeNodeView')
   const take = useRuns((s) => takeIndexOf(s.takes).byId.get(id))
   const order = useProject((s) => (take ? sceneMapOf(s.project.scenes).get(take.sceneId)?.order : undefined))
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   const [hover, setHover] = useState(false)
   const [previewReady, setPreviewReady] = useState(false)
   const [renaming, setRenaming] = useState(false)
