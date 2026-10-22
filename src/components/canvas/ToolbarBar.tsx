@@ -24,9 +24,10 @@ import './toolbar.css'
 
 // Opened from ▾ only: its own chunk (and arrange.css), loaded on the first open.
 const ArrangePopover = lazy(() => import('./ArrangePopover').then((m) => ({ default: m.ArrangePopover })))
+const AddPopover = lazy(() => import('./AddPopover').then((m) => ({ default: m.AddPopover })))
 
 const DOCK_LABELS: Record<ToolbarDock, string> = { bottom: 'Cạnh dưới', top: 'Cạnh trên', left: 'Cạnh trái', right: 'Cạnh phải', free: 'Đặt tự do' }
-const MENU = { place: 'Vị trí thanh công cụ', add: 'Thêm vào canvas', view: 'Hiển thị', zoom: 'Thu phóng', more: 'Thêm thao tác' } as const
+const MENU = { place: 'Vị trí thanh công cụ', view: 'Hiển thị', zoom: 'Thu phóng', more: 'Thêm thao tác' } as const
 const ICON = { size: 16, strokeWidth: 1.75 } as const
 /** Where ArrangePopover opens, from the side toolbar panels open on (toolbarModel.toolbarSide). */
 const POPOVER_SIDE = { top: 'up', bottom: 'down', left: 'left', right: 'right' } as const
@@ -62,6 +63,13 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
   const closeArrange = useCallback(() => {
     useArrangeMenu.getState().close()
     ;(barRef.current?.querySelector<HTMLElement>('[data-arrange-menu]') ?? focusMore())?.focus({ preventScroll: true })
+  }, [focusMore])
+  // "+ Thêm" (UI-04): the ▾ next to + opens AddPopover (its own chunk), anchored to that button.
+  const [addOpen, setAddOpen] = useState(false)
+  const addAnchor = () => barRef.current?.querySelector<HTMLElement>('[data-tool="add"]') ?? focusMore() ?? barRef.current
+  const closeAdd = useCallback(() => {
+    setAddOpen(false)
+    ;(barRef.current?.querySelector<HTMLElement>('[data-tool="add"]') ?? focusMore())?.focus({ preventScroll: true })
   }, [focusMore])
   // A bar that leaves the page (another view, the canvas remounted) closes its popover.
   useEffect(() => () => useArrangeMenu.getState().close(), [])
@@ -151,13 +159,12 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     { id: 'add-folder', label: 'Thư mục lưu video…', run: () => { void createFolderNode() } },
     { id: 'add-import', label: 'Nhập nhiều prompt…', run: () => ui.openDialog({ kind: 'import' }) },
   ]
-  const addMenu = () => openMenu(MENU.add, [{ id: 'add-next', label: 'Cảnh tiếp theo', shortcut: 'scene.next', run: () => { nextScene() } }, ...addItems])
   const hand = { label: 'Tay · kéo nền để di chuyển', shortcut: 'canvas.hand' as const, run: () => ui.setInteraction('hand'), pressed: interaction === 'hand' }
   const pick = { label: 'Chọn · kéo để chọn vùng', shortcut: 'canvas.select' as const, run: () => ui.setInteraction('select'), pressed: interaction === 'select' }
   const entries: Record<Exclude<ToolbarItemId, 'mouse' | 'arrange'>, { label: string; icon: ReactNode; run: () => void; shortcut?: ActionId; disabled?: boolean; menu?: string }> = {
     // nextScene copies the selected scene's references and settings (Ctrl+N "Cảnh mới (trống)" never does): say so
     new: { label: sceneCount ? 'Cảnh tiếp theo (giữ ảnh tham chiếu và cấu hình)' : 'Cảnh mới', icon: <Plus {...ICON} />, run: () => { nextScene() }, shortcut: 'scene.next' },
-    add: { label: 'Thêm: cảnh trống, thư mục lưu video, nhập nhiều prompt', icon: <ChevronDown size={12} strokeWidth={2} />, run: addMenu, menu: MENU.add },
+    add: { label: 'Thêm vào canvas: cảnh, ảnh, thư mục, nhập nhiều prompt (có ô tìm)', icon: <ChevronDown size={12} strokeWidth={2} />, run: () => setAddOpen((o) => !o) },
     run: { label: sceneCount ? `Chạy ${sceneCount} cảnh đang chọn · xác nhận chi phí` : 'Chạy · chọn ít nhất một cảnh', icon: <Play {...ICON} />, run: () => requestRun(selectedSceneIds()), shortcut: 'scene.run', disabled: !sceneCount },
     fit: { label: 'Vừa màn hình', icon: <Maximize {...ICON} />, run: () => onFit(useUI.getState().selectedIds), shortcut: 'canvas.fit' },
     view: { label: `Hiển thị: dây nối, video, bản đồ thu nhỏ${viewChanged ? ' (đang khác mặc định)' : ''}`, icon: <Eye {...ICON} />, run: viewMenu, menu: MENU.view },
@@ -196,7 +203,8 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     const item = entries[id]
     return <ToolbarButton key={id} data-tool={id} className={`cv-toolbar-button cv-toolbar-${id}`}
       label={item.label} shortcut={item.shortcut} disabled={item.disabled} tabIndex={id === fit.shown[0] ? 0 : -1}
-      aria-haspopup={item.menu ? 'menu' : undefined} aria-expanded={item.menu ? menu?.label === item.menu : undefined}
+      aria-haspopup={id === 'add' ? 'dialog' : item.menu ? 'menu' : undefined}
+      aria-expanded={id === 'add' ? addOpen : item.menu ? menu?.label === item.menu : undefined}
       onClick={item.run}>
       {item.icon}
       {id === 'run' && sceneCount > 0 && <span className="cv-toolbar-count" aria-hidden>{sceneCount}</span>}
@@ -236,6 +244,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
     {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} focusBar={focusMore} />}
     {menu && <ToolbarMenu key={menu.label} {...menu} anchor={rect} stage={stage} side={side} onClose={closeMenu} />}
     {arrangeOpen && !dragging && <Suspense fallback={null}><ArrangePopover anchor={arrangeAnchor() ?? document.body} side={POPOVER_SIDE[side]} onClose={closeArrange} /></Suspense>}
+    {addOpen && !dragging && <Suspense fallback={null}><AddPopover anchor={addAnchor() ?? document.body} side={POPOVER_SIDE[side]} onClose={closeAdd} /></Suspense>}
     <span className="cv-toolbar-sr" id="cv-toolbar-grip-help">{gripHelpText(IS_MAC)}</span>
     <span className="cv-toolbar-sr" role="status">{dragging ? '' : `Thanh công cụ: ${DOCK_LABELS[fit.dock]}.`}</span>
   </div>

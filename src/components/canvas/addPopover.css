@@ -1,0 +1,57 @@
+/* UI-04 "+ Thêm" popover (AddPopover): glass like the toolbar ("viên nổi"), search, chips, grouped rows. Tokens only. */
+.cv-add-backdrop { position: fixed; inset: 0; z-index: 120; }
+.cv-add-popover {
+  position: fixed;
+  width: min(348px, calc(100vw - 16px));
+  max-height: min(520px, calc(100vh - 16px));
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: 12px;
+}
+.cv-add-popover header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.cv-add-popover header strong { font-size: 14px; font-weight: 600; }
+.cv-add-popover .input { width: 100%; height: 36px; border-radius: var(--radius); }
+.cv-add-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0 4px; }
+.cv-add-filters button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+.cv-add-filters button:hover { background: var(--hover); color: var(--text); }
+.cv-add-filters button[aria-pressed='true'] { border-color: transparent; background: var(--accent-soft); color: var(--accent-ink); }
+.cv-add-group h3 { margin: 12px 6px 4px; color: var(--text-faint); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.cv-add-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+.cv-add-row:hover,
+.cv-add-row:focus-visible { background: var(--hover); }
+.cv-add-row:active { background: var(--pressed); transition-duration: 75ms; }
+.cv-add-row > svg { flex: none; color: var(--text-dim); }
+.cv-add-row b { display: block; font-size: 12.5px; font-weight: 500; }
+.cv-add-row small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 11px; line-height: 1.4; }
+.cv-add-empty { margin: 16px 0 6px; color: var(--text-dim); text-align: center; }

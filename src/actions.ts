@@ -605,6 +605,23 @@ export async function createAssetsFromFiles(
 }
 
 /**
+ * A file picker for images, opened inside a click (user gesture: the canvas menu's "Thêm ảnh tại đây…", the toolbar's
+ * "+ Thêm"); the images land at `position` (createAssetsFromFiles).
+ */
+export function pickImagesAt(position: XY) {
+  if (typeof document === 'undefined') return
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/*'
+  input.multiple = true
+  input.addEventListener('change', () => {
+    const files = [...(input.files ?? [])]
+    if (files.length) void createAssetsFromFiles(files, { position })
+  })
+  input.click()
+}
+
+/**
  * Image files dropped on a scene's "Ảnh tham chiếu" list (right panel): new library items linked to the scene in ONE
  * undo step with ONE toast, whose "Hoàn tác" takes back both (the items and the link). Returns the new item ids.
  */
