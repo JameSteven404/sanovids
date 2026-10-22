@@ -766,10 +766,10 @@ describe('newer-build model marker (foreignModel / foreignSettings)', () => {
 
   it('restoring the settings of a take made on a newer build’s model marks the scene (blocked, never a runnable Seedance 2.5)', () => {
     // A take saved by a newer build keeps its own settings as they were (migrateTake does not touch them).
-    const takeSettings = { model: 'future/model_x', mode: 'i2v', duration: 8, resolution: '1080p', ratio: '16:9', audio: true } as unknown as VideoSettings
+    const takeSettings = { model: 'newsite/veo_3.1', mode: 'i2v', duration: 8, resolution: '1080p', ratio: '16:9', audio: true } as unknown as VideoSettings
     const s2 = sc('s2')
     st().restoreScene('s2', { prompt: 'Mưa', refs: [], settings: takeSettings })
-    expect(marked('s2')).toEqual({ foreignModel: 'future/model_x', foreignSettings: { ...takeSettings } })
+    expect(marked('s2')).toEqual({ foreignModel: 'newsite/veo_3.1', foreignSettings: { ...takeSettings } })
     expect(sc('s2').settings.model).toBe('seedance_2_5') // stand-in values, as everywhere
     expect(sc('s2').prompt).toBe('Mưa')
     undo()
@@ -825,7 +825,7 @@ describe('newer-build model marker (foreignModel / foreignSettings)', () => {
 
 describe('a newer build’s project through save / load (migrate round trip)', () => {
   // A scene on a model this build does not know, exactly as the newer build saved it.
-  const VEO = { model: 'future/model_x', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16', audio: true }
+  const VEO = { model: 'newsite/veo_3.1', mode: 'r2v', duration: 8, resolution: '1080p', ratio: '9:16', audio: true }
   const saveAndLoad = () => st().loadProject(migrateProject(JSON.parse(JSON.stringify(st().project))))
   const blockReason = (id: string) => sceneRunBlockReason(st().project.assets, sc(id))
 
@@ -837,7 +837,7 @@ describe('a newer build’s project through save / load (migrate round trip)', (
   })
 
   it('keeps foreignSettings exactly through edits, a save and a reload; the newer build gets its settings back', () => {
-    expect(sc('s1')).toMatchObject({ foreignModel: 'future/model_x', foreignSettings: VEO, presetId: 'pv' })
+    expect(sc('s1')).toMatchObject({ foreignModel: 'newsite/veo_3.1', foreignSettings: VEO, presetId: 'pv' })
     expect(sc('s1').settings.model).toBe('seedance_2_5') // stand-in: every reader keeps working
     st().updateScene('s1', { title: 'Mở đầu' })
     st().setScenePrompt('s1', 'Mưa rơi @image_1')
@@ -846,26 +846,26 @@ describe('a newer build’s project through save / load (migrate round trip)', (
     saveAndLoad()
     saveAndLoad()
     const s = sc('s1')
-    expect(s).toMatchObject({ title: 'Mở đầu', prompt: 'Mưa rơi @image_1', refs: ['a'], foreignModel: 'future/model_x', foreignSettings: VEO })
+    expect(s).toMatchObject({ title: 'Mở đầu', prompt: 'Mưa rơi @image_1', refs: ['a'], foreignModel: 'newsite/veo_3.1', foreignSettings: VEO })
     expect(s.settings).toMatchObject({ model: 'seedance_2_5', duration: 5 })
     // What the build that knows the model does on load (its migrate): settings = foreignSettings + foreignModel.
     expect({ ...s.foreignSettings, model: s.foreignModel }).toEqual(VEO)
     // The preset keeps its marker too.
-    expect(st().project.presets[0]).toMatchObject({ foreignModel: 'future/model_x', foreignSettings: VEO })
+    expect(st().project.presets[0]).toMatchObject({ foreignModel: 'newsite/veo_3.1', foreignSettings: VEO })
   })
 
   it('the model picker shows the marker as its selected entry (several scenes: only when they share it)', () => {
     const pick = (...ids: string[]) => modelPick(ids.map((id) => sc(id).settings), ids.map((id) => sc(id).foreignModel))
-    expect(pick('s1')).toEqual({ foreign: 'future/model_x', model: null })
+    expect(pick('s1')).toEqual({ foreign: 'newsite/veo_3.1', model: null })
     expect(pick('s2')).toEqual({ foreign: null, model: 'seedance_2_5' })
     expect(pick('s1', 's2')).toEqual({ foreign: null, model: null }) // "—": only one of them is on the newer model
     const [copy] = st().duplicateScenes(['s1'])
-    expect(pick('s1', copy)).toEqual({ foreign: 'future/model_x', model: null })
+    expect(pick('s1', copy)).toEqual({ foreign: 'newsite/veo_3.1', model: null })
     expect(modelPick([sc('s1').settings])).toEqual({ foreign: null, model: 'seedance_2_5' }) // caller passes no markers
   })
 
   it('stays blocked until a model is picked here; picking one drops the marker for good', () => {
-    expect(blockReason('s1')).toContain('bản SanoVids mới hơn (future/model_x)')
+    expect(blockReason('s1')).toContain('bản SanoVids mới hơn (newsite/veo_3.1)')
     expect(blockReason('s2')).not.toContain('mới hơn')
     st().updateSettings(['s1'], { model: 'minimax_h3' })
     saveAndLoad()
@@ -881,7 +881,7 @@ describe('a newer build’s project through save / load (migrate round trip)', (
     st().applyPreset('pv', ['s2'])
     saveAndLoad()
     for (const id of [next, fromTake, copy, 's2']) {
-      expect(sc(id)).toMatchObject({ foreignModel: 'future/model_x', foreignSettings: VEO })
+      expect(sc(id)).toMatchObject({ foreignModel: 'newsite/veo_3.1', foreignSettings: VEO })
       expect(blockReason(id)).toContain('mới hơn')
     }
   })

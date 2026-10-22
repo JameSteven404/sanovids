@@ -2,8 +2,7 @@
 //   submit(request) → remote id (stored on the take) → poll(remote ids) → fetchResult(remote id) → blobs.
 // Providers: 'dev' (development mode, the default: the canvasapp gateway code talking to an in-app simulation of
 // canvasapp.io.vn — providers/dev/, no network), 'canvasapp' (the real gateway, desktop only — providers/canvasapp/,
-// docs/GATEWAY-CANVASAPP.md), 'seedvis-dev' / 'seedvis' (seedvis.com, simulated / real: wired once core/models
-// SEEDVIS_ENABLED) and 'mock' (the old demo, providers/mock.ts: only for takes saved before dev mode).
+// docs/GATEWAY-CANVASAPP.md) and 'mock' (the old demo, providers/mock.ts: only for takes saved before dev mode).
 import type { Mode, ModelId, Take, TakeProvider, VideoSettings } from '../core/types'
 
 export type ProviderId = TakeProvider
@@ -158,36 +157,6 @@ export interface RemoteStatus {
   progress?: number
   /** Vietnamese error text when state = failed. */
   error?: string
-  /** Live note for the take (queue position, "held for key …") → Take.remoteNote. */
-  note?: string
-  /** The provider's own phase while the job runs (seedvis: queued / processing) → Take.remotePhase. */
-  phase?: 'queued' | 'processing'
-  /**
-   * The job was sent with another API key than the one saved now: not polled, never failed — "dán lại khoá …{keyHint}".
-   * Comes with state 'processing'.
-   */
-  held?: { keyHint: string }
-  /** The provider's final code of an ended job (seedvis `error.code`) → Take.remoteCode. */
-  code?: string
-}
-
-/**
- * What cancel() achieved at the provider (seedvis): 'refunded' = cancelled while still queued, credit given back;
- * 'running' = refused, the job runs and is charged (keep polling, the video is downloaded); 'finished' = it had already
- * ended (poll now); 'unknown' = no answer (the take keeps running; the user may try again).
- */
-export type CancelOutcome = 'refunded' | 'running' | 'finished' | 'unknown'
-
-/**
- * Whether a same-key re-send of an uncertain take would arrive while the provider still remembers the key (seedvis
- * arrival gate, plan §7.3). `safeUntil` already includes the upload estimate: "now < safeUntil" = a re-send started now
- * arrives in time; null = never (see `reason`). 'key-changed': the API key saved now is not provably the one that sent
- * the first POST (seedvis replays a key only for the account that holds it — a same-key POST under another key could
- * create and bill a second job).
- */
-export interface SameKeyRetry {
-  safeUntil: number | null
-  reason: 'ok' | 'disabled' | 'expired' | 'no-record' | 'body-changed' | 'key-changed'
 }
 
 export interface JobResult {
@@ -264,19 +233,8 @@ export interface VideoProvider {
    * many downloads at once — try later, not a failure).
    */
   fetchResult(remoteId: string, opts?: FetchResultOptions): Promise<JobResult>
-  /**
-   * Stop a job at the provider when possible. Optional: without it, cancel only stops tracking locally. canvasapp
-   * answers nothing (void: the take is cancelled locally); seedvis answers what happened (CancelOutcome).
-   */
-  cancel?(remoteId: string): Promise<CancelOutcome | void> | void
-  /** Jobs this provider should run at once (seedvis: from the plan's streams). Omitted = the engine's own rule. */
-  concurrency?(): number
-  /** Pause after `consecutiveDeferrals` deferred submits in a row (seedvis back-off). Omitted = the poll interval. */
-  deferDelayMs?(consecutiveDeferrals: number): number
-  /** Ledger facts of a take for "Sao chép thông tin lỗi" (never a key or a signed URL). Synchronous, no request. */
-  diagnostics?(takeId: string): Record<string, string>
-  /** See SameKeyRetry (ledger only, synchronous, no request). Omitted = the provider never re-sends by arrival time. */
-  sameKeyRetry?(takeId: string): SameKeyRetry
+  /** Stop a job at the provider when possible. Optional: without it, cancel only stops tracking locally. */
+  cancel?(remoteId: string): Promise<void> | void
   /** Forget in-memory state (new project loaded, logout…). */
   reset?(): void
   /**

@@ -55,10 +55,9 @@ export type TopUpTab = 'topup' | 'history'
 /**
  * Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater ·
  * stress tester ("Test giới hạn", src/devtools/stress) · performance ('perf': only in a perf build, see src/perf;
- * devPanelTabs leaves it out everywhere else) · simulated seedvis.com ('seedvis', "seedvis giả lập": listed once
- * track B5 builds it — until then devPanelTabs leaves it out and the panel opens 'status' instead).
+ * devPanelTabs leaves it out everywhere else).
  */
-export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'stress' | 'perf' | 'seedvis'
+export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'stress' | 'perf'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'

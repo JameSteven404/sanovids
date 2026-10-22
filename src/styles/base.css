@@ -1,6 +1,6 @@
 /* Design D — Sano, en mouvement. Same public token names as before.
    New: --brand-gradient (decorative fills: progress bars), --action-gradient (filled text buttons, white label),
-   --selection (outline), --provider-canvasapp / --provider-seedvis (labels).
+   --selection (outline), --provider-canvasapp (canvasapp label in the credit pill).
    The brand red is decorative; filled text buttons use --action-gradient + --on-accent (white). Never put --on-accent
    on a solid tint (--accent, --ref, --danger…): in dark mode the tints are light pastels. Chips use *-soft + *-ink.
    The brand tile (.tb-logo, Giới thiệu) is the app icon's plate: a top→bottom gradient of --brand-plate-top / -bottom.
@@ -62,12 +62,8 @@
   --brand-gradient: linear-gradient(120deg, var(--brand-plate-top), var(--brand-plate-bottom));
   --action-gradient: linear-gradient(115deg, #CB160C, #CA3819);
   --selection: #FF8065;
-  /* sky blue vs lime (seedvis plan §12.1, H3): apart from every chromatic token and model dot, and from each other
-     under deuteranopia / protanopia (providerColors.test.ts); the dark backgrounds inherit them */
+  /* sky blue: apart from every chromatic token and model dot; the dark backgrounds inherit it */
   --provider-canvasapp: #2EC4F0;
-  --provider-canvasapp-soft: #0F3644;
-  --provider-seedvis: #C8F03C;
-  --provider-seedvis-soft: #363F14;
   --shadow-sm: 0 2px 4px #00000040;
   --shadow: 0 4px 14px #00000038;
   --shadow-lg: 0 24px 72px #00000080;
@@ -141,11 +137,8 @@
   --checker-a: #EFEFF2;
   --checker-b: #E3E3E8;
   --selection: #CB351B;
-  /* darker than the plan's #00749E / #65730D: >= 4.8:1 on every light surface and on the soft fill */
+  /* >= 4.8:1 on every light surface */
   --provider-canvasapp: #006E8A;
-  --provider-canvasapp-soft: #E0F1F8;
-  --provider-seedvis: #646E08;
-  --provider-seedvis-soft: #EEF2D5;
   --shadow-sm: 0 2px 4px #0000000C;
   --shadow: 0 4px 14px #00000010;
   --shadow-lg: 0 24px 72px #00000030;

@@ -134,7 +134,7 @@ function sameOrigin(url: string): boolean {
   }
 }
 
-const REAL_HOSTS = /canvasapp\.io\.vn|seedvis\.com|sepay\.vn/i
+const REAL_HOSTS = /canvasapp\.io\.vn|sepay\.vn/i
 const BLOCKED = 'ĐÃ CHẶN trong lúc thử nghiệm giới hạn.'
 
 /**

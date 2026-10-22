@@ -347,10 +347,6 @@ export const REQUIRED_ASAR_FILES = Object.freeze([
   // the development-mode lock (DV): without it a release build cannot lock or unlock development mode
   'electron/devaccess.cjs',
   'electron/devaccess-rules.cjs',
-  // the seedvis.com gateway: main.cjs requires seedvis.cjs at start (without it the app does not start)
-  'electron/seedvis.cjs',
-  'electron/seedvis-rules.cjs',
-  'electron/seedvis-key-rules.cjs',
   'node_modules/electron-updater/package.json',
 ])
 /** The checks scripts/mac-inspect.mjs records in mac-check.json (every one must be true to publish). */

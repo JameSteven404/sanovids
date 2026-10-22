@@ -130,7 +130,7 @@ export function compactStatus(s: StatusInput): { text: string; title: string; to
 
 // ---------------- settings line (choice 2B: one summary line, opened in place) ----------------
 /** Short mode names on the node (the full name is the title: modeLabel). */
-export const MODE_SHORT: Record<Mode, string> = { t2v: 'Chữ→Video', i2v: 'Ảnh→Video', transform: 'Đầu→cuối', first: 'Đầu→Video' }
+export const MODE_SHORT: Record<Mode, string> = { t2v: 'Chữ→Video', i2v: 'Ảnh→Video', transform: 'Đầu→cuối' }
 
 /** The ratio of an H3 "Đầu→cuối" scene: none is picked, canvasapp takes it from the two frames. */
 export const FRAME_RATIO_LABEL = 'theo ảnh'

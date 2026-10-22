@@ -50,7 +50,6 @@ import {
   RotateCcw,
   ScrollText,
   ShieldAlert,
-  Sprout,
   Trash2,
   TriangleAlert,
   Wallet,
@@ -61,8 +60,7 @@ import { lazy, Suspense, memo, useEffect, useMemo, useState, type ReactNode } fr
 import { takeCode } from '../../core/compile'
 import { MODELS, modeLabel } from '../../core/models'
 import { formatVnd } from '../../core/topup'
-import { CANVASAPP_MODEL_IDS } from '../../core/services'
-import type { CanvasappModelId, Mode } from '../../core/types'
+import type { Mode, ModelId } from '../../core/types'
 import { formatCreditNumber, formatCredits } from '../../lib/credits'
 import { updatesSource } from '../../lib/updates'
 import { activeProviderId, PROVIDER_LABEL, providerLimitsInfo, providerOf, refreshProviderLimits, resetDevMode, useDevAllowed, useProviderPrefs } from '../../providers'
@@ -275,8 +273,6 @@ const TAB_ICON: Record<DevPanelTab, ReactNode> = {
   stress: <Flame size={14} />,
   // Not listed by devPanelTabs yet (the perf build's tab, src/perf): pick() falls back to 'status' for it.
   perf: <Gauge size={14} />,
-  // "seedvis giả lập": not listed by devPanelTabs until track B5 (pick() falls back to 'status').
-  seedvis: <Sprout size={14} />,
 }
 
 /** "Cập nhật → Vị trí chạy": the simulated answer of window.bdpDesktop.app.placement() (only outside Electron). */
@@ -611,19 +607,18 @@ function BalanceCard({ snap }: { snap: DevServerSnapshot }) {
 type ModelList = 'off_durations' | 'off_resolutions' | 'off_ratios'
 
 function ModelsCard({ config }: { config: DevConfig }) {
-  // the simulated canvasapp's models only (seedvis has its own tab)
-  const ids = CANVASAPP_MODEL_IDS
+  const ids = Object.keys(MODELS) as ModelId[]
   // What SanoVids knows of these toggles (the dev provider's /api/video-profiles cache) — shown, never re-read here:
   // like the real site, SanoVids re-reads only after 10 minutes (or "Đọc lại ngay").
   const { limits, info } = useLimitsOf('dev')
   const [reading, setReading] = useState(false)
-  const setModel = (id: CanvasappModelId, patch: Partial<DevModelToggle>) => setConfig({ models: { ...config.models, [id]: { ...config.models[id], ...patch } } })
-  const toggleMode = (id: CanvasappModelId, mode: Mode) => {
+  const setModel = (id: ModelId, patch: Partial<DevModelToggle>) => setConfig({ models: { ...config.models, [id]: { ...config.models[id], ...patch } } })
+  const toggleMode = (id: ModelId, mode: Mode) => {
     const cur = config.models[id]
     const off = cur.disabled_modes.includes(mode)
     setModel(id, { disabled_modes: off ? cur.disabled_modes.filter((m) => m !== mode) : [...cur.disabled_modes, mode] })
   }
-  const toggleValue = <T extends string | number>(id: CanvasappModelId, list: ModelList, value: T) => {
+  const toggleValue = <T extends string | number>(id: ModelId, list: ModelList, value: T) => {
     const cur = (config.models[id][list] ?? []) as T[]
     setModel(id, { [list]: cur.includes(value) ? cur.filter((x) => x !== value) : [...cur, value] })
   }

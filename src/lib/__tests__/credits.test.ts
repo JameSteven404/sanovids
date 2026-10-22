@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   chargedDemo,
-  CREDIT_HINT,
-  CREDIT_MARK,
   CREDIT_SOURCE_LABEL,
   creditKindOf,
   creditUnitLabel,
@@ -10,11 +8,7 @@ import {
   formatCreditNumber,
   formatCredits,
   formatVnd,
-  isSimulatedCredit,
-  SEEDVIS_DEV_CREDIT_HINT,
-  type CreditKind,
 } from '../credits'
-import type { ProviderId } from '../../providers/types'
 
 describe('formatCredits', () => {
   it('names the kind: demo credits are never shown as a bare amount', () => {
@@ -68,32 +62,11 @@ describe('units and labels', () => {
     expect(creditKindOf('mock')).toBe('demo')
     expect(creditKindOf('dev')).toBe('dev')
     expect(creditKindOf('canvasapp')).toBe('canvasapp')
-    expect(CREDIT_SOURCE_LABEL).toEqual({
-      demo: 'credit demo',
-      dev: 'credit dev',
-      canvasapp: 'credit canvasapp',
-      seedvis: 'credit seedvis',
-      'seedvis-dev': 'credit dev seedvis',
-    })
+    expect(CREDIT_SOURCE_LABEL).toEqual({ demo: 'credit demo', dev: 'credit dev', canvasapp: 'credit canvasapp' })
     expect(formatVnd(1234)).toBe('1.234.000đ')
     expect(formatVnd(0.5)).toBe('500đ')
     expect(formatVnd(null)).toBe('—')
     expect(DEMO_CREDITS_DEFAULT).toBe(1000)
-  })
-
-  it('every provider has its own wallet: seedvis never falls back to canvasapp or the demo', () => {
-    const wallets: Record<ProviderId, CreditKind> = { mock: 'demo', dev: 'dev', canvasapp: 'canvasapp', 'seedvis-dev': 'seedvis-dev', seedvis: 'seedvis' }
-    for (const [provider, kind] of Object.entries(wallets) as [ProviderId, CreditKind][]) expect(creditKindOf(provider)).toBe(kind)
-    expect(formatCredits(120, 'seedvis')).toBe('120 credit seedvis')
-    expect(formatCredits(1234.5, 'seedvis-dev')).toBe('1.234,5 credit dev seedvis')
-    expect(creditUnitLabel('seedvis', { short: true })).toBe('cr')
-    // real money: no "giả lập" hint, no mark; the simulation is marked like development mode
-    expect([isSimulatedCredit('seedvis'), isSimulatedCredit('canvasapp')]).toEqual([false, false])
-    expect([isSimulatedCredit('seedvis-dev'), isSimulatedCredit('dev'), isSimulatedCredit('demo')]).toEqual([true, true, true])
-    expect([CREDIT_HINT.seedvis, CREDIT_MARK.seedvis]).toEqual([null, null])
-    expect([CREDIT_HINT['seedvis-dev'], CREDIT_MARK['seedvis-dev']]).toEqual([SEEDVIS_DEV_CREDIT_HINT, 'dev'])
-    // an id this build does not know (a newer build's provider) is never a real wallet
-    expect(creditKindOf('futurevendor' as ProviderId)).toBe('demo')
   })
 
   it('chargedDemo: only demo takes are paid with demo credits', () => {
@@ -103,7 +76,5 @@ describe('units and labels', () => {
     expect(chargedDemo({ provider: 'canvasapp', charged: false })).toBe(false)
     expect(chargedDemo({ provider: 'canvasapp', charged: true })).toBe(false)
     expect(chargedDemo({ provider: 'dev', charged: true })).toBe(false) // development mode bills the simulated account
-    expect(chargedDemo({ provider: 'seedvis', charged: true })).toBe(false)
-    expect(chargedDemo({ provider: 'seedvis-dev', charged: true })).toBe(false)
   })
 })

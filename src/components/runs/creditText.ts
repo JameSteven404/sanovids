@@ -40,7 +40,7 @@ export interface GatewayWords {
   siteName: string
 }
 
-export const GATEWAY_WORDS: Record<Exclude<CreditKind, 'demo'>, GatewayWords> = {
+export const GATEWAY_WORDS: Record<'canvasapp' | 'dev', GatewayWords> = {
   canvasapp: { credit: 'credit canvasapp', site: 'canvasapp', check: 'kiểm tra trên canvasapp.io.vn', approx: true, paidNote: '', siteName: 'canvasapp' },
   dev: {
     credit: 'credit dev',
@@ -49,17 +49,6 @@ export const GATEWAY_WORDS: Record<Exclude<CreditKind, 'demo'>, GatewayWords> = 
     approx: false,
     paidNote: ' (giả lập, không phải tiền thật)',
     siteName: 'canvasapp giả lập',
-  },
-  // seedvis prices are estimates from the reference table (models priceOf). TODO(B4): seedvis rows of takeCostLine keyed
-  // on Take.remoteCode (plan §12.6).
-  seedvis: { credit: 'credit seedvis', site: 'seedvis', check: 'xem số dư và lịch sử trên seedvis.com', approx: true, paidNote: '', siteName: 'seedvis' },
-  'seedvis-dev': {
-    credit: 'credit dev seedvis',
-    site: 'seedvis giả lập',
-    check: 'kiểm tra trong Bảng phát triển',
-    approx: true,
-    paidNote: ' (giả lập, không phải tiền thật)',
-    siteName: 'seedvis giả lập',
   },
 }
 

@@ -6,7 +6,7 @@ import { cleanTakeFileName } from './fileNames'
 import { normalizeFolders } from './folders'
 import { newId, pickColor } from './ids'
 import { cleanForeignSettings, foreignId, lostConfigValues } from './foreignMark'
-import { isModelId, normalizeSettings, SEEDVIS_ENABLED } from './models'
+import { isModelId, normalizeSettings } from './models'
 import { normalizeAssetName, normalizePresetName } from './names'
 import type { Asset, AssetKind, ForeignSettings, ImportedField, JobStatus, Preset, Project, Scene, Take, TakeImport, TakeProvider, VideoSettings, XY } from './types'
 
@@ -98,31 +98,7 @@ export { cleanForeignSettings, FOREIGN_ID_MAX, FOREIGN_SETTINGS_MAX_BYTES, FOREI
 /** Error of a take a newer build was still running (parked as 'failed' here, see migrateTake). */
 export const FOREIGN_RUNNING_ERROR = 'Video này đang tạo bằng SanoVids bản mới hơn — mở bằng bản đó để theo dõi.'
 
-/** The seedvis executors: known once SEEDVIS_ENABLED (before, a newer build's provider: parked, never run). */
-const SEEDVIS_PROVIDERS = ['seedvis', 'seedvis-dev'] as const satisfies readonly TakeProvider[]
-type SeedvisProvider = (typeof SEEDVIS_PROVIDERS)[number]
-const KNOWN_PROVIDERS: readonly TakeProvider[] = ['mock', 'canvasapp', 'dev', ...(SEEDVIS_ENABLED ? SEEDVIS_PROVIDERS : [])]
-const isKnownProvider = (v: unknown): v is TakeProvider => typeof v === 'string' && (KNOWN_PROVIDERS as readonly string[]).includes(v)
-const isSeedvisProvider = (v: unknown): v is SeedvisProvider => (SEEDVIS_PROVIDERS as readonly unknown[]).includes(v)
-
-/**
- * A seedvis take that was still waiting in the queue when a build without seedvis parked it (decision 12): it was never
- * sent, so nothing was charged — it is never sent by itself days later either.
- */
-export const PARKED_QUEUED_ERROR = 'Đã dừng vì dự án được mở bằng bản SanoVids cũ hơn — chưa gửi, không bị trừ credit. Bấm Chạy lại nếu vẫn cần.'
-
-/**
- * The unverifiable text of a seedvis take (a retry of an uncertain submit that can no longer be checked: seedvis has no
- * job list and no lookup by key). Starts like every unverifiable text ("Không kiểm tra được lần gửi trước", store/runs
- * hasUncertainSubmitText / isUnverifiableSubmit), so "Chạy lại" only offers "Tạo lại". The engine's wording record
- * (B2: providers/wording.ts) must use these exact strings (isUnknownSubmitError matches exact texts).
- */
-export const SEEDVIS_UNVERIFIABLE_SUBMIT_ERROR: Readonly<Record<SeedvisProvider, string>> = {
-  seedvis:
-    'Không kiểm tra được lần gửi trước của take này nữa — seedvis có thể đã nhận và trừ credit, và seedvis không cho tra job theo mã. SanoVids sẽ không gửi lại take này. Xem số dư và lịch sử trên seedvis.com trước: video có thể đã có ở đó; muốn thử lại thì bấm “Tạo lại” để tạo một take MỚI (nếu lần trước đã bị trừ thì sẽ trừ thêm một lần).',
-  'seedvis-dev':
-    'Không kiểm tra được lần gửi trước của take này nữa — seedvis giả lập có thể đã nhận và trừ credit dev. SanoVids sẽ không gửi lại take này. Xem tab “seedvis giả lập” của Bảng phát triển; muốn thử lại thì bấm “Tạo lại” để tạo một take MỚI (nếu lần trước đã bị trừ thì sẽ trừ thêm credit dev một lần).',
-}
+const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev'] satisfies TakeProvider[]
 
 /** Settings + newer-build marker of a scene or preset, as migrate keeps them. */
 interface ModelMark {
@@ -146,9 +122,7 @@ const markOf = (settings: VideoSettings, model: string | null, foreign: ForeignS
  *   stand-in values — it blocks running too (core/runRules), and any settings change drops it (store/project);
  * - else a marker saved with it (by a build that kept one) is validated and kept; once the build knows that model /
  *   offers those values, `settings` are restored from the marker (foreignSettings [+ foreignModel]) and the marker goes
- *   — what the build that brings them does; a model it knows again whose marker values it still does not offer comes
- *   back as a config marker (an even newer build's values survive a trip through a build without the model: that
- *   build keeps a same-model config marker's values, never the stand-ins beside it);
+ *   — what the build that brings them does;
  * - else no marker (an empty / missing model is the old default, Seedance 2.5, as always).
  * `omit`: keys of `rawSettings` that are not settings (a preset is its own settings object: id, name, marker).
  * `newerFile`: the project's schemaVersion is above 2 (see lostConfigValues).
@@ -162,12 +136,7 @@ function migrateModelMark(
   const raw = (rawSettings && typeof rawSettings === 'object' ? rawSettings : {}) as Partial<VideoSettings>
   const model: unknown = raw.model
   const settings = normalizeSettings(raw)
-  if (typeof model === 'string' && model.trim() && !isModelId(model)) {
-    // A config marker saved with it for this very model (by a build that knows the model, not some of its values) holds
-    // an even newer build's values, the settings only that build's stand-ins: keep the marker's (else they are lost).
-    const config = foreignId(saved.foreignModel) ? null : cleanForeignSettings(saved.foreignSettings)
-    return markOf(settings, foreignId(model), config && config.model === model ? config : cleanForeignSettings(raw, omit))
-  }
+  if (typeof model === 'string' && model.trim() && !isModelId(model)) return markOf(settings, foreignId(model), cleanForeignSettings(raw, omit))
   if (lostConfigValues(raw, newerFile).length) {
     // Only a marker that still holds a value it is made for: cleanForeignSettings skips an entry too big to keep (a
     // 5000-character "ratio" is no newer build's value), and a marker without its lost value would be restored — and
@@ -184,13 +153,7 @@ function migrateModelMark(
     if (!lostConfigValues(keptSettings, true).length) return markOf(restored, null, null)
     return { settings, foreignSettings: keptSettings }
   }
-  if (isModelId(kept)) {
-    const full = { ...(keptSettings ?? {}), model: kept }
-    const restored = normalizeSettings(full as Partial<VideoSettings>)
-    // values this build does not offer for it either (an even newer build's): a config marker, as above
-    const config = keptSettings && lostConfigValues(full, true).length ? cleanForeignSettings(full) : null
-    return config && lostConfigValues(config, true).length ? { settings: restored, foreignSettings: config } : markOf(restored, null, null)
-  }
+  if (isModelId(kept)) return markOf(normalizeSettings({ ...(keptSettings ?? {}), model: kept } as Partial<VideoSettings>), null, null)
   return markOf(settings, foreignId(kept), keptSettings)
 }
 
@@ -377,39 +340,6 @@ function takeSettings(raw: Record<string, unknown>): VideoSettings {
   } as VideoSettings
 }
 
-/** Longest seedvis texts kept on a take (adapter notes / the explanation under a money text). */
-const REMOTE_NOTE_MAX = 500
-const REMOTE_DETAIL_MAX = 2000
-const REMOTE_CODE_RE = /^[A-Za-z0-9_.:-]{1,64}$/
-/** Take.keyHint: the LAST 4 characters of the key (plan §10.3) — never more of a real key. */
-const KEY_HINT_RE = /^[A-Za-z0-9_-]{1,4}$/
-const KEY_TAG_RE = /^[0-9a-fA-F]{1,64}$/
-
-/**
- * The optional seedvis fields of a take (core/types), as saved — or dropped: `true` flags only as true
- * (cancelRequested / fetchable only next to a remoteId), remotePhase one of its two values, texts / codes / key hint and
- * tag only as short strings of their own shape. Each field is omitted at its default (no key), so a take without them
- * stays byte for byte the same.
- */
-function keepSeedvisFields(out: Take, t: Partial<Take>): void {
-  const keep = <K extends keyof Take>(key: K, ok: boolean) => {
-    if (ok) out[key] = t[key] as Take[K]
-    else delete out[key]
-  }
-  const hasJob = !!out.remoteId
-  keep('costEstimated', t.costEstimated === true)
-  keep('costUnknown', t.costUnknown === true)
-  keep('cancelBlocked', t.cancelBlocked === true)
-  keep('cancelRequested', t.cancelRequested === true && hasJob)
-  keep('fetchable', t.fetchable === true && hasJob)
-  keep('remotePhase', t.remotePhase === 'queued' || t.remotePhase === 'processing')
-  keep('remoteNote', typeof t.remoteNote === 'string' && !!t.remoteNote && t.remoteNote.length <= REMOTE_NOTE_MAX)
-  keep('remoteDetail', typeof t.remoteDetail === 'string' && !!t.remoteDetail && t.remoteDetail.length <= REMOTE_DETAIL_MAX)
-  keep('remoteCode', typeof t.remoteCode === 'string' && REMOTE_CODE_RE.test(t.remoteCode))
-  keep('keyHint', typeof t.keyHint === 'string' && KEY_HINT_RE.test(t.keyHint))
-  keep('keyTag', typeof t.keyTag === 'string' && KEY_TAG_RE.test(t.keyTag))
-}
-
 /**
  * Bring a saved take up to date. Provider fields default to the demo provider: takes saved before providers
  * existed ran on the mock, were never submitted anywhere (no remote id) and were paid with demo credits.
@@ -419,26 +349,19 @@ function keepSeedvisFields(out: Take, t: Partial<Take>): void {
  * the take foreignModel: it is never sent here. Such takes keep their original settings (foreignSettings) and a running
  * one is parked (parkForeignTake). A take parked for a model this build knows now gets back what that build had
  * (status, error). Takes of 'canvasapp' / 'dev' / the old demo (missing provider) keep their `charged` as before.
- * A seedvis take parked by a build without seedvis (SEEDVIS_ENABLED) gets back its provider, its settings
- * (foreignSettings) and its `charged` (foreignCharged, else false); if it was still running there: a job (or a submit in
- * flight) → 'processing' again; queued after an uncertain submit → 'failed' with the unverifiable text (submitUnknown
- * kept); queued → 'cancelled', never sent (PARKED_QUEUED_ERROR). The optional seedvis fields are validated
- * (keepSeedvisFields).
  */
 export function migrateTake(raw: unknown): Take {
   const t = (raw ?? {}) as Partial<Take>
   const frames = t.framesSnapshot
   const rawProvider: unknown = t.provider
   // A newer build's provider, as saved now (`provider`) or kept by a build that parked it (provider 'mock').
-  const firstMark = typeof rawProvider === 'string' && !!rawProvider.trim() && !isKnownProvider(rawProvider)
-  const parkedAsMock = !firstMark && (rawProvider === undefined || rawProvider === 'mock')
-  const newer = firstMark ? foreignId(rawProvider) : parkedAsMock && !isKnownProvider(String(t.foreignProvider)) ? foreignId(t.foreignProvider) : null
-  // Parked by a build without seedvis (provider 'mock' + foreignProvider) and known here: provider, charged and settings
-  // come back (the status: see below).
-  const restored = parkedAsMock && isSeedvisProvider(t.foreignProvider) && isKnownProvider(t.foreignProvider) ? t.foreignProvider : null
-  const savedSettings: Record<string, unknown> = isPlainObject(t.settings) ? t.settings : {}
-  const keptSettings = restored ? cleanForeignSettings(t.foreignSettings) : null
-  const rawSettings: Record<string, unknown> = keptSettings ? { ...savedSettings, ...keptSettings } : savedSettings
+  const firstMark = typeof rawProvider === 'string' && !!rawProvider.trim() && !KNOWN_PROVIDERS.includes(rawProvider)
+  const newer = firstMark
+    ? foreignId(rawProvider)
+    : (rawProvider === undefined || rawProvider === 'mock') && !KNOWN_PROVIDERS.includes(String(t.foreignProvider))
+      ? foreignId(t.foreignProvider)
+      : null
+  const rawSettings: Record<string, unknown> = isPlainObject(t.settings) ? t.settings : {}
   const model: unknown = rawSettings.model
   // A newer build's model (the id stays in settings.model as it was saved; a blank / missing one is not a model).
   const newerModel = typeof model === 'string' && model.trim() && !isModelId(model) ? foreignId(model) : null
@@ -452,10 +375,9 @@ export function migrateTake(raw: unknown): Take {
     videoRefsSnapshot: [],
     ...(legacyVideoRefsSnapshot ? { legacyVideoRefsSnapshot } : {}),
     position: t.position ?? null,
-    provider: restored ?? (isKnownProvider(t.provider) ? t.provider : 'mock'),
+    provider: t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock',
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
-    // a restored take: what the newer build had saved (parking set false); never paid with demo credits by default
-    charged: newer ? false : restored ? t.foreignCharged === true : t.charged !== false,
+    charged: newer ? false : t.charged !== false,
   }
   for (const k of ['foreignProvider', 'foreignModel', 'foreignStatus', 'foreignSettings', 'foreignCharged', 'foreignError'] as const) delete out[k]
   if (newer) out.foreignProvider = newer
@@ -483,25 +405,9 @@ export function migrateTake(raw: unknown): Take {
       out.status = parkedStatus
       out.error = savedError ?? null
     }
-  } else if (restored && parkedStatus) {
-    // A seedvis take a build without seedvis parked while it was still running (decision 12, plan §4 / M18). Never an
-    // automatic submit days later: only a take with a job (or a submit in flight) resumes — polled / looked up in the
-    // ledger, never posted again.
-    if (parkedStatus === 'processing' || out.remoteId) {
-      out.status = 'processing'
-      out.error = savedError ?? null
-    } else if (t.submitUnknown === true) {
-      // queued again after an uncertain submit: the first request may have been billed — "chưa gửi" would be false
-      out.status = 'failed'
-      out.error = SEEDVIS_UNVERIFIABLE_SUBMIT_ERROR[restored]
-    } else {
-      out.status = 'cancelled'
-      out.error = PARKED_QUEUED_ERROR
-    }
   }
   if (t.submitUnknown === true) out.submitUnknown = true
   else delete out.submitUnknown
-  keepSeedvisFields(out, t)
   // Custom file name: sanitized again (a file from elsewhere may hold separators, "..", reserved names…).
   const fileName = cleanTakeFileName(t.fileName)
   if (fileName) out.fileName = fileName

@@ -4,8 +4,8 @@
 //
 // ---- API ----
 //   useDevAccess(s => s.state)        DevAccessState (below). Select a primitive (s.state.access…) or the state object.
-//   devAllowed() / useDevAllowed()    true unless 'locked' — every development-mode surface checks this (seedvis
-//                                     simulation too, later: never a silent simulation for a locked build).
+//   devAllowed() / useDevAllowed()    true unless 'locked' — every development-mode surface checks this (never a
+//                                     silent simulation for a locked build).
 //   devAccessBridge()                 the desktop bridge (window.bdpDesktop.devAccess), the browser simulation
 //                                     (providers/dev/devAccess.ts, loopback only) or null (another web host).
 //   startDevAccessSync()              once at startup (devAccessActions.initDevAccess): reads the state again (a reload

@@ -381,7 +381,7 @@ describe('runInSandbox', () => {
       opts({
         steps: 50,
         onProgress: (p: StressProgress) => {
-          if (p.step === 2) void window.fetch('https://seedvis.com/api').catch(() => undefined)
+          if (p.step === 2) void window.fetch('https://canvasapp.io.vn/api/me').catch(() => undefined)
         },
       }),
     )

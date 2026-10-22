@@ -10,8 +10,6 @@
 // takes are being made (macOS: a window hidden by its close button keeps working at full speed only then).
 // devAccess: the development-mode lock (electron/devaccess.cjs). Main decides; the page only reads the state and asks
 // to unlock (the typed code, ≤ 300 characters), lock, keep, link / unlink the authenticator.
-// seedvis: the seedvis.com gateway (electron/seedvis.cjs). The page sends symbolic routes and plain data; main builds
-// every URL, adds the API key (which never comes back), checks every field and pulls results by job id + index.
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
@@ -37,25 +35,6 @@ const trashItems = (items) =>
   Array.isArray(items)
     ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
     : []
-
-/** Bytes of a typed array as a Uint8Array view, else undefined. */
-const bytesOf = (b) => (b && ArrayBuffer.isView(b) ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : undefined)
-/**
- * A seedvis:request payload: plain data only — route, id, idempotencyKey, a shallow copy of body, images
- * [{ field, index, mime, bytes }] (capped at 11 so main refuses more than 10), mustFinishBy. Main checks it all again.
- */
-const seedvisRequest = (r) => {
-  const o = r && typeof r === 'object' ? r : {}
-  const out = { route: str(o.route) }
-  if (o.id !== undefined) out.id = str(o.id)
-  if (o.idempotencyKey !== undefined) out.idempotencyKey = str(o.idempotencyKey)
-  if (o.body && typeof o.body === 'object' && !Array.isArray(o.body)) out.body = { ...o.body }
-  if (Array.isArray(o.images)) {
-    out.images = o.images.slice(0, 11).map((i) => ({ field: str(i && i.field), index: i && Number.isSafeInteger(i.index) ? i.index : -1, mime: str(i && i.mime), bytes: bytesOf(i && i.bytes) }))
-  }
-  if (typeof o.mustFinishBy === 'number') out.mustFinishBy = o.mustFinishBy
-  return out
-}
 
 contextBridge.exposeInMainWorld('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
@@ -89,32 +68,6 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
       ipcRenderer.on('devAccess:state', listener)
       return () => ipcRenderer.removeListener('devAccess:state', listener)
     },
-  },
-  /**
-   * seedvis.com (src/providers/seedvis/contract.ts SeedvisBridge). No call ever returns the API key. Every call →
-   * its contract answer or { ok: false, code, message }.
-   */
-  seedvis: {
-    /** → SeedvisKeyStatus { hasKey, hint, tag, savedAt, verifiedAt, storage, problem? } */
-    keyStatus: () => ipcRenderer.invoke('seedvis:keyStatus'),
-    /** "Dán key": main reads the clipboard itself, checks the key with seedvis, encrypts it, clears the clipboard. */
-    pasteKey: (a) => ipcRenderer.invoke('seedvis:pasteKey', { unverified: !!(a && a.unverified === true) }),
-    /** Fallback field: { key } crosses once (≤ 1000 characters). */
-    setKey: (a) => ipcRenderer.invoke('seedvis:setKey', { key: str(a && a.key).slice(0, 1000), unverified: !!(a && a.unverified === true) }),
-    clearKey: () => ipcRenderer.invoke('seedvis:clearKey'),
-    /** { route, id?, idempotencyKey?, body?, images?, mustFinishBy? } → SeedvisResponse */
-    request: (r) => ipcRenderer.invoke('seedvis:request', seedvisRequest(r)),
-    /** { generationId, index } → { ok: true, id, total, mime } | failure — main fetches only URLs seedvis gave it. */
-    downloadOpen: (a) =>
-      ipcRenderer.invoke('seedvis:downloadOpen', { generationId: str(a && a.generationId), index: a && Number.isSafeInteger(a.index) ? a.index : -1 }),
-    /** { id } → { ok: true, done: false, bytes } | { ok: true, done: true } | failure */
-    downloadRead: (a) => ipcRenderer.invoke('seedvis:downloadRead', { id: str(a && a.id) }),
-    /** { id } → { ok: true } */
-    downloadClose: (a) => ipcRenderer.invoke('seedvis:downloadClose', { id: str(a && a.id) }),
-    /** → boolean (main's net.isOnline()) */
-    isOnline: () => ipcRenderer.invoke('seedvis:isOnline'),
-    /** Opens the fixed seedvis.com billing page in the default browser. */
-    openBilling: () => ipcRenderer.invoke('seedvis:openBilling'),
   },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */

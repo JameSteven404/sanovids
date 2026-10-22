@@ -12,8 +12,6 @@ import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
 import devAccessSource from '../../../electron/devaccess.cjs?raw'
 import devAccessRulesSource from '../../../electron/devaccess-rules.cjs?raw'
-import seedvisSource from '../../../electron/seedvis.cjs?raw'
-import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgRaw from '../../../package.json?raw'
 
 type ProfileSource = 'env' | 'baked' | 'default'
@@ -921,41 +919,6 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(topKeys.indexOf('app')).toBe(topKeys.indexOf('platform') + 1)
   })
 
-  it('preload: the top-level blocks in order (seedvis between devAccess and canvasapp, updates last); every invoked channel has exactly one handler', () => {
-    const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
-    expect(topKeys).toEqual(['version', 'electron', 'platform', 'app', 'devAccess', 'seedvis', 'canvasapp', 'files', 'updates'])
-    const invoked = [...preloadSource.matchAll(/ipcRenderer\.invoke\('([\w:]+)'/g)].map((m) => m[1])
-    expect(new Set(invoked).size).toBe(invoked.length)
-    // IPC count: 33 channels before seedvis + its 10
-    expect(invoked).toHaveLength(43)
-    expect(invoked.filter((c) => c.startsWith('seedvis:'))).toHaveLength(10)
-    const handled = [
-      ...[...mainSource.matchAll(/ipcMain\.handle\(\s*'([\w:]+)'/g)].map((m) => m[1]),
-      ...[...devAccessSource.matchAll(/handle\('(devAccess:\w+)'/g)].map((m) => m[1]),
-      ...[...updaterSource.matchAll(/handle\('(updates:\w+)'/g)].map((m) => m[1]),
-      ...[...seedvisSource.matchAll(/handle\('(seedvis:\w+)'/g)].map((m) => m[1]),
-    ]
-    expect(new Set(handled).size).toBe(handled.length)
-    expect([...invoked].sort()).toEqual([...handled].sort())
-    // seedvis channels live in electron/seedvis.cjs only, each through the one wrapper that checks isAppSender first
-    expect(mainSource).not.toContain("'seedvis:")
-    expect(seedvisSource.split('ipcMain.handle(').length - 1).toBe(1)
-    expect(seedvisSource).toMatch(/ipcMain\.handle\(channel, async \(event, arg\) => \{\s+if \(!isAppSender\(event\)\) return /)
-    expect(mainSource).toContain('seedvis = setupSeedvis({ isAppSender: fromApp,')
-  })
-
-  it('close guard (seedvis): wired on the main window (Windows / Linux) and in before-quit (macOS); never vetoes an update’s quit', () => {
-    expect(fnBody('createWindow')).toContain("win.on('close', (event) => seedvisCloseGuard(event, 'window-close', win))")
-    expect(fnBody('seedvisCloseGuard')).toContain('quittingForUpdate: macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())')
-    // the macOS hide handler is untouched and still the first darwin-only 'close' listener
-    expect(inDarwinBlock(mainSource.indexOf("win.on('close', (event) => {"))).toBe(true)
-    const verdict = (createRequire(import.meta.url)('../../../electron/seedvis-rules.cjs') as { closeGuardVerdict: (o: unknown) => string }).closeGuardVerdict
-    for (const platform of ['win32', 'darwin', 'linux']) {
-      for (const phase of ['window-close', 'quit']) expect(verdict({ inFlight: 3, quittingForUpdate: true, platform, phase }), `${platform} ${phase}`).toBe('allow')
-    }
-    expect(mainSource).not.toMatch(/beforeunload'|'beforeunload/)
-  })
-
   it('preload: "Giữ đăng nhập" lives INSIDE the canvasapp block (no new top-level key); only a boolean crosses', () => {
     const block = /\n {2}canvasapp: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
@@ -1093,13 +1056,11 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     expect(idx("ipcMain.handle('app:busy'") > ab && idx("ipcMain.handle('app:busy'") < ae).toBe(true)
     // the Dock icon / a second launch: sound back on even when no 'show' event follows
     expect(fnBody('showMainWindow')).toContain('if (mainWindowWork) mainWindowWork.show()')
-    // quit flags: ⌘Q (before-quit, macOS only) and an update (before-quit-for-update). The seedvis close guard asks
-    // first while a scene is being sent (it never vetoes an update's quit — seedvisSource.test.ts / seedvisRules.test.ts);
-    // a vetoed quit leaves `quitting` untouched.
-    const quitAt = idx("app.on('before-quit', (event) => {")
+    // quit flags: ⌘Q (before-quit, macOS only) and an update (before-quit-for-update)
+    const quitAt = idx("app.on('before-quit', () => {")
     expect(inDarwinBlock(quitAt)).toBe(true)
     const [qs, qe] = blockAt(quitAt)
-    expect(mainSource.slice(qs, qe)).toMatch(/^\{\s+if \(seedvisCloseGuard\(event, 'quit', null\)\) return\s+quitting = true\s+if \(mainWindowWork\) mainWindowWork\.stop\(\)\s+\}$/)
+    expect(mainSource.slice(qs, qe)).toMatch(/^\{\s+quitting = true\s+if \(mainWindowWork\) mainWindowWork\.stop\(\)\s+\}$/)
     const updAt = idx("autoUpdater.on('before-quit-for-update', () => {")
     const [us, ue] = blockAt(updAt)
     expect(mainSource.slice(us, ue)).toMatch(/^\{\s+macQuitForUpdate = true\s+\}$/)
@@ -1151,9 +1112,7 @@ describe('development-mode lock wiring (main.cjs / preload.cjs / devaccess*.cjs 
   it('preload: a devAccess block right after app and before canvasapp; updates still last; app block unchanged; plain data only', () => {
     const topKeys = [...preloadSource.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1])
     expect(topKeys.indexOf('devAccess')).toBe(topKeys.indexOf('app') + 1)
-    // the seedvis block (electron/seedvis.cjs) sits between devAccess and canvasapp
-    expect(topKeys.indexOf('devAccess')).toBe(topKeys.indexOf('seedvis') - 1)
-    expect(topKeys.indexOf('seedvis')).toBe(topKeys.indexOf('canvasapp') - 1)
+    expect(topKeys.indexOf('devAccess')).toBe(topKeys.indexOf('canvasapp') - 1)
     expect(topKeys.at(-1)).toBe('updates')
     const block = /\n {2}devAccess: \{([\s\S]*?)\n {2}\},\n/.exec(preloadSource)
     expect(block).not.toBeNull()
