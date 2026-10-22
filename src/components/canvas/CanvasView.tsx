@@ -705,8 +705,10 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
     }
     // UI-05 alignment guides: ONE dragged node snaps to the edges / centres of the others (canvasModel.alignToGuides),
     // while it moves and where it is dropped (React Flow reports its own unsnapped end position).
+    // Counted after the auto-placed takes left: a scene dropped with its takes snaps like it did while dragging.
     const dragIds = Object.keys(drag)
-    const guideId = dragIds.length === 1 && !commitIds.length ? dragIds[0] : !dragIds.length && commitIds.length === 1 ? commitIds[0] : null
+    const dropIds = Object.keys(commit)
+    const guideId = dragIds.length === 1 && !dropIds.length ? dragIds[0] : !dragIds.length && dropIds.length === 1 ? dropIds[0] : null
     const self = guideId ? lookup.get(guideId) : undefined
     const sw = self?.measured?.width ?? 0, sh = self?.measured?.height ?? 0
     if (guideId && sw && sh) {

@@ -237,6 +237,8 @@ export function applySettings(patch: SettingsPatch): void {
 export interface SettingsBackup {
   settings: PortableSettings
   provider: ProviderId
+  /** One-time tips a reset showed again (key → saved value): Hoàn tác hides them again. */
+  hints?: Record<string, string>
 }
 
 export function backupSettings(): SettingsBackup {
@@ -246,6 +248,11 @@ export function backupSettings(): SettingsBackup {
 export function restoreSettings(backup: SettingsBackup): void {
   applySettings(backup.settings)
   if (useProviderPrefs.getState().provider !== backup.provider) useProviderPrefs.getState().setProvider(backup.provider)
+  try {
+    for (const [k, v] of Object.entries(backup.hints ?? {})) if (k.startsWith(HINT_PREFIX)) localStorage.setItem(k, v)
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 /** Keys of one-time tips ("Đã hiểu"): a reset shows them again. */
@@ -259,17 +266,18 @@ export function resetAllSettings(): SettingsBackup {
   const before = backupSettings()
   applySettings(DEFAULT_SETTINGS)
   if (useProviderPrefs.getState().provider !== 'dev') useProviderPrefs.getState().setProvider('dev')
+  const hints: Record<string, string> = {}
   try {
-    const keys: string[] = []
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
-      if (k?.startsWith(HINT_PREFIX)) keys.push(k)
+      const v = k?.startsWith(HINT_PREFIX) ? localStorage.getItem(k) : null
+      if (k && v !== null) hints[k] = v
     }
-    for (const k of keys) localStorage.removeItem(k)
+    for (const k of Object.keys(hints)) localStorage.removeItem(k)
   } catch {
     /* storage unavailable */
   }
-  return before
+  return { ...before, hints }
 }
 
 /** Number of settings that differ from the defaults (shown next to "Khôi phục cài đặt mặc định"). */

@@ -279,6 +279,9 @@ describe('apply / reset / restore', () => {
     restoreSettings(before)
     expect(currentSettings()).toEqual(CUSTOM)
     expect(useProviderPrefs.getState().provider).toBe('canvasapp')
+    // the tips dismissed before the reset are dismissed again
+    expect(storage.data.get('bdp:hint:storyboard-reorder')).toBe('1')
+    expect(storage.data.get('bdp:hint:folder-trash')).toBe('1')
     useProviderPrefs.getState().setProvider('dev')
     useDownloadPrefs.getState().set({ folderName: null })
   })
