@@ -793,13 +793,16 @@ export function runNow(sceneIds: string[]) {
     return res
   }
   // Say which wallet: canvasapp (or, in development mode, its simulation) charges the account when it accepts the job.
-  const kind = creditKindOf(activeProviderId())
+  const pid = activeProviderId()
+  const kind = creditKindOf(pid)
   const cost =
     kind === 'demo'
       ? `−${formatCredits(res.cost, kind)}`
       : kind === 'dev'
         ? `≈ ${formatCredits(res.cost, kind)} (giả lập, trừ khi máy chủ giả lập nhận job)`
-        : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
+        : pid === 'sano-gateway'
+          ? `≈ ${formatCredits(res.cost, kind)} · chi phí do SANO quản lý`
+          : `≈ ${formatCredits(res.cost, kind)} canvasapp (trừ khi canvasapp nhận job)`
   toast(`Đã gửi ${res.queued} cảnh vào hàng đợi · ${cost}${res.skipped.length ? ` · bỏ qua ${res.skipped.length}` : ''}`, { tone: 'success' })
   return res
 }

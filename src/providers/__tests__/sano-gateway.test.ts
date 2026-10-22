@@ -129,6 +129,17 @@ describe('sano-gateway provider', () => {
     expect(s.calls('GET', '/api/video/jobs/job_1/result')[0][1].signal).toBe(ctrl.signal)
   })
 
+  it('poll: one job answering 500 does not hide the others; all failing still throws', async () => {
+    const s = fakeSano()
+    const p = make(s)
+    await p.submit(req())
+    s.jobs.get('job_1')!.status = 'done'
+    const inner = s.fetch.getMockImplementation()!
+    s.fetch.mockImplementation(async (url, init) => (url.endsWith('/jobs/job_bad') ? json(500, { error: 'boom' }) : inner(url, init)))
+    expect(await p.poll(['job_1', 'job_bad'])).toEqual([{ remoteId: 'job_1', state: 'completed' }])
+    await expect(p.poll(['job_bad'])).rejects.toMatchObject({ code: 'server' })
+  })
+
   it('refuses what SANO does not run before any POST', async () => {
     const s = fakeSano()
     const p = make(s)
@@ -225,7 +236,30 @@ describe('sano-gateway provider', () => {
 describe('sano-gateway in the registry', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
     applyDevAccessState(bareState('build'))
+  })
+
+  it('the build flag turns it on on the web, never inside Electron', () => {
+    vi.stubEnv('VITE_SANO_GATEWAY', '1')
+    vi.stubGlobal('window', {})
+    expect(sanoGatewayAvailable()).toBe(true)
+    vi.stubGlobal('window', { bdpDesktop: {} })
+    expect(sanoGatewayAvailable()).toBe(false)
+    vi.stubGlobal('window', { __SANO_GATEWAY__: {}, bdpDesktop: {} })
+    expect(sanoGatewayAvailable()).toBe(false)
+  })
+
+  it('reads the host object of the same-origin SANO page around the iframe; a cross-origin parent is ignored', () => {
+    vi.stubGlobal('window', { parent: { __SANO_GATEWAY__: {} } })
+    expect(sanoGatewayAvailable()).toBe(true)
+    const crossOrigin = {
+      get __SANO_GATEWAY__(): never {
+        throw new DOMException('Blocked a frame', 'SecurityError')
+      },
+    }
+    vi.stubGlobal('window', { parent: crossOrigin })
+    expect(sanoGatewayAvailable()).toBe(false)
   })
 
   it('outside SANO: never offered, never chosen, refused', () => {

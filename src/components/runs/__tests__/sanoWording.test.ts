@@ -19,7 +19,18 @@ import type { Scene } from '../../../core/types'
 import { activeProviderId } from '../../../providers'
 import { applyDevAccessState, bareState } from '../../../providers/devAccess'
 import { LAYOUT, useProject } from '../../../store/project'
-import { hasUncertainSubmitText, SANO_UNKNOWN_SUBMIT_ERROR, UNKNOWN_SUBMIT_ERROR, unknownSubmitError } from '../../../store/runs'
+import { runNow } from '../../../actions'
+import {
+  downloadFailedError,
+  hasUncertainSubmitText,
+  maybeBilledRunWarning,
+  paidCancelledRunWarning,
+  SANO_UNKNOWN_SUBMIT_ERROR,
+  UNKNOWN_SUBMIT_ERROR,
+  unknownSubmitError,
+  useRuns,
+} from '../../../store/runs'
+import { useUI } from '../../../store/ui'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
 import { RunConfirmDialog } from '../RunConfirmDialog'
@@ -81,5 +92,25 @@ describe('SANO wording', () => {
     expect(SANO_UNKNOWN_SUBMIT_ERROR).not.toMatch(/canvasapp/i)
     expect(hasUncertainSubmitText(SANO_UNKNOWN_SUBMIT_ERROR)).toBe(true)
     expect(unknownSubmitError('canvasapp')).toBe(UNKNOWN_SUBMIT_ERROR)
+  })
+
+  it('run toast, download failure and run warnings name SANO, never canvasapp', () => {
+    const enqueue = useRuns.getState().enqueue
+    useRuns.setState({ enqueue: () => ({ queued: 1, cost: 20, skipped: [] }) })
+    try {
+      runNow(['s1'])
+    } finally {
+      useRuns.setState({ enqueue })
+    }
+    expect(useUI.getState().toasts.at(-1)?.text).toBe('Đã gửi 1 cảnh vào hàng đợi · ≈ 20 credit · chi phí do SANO quản lý')
+    for (const text of [
+      downloadFailedError('HTTP 500', 'sano-gateway'),
+      maybeBilledRunWarning('S01', 'sano-gateway', true),
+      maybeBilledRunWarning('S01', 'sano-gateway', false),
+      paidCancelledRunWarning('S01', 'sano-gateway'),
+    ]) {
+      expect(text).toMatch(/SANO|Chạy lại/)
+      expect(text).not.toMatch(/canvasapp/i)
+    }
   })
 })

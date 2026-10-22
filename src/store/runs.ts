@@ -364,7 +364,7 @@ export function checkTakesKey(takes: readonly Take[], sceneIds: readonly string[
 export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiable: boolean): string {
   const credit = pid === 'dev' ? 'credit dev' : 'credit'
   if (unverifiable) {
-    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : 'lịch sử credit trên canvasapp.io.vn'
+    const where = pid === 'dev' ? 'Bảng phát triển › Job & đơn nạp' : pid === 'sano-gateway' ? 'lịch sử job trong app SANO' : 'lịch sử credit trên canvasapp.io.vn'
     return `${label}: lần gửi trước có thể đã bị trừ ${credit} (SanoVids không kiểm tra được) — xem ${where} trước; chạy ở đây là take MỚI, có thể trừ thêm.`
   }
   return `${label}: lần gửi trước không rõ đã bị trừ ${credit} chưa — “Chạy lại” trên ${label} tìm job cũ trước khi gửi; chạy ở đây là take MỚI, có thể trừ thêm.`
@@ -376,6 +376,9 @@ export function maybeBilledRunWarning(label: string, pid: ProviderId, unverifiab
  * not follow it any more (a canvasapp cancel is local) — so a run of the scene is a NEW take that pays again.
  */
 export function paidCancelledRunWarning(label: string, pid: ProviderId): string {
+  if (pid === 'sano-gateway') {
+    return `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang máy chủ SANO (có thể đã tính phí) — video của job đó xem trong app SANO; chạy ở đây là take MỚI, tính phí thêm.`
+  }
   return pid === 'dev'
     ? `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp giả lập (đã trừ credit dev) — job vẫn còn trong Bảng phát triển; chạy ở đây là take MỚI, trừ thêm credit dev.`
     : `${label}: đã huỷ trong SanoVids nhưng job đã gửi sang canvasapp (đã trừ credit) — video của job đó vẫn tải được trên canvasapp.io.vn (phiên “SanoVids bridge”); chạy ở đây là take MỚI, trừ thêm credit.`
@@ -454,6 +457,9 @@ export function isUnverifiableSubmit(t: Pick<Take, 'provider' | 'remoteId' | 'st
 /** A finished remote video could not be downloaded after several tries (it is paid: re-running pays again). */
 export const downloadFailedError = (detail: string, pid: ProviderId = 'canvasapp'): string => {
   const why = detail.trim().replace(/\.?$/, '.')
+  if (pid === 'sano-gateway') {
+    return `Video đã tạo xong trên máy chủ SANO nhưng SanoVids không tải về được: ${why} Lấy video trực tiếp trong app SANO — chạy lại cảnh sẽ tính phí lần nữa.`
+  }
   return pid === 'dev'
     ? `Video đã tạo xong trên canvasapp giả lập (đã trừ credit dev) nhưng SanoVids không tải về được: ${why} Xem job trong Bảng phát triển (tab “Job & đơn nạp”, “Nhật ký”) — chạy lại cảnh sẽ trừ credit dev lần nữa.`
     : `Video đã tạo xong trên canvasapp (đã trừ credit) nhưng SanoVids không tải về được: ${why} Tải video trực tiếp trên canvasapp.io.vn (phiên “SanoVids bridge”) — chạy lại cảnh sẽ trừ credit lần nữa.`

@@ -279,20 +279,31 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     mayHaveSent: (key) => sent.has(key),
 
     async poll(remoteIds) {
+      // One broken job (5xx / network) is no news for that job only: the others' statuses still reach the engine.
+      let failure: unknown = null
+      let failed = 0
       const out = await Promise.all(
         remoteIds.map(async (id): Promise<RemoteStatus | null> => {
-          const res = await call(jobPath(id))
-          if (res.status === 404) return { remoteId: id, state: 'failed', error: 'Máy chủ SANO không còn job này.' }
-          if (!res.ok) throw new ProviderError('server', `Máy chủ SANO trả lỗi khi hỏi trạng thái job (${await serverText(res)}).`)
-          const b = await bodyOf(res)
-          const state = STATES[String(b?.status)]
-          if (!state) return null // 'unknown' (or a status this build does not know): no news, asked again next time
-          states.set(id, state)
-          const progress = typeof b?.progress === 'number' ? { progress: b.progress } : {}
-          const error = state === 'failed' ? { error: typeof b?.error === 'string' && b.error.trim() ? b.error.trim() : 'Máy chủ SANO báo job lỗi.' } : {}
-          return { remoteId: id, state, ...progress, ...error }
+          try {
+            const res = await call(jobPath(id))
+            if (res.status === 404) return { remoteId: id, state: 'failed', error: 'Máy chủ SANO không còn job này.' }
+            if (!res.ok) throw new ProviderError('server', `Máy chủ SANO trả lỗi khi hỏi trạng thái job (${await serverText(res)}).`)
+            const b = await bodyOf(res)
+            const state = STATES[String(b?.status)]
+            if (!state) return null // 'unknown' (or a status this build does not know): no news, asked again next time
+            states.set(id, state)
+            const progress = typeof b?.progress === 'number' ? { progress: b.progress } : {}
+            const error = state === 'failed' ? { error: typeof b?.error === 'string' && b.error.trim() ? b.error.trim() : 'Máy chủ SANO báo job lỗi.' } : {}
+            return { remoteId: id, state, ...progress, ...error }
+          } catch (e) {
+            if ((e as ProviderError).code === 'login-required') throw e
+            failure = e
+            failed++
+            return null
+          }
         }),
       )
+      if (failed && failed === remoteIds.length) throw failure // nothing answered: the engine backs off
       return out.filter((s): s is RemoteStatus => !!s)
     },
 

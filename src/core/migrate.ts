@@ -386,7 +386,7 @@ export function migrateTake(raw: unknown): Take {
     videoRefsSnapshot: [],
     ...(legacyVideoRefsSnapshot ? { legacyVideoRefsSnapshot } : {}),
     position: t.position ?? null,
-    provider: knownNow ?? (t.provider === 'canvasapp' || t.provider === 'dev' ? t.provider : 'mock'),
+    provider: knownNow ?? (KNOWN_PROVIDERS.includes(String(t.provider)) ? (t.provider as TakeProvider) : 'mock'),
     remoteId: typeof t.remoteId === 'string' && t.remoteId ? t.remoteId : null,
     charged: newer ? false : knownNow && typeof t.foreignCharged === 'boolean' ? t.foreignCharged : t.charged !== false,
   }
