@@ -12,4 +12,11 @@ interface Window {
   __SANOVIDS_PERF_HEADED__?: boolean
   __SANOVIDS_PERF_TARGET__?: 'web' | 'exe'
   sanovidsPerf?: typeof import('./perf/runner').harness
+  /** Set by the SANO app hosting the web build (providers/sano): turns the 'sano-gateway' provider on. */
+  __SANO_GATEWAY__?: { token?: () => Promise<string | null> | string | null }
+}
+
+interface ImportMetaEnv {
+  /** "1" = a web build made for SANO: the 'sano-gateway' provider is on without window.__SANO_GATEWAY__. */
+  readonly VITE_SANO_GATEWAY?: string
 }

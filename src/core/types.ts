@@ -279,9 +279,10 @@ export interface TakeImport {
  * Provider that runs a take (same ids as providers/types ProviderId):
  *   'dev'        development mode — an in-app simulation of canvasapp.io.vn (no network, fake credits);
  *   'canvasapp'  the real canvasapp.io.vn gateway (desktop only, real credits);
- *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed.
+ *   'mock'       the old demo provider ("Demo cũ"): only takes saved before development mode existed;
+ *   'sano-gateway' the SANO server, for the web build running inside the SANO app (providers/sano).
  */
-export type TakeProvider = 'mock' | 'canvasapp' | 'dev'
+export type TakeProvider = 'mock' | 'canvasapp' | 'dev' | 'sano-gateway'
 
 export interface CompiledImage {
   /** 1-based N in @image_N */

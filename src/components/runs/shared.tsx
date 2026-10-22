@@ -99,12 +99,13 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
 
-const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp' }
+const PROVIDER_SHORT: Record<ProviderId, string> = { mock: 'Demo cũ', dev: 'DEV', canvasapp: 'canvasapp', 'sano-gateway': 'SANO' }
 
 const PROVIDER_TITLE: Record<ProviderId, string> = {
   mock: 'Demo cũ — video giả, trả bằng credit demo (không phải tiền thật)',
   dev: 'Phát triển (giả lập) — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật)',
   canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
+  'sano-gateway': 'Máy chủ SANO — video thật, chi phí do SANO quản lý',
 }
 
 /** Chip of a take made by a newer SanoVids build's provider (Take.foreignProvider) instead of "Demo cũ". */

@@ -37,6 +37,7 @@ export function settingsRunWarning(limits: SettingsLimits, s: VideoSettings, id:
  * its credits ("credit dev" in development mode, CLAUDE.md).
  */
 export function limitsSite(id: ProviderId): { short: string; full: string; credit: string } {
+  if (id === 'sano-gateway') return { short: 'SANO', full: 'máy chủ SANO', credit: 'credit' }
   return id === 'dev'
     ? { short: 'canvasapp giả lập', full: 'canvasapp giả lập (chế độ Phát triển)', credit: 'credit dev' }
     : { short: 'canvasapp', full: 'canvasapp.io.vn', credit: 'credit' }

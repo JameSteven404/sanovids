@@ -7,6 +7,8 @@
 // Development mode LOCKED (release builds, providers/devAccess): no provider choice, no DEV — only canvasapp.io.vn, with
 // a switch "Dùng canvasapp.io.vn cho take mới" that is off until the user confirms the real-money warning
 // (CANVASAPP_NEEDS_OPT_IN). While it is off, nothing here talks to canvasapp (no balance read, no login block).
+// Inside the SANO app ('sano-gateway', providers/sano): one SANO note instead of the canvasapp switch, callouts and
+// login block — SANO keeps the account and the costs (still selectable here while development mode is open).
 // Login state and balance come from the shared gateway-credit store (store/credits useRealCredits: GET /api/me of the
 // active gateway) — the same numbers as the top bar pill, no separate request here.
 import { Bug, Cable, Cloud, CloudDownload, FlaskConical, History, LoaderCircle, LogIn, LogOut, Plus, RefreshCw, TriangleAlert, Wallet } from 'lucide-react'
@@ -183,6 +185,7 @@ export function GatewaySection() {
   const setProvider = useProviderPrefs((s) => s.setProvider)
   // Re-renders when the development-mode lock flips (the gateway below follows it).
   useProviderPrefs((s) => s.active)
+  const sano = activeProviderId() === 'sano-gateway'
   /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
   const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
@@ -248,8 +251,10 @@ export function GatewaySection() {
     toast(
       p === 'canvasapp'
         ? 'Take mới sẽ được tạo trên canvasapp.io.vn — trừ credit canvasapp (tiền thật).'
-        : 'Take mới dùng chế độ Phát triển — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật).',
-      { tone: p === 'canvasapp' ? 'warning' : 'success' },
+        : p === 'sano-gateway'
+          ? 'Take mới sẽ gửi qua máy chủ SANO — video thật, chi phí do SANO quản lý.'
+          : 'Take mới dùng chế độ Phát triển — canvasapp giả lập trong máy, trả bằng credit dev (không phải tiền thật).',
+      { tone: p === 'dev' ? 'success' : 'warning' },
     )
   }
 
@@ -270,7 +275,11 @@ export function GatewaySection() {
             <span className="badge warn">thử nghiệm</span>
           )}
         </h3>
-        {devOpen ? (
+        {sano ? (
+          <p>
+            Take mới gửi qua <b>máy chủ SANO</b> bằng tài khoản SANO đang đăng nhập trong app SANO — đăng nhập, model được mở và chi phí do SANO quản lý.
+          </p>
+        ) : devOpen ? (
           <p>
             <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả
             lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản
@@ -281,7 +290,7 @@ export function GatewaySection() {
         )}
       </header>
 
-      {!devOpen && <CanvasappSwitch desktop={desktop} />}
+      {!devOpen && !sano && <CanvasappSwitch desktop={desktop} />}
       {devOpen && (
         <div className="dg-field">
           <span className="label">Nhà cung cấp video cho take mới</span>
@@ -294,7 +303,14 @@ export function GatewaySection() {
               id: p,
               label: PROVIDER_LABEL[p],
               icon: p === 'dev' ? <Bug size={13} /> : <Cloud size={13} />,
-              hint: p === 'dev' ? 'canvasapp giả lập, credit dev — không tốn tiền' : desktop ? 'Video thật, trừ credit canvasapp' : 'Chỉ có trong bản desktop',
+              hint:
+                p === 'dev'
+                  ? 'canvasapp giả lập, credit dev — không tốn tiền'
+                  : p === 'sano-gateway'
+                    ? 'Máy chủ SANO — video thật'
+                    : desktop
+                      ? 'Video thật, trừ credit canvasapp'
+                      : 'Chỉ có trong bản desktop',
               disabled: p === 'canvasapp' && !desktop,
               title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : undefined,
             }))}
@@ -304,7 +320,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {dev ? (
+      {sano ? null : dev ? (
         <div className="dg-callout dg-dev-callout">
           <FlaskConical size={15} />
           <div>
@@ -322,7 +338,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {hasBridge && !off && (
+      {hasBridge && !off && !sano && (
         <div className={`dg-app dg-gw-login${dev ? ' dev' : ''}`}>
           <div className="dg-app-status">
             <span className={`dg-app-icon${loggedIn ? ' on' : ''}`}>{login.state === 'checking' ? <LoaderCircle size={17} className="dg-spin" /> : dev ? <Bug size={17} /> : <Cable size={17} />}</span>
@@ -415,7 +431,7 @@ export function GatewaySection() {
         </div>
       )}
 
-      {gwBridge && !off && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
+      {gwBridge && !off && !sano && typeof gwBridge.keepLogin === 'function' && <KeepLoginRow key={gw.id} bridge={gwBridge} dev={dev} loginState={login.state} />}
 
       {issue && (
         <div className="dg-callout warn">
@@ -425,9 +441,11 @@ export function GatewaySection() {
       )}
 
       <div className="dg-field-hint">
-        {dev
-          ? 'Giống cổng thật: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), ảnh tham chiếu chỉ tải lên một lần (phiên “SanoVids bridge”). Khác: kiểm tra tiến độ mỗi 3 giây và video xong sau ≈ 8 giây (đổi được trong Bảng phát triển).'
-          : 'Giới hạn: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), kiểm tra tiến độ mỗi 20 giây. Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids bridge”).'}
+        {sano
+          ? 'Tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), kiểm tra tiến độ mỗi 15 giây. Ảnh tham chiếu gửi kèm từng job (tối đa 20 MB mỗi job).'
+          : dev
+            ? 'Giống cổng thật: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), ảnh tham chiếu chỉ tải lên một lần (phiên “SanoVids bridge”). Khác: kiểm tra tiến độ mỗi 3 giây và video xong sau ≈ 8 giây (đổi được trong Bảng phát triển).'
+            : 'Giới hạn: tối đa 10 job cùng lúc (job thứ 11 trở đi chờ trong hàng đợi), kiểm tra tiến độ mỗi 20 giây. Ảnh tham chiếu chỉ tải lên canvasapp một lần (phiên “SanoVids bridge”).'}
       </div>
     </section>
   )

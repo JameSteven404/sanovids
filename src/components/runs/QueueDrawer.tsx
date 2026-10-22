@@ -230,28 +230,37 @@ function QueuePanel() {
           <span className="rq-demo-note dev">
             <Bug size={12} /> Chế độ Phát triển: canvasapp giả lập trong máy — credit dev, không gọi mạng, không tốn tiền thật
           </span>
+        ) : provider === 'sano-gateway' ? (
+          <span className="rq-demo-note real">
+            <Cloud size={12} /> Take mới gửi qua máy chủ SANO — video thật, chi phí do SANO quản lý
+          </span>
         ) : (
           <span className="rq-demo-note real">
             <Cloud size={12} /> Take mới tạo trên {PROVIDER_LABEL.canvasapp} — trừ credit canvasapp (tiền thật) khi job được nhận
           </span>
         )}
         <span className="rq-spacer" />
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => openImportJobs()}
-          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
-        >
-          <CloudDownload size={13} />
-          <span className="rq-btn-label">Nhập job</span>
-        </button>
-        {provider === 'dev' ? (
-          <DevPanelButton />
-        ) : (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
-            <Settings2 size={13} />
-            <span className="rq-btn-label">Cổng canvasapp</span>
-          </button>
+        {/* SANO has no canvasapp bridge session to import from, nor a canvasapp gateway to open. */}
+        {provider !== 'sano-gateway' && (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => openImportJobs()}
+              title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
+            >
+              <CloudDownload size={13} />
+              <span className="rq-btn-label">Nhập job</span>
+            </button>
+            {provider === 'dev' ? (
+              <DevPanelButton />
+            ) : (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={openSettings} title="Đăng nhập, số credit và nhà cung cấp video (Cài đặt)">
+                <Settings2 size={13} />
+                <span className="rq-btn-label">Cổng canvasapp</span>
+              </button>
+            )}
+          </>
         )}
         <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách — take “không rõ đã bị trừ credit chưa” được giữ lại (xoá riêng từng take nếu muốn)">
           <Trash size={13} />

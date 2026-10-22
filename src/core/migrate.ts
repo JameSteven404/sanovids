@@ -98,7 +98,7 @@ export { cleanForeignSettings, FOREIGN_ID_MAX, FOREIGN_SETTINGS_MAX_BYTES, FOREI
 /** Error of a take a newer build was still running (parked as 'failed' here, see migrateTake). */
 export const FOREIGN_RUNNING_ERROR = 'Video này đang tạo bằng SanoVids bản mới hơn — mở bằng bản đó để theo dõi.'
 
-const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev'] satisfies TakeProvider[]
+const KNOWN_PROVIDERS: readonly string[] = ['mock', 'canvasapp', 'dev', 'sano-gateway'] satisfies TakeProvider[]
 
 /** Settings + newer-build marker of a scene or preset, as migrate keeps them. */
 interface ModelMark {
