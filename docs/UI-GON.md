@@ -29,16 +29,43 @@ Cơ sở mã: nhánh `p3/ui-gon` (đã gồm bản 0.6.0 và giá đọc từ ca
 - hộp xác nhận chi phí trước mỗi lần tạo video;
 - các cảnh báo "không rõ đã bị trừ credit chưa", "Tạo lại là lượt mới";
 - chữ đỏ giữ chỗ khi cắt ảnh;
-- thẻ cảnh rộng 304 px;
-- màu thiết kế D (đỏ Sano, 3 nền tối, nền sáng);
+- thẻ cảnh **352 × 304 px** (rộng 352, cao 304 — `src/core/types.ts` / `canvasModel`; mockup E0 đã duyệt);
 - mã trong `src/providers/**`, `src/store/runs.ts`, `electron/**`, phần cập nhật và chữ ký số.
+
+### Đồng bộ với giao diện SanoAgent (Minh, 2026-10-22)
+
+Minh: "bảo đồng bộ với giao diện của sanoagent là được". SanoVids sẽ được đưa vào app SANO (quyết định D215 của SANO; kế hoạch SV-02 đang soạn trong repo SANO-AGENT), nên bản gọn phải **nhìn và nói giống SanoAgent**, không thêm phong cách riêng.
+
+Nguồn chuẩn (đọc, không sửa):
+- `E:/SANO AGENT/knowledge/07-Trien-khai/NHAN-DIEN-VA-UI-UX.md`:
+  - D159 cùng hệ nhận diện SANO;
+  - D160 thân thiện, hiện đại, ưu tiên tinh gọn, rõ ràng kiểu Apple;
+  - D161 giọng văn trung tính, thân thiện, ngắn gọn;
+  - D163 cá nhân hoá cao;
+  - D199 kính mờ nhẹ;
+  - D200 mật độ mặc định "Cân bằng";
+  - D201–D202 nền cá nhân;
+  - D203 đỏ SANO mặc định, mỗi người tự đổi được màu nhấn.
+- `E:/SANO AGENT/web/theme.css`:
+  - token Sáng / Tối: `--bg`, `--surface*`, `--text`, `--secondary`, `--border`, `--brand` #E60000, `--accent`, `--positive`, `--attention`…;
+  - font hệ thống `-apple-system, "SF Pro Display", "Segoe UI", Inter`.
+- PR SANO-AGENT #34 (đang mở) gom màu nhấn về một nguồn. Nếu PR đó đổi tên token thì theo PR.
+
+Áp dụng:
+- Màu, chữ, bo góc, viền, bóng, kính mờ, mật độ và cách viết câu theo SanoAgent.
+- Ghi rõ chỗ nào SanoVids đang khác, ví dụ:
+  - nền tối `#161618` so với `#121416`;
+  - font Be Vietnam Pro so với font hệ thống;
+  - 3 nền tối Than / Đen sâu / Xám xanh so với nền cá nhân D201–D202.
+- Mỗi chỗ khác đề xuất cách theo SANO. Riêng **3 nền tối, font chữ, logo / biểu tượng app**: chỉ đề xuất, Minh quyết, vì liên quan bộ nhận diện SANO bước 4 (chưa bắt đầu) và người đang dùng SanoVids.
+- Đỏ SANO vẫn là màu thương hiệu: SanoVids đã dùng `#E60000`. Không dùng đỏ cho mọi lỗi / trạng thái (D159).
 
 ## 2. Bảng việc
 
 | Mã | Ai | Việc | Phạm vi file | Đầu ra | Cách kiểm | Trạng thái |
 |---|---|---|---|---|---|---|
-| UG-01 | Argon | Kiểm thử trải nghiệm **người mới** trên app chạy thật ở chế độ Phát triển (mục 3) | Thư mục `E:\sanovids-ag-ug01` (nhánh `ag/ug01`). Chỉ đọc mã app; chỉ ghi `docs/ui-gon/AUDIT-ARGON.md` và ảnh `docs/ui-gon/img/` | Báo cáo ≥ 25 điểm: mỗi điểm có ảnh, lý do khó và đề xuất; kèm top 10 ưu tiên | Claude đọc, mở lại từng chỗ trên app để đối chiếu | Đang chờ Argon nhận |
-| UG-02 | Codex | Mockup HTML tĩnh **"SanoVids gọn cho người mới"** + bảng "nút hiện có → chỗ mới" (mục 4) | Thư mục `E:\sanovids-codex-ug02` (nhánh `cx/ug02`). Chỉ ghi `docs/ui-gon/mockup/**` | `docs/ui-gon/mockup/index.html` (mở được không cần mạng) + `docs/ui-gon/mockup/DE-XUAT.md` | Claude mở mockup ở Tối / Sáng, 1366 và 1920 px, đối chiếu bảng với mã thật | Claude đã chạy Codex |
+| UG-01 | Argon | Kiểm thử trải nghiệm **người mới** trên app chạy thật ở chế độ Phát triển (mục 3) | Thư mục `E:\sanovids-ag-ug01` (nhánh `ag/ug01`). Chỉ đọc mã app; chỉ ghi `docs/ui-gon/AUDIT-ARGON.md` và ảnh `docs/ui-gon/img/` | Báo cáo ≥ 25 điểm: mỗi điểm có ảnh, lý do khó và đề xuất; kèm top 10 ưu tiên và mục "Khác với giao diện SanoAgent" | Claude đọc, mở lại từng chỗ trên app để đối chiếu | Đang chờ Argon nhận |
+| UG-02 | Codex | Mockup HTML tĩnh **"SanoVids gọn cho người mới"** + bảng "nút hiện có → chỗ mới" (mục 4) | Thư mục `E:\sanovids-codex-ug02` (nhánh `cx/ug02`). Chỉ ghi `docs/ui-gon/mockup/**` | `docs/ui-gon/mockup/index.html` (mở được không cần mạng, **theo token SanoAgent**) + `docs/ui-gon/mockup/DE-XUAT.md` (thêm bảng "SanoVids → SanoAgent") | Claude mở mockup ở Tối / Sáng, 1366 và 1920 px, đối chiếu bảng với mã thật | Claude đã chạy Codex |
 | UG-03… | Argon / Codex / Claude | Các việc làm sau khi Minh duyệt đề xuất | (ghi sau) | | | Chờ Minh duyệt |
 
 ## 3. UG-01 — Argon kiểm thử trải nghiệm người mới
@@ -58,6 +85,10 @@ Cơ sở mã: nhánh `p3/ui-gon` (đã gồm bản 0.6.0 và giá đọc từ ca
 6. Sửa một cảnh: đổi thời lượng / độ phân giải, đổi ảnh, cắt một dây ảnh (chữ đỏ hiện ra).
 7. **Nhập nhiều prompt**, **Sắp xếp**, menu chuột phải, nút **+**.
 8. **Cài đặt**: tìm cách đổi giao diện Sáng / Tối, phím tắt.
+9. **Đối chiếu với SanoAgent** (mục "Đồng bộ với giao diện SanoAgent"):
+   - đọc `E:/SANO AGENT/knowledge/07-Trien-khai/NHAN-DIEN-VA-UI-UX.md` và `E:/SANO AGENT/web/theme.css`;
+   - muốn xem SANO chạy thật: trong `E:/SANO AGENT` chạy `npm run dev -- --port 5183` (chỉ xem, không sửa file);
+   - ghi mọi chỗ SanoVids khác SanoAgent: màu, chữ, bo góc, kính mờ, mật độ, giọng văn, nút, hộp thoại; kèm ảnh hai bên.
 
 Làm ở hai cỡ cửa sổ 1366×768 và 1920×1080, giao diện Tối và Sáng.
 
@@ -87,7 +118,8 @@ Làm ở hai cỡ cửa sổ 1366×768 và 1920×1080, giao diện Tối và Sá
 **Mockup tĩnh** trong `docs/ui-gon/mockup/index.html`:
 - một file, không cần mạng;
 - màu lấy từ token của `src/styles/base.css`;
-- có nút đổi Tối / Sáng.
+- có nút đổi Tối / Sáng;
+- **theo token và font của SanoAgent** (`E:/SANO AGENT/web/theme.css`), không theo thiết kế D riêng của SanoVids.
 
 Mockup gồm các màn hình:
 1. **Lần đầu mở / dự án trống:** hướng dẫn "Bắt đầu 3 bước" ngay trên canvas hoặc ở bảng bên phải, mỗi bước một nút làm luôn.
@@ -102,6 +134,7 @@ Mockup gồm các màn hình:
 **`docs/ui-gon/mockup/DE-XUAT.md`**
 - Bảng **"nút hiện có → chỗ mới"**: liệt kê từng điều khiển hiện có (tên, file:dòng) và chỗ của nó trong bản mới (giữ / vào "⋯" / vào Cài đặt Nâng cao / đề xuất bỏ, kèm lý do). Không tính năng nào được mất mà không ghi.
 - Danh sách chữ đổi cho dễ hiểu (cũ → mới).
+- Bảng **"SanoVids → SanoAgent"**: từng token / font / bo góc / bóng / kính mờ / mật độ / giọng văn đang khác. Mỗi dòng ghi giá trị SanoVids (file:dòng), giá trị SanoAgent (file:dòng) và đề xuất. Những dòng cần Minh quyết (3 nền tối, font, logo) đánh dấu riêng.
 - Chia đề xuất thành việc nhỏ UG-03, UG-04…, mỗi việc ghi file app sẽ sửa và cách kiểm.
 
 **Quy tắc**
@@ -112,4 +145,5 @@ Mockup gồm các màn hình:
 
 ## 5. Nhật ký
 
-- 2026-10-22: Claude tạo bảng, chuẩn bị hai thư mục làm việc, báo nhóm Zalo; chạy Codex cho UG-02.
+- 2026-10-22: Claude tạo bảng, chuẩn bị hai thư mục làm việc, báo nhóm Zalo (msgId 8403628080011); chạy Codex cho UG-02.
+- 2026-10-22: Minh yêu cầu đồng bộ với giao diện SanoAgent → thêm mục "Đồng bộ với giao diện SanoAgent", bước 9 của UG-01 và phần token SANO của UG-02. Sửa cỡ thẻ cảnh thành 352 × 304 px (Codex phát hiện bảng ghi sai "rộng 304"). Repo `JameSteven404/sanovids` chuyển về riêng tư theo lệnh Minh.
