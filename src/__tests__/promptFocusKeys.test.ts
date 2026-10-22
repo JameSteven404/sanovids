@@ -23,7 +23,8 @@ import { useShortcuts } from '../hooks/useShortcuts'
 import type { Project, Scene } from '../core/types'
 import { useCanvasPrefs } from '../lib/canvasPrefs'
 import { LAYOUT, useProject } from '../store/project'
-import { markPromptFocused, PROMPT_FOCUS_WAIT_MS, promptFocusPending, useSceneEditor } from '../store/sceneEditor'
+import { markPromptFocused, PROMPT_FOCUS_WAIT_MS, promptFocusPending, takePromptKeys, useSceneEditor } from '../store/sceneEditor'
+import { replayKeys } from '../components/canvas/sceneEditorModel'
 import { useUI } from '../store/ui'
 
 type Listener = (e: KeyboardEvent) => void
@@ -102,6 +103,27 @@ describe('a prompt field asked for but not focused yet takes the plain keys away
     expect(promptFocusPending()).toBe(false)
     press('h')
     expect(ui().interaction).toBe('hand')
+  })
+
+  it('the keys typed meanwhile are kept for that request (PR #13 F3) and typed into the field once it takes the focus', () => {
+    useSceneEditor.getState().open('s1', 'prompt', 0)
+    const seq = useSceneEditor.getState().seq
+    for (const key of ['M', 'ư', 'a', 'x', 'Backspace', ' ', 'r', 'ơ', 'i']) press(key)
+    const keys = takePromptKeys(seq)
+    expect(keys).toEqual(['M', 'ư', 'a', 'x', 'Backspace', ' ', 'r', 'ơ', 'i'])
+    expect(replayKeys('', 0, keys)).toEqual({ value: 'Mưa rơi', caret: 7 })
+    // handed over once; another request never receives them
+    expect(takePromptKeys(seq)).toEqual([])
+    press('z')
+    expect(takePromptKeys(seq + 1)).toEqual([])
+  })
+
+  it('replayKeys inserts at the caret; ⌫ / Delete remove one code point (an emoji too); nothing past the ends', () => {
+    expect(replayKeys('ab', 1, ['X'])).toEqual({ value: 'aXb', caret: 2 })
+    expect(replayKeys('a😀b', 3, ['Backspace'])).toEqual({ value: 'ab', caret: 1 })
+    expect(replayKeys('a😀b', 1, ['Delete'])).toEqual({ value: 'ab', caret: 1 })
+    expect(replayKeys('ab', 0, ['Backspace'])).toEqual({ value: 'ab', caret: 0 })
+    expect(replayKeys('ab', 9, ['Delete', 'c'])).toEqual({ value: 'abc', caret: 3 })
   })
 
   it('only for a while: a field that never comes (a far node that could not zoom in) gives the keys back', () => {

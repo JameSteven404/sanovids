@@ -9,7 +9,7 @@ import { cancelLibraryKey, handleLibraryKey, noteCanvasCommand, showBackspaceHin
 import { moveSelectedScene, sceneOrderKey } from '../sceneOrderActions'
 import { usePlayback } from '../lib/playback'
 import { toast, useUI } from '../store/ui'
-import { promptFocusPending, useSceneEditor } from '../store/sceneEditor'
+import { bufferPromptKey, promptFocusPending, useSceneEditor } from '../store/sceneEditor'
 
 /** Vietnamese input tools send Backspace before a rewritten letter; never delete for that pair. */
 export const BACKSPACE_GRACE_MS = 90
@@ -82,8 +82,13 @@ export function useShortcuts(): void {
       // Save/run remain available in text fields; local editors consume their Enter/Escape first.
       if (typing || dialogOpen) { dispatch(e, typing); return }
       // A node's prompt field asked for but not focused yet (a far node zooming in to type in it, a new scene made by
-      // double-click): plain letters, ⌫ and Delete were meant for that field — never a canvas key or a delete.
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') && promptFocusPending()) return
+      // double-click): plain letters, ⌫ and Delete were meant for that field — never a canvas key or a delete. They are
+      // kept and typed into the field once it takes the focus (SceneNodeEditor), never lost.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') && promptFocusPending()) {
+        e.preventDefault()
+        bufferPromptKey(e.key)
+        return
+      }
       if (handleLibraryKey(e, IS_MAC, {
         isDeleteChord: matchesAction(e, 'selection.delete'),
         isSelectAllChord: matchesAction(e, 'selection.selectAll'),

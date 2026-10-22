@@ -120,4 +120,14 @@ describe('checkTakeDelete', () => {
     const paid = checkTakeDelete(['p'], [{ id: 'p', status: 'processing', videoReady: true, sent: true, provider: 'canvasapp' }])
     expect([paid.paidPending, paid.sentAway]).toEqual([1, 0])
   })
+
+  it('asks before deleting a parked take of a newer build (its job may still run, and bill, there), even as "failed" mock', () => {
+    const parked = [{ id: 'k1', status: 'failed' as const, parked: true, provider: 'mock' }]
+    const c = checkTakeDelete(['k1'], parked, { label: 'S01·T2' })
+    expect(c.parked).toBe(1)
+    expect(c.question).toBe('Xoá vĩnh viễn S01·T2? Video đã xoá không hoàn tác được.\nS01·T2 có thể vẫn đang chạy (và tính credit) ở bản SanoVids mới hơn: xoá ở đây không huỷ job đó.')
+    // a credit case: asked even when the caller only confirms credit ('usedOnly'), never with false
+    expect(checkTakeDelete(['k1'], parked, { confirm: 'usedOnly' }).question).toContain('1 video có thể vẫn đang chạy')
+    expect(checkTakeDelete(['k1'], parked, { confirm: false }).question).toBeNull()
+  })
 })

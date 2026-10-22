@@ -67,6 +67,24 @@ export function promptFocusPending(now: number = performance.now()): boolean {
   return s.sceneId !== null && s.focus === 'prompt' && s.seq !== promptFocusedSeq && now - promptAskedAt < PROMPT_FOCUS_WAIT_MS
 }
 
+/** Keys typed while a prompt field was pending (promptFocusPending), for request `seq`: replayed once it takes the focus. */
+let pendingKeys: { seq: number; keys: string[] } | null = null
+const MAX_PENDING_KEYS = 500
+
+/** Keep a key (one character, 'Backspace' or 'Delete') typed for the pending prompt field (hooks/useShortcuts). */
+export function bufferPromptKey(key: string): void {
+  const seq = useSceneEditor.getState().seq
+  if (!pendingKeys || pendingKeys.seq !== seq) pendingKeys = { seq, keys: [] }
+  if (pendingKeys.keys.length < MAX_PENDING_KEYS) pendingKeys.keys.push(key)
+}
+
+/** The keys kept for request `seq` (empty for any other request), handed over once (SceneNodeEditor). */
+export function takePromptKeys(seq: number): string[] {
+  const keys = pendingKeys?.seq === seq ? pendingKeys.keys : []
+  pendingKeys = null
+  return keys
+}
+
 export const useSceneEditor = create<SceneEditorState>()((set, get) => ({
   sceneId: null,
   focus: null,

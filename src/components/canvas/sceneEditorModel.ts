@@ -8,6 +8,31 @@ import type { InlineKey, StageSize, Viewport } from './canvasModel'
 export type EditorFocus = 'prompt' | 'title' | 'preset' | 'model' | 'mode' | 'duration' | 'resolution' | 'ratio'
 
 /** Screen scale E and the compensating CSS scale k inside ViewportPortal. */
+/**
+ * Keys typed before the node field existed (store/sceneEditor bufferPromptKey), applied at `caret` of `value` as the
+ * field would have: a character is inserted, Backspace / Delete remove one code point before / after the caret.
+ */
+export function replayKeys(value: string, caret: number, keys: readonly string[]): { value: string; caret: number } {
+  let v = value
+  let c = Math.max(0, Math.min(caret, v.length))
+  const pair = (i: number) => /[\uD800-\uDBFF]/.test(v[i - 1] ?? '') && /[\uDC00-\uDFFF]/.test(v[i] ?? '')
+  for (const k of keys) {
+    if (k === 'Backspace') {
+      if (c === 0) continue
+      const n = c >= 2 && pair(c - 1) ? 2 : 1
+      v = v.slice(0, c - n) + v.slice(c)
+      c -= n
+    } else if (k === 'Delete') {
+      if (c >= v.length) continue
+      v = v.slice(0, c) + v.slice(c + (pair(c + 1) ? 2 : 1))
+    } else {
+      v = v.slice(0, c) + k + v.slice(c)
+      c += k.length
+    }
+  }
+  return { value: v, caret: c }
+}
+
 export function editorScale(zoom: number): { E: number; k: number } {
   const E = Math.min(1.25, Math.max(1, zoom))
   return { E, k: E / zoom }

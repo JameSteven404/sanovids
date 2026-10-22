@@ -494,7 +494,8 @@ export interface DeleteTakesOptions {
  * Takes as checkTakeDelete sees them: a running take whose video is already made and paid (remoteVideoReady:
  * downloading, or waiting for its next try) is asked about like a finished one — deleting it drops that paid video;
  * so is a "maybe billed" one (isUncertainSubmit) — deleting it drops the only trace of a job that may have been billed;
- * so is one still running there with its job sent or maybe sent (a job id, or mayHaveBeenSent) — like "Huỷ"'s toast.
+ * so is one still running there with its job sent or maybe sent (a job id, or mayHaveBeenSent) — like "Huỷ"'s toast;
+ * so is a parked take of a newer build (isParkedTake) — its job may still run, and bill, in that build.
  */
 export function deleteFacts(takes: readonly Take[]) {
   return takes.map((t) => {
@@ -506,6 +507,7 @@ export function deleteFacts(takes: readonly Take[]) {
       uncertain: isUncertainSubmit(t),
       sent: running && (!!t.remoteId || mayHaveBeenSent(t.id)),
       imported: !!t.imported,
+      parked: isParkedTake(t),
       provider: providerOf(t),
     }
   })
@@ -672,15 +674,25 @@ export function requestRun(sceneIds: string[] = selectedSceneIds(), opts: { foll
 /** "Thử lại" of a development-mode take while development mode is locked (actions.rerunTake). */
 export const DEV_LOCKED_RETRY = 'Take giả lập chỉ gửi lại được khi chế độ Phát triển đang mở. Bấm “Chạy lại” để tạo take mới trên canvasapp.io.vn (xem chi phí trước khi gửi).'
 
+/** "Chạy lại" of a parked take of a newer build (actions.rerunTake): refused, its job may still run there. */
+export const PARKED_RETRY_TEXT =
+  'Video này có thể vẫn đang chạy (và tính credit) ở bản SanoVids mới hơn — mở bằng bản đó để theo dõi. SanoVids không chạy lại nó ở đây để tránh trả hai lần; muốn tạo video mới cho cảnh này thì bấm Chạy trên thẻ cảnh.'
+
 /**
  * "Chạy lại" on a take. A canvasapp take whose submit outcome is unknown is re-sent as the SAME take (same key: the
  * job it may already have created is looked up first, so it is never paid twice). One whose earlier request can no
  * longer be checked (isUnverifiableSubmit) is never re-sent: "Tạo lại" = after a warning, the cost dialog for a NEW
- * take (new key — the user's explicit choice). Anything else → the cost dialog for a new take of its scene.
+ * take (new key — the user's explicit choice). A parked take of a newer build is refused (PARKED_RETRY_TEXT).
+ * Anything else → the cost dialog for a new take of its scene.
  */
 export function rerunTake(takeId: string, opts: { follow?: boolean } = {}) {
   const take = useRuns.getState().takes.find((t) => t.id === takeId)
   if (!take) return
+  // Every retry control (node, viewer, queue, tray, menu) lands here: a newer build may still be running this job.
+  if (isParkedTake(take)) {
+    toast(PARKED_RETRY_TEXT, { tone: 'warning', ms: 9000 })
+    return
+  }
   // Cancelled while its request was on its way, whose outcome is not known yet: neither the same take nor a new one is
   // sent before it is (a new take now could pay twice).
   if (requestInFlight(takeId)) {
