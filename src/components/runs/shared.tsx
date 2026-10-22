@@ -20,7 +20,7 @@ import {
   type ProviderId,
   type SettingsLimits,
 } from '../../providers'
-import { settingsRunBlock } from '../../providers/limits'
+import { settingsRunBlock, takeCost } from '../../providers/limits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
@@ -70,6 +70,18 @@ export function useSettingsRunBlock(settings: VideoSettings | undefined): string
   return useProviderLimits((s) => {
     void s.rev[provider]
     return settings ? settingsRunBlock(providerLimits(provider), settings) : null
+  })
+}
+
+/**
+ * Credits a new take of these settings costs on the provider new takes use (providers/limits takeCost: canvasapp's own
+ * price once read, else SanoVids' table) — a number selected from the revision store: re-renders only when it changes.
+ */
+export function useTakeCost(settings: VideoSettings | undefined): number {
+  const provider = useActiveProvider()
+  return useProviderLimits((s) => {
+    void s.rev[provider]
+    return settings ? takeCost(providerLimits(provider), settings) : 0
   })
 }
 

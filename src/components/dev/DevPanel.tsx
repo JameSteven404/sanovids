@@ -72,6 +72,7 @@ import {
   DEV_ENDPOINT_LABEL,
   DEV_ENDPOINTS,
   DEV_INITIAL_BALANCE,
+  DEV_PRICE_PERCENTS,
   DEV_SPEED_LABEL,
   DEV_TOPUP_OUTCOME_LABEL,
   devBridge,
@@ -81,6 +82,7 @@ import {
   useDevServer,
   type DevConfig,
   type DevModelToggle,
+  type DevPricePercent,
   type DevEncryption,
   type DevJobView,
   type DevLoginCookie,
@@ -397,6 +399,16 @@ function StatusTab({ snap }: { snap: DevServerSnapshot }) {
           label="Cho tải tiếp video (HTTP Range)"
           hint="Trang thật chưa rõ /stream có hỗ trợ — tắt là mặc định: tải hỏng giữa chừng thì tải lại từ đầu (lần thử sau). Bật: tải tiếp từ chỗ dừng (206, ETag)."
         />
+        <div className="dv-field">
+          <span className="label">Bảng giá của canvasapp</span>
+          <Segmented<DevPricePercent>
+            label="Bảng giá của canvasapp"
+            value={c.pricePercent}
+            onChange={(pricePercent) => setConfig({ pricePercent })}
+            options={DEV_PRICE_PERCENTS.map((p) => ({ id: p, label: p === 100 ? 'Như cũ' : `${p}%` }))}
+          />
+          <small className="dv-hint">Giả lập canvasapp đổi giá: SanoVids đọc giá mới ở lần đọc cấu hình model kế tiếp (bấm “Đọc lại” ở bảng bên phải).</small>
+        </div>
         <div className="dv-field">
           <span className="label">Mã lỗi khi không đủ credit</span>
           <Segmented<400 | 402>

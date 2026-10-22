@@ -17,7 +17,7 @@ vi.mock('../../lib/imageStore', () => ({
 
 import mainSource from '../../../electron/main.cjs?raw'
 import { CUSTOM_FAULT_DEFAULT, customFaultInput } from '../../components/dev/devModel'
-import { costOf } from '../../core/models'
+import { costOf, MODELS } from '../../core/models'
 import { checkoutUrlAllowed, TOPUP_ORDER_TTL_MS } from '../../core/topup'
 import { memoryStorage } from '../canvasapp/adapter'
 import { CanvasappError, createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
@@ -460,6 +460,18 @@ describe('dev server: video jobs', () => {
     expect(await refused(body())).toMatchObject({ status: 400, detail: expect.stringMatching(/not available/) })
     expect(s.server.balance()).toBe(1000)
     expect(s.server.snapshot().jobs).toHaveLength(0)
+  })
+
+  it('"Bảng giá của canvasapp": video-profiles pricing and the charge follow the simulated price table', async () => {
+    const s = setup()
+    const { body } = await prepared(s)
+    s.server.setConfig({ pricePercent: 200 })
+    const profile = (await s.api.videoProfiles()).find((p) => p.model_profile === 'seedance_2_5')
+    expect((profile?.options as { pricing: Record<string, Record<string, number>> }).pricing['480p']['30']).toBe(2 * MODELS.seedance_2_5.pricing['480p'][30])
+    await s.api.createVideoJob(body() as never)
+    expect(s.server.balance()).toBe(1000 - 2 * COST)
+    s.server.setConfig({ pricePercent: 7 as never }) // not offered → back to the default table
+    expect(s.server.config().pricePercent).toBe(100)
   })
 
   it('idempotent on client_request_id (same job, one charge); with dedupe off every POST creates and bills', async () => {

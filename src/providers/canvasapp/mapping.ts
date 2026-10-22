@@ -267,6 +267,19 @@ export function profileSpecOf(model: ModelId, profiles: readonly VideoProfile[])
 
 const listOf = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : null)
 
+/**
+ * canvasapp's own price of these settings, as its Run button reads it (runButtonText):
+ * `options.pricing[resolution in lower case][seconds as a string]` of the model's profile. Null when that profile holds
+ * no positive finite number there (unreadable list, malformed table, a value it does not price): SanoVids' table applies.
+ */
+export function profilePrice(s: Pick<VideoSettings, 'model' | 'duration' | 'resolution'>, profiles: readonly VideoProfile[]): number | null {
+  const o = profileSpecOf(s.model, profiles).options
+  const table = isPlainObject(o) && isPlainObject(o.pricing) ? o.pricing : null
+  const row = table?.[String(s.resolution).toLowerCase()]
+  const value = isPlainObject(row) ? row[String(s.duration)] : undefined
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
 /** A profile name shown in a message: canvasapp's display_name (trimmed, at most this long), else the built-in one. */
 const MAX_PROFILE_NAME = 40
 
@@ -307,8 +320,9 @@ export function profileIssues(s: Pick<VideoSettings, 'model' | 'mode' | 'duratio
 }
 
 /**
- * What profileIssues reads of each model's profile, as one string: two reads with the same signature refuse exactly
- * the same settings (the adapter keeps its SettingsLimits object then). `ok` false = canvasapp's fallbacks.
+ * What profileIssues and profilePrice read of each model's profile, as one string: two reads with the same signature
+ * refuse and price exactly the same settings (the adapter keeps its SettingsLimits object then). `ok` false =
+ * canvasapp's fallbacks.
  */
 export function profilesSignature(profiles: readonly VideoProfile[], ok: boolean): string {
   const models = Object.keys(PROFILE_FALLBACKS) as ModelId[]
@@ -317,7 +331,7 @@ export function profilesSignature(profiles: readonly VideoProfile[], ok: boolean
     models.map((m) => {
       const p = profileSpecOf(m, profiles)
       const o: Record<string, unknown> = isPlainObject(p.options) ? p.options : {}
-      return [profileName(m, p), p.can_create === false, o.modes ?? null, o.disabled_modes ?? null, o.durations ?? null, o.resolutions ?? null, o.aspect_ratios ?? null]
+      return [profileName(m, p), p.can_create === false, o.modes ?? null, o.disabled_modes ?? null, o.durations ?? null, o.resolutions ?? null, o.aspect_ratios ?? null, o.pricing ?? null]
     }),
   ])
 }

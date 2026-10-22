@@ -58,6 +58,12 @@ export interface SettingsLimits {
   firm: boolean
   /** Refusals of `s`, each tagged with its field, in the submit's order. [] for 'none'. Never throws. */
   issues(s: VideoSettings): SettingsIssue[]
+  /**
+   * The gateway's own price of `s` in credits from the same read (canvasapp: the profile's options.pricing, what its
+   * Run button shows), or null when the read holds none for `s` — SanoVids' table (core/models costOf) applies then.
+   * Missing = no prices. Never throws.
+   */
+  price?(s: VideoSettings): number | null
 }
 
 export const NO_LIMITS: SettingsLimits = Object.freeze({ source: 'none' as const, firm: false, issues: () => [] })

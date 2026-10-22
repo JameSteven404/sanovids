@@ -31,9 +31,9 @@ import {
   type EdgeKind,
 } from '../../actions'
 import { sceneCode, tokenForAsset } from '../../core/compile'
-import { MODELS, costOf } from '../../core/models'
+import { MODELS } from '../../core/models'
 import { sceneRunBlockReason } from '../../core/runRules'
-import type { Asset, Project, Scene, Take, XY } from '../../core/types'
+import type { Asset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
 import { openFilmPlayer } from '../../filmActions'
 import { chooseFolderPlace, createFolderNode, grantFolderAccess, linkScenesToFolder, linkTakesToFolder, openFolderNode, removeFolderNode } from '../../folderActions'
 import { useCanvasPrefs } from '../../lib/canvasPrefs'
@@ -43,7 +43,7 @@ import { useDownloadPrefs } from '../../lib/downloads'
 import { canTrashSaved, folderRuntime } from '../../lib/saveFolders'
 import { hideAssets, linkedPairs, scenesUsingAsset, unlinkAllFromScene, unlinkAssetsFromScenes, unlinkSelection } from '../../menuActions'
 import { activeProviderId, PROVIDER_LABEL, providerBlockedReason, providerLimits } from '../../providers'
-import { settingsRunBlock } from '../../providers/limits'
+import { settingsRunBlock, takeCost } from '../../providers/limits'
 import { freeSpotFrom, LAYOUT, refImageCount, undoToastAction, useProject } from '../../store/project'
 import { isParkedTake, isUncertainSubmit, useRuns } from '../../store/runs'
 import { useSceneEditor } from '../../store/sceneEditor'
@@ -110,6 +110,8 @@ const codeOf = (s: Snap, sceneId: string) => {
 }
 const selScenes = (s: Snap) => s.selectedIds.filter((id) => s.scenes.has(id))
 const priceOf = (cost: number) => formatCredits(cost, creditKindOf(activeProviderId()))
+/** What a new take of these settings costs now (canvasapp's own price once read). */
+const costFor = (settings: VideoSettings) => takeCost(providerLimits(activeProviderId()), settings)
 
 /** "@image_4" / "@image_4…6" this image would get in `scene` once linked; '' = no picture yet (no number). */
 export function linkPreviewToken(project: Project, scene: Scene, asset: Asset): string {
@@ -178,7 +180,7 @@ function sceneMenu(s: Snap, id: string): MenuSpec | null {
     : {
         type: 'item',
         id: 'scene.run',
-        label: `Chạy ${code} · ${priceOf(costOf(scene.settings))}`,
+        label: `Chạy ${code} · ${priceOf(costFor(scene.settings))}`,
         icon: 'play',
         action: 'scene.run',
         disabled: runBlock ?? undefined,
@@ -260,7 +262,7 @@ function multiMenu(s: Snap, ctx: CanvasMenuContext): MenuSpec {
   if (S.length) {
     const blocked = providerBlockedReason(activeProviderId())
     const priced = !blocked && S.length <= MAX_PRICED_SCENES
-    const total = priced ? S.reduce((sum, id) => sum + costOf(s.scenes.get(id)!.settings), 0) : 0
+    const total = priced ? S.reduce((sum, id) => sum + costFor(s.scenes.get(id)!.settings), 0) : 0
     entries.push({
       type: 'item',
       id: 'multi.run',
@@ -562,7 +564,7 @@ function takeMenu(s: Snap, id: string, ctx: CanvasMenuContext): MenuSpec | null 
     : {
         type: 'item',
         id: 'take.rerun',
-        label: blocked || !scene ? `Chạy lại ${code}` : `Chạy lại ${code} · ${priceOf(costOf(scene.settings))}`,
+        label: blocked || !scene ? `Chạy lại ${code}` : `Chạy lại ${code} · ${priceOf(costFor(scene.settings))}`,
         icon: 'rerun',
         hint: blocked ?? undefined,
         disabled: runBlock ?? undefined,

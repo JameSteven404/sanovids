@@ -29,6 +29,9 @@ fake server in `src/providers/__tests__/canvasapp-e2e.test.ts`.
   `profileSpec()`: a model missing from the list → its fallback; Seedance used as loaded; MiniMax-H3 merged with its
   fallback (a list narrower than the fallback's → the fallback's; `enabled` / `can_create` not a boolean → false).
   `runVideoNode()` refuses `can_create === false` and a mode in `disabled_modes` (it ignores `enabled`).
+  `options.pricing` = `{ '<resolution, lower case>': { '<seconds>': credits } }` — the price canvasapp's Run button shows
+  (`runButtonText`); SanoVids shows the same (`mapping.profilePrice` → `providers/limits.takeCost`) and uses its own table
+  only while no read prices the settings.
   SanoVids reads it before submitting (cached 10 min; after a failed read the fallbacks apply and it is read again a
   minute later) and refuses the same things (`profileSpecOf` / `validateRequest` in `mapping.ts`). The inspector, the
   Run buttons and the run dialog use that same cache and the same rule (`profileIssues`, adapter `settingsLimits()`):

@@ -1,13 +1,14 @@
 import { Check, ChevronDown, FlaskConical, Pencil, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { MODELS, costOf, foreignModelBadge, foreignModelOption, modeLabel, settingsLabel } from '../../core/models'
+import { MODELS, foreignModelBadge, foreignModelOption, modeLabel, settingsLabel } from '../../core/models'
 import type { ModelId, Mode, Preset, VideoSettings } from '../../core/types'
 import { CREDIT_MARK, formatCredits, isSimulatedCredit } from '../../lib/credits'
 import { useCreditKind } from '../../store/credits'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast } from '../../store/ui'
 import { ConfirmButton, Section } from './bits'
+import { useTakeCost } from '../runs/shared'
 import { appliedPresetId, costTitle, creditTone, modelSpec, presetMatches, undoToastAction, useSelectedSceneIds } from './shared'
 
 /** Number of scenes running with each preset (applied, and not changed since — by the scene or by editing the preset). */
@@ -36,7 +37,7 @@ function PresetEditor({ preset, focusName }: { preset: Preset; focusName: boolea
   }, [focusName])
   const spec = modelSpec(preset.model)
   const creditKind = useCreditKind()
-  const cost = costOf(preset)
+  const cost = useTakeCost(preset)
   const update = (patch: Partial<Omit<Preset, 'id'>>) => useProject.getState().updatePreset(preset.id, patch)
   const commitName = () => {
     const next = name.trim()
@@ -159,7 +160,7 @@ interface RowProps {
 const PresetRow = memo(function PresetRow({ preset, usage, selected, active, editing, fresh, onEdit }: RowProps) {
   const spec = modelSpec(preset.model)
   const creditKind = useCreditKind()
-  const cost = costOf(preset)
+  const cost = useTakeCost(preset)
   const n = selected.length
   const apply = () => {
     if (!n) return
