@@ -124,6 +124,9 @@ export interface ProviderIssue {
   at: number
 }
 
+/** ProviderIssue.code while running takes' jobs cannot be followed (RemoteStatus.waiting: another account's jobs…). */
+export const JOB_UNREACHABLE = 'job-unreachable'
+
 export interface RunsState {
   takes: Take[]
   /** DEMO credits (play money, local). Never the user's real canvasapp balance — see store/credits. */
@@ -1468,7 +1471,15 @@ async function pollProvider(pid: ProviderId, remoteIds: string[], gen: number) {
   if (gen !== generation) return
   pollFailures.delete(pid)
   pollPausedUntil.delete(pid)
-  if (useRuns.getState().providerIssue?.provider === pid) useRuns.setState({ providerIssue: null })
+  // A job the provider cannot follow right now (made with another canvasapp account…): its take keeps running and
+  // the reason stays shown as the provider issue (since when: the first poll that said so) until every job is followed.
+  const waiting = statuses.find((st) => st.waiting && (st.state === 'queued' || st.state === 'processing'))?.waiting
+  const issue = useRuns.getState().providerIssue
+  if (waiting) {
+    if (issue?.provider !== pid || issue.code !== JOB_UNREACHABLE || issue.message !== waiting) {
+      useRuns.setState({ providerIssue: { provider: pid, code: JOB_UNREACHABLE, message: waiting, at: Date.now() } })
+    }
+  } else if (issue?.provider === pid) useRuns.setState({ providerIssue: null })
 
   const byRemote = new Map(
     useRuns

@@ -25,7 +25,10 @@
 //          it again for the UI (TTL-gated, shares the submit's read, a failed UI read never replaces a fresh OK list;
 //          `changed` after a login / a change of the site: no "Đọc lại" limit, a request sent after the call);
 //          onLimitsChange tells the app (see "/api/video-profiles: one cache" below for the invariants).
-// poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s.
+// poll:    ONE GET /api/video-jobs?project_id=… for all running takes, never more often than every 15 s. A job this
+//          computer sent or imported that its project's list does not show (or a list refused with 404 / 403) is only
+//          missing when the account logged in now owns that bridge project (GET /api/projects, read only then): one of
+//          another account (logged in since) is kept running, never failed, and named in `waiting`.
 // result:  GET /api/video-jobs/{id}/stream → MP4 blob (the engine extracts the poster frame); the desktop transport
 //          pulls it in pieces (progress, abort when the take is cancelled, resume when canvasapp allows it).
 //
@@ -135,8 +138,20 @@ export const DEFAULT_POLL_MS = 20_000
  * in separate small lanes — so 10 running jobs do not mean 10 parallel requests.
  */
 export const MAX_CONCURRENCY = 10
-/** A job missing from the list this many polls in a row is reported as failed. */
+/** A job missing from the list this many polls in a row is reported as failed (only on a project the account owns). */
 const MAX_MISSES = 3
+/**
+ * GET /api/projects (the logged-in account's projects) is read when a job of this computer is missing from its
+ * project's job list: a project not there (another account's bridge) is trusted to stay so this long; one that is
+ * there is read again after MIN_POLL_MS, at the next missing job.
+ */
+export const OWN_PROJECTS_RECHECK_MS = 5 * 60_000
+/**
+ * RemoteStatus.waiting of the takes whose job runs on a bridge project the logged-in account does not have: made with
+ * another canvasapp account (or that bridge was deleted). They keep running here and are never failed over it.
+ */
+export const otherAccountText = (n: number): string =>
+  `Không theo dõi được ${n} video đang tạo: chúng được tạo bằng tài khoản canvasapp.io.vn khác với tài khoản đang đăng nhập (hoặc phiên cầu nối của chúng đã bị xoá). Đăng nhập lại tài khoản đó để SanoVids theo dõi và tải video về — job vẫn chạy và tính credit ở tài khoản đó.`
 /** After a POST /api/video-jobs without a clear answer: wait this long before each look at the job list. */
 export const RECONCILE_DELAYS_MS = [15_000, 15_000]
 /**
@@ -610,6 +625,12 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   /** A job of the ledger that a job-list read does not show (yet): still treated as running this long after it was made. */
   const unlistedGraceMs = (MAX_MISSES + 1) * pollMs
   const misses = new Map<string, number>()
+  /**
+   * The projects of the account logged in now (GET /api/projects), read only when the poll misses a job this computer
+   * sent or imported: tells a job of ANOTHER account — logged in since, so its bridge is not listed and its job list
+   * reads empty or is refused — from one that is gone. This session's: forgotten with it (reset) and after a 401.
+   */
+  let ownProjects: { at: number; epoch: number; ids: Set<string> } | null = null
 
   function load(): GatewayState {
     try {
@@ -1470,6 +1491,31 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
     })
   }
 
+  /**
+   * Does the account logged in now have this bridge project (ownProjects)? null = cannot tell now (the list could not
+   * be read). Rethrows 401 (and forgets what it knew: the next login may be another account).
+   */
+  async function ownsProject(projectId: string): Promise<boolean | null> {
+    const known = ownProjects
+    if (known && known.epoch === sessionEpoch) {
+      const has = known.ids.has(projectId)
+      if (now() - known.at < (has ? MIN_POLL_MS : OWN_PROJECTS_RECHECK_MS)) return has
+    }
+    const epoch = sessionEpoch
+    try {
+      const list = await api.listProjects()
+      const ids = new Set(list.map((p) => (p && typeof p === 'object' ? (p as { project_id?: unknown }).project_id : undefined)).filter((id): id is string => typeof id === 'string'))
+      if (epoch === sessionEpoch) ownProjects = { at: now(), epoch, ids }
+      return ids.has(projectId)
+    } catch (e) {
+      if (isLoginRequired(e)) {
+        ownProjects = null
+        throw e
+      }
+      return null
+    }
+  }
+
   async function jobsOf(projectId: string): Promise<CanvasJob[]> {
     const hit = lists.get(projectId)
     // ≤ minPollMs (not pollMs): the engine polls every pollMs, a cache as long as that would skip every other poll.
@@ -1483,6 +1529,7 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
   // nodes of jobs still running stay on it.
   function resetSession() {
     sessionEpoch++
+    ownProjects = null
     state = { projectId: null, uploads: {}, entries: {} }
     storage.remove(STATE_KEY)
     storage.remove(ACCOUNT_KEY) // the next confirmed account is the first one of the new state
@@ -1597,14 +1644,45 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
         }
         byProject.set(d.projectId, [...(byProject.get(d.projectId) ?? []), { remoteId, jobId: d.jobId }])
       }
+      // Jobs this computer sent or imported (the ledger): a missing one may be another account's. A take this ledger
+      // does not know (another computer's, the storage lost, the simulation reset) is missing as before.
+      const mine = new Set([...Object.values(ledger.jobs), ...Object.values(ledger.imported)].map((r) => r.remoteId))
+      /** Takes kept running because their job is another account's (they all get `waiting` below). */
+      const elsewhere: RemoteStatus[] = []
       for (const [projectId, items] of byProject) {
-        const jobs = await jobsOf(projectId)
+        let jobs: CanvasJob[]
+        /** Does the logged-in account have this project? Asked once, only when the answer matters. */
+        let owned: boolean | null | undefined
+        try {
+          jobs = await jobsOf(projectId)
+        } catch (e) {
+          if (isLoginRequired(e)) ownProjects = null
+          // Refused (404 / 403) for a project the account logged in now does not have: another account's bridge —
+          // its takes wait below and the other projects are still followed. Anything else, or a project it has: as
+          // before (the engine keeps every take and backs off).
+          if (!(e instanceof CanvasappError) || (e.code !== 'not-found' && e.code !== 'forbidden')) throw e
+          if ((owned = await ownsProject(projectId)) !== false) throw e
+          jobs = []
+        }
         const byId = new Map(jobs.map((j) => [j.job_id, j]))
+        if (owned === undefined && items.some((i) => !byId.has(i.jobId) && mine.has(i.remoteId))) owned = await ownsProject(projectId)
         for (const { remoteId, jobId } of items) {
           const job = byId.get(jobId)
           if (job) {
             misses.delete(remoteId)
             out.push(mapJobStatus(remoteId, job, deps.id === 'dev' ? 'canvasapp giả lập' : 'canvasapp'))
+            continue
+          }
+          // Another account's bridge (logged in since): the job runs — and bills — there. Never a miss, never failed.
+          if (owned === false) {
+            const st: RemoteStatus = { remoteId, state: 'processing' }
+            elsewhere.push(st)
+            out.push(st)
+            continue
+          }
+          // Cannot tell now (GET /api/projects failed): not a miss either — asked again at the next poll.
+          if (owned === null && mine.has(remoteId)) {
+            out.push({ remoteId, state: 'processing' })
             continue
           }
           const n = (misses.get(remoteId) ?? 0) + 1
@@ -1615,6 +1693,15 @@ export function createCanvasappProvider(deps: CanvasappProviderDeps): CanvasappP
               : { remoteId, state: 'processing' },
           )
         }
+        if (owned === false) {
+          // read while another account is logged in: says nothing about the jobs of that project (runningNodes…)
+          lists.delete(projectId)
+          lastLists.delete(projectId)
+        }
+      }
+      if (elsewhere.length) {
+        const text = otherAccountText(elsewhere.length)
+        for (const st of elsewhere) st.waiting = text
       }
       return out
     },
