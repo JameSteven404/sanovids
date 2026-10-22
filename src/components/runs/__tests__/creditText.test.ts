@@ -43,6 +43,18 @@ describe('takeCostLine / takeCostLabel — a newer build\'s provider (migrate: m
   })
 })
 
+describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway', () => {
+  it('names SANO, never canvasapp, as the site that accepts and bills the job', () => {
+    const done = takeCostLine(take({ provider: 'sano-gateway', charged: false, remoteId: 'job_1' }))
+    expect(done.note).toBe('đã trả bằng credit SANO · chi phí do SANO quản lý')
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' })).note).toBe('credit SANO · trừ trên máy chủ SANO khi job được nhận')
+    expect(takeCostLabel(take({ provider: 'sano-gateway' }))).toBe('20 credit SANO')
+    for (const status of ['completed', 'failed', 'cancelled', 'queued'] as const) {
+      expect(takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status })).note).not.toContain('canvasapp')
+    }
+  })
+})
+
 describe('takeCostLine — development mode (dev)', () => {
   it('paid with simulated credit dev once the simulation accepted the job — never "canvasapp" or "demo"', () => {
     const done = takeCostLine(take({ provider: 'dev', charged: false, remoteId: 'r1' }))

@@ -20,7 +20,8 @@ export const takeCreditKind = (t: Pick<Take, 'provider'>): CreditKind => creditK
 export function takeCostLabel(t: Pick<Take, 'provider' | 'cost'> & Partial<Pick<Take, 'imported' | 'foreignProvider'>>): string {
   const kind = takeCreditKind(t)
   const amount = formatCredits(takeCostKnown(t), kind)
-  const said = kind === 'canvasapp' && amount !== '—' ? `${amount} canvasapp` : amount
+  const site = providerOf(t) === 'sano-gateway' ? 'SANO' : 'canvasapp'
+  const said = kind === 'canvasapp' && amount !== '—' ? `${amount} ${site}` : amount
   return said !== '—' && takeCostInferred(t) ? `≈ ${said}` : said
 }
 
@@ -52,6 +53,16 @@ export const GATEWAY_WORDS: Record<'canvasapp' | 'dev', GatewayWords> = {
   },
 }
 
+/** A take sent through the SANO app's gateway: SANO accepts and bills the job, never canvasapp. */
+export const SANO_WORDS: GatewayWords = {
+  credit: 'credit SANO',
+  site: 'máy chủ SANO',
+  check: 'kiểm tra trong app SANO',
+  approx: true,
+  paidNote: ' · chi phí do SANO quản lý',
+  siteName: 'SANO',
+}
+
 export interface TakeCostLine {
   kind: CreditKind
   /** "20 credit demo" | "20 credit dev" | "≈ 20 credit" (canvasapp: SanoVids' estimate of what canvasapp bills). */
@@ -81,7 +92,7 @@ export function takeCostLine(t: CostTake): TakeCostLine {
     if (ended) return { kind, amount, note: 'đã trả bằng credit demo · đã hoàn lại', struck: true }
     return { kind, amount, note: 'đã trả bằng credit demo (giả lập, không phải tiền thật)', struck: false }
   }
-  const w = GATEWAY_WORDS[kind]
+  const w = providerOf(t) === 'sano-gateway' ? SANO_WORDS : GATEWAY_WORDS[kind]
   if (t.imported) {
     // made on the site, outside SanoVids: paid there when it was made; importing it costs nothing
     const known = formatCredits(takeCostKnown(t), kind)
