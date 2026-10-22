@@ -57,8 +57,8 @@ Việc chỉ tính là đã giao khi có dòng ở đây (quy trình Zalo của 
 
 | Mã | Ai | Việc | Phạm vi file | Đầu ra | Cách kiểm | Trạng thái |
 |---|---|---|---|---|---|---|
-| UI-00 | Claude | Đo độ mượt hiện tại: pan, zoom, kéo node, chọn nhiều với 100–300 node; tìm chỗ render lại khi pan / zoom | chỉ đọc code; `src/perf/**` nếu cần thêm kịch bản | Bảng p50 / p95 và danh sách điểm nghẽn (file:dòng) | `npm run perf:build`, `perf:serve`, `perf:run` cỡ M / L / XL | Đang làm |
-| UI-01 | Codex | Mockup HTML tĩnh "canvas SanoVids kiểu mới" theo mục 1, giữ màu thiết kế D (đỏ Sano, 3 nền tối, nền sáng). Gồm: (a) thanh điều khiển nổi (tên dự án, nhóm phải trên, thanh công cụ, zoom ▾); (b) node cảnh / ảnh / video gọn, bo 16px, tên ngoài khung, thanh thao tác nổi khi chọn, cổng có icon; (c) popover "+ Thêm" có ô tìm, chip lọc, danh sách nhóm; (d) đường gióng khi kéo; (e) bảng thời gian chuyển động đề xuất | thư mục mockup riêng (không phải mã app) | `index.html` mở được không cần mạng + mục "Số đo cho người làm app" | Claude mở thử ở cả Tối / Sáng và bề rộng 1280 / 1920 | Đã giao |
+| UI-00 | Claude | Đo độ mượt hiện tại: pan, zoom, kéo node, chọn nhiều với 100–300 node; tìm chỗ render lại khi pan / zoom | chỉ đọc code; `src/perf/**` nếu cần thêm kịch bản | Bảng p50 / p95 và danh sách điểm nghẽn (file:dòng) | `npm run perf:build`, `perf:serve`, `perf:run` cỡ M / L / XL | Đã đo M / L (mục 3) |
+| UI-01 | Codex | Mockup HTML tĩnh "canvas SanoVids kiểu mới" theo mục 1, giữ màu thiết kế D (đỏ Sano, 3 nền tối, nền sáng). Gồm: (a) thanh điều khiển nổi (tên dự án, nhóm phải trên, thanh công cụ, zoom ▾); (b) node cảnh / ảnh / video gọn, bo 16px, tên ngoài khung, thanh thao tác nổi khi chọn, cổng có icon; (c) popover "+ Thêm" có ô tìm, chip lọc, danh sách nhóm; (d) đường gióng khi kéo; (e) bảng thời gian chuyển động đề xuất | thư mục mockup riêng (không phải mã app) | `index.html` mở được không cần mạng + mục "Số đo cho người làm app" | Claude mở thử ở cả Tối / Sáng và bề rộng 1280 / 1920 | Xong, chờ Minh duyệt |
 | UI-02 | — | Token và kiểu "viên nổi" cho thanh trên cùng / thanh công cụ / zoom | `src/styles/base.css`, `toolbar.css`, `topbar.css` | Chờ Minh duyệt UI-01 | test màu (`noLiteralColors`, `designD`) | Chờ duyệt |
 | UI-03 | — | Thanh thao tác nổi trên node đang chọn + cổng có icon | `components/canvas/**` | Chờ Minh duyệt UI-01 | vitest + kiểm trong trình duyệt | Chờ duyệt |
 | UI-04 | — | Popover "+ Thêm" có tìm kiếm | `components/canvas/**` | Chờ Minh duyệt UI-01 | vitest + kiểm trong trình duyệt | Chờ duyệt |
@@ -66,3 +66,25 @@ Việc chỉ tính là đã giao khi có dòng ở đây (quy trình Zalo của 
 | UI-06 | — | Thời gian chuyển động thống nhất (75–150 ms, chỉ màu / độ mờ / transform) | CSS các vùng | Chờ Minh duyệt UI-01 | perf + test giảm chuyển động (`data-motion`) | Chờ duyệt |
 
 Quy tắc cho mọi người làm: đọc CLAUDE.md trước; chỉ sửa file trong phạm vi; không push; không chạy Electron hay trình duyệt trong sandbox; không gọi canvasapp.io.vn; không đụng `%APPDATA%\SanoVids`; chữ giao diện tiếng Việt.
+
+## 3. Số đo hiện tại (UI-00, 2026-10-22)
+
+`npm run perf:run -- --target web --size M|L --runs 3 --browser <Chrome>`, chạy ẩn (headless) trên máy của Minh trong lúc
+máy còn chạy việc khác, nên chỉ dùng để so tương đối giữa các bài; ngân sách chính thức là của bản `.exe`.
+Số là p95 `workMs` (React + layout của một bước, chưa tính vẽ). Một khung hình ở 60 Hz là 16,7 ms.
+
+| Bài | M (300 cảnh) | L (600 cảnh) | Ngân sách M / L | Nhận xét |
+|---|---|---|---|---|
+| `zoom` (một bước thu phóng) | 28,4 | 51,8 | 7,2 / 12 | Chậm nhất: mỗi bước vượt một khung hình |
+| `panFar` (kéo canvas ở zoom 0,15) | 16,6 | 29,4 | 6 / 10 | Nhìn xa: nhiều thẻ vào / ra khung |
+| `pan04` (kéo ở zoom 0,4) | 10,8 | 26,9 | 3,6 / 6 | |
+| `pan` (kéo ở zoom 1) | 5,1 | 9,1 | 3,6 / 6 | |
+| `hover` (rê chuột qua thẻ) | 13,6 | 19,3 | 3,6 / 6 | Rê chuột còn làm React vẽ lại |
+| `select` (chọn cảnh) | 37,2 | 31,3 | 18 / 30 | |
+| `star` (bấm sao) | 16,2 | 28 | 4,8 / 8 | |
+| `drag50` (kéo 50 thẻ) | 26 | 37,3 | 7,2 / 12 | |
+| `lodSwitch` (qua lại ngưỡng 55%) | 45,9 | 30,3 | 18 / 30 | |
+| `autosaveRuns` | 26,5 | 47,3 | 3,6 / 6 | |
+
+Hướng xử lý (làm cùng UI-02…UI-06, đo lại sau mỗi bước): rê chuột chỉ bằng CSS, không qua store; zoom / pan không làm
+vẽ lại thẻ (chỉ thẻ vào / ra khung); thanh tiến độ dùng `transform: scaleX` thay cho `width`.
