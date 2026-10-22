@@ -8,7 +8,7 @@ import type { Project, Scene } from '../../../core/types'
 import { useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
 import { useUI } from '../../../store/ui'
-import { loadCanvasMenu, onCanvasContextMenu, onCanvasMenuKey, resolveTarget, type CanvasMenuBridge } from '../canvasContextMenu'
+import { loadCanvasMenu, onCanvasContextMenu, onCanvasMenuKey, openNodeMenu, resolveTarget, type CanvasMenuBridge } from '../canvasContextMenu'
 import { useContextMenu } from '../contextMenuStore'
 
 // ---- a tiny fake DOM: enough of Element for closest / getAttribute / classList ----
@@ -195,5 +195,18 @@ describe('Menu key / Shift+F10', () => {
     expect(echo.preventDefault).toHaveBeenCalled()
     await loadCanvasMenu()
     expect(useContextMenu.getState().open?.seq).toBe(opened!.seq)
+  })
+})
+
+describe('"⋯" of a node action bar (UI-03 NodeActionBar)', () => {
+  it('opens that node’s right-click menu below the button and selects the node, like a right-click on it', async () => {
+    vi.stubGlobal('CSS', { escape: (v: string) => v })
+    Object.assign(stage, { querySelector: () => null })
+    const anchor = { left: 100, top: 20, right: 128, bottom: 48, width: 28, height: 28 } as DOMRect
+    openNodeMenu('s1', anchor, (p) => p)
+    expect(useUI.getState().selectedIds).toEqual(['s1'])
+    await loadCanvasMenu()
+    const open = useContextMenu.getState().open
+    expect(open).toMatchObject({ origin: 'mouse', spec: { label: 'Menu cảnh S01' }, anchor: { left: 100, top: 20, right: 128, bottom: 48 } })
   })
 })

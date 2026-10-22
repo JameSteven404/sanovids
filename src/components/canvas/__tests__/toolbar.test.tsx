@@ -143,12 +143,9 @@ describe('selection tray projection', () => {
     // A selected video drops the library selection (pickAssetSelection gives 0 images): no connect.
     expect(toolbarTrayContents({ ...selection, nodes: 2, scenes: 1, assets: 0 })).not.toContain('connect')
   })
-  it('shows only status-appropriate video operations, and only for exactly one take', () => {
-    expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'completed' })).toEqual(['star', 'download', 'save', 'delete'])
-    expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'failed' })).toEqual(['rerun', 'delete'])
-    expect(toolbarTrayContents({ ...selection, nodes: 1, takeStatus: 'processing' })).toEqual(['delete'])
-    expect(traySummary({ ...selection, nodes: 1, takeStatus: 'completed' }, 'S03·T2')).toBe('S03·T2')
-    expect(toolbarTrayContents({ ...selection, nodes: 2, takeStatus: 'completed' })).toEqual(['delete'])
+  it('one video: no tray — its own action bar above the node (NodeActionBar); several items still get the tray', () => {
+    expect(toolbarTrayContents({ ...selection, nodes: 1 })).toEqual([])
+    expect(toolbarTrayContents({ ...selection, nodes: 2 })).toEqual(['delete'])
   })
   it('cuts wires only when no nodes are selected', () => {
     expect(toolbarTrayContents({ ...selection, cuttableWires: 3 })).toEqual(['cut'])

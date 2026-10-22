@@ -48,7 +48,7 @@ import {
 } from './canvasModel'
 import { cutEdge } from './edges'
 import { isTypingChord as inlineEditKeyBubbles, isSaveChord as inlineEditSavesDraft, useShortcutLabel } from '../../lib/keymapPrefs'
-import { NodeSizer, useBodyReady, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
+import { NodeSizer, PortIcon, useBodyReady, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RefPreview, type PreviewAnchor } from './RefPreview'
 import {
   filesToSceneTiles,
@@ -249,7 +249,9 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           style={DOT_STYLE}
           isConnectableStart={false}
           title="Ảnh tham chiếu: kéo chấm phải của ô ảnh vào bất kỳ đâu trên node"
-        />
+        >
+          {selected && <PortIcon kind="image" />}
+        </Handle>
         {/*
           Takes are created by running the scene, never by wiring: this handle anchors the 'out' wires. Dragged to a
           folder node it wires the scene for auto-save ('autosave': every new video of the scene is saved there).
@@ -263,7 +265,9 @@ function SceneNodeView({ id, selected }: NodeProps<SceneFlowNode>) {
           isConnectableStart
           isConnectableEnd={false}
           title="Các video (take) tạo từ cảnh này · kéo chấm này vào một Thư mục để tự lưu mọi video mới của cảnh"
-        />
+        >
+          {selected && <PortIcon kind="video" />}
+        </Handle>
         {transform && (
           <>
             <Handle type="target" position={Position.Left} id="first" className="cv-h cv-h-first" isConnectableStart={false} title="Khung đầu">

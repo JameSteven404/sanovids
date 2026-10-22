@@ -116,6 +116,24 @@ body:has(.cv-toolbar-host[data-dock='top']) .toasts {
 .cv-toolbar-tray .cv-toolbar-button svg { flex: none; }
 .cv-toolbar-tray .cv-toolbar-button::after { display: none; }
 .cv-stage:has(.react-flow__node.dragging) .cv-toolbar-tray { visibility: hidden; }
+
+/* UI-03: the ONE selected node's floating action bar (NodeActionBar inside React Flow's NodeToolbar): glass like the
+   toolbar, fixed size at every zoom; hidden while a node is dragged, like the tray. */
+.cv-node-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.cv-node-bar .cv-toolbar-button { width: auto; min-width: 28px; height: 28px; padding: 0 6px; gap: 5px; font-size: 11px; font-weight: 500; }
+.cv-node-bar .cv-toolbar-sep { height: 16px; }
+.cv-stage:has(.react-flow__node.dragging) .cv-node-bar { visibility: hidden; }
 .cv-toolbar-backdrop { position: absolute; inset: 0; z-index: 8; pointer-events: auto; }
 .cv-toolbar-host .cv-toolbar-menu {
   position: absolute;

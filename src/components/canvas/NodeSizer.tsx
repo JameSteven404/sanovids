@@ -5,7 +5,7 @@
 // starts a wire / grabs a wire end instead of a resize.
 // Also the node-geometry hooks shared by the node types: useNodeBox (drawn size) and useRemeasureOn (dots that move).
 import { NodeResizer, useStore, useUpdateNodeInternals, type Handle as HandleBounds, type ReactFlowState } from '@xyflow/react'
-import { RotateCcw } from 'lucide-react'
+import { ImageIcon, RotateCcw, Video } from 'lucide-react'
 import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type SyntheticEvent } from 'react'
 import type { Size } from '../../core/types'
 import { NODE_SIZE } from '../../store/project'
@@ -23,6 +23,15 @@ const farOf = (s: ReactFlowState) => s.transform[2] < LOD_ZOOM
  */
 export function useFarView(): boolean {
   return useDeferredValue(useStore(farOf))
+}
+
+/**
+ * UI-03 (docs/UI-MUOT.md): the typed port a SELECTED node's dot grows into — a picture or a video icon, like Magnific.
+ * Drawn on the dot's 0 × 0 anchor (canvas.css .cv-h-ico), so the wire ends never move. Only while selected: icons on
+ * every node would add two SVGs per card.
+ */
+export function PortIcon({ kind }: { kind: 'image' | 'video' }) {
+  return <span className="cv-h-ico" aria-hidden="true">{kind === 'image' ? <ImageIcon size={12} /> : <Video size={12} />}</span>
 }
 
 /** The canvas is being panned / zoomed right now (CanvasView onMoveStart / onMoveEnd). */

@@ -11,7 +11,7 @@ import { useProject } from '../../store/project'
 import { useUI } from '../../store/ui'
 import { FullImage } from '../common/Media'
 import { assetMapOf, KIND_LABEL, usageOf } from './canvasModel'
-import { NodeSizer, useFarView, useNodeBox } from './NodeSizer'
+import { NodeSizer, PortIcon, useFarView, useNodeBox } from './NodeSizer'
 import './canvas.css'
 import './assetNode.css'
 
@@ -85,7 +85,9 @@ function AssetNodeView({ id, selected }: NodeProps<AssetFlowNode>) {
           <span className="cv-tile-name">{asset.name}</span>
           <span className={`cv-tile-use${usage ? '' : ' is-none'}`}>{usage ? `${usage} cảnh` : 'chưa nối'}</span>
         </div>
-        <Handle type="source" position={Position.Right} id="out" className="cv-h cv-h-out" title="Kéo thả vào bất kỳ đâu trên node cảnh để nối" />
+        <Handle type="source" position={Position.Right} id="out" className="cv-h cv-h-out" title="Kéo thả vào bất kỳ đâu trên node cảnh để nối">
+          {selected && <PortIcon kind="image" />}
+        </Handle>
       </div>
       <NodeSizer id={id} kind="asset" selected={!!selected} sized={!!box} />
     </>

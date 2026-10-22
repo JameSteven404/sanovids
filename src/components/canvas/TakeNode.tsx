@@ -38,7 +38,7 @@ import {
   takeDotTop,
   takeIndexOf,
 } from './canvasModel'
-import { NodeSizer, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
+import { NodeSizer, PortIcon, useFarView, useNodeBox, useRemeasureOn } from './NodeSizer'
 import { RENAME_TAKE_EVENT, takePendingRename, type RenameTakeDetail } from './takeEvents'
 import { footerTitle, starTitle, titleLine, TITLE_LINE_SELECTOR } from './takeNodeModel'
 import { TakeBarRest, TakePlayer } from './TakePlayer'
@@ -447,7 +447,9 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
         )}
         {!far && <TakeMainButton take={take} code={code} order={order} />}
 
-        <Handle type="target" position={Position.Left} id="in" className="cv-h cv-h-take-in" style={handleStyle} isConnectable={false} />
+        <Handle type="target" position={Position.Left} id="in" className="cv-h cv-h-take-in" style={handleStyle} isConnectable={false}>
+          {selected && <PortIcon kind="video" />}
+        </Handle>
         <Handle
           type="source"
           position={Position.Right}
@@ -457,7 +459,9 @@ function TakeNodeView({ id, selected, data }: NodeProps<TakeFlowNode>) {
           isConnectableStart={done}
           isConnectableEnd={false}
           title={done ? 'Kéo vào Thư mục để lưu · thả ra nền để tạo cảnh tiếp theo' : 'Video chưa tạo xong'}
-        />
+        >
+          {selected && done && <PortIcon kind="video" />}
+        </Handle>
       </div>
       <NodeSizer id={id} kind="take" selected={!!selected} sized={!!box} />
     </>

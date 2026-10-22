@@ -15,7 +15,7 @@ import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { hasTakeDrag, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
-import { useFarView, useRemeasureOn } from './NodeSizer'
+import { PortIcon, useFarView, useRemeasureOn } from './NodeSizer'
 import './saving.css'
 
 export type FolderFlowNode = Node<Record<string, unknown>, 'folder'>
@@ -260,7 +260,9 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
         id="in"
         className="cv-h cv-h-folder"
         title="Nối video hoặc cảnh vào đây để lưu · kéo từ đây tới một video / một cảnh"
-      />
+      >
+        {selected && <PortIcon kind="video" />}
+      </Handle>
     </div>
   )
 }

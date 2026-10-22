@@ -149,21 +149,19 @@ export function toggleCanvasOnly(now: PanelState, remembered: PanelState | null)
 }
 export const canvasOnlyLabel = (now: PanelState) => now.left || now.right ? 'Chỉ canvas (ẩn hai khung bên)' : 'Hiện lại hai khung bên'
 
-export type TrayAction = 'connect' | 'duplicate' | 'star' | 'download' | 'save' | 'rerun' | 'delete' | 'cut'
+export type TrayAction = 'connect' | 'duplicate' | 'delete' | 'cut'
 /**
  * What is selected, counted with the shared rules: `nodes` = canvas items; `assets` = what C would link
  * (actions.pickAssetSelection: the canvas wins over the library, a selected video drops the library);
  * `fromLibrary` = those assets were picked in Thư viện, not on the canvas.
  */
-export interface TraySelection { nodes: number; scenes: number; assets: number; fromLibrary?: boolean; takeStatus?: string; cuttableWires: number }
+export interface TraySelection { nodes: number; scenes: number; assets: number; fromLibrary?: boolean; cuttableWires: number }
 
 /**
- * The tray: 2+ canvas items, exactly one take, or wires only; also one scene + images picked in Thư viện (the case
- * the old "… bấm C để nối" pill announced: the only sign those images will be linked). One scene or one image: none.
+ * The tray: 2+ canvas items or wires only; also one scene + images picked in Thư viện (the case the old "… bấm C để
+ * nối" pill announced: the only sign those images will be linked). One node: none — its own action bar (NodeActionBar).
  */
 export function toolbarTrayContents(selection: TraySelection): TrayAction[] {
-  if (selection.nodes === 1 && selection.takeStatus) return selection.takeStatus === 'completed' ? ['star', 'download', 'save', 'delete']
-    : selection.takeStatus === 'failed' || selection.takeStatus === 'cancelled' ? ['rerun', 'delete'] : ['delete']
   // Same condition as connectSelection: at least one scene and one image to link.
   const connect = selection.scenes >= 1 && selection.assets >= 1
   if (selection.nodes >= 2) return [...(connect ? ['connect' as const] : []), ...(selection.scenes ? ['duplicate' as const] : []), 'delete']
@@ -172,9 +170,8 @@ export function toolbarTrayContents(selection: TraySelection): TrayAction[] {
   return []
 }
 
-/** The tray's first words: "4 mục · 1 ảnh + 3 cảnh", "S03·T2", "2 dây". */
-export function traySummary(selection: TraySelection, takeCode?: string): string {
-  if (selection.nodes === 1 && selection.takeStatus && takeCode) return takeCode
+/** The tray's first words: "4 mục · 1 ảnh + 3 cảnh", "2 dây". */
+export function traySummary(selection: TraySelection): string {
   const connect = selection.scenes >= 1 && selection.assets >= 1
   if (selection.nodes >= 2 || connect) {
     const parts = selection.nodes >= 2 ? [`${selection.nodes} mục`] : []

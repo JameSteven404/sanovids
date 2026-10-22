@@ -140,6 +140,7 @@ import {
 import { maybeSpaceRows } from './rowSpacing'
 import { SceneNode, type SceneFlowNode } from './SceneNode'
 import { typeOnNode } from './SceneNodeEditor'
+import { NodeActionBar } from './NodeActionBar'
 import { setCanvasMoving, useFarView } from './NodeSizer'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
 import {
@@ -1251,6 +1252,7 @@ function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> })
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
         <WireCutLayer />
+        <NodeActionBar />
         {showMinimap && !minimapHidden && (
           <MiniMap<CanvasNode>
             position="bottom-right"

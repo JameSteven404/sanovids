@@ -188,6 +188,27 @@
   transform: scale(1.35);
   box-shadow: 0 0 0 4px var(--h-glow);
 }
+/* UI-03 typed ports: a selected node's dot becomes a 22 px circle with its type's icon (NodeSizer PortIcon), centred on
+   the 0 × 0 anchor — wires never move. It replaces the plain dot, which would paint over it (::after comes later). */
+.cv-stage .cv-h-ico {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 1px solid var(--h-c);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--h-c);
+  pointer-events: none;
+}
+.cv-stage .cv-h:has(.cv-h-ico)::after {
+  opacity: 0;
+}
 /* the scene's ref / take dots and the take's in / out dots get their `top` inline (canvasModel DOT_TOP / takeDotTop:
    the middle of the take's poster, so the scene → take wire of an unresized row runs straight) */
 

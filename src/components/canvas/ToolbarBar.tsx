@@ -233,7 +233,7 @@ export const ToolbarBar = memo(function ToolbarBar({ onArrange, onFit, big }: { 
         </ToolbarButton>}
       </Fragment>)}
     </div>
-    {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} openMenu={openMenu} focusBar={focusMore} />}
+    {!dragging && <ToolbarTray anchor={rect} stage={stage} side={side} focusBar={focusMore} />}
     {menu && <ToolbarMenu key={menu.label} {...menu} anchor={rect} stage={stage} side={side} onClose={closeMenu} />}
     {arrangeOpen && !dragging && <Suspense fallback={null}><ArrangePopover anchor={arrangeAnchor() ?? document.body} side={POPOVER_SIDE[side]} onClose={closeArrange} /></Suspense>}
     <span className="cv-toolbar-sr" id="cv-toolbar-grip-help">{gripHelpText(IS_MAC)}</span>

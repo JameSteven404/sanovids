@@ -16,7 +16,7 @@ import { closeContextMenu, openContextMenu, openWhenLoaded, type MenuOrigin } fr
 import { contextSelection, isMacSecondaryPress, isMenuKey, type ContextKind, type MenuItem } from './menuModel'
 
 /** Parts of the stage that have their own behaviour (or none): a right-click there opens no canvas menu. */
-const NO_MENU = '.cv-toolbar-host, .react-flow__minimap, .react-flow__controls, .react-flow__attribution, .cv-menu, .cv-empty, .cv-sn-mention, .react-flow__edgeupdater'
+const NO_MENU = '.cv-toolbar-host, .cv-node-bar, .react-flow__minimap, .react-flow__controls, .react-flow__attribution, .cv-menu, .cv-empty, .cv-sn-mention, .react-flow__edgeupdater'
 const NODE_TYPES = new Set(['scene', 'take', 'asset', 'folder'])
 /** The browser may send its own contextmenu event after the Menu key / Shift+F10: ignored for this long. */
 const KEYBOARD_ECHO_MS = 600
@@ -179,26 +179,33 @@ export function onCanvasMenuKey(e: KeyboardEvent, bridge: CanvasMenuBridge): voi
   e.preventDefault()
   e.stopPropagation()
   const ui = useUI.getState()
-  const project = useProject.getState().project
-  const takes = useRuns.getState().takes
   const first = ui.selectedIds[0]
   const nodeEl = first ? stage.querySelector(`.react-flow__node[data-id="${CSS.escape(first)}"]`) : null
   const box = (nodeEl ?? stage).getBoundingClientRect()
   const center = { x: box.left + box.width / 2, y: box.top + Math.min(box.height / 2, 120) }
-  let resolved: ResolvedTarget = { target: { kind: 'pane' }, kind: 'pane' }
-  if (first && nodeEl) {
-    const kind: ContextKind = project.scenes.some((s) => s.id === first)
-      ? 'scene'
-      : takes.some((t) => t.id === first)
-        ? 'take'
-        : project.assets.some((a) => a.id === first)
-          ? 'asset'
-          : 'folder'
-    resolved = { target: { kind, id: first } as CanvasTarget, kind, id: first, el: nodeEl }
-  }
+  const resolved: ResolvedTarget = first && nodeEl ? nodeTarget(first, nodeEl) : { target: { kind: 'pane' }, kind: 'pane' }
   bridge.closeOthers()
   keyboardOpenedAt = performance.now()
   openFor(resolved, { flow: bridge.toFlow(center), anchor: nodeEl ? box : undefined, at: nodeEl ? undefined : center, origin: 'keyboard' })
+}
+
+/** A node id → its menu target (scene / take / image / folder by the stores). */
+function nodeTarget(id: string, el: Element | null): ResolvedTarget {
+  const project = useProject.getState().project
+  const kind: ContextKind = project.scenes.some((s) => s.id === id)
+    ? 'scene'
+    : useRuns.getState().takes.some((t) => t.id === id)
+      ? 'take'
+      : project.assets.some((a) => a.id === id)
+        ? 'asset'
+        : 'folder'
+  return { target: { kind, id } as CanvasTarget, kind, id, el }
+}
+
+/** "⋯" of a node's action bar (canvas NodeActionBar): that node's right-click menu, below the button. */
+export function openNodeMenu(id: string, anchor: DOMRect, toFlow: (p: XY) => XY): void {
+  const nodeEl = stageEl()?.querySelector(`.react-flow__node[data-id="${CSS.escape(id)}"]`) ?? null
+  openFor(nodeTarget(id, nodeEl), { flow: toFlow({ x: anchor.left, y: anchor.bottom }), anchor, origin: 'mouse' })
 }
 
 /**

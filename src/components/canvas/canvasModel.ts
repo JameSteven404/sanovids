@@ -960,7 +960,7 @@ export function clientPoint(e: MouseEvent | TouchEvent): { x: number; y: number 
 }
 
 /** Overlays on the stage that block a wire drop (it must not fall through to the canvas or a card underneath). */
-export const DROP_BLOCKERS = '.cv-toolbar-bar, .cv-toolbar-tray, .cv-menu, .react-flow__minimap, .react-flow__panel'
+export const DROP_BLOCKERS = '.cv-toolbar-bar, .cv-toolbar-tray, .cv-node-bar, .cv-menu, .react-flow__minimap, .react-flow__panel'
 
 /**
  * The React Flow node under a screen point (ignores the connection line), or null. 'pane' when over empty canvas.
