@@ -14,11 +14,13 @@
 //     kind: 'dev' | 'canvasapp'          follows the provider NEW takes use (activeProviderId(), Settings choice);
 //                                        ('demo' only from creditInfoFrom for legacy displays).
 //     balance: number | null             last confirmed balance of the active gateway, null = unknown.
-//     status: 'ok' | 'loading' | 'login-required' | 'unavailable' | 'error'
+//     status: 'ok' | 'loading' | 'login-required' | 'unavailable' | 'error' | 'off'
 //                                        'loading' until the first answer; 'login-required' after a 401 (balance
 //                                        null → show "Đăng nhập"); 'unavailable' when the gateway cannot be used here
-//                                        (real canvasapp outside the desktop app); 'error' otherwise (balance = last
-//                                        known value or null, see `error`). demo: always 'ok'.
+//                                        (real canvasapp outside the desktop app); 'off' when development mode is locked
+//                                        and the user has not turned the canvasapp gateway on (providers/index
+//                                        canvasappOff(): nothing is read, nothing is sent); 'error' otherwise (balance =
+//                                        last known value or null, see `error`). demo: always 'ok'.
 //     refresh(): Promise<void>           re-read now (forced, bypasses the 15 s throttle). demo: no-op.
 //     updatedAt, error, refreshing       when the balance was confirmed / Vietnamese problem text / read in flight.
 //   useCreditKind(): CreditKind          just the kind (cheaper when no balance is shown).
@@ -52,7 +54,8 @@ import { useEffect, useMemo } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { creditKindOf, type CreditKind } from '../lib/credits'
-import { activeGateway, activeProviderId, useProviderPrefs } from '../providers'
+import { activeGateway, activeProviderId, CANVASAPP_OFF_REASON, canvasappOff, getProvider, useProviderPrefs } from '../providers'
+import { accountKeyOf, type CanvasappProvider } from '../providers/canvasapp/adapter'
 import { CanvasappError, canvasappErrorText, isLoginRequired, type CanvasappApi } from '../providers/canvasapp/api'
 import { WEB_UNAVAILABLE } from '../providers/canvasapp/transport'
 import { onRunEvent, resumeProviderPolling, useRuns, type RunEvent } from './runs'
@@ -79,7 +82,7 @@ export const CREDITS_MIN_REFRESH_MS = 15_000
 /** Background refresh period while the window is visible (a gateway is active). */
 export const CREDITS_SYNC_INTERVAL_MS = 60_000
 
-export type RealCreditsStatus = 'idle' | 'loading' | 'ok' | 'login-required' | 'unavailable' | 'error'
+export type RealCreditsStatus = 'idle' | 'loading' | 'ok' | 'login-required' | 'unavailable' | 'error' | 'off'
 
 export interface RealCreditsState {
   /** Last balance confirmed by canvasapp; null = unknown (show "—"). Cleared on login-required / unavailable / reset. */
@@ -104,6 +107,16 @@ export interface RealCreditsDeps {
   now?: () => number
   /** Throttle for non-forced reads (default CREDITS_MIN_REFRESH_MS). */
   minIntervalMs?: number
+  /**
+   * Every confirmed /api/me answer (a balance was read), as canvasapp sent it — only one that is applied (never one a
+   * reset() made stale). The app: which account the gateway's session state belongs to (provider.noteAccount).
+   */
+  onMe?: (me: unknown) => void
+  /**
+   * A reason when the gateway must not be asked at all right now (the canvasapp gateway turned off while development
+   * mode is locked): the read answers 'off' with this text and sends nothing. Optional.
+   */
+  blocked?: () => string | null
 }
 
 export interface RealCredits {
@@ -133,20 +146,22 @@ export function createRealCredits(deps: RealCreditsDeps): RealCredits {
   /** Bumped by reset(): a read started before is ignored when it lands. */
   let epoch = 0
 
-  async function read(): Promise<Partial<RealCreditsState>> {
+  async function read(): Promise<{ patch: Partial<RealCreditsState>; me?: unknown }> {
     try {
+      const blocked = deps.blocked?.() ?? null
+      if (blocked) return { patch: { status: 'off', balance: null, error: blocked } }
       const api = deps.api()
       const avail = await api.transport.available()
-      if (!avail.ok) return { status: 'unavailable', balance: null, error: avail.reason || WEB_UNAVAILABLE }
+      if (!avail.ok) return { patch: { status: 'unavailable', balance: null, error: avail.reason || WEB_UNAVAILABLE } }
       const me = await api.me()
       const balance = balanceOf((me as { credits_balance?: unknown } | undefined)?.credits_balance)
-      if (balance === null) return { status: 'error', balance: null, error: NO_BALANCE }
-      return { status: 'ok', balance, updatedAt: now(), error: null }
+      if (balance === null) return { patch: { status: 'error', balance: null, error: NO_BALANCE } }
+      return { patch: { status: 'ok', balance, updatedAt: now(), error: null }, me }
     } catch (e) {
-      if (isLoginRequired(e)) return { status: 'login-required', balance: null, error: canvasappErrorText(e) }
-      if (e instanceof CanvasappError && e.code === 'unavailable') return { status: 'unavailable', balance: null, error: e.message || WEB_UNAVAILABLE }
+      if (isLoginRequired(e)) return { patch: { status: 'login-required', balance: null, error: canvasappErrorText(e) } }
+      if (e instanceof CanvasappError && e.code === 'unavailable') return { patch: { status: 'unavailable', balance: null, error: e.message || WEB_UNAVAILABLE } }
       // Network / server trouble: keep the last confirmed balance (updatedAt says how old it is).
-      return { status: 'error', error: canvasappErrorText(e) }
+      return { patch: { status: 'error', error: canvasappErrorText(e) } }
     }
   }
 
@@ -154,9 +169,16 @@ export function createRealCredits(deps: RealCreditsDeps): RealCredits {
     const mine = epoch
     lastAttempt = now()
     store.setState((s) => ({ refreshing: true, status: s.status === 'idle' ? 'loading' : s.status }))
-    const p = read().then((patch) => {
+    const p = read().then(({ patch, me }) => {
       if (mine !== epoch) return store.getState() // reset meanwhile: forget this answer
       inflight = null
+      if (me !== undefined && deps.onMe) {
+        try {
+          deps.onMe(me)
+        } catch {
+          /* the balance is shown anyway */
+        }
+      }
       store.setState({ ...patch, refreshing: false })
       return store.getState()
     })
@@ -295,7 +317,21 @@ export function createCreditsSync(deps: CreditsSyncDeps): { start: () => () => v
 // Default instance (the app's)
 // ---------------------------------------------------------------------------------------------
 
-const realCredits = createRealCredits({ api: () => activeGateway().api })
+/** The balance of the active gateway must not be read: canvasapp turned off while development mode is locked. */
+const gatewayOff = (): boolean => activeProviderId() === 'canvasapp' && canvasappOff()
+
+const realCredits = createRealCredits({
+  api: () => activeGateway().api,
+  blocked: () => (gatewayOff() ? CANVASAPP_OFF_REASON : null),
+  // The balance's account is the one logged in now: another one than the gateway's bridge state was built under (a
+  // kept login restored after a restart, another account logged in on canvasapp's page) resets that state, like Đăng
+  // xuất. A reset() of this store on a gateway switch drops a stale answer before it gets here.
+  // (the provider that runs the takes: the registry's — the gateway's own one in the app)
+  onMe: (me) => {
+    const p = getProvider(activeProviderId()) as Partial<CanvasappProvider>
+    if (typeof p.noteAccount === 'function') p.noteAccount(accountKeyOf(me))
+  },
+})
 
 export const useRealCredits = realCredits.store
 export const refreshRealCredits = realCredits.refresh
@@ -319,7 +355,7 @@ useRealCredits.subscribe((s, prev) => {
 
 const sync = createCreditsSync({
   refresh: refreshRealCredits,
-  isActive: () => creditKindOf(activeProviderId()) !== 'demo',
+  isActive: () => creditKindOf(activeProviderId()) !== 'demo' && !gatewayOff(),
   activeKey: () => activeProviderId(),
   subscribeActive: (listener) => useProviderPrefs.subscribe(() => listener()),
   subscribeJobs: onRunEvent,
@@ -332,7 +368,7 @@ export const startRealCreditsSync = sync.start
 // What the UI shows
 // ---------------------------------------------------------------------------------------------
 
-export type CreditStatus = 'ok' | 'loading' | 'login-required' | 'unavailable' | 'error'
+export type CreditStatus = 'ok' | 'loading' | 'login-required' | 'unavailable' | 'error' | 'off'
 
 export interface CreditInfo {
   kind: CreditKind
@@ -354,11 +390,15 @@ type RealView = Pick<RealCreditsState, 'balance' | 'status' | 'updatedAt' | 'err
 const refreshDemo = (): Promise<void> => Promise.resolve()
 const refreshReal = (): Promise<void> => refreshRealCredits({ force: true }).then(() => undefined)
 
-/** Pure: the CreditInfo for a kind, the demo balance and the gateway-balance state (dev and canvasapp read the latter). */
-export function creditInfoFrom(kind: CreditKind, demoCredits: number, real: RealView): CreditInfo {
+/**
+ * Pure: the CreditInfo for a kind, the demo balance and the gateway-balance state (dev and canvasapp read the latter).
+ * `off`: the canvasapp gateway is turned off (locked development mode) — 'off', nothing known, nothing to read.
+ */
+export function creditInfoFrom(kind: CreditKind, demoCredits: number, real: RealView, off = false): CreditInfo {
   if (kind === 'demo') {
     return { kind, balance: demoCredits, status: 'ok', refresh: refreshDemo, updatedAt: null, error: null, refreshing: false }
   }
+  if (off && kind === 'canvasapp') return { kind, balance: null, status: 'off', refresh: refreshDemo, updatedAt: null, error: CANVASAPP_OFF_REASON, refreshing: false }
   return {
     kind,
     balance: real.balance,
@@ -373,22 +413,28 @@ export function creditInfoFrom(kind: CreditKind, demoCredits: number, real: Real
 
 /** Non-reactive snapshot of what useCreditInfo() returns. */
 export function getCreditInfo(): CreditInfo {
-  return creditInfoFrom(creditKindOf(activeProviderId()), useRuns.getState().credits, useRealCredits.getState())
+  return creditInfoFrom(creditKindOf(activeProviderId()), useRuns.getState().credits, useRealCredits.getState(), gatewayOff())
 }
 
-/** Which wallet the next run uses; re-renders when the Settings choice changes. */
+/** Which wallet the next run uses; re-renders when the Settings choice or the development-mode lock changes it. */
 export function useCreditKind(): CreditKind {
-  useProviderPrefs((s) => s.provider)
+  useProviderPrefs((s) => s.active)
   return creditKindOf(activeProviderId())
+}
+
+/** The canvasapp gateway is turned off now (locked development mode, not chosen): a boolean selector. */
+export function useGatewayOff(): boolean {
+  return useProviderPrefs((s) => s.active === 'canvasapp' && s.provider !== 'canvasapp' && gatewayOff())
 }
 
 /** Balance to show for the active provider (see the API notes at the top). Starts the background sync. */
 export function useCreditInfo(): CreditInfo {
   useEffect(() => startRealCreditsSync(), [])
   const kind = useCreditKind()
+  const off = useGatewayOff()
   const demo = useRuns((s) => s.credits)
   const real = useRealCredits(
     useShallow((s): RealView => ({ balance: s.balance, status: s.status, updatedAt: s.updatedAt, error: s.error, refreshing: s.refreshing })),
   )
-  return useMemo(() => creditInfoFrom(kind, demo, real), [kind, demo, real])
+  return useMemo(() => creditInfoFrom(kind, demo, real, off), [kind, demo, real, off])
 }

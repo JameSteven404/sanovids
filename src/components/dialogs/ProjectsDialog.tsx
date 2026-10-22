@@ -98,7 +98,7 @@ export function ProjectsDialog() {
       size="wide"
       footer={
         <>
-          <span className="dg-foot-info">{busy ? 'Đang lưu và chuyển dự án…' : 'Dự án lưu trên máy này. Xuất file trong Cài đặt để sao lưu.'}</span>
+          <span className="dg-foot-info">{busy ? 'Đang lưu và chuyển dự án…' : 'Dự án lưu trên máy này. Xuất file trong Cài đặt để sao lưu (không kèm video đã tạo).'}</span>
           <button className="btn" onClick={closeDialog}>
             Đóng
           </button>

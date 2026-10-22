@@ -21,4 +21,11 @@ describe('imageFallbackName', () => {
     expect(imageFallbackNames([{ id: 'a', name: '', tag: 'T' }])('a')).toBe('T')
     expect(imageFallbackNames([])('x')).toBe('ảnh')
   })
+  // Test giới hạn monkey (seed ee1219bb, P3): an asset named like a token turned the text into a token of another picture
+  it('never an "@": a name like a token or a mention stays plain text', () => {
+    expect(imageFallbackName({ name: '@@image_1', tag: 'X' })).toBe('image_1')
+    expect(imageFallbackName({ name: '@Lumi ở @video 2', tag: 'X' })).toBe('Lumi ở video 2')
+    expect(imageFallbackName({ name: ' @ ', tag: '@Elara' })).toBe('Elara')
+    expect(imageFallbackName({ name: '@@', tag: '@' })).toBe('ảnh')
+  })
 })

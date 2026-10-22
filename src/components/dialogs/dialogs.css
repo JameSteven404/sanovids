@@ -45,8 +45,8 @@
   padding: 3px;
   border-radius: var(--radius-xs);
   transition:
-    color 0.12s ease-out,
-    background 0.12s ease-out;
+    color var(--motion-hover) var(--ease-ui),
+    background var(--motion-hover) var(--ease-ui);
 }
 .dg-x:hover {
   color: var(--danger-text);
@@ -85,14 +85,14 @@
   left: 2px;
   width: calc((100% - 4px - (var(--seg-n, 1) - 1) * 2px) / var(--seg-n, 1));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
+  background: var(--accent-soft);
   box-shadow: var(--shadow-sm);
   transform: translateX(calc(var(--seg-i, 0) * (100% + 2px)));
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
   opacity: 0;
 }
 :root[data-theme='light'] .dg-seg::before {
-  background: var(--panel);
+  background: var(--accent-soft);
 }
 .dg-seg.has-value::before {
   opacity: 1;
@@ -116,7 +116,7 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: color 0.15s ease-out;
+  transition: color var(--motion-state) var(--ease-ui);
 }
 .dg-seg.lg button {
   min-height: 34px;
@@ -125,7 +125,7 @@
   color: var(--text);
 }
 .dg-seg button.active {
-  color: var(--text);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 .dg-seg button:focus-visible {
@@ -176,8 +176,8 @@
   font-size: 12px;
   color: var(--text-faint);
   transition:
-    background 0.15s ease-out,
-    color 0.15s ease-out;
+    background var(--motion-state) var(--ease-ui),
+    color var(--motion-state) var(--ease-ui);
 }
 .dg-steps li + li::before {
   content: '';
@@ -202,7 +202,7 @@
   background: var(--accent-soft);
 }
 .dg-steps li.active > span {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: var(--accent);
   color: var(--on-accent);
 }
@@ -227,7 +227,7 @@
   border-radius: var(--radius);
   outline: 2px dashed transparent;
   outline-offset: 4px;
-  transition: outline-color 0.15s ease-out;
+  transition: outline-color var(--motion-state) var(--ease-ui);
 }
 .dg-import-input.over {
   outline-color: var(--ref);
@@ -265,8 +265,8 @@
   text-align: center;
   cursor: pointer;
   transition:
-    border-color 0.15s ease-out,
-    background 0.15s ease-out;
+    border-color var(--motion-state) var(--ease-ui),
+    background var(--motion-state) var(--ease-ui);
 }
 .dg-drop:hover,
 .dg-import-input.over .dg-drop {
@@ -334,7 +334,7 @@
   color: var(--accent);
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s ease-out;
+  transition: background var(--motion-state) var(--ease-ui);
 }
 .dg-sample:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
@@ -419,9 +419,11 @@
   font-size: 0.95em;
   font-weight: 600;
 }
+/* retired @video text (reference videos were retired): imported as written, blocks the run */
 .dg-tok.video {
-  background: var(--video-soft);
-  color: var(--video);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  text-decoration: line-through var(--danger);
 }
 .dg-tok.bad {
   background: var(--danger-soft);
@@ -508,8 +510,8 @@
   color: var(--ref);
 }
 .dg-tok-count.video {
-  background: var(--video-soft);
-  color: var(--video);
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 /* side panel */
@@ -594,7 +596,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
-  transition: border-color 0.15s ease-out;
+  transition: border-color var(--motion-state) var(--ease-ui);
 }
 .dg-map.set {
   border-color: color-mix(in srgb, var(--ref) 45%, transparent);
@@ -632,7 +634,7 @@
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .dg-map-pick:hover {
   background: var(--panel-2);
@@ -651,7 +653,7 @@
   flex: none;
   margin-left: auto;
   color: var(--text-faint);
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
 }
 .dg-map.open .dg-map-chev {
   transform: rotate(180deg);
@@ -683,7 +685,7 @@
   color: var(--text-dim);
   font-size: 11.5px;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .dg-asset-tile:hover {
   background: var(--hover);
@@ -887,7 +889,7 @@
   margin-top: 1px;
   border-radius: 999px;
   background: var(--panel-3);
-  transition: background 0.18s ease-out;
+  transition: background var(--motion-pop) var(--ease-ui);
 }
 .dg-switch input {
   position: absolute;
@@ -903,9 +905,9 @@
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--on-accent);
   box-shadow: var(--shadow-sm);
-  transition: transform 0.18s ease-out;
+  transition: transform var(--motion-pop) var(--ease-ui);
   pointer-events: none;
 }
 /* light theme: a white knob on a pale track needs a hairline to stay visible (the light --shadow-sm is very soft) */
@@ -916,7 +918,7 @@
     var(--shadow-sm);
 }
 .dg-switch.on {
-  background: var(--accent);
+  background: var(--action-gradient);
 }
 .dg-switch.on i {
   transform: translateX(16px);
@@ -1275,6 +1277,13 @@
   color: var(--text-dim);
   font-size: 11px;
 }
+/* Mac: what an ad-hoc signature does and does not prove (lib/platformText MAC_AD_HOC_NOTE). */
+.dg-about-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
 .dg-about-download {
   display: flex;
   flex-wrap: wrap;
@@ -1508,9 +1517,9 @@
   font-size: 11.5px;
   cursor: pointer;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .dg-token:hover {
   background: var(--accent-soft);
@@ -1591,7 +1600,7 @@
   border: 1px solid var(--border-strong);
   background: var(--bg-elev);
   color: var(--text-faint);
-  transition: box-shadow 0.12s ease-out;
+  transition: box-shadow var(--motion-hover) var(--ease-ui);
 }
 .dg-search:focus-within {
   border-color: var(--accent);
@@ -1629,7 +1638,7 @@
   gap: 12px;
   padding: 8px 8px 8px 10px;
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 /* hairline between rows, hidden next to a highlighted row */
 .dg-project + .dg-project::before {
@@ -1665,7 +1674,7 @@
   color: var(--text-dim);
 }
 .dg-project.current .dg-project-icon {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 .dg-project-info {
@@ -1932,4 +1941,8 @@
   .dg-spin {
     animation-duration: 2.4s;
   }
+}
+.dg-section:has(.dg-about-head) {
+  background: linear-gradient(150deg, var(--accent-soft), var(--panel));
+  border-color: var(--border-strong);
 }

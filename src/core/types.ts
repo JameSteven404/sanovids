@@ -4,8 +4,11 @@
 //
 // v2: the prompt is exactly what the user writes. Media references are numbered tokens:
 //   @image_N — N-th reference image of the scene (scene.refs order, each image of an asset gets its own number)
-//   @video_N — N-th reference video of the scene (scene.videoRefs order, ids of completed takes)
 // Tokens are renumbered automatically when references are reordered/removed (see core/compile.ts remapTokens).
+// Reference videos (@video_N) were retired in 0.6.0: old links are kept inert (Scene.legacyVideoRefs,
+// Take.legacyVideoRefsSnapshot — never read except by the open-project notice, src/videoRetired.ts), and @video text
+// left in a prompt stays verbatim but blocks the run (core/compile retiredVideoTokens). Never reuse `videoRefs`,
+// `legacyVideoRefs`, `@video_N` or the `vref` wire kind with another meaning.
 
 export type ModelId = 'seedance_2_5' | 'minimax_h3'
 export type Mode = 't2v' | 'i2v' | 'transform'
@@ -49,9 +52,19 @@ export interface VideoSettings {
   ratio: string
 }
 
+/**
+ * The `settings` object of a scene / preset exactly as a newer SanoVids build saved it, for a model this build does
+ * not know (see Scene.foreignModel). Flat JSON: primitive values only (migrate keeps at most 32 keys / 2 KB).
+ */
+export type ForeignSettings = Record<string, string | number | boolean>
+
 export interface Preset extends VideoSettings {
   id: string
   name: string
+  /** Model id of a newer build this build does not know (see Scene.foreignModel); applyPreset copies it to scenes. */
+  foreignModel?: string
+  /** The preset's original settings as the newer build saved them (see Scene.foreignSettings). */
+  foreignSettings?: ForeignSettings
 }
 
 export interface Scene {
@@ -59,12 +72,22 @@ export interface Scene {
   /** Display order, 1-based. S01, S02... Kept dense by the store. */
   order: number
   title: string
-  /** The prompt exactly as it will be sent, with @image_N / @video_N tokens. */
+  /** The prompt exactly as it will be sent, with @image_N tokens (old @video_N text is kept but blocks the run). */
   prompt: string
   /** Ordered asset ids used as reference images. Order decides @image_N numbering. */
   refs: string[]
-  /** Ordered take ids (completed videos) used as reference videos. Order decides @video_N numbering. */
+  /**
+   * @deprecated Always [] — reference videos were retired (0.6.0). Kept in the type and in saved files (a 0.5.0 build
+   * reads [] = no reference video) and so that code written before the retirement still compiles; nothing reads or
+   * writes take ids here any more (migrateProject moves old ones to `legacyVideoRefs`).
+   */
   videoRefs: string[]
+  /**
+   * Take ids this scene used as @video_N before reference videos were retired, kept inert (could be turned back on
+   * later with the same meaning). Only the open-project notice reads it (src/videoRetired.ts); never copied to a new
+   * scene, dropped on duplicate / import (the takes do not travel). Missing = none.
+   */
+  legacyVideoRefs?: string[]
   /** Preset the settings came from (informational; settings are copied, not linked). */
   presetId: string | null
   settings: VideoSettings
@@ -76,10 +99,21 @@ export interface Scene {
   /** Canvas card size (null/undefined = default). */
   size?: Size | null
   note: string
+  /**
+   * Model id saved by a newer SanoVids build that this build does not know (e.g. a later provider's model). Migrate
+   * keeps it instead of silently turning the scene into Seedance 2.5: `settings` still holds valid stand-in values
+   * (normalizeSettings) so every reader keeps working, but the scene must not run until the user picks a model
+   * (`updateSettings` with `model` drops both foreign fields; `applyPreset` copies the preset's). New scenes made from
+   * this one (next scene, scene from a take, duplicate) keep both fields. A later build that knows the model restores
+   * `settings` from `foreignSettings` and drops both.
+   */
+  foreignModel?: string
+  /** The scene's original `settings` as the newer build saved them (the stand-in `settings` would lose them on save). */
+  foreignSettings?: ForeignSettings
 }
 
 export interface ProjectSettings {
-  /** Rewrite @image_N / @video_N tokens when references are reordered or removed. */
+  /** Rewrite @image_N tokens when references are reordered or removed (@video text is never rewritten). */
   autoRenumber: boolean
 }
 
@@ -113,11 +147,17 @@ export interface SaveFolder {
 export interface Project {
   id: string
   name: string
-  schemaVersion: 2
+  /**
+   * 2 for every project this build makes. A newer build's number (3…) is kept as it was saved (migrateProject reads such
+   * a file as v2): written back as 2, a build that relies on the number would migrate its v3 data a second time.
+   */
+  schemaVersion: number
   createdAt: number
   updatedAt: number
   assets: Asset[]
   presets: Preset[]
+  /** Factory name migration applied (>= 2); retain higher versions and subsequent user renames. */
+  presetNames?: number
   scenes: Scene[]
   settings: ProjectSettings
   /** "Thư mục" nodes (missing in projects made before folders existed = none). */
@@ -142,7 +182,10 @@ export interface Take {
   /** Scene prompt at the time of the run, for "restore prompt". */
   rawPromptSnapshot: string
   refsSnapshot: string[]
+  /** @deprecated Always [] — reference videos were retired (0.6.0); old ones are in `legacyVideoRefsSnapshot`. */
   videoRefsSnapshot: string[]
+  /** Reference videos the take was queued with before the retirement (inert, see Scene.legacyVideoRefs). */
+  legacyVideoRefsSnapshot?: string[]
   settings: VideoSettings
   cost: number
   starred: boolean
@@ -182,6 +225,54 @@ export interface Take {
    * @image_N order — the full list, before the model's image cap. Lets "restore prompt" renumber exactly.
    */
   imageKeysSnapshot?: string[]
+  /**
+   * Provider id saved by a newer SanoVids build that this build does not know (migrate then gives the take
+   * provider 'mock' and charged false: it was never paid here, nothing is refunded). Missing = a known provider.
+   */
+  foreignProvider?: string
+  /**
+   * Model id (settings.model, kept as it was saved) of a newer SanoVids build that this build does not know, on a take
+   * of any provider — e.g. a later canvasapp model: such a take is never sent, polled or looked up here (it may be
+   * running, and paid, in that build); a queued / running one is parked like a foreignProvider take. A build that
+   * knows the model gives the status back (migrateTake). Missing = a known model.
+   */
+  foreignModel?: string
+  /**
+   * Status such a take (foreignProvider / foreignModel) had in the newer build while it was still running
+   * ('queued' / 'processing'): migrate parks it as 'failed' here (the engine, the queue counters, "Dọn job lỗi" and
+   * "Cập nhật khi xong" skip it) and keeps its remoteId; a build that knows the provider / model gives the status back.
+   */
+  foreignStatus?: JobStatus
+  /** The take's settings as the newer build saved them (foreignProvider / foreignModel takes; flat, primitives only). */
+  foreignSettings?: ForeignSettings
+  /** `charged` as the newer build saved it (a foreignProvider take gets charged false here). Missing = it had none. */
+  foreignCharged?: boolean
+  /** `error` as the newer build saved it, when parking replaced it with the "bản mới hơn" text. */
+  foreignError?: string
+  /**
+   * The take was IMPORTED ("Nhập job"): its job was created on canvasapp's own page (the user pressed "Tạo video" on a
+   * node of the "SanoVids bridge" session), not by SanoVids. It is born `processing` with `remoteId` set, so the queue
+   * only polls and downloads it — it is never submitted, and "Chạy lại" makes a NEW take (cost dialog). The job list
+   * does not say everything a take records: `unknown` fields hold placeholders (shown "?", never restored, cost "—");
+   * `inferred` ones come from the bridge node (canvas or SanoVids' own entry) whose prompt matched the job's — likely,
+   * not sure (shown "≈", never restored as settings but the mode restored references need: components/runs/
+   * importedTake.restorePlan). See providers/canvasapp/siteJobs.ts.
+   */
+  imported?: TakeImport
+}
+
+/** Settings / data of an imported take that canvasapp's job list does not tell for sure. */
+export type ImportedField = 'mode' | 'resolution' | 'duration' | 'ratio' | 'prompt' | 'refs'
+
+export interface TakeImport {
+  /** When SanoVids imported it (local time). */
+  at: number
+  /** canvasapp's job_name, when it had one (≤ 200 chars). */
+  jobName: string | null
+  /** Not known at all: the take holds a placeholder value. */
+  unknown: ImportedField[]
+  /** Taken from the bridge node: likely, not sure. Never in `unknown` too. */
+  inferred: ImportedField[]
 }
 
 /**
@@ -199,16 +290,9 @@ export interface CompiledImage {
   imageId: string
 }
 
-export interface CompiledVideo {
-  /** 1-based N in @video_N */
-  n: number
-  takeId: string
-}
-
 export interface CompiledPrompt {
   text: string
   images: CompiledImage[]
-  videos: CompiledVideo[]
   /** Assets in reference order (only those that send at least one image). */
   assetIds: string[]
   charCount: number
@@ -218,8 +302,14 @@ export interface CompiledPrompt {
   /** Low-priority hints (e.g. a connected image never mentioned in the prompt). */
   notes: string[]
   /**
-   * Tokens of the compiled prompt that have NO media behind them in this request (beyond the images/videos actually
-   * sent, in a mode that sends none, or unbound "@image_?N" placeholders). A take with any of these must not run.
+   * Tokens of the compiled prompt that have NO media behind them in this request (beyond the images actually sent, in
+   * a mode that sends none, unbound "@image_?N" placeholders, and every retired @video token). A take with any of
+   * these must not run.
    */
   unsentTokens: string[]
+  /**
+   * Retired @video tokens of the compiled prompt as written ("@video_1", "@Video 2", "@video_?3(S01·T1)"), in order,
+   * without duplicates (core/compile retiredVideoTokens). Also in `unsentTokens`; core/runRules names them first.
+   */
+  retiredTokens: string[]
 }

@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest'
 import {
   CLICK_MAX_MS,
   CLICK_SLOP,
+  connectingKind,
   cubicAt,
+  draggedWireEnd,
+  imageEndValid,
   cubicPath,
   isFreshWire,
   isWireClick,
@@ -15,7 +18,8 @@ import {
   newWireIds,
   parseCubicPath,
   pickNodeAt,
-  refDotTones,
+  reconnectDrop,
+  refWireGrips,
   setWireReconnecting,
   snapHandleFor,
   splitCubic,
@@ -30,6 +34,7 @@ import {
   wireVerdict,
   wireZ,
   type Cubic,
+  type ReconnectNodeKind,
   type WirePress,
 } from '../wireFx'
 
@@ -53,7 +58,7 @@ describe('isWireClick: a click, not the end of a pan / drag / pinch', () => {
   it('a press that started elsewhere (pane, another wire) or with two fingers is not a click', () => {
     expect(isWireClick(null, up())).toBe(false)
     expect(isWireClick(press({ edgeId: null }), up())).toBe(false)
-    expect(isWireClick(press({ edgeId: 'vref:t->s' }), up())).toBe(false)
+    expect(isWireClick(press({ edgeId: 'ref:b->s' }), up())).toBe(false)
     expect(isWireClick(press(), up({ edgeId: null }))).toBe(false)
     expect(isWireClick(press({ multi: true }), up())).toBe(false)
   })
@@ -66,8 +71,8 @@ describe('isWireClick: a click, not the end of a pan / drag / pinch', () => {
 
 describe('wireClickAction', () => {
   const base = { clickToCut: true, kind: 'ref' as const, modifier: false, onGrip: false, click: true }
-  it('cuts reference, frame, @video and folder wires on a plain click', () => {
-    for (const kind of ['ref', 'first', 'last', 'vref', 'save', 'autosave'] as const) expect(wireClickAction({ ...base, kind })).toBe('cut')
+  it('cuts reference, frame and folder wires on a plain click', () => {
+    for (const kind of ['ref', 'first', 'last', 'save', 'autosave'] as const) expect(wireClickAction({ ...base, kind })).toBe('cut')
   })
   it('never cuts a scene → take wire', () => {
     expect(wireClickAction({ ...base, kind: 'out' })).toBe('default')
@@ -160,28 +165,45 @@ describe('dragging a wire: verdict, color, snap handle', () => {
     expect(wireVerdict(src, null)).toBe('idle')
     expect(wireVerdict(src, { id: 'a1', type: 'asset' })).toBe('idle')
   })
-  it('a finished video goes to another scene or into a folder', () => {
-    const src = { type: 'take' as const, id: 't1', takeReady: true, takeSceneId: 's1' }
-    expect(wireVerdict(src, scene2)).toBe('valid')
-    expect(wireVerdict(src, scene)).toBe('invalid') // its own scene
-    expect(wireVerdict({ ...src, takeReady: false }, scene2)).toBe('invalid')
+  it('a video goes into a folder only — never onto a scene (reference videos were retired)', () => {
+    const src = { type: 'take' as const, id: 't1' }
+    expect(wireVerdict(src, scene2)).toBe('invalid')
+    expect(wireVerdict(src, scene)).toBe('invalid')
+    expect(wireVerdict({ type: 'take', id: 't1' }, scene2)).toBe('invalid')
     expect(wireVerdict(src, folder)).toBe('valid')
     expect(wireVerdict(src, takeNode)).toBe('invalid')
+    expect(snapHandleFor('take', 'scene')).toBeNull()
   })
-  it('moving the scene end of an existing @video / image wire: only to another scene, never into a folder', () => {
-    const vref = { type: 'take' as const, id: 't1', takeReady: true, takeSceneId: 's1', reconnect: true }
-    expect(wireVerdict(vref, folder)).toBe('invalid')
-    expect(wireVerdict(vref, scene2)).toBe('valid')
-    expect(wireVerdict(vref, scene)).toBe('invalid')
-    expect(wireVerdict(vref, takeNode)).toBe('invalid')
+  it('moving the scene end of an existing image wire: only to another scene, never into a folder', () => {
     expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, folder)).toBe('invalid')
     expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, scene2)).toBe('valid')
-    expect(wireVerdict(vref, null)).toBe('idle')
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, takeNode)).toBe('invalid')
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, null)).toBe('idle')
     // the flag CanvasView sets for the connection line
     expect(isWireReconnecting()).toBe(false)
     setWireReconnecting(true)
     expect(isWireReconnecting()).toBe(true)
     setWireReconnecting(false)
+  })
+  it('moving the image end accepts only eligible assets, snaps to their output and keeps the image color', () => {
+    const src = { type: 'scene' as const, id: 's1', reconnect: true }
+    setWireReconnecting(true, (id) => id === asset.id)
+    try {
+      expect(wireVerdict(src, asset)).toBe('valid')
+      for (const over of [scene2, folder, takeNode, { id: 'empty', type: 'asset' }]) {
+        expect(wireVerdict(src, over)).toBe('invalid')
+      }
+      expect(wireVerdict(src, null)).toBe('idle')
+      expect(wireVerdict(src, scene)).toBe('idle')
+      expect(wireVerdict({ type: 'take', id: 't1', reconnect: true }, { id: asset.id, type: null })).toBe('invalid')
+      expect(snapHandleFor('scene', 'asset')).toEqual({ type: 'source', id: 'out' })
+      expect(wireDragColor('scene')).toBe('var(--ref)')
+    } finally {
+      setWireReconnecting(false)
+    }
+    expect(wireVerdict({ type: 'asset', id: 'a1', reconnect: true }, scene2)).toBe('valid')
+    expect(snapHandleFor('scene', 'asset')).toBeNull()
+    expect(wireDragColor('scene')).toBe('var(--save)')
   })
   it("a scene's right dot goes into folders; a folder's dot to videos and scenes", () => {
     expect(wireVerdict({ type: 'scene', id: 's1' }, folder)).toBe('valid')
@@ -202,7 +224,6 @@ describe('dragging a wire: verdict, color, snap handle', () => {
   })
   it('the end snaps to the handle the wire will be drawn to', () => {
     expect(snapHandleFor('asset', 'scene')).toEqual({ type: 'target', id: 'ref' })
-    expect(snapHandleFor('take', 'scene')).toEqual({ type: 'target', id: 'ref' })
     expect(snapHandleFor('take', 'folder')).toEqual({ type: 'target', id: 'in' })
     expect(snapHandleFor('scene', 'folder')).toEqual({ type: 'target', id: 'in' })
     expect(snapHandleFor('folder', 'take')).toEqual({ type: 'source', id: 'out' })
@@ -228,6 +249,60 @@ describe('dragging a wire: verdict, color, snap handle', () => {
     expect(pickNodeAt(nodes, { x: 200, y: 200 })).toBeNull()
     // Unmeasured nodes fall back to their stored size.
     expect(pickNodeAt([{ id: 'w', width: 20, height: 20, internals: { positionAbsolute: { x: 0, y: 0 } } }], { x: 5, y: 5 })?.id).toBe('w')
+  })
+})
+
+describe('reconnecting an image wire: which end moves and where the drop goes', () => {
+  // the wire Lumi → S01; S02 another scene, Mira another character, a folder and a video card
+  const edge = { source: 'lumi', target: 's1' }
+  const kinds: Record<string, ReconnectNodeKind> = { lumi: 'asset', mira: 'asset', s1: 'scene', s2: 'scene', f1: 'folder', t1: 'other' }
+  const kindOf = (id: string): ReconnectNodeKind => kinds[id] ?? 'other'
+  const on = (id: string) => ({ kind: 'node' as const, id })
+
+  it('React Flow passes the FIXED handle: target fixed = the image end moves, source fixed = the scene end', () => {
+    expect(draggedWireEnd('target')).toBe('image')
+    expect(draggedWireEnd('source')).toBe('scene')
+  })
+
+  it('image end: another character replaces; empty canvas, its own cards or outside never cut and change nothing', () => {
+    expect(reconnectDrop('image', on('mira'), edge, kindOf)).toEqual({ do: 'replace', assetId: 'mira' })
+    expect(reconnectDrop('image', { kind: 'pane' }, edge, kindOf)).toEqual({ do: 'none' })
+    expect(reconnectDrop('image', null, edge, kindOf)).toEqual({ do: 'none' })
+    expect(reconnectDrop('image', on('lumi'), edge, kindOf)).toEqual({ do: 'none' })
+    expect(reconnectDrop('image', on('s1'), edge, kindOf)).toEqual({ do: 'none' })
+    for (const id of ['s2', 'f1', 't1', 'gone']) expect(reconnectDrop('image', on(id), edge, kindOf)).toEqual({ do: 'explain', end: 'image' })
+  })
+
+  it('scene end: another scene moves, empty canvas cuts (as Phím tắt says), a folder explains, the rest does nothing', () => {
+    expect(reconnectDrop('scene', on('s2'), edge, kindOf)).toEqual({ do: 'move', sceneId: 's2' })
+    expect(reconnectDrop('scene', { kind: 'pane' }, edge, kindOf)).toEqual({ do: 'cut' })
+    expect(reconnectDrop('scene', on('f1'), edge, kindOf)).toEqual({ do: 'explain', end: 'scene' })
+    expect(reconnectDrop('scene', null, edge, kindOf)).toEqual({ do: 'none' })
+    for (const id of ['s1', 'lumi', 'mira', 't1', 'gone']) expect(reconnectDrop('scene', on(id), edge, kindOf)).toEqual({ do: 'none' })
+  })
+
+  it('onReconnect routes the moved end: the image end reads the connection source, the scene end its target', () => {
+    // CanvasView.onReconnect: id = end === 'image' ? c.source : c.target
+    const c = { source: 'mira', target: 's1' }
+    expect(reconnectDrop('image', on(c.source), edge, kindOf)).toEqual({ do: 'replace', assetId: 'mira' })
+    const moved = { source: 'lumi', target: 's2' }
+    expect(reconnectDrop('scene', on(moved.target), edge, kindOf)).toEqual({ do: 'move', sceneId: 's2' })
+  })
+
+  it('imageEndValid: the scene end stays, the new character differs and passes the replacement rules', () => {
+    const ok = (id: string) => id === 'mira'
+    expect(imageEndValid(edge, { source: 'mira', target: 's1' }, ok)).toBe(true)
+    expect(imageEndValid(edge, { source: 'mira', target: 's2' }, ok)).toBe(false)
+    expect(imageEndValid(edge, { source: 'lumi', target: 's1' }, () => true)).toBe(false)
+    expect(imageEndValid(edge, { source: 'nova', target: 's1' }, ok)).toBe(false)
+  })
+
+  it("connectingKind: the image end of a wire is a 'rewire' (folders do not light up), new wires keep their card type", () => {
+    expect(connectingKind('scene', 'target')).toBe('rewire')
+    expect(connectingKind('scene', 'source')).toBe('scene')
+    expect(connectingKind('asset', 'source')).toBe('asset')
+    expect(connectingKind('folder', 'source')).toBe('folder')
+    expect(connectingKind(undefined, null)).toBe('')
   })
 })
 
@@ -329,25 +404,14 @@ describe('wires on the dots', () => {
     expect(z(false, false, false)).toBeLessThan(z(false, false, true))
     for (const a of [true, false]) for (const b of [true, false]) for (const c of [true, false]) expect(z(a, b, c)).toBeLessThanOrEqual(0)
   })
-})
 
-describe("refDotTones: a scene's reference dot takes the color of the wires drawn into it", () => {
-  type Kind = 'ref' | 'vref' | 'first' | 'last' | 'out' | 'save' | 'autosave'
-  const w = (kind: Kind, target: string, targetHandle = kind === 'ref' || kind === 'vref' ? 'ref' : 'in') => ({ kind, target, targetHandle })
-  it('images only (or nothing) → no entry (teal); videos only → video; both → mixed', () => {
-    const tones = refDotTones([w('ref', 'img'), w('vref', 'vid'), w('vref', 'vid'), w('ref', 'mix'), w('vref', 'mix')])
-    expect(tones.has('img')).toBe(false)
-    expect(tones.get('vid')).toBe('video')
-    expect(tones.get('mix')).toBe('mixed')
-    expect(tones.has('none')).toBe(false)
-  })
-  it('only wires into the reference dot count (frames, take / folder wires do not)', () => {
-    const tones = refDotTones([w('vref', 's1'), w('first', 's1', 'first'), w('last', 's1', 'last'), w('ref', 's2', 'first'), w('save', 's3'), w('autosave', 's3')])
-    expect(tones.get('s1')).toBe('video')
-    expect(tones.size).toBe(1)
-  })
-  it('a reference with no wire on the canvas does not color the dot', () => {
-    // The scene references an image that is not on the canvas: buildRawEdges draws no wire for it, so only @video wires arrive.
-    expect(refDotTones([w('vref', 's8')]).get('s8')).toBe('video')
+  it('refWireGrips: an end is grabbable only when the wire is alone at that dot, or selected', () => {
+    const g = (selected: boolean, sharedAtScene: boolean, sharedAtImage: boolean) => refWireGrips({ selected, sharedAtScene, sharedAtImage })
+    expect(g(false, false, false)).toBe(true)
+    // A character used in many scenes: its wires all leave one asset dot, only their scene ends can be grabbed.
+    expect(g(false, false, true)).toBe('target')
+    expect(g(false, true, false)).toBe('source')
+    expect(g(false, true, true)).toBe(false)
+    for (const a of [true, false]) for (const b of [true, false]) expect(g(true, a, b)).toBe(true)
   })
 })

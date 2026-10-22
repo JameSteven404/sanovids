@@ -15,9 +15,12 @@ import '@xyflow/react/dist/style.css'
 import './styles/base.css'
 import './styles/app.css'
 import { App } from './App'
+import { initDevAccess } from './devAccessActions'
 import { initMotion } from './lib/canvasPrefs'
 import { initPwa, registerServiceWorker } from './lib/pwa'
 import { initTheme } from './lib/theme'
+import { initRetiredVideoNotice } from './videoRetired'
+import { showPlacementNoticeOnLaunch } from './placementNotice'
 
 // Appearance (Sáng / Tối / Theo hệ thống) before the first render, so nothing paints in the wrong theme; it then
 // follows the OS while the choice is "Theo hệ thống". index.html painted the page background inline to avoid a
@@ -29,6 +32,15 @@ initMotion()
 
 // Before the first render: the one-shot beforeinstallprompt event can fire very early.
 initPwa()
+// Development mode lock (release builds hide it): follow the main process / the browser simulation.
+initDevAccess()
+
+// Reference videos were retired (0.6.0): once per project, say what happened to its old @video data.
+initRetiredVideoNotice()
+
+// A Mac run from a .dmg / Tải về / an external drive: once per launch, how to move the app into Applications (never
+// moved automatically).
+void showPlacementNoticeOnLaunch()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

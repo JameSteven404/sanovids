@@ -56,7 +56,7 @@ function fakeProvider(id: 'mock' | 'canvasapp' | 'dev') {
     id,
     label: id,
     available: async () => ({ ok: true }),
-    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: id === 'mock' ? 0 : 15_000, maxRefVideos: 0 }),
+    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: id === 'mock' ? 0 : 15_000 }),
     submit: async (req) => {
       const remoteId = 'r_' + req.key
       statuses.set(remoteId, { remoteId, state: 'queued' })

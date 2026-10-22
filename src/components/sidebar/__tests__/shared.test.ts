@@ -1,16 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { assetDefaultLayout } from '../../canvas/canvasModel'
+import { ASSET_TILE } from '../../canvas/canvasModel'
 import type { Asset, Project, Scene, Take } from '../../../core/types'
-import { useProject } from '../../../store/project'
+import { LAYOUT, useProject } from '../../../store/project'
 import {
   changedPrompts,
   checkTag,
   countMentions,
-  finishedTakes,
+  finishedTakesOf,
   imageTokenLabels,
   matchesQuery,
   nextAssetPosition,
   norm,
+  queryTerms,
   renameAssetTag,
   takeHiddenOnCanvas,
   takeSearchFields,
@@ -53,7 +54,12 @@ describe('sidebar search', () => {
 
   it('finds a take by the usual spellings of its code and by scene title', () => {
     const fields = takeSearchFields(3, 2, 'Chợ đêm')
-    for (const q of ['S03·T2', 's03-t2', 'S03T2', 's03 t2', 's3 t2', 't2', 'cho dem']) expect(matchesQuery(q, ...fields)).toBe(true)
+    const hay = norm(fields.join(' \u0001 '))
+    for (const q of ['S03·T2', 's03-t2', 'S03T2', 's03 t2', 's3 t2', 't2', 'cho dem', '@s03 @t2', 'CHỢ ĐÊM', '   ']) {
+      expect(matchesQuery(q, ...fields)).toBe(true)
+      expect(queryTerms(q).every((term) => hay.includes(term))).toBe(true)
+    }
+    expect(queryTerms('no match').every((term) => hay.includes(term))).toBe(false)
     expect(matchesQuery('S03-T1', ...fields)).toBe(false)
     expect(matchesQuery('S04', ...fields)).toBe(false)
   })
@@ -83,7 +89,28 @@ describe('finished takes', () => {
       take('t5', 's1', 3, 'processing', null),
       take('t6', 's2', 2, 'completed', 200),
     ]
-    expect(finishedTakes(takes, new Set(['s1', 's2'])).map((t) => t.id)).toEqual(['t3', 't6', 't1'])
+    expect(finishedTakesOf(takes, new Set(['s1', 's2'])).map((t) => t.id)).toEqual(['t3', 't6', 't1'])
+  })
+
+  it('caches by both immutable inputs, without mutating their order', () => {
+    const takes = [take('old', 's1', 1, 'completed', 10), take('new', 's2', 1, 'completed', 20)]
+    const ids = new Set(['s1', 's2'])
+    const first = finishedTakesOf(takes, ids)
+    expect(finishedTakesOf(takes, ids)).toBe(first)
+    expect(takes.map((t) => t.id)).toEqual(['old', 'new'])
+    expect(finishedTakesOf(takes, new Set(['s1']))).toEqual([takes[0]])
+    expect(finishedTakesOf(takes, ids)).toBe(first)
+    expect(finishedTakesOf([takes[0], { ...takes[1], starred: true }], ids)[0].starred).toBe(true)
+  })
+
+  it('keeps completed objects stable across a progress tick; includes newly completed takes', () => {
+    const done = take('done', 's1', 1, 'completed', 10)
+    const running = take('running', 's1', 2, 'processing', null)
+    const ids = new Set(['s1'])
+    const tick = finishedTakesOf([done, { ...running, progress: 50 }], ids)
+    expect(tick).toEqual(finishedTakesOf([done, running], ids))
+    expect(tick[0]).toBe(done)
+    expect(finishedTakesOf([done, { ...running, status: 'completed', finishedAt: 30 }], ids).map((t) => t.id)).toEqual(['running', 'done'])
   })
 })
 
@@ -99,10 +126,10 @@ describe('takes hidden by "Chỉ take chọn"', () => {
   it('shows every take in the "all" display', () => {
     for (const t of takes) expect(takeHiddenOnCanvas(t.id, takes, scenes, 'all')).toBe(false)
   })
-  it('keeps the chosen take of each scene and the takes used as @video', () => {
-    // s1: newest completed (T2) is chosen; T1 stays because S2 uses it as @video; failed T3 is hidden.
+  it('keeps only the chosen take of each scene (an old @video link keeps nothing: reference videos were retired)', () => {
+    // s1: newest completed (T2) is chosen; T1 is hidden although S2 once used it as @video; failed T3 is hidden.
     expect(takeHiddenOnCanvas('t2', takes, scenes, 'chosen')).toBe(false)
-    expect(takeHiddenOnCanvas('t1', takes, scenes, 'chosen')).toBe(false)
+    expect(takeHiddenOnCanvas('t1', takes, scenes, 'chosen')).toBe(true)
     expect(takeHiddenOnCanvas('t3', takes, scenes, 'chosen')).toBe(true)
     // s2: the starred take wins over the newer one.
     expect(takeHiddenOnCanvas('t4', takes, scenes, 'chosen')).toBe(false)
@@ -148,18 +175,18 @@ describe('tag validation + rename', () => {
   })
 
   it('places new canvas assets under the existing asset column', () => {
-    // Default card height follows the image (square images here): name/meta rows + the image box.
-    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + assetDefaultLayout(1).h + 28 })
+    // 0.6.0: every default image tile has one size (220 × 275), whatever the picture's shape.
+    expect(nextAssetPosition(useProject.getState().project)).toEqual({ x: 40, y: 60 + ASSET_TILE.h + LAYOUT.assetGapY })
   })
 
   it('places new canvas assets below a resized (taller) asset node, not over it', () => {
     const p = project()
     p.assets = [
       { ...asset('a', 'A', 'A', [], { x: 40, y: 60 }), size: { w: 300, h: 480 } },
-      asset('b', 'B', 'B', [], { x: 40, y: 300 }),
+      asset('b', 'B', 'B', [], { x: 40, y: 240 }),
     ]
-    // a's bottom edge (60 + 480) is lower than b's (300 + default card height).
-    expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 480 + 28 })
+    // a's bottom edge (60 + 480) is lower than b's (240 + the default tile's 275).
+    expect(nextAssetPosition(p)).toEqual({ x: 40, y: 60 + 480 + LAYOUT.assetGapY })
   })
 })
 
@@ -177,7 +204,7 @@ describe('renumbering feedback', () => {
     useProject.getState().updateAsset('a', { imageIds: ['a2'] })
     const after = useProject.getState().project.scenes
     expect(changedPrompts(before, after)).toEqual(['s1'])
-    expect(after[0].prompt).toBe('Elara and @image_2')
+    expect(after[0].prompt).toBe('@image_?1(Elara · ảnh 1) and @image_2')
   })
 
   it('reports nothing when no prompt changed', () => {

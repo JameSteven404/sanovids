@@ -1,7 +1,7 @@
 // Small menu shown when a connection is released on empty canvas.
 import { Clapperboard, Film, Folder, FolderPlus, Link2, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createSceneFromTake, linkAssets, linkTakes, selectedSceneIds, takeLabel } from '../../actions'
+import { createSceneFromVideo, linkAssets, selectedSceneIds, takeLabel } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import type { XY } from '../../core/types'
 import { createFolderNode, linkScenesToFolder, linkTakesToFolder } from '../../folderActions'
@@ -96,22 +96,13 @@ export function ConnectMenu({ menu, onClose }: { menu: ConnectMenuState; onClose
     items.push({
       key: 'continue',
       icon: Film,
-      label: 'Tạo cảnh tiếp nối từ video này',
-      hint: `${label} thành @video_1, giữ ảnh tham chiếu & cấu hình`,
+      label: 'Tạo cảnh tiếp theo từ video này',
+      hint: `Cùng ảnh tham chiếu và cấu hình của ${label}, prompt để trống`,
       primary: true,
       run: () => {
-        createSceneFromTake(takeId, pos)
+        createSceneFromVideo(takeId, pos)
       },
     })
-    if (selScenes.length) {
-      items.push({
-        key: 'sel',
-        icon: Link2,
-        label: `Dùng làm @video cho ${selScenes.length} cảnh đang chọn`,
-        hint: what,
-        run: () => linkTakes(selScenes, takeIds),
-      })
-    }
     for (const f of folders) {
       items.push({ key: `folder:${f.id}`, icon: Folder, label: `Lưu vào thư mục “${f.name}”`, hint: what, run: () => linkTakesToFolder(takeIds, f.id) })
     }

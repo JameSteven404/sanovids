@@ -1,6 +1,6 @@
-// Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene),
-// video references (take -> scene, @video_N), take outputs (scene -> take, not deletable) and wires into folder
-// nodes: save (take -> folder) and autosave (scene -> folder, dashed).
+// Custom edges: image references (asset -> scene), H3 first/last frames (asset -> scene), take outputs (scene -> take,
+// not deletable) and wires into folder nodes: save (take -> folder) and autosave (scene -> folder, dashed). (Video
+// references, take -> scene as @video_N, were retired in 0.6.0: no such wire is drawn any more.)
 // Every wire runs from the center of its source dot to the center of its target dot: the handles React Flow measures
 // are 0×0 anchors at the dot centers (canvas.css "handles"), and wires into the same dot all converge there (no fan-out),
 // the dot painting over their ends. Each cuttable wire = its visible path (.cv-wire) + a wide transparent hit band on
@@ -9,11 +9,16 @@
 import { EdgeLabelRenderer, type Edge, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useState, type AnimationEvent, type CSSProperties } from 'react'
-import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, videoLabel, type EdgeKind } from '../../actions'
+import { announceWireCuts, isFolderEdge, parseEdgeId, takeLabel, type EdgeKind } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { offUnlinkText, SAVE_CUT_BUTTON_TITLE, saveWireTitle } from '../../core/folderTrash'
 import { folderMapOf } from '../../core/folders'
-import { staleNoteSince } from '../../core/staleTokens'
+import { mediaChangeNote } from '../../core/staleTokens'
+import { afterSaveUnlinked } from '../../folderActions'
 import { motionLevel, useCanvasPrefs } from '../../lib/canvasPrefs'
+import { useDownloadPrefs } from '../../lib/downloads'
+import { flushScenes } from '../../lib/promptDrafts'
+import { canTrashSaved } from '../../lib/saveFolders'
 import { undoToastAction, useProject } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
 import { assetMapOf, keepHover, sceneMapOf, scheduleHoverEnd, useCanvasLocal, withAlpha } from './canvasModel'
@@ -25,10 +30,12 @@ export type LinkEdgeData = {
   color: string
   /** Touches the hovered / selected node. */
   highlight: boolean
+  /** Visibility from selection/mode; incident hover is resolved locally without rebuilding the edge list. */
+  visible?: boolean
 }
 export type LinkEdge = Edge<LinkEdgeData>
 
-/** Purple of video wires / handles: the theme token (light and dark themes define their own value). */
+/** Purple of video (take) handles: the theme token (light and dark themes define their own value). */
 export const VIDEO_COLOR = 'var(--video)'
 
 /** Wire colors are theme tokens (styles/base.css), so they follow the light / dark theme. */
@@ -36,7 +43,6 @@ const KIND_STROKE: Record<EdgeKind, string> = {
   ref: 'var(--ref)',
   first: 'var(--first)',
   last: 'var(--last)',
-  vref: VIDEO_COLOR,
   out: 'var(--seq)',
   save: 'var(--save)',
   autosave: 'var(--save)',
@@ -46,7 +52,6 @@ const CUT_LABEL: Record<EdgeKind, string> = {
   ref: 'tham chiếu ảnh',
   first: 'khung đầu',
   last: 'khung cuối',
-  vref: 'video tham chiếu',
   out: '',
   save: 'lưu',
   autosave: 'tự lưu',
@@ -54,10 +59,11 @@ const CUT_LABEL: Record<EdgeKind, string> = {
 
 /**
  * Cut one link (one undo step) and say so — naming what was cut, with Undo. Every canvas way of removing a reference
- * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar / @video thumb, a wire end dropped
- * on empty canvas). The prompt's @image_N / @video_N tokens are renumbered in the same step (SPEC §2): the toast says so
- * when it happened. 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation
- * splits the wire (default: its middle).
+ * goes through here (a click on the wire, the wire's ×, the × on a scene card avatar, a wire end dropped on empty
+ * canvas). The prompt's @image_N tokens are renumbered in the same step and the cut picture's token becomes a red
+ * placeholder "@image_?N(label)" (no text is lost; the scene is blocked until it is filled): the toast says so.
+ * 'out' wires (scene → its take) cannot be cut. `at` (screen point) is where the cut animation splits the wire
+ * (default: its middle).
  */
 export function cutEdge(id: string, silent = false, at?: { x: number; y: number }) {
   const e = parseEdgeId(id)
@@ -67,29 +73,33 @@ export function cutEdge(id: string, silent = false, at?: { x: number; y: number 
     cutFolderEdge(id, e.kind, e.from, e.to, silent)
     return
   }
+  // Commit the prompt being typed in the scene first: it is renumbered with the cut instead of overwriting it.
+  flushScenes([e.to])
   const p = useProject.getState()
   const projectBefore = p.project
   const before = sceneMapOf(p.project.scenes).get(e.to)
   if (!before) return
-  const what = e.kind === 'vref' ? takeLabel(e.from) : assetMapOf(p.project.assets).get(e.from)?.name
+  const what = assetMapOf(p.project.assets).get(e.from)?.name
   if (e.kind === 'ref') p.removeRef(e.to, e.from)
-  else if (e.kind === 'vref') p.removeVideoRef(e.to, e.from, videoLabel(e.from))
   else p.setFrame(e.to, e.kind, null)
-  const after = sceneMapOf(useProject.getState().project.scenes).get(e.to)
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
   if (silent) return
-  const renumbered = !!after && after.prompt !== before.prompt
-  // Renumbering off: the prompt kept its numbers, which may now name another picture — say where to fix them.
-  const stale = staleNoteSince(projectBefore, useProject.getState().project)
-  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${renumbered ? ' — đã đánh lại số trong prompt' : ''}${stale}.`, {
+  // Red placeholders left / numbers left stale (renumbering off) / prompt renumbered (core/staleTokens mediaChangeNote).
+  const note = mediaChangeNote(projectBefore, useProject.getState().project)
+  toast(`Đã bỏ nối ${CUT_LABEL[e.kind]}${what ? ` ${what}` : ''} khỏi ${sceneCode(before.order)}${note?.text ?? ''}.`, {
     action: undoToastAction(),
-    ...(stale ? { tone: 'warning' as const, ms: 8000 } : {}),
+    ...(note && note.tone === 'warning' ? { tone: 'warning' as const, ms: note.ms ?? 8000 } : {}),
   })
 }
 
-/** Cut a wire into a folder node (one undo step). The files already saved there stay. */
+/**
+ * Cut a wire into a folder node (one undo step). An auto-save wire (scene → folder) never touches files. A take →
+ * folder wire: with "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" on (desktop app), the files that wire
+ * itself copied, unchanged, go to the Recycle Bin — folderActions.afterSaveUnlinked says so (Hoàn tác writes a new
+ * copy); otherwise the files stay and the toast says so right away.
+ */
 function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, folderId: string, silent: boolean) {
   const p = useProject.getState()
   const folder = folderMapOf(p.project.folders).get(folderId)
@@ -98,15 +108,19 @@ function cutFolderEdge(id: string, kind: 'save' | 'autosave', from: string, fold
   const ui = useUI.getState()
   if (ui.selectedEdgeIds.includes(id)) ui.setSelectedEdges(ui.selectedEdgeIds.filter((x) => x !== id))
   useCanvasLocal.getState().setHoveredEdge(null)
-  if (silent) return
-  const scene = kind === 'autosave' ? sceneMapOf(p.project.scenes).get(from) : undefined
-  const what = kind === 'autosave' ? (scene ? sceneCode(scene.order) : 'cảnh') : takeLabel(from)
-  toast(
-    kind === 'autosave'
-      ? `Đã bỏ tự lưu ${what} vào “${folder.name}” (video đã lưu vẫn còn trong thư mục).`
-      : `Đã bỏ nối ${what} khỏi thư mục “${folder.name}” (file đã lưu vẫn còn).`,
-    { action: undoToastAction() },
-  )
+  if (kind === 'autosave') {
+    if (silent) return
+    const scene = sceneMapOf(p.project.scenes).get(from)
+    toast(`Đã bỏ tự lưu ${scene ? sceneCode(scene.order) : 'cảnh'} vào “${folder.name}” (video đã lưu vẫn còn trong thư mục).`, { action: undoToastAction() })
+    return
+  }
+  // Captured now: Hoàn tác must undo this cut, not a newer step made while the files are being moved.
+  const undo = undoToastAction()
+  // Decided now, once: what this toast says is what happens (the setting is not read again in the folder's lock).
+  const trash = useDownloadPrefs.getState().folderUnlinkTrash && canTrashSaved()
+  if (!silent && !trash) toast(offUnlinkText(takeLabel(from), folder.name), { action: undo })
+  // Always handled (in the folder's lock): a waiting save of this wire is dropped, its ownership record released.
+  void afterSaveUnlinked([{ folderId, takeId: from }], { source: 'cut', undo, toast: silent || !trash ? 'none' : 'single', trash })
 }
 
 /** Invisible hit band around every cuttable wire (px, flow units): thin wires stay easy to hit. */
@@ -123,10 +137,13 @@ function wireIntro(id: string, kind: EdgeKind): 'draw' | 'fade' | null {
   return level === 'full' && kind !== 'out' && kind !== 'autosave' ? 'draw' : 'fade'
 }
 
-function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LinkEdge>) {
+function LinkEdgeComponent({ id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<LinkEdge>) {
   const hovered = useCanvasLocal((s) => s.hoveredEdgeId === id)
+  const touchesHover = useCanvasLocal((s) => s.hoveredId === source || s.hoveredId === target)
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const kind = data?.kind ?? 'ref'
+  // A take → folder wire whose cut moves the saved files to the Recycle Bin (setting on, desktop app): its tooltips say so.
+  const trash = useDownloadPrefs((s) => kind === 'save' && s.folderUnlinkTrash) && canTrashSaved()
   // A wire that just appeared (new link, undo of a cut) animates in once — not one scrolled into view.
   const [intro, setIntro] = useState(() => wireIntro(id, kind))
   const endIntro = useCallback((e: AnimationEvent<SVGPathElement>) => {
@@ -142,8 +159,10 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   // its center, tangent to each other, and the dot covers the meeting point.
   const [path, labelX, labelY] = wirePath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
   const hitPath = useMemo(() => (kind === 'out' ? '' : wireHitPath(path)), [kind, path])
-  const hl = !!data?.highlight || hovered || !!selected
+  const hl = !!data?.highlight || touchesHover || hovered || !!selected
   const base = KIND_STROKE[kind]
+
+  if (data?.visible === false && !touchesHover && !hovered) return null
 
   if (kind === 'out') {
     // Subtle: the take was generated by this scene. Not selectable, not deletable, not cuttable.
@@ -152,7 +171,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         id={id}
         d={path}
         fill="none"
-        className={`react-flow__edge-path cv-wire cv-wire-out${intro ? ' is-fading-in' : ''}`}
+        className={`react-flow__edge-path cv-wire cv-wire-out${hl ? ' is-highlighted' : ''}${intro ? ' is-fading-in' : ''}`}
         style={{ stroke: hl ? 'var(--text-dim)' : base, strokeWidth: hl ? 1.5 : 1.25, strokeDasharray: '3 4', opacity: hl ? 0.9 : 0.5 }}
         onAnimationEnd={intro ? endIntro : undefined}
       />
@@ -167,7 +186,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
   const style: CSSProperties = {
     stroke,
     strokeWidth: selected ? 2.5 : hovered ? 2.25 : hl ? 2 : 1.5,
-    opacity: hl ? 1 : kind === 'vref' || kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
+    opacity: hl ? 1 : kind === 'save' || kind === 'autosave' ? 0.65 : 0.45,
     // A scene's "tự lưu" wire stands for every future video: dashed, unlike a one-video "lưu" wire.
     strokeDasharray: kind === 'autosave' && !drawing ? '6 5' : undefined,
     filter: selected
@@ -176,7 +195,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         ? `drop-shadow(0 0 2.5px ${withAlpha(tint, 0.45)})`
         : undefined,
   }
-  const cls = `react-flow__edge-path cv-wire${drawing ? ' is-drawing' : intro === 'fade' ? ' is-fading-in' : ''}`
+  const cls = `react-flow__edge-path cv-wire${hovered ? ' is-hovered' : hl ? ' is-highlighted' : ''}${drawing ? ' is-drawing' : intro === 'fade' ? ' is-fading-in' : ''}`
   return (
     <>
       <path
@@ -192,7 +211,7 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
       {/* Hit band on top (transparent): the band is the wire for hover, click-to-cut and selection. It stops at the
           dots' rims, where the drawn wire runs on under the dot (wires.css: the drawn path takes no pointer). */}
       <path d={hitPath} fill="none" className="react-flow__edge-interaction cv-wire-hit" strokeOpacity={0} strokeWidth={WIRE_HIT_WIDTH}>
-        <title>{clickToCut ? 'Bấm để bỏ nối · Ctrl/Shift + bấm: chọn dây' : 'Bấm để chọn dây · Delete: bỏ nối'}</title>
+        <title>{saveWireTitle(clickToCut, trash)}</title>
       </path>
       {/* With click-to-cut the wire itself is the button; otherwise the × on hover / selection cuts it. */}
       {!clickToCut && (hovered || selected) && (
@@ -200,13 +219,13 @@ function LinkEdgeComponent({ id, sourceX, sourceY, targetX, targetY, sourcePosit
           <button
             className="cv-edge-cut nodrag nopan"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-            title="Bỏ nối (Delete)"
+            title={trash ? SAVE_CUT_BUTTON_TITLE : 'Bỏ nối (Delete)'}
             aria-label="Bỏ nối"
             onMouseEnter={() => {
               keepHover()
               useCanvasLocal.getState().setHoveredEdge(id)
             }}
-            onMouseLeave={() => scheduleHoverEnd(() => useUI.getState().setHovered(null), 180)}
+            onMouseLeave={() => scheduleHoverEnd(() => useCanvasLocal.getState().setHovered(null), 180)}
             onClick={(e) => {
               e.stopPropagation()
               cutEdge(id)
@@ -226,7 +245,6 @@ export const edgeTypes = {
   ref: LinkEdgeView,
   first: LinkEdgeView,
   last: LinkEdgeView,
-  vref: LinkEdgeView,
   out: LinkEdgeView,
   save: LinkEdgeView,
   autosave: LinkEdgeView,

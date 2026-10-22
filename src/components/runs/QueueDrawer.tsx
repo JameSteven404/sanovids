@@ -1,9 +1,11 @@
+import { useShortcutLabel } from '../../lib/keymapPrefs'
 import {
   Bug,
   ChevronDown,
   ChevronUp,
   CircleStop,
   Cloud,
+  CloudDownload,
   Download,
   Eye,
   ListVideo,
@@ -18,20 +20,26 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
+import { cancelTake, deleteTakes, downloadTake, focusNodes, openDevPanel, rerunTake } from '../../actions'
 import { sceneCode } from '../../core/compile'
-import { MODELS, settingsLabel } from '../../core/models'
+import { MODELS } from '../../core/models'
 import type { Scene, Take } from '../../core/types'
-import { chargedDemo, CREDIT_MARK, formatCredits } from '../../lib/credits'
-import { PROVIDER_LABEL, providerOf } from '../../providers'
+import { CREDIT_MARK, formatCredits } from '../../lib/credits'
+import { PROVIDER_LABEL } from '../../providers'
+import { useDevAllowed } from '../../providers/devAccess'
+import { providerOf } from '../../providers/types'
 import { useDevServer, type DevSpeed } from '../../providers/dev'
 import { useProject } from '../../store/project'
-import { useRuns } from '../../store/runs'
+import { clearableTakes, isParkedTake, useRuns } from '../../store/runs'
+import { transferPercent, useTakeTransfers } from '../../store/takeTransfers'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { sceneMapOf } from '../canvas/canvasModel'
 import { activeFaultCount } from '../dev/devModel'
 import { CreditPill } from '../topbar/CreditPill'
 import { takeCostLine } from './creditText'
+import { importedChipTitle, takeCostKnown, takeSettingsText } from './importedTake'
+import { openImportJobs } from '../../siteJobActions'
 import { formatClock, formatDuration, isActive, ProviderBadge, StatusBadge, takeElapsed, useActiveProvider, useNow } from './shared'
 import './runs.css'
 
@@ -181,8 +189,10 @@ function QueuePanel() {
   const issue = useRuns((s) => s.providerIssue)
   const elsewhere = useRuns((s) => s.engineElsewhere)
   const provider = useActiveProvider()
-  const scenes = useProject((s) => s.project.scenes)
-  const sceneMap = useMemo(() => new Map(scenes.map((s) => [s.id, s])), [scenes])
+  const runKey = useShortcutLabel('scene.run')
+  // 'Bảng phát triển' only while development mode is open (a DEV take may still finish while it is locked)
+  const devOpen = useDevAllowed()
+  const sceneMap = useProject((s) => sceneMapOf(s.project.scenes))
   const [doneLimit, setDoneLimit] = useState(DONE_PAGE)
 
   const groups = useMemo<Group[]>(() => {
@@ -192,15 +202,19 @@ function QueuePanel() {
       { key: 'processing', title: 'Đang tạo', takes: pick((t) => t.status === 'processing') },
       // Queue order: the next job to start is listed first.
       { key: 'queued', title: 'Đang chờ', takes: pick((t) => t.status === 'queued').reverse() },
-      { key: 'failed', title: 'Lỗi / đã huỷ', takes: pick((t) => t.status === 'failed' || t.status === 'cancelled') },
+      // A newer build's take still running there (parked as 'failed' here): its own group, never "Dọn job lỗi".
+      { key: 'newer', title: 'Đang chạy ở bản SanoVids mới hơn', takes: pick(isParkedTake) },
+      { key: 'failed', title: 'Lỗi / đã huỷ', takes: pick((t) => (t.status === 'failed' || t.status === 'cancelled') && !isParkedTake(t)) },
       { key: 'completed', title: 'Hoàn thành', takes: pick((t) => t.status === 'completed') },
     ].filter((g) => g.takes.length)
   }, [takes])
 
-  const clearable = useMemo(() => takes.filter((t) => t.status === 'failed' || t.status === 'cancelled'), [takes])
+  const clearable = useMemo(() => clearableTakes(takes), [takes])
 
-  // The shared delete (actions.deleteTakes): also drops the takes from @video references and the selection and
-  // deletes their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming.
+  // The shared delete (actions.deleteTakes): also drops the takes from folder nodes and the selection and deletes
+  // their stored files. Failed / cancelled jobs have no finished video, so nothing needs confirming. A newer
+  // build's take parked here (it may still be running, and paid, there) and a "maybe billed" take (its "Chạy lại"
+  // finds the job its earlier request may have made) are never part of it (clearableTakes).
   const clearFailed = () => {
     const n = deleteTakes(
       clearable.map((t) => t.id),
@@ -222,6 +236,15 @@ function QueuePanel() {
           </span>
         )}
         <span className="rq-spacer" />
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => openImportJobs()}
+          title={`Tìm video đã tạo trực tiếp trên ${provider === 'dev' ? 'canvasapp giả lập' : 'canvasapp.io.vn'} (phiên “SanoVids bridge”) và đưa vào dự án thành take — chỉ đọc, không trừ ${provider === 'dev' ? 'credit dev' : 'credit'}`}
+        >
+          <CloudDownload size={13} />
+          <span className="rq-btn-label">Nhập job</span>
+        </button>
         {provider === 'dev' ? (
           <DevPanelButton />
         ) : (
@@ -230,7 +253,7 @@ function QueuePanel() {
             <span className="rq-btn-label">Cổng canvasapp</span>
           </button>
         )}
-        <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!clearable.length} onClick={clearFailed} title="Xoá các job lỗi/đã huỷ khỏi danh sách — take “không rõ đã bị trừ credit chưa” được giữ lại (xoá riêng từng take nếu muốn)">
           <Trash size={13} />
           <span className="rq-btn-label">Dọn job lỗi/đã huỷ{clearable.length ? ` (${clearable.length})` : ''}</span>
         </button>
@@ -246,7 +269,7 @@ function QueuePanel() {
               </b>
               <small>Các take đang chạy được giữ nguyên; SanoVids tự kiểm tra lại sau · lúc {formatClock(issue.at)}</small>
             </div>
-            {issue.provider === 'dev' && (
+            {issue.provider === 'dev' && devOpen && (
               <button type="button" className="btn btn-sm" onClick={() => openDevPanel('log')} title="Xem nhật ký yêu cầu và lỗi giả đang bật">
                 <Bug size={13} /> Bảng phát triển
               </button>
@@ -272,7 +295,7 @@ function QueuePanel() {
             <ListVideo size={22} />
             <div>Chưa có job nào.</div>
             <div className="faint">
-              Chọn cảnh rồi bấm <span className="kbd">Ctrl</span> + <span className="kbd">Enter</span> hoặc nút ▶ trên thẻ cảnh.
+              Chọn cảnh rồi bấm {runKey && <><span className="kbd">{runKey}</span> hoặc </>}nút ▶ trên thẻ cảnh.
             </div>
           </div>
         )}
@@ -322,18 +345,10 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
       setSaving(false)
     }
   }
-  const cancel = () => {
-    const label = `${code} · T${take.number}`
-    const demoPaid = chargedDemo(take)
-    const sentAway = !demoPaid && !!take.remoteId
-    useRuns.getState().cancel(take.id)
-    if (demoPaid) toast(`Đã huỷ ${label} · hoàn ${formatCredits(take.cost, 'demo')}.`)
-    else if (sentAway) toast(`Đã huỷ ${label} trong SanoVids — job đã gửi sang ${PROVIDER_LABEL[providerOf(take)]} vẫn chạy ở đó.`, { tone: 'warning', ms: 7000 })
-    else if (!demoPaid && take.status === 'processing') {
-      // The request was on its way (no remote id yet): the provider may still accept — and bill — it (see takeCostLine).
-      toast(`Đã huỷ ${label} lúc đang gửi sang ${PROVIDER_LABEL[providerOf(take)]} — nếu job đã được nhận thì có thể đã trừ credit.`, { tone: 'warning', ms: 7000 })
-    } else toast(`Đã huỷ ${label}.`)
-  }
+  // The finished video is downloading: its own progress ("tải 45%"), and "Huỷ" asks first (actions.cancelTake).
+  const downloading = useTakeTransfers((s) => take.id in s.byTake)
+  const downloadPct = useTakeTransfers((s) => transferPercent(s.byTake[take.id]))
+  const shownPct = take.status === 'queued' ? 0 : downloading ? (downloadPct ?? take.progress) : take.progress
 
   return (
     <div className={`rq-row ${take.status}`}>
@@ -356,10 +371,15 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         </div>
         <div className="rq-row-sub">
           <ProviderBadge take={take} />
+          {take.imported && (
+            <span className="rq-imported" title={importedChipTitle(take)}>
+              nhập
+            </span>
+          )}
           <span className="rq-row-model" style={{ ['--rq-model-c' as string]: MODELS[take.settings.model]?.color }}>
             {MODELS[take.settings.model]?.short ?? take.settings.model}
           </span>
-          <span>{settingsLabel(take.settings)}</span>
+          <span>{takeSettingsText(take)}</span>
           {take.status === 'failed' && take.error && (
             <span className="rq-row-err" title={take.error}>
               {take.error}
@@ -372,24 +392,36 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
         <StatusBadge take={take} showProgress={false} />
         {active && (
           <span className="progress">
-            <i style={{ width: `${take.status === 'queued' ? 0 : take.progress}%` }} />
+            <i style={{ width: `${shownPct}%` }} />
           </span>
         )}
       </div>
 
-      <span className="rq-row-time mono" title={take.status === 'queued' ? 'Thời gian chờ' : 'Thời gian tạo'}>
-        {take.status === 'processing' ? `${take.progress}% · ` : ''}
+      <span
+        className="rq-row-time mono"
+        title={take.status === 'queued' ? 'Thời gian chờ' : downloading ? 'Video đã tạo xong, đang tải về máy · thời gian tạo' : 'Thời gian tạo'}
+      >
+        {take.status === 'processing' ? (downloading ? `tải ${downloadPct === null ? '…' : `${downloadPct}%`} · ` : `${take.progress}% · `) : ''}
         {formatDuration(elapsed)}
       </span>
 
-      <span className={`rq-row-cost ${cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
-        <span className="mono">{formatCredits(take.cost, cost.kind, { short: true })}</span>
-        {CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
+      <span className={`rq-row-cost ${cost.foreign ? '' : cost.kind}${cost.struck ? ' struck' : ''}`} title={`${cost.amount} · ${cost.note}`}>
+        <span className="mono">{formatCredits(takeCostKnown(take), cost.kind, { short: true })}</span>
+        {!cost.foreign && CREDIT_MARK[cost.kind] && <span className="rq-demo-mark">{CREDIT_MARK[cost.kind]}</span>}
       </span>
 
       <div className="rq-row-actions">
         {active && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} title={`Huỷ ${code} · T${take.number}`}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => cancelTake(take.id)}
+            title={
+              downloading
+                ? `Huỷ ${code} · T${take.number} — video đã tạo xong (đã trừ ${providerOf(take) === 'dev' ? 'credit dev' : 'credit'}), SanoVids hỏi trước khi bỏ`
+                : `Huỷ ${code} · T${take.number}`
+            }
+          >
             <CircleStop size={13} />
             <span className="rq-act-label">Huỷ</span>
           </button>
@@ -439,10 +471,9 @@ const QueueRow = memo(function QueueRow({ take, scene }: { take: Take; scene: Sc
 
 /**
  * Is this take node visible in the canvas "Chỉ take chọn" mode? Same rule as the canvas: the scene's chosen take
- * (starred, else the newest completed, else the newest) plus every take used as a @video reference.
+ * (starred, else the newest completed, else the newest).
  */
 function shownWhenChosenOnly(take: Take): boolean {
-  if (useProject.getState().project.scenes.some((s) => s.videoRefs.includes(take.id))) return true
   const list = useRuns
     .getState()
     .takes.filter((t) => t.sceneId === take.sceneId)

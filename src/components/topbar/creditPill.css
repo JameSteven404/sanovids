@@ -12,7 +12,7 @@
   padding: 0 10px 0 8px;
   border-radius: 999px;
   border: 1px solid transparent;
-  background: transparent;
+  background: var(--bg-elev);
   color: var(--text-dim);
   font-family: inherit;
   font-size: 12px;
@@ -21,9 +21,9 @@
   cursor: pointer;
   user-select: none;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out,
-    border-color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui);
 }
 .tb-cp:focus-visible {
   outline: none;
@@ -123,6 +123,18 @@
 .tb-cp.problem:hover {
   background: color-mix(in srgb, var(--warn) 24%, transparent);
 }
+/* the canvasapp gateway is turned off (development mode locked, not turned on): quiet neutral, solid outline */
+.tb-cp.off {
+  border-color: var(--border-strong);
+}
+.tb-cp.off:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.tb-cp.off .tb-cp-num {
+  color: var(--text-dim);
+  font-weight: 500;
+}
 /* Light appearance: tinted text on a pale fill of the same tint is too faint for small labels; mixing in the text
    color brings it to about 4:1 and keeps the hue (same rule as the top bar's provider / running pills). */
 :root[data-theme='light'] .tb-cp.real,
@@ -188,7 +200,7 @@
   background: var(--info-soft);
   color: var(--info);
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-cp-add.sm {
   width: 24px;
@@ -206,7 +218,7 @@
 }
 /* low balance: the "+" asks for attention */
 .tb-cp-add.low {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: transparent;
   color: var(--on-accent);
 }
@@ -229,7 +241,7 @@
 }
 .tb-cp-add.sim.low {
   border: 1px solid transparent;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 :root[data-theme='light'] .tb-cp-add.sim:not(.low) {
@@ -262,4 +274,13 @@
   .tb-cp-spin {
     animation: none;
   }
+}
+
+.tb-cp.real .tb-cp-src {
+  color: var(--provider-canvasapp);
+}
+/* Hovered, the 24% --info fill sits closer to the label than --info-soft (most in the hovered queue drawer bar): the
+   label mixes in the text colour to keep 4.5:1 in every appearance (designD.test.ts). */
+.tb-cp.real:hover .tb-cp-src {
+  color: color-mix(in srgb, var(--provider-canvasapp) 70%, var(--text));
 }

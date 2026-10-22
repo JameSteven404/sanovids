@@ -1,7 +1,12 @@
 // Settings → "Cơ bản": appearance, saving videos, video sound, wires & canvas, prompt, app updates, the app, project data,
 // about (version, author, code signature). Each row subscribes to its own pref only (the dialog never re-renders as a
 // whole) and applies at once; the stores save and validate the values (lib/theme, lib/downloads, lib/playback,
-// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature.
+// lib/canvasPrefs, store/ui, store/project, lib/updatePrefs). The about texts: lib/aboutModel; signature: lib/appSignature;
+// the Portable / temp-copy reminder (AppBlock, AboutBlock): lib/appPlacement + aboutModel placementNote.
+import { platformText, MAC_EXPERIMENTAL, MAC_AD_HOC_NOTE } from '../../lib/platformText'
+import { PLATFORM } from '../../lib/platform'
+import { useDevSignaturePlatform } from '../../providers/dev/appSignature'
+import { isUpToDate, settingsStatusNote } from '../../lib/updateModel'
 import {
   AppWindow,
   CircleArrowUp,
@@ -29,6 +34,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { version as APP_VERSION } from '../../../package.json'
+import { FOLDER_UNLINK_TRASH_WEB_NOTE } from '../../core/folderTrash'
 import type { EdgeMode } from '../../core/types'
 import {
   ABOUT_AUTHOR_LINE,
@@ -38,20 +44,22 @@ import {
   ABOUT_LICENSE_NOTE,
   ABOUT_OPEN_PAGE,
   ABOUT_OPEN_PAGE_TITLE,
-  ABOUT_OPEN_SOURCE,
+  aboutOpenSource,
   ABOUT_PARTNER_LINE,
   ABOUT_TITLE,
+  placementNote,
   signatureView,
   thumbprintRows,
   versionLine,
 } from '../../lib/aboutModel'
-import { loadAppSignature, useAppSignature } from '../../lib/appSignature'
-import { useCanvasPrefs } from '../../lib/canvasPrefs'
+import { loadAppPlacement, macPlacementNote, useAppPlacement } from '../../lib/appPlacement'
+import { appSignatureSource, loadAppSignature, useAppSignature } from '../../lib/appSignature'
+import { BIG_PROJECT_LABEL, NODE_EDITOR_LABEL, useCanvasPrefs, WHEEL_LABEL, type BigProjectMode, type NodeEditorMode, type WheelMode } from '../../lib/canvasPrefs'
 import { desktopFiles } from '../../lib/desktopFiles'
 import { canPickFolder, canSaveAs, clearDownloadFolder, pendingDownloadCount, pickDownloadFolder, savePendingDownloads, useDownloadPrefs } from '../../lib/downloads'
 import { PLAYBACK_RATES, usePlayback } from '../../lib/playback'
 import { desktopInfo, usePwaInstall } from '../../lib/pwa'
-import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
+import { BACKGROUND_LABEL, BACKGROUND_PREFS, THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
 import { autoDownloadNote, hasUpdateDetails, lastCheckText, settingsIntroTitle, settingsStatusLine } from '../../lib/updateModel'
 import { useUpdatePrefs } from '../../lib/updatePrefs'
 import { openReleasePage, useUpdates } from '../../lib/updates'
@@ -61,6 +69,9 @@ import { toast, useUI, type InteractionMode, type TakeDisplay } from '../../stor
 import { checkNow, openUpdateDialog, useInstallUi } from '../../updateActions'
 import { rateLabel } from '../canvas/playerModel'
 import { Logo } from '../common/Logo'
+import { DevUnlock } from '../dev/DevUnlock'
+import { nextTaps } from '../dev/devUnlockModel'
+import { useDevAccess } from '../../providers/devAccess'
 import './dialogs.css'
 import { Segmented } from './Segmented'
 import { Field, Section, Toggle, useSettingsCtx, type RowProps } from './settingsUi'
@@ -90,15 +101,35 @@ export function ThemeSetting({ label, hint }: RowProps) {
   )
 }
 
+export function BackgroundSetting({ label, hint }: RowProps) {
+  const background = useTheme((s) => s.background)
+  const setBackground = useTheme((s) => s.setBackground)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented
+        label={label}
+        size="lg"
+        value={background}
+        onChange={setBackground}
+        options={BACKGROUND_PREFS.map((id) => ({
+          id,
+          label: BACKGROUND_LABEL[id],
+          icon: <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><rect x="1" y="1" width="14" height="14" rx="4" fill={`var(--bg-swatch-${id})`} stroke="var(--border-strong)" /></svg>,
+        }))}
+      />
+    </Field>
+  )
+}
+
 // ---------------- Tải video ----------------
 export function AskWhereSetting({ label, hint }: RowProps) {
   const askWhere = useDownloadPrefs((s) => s.askWhere)
   const set = useDownloadPrefs((s) => s.set)
   const where = desktopFiles()
-    ? 'Bản desktop: hộp thoại Lưu của Windows, file .txt lưu cạnh video với cùng tên.'
+    ? `Bản desktop: ${platformText.saveDialog}, file .txt lưu cạnh video với cùng tên.`
     : canSaveAs()
-      ? 'Chrome / Edge: hộp thoại Lưu cho video; file .txt tải về thư mục Tải xuống.'
-      : 'Trình duyệt này không có hộp thoại Lưu: video vẫn tải về thư mục Tải xuống (Downloads).'
+      ? `Chrome / Edge: hộp thoại Lưu cho video; file .txt tải về ${platformText.downloads}.`
+      : `Trình duyệt này không có hộp thoại Lưu: video vẫn tải về ${platformText.downloads}.`
   return (
     <Toggle
       checked={askWhere}
@@ -117,6 +148,31 @@ export function WithPromptSetting({ label, hint }: RowProps) {
   const withPrompt = useDownloadPrefs((s) => s.withPrompt)
   const set = useDownloadPrefs((s) => s.set)
   return <Toggle checked={withPrompt} onChange={(v) => set({ withPrompt: v })} label={label} hint={hint} />
+}
+
+/** "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (desktop app only: shown off and disabled in a browser). */
+export function FolderUnlinkTrashSetting({ label, hint }: RowProps) {
+  const on = useDownloadPrefs((s) => s.folderUnlinkTrash)
+  const set = useDownloadPrefs((s) => s.set)
+  const desktop = !!desktopFiles()
+  return (
+    <Toggle
+      // A browser has no Recycle Bin: off and disabled there; the saved pref is untouched.
+      checked={desktop ? on : false}
+      onChange={(v) => set({ folderUnlinkTrash: v })}
+      label={label}
+      disabled={!desktop}
+      hint={
+        desktop ? (
+          hint
+        ) : (
+          <>
+            {hint} {FOLDER_UNLINK_TRASH_WEB_NOTE}
+          </>
+        )
+      }
+    />
+  )
 }
 
 export function AutoDownloadSetting({ label, hint }: RowProps) {
@@ -160,7 +216,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
     setBusy(true)
     try {
       await clearDownloadFolder()
-      toast('Video sẽ được lưu vào thư mục Downloads.', { tone: 'success' })
+      toast(`Video sẽ được lưu vào ${platformText.downloads}.`, { tone: 'success' })
     } finally {
       setBusy(false)
     }
@@ -173,7 +229,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
       const res = await savePendingDownloads()
       if (!res) toast('Không còn video nào đang chờ lưu.')
       else if (res.to === 'folder') toast(`Đã lưu ${res.names.length} file vào thư mục “${res.folder}”.`, { tone: 'success' })
-      else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về Downloads.`, { tone: 'warning' })
+      else toast(`Chưa được phép ghi vào thư mục nên đã tải ${res.names.length} file về ${platformText.downloads}.`, { tone: 'warning' })
     } catch (e) {
       toast(`Không lưu được: ${(e as Error).message}`, { tone: 'error' })
     } finally {
@@ -187,11 +243,11 @@ export function DownloadFolderSetting({ label }: RowProps) {
   if (folderName) {
     hint = `${used}: ghi thẳng vào “${folderName}”. Sau khi mở lại app, ${desktop ? 'app' : 'trình duyệt'} có thể hỏi lại quyền ghi vào thư mục.`
   } else if (desktop) {
-    hint = `${used}: chưa chọn thư mục nên lưu vào thư mục Downloads của máy (không hỏi).`
+    hint = `${used}: chưa chọn thư mục nên lưu vào ${platformText.downloads} của máy (không hỏi).`
   } else if (canPick) {
-    hint = `${used}: chưa chọn thư mục nên trình duyệt tải về Downloads.`
+    hint = `${used}: chưa chọn thư mục nên trình duyệt tải về ${platformText.downloads}.`
   } else {
-    hint = 'Trình duyệt này không cho chọn thư mục — video được tải về thư mục Downloads. Dùng Chrome / Edge / Brave hoặc bản desktop để lưu thẳng vào một thư mục.'
+    hint = `Trình duyệt này không cho chọn thư mục — video được tải về ${platformText.downloads}. Dùng Chrome / Edge / Brave hoặc bản desktop để lưu thẳng vào một thư mục.`
   }
 
   return (
@@ -201,7 +257,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
         <span className={`dg-folder-icon${folderName ? ' on' : ''}`}>{folderName ? <FolderOpen size={16} /> : <FolderDown size={16} />}</span>
         <span className="dg-folder-text">
           <small>Thư mục lưu:</small>
-          <b title={folderName ?? 'Thư mục Downloads mặc định'}>{folderName ?? 'Downloads mặc định'}</b>
+          <b title={folderName ?? `Mặc định: ${platformText.downloads}`}>{folderName ?? 'Downloads mặc định'}</b>
         </span>
         {canPick && (
           <button className="btn btn-sm" disabled={busy} onClick={() => void pick()} title="Chọn một thư mục trên máy để lưu video vào đó">
@@ -209,7 +265,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
           </button>
         )}
         {folderName && (
-          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void resetToDownloads()} title="Bỏ thư mục đã chọn, lưu vào Downloads">
+          <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => void resetToDownloads()} title={`Bỏ thư mục đã chọn, lưu vào ${platformText.downloads}`}>
             Dùng Downloads
           </button>
         )}
@@ -220,7 +276,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
           <Clock size={15} />
           <div>
             <b>{pending.count} file tự tải đang chờ lưu</b>
-            {folderName ? ` vào “${folderName}”` : ''} — trình duyệt cần bạn cho phép ghi vào thư mục lần nữa (sau khi mở lại app). File không bị tải nhầm về Downloads.
+            {folderName ? ` vào “${folderName}”` : ''} — trình duyệt cần bạn cho phép ghi vào thư mục lần nữa (sau khi mở lại app). File không bị tải nhầm về {platformText.downloads}.
           </div>
           <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => void savePending()}>
             {saving ? <LoaderCircle size={13} className="dg-spin" /> : <FolderOpen size={13} />} Cho phép & lưu
@@ -230,7 +286,7 @@ export function DownloadFolderSetting({ label }: RowProps) {
         folderName &&
         autoDownload && (
           <div className="dg-field-hint">
-            Khi chưa có quyền ghi vào thư mục, video tự tải được giữ lại chờ (không tải nhầm về Downloads): bấm “Cho phép & lưu” trên thông báo hoặc ở đây.
+            Khi chưa có quyền ghi vào thư mục, video tự tải được giữ lại chờ (không tải nhầm về {platformText.downloads}): bấm “Cho phép & lưu” trên thông báo hoặc ở đây.
           </div>
         )
       )}
@@ -289,6 +345,53 @@ export function RateSetting({ label, hint }: RowProps) {
 }
 
 // ---------------- Dây nối & canvas ----------------
+// Segments are narrow (three in half a column): a short label + a second line; the full name is the tooltip.
+const NODE_EDITOR_OPTIONS: { id: NodeEditorMode; label: string; hint: string; title: string }[] = [
+  { id: 'click', label: 'Bấm vào prompt', hint: 'là gõ ngay', title: `${NODE_EDITOR_LABEL.click}: bấm vào chữ prompt trên node cảnh là gõ ngay, con trỏ đặt đúng chỗ bấm` },
+  { id: 'select', label: 'Tự mở', hint: 'khi chọn 1 cảnh', title: `${NODE_EDITOR_LABEL.select}: chọn đúng 1 cảnh là ô gõ trên node sẵn sàng (chưa đặt con trỏ vào)` },
+  { id: 'off', label: 'Tắt', hint: 'sửa ở bảng bên phải', title: NODE_EDITOR_LABEL.off },
+]
+
+export function NodeEditorSetting({ label, hint }: RowProps) {
+  const nodeEditor = useCanvasPrefs((s) => s.nodeEditor)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={nodeEditor} onChange={(v) => set({ nodeEditor: v })} options={NODE_EDITOR_OPTIONS} />
+    </Field>
+  )
+}
+
+const BIG_PROJECT_OPTIONS: { id: BigProjectMode; label: string; title: string }[] = [
+  { id: 'auto', label: BIG_PROJECT_LABEL.auto, title: 'Tự tối ưu khi canvas có từ 800 thẻ' },
+  { id: 'off', label: BIG_PROJECT_LABEL.off, title: 'Luôn hiện bản đồ thu nhỏ và mọi dây như dự án nhỏ' },
+]
+
+export function BigProjectSetting({ label, hint }: RowProps) {
+  const bigProject = useCanvasPrefs((s) => s.bigProject)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={bigProject} onChange={(v) => set({ bigProject: v })} options={BIG_PROJECT_OPTIONS} />
+    </Field>
+  )
+}
+
+const WHEEL_OPTIONS: { id: WheelMode; label: string; title: string }[] = [
+  { id: 'pan', label: WHEEL_LABEL.pan, title: 'Lăn để di chuyển canvas; Ctrl + lăn để thu phóng' },
+  { id: 'zoom', label: WHEEL_LABEL.zoom, title: 'Lăn để phóng to / thu nhỏ (như bản 0.5)' },
+]
+
+export function WheelSetting({ label, hint }: RowProps) {
+  const wheel = useCanvasPrefs((s) => s.wheel)
+  const set = useCanvasPrefs((s) => s.set)
+  return (
+    <Field label={label} hint={hint}>
+      <Segmented label={label} value={wheel} onChange={(v) => set({ wheel: v })} options={WHEEL_OPTIONS} />
+    </Field>
+  )
+}
+
 export function ClickToCutSetting({ label, hint }: RowProps) {
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
   const set = useCanvasPrefs((s) => s.set)
@@ -380,7 +483,7 @@ export function UpdateStatusIntro() {
       <CloudDownload size={17} />
     ) : s === 'available' || s === 'ready' ? (
       <CircleArrowUp size={17} />
-    ) : s === 'none' ? (
+    ) : isUpToDate(state) ? (
       <CircleCheck size={17} />
     ) : s === 'error' ? (
       <TriangleAlert size={17} />
@@ -392,12 +495,13 @@ export function UpdateStatusIntro() {
   return (
     <div className="dg-app">
       <div className="dg-app-status">
-        <span className={`dg-app-icon${s === 'none' || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
+        <span className={`dg-app-icon${isUpToDate(state) || s === 'ready' ? ' on' : ''}`} aria-hidden="true">
           {icon}
         </span>
         <span role="status">
           <b>{settingsIntroTitle(state, web)}</b>
           <small>{settingsStatusLine(state, { web, autoDownload })}</small>
+          {settingsStatusNote(state) && <small>{settingsStatusNote(state)}</small>}
           {state.lastCheck ? <small>Kiểm tra lần cuối: {lastCheckText(state.lastCheck, Math.max(now, state.lastCheck))}</small> : null}
         </span>
       </div>
@@ -426,7 +530,7 @@ export function UpdateAutoDownloadSetting({ label, hint }: RowProps) {
       hint={
         note ? (
           <>
-            {hint} {note}
+            {kind === 'mac-manual' ? note : <>{hint} {note}</>}
           </>
         ) : (
           hint
@@ -460,6 +564,45 @@ export function UpdateCheckSetting({ label, hint }: RowProps) {
         {checking ? <LoaderCircle size={13} className="dg-spin" /> : <RefreshCw size={13} />} Kiểm tra ngay
       </button>
     </Field>
+  )
+}
+
+// ---------------- Portable / temp-copy reminder (Ứng dụng, Giới thiệu) ----------------
+/** "Install the Setup build" when running a Portable build or a copy in Windows' temp folder; nothing otherwise. */
+function PlacementNoteView() {
+  const placement = useAppPlacement((s) => s.placement)
+  const updateKind = useUpdates((s) => s.state.kind)
+  const [opening, setOpening] = useState(false)
+  useEffect(() => {
+    void loadAppPlacement()
+  }, [])
+  const macNote = macPlacementNote(placement?.kind)
+  const note = placementNote(placement?.kind ?? null, updateKind)
+  if (macNote) return (
+    <div className="dg-callout warn dg-pending" role="note">
+      <TriangleAlert size={15} />
+      <div>{macNote}</div>
+    </div>
+  )
+  if (!note) return null
+  const openPage = async () => {
+    if (opening) return
+    setOpening(true)
+    try {
+      const res = await openReleasePage()
+      if (!res.ok) toast(res.message, { tone: 'error' })
+    } finally {
+      setOpening(false)
+    }
+  }
+  return (
+    <div className="dg-callout warn dg-pending" role="note">
+      {note.kind === 'temp-copy' ? <TriangleAlert size={15} /> : <MonitorDown size={15} />}
+      <div>{note.text}</div>
+      <button type="button" className="btn btn-sm" disabled={opening} onClick={() => void openPage()} title={ABOUT_OPEN_PAGE_TITLE}>
+        {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {note.action}
+      </button>
+    </div>
   )
 }
 
@@ -511,6 +654,7 @@ export function AppBlock() {
           </button>
         )}
       </div>
+      <PlacementNoteView />
       {!canInstall && !installed && !desktop && (
         <div className="dg-field-hint">
           Chrome / Edge / Brave: bấm biểu tượng cài đặt trên thanh địa chỉ, hoặc menu ⋮ → “Cài đặt SanoVids”. Trang phải được mở qua http(s).
@@ -520,11 +664,8 @@ export function AppBlock() {
         <div className="dg-app-exe">
           <MonitorDown size={16} />
           <div>
-            <b>Bản cài Windows (.exe)</b>
-            <p>
-              Trong thư mục dự án chạy <code>npm run dist:win</code> → thư mục <code>release/</code> có bộ cài <code>SanoVids-Setup-…exe</code> và bản portable <code>SanoVids-Portable-…exe</code> (chạy
-              không cần cài). Chép sang máy khác để cài; nếu Windows SmartScreen cảnh báo, chọn “More info → Run anyway”.
-            </p>
+            <b>{platformText.installTitle}</b>
+            <p>{platformText.installHint}</p>
           </div>
         </div>
       )}
@@ -540,13 +681,27 @@ export function AboutBlock() {
   const kind = useUpdates((s) => s.state.kind)
   const { desktop } = usePwaInstall()
   const [opening, setOpening] = useState(false)
+  // Development mode, locked: five taps on the version line within 3 s open the unlock box (no visible hint).
+  const locked = useDevAccess((s) => s.state.access === 'locked')
+  const [unlockOpen, setUnlockOpen] = useState(false)
+  const taps = useRef<number[]>([])
+  const onVersionTap = () => {
+    if (!locked) return
+    const next = nextTaps(taps.current, Date.now())
+    taps.current = next.times
+    if (next.fire) setUnlockOpen(true)
+  }
 
   useEffect(() => {
     void loadAppSignature()
   }, [])
 
   const version = desktopInfo()?.version || APP_VERSION
-  const view = signatureView(sig)
+  const simulatedPlatform = useDevSignaturePlatform((s) => s.platform)
+  const platform = appSignatureSource() === 'sim' ? simulatedPlatform ?? PLATFORM : PLATFORM
+  const view = signatureView(sig, platform)
+  // A packaged Mac build: check-only updates, labelled "thử nghiệm", ad-hoc signature (lib/platformText).
+  const macBuild = platform === 'mac' && !!sig?.packaged
 
   const openPage = async () => {
     if (opening) return
@@ -567,9 +722,11 @@ export function AboutBlock() {
         </span>
         <span className="dg-about-name">
           <b>SanoVids</b>
-          <small>{versionLine(version, kind, desktop)}</small>
+          <small onClick={onVersionTap}>{versionLine(version, macBuild ? 'mac-manual' : kind, desktop)}{macBuild ? ` · ${MAC_EXPERIMENTAL}` : ''}</small>
         </span>
       </div>
+      {unlockOpen && <DevUnlock onClose={() => setUnlockOpen(false)} />}
+      <PlacementNoteView />
       <div className="dg-about-lines">
         <p className="dg-about-author">{ABOUT_AUTHOR_LINE}</p>
         <p>{ABOUT_PARTNER_LINE}</p>
@@ -596,7 +753,8 @@ export function AboutBlock() {
             </span>
           </div>
         )}
-        {thumbprintRows(sig).map((row) => (
+        {macBuild && <p className="dg-about-note">{MAC_AD_HOC_NOTE}</p>}
+        {thumbprintRows(sig, platform).map((row) => (
           <p key={row.label} className="dg-about-thumb">
             {row.label}: <span className="mono">{row.value}</span>
           </p>
@@ -608,7 +766,7 @@ export function AboutBlock() {
           {opening ? <LoaderCircle size={13} className="dg-spin" /> : <ExternalLink size={13} />} {ABOUT_OPEN_PAGE}
         </button>
       </div>
-      <div className="dg-field-hint">{ABOUT_OPEN_SOURCE}</div>
+      <div className="dg-field-hint">{aboutOpenSource(platform)}</div>
     </Section>
   )
 }
@@ -639,7 +797,7 @@ export function DataBlock() {
   const icon = (kind: DataJob, idle: ReactNode) => (busy === kind ? <LoaderCircle size={14} className="dg-spin" /> : idle)
 
   return (
-    <Section title="Dữ liệu dự án" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác.">
+    <Section title="Dữ liệu dự án" desc="Dự án được lưu tự động trên máy này (ảnh và video trong IndexedDB). Xuất file để sao lưu hoặc chuyển sang máy khác — file chứa cảnh, prompt và ảnh, không chứa video đã tạo.">
       <div className="dg-data-actions" aria-busy={!!busy}>
         <button className="btn" disabled={!!busy} onClick={() => void run('export', exportProjectFile, 'Đã xuất dự án (.sanovids.json).')}>
           {icon('export', <Download size={14} />)} {busy === 'export' ? 'Đang xuất…' : 'Xuất dự án'}

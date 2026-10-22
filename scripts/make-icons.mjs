@@ -4,16 +4,19 @@
 //   node scripts/make-icons.mjs --out tmp  (write the same tree under ./tmp instead of the repo)
 //   node scripts/make-icons.mjs --src dir  (read the SVG sources from another folder)
 //
-// One devDependency: @resvg/resvg-js (SVG rasteriser). PNG comes from resvg; ICO and BMP are encoded here with
-// node built-ins only.
+// One devDependency: @resvg/resvg-js (SVG rasteriser). PNG comes from resvg; ICO, ICNS and BMP are encoded here with
+// node built-ins only (the .icns is committed, so electron-builder never downloads an icon converter on the Mac).
 //
 // Sources (build/icon-source/):
-//   icon-master.svg       512 master: 96 px and up, web icons, installer art. Plate inset 16, play cut-out in the disc.
-//   icon-small.svg        32-unit pixel-hinted cut: 16, 32, 40, 48, 64 px (and the 64 px icon in the installer).
-//   icon-24.svg           24 px cut (taskbar at 100 %, in-app top-bar logo).
-//   icon-20.svg           20 px cut (title bar / small icons at 125 %).
-//   favicon.svg           browser tab icon, copied as is.
-//   logo-mark.svg         glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
+//   icon-master.svg       D 512 master: white play triangle with an S cutout + source dot on a vertical Sano red plate.
+//                         Plate inset 16, width 480, rx 108; used at 96 px and up, for web icons and installer art.
+//   icon-small.svg        Same 512-unit glyph scaled to 32 units: 32, 40, 48, 64 px (also installer icon).
+//   icon-24.svg           Same glyph scaled to 24 units (taskbar at 100 %, in-app top-bar logo).
+//   icon-20.svg           Same glyph scaled to 20 units (title bar / small icons at 125 %), S cut 44 wide (≈ 1.7 px).
+//   icon-16.svg           Same glyph scaled to 16 units (title bar / tray at 100 %), S cut 56 wide (≈ 1.75 px): the
+//                         master's 30 is under 1 px here and the S blurs into the triangle.
+//   favicon.svg           Separate red play / white S on a dark tile, copied as is for browser tabs.
+//   logo-mark.svg         512-unit glyph only, currentColor (reference for src/components/common/Logo.tsx; not copied).
 //   installer-sidebar.svg NSIS welcome / finish sidebar 164x314 (href="icon:N" = the N px app icon).
 //   installer-header.svg  NSIS header 150x57.
 //   uninstaller-sidebar.svg (optional) else the installer sidebar is reused.
@@ -25,6 +28,11 @@
 //   build/installerSidebar.bmp    164x314, 24-bit
 //   build/uninstallerSidebar.bmp  164x314, 24-bit
 //   build/installerHeader.bmp     150x57, 24-bit
+//   build/icon.icns               macOS app icon (package.json build.mac.icon): PNG entries 16…1024 on Apple's macOS 11+
+//                                 grid (824 px plate at 100,100 on a 1024 canvas, soft shadow below)
+//   build/dmg-background.png      540x380 (+ @2x 1080x760, dmg-builder joins them into a HiDPI tiff): neutral charcoal
+//                                 with a Sano red arrow from the app to Applications, no text (Finder draws the labels,
+//                                 black or white by appearance, on mid-grey plates readable either way)
 //   public/favicon.svg
 //   public/icons/icon.ico         same as build/icon.ico (BrowserWindow icon on Windows, ships inside dist/)
 //   public/icons/icon-192.png, icon-512.png      rounded plate, transparent corners (PWA purpose "any")
@@ -54,10 +62,12 @@ const SVG = {
   small: source('icon-small.svg'),
   s24: source('icon-24.svg'),
   s20: source('icon-20.svg'),
+  s16: source('icon-16.svg'),
 }
 
 /** Which drawing a pixel size is rendered from. */
 function svgFor(size) {
+  if (size === 16) return SVG.s16
   if (size === 20) return SVG.s20
   if (size === 24) return SVG.s24
   if (size < 96) return SVG.small
@@ -192,6 +202,91 @@ function encodeBmp24({ width: w, height: h, rgba }) {
   return file
 }
 
+// ---------------------------------------------------------------- macOS
+/** An SVG's inner markup (its outer <svg …> tag removed), to nest it in another drawing. */
+const innerSvg = (svg) => svg.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '')
+
+/**
+ * The macOS app icon at `size` px, on Apple's macOS 11+ grid (1024 canvas): the plate is 824 wide at (100, 100) with a
+ * soft shadow below it. D keeps the master's plate geometry (inset 16, rx 108 / 480 = 22.5 %) and paints it Sano red
+ * top to bottom, with a white play/S glyph. It is only re-framed; 64 px and below use the same glyph on the 32-unit plate.
+ */
+function macIconSvg(size) {
+  const small = size <= 64
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs><filter id="mac-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/></filter></defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#mac-shadow)" opacity="0.9"/>
+<svg x="100" y="100" width="824" height="824" viewBox="${small ? '0 0 32 32' : '16 16 480 480'}">${innerSvg(small ? SVG.small : SVG.master)}</svg>
+</svg>`
+}
+
+/** .icns entries: OSType → pixel size (PNG data; iconutil's own set for an iconset with every size). */
+const ICNS_ENTRIES = [
+  ['icp4', 16],
+  ['icp5', 32],
+  ['ic11', 32],
+  ['icp6', 64],
+  ['ic12', 64],
+  ['ic07', 128],
+  ['ic13', 256],
+  ['ic08', 256],
+  ['ic14', 512],
+  ['ic09', 512],
+  ['ic10', 1024],
+]
+
+/** .icns: 'icns' + big-endian total length, then per entry its OSType + big-endian length (8-byte header included) + PNG. */
+function encodeIcns() {
+  const pngs = new Map()
+  const parts = ICNS_ENTRIES.map(([type, px]) => {
+    if (!pngs.has(px)) pngs.set(px, Buffer.from(rasterize(macIconSvg(px), px).png))
+    const data = pngs.get(px)
+    const head = Buffer.alloc(8)
+    head.write(type, 0, 'latin1')
+    head.writeUInt32BE(data.length + 8, 4)
+    return Buffer.concat([head, data])
+  })
+  const body = Buffer.concat(parts)
+  const head = Buffer.alloc(8)
+  head.write('icns', 0, 'latin1')
+  head.writeUInt32BE(body.length + 8, 4)
+  return Buffer.concat([head, body])
+}
+
+/** Reads an .icns back (self-check after writing): every entry a PNG of the announced size. */
+function readIcns(buf) {
+  if (buf.toString('latin1', 0, 4) !== 'icns' || buf.readUInt32BE(4) !== buf.length) throw new Error('icon.icns: bad header')
+  const out = []
+  for (let o = 8; o < buf.length; ) {
+    const type = buf.toString('latin1', o, o + 4)
+    const len = buf.readUInt32BE(o + 4)
+    if (len < 8 || o + len > buf.length) throw new Error(`icon.icns: entry ${type} overflows the file`)
+    const png = buf.subarray(o + 8, o + len)
+    if (png.readUInt32BE(0) !== 0x89504e47) throw new Error(`icon.icns: entry ${type} is not a PNG`)
+    out.push({ type, width: png.readUInt32BE(16), height: png.readUInt32BE(20) })
+    o += len
+  }
+  return out
+}
+
+/**
+ * DMG window background, 540 x 380 points: the app icon at (140, 190), the Applications link at (400, 190).
+ * Finder draws the icon labels itself, black under the macOS Light appearance and white under Dark (a DMG cannot set
+ * their colour), so each label row (y 240-274, below the 96 pt icon) sits on a mid-grey plate #757579 that keeps
+ * about 4.6:1 contrast with both; on the bare charcoal a black label would vanish.
+ * scripts/__tests__/designDocs.test.mjs checks the committed PNGs.
+ */
+function dmgBackgroundSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F1F22"/><stop offset="1" stop-color="#161618"/></linearGradient></defs>
+<rect width="540" height="380" fill="url(#bg)"/>
+<rect x="80" y="240" width="120" height="34" rx="12" fill="#757579"/>
+<rect x="340" y="240" width="120" height="34" rx="12" fill="#757579"/>
+<path d="M212 190 H318" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" fill="none"/>
+<path d="M306 174 L328 190 L306 206" stroke="#FF3D14" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>`
+}
+
 /** Reads an .ico directory back (used as a self-check after writing). */
 function readIcoDirectory(buf) {
   if (buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) throw new Error('not an .ico')
@@ -237,14 +332,25 @@ write('build/installerSidebar.bmp', encodeBmp24(rasterize(withIcons(sidebar), 16
 write('build/uninstallerSidebar.bmp', encodeBmp24(rasterize(withIcons(unSidebar), 164)))
 write('build/installerHeader.bmp', encodeBmp24(rasterize(withIcons(source('installer-header.svg')), 150)))
 
+const icns = encodeIcns()
+const icnsDir = readIcns(icns)
+for (const [i, e] of icnsDir.entries()) {
+  const [type, want] = ICNS_ENTRIES[i]
+  if (e.type !== type || e.width !== want || e.height !== want) throw new Error(`icon.icns entry ${i} is ${e.type} ${e.width}x${e.height}, expected ${type} ${want}`)
+}
+write('build/icon.icns', icns)
+write('build/dmg-background.png', rasterize(dmgBackgroundSvg(), 540).png)
+write('build/dmg-background@2x.png', rasterize(dmgBackgroundSvg(), 1080).png)
+
 write('public/favicon.svg', source('favicon.svg'))
 write('public/icons/icon-192.png', iconPng(192))
 write('public/icons/icon-512.png', iconPng(512))
-// maskable: the farthest ink point of the master glyph is 243 from the centre; x0.8 = 194 < 204.8 (the 80 % circle)
+// D maskable: glyph control points + source dot fit within radius 241; x0.8 < 193 < 204.8 (the 80 % safe circle).
 write('public/icons/maskable-512.png', rasterize(fullBleed(0.8), 512).png)
 write('public/icons/apple-touch-icon-180.png', rasterize(fullBleed(0.92), 180).png)
 
 console.log(`make-icons: ${written.length} files -> ${OUT}`)
 for (const [rel, n] of written) console.log(`  ${rel.padEnd(34)} ${String(n).padStart(7)} B`)
 console.log('  icon.ico entries: ' + dir.map((e) => `${e.size}${e.format === 'png' ? ' (png)' : ''}`).join(', '))
+console.log('  icon.icns entries: ' + icnsDir.map((e) => `${e.type}=${e.width}`).join(', '))
 if (!HAVE_SEGOE) console.warn('  note: Segoe UI not found; installer text used a fallback system font')

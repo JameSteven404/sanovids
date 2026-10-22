@@ -2,9 +2,11 @@
 // Wires into it: take → folder ('save': that video now, or when it finishes) and scene → folder ('autosave': every
 // new video of the scene). Drag from its dot to a video or a scene, from a video's purple dot / a scene's right dot to
 // it, or drop videos from the library on it. Memoized; reads its folder and runtime state (lib/saveFolders) itself.
-import { Handle, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { platformText } from '../../lib/platformText'
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { CircleAlert, Folder, FolderCheck, FolderOpen, FolderSearch, KeyRound, LoaderCircle, Trash2 } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type DragEvent, type SyntheticEvent } from 'react'
+import { FOLDER_TRASHING_TEXT, trashExpiredSuffix, trashPendingSuffix } from '../../core/folderTrash'
 import { folderMapOf, shortPath } from '../../core/folders'
 import { chooseFolderPlace, grantFolderAccess, linkTakesToFolder, openFolderNode, refreshFolderNode, removeFolderNode } from '../../folderActions'
 import { desktopFiles } from '../../lib/desktopFiles'
@@ -12,8 +14,8 @@ import { useFolderStatus, folderRuntime, type FolderRuntime } from '../../lib/sa
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
-import { hasTakeDrag, LOD_ZOOM, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
-import { useRemeasureOn } from './NodeSizer'
+import { hasTakeDrag, readTakeIds, sceneMapOf, takeIndexOf } from './canvasModel'
+import { PortIcon, useFarView, useRemeasureOn } from './NodeSizer'
 import './saving.css'
 
 export type FolderFlowNode = Node<Record<string, unknown>, 'folder'>
@@ -35,10 +37,15 @@ function liveCount(ids: readonly string[] | undefined, live: ReadonlyMap<string,
   return n
 }
 
-/** One status line under the name: what the folder needs, or what was saved. */
+/**
+ * One status line under the name: what the folder needs, or what was saved. Cut wires whose files wait for the folder
+ * before going to the Recycle Bin add " · N file chờ xoá"; waits that expired this session (files kept) say so too.
+ */
 function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 'error' | 'muted' | 'busy'; text: string } {
+  if (rt.trashing) return { tone: 'busy', text: FOLDER_TRASHING_TEXT }
   if (rt.busy) return { tone: 'busy', text: 'Đang lưu…' }
-  const waiting = rt.pending ? ` · ${rt.pending} video chờ lưu` : ''
+  const trashNotes = trashPendingSuffix(rt.trashPending) + trashExpiredSuffix(rt.trashExpired)
+  const waiting = (rt.pending ? ` · ${rt.pending} video chờ lưu` : '') + trashNotes
   switch (rt.access) {
     case 'checking':
       return { tone: 'muted', text: 'Đang kiểm tra thư mục…' }
@@ -51,9 +58,10 @@ function statusOf(rt: FolderRuntime, hasPath: boolean): { tone: 'ok' | 'warn' | 
     case 'ask':
       return { tone: 'warn', text: 'Cần cấp lại quyền ghi vào thư mục' + waiting }
   }
-  if (rt.error) return { tone: 'error', text: rt.error }
-  if (!rt.saved) return { tone: 'muted', text: 'Chưa lưu video nào' }
-  return { tone: 'ok', text: `Đã lưu ${rt.saved} video${rt.lastAt ? ` · lần cuối ${timeText(rt.lastAt)}` : ''}` }
+  const trashWaiting = trashNotes
+  if (rt.error) return { tone: 'error', text: rt.error + trashWaiting }
+  if (!rt.saved) return { tone: 'muted', text: 'Chưa lưu video nào' + trashWaiting }
+  return { tone: 'ok', text: `Đã lưu ${rt.saved} video${rt.lastAt ? ` · lần cuối ${timeText(rt.lastAt)}` : ''}${trashWaiting}` }
 }
 
 function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
@@ -62,7 +70,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
   const autoN = useProject((s) => liveCount(folder?.autoScenes, sceneMapOf(s.project.scenes)))
   const takeN = useRuns((s) => liveCount(folder?.takes, takeIndexOf(s.takes).byId))
   const stored = useFolderStatus((s) => s.byId[id])
-  const far = useStore((s) => s.transform[2] < LOD_ZOOM)
+  const far = useFarView()
   // The dot moves down in the far layout (saving.css): re-measure even when the card keeps its height.
   useRemeasureOn(id, far)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
@@ -135,7 +143,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
     if (ids.length) linkTakesToFolder(ids, id)
   }
 
-  const Icon = rt.busy ? LoaderCircle : status.tone === 'ok' ? FolderCheck : Folder
+  const Icon = rt.busy || rt.trashing ? LoaderCircle : status.tone === 'ok' ? FolderCheck : Folder
   const cls = [
     'cv-folder',
     selected && 'is-selected',
@@ -151,7 +159,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
     <div className={cls} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="cv-folder-head">
         <span className={`cv-folder-icon tone-${status.tone}`} aria-hidden>
-          <Icon size={far ? 30 : 17} strokeWidth={1.75} className={rt.busy ? 'cv-spin' : undefined} />
+          <Icon size={far ? 30 : 17} strokeWidth={1.75} className={rt.busy || rt.trashing ? 'cv-spin' : undefined} />
         </span>
         <span className="cv-folder-titles">
           <span className="cv-folder-name" title={folder.name}>
@@ -218,7 +226,7 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
               <button
                 className="cv-folder-btn"
                 disabled={rt.access !== 'ok'}
-                title={path ? `Mở ${path} trong File Explorer` : 'Chưa chọn thư mục'}
+                title={path ? `Mở ${path} trong ${platformText.fileManager}` : 'Chưa chọn thư mục'}
                 onClick={(e) => {
                   e.stopPropagation()
                   void openFolderNode(id)
@@ -252,7 +260,9 @@ function FolderNodeView({ id, selected }: NodeProps<FolderFlowNode>) {
         id="in"
         className="cv-h cv-h-folder"
         title="Nối video hoặc cảnh vào đây để lưu · kéo từ đây tới một video / một cảnh"
-      />
+      >
+        {selected && <PortIcon kind="video" />}
+      </Handle>
     </div>
   )
 }

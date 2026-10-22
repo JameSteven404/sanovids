@@ -1,30 +1,24 @@
-import { Download, FileArchive, Film, Link2, LoaderCircle, Star } from 'lucide-react'
+import { Download, FileArchive, Film, LoaderCircle, Star } from 'lucide-react'
 import { memo, useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { downloadChosenTakesZip, downloadTake, focusNodes, linkTakes, selectedTakeIds, takeLabel } from '../../actions'
+import { downloadChosenTakesZip, downloadTake, focusNodes, selectedTakeIds, takeLabel } from '../../actions'
 import { sceneCode, takeCode } from '../../core/compile'
-import { modeLabel } from '../../core/models'
 import type { Take } from '../../core/types'
 import { TAKES_MIME } from '../../lib/dnd'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { cachedUrl } from '../../lib/imageStore'
+import { perfCount } from '../../perf/probe'
 import { useProject, type ProjectState } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { takeDurationText } from '../runs/importedTake'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
-import {
-  EMPTY_IDS,
-  finishedTakes,
-  matchesQuery,
-  takeHiddenOnCanvas,
-  takeSearchFields,
-  usePrefState,
-  useSceneCode,
-  useSceneMediaFlags,
-  useSingleSceneId,
-} from './shared'
+import { EMPTY_IDS, finishedTakesOf, norm, queryTerms, takeHiddenOnCanvas, takeSearchFields, usePrefState } from './shared'
+import { useWindowedList } from './useWindowedList'
+
+const ROW_HEIGHT = 48
 
 const sceneOrderSelector = (s: ProjectState) => {
   const m: Record<string, number> = {}
@@ -41,13 +35,6 @@ const sceneColorSelector = (s: ProjectState) => {
   for (const sc of s.project.scenes) if (sc.color) m[sc.id] = sc.color
   return m
 }
-/** Number of scenes using each take as a reference video (@video_N). */
-const videoUsageSelector = (s: ProjectState) => {
-  const m: Record<string, number> = {}
-  for (const sc of s.project.scenes) for (const t of sc.videoRefs) m[t] = (m[t] ?? 0) + 1
-  return m
-}
-
 /** Drag-ghost thumbnail fill for a take of a scene without its own color (the ghost lives in <body>: tokens apply). */
 const VIDEO_COLOR = 'var(--video)'
 
@@ -62,7 +49,7 @@ function dragIdsFor(id: string): string[] {
 }
 
 /** HTML5 drag of finished videos: TAKES_MIME payload + ghost; `ui.draggingTakeIds` lets drop targets light up. */
-function startTakeDrag(e: DragEvent<HTMLElement>, takeId: string, color: string | null) {
+export function startTakeDrag(e: DragEvent<HTMLElement>, takeId: string, color: string | null) {
   const ids = dragIdsFor(takeId)
   const takes = useRuns.getState().takes
   e.dataTransfer.effectAllowed = 'all'
@@ -76,7 +63,7 @@ function startTakeDrag(e: DragEvent<HTMLElement>, takeId: string, color: string 
   useUI.getState().setDraggingTakes(ids)
 }
 
-function endTakeDrag() {
+export function endTakeDrag() {
   useUI.getState().setDraggingTakes(null)
 }
 
@@ -86,7 +73,7 @@ function endTakeDrag() {
  * selection never holds an invisible node (that Delete would then act on). "Chỉ take chọn" only filters the canvas:
  * the other views show every take, so there the take itself is selected.
  */
-function selectTake(e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) {
+export function selectTake(e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) {
   const ui = useUI.getState()
   const take = useRuns.getState().takes.find((t) => t.id === id)
   const scenes = useProject.getState().project.scenes
@@ -106,15 +93,6 @@ function openTake(id: string) {
   useUI.getState().openDialog({ kind: 'take', takeId: id })
 }
 
-async function copyToken(token: string, code: string) {
-  try {
-    await navigator.clipboard.writeText(token)
-    toast(`Đã copy ${token} — dán vào prompt của ${code}.`, { tone: 'success' })
-  } catch {
-    toast('Trình duyệt chặn clipboard.', { tone: 'error' })
-  }
-}
-
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
 
 // ---------------- row ----------------
@@ -125,18 +103,11 @@ interface RowProps {
   sceneTitle: string
   /** Scene color (null = default video color). */
   color: string | null
-  usage: number
   selected: boolean
   dragging: boolean
-  /** Exactly one scene is selected: its id and code (else null / ''). */
-  singleId: string | null
-  singleCode: string
-  /** This take's "@video_N" in the selected scene (null = not linked there). */
-  token: string | null
-  /** The selected scene's model / mode accepts reference videos (false: "+ Nối" can only fail, @video does nothing). */
-  sendsVideos: boolean
-  /** "MiniMax-H3": model of that scene, for the explanations. */
-  sceneModel: string
+  index: number
+  count: number
+  tabIndex: number
   /** What the download button saves and where, e.g. "video + prompt .txt → thư mục “Phim”". */
   saveHint: string
 }
@@ -146,75 +117,36 @@ const TakeRow = memo(function TakeRow({
   code,
   sceneTitle,
   color,
-  usage,
   selected,
   dragging,
-  singleId,
-  singleCode,
-  token,
-  sendsVideos,
-  sceneModel,
+  index,
+  count,
+  tabIndex,
   saveHint,
 }: RowProps) {
+  perfCount('TakeRow')
   const [saving, setSaving] = useState(false)
   const download = () => {
     if (saving) return
     setSaving(true)
     void downloadTake(take.id).finally(() => setSaving(false))
   }
-  const usedTitle = usage ? `Đang là video tham chiếu ở ${usage} cảnh` : 'Chưa dùng làm video tham chiếu'
-  const offNote = `${sceneModel || 'Model'} ở chế độ hiện tại của ${singleCode} không nhận video tham chiếu`
-  /** @video number / "+ Nối" for the single selected scene (under the code, so the row never overflows). */
-  const pill = !singleId ? null : token ? (
-    sendsVideos ? (
-      <button
-        key="tok"
-        className="sb-token video"
-        title={`${token} trong ${singleCode} · bấm để copy`}
-        onClick={(e) => {
-          e.stopPropagation()
-          // 2nd click of a double-click on "+ Nối": this button replaced it under the pointer.
-          if (e.detail > 1) return
-          void copyToken(token, singleCode)
-        }}
-        onDoubleClick={stop}
-      >
-        {token}
-      </button>
-    ) : (
-      <span key="off" className="sb-token video off" title={`${token} trong ${singleCode} — ${offNote}, số này chưa có tác dụng.`}>
-        {token}
-      </span>
-    )
-  ) : take.sceneId === singleId ? null : (
-    <button
-      key="link"
-      className={`sb-connect video${sendsVideos ? '' : ' off'}`}
-      title={sendsVideos ? `Dùng ${code} làm video tham chiếu (@video) cho ${singleCode}` : `Không nối được: ${offNote}.`}
-      aria-disabled={!sendsVideos}
-      onClick={(e) => {
-        e.stopPropagation()
-        if (e.detail > 1) return
-        if (sendsVideos) linkTakes([singleId], [take.id])
-        else toast(`Không nối được: ${offNote}. Dùng Seedance 2.5, hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.`, { tone: 'warning' })
-      }}
-      onDoubleClick={stop}
-    >
-      + Nối
-    </button>
-  )
   return (
     <div
       className={`sb-take${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
-      style={color ? ({ '--sb-c': color } as CSSProperties) : undefined}
+      style={{ '--sb-c': color ?? VIDEO_COLOR, top: index * ROW_HEIGHT + 2 } as CSSProperties}
       draggable
       role="option"
-      tabIndex={0}
+      data-window-id={take.id}
+      tabIndex={tabIndex}
       aria-selected={selected}
-      title={`${code}${sceneTitle ? ` · ${sceneTitle}` : ''}\n${usedTitle}\nKéo vào cảnh để dùng làm @video · nháy đúp để xem`}
+      aria-setsize={count}
+      aria-posinset={index + 1}
+      title={`${code}${sceneTitle ? ` · ${sceneTitle}` : ''}\nKéo vào Thư mục để lưu · thả ra chỗ trống trên canvas để tạo cảnh tiếp theo · nháy đúp để xem`}
       onClick={(e) => {
         e.stopPropagation()
         if (e.detail > 1) return
+        e.currentTarget.focus({ preventScroll: true })
         selectTake(e, take.id)
       }}
       onDoubleClick={(e) => {
@@ -223,11 +155,14 @@ const TakeRow = memo(function TakeRow({
       }}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter') {
+        if (e.nativeEvent.isComposing || e.keyCode === 229 || e.altKey) return
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
           e.preventDefault()
+          e.stopPropagation()
           openTake(take.id)
         } else if (e.key === ' ') {
           e.preventDefault()
+          e.stopPropagation()
           selectTake(e, take.id)
         }
       }}
@@ -236,25 +171,19 @@ const TakeRow = memo(function TakeRow({
     >
       <div className="sb-take-media">
         {take.posterId ? <MediaImg id={take.posterId} alt={code} className="media-img sb-take-img" /> : <span className="sb-take-noposter">T{take.number}</span>}
-        <span className="sb-take-dur">{take.settings.duration}s</span>
+        <span className="sb-take-dur">{takeDurationText(take)}</span>
       </div>
       <div className="sb-take-info">
         <div className="sb-take-top">
           <span className="sb-take-code mono">{code}</span>
-          {usage > 0 && (
-            <span className="sb-take-used" title={usedTitle}>
-              <Link2 size={10} />
-              {usage}
-            </span>
-          )}
         </div>
         <div className="sb-take-sub">
-          {pill}
           <span className="sb-take-title">{sceneTitle || <span className="faint">Chưa đặt tên</span>}</span>
         </div>
       </div>
       <button
         className={`sb-take-btn sb-take-dl${saving ? ' busy' : ''}`}
+        tabIndex={tabIndex}
         title={saving ? `Đang lưu ${code}…` : `Tải ${code} (${saveHint})`}
         aria-label={`Tải video ${code}`}
         aria-busy={saving}
@@ -269,6 +198,7 @@ const TakeRow = memo(function TakeRow({
       </button>
       <button
         className={`sb-take-btn sb-take-star${take.starred ? ' on' : ''}`}
+        tabIndex={tabIndex}
         title={take.starred ? 'Bỏ chọn take này' : 'Chọn take này (★)'}
         aria-pressed={take.starred}
         onClick={(e) => {
@@ -284,19 +214,13 @@ const TakeRow = memo(function TakeRow({
 })
 
 // ---------------- panel ----------------
-/** "Video đã tạo": finished takes of the project, newest first, draggable onto scenes as @video references. */
+/** "Video đã tạo": finished takes of the project, newest first, draggable into folder nodes / onto empty canvas. */
 export function TakesPanel({ query, collapsed, onToggle }: { query: string; collapsed: boolean; onToggle: () => void }) {
   const orders = useProject(useShallow(sceneOrderSelector))
   const titles = useProject(useShallow(sceneTitleSelector))
   const colors = useProject(useShallow(sceneColorSelector))
-  const usage = useProject(useShallow(videoUsageSelector))
-  const singleId = useSingleSceneId()
-  const singleCode = useSceneCode(singleId)
-  const media = useSceneMediaFlags(singleId)
-  /** Same array object while only the prompt changes. */
-  const singleVideoRefs = useProject((s) => (singleId ? s.project.scenes.find((sc) => sc.id === singleId)?.videoRefs ?? EMPTY_IDS : EMPTY_IDS))
   const sceneIds = useMemo(() => new Set(Object.keys(orders)), [orders])
-  const takes = useRuns(useShallow((s) => finishedTakes(s.takes, sceneIds)))
+  const takes = useRuns(useShallow((s) => finishedTakesOf(s.takes, sceneIds)))
   const selectedIds = useUI((s) => s.selectedIds)
   const selSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const [starredOnly, setStarredOnly] = usePrefState('sb-takes-starred', false)
@@ -313,11 +237,12 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
   const chosenCount = useMemo(() => new Set(takes.map((t) => t.sceneId)).size, [takes])
   const [zipping, setZipping] = useState(false)
 
-  const visible = useMemo(
-    () =>
-      takes.filter((t) => (!starredOnly || t.starred) && matchesQuery(query, ...takeSearchFields(orders[t.sceneId], t.number, titles[t.sceneId]))),
-    [takes, starredOnly, query, orders, titles],
-  )
+  const search = useMemo(() => new Map(takes.map((t) => [t.id, norm(takeSearchFields(orders[t.sceneId], t.number, titles[t.sceneId]).join(' \u0001 '))])), [takes, orders, titles])
+  const terms = useMemo(() => queryTerms(query), [query])
+  const visible = useMemo(() => takes.filter((t) => (!starredOnly || t.starred) && terms.every((term) => search.get(t.id)!.includes(term))), [takes, starredOnly, terms, search])
+  const visibleIds = useMemo(() => visible.map((t) => t.id), [visible])
+  const projectId = useProject((s) => s.project.id)
+  const list = useWindowedList(visibleIds, ROW_HEIGHT, JSON.stringify([projectId, query, starredOnly]))
   const filtered = !!query.trim() || starredOnly
 
   // A row that unmounts mid-drag (take deleted, list filtered) never gets its dragend. No pointerdown can happen
@@ -355,6 +280,8 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
       collapsed={collapsed}
       onToggle={onToggle}
       grow={2}
+      bodyRef={list.bodyRef}
+      bodyProps={list.bodyProps}
       actions={
         takes.length > 0 && (
           <>
@@ -379,53 +306,38 @@ export function TakesPanel({ query, collapsed, onToggle }: { query: string; coll
           </>
         )
       }
-      toolbar={
-        singleId && takes.length > 0 ? (
-          media.videos ? (
-            <div className="sb-explain">
-              Số <span className="sb-tok video">@video</span> trong <b className="sb-accent">{singleCode}</b> · bấm số để copy, <b>+ Nối</b> để thêm.
-            </div>
-          ) : (
-            <div
-              className="sb-explain warn"
-              title={`${media.model} ở chế độ hiện tại của ${singleCode} không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.`}
-            >
-              <b className="sb-accent">{singleCode}</b> ({media.model}) ở chế độ này không nhận video <span className="sb-tok video off">@video</span>.
-            </div>
-          )
-        ) : undefined
-      }
-      footer={takes.length ? <div className="sb-libfoot hint">Kéo video vào cảnh để dùng làm @video · nháy đúp để xem · ⬇ để tải</div> : undefined}
+      footer={takes.length ? <div className="sb-libfoot hint">Kéo video vào Thư mục để lưu · thả ra chỗ trống để tạo cảnh tiếp theo · nháy đúp để xem · ⬇ để tải</div> : undefined}
     >
       {!takes.length ? (
         <div className="empty sb-empty">
           <div>Chưa có video nào tạo xong.</div>
-          <div className="faint">Chạy một cảnh (▶). Video xong sẽ hiện ở đây để kéo vào cảnh khác làm @video.</div>
+          <div className="faint">Chạy một cảnh (▶). Video xong sẽ hiện ở đây để xem, tải hoặc kéo vào Thư mục.</div>
         </div>
       ) : !visible.length ? (
         <div className="empty sb-empty">
           {query.trim() ? `Không có video nào khớp “${query.trim()}”${starredOnly ? ' trong các take đã chọn ★' : ''}.` : 'Chưa có take nào được chọn ★.'}
         </div>
       ) : (
-        <div className="sb-take-list" role="listbox" aria-multiselectable="true" aria-label="Video đã tạo">
-          {visible.map((t) => (
-            <TakeRow
-              key={t.id}
-              take={t}
-              code={takeCode(orders[t.sceneId], t.number)}
-              sceneTitle={titles[t.sceneId] ?? ''}
-              color={colors[t.sceneId] ?? null}
-              usage={usage[t.id] ?? 0}
-              selected={selSet.has(t.id)}
-              dragging={dragSet.has(t.id)}
-              singleId={singleId}
-              singleCode={singleCode}
-              token={singleId && singleVideoRefs.includes(t.id) ? `@video_${singleVideoRefs.indexOf(t.id) + 1}` : null}
-              sendsVideos={media.videos}
-              sceneModel={media.model}
-              saveHint={saveHint}
-            />
-          ))}
+        <div className="sb-take-list" style={{ height: visible.length * ROW_HEIGHT, '--sb-take-step': `${ROW_HEIGHT}px` } as CSSProperties} role="listbox" aria-multiselectable="true" aria-label="Video đã tạo">
+          {list.rows.map((index) => {
+            const t = visible[index]
+            const code = takeCode(orders[t.sceneId], t.number)
+            return (
+              <TakeRow
+                key={t.id}
+                take={t}
+                code={code}
+                sceneTitle={titles[t.sceneId] ?? ''}
+                color={colors[t.sceneId] ?? null}
+                selected={selSet.has(t.id)}
+                dragging={dragSet.has(t.id)}
+                index={index}
+                count={visible.length}
+                tabIndex={list.tabIndex === index ? 0 : -1}
+                saveHint={saveHint}
+              />
+            )
+          })}
         </div>
       )}
     </Section>

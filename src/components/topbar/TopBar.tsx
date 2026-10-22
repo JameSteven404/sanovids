@@ -1,5 +1,6 @@
 import {
   Bug,
+  CirclePlay,
   Download,
   FileInput,
   FolderOpen,
@@ -26,10 +27,14 @@ import {
 import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useStore } from 'zustand'
 import { downloadChosenTakesZip, openDevPanel } from '../../actions'
-import type { ViewMode } from '../../core/types'
+import { filmSummary, runtimeText } from '../../core/filmItems'
+import { SHOWN_VIEW_LIST } from '../../core/shownViews'
+import type { Scene, Take, ViewMode } from '../../core/types'
+import { openFilmPlayer } from '../../filmActions'
 import { useDownloadPrefs } from '../../lib/downloads'
+import { useShortcutTitle } from '../../lib/keymapPrefs'
 import { THEME_LABEL, useTheme, type ThemePref } from '../../lib/theme'
-import { activeProviderId, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
+import { activeProviderId, devAllowed, PROVIDER_LABEL, useProviderPrefs } from '../../providers'
 import { useDevServer } from '../../providers/dev'
 import { startRealCreditsSync } from '../../store/credits'
 import { flush, useSave } from '../../store/persist'
@@ -42,15 +47,12 @@ import { CreditPill } from './CreditPill'
 import './topbar.css'
 import { UpdatePill } from './UpdatePill'
 
-const VIEWS: { id: ViewMode; label: string; key: string; icon: LucideIcon }[] = [
-  { id: 'canvas', label: 'Canvas', key: '1', icon: Workflow },
-  { id: 'table', label: 'Bảng cảnh', key: '2', icon: Table2 },
-  { id: 'storyboard', label: 'Storyboard', key: '3', icon: LayoutGrid },
-]
+/** Icons of the center views; which views are shown (and their labels) is decided in core/shownViews. */
+const VIEW_ICON: Record<ViewMode, LucideIcon> = { canvas: Workflow, table: Table2, storyboard: LayoutGrid }
 
 /**
- * Unified toolbar (Apple style): app mark + project left, the view switch centred, quiet icon buttons right.
- * Translucent material with a hairline bottom border.
+ * Unified toolbar (Apple style): app mark + project left, "Phát liền" centred (with the view switch when more than
+ * one view is shown), quiet icon buttons right. Translucent material with a hairline bottom border.
  */
 export function TopBar() {
   const openDialog = useUI((s) => s.openDialog)
@@ -59,48 +61,56 @@ export function TopBar() {
   // useCreditInfo() share this one sync.
   useEffect(() => startRealCreditsSync(), [])
   return (
-    <header className="tb material">
+    <header className="tb">
       <div className="tb-left">
-        <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
-          <span className="tb-logo" aria-hidden="true">
-            <Logo size={24} />
-          </span>
-          <span className="tb-brand-text">SanoVids</span>
+        <div className="tb-pill">
+          <div className="tb-brand" title="SanoVids — dựng phim AI theo từng cảnh">
+            <span className="tb-logo" aria-hidden="true">
+              <Logo size={24} />
+            </span>
+            <span className="tb-brand-text">SanoVids</span>
+          </div>
+          <span className="tb-divider" />
+          <ProjectName />
+          <SaveStatus />
+          <button type="button" className="tb-btn tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
+            <FolderOpen size={16} />
+            <span className="tb-hide-sm">Dự án</span>
+          </button>
         </div>
-        <span className="tb-divider" />
-        <ProjectName />
-        <SaveStatus />
-        <button type="button" className="tb-btn tb-projects" onClick={() => openDialog({ kind: 'projects' })} title="Danh sách dự án">
-          <FolderOpen size={16} />
-          <span className="tb-hide-sm">Dự án</span>
-        </button>
       </div>
 
+      {/* Kept even when it only holds the film button: the bar is a 3-column grid (topbar.css). */}
       <div className="tb-center">
-        <ViewSwitch />
+        <span className="tb-pill">
+          {SHOWN_VIEW_LIST.length > 1 && <ViewSwitch />}
+          <FilmButton />
+        </span>
       </div>
 
       <div className="tb-right">
-        <HistoryButtons />
-        <RunningIndicator />
-        <UpdatePill />
-        <ProviderBadge />
-        <CreditPill />
-        <DevButton />
-        <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
-          <FileInput size={16} />
-          <span className="tb-hide-md">Nhập prompt</span>
-        </button>
-        <DownloadAllButton />
-        <span className="tb-divider" />
-        <AppearanceButton />
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video, chế độ Phát triển)" aria-label="Cài đặt">
-          <Settings size={16} />
-        </button>
-        <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
-          <Keyboard size={16} />
-        </button>
-        <PanelToggles />
+        <div className="tb-pill">
+          <HistoryButtons />
+          <RunningIndicator />
+          <UpdatePill />
+          <ProviderBadge />
+          <CreditPill />
+          <DevButton />
+          <button type="button" className="tb-btn tb-import" onClick={() => openDialog({ kind: 'import' })} title="Nhập prompt cũ (dán hoặc file .txt)">
+            <FileInput size={16} />
+            <span className="tb-hide-md">Nhập prompt</span>
+          </button>
+          <DownloadAllButton />
+          <span className="tb-divider" />
+          <AppearanceButton />
+          <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'settings' })} title="Cài đặt (dự án, nhà cung cấp video)" aria-label="Cài đặt">
+            <Settings size={16} />
+          </button>
+          <button type="button" className="icon-btn" onClick={() => openDialog({ kind: 'shortcuts' })} title="Phím tắt (?)" aria-label="Phím tắt">
+            <Keyboard size={16} />
+          </button>
+          <PanelToggles />
+        </div>
       </div>
     </header>
   )
@@ -173,13 +183,14 @@ function SaveStatus() {
   const savedAt = useSave((s) => s.savedAt)
   const stale = useSave((s) => s.stale)
   const [busy, setBusy] = useState(false)
+  const saveTitle = useShortcutTitle('bấm để lưu ngay', 'project.save')
   if (stale) return <StaleStatus />
   const shown = busy ? 'saving' : status
   const label = shown === 'saving' ? 'Đang lưu…' : shown === 'error' ? 'Lỗi lưu' : shown === 'saved' ? 'Đã lưu' : 'Chưa lưu'
   const title =
     status === 'error'
       ? 'Không ghi được vào bộ nhớ của trình duyệt. Bấm để thử lưu lại, hoặc xuất dự án ra file trong Cài đặt.'
-      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — bấm để lưu ngay (Ctrl+S)`
+      : `Tự động lưu trên máy này${savedAt ? ` · lần cuối ${new Date(savedAt).toLocaleTimeString('vi-VN')}` : ''} — ${saveTitle}`
 
   const save = async () => {
     if (busy) return
@@ -226,10 +237,14 @@ function StaleStatus() {
   )
 }
 
-/** Apple-style segmented control: equal segments, a raised thumb that slides to the selected one. */
+/**
+ * Apple-style segmented control: equal segments, a raised thumb that slides to the selected one. Rendered only while
+ * core/shownViews shows 2 or more views (0.6.0: the canvas alone, so not at all).
+ */
 function ViewSwitch() {
   const view = useUI((s) => s.view)
   const setView = useUI((s) => s.setView)
+  const VIEWS = SHOWN_VIEW_LIST
   const index = VIEWS.findIndex((v) => v.id === view)
   // ←/→ move between the views (tablist keyboard pattern); kept away from the canvas shortcuts.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -249,21 +264,24 @@ function ViewSwitch() {
       style={{ ['--seg-i' as string]: Math.max(0, index), ['--seg-n' as string]: VIEWS.length }}
     >
       {index >= 0 && <span className="tb-seg-thumb" aria-hidden="true" />}
-      {VIEWS.map(({ id, label, key, icon: Icon }) => (
-        <button
-          key={id}
-          type="button"
-          role="tab"
-          aria-selected={view === id}
-          tabIndex={view === id ? 0 : -1}
-          className={`tb-seg-btn ${view === id ? 'active' : ''}`}
-          onClick={() => setView(id)}
-          title={`${label} (${key})`}
-        >
-          <Icon size={15} />
-          <span className="tb-seg-label">{label}</span>
-        </button>
-      ))}
+      {VIEWS.map(({ id, label }) => {
+        const Icon = VIEW_ICON[id]
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={view === id}
+            tabIndex={view === id ? 0 : -1}
+            className={`tb-seg-btn ${view === id ? 'active' : ''}`}
+            onClick={() => setView(id)}
+            title={label}
+          >
+            <Icon size={15} />
+            <span className="tb-seg-label">{label}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -271,12 +289,14 @@ function ViewSwitch() {
 function HistoryButtons() {
   const past = useStore(useProject.temporal, (s) => s.pastStates.length)
   const future = useStore(useProject.temporal, (s) => s.futureStates.length)
+  const undoTitle = useShortcutTitle('Hoàn tác', 'history.undo')
+  const redoTitle = useShortcutTitle('Làm lại', 'history.redo')
   return (
     <div className="tb-history">
-      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `Hoàn tác (Ctrl+Z) · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
+      <button type="button" className="icon-btn" onClick={() => undo()} disabled={!past} title={past ? `${undoTitle} · còn ${past} bước` : 'Không có gì để hoàn tác'} aria-label="Hoàn tác">
         <Undo2 size={16} />
       </button>
-      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? 'Làm lại (Ctrl+Shift+Z)' : 'Không có gì để làm lại'} aria-label="Làm lại">
+      <button type="button" className="icon-btn" onClick={() => redo()} disabled={!future} title={future ? redoTitle : 'Không có gì để làm lại'} aria-label="Làm lại">
         <Redo2 size={16} />
       </button>
     </div>
@@ -316,8 +336,8 @@ function RunningIndicator() {
  * ("DEV 1.000 credit" / "canvasapp · 1.234 credit") already names the provider, so nothing extra is shown.
  */
 function ProviderBadge() {
-  // Subscribed so the badge follows the Settings choice; the bridge check inside activeProviderId() is static.
-  useProviderPrefs((s) => s.provider)
+  // Subscribed so the badge follows the Settings choice and the development-mode lock; the bridge check is static.
+  useProviderPrefs((s) => s.active)
   const issue = useRuns((s) => s.providerIssue)
   const openDialog = useUI((s) => s.openDialog)
   const id = activeProviderId()
@@ -338,9 +358,10 @@ function ProviderBadge() {
  * count shows how many faults are armed on the simulated server, so a forgotten one never looks like a real bug.
  */
 function DevButton() {
-  useProviderPrefs((s) => s.provider)
+  // `active` is never 'dev' while development mode is locked (release builds): the button is gone then.
+  useProviderPrefs((s) => s.active)
   const armed = useDevServer((s) => activeFaultCount(s.snapshot))
-  if (activeProviderId() !== 'dev') return null
+  if (activeProviderId() !== 'dev' || !devAllowed()) return null
   const title = armed
     ? `Bảng phát triển — đang bật ${armed} lỗi giả trên canvasapp giả lập. Bấm để xem / tắt.`
     : 'Bảng phát triển (chế độ Phát triển): trạng thái máy chủ giả lập, gây lỗi, nhật ký yêu cầu, job'
@@ -352,19 +373,68 @@ function DevButton() {
   )
 }
 
+// One computation per store change for every button that shows the count ("Phát liền" and the .zip button both
+// subscribe): the results are remembered by input identity, so the second subscriber reuses the first one's loop.
+let sceneKeyMemo: { scenes: Scene[] | null; key: string } = { scenes: null, key: '' }
+export function sceneKeyOf(scenes: Scene[]): string {
+  if (sceneKeyMemo.scenes !== scenes) sceneKeyMemo = { scenes, key: scenes.map((x) => x.id).join('|') }
+  return sceneKeyMemo.key
+}
+let countMemo: { takes: Take[] | null; sceneKey: string; count: number } = { takes: null, sceneKey: '', count: 0 }
+function chosenCountOf(takes: Take[], sceneKey: string): number {
+  if (countMemo.takes === takes && countMemo.sceneKey === sceneKey) return countMemo.count
+  let count = 0
+  if (sceneKey) {
+    const scenes = new Set(sceneKey.split('|'))
+    const done = new Set<string>()
+    for (const t of takes) if (t.status === 'completed' && scenes.has(t.sceneId)) done.add(t.sceneId)
+    count = done.size
+  }
+  countMemo = { takes, sceneKey, count }
+  return count
+}
+
 /**
  * Number of scenes that have a finished take — i.e. `actions.chosenTakeIds().length` (★ take, else the newest
  * finished one). Selects primitives only, so the top bar does not re-render on every progress tick.
  */
 function useChosenTakeCount(): number {
-  const sceneKey = useProject((s) => s.project.scenes.map((x) => x.id).join('|'))
-  return useRuns((s) => {
-    if (!sceneKey) return 0
-    const scenes = new Set(sceneKey.split('|'))
-    const done = new Set<string>()
-    for (const t of s.takes) if (t.status === 'completed' && scenes.has(t.sceneId)) done.add(t.sceneId)
-    return done.size
-  })
+  const sceneKey = useProject((s) => sceneKeyOf(s.project.scenes))
+  return useRuns((s) => chosenCountOf(s.takes, sceneKey))
+}
+
+/** Tooltip of "Phát liền", computed when the pointer / focus arrives (the top bar does not follow every take for it). */
+function filmTitle(): string {
+  const f = filmSummary(useProject.getState().project.scenes, useRuns.getState().takes)
+  if (!f.withTake) return FILM_EMPTY_TITLE
+  const missing = f.missingStarIds.length ? ` · ${f.missingStarIds.length} cảnh chưa có take ★` : ''
+  return `Phát liền: xem lần lượt take ★ (hoặc take mới nhất đã xong) của ${f.withTake}/${f.scenes} cảnh theo thứ tự · tổng ${runtimeText(f)}${missing}`
+}
+const FILM_EMPTY_TITLE = 'Chưa có cảnh nào có video xong để phát liền'
+
+/**
+ * "Phát liền", centred: plays every scene's chosen take in scene order (filmActions.openFilmPlayer). Off until a
+ * scene has a finished take.
+ */
+function FilmButton() {
+  const count = useChosenTakeCount()
+  const [title, setTitle] = useState('Phát liền')
+  const refresh = () => setTitle(filmTitle())
+  return (
+    <button
+      type="button"
+      className="tb-btn tb-film"
+      onClick={() => openFilmPlayer()}
+      onPointerEnter={refresh}
+      onFocus={refresh}
+      disabled={!count}
+      title={count ? title : FILM_EMPTY_TITLE}
+      aria-label="Phát liền"
+    >
+      <CirclePlay size={16} />
+      <span className="tb-film-label">Phát liền</span>
+    </button>
+  )
 }
 
 /** "Tải tất cả video chọn (.zip)": the chosen take of every scene in one zip (actions.downloadChosenTakesZip). */

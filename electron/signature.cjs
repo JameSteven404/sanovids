@@ -15,6 +15,10 @@
 // (SystemRoot only when it looks like <drive>:\Windows and the file really is there, else C:\Windows), and the child
 // gets an allowlisted environment (no COR_* / COMPlus_* / DOTNET_* profiler or runtime overrides, no PSModulePath, no
 // PATH entry outside Windows).
+//
+// The same hardened launch also answers one other question for electron/main.cjs: checkDriveType(root) — the
+// GetDriveType of a drive root ('X:\'), so files:trashSaved only ever moves files on a fixed disk. The root travels in
+// env SANOVIDS_DRIVE_ROOT; any failure is null (main then moves nothing).
 'use strict'
 
 const childProcess = require('node:child_process')
@@ -313,12 +317,51 @@ function checkFilesSignature(files, opts) {
     .catch(() => list.map((file) => ({ file, parsed: null, verdict: { ...UNKNOWN } })))
 }
 
+// ---- drive type (files:trashSaved) ----
+const DRIVE_ROOT_ENV = 'SANOVIDS_DRIVE_ROOT'
+const DRIVE_TYPE_TIMEOUT_MS = 20_000
+/**
+ * One line, no '"', newline or backtick (like SIGNATURE_SCRIPT): the System.IO.DriveType number (GetDriveType) of the
+ * root in env SANOVIDS_DRIVE_ROOT. In ConstrainedLanguage the call is refused: no number, null.
+ */
+const DRIVE_TYPE_SCRIPT = `[Console]::Out.Write([int]([System.IO.DriveInfo]::new($env:${DRIVE_ROOT_ENV}).DriveType))`
+
+/** stdout of DRIVE_TYPE_SCRIPT → 0–6, or null for anything else. */
+function parseDriveTypeOutput(stdout) {
+  const m = /^\s*([0-6])\s*$/.exec(typeof stdout === 'string' ? stdout : '')
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * GetDriveType of a drive root 'X:\' (3 = a fixed disk; see main.cjs SAVE_DRIVE_FIXED). NEVER rejects: null when it
+ * could not be read (not Windows, a bad root, no PowerShell, timeout, ConstrainedLanguage, garbage).
+ * opts: { timeoutMs = 20000, log(line), powershellPath, spawnImpl, env } (the last three for tests).
+ */
+function checkDriveType(root, opts) {
+  const o = runOptions(opts && typeof opts === 'object' ? { ...opts, timeoutMs: opts.timeoutMs || DRIVE_TYPE_TIMEOUT_MS } : { timeoutMs: DRIVE_TYPE_TIMEOUT_MS })
+  if (process.platform !== 'win32') return Promise.resolve(null)
+  if (typeof root !== 'string' || !/^[A-Za-z]:\\$/.test(root)) return Promise.resolve(null)
+  const env = powershellChildEnv(o.baseEnv, o.root)
+  env[DRIVE_ROOT_ENV] = root
+  const args = [...rules.powershellArgs().slice(0, -1), DRIVE_TYPE_SCRIPT]
+  return runPowershell({ exe: o.exe, args, env, timeoutMs: o.timeoutMs, spawnImpl: o.spawnImpl })
+    .then((run) => {
+      const type = run.stdout === null ? null : parseDriveTypeOutput(run.stdout)
+      if (type === null) safeLog(o.log, `drive type of ${root} not read (${run.cause}${run.stderr ? `: ${run.stderr}` : ''})`)
+      return type
+    })
+    .catch(() => null)
+}
+
 module.exports = {
   readSignerPins,
   checkFileSignature,
   checkFilesSignature,
+  checkDriveType,
+  parseDriveTypeOutput,
   resolvePowershell,
   powershellChildEnv,
   batchSignatureScript,
+  DRIVE_TYPE_SCRIPT,
   SIGNATURE_TIMEOUT_MS,
 }

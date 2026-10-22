@@ -1,17 +1,62 @@
-// Player of a finished take inside its canvas node: the video plus a compact control bar pinned to the bottom of the
-// poster — timeline (click / drag to seek), play / pause, time, speed and volume. Mounted by TakeNode only while the
-// node is hovered or its player is pinned (= one or two players on the whole board), so it may update per frame:
-// the progress bar is painted from requestAnimationFrame through a CSS variable, never through React state.
+// Controls of a finished take's player on its canvas node, in the 30px bar UNDER the picture (never drawn over it):
+// timeline (click / drag to seek), play / pause, time, speed, volume and "Phóng to" (fullscreen). The <video> itself
+// lives in TakeNode's picture box (shared ref, mounted in the same commit). Mounted by TakeNode only while the node is
+// hovered or its player is pinned (= one or two players on the whole board), so it may update per frame: the progress
+// bar is painted from requestAnimationFrame through a CSS variable, never through React state. TakeBarRest is the
+// same bar at rest (no player): play button, generation progress, measured length — same places, nothing jumps.
 //
 // Shared with the take viewer and "Phát liền": sound on/off, volume and speed (lib/playback.ts). Using any control
 // pins the player: it keeps playing after the mouse leaves, until empty canvas is clicked, another node's player
 // is pinned, or the node unmounts / zooms out. A pinned player pauses while another node previews or a dialog is
 // open (never two videos with sound at once) and resumes when its node is hovered again.
-import { Pause, Play, Volume1, Volume2, VolumeX } from 'lucide-react'
-import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type SyntheticEvent, type WheelEvent } from 'react'
-import { playWithSound, resumePoint, savedPosition, savePosition, toggleSound, usePlayback } from '../../lib/playback'
+//
+// "Phóng to": the node's stage (picture + bar) goes fullscreen (requestFullscreen; the same <video>, so it keeps
+// playing). Meanwhile every key is decided here (core/transportKeys nodeFullKey, window capture listeners for keydown,
+// keyup and keypress: nothing reaches React Flow or the app shortcuts behind it) and usePlayback.fullscreenId is set.
+// It leaves fullscreen on Esc / F / `, when a dialog or a development-mode sheet opens, when the window loses focus
+// or is hidden, and when the node unmounts. Unsupported or refused → the take viewer opens instead.
+import { Maximize2, Minimize2, Pause, Play, Volume1, Volume2, VolumeX } from 'lucide-react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent,
+  type RefObject,
+  type SyntheticEvent,
+  type WheelEvent,
+} from 'react'
+import { takeFileBase } from '../../actions'
+import { frameDelta, lastFrameTime, nodeFullKey, VOLUME_KEY_STEP, type TransportOp } from '../../core/transportKeys'
+import { useKeymap } from '../../lib/keymapPrefs'
+import { starSelection } from '../../keyCommands'
+import { describeFocus, useTransport } from '../../hooks/useTransport'
+import { eventLike, IS_MAC } from '../../lib/keyEvents'
+import { knownLength, playWithSound, resumePoint, savedPosition, saveLength, savePosition, toggleSound, usePlayback } from '../../lib/playback'
+import { useDevPrompts } from '../../providers/dev/prompts'
+import { useRuns } from '../../store/runs'
 import { useUI } from '../../store/ui'
-import { formatClock, formatLength, fractionAt, nextRate, rateLabel, rememberedVolume, seekStep, stepVolume, volumeLevel, wheelStep } from './playerModel'
+import { trapTabWithin } from '../common/focus'
+import {
+  formatClock,
+  formatLength,
+  fractionAt,
+  fullscreenButton,
+  nextRate,
+  playClickAction,
+  rateLabel,
+  rememberedVolume,
+  restBarState,
+  seekStep,
+  shuttleLabel,
+  stepVolume,
+  volumeLevel,
+  wheelStep,
+} from './playerModel'
 
 const stop = (e: SyntheticEvent) => e.stopPropagation()
 /**
@@ -26,17 +71,42 @@ const lengthOf = (v: HTMLVideoElement) => (Number.isFinite(v.duration) && v.dura
 
 /** Volume keyboard / wheel step. */
 const VOL_STEP = 0.05
+/** A window blur shorter than this (a fullscreen transition, a flicker) does not leave fullscreen. */
+const BLUR_EXIT_MS = 250
+/** Held keys repeat only for these (frame steps, volume): the shuttle and toggles act once per press. */
+const REPEATS = new Set<TransportOp>(['frame-back', 'frame-fwd', 'frame-back5', 'frame-fwd5', 'volume-up', 'volume-down'])
 
-function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+function openViewer(takeId: string) {
+  useUI.getState().openDialog({ kind: 'take', takeId })
+}
+
+export interface TakePlayerProps {
+  takeId: string
+  url: string
+  /** The node's <video> (TakeNode renders it in the picture box). */
+  videoRef: RefObject<HTMLVideoElement | null>
+  /** The node's stage (picture + bar): what goes fullscreen. */
+  stageRef: RefObject<HTMLDivElement | null>
+  /** "S03·T2" (fullscreen title). */
+  code: string
+  /** Fullscreen entered / left (TakeNode keeps the node's place and drops canvas gestures on the stage). */
+  onFullChange: (full: boolean) => void
+}
+
+function TakePlayerView({ takeId, url, videoRef, stageRef, code, onFullChange }: TakePlayerProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const tipRef = useRef<HTMLSpanElement>(null)
+  const playRef = useRef<HTMLButtonElement>(null)
+  const fullRef = useRef<HTMLButtonElement>(null)
+  const volRef = useRef<HTMLSpanElement>(null)
   const sound = usePlayback((s) => s.sound)
   const volume = usePlayback((s) => s.volume)
   const rate = usePlayback((s) => s.rate)
   const pinned = usePlayback((s) => s.pinned === takeId)
   const hovered = usePlayback((s) => s.hoverId === takeId)
   const otherHover = usePlayback((s) => s.hoverId !== null && s.hoverId !== takeId)
+  // A play request for this mounted player (canvas Space / J / K / L, the resting bar): its time, 0 = none.
+  const requestAt = usePlayback((s) => (s.playRequest?.takeId === takeId ? s.playRequest.at : 0))
   const blocked = useUI((s) => s.dialog.kind !== 'none')
 
   const [playing, setPlaying] = useState(false)
@@ -46,6 +116,10 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
   const [time, setTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [scrubbing, setScrubbing] = useState(false)
+  /** The stage is fullscreen ("Phóng to"). */
+  const [full, setFull] = useState(false)
+  /** "S03·T2 · file name", read once when fullscreen starts. */
+  const [fullTitle, setFullTitle] = useState('')
 
   /** Set while the timeline is dragged: whether to resume playing afterwards. */
   const scrub = useRef<{ wasPlaying: boolean } | null>(null)
@@ -63,11 +137,20 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
   const wheelAcc = useRef({ rate: 0, volume: 0 })
   /** The sound pref this player last followed (the start effect applies the first one). */
   const lastSound = useRef(sound)
+  /** performance.now() when the hover preview started playing by itself (playClickAction), null otherwise. */
+  const autoStartedAt = useRef<number | null>(null)
+  /** Fullscreen was entered from the keyboard: the focus stays on its button afterwards. */
+  const fullByKey = useRef(false)
+  const wasFull = useRef(false)
+
+  const transport = useTransport(videoRef, { userRate: () => usePlayback.getState().rate })
+  const { shuttling, stop: stopShuttle } = transport
 
   /** Any use of a control keeps this player open (and closes another pinned one). */
-  const touch = () => usePlayback.getState().pin(takeId)
+  const touch = useCallback(() => usePlayback.getState().pin(takeId), [takeId])
 
-  // Start: shared volume + speed, resume where this take was left, play (with sound when allowed).
+  // Start: shared volume + speed, resume where this take was left, play (with sound when allowed) — unless a play
+  // request says otherwise (K = stay paused; J / L = shuttle).
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
@@ -75,6 +158,8 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     ready.current = false
     probing.current = false
     const p = usePlayback.getState()
+    const req = p.consumePlayRequest(takeId)
+    const pinnedAtStart = p.pinned === takeId
     v.volume = p.volume
     // The media load resets playbackRate to defaultPlaybackRate: set both.
     v.defaultPlaybackRate = p.rate
@@ -87,6 +172,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
       ready.current = true
       setDuration(d)
       setTime(Math.floor(t))
+      saveLength(takeId, d)
     }
     const onMeta = () => {
       if (v.duration !== Infinity) return begin()
@@ -97,7 +183,20 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     }
     if (v.readyState >= HTMLMediaElement.HAVE_METADATA) onMeta()
     else v.addEventListener('loadedmetadata', onMeta, { once: true })
-    void playWithSound(v, p.sound).then((on) => live && setAudible(on))
+    if (req?.op === 'stop') {
+      // Asked by a key or a click (a user gesture): the sound setting applies at once.
+      v.muted = !p.sound
+      setAudible(!v.muted)
+    } else {
+      void playWithSound(v, p.sound).then((on) => {
+        if (!live) return
+        setAudible(on)
+        // The hover preview started by itself: a click on ▶ in the next moment keeps it running (playClickAction).
+        if (!req && !pinnedAtStart) autoStartedAt.current = performance.now()
+        if (req?.op === 'forward' || req?.op === 'reverse') transport.shuttleOp(req.op)
+      })
+    }
+    if (req?.focus) playRef.current?.focus()
     return () => {
       live = false
       v.removeEventListener('loadedmetadata', onMeta)
@@ -105,6 +204,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
       if (ready.current) savePosition(takeId, v.currentTime)
       ready.current = false
     }
+    // Only a new video (or take) starts over; shuttleOp is a stable callback, videoRef a ref object.
   }, [url, takeId])
 
   // Media events: play state, time text, length, buffered part; the played part follows every frame while playing.
@@ -129,6 +229,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     }
     const onPause = () => {
       setPlaying(false)
+      autoStartedAt.current = null
       cancelAnimationFrame(raf)
       raf = 0
       paint()
@@ -136,7 +237,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     const onTime = () => {
       if (probing.current) return
       setTime(Math.floor(v.currentTime))
-      // Also here: rAF stops in a hidden / occluded window while the video may keep playing.
+      // Also here: rAF stops in a hidden / occluded window while the video may keep playing (and J moves a paused one).
       paint()
     }
     const onBuffered = () => {
@@ -145,7 +246,10 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
       track.style.setProperty('--tp-buf', String(d && b.length ? Math.min(1, b.end(b.length - 1) / d) : 0))
     }
     const onLength = () => {
-      if (!probing.current) setDuration(lengthOf(v))
+      if (!probing.current) {
+        setDuration(lengthOf(v))
+        saveLength(takeId, lengthOf(v))
+      }
       onBuffered()
       paint()
     }
@@ -170,19 +274,20 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
       cancelAnimationFrame(raf)
       for (const [type, fn] of on) v.removeEventListener(type, fn)
     }
-  }, [])
+  }, [takeId, videoRef])
 
   // Shared prefs changed (here or in another player): follow them.
   useEffect(() => {
     const v = videoRef.current
     if (v) v.volume = volume
-  }, [volume])
+  }, [volume, videoRef])
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
     v.defaultPlaybackRate = rate
-    v.playbackRate = rate
-  }, [rate])
+    // A running J / L shuttle keeps its own speed (it gives the user's speed back when it ends).
+    if (!shuttling()) v.playbackRate = rate
+  }, [rate, videoRef, shuttling])
   // Sound switched off or back on (here, in the take viewer, in "Phát liền"): mirror it, both ways. Only real changes:
   // the start effect sets the first state, and may have had to fall back to muted. Switching the sound on is always a
   // user action on this page, so unmuting is allowed. The speaker icon follows through 'volumechange'.
@@ -191,29 +296,47 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     if (!v || lastSound.current === sound) return
     lastSound.current = sound
     v.muted = !sound
-  }, [sound])
+  }, [sound, videoRef])
 
   // Another node previews, or a dialog opened: pause. Back on this node (nothing in the way): resume.
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
     if (otherHover || blocked) {
-      if (!v.paused) {
-        autoPaused.current = true
+      if (!v.paused || shuttling()) {
+        autoPaused.current = !v.paused
+        stopShuttle()
         v.pause()
       }
     } else if (hovered && autoPaused.current) {
       autoPaused.current = false
       void v.play().catch(() => undefined)
     }
-  }, [otherHover, blocked, hovered])
+  }, [otherHover, blocked, hovered, videoRef, shuttling, stopShuttle])
 
   // ---------------- play / pause ----------------
-  const togglePlay = () => {
-    touch()
+  /** The play button: within the hover preview's first moment it only pins (keeps it playing); J backwards → play. */
+  const onPlayButton = () => {
     const v = videoRef.current
     if (!v) return
+    const action = playClickAction({ playing: !v.paused, autoStartedAt: autoStartedAt.current, now: performance.now(), pinned: usePlayback.getState().pinned === takeId })
+    touch()
+    autoStartedAt.current = null
     autoPaused.current = false
+    if (action === 'pin-keep') return
+    if (transport.shuttle.dir === 1) return transport.stop()
+    if (transport.shuttle.dir === -1) transport.release()
+    if (v.paused) void v.play().catch(() => undefined)
+    else v.pause()
+  }
+  /** Space / a play request: play / pause; while J / L shuttles, stop. */
+  const toggleKey = () => {
+    const v = videoRef.current
+    if (!v) return
+    touch()
+    autoStartedAt.current = null
+    autoPaused.current = false
+    if (transport.shuttling()) return transport.stop()
     if (v.paused) void v.play().catch(() => undefined)
     else v.pause()
   }
@@ -233,7 +356,8 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     const d = v ? lengthOf(v) : 0
     if (!v || !d) return
     trackRef.current?.style.setProperty('--tp-played', String(f))
-    v.currentTime = f * d
+    // never the very end (the rail's right end, End, → there): the card's video loops, it would restart at 0
+    v.currentTime = Math.min(f * d, lastFrameTime(d))
   }
   const onTrackDown = (e: PointerEvent<HTMLDivElement>) => {
     e.stopPropagation()
@@ -243,6 +367,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     const v = videoRef.current
     if (!v || !lengthOf(v)) return
     e.currentTarget.setPointerCapture(e.pointerId)
+    transport.release()
     scrub.current = { wasPlaying: !v.paused }
     autoPaused.current = false
     v.pause()
@@ -265,25 +390,32 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     const v = videoRef.current
     if (v && s.wasPlaying) void v.play().catch(() => undefined)
   }
-  const onTrackKey = (e: KeyboardEvent<HTMLDivElement>) => {
+  /** The focused timeline keeps slider keys: ← → (↓ ↑) one second (Shift: 5), Home / End. True when used. */
+  const trackKey = (key: string, shift: boolean): boolean => {
     const v = videoRef.current
     const d = v ? lengthOf(v) : 0
-    if (!v || !d) return
+    if (!v || !d) return false
     let t: number | null = null
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') t = v.currentTime - seekStep(e.shiftKey)
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') t = v.currentTime + seekStep(e.shiftKey)
-    else if (e.key === 'Home') t = 0
-    else if (e.key === 'End') t = d
-    if (t === null) return
+    if (key === 'ArrowLeft' || key === 'ArrowDown') t = v.currentTime - seekStep(shift)
+    else if (key === 'ArrowRight' || key === 'ArrowUp') t = v.currentTime + seekStep(shift)
+    else if (key === 'Home') t = 0
+    else if (key === 'End') t = d
+    if (t === null) return false
+    touch()
+    transport.release()
+    seekTo(Math.min(1, Math.max(0, t / d)))
+    return true
+  }
+  const onTrackKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!trackKey(e.key, e.shiftKey)) return
     e.preventDefault()
     e.stopPropagation()
-    touch()
-    seekTo(Math.min(1, Math.max(0, t / d)))
   }
 
   // ---------------- speed ----------------
   const changeRate = (dir: 1 | -1) => {
     touch()
+    transport.release()
     const p = usePlayback.getState()
     p.setRate(nextRate(p.rate, dir))
   }
@@ -323,6 +455,10 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     lastVolume.current = rememberedVolume(lastVolume.current, usePlayback.getState().volume, now, lastVolStepAt.current)
     lastVolStepAt.current = now
   }
+  const stepVolumeBy = (delta: number) => {
+    noteVolumeStep()
+    applyVolume(stepVolume(usePlayback.getState().volume, delta))
+  }
   const volumeAt = (e: PointerEvent<HTMLElement>) => Math.round(fractionAt(e.clientX, e.currentTarget.getBoundingClientRect()) * 100) / 100
   const onVolDown = (e: PointerEvent<HTMLSpanElement>) => {
     e.stopPropagation()
@@ -341,26 +477,227 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
     volDrag.current = false
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
-  const onVolKey = (e: KeyboardEvent<HTMLSpanElement>) => {
+  /** The focused volume slider keeps slider keys: ← → ↓ ↑ 5 %, Home / End. True when used. */
+  const volKey = (key: string): boolean => {
     const cur = usePlayback.getState().volume
     let next: number | null = null
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = stepVolume(cur, -VOL_STEP)
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = stepVolume(cur, VOL_STEP)
-    else if (e.key === 'Home') next = 0
-    else if (e.key === 'End') next = 1
-    if (next === null) return
-    e.preventDefault()
-    e.stopPropagation()
+    if (key === 'ArrowLeft' || key === 'ArrowDown') next = stepVolume(cur, -VOL_STEP)
+    else if (key === 'ArrowRight' || key === 'ArrowUp') next = stepVolume(cur, VOL_STEP)
+    else if (key === 'Home') next = 0
+    else if (key === 'End') next = 1
+    if (next === null) return false
     noteVolumeStep()
     applyVolume(next)
+    return true
+  }
+  const onVolKey = (e: KeyboardEvent<HTMLSpanElement>) => {
+    if (!volKey(e.key)) return
+    e.preventDefault()
+    e.stopPropagation()
   }
   const onVolWheel = (e: WheelEvent) => {
     const r = wheelStep(wheelAcc.current.volume, e.deltaY, e.deltaMode)
     wheelAcc.current.volume = r.acc
     if (!r.step) return
-    noteVolumeStep()
-    applyVolume(stepVolume(usePlayback.getState().volume, r.step * VOL_STEP))
+    stepVolumeBy(r.step * VOL_STEP)
   }
+
+  // ---------------- fullscreen ("Phóng to") ----------------
+  const exitFull = useCallback(() => {
+    const el = document.fullscreenElement
+    const stage = stageRef.current
+    if (el && stage && (el === stage || stage.contains(el))) void document.exitFullscreen().catch(() => undefined)
+  }, [stageRef])
+  const enterFull = (byKey: boolean) => {
+    touch()
+    const stage = stageRef.current
+    fullByKey.current = byKey
+    if (!stage || !document.fullscreenEnabled || typeof stage.requestFullscreen !== 'function') return openViewer(takeId)
+    stage.requestFullscreen({ navigationUI: 'hide' }).catch(() => openViewer(takeId))
+  }
+  const onFullButton = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    if (full) exitFull()
+    else enterFull(e.detail === 0)
+  }
+
+  // Follow the document's fullscreen state (entered here, left with the browser's own Esc or by anything else).
+  useEffect(() => {
+    const onChange = () => {
+      const stage = stageRef.current
+      setFull(!!stage && document.fullscreenElement === stage)
+    }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [stageRef])
+
+  // Entered / left: tell the node and the store, move the focus (entering: onto "Thu nhỏ"; leaving after a mouse
+  // entry: out of the player, so Space pans the canvas again).
+  useEffect(() => {
+    if (full === wasFull.current) return
+    wasFull.current = full
+    onFullChange(full)
+    usePlayback.getState().setFullscreen(full ? takeId : null, takeId)
+    if (full) {
+      setFullTitle(`${code} · ${takeFileBase(takeId)}`)
+      fullRef.current?.focus({ preventScroll: true })
+    } else if (fullByKey.current) {
+      fullRef.current?.focus({ preventScroll: true })
+    } else {
+      const a = document.activeElement
+      if (a instanceof HTMLElement && stageRef.current?.contains(a)) a.blur()
+    }
+  }, [full, takeId, code, onFullChange, stageRef])
+
+  // Unmount while fullscreen (the take was removed, the node left the board): leave it, clear the store, and give the
+  // node its normal layout back (its fullscreenchange listener is gone with this player).
+  useEffect(
+    () => () => {
+      if (!wasFull.current) return
+      wasFull.current = false
+      const el = document.fullscreenElement
+      if (el && stageRef.current && (el === stageRef.current || stageRef.current.contains(el))) void document.exitFullscreen().catch(() => undefined)
+      usePlayback.getState().setFullscreen(null, takeId)
+      onFullChange(false)
+    },
+    [takeId, stageRef, onFullChange],
+  )
+
+  // A dialog opened over everything: leave fullscreen (the dialog would show behind it).
+  useEffect(() => {
+    if (full && blocked) exitFull()
+  }, [full, blocked, exitFull])
+
+  // The latest handlers (the listeners below are added once per fullscreen session).
+  const toggleRef = useRef(toggleKey)
+  toggleRef.current = toggleKey
+  const fullKeyRef = useRef<(e: globalThis.KeyboardEvent) => void>(() => undefined)
+  fullKeyRef.current = (native) => {
+    const stage = stageRef.current
+    const active = document.activeElement
+    const inside = !!stage && active instanceof HTMLElement && stage.contains(active)
+    const d = nodeFullKey(eventLike(native), inside ? describeFocus(active) : 'none', { mac: IS_MAC, starChords: useKeymap.getState().resolved.byAction['take.star'] })
+    if (d.kind === 'tab') {
+      if (stage) trapTabWithin(stage, native)
+      return
+    }
+    if (d.kind === 'default') return
+    if (d.kind === 'slider') {
+      const used = active === trackRef.current ? trackKey(native.key, native.shiftKey) : active === volRef.current ? volKey(native.key) : false
+      if (used) native.preventDefault()
+      return
+    }
+    // Alt combinations stay with the system (Alt+F4, Alt+Tab); every other key is the player's or nothing.
+    if (d.kind === 'block') {
+      if (!native.altKey) native.preventDefault()
+      return
+    }
+    native.preventDefault()
+    if (native.repeat && !REPEATS.has(d.op)) return
+    runOp(d.op)
+  }
+  const runOp = (op: TransportOp) => {
+    switch (op) {
+      case 'toggle':
+        return toggleKey()
+      case 'stop':
+        touch()
+        return transport.stop()
+      case 'forward':
+      case 'reverse':
+        touch()
+        return transport.shuttleOp(op)
+      case 'start':
+      case 'end':
+        touch()
+        return transport.edge(op)
+      case 'volume-up':
+        return stepVolumeBy(VOLUME_KEY_STEP)
+      case 'volume-down':
+        return stepVolumeBy(-VOLUME_KEY_STEP)
+      case 'fullscreen':
+      case 'exit':
+        return exitFull()
+      case 'star':
+        return starSelection(takeId)
+      default: {
+        const n = frameDelta(op)
+        if (n) {
+          touch()
+          transport.frame(n)
+        }
+      }
+    }
+  }
+
+  // While fullscreen: own every key (window capture, before React, React Flow and the app shortcuts), the clicks on
+  // the picture (click = play / pause, double-click = leave; never the node's "open viewer"), and leave on a window
+  // blur / hidden page or when a development-mode sheet appears.
+  useEffect(() => {
+    if (!full) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      e.stopImmediatePropagation()
+      if (e.type === 'keydown') fullKeyRef.current(e)
+      // A button activates on Space's keyup: Space is play / pause here.
+      else if (e.type === 'keyup' && (e.key === ' ' || e.code === 'Space')) e.preventDefault()
+    }
+    const types = ['keydown', 'keyup', 'keypress'] as const
+    for (const t of types) window.addEventListener(t, onKey, true)
+    const v = videoRef.current
+    const onClick = (e: MouseEvent) => {
+      e.stopPropagation()
+      toggleRef.current()
+    }
+    const onDbl = (e: MouseEvent) => {
+      e.stopPropagation()
+      exitFull()
+    }
+    v?.addEventListener('click', onClick)
+    v?.addEventListener('dblclick', onDbl)
+    let blurTimer: ReturnType<typeof setTimeout> | null = null
+    const onBlur = () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = setTimeout(() => {
+        blurTimer = null
+        if (!document.hasFocus()) exitFull()
+      }, BLUR_EXIT_MS)
+    }
+    const onVisible = () => {
+      if (document.hidden) exitFull()
+    }
+    window.addEventListener('blur', onBlur)
+    document.addEventListener('visibilitychange', onVisible)
+    const offDev = useDevPrompts.subscribe((s) => {
+      if (s.login || s.checkout) exitFull()
+    })
+    const dev = useDevPrompts.getState()
+    if (dev.login || dev.checkout) exitFull()
+    return () => {
+      for (const t of types) window.removeEventListener(t, onKey, true)
+      v?.removeEventListener('click', onClick)
+      v?.removeEventListener('dblclick', onDbl)
+      if (blurTimer) clearTimeout(blurTimer)
+      window.removeEventListener('blur', onBlur)
+      document.removeEventListener('visibilitychange', onVisible)
+      offDev()
+    }
+  }, [full, videoRef, exitFull])
+
+  // A play request while mounted (the start effect took the one that mounted it).
+  useEffect(() => {
+    if (!requestAt) return
+    const req = usePlayback.getState().consumePlayRequest(takeId)
+    if (!req) return
+    if (req.op === 'toggle') toggleKey()
+    else if (req.op === 'stop') {
+      touch()
+      transport.stop()
+    } else {
+      touch()
+      transport.shuttleOp(req.op)
+    }
+    if (req.focus) playRef.current?.focus()
+    // Only a new request runs (the handlers read refs / stable callbacks).
+  }, [requestAt])
 
   const level = volumeLevel(volume, audible)
   const VolumeIcon = level === 'off' ? VolumeX : level === 'low' ? Volume1 : Volume2
@@ -370,62 +707,69 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
   const lengthText = formatLength(duration)
   const lengthMax = Math.round(duration)
   const clock = `${formatClock(time)} / ${lengthText}`
-  const rateText = rateLabel(rate)
-  const cls = ['cv-tp', 'nodrag', 'nopan', 'nokey', scrubbing && 'is-scrub', pinned && 'is-pinned', duration > 0 && 'has-length']
+  const rateText = shuttleLabel(transport.shuttle) ?? rateLabel(rate)
+  const fullBtn = fullscreenButton(full)
+  const FullIcon = full ? Minimize2 : Maximize2
+  const cls = ['cv-tp', 'nodrag', 'nopan', 'nokey', scrubbing && 'is-scrub', pinned && 'is-pinned', duration > 0 && 'has-length', transport.shuttle.dir !== 0 && 'is-shuttle']
     .filter(Boolean)
     .join(' ')
 
   return (
-    <>
-      <video ref={videoRef} className="cv-take-video" src={url} loop playsInline muted preload="auto" />
+    <div
+      className={cls}
+      style={{ ['--tp-vol' as string]: String(audible ? volume : 0) }}
+      // Only the controls take presses (the time text and the gaps let them through to the node, see takeNode.css);
+      // each control pins the player itself, on a primary press only.
+      onPointerDown={stop}
+      onMouseDown={keepFocus}
+      onClick={stop}
+      onDoubleClick={stop}
+    >
       <div
-        className={cls}
-        style={{ ['--tp-vol' as string]: String(audible ? volume : 0) }}
-        // Only the controls take presses (the fade, time text and gaps let them through to the node, see canvas.css);
-        // each control pins the player itself, on a primary press only.
-        onPointerDown={stop}
-        onMouseDown={keepFocus}
-        onClick={stop}
-        onDoubleClick={stop}
+        ref={trackRef}
+        className="cv-tp-track"
+        role="slider"
+        tabIndex={0}
+        aria-label="Thời gian video"
+        aria-valuemin={0}
+        aria-valuemax={lengthMax}
+        aria-valuenow={Math.min(time, lengthMax)}
+        aria-valuetext={clock}
+        title="Bấm hoặc kéo để tua (← → từng giây, Shift: 5 giây)"
+        onPointerDown={onTrackDown}
+        onPointerMove={onTrackMove}
+        onPointerUp={endScrub}
+        onPointerCancel={endScrub}
+        onLostPointerCapture={endScrub}
+        onKeyDown={onTrackKey}
       >
-        <div
-          ref={trackRef}
-          className="cv-tp-track"
-          role="slider"
-          tabIndex={0}
-          aria-label="Thời gian video"
-          aria-valuemin={0}
-          aria-valuemax={lengthMax}
-          aria-valuenow={Math.min(time, lengthMax)}
-          aria-valuetext={clock}
-          title="Bấm hoặc kéo để tua (← → từng giây, Shift: 5 giây)"
-          onPointerDown={onTrackDown}
-          onPointerMove={onTrackMove}
-          onPointerUp={endScrub}
-          onPointerCancel={endScrub}
-          onLostPointerCapture={endScrub}
-          onKeyDown={onTrackKey}
-        >
-          <span className="cv-tp-rail" aria-hidden>
-            <i className="cv-tp-buf" />
-            <i className="cv-tp-fill" />
+        <span className="cv-tp-rail" aria-hidden>
+          <i className="cv-tp-buf" />
+          <i className="cv-tp-fill" />
+        </span>
+        <span className="cv-tp-knob" aria-hidden>
+          <i />
+        </span>
+        <span ref={tipRef} className="cv-tp-tip" aria-hidden>
+          0:00
+        </span>
+      </div>
+      <div className="cv-tp-row">
+        <button ref={playRef} className="cv-tp-btn cv-tp-play" title={playing ? 'Tạm dừng' : 'Phát'} aria-label={playing ? 'Tạm dừng' : 'Phát'} onClick={onPlayButton}>
+          {playing ? <Pause size={13} fill="currentColor" strokeWidth={0} /> : <Play size={13} fill="currentColor" strokeWidth={0} />}
+        </button>
+        <span className="cv-tp-time" aria-hidden>
+          {formatClock(time)}
+          <span className="cv-tp-dur"> / {lengthText}</span>
+        </span>
+        {full && (
+          <span className="cv-tp-title" title={fullTitle}>
+            {fullTitle}
           </span>
-          <span className="cv-tp-knob" aria-hidden>
-            <i />
-          </span>
-          <span ref={tipRef} className="cv-tp-tip" aria-hidden>
-            0:00
-          </span>
-        </div>
-        <div className="cv-tp-row">
-          <button className="cv-tp-btn" title={playing ? 'Tạm dừng' : 'Phát'} aria-label={playing ? 'Tạm dừng' : 'Phát'} onClick={togglePlay}>
-            {playing ? <Pause size={13} fill="currentColor" strokeWidth={0} /> : <Play size={13} fill="currentColor" strokeWidth={0} />}
-          </button>
-          <span className="cv-tp-time" aria-hidden>
-            {formatClock(time)}
-            <span className="cv-tp-dur"> / {lengthText}</span>
-          </span>
-          <span className="cv-tp-sp" />
+        )}
+        <span className="cv-tp-sp" />
+        {full && <span className="cv-tp-hint">Esc để thoát</span>}
+        <span className="cv-tp-end">
           <button
             className="cv-tp-btn cv-tp-rate nowheel"
             title={`Tốc độ phát ${rateText} — bấm để tăng, Shift+bấm để giảm, hoặc cuộn chuột`}
@@ -447,6 +791,7 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
               <VolumeIcon size={14} strokeWidth={2} />
             </button>
             <span
+              ref={volRef}
               className="cv-tp-vslider"
               role="slider"
               tabIndex={0}
@@ -467,17 +812,76 @@ function TakePlayerView({ takeId, url }: { takeId: string; url: string }) {
               <i className="cv-tp-vknob" />
             </span>
           </span>
-        </div>
+          <button ref={fullRef} className="cv-tp-btn cv-tp-full" title={fullBtn.title} aria-label={fullBtn.aria} onClick={onFullButton}>
+            <FullIcon size={13} strokeWidth={2.2} />
+          </button>
+        </span>
       </div>
-    </>
+    </div>
   )
 }
 
 /** Unmounting (hover ended and not pinned, zoomed out, node gone) also unpins this take. */
-function TakePlayerRoot(props: { takeId: string; url: string }) {
+function TakePlayerRoot(props: TakePlayerProps) {
   const { takeId } = props
   useEffect(() => () => usePlayback.getState().unpin(takeId), [takeId])
   return <TakePlayerView {...props} />
 }
 
 export const TakePlayer = memo(TakePlayerRoot)
+
+/**
+ * The bar of a take card without a player (not hovered, or not finished): the same rail, play button and time places
+ * as the player (nothing jumps when it mounts). The rail shows the generation progress; ▶ pins the player and asks it
+ * to play (from the keyboard, the player's play button then takes the focus); the time is the length a player
+ * measured this session (never the requested duration: development-mode clips are ~3 s, and the footer says "30s").
+ */
+export const TakeBarRest = memo(function TakeBarRest({
+  takeId,
+  code,
+  status,
+  progress,
+  videoId,
+}: {
+  takeId: string
+  code: string
+  status: string
+  progress: number
+  videoId: string | null
+}) {
+  const bar = restBarState({ status, progress, videoId }, code, knownLength(takeId))
+  const busy = bar.progress !== null
+  return (
+    <div
+      className={`cv-tp is-rest${busy ? ' is-busy' : ''}`}
+      style={busy ? ({ ['--tp-played' as string]: String(bar.progress) } as CSSProperties) : undefined}
+    >
+      <div className="cv-tp-track" aria-hidden>
+        <span className="cv-tp-rail">
+          <i className="cv-tp-fill" />
+        </span>
+      </div>
+      <div className="cv-tp-row">
+        <button
+          className="cv-tp-btn cv-tp-play nodrag nopan"
+          disabled={!bar.canPlay}
+          title={bar.title}
+          aria-label={bar.aria}
+          onPointerDown={stop}
+          onDoubleClick={stop}
+          onClick={(e) => {
+            e.stopPropagation()
+            usePlayback.getState().requestPlay(takeId, 'toggle', { focus: e.detail === 0 })
+          }}
+        >
+          <Play size={13} fill="currentColor" strokeWidth={0} />
+        </button>
+        {bar.length && (
+          <span className="cv-tp-time" title="Độ dài video">
+            {bar.length}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+})

@@ -17,6 +17,12 @@ export interface TransportRequest {
   form?: { field: string; filename: string; contentType: string; bytes: Uint8Array }
   /** Return the body as bytes (video stream). */
   binary?: boolean
+  /**
+   * GET /api/video-jobs only: an answer read now, not the gateway's cached one (main / the dev bridge reuse a cached list
+   * for such a read only while it is younger than their fresh floor, CANVASAPP_JOBS_FRESH_MS). For the lookups after a
+   * lost answer: whether the job exists must not be decided on a list older than the bet it serves.
+   */
+  fresh?: boolean
 }
 
 export interface TransportResponse {
@@ -27,9 +33,37 @@ export interface TransportResponse {
   bytes?: Uint8Array
 }
 
+/** How much of a video arrived (total null = canvasapp did not say). */
+export interface DownloadProgress {
+  received: number
+  total: number | null
+}
+
+export interface DownloadOptions {
+  /** Abort = stop the download now (the transport closes it in the desktop app and rejects with code 'aborted'). */
+  signal?: AbortSignal
+  /** Called at most every ~250 ms while bytes arrive, and once at the end. */
+  onProgress?: (p: DownloadProgress) => void
+}
+
+/** A download's answer: the video (2xx) or what canvasapp said instead (json / text, like TransportResponse). */
+export interface TransportDownload {
+  status: number
+  contentType: string
+  blob?: Blob
+  json?: unknown
+  text?: string
+}
+
 export interface Transport {
   available(): Promise<ProviderAvailability>
   request(req: TransportRequest): Promise<TransportResponse>
+  /**
+   * A binary GET (the video stream) without holding it in one message: pieces, progress, abort, resume. The desktop
+   * transport always has it (main refuses the stream through request()); in-memory test transports may leave it out,
+   * then fetchVideo uses request({ binary: true }).
+   */
+  download?(req: TransportRequest, opts?: DownloadOptions): Promise<TransportDownload>
 }
 
 export type CanvasappErrorCode =
@@ -46,6 +80,11 @@ export type CanvasappErrorCode =
   | 'busy'
   | 'deferred'
   | 'cancelled'
+  | 'aborted'
+  | 'too-large'
+  | 'too-slow'
+  /** Something could not be stored on this computer (the gateway's job ledger): nothing was sent. */
+  | 'storage'
 
 export class CanvasappError extends Error {
   readonly code: CanvasappErrorCode
@@ -53,15 +92,25 @@ export class CanvasappError extends Error {
   readonly detail?: string
   /** A video job may have been created (and billed) although no job id came back — see providers/types isSubmitUncertain. */
   readonly uncertain?: boolean
+  /**
+   * With `uncertain`: the earlier request of this key can no longer be checked at all (see providers/types
+   * isSubmitUnverifiable) — retrying the same key cannot help, only a new take can.
+   */
+  readonly unverifiable?: boolean
   /** Refused for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance): message NOT_ENOUGH_CREDITS_TEXT. */
   readonly noCredit?: boolean
-  constructor(code: CanvasappErrorCode, message: string, opts: { status?: number; detail?: string; uncertain?: boolean; noCredit?: boolean } = {}) {
+  constructor(
+    code: CanvasappErrorCode,
+    message: string,
+    opts: { status?: number; detail?: string; uncertain?: boolean; unverifiable?: boolean; noCredit?: boolean } = {},
+  ) {
     super(message)
     this.name = 'CanvasappError'
     this.code = code
     this.status = opts.status
     this.detail = opts.detail
     if (opts.uncertain) this.uncertain = true
+    if (opts.uncertain && opts.unverifiable) this.unverifiable = true
     if (opts.noCredit) this.noCredit = true
   }
 }
@@ -82,6 +131,10 @@ const CODE_TEXT: Record<CanvasappErrorCode, string> = {
   busy: 'Đang có một cửa sổ thanh toán mở — hoàn tất hoặc đóng nó trước.',
   cancelled: 'Đã huỷ trước khi gửi sang canvasapp — không bị trừ credit.',
   deferred: 'Chưa gửi sang canvasapp (chờ lượt sau) — không bị trừ credit.',
+  aborted: 'Đã dừng tải video.',
+  'too-large': 'Video quá lớn để SanoVids tải về.',
+  'too-slow': 'Tải video quá lâu nên SanoVids dừng lại.',
+  storage: 'Không ghi được dữ liệu trên máy này (bộ nhớ có thể đã đầy) — chưa gửi gì sang canvasapp, không bị trừ credit.',
 }
 
 /** Shown when canvasapp refuses a job for lack of credits (HTTP 402, or a 4xx whose detail talks about the balance). */
@@ -432,6 +485,9 @@ function asArray<T>(raw: unknown, key: string): T[] {
   throw new CanvasappError('bad-response', CODE_TEXT['bad-response'])
 }
 
+/** Content types of a /stream answer that cannot be the video: a page, JSON / XML data, a script, a form. */
+const NOT_A_VIDEO_TYPE = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)$)|\+(json|xml)$/i
+
 export function createCanvasappApi(transport: Transport) {
   async function call(req: TransportRequest): Promise<TransportResponse> {
     let res: TransportResponse
@@ -488,15 +544,45 @@ export function createCanvasappApi(transport: Transport) {
     },
 
     createVideoJob: async (body: VideoJobBody) => json<unknown>({ method: 'POST', path: '/api/video-jobs', json: body }),
-    listVideoJobs: async (projectId: string) =>
-      asArray<CanvasJob>(await json<unknown>({ method: 'GET', path: `/api/video-jobs?project_id=${enc(safeId(projectId, 'phiên'))}` }), 'jobs'),
+    listVideoJobs: async (projectId: string, opts: { fresh?: boolean } = {}) =>
+      asArray<CanvasJob>(
+        await json<unknown>({ method: 'GET', path: `/api/video-jobs?project_id=${enc(safeId(projectId, 'phiên'))}`, ...(opts.fresh ? { fresh: true } : {}) }),
+        'jobs',
+      ),
     jobPrompt: async (jobId: string) => (await json<{ prompt?: string }>({ method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/prompt` }))?.prompt ?? '',
     streamPath: (jobId: string) => `/api/video-jobs/${safeId(jobId, 'job')}/stream`,
-    fetchVideo: async (jobId: string): Promise<Blob> => {
-      const res = await call({ method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/stream`, binary: true })
-      if (!res.bytes?.byteLength) throw new CanvasappError('bad-response', 'canvasapp.io.vn trả về video rỗng.')
-      const type = res.contentType.split(';')[0].trim() || 'video/mp4'
-      return new Blob([res.bytes as BlobPart], { type: type.startsWith('video/') ? type : 'video/mp4' })
+    /**
+     * The finished video. Through transport.download when there is one (pieces, `opts.signal` stops it with code
+     * 'aborted', `opts.onProgress`), else one binary request. Typed video/* (video/mp4 when canvasapp says otherwise).
+     */
+    fetchVideo: async (jobId: string, opts: DownloadOptions = {}): Promise<Blob> => {
+      const req: TransportRequest = { method: 'GET', path: `/api/video-jobs/${safeId(jobId, 'job')}/stream`, binary: true }
+      let video: Blob | null = null
+      let contentType = ''
+      if (typeof transport.download === 'function') {
+        let res: TransportDownload
+        try {
+          res = await transport.download(req, opts)
+        } catch (e) {
+          if (e instanceof CanvasappError) throw e
+          throw new CanvasappError('network', CODE_TEXT.network + (e instanceof Error && e.message ? ` (${e.message})` : ''))
+        }
+        if (res.status < 200 || res.status >= 300) throw errorFromResponse(res, req)
+        video = res.blob ?? null
+        contentType = res.contentType
+      } else {
+        const res = await call(req)
+        video = res.bytes?.byteLength ? new Blob([res.bytes as BlobPart]) : null
+        contentType = res.contentType
+      }
+      if (!video?.size) throw new CanvasappError('bad-response', 'canvasapp.io.vn trả về video rỗng.')
+      const type = (contentType || '').split(';')[0].trim() || 'video/mp4'
+      // A page or a message, not a video (a login page an https redirect led to, a JSON "not ready"…): never kept as
+      // the take's video — 'bad-response' goes through the engine's download retries (the take stays at 99 %).
+      if (NOT_A_VIDEO_TYPE.test(type)) {
+        throw new CanvasappError('bad-response', `canvasapp.io.vn trả về ${type.slice(0, 60)} thay cho video (trang đăng nhập hoặc thông báo?) — chưa nhận được video, SanoVids sẽ thử tải lại.`)
+      }
+      return new Blob([video], { type: type.startsWith('video/') ? type : 'video/mp4' })
     },
     deleteJob: async (jobId: string) => {
       await call({ method: 'DELETE', path: `/api/video-jobs/${safeId(jobId, 'job')}` })

@@ -1,0 +1,53 @@
+/* "Test giới hạn" tab + floating HUD. Tokens from src/styles/base.css only. */
+.dv-stress { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; font-size: 12px; color: var(--text); }
+.dv-stress-intro { color: var(--text-dim); }
+.dv-stress-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dv-stress-chips .chip { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); }
+.dv-stress-dim { color: var(--text-dim); }
+.dv-stress-mono { font-family: var(--mono); }
+
+.dv-stress-scenarios { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.dv-stress-group { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.dv-stress-group-title { font-weight: 600; color: var(--text-dim); margin-bottom: 2px; }
+.dv-stress-scn { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 0; }
+.dv-stress-scn.off { opacity: 0.5; cursor: default; }
+.dv-stress-scn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-stress-scn-meta { color: var(--text-faint); font-family: var(--mono); font-size: 11px; }
+.dv-stress-note { grid-column: 1 / -1; color: var(--text-faint); font-size: 11px; }
+
+.dv-stress-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; align-items: end; }
+.dv-stress-fields label { display: flex; flex-direction: column; gap: 3px; }
+.dv-stress-fields label > span { color: var(--text-dim); font-size: 11px; }
+.dv-stress-fields label.dv-stress-check { flex-direction: row; align-items: center; gap: 6px; }
+.dv-stress-fields label.dv-stress-check > span { color: var(--text); font-size: 12px; }
+
+.dv-stress-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dv-stress-actions .btn { display: inline-flex; align-items: center; gap: 5px; }
+.dv-stress-blocked { background: var(--warn-soft); color: var(--warn); border-radius: var(--radius-sm); padding: 6px 8px; }
+
+.dv-stress-progress { display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+.dv-stress-progress-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dv-stress-counters { display: flex; flex-wrap: wrap; gap: 6px; }
+.dv-stress-spin { animation: dv-stress-spin 1s linear infinite; }
+@keyframes dv-stress-spin { to { transform: rotate(360deg); } }
+
+.dv-stress-report { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; background: var(--panel-2); }
+.dv-stress-report.pass { border-color: var(--ok); }
+.dv-stress-report.fail, .dv-stress-report.harness-error { border-color: var(--danger); }
+.dv-stress-report.stopped { border-color: var(--warn); }
+.dv-stress-report-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dv-stress-report.pass .dv-stress-report-head svg { color: var(--ok); }
+.dv-stress-report.fail .dv-stress-report-head svg, .dv-stress-report.harness-error .dv-stress-report-head svg { color: var(--danger); }
+.dv-stress-report.stopped .dv-stress-report-head svg { color: var(--warn); }
+.dv-stress-failure { background: var(--danger-soft); color: var(--danger-text); border-radius: var(--radius-sm); padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; word-break: break-word; }
+.dv-stress-warnings, .dv-stress-notes { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; }
+.dv-stress-notes { color: var(--text-dim); }
+.dv-stress-table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.dv-stress-table th, .dv-stress-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.dv-stress-table th { color: var(--text-dim); font-weight: 600; }
+.dv-stress-last pre { margin: 0; white-space: pre-wrap; color: var(--text-dim); font-size: 11px; }
+
+/* Floating pill while a run goes on (the dev panel may be closed). */
+.dv-stress-hud { position: fixed; left: 12px; bottom: 12px; z-index: 1000; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 999px; box-shadow: var(--shadow); font-size: 12px; color: var(--text); }
+.dv-stress-hud .dv-stress-hud-err { color: var(--danger); }
+.dv-stress-hud .icon-btn { display: inline-flex; }

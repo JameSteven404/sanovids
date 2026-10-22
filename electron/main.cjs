@@ -3,11 +3,13 @@
 // secure origin: IndexedDB / localStorage persist between launches exactly like on the web.
 'use strict'
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session, shell } = require('electron')
+const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { Readable } = require('node:stream')
 const { setupUpdater } = require('./updater.cjs')
+const { setupDevAccess, readTestDevLock } = require('./devaccess.cjs')
 
 const SCHEME = 'app'
 const HOST = 'bdp'
@@ -53,7 +55,7 @@ const PACKAGED = hardening.isPackagedApp({ isPackaged: app.isPackaged, appPath: 
 // packaged package.json by test builds (extraMetadata; the NSIS relaunch drops the environment). Invalid → refuse to start.
 // fsMod lets the check see through junctions / symlinks / short names to the real %APPDATA%\SanoVids.
 const bakedProfileDir = readBakedProfileDir()
-const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
+const profile = updaterRules.resolveProfileDir({ env: process.env.SANOVIDS_PROFILE_DIR, baked: bakedProfileDir, appData: app.getPath('appData'), appName: app.getName(), platform: process.platform, pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })
 if (!profile.ok) { console.error(`[SanoVids] ${profile.error}`); process.exit(2) }
 /** A test-identity build (its package.json, inside the integrity-checked app.asar, has a baked test profile). Never the official build. */
 const TEST_BUILD = typeof bakedProfileDir === 'string' && bakedProfileDir !== ''
@@ -69,13 +71,26 @@ if (refused.length > 0) {
 // SSLKEYLOGFILE would make Chromium write every TLS key to disk (like the refused --ssl-key-log-file): removed from this
 // process before the network service reads it (checked on Electron 44: deleting it here stops the key log file).
 for (const name of hardening.envToStrip({ isPackaged: PACKAGED, env: process.env })) delete process.env[name]
+// The electron-builder Portable stub tells the app it extracted where the portable .exe is (PORTABLE_EXECUTABLE_*): read
+// once, then removed, so nothing SanoVids starts (a browser opened by "Mở trang tải về", an installer) inherits it.
+// Trusted only for a run that really comes from that stub (portableFile(), updater-rules trustedPortableFile).
+const portableEnv = updaterRules.portableEnvOf(process.env)
+for (const name of updaterRules.PORTABLE_ENV) delete process.env[name]
 // Every renderer runs sandboxed (the windows below ask for it too; this also covers anything created later).
 app.enableSandbox()
 /** DevTools only from source or in a test build on its isolated test profile — never in the official packaged app. */
 const DEVTOOLS = hardening.allowDevTools({ isPackaged: PACKAGED, profileSource: profile.source, testBuild: TEST_BUILD })
+/**
+ * Development mode opens by the kind of build exactly where DevTools do (from source, a test build on its test profile)
+ * unless a test build bakes `sanovidsTestDevLock`; the release build stays locked until the owner unlocks it with a code
+ * (electron/devaccess.cjs). Computed after DEVTOOLS and never feeds back into it: unlocking changes no protection.
+ */
+const DEV_OPEN_BUILD = require('./devaccess-rules.cjs').devOpenBuild({ devToolsAllowed: DEVTOOLS, testDevLock: readTestDevLock() })
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
-app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
+// The taskbar / notification identity exists on Windows only (app.setAppUserModelId is not defined on macOS: calling it
+// there would throw before any window exists).
+if (process.platform === 'win32') app.setAppUserModelId(updaterRules.appUserModelId(app.getName()))
 
 /** `sanovidsTestProfileDir` of the app's own package.json (only test builds have it), else undefined. */
 function readBakedProfileDir() {
@@ -87,9 +102,50 @@ function readBakedProfileDir() {
   }
 }
 
+let portableFileMemo = null
+
+/**
+ * The portable .exe this run was started from (the Portable stub's PORTABLE_EXECUTABLE_FILE, kept in `portableEnv`),
+ * only when updater-rules trustedPortableFile vouches for it; else undefined. Computed once.
+ */
+function portableFile() {
+  if (!portableFileMemo) {
+    let file
+    try {
+      file = updaterRules.trustedPortableFile({
+        platform: process.platform,
+        isPackaged: PACKAGED,
+        portable: portableEnv,
+        execPath: process.execPath,
+        tmpDir: app.getPath('temp'),
+        appName: app.getName(),
+        exists: fs.existsSync,
+        realpath: fs.realpathSync.native,
+        pathMod: path,
+      })
+    } catch {
+      file = undefined
+    }
+    portableFileMemo = { file }
+  }
+  return portableFileMemo.file
+}
+
 /** The main SanoVids window (set in createWindow, cleared when it closes) and the auto-updater (electron/updater.cjs). */
 let mainWindow = null
 let updater = null
+/** The development-mode lock (electron/devaccess.cjs), set up on ready before the first window. */
+let devAccess = null
+/** The main window reached its first ready-to-show (it shows itself then: nothing shows it earlier). */
+let mainWindowShown = false
+/**
+ * macOS: ⌘Q / app.quit() is under way ('before-quit'), or an update quits the app ('before-quit-for-update': Squirrel.Mac
+ * closes every window BEFORE 'before-quit'). Until then the main window's close button only hides it.
+ */
+let quitting = false
+let macQuitForUpdate = false
+/** macOS: the main window's hidden-work rules (hardening-rules createHiddenWork; set in createWindow, null elsewhere). */
+let mainWindowWork = null
 
 // Must run before the app is ready.
 protocol.registerSchemesAsPrivileged([
@@ -102,13 +158,8 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  })
+  // A second launch brings THE SanoVids window forward (never a canvasapp login / checkout window).
+  app.on('second-instance', () => showMainWindow())
   // Every web page SanoVids ever creates (main window, canvasapp login and its popups, checkout): no <webview>, and
   // Web Bluetooth never picks a device (Electron would otherwise select the first one). Exactly one handler each.
   app.on('web-contents-created', (_event, wc) => {
@@ -117,27 +168,57 @@ if (!app.requestSingleInstanceLock()) {
       event.preventDefault()
       callback('')
     })
+    // Right-click on text (Windows and macOS): the native Cắt / Sao chép / Dán / Chọn tất cả menu, roles only
+    // (hardening-rules textContextMenu: no "Inspect", no spelling items). Electron only emits it when the page did not
+    // handle the right-click itself, so the app's own menus never stack with it.
+    wc.on('context-menu', (_e, params) => {
+      const template = hardening.textContextMenu(params)
+      if (!template) return
+      const win = BrowserWindow.fromWebContents(wc)
+      Menu.buildFromTemplate(template).popup(win ? { window: win } : {})
+    })
   })
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null)
+    // Windows: no application menu (the page owns every key). macOS: the app / Sửa / Cửa sổ menus, roles only
+    // (hardening-rules macMenuTemplate) — without an Edit menu ⌘C / ⌘V / ⌘A never reach a text field, ⌘Q does nothing.
+    Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate(hardening.macMenuTemplate({ appName: app.getName() })) : null)
     restrictDefaultSessionPermissions()
+    registerDownloads()
     protocol.handle(SCHEME, serveDist)
     registerCanvasappGateway()
     registerFileBridge()
     registerAppBridge()
     try {
-      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source })
+      updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
     } catch (e) {
       console.error('[SanoVids] auto-updater disabled:', e)
     }
+    try {
+      devAccess = setupDevAccess({ userDataDir: app.getPath('userData'), buildOpen: DEV_OPEN_BUILD, isAppSender: fromApp, getMainWindow: () => mainWindow })
+    } catch (e) {
+      console.error('[SanoVids] development-mode lock unavailable:', e)
+    }
     createWindow()
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    })
+    // macOS: the Dock icon brings the hidden window back (or opens one when there is none).
+    app.on('activate', () => showMainWindow())
+    if (process.platform === 'darwin') {
+      // Phase 2 (Squirrel.Mac installing an update) closes every window before 'before-quit': never hide then.
+      require('electron').autoUpdater.on('before-quit-for-update', () => {
+        macQuitForUpdate = true
+      })
+      if (!PACKAGED) setDevDockIcon()
+    }
   })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+  if (process.platform === 'darwin') {
+    // ⌘Q / app.quit(): the main window really closes now (its close button otherwise only hides it).
+    app.on('before-quit', () => {
+      quitting = true
+      if (mainWindowWork) mainWindowWork.stop()
+    })
+  }
   // A downloaded update installs silently when the app quits (electron-updater, in this same 'quit' event, exit code 0):
   // the updater records the attempt there (notice on the next launch). 'quit' never fires for a quit a window vetoed.
   app.on('quit', (_event, exitCode) => updater && updater.onQuit(exitCode))
@@ -234,16 +315,54 @@ function createWindow() {
       spellcheck: false,
       // Hover previews / the take viewer may start with sound before any click (the speaker switch decides).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--bdp-version=${app.getVersion()}`],
+      additionalArguments: [`--bdp-version=${app.getVersion()}`, devAccess ? devAccess.initialArg() : `--bdp-dev-access=${DEV_OPEN_BUILD ? 'build' : 'locked'}`],
     },
   })
 
   mainWindow = win
+  if (devAccess) devAccess.attachWindow(win)
+  mainWindowShown = false
+  const work = process.platform === 'darwin' ? hiddenWorkOf(win) : null
+  mainWindowWork = work
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+    if (work) work.stop()
+    if (mainWindowWork === work) mainWindowWork = null
   })
+  if (process.platform === 'darwin') {
+    // macOS: the red button / ⌘W only hide the window — the app keeps running and the takes being made go on — until
+    // ⌘Q or an update quits it; the Dock icon brings it back (app 'activate' → showMainWindow).
+    win.on('close', (event) => {
+      const updating = macQuitForUpdate || !!(updater && updater.isQuittingForUpdate())
+      if (!hardening.mainWindowCloseHides({ platform: process.platform, quitting, quittingForUpdate: updating })) return
+      event.preventDefault()
+      hideMainWindow(win, work)
+    })
+    win.on('show', () => work.show())
+    // A page that crashed or reloads says again what it is doing ('app:busy' when it starts): nothing is being made now.
+    win.webContents.on('render-process-gone', () => work.setBusy(false))
+  }
+
+  // Portable build: a pinned window relaunches the portable .exe itself, not the temp copy it runs from (updater-rules
+  // portableRelaunch: packaged win32 with a valid PORTABLE_EXECUTABLE_FILE only; nothing is set otherwise).
+  const relaunch = updaterRules.portableRelaunch({
+    platform: process.platform,
+    isPackaged: PACKAGED,
+    portableFile: portableFile(),
+    appName: app.getName(),
+    exists: fs.existsSync,
+    pathMod: path,
+  })
+  if (relaunch) {
+    try {
+      win.setAppDetails(relaunch)
+    } catch (e) {
+      console.warn('[SanoVids] setAppDetails failed:', (e && e.message) || e)
+    }
+  }
 
   win.once('ready-to-show', () => {
+    if (mainWindow === win) mainWindowShown = true
     win.maximize()
     win.show()
     if (updater) updater.onWindowReady()
@@ -266,6 +385,10 @@ function createWindow() {
       if ((input.control || input.meta) && input.shift && key === 'i') {
         webContents.toggleDevTools()
         event.preventDefault()
+      } else if (input.meta && input.alt && input.code === 'KeyI') {
+        // macOS ⌘⌥I (⌥I is a dead key there: input.key is not 'i', the physical key is).
+        webContents.toggleDevTools()
+        event.preventDefault()
       } else if (key === 'f12') {
         webContents.toggleDevTools()
         event.preventDefault()
@@ -284,11 +407,97 @@ function createWindow() {
     if (isExternal(url)) void shell.openExternal(url)
   })
 
-  // Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder
-  // without a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file"
-  // uses files:saveAs (native save dialog) instead. The renderer is told (bdp:downloaded) when a file is saved.
-  // Only blobs made by the page itself (blob:app://bdp/…) with the types SanoVids produces: never a program or a script.
-  webContents.session.on('will-download', (_event, item) => {
+  void win.loadURL(`${ORIGIN}/index.html`)
+  return win
+}
+
+/**
+ * Brings the SanoVids window back (a second launch, the Dock icon): restored, shown, focused — never before its first
+ * ready-to-show (it shows itself then). macOS keeps running without a window: a new one opens (never during an update's
+ * quit). Being asked means the app is still running: a quit that another window vetoed is over (`quitting` reset).
+ */
+function showMainWindow() {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) {
+    if (process.platform === 'darwin' && app.isReady() && !macQuitForUpdate) {
+      quitting = false
+      createWindow()
+    }
+    return
+  }
+  if (!mainWindowShown) return
+  if (process.platform === 'darwin' && !macQuitForUpdate) quitting = false
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  // macOS: sound back on, full-speed work let go — also when no 'show' event follows (the window was not hidden).
+  if (mainWindowWork) mainWindowWork.show()
+}
+
+/**
+ * macOS: hides the main window instead of closing it (close button / ⌘W). A full-screen window leaves full screen first:
+ * hiding it there would leave an empty black Space behind. Sound off at once; the takes being made keep going at full
+ * speed only while there are some (createHiddenWork).
+ */
+function hideMainWindow(win, work) {
+  if (win.isDestroyed()) return
+  const hide = () => {
+    if (win.isDestroyed()) return
+    work.hide()
+    win.hide()
+  }
+  if (win.isFullScreen()) {
+    win.once('leave-full-screen', hide)
+    win.setFullScreen(false)
+  } else hide()
+}
+
+/**
+ * macOS: the hidden-work rules of one main window (hardening-rules createHiddenWork) with Electron's effects: its
+ * page's background throttling and sound, one 'prevent-app-suspension' blocker (powerSaveBlocker is loaded here only).
+ */
+function hiddenWorkOf(win) {
+  const page = () => (!win.isDestroyed() && !win.webContents.isDestroyed() ? win.webContents : null)
+  return hardening.createHiddenWork({
+    setThrottling: (on) => {
+      const wc = page()
+      if (wc) wc.setBackgroundThrottling(on)
+    },
+    setMuted: (on) => {
+      const wc = page()
+      if (wc) wc.setAudioMuted(on)
+    },
+    startBlocker: () => require('electron').powerSaveBlocker.start('prevent-app-suspension'),
+    stopBlocker: (id) => {
+      const { powerSaveBlocker } = require('electron')
+      if (typeof id === 'number' && powerSaveBlocker.isStarted(id)) powerSaveBlocker.stop(id)
+    },
+    schedule: (fn, ms) => setTimeout(fn, ms),
+    cancel: (t) => clearTimeout(t),
+  })
+}
+
+/** From the sources on macOS the Dock shows Electron's icon (a window's `icon` is ignored there): ours instead. */
+function setDevDockIcon() {
+  if (process.platform !== 'darwin' || !app.dock || typeof app.dock.setIcon !== 'function') return
+  try {
+    app.dock.setIcon(path.join(DIST, 'icons', 'icon-512.png'))
+  } catch {
+    // cosmetic only
+  }
+}
+
+/**
+ * Plain downloads (Tải video with "Hỏi nơi lưu" off, auto-downloads, export) go straight to the Downloads folder without
+ * a dialog, with " (2)", " (3)"… appended instead of overwriting an existing file. "Hỏi nơi lưu & tên file" uses
+ * files:saveAs (native save dialog) instead. Only blobs made by the page itself (blob:app://bdp/…) with the types
+ * SanoVids produces: never a program or a script. Registered ONCE on the default session (the SanoVids window's) when
+ * the app is ready — not per window (macOS may create the window again). The page is not told about finished
+ * downloads. macOS: a download the system refused (SanoVids not allowed into Downloads) is said in a dialog instead of
+ * failing silently; Windows stays silent as before.
+ */
+function registerDownloads() {
+  session.defaultSession.on('will-download', (_event, item) => {
     if (!hardening.downloadAllowed(item.getURL(), item.getFilename())) {
       item.cancel()
       console.warn(`[SanoVids] download refused: ${hardening.downloadLogLabel(item.getURL(), item.getFilename())}`)
@@ -299,13 +508,24 @@ function createWindow() {
     let target = path.join(dir, parsed.base)
     for (let i = 2; fs.existsSync(target) && i < 1000; i++) target = path.join(dir, `${parsed.name} (${i})${parsed.ext}`)
     item.setSavePath(target)
-    item.once('done', (_e, state) => {
-      if (state === 'completed' && !webContents.isDestroyed()) webContents.send('bdp:downloaded', target)
-    })
+    if (process.platform === 'darwin') {
+      item.once('done', (_e, state) => {
+        if (state === 'interrupted') void showDownloadFailed()
+      })
+    }
   })
+}
 
-  void win.loadURL(`${ORIGIN}/index.html`)
-  return win
+/** macOS: a plain download could not be written (most often: SanoVids is not allowed into the Downloads folder). */
+async function showDownloadFailed() {
+  const win = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null
+  const opts = { type: 'warning', buttons: ['OK'], message: 'Không lưu được file vào thư mục Tải về', detail: saveErrorText({ code: 'EPERM' }, 'darwin') }
+  try {
+    if (win) await dialog.showMessageBox(win, opts)
+    else await dialog.showMessageBox(opts)
+  } catch {
+    // shutting down
+  }
 }
 
 function isExternal(url) {
@@ -343,8 +563,74 @@ async function computeAppSignature() {
   return hardening.appSignaturePayload(verdict, { packaged: true })
 }
 
+// Where this SanoVids runs from (Cài đặt → Ứng dụng / Giới thiệu hints: Portable, or a leftover copy in the temp folder
+// that Windows may delete; on macOS: outside Applications). Only the kind crosses ('app:placement', no argument): never
+// a path.
+let placementPayload = null
+let inApplicationsMemo = null
+
+/**
+ * macOS: does the packaged app run from an Applications folder (app.isInApplicationsFolder)? false everywhere else.
+ * That API exists on macOS only: asked behind the platform guard, in its own try — never inside appPlacement's try,
+ * whose fallback would swallow a TypeError and turn every Windows Setup into 'portable'. Asked once.
+ */
+function macInApplications() {
+  if (inApplicationsMemo === null) {
+    let inApplications = false
+    if (process.platform === 'darwin' && PACKAGED && typeof app.isInApplicationsFolder === 'function') {
+      try {
+        inApplications = app.isInApplicationsFolder() === true
+      } catch {
+        inApplications = false
+      }
+    }
+    inApplicationsMemo = inApplications
+  }
+  return inApplicationsMemo
+}
+
+/**
+ * → { kind: 'installer' | 'portable' | 'temp-copy' | 'dev' | 'mac-applications' | 'mac-translocated' | 'mac-volume' |
+ * 'mac-other' } (updater-rules.placement), computed once. Never throws.
+ */
+function appPlacement() {
+  if (!placementPayload) {
+    const inApplications = macInApplications() // outside the try below (see macInApplications)
+    let kind
+    try {
+      // PACKAGED, not app.isPackaged (see its definition): only differs for a renamed exe running the real app.asar,
+      // which the updater calls 'dev' and this calls 'portable' / 'temp-copy' (a hint, never a protection).
+      kind = updaterRules.placement({
+        platform: process.platform,
+        isPackaged: PACKAGED,
+        portableFile: portableFile(),
+        execPath: process.execPath,
+        tmpDir: app.getPath('temp'),
+        appName: app.getName(),
+        exists: fs.existsSync,
+        realpath: fs.realpathSync.native,
+        pathMod: path,
+        inApplications,
+      })
+    } catch {
+      kind = PACKAGED ? 'portable' : 'dev'
+    }
+    placementPayload = { kind }
+  }
+  return placementPayload
+}
+
 function registerAppBridge() {
   ipcMain.handle('app:signature', (event) => (fromApp(event) ? appSignature() : { status: 'unknown', packaged: false }))
+  ipcMain.handle('app:placement', (event) => (fromApp(event) ? appPlacement() : { kind: 'unknown' }))
+  // macOS: the SanoVids page says whether takes are queued / being made (only a boolean crosses); a hidden window keeps
+  // working at full speed only then (createHiddenWork). Windows: nothing listens (mainWindowWork is null).
+  ipcMain.handle('app:busy', (event, busy) => {
+    const win = mainWindow
+    if (!fromApp(event) || !win || win.isDestroyed() || event.sender !== win.webContents || !mainWindowWork) return false
+    mainWindowWork.setBusy(busy === true)
+    return true
+  })
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -355,14 +641,38 @@ function registerAppBridge() {
 // allowlist of canvasapp endpoints through that session. The main process adds the X-CSRF-Token header from the
 // partition's canvas_csrf cookie (exactly what canvasapp's own page does), keeps concurrency low (2 API calls + 2 video
 // downloads at a time, whatever the number of running jobs) and caches the job list so it is never fetched more than
-// once every 15 s. No Origin/Referer spoofing, no Cloudflare workarounds.
+// once every 15 s. Finished videos are pulled by the page in pieces of ≤ 4 MiB (canvasapp:downloadOpen / downloadRead /
+// downloadClose, <canvasapp-downloads>): ≤ 1 GB, stopped after 60 s without data, continued with Range when canvasapp
+// allows it. No Origin/Referer spoofing, no Cloudflare workarounds.
+//
+// Giữ đăng nhập (electron/keeplogin-rules.cjs): canvasapp's login cookies are session cookies, which Electron drops on
+// quit. Once canvasapp confirms a login, an encrypted copy (safeStorage) of canvasapp.io.vn's own session cookies is
+// kept in userData/canvasapp-login.bin and put back (as session cookies) before the first request of the next run —
+// only while "Giữ đăng nhập canvasapp trên máy này" is on (userData/canvasapp-prefs.json; default: installer / source
+// on, Portable / temp copy off — an unset default off never deletes a copy the installed app kept, keepLoginCopyRule).
+// Đăng xuất refuses new requests and new video downloads, aborts and awaits the ones in
+// flight (API requests, and the net.requests of video downloads until Electron reports them over), deletes the copy
+// (and says so when it cannot), asks canvasapp to end the session (POST /api/auth/logout, like its own button) and
+// clears the partition. No quit hook: saving happens when the cookies change. Separately, once canvasapp confirms a
+// login, the Google account cookies "Đăng nhập bằng Google" leaves in this partition (plaintext, ~2 years) are removed.
 // ---------------------------------------------------------------------------------------------------------------
 
+const keepLoginRules = require('./keeplogin-rules.cjs')
 const CANVASAPP_ORIGIN = 'https://canvasapp.io.vn'
+const CANVASAPP_HOST = 'canvasapp.io.vn'
 const CANVASAPP_PARTITION = 'persist:canvasapp'
 const CANVASAPP_JOBS_MIN_MS = 15_000
+/**
+ * A job-list read the page asks for `fresh` (the lookups after a lost answer: is the job there?) is served from the
+ * cache only while the cached answer was sent this recently — never one of up to 15 s ago.
+ */
+const CANVASAPP_JOBS_FRESH_MS = 5_000
+const CANVASAPP_LOGIN_FILE = 'canvasapp-login.bin'
+const CANVASAPP_PREFS_FILE = 'canvasapp-prefs.json'
+/** Main-only (never in CANVASAPP_ROUTES: the page cannot call it) — what canvasapp's own "Đăng xuất" button sends. */
+const CANVASAPP_LOGOUT_PATH = '/api/auth/logout'
 
-// <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it)
+// <canvasapp-routes> (pure; src/providers/__tests__/canvasapp-e2e.test.ts runs this block as-is: every request the gateway sends must pass it — the one main-only exception is canvasappServerLogout's POST CANVASAPP_LOGOUT_PATH, sent only by Đăng xuất)
 const CANVASAPP_MAX_JSON_BYTES = 2 * 1024 * 1024
 const CANVASAPP_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 /** Ids in paths (project / job / order ids; canvasapp's are UUIDs). */
@@ -415,6 +725,16 @@ function matchCanvasappRoute(method, rawPath) {
   }
   return { route, url }
 }
+
+/**
+ * canvasapp:request takes every allowlisted route EXCEPT the video stream (`binary`): a video only comes in pieces
+ * (canvasapp:downloadOpen, <canvasapp-downloads>: the 1 GB cap while reading, the idle stop, no whole file in one IPC
+ * message). The page, the preload and main ship together in app.asar, so no page needs the old one-message way.
+ */
+function matchCanvasappRequest(method, rawPath) {
+  const m = matchCanvasappRoute(method, rawPath)
+  return m && !m.route.binary ? m : null
+}
 // </canvasapp-routes>
 
 let canvasappLoginWin = null
@@ -422,6 +742,21 @@ let canvasappLoginPromise = null
 const canvasappJobListCache = new Map() // query string -> { at, result }
 /** Bumped by every POST /api/video-jobs: a job list read that started before it is never cached. */
 let canvasappJobsEpoch = 0
+/** The keep-login object (keeplogin-rules createCanvasappKeepLogin), created on ready — reads nothing until first use. */
+let canvasappKeep = null
+/** The memoized restore of the kept login (ensureCanvasappRestored). */
+let canvasappRestore = null
+/** The user's choice of "Giữ đăng nhập canvasapp trên máy này" ({ keepLogin }), or null = never chose (placement default). */
+let canvasappKeepPrefs = null
+/** Đăng xuất is running: new canvasapp requests are refused. */
+let canvasappLoggingOut = false
+let canvasappLogoutPromise = null
+/** Bumped by every Đăng xuất: a request that started before never goes out after it. */
+let canvasappLogoutEpoch = 0
+/** Every canvasapp request from its start (lane wait included) to its end: Đăng xuất aborts and awaits them. */
+const canvasappInFlight = new Set()
+/** Google account cookies left from an earlier run were removed after the first confirmed session (canvasappLoginConfirmed). */
+let canvasappGoogleCleaned = false
 
 function canvasappSession() {
   return session.fromPartition(CANVASAPP_PARTITION)
@@ -461,6 +796,633 @@ async function withCanvasappSlot(laneName, fn) {
 }
 // </canvasapp-lanes>
 
+// <canvasapp-downloads> (pure; src/providers/__tests__/gatewayDownloads.test.ts runs this block as-is next to its
+// TypeScript port src/providers/dev/downloads.ts (development mode): keep both in sync)
+/**
+ * Finished videos never cross IPC in one message. The page pulls them in pieces (canvasapp:downloadOpen / downloadRead /
+ * downloadClose): main reads the HTTP body of GET /api/video-jobs/{id}/stream itself and answers each read with what
+ * arrived (≤ 4 MiB, or less after 1 s on a slow link). One read at a time per download; the body stream is read only
+ * while the page waits for a piece (deps.fetch = <canvasapp-net-get>: Electron's net response asks the network for
+ * more only as the stream is read).
+ * A download (one connection) holds one slot of the 'download' lane from open to end. It ends after 60 s without a
+ * network byte, after 30 s without a read from the page (reload / crash), after 60 min open ('too-slow': the page
+ * continues on a new connection when it can resume, else it stops — the slot goes to the next in line meanwhile),
+ * past 1 GB, when the page closes it, reloads, navigates, crashes or logs out. A download cut half-way continues with
+ * Range + If-Range only when canvasapp gave a strong ETag (or a Last-Modified date) for that video, and a 206 is taken
+ * only when it carries that same validator: never spliced onto a file that may have changed.
+ * The page never sends a URL (only an allowlisted path), a header or a validator: main keeps those.
+ */
+const CANVASAPP_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
+const CANVASAPP_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+const CANVASAPP_DOWNLOAD_FLUSH_MS = 1000
+/** Until the answer's headers (from when the slot is held): generous, /stream may fetch the file before answering (VERIFY). */
+const CANVASAPP_DOWNLOAD_HEADERS_MS = 5 * 60_000
+const CANVASAPP_DOWNLOAD_IDLE_MS = 60_000
+/**
+ * A page that stops reading a download this long loses its connection (a backstop: reload, navigation, crash and close
+ * end it at once through webContents events). Long on purpose — a page blocked by a question (confirm) or busy must not
+ * lose its downloads — and reported 'network' (resumable: the page continues from what it has), never 'gone'.
+ */
+const CANVASAPP_DOWNLOAD_PULL_IDLE_MS = 10 * 60_000
+const CANVASAPP_DOWNLOAD_MAX_MS = 60 * 60_000
+/**
+ * Open + waiting for a slot. ≥ the jobs SanoVids itself runs at once (src/providers/canvasapp/adapter.ts
+ * MAX_CONCURRENCY); imported takes ("Nhập job") take no submit slot, so more finishing videos than this can ask at once:
+ * the extra ones are refused 'busy' and the engine asks again 15 s later (deferred, not a failed try).
+ */
+const CANVASAPP_DOWNLOAD_MAX_SESSIONS = 16
+const CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES = 64 * 1024
+/**
+ * A video's validator (ETag / Last-Modified) is kept this long after the last connection for that path ended (or
+ * opened), for a resume: a download that ran longer than this still continues where it was cut.
+ */
+const CANVASAPP_DOWNLOAD_TAG_MS = 10 * 60_000
+const CANVASAPP_DOWNLOAD_MAX_TAGS = 64
+/** Download ids are chosen by the page (crypto.randomUUID()), so it can close one that still waits for a slot. */
+const CANVASAPP_DOWNLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+/** Content-Length → bytes, or null (missing / not a plain number). */
+function parseContentLength(v) {
+  const s = typeof v === 'string' ? v.trim() : ''
+  return /^\d{1,15}$/.test(s) ? Number(s) : null
+}
+
+/** "bytes 100-199/1000" → { start, end, total } (end inclusive; total null for "*"), or null. */
+function parseContentRange(v) {
+  const m = typeof v === 'string' ? /^bytes (\d{1,15})-(\d{1,15})\/(\d{1,15}|\*)$/i.exec(v.trim()) : null
+  if (!m) return null
+  const start = Number(m[1])
+  const end = Number(m[2])
+  const total = m[3] === '*' ? null : Number(m[3])
+  if (start > end || (total !== null && end >= total)) return null
+  return { start, end, total }
+}
+
+/** Where the page asks to continue from: a safe integer in (0, maxBytes), else 0. */
+function downloadStartByte(v, maxBytes) {
+  return Number.isSafeInteger(v) && v > 0 && v < maxBytes ? v : 0
+}
+
+/** A strong ETag (never W/), else an HTTP date (Last-Modified), else null. Strict: nothing else reaches a header. */
+function strongValidator(etag, lastModified) {
+  const e = typeof etag === 'string' ? etag.trim() : ''
+  if (/^"[\x21\x23-\x7e]{1,200}"$/.test(e)) return e
+  const d = typeof lastModified === 'string' ? lastModified.trim() : ''
+  if (/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(d)) return d
+  return null
+}
+
+/** Request headers: Range + If-Range only to continue (from > 0) a video whose validator main holds. */
+function downloadHeaders(from, validator) {
+  const h = { Accept: 'video/mp4,*/*' }
+  if (from > 0 && validator) {
+    h.Range = `bytes=${from}-`
+    h['If-Range'] = validator
+  }
+  return h
+}
+
+/**
+ * What to do with an answer (o.validator = the answer's strongValidator, o.sent = the one sent with If-Range):
+ *   { kind: 'answer' }      not 200 / 206: read a little of the body, hand it to the page (401, 404, 409, 5xx…);
+ *   { kind: 'bad-range' }   a 206 that does not start where asked (or of unknown size), a 206 to a resume without the
+ *                           validator sent (a server that ignores If-Range: maybe the rest of another file of the
+ *                           same size), or 416 to a resume;
+ *   { kind: 'too-large' }   the announced size is over maxBytes (nothing is read);
+ *   { kind: 'stream', from, end, total, resumable }   end = absolute end of this answer (null = unknown), total = the
+ *                           whole video's size (null = unknown); resumable = a cut can continue with Range.
+ * A 200 to a resume means "from the start". An encoded body (Content-Encoding) has no usable length nor offsets.
+ */
+function downloadPlan(o) {
+  const from = o.from > 0 ? o.from : 0
+  const enc = typeof o.contentEncoding === 'string' ? o.contentEncoding.trim() : ''
+  const encoded = enc !== '' && !/^identity$/i.test(enc)
+  if (o.status === 416 && from > 0) return { kind: 'bad-range' }
+  if (o.status !== 200 && o.status !== 206) return { kind: 'answer' }
+  if (o.status === 206) {
+    const r = encoded ? null : parseContentRange(o.contentRange)
+    if (!r || r.start !== from || r.total === null) return { kind: 'bad-range' }
+    // RFC 9110 §15.3.7: a 206 carries the validator a 200 would — it must be the one If-Range named
+    if (from > 0 && (!o.sent || o.validator !== o.sent)) return { kind: 'bad-range' }
+    if (r.total > o.maxBytes) return { kind: 'too-large' }
+    return { kind: 'stream', from: r.start, end: r.end + 1, total: r.total, resumable: !!o.validator }
+  }
+  const len = encoded ? null : parseContentLength(o.contentLength)
+  if (len !== null && len > o.maxBytes) return { kind: 'too-large' }
+  const ranges = typeof o.acceptRanges === 'string' && /^bytes$/i.test(o.acceptRanges.trim())
+  return { kind: 'stream', from: 0, end: len, total: len, resumable: !encoded && ranges && !!o.validator }
+}
+
+/**
+ * Pieces of one HTTP body for the page. o: { reader, start, end, maxBytes, chunkBytes, flushMs, idleMs, setTimer,
+ * clearTimer }. read() → { bytes } | { done: true } | { error: 'network' | 'too-large', reason }, never throws.
+ * The network is read only while a read() waits (one reader.read() at a time); a piece is chunkBytes, or what
+ * arrived once flushMs passed. 'done' only for a body that ended by itself with the announced length. Reasons: idle
+ * (no byte for idleMs), cut (the connection broke), length (not the announced size), size (over maxBytes), closed
+ * (cancel(), or a second read() at once), max (abort('max')). After a cut / idle, what arrived before is still handed
+ * out first; then (and after any other failure at once) every read() returns the failure.
+ */
+function createDownloadPump(o) {
+  const reader = o.reader
+  const start = o.start > 0 ? o.start : 0
+  const end = typeof o.end === 'number' ? o.end : null
+  let queue = []
+  let queued = 0
+  let received = 0
+  let pulling = false
+  let eof = false
+  let finished = false
+  let failure = null
+  let waiter = null
+  let idleTimer = null
+
+  const stopIdle = () => {
+    if (idleTimer !== null) o.clearTimer(idleTimer)
+    idleTimer = null
+  }
+
+  function fail(reason) {
+    if (failure || finished) return
+    failure = { error: reason === 'size' ? 'too-large' : 'network', reason }
+    stopIdle()
+    // a broken / stalled connection: what arrived before is still the video's start (handed out first, for a resume)
+    if (reason !== 'cut' && reason !== 'idle') {
+      queue = []
+      queued = 0
+    }
+    try {
+      const p = reader.cancel()
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+    answer()
+  }
+
+  /** The next piece: a fresh copy (a view would send its whole buffer over IPC). */
+  function take() {
+    const n = Math.min(o.chunkBytes, queued)
+    const out = new Uint8Array(n)
+    let off = 0
+    while (off < n) {
+      const head = queue[0]
+      const k = Math.min(head.byteLength, n - off)
+      out.set(k === head.byteLength ? head : head.subarray(0, k), off)
+      off += k
+      if (k === head.byteLength) queue.shift()
+      else queue[0] = head.subarray(k)
+    }
+    queued -= n
+    return out
+  }
+
+  function answer() {
+    if (!waiter) return
+    let out
+    if (failure) out = queued > 0 ? { bytes: take() } : failure
+    else if (queued >= o.chunkBytes || (queued > 0 && (eof || waiter.flushDue))) out = { bytes: take() }
+    else if (eof) {
+      finished = true
+      out = { done: true }
+    } else {
+      pull()
+      return
+    }
+    const w = waiter
+    waiter = null
+    o.clearTimer(w.timer)
+    w.resolve(out)
+  }
+
+  function pull() {
+    if (pulling || eof || failure) return
+    pulling = true
+    idleTimer = o.setTimer(() => {
+      idleTimer = null
+      fail('idle')
+    }, o.idleMs)
+    let p
+    try {
+      p = Promise.resolve(reader.read())
+    } catch (e) {
+      p = Promise.reject(e)
+    }
+    p.then(
+      (r) => {
+        pulling = false
+        stopIdle()
+        if (failure) return
+        if (!r || r.done) {
+          if (end !== null && start + received !== end) return fail('length')
+          eof = true
+          return answer()
+        }
+        const v = r.value
+        if (!v || !ArrayBuffer.isView(v)) return fail('cut')
+        const chunk = new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
+        received += chunk.byteLength
+        if (start + received > o.maxBytes) return fail('size')
+        if (end !== null && start + received > end) return fail('length')
+        if (chunk.byteLength) {
+          queue.push(chunk)
+          queued += chunk.byteLength
+        }
+        answer()
+      },
+      () => {
+        pulling = false
+        stopIdle()
+        fail('cut')
+      },
+    )
+  }
+
+  function read() {
+    if (failure && queued === 0) return Promise.resolve(failure)
+    if (waiter) {
+      fail('closed') // a second read at once: never hand out pieces out of order
+      return Promise.resolve(failure)
+    }
+    if (finished) return Promise.resolve({ done: true })
+    return new Promise((resolve) => {
+      const w = { resolve, flushDue: false, timer: null }
+      w.timer = o.setTimer(() => {
+        if (waiter !== w) return
+        w.flushDue = true
+        answer()
+      }, o.flushMs)
+      waiter = w
+      answer()
+    })
+  }
+
+  return { read, abort: (reason) => fail(reason), cancel: () => fail('closed'), received: () => received }
+}
+
+/** "1 GB", "512 MB" (decimal comma). */
+function downloadSizeText(bytes) {
+  const gb = bytes / (1024 * 1024 * 1024)
+  const n = gb >= 1 ? `${Math.round(gb * 10) / 10} GB` : `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`
+  return n.replace('.', ',')
+}
+
+/**
+ * { code, message } of a failed download (reason of createDownloadPump). o: { idleMs, maxMs, maxBytes }. Codes:
+ * network (idle / cut / length), too-large (size), too-slow (max: open longer than maxMs), gone (closed, unknown).
+ */
+function downloadFailure(reason, o) {
+  const opt = o || {}
+  const secs = Math.max(1, Math.round((opt.idleMs || CANVASAPP_DOWNLOAD_IDLE_MS) / 1000))
+  const mins = Math.max(1, Math.round((opt.maxMs || CANVASAPP_DOWNLOAD_MAX_MS) / 60_000))
+  switch (reason) {
+    case 'idle':
+      return { code: 'network', message: `canvasapp.io.vn ngừng gửi video giữa chừng (${secs} giây không nhận thêm dữ liệu).` }
+    case 'cut':
+      return { code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp.io.vn.' }
+    case 'length':
+      return { code: 'network', message: 'Video tải về không khớp dung lượng canvasapp.io.vn báo (kết nối bị đóng giữa chừng).' }
+    case 'size':
+      return { code: 'too-large', message: `Video lớn hơn ${downloadSizeText(opt.maxBytes || CANVASAPP_VIDEO_MAX_BYTES)} — SanoVids không tải về máy được.` }
+    case 'max':
+      // its own code: the page continues on a new connection only when it can resume, never starts again from 0
+      return { code: 'too-slow', message: `Tải video quá ${mins} phút nên SanoVids dừng lại.` }
+    default:
+      return { code: 'gone', message: 'Lượt tải video này đã kết thúc.' }
+  }
+}
+
+/** The start of an error answer's body (≤ maxBytes, then cancelled; `signal` aborts the read), as text. Never throws. */
+async function readErrorBody(body, maxBytes, signal) {
+  if (!body || typeof body.getReader !== 'function') return ''
+  let reader
+  try {
+    reader = body.getReader()
+  } catch {
+    return ''
+  }
+  const parts = []
+  let size = 0
+  const stop = () => {
+    try {
+      const p = reader.cancel()
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+  }
+  if (signal) {
+    if (signal.aborted) stop()
+    else signal.addEventListener('abort', stop, { once: true })
+  }
+  try {
+    while (size < maxBytes) {
+      const r = await reader.read()
+      if (!r || r.done || !r.value || !ArrayBuffer.isView(r.value)) break
+      const v = r.value
+      const piece = new Uint8Array(v.buffer, v.byteOffset, Math.min(v.byteLength, maxBytes - size)).slice()
+      parts.push(piece)
+      size += piece.byteLength
+    }
+  } catch {
+    /* cut: what came is enough */
+  }
+  if (signal) signal.removeEventListener('abort', stop)
+  stop()
+  const all = new Uint8Array(size)
+  let off = 0
+  for (const p of parts) {
+    all.set(p, off)
+    off += p.byteLength
+  }
+  return new TextDecoder().decode(all)
+}
+
+/** A non-2xx answer for the page, like canvasapp:request's (JSON when it says so, else ≤ 2000 characters of text). */
+function downloadAnswer(status, contentType, text) {
+  const out = { ok: true, status, contentType }
+  if (/json/i.test(contentType)) {
+    try {
+      out.json = JSON.parse(text)
+    } catch {
+      out.text = text.slice(0, 2000)
+    }
+  } else {
+    out.text = text.slice(0, 2000)
+  }
+  return out
+}
+
+/**
+ * The downloads of the gateway. deps: { fetch(url, { headers, signal }) → Response-like, withSlot(fn) (a slot of the
+ * 'download' lane, held until fn's promise settles), matchRoute(path) → { binary, url, key } | null, setTimer,
+ * clearTimer, now, limits? } (limits overrides the constants above — development mode, tests).
+ *   open(owner, { id, path, from })   → { ok: true, id, status, contentType, from, total, resumable }   (streaming)
+ *                                     | { ok: true, status, contentType, json?, text? }                (not 200 / 206)
+ *                                     | { ok: false, code, message }   bad-request | busy | not-allowed | gone |
+ *                                       network | too-large | bad-range (not-allowed also = a redirect to http,
+ *                                       refused by deps.fetch with error.code 'insecure-redirect' before it is sent)
+ *   read(owner, { id })               → { ok: true, done: false, bytes } | { ok: true, done: true } | { ok: false, … }
+ *                                       (code network | too-large | too-slow | gone)
+ *   close(owner, { id })              → { ok: true } (idempotent; ends a download still waiting for its slot too)
+ *   closeAll(owner?)                  every download of that page (all without owner): reload, crash, logout.
+ * Only the page (owner = webContents id) that opened a download may read or close it. Every end frees the slot once.
+ */
+function createDownloadSessions(deps) {
+  const lim = Object.assign(
+    {
+      maxBytes: CANVASAPP_VIDEO_MAX_BYTES,
+      chunkBytes: CANVASAPP_DOWNLOAD_CHUNK_BYTES,
+      flushMs: CANVASAPP_DOWNLOAD_FLUSH_MS,
+      headersMs: CANVASAPP_DOWNLOAD_HEADERS_MS,
+      idleMs: CANVASAPP_DOWNLOAD_IDLE_MS,
+      pullIdleMs: CANVASAPP_DOWNLOAD_PULL_IDLE_MS,
+      maxMs: CANVASAPP_DOWNLOAD_MAX_MS,
+      maxSessions: CANVASAPP_DOWNLOAD_MAX_SESSIONS,
+      errorBodyBytes: CANVASAPP_DOWNLOAD_ERROR_BODY_BYTES,
+    },
+    deps.limits || {},
+  )
+  const sessions = new Map()
+  const tags = new Map() // path → { validator, at }
+  // downloads ended because their page stopped reading (id → owner): the next read says 'network', so the page continues
+  const idled = new Map()
+  const refusal = (code, message) => ({ ok: false, code, message })
+  const failure = (reason) => {
+    const f = downloadFailure(reason, lim)
+    return refusal(f.code, f.message)
+  }
+
+  function tagOf(key) {
+    const t = tags.get(key)
+    if (!t) return null
+    if (deps.now() - t.at >= CANVASAPP_DOWNLOAD_TAG_MS) {
+      tags.delete(key)
+      return null
+    }
+    return t.validator
+  }
+  function rememberTag(key, validator) {
+    tags.delete(key)
+    tags.set(key, { validator, at: deps.now() })
+    while (tags.size > CANVASAPP_DOWNLOAD_MAX_TAGS) tags.delete(tags.keys().next().value)
+  }
+
+  /** The one way a download ends: timers off, body cancelled, request aborted, slot freed — once. */
+  function end(s) {
+    if (s.ended) return
+    s.ended = true
+    for (const k of ['headerTimer', 'pullTimer', 'maxTimer']) {
+      if (s[k] !== null) deps.clearTimer(s[k])
+      s[k] = null
+    }
+    sessions.delete(s.id)
+    // the clock of the video's validator starts again: a cut after a long download can still resume
+    if (s.validator) rememberTag(s.key, s.validator)
+    if (s.pump) s.pump.cancel()
+    try {
+      s.controller.abort()
+    } catch {
+      /* nothing in flight */
+    }
+    const release = s.release
+    s.release = null
+    if (release) release()
+  }
+
+  function armPull(s) {
+    if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
+    s.pullTimer = deps.setTimer(() => {
+      s.pullTimer = null
+      end(s)
+      idled.set(s.id, s.owner)
+      while (idled.size > lim.maxSessions) idled.delete(idled.keys().next().value)
+    }, lim.pullIdleMs)
+  }
+
+  /** The page's read of a download main ended for not being read: once, a resumable 'network' failure. */
+  function idledRead(owner, args) {
+    const id = args && typeof args === 'object' && typeof args.id === 'string' ? args.id : ''
+    if (!idled.has(id) || idled.get(id) !== owner) return null
+    idled.delete(id)
+    return refusal('network', 'Trang không đọc tiếp video quá lâu nên SanoVids đã đóng kết nối — tải tiếp từ chỗ đã nhận.')
+  }
+
+  function owned(owner, args) {
+    const id = args && typeof args === 'object' && typeof args.id === 'string' ? args.id : ''
+    if (!CANVASAPP_DOWNLOAD_ID_RE.test(id)) return null
+    const s = sessions.get(id)
+    return s && s.owner === owner ? s : null
+  }
+
+  function cancelBody(res) {
+    try {
+      const p = res && res.body && typeof res.body.cancel === 'function' ? res.body.cancel() : null
+      if (p && typeof p.then === 'function') p.then(undefined, () => undefined)
+    } catch {
+      /* already closed */
+    }
+  }
+
+  async function open(owner, args) {
+    const a = args && typeof args === 'object' ? args : {}
+    const id = typeof a.id === 'string' && CANVASAPP_DOWNLOAD_ID_RE.test(a.id) ? a.id : null
+    if (!id) return refusal('bad-request', 'Mã lượt tải video không hợp lệ.')
+    if (sessions.has(id)) return refusal('busy', 'Mã lượt tải video này đang được dùng.')
+    const m = deps.matchRoute(a.path)
+    if (!m || !m.binary) return refusal('not-allowed', `SanoVids không được phép tải ${String(a.path).slice(0, 80)}.`)
+    if (sessions.size >= lim.maxSessions) return refusal('busy', 'Đang tải quá nhiều video cùng lúc — SanoVids tải video này sau.')
+    const s = { id, owner, key: m.key, controller: new AbortController(), pump: null, release: null, ended: false, reading: false, headerTimer: null, pullTimer: null, maxTimer: null, timedOut: false, validator: null }
+    sessions.set(id, s)
+
+    // One slot of the 'download' lane for the whole download. Closed while waiting: the slot is let go at once.
+    const got = await new Promise((resolve) => {
+      const held = () => {
+        if (s.ended) {
+          resolve(false)
+          return Promise.resolve()
+        }
+        return new Promise((done) => {
+          s.release = done
+          resolve(true)
+        })
+      }
+      let slot
+      try {
+        slot = Promise.resolve(deps.withSlot(held))
+      } catch (e) {
+        slot = Promise.reject(e)
+      }
+      slot.then(undefined, () => resolve(false))
+    })
+    if (!got || s.ended) {
+      end(s)
+      return failure('closed')
+    }
+
+    const validator = tagOf(s.key)
+    const from = validator ? downloadStartByte(a.from, lim.maxBytes) : 0
+    s.headerTimer = deps.setTimer(() => {
+      s.headerTimer = null
+      s.timedOut = true
+      s.controller.abort()
+    }, lim.headersMs)
+    let res
+    try {
+      res = await deps.fetch(m.url, { headers: downloadHeaders(from, validator), signal: s.controller.signal })
+    } catch (e) {
+      const closed = s.ended && !s.timedOut
+      end(s)
+      if (closed) return failure('closed')
+      if (e && e.code === 'insecure-redirect') {
+        return refusal('not-allowed', 'canvasapp.io.vn chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+      }
+      return refusal('network', s.timedOut ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
+    }
+    if (s.ended) {
+      cancelBody(res)
+      return failure('closed')
+    }
+    if (!res || typeof res.status !== 'number') {
+      end(s)
+      return refusal('network', 'canvasapp.io.vn trả về câu trả lời lạ.')
+    }
+    const header = (name) => {
+      const v = res.headers && typeof res.headers.get === 'function' ? res.headers.get(name) : null
+      return typeof v === 'string' ? v : null
+    }
+    const contentType = header('content-type') || ''
+    const validatorNow = strongValidator(header('etag'), header('last-modified'))
+    const plan = downloadPlan({
+      status: res.status,
+      from,
+      contentLength: header('content-length'),
+      contentRange: header('content-range'),
+      contentEncoding: header('content-encoding'),
+      acceptRanges: header('accept-ranges'),
+      validator: validatorNow,
+      sent: from > 0 ? validator : null,
+      maxBytes: lim.maxBytes,
+    })
+    if (plan.kind === 'answer') {
+      const text = await readErrorBody(res.body, lim.errorBodyBytes, s.controller.signal) // still under the headers timer
+      end(s)
+      return downloadAnswer(res.status, contentType, text)
+    }
+    if (plan.kind !== 'stream') {
+      cancelBody(res)
+      end(s)
+      if (plan.kind === 'too-large') return failure('size')
+      return refusal('bad-range', 'canvasapp.io.vn trả về phần video không khớp chỗ đang tải.')
+    }
+    deps.clearTimer(s.headerTimer)
+    s.headerTimer = null
+    s.validator = validatorNow
+    if (validatorNow) rememberTag(s.key, validatorNow)
+    else tags.delete(s.key)
+    let reader = null
+    try {
+      reader = res.body && typeof res.body.getReader === 'function' ? res.body.getReader() : null
+    } catch {
+      reader = null
+    }
+    if (!reader) reader = { read: () => Promise.resolve({ done: true }), cancel: () => Promise.resolve() }
+    s.pump = createDownloadPump({
+      reader,
+      start: plan.from,
+      end: plan.end,
+      maxBytes: lim.maxBytes,
+      chunkBytes: lim.chunkBytes,
+      flushMs: lim.flushMs,
+      idleMs: lim.idleMs,
+      setTimer: deps.setTimer,
+      clearTimer: deps.clearTimer,
+    })
+    s.maxTimer = deps.setTimer(() => {
+      s.maxTimer = null
+      if (s.pump) s.pump.abort('max')
+    }, lim.maxMs)
+    armPull(s)
+    return { ok: true, id, status: res.status, contentType, from: plan.from, total: plan.total, resumable: plan.resumable }
+  }
+
+  async function read(owner, args) {
+    const s = owned(owner, args)
+    if (!s) return idledRead(owner, args) || failure('closed')
+    if (!s.pump || s.reading) return refusal('busy', 'Lượt tải video này đang mở hoặc đang được đọc.')
+    s.reading = true
+    if (s.pullTimer !== null) deps.clearTimer(s.pullTimer)
+    s.pullTimer = null
+    try {
+      const r = await s.pump.read()
+      if (r && r.bytes) return { ok: true, done: false, bytes: r.bytes }
+      end(s)
+      if (r && r.done) return { ok: true, done: true }
+      return failure(r && r.reason)
+    } catch (e) {
+      end(s)
+      return refusal('network', `Không đọc được video (${(e && e.message) || e}).`)
+    } finally {
+      s.reading = false
+      if (!s.ended) armPull(s)
+    }
+  }
+
+  function close(owner, args) {
+    const s = owned(owner, args)
+    if (s) end(s)
+    else idledRead(owner, args)
+    return { ok: true }
+  }
+
+  function closeAll(owner) {
+    for (const s of [...sessions.values()]) if (owner === undefined || s.owner === owner) end(s)
+    for (const [id, o] of [...idled]) if (owner === undefined || o === owner) idled.delete(id)
+  }
+
+  return { open, read, close, closeAll, size: () => sessions.size }
+}
+// </canvasapp-downloads>
+
 async function canvasappCsrf() {
   const cookies = await canvasappSession().cookies.get({ url: CANVASAPP_ORIGIN, name: 'canvas_csrf' })
   return cookies[0] ? cookies[0].value : null
@@ -483,18 +1445,26 @@ function multipartBody(form) {
 async function canvasappRequest(req) {
   if (!req || typeof req !== 'object') return gatewayError('bad-request', 'Yêu cầu không hợp lệ.')
   const method = String(req.method || 'GET').toUpperCase()
-  const match = matchCanvasappRoute(method, req.path)
+  // never the video stream: it only comes in pieces (canvasapp:downloadOpen)
+  const match = matchCanvasappRequest(method, req.path)
   if (!match) return gatewayError('not-allowed', `SanoVids không được phép gọi ${method} ${String(req.path).slice(0, 80)}.`)
   const { route, url } = match
+  // Đăng xuất is running: nothing new goes out (a late answer could put a login cookie back after the clear).
+  if (canvasappLoggingOut) return gatewayError('logged-out', keepLoginRules.CANVASAPP_LOGGING_OUT_TEXT)
+  const logoutAt = canvasappLogoutEpoch
+  // The kept login (Giữ đăng nhập) is put back before the first request of the run: lazy, once, at most 3 s.
+  await ensureCanvasappRestored()
+  // Đăng xuất started meanwhile: not even a cached answer of the session it wipes.
+  if (canvasappLoggingOut || logoutAt !== canvasappLogoutEpoch) return gatewayError('logged-out', keepLoginRules.CANVASAPP_LOGGING_OUT_TEXT)
 
   // Job list: at most once every 15 s per project, whatever the renderer asks.
   const cacheKey = method === 'GET' && url.pathname === '/api/video-jobs' ? url.search : null
   if (cacheKey !== null) {
     const hit = canvasappJobListCache.get(cacheKey)
-    if (hit && Date.now() - hit.at < CANVASAPP_JOBS_MIN_MS) return hit.result
+    if (hit && Date.now() - hit.at < (req.fresh === true ? CANVASAPP_JOBS_FRESH_MS : CANVASAPP_JOBS_MIN_MS)) return hit.result
   }
 
-  const headers = { Accept: route.binary ? 'video/mp4,*/*' : 'application/json' }
+  const headers = { Accept: 'application/json' }
   let body
   if (method !== 'GET') {
     const csrf = await canvasappCsrf()
@@ -522,12 +1492,31 @@ async function canvasappRequest(req) {
   }
   const epoch = canvasappJobsEpoch
   const controller = new AbortController()
+  // In flight from here (lane wait included) to the end: Đăng xuất aborts it and waits for it (drainCanvasappRequests).
+  let settle = () => undefined
+  const inFlight = { controller, done: new Promise((resolve) => (settle = resolve)) }
+  canvasappInFlight.add(inFlight)
+  const stopped = () => controller.signal.aborted || canvasappLoggingOut || logoutAt !== canvasappLogoutEpoch
+  // Status requests tell the kept login whether canvasapp still accepts the session (keepLoginRules.statusVerdict).
+  const statusReq = method === 'GET' && (url.pathname === '/api/me' || url.pathname === '/api/auth/state')
   let timer = null
+  let timedOut = false
+  // When the request really left (after waiting for a slot). A cached job list is stamped with it, not with the time
+  // its answer arrived: canvasapp's answer shows the list as it was at that moment or later, so a cache hit is never
+  // taken for a newer list than it is (the adapter trusts a read to show what existed 15 s before it was sent).
+  let sentAt = 0
   try {
-    const result = await withCanvasappSlot(route.binary ? 'download' : 'api', async () => {
-      // The clock starts when the request is really sent, not while it waits for a slot (e.g. behind other video
-      // downloads): a timeout then means canvasapp did not answer, never "not sent yet".
-      timer = setTimeout(() => controller.abort(), route.binary ? 10 * 60_000 : 60_000)
+    const result = await withCanvasappSlot('api', async () => {
+      // Waited for a slot while Đăng xuất started: never sent.
+      if (stopped()) return gatewayError('logged-out', keepLoginRules.CANVASAPP_LOGGING_OUT_TEXT)
+      // The clock starts when the request is really sent, not while it waits for a slot: a timeout then means
+      // canvasapp did not answer, never "not sent yet".
+      timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, 60_000)
+      const mark = statusReq && canvasappKeep ? canvasappKeep.mark() : null
+      sentAt = Date.now()
       const res = await canvasappSession().fetch(url.toString(), {
         method,
         headers,
@@ -539,34 +1528,180 @@ async function canvasappRequest(req) {
       })
       const contentType = res.headers.get('content-type') || ''
       const out = { ok: true, status: res.status, contentType }
-      if (route.binary && res.ok) {
-        out.bytes = new Uint8Array(await res.arrayBuffer())
-      } else {
-        const text = await res.text()
-        if (/json/i.test(contentType)) {
-          try {
-            out.json = JSON.parse(text)
-          } catch {
-            out.text = text.slice(0, 2000)
-          }
-        } else {
+      const text = await res.text()
+      if (/json/i.test(contentType)) {
+        try {
+          out.json = JSON.parse(text)
+        } catch {
           out.text = text.slice(0, 2000)
         }
+      } else {
+        out.text = text.slice(0, 2000)
+      }
+      if (statusReq) {
+        // canvasapp decides: a refusal drops the kept copy (unless the kept cookies changed since `mark`), a
+        // confirmation arms it (only a login canvasapp accepted is ever written).
+        const verdict = keepLoginRules.statusVerdict(url.pathname, res.status, out.json)
+        if (mark && verdict === 'denied') void canvasappKeep.rejected(mark)
+        else if (mark && verdict === 'accepted') void canvasappKeep.confirmed(mark)
+        if (verdict === 'accepted') canvasappLoginConfirmed()
       }
       return out
     })
-    if (cacheKey !== null && result.status === 200 && epoch === canvasappJobsEpoch) canvasappJobListCache.set(cacheKey, { at: Date.now(), result })
+    // Never an answer of the session Đăng xuất is wiping (a late one after the drain cap), never a refusal ('logged-out').
+    if (cacheKey !== null && result.ok && result.status === 200 && epoch === canvasappJobsEpoch && !stopped()) {
+      canvasappJobListCache.set(cacheKey, { at: sentAt, result })
+    }
     return result
   } catch (e) {
     const aborted = e && e.name === 'AbortError'
+    // Aborted by Đăng xuất: 'network' on purpose (it may have reached canvasapp — a job is looked up, never re-posted).
+    if (aborted && !timedOut) return gatewayError('network', keepLoginRules.CANVASAPP_ABORTED_BY_LOGOUT_TEXT)
     return gatewayError('network', aborted ? 'canvasapp.io.vn không phản hồi (quá thời gian chờ).' : `Không kết nối được tới canvasapp.io.vn (${(e && e.message) || e}).`)
   } finally {
     if (timer) clearTimeout(timer)
+    canvasappInFlight.delete(inFlight)
+    settle()
     if (createsJob) {
       canvasappJobsEpoch++
       canvasappJobListCache.clear()
     }
   }
+}
+
+// <canvasapp-net-get> (pure; src/providers/__tests__/gatewayDownloads.test.ts runs this block as-is with a fake net.request)
+/**
+ * The GET of a video for <canvasapp-downloads> (its deps.fetch), through net.request rather than session.fetch:
+ * session.fetch follows every redirect, https → http included, and its Response never says where it ended (url is
+ * always '' — Electron's net-fetch builds it without one), so a downgrade could not even be seen. Here redirect is
+ * 'manual' and a redirect is followed only to an https URL: the request to an http URL is never sent (Electron
+ * cancels a redirect that is not followed during the 'redirect' event; this aborts it at once).
+ * o: { request(options) → ClientRequest (net.request), toWeb(IncomingMessage) → web ReadableStream, session }.
+ * Resolves { status, headers: { get(name) }, body: web ReadableStream | null }; rejects on a network error, when
+ * init.signal aborts (which also aborts a body being read) and on a refused redirect (error.code 'insecure-redirect').
+ */
+function canvasappNetGet(o, url, init) {
+  return new Promise((resolve, reject) => {
+    const signal = init && init.signal
+    let settled = false
+    let req = null
+    const fail = (e) => {
+      if (settled) return
+      settled = true
+      reject(e)
+    }
+    const aborted = () => Object.assign(new Error('aborted'), { name: 'AbortError' })
+    const stop = () => {
+      try {
+        if (req) req.abort()
+      } catch {
+        /* already over */
+      }
+    }
+    if (signal && signal.aborted) return fail(aborted())
+    try {
+      req = o.request({ method: 'GET', url, session: o.session, credentials: 'include', redirect: 'manual', bypassCustomProtocolHandlers: true })
+      for (const [name, value] of Object.entries((init && init.headers) || {})) req.setHeader(name, value)
+    } catch (e) {
+      return fail(e)
+    }
+    req.on('redirect', (_status, _method, redirectUrl) => {
+      if (downloadRedirectOk(redirectUrl)) return req.followRedirect()
+      fail(Object.assign(new Error('Chuyển hướng sang http bị từ chối.'), { code: 'insecure-redirect' }))
+      stop()
+    })
+    req.on('response', (res) => {
+      if (settled) return
+      settled = true
+      const headers = (res && res.headers) || {}
+      const get = (name) => {
+        const v = headers[String(name).toLowerCase()]
+        return v === undefined || v === null ? null : Array.isArray(v) ? v.join(', ') : String(v)
+      }
+      const status = res.statusCode
+      resolve({ status, headers: { get }, body: [101, 204, 205, 304].includes(status) ? null : o.toWeb(res) })
+    })
+    req.on('error', (e) => fail(e))
+    req.on('abort', () => fail(aborted()))
+    if (signal) {
+      signal.addEventListener(
+        'abort',
+        () => {
+          fail(aborted())
+          stop()
+        },
+        { once: true },
+      )
+    }
+    req.end()
+  })
+}
+
+/** Where a video download may be redirected: https only (never http, never another scheme). */
+function downloadRedirectOk(url) {
+  try {
+    return new URL(String(url)).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+// </canvasapp-net-get>
+
+/**
+ * The net.requests of video downloads not over yet. Đăng xuất aborts them and waits until Electron reports each one over
+ * ('close' — emitted last, after a response that ended, an error or an abort; 'abort' / 'error' too, in case): no
+ * answer of the old session can set a cookie after the wipe (drainCanvasappRequests).
+ */
+const canvasappDownloadRequests = new Set()
+
+function watchDownloadRequest(req) {
+  let settle = () => undefined
+  const entry = {
+    done: new Promise((resolve) => (settle = resolve)),
+    abort: () => {
+      try {
+        req.abort()
+      } catch {
+        /* already over */
+      }
+    },
+  }
+  const over = () => {
+    canvasappDownloadRequests.delete(entry)
+    settle()
+  }
+  canvasappDownloadRequests.add(entry)
+  for (const name of ['close', 'abort', 'error']) req.once(name, over)
+  return req
+}
+
+/** Video downloads of the gateway (<canvasapp-downloads>): the 'download' lane, the canvasapp partition, the allowlist. */
+const canvasappDownloads = createDownloadSessions({
+  fetch: (url, init) => canvasappNetGet({ request: (opts) => watchDownloadRequest(net.request(opts)), toWeb: (res) => Readable.toWeb(res), session: canvasappSession() }, url, init),
+  withSlot: (fn) => withCanvasappSlot('download', fn),
+  matchRoute: (rawPath) => {
+    const m = matchCanvasappRoute('GET', rawPath)
+    return m ? { binary: !!m.route.binary, url: m.url.toString(), key: m.url.pathname } : null
+  },
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (t) => clearTimeout(t),
+  now: () => Date.now(),
+})
+
+const canvasappDownloadOwners = new WeakSet()
+
+/** A page that reloads, navigates away, crashes or closes stops its video downloads at once (their slots are freed). */
+function watchDownloadOwner(wc) {
+  if (!wc || canvasappDownloadOwners.has(wc)) return
+  canvasappDownloadOwners.add(wc)
+  const owner = wc.id
+  const closeAll = () => canvasappDownloads.closeAll(owner)
+  wc.once('destroyed', closeAll)
+  wc.on('render-process-gone', closeAll)
+  // A navigation that really happened: did-navigate = the main frame committed a new document (reload included; never
+  // an in-page one). Not when a navigation only starts — that event fires before will-navigate can cancel it (a link
+  // dropped on the window, opened in the browser instead), and the page that stays would lose every download.
+  wc.on('did-navigate', closeAll)
 }
 
 async function canvasappStatus() {
@@ -619,8 +1754,13 @@ function canvasappLogin(parent) {
         done = true
         clearInterval(timer)
         const st = await canvasappStatus()
+        // A confirmed login: keep it now (encrypted, flushed — an app killed right after login stays logged in).
+        const kept = st.ok && st.authenticated && canvasappKeep ? (await canvasappKeep.loggedIn()).kept : false
+        if (DEVTOOLS) void logCanvasappCookieShape()
+        // "Đăng nhập bằng Google" is over: Google's account cookies are not needed in this partition any more.
+        if (st.ok && st.authenticated) await keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
         if (closeWindow && !win.isDestroyed()) win.close()
-        resolve(st)
+        resolve(st.ok && st.authenticated ? { ...st, keepLogin: kept } : st)
       }
       const check = async () => {
         if (done || checking) return
@@ -645,14 +1785,223 @@ function canvasappLogin(parent) {
   return canvasappLoginPromise
 }
 
+/**
+ * Set while Đăng xuất wipes the canvasapp session: no video download may start then (its request would carry the old
+ * cookies, and its answer could write them back after the wipe) — canvasapp:downloadOpen answers 'busy' (the engine asks
+ * again later, not a failed try). Kept apart from canvasapp:request's own logout guard (canvasappLoggingOut): both
+ * stay, and Đăng xuất drains download requests together with the API ones (drainCanvasappRequests).
+ */
+let canvasappDownloadsBlocked = false
+
+/**
+ * Đăng xuất, in this order: no new video download (canvasappDownloadsBlocked, from the first line), every download ended;
+ * close the login / checkout windows; refuse new requests, abort the ones in flight and wait for them — API requests
+ * and the net.requests of video downloads — (an answer arriving after the clear would put its session cookie back);
+ * delete the kept copy FIRST (the keep-login object writes nothing until the next confirmed login); ask canvasapp to end
+ * the session (best effort); clear the partition and flush; end anything that slipped in. → { ok: true } | { ok: false,
+ * code: 'keep-login-not-cleared', message } (never "Đã đăng xuất" while a copy remains). Concurrent calls share one run.
+ */
 async function canvasappLogout() {
-  if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
-  if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
-  const ses = canvasappSession()
-  await ses.clearStorageData()
-  await ses.clearCache()
-  canvasappJobListCache.clear()
-  return { ok: true }
+  canvasappDownloadsBlocked = true
+  try {
+    if (!canvasappLogoutPromise) {
+      canvasappLogoutPromise = (async () => {
+        canvasappDownloads.closeAll()
+        if (canvasappLoginWin && !canvasappLoginWin.isDestroyed()) canvasappLoginWin.close()
+        if (checkoutWin && !checkoutWin.isDestroyed()) checkoutWin.close()
+        canvasappLoggingOut = true
+        canvasappLogoutEpoch++
+        try {
+          await drainCanvasappRequests(keepLoginRules.KEEP_LOGIN_DRAIN_CAP_MS)
+          const ses = canvasappSession()
+          const clear = async () => {
+            await canvasappServerLogout()
+            await ses.clearStorageData()
+            await ses.clearCache()
+            try {
+              await ses.cookies.flushStore()
+            } catch {
+              /* shutting down */
+            }
+          }
+          const { copyRemoved } = canvasappKeep ? await canvasappKeep.forget(clear) : (await clear(), { copyRemoved: true })
+          canvasappJobListCache.clear()
+          // anything that slipped in while the session was being wiped ends too
+          canvasappDownloads.closeAll()
+          return copyRemoved ? { ok: true } : gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+        } finally {
+          canvasappLoggingOut = false
+        }
+      })().finally(() => {
+        canvasappLogoutPromise = null
+      })
+    }
+    return await canvasappLogoutPromise
+  } finally {
+    canvasappDownloadsBlocked = false
+  }
+}
+
+/**
+ * Aborts every canvasapp request in flight and waits for them to settle, at most `capMs`: the API requests
+ * (canvasappInFlight) and the net.requests of video downloads (canvasappDownloadRequests — ended by
+ * canvasappDownloads.closeAll(), they count until Electron reports them over, so no answer of the old session lands
+ * after the wipe).
+ */
+async function drainCanvasappRequests(capMs) {
+  const pending = [...canvasappInFlight]
+  for (const r of pending) r.controller.abort()
+  canvasappDownloads.closeAll()
+  const downloads = [...canvasappDownloadRequests]
+  for (const d of downloads) d.abort()
+  if (pending.length || downloads.length) {
+    const settled = Promise.all([Promise.allSettled(pending.map((r) => r.done)), Promise.allSettled(downloads.map((d) => d.done))])
+    await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, capMs))])
+  }
+}
+
+/**
+ * Best effort, main-only: the request canvasapp's own "Đăng xuất" button sends (POST /api/auth/logout + X-CSRF-Token),
+ * so a copy of the session taken earlier is not left usable on canvasapp's side (whether canvasapp revokes it on its
+ * server is canvasapp's business — never claimed). Skipped without a canvasapp.io.vn cookie; offline → skipped.
+ * Never throws; the answer is ignored. Not in CANVASAPP_ROUTES: the page cannot send it.
+ */
+async function canvasappServerLogout() {
+  try {
+    const ses = canvasappSession()
+    const cookies = await ses.cookies.get({ domain: CANVASAPP_HOST })
+    if (!cookies.some((c) => keepLoginRules.isHostCookie(c, CANVASAPP_HOST))) return
+    const csrf = await canvasappCsrf()
+    await ses.fetch(CANVASAPP_ORIGIN + CANVASAPP_LOGOUT_PATH, {
+      method: 'POST',
+      headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+      credentials: 'include',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5000),
+      bypassCustomProtocolHandlers: true,
+    })
+  } catch {
+    /* offline / refused: the local copy and the partition are cleared anyway */
+  }
+}
+
+/**
+ * canvasapp confirmed the session (200 /api/me, /api/auth/state authenticated): once per run, Google account cookies a
+ * past "Đăng nhập bằng Google" left in the partition are removed (plaintext, ~2 years; logins that end in the login
+ * window remove them in `finish`). Never while the login window is open: a Google sign-in may be under way there.
+ */
+function canvasappLoginConfirmed() {
+  if (canvasappGoogleCleaned || (canvasappLoginWin && !canvasappLoginWin.isDestroyed())) return
+  canvasappGoogleCleaned = true
+  void keepLoginRules.removeGoogleAccountCookies(canvasappSession().cookies)
+}
+
+/** The kept login is put back once, before the first canvasapp use of the run (at most 3 s), then changes are watched. */
+function ensureCanvasappRestored() {
+  if (!canvasappRestore) {
+    const done = canvasappKeep
+      ? canvasappKeep
+          .restore()
+          .then(() => canvasappSession().cookies.on('changed', canvasappKeep.onChanged))
+          .catch(() => undefined)
+      : Promise.resolve()
+    canvasappRestore = Promise.race([done, new Promise((resolve) => setTimeout(resolve, keepLoginRules.KEEP_LOGIN_RESTORE_CAP_MS))])
+  }
+  return canvasappRestore
+}
+
+function canvasappPrefsPath() {
+  return path.join(app.getPath('userData'), CANVASAPP_PREFS_FILE)
+}
+
+/** The user's choice ({ keepLogin }) from userData/canvasapp-prefs.json, or null (never chose / unreadable). */
+function readCanvasappKeepPrefs() {
+  try {
+    return keepLoginRules.parseKeepLoginPrefs(fs.readFileSync(canvasappPrefsPath(), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function storeCanvasappKeepPrefs(keepLogin) {
+  const file = canvasappPrefsPath()
+  const tmp = file + '.tmp'
+  await fs.promises.writeFile(tmp, keepLoginRules.keepLoginPrefsText(keepLogin))
+  await renameSaveFile(fs.promises, tmp, file)
+}
+
+/**
+ * The placement the keep-login default reads (keepLoginRules.keepLoginPlacement): appPlacement().kind — on macOS
+ * 'mac-applications' for an app installed in Applications (on), any other Mac place off. The Applications answer is
+ * macInApplications' (platform guard + its own try, never inside appPlacement's try).
+ */
+function keepLoginPlacementKind() {
+  return keepLoginRules.keepLoginPlacement({ platform: process.platform, kind: appPlacement().kind, inApplications: macInApplications() })
+}
+
+/**
+ * Creates the keep-login object (on ready). Reads only the small prefs file: the copy is read, and safeStorage touched,
+ * at the first canvasapp use (ensureCanvasappRestored) or when a confirmed login is saved — a user who never logs in
+ * to canvasapp never reaches DPAPI / the Keychain. Async safeStorage only (never blocks main on a Keychain prompt);
+ * Linux's plain-text backend counts as unavailable (nothing kept). The start-up sweep only stats the copy: an expired
+ * one (or one the switch / Đăng xuất said to forget) is deleted unread, even if canvasapp is never used in this run.
+ */
+function startCanvasappKeepLogin() {
+  canvasappKeepPrefs = readCanvasappKeepPrefs()
+  const asyncSafeStorage = {
+    // the async encryptor (initialized lazily on its first use); Linux's plain-text backend counts as unavailable
+    isEncryptionAvailable: async () => (await safeStorage.isAsyncEncryptionAvailable()) && !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text'),
+    encryptStringAsync: (text) => safeStorage.encryptStringAsync(text),
+    decryptStringAsync: (bytes) => safeStorage.decryptStringAsync(bytes),
+  }
+  canvasappKeep = keepLoginRules.createCanvasappKeepLogin({
+    cookies: canvasappSession().cookies,
+    crypto: asyncSafeStorage,
+    fsp: fs.promises,
+    rename: (from, to) => renameSaveFile(fs.promises, from, to),
+    file: path.join(app.getPath('userData'), CANVASAPP_LOGIN_FILE),
+    host: CANVASAPP_HOST,
+    origin: CANVASAPP_ORIGIN,
+    now: Date.now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    setTimer: setTimeout,
+    clearTimer: clearTimeout,
+    enabled: keepLoginRules.resolveKeepLogin(canvasappKeepPrefs, keepLoginPlacementKind()),
+    // never chose: a default-off run (Portable shares userData with Setup) leaves the installed app's copy alone
+    chosen: canvasappKeepPrefs !== null,
+  })
+  void canvasappKeep.sweep()
+}
+
+/** canvasapp:keepLogin → { ok: true, keepLogin, available, chosen } (booleans only). */
+function canvasappKeepLoginState() {
+  const st = canvasappKeep ? canvasappKeep.state() : { enabled: false, available: false }
+  return keepLoginRules.keepLoginPayload({ enabled: st.enabled, available: st.available, chosen: canvasappKeepPrefs !== null })
+}
+
+/** canvasapp:setKeepLogin (strict boolean). Off deletes the copy now; the choice is stored even when that failed. */
+async function canvasappSetKeepLogin(on) {
+  if (typeof on !== 'boolean') return gatewayError('bad-request', 'Lựa chọn không hợp lệ.')
+  if (!canvasappKeep) return gatewayError('unavailable', 'Chưa sẵn sàng — thử lại sau giây lát.')
+  const { copyRemoved } = await canvasappKeep.setEnabled(on)
+  canvasappKeepPrefs = { keepLogin: on }
+  try {
+    await storeCanvasappKeepPrefs(on)
+  } catch {
+    return gatewayError('prefs-not-saved', keepLoginRules.KEEP_LOGIN_PREFS_NOT_SAVED_TEXT)
+  }
+  if (!copyRemoved) return gatewayError('keep-login-not-cleared', keepLoginRules.KEEP_LOGIN_OFF_NOT_CLEARED_TEXT)
+  return canvasappKeepLoginState()
+}
+
+/** DevTools runs only (source / test build): the SHAPE of canvasapp's cookies in the log (session or not) — never a value. */
+async function logCanvasappCookieShape() {
+  try {
+    const list = await canvasappSession().cookies.get({ domain: CANVASAPP_HOST })
+    for (const c of list) console.log(`[SanoVids] canvasapp cookie: ${keepLoginRules.cookieShapeLine(c, Date.now())}`)
+  } catch {
+    /* diagnostics only */
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -815,7 +2164,9 @@ const CANVASAPP_DENIED_PERMISSIONS = new Set([
  * canvasapp:checkout → { ok: true, result: 'success'|'cancel'|'error'|'closed'|'timeout', orderId, blockedHost }
  *                    | { ok: false, code, message }
  */
-function canvasappCheckout(parent, args) {
+async function canvasappCheckout(parent, args) {
+  // The kept login first (a top-up order POST through canvasappRequest normally came before and did it already).
+  await ensureCanvasappRestored()
   if (checkoutWin && !checkoutWin.isDestroyed()) {
     checkoutWin.show()
     checkoutWin.focus()
@@ -834,7 +2185,8 @@ function canvasappCheckout(parent, args) {
     minWidth: 420,
     minHeight: 520,
     parent: parent || undefined,
-    modal: !!parent,
+    // Not modal on macOS: a modal window becomes a sheet there, without a close button (stuck until the timeout).
+    modal: process.platform !== 'darwin' && !!parent,
     title: 'Thanh toán nạp credit',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
@@ -850,7 +2202,8 @@ function canvasappCheckout(parent, args) {
     },
   })
   checkoutWin = win
-  win.setMenu(null)
+  // win.setMenu exists on Windows / Linux only (macOS has one application menu): a throw here would leave checkoutWin set.
+  if (process.platform !== 'darwin') win.setMenu(null)
   const wc = win.webContents
 
   return new Promise((resolve) => {
@@ -928,6 +2281,11 @@ function restrictCanvasappPermissions() {
 
 function registerCanvasappGateway() {
   restrictCanvasappPermissions()
+  try {
+    startCanvasappKeepLogin()
+  } catch (e) {
+    console.error('[SanoVids] canvasapp keep-login disabled:', (e && e.message) || e) // as today: log in after each start
+  }
   const guard = (fn) => async (event, ...args) => {
     if (!fromApp(event)) return gatewayError('not-allowed', 'Nguồn gọi không hợp lệ.')
     try {
@@ -940,7 +2298,19 @@ function registerCanvasappGateway() {
   ipcMain.handle('canvasapp:login', guard((event) => canvasappLogin(BrowserWindow.fromWebContents(event.sender))))
   ipcMain.handle('canvasapp:logout', guard(() => canvasappLogout()))
   ipcMain.handle('canvasapp:request', guard((_event, req) => canvasappRequest(req)))
+  ipcMain.handle(
+    'canvasapp:downloadOpen',
+    guard((event, args) => {
+      if (canvasappDownloadsBlocked) return { ok: false, code: 'busy', message: 'Đang đăng xuất khỏi canvasapp.io.vn — SanoVids tải video này sau.' }
+      watchDownloadOwner(event.sender)
+      return canvasappDownloads.open(event.sender.id, args)
+    }),
+  )
+  ipcMain.handle('canvasapp:downloadRead', guard((event, args) => canvasappDownloads.read(event.sender.id, args)))
+  ipcMain.handle('canvasapp:downloadClose', guard((event, args) => canvasappDownloads.close(event.sender.id, args)))
   ipcMain.handle('canvasapp:checkout', guard((event, args) => canvasappCheckout(BrowserWindow.fromWebContents(event.sender), args)))
+  ipcMain.handle('canvasapp:keepLogin', guard(() => canvasappKeepLoginState()))
+  ipcMain.handle('canvasapp:setKeepLogin', guard((_event, on) => canvasappSetKeepLogin(on)))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -951,6 +2321,11 @@ function registerCanvasappGateway() {
 //   files:pickFolder    the user picks a folder; it joins the ALLOWLIST (userData/save-locations.json);
 //   files:writeToFolder only into an allowlisted folder (exact path, not a sub-folder), plain file names only;
 //   files:openFolder    shows an allowlisted folder in Explorer / Finder;  files:folderStatus  allowed / exists.
+//   files:trashSaved    moves to the Windows Recycle Bin (shell.trashItem, never a permanent delete) ONLY files main
+//                       itself wrote into that allowlisted folder for that folder node / take — recorded in its own
+//                       ledger (userData/saved-files.json: names, sizes, SHA-256, file identity; never 'autosave'
+//                       writes) — still exactly as written, and only on a fixed disk. The page names ledger group ids,
+//                       never a file or a path.
 // Nothing is ever overwritten except the file the user confirmed in the save dialog: other names get " (2)".
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -960,6 +2335,21 @@ const SAVE_MAX_FILES = 4
 const SAVE_MAX_FILE_BYTES = 1024 * 1024 * 1024 // 1 GB per file
 const SAVE_MAX_TEXT_CHARS = 2_000_000
 const SAVE_MAX_NAME = 180
+/**
+ * macOS only: the same name in bytes / in decomposed form. APFS allows 255 UTF-8 bytes per name, HFS+ and exFAT 255
+ * UTF-16 units after decomposition (NFD: "ệ" takes 3): a long title full of Vietnamese letters (3 bytes each) passes the
+ * 180-unit cut and still fails there with ENAMETOOLONG. 224 leaves room for " (n)" (SAVE_LEDGER_MAX_NAME). Windows (NTFS:
+ * 255 UTF-16 units, nothing decomposed) keeps the 180-unit cut alone: the page builds names well below it, so main never
+ * shortens one there (the page would report the changed name as a clash with an existing file).
+ */
+const SAVE_MAX_NAME_BYTES = 224
+/** Whether names also get the macOS byte / decomposed budget (configureSaveNames; off = the Windows rules). */
+let saveNameByteBudget = false
+
+/** Set once by main.cjs at start (process.platform): the budget above applies on macOS only. */
+function configureSaveNames(o) {
+  saveNameByteBudget = !!(o && typeof o === 'object' && o.platform === 'darwin')
+}
 const SAVE_MAX_PATH = 1024
 const SAVE_MAX_FOLDERS = 200
 // Windows device names, also as "nul .txt" / "Con ...x" (spaces before the first dot are ignored there too).
@@ -993,19 +2383,30 @@ function saveNameExt(name) {
 
 /**
  * A plain file name to write, or null. Separators and forbidden characters become "-" (so no path can be named),
- * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", long names are cut
- * keeping their extension.
+ * no leading / trailing dots or spaces (never "." or ".."), reserved device names get "_", names longer than `max`
+ * UTF-16 units — or, on macOS, than the byte / decomposed budget (SAVE_MAX_NAME_BYTES, + the same slack as `max` above
+ * SAVE_MAX_NAME) — are cut keeping their extension. `tailRoom`: the room kept for the extension when it is longer than
+ * this name's own (checkSaveFiles: the files of one group are cut alike, so a video and its .txt keep the same base).
  */
-function sanitizeSaveName(raw) {
+function sanitizeSaveName(raw, max = SAVE_MAX_NAME, tailRoom = 0) {
   if (typeof raw !== 'string') return null
   let s = raw.replace(SAVE_LONE_SURROGATE_RE, '').normalize('NFC').replace(SAVE_FORMAT_CHARS_RE, '')
   s = s.replace(SAVE_BAD_CHARS_RE, '-').replace(/\s+/g, ' ').trim()
   s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
   if (!s) return null
-  if (s.length > SAVE_MAX_NAME) {
-    const ext = saveNameExt(s)
-    const tail = ext && ext.length <= 8 ? '.' + ext : ''
-    s = cutSaveText(s, SAVE_MAX_NAME - tail.length).replace(/[.\s]+$/, '') + tail
+  const ext = saveNameExt(s)
+  const tail = ext && ext.length <= 8 ? '.' + ext : ''
+  const room = Math.max(tail.length, tailRoom)
+  if (s.length - tail.length + room > max) s = cutSaveText(s.slice(0, s.length - tail.length), max - room).replace(/[.\s]+$/, '') + tail
+  if (saveNameByteBudget) {
+    const budget = SAVE_MAX_NAME_BYTES + Math.max(0, max - SAVE_MAX_NAME)
+    const tailCost = Math.max(Buffer.byteLength(tail, 'utf8'), tail.normalize('NFD').length, tailRoom)
+    const base = s.slice(0, s.length - tail.length)
+    if (!saveNameFits(base, budget - tailCost)) {
+      s = fitSaveText(base, budget - tailCost).replace(/[.\s]+$/, '')
+      if (!s) return null
+      s += tail
+    }
   }
   if (SAVE_RESERVED_RE.test(s)) s = '_' + s
   return s
@@ -1017,6 +2418,51 @@ function cutSaveText(s, max) {
   const out = s.slice(0, max)
   return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out
 }
+
+/** Within `budget` UTF-8 bytes AND `budget` UTF-16 units once decomposed (APFS / HFS+ / exFAT name limits)? */
+function saveNameFits(s, budget) {
+  return Buffer.byteLength(s, 'utf8') <= budget && s.normalize('NFD').length <= budget
+}
+
+/**
+ * The longest start of `s` within the byte / decomposed budget, cut between whole characters only: never inside a
+ * surrogate pair, never between a letter and the combining marks that follow it.
+ */
+function fitSaveText(s, budget) {
+  const parts = s.match(/\P{M}\p{M}*|\p{M}+/gu) || []
+  let out = ''
+  for (const part of parts) {
+    if (!saveNameFits(out + part, budget)) break
+    out += part
+  }
+  return out
+}
+
+/** Vietnamese text for a file-system error; macOS says how to allow SanoVids into a folder it refused (EPERM). */
+function saveErrorText(e, platform) {
+  switch (e && e.code) {
+    case 'ENOSPC':
+      return 'Ổ đĩa đã đầy.'
+    case 'EPERM':
+      if (platform === 'darwin') return SAVE_MAC_PERMISSION_TEXT
+      return 'Không có quyền ghi vào thư mục này.'
+    case 'EACCES':
+      return 'Không có quyền ghi vào thư mục này.'
+    case 'EBUSY':
+      return 'File đang bị chương trình khác mở hoặc khoá.'
+    case 'ENOENT':
+    case 'ENOTDIR':
+      return 'Không tìm thấy thư mục.'
+    case 'EROFS':
+      return 'Ổ đĩa chỉ cho đọc.'
+    default:
+      return `Không ghi được file (${(e && (e.code || e.message)) || e}).`
+  }
+}
+
+/** macOS privacy protection (TCC) refused a folder: where the user allows SanoVids into it. */
+const SAVE_MAC_PERMISSION_TEXT =
+  'macOS chưa cho SanoVids ghi vào thư mục này — mở Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Tệp và Thư mục (hoặc Ổ đĩa ngoài / Ổ mạng), bật SanoVids rồi thử lại.'
 
 /** "clip.mp4", 2 → "clip (2).mp4" (same rule as the web app). */
 function numberedSaveName(name, n) {
@@ -1068,9 +2514,12 @@ function checkSaveFiles(files) {
   if (!Array.isArray(files) || files.length < 1 || files.length > SAVE_MAX_FILES) return { error: 'Danh sách file không hợp lệ.' }
   const out = []
   const seen = new Set()
+  // One cut for the whole group: a video and its prompt .txt keep the same base name when it has to be shortened (alone,
+  // the file with the shorter extension would keep a longer base). The room is that of the longest allowed extension.
+  const room = Math.max(0, ...files.map((f) => saveTailRoom(f && typeof f === 'object' ? sanitizeSaveName(f.name) : null)))
   for (const f of files) {
     if (!f || typeof f !== 'object') return { error: 'File không hợp lệ.' }
-    const name = sanitizeSaveName(f.name)
+    const name = sanitizeSaveName(f.name, SAVE_MAX_NAME, room)
     if (!name) return { error: 'Tên file không hợp lệ.' }
     // Never a program, a shortcut or a settings file of Windows (.exe, .lnk, .url, desktop.ini…), whatever the page says.
     if (!SAVE_ALLOWED_EXT.has(saveNameExt(name))) return { error: 'Loại file này không được phép lưu.' }
@@ -1085,6 +2534,12 @@ function checkSaveFiles(files) {
     } else return { error: 'File không có nội dung.' }
   }
   return { files: out }
+}
+
+/** ".mp4" → 4: the room of a sanitized name's extension when SanoVids may write that type (ASCII), else 0. */
+function saveTailRoom(name) {
+  const ext = name ? saveNameExt(name) : ''
+  return SAVE_ALLOWED_EXT.has(ext) ? ext.length + 1 : 0
 }
 
 /** files:saveAs arguments → { suggestedName, title, files } or { error }. */
@@ -1180,9 +2635,11 @@ async function renameSaveFile(fsp, from, to) {
 
 /**
  * Give a finished temp file its real name without ever replacing a file: a hard link fails when the name exists
- * (EEXIST); drives without hard links (FAT / exFAT sticks, some shares) rename after checking the name is free.
+ * (EEXIST). Drives without hard links (FAT / exFAT sticks, some shares): `data` is written again under the real name,
+ * created exclusively ('wx': EEXIST when a file appeared there meanwhile — a rename would silently replace it), then
+ * the temp file goes. Only a file this call created is ever removed again (a write cut short).
  */
-async function claimSaveName(fsp, part, target) {
+async function claimSaveName(fsp, part, target, data) {
   try {
     await fsp.link(part, target)
     await fsp.unlink(part).catch(() => undefined)
@@ -1190,8 +2647,16 @@ async function claimSaveName(fsp, part, target) {
   } catch (e) {
     if (e && e.code === 'EEXIST') throw e
   }
-  if (!(await savePathFree(fsp, target))) throw saveError('EEXIST')
-  await renameSaveFile(fsp, part, target)
+  const fh = await fsp.open(target, 'wx')
+  let written = false
+  try {
+    await fh.writeFile(data)
+    written = true
+  } finally {
+    await fh.close().catch(() => undefined)
+    if (!written) await fsp.unlink(target).catch(() => undefined)
+  }
+  await fsp.unlink(part).catch(() => undefined)
 }
 
 /**
@@ -1211,8 +2676,9 @@ async function writeGroupExclusive(dir, files, fsp, pathMod) {
       for (let i = 0; i < files.length; i++) {
         const target = pathMod.join(dir, names[i])
         if (!isDirectChild(dir, target, pathMod)) throw saveError('EINVAL', 'bad name')
-        part = await writeSavePart(fsp, target, saveFileData(files[i]))
-        await claimSaveName(fsp, part, target)
+        const data = saveFileData(files[i])
+        part = await writeSavePart(fsp, target, data)
+        await claimSaveName(fsp, part, target, data)
         part = null
         written.push(target)
       }
@@ -1238,7 +2704,430 @@ async function writeSaveReplacing(fsp, target, data) {
     throw e
   }
 }
+
+// ---- the ledger of folder-node writes (userData/saved-files.json) and moving them to the Recycle Bin ----
+// { v: 1, groups: [{ id, folder, folderId, takeId, via, at, files: [{ name, size, sha256, ino, birthNs }], primaryTrashed? }] }
+//   id      16 hex chars (the `recorded` answer of files:writeToFolder; the page sends it back to files:trashSaved);
+//   folder  folderKey of the folder written into; folderId / takeId / via: the owner the page gave with the write;
+//   files   files[0] = the primary (video, or the poster .jpg written without one), then its companions (the prompt .txt);
+//           ino / birthNs: the file's identity right after the write (file id + creation time, decimal strings): a file
+//           put back under the same name later — even with the same bytes — is another file and is never moved;
+//   primaryTrashed  kept only for companions that could not follow their primary to the Recycle Bin (a retry).
+// Every write into a folder drops the entries its new names prove gone (ledgerWithout: writes never overwrite).
+// Lost or broken ledger = nothing can be moved (the safe side). The page never names a file or a path to move.
+const SAVE_LEDGER_VERSION = 1
+const SAVE_LEDGER_MAX_GROUPS = 3000
+/** Ledger names may be a little longer than SAVE_MAX_NAME: writeGroupExclusive adds " (n)". */
+const SAVE_LEDGER_MAX_NAME = SAVE_MAX_NAME + 16
+// Only what a folder node writes can ever go to the Recycle Bin: videos, posters, the prompt .txt (never a .zip / .json).
+const SAVE_TRASH_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'jpg', 'jpeg', 'png', 'webp', 'txt'])
+/** Folder node / take ids (the page's ids). */
+const SAVE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/
+const SAVE_GROUP_ID_RE = /^[0-9a-f]{16}$/
+const SAVE_SHA_RE = /^[0-9a-f]{64}$/
+/** Where a write comes from (src/lib/desktopFiles.ts SaveVia). 'autosave' groups are never moved. */
+const SAVE_VIAS = ['link', 'again', 'restore', 'autosave', 'manual']
+const SAVE_TRASH_MAX_ITEMS = 200
+const SAVE_TRASH_MAX_GROUPS = 20
+/**
+ * A file of at least this size with no data allocated on the disk is not here: a OneDrive / cloud "online-only"
+ * placeholder (or an all-holes sparse file). Never hashed (reading it would download it) and never moved: kept.
+ * (Smaller files may legitimately have no allocation: NTFS keeps them inside the MFT record.)
+ */
+const SAVE_CLOUD_MIN_BYTES = 4096
+const SAVE_HASH_MIN_MS = 60_000
+const SAVE_HASH_BYTES_PER_S = 10 * 1024 * 1024
+/** A file id / creation time in ns, as recorded (decimal string of a bigint). */
+const SAVE_FILE_ID_RE = /^\d{1,40}$/
+/**
+ * GetDriveType: the only drive type files:trashSaved ever moves files on — a disk fixed in the computer (an external
+ * USB hard disk reports itself fixed and has a Recycle Bin too; a SUBST drive reports the drive it points into).
+ * Removable sticks, mapped network drives, CD / DVD, RAM disks and unknown roots (0 unknown, 1 no root, 2 removable,
+ * 4 network, 5 CD-ROM, 6 RAM disk) may have no Recycle Bin, where Windows could delete instead: the file stays ('failed').
+ */
+const SAVE_DRIVE_FIXED = 3
+
+/** A name as recorded in the ledger: exactly what sanitizeSaveName keeps, of a type a folder node writes. */
+function isLedgerName(name) {
+  return typeof name === 'string' && sanitizeSaveName(name, SAVE_LEDGER_MAX_NAME) === name && SAVE_TRASH_EXT.has(saveNameExt(name))
+}
+
+/** `owner` of files:writeToFolder → { folderId, takeId, via }, or null (the write happens, nothing is recorded). */
+function checkSaveOwner(o) {
+  if (!o || typeof o !== 'object') return null
+  const { folderId, takeId, via } = o
+  if (typeof folderId !== 'string' || !SAVE_ID_RE.test(folderId)) return null
+  if (typeof takeId !== 'string' || !SAVE_ID_RE.test(takeId)) return null
+  if (typeof via !== 'string' || !SAVE_VIAS.includes(via)) return null
+  return { folderId, takeId, via }
+}
+
+/**
+ * files:trashSaved arguments → { folderPath, folderId, items: [{ takeId, groupIds }] } or { error }: an absolute folder
+ * path, a folder node id, 1–200 items with distinct take ids, each with 1–20 ledger group ids (16 hex, deduplicated).
+ */
+function checkTrashArgs(args, pathMod) {
+  const bad = { error: 'Yêu cầu không hợp lệ.' }
+  if (!args || typeof args !== 'object') return bad
+  if (!folderKey(args.folderPath, pathMod)) return bad
+  if (typeof args.folderId !== 'string' || !SAVE_ID_RE.test(args.folderId)) return bad
+  if (!Array.isArray(args.items) || args.items.length < 1 || args.items.length > SAVE_TRASH_MAX_ITEMS) return bad
+  const items = []
+  const seen = new Set()
+  for (const it of args.items) {
+    if (!it || typeof it !== 'object' || typeof it.takeId !== 'string' || !SAVE_ID_RE.test(it.takeId) || seen.has(it.takeId)) return bad
+    seen.add(it.takeId)
+    const ids = it.groupIds
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > SAVE_TRASH_MAX_GROUPS) return bad
+    if (!ids.every((g) => typeof g === 'string' && SAVE_GROUP_ID_RE.test(g))) return bad
+    items.push({ takeId: it.takeId, groupIds: [...new Set(ids)] })
+  }
+  return { folderPath: args.folderPath, folderId: args.folderId, items }
+}
+
+/** One ledger group checked value by value (a copy with known fields only), or null. */
+function checkLedgerGroup(g, pathMod) {
+  if (!g || typeof g !== 'object') return null
+  if (typeof g.id !== 'string' || !SAVE_GROUP_ID_RE.test(g.id)) return null
+  if (typeof g.folder !== 'string' || folderKey(g.folder, pathMod) !== g.folder) return null
+  const owner = checkSaveOwner(g)
+  if (!owner) return null
+  if (typeof g.at !== 'number' || !Number.isFinite(g.at) || g.at < 0) return null
+  if (!Array.isArray(g.files) || g.files.length < 1 || g.files.length > SAVE_MAX_FILES) return null
+  const files = []
+  const names = new Set()
+  for (const f of g.files) {
+    if (!f || typeof f !== 'object' || !isLedgerName(f.name) || names.has(f.name.toLowerCase())) return null
+    if (!Number.isSafeInteger(f.size) || f.size < 0 || f.size > SAVE_MAX_FILE_BYTES) return null
+    if (typeof f.sha256 !== 'string' || !SAVE_SHA_RE.test(f.sha256)) return null
+    // The identity of the file as written: without it a file can never be told from one put back under its name.
+    if (typeof f.ino !== 'string' || !SAVE_FILE_ID_RE.test(f.ino) || typeof f.birthNs !== 'string' || !SAVE_FILE_ID_RE.test(f.birthNs)) return null
+    names.add(f.name.toLowerCase())
+    files.push({ name: f.name, size: f.size, sha256: f.sha256, ino: f.ino, birthNs: f.birthNs })
+  }
+  const out = { id: g.id, folder: g.folder, folderId: owner.folderId, takeId: owner.takeId, via: owner.via, at: g.at, files }
+  if (g.primaryTrashed === true) out.primaryTrashed = true
+  return out
+}
+
+/**
+ * userData/saved-files.json, checked value by value: unknown version / garbage → empty; invalid groups, groups of a
+ * folder no longer in the allowlist (`allowed`: folder keys of save-locations.json) and duplicated ids are dropped;
+ * at most SAVE_LEDGER_MAX_GROUPS (the newest).
+ */
+function parseSaveLedger(raw, allowed, pathMod) {
+  const ok = Array.isArray(allowed) ? allowed : []
+  const checked = []
+  if (raw && typeof raw === 'object' && raw.v === SAVE_LEDGER_VERSION && Array.isArray(raw.groups)) {
+    for (const g of raw.groups) {
+      const c = checkLedgerGroup(g, pathMod)
+      if (c && ok.includes(c.folder)) checked.push(c)
+    }
+  }
+  const count = new Map()
+  for (const g of checked) count.set(g.id, (count.get(g.id) || 0) + 1)
+  // The same id twice: something is wrong with both, neither can be moved.
+  const groups = checked.filter((g) => count.get(g.id) === 1)
+  return { v: SAVE_LEDGER_VERSION, groups: groups.slice(-SAVE_LEDGER_MAX_GROUPS) }
+}
+
+/**
+ * The ledger group of a write: `names` (as written, " (n)" included) with `digests` ([{ size, sha256, ino, birthNs }],
+ * same order: the bytes written and the identity of each file right after the write), into the folder `dirKey`
+ * (folderKey), for `owner`. → the group, or null when anything is not recordable.
+ */
+function ledgerGroup(dirKey, owner, names, digests, at, id, pathMod) {
+  const o = checkSaveOwner(owner)
+  if (!o || !Array.isArray(names) || !Array.isArray(digests) || names.length !== digests.length) return null
+  const files = names.map((name, i) => {
+    const d = digests[i] || {}
+    return { name, size: d.size, sha256: d.sha256, ino: d.ino, birthNs: d.birthNs }
+  })
+  return checkLedgerGroup({ id, folder: dirKey, ...o, at, files }, pathMod)
+}
+
+/**
+ * The ledger without the entries `names` prove gone: those names were just written into the folder `dirKey`, and a
+ * write never replaces a file, so whatever the ledger recorded under them was removed meanwhile (Explorer, another
+ * program) — a later file under the same name must never be taken for it. A group whose primary name is reused goes
+ * whole; a reused companion name drops that entry only (a group left without files goes). Names compare like the file
+ * system does (case-insensitive on Windows). → the same ledger object when nothing changes.
+ */
+function ledgerWithout(ledger, dirKey, names, pathMod) {
+  const groups = ledger && Array.isArray(ledger.groups) ? ledger.groups : null
+  if (!groups || !dirKey || !Array.isArray(names) || !names.length) return ledger
+  const norm = pathMod.sep === '\\' ? (n) => String(n).toLowerCase() : (n) => String(n)
+  const taken = new Set(names.filter((n) => typeof n === 'string' && n !== '').map(norm))
+  let changed = false
+  const next = []
+  for (const g of groups) {
+    if (!g || g.folder !== dirKey || !Array.isArray(g.files) || !g.files.length) {
+      next.push(g)
+      continue
+    }
+    if (!g.primaryTrashed && taken.has(norm(g.files[0].name))) {
+      changed = true
+      continue
+    }
+    const files = g.files.filter((f) => !taken.has(norm(f.name)))
+    if (files.length === g.files.length) {
+      next.push(g)
+      continue
+    }
+    changed = true
+    if (files.length) next.push({ ...g, files })
+  }
+  return changed ? { v: SAVE_LEDGER_VERSION, groups: next } : ledger
+}
+
+/** { ino, birthNs } (decimal strings) of an lstat result read with { bigint: true }; null for anything else. */
+function savedFileIdentity(st) {
+  if (!st || typeof st.ino !== 'bigint' || typeof st.birthtimeNs !== 'bigint') return null
+  return { ino: st.ino.toString(), birthNs: st.birthtimeNs.toString() }
+}
+
+/** Is the file at `st` (savedStatOf) the very file recorded in `entry` (same file id and creation time)? */
+function sameSavedIdentity(entry, st) {
+  const id = st && st.identity
+  return !!id && typeof entry.ino === 'string' && typeof entry.birthNs === 'string' && id.ino === entry.ino && id.birthNs === entry.birthNs
+}
+
+/**
+ * An lstat result (BigIntStats read with { bigint: true }; a plain one from a test) → what the checks read: numbers for
+ * size / mtimeMs / blocks, the exact mtime (ns) and identity when known. null stays null.
+ */
+function savedStatOf(st) {
+  if (!st) return null
+  const num = (v) => (typeof v === 'bigint' ? Number(v) : v)
+  return {
+    size: num(st.size),
+    mtimeMs: num(st.mtimeMs),
+    mtimeNs: typeof st.mtimeNs === 'bigint' ? st.mtimeNs.toString() : undefined,
+    ino: typeof st.ino === 'bigint' ? st.ino.toString() : st.ino,
+    blocks: num(st.blocks),
+    identity: savedFileIdentity(st),
+    isFile: () => typeof st.isFile === 'function' && st.isFile(),
+    isSymbolicLink: () => typeof st.isSymbolicLink === 'function' && st.isSymbolicLink(),
+  }
+}
+
+/** The ledger without `removeIds`, with `add` (a group with an existing id replaces it in place), capped. */
+function ledgerWith(ledger, add, removeIds) {
+  const drop = new Set(Array.isArray(removeIds) ? removeIds : [])
+  const groups = (ledger && Array.isArray(ledger.groups) ? ledger.groups : []).filter((g) => !drop.has(g.id))
+  for (const g of Array.isArray(add) ? add : []) {
+    if (!g || typeof g.id !== 'string') continue
+    const i = groups.findIndex((x) => x.id === g.id)
+    if (i >= 0) groups[i] = g
+    else groups.push(g)
+  }
+  return { v: SAVE_LEDGER_VERSION, groups: groups.slice(-SAVE_LEDGER_MAX_GROUPS) }
+}
+
+/**
+ * The groups one trashSaved item may move: its `groupIds` AND this folder node / take AND written into this folder
+ * (`dirKey`) AND never 'autosave'. None → unknown (saved by an older build, ledger lost, not this wire's files);
+ * elsewhere = those groups were written into another folder (the node now points elsewhere): nothing is moved.
+ */
+function selectTrashGroups(ledger, dirKey, folderId, item) {
+  const wanted = new Set(item && Array.isArray(item.groupIds) ? item.groupIds : [])
+  const takeId = item && item.takeId
+  const owned = (ledger && Array.isArray(ledger.groups) ? ledger.groups : []).filter(
+    (g) => wanted.has(g.id) && g.folderId === folderId && g.takeId === takeId && g.via !== 'autosave',
+  )
+  const groups = owned.filter((g) => g.folder === dirKey)
+  return { groups, unknown: groups.length === 0, elsewhere: groups.length === 0 && owned.length > 0 }
+}
+
+/** '' when `st` (lstat; null = nothing there) may still be the recorded file, else 'missing' | 'changed'. */
+function savedFileStatProblem(entry, st) {
+  if (!st) return 'missing'
+  if (typeof st.isSymbolicLink === 'function' && st.isSymbolicLink()) return 'changed'
+  if (typeof st.isFile !== 'function' || !st.isFile()) return 'changed'
+  if (st.size !== entry.size) return 'changed'
+  return ''
+}
+
+/**
+ * Is the file at `st` still exactly the recorded one? 'ok' only for a regular file (not a link) of the recorded size
+ * whose SHA-256 (`sha`, hex) is the recorded one; 'missing' when nothing is there; 'changed' otherwise (it is the user's).
+ */
+function judgeSavedFile(entry, st, sha) {
+  const problem = savedFileStatProblem(entry, st)
+  if (problem) return problem
+  return typeof sha === 'string' && SAVE_SHA_RE.test(sha) && sha === entry.sha256 ? 'ok' : 'changed'
+}
+
+/** No data of this file on the disk (see SAVE_CLOUD_MIN_BYTES): kept, never read. */
+function savedFileOnlineOnly(st) {
+  return !!st && typeof st.blocks === 'number' && st.blocks === 0 && typeof st.size === 'number' && st.size >= SAVE_CLOUD_MIN_BYTES
+}
+
+/** The same file before and after hashing (size, last write, file id): nothing replaced or rewrote it meanwhile. */
+function sameSavedStat(a, b) {
+  return !!a && !!b && a.size === b.size && a.mtimeMs === b.mtimeMs && a.mtimeNs === b.mtimeNs && a.ino === b.ino
+}
+
+/** Time allowed to hash a file: 60 s, or 10 MB/s for big files on slow drives. */
+function saveHashTimeoutMs(size) {
+  return Math.max(SAVE_HASH_MIN_MS, Math.ceil((Number(size) / SAVE_HASH_BYTES_PER_S) * 1000) || 0)
+}
+
+/** Windows network shares (\\server\share) and device paths (\\?\, \\.\) have no Recycle Bin: never tried there. */
+function saveTrashSupported(dir, pathMod) {
+  return !(pathMod.sep === '\\' && /^[\\/]{2}/.test(String(dir)))
+}
+
+/**
+ * The drive root whose type decides whether files may go to the Recycle Bin: 'X:\' of the folder's REAL path (links and
+ * junctions resolved by the caller) on Windows; null for anything else there (a share, a device or volume path → never
+ * moved). POSIX: '/' (no drive types; saveTrashDriveAllowed does not ask).
+ */
+function saveDriveRoot(realDir, pathMod) {
+  if (pathMod.sep !== '\\') return '/'
+  const m = /^([A-Za-z]):[\\/]/.exec(String(realDir))
+  return m ? `${m[1].toUpperCase()}:\\` : null
+}
+
+/** May files on a drive of this type (GetDriveType number; null = could not be read) go to the Recycle Bin? */
+function saveTrashDriveAllowed(driveType, pathMod) {
+  if (pathMod.sep !== '\\') return true
+  return driveType === SAVE_DRIVE_FIXED
+}
+
+/** `promise`, or a rejection as soon as `signal` (the watchdog) aborts. */
+function withSaveAbort(promise, signal) {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(saveError('ETIMEDOUT', 'watchdog'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(saveError('ETIMEDOUT', 'watchdog'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
+  })
+}
+
+/**
+ * Move the files of ledger `groups` (selected by selectTrashGroups) out of `dir` to the Recycle Bin.
+ * deps: fsp (lstat only, read with { bigint: true }), hashFile(path, timeoutMs, signal) → SHA-256 hex,
+ * trash(absolutePath) (shell.trashItem: the ONLY way anything leaves the folder — never a delete), pathMod,
+ * driveType (GetDriveType of the folder's real drive, Windows: only a fixed disk is ever tried), signal (watchdog: once
+ * aborted, no new file is started; a move already handed to trash() is always awaited — shell.trashItem cannot be
+ * stopped, and abandoning it would report a file as kept that still lands in the Recycle Bin).
+ * Per file, decided only from lstat, the identity, the size and the hash (never from an error text or the mtime alone):
+ *   gone → 'missing' (entry dropped); a link / not a regular file / another file (other file id or creation time: put
+ *   back under the name) / other size / other hash / rewritten while hashed → 'changed' (kept: it is the user's now;
+ *   dropped); online-only → 'failed' + cloud (kept; entry kept); hashing failed or timed out → 'failed' (entry kept);
+ *   trash() resolved → 'trashed' (dropped); trash() failed → 'missing' when the file is gone, else 'failed' (kept for
+ *   "Thử lại"). Network shares and drives that are not fixed disks → 'failed' without trying.
+ * The primary goes first; companions (the prompt .txt) only follow a 'trashed' primary, each only when unchanged, and
+ * are reported only then. Groups of another folder or written by 'autosave' are skipped (never touched, not reported).
+ * → { results: [{ id, takeId, files: [{ name, role, result, cloud? }] }], keep: [groups to keep, possibly reduced], removeIds }
+ */
+async function trashSavedGroups(dir, groups, { fsp, hashFile, trash, pathMod, signal, driveType }) {
+  const results = []
+  const keep = []
+  const removeIds = []
+  const dirKey = folderKey(dir, pathMod)
+  const supported = saveTrashSupported(dir, pathMod) && saveTrashDriveAllowed(driveType, pathMod)
+  const aborted = () => !!(signal && signal.aborted)
+  const lstatOrNull = async (p) => {
+    try {
+      return savedStatOf(await fsp.lstat(p, { bigint: true }))
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return null
+      throw e
+    }
+  }
+  /** Gone after a failure → 'missing', still there (or unreadable) → 'failed'. */
+  const goneOrFailed = async (p) => {
+    try {
+      return (await lstatOrNull(p)) ? 'failed' : 'missing'
+    } catch {
+      return 'failed'
+    }
+  }
+  const moveOne = async (entry) => {
+    const p = pathMod.join(dir, entry.name)
+    if (!isLedgerName(entry.name) || !isDirectChild(dir, p, pathMod)) return { result: 'changed' }
+    if (!supported || aborted()) return { result: 'failed' }
+    let before
+    try {
+      before = await lstatOrNull(p)
+    } catch {
+      return { result: 'failed' }
+    }
+    const problem = savedFileStatProblem(entry, before)
+    if (problem) return { result: problem }
+    // Another file under the recorded name (deleted, then written again — even with the same bytes): the user's.
+    if (!sameSavedIdentity(entry, before)) return { result: 'changed' }
+    if (savedFileOnlineOnly(before)) return { result: 'failed', cloud: true }
+    let sha
+    try {
+      sha = await withSaveAbort(Promise.resolve().then(() => hashFile(p, saveHashTimeoutMs(entry.size), signal)), signal)
+    } catch {
+      return { result: await goneOrFailed(p) }
+    }
+    let after
+    try {
+      after = await lstatOrNull(p)
+    } catch {
+      return { result: 'failed' }
+    }
+    if (!after) return { result: 'missing' }
+    if (!sameSavedStat(before, after)) return { result: 'changed' }
+    const verdict = judgeSavedFile(entry, after, sha)
+    if (verdict !== 'ok') return { result: verdict }
+    if (aborted()) return { result: 'failed' }
+    // Never raced against the watchdog: the outcome of a move that has started is always the real one.
+    try {
+      await Promise.resolve().then(() => trash(pathMod.resolve(p)))
+      return { result: 'trashed' }
+    } catch {
+      return { result: await goneOrFailed(p) }
+    }
+  }
+  const report = (entry, role, r) => (r.cloud ? { name: entry.name, role, result: r.result, cloud: true } : { name: entry.name, role, result: r.result })
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g || g.via === 'autosave' || !dirKey || g.folder !== dirKey || !Array.isArray(g.files) || g.files.length === 0) continue
+    const files = []
+    const failed = []
+    const companions = async (list) => {
+      for (const entry of list) {
+        const r = await moveOne(entry)
+        files.push(report(entry, 'companion', r))
+        if (r.result === 'failed') failed.push(entry)
+      }
+    }
+    if (g.primaryTrashed) {
+      await companions(g.files)
+      if (failed.length) keep.push({ ...g, files: failed })
+      else removeIds.push(g.id)
+    } else {
+      const [primary, ...rest] = g.files
+      const r = await moveOne(primary)
+      files.push(report(primary, 'primary', r))
+      if (r.result === 'trashed') {
+        await companions(rest)
+        if (failed.length) keep.push({ ...g, primaryTrashed: true, files: failed })
+        else removeIds.push(g.id)
+      } else if (r.result === 'failed') keep.push(g)
+      else removeIds.push(g.id)
+    }
+    results.push({ id: g.id, takeId: g.takeId, files })
+  }
+  return { results, keep, removeIds }
+}
 // </save-rules>
+configureSaveNames({ platform: process.platform })
 
 const SAVE_STATE_FILE = 'save-locations.json'
 let saveState = null
@@ -1269,28 +3158,171 @@ async function storeSaveState(next) {
   }
 }
 
+// ---- the ledger of folder-node writes (rules above, in <save-rules>) ----
+const SAVE_LEDGER_FILE = 'saved-files.json'
+/**
+ * files:trashSaved starts no new file after this: files not started by then stay where they are ('failed'). A move
+ * already handed to shell.trashItem is awaited (it cannot be cancelled; its real outcome is reported).
+ */
+const SAVE_TRASH_WATCHDOG_MS = 5 * 60_000
+let saveLedger = null
+let saveLedgerChain = Promise.resolve()
+/** Ledger groups a files:trashSaved call is moving right now: another call never touches them at the same time. */
+const trashingIds = new Set()
+
+function saveLedgerPath() {
+  return path.join(app.getPath('userData'), SAVE_LEDGER_FILE)
+}
+
+/** The ledger from disk, checked value by value; missing / unreadable / broken → empty (nothing can be moved). */
+async function loadSaveLedger() {
+  try {
+    return parseSaveLedger(JSON.parse(await fs.promises.readFile(saveLedgerPath(), 'utf8')), loadSaveState().folders, path)
+  } catch {
+    return parseSaveLedger(null, [], path)
+  }
+}
+
+/** Written whole (tmp + rename); throws when it could not be stored. */
+async function storeSaveLedger(next) {
+  const file = saveLedgerPath()
+  const tmp = `${file}.tmp`
+  await fs.promises.writeFile(tmp, JSON.stringify(next), 'utf8')
+  await renameSaveFile(fs.promises, tmp, file)
+}
+
+/**
+ * fn(ledger) → the next ledger (or the same one), one call at a time. A next ledger becomes current only once stored,
+ * so what the page was told (`recorded`) always survives a restart. → the current ledger.
+ */
+function withLedger(fn) {
+  const run = saveLedgerChain.then(async () => {
+    if (!saveLedger) saveLedger = await loadSaveLedger()
+    const next = await fn(saveLedger)
+    if (next && next !== saveLedger) {
+      await storeSaveLedger(next)
+      saveLedger = next
+    }
+    return saveLedger
+  })
+  saveLedgerChain = run.catch(() => undefined)
+  return run
+}
+
+/** { size, sha256 } of a file as written (text = UTF-8, like fs.writeFile); hashed off the main thread. */
+async function digestOf(f) {
+  const data = f.bytes ? f.bytes : Buffer.from(f.text, 'utf8')
+  const sha256 = Buffer.from(await crypto.webcrypto.subtle.digest('SHA-256', data)).toString('hex')
+  return { size: data.byteLength, sha256 }
+}
+
+/** SHA-256 (hex) of a file on disk, streamed; rejects after `timeoutMs` or when `signal` aborts. */
+function hashSavedFile(p, timeoutMs, signal) {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const abort = signal ? AbortSignal.any([timeout, signal]) : timeout
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(p, { highWaterMark: 1024 * 1024, signal: abort })
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.once('error', reject)
+    stream.once('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+/** { ino, birthNs } of each file just written into `dir` (same order); null for one that could not be read. */
+async function savedIdentities(dir, names) {
+  const out = []
+  for (const name of names) {
+    try {
+      out.push(savedFileIdentity(await fs.promises.lstat(path.join(dir, name), { bigint: true })))
+    } catch {
+      out.push(null)
+    }
+  }
+  return out
+}
+
+/**
+ * Names just written into `dir` (by any write: a folder node without an owner, the save dialog): ledger entries under
+ * those names are forgotten (ledgerWithout). Never throws.
+ */
+async function forgetSavedNames(dir, names) {
+  try {
+    const dirKey = folderKey(dir, path)
+    if (dirKey) await withLedger((ledger) => ledgerWithout(ledger, dirKey, names, path))
+  } catch (e) {
+    console.warn('[SanoVids] saved-files ledger not updated:', (e && e.message) || e)
+  }
+}
+
+/**
+ * Record a group just written into `dir` for `owner` → its id, or false (not recorded: it can never be moved). The
+ * entries its names prove gone are forgotten in the same step, recorded or not.
+ */
+async function recordSavedGroup(dir, owner, names, files) {
+  let digests = null
+  try {
+    const identities = await savedIdentities(dir, names)
+    digests = []
+    for (let i = 0; i < files.length; i++) digests.push({ ...(await digestOf(files[i])), ...(identities[i] || {}) })
+  } catch (e) {
+    digests = null
+    console.warn('[SanoVids] saved files not hashed:', (e && e.message) || e)
+  }
+  try {
+    const dirKey = folderKey(dir, path)
+    let id = ''
+    await withLedger((ledger) => {
+      const pruned = ledgerWithout(ledger, dirKey, names, path)
+      if (!digests) return pruned
+      let gid
+      do gid = crypto.randomBytes(8).toString('hex')
+      while (pruned.groups.some((g) => g.id === gid))
+      const group = ledgerGroup(dirKey, owner, names, digests, Date.now(), gid, path)
+      if (!group) return pruned
+      id = gid
+      return ledgerWith(pruned, [group], [])
+    })
+    return id || false
+  } catch (e) {
+    console.warn('[SanoVids] saved files not recorded:', (e && e.message) || e)
+    return false
+  }
+}
+
+/** files:trashSaved reads a drive's type at most this often (a stick swapped for another under the same letter). */
+const SAVE_DRIVE_TYPE_TTL_MS = 30_000
+const saveDriveTypes = new Map() // root → { at, type }
+
+/**
+ * GetDriveType of the drive `dir` really lives on (links / junctions resolved; Windows only, else null): one hardened
+ * PowerShell call (electron/signature.cjs checkDriveType) per root every SAVE_DRIVE_TYPE_TTL_MS. null = could not be
+ * read (nothing is moved then). Never throws.
+ */
+async function saveDriveTypeOf(dir) {
+  if (process.platform !== 'win32') return null
+  let root = null
+  try {
+    root = saveDriveRoot(await fs.promises.realpath(dir), path)
+  } catch {
+    return null
+  }
+  if (!root) return null
+  const hit = saveDriveTypes.get(root)
+  if (hit && Date.now() - hit.at < SAVE_DRIVE_TYPE_TTL_MS) return hit.type
+  const signature = require('./signature.cjs')
+  const type = await signature.checkDriveType(root, { log: (line) => console.warn(`[SanoVids] ${line}`) })
+  if (type !== null) saveDriveTypes.set(root, { at: Date.now(), type })
+  return type
+}
+
 function fileError(code, message) {
   return { ok: false, code, message }
 }
 
-/** Vietnamese text for a file-system error. */
+/** Vietnamese text for a file-system error (save-rules saveErrorText, for this platform). */
 function fsErrorText(e) {
-  switch (e && e.code) {
-    case 'ENOSPC':
-      return 'Ổ đĩa đã đầy.'
-    case 'EACCES':
-    case 'EPERM':
-      return 'Không có quyền ghi vào thư mục này.'
-    case 'EBUSY':
-      return 'File đang bị chương trình khác mở hoặc khoá.'
-    case 'ENOENT':
-    case 'ENOTDIR':
-      return 'Không tìm thấy thư mục.'
-    case 'EROFS':
-      return 'Ổ đĩa chỉ cho đọc.'
-    default:
-      return `Không ghi được file (${(e && (e.code || e.message)) || e}).`
-  }
+  return saveErrorText(e, process.platform)
 }
 
 async function isDirectory(p) {
@@ -1305,6 +3337,8 @@ async function filesPickFolder(win) {
   const st = loadSaveState()
   const opts = {
     title: 'Chọn thư mục lưu video',
+    // macOS's folder panel shows `message`, never `title`
+    message: 'Chọn thư mục lưu video',
     buttonLabel: 'Chọn thư mục này',
     properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
     ...(st.lastSaveDir ? { defaultPath: st.lastSaveDir } : {}),
@@ -1334,10 +3368,79 @@ async function filesWriteToFolder(args) {
   if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục (đã đổi tên, chuyển hoặc xoá?).')
   const checked = checkSaveFiles(args.files)
   if (checked.error) return fileError('bad-request', checked.error)
+  let names
   try {
-    return { ok: true, names: await writeGroupExclusive(dir, checked.files, fs.promises, path) }
+    names = await writeGroupExclusive(dir, checked.files, fs.promises, path)
   } catch (e) {
     return fileError(e && e.code === 'ENOENT' ? 'missing' : 'write-failed', fsErrorText(e))
+  }
+  // With a valid owner the group is recorded BEFORE answering (so the page can hand its id back to files:trashSaved).
+  // Either way, ledger entries under the names just written are forgotten (the files they recorded are gone).
+  const owner = checkSaveOwner(args.owner)
+  if (!owner) {
+    await forgetSavedNames(dir, names)
+    return { ok: true, names }
+  }
+  return { ok: true, names, recorded: await recordSavedGroup(dir, owner, names, checked.files) }
+}
+
+/**
+ * Move the files a cut "video → Thư mục" wire had copied to the Recycle Bin (src/lib/saveFolders.ts trashSavedFiles).
+ * Only groups of the ledger: named by the page (groupIds), of this folder node and take, written into THIS allowlisted
+ * folder, never by 'autosave', and each file still exactly as written (trashSavedGroups). → { ok: true, results }
+ * (one per item: { takeId, unknown?, elsewhere?, files }) | { ok: false, code: 'bad-request' | 'not-allowed' | 'missing' }.
+ */
+async function filesTrashSaved(args) {
+  const checked = checkTrashArgs(args, path)
+  if (checked.error) return fileError('bad-request', checked.error)
+  if (!isAllowedFolder(loadSaveState().folders, checked.folderPath, path)) {
+    return fileError('not-allowed', 'Thư mục này chưa được chọn trên máy này.')
+  }
+  const dir = path.resolve(checked.folderPath)
+  if (!(await isDirectory(dir))) return fileError('missing', 'Không tìm thấy thư mục (đã đổi tên, chuyển hoặc xoá?).')
+  const dirKey = folderKey(dir, path)
+  const ledger = await withLedger((current) => current)
+  const picked = checked.items.map((item) => ({ item, ...selectTrashGroups(ledger, dirKey, checked.folderId, item) }))
+  const claimed = []
+  for (const p of picked) {
+    p.busy = p.groups.filter((g) => trashingIds.has(g.id))
+    p.groups = p.groups.filter((g) => !trashingIds.has(g.id))
+    for (const g of p.groups) {
+      trashingIds.add(g.id)
+      claimed.push(g.id)
+    }
+  }
+  try {
+    const groups = picked.flatMap((p) => p.groups)
+    const out = await trashSavedGroups(dir, groups, {
+      fsp: fs.promises,
+      hashFile: hashSavedFile,
+      trash: (p) => shell.trashItem(p),
+      pathMod: path,
+      signal: AbortSignal.timeout(SAVE_TRASH_WATCHDOG_MS),
+      // Only a fixed disk is ever tried (USB sticks, network drives… may have no Recycle Bin): read once per call.
+      driveType: groups.length ? await saveDriveTypeOf(dir) : null,
+    })
+    try {
+      // A kept group a write dropped meanwhile (ledgerWithout) is not brought back.
+      await withLedger((current) => ledgerWith(current, out.keep.filter((g) => current.groups.some((x) => x.id === g.id)), out.removeIds))
+    } catch (e) {
+      // Not stored: the moved files read 'missing' next time and are dropped then.
+      console.warn('[SanoVids] saved-files ledger not updated:', (e && e.message) || e)
+    }
+    const filesOf = new Map(out.results.map((r) => [r.id, r.files]))
+    const results = picked.map(({ item, groups, busy, unknown, elsewhere }) => {
+      const files = groups.flatMap((g) => filesOf.get(g.id) || [])
+      // Being moved by another call right now: untouched here.
+      for (const g of busy) files.push({ name: g.files[0].name, role: g.primaryTrashed ? 'companion' : 'primary', result: 'failed' })
+      const r = { takeId: item.takeId, files }
+      if (unknown) r.unknown = true
+      if (elsewhere) r.elsewhere = true
+      return r
+    })
+    return { ok: true, results }
+  } finally {
+    for (const id of claimed) trashingIds.delete(id)
   }
 }
 
@@ -1359,6 +3462,9 @@ async function filesSaveAs(win, args) {
   const dir = st.lastSaveDir && (await isDirectory(st.lastSaveDir)) ? st.lastSaveDir : app.getPath('downloads')
   const opts = {
     title: checked.title,
+    // macOS's save panel shows `message`, not `title`; no Finder tag field (macOS only, ignored elsewhere)
+    message: checked.title,
+    showsTagField: false,
     defaultPath: path.join(dir, checked.suggestedName),
     buttonLabel: 'Lưu',
     filters: saveDialogFilters(primary.name),
@@ -1369,6 +3475,8 @@ async function filesSaveAs(win, args) {
   const chosen = path.resolve(res.filePath)
   let target = withSaveExtension(chosen, ext, path)
   const targetDir = path.dirname(target)
+  /** Names written so far: a folder node's file the save may have replaced (confirmed in the dialog) is never moved. */
+  const names = []
   try {
     if (target === chosen) {
       // The user confirmed this exact file in the dialog (it asks before replacing one): replaced all at once.
@@ -1378,7 +3486,7 @@ async function filesSaveAs(win, args) {
       const [written] = await writeGroupExclusive(targetDir, [{ ...primary, name: path.basename(target) }], fs.promises, path)
       target = path.join(targetDir, written)
     }
-    const names = [path.basename(target)]
+    names.push(path.basename(target))
     for (const f of checked.files.slice(1)) {
       const name = companionSaveName(target, f.name, path)
       if (!name) continue
@@ -1387,9 +3495,11 @@ async function filesSaveAs(win, args) {
       names.push(written)
     }
     await storeSaveState({ ...loadSaveState(), lastSaveDir: targetDir })
-    return { ok: true, path: target, names }
+    return { ok: true, path: target, names: [...names] }
   } catch (e) {
     return fileError('write-failed', fsErrorText(e))
+  } finally {
+    if (names.length) await forgetSavedNames(targetDir, names)
   }
 }
 
@@ -1406,6 +3516,7 @@ function registerFileBridge() {
   ipcMain.handle('files:pickFolder', guard((event) => filesPickFolder(winOf(event))))
   ipcMain.handle('files:folderStatus', guard((_event, args) => filesFolderStatus(args)))
   ipcMain.handle('files:writeToFolder', guard((_event, args) => filesWriteToFolder(args)))
+  ipcMain.handle('files:trashSaved', guard((_event, args) => filesTrashSaved(args)))
   ipcMain.handle('files:openFolder', guard((_event, args) => filesOpenFolder(args)))
   ipcMain.handle('files:saveAs', guard((event, args) => filesSaveAs(winOf(event), args)))
 }

@@ -59,7 +59,7 @@ function fakeDevProvider() {
     label: 'dev',
     minPollIntervalMs: 0,
     available: async () => ({ ok: true }),
-    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0, maxRefVideos: 0 }),
+    capabilities: (m) => capabilitiesFromModels(m, { maxConcurrency: 2, pollIntervalMs: 0 }),
     submit: async (req) => {
       submitted.push(req)
       const remoteId = 'r_' + req.key
@@ -185,5 +185,19 @@ describe('restartWork', () => {
     expect(currentRestartWork()).toEqual({ queued: 1, processing: 3, sending: 1 })
     useRuns.setState({ takes: [] })
     expect(currentRestartWork()).toEqual({ queued: 0, processing: 0, sending: 0 })
+  })
+
+  it('never waits for a take of a newer SanoVids build (it may still be running there, never here)', () => {
+    // As saved by the newer build, still running there: loadRuns (migrate) parks them.
+    const raw = (id: string, status: Take['status']) =>
+      ({ ...useRuns.getState().takes[0], id, sceneId: 's1', status, provider: 'newsite', remoteId: 'job-' + id }) as unknown as Take
+    useRuns.getState().loadRuns({ takes: [raw('n1', 'queued'), raw('n2', 'processing')], credits: 0, spent: 0 })
+    expect(useRuns.getState().takes.map((t) => t.status)).toEqual(['failed', 'failed'])
+    expect(currentRestartWork()).toEqual({ queued: 0, processing: 0, sending: 0 })
+    // Even one found running (not parked yet) is not counted.
+    const t = (id: string, status: Take['status']) =>
+      ({ ...useRuns.getState().takes[0], id, sceneId: 's1', status, provider: 'mock', foreignProvider: 'newsite', remoteId: null }) as Take
+    expect(restartWork([t('a', 'queued'), t('b', 'processing')], new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
+    useRuns.getState().loadRuns({ takes: [], credits: 0, spent: 0 })
   })
 })

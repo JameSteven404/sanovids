@@ -3,7 +3,16 @@
 import { describe, expect, it } from 'vitest'
 import { CanvasappError, errorFromResponse } from '../canvasapp/api'
 import { devError, devResult, devWording, withDevWording } from '../dev/wording'
-import { downloadFailedError, DEV_UNKNOWN_SUBMIT_ERROR, hasUncertainSubmitText, unknownSubmitError, UNKNOWN_SUBMIT_ERROR } from '../../store/runs'
+import {
+  downloadFailedError,
+  DEV_UNKNOWN_SUBMIT_ERROR,
+  DEV_UNVERIFIABLE_SUBMIT_ERROR,
+  hasUncertainSubmitText,
+  unknownSubmitError,
+  UNKNOWN_SUBMIT_ERROR,
+  unverifiableSubmitError,
+  UNVERIFIABLE_SUBMIT_ERROR,
+} from '../../store/runs'
 
 describe('devWording', () => {
   it('points to the Bảng phát triển and names the simulation; idempotent', () => {
@@ -64,6 +73,17 @@ describe('engine texts per provider (store/runs)', () => {
     // still recognised as "maybe billed" (takes saved with the text only)
     expect(hasUncertainSubmitText(DEV_UNKNOWN_SUBMIT_ERROR)).toBe(true)
     expect(hasUncertainSubmitText(UNKNOWN_SUBMIT_ERROR)).toBe(true)
+    // "can no longer be checked": maybe billed, only "Tạo lại" (a new take) — in each provider's words
+    expect(unverifiableSubmitError('canvasapp')).toBe(UNVERIFIABLE_SUBMIT_ERROR)
+    expect(unverifiableSubmitError('dev')).toBe(DEV_UNVERIFIABLE_SUBMIT_ERROR)
+    expect(UNVERIFIABLE_SUBMIT_ERROR).toContain('canvasapp.io.vn')
+    expect(DEV_UNVERIFIABLE_SUBMIT_ERROR).toContain('Bảng phát triển')
+    expect(DEV_UNVERIFIABLE_SUBMIT_ERROR).not.toContain('canvasapp.io.vn')
+    for (const t of [UNVERIFIABLE_SUBMIT_ERROR, DEV_UNVERIFIABLE_SUBMIT_ERROR]) {
+      expect(t).toContain('“Tạo lại”')
+      expect(t).toContain('trừ thêm')
+      expect(hasUncertainSubmitText(t)).toBe(true)
+    }
     expect(downloadFailedError('HTTP 503', 'canvasapp')).toContain('Tải video trực tiếp trên canvasapp.io.vn')
     const dev = downloadFailedError('HTTP 503', 'dev')
     expect(dev).toContain('HTTP 503.')

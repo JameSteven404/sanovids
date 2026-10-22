@@ -1,5 +1,5 @@
 // Generates build/license-third-party.txt: the licence texts of every open-source package SanoVids ships, copied into
-// the install folder as THIRD-PARTY-NOTICES.txt (package.json build.extraFiles). LICENSE.txt clause 6, the installer
+// the install folder as THIRD-PARTY-NOTICES.txt (package.json build.win.extraFiles). LICENSE.txt clause 6, the installer
 // licence page, README and Cài đặt → Giới thiệu point at it; Electron's and Chromium's own licences ship next to it as
 // LICENSE.electron.txt / LICENSES.chromium.html (electron-builder copies them).
 //

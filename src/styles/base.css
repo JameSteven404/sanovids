@@ -1,166 +1,168 @@
-/* Design tokens + shared primitives. Component styles live next to their components. */
-/*
- * Design tokens — inspired by Apple's Human Interface Guidelines: system colors, hairline separators,
- * soft depth, generous radii, translucent "materials". Two appearances: dark (default) and light.
- * The resolved theme is set on <html data-theme="…"> by src/lib/theme.ts (and early in index.html).
- * Components must only use these tokens — never hard-coded colors — so both themes work.
- */
+/* Design D — Sano, en mouvement. Same public token names as before.
+   New: --brand-gradient (decorative fills: progress bars), --action-gradient (filled text buttons, white label),
+   --selection (outline), --provider-canvasapp (canvasapp label in the credit pill).
+   The brand red is decorative; filled text buttons use --action-gradient + --on-accent (white). Never put --on-accent
+   on a solid tint (--accent, --ref, --danger…): in dark mode the tints are light pastels. Chips use *-soft + *-ink.
+   The brand tile (.tb-logo, Giới thiệu) is the app icon's plate: a top→bottom gradient of --brand-plate-top / -bottom.
+   --danger reads as red, never pastel pink, in both themes (the UI calls blocking placeholders "chữ đỏ"), and its hue
+   stays apart from the coral accent / selection. */
 :root,
 :root[data-theme='dark'] {
-  /* surfaces */
-  --bg: #161618; /* window */
-  --bg-elev: #1c1c1e; /* fields, wells */
-  --panel: #1e1e20; /* sidebars, inspector, cards */
-  --panel-2: #2c2c2e; /* raised controls */
-  --panel-3: #3a3a3c; /* hover / pressed */
+  --bg: #161618;
+  --bg-swatch-than: #161618;
+  --bg-swatch-deep: #0C0C0D;
+  --bg-swatch-slate: #14171C;
+  --cv-chip-solid: #252527;
+  --bg-elev: #1A1A1D;
+  --panel: #1F1F22;
+  --panel-2: #2A2A2E;
+  --panel-3: #37373C;
   --canvas-bg: #121214;
-  --canvas-dot: rgba(255, 255, 255, 0.09);
-  --material: rgba(36, 36, 38, 0.72); /* translucent bars, popovers (with backdrop-filter) */
-  --material-strong: rgba(44, 44, 46, 0.88);
-  --scrim: rgba(0, 0, 0, 0.5);
-  --hover: rgba(255, 255, 255, 0.06);
-  --pressed: rgba(255, 255, 255, 0.1);
-
-  /* lines */
-  --border: rgba(255, 255, 255, 0.08); /* hairline separators */
-  --border-strong: rgba(255, 255, 255, 0.16);
-
-  /* text */
-  --text: #f5f5f7;
-  --text-dim: rgba(235, 235, 245, 0.62);
-  --text-faint: rgba(235, 235, 245, 0.34);
-
-  /* tint + system colors (dark variants) */
-  --accent: #ff9f0a; /* system orange — primary actions, run */
-  --accent-strong: #ffb340;
-  --accent-soft: rgba(255, 159, 10, 0.16);
-  --on-accent: #1d1206;
-  --ref: #40c8e0; /* teal — reference images */
-  --ref-soft: rgba(64, 200, 224, 0.16);
-  --video: #bf5af2; /* purple — generated videos, @video_N */
-  --video-soft: rgba(191, 90, 242, 0.18);
-  --save: #7d7aff; /* indigo — folder nodes ("Thư mục") and the wires that save videos into them */
-  --save-soft: rgba(125, 122, 255, 0.16);
-  --seq: #8e8e93;
-  --first: #30d158;
-  --last: #bf5af2;
-  --ok: #30d158;
-  --ok-soft: rgba(48, 209, 88, 0.16);
-  --warn: #ffd60a;
-  --warn-soft: rgba(255, 214, 10, 0.14);
-  --danger: #ff453a;
-  --danger-soft: rgba(255, 69, 58, 0.14);
-  --danger-text: #ff6961;
-  --info: #0a84ff;
-  --info-soft: rgba(10, 132, 255, 0.16);
-
-  /* checkerboard behind letterboxed images */
-  --checker-a: #1c1c1e;
-  --checker-b: #232325;
-
-  /* brand mark (the app icon's orange plate + ink): fixed in BOTH themes, so never redefined in the light block */
-  --brand-plate-top: #ffb340;
-  --brand-plate-bottom: #ff9f0a;
-  --brand-ink: #1d1206;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
-  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 24px 64px rgba(0, 0, 0, 0.55);
-  --focus-ring: 0 0 0 3px rgba(255, 159, 10, 0.35);
-  --scrollbar: rgba(255, 255, 255, 0.18);
-
-  color-scheme: dark;
-}
-
-:root[data-theme='light'] {
-  --bg: #f5f5f7;
-  --bg-elev: #ffffff;
-  --panel: #ffffff;
-  --panel-2: #f2f2f7;
-  --panel-3: #e5e5ea;
-  --canvas-bg: #eef0f3;
-  --canvas-dot: rgba(60, 60, 67, 0.16);
-  --material: rgba(255, 255, 255, 0.72);
-  --material-strong: rgba(255, 255, 255, 0.9);
-  --scrim: rgba(0, 0, 0, 0.28);
-  --hover: rgba(0, 0, 0, 0.04);
-  --pressed: rgba(0, 0, 0, 0.08);
-
-  --border: rgba(60, 60, 67, 0.13);
-  --border-strong: rgba(60, 60, 67, 0.24);
-
-  --text: #1d1d1f;
-  --text-dim: rgba(60, 60, 67, 0.78);
-  --text-faint: rgba(60, 60, 67, 0.46);
-
-  /* light variants are a touch deeper so text and thin lines stay readable on white */
-  --accent: #f07c00;
-  --accent-strong: #ff8f1a;
-  --accent-soft: rgba(255, 149, 0, 0.14);
-  --on-accent: #ffffff;
-  --ref: #0a9cb8;
-  --ref-soft: rgba(48, 176, 199, 0.14);
-  --video: #a347d1;
-  --video-soft: rgba(175, 82, 222, 0.13);
-  --save: #5856d6;
-  --save-soft: rgba(88, 86, 214, 0.12);
-  --seq: #8e8e93;
-  --first: #248a3d;
-  --last: #a347d1;
-  --ok: #248a3d;
-  --ok-soft: rgba(52, 199, 89, 0.14);
-  --warn: #b25000;
-  --warn-soft: rgba(255, 204, 0, 0.18);
-  --danger: #d70015;
-  --danger-soft: rgba(255, 59, 48, 0.1);
-  --danger-text: #d70015;
-  --info: #007aff;
-  --info-soft: rgba(0, 122, 255, 0.12);
-
-  --checker-a: #f2f2f7;
-  --checker-b: #e9e9ee;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.08), 0 24px 60px rgba(0, 0, 0, 0.16);
-  --focus-ring: 0 0 0 3px rgba(0, 122, 255, 0.3);
-  --scrollbar: rgba(0, 0, 0, 0.22);
-  --accent-ink: #c25e00;
-  --ref-ink: #087489;
-  --video-ink: #8a35b8;
-
-  color-scheme: light;
-}
-
-:root {
-  /* Over photos and videos the chrome is always light-on-dark, whatever the theme. */
-  --media-bg: #000;
-  --media-scrim: rgba(0, 0, 0, 0.58);
-  --on-media: #fff;
-
-  /* Text drawn in a tint color ("ink") — deeper in the light theme so it stays readable on white/soft fills. */
-  --accent-ink: var(--accent);
-  --ref-ink: var(--ref);
-  --video-ink: var(--video);
-
+  --canvas-dot: #2E2E33;
+  --material: rgba(31,31,34,.94);
+  --material-strong: rgba(31,31,34,.98);
+  --scrim: rgba(0,0,0,.55);
+  --hover: rgba(255,255,255,.06);
+  --pressed: rgba(255,255,255,.1);
+  --border: #34343A;
+  --border-strong: #5C5C66;
+  --text: #F5F5F7;
+  --text-dim: #BDBDC6;
+  --text-faint: #A6A6B0;
+  --accent: #FF775A;
+  --accent-strong: #FF977F;
+  --accent-soft: #492923;
+  --on-accent: #FFFFFF;
+  --accent-ink: #FF947B;
+  --ref: #75D6C5;
+  --ref-soft: #253E39;
+  --ref-ink: #8EE4D4;
+  --video: #D3AEF5;
+  --video-soft: #3C2E48;
+  --video-ink: #D3AEF5;
+  --save: #A9BFFF;
+  --save-soft: #2F3548;
+  --seq: #A6A6B0;
+  --first: #8DD79F;
+  --last: #D3AEF5;
+  --ok: #8DD79F;
+  --ok-soft: #293D2D;
+  --warn: #F1C578;
+  --warn-soft: #473A25;
+  --danger: #FF5F72;
+  --danger-soft: #4A2228;
+  --danger-text: #FF7783;
+  --info: #A9BFFF;
+  --info-soft: #2F3548;
+  --checker-a: #1A1A1D;
+  --checker-b: #2A2A2E;
+  --brand-plate-top: #E60000;
+  --brand-plate-bottom: #FF3D14;
+  --brand-ink: #FFFFFF;
+  --brand-gradient: linear-gradient(120deg, var(--brand-plate-top), var(--brand-plate-bottom));
+  --action-gradient: linear-gradient(115deg, #CB160C, #CA3819);
+  --selection: #FF8065;
+  /* sky blue: apart from every chromatic token and model dot; the dark backgrounds inherit it */
+  --provider-canvasapp: #2EC4F0;
+  --shadow-sm: 0 2px 4px #00000040;
+  --shadow: 0 4px 14px #00000038;
+  --shadow-lg: 0 24px 72px #00000080;
+  --focus-ring: 0 0 0 3px #A9BFFF;
+  --scrollbar: #5C5C66;
+  --media-bg: #0E0E10;
+  --media-scrim: rgba(14,14,16,.64);
+  --on-media: #FFFFFF;
+  --radius-control: 9px;
+  --radius-chip: 7px;
+  --radius-card: 13px;
+  --radius-toolbar: 14px;
   --radius-xs: 6px;
   --radius-sm: 8px;
   --radius: 12px;
   --radius-lg: 16px;
-  --radius-xl: 20px;
-  --blur: saturate(180%) blur(20px);
-
-  /* Apple system font where available (macOS/iOS), Segoe UI Variable on Windows, Be Vietnam Pro as fallback */
-  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', 'Be Vietnam Pro', system-ui, Roboto, sans-serif;
-  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', 'Be Vietnam Pro', system-ui, sans-serif;
-  --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
-
+  --radius-xl: 24px;
+  --blur: saturate(110%) blur(16px);
+  /* "Viên nổi" (docs/UI-MUOT.md, mockup UI-01): floating chrome = the panel at 90 % + 12 px blur, a hairline edge
+     instead of a hard border, a faint shadow, 16 px corners. --glass follows --panel (every background, light). */
+  --glass: color-mix(in srgb, var(--panel) 90%, transparent);
+  --glass-blur: blur(12px);
+  --hairline: rgba(255,255,255,.08);
+  --glass-shadow: 0 4px 20px rgba(0,0,0,.06);
+  --radius-pill: 16px;
+  /* Motion (UI-06, docs/UI-MUOT.md): press 75 ms · hover 120 ms · state / selection 150 ms · popovers 180 ms, one easing;
+     only colour, opacity and transform move. "Hiệu ứng chuyển động" Giảm bớt / Tắt still apply on top (app.css). */
+  --motion-press: 75ms;
+  --motion-hover: 120ms;
+  --motion-state: 150ms;
+  --motion-pop: 180ms;
+  --ease-ui: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Be Vietnam Pro and JetBrains Mono are bundled (main.tsx, @fontsource): the same faces on every platform. */
+  --font: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace;
   --topbar-h: 52px;
   --left-w: 272px;
   --right-w: 392px;
+  color-scheme: dark;
+}
+:root[data-theme='light'] {
+  --bg: #F5F5F7;
+  --cv-chip-solid: #343438;
+  --bg-elev: #FBFBFC;
+  --panel: #FFFFFF;
+  --panel-2: #EFEFF2;
+  --panel-3: #E3E3E8;
+  --canvas-bg: #ECECF0;
+  --canvas-dot: #CDCDD4;
+  --material: rgba(255,255,255,.94);
+  --material-strong: rgba(255,255,255,.98);
+  --scrim: rgba(20,20,25,.25);
+  --hover: rgba(0,0,0,.05);
+  --pressed: rgba(0,0,0,.09);
+  --border: #D9D9DF;
+  --border-strong: #8C8C96;
+  --text: #1D1D1F;
+  --text-dim: #55555E;
+  --text-faint: #5E5E68;
+  --accent: #C32B15;
+  --accent-strong: #A52213;
+  --accent-soft: #FFE5DA;
+  --accent-ink: #AB2713;
+  --ref: #196E60;
+  --ref-soft: #DCEFE8;
+  --ref-ink: #196354;
+  --video: #78469B;
+  --video-soft: #F0E5F7;
+  --video-ink: #70358F;
+  --save: #4058A0;
+  --save-soft: #E4EAFB;
+  --seq: #5E5E68;
+  --first: #306C3D;
+  --last: #78469B;
+  --ok: #306C3D;
+  --ok-soft: #E1EFE1;
+  --warn: #7E550F;
+  --warn-soft: #F9EBC9;
+  --danger: #AE2155;
+  --danger-soft: #FCE2EB;
+  --danger-text: #9D194A;
+  --info: #4560A8;
+  --info-soft: #E4EAFB;
+  --checker-a: #EFEFF2;
+  --checker-b: #E3E3E8;
+  --selection: #CB351B;
+  /* >= 4.8:1 on every light surface */
+  --provider-canvasapp: #006E8A;
+  --shadow-sm: 0 2px 4px #0000000C;
+  --shadow: 0 4px 14px #00000010;
+  --shadow-lg: 0 24px 72px #00000030;
+  --focus-ring: 0 0 0 3px #4560A8;
+  --scrollbar: #8C8C96;
+  --hairline: rgba(0,0,0,.08);
+  color-scheme: light;
 }
 
-/* Translucent material (Apple "vibrancy"): toolbars, popovers, floating panels. */
+/* Translucent surfaces: toolbars, popovers and floating panels. */
 .material {
   background: var(--material);
   -webkit-backdrop-filter: var(--blur);
@@ -217,8 +219,8 @@ textarea {
   gap: 6px;
   height: 32px;
   padding: 0 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font-weight: 500;
@@ -234,13 +236,15 @@ textarea {
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--action-gradient);
+  border-color: transparent;
   color: var(--on-accent);
   font-weight: 600;
+  box-shadow: var(--shadow-sm);
 }
 .btn-primary:hover {
-  background: var(--accent-strong);
+  background: var(--action-gradient);
+  border-color: var(--selection);
 }
 .btn-ghost {
   background: transparent;
@@ -332,7 +336,7 @@ textarea {
 .input:focus,
 .select:focus,
 .textarea:focus {
-  border-color: var(--border-strong);
+  border-color: var(--info);
   box-shadow: var(--focus-ring);
 }
 .textarea {
@@ -381,8 +385,8 @@ textarea {
   gap: 4px;
   height: 20px;
   padding: 0 7px;
-  border-radius: 999px;
-  background: var(--panel-3);
+  border-radius: var(--radius-xs);
+  background: var(--panel-2);
   color: var(--text-dim);
   font-size: 11px;
   font-weight: 600;
@@ -478,7 +482,7 @@ textarea {
 .progress > i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--brand-gradient);
   transition: width 0.2s linear;
 }
 
@@ -523,12 +527,14 @@ textarea {
   gap: 5px;
   height: 24px;
   padding: 0 8px 0 2px;
-  border-radius: 999px;
-  background: var(--panel-3);
+  border-radius: var(--radius-xs);
+  background: var(--ref-soft);
   border: 1px solid var(--border-strong);
   font-size: 11.5px;
   font-weight: 500;
   white-space: nowrap;
+  color: var(--ref-ink);
+  border-color: transparent;
 }
 /* A square avatar flush inside a pill would poke past the curve: use a rounded rectangle instead. */
 .chip:has(> .asset-avatar) {
@@ -570,4 +576,32 @@ textarea {
 }
 .full-img.zoomable {
   cursor: zoom-in;
+}
+
+/* Keyboard focus is visible on custom controls as well as shared primitives. Zero-specificity exclusion: the text
+   fields (.input / .select / .textarea) already show --focus-ring on focus, so they get no second, outer ring. */
+:where(button, a, input, select, textarea, [tabindex]):not(:where(.input, .select, .textarea)):focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 3px;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-dim);
+}
+
+/* Device background preference: dark only; Than is the default. */
+:root[data-bg='deep']:not([data-theme='light']) {
+  --bg: #0C0C0D; --bg-elev: #111113; --panel: #161618; --panel-2: #202023; --panel-3: #2C2C30;
+  --canvas-bg: #08080A; --canvas-dot: #26262B; --material: rgba(22,22,24,.94); --material-strong: rgba(22,22,24,.98);
+  --border: #2A2A2F; --border-strong: #52525C; --checker-a: #111113; --checker-b: #202023; --media-bg: #070708;
+}
+:root[data-bg='slate']:not([data-theme='light']) {
+  --bg: #14171C; --bg-elev: #181B21; --panel: #1D2128; --panel-2: #272C34; --panel-3: #333943;
+  --canvas-bg: #111419; --canvas-dot: #2D333C; --material: rgba(29,33,40,.94); --material-strong: rgba(29,33,40,.98);
+  --border: #323844; --border-strong: #57606E; --text: #F2F4F7; --text-dim: #B8C0CC; --text-faint: #A0AABA;
+  --seq: #A0AABA; --checker-a: #181B21; --checker-b: #272C34; --scrollbar: #57606E;
 }

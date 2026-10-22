@@ -9,11 +9,13 @@ import nodePath from 'node:path'
 import { describe, expect, it } from 'vitest'
 import mainSource from '../../../electron/main.cjs?raw'
 import preloadSource from '../../../electron/preload.cjs?raw'
+import rulesSource from '../../../electron/updater-rules.cjs?raw'
 import updaterSource from '../../../electron/updater.cjs?raw'
 import pkgSource from '../../../package.json?raw'
 
 type PathMod = typeof nodePath.win32
-type Kind = 'installer' | 'portable' | 'dev'
+type Kind = 'installer' | 'portable' | 'mac-manual' | 'dev'
+type MacPlace = 'mac-applications' | 'mac-translocated' | 'mac-volume' | 'mac-other'
 type ErrorCode = 'offline' | 'no-release' | 'rate-limited' | 'checksum' | 'signature' | 'signature-unverified' | 'disk' | 'install-failed' | 'failed'
 interface UpdErr {
   code: ErrorCode
@@ -41,6 +43,7 @@ interface State {
   lastCheck?: number
   autoDownload: boolean
   notice?: unknown
+  noMacBuild?: true
 }
 interface FsMod {
   existsSync(p: string): boolean
@@ -80,7 +83,7 @@ interface Rules {
   INSTALL_GRACE_MS: number
   isVersion(v: unknown): boolean
   compareVersions(a: string, b: string): -1 | 0 | 1
-  resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
+  resolveProfileDir(o: { env?: string; baked?: string; appData: string; appName: string; platform?: string; pathMod: PathMod; fsMod?: FsMod }): ProfileResult
   appUserModelId(appName: string): string
   detectKind(o: {
     platform: string
@@ -91,6 +94,41 @@ interface Rules {
     exists: (p: string) => boolean
     pathMod: PathMod
   }): Kind
+  placement(o: {
+    platform: string
+    isPackaged: boolean
+    portableFile?: unknown
+    execPath: unknown
+    tmpDir: unknown
+    appName: string
+    exists: (p: string) => boolean
+    realpath?: unknown
+    pathMod: PathMod
+    inApplications?: unknown
+  }): Kind | 'temp-copy' | MacPlace
+  macPlacement(o: { execPath: unknown; inApplications?: unknown }): MacPlace
+  macFeedMissing(err: unknown): boolean
+  portableRelaunch(o: {
+    platform: string
+    isPackaged: boolean
+    portableFile?: unknown
+    appName: unknown
+    exists: (p: string) => boolean
+    pathMod: PathMod
+  }): { appId: string; appIconPath: string; appIconIndex: number; relaunchCommand: string; relaunchDisplayName: string } | null
+  PORTABLE_ENV: readonly string[]
+  portableEnvOf(env: unknown): { file?: string; dir?: string; appFilename?: string }
+  trustedPortableFile(o: {
+    platform: string
+    isPackaged: boolean
+    portable: unknown
+    execPath: unknown
+    tmpDir: unknown
+    appName: string
+    exists: (p: string) => boolean
+    realpath?: unknown
+    pathMod: PathMod
+  }): string | undefined
   mapUpdaterError(err: unknown, phase: 'check' | 'download' | 'install'): UpdErr
   notesToText(notes: unknown): string
   normalizeInfo(info: unknown): Info | null
@@ -289,6 +327,21 @@ describe('updater rules: data folder override (test isolation)', () => {
     expect(resolveWin({ appName: '..' })).toEqual({ ok: true, dir: `${winAppData}\\SanoVids-other`, source: 'default' })
   })
 
+  it('macOS: the real folder is recognised whatever the case or the normalization (APFS / HFS+ ignore both)', () => {
+    const appData = '/Users/Minh Nguyễn/Library/Application Support'
+    const real = `${appData}/SanoVids`
+    const mac = (env: string) => rules.resolveProfileDir({ env, appData, appName: 'SanoVids', platform: 'darwin', pathMod: posix })
+    const linux = (env: string) => rules.resolveProfileDir({ env, appData, appName: 'SanoVids', platform: 'linux', pathMod: posix })
+    expect(rules.resolveProfileDir({ appData, appName: 'SanoVids', platform: 'darwin', pathMod: posix })).toEqual({ ok: true, dir: real, source: 'default' })
+    for (const env of [real, real.toLowerCase(), real.toUpperCase(), real.normalize('NFD'), `${real.normalize('NFD').toLowerCase()}/sub`, appData.toLowerCase(), '/users/minh nguyễn']) {
+      expect(mac(env).ok, env).toBe(false)
+    }
+    // Linux stays case-sensitive (another folder), and ordinary scratch folders stay fine on macOS.
+    expect(linux(real.toLowerCase()).ok).toBe(true)
+    expect(mac('/private/tmp/sanovids-e2e/profile')).toEqual({ ok: true, dir: '/private/tmp/sanovids-e2e/profile', source: 'env' })
+    expect(mac(`${appData}/SanoVidsMacTest`).ok).toBe(true)
+  })
+
   it('AppUserModelId stays com.sanovids.app for the real app only', () => {
     expect(rules.appUserModelId('SanoVids')).toBe('com.sanovids.app')
     expect(rules.appUserModelId('SanoVidsUpdTest')).toBe('com.sanovids.test.sanovidsupdtest')
@@ -308,7 +361,9 @@ describe('updater rules: build kind', () => {
 
   it('dev / portable / installer', () => {
     expect(rules.detectKind({ ...base, isPackaged: false, exists: () => true })).toBe('dev')
-    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: () => true })).toBe('portable')
+    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: (p) => p !== uninstaller })).toBe('portable')
+    // an NSIS install is the installer whatever the environment says (a Portable stub's variable it inherited)
+    expect(rules.detectKind({ ...base, portableFile: 'E:\\SanoVids-Portable.exe', exists: () => true })).toBe('installer')
     expect(rules.detectKind({ ...base, exists: (p) => p === uninstaller })).toBe('installer')
     expect(rules.detectKind({ ...base, portableFile: '', exists: (p) => p === uninstaller })).toBe('installer')
     expect(rules.detectKind({ ...base, exists: () => false })).toBe('portable') // win-unpacked / a copied exe
@@ -322,6 +377,227 @@ describe('updater rules: build kind', () => {
         exists: (p) => p === 'D:\\scratch\\install\\Uninstall SanoVidsUpdTest.exe',
       }),
     ).toBe('installer')
+  })
+
+  it('macOS: mac-manual (check only) when packaged, dev from the sources — whatever files sit next to it', () => {
+    const mac = { ...base, platform: 'darwin', execPath: '/Applications/SanoVids.app/Contents/MacOS/SanoVids', pathMod: posix }
+    expect(rules.detectKind({ ...mac, exists: () => true })).toBe('mac-manual')
+    expect(rules.detectKind({ ...mac, exists: () => false })).toBe('mac-manual')
+    expect(rules.detectKind({ ...mac, portableFile: '/Volumes/USB/SanoVids-Portable.exe', exists: () => true })).toBe('mac-manual')
+    expect(rules.detectKind({ ...mac, exists: () => { throw new Error('EACCES') } })).toBe('mac-manual')
+    expect(rules.detectKind({ ...mac, isPackaged: false, exists: () => true })).toBe('dev')
+    // Windows and Linux are unchanged
+    expect(rules.detectKind({ ...base, exists: (p) => p === uninstaller })).toBe('installer')
+    expect(rules.detectKind({ ...base, platform: 'linux', pathMod: posix, execPath: '/opt/SanoVids/SanoVids', exists: () => true })).toBe('portable')
+  })
+})
+
+describe('updater rules: where the macOS app runs from (app:placement)', () => {
+  const tmp = '/private/var/folders/x1/abc123def/T'
+  const translocated = `${tmp}/AppTranslocation/0A1B2C3D-0000-1111-2222-333344445555/d/SanoVids.app/Contents/MacOS/SanoVids`
+  const inApps = '/Applications/SanoVids.app/Contents/MacOS/SanoVids'
+  const base = { platform: 'darwin', isPackaged: true, appName: 'SanoVids', pathMod: posix, exists: () => true, realpath: (p: string) => p, tmpDir: tmp }
+
+  it('Applications (app.isInApplicationsFolder) → translocated → /Volumes → other', () => {
+    expect(rules.placement({ ...base, execPath: inApps, inApplications: true })).toBe('mac-applications')
+    expect(rules.placement({ ...base, execPath: `/Users/me/Applications/SanoVids.app/Contents/MacOS/SanoVids`, inApplications: true })).toBe('mac-applications')
+    // Gatekeeper's temporary copy (opened from a downloaded .dmg / Downloads): translocated, even though it is inside
+    // the temp folder (never the Windows temp-copy rule)
+    expect(rules.placement({ ...base, execPath: translocated, inApplications: false })).toBe('mac-translocated')
+    expect(rules.placement({ ...base, execPath: translocated.replace('AppTranslocation', 'apptranslocation') })).toBe('mac-translocated')
+    expect(rules.placement({ ...base, execPath: '/Volumes/SanoVids 0.6.0/SanoVids.app/Contents/MacOS/SanoVids', inApplications: false })).toBe('mac-volume')
+    expect(rules.placement({ ...base, execPath: '/Volumes/USB/Apps/SanoVids.app/Contents/MacOS/SanoVids' })).toBe('mac-volume')
+    expect(rules.placement({ ...base, execPath: '/Users/me/Downloads/SanoVids.app/Contents/MacOS/SanoVids', inApplications: false })).toBe('mac-other')
+    expect(rules.placement({ ...base, execPath: '/Users/me/Desktop/SanoVids.app/Contents/MacOS/SanoVids' })).toBe('mac-other')
+    // the Applications answer wins over the path (macOS decides what "Applications" is)
+    expect(rules.placement({ ...base, execPath: translocated, inApplications: true })).toBe('mac-applications')
+    // only exactly true counts
+    expect(rules.placement({ ...base, execPath: inApps, inApplications: 'true' })).toBe('mac-other')
+  })
+
+  it('packaged on macOS: never an updater kind, never a Windows place', () => {
+    const paths = [inApps, translocated, '/Volumes/x/SanoVids.app/Contents/MacOS/SanoVids', `${tmp}/x/SanoVids`, '/Users/me/SanoVids', '', 'relative/SanoVids']
+    for (const execPath of paths) {
+      for (const inApplications of [true, false, undefined]) {
+        for (const exists of [() => true, () => false]) {
+          const kind = rules.placement({ ...base, execPath, inApplications, exists, portableFile: '/Volumes/USB/SanoVids-Portable.exe' })
+          expect(['mac-applications', 'mac-translocated', 'mac-volume', 'mac-other'], `${execPath} ${inApplications}`).toContain(kind)
+          expect(['mac-manual', 'portable', 'temp-copy', 'installer', 'dev']).not.toContain(kind)
+        }
+      }
+    }
+  })
+
+  it('from the sources: dev; junk never throws', () => {
+    expect(rules.placement({ ...base, isPackaged: false, execPath: '/Users/me/code/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', inApplications: true })).toBe('dev')
+    for (const execPath of [null, 42, {}, '/x'.repeat(5000)]) expect(rules.placement({ ...base, execPath, inApplications: false }), String(execPath).slice(0, 20)).toBe('mac-other')
+    expect(rules.macPlacement({ execPath: undefined })).toBe('mac-other')
+    expect(rules.macPlacement({ execPath: translocated, inApplications: false })).toBe('mac-translocated')
+  })
+
+  it('Windows keeps its kinds when main passes inApplications (always false there)', () => {
+    const temp = 'C:\\Users\\minhm\\AppData\\Local\\Temp'
+    const installed = 'C:\\Users\\me\\AppData\\Local\\Programs\\sanovids\\SanoVids.exe'
+    const w = { platform: 'win32', isPackaged: true, appName: 'SanoVids', pathMod: win, realpath: (p: string) => p, tmpDir: temp, inApplications: false }
+    expect(rules.placement({ ...w, execPath: installed, exists: (p) => p === installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe') })).toBe('installer')
+    expect(rules.placement({ ...w, execPath: installed, exists: () => false })).toBe('portable')
+    expect(rules.placement({ ...w, execPath: `${temp}\\nsyF6B5.tmp\\7z-out\\SanoVids.exe`, exists: () => false })).toBe('temp-copy')
+    // even a (wrong) true changes nothing off macOS
+    expect(rules.placement({ ...w, execPath: installed, exists: () => false, inApplications: true })).toBe('portable')
+  })
+
+  it('the portable taskbar identity never applies on macOS', () => {
+    expect(rules.portableRelaunch({ platform: 'darwin', isPackaged: true, portableFile: '/Volumes/USB/SanoVids.exe', appName: 'SanoVids', exists: () => true, pathMod: posix })).toBeNull()
+  })
+})
+
+describe('updater rules: where the app runs from (app:placement)', () => {
+  const temp = 'C:\\Users\\minhm\\AppData\\Local\\Temp'
+  const shortTemp = 'C:\\Users\\MINHM~1\\AppData\\Local\\Temp'
+  const leftover = `${temp}\\nsyF6B5.tmp\\7z-out\\SanoVids.exe`
+  const installed = 'C:\\Users\\me\\AppData\\Local\\Programs\\sanovids\\SanoVids.exe'
+  /** fs.realpathSync.native stand-in: short names → long names (like Windows), unknown paths as they are. */
+  const realpath = (p: string) => p.replace(/^C:\\Users\\MINHM~1\\/i, 'C:\\Users\\minhm\\')
+  const base = { platform: 'win32', isPackaged: true, appName: 'SanoVids', pathMod: win, exists: () => false, realpath, tmpDir: shortTemp }
+
+  it('installer / portable / dev are exactly detectKind (= the updater state kind)', () => {
+    const cases = [
+      { ...base, execPath: installed, exists: (p: string) => p === installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe') },
+      { ...base, execPath: installed },
+      { ...base, execPath: installed, isPackaged: false },
+      { ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe`, portableFile: 'E:\\SanoVids-Portable-0.6.0.exe' },
+      { ...base, execPath: 'D:\\x\\SanoVids.exe', platform: 'linux' },
+    ]
+    for (const c of cases) expect(rules.placement(c), c.execPath).toBe(rules.detectKind(c as Parameters<Rules['detectKind']>[0]))
+    expect(rules.placement(cases[0])).toBe('installer')
+    expect(rules.placement(cases[2])).toBe('dev')
+  })
+
+  it('a leftover copy inside the temp folder (no PORTABLE_EXECUTABLE_FILE) → temp-copy, also through an 8.3 TEMP path', () => {
+    expect(rules.placement({ ...base, execPath: leftover })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: temp })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: leftover.toUpperCase(), tmpDir: temp })).toBe('temp-copy') // Windows paths ignore case
+    expect(rules.placement({ ...base, execPath: `${shortTemp}\\nsyF6B5.tmp\\7z-out\\SanoVids.exe` })).toBe('temp-copy')
+    expect(rules.placement({ ...base, execPath: `${temp}\\..foo\\SanoVids.exe` })).toBe('temp-copy') // a folder named "..foo" is inside
+  })
+
+  it('the real Portable (it sets PORTABLE_EXECUTABLE_FILE) is portable even though it runs from %TEMP%', () => {
+    expect(rules.placement({ ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe`, portableFile: 'E:\\USB\\SanoVids-Portable-0.6.0.exe' })).toBe('portable')
+  })
+
+  it('anything doubtful is plain portable, never temp-copy', () => {
+    expect(rules.placement({ ...base, execPath: 'D:\\Apps\\SanoVids\\SanoVids.exe' })).toBe('portable') // win-unpacked / a copied exe
+    expect(rules.placement({ ...base, execPath: `${temp}2\\SanoVids.exe` })).toBe('portable') // a sibling, not inside
+    expect(rules.placement({ ...base, execPath: temp })).toBe('portable') // the folder itself
+    expect(rules.placement({ ...base, execPath: leftover, realpath: () => { throw new Error('EACCES') } })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, realpath: undefined })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, realpath: () => 42 })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: '' })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: 'Temp' })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: leftover, tmpDir: undefined })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: '', tmpDir: temp })).toBe('portable')
+    expect(rules.placement({ ...base, execPath: `${temp}\\x\u0000\\SanoVids.exe` })).toBe('portable')
+    // exists() throwing is detectKind's business: portable
+    expect(rules.placement({ ...base, execPath: installed, exists: () => { throw new Error('EACCES') } })).toBe('portable')
+  })
+
+  it('POSIX paths (case-sensitive)', () => {
+    const px = { ...base, platform: 'linux', pathMod: posix, realpath: (p: string) => p }
+    expect(rules.placement({ ...px, execPath: '/tmp/x/SanoVids', tmpDir: '/tmp' })).toBe('temp-copy')
+    expect(rules.placement({ ...px, execPath: '/TMP/x/SanoVids', tmpDir: '/tmp' })).toBe('portable')
+    expect(rules.placement({ ...px, execPath: '/opt/SanoVids/SanoVids', tmpDir: '/tmp' })).toBe('portable')
+  })
+})
+
+describe('updater rules: PORTABLE_EXECUTABLE_FILE is trusted only for a run its own Portable stub started', () => {
+  const temp = 'C:\\Users\\minhm\\AppData\\Local\\Temp'
+  const shortTemp = 'C:\\Users\\MINHM~1\\AppData\\Local\\Temp'
+  const file = 'E:\\USB\\SanoVids-Portable-0.6.0.exe'
+  const extracted = `${temp}\\2pZ0QkK4yS1x\\SanoVids.exe`
+  const installed = 'C:\\Users\\me\\AppData\\Local\\Programs\\sanovids\\SanoVids.exe'
+  const realpath = (p: string) => p.replace(/^C:\\Users\\MINHM~1\\/i, 'C:\\Users\\minhm\\')
+  const portable = { file, dir: 'E:\\USB', appFilename: 'SanoVids' }
+  const base = { platform: 'win32', isPackaged: true, portable, execPath: extracted, tmpDir: shortTemp, appName: 'SanoVids', exists: (p: string) => p === file, realpath, pathMod: win }
+
+  it('reads the three variables the stub sets (non-empty strings only)', () => {
+    expect([...rules.PORTABLE_ENV]).toEqual(['PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_DIR', 'PORTABLE_EXECUTABLE_APP_FILENAME'])
+    expect(rules.portableEnvOf({ PORTABLE_EXECUTABLE_FILE: file, PORTABLE_EXECUTABLE_DIR: 'E:\\USB', PORTABLE_EXECUTABLE_APP_FILENAME: 'SanoVids', TEMP: 'x' })).toEqual(portable)
+    expect(rules.portableEnvOf({ PORTABLE_EXECUTABLE_FILE: '', PORTABLE_EXECUTABLE_DIR: 7 })).toEqual({ file: undefined, dir: undefined, appFilename: undefined })
+    expect(rules.portableEnvOf(null)).toEqual({ file: undefined, dir: undefined, appFilename: undefined })
+  })
+
+  it('the app its stub extracted into %TEMP% (also through an 8.3 TEMP path) → the portable file', () => {
+    expect(rules.trustedPortableFile(base)).toBe(file)
+    expect(rules.trustedPortableFile({ ...base, tmpDir: temp })).toBe(file)
+    expect(rules.trustedPortableFile({ ...base, execPath: `${temp}\\nsA1.tmp\\app\\SanoVids.exe` })).toBe(file) // older stubs
+    expect(rules.trustedPortableFile({ ...base, portable: { ...portable, appFilename: 'sanovids' } })).toBe(file) // case-insensitive
+    expect(rules.trustedPortableFile({ ...base, appName: 'SanoVidsIconTest', execPath: `${temp}\\x\\SanoVidsIconTest.exe`, portable: { ...portable, appFilename: 'SanoVidsIconTest' } })).toBe(file)
+  })
+
+  it('inherited by an installed SanoVids (another portable app, a browser a Portable opened…) → not trusted', () => {
+    const uninstaller = installed.replace('SanoVids.exe', 'Uninstall SanoVids.exe')
+    expect(rules.trustedPortableFile({ ...base, execPath: installed, exists: (p) => p === file || p === uninstaller })).toBeUndefined()
+    // no uninstaller, but not in the temp folder (win-unpacked, a copied exe)
+    expect(rules.trustedPortableFile({ ...base, execPath: 'D:\\Apps\\SanoVids\\SanoVids.exe' })).toBeUndefined()
+    // another app's stub: its own app name
+    expect(rules.trustedPortableFile({ ...base, portable: { ...portable, appFilename: 'OtherTool' } })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, portable: { file } })).toBeUndefined()
+    // an uninstaller next to an exe in %TEMP% (a leftover install copy) is never the portable either
+    expect(rules.trustedPortableFile({ ...base, exists: () => true })).toBeUndefined()
+  })
+
+  it('anything doubtful → not trusted (never throws)', () => {
+    for (const bad of ['', 'Portable.exe', 'E:\\USB\\SanoVids.txt', 'E:\\USB\\Sano"Vids.exe', 'E:\\USB\\a\nb.exe', 'E:\\USB\\a\u0000.exe', 'x'.repeat(1100) + '.exe', 7, null]) {
+      expect(rules.trustedPortableFile({ ...base, portable: { ...portable, file: bad }, exists: (p) => !p.includes('Uninstall') }), String(bad)).toBeUndefined()
+    }
+    expect(rules.trustedPortableFile({ ...base, exists: () => false })).toBeUndefined() // the portable .exe is gone
+    expect(rules.trustedPortableFile({ ...base, isPackaged: false })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, platform: 'linux' })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, portable: null })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, realpath: undefined })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, realpath: () => { throw new Error('EACCES') } })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, tmpDir: 'Temp' })).toBeUndefined()
+    expect(rules.trustedPortableFile({ ...base, execPath: temp })).toBeUndefined() // the temp folder itself
+    expect(rules.trustedPortableFile({ ...base, exists: () => { throw new Error('EACCES') } })).toBeUndefined()
+  })
+})
+
+describe('updater rules: the portable window pins the portable .exe (setAppDetails)', () => {
+  const file = 'E:\\USB\\SanoVids-Portable-0.6.0.exe'
+  const base = { platform: 'win32', isPackaged: true, portableFile: file, appName: 'SanoVids', pathMod: win, exists: (p: string) => p === file }
+
+  it('a packaged win32 portable run → relaunch the portable file itself, with its icon and the app identity', () => {
+    expect(rules.portableRelaunch(base)).toEqual({
+      appId: 'com.sanovids.app',
+      appIconPath: file,
+      appIconIndex: 0,
+      relaunchCommand: `"${file}"`,
+      relaunchDisplayName: 'SanoVids',
+    })
+    const test = rules.portableRelaunch({ ...base, appName: 'SanoVidsIconTest' })
+    expect(test!.appId).toBe(rules.appUserModelId('SanoVidsIconTest'))
+    expect(test!.relaunchDisplayName).toBe('SanoVidsIconTest')
+    expect(rules.portableRelaunch({ ...base, portableFile: 'E:\\USB\\SANOVIDS.EXE', exists: () => true })!.relaunchCommand).toBe('"E:\\USB\\SANOVIDS.EXE"')
+  })
+
+  it('anything else → null (nothing set)', () => {
+    const bad = [
+      { ...base, platform: 'linux' },
+      { ...base, isPackaged: false },
+      { ...base, portableFile: undefined },
+      { ...base, portableFile: '' },
+      { ...base, portableFile: 42 },
+      { ...base, portableFile: 'SanoVids-Portable.exe', exists: () => true }, // relative
+      { ...base, portableFile: 'E:\\USB\\SanoVids-Portable.bat', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\SanoVids-Portable', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a" --inspect "b.exe', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a\r\nb.exe', exists: () => true },
+      { ...base, portableFile: 'E:\\USB\\a\u0000.exe', exists: () => true },
+      { ...base, portableFile: `E:\\${'x'.repeat(1100)}.exe`, exists: () => true },
+      { ...base, exists: () => false }, // the portable file is gone
+      { ...base, exists: () => { throw new Error('EACCES') } },
+    ]
+    for (const b of bad) expect(rules.portableRelaunch(b), JSON.stringify(b.portableFile)?.slice(0, 60)).toBeNull()
   })
 })
 
@@ -414,6 +690,29 @@ describe('updater rules: errors become fixed Vietnamese texts', () => {
     expect(rules.mapUpdaterError(new Error('x'), 'install').message).toBe('Không khởi động được trình cài bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'check').message).toBe('Không kiểm tra được bản cập nhật.')
     expect(rules.mapUpdaterError(new Error('x'), 'download').message).toBe('Tải bản cập nhật bị lỗi.')
+  })
+
+  it('macFeedMissing: only a missing channel file (latest-mac.yml) of the newest release — never a network failure', () => {
+    const missing = {
+      code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+      message: 'Cannot find latest-mac.yml in the latest release artifacts (https://github.com/JameSteven404/sanovids-releases/releases/download/v0.6.1/latest-mac.yml): HttpError: 404 \n"method: GET url: …"',
+    }
+    expect(rules.macFeedMissing(missing)).toBe(true)
+    expect(rules.macFeedMissing({ code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })).toBe(true)
+    expect(rules.macFeedMissing({ code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND', message: 'Cannot find latest-mac.yml: Error: net::ERR_NETWORK_CHANGED' })).toBe(false)
+    for (const e of [
+      { code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND', message: 'Unable to find latest version on GitHub: HttpError: 404' },
+      { code: 'HTTP_ERROR_404' },
+      { code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' },
+      new Error('ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'),
+      'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+      null,
+      undefined,
+    ]) {
+      expect(rules.macFeedMissing(e), JSON.stringify(e)).toBe(false)
+    }
+    // The Windows mapping is unchanged: a missing latest.yml is still "no release" there.
+    expect(rules.mapUpdaterError(missing, 'check').code).toBe('no-release')
   })
 })
 
@@ -621,6 +920,45 @@ describe('updater rules: state machine', () => {
     expect(rules.reduceUpdateState(s, { type: 'prefs', autoDownload: false }, NOW).autoDownload).toBe(false)
     expect(rules.reduceUpdateState(s, { type: 'nope' }, NOW)).toBe(s)
     expect(rules.reduceUpdateState(s, null, NOW)).toBe(s)
+  })
+
+  it('mac-manual: a newest release without Mac files → none + noMacBuild (never "the newest"), dropped by every other state', () => {
+    const mac = rules.initialState({ kind: 'mac-manual', current: '0.6.0', autoDownload: true })
+    expect(mac).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'idle', autoDownload: true })
+    const noMac = run(mac, { type: 'checking' }, { type: 'not-available', noMacBuild: true })
+    expect(noMac).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: NOW, noMacBuild: true })
+    // the newest release HAS a Mac build that is not newer: plain none
+    expect(run(noMac, { type: 'checking' }, { type: 'not-available' })).toEqual({ kind: 'mac-manual', current: '0.6.0', status: 'none', autoDownload: true, lastCheck: NOW })
+    // every other state drops the flag
+    expect(run(noMac, { type: 'checking' }).noMacBuild).toBeUndefined()
+    expect(run(noMac, { type: 'checking' }, { type: 'check-error', error: err('offline') }).noMacBuild).toBeUndefined()
+    expect(rules.reduceUpdateState(noMac, { type: 'check-error', error: err('offline') }, NOW).noMacBuild).toBeUndefined()
+    expect(run(noMac, { type: 'available', info: info('0.6.1') }).noMacBuild).toBeUndefined()
+    // a change that keeps the state 'none' keeps it; nothing at all → the very same object
+    expect(rules.reduceUpdateState(noMac, { type: 'prefs', autoDownload: false }, NOW)).toEqual({ ...noMac, autoDownload: false })
+    expect(rules.reduceUpdateState(noMac, { type: 'prefs', autoDownload: true }, NOW)).toBe(noMac)
+    // only exactly true, only for the Mac build
+    for (const flag of ['true', 1, {}, null]) expect(run(mac, { type: 'not-available', noMacBuild: flag }).noMacBuild, String(flag)).toBeUndefined()
+    for (const kind of ['installer', 'portable'] as const) {
+      expect(run(start(kind), { type: 'not-available', noMacBuild: true }).noMacBuild, kind).toBeUndefined()
+      // …and on Windows a withdrawn release still clears a known one, flag or not
+      expect(run(start(kind), { type: 'available', info: info('0.5.0') }, { type: 'not-available', noMacBuild: true }).status, kind).toBe('none')
+    }
+  })
+
+  it('mac-manual: a known update survives a re-check whose newest release has no Mac build (only lastCheck changes)', () => {
+    const mac = rules.initialState({ kind: 'mac-manual', current: '0.6.0', autoDownload: true })
+    const avail = run(mac, { type: 'checking' }, { type: 'available', info: info('0.6.1') })
+    expect(avail).toMatchObject({ status: 'available', version: '0.6.1', notes: 'Ghi chú 0.6.1' })
+    // electron-updater's real order: checking-for-update (kept: a known update stays), then the result
+    expect(rules.reduceUpdateState(avail, { type: 'checking' }, NOW + 5)).toBe(avail)
+    const after = rules.reduceUpdateState(avail, { type: 'not-available', noMacBuild: true }, NOW + 5)
+    expect(after).toEqual({ ...avail, lastCheck: NOW + 5 })
+    expect(after.noMacBuild).toBeUndefined()
+    // a plain not-available (the newest release has a Mac build, not newer: the release was withdrawn) clears it
+    expect(rules.reduceUpdateState(avail, { type: 'not-available' }, NOW + 6)).toMatchObject({ status: 'none' })
+    // a newer Mac build found later replaces it
+    expect(run(after, { type: 'checking' }, { type: 'available', info: info('0.6.2') })).toMatchObject({ status: 'available', version: '0.6.2' })
   })
 })
 
@@ -1017,6 +1355,33 @@ describe('electron-updater internals the pinned verifier relies on (6.8.10)', ()
     expect(appUpdater).toContain('sha512: fileInfo.info.sha512,')
   })
 
+  it('GitHubProvider: macOS reads latest-mac.yml, and a 404 of it is ERR_UPDATER_CHANNEL_FILE_NOT_FOUND (macFeedMissing)', () => {
+    expect(read('providers/Provider.js')).toContain('return this.runtimeOptions.platform === "darwin" ? "-mac" : "";')
+    expect(read('providers/GitHubProvider.js')).toMatch(
+      /e\.statusCode === 404\) \{\s*throw \(0, builder_util_runtime_1\.newError\)\(`Cannot find \$\{channelFile\} in the latest release artifacts[^`]*`, "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND"\);/,
+    )
+  })
+
+  it('updater.cjs: the Mac build checks only — no NSIS hooks, no download / install, a missing latest-mac.yml is not-available + noMacBuild', () => {
+    const mac = updaterSource.indexOf("if (kind === 'mac-manual') {")
+    expect(mac).toBeGreaterThan(-1)
+    // the hooks are installed in the else branch only
+    const elseAt = updaterSource.indexOf('} else {', mac)
+    expect(updaterSource.slice(mac, elseAt)).not.toMatch(/verifySignature|verifyUpdateCodeSignature|verifierOk = true/)
+    expect(updaterSource.indexOf('updater.verifySignature = verifyMethod')).toBeGreaterThan(elseAt)
+    expect(updaterSource).toContain("log.info('mac: check only (no download, no install)')")
+    expect(updaterSource).toContain("updater.autoInstallOnAppQuit = kind === 'installer'")
+    // download / install stay installer-only
+    expect(updaterSource).toContain("if (kind !== 'installer' || !au) return fail('unsupported', MSG.downloadUnsupported)")
+    expect(updaterSource).toContain("if (kind !== 'installer' || !au) return fail('unsupported', MSG.installUnsupported)")
+    expect(updaterSource).toContain("if (!au || downloadInFlight || kind !== 'installer') return")
+    // the missing Mac feed: decided before mapUpdaterError, never an error state
+    const check = updaterSource.indexOf("if (kind === 'mac-manual' && rules.macFeedMissing(e)) {")
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(updaterSource.indexOf("rules.mapUpdaterError(e, 'check')"))
+    expect(updaterSource).toContain("dispatch({ type: 'not-available', noMacBuild: true })")
+  })
+
   it('updater.cjs installs our verifier on both hooks and re-verifies (signature, identity, content) before installing', () => {
     expect(updaterSource).toContain('updater.verifySignature =')
     expect(updaterSource).toContain('updater.verifyUpdateCodeSignature =')
@@ -1120,6 +1485,35 @@ describe('packaging guarantees (package.json, preload, main)', () => {
     expect(mainSource).not.toMatch(/forceDevUpdateConfig\s*=\s*true|setFeedURL\(/)
     // The guard sees through links (realpath) to the real folder.
     expect(mainSource).toContain('fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native }')
+  })
+
+  it('updater-rules.cjs requires nothing (main, updater and scripts share it; app.asar cannot resolve npm helpers from electron/)', () => {
+    const code = rulesSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code).not.toMatch(/\brequire\s*\(/)
+    expect(code).not.toMatch(/\bimport\s*\(/)
+  })
+
+  it('main.cjs: placement and the portable taskbar identity come from updater-rules (no path crosses to the page)', () => {
+    expect(mainSource.split('updaterRules.placement(').length - 1).toBe(1)
+    // macOS: the Applications answer comes from main (asked outside placement's try), the data folder check ignores case there
+    expect(mainSource).toMatch(/const inApplications = macInApplications\(\)[^\n]*\n\s+let kind\n\s+try \{[\s\S]*?kind = updaterRules\.placement\(\{[\s\S]*?\n\s+inApplications,\n\s+\}\)/)
+    expect(mainSource).toContain("appName: app.getName(), platform: process.platform, pathMod: path, fsMod: { existsSync: fs.existsSync, realpathSync: fs.realpathSync.native } })")
+    expect(mainSource.split('updaterRules.portableRelaunch(').length - 1).toBe(1)
+    expect(mainSource).toContain('realpath: fs.realpathSync.native,')
+    expect(mainSource).toContain('win.setAppDetails(relaunch)')
+    // The Portable stub's variables: read once, removed from the environment (children never inherit them), and the
+    // file trusted only through trustedPortableFile — placement, the taskbar identity and the updater all get that.
+    expect(mainSource).toContain('const portableEnv = updaterRules.portableEnvOf(process.env)')
+    const strip = mainSource.indexOf('for (const name of updaterRules.PORTABLE_ENV) delete process.env[name]')
+    expect(strip).toBeGreaterThan(-1)
+    for (const later of ['app.enableSandbox()', "app.setPath('userData'", 'requestSingleInstanceLock', 'app.whenReady()']) expect(strip, later).toBeLessThan(mainSource.indexOf(later))
+    expect(mainSource.split('updaterRules.trustedPortableFile(').length - 1).toBe(1)
+    expect(mainSource).toContain('portable: portableEnv,')
+    expect(mainSource.split('portableFile: portableFile(),').length - 1).toBe(2)
+    expect(mainSource).toContain('setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })')
+    const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    for (const src of [mainSource, updaterSource]) expect(code(src)).not.toContain('process.env.PORTABLE_EXECUTABLE')
+    expect(updaterSource).toContain('    portableFile,\n    execPath: process.execPath,')
   })
 
   it('main.cjs records the install-on-quit attempt in the app quit event (never for a vetoed quit)', () => {

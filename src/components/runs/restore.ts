@@ -1,12 +1,15 @@
 // "Khôi phục prompt này" and the take viewer's reference list: the numbers a take was sent with.
 // Pure helpers (no React, no stores) — covered by ./__tests__/restore.test.ts.
 //
-// A take keeps the scene prompt and the ordered asset/take ids it ran with. Tokens are positional (@image_N =
-// N-th image of the refs, @video_N = N-th video), so restoring the old prompt with a shorter list (an asset or a
-// take was deleted since) must renumber the tokens like a live deletion does.
+// A take keeps the scene prompt and the ordered asset ids it ran with. Tokens are positional (@image_N = N-th image of
+// the refs), so restoring the old prompt with a shorter list (an asset was deleted since) must renumber the tokens
+// like a live deletion does — the token of a picture that is gone becomes a red placeholder (core/placeholders), never
+// a name or nothing. @video text of an older take (reference videos were retired in 0.6.0) comes back exactly
+// as it was written — never renumbered or replaced — and blocks the run (core/compile retiredVideoTokens).
 // The exact image list of the run is only known when the take carries `imageKeysSnapshot` (the image keys it was
 // sent with, in order). Older takes do not: the image slots are then rebuilt from the assets as they are now.
-import { HAS_TOKEN_RE, imageKey, mediaKeys, remapTokens, TOKEN_RE } from '../../core/compile'
+import { HAS_TOKEN_RE, imageKey, mediaKeys, remapTokens, retiredVideoTokens, TOKEN_RE } from '../../core/compile'
+import { imagePlaceholders, removalLabels } from '../../core/placeholders'
 import { tokensShifted } from '../../core/staleTokens'
 import type { Asset, Take } from '../../core/types'
 
@@ -55,69 +58,74 @@ export interface RestoredScene {
   prompt: string
   /** The take's references that still exist, in their original order. */
   refs: string[]
-  videoRefs: string[]
   /** References of the take that no longer exist (dropped). */
   gone: number
-  /** True when tokens of the prompt were rewritten. */
+  /** True when tokens of the prompt were rewritten (renumbered, or turned into red placeholders). */
   renumbered: boolean
   /**
-   * Renumbering off and the prompt kept tokens that now point at another image / video than when the take ran
-   * (a reference was deleted, or a character's pictures changed): the user must check them.
+   * Renumbering off and the prompt kept tokens that now point at another image than when the take ran (a reference
+   * was deleted, or a character's pictures changed): the user must check them.
    */
   stale: boolean
+  /** Retired @video tokens of the restored prompt, as written (distinct, in order): they block the run. */
+  retired: string[]
   /**
-   * @image tokens whose number could not be resolved for sure: they come after a deleted asset of an older take
-   * (no image snapshot), whose image count is unknown. They were renumbered as if that asset had one image —
-   * the user should check them.
+   * @image tokens of an older take (no image snapshot) that come after a character deleted since: its picture count is
+   * unknown, so their picture is unknown too — they became bare red placeholders "@image_?N" (never a guess).
    */
   uncertain: number
+  /** Red placeholders the restore wrote (removed pictures + `uncertain`): the scene is blocked until they are filled. */
+  placeholders: number
 }
 
+/** Key standing for a picture of an older take whose place is unknown (after a deleted character). */
+const unknownKey = (i: number) => `\u0000unknown:${i}`
+
 /**
- * Scene data that puts a scene back the way it was when `take` ran. References that no longer exist are dropped
- * and, with `renumber` (project.settings.autoRenumber), the @image_N / @video_N tokens of the old prompt are
- * rewritten so each one still points at the same image/video; tokens whose media is gone become the asset name
- * (or "ảnh") / `videoLabel(takeId)` — the same rule as removing a reference from a live scene.
+ * Scene data that puts a scene back the way it was when `take` ran. References that no longer exist are dropped and
+ * the @image_N tokens of the old prompt are rewritten so each one still points at the same image — with `renumber` off
+ * (project.settings.autoRenumber) they keep their numbers. The token of a picture that is gone becomes a red
+ * placeholder, exactly like removing a reference from a live scene: "@image_?N(Tên · ảnh k)" when the character still
+ * exists (only that picture is gone), a bare "@image_?N" when it was deleted. For an older take without an image
+ * snapshot, every token from the first deleted character on becomes a bare placeholder (`uncertain` past it). @video
+ * text is kept exactly as written (`retired` lists it).
  */
 export function restoredFromTake(
-  take: Pick<Take, 'rawPromptSnapshot' | 'refsSnapshot' | 'videoRefsSnapshot'> & { imageKeysSnapshot?: readonly string[] },
+  take: Pick<Take, 'rawPromptSnapshot' | 'refsSnapshot'> & { imageKeysSnapshot?: readonly string[] },
   assets: Asset[],
-  liveTakeIds: Set<string>,
-  opts: { renumber: boolean; videoLabel?: (takeId: string) => string },
+  opts: { renumber: boolean },
 ): RestoredScene {
   const alive = new Set(assets.map((a) => a.id))
   const refs = take.refsSnapshot.filter((id) => alive.has(id))
-  const videoRefs = take.videoRefsSnapshot.filter((id) => liveTakeIds.has(id))
-  const gone = take.refsSnapshot.length - refs.length + take.videoRefsSnapshot.length - videoRefs.length
-  let prompt = take.rawPromptSnapshot
-  let renumbered = false
-  let uncertain = 0
-  if (!HAS_TOKEN_RE.test(prompt)) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
+  const gone = take.refsSnapshot.length - refs.length
+  const raw = take.rawPromptSnapshot
+  const retired = [...new Set(retiredVideoTokens(raw).map((t) => t.text))]
+  const same = { prompt: raw, refs, gone, renumbered: false, uncertain: 0, placeholders: 0, stale: false, retired }
+  if (!HAS_TOKEN_RE.test(raw)) return same
 
   const exact = exactImageKeys(take)
-  const beforeImages = snapshotImageKeys(assets, take.refsSnapshot, exact)
-  const after = mediaKeys(assets, refs, videoRefs)
+  let beforeImages = snapshotImageKeys(assets, take.refsSnapshot, exact)
+  const after = mediaKeys(assets, refs)
   // With the exact snapshot, images added to / removed from an asset since the run also shift the numbers.
   const imagesMoved = !!exact && beforeImages.join('|') !== after.images.join('|')
-  if (gone === 0 && !imagesMoved) return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
-  if (!opts.renumber) {
-    const stale = tokensShifted(prompt, { images: beforeImages, videos: take.videoRefsSnapshot }, after)
-    return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale }
-  }
+  if (gone === 0 && !imagesMoved) return same
 
-  // Old take: past the first deleted asset the slots are a guess (its real image count is unknown).
+  // Old take: from the first deleted asset on the slots are unknown (its real image count is unknown) — never guessed.
+  let uncertain = 0
   const guessFrom = beforeImages.findIndex(isMissingKey)
   if (guessFrom >= 0) {
-    for (const m of prompt.matchAll(TOKEN_RE)) {
+    for (const m of raw.matchAll(TOKEN_RE)) {
       if (m[1].toLowerCase() === 'image' && Number(m[2]) - 1 > guessFrom) uncertain++
     }
+    beforeImages = beforeImages.map((k, i) => (i > guessFrom ? unknownKey(i) : k))
   }
-  const names = new Map(assets.map((a) => [a.id, a.name]))
-  const videoLabel = opts.videoLabel ?? (() => 'video')
-  const res = remapTokens(prompt, { images: beforeImages, videos: take.videoRefsSnapshot }, after, (kind, key) =>
-    kind === 'image' ? (names.get(key.slice(0, key.indexOf(':'))) ?? 'ảnh') : videoLabel(key),
-  )
-  prompt = res.text
-  renumbered = res.changed
-  return { prompt, refs, videoRefs, gone, renumbered, uncertain, stale: false }
+  const labels = removalLabels(assets, { beforeKeys: beforeImages, refsAfter: refs, assetsAfter: assets })
+  const res = remapTokens(raw, { images: beforeImages }, after, () => '', {
+    keepNumbers: !opts.renumber,
+    placeholder: (key, n, glued) => (isMissingKey(key) || key.startsWith('\u0000') ? null : labels(key, n, glued)),
+  })
+  const placeholders = imagePlaceholders(res.text).length - imagePlaceholders(raw).length
+  // Past the unknown slots a typed-ahead number of the old prompt has no picture either (out of range: blocked).
+  const stale = !opts.renumber && tokensShifted(res.text, { images: beforeImages }, after)
+  return { prompt: res.text, refs, gone, renumbered: res.changed, uncertain, placeholders: Math.max(0, placeholders), stale, retired }
 }

@@ -1,6 +1,7 @@
 // UI-only state: selection, view, dialogs, drag overlay, toasts. Never undoable, mostly not persisted.
 import { create } from 'zustand'
-import type { EdgeMode, ViewMode, XY } from '../core/types'
+import { isShownView } from '../core/shownViews'
+import type { EdgeMode, ViewMode } from '../core/types'
 
 export interface ToastAction {
   label: string
@@ -18,7 +19,11 @@ export interface Toast {
 export type DialogState =
   | { kind: 'none' }
   | { kind: 'import' }
-  | { kind: 'settings' }
+  /**
+   * "Cài đặt". `section`: id of a group of its GROUPS (components/dialogs/SettingsDialog, e.g. 'canvas', 'keys') to show
+   * — the dialog switches to that group's level and scrolls it into view. Open it with actions.openSettings(section).
+   */
+  | { kind: 'settings'; section?: string }
   | { kind: 'shortcuts' }
   /** `follow`: after the run starts, open the take viewer on the new take (re-run from the viewer). */
   | { kind: 'runConfirm'; sceneIds: string[]; follow?: boolean }
@@ -32,12 +37,27 @@ export type DialogState =
   | { kind: 'dev'; tab?: DevPanelTab }
   /** "Cập nhật SanoVids" (components/dialogs/UpdateDialog). Open with updateActions.openUpdateDialog(). */
   | { kind: 'update' }
+  /**
+   * "Nhập job" — jobs made on canvasapp's own page become takes (components/runs/ImportJobsDialog, siteJobActions).
+   * `back`: the dialog it was opened from (Settings, Bảng phát triển), shown again when it closes. `provider`: the
+   * gateway to read (default: the one new takes use; the Bảng phát triển always reads the simulated one).
+   */
+  | { kind: 'importJobs'; back?: DialogState; provider?: 'dev' | 'canvasapp' }
+  /**
+   * "Phát liền" (components/player/FilmPlayerDialog): every scene's chosen take in scene order, from item `start`
+   * (0-based). Open with filmActions.openFilmPlayer(start), which refuses a project without scenes.
+   */
+  | { kind: 'player'; start?: number }
 
 /** Tabs of the top-up sheet: buy credits / the canvasapp credit history. */
 export type TopUpTab = 'topup' | 'history'
 
-/** Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater. */
-export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates'
+/**
+ * Tabs of the development panel: server state · faults · request log · jobs & top-up orders · simulated updater ·
+ * stress tester ("Test giới hạn", src/devtools/stress) · performance ('perf': only in a perf build, see src/perf;
+ * devPanelTabs leaves it out everywhere else).
+ */
+export type DevPanelTab = 'status' | 'faults' | 'log' | 'jobs' | 'updates' | 'stress' | 'perf'
 
 export type InteractionMode = 'hand' | 'select'
 export type TakeDisplay = 'all' | 'chosen'
@@ -52,6 +72,7 @@ export const TOAST_TIME_LABEL: Record<ToastTime, string> = { short: 'Ngắn', no
 export const TOAST_BASE_MS = 2800
 export const TOAST_ACTION_MS = 6000
 
+/** Every view id a stored pref may hold. Only the shown ones (core/shownViews) are ever used. */
 export const VIEW_MODES: readonly ViewMode[] = ['canvas', 'table', 'storyboard']
 export const EDGE_MODES: readonly EdgeMode[] = ['hidden', 'selected', 'all']
 export const INTERACTION_MODES: readonly InteractionMode[] = ['hand', 'select']
@@ -96,6 +117,9 @@ export interface UIState {
   edgeMode: EdgeMode
   interaction: InteractionMode
   showMinimap: boolean
+  /** Large-canvas override is session-only and never writes the user's minimap preference. */
+  minimapAutoHiddenFor: string | null
+  minimapShownFor: string[]
   queueOpen: boolean
   leftOpen: boolean
   rightOpen: boolean
@@ -106,14 +130,9 @@ export interface UIState {
   selectedEdgeIds: string[]
   /** Asset ids selected in the left library (independent of canvas). */
   librarySelection: string[]
-  hoveredId: string | null
   /** Asset id being dragged from the library (HTML5 DnD), used to highlight drop targets. */
   draggingAssetIds: string[] | null
 
-  /** Live positions while a node is being dragged. Committed to the project store on drag end. */
-  dragPos: Record<string, XY>
-  /** Node sizes measured by React Flow (kept so derived nodes stay measured). */
-  measured: Record<string, { width: number; height: number }>
 
   dialog: DialogState
   toasts: Toast[]
@@ -139,15 +158,11 @@ export interface UIState {
   clearSelection: () => void
   setLibrarySelection: (ids: string[]) => void
   toggleLibrary: (id: string, additive: boolean) => void
-  setHovered: (id: string | null) => void
   setDraggingAssets: (ids: string[] | null) => void
   /** Take ids being dragged (HTML5 DnD from the library / take strips), to highlight drop targets. */
   draggingTakeIds: string[] | null
   setDraggingTakes: (ids: string[] | null) => void
 
-  setDragPos: (pos: Record<string, XY>) => void
-  clearDragPos: (ids?: string[]) => void
-  setMeasured: (id: string, size: { width: number; height: number }) => void
 
   openDialog: (d: DialogState) => void
   closeDialog: () => void
@@ -160,10 +175,13 @@ export interface UIState {
 let toastSeq = 1
 
 export const useUI = create<UIState>()((set, get) => ({
-  view: pref('view', 'canvas', oneOf(VIEW_MODES)),
+  // A hidden view saved by an older version (Bảng cảnh / Storyboard) opens the canvas; the stored value is left alone.
+  view: pref('view', 'canvas', isShownView),
   edgeMode: pref('edgeMode', 'selected', oneOf(EDGE_MODES)),
   interaction: pref('interaction', 'hand', oneOf(INTERACTION_MODES)),
   showMinimap: pref('minimap', true, isBool),
+  minimapAutoHiddenFor: null,
+  minimapShownFor: [],
   takeDisplay: pref('takeDisplay', 'all', oneOf(TAKE_DISPLAYS)),
   toastTime: pref('toastTime', 'normal', oneOf(TOAST_TIMES)),
   queueOpen: false,
@@ -173,15 +191,14 @@ export const useUI = create<UIState>()((set, get) => ({
   selectedIds: [],
   selectedEdgeIds: [],
   librarySelection: [],
-  hoveredId: null,
   draggingAssetIds: null,
   draggingTakeIds: null,
-  dragPos: {},
-  measured: {},
   dialog: { kind: 'none' },
   toasts: [],
 
   setView: (view) => {
+    // Hidden views (core/shownViews) are never shown: there would be no way back to the canvas.
+    if (!isShownView(view)) return
     savePref('view', view)
     set({ view })
   },
@@ -204,11 +221,18 @@ export const useUI = create<UIState>()((set, get) => ({
     savePref('takeDisplay', takeDisplay)
     set({ takeDisplay })
   },
-  toggleMinimap: () => get().setMinimap(!get().showMinimap),
+  toggleMinimap: () => {
+    const s = get()
+    const id = s.minimapAutoHiddenFor
+    if (id && s.showMinimap && !s.minimapShownFor.includes(id)) {
+      set({ minimapShownFor: [...s.minimapShownFor, id] })
+    } else get().setMinimap(!s.showMinimap)
+  },
   setMinimap: (showMinimap) => {
     if (typeof showMinimap !== 'boolean') return
     savePref('minimap', showMinimap)
-    set({ showMinimap })
+    const { minimapAutoHiddenFor: id, minimapShownFor } = get()
+    set({ showMinimap, minimapShownFor: id ? [...minimapShownFor.filter((p) => p !== id), ...(showMinimap ? [id] : [])] : minimapShownFor })
   },
   setToastTime: (toastTime) => {
     if (!TOAST_TIMES.includes(toastTime)) return
@@ -238,24 +262,9 @@ export const useUI = create<UIState>()((set, get) => ({
       if (!additive) return { librarySelection: s.librarySelection.length === 1 && s.librarySelection[0] === id ? [] : [id] }
       return { librarySelection: s.librarySelection.includes(id) ? s.librarySelection.filter((x) => x !== id) : [...s.librarySelection, id] }
     }),
-  setHovered: (hoveredId) => set((s) => (s.hoveredId === hoveredId ? s : { hoveredId })),
   setDraggingAssets: (draggingAssetIds) => set({ draggingAssetIds }),
   setDraggingTakes: (draggingTakeIds) => set({ draggingTakeIds }),
 
-  setDragPos: (pos) => set((s) => ({ dragPos: { ...s.dragPos, ...pos } })),
-  clearDragPos: (ids) =>
-    set((s) => {
-      if (!ids) return { dragPos: {} }
-      const next = { ...s.dragPos }
-      for (const id of ids) delete next[id]
-      return { dragPos: next }
-    }),
-  setMeasured: (id, size) =>
-    set((s) => {
-      const cur = s.measured[id]
-      if (cur && cur.width === size.width && cur.height === size.height) return s
-      return { measured: { ...s.measured, [id]: size } }
-    }),
 
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: { kind: 'none' } }),

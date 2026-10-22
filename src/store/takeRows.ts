@@ -1,10 +1,11 @@
 // Where the take (video) nodes are, for the layout of NEW nodes in the project store (project.setTakeLayoutSource).
 // Same rules as the canvas (components/canvas: layoutTakes + takeSlots): a scene's row holds its takes that are
-// shown under the "Video" display (all, or only the chosen one + takes used as @video) and auto-placed — plus the
-// ones only nudged on their slot (core/takes keepsSlot). Takes dragged away are separate boxes; hidden ones are nothing.
-import { chooseTake, keepsSlot, videoUsageOf } from '../core/takes'
+// shown under the "Video" display (all, or only the chosen one) and auto-placed — plus the ones only nudged on their
+// slot (core/takes keepsSlot). Takes dragged away are separate boxes; hidden ones (and takes of deleted scenes: no
+// scene uses a video as @video any more) are nothing.
+import { chooseTake, keepsSlot } from '../core/takes'
 import type { Scene, Take } from '../core/types'
-import { LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
+import { drawnSceneSize, LAYOUT, useProject, type Box, type TakeLayoutSource } from './project'
 import { useRuns } from './runs'
 import { useUI, type TakeDisplay } from './ui'
 
@@ -27,19 +28,17 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
     if (list) list.push(t)
     else byScene.set(t.sceneId, [t])
   }
-  const used = videoUsageOf(scenes)
   const rows = new Map<string, { h: number; w: number }>()
   const placed: Box[] = []
   const offRow = new Set<string>()
-  const alive = new Set<string>()
   for (const s of scenes) {
-    alive.add(s.id)
     const list = byScene.get(s.id)
     if (!list) continue
     list.sort((a, b) => a.number - b.number)
     const chosen = mode === 'chosen' ? chooseTake(list) : undefined
-    const shown = mode === 'chosen' ? list.filter((t) => t === chosen || used.has(t.id)) : list
-    const cardW = s.size?.w ?? LAYOUT.sceneW
+    const shown = mode === 'chosen' ? list.filter((t) => t === chosen) : list
+    // The width the canvas draws the node at: a stored size from before 0.6.0 (below today's minimum) reads as the default.
+    const cardW = drawnSceneSize(s.size)?.w ?? LAYOUT.sceneW
     let acc = 0
     let h = 0
     for (const t of shown) {
@@ -55,8 +54,6 @@ export function computeTakeRows(takes: readonly Take[], scenes: Scene[], mode: T
     }
     if (acc > 0) rows.set(s.id, { h, w: LAYOUT.takeOffsetX + acc - LAYOUT.takeGapX })
   }
-  // Takes of deleted scenes stay on the canvas while a scene uses them as @video: in the way when placed by hand.
-  for (const t of takes) if (!alive.has(t.sceneId) && used.has(t.id) && t.position) placed.push({ x: t.position.x, y: t.position.y, ...sizeOf(t) })
   return { rows, placed, offRow }
 }
 

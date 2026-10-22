@@ -3,13 +3,24 @@
 // GROUPS below: the same label / hint feeds the row and the search (settingsSearch.ts). Each row component
 // subscribes to its own pref and applies at once; the stores persist and validate (see lib/settings.ts for the list,
 // the reset to defaults and the export / import of a settings file). Rows: SettingsBasic.tsx / SettingsAdvanced.tsx.
+// Deep link: `{ kind: 'settings', section: <group id> }` (actions.openSettings(section)) opens on that group's level and
+// scrolls the group into view (its <Section> carries data-set-anchor, settingsUi.tsx).
+import { platformText } from '../../lib/platformText'
 import { Search, X } from 'lucide-react'
+import { KEY_ACTIONS, type ActionId } from '../../core/keymap'
+import { isImeKey } from '../../lib/keyEvents'
+import { matchesAction, useKeymap, useShortcutTitle } from '../../lib/keymapPrefs'
+import { KeysIntro, SHORTCUT_ROWS, useKeyCaptureHost } from './SettingsShortcuts'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
-import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE } from '../../lib/aboutModel'
+import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/folderTrash'
+import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
+import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
+import { useDevAllowed } from '../../providers'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
 import { GatewaySection } from './GatewaySection'
+import { KEEP_LOGIN_KEYWORDS } from './keepLoginModel'
 import { Segmented } from './Segmented'
 import {
   BackupSetting,
@@ -27,12 +38,17 @@ import {
   AskWhereSetting,
   AutoDownloadSetting,
   AutoRenumberSetting,
+  BackgroundSetting,
+  BigProjectSetting,
+  WheelSetting,
   ClickToCutSetting,
   DataBlock,
   DownloadFolderSetting,
   EdgeModeSetting,
+  FolderUnlinkTrashSetting,
   InteractionSetting,
   MinimapSetting,
+  NodeEditorSetting,
   RateSetting,
   SoundSetting,
   TakeDisplaySetting,
@@ -43,8 +59,8 @@ import {
   VolumeSetting,
   WithPromptSetting,
 } from './SettingsBasic'
-import { matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
-import { Section, SettingsCtx, type RowProps } from './settingsUi'
+import { deepLinkStep, matchSettings, resultCount, searchWords, SETTINGS_LEVEL_LABEL, SETTINGS_LEVELS, visibleGroups, type GroupMatch, type SearchGroup, type SearchRow, type SettingsLevel } from './settingsSearch'
+import { Section, SectionAnchorCtx, SettingsCtx, type RowProps } from './settingsUi'
 
 interface Row extends SearchRow {
   C: ComponentType<RowProps>
@@ -68,7 +84,10 @@ const GROUPS: Group[] = [
     col: 0,
     title: 'Giao diện',
     desc: 'Chế độ sáng hoặc tối cho toàn bộ ứng dụng.',
-    rows: [{ id: 'theme', label: 'Chế độ giao diện', hint: 'Lựa chọn được nhớ trên máy này.', keywords: 'sáng tối hệ thống dark light theme màu nền', C: ThemeSetting }],
+    rows: [
+      { id: 'theme', label: 'Chế độ giao diện', hint: 'Lựa chọn được nhớ trên máy này.', keywords: 'sáng tối hệ thống dark light theme', C: ThemeSetting },
+      { id: 'background', label: 'Màu nền', hint: 'Chỉ áp dụng cho giao diện tối. Giao diện sáng giữ nguyên; lựa chọn được nhớ trên máy này.', keywords: 'than đen sâu xám xanh màu nền background', C: BackgroundSetting },
+    ],
   },
   {
     id: 'downloads',
@@ -91,6 +110,7 @@ const GROUPS: Group[] = [
         keywords: 'txt prompt văn bản kèm theo file phụ',
         C: WithPromptSetting,
       },
+      { id: 'folderUnlinkTrash', ...FOLDER_UNLINK_TRASH_ROW, C: FolderUnlinkTrashSetting },
       {
         id: 'autoDownload',
         label: 'Tự tải khi video xong',
@@ -112,13 +132,13 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 0,
     title: 'Prompt',
-    desc: 'Prompt được gửi đúng như bạn viết. Ảnh và video tham chiếu được gọi bằng số: @image_1, @video_1…',
+    desc: 'Prompt được gửi đúng như bạn viết. Ảnh tham chiếu được gọi bằng số: @image_1, @image_2…',
     badge: <span className="badge" title="Lưu trong dự án đang mở, không phải cài đặt của máy">dự án này</span>,
     rows: [
       {
         id: 'autoRenumber',
-        label: 'Tự đánh lại số @image/@video khi đổi tham chiếu',
-        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh/video (hoàn tác được). Tắt nếu muốn tự quản lý số.',
+        label: 'Tự đánh lại số @image khi đổi tham chiếu',
+        hint: 'Khi bỏ nối, đổi thứ tự hoặc thêm/bớt ảnh của nhân vật, các token trong prompt được sửa để vẫn trỏ đúng ảnh (hoàn tác được). Ảnh bị bỏ luôn để lại chữ đỏ @image_?N(tên) chặn Chạy — bật hay tắt đều không mất chữ. Tắt nếu muốn tự quản lý số.',
         keywords: 'token image video đánh số renumber tham chiếu',
         C: AutoRenumberSetting,
       },
@@ -129,7 +149,7 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 0,
     title: 'Cập nhật',
-    desc: 'Bản cài (Setup) tự tìm và tải bản mới, rồi cài khi bạn khởi động lại hoặc tắt app. Dự án và cài đặt giữ nguyên.',
+    desc: 'Bản cài Windows (Setup) tự tải và cài bản mới; bản Portable và bản cho Mac chỉ báo có bản mới. Dự án và cài đặt giữ nguyên.',
     keywords: 'update cập nhật nâng cấp phiên bản version bản mới tự động tải về khởi động lại github',
     Intro: UpdateStatusIntro,
     rows: [
@@ -143,13 +163,22 @@ const GROUPS: Group[] = [
       { id: 'updateCheck', label: 'Kiểm tra cập nhật', hint: 'SanoVids tự kiểm tra khi mở và 4 giờ một lần.', keywords: 'check kiểm tra ngay', C: UpdateCheckSetting },
     ],
   },
-  { id: 'app', level: 'basic', col: 0, title: 'Ứng dụng', desc: 'Bản app desktop cho Windows, hoặc cài thành app trên trình duyệt.', keywords: 'cài app desktop exe windows pwa', Block: AppBlock },
+  {
+    id: 'app',
+    level: 'basic',
+    col: 0,
+    title: 'Ứng dụng',
+    desc: 'Bản app desktop cho Windows và macOS, hoặc cài thành app trên trình duyệt.',
+    // Also the Portable / temp-copy reminder (no Desktop / Start icon, no auto-update): lib/aboutModel placementNote.
+    keywords: `cài app desktop exe windows pwa mac macos dmg applications finder thử nghiệm ${PLACEMENT_KEYWORDS}`,
+    Block: AppBlock,
+  },
   {
     id: 'playback',
     level: 'basic',
     col: 1,
     title: 'Âm thanh video',
-    desc: 'Cho trình phát trên canvas, cửa sổ xem take và “Phát liền” ở Storyboard. Nhớ trên máy này.',
+    desc: 'Cho trình phát trên canvas, cửa sổ xem take và “Phát liền”. Nhớ trên máy này.',
     rows: [
       {
         id: 'sound',
@@ -167,16 +196,17 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Dây nối & canvas',
-    desc: 'Cách dây nối và video hiện trên canvas.',
+    desc: 'Cách dây nối, thẻ cảnh và video hiện trên canvas.',
     rows: [
+      { id: 'nodeEditor', ...NODE_EDITOR_ROW, C: NodeEditorSetting },
       {
         id: 'clickToCut',
         label: 'Bấm vào dây để cắt',
-        hint: 'Một cú bấm vào dây tham chiếu, khung hình, @video hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. Ctrl/Shift + bấm để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt.',
+        hint: `Một cú bấm vào dây tham chiếu, khung hình hoặc dây lưu là bỏ nối ngay (có Hoàn tác) — không cần nhắm nút ×. ${platformText.modShiftClick} để chọn dây; dây cảnh → video không bao giờ bị cắt. Tắt: bấm để chọn, rồi Delete hoặc nút × để cắt. ${CLICK_TO_CUT_TRASH_NOTE}`,
         keywords: 'hủy nối huỷ nối bỏ nối cắt dây x kẹt wire',
         C: ClickToCutSetting,
       },
-      { id: 'edgeMode', label: 'Hiển thị dây nối', hint: 'Cũng đổi được trên thanh công cụ canvas (phím E).', keywords: 'dây ẩn hiện tất cả đang chọn edge', C: EdgeModeSetting },
+      { id: 'edgeMode', label: 'Hiển thị dây nối', hint: 'Cũng đổi được trên thanh công cụ canvas (Hiển thị) hoặc bằng phím tắt “Đổi cách hiện dây”.', keywords: 'dây ẩn hiện tất cả đang chọn edge', C: EdgeModeSetting },
       {
         id: 'takeDisplay',
         label: 'Video trên canvas',
@@ -191,7 +221,9 @@ const GROUPS: Group[] = [
         keywords: 'chuột tay chọn vùng pan kéo',
         C: InteractionSetting,
       },
+      { id: 'wheel', ...WHEEL_ROW, C: WheelSetting },
       { id: 'minimap', label: 'Bản đồ thu nhỏ', hint: 'Khung nhỏ ở góc canvas cho thấy toàn bộ dự án.', keywords: 'minimap bản đồ góc', C: MinimapSetting },
+      { id: 'bigProject', ...BIG_PROJECT_ROW, C: BigProjectSetting },
     ],
   },
   {
@@ -199,7 +231,7 @@ const GROUPS: Group[] = [
     level: 'basic',
     col: 1,
     title: 'Dữ liệu dự án',
-    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác; nhập file .sanovids.json; tạo lại dự án mẫu.',
+    desc: 'Xuất file để sao lưu hoặc chuyển dự án sang máy khác (không kèm video đã tạo); nhập file .sanovids.json; tạo lại dự án mẫu.',
     keywords: 'xuất nhập dự án sao lưu json mẫu demo backup',
     Block: DataBlock,
   },
@@ -214,7 +246,7 @@ const GROUPS: Group[] = [
       {
         id: 'animations',
         label: 'Hiệu ứng chuyển động',
-        hint: 'Đầy đủ: dây cắt rồi thu về, dây mới vẽ ra, thẻ Storyboard lướt. Giảm bớt: chỉ mờ dần, không gì trượt. Tắt: không hiệu ứng nào trong toàn bộ app.',
+        hint: 'Đầy đủ: dây cắt rồi thu về, dây mới vẽ ra. Giảm bớt: chỉ mờ dần, không gì trượt. Tắt: không hiệu ứng nào trong toàn bộ app.',
         keywords: 'hoạt ảnh animation giảm motion mượt',
         C: MotionSetting,
       },
@@ -275,7 +307,7 @@ const GROUPS: Group[] = [
       {
         id: 'resetAll',
         label: 'Khôi phục cài đặt mặc định',
-        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác).',
+        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác). Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.',
         keywords: 'reset mặc định đặt lại',
         C: ResetAllSetting,
       },
@@ -287,9 +319,15 @@ const GROUPS: Group[] = [
     col: 1,
     title: 'Cổng canvasapp.io.vn',
     desc: 'Nhà cung cấp video cho take mới, đăng nhập canvasapp và credit thật.',
-    keywords: 'canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền',
+    keywords: `canvasapp cổng nhà cung cấp provider đăng nhập đăng xuất credit thật nạp tiền ${KEEP_LOGIN_KEYWORDS}`,
     Block: GatewaySection,
   },
+  ...(['keys', 'keysScene', 'keysTake', 'keysCanvas'] as const).map((id): Group => ({
+    id, level: 'advanced', col: 1,
+    title: { keys: 'Phím tắt', keysScene: 'Phím tắt · Cảnh & chọn', keysTake: 'Phím tắt · Video', keysCanvas: 'Phím tắt · Canvas' }[id],
+    ...(id === 'keys' ? { Intro: KeysIntro } : {}),
+    rows: SHORTCUT_ROWS.filter((row) => KEY_ACTIONS.find((a) => a.id === row.id)?.group === id),
+  })),
   {
     id: 'dev',
     level: 'basic',
@@ -323,23 +361,35 @@ function saveLevel(level: SettingsLevel) {
 
 const LEVEL_HINT: Record<SettingsLevel, string> = { basic: 'Dùng hằng ngày', advanced: 'Tên file, hiệu ứng, cổng…' }
 
-export function SettingsDialog() {
+/** `section`: id of a group to show (deep link, see the top of this file); unknown ids are ignored. */
+export function SettingsDialog({ section }: { section?: string } = {}) {
+  useKeyCaptureHost()
   const closeDialog = useUI((s) => s.closeDialog)
-  const [level, setLevel] = useState<SettingsLevel>(readLevel)
+  // Development mode locked (release builds): no "Chế độ Phát triển" group, "Nhà cung cấp video" in "Cơ bản".
+  const devOpen = useDevAllowed()
+  const keyLabels = useKeymap((s) => s.resolved.allLabels)
+  const groups = useMemo(() => visibleGroups(GROUPS, devOpen).map((g) => g.id.startsWith('keys')
+    ? { ...g, rows: g.rows?.map((r) => ({ ...r, keywords: `${r.keywords} ${keyLabels[r.id as ActionId]}` })) } : g), [devOpen, keyLabels])
+  const target = section ? groups.find((g) => g.id === section) : undefined
+  const [level, setLevel] = useState<SettingsLevel>(() => target?.level ?? readLevel())
   const [query, setQuery] = useState('')
   const [epoch, setEpoch] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
+  const searchTitle = useShortcutTitle('Tìm cài đặt', 'settings.search')
+  const resultsRef = useRef<HTMLDivElement>(null)
+  /** Group to bring into view once its level is shown (set by a deep link). */
+  const pendingAnchor = useRef<Group | undefined>(target)
   const resultsId = useId()
   const resync = useCallback(() => setEpoch((e) => e + 1), [])
   const ctx = useMemo(() => ({ close: closeDialog, resync, epoch }), [closeDialog, resync, epoch])
-  const matches = useMemo(() => matchSettings(GROUPS, level, query), [level, query])
+  const matches = useMemo(() => matchSettings(groups, level, query), [groups, level, query])
   const searching = searchWords(query).length > 0
   const count = searching ? resultCount(matches) : 0
 
   // Ctrl+F / ⌘F: the settings search (instead of the page's find bar) while the dialog is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+      if (!e.defaultPrevented && !isImeKey(e) && matchesAction(e, 'settings.search')) {
         e.preventDefault()
         searchRef.current?.focus()
         searchRef.current?.select()
@@ -348,6 +398,38 @@ export function SettingsDialog() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // Deep link while the dialog is already open (another "Cài đặt → …" button): show that group's level, no search.
+  // The level is not saved: the next plain opening uses the level the user chose. Only a NEW request moves the dialog
+  // (deepLinkStep): a lock flip that only moves 'gateway' to the other level leaves the user where they are.
+  const followedSection = useRef<string | undefined | null>(null)
+  useEffect(() => {
+    const next = deepLinkStep(followedSection.current, section, groups)
+    followedSection.current = section
+    if (!next) return
+    pendingAnchor.current = next
+    setLevel(next.level)
+    setQuery('')
+  }, [section, groups])
+
+  // Bring the requested group into view once its level is rendered, and move the focus there (screen readers land on
+  // it; Tab continues inside it). A group whose section has no anchor (the gateway block) only gets its level shown.
+  useEffect(() => {
+    const group = pendingAnchor.current
+    if (!group || group.level !== level || searchWords(query).length) return
+    pendingAnchor.current = undefined
+    const root = resultsRef.current
+    const el = [...(root?.querySelectorAll<HTMLElement>('[data-set-anchor]') ?? [])].find((x) => x.dataset.setAnchor === group.id)
+    if (!el) {
+      // The section that had the focus may just have left with the old level: keep the focus inside the dialog.
+      const dialog = root?.closest<HTMLElement>('[role="dialog"]')
+      if (dialog && !dialog.contains(document.activeElement)) dialog.focus({ preventScroll: true })
+      return
+    }
+    el.scrollIntoView({ block: 'start' })
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
+    el.focus({ preventScroll: true })
+  })
 
   const chooseLevel = (next: SettingsLevel) => {
     setLevel(next)
@@ -377,7 +459,7 @@ export function SettingsDialog() {
                 options={SETTINGS_LEVELS.map((l) => ({ id: l, label: SETTINGS_LEVEL_LABEL[l], hint: LEVEL_HINT[l] }))}
               />
             </div>
-            <label className="dg-search dg-set-search" title="Tìm cài đặt (Ctrl+F)">
+            <label className="dg-search dg-set-search" title={searchTitle}>
               <Search size={14} aria-hidden />
               <input
                 ref={searchRef}
@@ -409,7 +491,7 @@ export function SettingsDialog() {
           <div className="dg-set-status" role="status">
             {searching && count > 0 ? `${count} cài đặt khớp “${query.trim()}” — tìm trong cả Cơ bản và Nâng cao.` : ''}
           </div>
-          <div id={resultsId}>
+          <div id={resultsId} ref={resultsRef}>
             {!searching ? (
               <Columns matches={matches} />
             ) : matches.length ? (
@@ -463,10 +545,16 @@ function Columns({ matches }: { matches: GroupMatch<Group>[] }) {
 }
 
 function GroupView({ match: { group, rows } }: { match: GroupMatch<Group> }) {
-  if (group.Block) return <group.Block />
+  // A block renders its own <Section>: the context gives it this group's anchor (deep link).
+  if (group.Block)
+    return (
+      <SectionAnchorCtx.Provider value={group.id}>
+        <group.Block />
+      </SectionAnchorCtx.Provider>
+    )
   const Intro = group.Intro
   return (
-    <Section title={group.title} desc={group.desc} badge={group.badge}>
+    <Section title={group.title} desc={group.desc} badge={group.badge} anchor={group.id}>
       {Intro && <Intro />}
       {rows.map((r) => (
         <r.C key={r.id} label={r.label} hint={r.hint} />

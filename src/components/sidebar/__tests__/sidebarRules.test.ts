@@ -31,9 +31,9 @@ const asset = (id: string, imageIds: string[]): Asset => ({
 })
 
 describe('library card keys', () => {
-  it('never lets Delete / Backspace reach the global shortcut (it deletes the canvas selection)', () => {
-    expect(libraryCardKey('Delete')).toBe('block')
-    expect(libraryCardKey('Backspace')).toBe('block')
+  it('Delete / Backspace are not the card’s: they go up to the shortcuts’ library scope (libraryActions)', () => {
+    expect(libraryCardKey('Delete')).toBeNull()
+    expect(libraryCardKey('Backspace')).toBeNull()
   })
   it('keeps Enter = open, Space = toggle, other keys untouched', () => {
     expect(libraryCardKey('Enter')).toBe('open')
@@ -104,16 +104,16 @@ describe('renumbering note under the asset images', () => {
 })
 
 describe('media sent by the selected scene', () => {
-  it('Seedance and H3 image→video send images and videos', () => {
-    expect(sceneMediaFlags(settings())).toEqual({ images: true, videos: true, model: 'Seedance 2.5' })
-    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 'i2v', resolution: '768p' }))).toMatchObject({ images: true, videos: true })
+  it('Seedance and H3 image→video send images (no video flag any more: reference videos were retired)', () => {
+    expect(sceneMediaFlags(settings())).toEqual({ images: true, model: 'Seedance 2.5' })
+    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 'i2v', resolution: '768p' }))).toMatchObject({ images: true })
   })
   it('H3 text→video / transform send no reference media', () => {
-    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 't2v', resolution: '768p' }))).toEqual({ images: false, videos: false, model: 'MiniMax-H3' })
-    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 'transform', resolution: '768p' }))).toMatchObject({ images: false, videos: false })
+    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 't2v', resolution: '768p' }))).toEqual({ images: false, model: 'MiniMax-H3' })
+    expect(sceneMediaFlags(settings({ model: 'minimax_h3', mode: 'transform', resolution: '768p' }))).toMatchObject({ images: false })
   })
   it('no scene → nothing to warn about', () => {
-    expect(sceneMediaFlags(undefined)).toMatchObject({ images: true, videos: true })
+    expect(sceneMediaFlags(undefined)).toEqual({ images: true, model: '' })
   })
 })
 
@@ -130,12 +130,12 @@ describe('packColumns (library masonry)', () => {
   })
 })
 
-describe('@image / @video tokens left pointing elsewhere (renumbering off)', () => {
+describe('@image tokens left pointing elsewhere (renumbering off)', () => {
   const assets = [asset('elara', ['e1', 'e2']), asset('kai', ['k1'])]
   const proj = (scenes: Scene[], list: Asset[] = assets): Project => ({
     id: 'p', name: 'P', schemaVersion: 2, createdAt: 0, updatedAt: 0, presets: [], settings: { autoRenumber: false }, assets: list, scenes,
   })
-  const withRefs = (s: Scene, refs: string[], videoRefs = s.videoRefs): Scene => ({ ...s, refs, videoRefs })
+  const withRefs = (s: Scene, refs: string[]): Scene => ({ ...s, refs })
 
   it('a reorder or removal of refs with the prompt left as written', () => {
     const s1 = scene('s1', '@image_1 hugs @image_3', ['elara', 'kai'])
@@ -146,19 +146,19 @@ describe('@image / @video tokens left pointing elsewhere (renumbering off)', () 
     const s2 = scene('s2', '@image_1 waves', ['elara', 'kai'])
     expect(scenesWithStaleTokens(proj([s2]), proj([withRefs(s2, ['elara'])]))).toEqual([])
   })
-  it('asset image changes, video refs; renumbered prompts and untouched scenes are not listed', () => {
+  it('asset image changes; retired @video text never counts; renumbered prompts and untouched scenes are not listed', () => {
     const s1 = scene('s1', '@image_2 then @video_1', ['elara'])
     const swapped = [asset('elara', ['e2', 'e1']), assets[1]]
     expect(scenesWithStaleTokens(proj([s1]), proj([s1], swapped))).toEqual(['s1'])
-    const v = { ...s1, prompt: '@video_1 then @video_2', videoRefs: ['t1', 't2'] }
-    expect(scenesWithStaleTokens(proj([v]), proj([withRefs(v, v.refs, ['t2'])]))).toEqual(['s1'])
-    expect(scenesWithStaleTokens(proj([v]), proj([{ ...withRefs(v, v.refs, ['t2']), prompt: 'video S01·T1 then @video_1' }]))).toEqual([])
+    const v = { ...s1, prompt: '@video_1 then @video_2', legacyVideoRefs: ['t1', 't2'] }
+    expect(scenesWithStaleTokens(proj([v]), proj([{ ...v, legacyVideoRefs: ['t2'] }]))).toEqual([])
+    expect(scenesWithStaleTokens(proj([v]), proj([withRefs(v, ['kai'])]))).toEqual([])
     expect(scenesWithStaleTokens(proj([v]), proj([v]))).toEqual([])
   })
   it('names the scenes in order, at most four', () => {
     const scenes = ['a', 'b', 'c', 'd', 'e'].map((id, i) => ({ ...scene(id, '', []), order: 5 - i }))
     expect(staleTokenNote(proj(scenes), ['a', 'e'])).toBe(' · tự đánh lại số đang tắt — hãy sửa số @image trong S01, S05')
-    expect(staleTokenNote(proj(scenes), ['a', 'b', 'c', 'd', 'e'], '@video')).toContain('@video trong S01, S02, S03, S04… (5 cảnh)')
+    expect(staleTokenNote(proj(scenes), ['a', 'b', 'c', 'd', 'e'])).toContain('@image trong S01, S02, S03, S04… (5 cảnh)')
   })
 })
 

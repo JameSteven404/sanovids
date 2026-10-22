@@ -4,7 +4,8 @@ import { openDevPanel, runNow } from '../../actions'
 import { compileScene, sceneCode } from '../../core/compile'
 import { MODELS, settingsLabel } from '../../core/models'
 import type { Asset, Scene } from '../../core/types'
-import { PROVIDER_LABEL } from '../../providers'
+import { devAllowed, PROVIDER_LABEL, providerOf } from '../../providers'
+import { limitsSite } from '../../providers/limits'
 import {
   CREDIT_HINT,
   creditUnitLabel,
@@ -17,13 +18,13 @@ import {
   type CreditInfo,
 } from '../../store/credits'
 import { useProject } from '../../store/project'
-import { useRuns, type SceneRunCheck } from '../../store/runs'
+import { checkTakesKey, useRuns, type SceneRunCheck } from '../../store/runs'
 import { useUI } from '../../store/ui'
 import { AssetAvatar } from '../common/Media'
 import { Modal } from '../common/Modal'
 import { loginToCanvasapp } from '../topbar/CreditPill'
 import { runCostPreview, type RunCostPreview } from './creditText'
-import { ProviderBadge, useActiveProvider } from './shared'
+import { ProviderBadge, useActiveLimits } from './shared'
 import './runs.css'
 
 interface Row {
@@ -31,9 +32,6 @@ interface Row {
   check: SceneRunCheck
   assets: Asset[]
   images: number
-  /** Reference videos (@video_N) and how many of them are finished takes. */
-  videos: number
-  videosReady: number
 }
 
 interface TakeStat {
@@ -61,7 +59,9 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   const close = useUI((s) => s.closeDialog)
   const project = useProject((s) => s.project)
   const takes = useRuns((s) => s.takes)
-  const provider = useActiveProvider()
+  // What the gateway runs now (/api/video-profiles): read when the dialog opens (TTL-gated — nothing is sent while the
+  // last read is fresh); the checks below (store/runs check()) skip what it surely refuses and warn on a guess.
+  const { provider, limits, info: limitsInfo } = useActiveLimits()
   const info = useCreditInfo()
   const kind = info.kind
   const demo = kind === 'demo'
@@ -73,21 +73,14 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   useEffect(() => {
     if (!demo) void refreshRealCredits()
   }, [demo])
-  // Status of every reference video of these scenes, as one string: re-check only when one of them changes.
-  const videoKey = useRuns((s) => {
-    const ids = new Set(sceneIds)
-    const refs = project.scenes.filter((sc) => ids.has(sc.id) && sc.videoRefs.length)
-    if (!refs.length) return ''
-    const status = new Map(s.takes.map((t) => [t.id, t.status]))
-    return refs.map((sc) => sc.videoRefs.map((t) => status.get(t) ?? '-').join(',')).join('|')
-  })
   const [onlyNew, setOnlyNew] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
+  // check() also reads each scene's newest take ("maybe billed" / paid-cancelled warnings): re-check when one changes.
+  const takesKey = useMemo(() => checkTakesKey(takes, sceneIds), [takes, sceneIds])
 
   const rows = useMemo<Row[]>(() => {
     const checks = new Map(useRuns.getState().check(sceneIds).map((c) => [c.sceneId, c]))
     const assetMap = new Map(project.assets.map((a) => [a.id, a]))
-    const status = new Map(useRuns.getState().takes.map((t) => [t.id, t.status]))
     return project.scenes
       .filter((s) => checks.has(s.id))
       .sort((a, b) => a.order - b.order)
@@ -98,13 +91,21 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           check: checks.get(scene.id)!,
           assets: scene.refs.map((id) => assetMap.get(id)).filter((a): a is Asset => !!a),
           images: compiled.images.length,
-          videos: scene.videoRefs.length,
-          videosReady: scene.videoRefs.filter((t) => status.get(t) === 'completed').length,
         }
       })
-    // videoKey: re-run the check when a reference video finishes (or is deleted). provider: the checks depend on
-    // what the provider accepts (canvasapp has no @video yet).
-  }, [project, sceneIds, videoKey, provider])
+    // provider / limits: the checks depend on what the provider accepts (/api/video-profiles) — `limits` keeps its
+    // identity while what it refuses is unchanged, so a re-read with the same answer re-checks nothing.
+  }, [project, sceneIds, provider, limits, takesKey])
+  // A read in flight may still turn a "sẽ chạy" into "bị bỏ qua" (or back): say so instead of a silent flip.
+  const limitsPending = limitsInfo.reading && !(limits.source === 'server' && limits.firm)
+  const site = limitsSite(provider)
+
+  // Development mode locked: a scene that had simulated (DEV) takes now runs for real — say so next to the cost.
+  const hadDevTakes = useMemo(() => {
+    if (kind !== 'canvasapp' || devAllowed()) return false
+    const ids = new Set(sceneIds)
+    return takes.some((t) => ids.has(t.sceneId) && providerOf(t) === 'dev')
+  }, [kind, sceneIds, takes])
 
   const stats = useMemo(() => {
     const m = new Map<string, TakeStat>()
@@ -235,6 +236,15 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
               <TriangleAlert size={11} /> {withWarnings} có cảnh báo
             </span>
           )}
+          {limitsPending ? (
+            <span className="badge" title={`Đọc model / chế độ ${site.short} đang cho tạo — danh sách bên dưới tự cập nhật`}>
+              <LoaderCircle size={11} className="rq-spin" /> Đang đọc cấu hình model từ {site.short}…
+            </span>
+          ) : limits.source === 'fallback' ? (
+            <span className="badge warn" title={`Chưa đọc được cấu hình model từ ${site.full}: đang theo cấu hình mặc định như trang canvasapp (MiniMax-H3 tạm khoá): cảnh có cảnh báo có thể bị từ chối khi gửi (không tốn ${site.credit}). SanoVids đọc lại trước khi gửi (sau 1 phút nếu chính một lần gửi vừa đọc hỏng) hoặc khi mở lại hộp Chạy (sau 1 phút)`}>
+              <TriangleAlert size={11} /> Chưa đọc được cấu hình model
+            </span>
+          ) : null}
         </div>
         <span className="rq-spacer" />
         <label className="checkbox">
@@ -255,7 +265,6 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
               <col className="rq-w-title" />
               <col className="rq-w-settings" />
               <col className="rq-w-refs" />
-              <col className="rq-w-videos" />
               <col className="rq-w-warn" />
               <col className="rq-w-credit" />
               <col className="rq-w-status" />
@@ -269,7 +278,6 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
                 <th>Tên</th>
                 <th>Cấu hình</th>
                 <th title="Ảnh tham chiếu (@image_N)">Ảnh</th>
-                <th title="Video tham chiếu (@video_N)">Video</th>
                 <th>Cảnh báo</th>
                 <th className="num" title={sim ? `${unit} (giả lập, không phải tiền thật)` : 'Credit canvasapp (ước tính, tiền thật)'}>
                   Credit
@@ -313,8 +321,9 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
         <div className="rq-confirm-note real">
           <TriangleAlert size={13} />
           <span>
-            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận (số dư DEV không liên quan). Huỷ
+            Gửi sang <b>canvasapp.io.vn</b> bằng tài khoản của bạn — credit thật, trừ trên canvasapp khi job được nhận{devAllowed() ? ' (số dư DEV không liên quan)' : ''}. Huỷ
             take trong SanoVids không dừng job đã gửi sang canvasapp.
+            {hadDevTakes && ' Take cũ của cảnh là take giả lập (DEV) — lần này chạy thật trên canvasapp.io.vn (credit thật).'}
           </span>
         </div>
       )}
@@ -323,7 +332,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
 }
 
 function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeStat | undefined; included: boolean; onToggle: () => void }) {
-  const { scene, check, assets, images, videos, videosReady } = row
+  const { scene, check, assets, images } = row
   const spec = MODELS[scene.settings.model]
   const warnings = check.warnings
   return (
@@ -358,19 +367,6 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
           <span className="faint">—</span>
         )}
       </td>
-      <td className="mono">
-        {videos ? (
-          <span
-            className={videosReady < videos ? 'rq-vcount pending' : 'rq-vcount'}
-            title={videosReady < videos ? `${videos - videosReady}/${videos} video tham chiếu chưa tạo xong` : `${videos} video tham chiếu (@video_1…)`}
-          >
-            {videos}
-            {videosReady < videos && <TriangleAlert size={11} />}
-          </span>
-        ) : (
-          <span className="faint">—</span>
-        )}
-      </td>
       <td className="rq-cell-warn">
         {warnings.length ? (
           <span className="rq-warn" title={warnings.join('\n')}>
@@ -385,7 +381,9 @@ function ConfirmRow({ row, stat, included, onToggle }: { row: Row; stat: TakeSta
       <td className="num mono">{formatCreditNumber(check.cost)}</td>
       <td className="rq-cell-status">
         {!check.ok ? (
-          <span className="rq-skip">Bỏ qua: {check.reason}</span>
+          <span className="rq-skip" title={`Bỏ qua: ${check.reason}`}>
+            Bỏ qua: {check.reason}
+          </span>
         ) : !included ? (
           <span className="faint">Không chạy</span>
         ) : (

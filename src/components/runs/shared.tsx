@@ -1,17 +1,100 @@
 // Small helpers shared by the runs area (queue drawer, take strip, take viewer, run dialog).
-import { Ban, Bug, CircleAlert, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type { JobStatus, Take, VideoSettings } from '../../core/types'
+import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, LoaderCircle, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { promptParts } from '../../core/compile'
+import { sceneRunBlock } from '../../core/runGate'
+import { sceneMapOf } from '../../core/sceneIndex'
+import type { JobStatus, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
-import { activeProviderId, PROVIDER_LABEL, providerOf, useProviderPrefs, type ProviderId } from '../../providers'
+import {
+  activeProviderId,
+  PROVIDER_LABEL,
+  providerLimits,
+  providerLimitsInfo,
+  providerOf,
+  refreshProviderLimits,
+  useProviderLimits,
+  useProviderPrefs,
+  watchProviderLimits,
+  type LimitsInfo,
+  type ProviderId,
+  type SettingsLimits,
+} from '../../providers'
+import { settingsRunBlock } from '../../providers/limits'
+import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
 // ---- providers (Phát triển (giả lập) | canvasapp.io.vn | Demo cũ) ----
 
-/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings change it. */
+/** Provider that NEW takes will use (see providers/index activeProviderId); re-renders when Settings or the lock change it. */
 export function useActiveProvider(): ProviderId {
-  useProviderPrefs((s) => s.provider)
+  useProviderPrefs((s) => s.active)
   return activeProviderId()
+}
+
+// ---- what the gateway runs right now (/api/video-profiles; providers/index useProviderLimits) ----
+
+/**
+ * What `provider` refuses now and how it was read; re-renders only when its revision moves (a read, logout, expiry).
+ * `limits` keeps its identity while what it refuses is unchanged — memo on it, not on `info`.
+ */
+export function useLimitsOf(provider: ProviderId): { limits: SettingsLimits; info: LimitsInfo } {
+  const rev = useProviderLimits((s) => s.rev[provider] ?? 0)
+  // rev: the accessors read the provider's own state, which the revision tracks
+  return useMemo(() => ({ limits: providerLimits(provider), info: providerLimitsInfo(provider) }), [provider, rev])
+}
+
+/**
+ * The limits of the provider NEW takes use, for a place where the user picks settings or runs (inspector settings,
+ * run dialog): reads them when mounted (TTL-gated — nothing is sent while the last read is fresh, or within a minute
+ * of a failed one) and keeps a firm read renewed while mounted (watchProviderLimits).
+ */
+export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimits; info: LimitsInfo } {
+  const provider = useActiveProvider()
+  const { limits, info } = useLimitsOf(provider)
+  useEffect(() => watchProviderLimits(provider), [provider])
+  // an older read (seen as a guess) is read again: a firm one is renewed by the watcher before it gets there
+  const stale = limits.source === 'server' && !limits.firm
+  useEffect(() => {
+    void refreshProviderLimits(provider)
+  }, [provider, stale])
+  return { provider, limits, info }
+}
+
+/**
+ * The gateway's sure refusal of these settings (providers/limits settingsRunBlock: a firm 'server' read), or null —
+ * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
+ */
+export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+  const provider = useActiveProvider()
+  return useProviderLimits((s) => {
+    void s.rev[provider]
+    return settings ? settingsRunBlock(providerLimits(provider), settings) : null
+  })
+}
+
+/**
+ * Why a scene's Run button is off — the engine's rule list (core/runRules through core/runGate sceneRunBlock = store/
+ * runs check()); null = it can run (or no scene). Pass the scene (a card that already holds it) or its id (the
+ * inspector: the answer is selected as a string, so typing in the scene's prompt re-renders the caller only when the
+ * answer changes). The compile is cached per scene object + assets array (core/runRules compiledOf), so a card per
+ * scene stays cheap with 100+ scenes; the gateway's sure refusal of the settings changing re-reads it.
+ */
+export function useSceneRunBlock(target: Scene | string | undefined): string | null {
+  const id = typeof target === 'string' ? target : undefined
+  const given = typeof target === 'string' ? undefined : target
+  // by id: the map shared by every selector of this scenes array (core/sceneIndex), never a scan per keystroke
+  const pick = (scenes: readonly Scene[]) => (id === undefined ? given : sceneMapOf(scenes).get(id))
+  const provider = useActiveProvider()
+  // re-renders (and so re-selects below) when what the gateway refuses was read again
+  useProviderLimits((s) => s.rev[provider] ?? 0)
+  return useProject((s) => {
+    const scene = pick(s.project.scenes)
+    if (!scene) return null
+    const assets = s.project.assets
+    const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings)
+    return sceneRunBlock(scene, assets, settingsBlock)
+  })
 }
 
 // Credit amounts: lib/credits formatCredits / formatVnd and ./creditText (which wallet paid a take).
@@ -24,8 +107,23 @@ const PROVIDER_TITLE: Record<ProviderId, string> = {
   canvasapp: 'canvasapp.io.vn — video thật, trả bằng credit canvasapp của tài khoản bạn',
 }
 
-/** Small chip naming the provider a take ran on (queue rows, take viewer). */
-export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider'>; provider?: ProviderId }) {
+/** Chip of a take made by a newer SanoVids build's provider (Take.foreignProvider) instead of "Demo cũ". */
+export const NEWER_BUILD_SHORT = 'Bản mới hơn'
+export const NEWER_BUILD_TITLE = 'Tạo bằng SanoVids bản mới hơn'
+
+/**
+ * Small chip naming the provider a take ran on (queue rows, take viewer). A take of a newer build's provider
+ * (migrate: provider 'mock' + foreignProvider) says "Bản mới hơn", not "Demo cũ" — pass the take for that.
+ */
+export function ProviderBadge({ take, provider }: { take?: Pick<Take, 'provider' | 'foreignProvider'>; provider?: ProviderId }) {
+  if (!provider && take?.foreignProvider) {
+    return (
+      <span className="rq-prov foreign" title={NEWER_BUILD_TITLE}>
+        <CircleArrowUp size={10} />
+        {NEWER_BUILD_SHORT}
+      </span>
+    )
+  }
   const id = provider ?? (take ? providerOf(take) : 'mock')
   return (
     <span
@@ -167,18 +265,25 @@ export function StatusBadge({ take, showProgress = true }: { take: Pick<Take, 's
   )
 }
 
-/** Prompt text with @image_N (teal) and @video_N (purple) tokens highlighted. */
+/**
+ * Prompt text with @image_N tokens highlighted (teal) and retired @video text marked (red, struck through: reference
+ * videos were retired — such a prompt does not run; core/compile promptParts = retiredVideoTokens).
+ */
 export function HighlightedPrompt({ text }: { text: string }) {
-  const parts = text.split(/(@(?:image|video)[ _]?\d+)\b/gi)
+  const parts = useMemo(() => promptParts(text), [text])
   return (
     <>
       {parts.map((p, i) =>
-        i % 2 === 1 ? (
-          <mark key={i} className={/^@video/i.test(p) ? 'rq-tok video' : 'rq-tok'}>
-            {p}
+        p.kind === 'text' ? (
+          p.text
+        ) : p.kind === 'retired' ? (
+          <mark key={i} className="rq-tok is-retired" title={`${p.text}: video tham chiếu không còn được hỗ trợ — prompt này không chạy được cho tới khi sửa`}>
+            {p.text}
           </mark>
         ) : (
-          p
+          <mark key={i} className="rq-tok">
+            {p.text}
+          </mark>
         ),
       )}
     </>

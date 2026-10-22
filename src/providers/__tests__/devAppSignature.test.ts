@@ -3,14 +3,16 @@
 // "Chưa kiểm tra được chữ ký" states of the simulated updater (providers/dev/updates failSignature).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { create } from 'zustand'
-import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, signatureView } from '../../lib/aboutModel'
+import { ABOUT_AUTHOR, ABOUT_OFFICIAL_THUMBPRINT, MAC_SIGNATURE_TITLE, signatureView as signatureViewOn, thumbprintRows } from '../../lib/aboutModel'
 import { parseAppSignature, type AppSignature } from '../../lib/appSignature'
 import { UPDATE_ERROR_TEXT } from '../../lib/updateModel'
 import {
   createDevSignatureBridge,
   DEV_OTHER_THUMBPRINT,
   DEV_SIGNATURE_DELAY_MS,
+  DEV_SIGNATURE_MAC_OPTION,
   DEV_SIGNATURE_OPTIONS,
+  DEV_SIGNATURE_PLATFORMS,
   DEV_SIGNATURE_PRESET_IDS,
   DEV_SIGNATURE_PRESETS,
   devSignature,
@@ -18,11 +20,14 @@ import {
   devSignaturePresetOf,
   simulateDevSignature,
   useDevSignature,
+  useDevSignaturePlatform,
   type DevSignaturePreset,
 } from '../dev/appSignature'
 import { createDevUpdatesBridge, DEV_UPDATES_DRAFT_DEFAULT, devUpdatesInitialState, type DevUpdatesStore } from '../dev/updates'
 
 const PIN = '7489ABFAC1A7CD23D5FFB0785CA7CAB414AE49ED'
+/** The About row of a preset, on the platform it simulates (Windows for every non-Mac answer). */
+const signatureView = (sig: AppSignature | null, id?: DevSignaturePreset) => signatureViewOn(sig, (id && DEV_SIGNATURE_PLATFORMS[id]) || 'win')
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -44,6 +49,7 @@ describe('presets', () => {
       impostor: { status: 'other-signer', packaged: true, signer: 'Nguyễn Giang Minh (Jame Steven)', thumbprint: 'FEDCBA9876543210FEDCBA9876543210FEDCBA98' },
       tampered: { status: 'tampered', packaged: true },
       unknown: { status: 'unknown', packaged: true },
+      'mac-adhoc': { status: 'unknown', packaged: true },
     })
     expect(DEV_SIGNATURE_PRESETS.signed.thumbprint).toBe(ABOUT_OFFICIAL_THUMBPRINT)
     expect(DEV_OTHER_THUMBPRINT).not.toBe(PIN)
@@ -51,17 +57,21 @@ describe('presets', () => {
   })
 
   it('every preset is a valid payload, maps back to itself and has an option', () => {
-    expect(DEV_SIGNATURE_OPTIONS.map((o) => o.id)).toEqual([...DEV_SIGNATURE_PRESET_IDS])
+    // the Windows answers are the dev panel's options; the Mac one has its own option (shown once the About block
+    // reads the simulated platform)
+    expect([...DEV_SIGNATURE_OPTIONS, DEV_SIGNATURE_MAC_OPTION].map((o) => o.id)).toEqual([...DEV_SIGNATURE_PRESET_IDS])
     expect(DEV_SIGNATURE_OPTIONS.map((o) => o.label)).toEqual(['Đã ký', 'Chưa ký – bản phát triển', 'Chưa ký – bản cài', 'Người ký khác', 'Giả tên tác giả', 'Bị sửa', 'Không rõ'])
+    expect(DEV_SIGNATURE_MAC_OPTION.label).toBe('Bản Mac (ad-hoc)')
     for (const id of DEV_SIGNATURE_PRESET_IDS) {
       const p = DEV_SIGNATURE_PRESETS[id]
       expect(parseAppSignature(p)).toEqual(p)
-      expect(devSignaturePresetOf(p)).toBe(id)
+      expect(devSignaturePresetOf(p, DEV_SIGNATURE_PLATFORMS[id])).toBe(id)
+      expect(DEV_SIGNATURE_PLATFORMS[id]).toBe(id === 'mac-adhoc' ? 'mac' : null)
     }
   })
 
   it('each preset shows a different About state', () => {
-    const titles = DEV_SIGNATURE_PRESET_IDS.map((id) => signatureView(DEV_SIGNATURE_PRESETS[id]).title)
+    const titles = DEV_SIGNATURE_PRESET_IDS.map((id) => signatureView(DEV_SIGNATURE_PRESETS[id], id).title)
     expect(new Set(titles).size).toBe(DEV_SIGNATURE_PRESET_IDS.length)
   })
 
@@ -91,8 +101,35 @@ describe('simulate', () => {
   it('devSignature drives the app store; reset goes back to the development build', () => {
     devSignature.simulate('unknown')
     expect(useDevSignature.getState()).toEqual({ status: 'unknown', packaged: true })
+    expect(useDevSignaturePlatform.getState().platform).toBeNull()
     devSignature.reset()
     expect(useDevSignature.getState()).toEqual({ status: 'unsigned', packaged: false })
+  })
+
+  it('the Mac answer ("Bản Mac (ad-hoc)"): what a packaged Mac build sends, shown with the Mac texts — never "signed"', () => {
+    devSignature.simulate('mac-adhoc')
+    const sig = useDevSignature.getState()
+    const platform = useDevSignaturePlatform.getState().platform
+    expect(sig).toEqual({ status: 'unknown', packaged: true })
+    expect(platform).toBe('mac')
+    expect(devSignaturePresetOf(sig, platform)).toBe('mac-adhoc')
+    // the same payload on Windows is the "could not check" answer
+    expect(devSignaturePresetOf(sig)).toBe('unknown')
+    const view = signatureViewOn(sig, platform ?? 'win')
+    expect(view).toMatchObject({ tone: 'neutral', title: MAC_SIGNATURE_TITLE })
+    expect(`${view.title} ${view.detail}`).not.toMatch(/Đã ký|✓|Bản gốc|PowerShell|Windows/)
+    expect(thumbprintRows(sig, 'mac')).toEqual([])
+    // any other answer goes back to this device's platform; so does reset
+    devSignature.simulate('signed')
+    expect(useDevSignaturePlatform.getState().platform).toBeNull()
+    devSignature.simulate('mac-adhoc')
+    devSignature.reset()
+    expect(useDevSignaturePlatform.getState().platform).toBeNull()
+    // a separate store without a platform store: only the signature changes
+    const store = newStore()
+    simulateDevSignature(store, 'mac-adhoc')
+    expect(store.getState()).toEqual({ status: 'unknown', packaged: true })
+    expect(useDevSignaturePlatform.getState().platform).toBeNull()
   })
 })
 

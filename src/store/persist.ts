@@ -12,18 +12,22 @@
 // - other tabs are told about saves (BroadcastChannel) and reload a project they have no unsaved changes to.
 import { createStore, get, set, update } from 'idb-keyval'
 import { create } from 'zustand'
-import { takeCode } from '../core/compile'
+import { cleanFileBase } from '../core/fileNames'
 import { foldersForCopy } from '../core/folders'
 import { newId } from '../core/ids'
-import { dropVideoRefs, migrateProject } from '../core/migrate'
+import { dropLegacyVideoRefs, migrateProject } from '../core/migrate'
 import { createDemoProject } from '../core/seed'
 import { backupWins, isForeignWrite, nextStamp, sortByUpdated, upsertById, type BackupInfo, type RevStamp } from '../core/storageRules'
 import type { Project, Take } from '../core/types'
-import { dataUrlToBlob, deleteMedia, getBlob, putBlob } from '../lib/imageStore'
+import { dataUrlToBlob, deleteMedia, getBlob, putBlob, revokeUnusedUrls } from '../lib/imageStore'
 import { copyFolderHandle } from '../lib/saveFolders'
 import { clearHistory, emptyProject, useProject } from './project'
 import { setEngineHooks, stopEngine, useRuns } from './runs'
 import { useUI } from './ui'
+
+// Loaded only in perf builds; regular autosave has no instrumentation dependency.
+let mark: typeof import('../perf/probe').perfMark | undefined
+if (__SANOVIDS_PERF__) void import('../perf/probe').then((m) => { mark = m.perfMark })
 
 export interface ProjectMeta {
   id: string
@@ -203,7 +207,11 @@ async function guardedWrite(projectId: string, entries: [string, unknown][], met
             return // nothing written; the transaction just completes
           }
           out.stamp = nextStamp(stored, TAB_ID)
-          for (const [key, value] of entries) store.put(value, key)
+          for (const [key, value] of entries) {
+            const finish = mark?.(key.startsWith('runs:') ? 'autosaveRuns' : 'autosaveProject')
+            store.put(value, key)
+            finish?.()
+          }
           store.put(out.stamp, K.rev(projectId))
           if (meta) {
             const ireq = store.get(K.index)
@@ -264,7 +272,19 @@ let backupSeq = 0
 const projectDirty = () => useProject.getState().project !== savedProject
 function runsDirty() {
   const r = useRuns.getState()
-  return !savedRuns || r.takes !== savedRuns.takes || r.credits !== savedRuns.credits || r.spent !== savedRuns.spent
+  return !savedRuns || !progressOnlyChange(r, savedRuns)
+}
+
+/** Progress is disposable; every other field (including future fields) must reach storage. */
+export function progressOnlyChange(a: RunsData, b: RunsData): boolean {
+  if (a.credits !== b.credits || a.spent !== b.spent || a.takes.length !== b.takes.length) return false
+  return a.takes === b.takes || a.takes.every((take, i) => {
+    const previous = b.takes[i]
+    if (take === previous) return true
+    const keys = new Set([...Object.keys(take), ...Object.keys(previous)])
+    for (const key of keys) if (key !== 'progress' && take[key as keyof Take] !== previous[key as keyof Take]) return false
+    return true
+  })
 }
 const hasUnsaved = () => projectDirty() || runsDirty() || !!projectTimer || !!runsTimer
 
@@ -278,7 +298,7 @@ function reportSave() {
 }
 
 async function saveProjectNow(p: Project): Promise<WriteResult> {
-  if (!useSave.getState().stale) useSave.setState({ status: 'saving' })
+  if (!useSave.getState().stale && useSave.getState().status !== 'saving') useSave.setState({ status: 'saving' })
   // Listed with the save time: after an undo the project carries the (older) time of the restored snapshot.
   const res = await guardedWrite(p.id, [[K.project(p.id), p]], { ...metaOf(p), updatedAt: Math.max(p.updatedAt, Date.now()) })
   const open = useProject.getState().project.id === p.id
@@ -299,9 +319,11 @@ async function saveProjectNow(p: Project): Promise<WriteResult> {
 }
 
 async function saveRunsNow(projectId: string): Promise<WriteResult> {
+  const finish = mark?.('autosave.runs')
   const { takes, credits, spent } = useRuns.getState()
   const data: RunsData = { takes, credits, spent }
   const res = await guardedWrite(projectId, [[K.runs(projectId), data]])
+  finish?.()
   const open = useProject.getState().project.id === projectId
   if (res === 'ok' && open) savedRuns = data
   if (res === 'conflict' || !open) return res
@@ -356,6 +378,8 @@ async function loadProjectData(id: string): Promise<Loaded | null> {
 }
 
 function openProject({ project: p, runs, rev, unsaved }: Loaded) {
+  // Media URLs live as long as their project is open (imageStore: idle URLs are kept for the open project only).
+  if (p.id !== useProject.getState().project.id) revokeUnusedUrls()
   useProject.getState().loadProject(p)
   clearHistory()
   useRuns.getState().loadRuns(runs)
@@ -385,7 +409,7 @@ let runsTimer: ReturnType<typeof setTimeout> | null = null
 let runsDirtySince = 0
 const PROJECT_DEBOUNCE_MS = 400
 const RUNS_DEBOUNCE_MS = 800
-/** Running jobs change progress every tick, so the debounce alone would never fire during a batch. */
+/** Sustained meaningful edits still have a deadline; progress-only ticks do not reset the debounce. */
 const RUNS_MAX_WAIT_MS = 3000
 
 function cancelPendingSaves() {
@@ -397,7 +421,7 @@ function cancelPendingSaves() {
 
 function scheduleProjectSave() {
   if (stale.has(useProject.getState().project.id)) return
-  useSave.setState({ status: 'saving' })
+  if (useSave.getState().status !== 'saving') useSave.setState({ status: 'saving' })
   if (projectTimer) clearTimeout(projectTimer)
   projectTimer = setTimeout(() => {
     projectTimer = null
@@ -530,6 +554,7 @@ export async function bootstrap(): Promise<void> {
   })
   useRuns.subscribe((s, prev) => {
     if (s.takes === prev.takes && s.credits === prev.credits && s.spent === prev.spent) return
+    if (progressOnlyChange(s, prev)) return
     if (!runsDirty()) return
     scheduleRunsSave()
   })
@@ -676,9 +701,39 @@ async function writeNewProject(p: Project): Promise<boolean> {
   return (await guardedWrite(p.id, [[K.project(p.id), p]], metaOf(p))) === 'ok'
 }
 
+const NEW_PROJECT_WRITE_ERROR = 'Không tạo được dự án: không ghi được vào bộ nhớ trình duyệt (bộ nhớ đầy?).'
+
 async function openNewProject(p: Project) {
-  if (!(await writeNewProject(p))) throw new Error('Không tạo được dự án: không ghi được vào bộ nhớ trình duyệt (bộ nhớ đầy?).')
+  if (!(await writeNewProject(p))) throw new Error(NEW_PROJECT_WRITE_ERROR)
   openProject({ project: p, runs: null, rev: baseRevs.get(p.id) ?? null, unsaved: false })
+}
+
+/** Harness-only entry point, removed by tree shaking from ordinary builds. Never overwrite an existing id. */
+export async function installProject(project: Project, runs: RunsData): Promise<void> {
+  if (!__SANOVIDS_PERF__ || !project.id.startsWith('prf_')) throw new Error('Chỉ cài dự án thử trong bản perf.')
+  await leaveCurrentProject()
+  if (await readStamp(project.id) || await readProject(project.id)) throw new Error('Dự án thử đã tồn tại; hãy dọn trước.')
+  const result = await guardedWrite(project.id, [[K.project(project.id), project], [K.runs(project.id), runs]], metaOf(project))
+  if (result !== 'ok') throw new Error('Không lưu được dự án thử.')
+  openProject({ project, runs, rev: baseRevs.get(project.id) ?? null, unsaved: false })
+}
+
+/** Remove a deleted harness project's tombstone only after its project/runs have gone. */
+export async function forgetDeletedProject(id: string): Promise<void> {
+  if (!__SANOVIDS_PERF__ || !id.startsWith('prf_')) throw new Error('Chỉ dọn dấu xoá của dự án thử.')
+  await db('readwrite', (store) => new Promise<void>((resolve, reject) => {
+    const request = store.get(K.project(id))
+    request.onsuccess = () => {
+      if (request.result) { store.transaction.abort(); return }
+      store.delete(K.rev(id))
+      store.delete(K.runs(id))
+    }
+    store.transaction.oncomplete = () => resolve()
+    store.transaction.onabort = store.transaction.onerror = () => reject(new Error('Không dọn được dấu xoá.'))
+  }))
+  baseRevs.delete(id)
+  stale.delete(id)
+  lsRemove(LS.backup(id))
 }
 
 export async function createProject(name = 'Dự án mới'): Promise<void> {
@@ -691,22 +746,15 @@ export async function createDemo(): Promise<void> {
   await openNewProject(await createDemoProject())
 }
 
-/** "video S03·T2" for every take id of a project (text that replaces @video tokens when the takes are gone). */
-function videoLabels(p: Project, takes: Take[]): Record<string, string> {
-  const order = new Map(p.scenes.map((s) => [s.id, s.order]))
-  return Object.fromEntries(takes.map((t) => [t.id, 'video ' + takeCode(order.get(t.sceneId), t.number)]))
-}
-
 export async function duplicateProject(id: string): Promise<void> {
   const current = useProject.getState().project
   const isCurrent = id === current.id
   const src = isCurrent ? current : (await loadProjectData(id))?.project
   if (!src) throw new Error('Không đọc được dự án này.')
-  // Takes (videos) are not copied, so the copy cannot keep video references: their @video tokens become text.
-  const takes = isCurrent ? useRuns.getState().takes : ((await readRuns(id))?.takes ?? [])
-  const labels = videoLabels(src, takes)
+  // Takes (videos) are not copied: the archived video links of the original (Scene.legacyVideoRefs) stay behind.
+  // Prompts are copied as written (@video text included: it blocks the run in the copy too).
   const now = Date.now()
-  const copy = dropVideoRefs(src, (t) => labels[t] ?? 'video')
+  const copy = dropLegacyVideoRefs(src)
   // Folder nodes get new ids (the copy must not share the original's folder access, waiting saves and counters) and
   // keep their folder on this computer (web: the same folder handle, copied below).
   const { folders, ids: folderIds } = foldersForCopy(copy.folders, { keepPath: true, taken: nodeIdsOf(copy) })
@@ -779,8 +827,8 @@ interface ExportFile {
   version: 1 | 2
   project: unknown
   media: Record<string, string> // image id -> data URL
-  /** take id -> "video S03·T2": takes are not exported, their @video tokens become this text on import. */
-  videoLabels?: Record<string, string>
+  // (Files of older builds may carry `videoLabels` — take id → "video S03·T2", for the @video tokens: ignored, the
+  // prompt is imported as written.)
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -802,12 +850,13 @@ export async function exportProjectFile(): Promise<void> {
       if (blob) media[id] = await blobToDataUrl(blob)
     }
   }
-  const file: ExportFile = { format: 'sanovids', version: 2, project: projectForExport(project), media, videoLabels: videoLabels(project, useRuns.getState().takes) }
+  const file: ExportFile = { format: 'sanovids', version: 2, project: projectForExport(project), media }
   const blob = new Blob([JSON.stringify(file)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${project.name.replace(/[<>:"/\\|?*]/g, '-')}.sanovids.json`
+  // Same cleaning as video names (core/fileNames): Windows device names, trailing dots, the UTF-8 / NFD byte caps.
+  a.download = `${cleanFileBase(project.name) || 'Dự án'}.sanovids.json`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }
@@ -817,20 +866,47 @@ export async function importProjectFile(file: File): Promise<void> {
   if ((data?.format !== 'sanovids' && data?.format !== 'ban-dung-phim') || !data.project) throw new Error('File không đúng định dạng dự án SanoVids.')
   await leaveCurrentProject()
   const idMap = new Map<string, string>()
-  for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
-    idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
+  let project: Project
+  try {
+    for (const [oldId, dataUrl] of Object.entries(data.media ?? {})) {
+      idMap.set(oldId, await putBlob(dataUrlToBlob(dataUrl), 'img'))
+    }
+    project = importedProject(data.project, idMap)
+    if (!(await writeNewProject(project))) throw new Error(NEW_PROJECT_WRITE_ERROR)
+  } catch (error) {
+    // Until the project is saved nothing references the images written so far: a failed import leaves none behind.
+    for (const id of idMap.values()) void deleteMedia(id).catch(() => undefined)
+    throw error
   }
-  await openNewProject(importedProject(data.project, data.videoLabels ?? {}, idMap))
+  openProject({ project, runs: null, rev: baseRevs.get(project.id) ?? null, unsaved: false })
+  // Opened all the same (a warning, not a refusal): what this build does not know stays blocked (core/runRules).
+  const warning = importWarning(data, project)
+  if (warning) useUI.getState().toast(warning, { tone: 'warning', ms: 12000 })
+}
+
+/** Shown after importing a project file made by a newer SanoVids build (see importWarning). */
+export const NEWER_FILE_WARNING = 'File này tạo bằng SanoVids mới hơn: cảnh dùng model lạ sẽ bị chặn chạy cho tới khi bạn cập nhật.'
+
+/**
+ * NEWER_FILE_WARNING when a .sanovids.json comes from a newer build: a file `version` above 2, a project
+ * `schemaVersion` above 2, or a scene / preset on a model this build does not know (the imported project's
+ * foreignModel markers, migrate) — a newer build may keep version 2 and still use new models. Null otherwise.
+ */
+export function importWarning(file: { version?: unknown; project?: unknown }, imported: Project): string | null {
+  const newer = (v: unknown) => typeof v === 'number' && v > 2
+  const rawSchema = file.project && typeof file.project === 'object' ? (file.project as { schemaVersion?: unknown }).schemaVersion : undefined
+  const foreign = imported.scenes.some((s) => !!s.foreignModel) || imported.presets.some((p) => !!p.foreignModel)
+  return newer(file.version) || newer(rawSchema) || foreign ? NEWER_FILE_WARNING : null
 }
 
 /**
- * A project read from a .sanovids.json, ready to open as a new project: new id, images under their new ids, no video
- * references (takes are not exported: their tokens become plain text), and folder nodes with new ids and no place on
- * this computer — a file from elsewhere never chooses where this computer writes (not even a folder picked here before
- * for another project): each node asks "Chọn lại thư mục".
+ * A project read from a .sanovids.json, ready to open as a new project: new id, images under their new ids, no
+ * archived video links (takes are not exported; prompts — @video text included — come in exactly as written), and
+ * folder nodes with new ids and no place on this computer — a file from elsewhere never chooses where this computer
+ * writes (not even a folder picked here before for another project): each node asks "Chọn lại thư mục".
  */
-export function importedProject(raw: unknown, labels: Record<string, string>, imageIds: ReadonlyMap<string, string> = new Map()): Project {
-  const withoutVideos = dropVideoRefs(migrateProject(raw), (t) => labels[t] ?? 'video')
+export function importedProject(raw: unknown, imageIds: ReadonlyMap<string, string> = new Map()): Project {
+  const withoutVideos = dropLegacyVideoRefs(migrateProject(raw))
   const { folders } = foldersForCopy(withoutVideos.folders, { keepPath: false, taken: nodeIdsOf(withoutVideos) })
   return {
     ...withoutVideos,

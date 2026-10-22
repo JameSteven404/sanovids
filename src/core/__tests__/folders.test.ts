@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropFolderLinks, folderBaseName, folderMapOf, foldersForCopy, folderTargetsFor, isLinked, normalizeFolders, shortPath, withLink } from '../folders'
+import { dropFolderLinks, folderBaseName, folderMapOf, foldersForCopy, folderTargetsFor, isLinked, isTargeted, normalizeFolders, shortPath, withLink } from '../folders'
 import { migrateProject, migrateTake } from '../migrate'
 import type { SaveFolder } from '../types'
 
@@ -88,6 +88,24 @@ describe('wires into a folder', () => {
     expect(folderTargetsFor(fs, { id: 't2', sceneId: 's1' }).map((f) => f.id)).toEqual(['a', 'c'])
     expect(folderTargetsFor(fs, { id: 't3', sceneId: 's2' })).toEqual([])
     expect(folderTargetsFor(undefined, { id: 't1', sceneId: 's1' })).toEqual([])
+  })
+
+  it("isTargeted: the take's own wire or its scene's auto-save wire (the same test as folderTargetsFor)", () => {
+    const f = folder({ takes: ['t1'], autoScenes: ['s2'] })
+    expect(isTargeted(f, { id: 't1', sceneId: 's1' })).toBe(true) // its own 'save' wire
+    expect(isTargeted(f, { id: 't9', sceneId: 's2' })).toBe(true) // its scene saves there
+    expect(isTargeted(f, { id: 't2', sceneId: 's1' })).toBe(false)
+    expect(isTargeted(folder(), { id: 't1', sceneId: 's1' })).toBe(false) // no links at all
+    // a cut wire: no longer targeted (its waiting save is dropped, its files may go to the Recycle Bin)
+    expect(isTargeted(withLink(f, 'save', 't1', false), { id: 't1', sceneId: 's1' })).toBe(false)
+    const fs = [f, folder({ id: 'b', takes: ['t2'] })]
+    for (const take of [
+      { id: 't1', sceneId: 's1' },
+      { id: 't2', sceneId: 's2' },
+      { id: 't3', sceneId: 's3' },
+    ]) {
+      expect(folderTargetsFor(fs, take).map((x) => x.id)).toEqual(fs.filter((x) => isTargeted(x, take)).map((x) => x.id))
+    }
   })
 
   it('forgets links to deleted takes / scenes (same array when nothing changes)', () => {

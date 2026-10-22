@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { focusNodes, linkAssets, revealNodes, viewImages } from '../../actions'
 import { sceneCode } from '../../core/compile'
 import { PALETTE } from '../../core/ids'
+import { normalizeAssetName } from '../../core/names'
 import type { Asset, AssetKind } from '../../core/types'
 import { aspectOf, useImageSize } from '../../lib/imageMeta'
 import { selectAsset, undoToastAction, useProject, type ProjectState } from '../../store/project'
@@ -19,6 +20,9 @@ const SEP = '\u0001'
 export function AssetInspector({ assetId }: { assetId: string }) {
   const asset = useProject(selectAsset(assetId))
   const [tagDraft, setTagDraft] = useState<string | null>(null)
+  // What is typed while the name is edited: the store keeps a blank name as "Không tên" (core/names), the field shows it
+  // only once the edit ends.
+  const [nameDraft, setNameDraft] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   // Images are being stored: keep the list as is until they are appended (a change made now would be lost).
   const busy = useAddingImages(assetId)
@@ -69,9 +73,13 @@ export function AssetInspector({ assetId }: { assetId: string }) {
         {/* Never left empty (like the asset dialog): renumbering turns removed @image_N tokens into the name. */}
         <input
           className="in-asset-name"
-          value={asset.name}
-          onChange={(e) => update({ name: e.target.value })}
+          value={nameDraft !== null && normalizeAssetName(nameDraft) === asset.name ? nameDraft : asset.name}
+          onChange={(e) => {
+            setNameDraft(e.target.value)
+            update({ name: e.target.value })
+          }}
           onBlur={(e) => {
+            setNameDraft(null)
             if (!e.target.value.trim()) update({ name: asset.tag })
           }}
           placeholder="Tên"

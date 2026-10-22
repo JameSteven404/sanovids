@@ -1,6 +1,6 @@
 // Small presentational pieces reused across the sidebar panels and dialogs.
 import { Check, ChevronRight } from 'lucide-react'
-import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { PALETTE } from '../../core/ids'
 
 // ---------------- collapsible section ----------------
@@ -20,11 +20,12 @@ interface SectionProps {
   /** Extra props for the section root (drop zones). */
   rootProps?: HTMLAttributes<HTMLElement>
   bodyProps?: HTMLAttributes<HTMLDivElement>
+  bodyRef?: Ref<HTMLDivElement>
   className?: string
   children: ReactNode
 }
 
-export function Section({ title, icon, count, actions, collapsed, onToggle, grow, toolbar, footer, rootProps, bodyProps, className = '', children }: SectionProps) {
+export function Section({ title, icon, count, actions, collapsed, onToggle, grow, toolbar, footer, rootProps, bodyProps, bodyRef, className = '', children }: SectionProps) {
   return (
     <section
       {...rootProps}
@@ -35,6 +36,7 @@ export function Section({ title, icon, count, actions, collapsed, onToggle, grow
         <button
           className="sb-sec-toggle"
           aria-expanded={!collapsed}
+          aria-label={`${collapsed ? 'Mở rộng' : 'Thu gọn'} ${title}`}
           title={collapsed ? 'Mở rộng' : 'Thu gọn'}
           onClick={(e) => {
             e.stopPropagation()
@@ -56,7 +58,7 @@ export function Section({ title, icon, count, actions, collapsed, onToggle, grow
       {!collapsed && (
         <>
           {toolbar}
-          <div {...bodyProps} className={`sb-sec-body ${bodyProps?.className ?? ''}`}>
+          <div {...bodyProps} ref={bodyRef} className={`sb-sec-body ${bodyProps?.className ?? ''}`}>
             {children}
           </div>
           {footer}

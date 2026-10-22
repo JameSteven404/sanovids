@@ -3,7 +3,7 @@
 // Providers: 'dev' (development mode, the default: the canvasapp gateway code talking to an in-app simulation of
 // canvasapp.io.vn — providers/dev/, no network), 'canvasapp' (the real gateway, desktop only — providers/canvasapp/,
 // docs/GATEWAY-CANVASAPP.md) and 'mock' (the old demo, providers/mock.ts: only for takes saved before dev mode).
-import type { Mode, ModelId, Take, TakeProvider } from '../core/types'
+import type { Mode, ModelId, Take, TakeProvider, VideoSettings } from '../core/types'
 
 export type ProviderId = TakeProvider
 
@@ -21,13 +21,78 @@ export interface ProviderCapabilities {
   resolutions: string[]
   ratios: string[]
   maxRefImages: number
-  /** 0 = reference videos (@video_N) are not supported by this provider. */
-  maxRefVideos: number
   promptLimit: (mode: Mode) => number
   /** Max jobs this provider should run at the same time. */
   maxConcurrency: number
   /** Minimum delay between two poll() calls (ms). 0 = poll every engine tick (local mock). */
   pollIntervalMs: number
+}
+
+// ---- What the gateway runs right now (canvasapp /api/video-profiles) — the inspector, the run check, Bảng phát triển ----
+
+/** A video setting the gateway can refuse. */
+export type LimitField = 'model' | 'mode' | 'duration' | 'resolution' | 'ratio'
+
+export interface SettingsIssue {
+  field: LimitField
+  /** Vietnamese, the very text of the submit refusal (canvasapp mapping.profileIssues). */
+  reason: string
+}
+
+/**
+ * What SanoVids knows: 'none' = not read yet (logged out, never asked, the old demo) → no limits; 'server' = read from
+ * the gateway; 'fallback' = could not be read → canvasapp's built-in profiles (a guess: MiniMax-H3 locked).
+ */
+export type LimitsSource = 'none' | 'server' | 'fallback'
+
+/**
+ * The gateway's refusals of video settings, from what it last said. Referentially stable while what it decides does
+ * not change (a re-read with the same answer keeps the object), so it can key memos.
+ */
+export interface SettingsLimits {
+  source: LimitsSource
+  /**
+   * A 'server' read young enough that a submit now decides with exactly it (no re-read first): its refusals are
+   * certain. False for 'none', 'fallback' and an older read (a submit reads again before deciding).
+   */
+  firm: boolean
+  /** Refusals of `s`, each tagged with its field, in the submit's order. [] for 'none'. Never throws. */
+  issues(s: VideoSettings): SettingsIssue[]
+}
+
+export const NO_LIMITS: SettingsLimits = Object.freeze({ source: 'none' as const, firm: false, issues: () => [] })
+
+/** How the last read of the gateway's settings went (Bảng phát triển, the inspector note, toasts). */
+export interface LimitsInfo {
+  source: LimitsSource
+  /** Local time of the read the current knowledge comes from (null for 'none'). */
+  at: number | null
+  /** Until when a 'server' read stays firm (null otherwise). */
+  firmUntil: number | null
+  /** Last read attempt, whatever came of it ('kept' = failed, the earlier read stays). */
+  lastAttempt: { at: number; result: 'read' | 'failed' | 'kept' | 'login' } | null
+  /** A read is in flight. */
+  reading: boolean
+}
+
+export const NO_LIMITS_INFO: LimitsInfo = Object.freeze({ source: 'none' as const, at: null, firmUntil: null, lastAttempt: null, reading: false })
+
+/**
+ * refreshLimits(): 'fresh' = nothing sent (read recently enough); 'read' = read now; 'failed' = could not be read
+ * (canvasapp's fallbacks now apply); 'kept' = could not be read, the earlier read is still used; 'login' = the gateway
+ * wants a login; 'unavailable' = the gateway cannot be reached from here (web build).
+ */
+export type RefreshLimitsResult = 'fresh' | 'read' | 'failed' | 'kept' | 'login' | 'unavailable'
+
+/** How refreshLimits() reads. */
+export interface RefreshLimitsOptions {
+  /** "Đọc lại": read now whatever the TTL — at most one request every few seconds (a quick second click gets its answer). */
+  force?: boolean
+  /**
+   * What decides the answer has just changed (a login; the simulated site's settings in development mode): read now
+   * with a request sent after this call — no few-seconds limit, never a read already in flight. Implies `force`.
+   */
+  changed?: boolean
 }
 
 /** A reference image, in @image_N order. The provider loads the blob from the media store when it needs it. */
@@ -38,15 +103,6 @@ export interface JobImage {
   /** Media-store key (IndexedDB) — also the cache key for uploads to a remote provider. */
   imageId: string
   blob?: Blob
-}
-
-/** A reference video (a completed take), in @video_N order. */
-export interface JobVideo {
-  /** 1-based N in @video_N */
-  n: number
-  takeId: string
-  videoId: string | null
-  posterId: string | null
 }
 
 /** H3 transform frame (primary image of the chosen asset). */
@@ -62,6 +118,12 @@ export interface JobRequest {
   key: string
   takeId: string
   sceneId: string
+  /**
+   * SanoVids project of the take — never canvasapp's bridge project_id. With sceneId it names the take's video node on
+   * the canvasapp bridge canvas (mapping.sceneNodeKey): projects sharing scene ids (Nhân bản dự án, a file imported
+   * twice) never share a node.
+   */
+  sanovidsProjectId: string
   /** "S07" */
   sceneCode: string
   takeNumber: number
@@ -72,12 +134,14 @@ export interface JobRequest {
   duration: number
   resolution: string
   ratio: string
-  /** Compiled prompt, sent as written (with @image_N / @video_N tokens). */
+  /**
+   * Compiled prompt, sent as written (with @image_N tokens). Never with a reference video: they were retired (0.6.0) —
+   * a prompt still holding @video text is refused before anything is sent (canvasapp mapping.validateRequest).
+   */
   prompt: string
   /** The scene prompt as typed (display only). */
   rawPrompt: string
   images: JobImage[]
-  videos: JobVideo[]
   firstFrame: JobFrame | null
   lastFrame: JobFrame | null
   /** Local time the take started processing (the mock uses it for wall-clock progress). */
@@ -102,12 +166,32 @@ export interface JobResult {
   poster?: Blob | null
 }
 
+/** How much of a finished video has been downloaded (total null = the provider did not say). */
+export interface ResultProgress {
+  received: number
+  total: number | null
+}
+
+export interface FetchResultOptions {
+  /** Aborted when the take is cancelled / deleted or the project is switched: stop downloading (then it rejects). */
+  signal?: AbortSignal
+  /** Download progress (throttled by the provider). */
+  onProgress?: (p: ResultProgress) => void
+}
+
 export interface SubmitOptions {
   /**
    * True once the take was cancelled / deleted in SanoVids. A paying provider checks it before every step and right
    * before the request that creates (and bills) the job; it then gives up with a ProviderError code 'cancelled'.
    */
   isCancelled?: () => boolean
+  /**
+   * An explicit retry of a take whose earlier submit ended "unknown" (Take.submitUnknown): its first request may have
+   * been billed. A paying provider that has no record left to check it against (another computer, cleared storage,
+   * written over by another build, trimmed) never sends it again — no record is no proof it was never sent. It fails
+   * `uncertain` + `unverifiable` (isSubmitUnverifiable).
+   */
+  retryOfUnknown?: boolean
 }
 
 export interface VideoProvider {
@@ -122,7 +206,8 @@ export interface VideoProvider {
   capabilities(model: ModelId): ProviderCapabilities
   /**
    * Create the job (req.key = idempotency key). Errors: code 'cancelled' (see SubmitOptions, nothing was created);
-   * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back.
+   * `uncertain: true` (see isSubmitUncertain) when the job may exist at the provider although no id came back;
+   * also `unverifiable: true` (isSubmitUnverifiable) when an earlier request of that key can no longer be checked.
    */
   submit(req: JobRequest, opts?: SubmitOptions): Promise<{ remoteId: string }>
   /**
@@ -130,13 +215,41 @@ export interface VideoProvider {
    * WITHOUT ever creating one. Null = none known. Optional: without it such takes fail as "unknown".
    */
   recover?(req: JobRequest): Promise<{ remoteId: string } | null>
+  /**
+   * Synchronous, never a request, never throws: may a request of `key` have reached the provider — the request that
+   * creates (bills) its job sent or about to be sent in the same synchronous step, its answer pending or lost, a job
+   * known for it, or a record of it trimmed? False only when nothing of `key` can have gone out from here: a submit
+   * still before that request then stops at its next isCancelled() check (SubmitOptions) with nothing sent. The engine
+   * asks it when a take is cancelled while its submit is on its way (store/runs cancel(): "maybe billed" or not).
+   * Optional: without it every such cancel counts as "maybe billed".
+   */
+  mayHaveSent?(key: string): boolean
   /** Statuses for the given remote ids (ids the provider does not know may be omitted). */
   poll(remoteIds: string[]): Promise<RemoteStatus[]>
-  fetchResult(remoteId: string): Promise<JobResult>
+  /**
+   * The finished video. Errors: code 'too-large' (see isResultTooLarge: never downloadable, do not try again);
+   * 'too-slow' (see isResultTooSlow: a connection open past the gateway's time limit that could not continue — a new
+   * try would start again from 0 and hit the same limit); 'deferred' (see isResultDeferred: nothing was fetched, too
+   * many downloads at once — try later, not a failure).
+   */
+  fetchResult(remoteId: string, opts?: FetchResultOptions): Promise<JobResult>
   /** Stop a job at the provider when possible. Optional: without it, cancel only stops tracking locally. */
   cancel?(remoteId: string): Promise<void> | void
   /** Forget in-memory state (new project loaded, logout…). */
   reset?(): void
+  /**
+   * What the gateway refuses right now, from its last answer — synchronous, never a request, never throws. Optional:
+   * without it (the old demo) nothing is limited.
+   */
+  settingsLimits?(): SettingsLimits
+  /** How that knowledge was obtained (synchronous). */
+  limitsInfo?(): LimitsInfo
+  /**
+   * Read it again when it is old (TTL-gated: nothing is sent while fresh, or within a minute of a failed attempt);
+   * `force` reads now (at most every few seconds); `changed` after a login / a change of the site's settings (no
+   * limit). Shares one request with a submit's own read. Never throws.
+   */
+  refreshLimits?(opts?: RefreshLimitsOptions): Promise<RefreshLimitsResult>
 }
 
 /** Error with a machine-readable code, thrown by providers. */
@@ -159,11 +272,30 @@ export const isSubmitCancelled = (e: unknown): boolean => !!e && typeof e === 'o
  */
 export const isSubmitDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
 
+/** fetchResult() refused a video bigger than SanoVids can take (1 GB): trying again gives the same answer. */
+export const isResultTooLarge = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-large'
+
+/**
+ * fetchResult() stopped a download that stayed open past the gateway's time limit (60 min per connection) and could
+ * not continue where it stopped (no Range): another try from 0 would hit the same limit — do not try again.
+ */
+export const isResultTooSlow = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'too-slow'
+
+/** fetchResult() fetched nothing and asks to be tried later (too many downloads at once): not a failed download. */
+export const isResultDeferred = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { code?: unknown }).code === 'deferred'
+
 /**
  * submit() failed in a way that leaves it UNKNOWN whether the provider created (and billed) the job — e.g. the
  * connection broke after the request was sent. Such a take must never be submitted again under a new key.
  */
 export const isSubmitUncertain = (e: unknown): boolean => !!e && typeof e === 'object' && (e as { uncertain?: unknown }).uncertain === true
+
+/**
+ * An uncertain submit (isSubmitUncertain) of a key that was sent before, whose earlier request can no longer be
+ * checked — e.g. the provider's job list no longer reaches back to it, or several jobs could be it. It may have been
+ * billed, so the provider never sends that key again; only a NEW take (new key, the user's explicit choice) can run.
+ */
+export const isSubmitUnverifiable = (e: unknown): boolean => isSubmitUncertain(e) && (e as { unverifiable?: unknown }).unverifiable === true
 
 /**
  * Provider fields of a take (provider, remoteId, charged, framesSnapshot, imageKeysSnapshot) now live on `Take`

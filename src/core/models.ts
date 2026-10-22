@@ -9,8 +9,6 @@ export interface ModelSpec {
   resolutions: string[]
   ratios: string[]
   maxRefImages: number
-  /** Reference videos (@video_N) accepted per request. */
-  maxRefVideos: number
   promptLimit: (mode: Mode) => number
   /**
    * credits[resolution][duration] per video, 1 credit ≈ 1.000đ — the same table as canvasapp. The demo provider
@@ -31,7 +29,6 @@ export const MODELS: Record<ModelId, ModelSpec> = {
     resolutions: ['480p', '720p', '1080p'],
     ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
     maxRefImages: 30,
-    maxRefVideos: 10,
     promptLimit: () => 20000,
     pricing: {
       '480p': { 5: 4, 10: 5, 15: 10, 30: 15 },
@@ -49,7 +46,6 @@ export const MODELS: Record<ModelId, ModelSpec> = {
     resolutions: ['768p', '2k'],
     ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
     maxRefImages: 9,
-    maxRefVideos: 3,
     promptLimit: (mode) => (mode === 'transform' ? 20000 : 7000),
     pricing: {
       '768p': { 5: 4, 10: 6, 15: 8 },
@@ -79,14 +75,27 @@ export function modeLabel(mode: Mode, model?: ModelId): string {
   return sendsImages ? label : label.replace(/\s*\(\+ảnh\)$/, '')
 }
 
+/**
+ * A model this build knows: an own key of MODELS (never an inherited name such as "constructor" or "toString", which a
+ * file of a newer build or from elsewhere may hold). Anything else is a newer build's model (see Scene.foreignModel).
+ */
+export function isModelId(v: unknown): v is ModelId {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(MODELS, v)
+}
+
+/** Badge of a scene / preset on a model of a newer SanoVids build (Scene.foreignModel): "veo_3_1 · bản mới hơn". */
+export const foreignModelBadge = (model: string): string => `${model} · bản mới hơn`
+/** The model picker's stand-in entry for that model while it is selected: "veo_3_1 (bản mới hơn)". */
+export const foreignModelOption = (model: string): string => `${model} (bản mới hơn)`
+
 export function costOf(s: VideoSettings): number {
-  const spec = MODELS[s.model]
+  const spec = isModelId(s.model) ? MODELS[s.model] : undefined
   return spec?.pricing[s.resolution]?.[s.duration] ?? 0
 }
 
-/** Clamp settings so they are valid for the chosen model. */
+/** Clamp settings so they are valid for the chosen model (an unknown model becomes Seedance 2.5). */
 export function normalizeSettings(s: Partial<VideoSettings> & { model?: ModelId }): VideoSettings {
-  const model: ModelId = s.model && MODELS[s.model] ? s.model : 'seedance_2_5'
+  const model: ModelId = isModelId(s.model) ? s.model : 'seedance_2_5'
   const spec = MODELS[model]
   const mode = s.mode && spec.modes.includes(s.mode) ? s.mode : spec.modes[0]
   const duration = s.duration && spec.durations.includes(s.duration) ? s.duration : spec.durations.includes(15) ? 15 : spec.durations[0]
@@ -95,16 +104,13 @@ export function normalizeSettings(s: Partial<VideoSettings> & { model?: ModelId 
   return { model, mode, duration, resolution, ratio }
 }
 
+/** "15s · 480P · 16:9". Tolerates settings of another build missing a field (a take of a newer build's route). */
 export function settingsLabel(s: VideoSettings): string {
-  return `${s.duration}s · ${s.resolution.toUpperCase()} · ${s.ratio}`
+  const duration = typeof s?.duration === 'number' && Number.isFinite(s.duration) ? `${s.duration}s` : '?s'
+  return `${duration} · ${String(s?.resolution ?? '').toUpperCase()} · ${s?.ratio ?? ''}`
 }
 
 /** Whether this mode sends reference images. */
 export function usesRefs(s: VideoSettings): boolean {
   return s.model === 'seedance_2_5' || s.mode === 'i2v'
-}
-
-/** Whether this mode accepts reference videos (@video_N). Same modes as reference images. */
-export function usesVideoRefs(s: VideoSettings): boolean {
-  return usesRefs(s)
 }

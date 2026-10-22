@@ -159,3 +159,17 @@ describe('clockText', () => {
     expect(clockText(null, now)).toBe('—')
   })
 })
+
+describe('creditPillView — canvasapp gateway off (development mode locked, not turned on)', () => {
+  it('neutral "canvasapp · Chưa bật", opens Cài đặt → Nhà cung cấp video, no top-up, no DEV', () => {
+    const v = creditPillView(real({ status: 'off', error: 'tắt' }))
+    expect(v.tone).toBe('off')
+    expect(v.source).toBe('canvasapp')
+    expect(v.value).toBe('Chưa bật')
+    expect(v.action).toBe('gateway')
+    expect(v.topUp).toBe(false)
+    expect(v.sim).toBe(false)
+    expect(v.title).toBe('Cổng canvasapp.io.vn đang tắt. Bấm để mở Cài đặt.')
+    expect(`${v.title} ${v.ariaLabel}`).not.toMatch(/DEV|dev|giả lập/)
+  })
+})

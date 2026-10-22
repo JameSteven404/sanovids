@@ -1,50 +1,56 @@
 // Inspector for one scene. Every section subscribes to the narrow slice it needs, so typing in the
 // prompt (or the title / note) does not re-render the whole panel.
-import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, CornerDownRight, Download, Film, FlaskConical, GripVertical, Info, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
-import { memo, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useShortcutTitle } from '../../lib/keymapPrefs'
+import { ArrowRight, ChevronLeft, ChevronRight, CopyPlus, Download, Film, FlaskConical, GripVertical, Info, Maximize2, Play, Plus, Star, Trash, TriangleAlert, X } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { createAssetsFromFiles, createSceneFromTake, downloadTake, focusNodes, linkAssets, linkTakes, nextScene, requestRun, revealNodes, takeLabel } from '../../actions'
-import { compileScene, sceneCode } from '../../core/compile'
-import { costOf, modeLabel, MODELS, usesRefs, usesVideoRefs } from '../../core/models'
-import type { Asset } from '../../core/types'
+import { downloadTake, filesToSceneRefs, focusNodes, linkAssets, nextScene, requestRun, revealNodes } from '../../actions'
+import { sceneCode } from '../../core/compile'
+import { sceneMapOf } from '../../core/sceneIndex'
+import { costOf, foreignModelBadge, modeLabel, MODELS, usesRefs } from '../../core/models'
+import { foreignModelReason } from '../../core/runRules'
+import type { Asset, Scene } from '../../core/types'
 import { formatCredits, isSimulatedCredit } from '../../lib/credits'
-import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
+import { ASSETS_MIME, readIds } from '../../lib/dnd'
+import { useCanvasPrefs } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { useCreditKind } from '../../store/credits'
+import { reportMediaChange } from '../../placeholderActions'
 import { undoToastAction, useProject } from '../../store/project'
 import { useSceneTakes } from '../../store/runs'
+import { useInPanel, useSceneEditor } from '../../store/sceneEditor'
 import { toast, useUI } from '../../store/ui'
-import { AssetAvatar, MediaImg } from '../common/Media'
-import { appliedPresetId, costTitle, creditTone, NO_VIDEO_REFS_REASON, scenesWithStaleTokens, staleTokenNote } from '../sidebar/shared'
+import { typeOnNode } from '../canvas/SceneNodeEditor'
+import { AssetAvatar } from '../common/Media'
+import { appliedPresetId, costTitle, creditTone } from '../sidebar/shared'
+import { useSceneRunBlock } from '../runs/shared'
 import { TakeStrip } from '../runs/TakeStrip'
 import { FinalPromptPreview } from './FinalPromptPreview'
 import { RefThumb, useImagePreview } from './ImagePreview'
-import { STATUS_TEXT, useTakeInfos, type TakeInfo } from './hooks'
+import { PlaceholderBar } from './PlaceholderBar'
 import { flushPromptEditor, PromptEditor } from './PromptEditor'
+import { SceneOrderControl } from './SceneOrderControl'
 import { SettingsFields } from './SettingsFields'
 import { AssetPicker, EMPTY_IDS, KIND_LABEL, Section, useSceneField } from './shared'
-import { TakePicker } from './TakePicker'
 import { imageOptsFor, legacyAssets, replaceLegacyTags } from './tokens'
 import { useReorder } from './useReorder'
 
-/** Row reordering inside the lists below (drag payload = row index). Library cards / takes use src/lib/dnd.ts. */
+/** Row reordering inside the list below (drag payload = row index). Library cards use src/lib/dnd.ts. */
 const REF_MIME = 'application/x-bdp-refidx'
-const VREF_MIME = 'application/x-bdp-vrefidx'
 const hasFiles = (dt: DataTransfer | null) => !!dt && Array.from(dt.types).includes('Files')
-const isTakeDrag = (e: DragEvent) => Array.from(e.dataTransfer.types).includes(TAKES_MIME)
+/** "veo_3_1 · bản mới hơn" in the settings header: may shrink (ellipsis, full text in the title) beside the cost. */
+const FOREIGN_BADGE_STYLE: CSSProperties = { minWidth: 0, maxWidth: '60%' }
+const ELLIPSIS_STYLE: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
 export function SceneInspector({ sceneId }: { sceneId: string }) {
-  const exists = useProject((s) => s.project.scenes.some((x) => x.id === sceneId))
+  const exists = useProject((s) => sceneMapOf(s.project.scenes).has(sceneId))
   if (!exists) return null
   return (
     <div className="in-scene">
       <SceneHeader sceneId={sceneId} />
       <SettingsSection sceneId={sceneId} />
-      <Section id="prompt" title="Prompt">
-        <PromptEditor sceneId={sceneId} />
-      </Section>
+      <PromptSection sceneId={sceneId} />
       <RefsSection sceneId={sceneId} />
-      <VideoRefsSection sceneId={sceneId} />
       <FinalPromptPreview sceneId={sceneId} />
       <TakesSection sceneId={sceneId} />
       <NoteSection sceneId={sceneId} />
@@ -56,28 +62,23 @@ export function SceneInspector({ sceneId }: { sceneId: string }) {
 const promptOf = (sceneId: string) => useProject.getState().project.scenes.find((s) => s.id === sceneId)?.prompt
 
 /**
- * Run a refs / videoRefs change (the store renumbers @image_N / @video_N tokens in the same undo step) and tell
- * the user what it did to the prompt: renumbered it, or — automatic renumbering off (Settings) — left tokens that
- * now point at another image / video (warning). Pending typing is committed first so it is renumbered too.
- * `done`: what was changed ("Đã bỏ nối Elara"); announced on its own only when `plain`.
+ * Run a refs change (the store renumbers @image_N tokens in the same undo step, the token of a removed picture becomes
+ * a red placeholder) and tell the user what it did to the prompt (core/staleTokens mediaChangeNote: red placeholders
+ * left, numbers left stale with renumbering off, or renumbered). Pending typing is committed first so it is renumbered
+ * too. `done`: what was changed ("Đã bỏ nối Elara"); announced on its own only when `plain`.
  */
-function changeMedia(sceneId: string, run: () => void, msg: { done: string; renumbered: string; plain?: boolean; what?: string }) {
+function changeMedia(sceneId: string, run: () => void, msg: { done: string; plain?: boolean }) {
   flushPromptEditor(sceneId)
   const before = useProject.getState().project
   run()
-  const after = useProject.getState().project
-  const stale = scenesWithStaleTokens(before, after)
-  const promptBefore = before.scenes.find((s) => s.id === sceneId)?.prompt
-  if (stale.length) toast(`${msg.done}${staleTokenNote(after, stale, msg.what)}.`, { tone: 'warning', ms: 8000, action: undoToastAction() })
-  else if (promptOf(sceneId) !== promptBefore) toast(msg.renumbered, { tone: 'info', action: undoToastAction() })
-  else if (msg.plain) toast(`${msg.done}.`, { action: undoToastAction() })
+  reportMediaChange(before, msg.done, { always: msg.plain })
 }
 
 /** Tooltip of a reorder grip: the token numbers follow only while automatic renumbering is on. */
-function gripTitle(autoRenumber: boolean, what: '@image' | '@video'): string {
+function gripTitle(autoRenumber: boolean): string {
   return autoRenumber
-    ? `Kéo để đổi thứ tự (↑/↓) — số ${what} trong prompt tự cập nhật`
-    : `Kéo để đổi thứ tự (↑/↓) — tự đánh lại số đang tắt (Cài đặt): số ${what} trong prompt sẽ trỏ sang ${what === '@image' ? 'ảnh' : 'video'} khác`
+    ? 'Kéo để đổi thứ tự (↑/↓) — số @image trong prompt tự cập nhật'
+    : 'Kéo để đổi thứ tự (↑/↓) — tự đánh lại số đang tắt (Cài đặt): số @image trong prompt sẽ trỏ sang ảnh khác'
 }
 
 // ---------------- 1. header ----------------
@@ -88,9 +89,25 @@ interface SceneOpt {
 }
 const SEP = '\u0001'
 
+let optionMemo: { scenes: readonly Scene[]; keys: string[] } = { scenes: [], keys: [] }
+/**
+ * One key per scene (order, id, title): what the header's scene picker lists (shallow-compared). The last answer comes
+ * back as is while no scene's order / id / title changed — typing in a prompt builds no new string per scene.
+ */
+export function sceneOptionKeys(scenes: Scene[]): string[] {
+  const prev = optionMemo.scenes
+  if (prev === scenes) return optionMemo.keys
+  if (prev.length === scenes.length && scenes.every((s, i) => s === prev[i] || (s.id === prev[i].id && s.order === prev[i].order && s.title === prev[i].title))) {
+    optionMemo = { scenes, keys: optionMemo.keys }
+    return optionMemo.keys
+  }
+  optionMemo = { scenes, keys: scenes.map((x) => `${x.order}${SEP}${x.id}${SEP}${x.title}`) }
+  return optionMemo.keys
+}
+
 /** Stable list of all scenes (id/order/title), sorted by order. */
 function useSceneOptions(): SceneOpt[] {
-  const keys = useProject(useShallow((s) => s.project.scenes.map((x) => `${x.order}${SEP}${x.id}${SEP}${x.title}`)))
+  const keys = useProject(useShallow((s) => sceneOptionKeys(s.project.scenes)))
   return useMemo(
     () =>
       keys
@@ -111,6 +128,13 @@ function goTo(id: string) {
 const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) {
   const order = useSceneField(sceneId, (s) => s.order) ?? 0
   const title = useSceneField(sceneId, (s) => s.title) ?? ''
+  // Same gate as the Run button of the Take section below (core/runRules = store/runs check()); selected by id as a
+  // string, so typing in the prompt does not re-render the header.
+  const reason = useSceneRunBlock(sceneId)
+  const nextTitle = useShortcutTitle('Tạo cảnh tiếp theo bên dưới', 'scene.next')
+  const duplicateTitle = useShortcutTitle('Nhân bản cảnh', 'selection.duplicate')
+  const deleteTitle = useShortcutTitle('Xoá cảnh', 'selection.delete')
+  const runTitle = useShortcutTitle('Chạy cảnh này', 'scene.run')
   const options = useSceneOptions()
   const idx = options.findIndex((o) => o.id === sceneId)
   const prev = idx > 0 ? options[idx - 1] : undefined
@@ -133,7 +157,7 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
   return (
     <header className="in-head">
       <div className="in-head-row">
-        <span className="in-code mono">{sceneCode(order)}</span>
+        <SceneOrderControl sceneId={sceneId} order={order} idx={idx} count={options.length} />
         <input
           className="in-title-input"
           value={title}
@@ -153,16 +177,22 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
       </div>
       <div className="in-head-row in-head-sub">
         <div className="in-head-actions">
-          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title="Tạo cảnh tiếp theo bên dưới (N) — giữ ảnh/video tham chiếu và cấu hình">
+          <button type="button" className="icon-btn in-icon-sm" onClick={() => nextScene()} title={`${nextTitle} — giữ ảnh tham chiếu và cấu hình`}>
             <ArrowRight size={14} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title="Nhân bản cảnh (Ctrl+D)">
+          <button type="button" className="icon-btn in-icon-sm" onClick={onDuplicate} title={duplicateTitle}>
             <CopyPlus size={14} />
           </button>
-          <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title="Xoá cảnh (Delete)">
+          <button type="button" className="icon-btn in-icon-sm in-danger-hover" onClick={onDelete} title={deleteTitle}>
             <Trash size={14} />
           </button>
-          <button type="button" className="btn btn-primary btn-sm in-head-run" onClick={() => requestRun([sceneId])} title="Chạy cảnh này (Ctrl+Enter)">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm in-head-run"
+            onClick={() => requestRun([sceneId])}
+            disabled={!!reason}
+            title={reason ? `Chưa chạy được: ${reason}` : runTitle}
+          >
             <Play size={12} fill="currentColor" /> Chạy
           </button>
         </div>
@@ -175,6 +205,9 @@ const SceneHeader = memo(function SceneHeader({ sceneId }: { sceneId: string }) 
 const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: string }) {
   const settings = useSceneField(sceneId, (s) => s.settings)
   const storedPresetId = useSceneField(sceneId, (s) => s.presetId) ?? null
+  // A newer build's model (migrate keeps it, Run is blocked): shown instead of the stand-in model.
+  const foreignModel = useSceneField(sceneId, (s) => s.foreignModel)
+  const foreignModels = useMemo(() => [foreignModel], [foreignModel])
   const presets = useProject((s) => s.project.presets)
   const list = useMemo(() => (settings ? [settings] : []), [settings])
   // A preset edited after it was applied no longer describes the scene: show "Tuỳ chỉnh" (picking it re-applies it).
@@ -188,8 +221,15 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
     <Section
       id="settings"
       title="Cấu hình video"
+      // Picked on the scene node day to day (its settings line): collapsed here until opened.
+      defaultOpen={false}
       meta={
         <span className="in-meta">
+          {foreignModel && (
+            <span className="badge warn" style={FOREIGN_BADGE_STYLE} title={foreignModelReason(foreignModel)}>
+              <span style={ELLIPSIS_STYLE}>{foreignModelBadge(foreignModel)}</span>
+            </span>
+          )}
           {preset && <span className="badge">{preset.name}</span>}
           <span className={`badge in-cost ${creditTone(creditKind)}`} title={costTitle(cost, creditKind, 'Mỗi lần chạy · ')}>
             {isSimulatedCredit(creditKind) && <FlaskConical size={11} />}
@@ -200,11 +240,62 @@ const SettingsSection = memo(function SettingsSection({ sceneId }: { sceneId: st
     >
       <SettingsFields
         settings={list}
+        foreignModels={foreignModels}
         presetIds={presetIds}
         presets={presets}
         onPatch={(patch) => useProject.getState().updateSettings([sceneId], patch)}
         onPreset={(id) => useProject.getState().applyPreset(id, [sceneId])}
       />
+    </Section>
+  )
+})
+
+// ---------------- 2b. prompt: typed on the scene node; here the wide composer ----------------
+/**
+ * The prompt is typed on the scene node itself. The panel keeps the wide composer for very long prompts, opened on
+ * demand: while it is open the node shows static text (store/sceneEditor: one place to type per scene). With the
+ * node editor turned off (Settings), the prompt is always typed here.
+ */
+const PromptSection = memo(function PromptSection({ sceneId }: { sceneId: string }) {
+  const always = useCanvasPrefs((s) => s.nodeEditor === 'off')
+  const inPanel = useInPanel(sceneId)
+  // Leaving this scene (another selection, deleted) closes its composer.
+  useEffect(
+    () => () => {
+      if (useSceneEditor.getState().panelSceneId === sceneId) useSceneEditor.getState().closePanel()
+    },
+    [sceneId],
+  )
+  if (always || inPanel) {
+    return (
+      <Section
+        id="prompt"
+        title="Prompt"
+        extra={
+          !always && (
+            // typeOnNode: the canvas first brings the node on screen and near (its field exists only there).
+            <button type="button" className="btn btn-sm btn-ghost in-mini" onClick={() => typeOnNode(sceneId)} title="Đóng khung soạn rộng và gõ tiếp trên node cảnh">
+              Gõ trên node
+            </button>
+          )
+        }
+      >
+        <PromptEditor sceneId={sceneId} />
+        <PlaceholderBar sceneId={sceneId} />
+      </Section>
+    )
+  }
+  return (
+    <Section id="prompt" title="Prompt">
+      <div className="in-note">
+        <Info size={13} />
+        <span>Gõ prompt ngay trên node cảnh: bấm vào chữ, hoặc chọn cảnh rồi nhấn Enter. Prompt rất dài thì mở khung soạn rộng ở đây.</span>
+      </div>
+      <button type="button" className="btn btn-sm btn-ghost in-add" onClick={() => useSceneEditor.getState().openPanel(sceneId)}>
+        <Maximize2 size={13} /> Mở khung soạn rộng
+      </button>
+      {/* red placeholders: also handled on the node (variant 'node'); here for the keyboard and the wide panel */}
+      <PlaceholderBar sceneId={sceneId} />
     </Section>
   )
 })
@@ -216,13 +307,12 @@ function tokensLabel(ns: number[]): string {
   return `@image_${ns[0]}…${ns[ns.length - 1]}`
 }
 
-/** Remove a ref (tokens renumber); offer to turn a remaining legacy @Tag into the name (it would re-link). */
+/**
+ * Remove a ref (tokens renumber, its own tokens turn into red placeholders — no text is lost); offer to turn a
+ * remaining legacy @Tag into the name (it would re-link).
+ */
 function removeRef(sceneId: string, asset: Asset) {
-  changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), {
-    done: `Đã bỏ nối ${asset.name}`,
-    renumbered: `Đã bỏ nối ${asset.name} — đã đánh lại số trong prompt (ảnh của ${asset.name} đổi thành tên).`,
-    plain: true,
-  })
+  changeMedia(sceneId, () => useProject.getState().removeRef(sceneId, asset.id), { done: `Đã bỏ nối ${asset.name}`, plain: true })
   const prompt = promptOf(sceneId) ?? ''
   if (!legacyAssets(prompt, [asset]).length) return
   toast(`Prompt vẫn nhắc @${asset.tag} nên sẽ tự nối lại khi sửa prompt.`, {
@@ -263,10 +353,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
   )
   const moveRow = (from: number, to: number) => {
     if (from === to || !rows[from] || !rows[to]) return
-    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), {
-      done: 'Đã đổi thứ tự ảnh tham chiếu',
-      renumbered: 'Đã đánh lại số trong prompt.',
-    })
+    changeMedia(sceneId, () => useProject.getState().moveRef(sceneId, rows[from].index, rows[to].index), { done: 'Đã đổi thứ tự ảnh tham chiếu' })
   }
   const reorder = useReorder(rows.length, REF_MIME, moveRow)
   const preview = useImagePreview()
@@ -305,11 +392,10 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
         onDrop={(e) => {
           if (!isLibDrag(e)) {
             if (!hasFiles(e.dataTransfer)) return
-            // Image files: add them to the library, then link them here (same as dropping on the scene card).
+            // Image files: new library items linked here — one undo step, one toast (its "Hoàn tác" takes back both).
             e.preventDefault()
             setLibOver(null)
-            const files = Array.from(e.dataTransfer.files)
-            void createAssetsFromFiles(files).then((created) => linkAssets([sceneId], created))
+            void filesToSceneRefs(sceneId, Array.from(e.dataTransfer.files))
             return
           }
           e.preventDefault()
@@ -328,7 +414,7 @@ const RefsSection = memo(function RefsSection({ sceneId }: { sceneId: string }) 
           const sentNs = ns.filter((n) => n <= spec.maxRefImages)
           return (
             <div key={a.id} className={`in-ref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
-              <button type="button" className="in-grip" title={gripTitle(autoRenumber, '@image')} aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
+              <button type="button" className="in-grip" title={gripTitle(autoRenumber)} aria-label={`Đổi thứ tự ${a.name}`} onKeyDown={reorder.gripKeyDown(i)}>
                 <GripVertical size={13} />
               </button>
               <RefThumb asset={a} preview={preview} />
@@ -464,202 +550,14 @@ function FrameSlot({ sceneId, which, label, assetId, assets }: { sceneId: string
   )
 }
 
-// ---------------- 4. reference videos (@video_N) ----------------
-function removeVideoRef(sceneId: string, take: TakeInfo) {
-  const label = take.status ? takeLabel(take.id) : 'đã xoá'
-  // A @video_N token of the removed video becomes plain text ("video S03·T2").
-  changeMedia(sceneId, () => useProject.getState().removeVideoRef(sceneId, take.id, take.status ? 'video ' + label : 'video'), {
-    done: `Đã bỏ video ${label}`,
-    renumbered: `Đã bỏ video ${label} — đã đánh lại số @video trong prompt.`,
-    plain: true,
-    what: '@video',
-  })
-}
-
-const VideoRefsSection = memo(function VideoRefsSection({ sceneId }: { sceneId: string }) {
-  const videoRefs = useSceneField(sceneId, (s) => s.videoRefs) ?? EMPTY_IDS
-  const settings = useSceneField(sceneId, (s) => s.settings)
-  const infos = useTakeInfos(videoRefs)
-  const autoRenumber = useProject((s) => s.project.settings.autoRenumber)
-  const [picker, setPicker] = useState(false)
-  const addBtn = useRef<HTMLButtonElement>(null)
-  /** Generated videos (takes) dragged over the list from the canvas strip / sidebar. */
-  const [takeOver, setTakeOver] = useState(false)
-  const moveRow = (from: number, to: number) =>
-    changeMedia(sceneId, () => useProject.getState().moveVideoRef(sceneId, from, to), {
-      done: 'Đã đổi thứ tự video tham chiếu',
-      renumbered: 'Đã đánh lại số trong prompt.',
-      what: '@video',
-    })
-  const reorder = useReorder(infos.length, VREF_MIME, moveRow)
-  if (!settings) return null
-
-  const spec = MODELS[settings.model]
-  const sends = usesVideoRefs(settings)
-  const over = sends && videoRefs.length > spec.maxRefVideos
-  if (!sends && !videoRefs.length) {
-    return (
-      <Section id="vrefs" title="Video tham chiếu" meta={<span className="in-meta"><span className="badge">không nhận video</span></span>} defaultOpen={false}>
-        <div className="in-note">
-          <Info size={13} />
-          <span>
-            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu (@video). Dùng Seedance 2.5, hoặc chế độ “{modeLabel('i2v', 'minimax_h3')}” của MiniMax-H3.
-          </span>
-        </div>
-      </Section>
-    )
-  }
-
-  return (
-    <Section
-      id="vrefs"
-      title="Video tham chiếu"
-      meta={
-        <span className="in-meta">
-          <span className={`badge ${over || !sends ? 'danger' : videoRefs.length ? 'video' : ''}`} title="Số video gửi kèm / giới hạn của model">
-            {sends ? `${Math.min(videoRefs.length, spec.maxRefVideos)}/${spec.maxRefVideos} video` : 'không nhận video'}
-          </span>
-        </span>
-      }
-    >
-      <div
-        className={`in-refs ${takeOver ? 'is-take-over' : ''}`}
-        onDragOver={(e) => {
-          if (!isTakeDrag(e)) return
-          e.preventDefault()
-          e.dataTransfer.dropEffect = e.dataTransfer.effectAllowed === 'link' ? 'link' : 'copy'
-          if (!takeOver) setTakeOver(true)
-        }}
-        onDragLeave={(e) => {
-          if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) setTakeOver(false)
-        }}
-        onDrop={(e) => {
-          if (!isTakeDrag(e)) return
-          e.preventDefault()
-          setTakeOver(false)
-          const ids = readIds(e.dataTransfer, TAKES_MIME)
-          if (ids.length) linkTakes([sceneId], ids)
-        }}
-      >
-        {infos.length === 0 && (
-          <div className="in-refs-empty">
-            Chưa có video tham chiếu. Kéo một video (take) vào đây hoặc nối dây từ video trên canvas vào cảnh này, hoặc bấm “Thêm video”. Video được gọi trong prompt bằng{' '}
-            <span className="mono">@video_1</span>…
-          </div>
-        )}
-        {infos.map((t, i) => {
-          const n = i + 1
-          const off = !sends || n > spec.maxRefVideos
-          return (
-            <div key={t.id} className={`in-ref in-vref ${reorder.rowClass(i)}`} {...reorder.rowProps(i)}>
-              <button type="button" className="in-grip" title={gripTitle(autoRenumber, '@video')} aria-label={`Đổi thứ tự ${t.label}`} onKeyDown={reorder.gripKeyDown(i)}>
-                <GripVertical size={13} />
-              </button>
-              <button
-                type="button"
-                className="in-vref-thumb"
-                onClick={() => t.status && useUI.getState().openDialog({ kind: 'take', takeId: t.id })}
-                disabled={!t.status}
-                title="Xem video"
-              >
-                {t.posterId ? <MediaImg id={t.posterId} className="media-img" /> : <Film size={13} />}
-              </button>
-              <button type="button" className="in-ref-name" onClick={() => t.status && goTo(t.id)} disabled={!t.status} title="Chọn video trên canvas">
-                <span className="in-ref-title">{t.label}</span>
-                <span className="in-ref-tag">
-                  {t.status ? (
-                    <>
-                      <span className={`status-dot ${t.status}`} /> {STATUS_TEXT[t.status]}
-                      {t.status === 'processing' ? ` ${t.progress}%` : ''}
-                    </>
-                  ) : (
-                    'Take đã bị xoá'
-                  )}
-                </span>
-              </button>
-              <span className={`in-token is-video ${off || t.status !== 'completed' ? 'is-off' : ''}`} title={off ? 'Không được gửi' : `@video_${n}`}>
-                @video_{n}
-              </span>
-              <button type="button" className="in-x" onClick={() => removeVideoRef(sceneId, t)} title="Bỏ video tham chiếu" aria-label={`Bỏ ${t.label}`}>
-                <X size={13} />
-              </button>
-            </div>
-          )
-        })}
-        {takeOver && <div className="in-refs-drop is-video">Thả để dùng làm video tham chiếu (@video) của cảnh này</div>}
-      </div>
-
-      {over && (
-        <div className="in-note danger">
-          <TriangleAlert size={13} />
-          <span>
-            {spec.name} nhận tối đa {spec.maxRefVideos} video; {videoRefs.length - spec.maxRefVideos} video cuối sẽ không được gửi.
-          </span>
-        </div>
-      )}
-      {!sends && (
-        <div className="in-note danger">
-          <TriangleAlert size={13} />
-          <span>
-            {spec.name} ở chế độ “{modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — các video trên sẽ không được gửi.
-          </span>
-        </div>
-      )}
-
-      {sends && (
-        <div className="in-pop-host">
-          <button ref={addBtn} type="button" className="btn btn-sm btn-ghost in-add" onClick={() => setPicker((p) => !p)}>
-            <Plus size={13} /> Thêm video
-          </button>
-          {picker && (
-            <TakePicker
-              excludeSceneIds={[sceneId]}
-              exclude={videoRefs}
-              ignoreRef={addBtn}
-              title="Dùng video làm tham chiếu"
-              onClose={() => setPicker(false)}
-              onPick={(takeId) => linkTakes([sceneId], [takeId])}
-            />
-          )}
-        </div>
-      )}
-    </Section>
-  )
-})
-
 // ---------------- 5. takes + run ----------------
 const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }) {
   const takes = useSceneTakes(sceneId)
   const settings = useSceneField(sceneId, (s) => s.settings)
-  const promptEmpty = useSceneField(sceneId, (s) => !s.prompt.trim()) ?? true
-  const framesMissing = useSceneField(sceneId, (s) => s.settings.mode === 'transform' && (!s.firstFrame || !s.lastFrame)) ?? false
-  const hasVideoRefs = useSceneField(sceneId, (s) => s.videoRefs.length > 0) ?? false
-  // Tokens with no picture/video in the request (character sync): a string, so the selector result is stable.
-  const unsent = useProject((s) => {
-    const sc = s.project.scenes.find((x) => x.id === sceneId)
-    return sc ? compileScene(s.project, sc).unsentTokens.slice(0, 2).join(', ') : ''
-  })
   const completed = useMemo(() => takes.filter((t) => t.status === 'completed').sort((a, b) => a.number - b.number), [takes])
-  const creditKind = useCreditKind()
   if (!settings) return null
-  const cost = costOf(settings)
-  // The continuing scene copies this scene's settings: a mode without reference videos could never use @video_1.
-  const acceptsVideo = usesVideoRefs(settings)
-  const noVideoTitle = `${MODELS[settings.model].name} ở chế độ “${modeLabel(settings.mode, settings.model)}” không nhận video tham chiếu — đổi sang Seedance 2.5 hoặc chế độ “${modeLabel('i2v', 'minimax_h3')}” để tạo cảnh tiếp nối`
   const running = takes.filter((t) => t.status === 'queued' || t.status === 'processing').length
-  const reason = promptEmpty
-    ? 'Prompt trống'
-    : framesMissing
-      ? 'Thiếu khung đầu/cuối'
-      : unsent
-        ? `Prompt nhắc ${unsent} nhưng ảnh/video đó không được gửi — sửa số hoặc nối thêm`
-        : hasVideoRefs && creditKind !== 'demo'
-          ? NO_VIDEO_REFS_REASON
-          : null
   const chosen = [...completed].reverse().find((t) => t.starred) ?? completed[completed.length - 1]
-  const shown = completed.slice(-6)
-  if (chosen && !shown.includes(chosen)) shown.splice(0, 1, chosen)
-  shown.sort((a, b) => a.number - b.number)
   return (
     <Section
       id="takes"
@@ -685,41 +583,7 @@ const TakesSection = memo(function TakesSection({ sceneId }: { sceneId: string }
         </div>
       )}
       {completed.length > 0 && <DownloadRow takes={completed} chosenId={chosen?.id} />}
-      {shown.length > 0 && (
-        <div className="in-continue-row">
-          <span className="in-continue-label">
-            <CornerDownRight size={13} /> Tạo cảnh tiếp nối từ
-          </span>
-          {shown.map((t) => (
-            <button
-              type="button"
-              key={t.id}
-              className={`btn btn-sm ${t.id === chosen?.id ? 'in-continue-main' : 'btn-ghost'}`}
-              onClick={() => createSceneFromTake(t.id)}
-              disabled={!acceptsVideo}
-              title={
-                !acceptsVideo
-                  ? noVideoTitle
-                  : `Cảnh mới bên dưới, dùng T${t.number} làm @video_1, giữ ảnh tham chiếu và cấu hình${creditKind !== 'demo' ? ' · Lưu ý: cổng canvasapp (cả chế độ Phát triển) chưa nhận video tham chiếu — bỏ @video_1 để chạy cảnh này' : ''}`
-              }
-            >
-              T{t.number}
-              {t.starred && <Star size={11} fill="currentColor" className="in-star" />}
-            </button>
-          ))}
-        </div>
-      )}
-      <button
-        type="button"
-        className="btn btn-primary btn-lg in-run"
-        onClick={() => requestRun([sceneId])}
-        disabled={!!reason}
-        title={reason ?? costTitle(cost, creditKind, 'Xem chi phí và chạy (Ctrl+Enter) · ')}
-      >
-        <Play size={14} fill="currentColor" />
-        Chạy · {settings.duration}s ·<span className={`in-run-cost ${creditTone(creditKind)}`}>{formatCredits(cost, creditKind)}</span>
-      </button>
-      {reason && <div className="in-run-reason">{reason} — chưa thể chạy.</div>}
+      {/* The costed Run button and its reason live on the scene node (and the head's "Chạy" above). */}
     </Section>
   )
 })

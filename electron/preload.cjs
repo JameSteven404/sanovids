@@ -5,12 +5,17 @@
 // files: the "Lưu video" dialog and the folder nodes (main writes only into folders the user picked).
 // updates: the auto-updater (electron/updater.cjs) — check / download / install / open the fixed release page; the page
 // never sends a URL, a path or a feed, and receives the state as plain data ('updates:state').
-// app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses).
+// app: read-only self-check of the app's own code signature (main checks the running .exe once; no argument crosses),
+// and where the app runs from (installer / portable / temp-copy / dev — a kind, never a path); setBusy tells main whether
+// takes are being made (macOS: a window hidden by its close button keeps working at full speed only then).
+// devAccess: the development-mode lock (electron/devaccess.cjs). Main decides; the page only reads the state and asks
+// to unlock (the typed code, ≤ 300 characters), lock, keep, link / unlink the authenticator.
 'use strict'
 
 const { contextBridge, ipcRenderer } = require('electron')
 
 const arg = process.argv.find((a) => a.startsWith('--bdp-version='))
+const devAccessArg = process.argv.find((a) => a.startsWith('--bdp-dev-access='))
 
 /** Plain data only: a string (or '') — the main process validates everything again. */
 const str = (v) => (typeof v === 'string' ? v : '')
@@ -23,6 +28,13 @@ const fileList = (files) =>
         text: f && typeof f.text === 'string' ? f.text : undefined,
       }))
     : []
+/** Owner of a folder write { folderId, takeId, via } (strings; main checks them and records the group), or undefined. */
+const saveOwner = (o) => (o && typeof o === 'object' ? { folderId: str(o.folderId), takeId: str(o.takeId), via: str(o.via) } : undefined)
+/** [{ takeId, groupIds }] for files:trashSaved — capped above main's limits (200 / 20), so main refuses a bigger batch. */
+const trashItems = (items) =>
+  Array.isArray(items)
+    ? items.slice(0, 256).map((i) => ({ takeId: str(i && i.takeId), groupIds: Array.isArray(i && i.groupIds) ? i.groupIds.slice(0, 32).map(str) : [] }))
+    : []
 
 contextBridge.exposeInMainWorld('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
@@ -32,16 +44,66 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
   app: {
     /** → { status: 'signed'|'unsigned'|'other-signer'|'tampered'|'unknown', packaged, signer?, thumbprint? } */
     signature: () => ipcRenderer.invoke('app:signature'),
+    /** → { kind: 'installer'|'portable'|'temp-copy'|'dev' } — where this SanoVids runs from (no path). */
+    placement: () => ipcRenderer.invoke('app:placement'),
+    /** (busy) → whether main heard it. macOS: takes queued / being made keep a hidden window working (only a boolean). */
+    setBusy: (busy) => ipcRenderer.invoke('app:busy', busy === true),
+  },
+  /** Development-mode lock: every call → DevAccessState or { ok, state } | { ok: false, error, … } (src/providers/devAccess.ts). */
+  devAccess: {
+    /** 'build' | 'unlocked' | 'locked' when this window was created ('' = unknown: the page treats it as locked). */
+    initial: devAccessArg ? devAccessArg.slice('--bdp-dev-access='.length) : '',
+    getState: () => ipcRenderer.invoke('devAccess:getState'),
+    unlock: (code) => ipcRenderer.invoke('devAccess:unlock', { code: str(code).slice(0, 300) }),
+    lock: () => ipcRenderer.invoke('devAccess:lock'),
+    setKeep: (days) => ipcRenderer.invoke('devAccess:setKeep', { days: Number(days) }),
+    totpBegin: () => ipcRenderer.invoke('devAccess:totpBegin'),
+    totpConfirm: (code) => ipcRenderer.invoke('devAccess:totpConfirm', { code: str(code).slice(0, 300) }),
+    linkCancel: () => ipcRenderer.invoke('devAccess:linkCancel'),
+    totpRemove: () => ipcRenderer.invoke('devAccess:totpRemove'),
+    /** cb(state) on every change main pushes; returns an unsubscribe function. */
+    onState: (cb) => {
+      if (typeof cb !== 'function') return () => undefined
+      const listener = (_event, state) => cb(state)
+      ipcRenderer.on('devAccess:state', listener)
+      return () => ipcRenderer.removeListener('devAccess:state', listener)
+    },
   },
   canvasapp: {
     /** → { ok: true, authenticated } | { ok: false, code, message } */
     status: () => ipcRenderer.invoke('canvasapp:status'),
     /** Opens canvasapp.io.vn in its own window; resolves when logged in or when the window is closed. */
     login: () => ipcRenderer.invoke('canvasapp:login'),
-    /** Clears the canvasapp session (cookies, storage, cache) of the gateway partition. */
+    /**
+     * Đăng xuất: stops canvasapp requests in flight, deletes the kept (encrypted) login copy, asks canvasapp to end the
+     * session and clears the gateway partition. → { ok: true } | { ok: false, code: 'keep-login-not-cleared', message }
+     */
     logout: () => ipcRenderer.invoke('canvasapp:logout'),
-    /** { method, path, json?, form?, binary? } → { ok: true, status, contentType, json?, text?, bytes? } | { ok: false, code, message } */
+    /** → { ok: true, keepLogin, available, chosen } — whether SanoVids keeps the canvasapp login across restarts (encrypted). */
+    keepLogin: () => ipcRenderer.invoke('canvasapp:keepLogin'),
+    /** (on) → same; off deletes the kept copy now (this run stays logged in). Only a boolean crosses. */
+    setKeepLogin: (on) => ipcRenderer.invoke('canvasapp:setKeepLogin', on === true),
+    /**
+     * { method, path, json?, form? } → { ok: true, status, contentType, json?, text? } | { ok: false, code, message }
+     * — never the video stream (main refuses it here: downloadOpen / downloadRead / downloadClose).
+     */
     request: (req) => ipcRenderer.invoke('canvasapp:request', req),
+    /**
+     * Finished videos, pulled in pieces (main reads the HTTP body; nothing big crosses in one message).
+     * { id (a UUID the page picks), path (allowlisted GET …/stream), from (continue at this byte; main decides whether
+     * it can) } → { ok: true, id, status, contentType, from, total, resumable } | { ok: true, status, contentType,
+     * json?, text? } (not 200 / 206) | { ok: false, code, message }
+     */
+    downloadOpen: (a) =>
+      ipcRenderer.invoke('canvasapp:downloadOpen', {
+        id: str(a && a.id),
+        path: str(a && a.path),
+        from: a && Number.isSafeInteger(a.from) && a.from > 0 ? a.from : 0,
+      }),
+    /** { id } → the next piece: { ok: true, done: false, bytes } | { ok: true, done: true } | { ok: false, code, message } */
+    downloadRead: (a) => ipcRenderer.invoke('canvasapp:downloadRead', { id: str(a && a.id) }),
+    /** { id } → stops that download (also while it waits for its turn) → { ok: true } */
+    downloadClose: (a) => ipcRenderer.invoke('canvasapp:downloadClose', { id: str(a && a.id) }),
     /**
      * Top-up: { checkoutUrl, fields } (from POST /api/payments/topups) → opens the REAL checkout page (SePay) in a
      * modal window; main re-validates the URL. → { ok: true, result: 'success'|'cancel'|'error'|'closed'|'timeout',
@@ -62,8 +124,18 @@ contextBridge.exposeInMainWorld('bdpDesktop', {
     pickFolder: () => ipcRenderer.invoke('files:pickFolder'),
     /** { folderPath } → { ok: true, allowed, exists } */
     folderStatus: (args) => ipcRenderer.invoke('files:folderStatus', { folderPath: str(args && args.folderPath) }),
-    /** { folderPath, files: [{ name, bytes | text }] } → { ok: true, names } — never overwrites (" (2)"). */
-    writeToFolder: (args) => ipcRenderer.invoke('files:writeToFolder', { folderPath: str(args && args.folderPath), files: fileList(args && args.files) }),
+    /**
+     * { folderPath, files: [{ name, bytes | text }], owner?: { folderId, takeId, via } } → { ok: true, names, recorded? }
+     * — never overwrites (" (2)"); with an owner, main records the group (`recorded`: its id, or false).
+     */
+    writeToFolder: (args) =>
+      ipcRenderer.invoke('files:writeToFolder', { folderPath: str(args && args.folderPath), files: fileList(args && args.files), owner: saveOwner(args && args.owner) }),
+    /**
+     * { folderPath, folderId, items: [{ takeId, groupIds }] } → { ok: true, results } — moves to the Recycle Bin only the
+     * files main recorded for those groups and that are unchanged (never deletes; the page names no file).
+     */
+    trashSaved: (args) =>
+      ipcRenderer.invoke('files:trashSaved', { folderPath: str(args && args.folderPath), folderId: str(args && args.folderId), items: trashItems(args && args.items) }),
     /** { folderPath } → shows the (allowlisted) folder in Explorer / Finder. */
     openFolder: (args) => ipcRenderer.invoke('files:openFolder', { folderPath: str(args && args.folderPath) }),
     /** { suggestedName, title?, files } → native "Save as" for files[0], companions next to it → { ok: true, path, names } | { ok: false, canceled } */

@@ -1,5 +1,8 @@
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { chordParts } from '../../core/keymap'
+import { IS_MAC } from '../../lib/keyEvents'
+import { useKeymap } from '../../lib/keymapPrefs'
 import { AssetLibrary } from './AssetLibrary'
 import { PresetsPanel } from './PresetsPanel'
 import { readPrefValue, useFileDropGuard, writePref } from './shared'
@@ -22,6 +25,9 @@ function loadCollapsed(): Collapsed {
 /** Left column: search + Thư viện / Video đã tạo / Preset, each collapsible with its own scroll. */
 export function Sidebar() {
   const [query, setQuery] = useState('')
+  // Key cap of the search field: the first chord of "Tìm trong thư viện" in use (a primitive: stable selector).
+  const searchChord = useKeymap((s) => s.resolved.byAction['library.search'][0] ?? '')
+  const searchKey = searchChord ? chordParts(searchChord, IS_MAC).join(IS_MAC ? '' : ' ') : ''
   const [collapsed, setCollapsed] = useState<Collapsed>(loadCollapsed)
   const inputRef = useRef<HTMLInputElement>(null)
   useFileDropGuard()
@@ -58,6 +64,7 @@ export function Sidebar() {
             ref={inputRef}
             className="input sb-search-input"
             placeholder="Tìm nhân vật, bối cảnh, video…"
+            aria-label="Tìm trong thư viện và video đã tạo"
             value={query}
             spellCheck={false}
             onChange={(e) => setQuery(e.target.value)}
@@ -84,7 +91,7 @@ export function Sidebar() {
               <X size={10} strokeWidth={3} />
             </button>
           ) : (
-            <span className="kbd sb-search-kbd">Ctrl K</span>
+            searchKey && <span className="kbd sb-search-kbd">{searchKey}</span>
           )}
         </label>
       </div>

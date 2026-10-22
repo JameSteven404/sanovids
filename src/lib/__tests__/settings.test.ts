@@ -24,6 +24,7 @@ import {
 } from '../settings'
 import { parseThemePref, useTheme } from '../theme'
 import { useUpdatePrefs } from '../updatePrefs'
+import { useKeymap } from '../keymapPrefs'
 
 /** In-memory localStorage (the tests run in Node, where there is none). */
 function memoryStorage(initial: Record<string, string> = {}) {
@@ -44,12 +45,15 @@ function memoryStorage(initial: Record<string, string> = {}) {
 /** A device where the user changed nearly everything. */
 const CUSTOM = {
   theme: 'light',
-  downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}' },
+  background: 'slate',
+  downloads: { askWhere: false, withPrompt: false, autoDownload: true, zipPrompts: false, nameTemplate: '{take} - {scene}', folderUnlinkTrash: false },
   playback: { sound: false, volume: 0.4, rate: 1.5 },
-  canvas: { clickToCut: false, animations: 'off' },
+  canvas: { clickToCut: false, animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off', wheel: 'zoom' },
+  arrange: { style: 'grid', gridCols: 4, spacing: 'tight', refs: 'byKind', folders: 'top', placedTakes: 'follow', videoBy: { rows: 'all', grid: 'all', strip: 'chosen' } },
   ui: { edgeMode: 'all', takeDisplay: 'chosen', showMinimap: false, interaction: 'select', toastTime: 'long' },
   mock: { speed: 'slow', failRate: 0.25, concurrency: 1, recordVideo: false },
   updates: { autoDownload: false },
+  keys: { 'scene.next': ['Alt+KeyN'], 'history.redo': [] },
 } as const
 
 describe('stored prefs are validated on read', () => {
@@ -57,7 +61,11 @@ describe('stored prefs are validated on read', () => {
     expect(parseDownloadPrefs(null)).toEqual(DEFAULT_DOWNLOAD_PREFS)
     expect(parseDownloadPrefs('not json')).toEqual(DEFAULT_DOWNLOAD_PREFS)
     expect(parseDownloadPrefs('[true]')).toEqual(DEFAULT_DOWNLOAD_PREFS)
-    expect(DEFAULT_DOWNLOAD_PREFS).toMatchObject({ askWhere: true, withPrompt: true, autoDownload: false, zipPrompts: true, nameTemplate: DEFAULT_NAME_TEMPLATE })
+    expect(DEFAULT_DOWNLOAD_PREFS).toMatchObject({ askWhere: true, withPrompt: true, autoDownload: false, zipPrompts: true, nameTemplate: DEFAULT_NAME_TEMPLATE, folderUnlinkTrash: true })
+    // "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác": on by default, only a boolean is taken
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":false}').folderUnlinkTrash).toBe(false)
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":"no"}').folderUnlinkTrash).toBe(true)
+    expect(parseDownloadPrefs('{"folderUnlinkTrash":0}').folderUnlinkTrash).toBe(true)
     // older versions stored only the first four keys
     expect(parseDownloadPrefs('{"autoDownload":true,"folderName":"Phim","withPrompt":false}')).toEqual({
       ...DEFAULT_DOWNLOAD_PREFS,
@@ -109,7 +117,7 @@ describe('stored prefs are validated on read', () => {
           'bdp:pref:leftOpen': '{',
           'bdp:pref:downloads': '{"withPrompt":"nope","askWhere":false,"nameTemplate":"{x}"}',
           'bdp:pref:mock': '{"concurrency":50,"speed":"normal"}',
-          'bdp:pref:canvas': '{"animations":"wild"}',
+          'bdp:pref:canvas': '{"animations":"wild","nodeEditor":"always","editorWidth":"wide","bigProject":true}',
           'bdp:pref:updates': '{"autoDownload":"no"}',
         }),
       )
@@ -120,13 +128,31 @@ describe('stored prefs are validated on read', () => {
       expect(dl).toMatchObject({ withPrompt: true, askWhere: false, nameTemplate: DEFAULT_NAME_TEMPLATE })
       const runs = (await import('../../store/runs')).useRuns.getState()
       expect(runs.mock).toEqual({ ...DEFAULT_MOCK_SETTINGS, concurrency: 5, speed: 'normal' })
-      expect((await import('../canvasPrefs')).useCanvasPrefs.getState().animations).toBe('full')
+      expect((await import('../canvasPrefs')).useCanvasPrefs.getState()).toMatchObject({ animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto' })
       expect((await import('../updatePrefs')).useUpdatePrefs.getState().autoDownload).toBe(true)
     })
   })
 })
 
 describe('settings file (export / import)', () => {
+  it('validates keys with the same safety rules as capture and local preferences', () => {
+    for (const chord of ['Backspace', 'Ctrl+Backspace', 'Enter', 'ArrowLeft']) {
+      expect(sanitizeSettings({ keys: { 'selection.delete': [chord] } })).toMatchObject({ patch: {}, accepted: 0, rejected: ['keys.selection.delete'] })
+    }
+    expect(sanitizeSettings({ keys: { 'project.save': ['KeyS'] } }).rejected).toEqual(['keys.project.save'])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['KeyN', 'Alt+KeyN', 'F2'] } }).rejected).toEqual(['keys.scene.next'])
+    expect(sanitizeSettings({ keys: { 'canvas.fit': ['F2'], 'scene.next': ['F2'] } })).toMatchObject({
+      patch: { keys: { 'scene.next': ['F2'], 'canvas.fit': [] } }, accepted: 2, rejected: ['keys.canvas.fit'],
+    })
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, true).rejected).toEqual(['keys.scene.next'])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, true).keyIssues).toEqual([
+      expect.objectContaining({ path: 'keys.scene.next', reason: 'mac-system', message: expect.stringContaining('Ẩn SanoVids') }),
+    ])
+    expect(sanitizeSettings({ keys: { 'scene.next': ['Ctrl+KeyH'] } }, false).rejected).toEqual([])
+    expect(sanitizeSettings({ keys: {} })).toEqual({ patch: { keys: {} }, accepted: 1, rejected: [] })
+    expect(sanitizeSettings({ keys: null }).rejected).toEqual(['keys'])
+  })
+
   it('sanitizeSettings keeps valid values, refuses wrong ones, ignores unknown keys', () => {
     const res = sanitizeSettings({
       theme: 'dark',
@@ -152,6 +178,24 @@ describe('settings file (export / import)', () => {
     expect(sanitizeSettings({ updates: { autoDownload: 'no' } })).toEqual({ patch: {}, accepted: 0, rejected: ['updates.autoDownload'] })
     expect(sanitizeSettings({ updates: { autoDownload: false, channel: 'beta' } })).toEqual({ patch: { updates: { autoDownload: false } }, accepted: 1, rejected: [] })
     expect(sanitizeSettings({ theme: 'pink', ui: 'all' }).rejected).toEqual(['theme', 'ui'])
+    // the Recycle Bin on unlinking a folder wire: a boolean only
+    expect(sanitizeSettings({ downloads: { folderUnlinkTrash: false } })).toEqual({ patch: { downloads: { folderUnlinkTrash: false } }, accepted: 1, rejected: [] })
+    for (const bad of ['false', 0, null, 'yes']) {
+      expect(sanitizeSettings({ downloads: { folderUnlinkTrash: bad } }), String(bad)).toEqual({ patch: {}, accepted: 0, rejected: ['downloads.folderUnlinkTrash'] })
+    }
+  })
+
+  it('the editor on a scene card and the big-project optimisations: valid values only, never "fixed"', () => {
+    expect(sanitizeSettings({ canvas: { nodeEditor: 'off', editorWidth: 640, bigProject: 'off' } })).toEqual({
+      patch: { canvas: { nodeEditor: 'off', editorWidth: 640, bigProject: 'off' } },
+      accepted: 3,
+      rejected: [],
+    })
+    expect(sanitizeSettings({ canvas: { editorWidth: 340 } }).patch).toEqual({ canvas: { editorWidth: 340 } })
+    for (const bad of [339, 641, 400.5, '400', null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(sanitizeSettings({ canvas: { editorWidth: bad } }), String(bad)).toEqual({ patch: {}, accepted: 0, rejected: ['canvas.editorWidth'] })
+    }
+    expect(sanitizeSettings({ canvas: { nodeEditor: 'always', bigProject: 'on' } }).rejected.sort()).toEqual(['canvas.bigProject', 'canvas.nodeEditor'])
   })
 
   it('readSettingsFile explains what is wrong with a file', () => {
@@ -185,7 +229,7 @@ describe('settings file (export / import)', () => {
 describe('apply / reset / restore', () => {
   let storage: ReturnType<typeof memoryStorage>
   beforeEach(() => {
-    storage = memoryStorage({ 'bdp:hint:storyboard-reorder': '1', 'bdp:pref:leftW': '300' })
+    storage = memoryStorage({ 'bdp:hint:storyboard-reorder': '1', 'bdp:hint:folder-trash': '1', 'bdp:pref:leftW': '300' })
     vi.stubGlobal('localStorage', storage)
     applySettings(DEFAULT_SETTINGS)
     useProviderPrefs.getState().setProvider('dev')
@@ -201,12 +245,14 @@ describe('apply / reset / restore', () => {
     expect(useTheme.getState().pref).toBe('light')
     expect(useUI.getState().toastTime).toBe('long')
     expect(usePlayback.getState().rate).toBe(1.5)
-    expect(useCanvasPrefs.getState().animations).toBe('off')
+    expect(useCanvasPrefs.getState()).toMatchObject({ animations: 'off', nodeEditor: 'select', editorWidth: 512, bigProject: 'off' })
+    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual(CUSTOM.canvas)
     expect(useRuns.getState().mock.concurrency).toBe(1)
-    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!)).toMatchObject({ nameTemplate: '{take} - {scene}', zipPrompts: false })
+    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!)).toMatchObject({ nameTemplate: '{take} - {scene}', zipPrompts: false, folderUnlinkTrash: false })
     expect(storage.data.get('bdp:pref:toastTime')).toBe('"long"')
     expect(storage.data.get('bdp:pref:minimap')).toBe('false')
     expect(storage.data.get('bdp:pref:theme')).toBe('"light"')
+    expect(storage.data.get('bdp:pref:background')).toBe('"slate"')
     expect(useUpdatePrefs.getState().autoDownload).toBe(false)
     expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":false}')
     expect(changedSettingsCount()).toBeGreaterThan(15)
@@ -221,18 +267,77 @@ describe('apply / reset / restore', () => {
     expect(changedSettingsCount()).toBe(0)
     expect(useProviderPrefs.getState().provider).toBe('dev')
     expect(storage.data.has('bdp:hint:storyboard-reorder')).toBe(false)
+    expect(storage.data.has('bdp:hint:folder-trash')).toBe(false) // "Tắt ở Cài đặt → Tải video." shown again
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(true)
     // the chosen download folder is a place, not a setting: kept
     expect(useDownloadPrefs.getState().folderName).toBe('Phim')
     expect(storage.data.get('bdp:pref:leftW')).toBe('300') // panel widths: resetPanelLayout, not this
-    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full' })
+    expect(JSON.parse(storage.data.get('bdp:pref:canvas')!)).toEqual({ clickToCut: true, animations: 'full', nodeEditor: 'click', editorWidth: 380, bigProject: 'auto', wheel: 'pan' })
     expect(useUpdatePrefs.getState().autoDownload).toBe(true)
     expect(storage.data.get('bdp:pref:updates')).toBe('{"autoDownload":true}')
 
     restoreSettings(before)
     expect(currentSettings()).toEqual(CUSTOM)
     expect(useProviderPrefs.getState().provider).toBe('canvasapp')
+    // the tips dismissed before the reset are dismissed again
+    expect(storage.data.get('bdp:hint:storyboard-reorder')).toBe('1')
+    expect(storage.data.get('bdp:hint:folder-trash')).toBe('1')
     useProviderPrefs.getState().setProvider('dev')
     useDownloadPrefs.getState().set({ folderName: null })
+  })
+
+  it('changedSettingsCount counts the new canvas prefs, each once', () => {
+    expect(changedSettingsCount()).toBe(0)
+    applySettings({ canvas: { nodeEditor: 'off', bigProject: 'off', editorWidth: 400 } })
+    expect(changedSettingsCount()).toBe(3)
+    expect(currentSettings().canvas).toEqual({ ...DEFAULT_SETTINGS.canvas, nodeEditor: 'off', bigProject: 'off', editorWidth: 400 })
+  })
+
+  it('validates, counts and imports a background independently of the theme', () => {
+    for (const background of ['than', 'deep', 'slate'] as const) {
+      const read = readSettingsFile(JSON.stringify({ kind: SETTINGS_FILE_KIND, settings: { background } }))
+      expect(read).toEqual({ ok: true, patch: { background }, accepted: 1, rejected: [] })
+      if (read.ok) applySettings(read.patch)
+      expect(currentSettings().background).toBe(background)
+      expect(changedSettingsCount()).toBe(background === 'than' ? 0 : 1)
+    }
+    for (const background of ['light', 'neon', '', 1, null, {}, ['deep']]) {
+      expect(sanitizeSettings({ background })).toEqual({ patch: {}, accepted: 0, rejected: ['background'] })
+    }
+    // Older files leave this device's existing background alone.
+    applySettings(sanitizeSettings({ theme: 'light' }).patch)
+    expect(currentSettings().background).toBe('slate')
+  })
+
+  it('replaces the entire keys group, preserves foreign ids, and resets/restores overrides', () => {
+    applySettings({ keys: { 'scene.next': ['Alt+KeyN'], 'canvas.fit': [] } })
+    expect(changedSettingsCount()).toBe(2)
+    applySettings({ keys: { 'future.action': ['F3'], 'project.save': ['Ctrl+Shift+KeyS'] } })
+    expect(useKeymap.getState().bindings).toEqual({ 'project.save': ['Ctrl+Shift+KeyS'] })
+    expect(useKeymap.getState().resolved.labels['scene.next']).toBe('N')
+    const before = resetAllSettings()
+    expect(currentSettings().keys).toEqual({})
+    restoreSettings(before)
+    expect(currentSettings().keys).toEqual({ 'future.action': ['F3'], 'project.save': ['Ctrl+Shift+KeyS'] })
+    expect(JSON.parse(storage.data.get('bdp:pref:keys')!)).toEqual({ v: 1, bindings: currentSettings().keys })
+    expect(changedSettingsCount()).toBe(1)
+    expect(changedSettingsCount({ ...DEFAULT_SETTINGS, keys: { 'scene.next': ['KeyN'] } })).toBe(0)
+    const read = readSettingsFile(settingsFileText())
+    expect(read.ok && read.patch.keys).toEqual(currentSettings().keys)
+    applySettings({ keys: {} })
+    expect(changedSettingsCount()).toBe(0)
+  })
+
+  it('changedSettingsCount counts "chuyển file vào Thùng rác" once; Hoàn tác of a reset brings it back', () => {
+    expect(changedSettingsCount()).toBe(0)
+    applySettings({ downloads: { folderUnlinkTrash: false } })
+    expect(changedSettingsCount()).toBe(1)
+    expect(currentSettings().downloads.folderUnlinkTrash).toBe(false)
+    expect(JSON.parse(storage.data.get('bdp:pref:downloads')!).folderUnlinkTrash).toBe(false)
+    const before = resetAllSettings()
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(true)
+    restoreSettings(before)
+    expect(useDownloadPrefs.getState().folderUnlinkTrash).toBe(false)
   })
 
   it('changedSettingsCount counts the app-update pref', () => {

@@ -1,0 +1,86 @@
+# Bản SanoVids cho Mac (chip Apple, thử nghiệm): dựng DMG + ZIP ký ad-hoc ("-"), chưa công chứng, KHÔNG BAO GIỜ đăng bản.
+# Đăng bản chỉ làm trên máy Windows: `npm run mac:fetch -- --run <số lần chạy>` tải ĐÚNG lần chạy bạn đã thử (sự kiện
+# workflow_dispatch, rc = true, trên main, đúng commit sẽ gắn tag) rồi `npm run release:check` (nhóm (k) "Bản Mac") kiểm
+# lại từng file theo SHA-512, `npm run release:publish` đăng vào cùng bản nháp — repo công khai sau cùng.
+#
+# - Không chạy khi push tag: bản dựng Mac không tái lập được từng byte, dựng lại sau khi thử là đăng một file chưa ai thử.
+# - Không bao giờ chạy với pull_request: electron-builder bỏ hẳn bước ký khi có GITHUB_BASE_REF, và một app arm64 không
+#   có chữ ký bị macOS báo "bị hỏng".
+# - Không có bí mật (giai đoạn 1, chưa có Apple Developer). Artifact: đúng 5 file cố định, giữ 3 ngày.
+# - Chi phí (gói Free): phút macOS tính ~10 lần; mỗi lần dựng khoảng 6–10 phút.
+name: mac-build
+run-name: "mac-build ${{ github.event_name == 'workflow_dispatch' && inputs.rc && 'RC' || 'thử' }} · ${{ github.ref_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: 'Bản RC của một phiên bản (chạy trên main, đúng commit sẽ gắn tag)'
+        type: boolean
+        default: false
+  push:
+    # Dựng thử trước khi workflow có trên main. Không bao giờ được đăng (nhóm (k) từ chối mọi lần chạy không phải RC).
+    branches: ['mac-ci/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    # GitHub-hosted Apple Silicon (arm64). Nhãn ghim, không dùng macos-latest.
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      # mac-inspect.mjs ghi vào mac-check.json; fetch-mac-build.mjs và publish-release.mjs đòi đúng các giá trị này.
+      SANOVIDS_MAC_RC: ${{ github.event_name == 'workflow_dispatch' && inputs.rc && 'true' || 'false' }}
+      ELECTRON_BUILDER_DISABLE_BUILD_CACHE: 'true'
+    steps:
+      - name: RC chỉ dựng từ main
+        if: github.event_name == 'workflow_dispatch' && inputs.rc && github.ref != 'refs/heads/main'
+        run: |
+          echo "Bản RC phải chạy trên main (đang chạy trên ${GITHUB_REF})." >&2
+          exit 1
+
+      # Mọi action ghim theo SHA đầy đủ (chú thích là phiên bản tương ứng).
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - id: v
+        name: Phiên bản
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - run: npm run typecheck
+
+      # Bản RC (workflow_dispatch, rc = true) dừng khi test hỏng: không có artifact nào để đăng. Lần dựng thử (push
+      # mac-ci/**, chạy tay không rc) vẫn đi tiếp để xem bản dựng.
+      - run: npm test
+        continue-on-error: ${{ !(github.event_name == 'workflow_dispatch' && inputs.rc) }}
+
+      # update-notes → third-party-notices --check → vite build → electron-builder (--publish never) → mac-inspect
+      - run: npm run dist:mac
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sanovids-mac-${{ steps.v.outputs.version }}-${{ github.run_number }}
+          # Đúng 5 file cố định, không glob (không bao giờ thư mục .app: artifact zip làm hỏng symlink của framework).
+          path: |
+            release/mac/SanoVids-Mac-${{ steps.v.outputs.version }}-arm64.dmg
+            release/mac/SanoVids-Mac-${{ steps.v.outputs.version }}-arm64.zip
+            release/mac/SanoVids-Mac-${{ steps.v.outputs.version }}-arm64.zip.blockmap
+            release/mac/latest-mac.yml
+            release/mac/mac-check.json
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0

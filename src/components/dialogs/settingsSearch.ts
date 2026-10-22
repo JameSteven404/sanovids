@@ -71,6 +71,37 @@ export function matchSettings<G extends SearchGroup>(groups: readonly G[], level
   return out
 }
 
+/**
+ * The groups Settings shows (search and deep links included): development mode open → all of them; locked (release
+ * builds) → no 'dev' group, and the canvasapp gateway ('gateway', "Nhà cung cấp video") moves to "Cơ bản" in its place —
+ * so "phát triển" / "dev" / "giả lập" find nothing and openSettings('dev') is an unknown id.
+ */
+export function visibleGroups<G extends SearchGroup>(groups: readonly G[], devOpen: boolean): G[] {
+  if (devOpen) return [...groups]
+  const gateway = groups.find((g) => g.id === 'gateway')
+  const out: G[] = []
+  for (const g of groups) {
+    if (g.id === 'gateway') continue
+    if (g.id === 'dev') {
+      if (gateway) out.push({ ...gateway, level: 'basic' })
+      continue
+    }
+    out.push(g)
+  }
+  return out
+}
+
+/**
+ * The group a deep link should switch the dialog to NOW, or undefined. Only a new request (`section` differs from the
+ * one already followed, `followed`; null = none yet) moves the dialog. The same request with other group objects —
+ * development mode locking / unlocking moves 'gateway' between the levels — never does: jumping to "Nâng cao" right
+ * after an unlock from Giới thiệu would unmount the unlock box and drop its one-time authenticator link offer.
+ */
+export function deepLinkStep<G extends SearchGroup>(followed: string | undefined | null, section: string | undefined, groups: readonly G[]): G | undefined {
+  if (!section || section === followed) return undefined
+  return groups.find((g) => g.id === section)
+}
+
 /** Number of results (a block group counts as one). */
 export function resultCount(matches: readonly GroupMatch<SearchGroup>[]): number {
   return matches.reduce((n, m) => n + (m.group.rows ? m.rows.length : 1), 0)

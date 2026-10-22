@@ -1,4 +1,4 @@
-/* Saving videos on the canvas: folder nodes ("Thư mục", FolderNode.tsx) and the take's "Tên file" (TakeNode.tsx). */
+/* Saving videos on the canvas: folder nodes ("Thư mục", FolderNode.tsx). The take's "Tên file" input: takeNode.css. */
 
 /* ============================== folder node ============================== */
 /* Indigo (--save) marks everything about saving into folders: the node's icon / dot and the wires into it. */
@@ -32,7 +32,7 @@
   box-shadow: var(--cv-lift-shadow);
 }
 .cv-folder.is-selected {
-  border-color: var(--accent);
+  border-color: var(--selection);
   box-shadow: var(--cv-ring), var(--cv-lift-shadow);
 }
 .cv-folder.needs-attention:not(.is-selected) {
@@ -229,14 +229,15 @@
   transform: scale(0.98);
 }
 .cv-folder-btn.primary {
-  background: var(--save);
-  color: var(--cv-on-media);
+  background: var(--save-soft);
+  color: var(--save);
 }
 .cv-folder-btn.primary > svg {
   color: inherit;
 }
 .cv-folder-btn.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--save) 85%, var(--text));
+  background: var(--save-soft);
+  box-shadow: inset 0 0 0 1px var(--save);
 }
 .cv-folder-btn:disabled {
   opacity: 0.4;
@@ -266,7 +267,7 @@
   top: 25px;
   --h-c: var(--save);
   --h-glow: var(--save-soft);
-  --h-ring: 0 0 0 3px color-mix(in srgb, var(--save) 22%, transparent);
+  --h-ring: 0 0 0 1px var(--save);
 }
 /* FolderNode re-measures the node when this changes (useRemeasureOn), so its wires follow the dot */
 .cv-stage .is-far .cv-h.cv-h-folder {
@@ -294,34 +295,4 @@
 }
 
 /* ============================== take node: "Tên file" ============================== */
-/* a custom file name replaces the settings label in the footer (settings stay in its tooltip) */
-.cv-take-settings.is-name {
-  color: var(--text);
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-}
-.cv-take-settings {
-  cursor: text;
-}
-.cv-take-foot.is-renaming {
-  padding: 0 6px;
-}
-.cv-take-name-input {
-  flex: 1;
-  min-width: 0;
-  height: 24px;
-  padding: 0 7px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--accent);
-  background: var(--bg-elev);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.cv-take-name-input::placeholder {
-  color: var(--text-faint);
-}
+/* edited in the take's title line above the card (takeNode.css .cv-take-name-input); the footer keeps the settings */

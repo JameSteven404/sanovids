@@ -7,17 +7,12 @@ import { CloudDownload, FlaskConical, RotateCcw, ShieldCheck } from 'lucide-reac
 import type { ReactNode } from 'react'
 import { isUpdateVersion } from '../../lib/updateModel'
 import type { UpdateKind } from '../../lib/updateTypes'
-import { DEV_SIGNATURE_OPTIONS, devSignature, devSignaturePresetOf, useDevSignature, type DevSignaturePreset } from '../../providers/dev/appSignature'
-import { DEV_NEXT_CHECK_LABEL, devUpdates, useDevUpdates, type DevNextCheck } from '../../providers/dev/updates'
+import { DEV_SIGNATURE_OPTIONS, DEV_SIGNATURE_MAC_OPTION, devSignature, devSignaturePresetOf, useDevSignature, useDevSignaturePlatform, type DevSignaturePreset } from '../../providers/dev/appSignature'
+import { DEV_UPDATE_KIND_OPTIONS, DEV_NEXT_CHECKS, DEV_NEXT_CHECK_LABEL, devUpdates, useDevUpdates, type DevNextCheck } from '../../providers/dev/updates'
 import { Segmented } from '../dialogs/Segmented'
 
-const KIND_OPTIONS: { id: UpdateKind; label: string; title: string }[] = [
-  { id: 'installer', label: 'Bản cài', title: 'Bản cài (Setup): tự tải và tự cài bản mới' },
-  { id: 'portable', label: 'Bản portable', title: 'Bản portable: chỉ báo có bản mới' },
-  { id: 'dev', label: 'Bản phát triển', title: 'Chạy từ mã nguồn: không tự cập nhật' },
-]
-
-const NEXT_CHECKS: DevNextCheck[] = ['none', 'available', 'offline', 'no-release']
+const KIND_OPTIONS = [...DEV_UPDATE_KIND_OPTIONS]
+const SIGNATURE_OPTIONS = [...DEV_SIGNATURE_OPTIONS, DEV_SIGNATURE_MAC_OPTION]
 
 function UpdCard({ title, icon, children, wide }: { title: string; icon: ReactNode; children: ReactNode; wide?: boolean }) {
   return (
@@ -42,12 +37,13 @@ export function DevUpdatesTab() {
   const sigStatus = useDevSignature((s) => s.status)
   const sigPackaged = useDevSignature((s) => s.packaged)
   const sigSigner = useDevSignature((s) => s.signer)
-  const sigPreset = devSignaturePresetOf({ status: sigStatus, packaged: sigPackaged, signer: sigSigner })
+  const sigPlatform = useDevSignaturePlatform((s) => s.platform)
+  const sigPreset = devSignaturePresetOf({ status: sigStatus, packaged: sigPackaged, signer: sigSigner }, sigPlatform)
 
   return (
     <div className="dv-upd">
       <p className="dv-hint dv-upd-intro">
-        Giả lập trình cập nhật của bản cài Windows để thử giao diện (thanh trên cùng, hộp thoại, Cài đặt). Không tải gì, không gọi mạng.
+        Giả lập trình cập nhật của bản Windows / Mac để thử giao diện (thanh trên cùng, hộp thoại, Cài đặt). Không tải gì, không gọi mạng.
       </p>
       <div className="dv-grid">
         <UpdCard title="Bản đang chạy" icon={<FlaskConical size={15} />}>
@@ -87,7 +83,7 @@ export function DevUpdatesTab() {
           <label className="dv-field">
             <span className="label">Lần kiểm tra tới</span>
             <select className="select" value={nextCheck} onChange={(e) => devUpdates.setNextCheck(e.target.value as DevNextCheck)}>
-              {NEXT_CHECKS.map((o) => (
+              {DEV_NEXT_CHECKS.map((o) => (
                 <option key={o} value={o}>
                   {DEV_NEXT_CHECK_LABEL[o]}
                 </option>
@@ -147,10 +143,10 @@ export function DevUpdatesTab() {
         <UpdCard title="Chữ ký số (Giới thiệu)" icon={<ShieldCheck size={15} />} wide>
           <div className="dv-field">
             <span className="label">Kết quả tự kiểm tra chữ ký số</span>
-            <Segmented<DevSignaturePreset> label="Kết quả tự kiểm tra chữ ký số" value={sigPreset} onChange={(p) => devSignature.simulate(p)} options={DEV_SIGNATURE_OPTIONS} />
+            <Segmented<DevSignaturePreset> label="Kết quả tự kiểm tra chữ ký số" value={sigPreset} onChange={(p) => devSignature.simulate(p)} options={SIGNATURE_OPTIONS} />
           </div>
           <p className="dv-hint">
-            Trạng thái mà Cài đặt → Giới thiệu hiển thị. Bản desktop tự kiểm tra chữ ký số của file SanoVids.exe khi mở; ở đây chỉ giả lập, không kiểm tra gì.
+            Trạng thái mà Cài đặt → Giới thiệu hiển thị. Bản Windows tự kiểm tra chữ ký số khi mở; bản Mac hiện trạng thái ad-hoc, chưa có chữ ký của Apple; ở đây chỉ giả lập, không kiểm tra gì.
           </p>
         </UpdCard>
       </div>

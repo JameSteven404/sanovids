@@ -1,5 +1,5 @@
 // Pure helpers about takes (video nodes) shared by the canvas and the layout of new nodes (store/takeRows).
-import type { Scene, Take, XY } from './types'
+import type { Take, XY } from './types'
 
 /**
  * Does a take the user placed by hand (`at`) still sit on its row slot (`slot`), i.e. was it only nudged? Its box
@@ -18,16 +18,4 @@ export function chooseTake(list: Take[]): Take | undefined {
     if (!completed && t.status === 'completed') completed = t
   }
   return completed ?? list[list.length - 1]
-}
-
-const videoUsage = new WeakMap<Scene[], Map<string, number>>()
-/** take id -> number of scenes that use it as @video. */
-export function videoUsageOf(scenes: Scene[]): Map<string, number> {
-  let m = videoUsage.get(scenes)
-  if (!m) {
-    m = new Map()
-    for (const s of scenes) for (const t of s.videoRefs) m.set(t, (m.get(t) ?? 0) + 1)
-    videoUsage.set(scenes, m)
-  }
-  return m
 }

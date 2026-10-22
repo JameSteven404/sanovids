@@ -6,15 +6,18 @@
 //   canvasapp  solid tinted "canvasapp · 1.234 credit" (≈ đồng + last update in the tooltip); click → re-read.
 //              A small "+" next to it opens "Nạp credit canvasapp" (SePay QR, components/topup).
 //              Not logged in → "canvasapp · Đăng nhập" (opens canvasapp's own login window). Unknown → "—".
+//   off        "canvasapp · Chưa bật": development mode is locked and the canvasapp gateway is not turned on; click →
+//              Cài đặt → Nhà cung cấp video (nothing is read from canvasapp meanwhile).
 //   demo       (legacy) dashed "… credit DEMO" — only for callers passing the old demo wallet.
 // What it shows for each state: creditPillModel.ts (pure, tested).
-import { FlaskConical, LoaderCircle, LogIn, Plus, TriangleAlert, Wallet } from 'lucide-react'
+import { FlaskConical, LoaderCircle, LogIn, Plus, Power, TriangleAlert, Wallet } from 'lucide-react'
 import { memo, useState } from 'react'
-import { openTopUp } from '../../actions'
-import { activeGateway, type Gateway } from '../../providers'
+import { openSettings, openTopUp } from '../../actions'
+import { activeGateway, refreshProviderLimits, type Gateway } from '../../providers'
 import { refreshRealCredits, useCreditInfo } from '../../store/credits'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
+import { GATEWAY_SETTINGS_GROUP, loginSuccessToast } from '../dialogs/keepLoginModel'
 import { creditPillView } from './creditPillModel'
 import './creditPill.css'
 
@@ -23,7 +26,7 @@ let loginInFlight: Promise<boolean> | null = null
 /**
  * Log in on the gateway's own login page — the active one by default: canvasapp's real page (desktop bridge, a
  * separate window — SanoVids never sees the password), or in development mode the simulated login sheet — then
- * re-read the balance. Without a bridge (real canvasapp on the web) it opens Cài đặt instead. Resolves true when
+ * re-read the balance and what the account may run (/api/video-profiles). Without a bridge (real canvasapp on the web) it opens Cài đặt instead. Resolves true when
  * logged in. Concurrent calls share one login window.
  */
 export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<boolean> {
@@ -38,8 +41,14 @@ export function loginToCanvasapp(gateway: Gateway = activeGateway()): Promise<bo
     try {
       const st = await bridge.login()
       const ok = st.ok && st.authenticated
-      if (ok) toast(`Đã đăng nhập ${name}.`, { tone: 'success' })
+      if (ok) {
+        // "SanoVids giữ đăng nhập trên máy này…" when it keeps the login across restarts (+ a Cài đặt button).
+        const t = loginSuccessToast(name, st)
+        toast(t.text, { tone: 'success', ...(t.settings ? { action: { label: 'Cài đặt', run: () => openSettings(GATEWAY_SETTINGS_GROUP) } } : {}) })
+      }
       else if (!st.ok) toast(`Không đăng nhập được ${name}: ${st.message}`, { tone: 'error' })
+      // what this account may run (/api/video-profiles), read at once — even seconds after the inspector's own 401
+      if (ok) void refreshProviderLimits(gateway.id, { changed: true })
       await refreshRealCredits({ force: true })
       return ok
     } catch (e) {
@@ -80,6 +89,7 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
 
   const onClick = () => {
     if (v.action === 'settings') useUI.getState().openDialog({ kind: 'settings' })
+    else if (v.action === 'gateway') openSettings(GATEWAY_SETTINGS_GROUP)
     else if (v.action === 'login') {
       if (loggingIn) return
       setLoggingIn(true)
@@ -95,6 +105,8 @@ export const CreditPill = memo(function CreditPill({ size = 'md' }: CreditPillPr
     <LogIn size={13} />
   ) : v.tone === 'problem' ? (
     <TriangleAlert size={13} />
+  ) : v.tone === 'off' ? (
+    <Power size={13} />
   ) : (
     <Wallet size={13} />
   )

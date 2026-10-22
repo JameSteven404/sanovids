@@ -1,26 +1,33 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { CanvasView } from './components/canvas/CanvasView'
 import { SectionBoundary } from './components/common/ErrorBoundary'
 import { errorSummary, isChunkLoadError } from './components/common/errorInfo'
 import { LEFT_PANEL, PanelResizer, RIGHT_PANEL, usePanelWidths } from './components/common/PanelResizer'
 import { ImageLightbox } from './components/common/ImageLightbox'
+import { ConfirmSheet } from './components/common/ConfirmSheet'
 import { Toasts } from './components/common/Toasts'
+import { ContextMenuBoundary } from './components/contextmenu/ContextMenuBoundary'
+import { useContextMenu } from './components/contextmenu/contextMenuStore'
 import { Inspector } from './components/inspector/Inspector'
 import { QueueDrawer } from './components/runs/QueueDrawer'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { useFileDropGuard } from './components/sidebar/shared'
 import { TopBar } from './components/topbar/TopBar'
 import { useShortcuts } from './hooks/useShortcuts'
+import { startDesktopBusy } from './lib/desktopBusy'
+import { activeProviderId, useProviderPrefs } from './providers'
 import { closeDevPrompts, useDevPrompts } from './providers/dev/prompts'
 import { bootstrap, useSave } from './store/persist'
 import { toast, useUI, type DialogState } from './store/ui'
 import { startUpdates } from './updateActions'
 
-// Code splitting: the canvas (default view) ships in the main bundle; the other views and every dialog are
-// separate chunks, loaded on first use and prefetched once the browser is idle so opening them stays instant.
+let PerfProfiler = ({ children }: { id: string; children: ReactNode }) => <>{children}</>
+if (__SANOVIDS_PERF__) PerfProfiler = (await import('./perf/PerfProfiler')).PerfProfiler
+
+// Code splitting: the canvas (the only view shown, core/shownViews) ships in the main bundle; every dialog — the
+// "Phát liền" player too — is a separate chunk, loaded on first use and prefetched once the browser is idle so opening
+// it stays instant. The hidden Storyboard (components/views) is not imported at all, so it is not bundled.
 const chunks = {
-  sceneTable: () => import('./components/views/SceneTable'),
-  storyboard: () => import('./components/views/Storyboard'),
   importDialog: () => import('./components/dialogs/ImportDialog'),
   settingsDialog: () => import('./components/dialogs/SettingsDialog'),
   shortcutsDialog: () => import('./components/dialogs/ShortcutsDialog'),
@@ -32,10 +39,14 @@ const chunks = {
   devPanel: () => import('./components/dev/DevPanel'),
   devSheets: () => import('./components/dev/DevSheets'),
   updateDialog: () => import('./components/dialogs/UpdateDialog'),
+  importJobsDialog: () => import('./components/runs/ImportJobsDialog'),
+  filmPlayer: () => import('./components/player/FilmPlayerDialog'),
+  // right-click menus: the host (mounted while a menu is open) and the builders the openers load on the first menu
+  contextMenu: () => import('./components/contextmenu/ContextMenuHost'),
+  canvasMenu: () => import('./components/contextmenu/canvasMenu'),
+  libraryMenu: () => import('./components/contextmenu/libraryMenu'),
 }
 
-const SceneTable = lazy(() => chunks.sceneTable().then((m) => ({ default: m.SceneTable })))
-const Storyboard = lazy(() => chunks.storyboard().then((m) => ({ default: m.Storyboard })))
 const ImportDialog = lazy(() => chunks.importDialog().then((m) => ({ default: m.ImportDialog })))
 const SettingsDialog = lazy(() => chunks.settingsDialog().then((m) => ({ default: m.SettingsDialog })))
 const ShortcutsDialog = lazy(() => chunks.shortcutsDialog().then((m) => ({ default: m.ShortcutsDialog })))
@@ -47,6 +58,16 @@ const TopUpDialog = lazy(() => chunks.topUpDialog().then((m) => ({ default: m.To
 const DevPanel = lazy(() => chunks.devPanel().then((m) => ({ default: m.DevPanel })))
 const DevSheets = lazy(() => chunks.devSheets().then((m) => ({ default: m.DevSheets })))
 const UpdateDialog = lazy(() => chunks.updateDialog().then((m) => ({ default: m.UpdateDialog })))
+const ImportJobsDialog = lazy(() => chunks.importJobsDialog().then((m) => ({ default: m.ImportJobsDialog })))
+// "Test giới hạn" pill (src/devtools/stress): development mode only, never prefetched; a chunk that cannot load shows
+// nothing (the tester itself is a separate chunk, loaded by its dev-panel tab).
+const StressHud = lazy(
+  (): Promise<{ default: ComponentType }> =>
+    import('./devtools/stress/StressHud').then((m) => ({ default: m.StressHud })).catch(() => ({ default: () => null })),
+)
+const FilmPlayerDialog = lazy(() => chunks.filmPlayer().then((m) => ({ default: m.FilmPlayerDialog })))
+const lazyContextMenuHost = () => lazy(() => chunks.contextMenu().then((m) => ({ default: m.ContextMenuHost })))
+let ContextMenuHost = lazyContextMenuHost()
 
 function usePrefetchChunks() {
   useEffect(() => {
@@ -98,13 +119,17 @@ function BootError({ detail }: { detail: string }) {
 }
 
 function Shell() {
+  useEffect(() => {
+    if (__SANOVIDS_PERF__) void import('./perf/runner').then((m) => m.exposeHarness()).catch((error) => console.warn('[SanoVids perf]', error))
+  }, [])
   useShortcuts()
   useFileDropGuard()
   usePrefetchChunks()
   // App updates (desktop: the main process updater; development mode in a browser: its simulation): state mirror,
   // "download ready" / "updated" toasts. Ref-counted.
   useEffect(() => startUpdates(), [])
-  const view = useUI((s) => s.view)
+  // macOS desktop: a window hidden by its close button keeps working at full speed only while takes are being made.
+  useEffect(() => startDesktopBusy(), [])
   const leftOpen = useUI((s) => s.leftOpen)
   const rightOpen = useUI((s) => s.rightOpen)
   const root = useRef<HTMLDivElement>(null)
@@ -114,24 +139,21 @@ function Shell() {
   return (
     <div className="app" ref={root}>
       <SectionBoundary area="Thanh công cụ" variant="bar" className="app-crash-topbar">
-        <TopBar />
+        {__SANOVIDS_PERF__ ? <PerfProfiler id="TopBar"><TopBar /></PerfProfiler> : <TopBar />}
       </SectionBoundary>
       <div className="app-main">
         {leftOpen && (
           <aside className="app-left">
             <SectionBoundary area="Thư viện">
-              <Sidebar />
+              {__SANOVIDS_PERF__ ? <PerfProfiler id="Sidebar"><Sidebar /></PerfProfiler> : <Sidebar />}
             </SectionBoundary>
           </aside>
         )}
         {leftOpen && <PanelResizer spec={LEFT_PANEL} side="left" root={root} onCollapse={() => useUI.getState().setLeftOpen(false)} />}
         <main className="app-center">
-          <SectionBoundary key={view} area={VIEW_AREA[view] ?? 'Chế độ xem'}>
-            {view === 'canvas' ? (
-              <CanvasView />
-            ) : (
-              <Suspense fallback={<div className="app-loading busy">Đang tải…</div>}>{view === 'table' ? <SceneTable /> : <Storyboard />}</Suspense>
-            )}
+          {/* The only view (core/shownViews): it never unmounts, whatever ui.view says. */}
+          <SectionBoundary area="Canvas">
+            {__SANOVIDS_PERF__ ? <PerfProfiler id="CanvasInner"><CanvasView /></PerfProfiler> : <CanvasView />}
           </SectionBoundary>
           <SectionBoundary area="Hàng đợi" variant="bar" className="app-crash-queue">
             <QueueDrawer />
@@ -141,20 +163,49 @@ function Shell() {
         {rightOpen && (
           <aside className="app-right">
             <SectionBoundary area="Bảng thuộc tính">
-              <Inspector />
+              {__SANOVIDS_PERF__ ? <PerfProfiler id="Inspector"><Inspector /></PerfProfiler> : <Inspector />}
             </SectionBoundary>
           </aside>
         )}
       </div>
       <Dialogs />
+      <ConfirmSheet />
       <DevPrompts />
+      <StressHudSlot />
+      {/* Right-click menus of the canvas AND the library: outside every region boundary (a crashed canvas keeps the library's). */}
+      <ContextMenuSlot />
       <Toasts />
     </div>
   )
 }
 
-/** Names of the center views in crash messages. */
-const VIEW_AREA: Record<string, string> = { canvas: 'Canvas', table: 'Bảng cảnh', storyboard: 'Storyboard' }
+/**
+ * The one right-click menu host, mounted only while a menu is open (its chunk is prefetched when idle). A failed host
+ * closes the menu instead of blanking the window; a chunk that did not load is tried again on the next menu.
+ */
+function ContextMenuSlot() {
+  const open = useContextMenu((s) => s.open !== null)
+  if (!open) return null
+  return (
+    <ContextMenuBoundary onChunkError={() => (ContextMenuHost = lazyContextMenuHost())}>
+      <Suspense fallback={null}>
+        <ContextMenuHost />
+      </Suspense>
+    </ContextMenuBoundary>
+  )
+}
+
+/** The stress tester's pill + clean-up after an interrupted run: only while development mode runs new takes. */
+function StressHudSlot() {
+  // `active`: also re-renders when the development-mode lock flips (locked → never 'dev').
+  useProviderPrefs((s) => s.active)
+  if (activeProviderId() !== 'dev') return null
+  return (
+    <Suspense fallback={null}>
+      <StressHud />
+    </Suspense>
+  )
+}
 
 function Dialogs() {
   const dialog = useUI((s) => s.dialog)
@@ -171,7 +222,7 @@ function renderDialog(dialog: DialogState): ReactNode {
     case 'import':
       return <ImportDialog />
     case 'settings':
-      return <SettingsDialog />
+      return <SettingsDialog section={dialog.section} />
     case 'shortcuts':
       return <ShortcutsDialog />
     case 'projects':
@@ -190,6 +241,10 @@ function renderDialog(dialog: DialogState): ReactNode {
       return <DevPanel tab={dialog.tab} />
     case 'update':
       return <UpdateDialog />
+    case 'importJobs':
+      return <ImportJobsDialog back={dialog.back} provider={dialog.provider} />
+    case 'player':
+      return <FilmPlayerDialog start={dialog.start} />
     default:
       return null
   }

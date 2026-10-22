@@ -18,10 +18,34 @@ export interface SettingsCtxValue {
 export const SettingsCtx = createContext<SettingsCtxValue>({ close: () => undefined, resync: () => undefined, epoch: 0 })
 export const useSettingsCtx = () => useContext(SettingsCtx)
 
-export function Section({ title, desc, children, badge }: { title: string; desc?: ReactNode; children: ReactNode; badge?: ReactNode }) {
+/**
+ * Id of the Settings group being rendered (SettingsDialog GroupView provides it), so a block group's own <Section>
+ * carries the anchor too without a prop.
+ */
+export const SectionAnchorCtx = createContext<string | undefined>(undefined)
+
+/**
+ * A grouped inset section. `anchor` (default: the group id from SectionAnchorCtx) = the Settings group id it shows:
+ * SettingsDialog scrolls to it when opened on that group.
+ */
+export function Section({
+  title,
+  desc,
+  children,
+  badge,
+  anchor,
+}: {
+  title: string
+  desc?: ReactNode
+  children: ReactNode
+  badge?: ReactNode
+  anchor?: string
+}) {
   const id = useId()
+  const group = useContext(SectionAnchorCtx)
+  const anchorId = anchor ?? group
   return (
-    <section className="dg-section" aria-labelledby={id}>
+    <section className="dg-section" aria-labelledby={id} data-set-anchor={anchorId}>
       <header>
         <h3 id={id}>
           {title}

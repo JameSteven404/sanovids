@@ -8,16 +8,15 @@
 .in-mention,
 .in-hover-preview {
   /* inset group fill: a touch off the panel in both themes */
-  --in-group: color-mix(in srgb, var(--panel-2) 50%, var(--panel));
+  --in-group: var(--panel);
   /* readable tints: system colors pulled toward the text color so small tinted text keeps its contrast */
-  --in-ref-ink: color-mix(in srgb, var(--ref) 72%, var(--text));
-  --in-video-ink: color-mix(in srgb, var(--video) 72%, var(--text));
+  --in-ref-ink: var(--ref-ink);
   /* 72% like the others: at 82% the light orange ink stayed under 4:1 on white / on --accent-soft */
-  --in-accent-ink: color-mix(in srgb, var(--accent) 72%, var(--text));
+  --in-accent-ink: var(--accent-ink);
   /* real canvasapp credits (docs/SPEC-v2.md §9): --info like the top bar credit pill */
   --in-credit-ink: color-mix(in srgb, var(--info) 80%, var(--text));
   /* solid teal behind --on-accent text: a touch deeper in light (white text) and lighter in dark (dark text) */
-  --in-ref-fill: color-mix(in srgb, var(--ref) 80%, var(--text));
+  --in-ref-fill: var(--ref-soft);
 }
 .in-root {
   flex: 1;
@@ -109,9 +108,9 @@
   outline: none;
   text-overflow: ellipsis;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-title-input::placeholder {
   color: var(--text-faint);
@@ -216,7 +215,7 @@
   letter-spacing: 0.02em;
   color: var(--text-dim);
   white-space: nowrap;
-  transition: color 0.12s ease-out;
+  transition: color var(--motion-hover) var(--ease-ui);
 }
 .in-section-toggle:hover .in-section-title {
   color: var(--text);
@@ -224,7 +223,7 @@
 .in-chev {
   flex: none;
   color: var(--text-faint);
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
 }
 .in-section.is-collapsed .in-chev {
   transform: rotate(-90deg);
@@ -322,7 +321,7 @@
   height: 28px;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--panel-2);
+  background: var(--bg-elev);
   box-shadow: inset 0 0 0 1px var(--border);
 }
 /* the raised selected segment; slides between equal-width segments (--i of --n) */
@@ -334,14 +333,14 @@
   width: calc((100% - 4px) / var(--n, 1));
   transform: translateX(calc(var(--i, 0) * 100%));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
+  background: var(--accent-soft);
   box-shadow: var(--shadow-sm);
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion-state) var(--ease-ui);
   pointer-events: none;
 }
 /* white thumb on the light gray track: a hairline keeps its edge visible (the light shadow alone is very faint) */
 :root[data-theme='light'] .in-seg-thumb {
-  background: var(--panel);
+  background: var(--accent-soft);
   box-shadow:
     0 0 0 1px var(--border),
     var(--shadow-sm);
@@ -363,15 +362,15 @@
   text-overflow: ellipsis;
   cursor: pointer;
   transition:
-    color 0.15s ease-out,
-    background 0.12s ease-out;
+    color var(--motion-state) var(--ease-ui),
+    background var(--motion-hover) var(--ease-ui);
 }
 .in-seg-btn:hover:not(.on) {
   color: var(--text);
   background: var(--hover);
 }
 .in-seg-btn.on {
-  color: var(--text);
+  color: var(--accent-ink);
   font-weight: 600;
   cursor: default;
 }
@@ -387,6 +386,48 @@
   text-decoration: underline dotted;
   text-underline-offset: 3px;
   text-decoration-color: var(--text-faint);
+}
+/* the gateway refuses it now (/api/video-profiles, SettingsFields): shown, struck through, not pickable */
+.in-seg-btn.is-off {
+  color: var(--text-faint);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+.in-seg-btn.is-off.on {
+  color: var(--danger-text);
+}
+.in-seg-btn.is-off:hover:not(.on) {
+  color: var(--text-faint);
+  background: transparent;
+}
+.in-seg-btn.is-off:active:not(.on) {
+  transform: none;
+}
+/* ...may be refused (the gateway's settings could not be read, or an older read) */
+.in-seg-btn.is-risky {
+  text-decoration: underline wavy;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--warn);
+}
+/* the scene's current value is refused: outline the control */
+.in-field.is-refused .select,
+.in-field.is-refused .in-seg {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+.in-field.is-refused .select {
+  border-color: var(--danger);
+}
+/* ...without hiding the focus ring (`.select` has no outline: the ring is the only focus mark) */
+.in-field.is-refused .select:focus {
+  box-shadow:
+    var(--focus-ring),
+    inset 0 0 0 1px var(--danger);
+}
+.in-field.is-risky .select {
+  border-color: var(--warn);
+}
+.in-field.is-risky .in-seg {
+  box-shadow: inset 0 0 0 1px var(--warn);
 }
 
 /* ---------- prompt editor ---------- */
@@ -427,8 +468,8 @@
   color: transparent;
   caret-color: var(--text);
   transition:
-    border-color 0.15s ease-out,
-    box-shadow 0.15s ease-out;
+    border-color var(--motion-state) var(--ease-ui),
+    box-shadow var(--motion-state) var(--ease-ui);
 }
 .textarea.in-pe-ta:focus {
   border-color: var(--border-strong);
@@ -458,13 +499,8 @@
 /* Tokens must stand out in a long prompt: a stronger tint + a thin ring of the same hue (box-shadow: no metric change). */
 .in-tk.is-image {
   color: var(--in-ref-ink);
-  background: color-mix(in srgb, var(--ref) 26%, transparent);
+  background: var(--ref-soft);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ref) 55%, transparent);
-}
-.in-tk.is-video {
-  color: var(--in-video-ink);
-  background: color-mix(in srgb, var(--video) 26%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--video) 55%, transparent);
 }
 .in-tk.is-legacy {
   color: var(--in-ref-ink);
@@ -478,6 +514,11 @@
   text-decoration: underline wavy var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
+}
+/* Retired @video text (reference videos were retired): kept as written, never sent — struck through in red. */
+.in-tk.is-retired {
+  text-decoration: line-through var(--danger);
+  text-decoration-thickness: 1.5px;
 }
 .in-pe-back.has-hl .in-tk:not(.is-hl) {
   opacity: 0.55;
@@ -508,14 +549,14 @@
 .in-pe-expand:focus-visible {
   opacity: 1;
 }
-/* Library cards (@image_N) / generated videos (@video_N) dragged over the prompt. */
+/* Library cards (@image_N) dragged over the prompt; a generated video is refused (reference videos were retired). */
 .in-pe-wrap.is-drop-assets {
   --in-drop: var(--ref);
   --in-drop-soft: var(--ref-soft);
 }
 .in-pe-wrap.is-drop-takes {
-  --in-drop: var(--video);
-  --in-drop-soft: var(--video-soft);
+  --in-drop: var(--danger);
+  --in-drop-soft: var(--danger-soft);
 }
 .in-pe-wrap.is-drop .textarea.in-pe-ta {
   border-color: var(--in-drop);
@@ -622,11 +663,11 @@
   cursor: pointer;
   box-shadow: var(--shadow-sm);
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-hint-btn:hover {
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
 }
 .in-hint-btn:focus-visible {
@@ -645,6 +686,133 @@
 .in-hint-chip.is-legacy > span {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Retired @video text (reference videos were retired): why the scene does not run + the explicit quick fixes. */
+.in-retired {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.in-retired-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--text);
+}
+.in-retired-text svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--danger-text);
+}
+.in-retired-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* "Chữ đỏ chờ ảnh" (PlaceholderBar): red placeholders a removed picture left in the prompt + their explicit fixes. */
+.in-ph {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.in-ph-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.in-pop-host.in-ph-host {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 0;
+}
+.in-ph-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 6px 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: var(--panel);
+  color: var(--danger-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--motion-hover) var(--ease-ui);
+}
+.in-ph-chip:hover,
+.in-ph-chip[aria-expanded='true'] {
+  background: var(--hover);
+}
+.in-ph-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.in-ph-chip.is-mismatch {
+  border-style: dashed;
+}
+.in-ph-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.in-ph-count {
+  font-family: inherit;
+  color: var(--text-faint);
+}
+.in-ph-empty {
+  flex: 1 1 100%;
+  color: var(--text-faint);
+}
+.in-ph-menu {
+  min-width: 248px;
+}
+.in-ph-sub {
+  padding: 6px 8px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+}
+.in-ph-foot {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--border);
+}
+.in-ph-foot .in-picker-item {
+  min-height: 30px;
+  font-size: 12px;
+}
+.in-picker-item.is-danger {
+  color: var(--danger-text);
+}
+.in-ph.is-node {
+  margin-top: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
 }
 
 /* token legend under the editor: soft tinted chips */
@@ -679,22 +847,15 @@
   cursor: pointer;
   white-space: nowrap;
   transition:
-    border-color 0.12s ease-out,
-    color 0.12s ease-out,
-    background 0.12s ease-out;
+    border-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui),
+    background var(--motion-hover) var(--ease-ui);
 }
 .in-legend-chip.is-image {
   background: var(--ref-soft);
 }
-.in-legend-chip.is-video {
-  background: var(--video-soft);
-}
 .in-legend-chip.is-image:hover {
   border-color: color-mix(in srgb, var(--ref) 55%, transparent);
-  color: var(--text);
-}
-.in-legend-chip.is-video:hover {
-  border-color: color-mix(in srgb, var(--video) 55%, transparent);
   color: var(--text);
 }
 .in-legend-chip:focus-visible {
@@ -713,15 +874,6 @@
   object-fit: cover;
   background: var(--panel-3);
 }
-.in-legend-thumb.is-wide {
-  width: 28px;
-  border-radius: 4px;
-}
-.in-legend-icon {
-  flex: none;
-  margin-left: 3px;
-  color: var(--in-video-ink);
-}
 .in-legend-tok {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -729,9 +881,6 @@
 }
 .is-image > .in-legend-tok {
   color: var(--in-ref-ink);
-}
-.is-video > .in-legend-tok {
-  color: var(--in-video-ink);
 }
 .in-legend-name {
   overflow: hidden;
@@ -839,7 +988,7 @@
   margin-right: 2px;
 }
 
-/* popup rows (images / videos / library) */
+/* popup rows (images / library) */
 .in-mention-group {
   padding: 8px 8px 3px;
   font-size: 11px;
@@ -855,32 +1004,12 @@
   object-fit: cover;
   background: var(--panel-3);
 }
-.in-mention-thumb.is-wide {
-  width: 40px;
-  height: 24px;
-  border-radius: 4px;
-}
-.in-mention-nothumb {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--in-video-ink);
-}
 .in-mention-tok {
   font-family: var(--mono);
   font-size: 11.5px;
 }
 .in-mention-item.is-image .in-mention-tok {
   color: var(--in-ref-ink);
-}
-.in-mention-item.is-video .in-mention-tok {
-  color: var(--in-video-ink);
-}
-.in-mention-item.is-video.active {
-  background: var(--video-soft);
-}
-.in-mention-item.is-video.active .in-mention-tag {
-  color: var(--in-video-ink);
 }
 .in-mention-kindicon {
   flex: none;
@@ -901,7 +1030,7 @@
 }
 .in-mention-item.active .in-mention-link {
   background: var(--in-ref-fill);
-  color: var(--on-accent);
+  color: var(--ref-ink);
 }
 
 /* ---------- references (rounded rows inside the group) ---------- */
@@ -912,8 +1041,8 @@
   gap: 2px;
   border-radius: var(--radius-sm);
   transition:
-    background 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-refs.is-lib-over {
   background: var(--ref-soft);
@@ -925,13 +1054,6 @@
   color: var(--in-ref-ink);
   font-weight: 600;
   font-size: 12px;
-}
-.in-refs.is-take-over {
-  background: var(--video-soft);
-  box-shadow: 0 0 0 2px var(--video);
-}
-.in-refs-drop.is-video {
-  color: var(--in-video-ink);
 }
 /* no box inside the group: quiet text */
 .in-refs-empty {
@@ -953,7 +1075,7 @@
   min-height: 42px;
   padding: 4px 4px 4px 0;
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-ref.is-multi {
   padding-left: 6px;
@@ -1064,50 +1186,6 @@
   background: var(--warn-soft);
   color: var(--warn);
 }
-.in-token.is-video {
-  background: var(--video-soft);
-  color: var(--in-video-ink);
-}
-.in-token.is-video.is-off {
-  background: var(--hover);
-  color: var(--text-faint);
-}
-.in-meta .badge.video {
-  background: var(--video-soft);
-  color: var(--in-video-ink);
-}
-.in-vref-thumb {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 27px;
-  padding: 0;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--panel-3);
-  color: var(--in-video-ink);
-  overflow: hidden;
-  cursor: pointer;
-}
-.in-vref-thumb:disabled {
-  cursor: default;
-}
-.in-vref-thumb:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.in-vref-thumb .media-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.in-vref-thumb.is-sm {
-  width: 40px;
-  height: 23px;
-  cursor: inherit;
-}
 .in-ref-name:disabled,
 .in-ref-name.is-static {
   cursor: default;
@@ -1132,8 +1210,8 @@
   color: var(--text-faint);
   cursor: pointer;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-x:hover {
   color: var(--danger-text);
@@ -1172,11 +1250,39 @@
 .in-note.danger svg {
   color: var(--danger-text);
 }
+.in-note.is-warn {
+  background: var(--warn-soft);
+  color: var(--text);
+}
+.in-note.is-warn svg {
+  color: var(--warn);
+}
+/* what the gateway refuses now (SettingsFields LimitsNote): text, reasons, then "Đọc lại" */
+.in-limits-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.in-note-list {
+  margin: 2px 0;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.in-limits-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.in-spin {
+  animation: app-spin 0.8s linear infinite;
+}
 .in-pop-host {
   position: relative;
   margin-top: 6px;
 }
-/* "+ Thêm ảnh / video": a plain add row, not a box */
+/* "+ Thêm ảnh": a plain add row, not a box */
 .btn.in-add {
   height: 30px;
   width: 100%;
@@ -1236,8 +1342,8 @@
   text-align: left;
   min-width: 0;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui);
 }
 .in-frame-btn > span.faint {
   display: inline-flex;
@@ -1332,8 +1438,8 @@
   background: var(--hover);
   color: var(--text-faint);
   transition:
-    background 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-picker-search:focus-within {
   border-color: var(--border-strong);
@@ -1436,8 +1542,8 @@
   cursor: pointer;
 }
 .in-check.on {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--action-gradient);
+  border-color: transparent;
 }
 .in-check.partial {
   border-color: var(--accent);
@@ -1519,7 +1625,7 @@ span.in-check {
   background: var(--bg-elev);
   font-size: 12.5px;
   line-height: 1.6;
-  transition: opacity 0.15s ease-out;
+  transition: opacity var(--motion-state) var(--ease-ui);
 }
 
 /* ---------- takes / run ---------- */
@@ -1546,25 +1652,6 @@ span.in-check {
 }
 .btn.in-download.is-chosen {
   border-color: var(--accent);
-  color: var(--text);
-}
-.in-continue-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 12px;
-}
-.in-continue-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-right: 2px;
-  font-size: 12px;
-  color: var(--text-faint);
-}
-.btn.in-continue-main {
-  border-color: var(--video);
   color: var(--text);
 }
 .in-star {
@@ -1660,8 +1747,8 @@ span.in-check {
   cursor: pointer;
   flex: none;
   transition:
-    background 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 button.in-code-chip:hover {
   background: var(--accent-soft);
@@ -1775,9 +1862,9 @@ button.in-code-chip:focus-visible {
   font-weight: 600;
   outline: none;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-asset-name::placeholder {
   color: var(--text-faint);
@@ -1832,8 +1919,8 @@ button.in-code-chip:focus-visible {
   cursor: pointer;
   padding: 0;
   transition:
-    transform 0.12s ease-out,
-    box-shadow 0.12s ease-out;
+    transform var(--motion-hover) var(--ease-ui),
+    box-shadow var(--motion-hover) var(--ease-ui);
 }
 .in-swatch:hover {
   transform: scale(1.1);
@@ -1928,8 +2015,8 @@ button.in-code-chip:focus-visible {
   opacity: 1;
 }
 .in-image-x:hover:not(:disabled) {
-  background: var(--danger);
-  color: var(--on-accent);
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 .in-image-make:focus-visible,
 .in-image-x:focus-visible {
@@ -1964,9 +2051,9 @@ button.in-code-chip:focus-visible {
   font-size: 11px;
   cursor: pointer;
   transition:
-    background 0.12s ease-out,
-    border-color 0.12s ease-out,
-    color 0.12s ease-out;
+    background var(--motion-hover) var(--ease-ui),
+    border-color var(--motion-hover) var(--ease-ui),
+    color var(--motion-hover) var(--ease-ui);
 }
 .in-image-add:hover:not(:disabled) {
   border-color: var(--accent);
@@ -1991,7 +2078,7 @@ button.in-code-chip:focus-visible {
   align-items: center;
   gap: 4px;
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .in-usedin-row:hover {
   background: var(--hover);
@@ -2186,8 +2273,8 @@ button.in-code-chip:focus-visible {
   overflow: hidden;
   cursor: pointer;
   transition:
-    box-shadow 0.15s ease-out,
-    transform 0.15s ease-out;
+    box-shadow var(--motion-state) var(--ease-ui),
+    transform var(--motion-state) var(--ease-ui);
 }
 .in-take-poster:hover {
   box-shadow: var(--shadow);
@@ -2234,7 +2321,7 @@ button.in-code-chip:focus-visible {
   backdrop-filter: var(--blur);
   box-shadow: var(--shadow-lg);
   pointer-events: none;
-  animation: in-hover-in 0.12s ease-out;
+  animation: in-hover-in var(--motion-hover) var(--ease-ui);
 }
 .in-hover-preview .full-img {
   border-radius: var(--radius-sm);
@@ -2303,3 +2390,109 @@ button.in-code-chip:focus-visible {
     transform: none;
   }
 }
+
+/* ---------- scene order on the scene code (SceneOrderControl): ▲▼ + "Dời tới vị trí…" ---------- */
+.in-code-group {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+/* the code chip is a button: same chip look, a quiet hover (the box opens below) */
+.in-code.in-code-btn {
+  border: 0;
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: background var(--motion-hover) var(--ease-ui);
+}
+.in-code.in-code-btn:hover:not([aria-disabled='true']),
+.in-code.in-code-btn[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.in-code.in-code-btn[aria-disabled='true'] {
+  cursor: default;
+}
+.in-code.in-code-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.in-code-steps {
+  display: inline-flex;
+  flex-direction: column;
+}
+.icon-btn.in-code-step {
+  width: 16px;
+  height: 13px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+.icon-btn.in-code-step:hover:not(:disabled) {
+  color: var(--text);
+}
+.icon-btn.in-code-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* "Dời S05 tới vị trí [n] / N": a small popover under the code */
+.in-moveto {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: 244px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--material-strong);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.in-moveto-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.in-moveto-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.input.in-moveto-input {
+  width: 56px;
+  height: 26px;
+  padding: 0 6px;
+  text-align: center;
+  font-family: var(--mono);
+}
+.in-moveto-of {
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+.in-moveto-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.in-moveto-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+@media (prefers-reduced-motion: reduce) {
+  .in-code.in-code-btn {
+    transition: none;
+  }
+}
+
+/* Placeholder menus may also open on a node, outside .in-root. */
+@media (prefers-reduced-motion: reduce) {
+  .in-ph-menu { animation: none; }
+}
+:root:is([data-motion='reduced'], [data-motion='off']) .in-ph-menu { animation: none; }

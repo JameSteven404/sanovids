@@ -1,17 +1,37 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MODELS } from '../../../core/models'
-import type { Asset } from '../../../core/types'
+import type { Asset, VideoSettings } from '../../../core/types'
 import { findMention, fold, popupPlacement, POPUP_MAX_H } from '../mentions'
 import { changedSource, existingIds, pickView, type SelectionParts } from '../selection'
-import { patchFits, patchLabel, segmentsNeedFullRow } from '../SettingsFields'
+import { focusSettingsField, patchFits, patchLabel, segmentsNeedFullRow } from '../SettingsFields'
+import {
+  batchSkipText,
+  clockTime,
+  fieldBlock,
+  optionLimit,
+  optionTag,
+  optionTitle,
+  partialNote,
+  patchFitsLimits,
+  presetLimit,
+  refreshToast,
+  segmentPickable,
+  selectionIssues,
+  settingsListKey,
+  uniqueSettings,
+} from '../settingsLimits'
+import { profileIssues } from '../../../providers/canvasapp/mapping'
+import type { VideoProfile } from '../../../providers/canvasapp/api'
+import { limitsSite, settingsRunWarning } from '../../../providers/limits'
+import { NO_LIMITS, type SettingsLimits } from '../../../providers/types'
 import {
   imageOptsFor,
   insertAt,
   legacyAssets,
   legacyFixMessage,
+  invalidTokenTitle,
   mediaCountLabel,
   planImageLinks,
-  planVideoLinks,
   remapOffset,
   renumberImageTokens,
   replaceLegacyTags,
@@ -21,8 +41,8 @@ import {
   suggestionToken,
   type ImageOpt,
   type LibraryOpt,
-  type VideoOpt,
 } from '../tokens'
+import { retiredVideoTokens } from '../../../core/compile'
 
 const asset = (id: string, name: string, tag: string, over: Partial<Asset> = {}): Asset => ({
   id, kind: 'character', name, tag, description: '', imageIds: ['img_' + id], color: '#fff', position: null, ...over,
@@ -70,41 +90,52 @@ describe('findMention', () => {
 })
 
 describe('segmentPrompt', () => {
-  it('splits tokens and keeps the exact text', () => {
+  it('splits tokens and keeps the exact text; @video text is always a retired (invalid) segment', () => {
     const text = '@image_1 hugs @image_2 near @video_1, then @image_5 and @video_2.'
-    const segs = segmentPrompt(text, 3, 1)
+    const segs = segmentPrompt(text, 3)
     expect(segs.map((s) => s.text).join('')).toBe(text)
     const marks = segs.filter((s) => s.kind !== 'text')
-    expect(marks.map((s) => [s.kind, s.n, !!s.invalid])).toEqual([
-      ['image', 1, false],
-      ['image', 2, false],
-      ['video', 1, false],
-      ['image', 5, true],
-      ['video', 2, true],
+    expect(marks.map((s) => [s.kind, s.text, !!s.invalid, s.reason ?? null])).toEqual([
+      ['image', '@image_1', false, null],
+      ['image', '@image_2', false, null],
+      ['video', '@video_1', true, 'retired'],
+      ['image', '@image_5', true, 'missing'],
+      ['video', '@video_2', true, 'retired'],
     ])
+    expect(invalidTokenTitle(marks[2])).toBe('@video_1: video tham chiếu không còn được hỗ trợ — xoá hoặc viết lại bằng lời để chạy cảnh này.')
+  })
+  it('marks exactly what blocks the run (retiredVideoTokens), spellings a narrower highlighter missed included', () => {
+    const text = 'a @Video 2 b @VIDEO3 c @video_?4(S01·T1) d @video_?5go e @video_1ạ f @video2go @video1abc email@video_6.com'
+    const segs = segmentPrompt(text, 0)
+    expect(segs.map((s) => s.text).join('')).toBe(text)
+    const red = segs.filter((s) => s.reason === 'retired').map((s) => s.text)
+    expect(red).toEqual(retiredVideoTokens(text).map((t) => t.text))
+    expect(red).toEqual(['@Video 2', '@VIDEO3', '@video_?4(S01·T1)', '@video_?5', '@video_1', '@video_6'])
+    // plain words, not tokens: never marked as retired
+    expect(segmentPrompt('@video2go @video1abc', 0, new Set(['video2go', 'video1abc'])).every((s) => s.kind !== 'video')).toBe(true)
   })
   it('marks legacy asset tags only when known, merges plain text', () => {
-    const segs = segmentPrompt('@Elara meets @Bob at @image_0', 2, 0, new Set(['elara']))
+    const segs = segmentPrompt('@Elara meets @Bob at @image_0', 2, new Set(['elara']))
     expect(segs.map((s) => s.kind)).toEqual(['legacy', 'text', 'image'])
     expect(segs[1].text).toBe(' meets @Bob at ')
     expect(segs[2].invalid).toBe(true)
   })
   it('marks tokens past what is really sent, and "@image_?N" placeholders, as invalid', () => {
     const text = '@image_1 and @image_10, @video_2 then @image_?3'
-    const segs = segmentPrompt(text, 12, 2, undefined, { images: 9, videos: 1 })
+    const segs = segmentPrompt(text, 12, undefined, { images: 9 })
     expect(segs.map((s) => s.text).join('')).toBe(text)
     expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.text, s.reason ?? null])).toEqual([
       ['@image_1', null],
       ['@image_10', 'unsent'],
-      ['@video_2', 'unsent'],
+      ['@video_2', 'retired'],
       ['@image_?3', 'unbound'],
     ])
     // a mode that sends no images: every image token is unsent
-    expect(segmentPrompt('@image_1', 3, 0, undefined, { images: 0, videos: 0 })[0].reason).toBe('unsent')
+    expect(segmentPrompt('@image_1', 3, undefined, { images: 0 })[0].reason).toBe('unsent')
   })
   it('highlights tokens written as "@Image 1", "@image2", "@IMAGE_3" like "@image_1"', () => {
     const text = 'References: @Image 1 = Elara, @image2 = Lumi, @IMAGE_3 = Village, @Image 9.'
-    const segs = segmentPrompt(text, 3, 0, new Set(['image']))
+    const segs = segmentPrompt(text, 3, new Set(['image']))
     expect(segs.map((s) => s.text).join('')).toBe(text)
     expect(segs.filter((s) => s.kind !== 'text').map((s) => [s.kind, s.text, s.n, !!s.invalid])).toEqual([
       ['image', '@Image 1', 1, false],
@@ -114,25 +145,22 @@ describe('segmentPrompt', () => {
     ])
   })
   it('does not treat longer words as tokens and handles empty text', () => {
-    expect(segmentPrompt('@image_12abc', 20, 0).map((s) => s.kind)).toEqual(['text'])
-    expect(segmentPrompt('', 1, 1)).toEqual([])
+    expect(segmentPrompt('@image_12abc', 20).map((s) => s.kind)).toEqual(['text'])
+    expect(segmentPrompt('', 1)).toEqual([])
   })
   it('stays linear on long prompts', () => {
     const text = 'A long line with @image_1 and @video_1. '.repeat(400) // ~16k chars
     const t0 = performance.now()
-    const segs = segmentPrompt(text, 1, 1, new Set(['elara']))
+    const segs = segmentPrompt(text, 1, new Set(['elara']))
     expect(performance.now() - t0).toBeLessThan(100)
     expect(segs.filter((s) => s.kind === 'image')).toHaveLength(400)
+    expect(segs.filter((s) => s.kind === 'video')).toHaveLength(400)
     expect(segs.map((s) => s.text).join('')).toBe(text)
   })
 })
 
 describe('suggestMedia', () => {
   const images: ImageOpt[] = imageOptsFor(ASSETS, ['a', 'c']) // Elara ×2 → 1,2 · Làng núi → 3
-  const videos: VideoOpt[] = [
-    { n: 1, takeId: 't1', label: 'S03·T2', posterId: null, status: 'completed' },
-    { n: 2, takeId: 't2', label: 'S04·T1', posterId: null, status: 'completed' },
-  ]
   const library: LibraryOpt[] = ASSETS.filter((a) => !['a', 'c'].includes(a.id)).map((a) => ({ assetId: a.id, name: a.name, tag: a.tag, kind: a.kind }))
   const key = (s: ReturnType<typeof suggestMedia>[number]) => (s.type === 'link' ? 'link:' + s.tag : suggestionToken(s))
 
@@ -143,37 +171,24 @@ describe('suggestMedia', () => {
       [3, 'c', 0],
     ])
   })
-  it('lists images, videos, then library for an empty query', () => {
-    expect(suggestMedia('', images, videos, library).map(key)).toEqual([
-      '@image_1',
-      '@image_2',
-      '@image_3',
-      '@video_1',
-      '@video_2',
-      'link:BeAn',
-      'link:Aurelian',
-      'link:Elaine',
-    ])
+  it('lists images, then library for an empty query (never a video: reference videos were retired)', () => {
+    expect(suggestMedia('', images, library).map(key)).toEqual(['@image_1', '@image_2', '@image_3', 'link:BeAn', 'link:Aurelian', 'link:Elaine'])
   })
   it('filters by name: linked images before library assets', () => {
-    expect(suggestMedia('ela', images, videos, library).map(key)).toEqual(['@image_1', '@image_2', 'link:Elaine'])
-    expect(suggestMedia('lang', images, videos, library).map(key)).toEqual(['@image_3'])
-    expect(suggestMedia('nui', images, videos, library).map(key)).toEqual(['@image_3'])
+    expect(suggestMedia('ela', images, library).map(key)).toEqual(['@image_1', '@image_2', 'link:Elaine'])
+    expect(suggestMedia('lang', images, library).map(key)).toEqual(['@image_3'])
+    expect(suggestMedia('nui', images, library).map(key)).toEqual(['@image_3'])
   })
   it('filters by number and token prefix', () => {
-    expect(suggestMedia('2', images, videos, library).map(key)).toEqual(['@image_2', '@video_2'])
-    expect(suggestMedia('vid', images, videos, library).map(key)).toEqual(['@video_1', '@video_2'])
-    expect(suggestMedia('image_3', images, videos, library).map(key)).toEqual(['@image_3'])
-  })
-  it('matches video labels loosely', () => {
-    expect(suggestMedia('s03', images, videos, library).map(key)).toEqual(['@video_1'])
-    expect(suggestMedia('s04t1', images, videos, library).map(key)).toEqual(['@video_2'])
+    expect(suggestMedia('2', images, library).map(key)).toEqual(['@image_2'])
+    expect(suggestMedia('vid', images, library).map(key)).toEqual([])
+    expect(suggestMedia('image_3', images, library).map(key)).toEqual(['@image_3'])
   })
   it('never offers library assets for a number ("@5" + Enter must not link "Lính 5")', () => {
     const lib: LibraryOpt[] = [...library, { assetId: 'l5', name: 'Lính 5', tag: 'Linh5', kind: 'character' }]
-    expect(suggestMedia('5', images, videos, lib)).toEqual([])
-    expect(suggestMedia('2', images, videos, lib).map(key)).toEqual(['@image_2', '@video_2'])
-    expect(suggestMedia('linh', images, videos, lib).map(key)).toEqual(['link:Linh5'])
+    expect(suggestMedia('5', images, lib)).toEqual([])
+    expect(suggestMedia('2', images, lib).map(key)).toEqual(['@image_2'])
+    expect(suggestMedia('linh', images, lib).map(key)).toEqual(['link:Linh5'])
   })
 })
 
@@ -193,33 +208,15 @@ describe('linking from the prompt editor (one store step)', () => {
     expect(plan.refs).toEqual(['a', 'b', 'c'])
     expect([...plan.tokens.keys()]).toEqual(['b', 'c'])
   })
-  it('links only finished takes of other scenes, within the video limit', () => {
-    const takes = [
-      { id: 't1', sceneId: 's2', status: 'completed' },
-      { id: 't2', sceneId: 's1', status: 'completed' },
-      { id: 't3', sceneId: 's2', status: 'processing' },
-      { id: 't4', sceneId: 's3', status: 'completed' },
-      { id: 't5', sceneId: 's3', status: 'completed' },
-    ]
-    const plan = planVideoLinks('s1', ['t9'], ['t1', 't2', 't3', 't9', 't4', 't5'], takes, 3)
-    expect(plan).toEqual({
-      videoRefs: ['t9', 't1', 't4'],
-      tokens: ['@video_2', '@video_1', '@video_3'],
-      linked: ['t1', 't4'],
-      notReady: 1,
-      own: 1,
-      overLimit: 1,
-    })
-    expect(planVideoLinks('s1', [], ['t1'], takes, 0).overLimit).toBe(1) // mode without reference videos
-  })
-  it('renumbers image tokens when refs are dropped (auto-link undo)', () => {
+  it('renumbers image tokens when refs are dropped (auto-link undo); @video text is kept as is', () => {
     // refs [Bé An, Elara(2), Aurelian]: @image_4 = Aurelian; unlinking Elara → Aurelian becomes @image_2
     const before = ['b', 'a', 'd']
-    expect(renumberImageTokens('@image_1 and @image_4 meet @image_2', ASSETS, before, ['b', 'd'], [])).toBe('@image_1 and @image_2 meet Elara')
+    expect(renumberImageTokens('@image_1 and @image_4 meet @image_2', ASSETS, before, ['b', 'd'])).toBe('@image_1 and @image_2 meet Elara')
+    expect(renumberImageTokens('@video_1 then @image_4', ASSETS, before, ['b', 'd'])).toBe('@video_1 then @image_2')
     // an empty name never deletes the token: the tag is used
     const unnamed = ASSETS.map((x) => (x.id === 'a' ? { ...x, name: '  ' } : x))
-    expect(renumberImageTokens('@image_2 waves', unnamed, before, ['b', 'd'], [])).toBe('Elara waves')
-    expect(renumberImageTokens('no tokens', ASSETS, before, [], [])).toBe('no tokens')
+    expect(renumberImageTokens('@image_2 waves', unnamed, before, ['b', 'd'])).toBe('Elara waves')
+    expect(renumberImageTokens('no tokens', ASSETS, before, [])).toBe('no tokens')
   })
 })
 
@@ -253,7 +250,7 @@ describe('legacy @Tag helpers', () => {
     expect(r.replaced).toBe(2)
   })
   it('labels counts', () => {
-    expect(mediaCountLabel(3, 1)).toBe('3 ảnh · 1 video')
+    expect(mediaCountLabel(3)).toBe('3 ảnh')
   })
 })
 
@@ -275,7 +272,176 @@ describe('patchFits (batch settings on scenes with different models)', () => {
   })
 })
 
+describe('settings fields follow what the gateway runs now (settingsLimits.ts)', () => {
+  const SD: VideoSettings = { model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', ratio: '16:9' }
+  const H3: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+  const site = limitsSite('canvasapp')
+  const h3p = (over: Record<string, unknown> = {}, options: Record<string, unknown> = {}): VideoProfile => ({
+    model_profile: 'minimax_h3',
+    display_name: 'MiniMax-H3',
+    can_create: true,
+    ...over,
+    options: { disabled_modes: [], ...options },
+  })
+  const sdp = (options: Record<string, unknown> = {}): VideoProfile => ({ model_profile: 'seedance_2_5', display_name: 'Seedance 2.5', can_create: true, options })
+  /** Limits as the adapter builds them: the submit's own rule over a profile list. */
+  const limitsOf = (profiles: VideoProfile[], source: SettingsLimits['source'] = 'server', firm = source === 'server'): SettingsLimits => ({
+    source,
+    firm,
+    issues: (x) => profileIssues(x, profiles),
+  })
+
+  it('nothing known: no option is refused, and the " · chỉ …" note is the model table’s (as before)', () => {
+    const both = [SD, H3]
+    expect(optionLimit(NO_LIMITS, both, 'resolution', '480p')).toEqual({ state: 'ok', reason: '', okModels: ['seedance_2_5'] })
+    expect(partialNote(optionLimit(NO_LIMITS, both, 'resolution', '480p'), ['seedance_2_5', 'minimax_h3'])).toBe(' · chỉ SD 2.5')
+    expect(partialNote(optionLimit(NO_LIMITS, both, 'ratio', '16:9'), ['seedance_2_5', 'minimax_h3'])).toBe('')
+    expect(partialNote(optionLimit(NO_LIMITS, [SD], 'resolution', '480p'), ['seedance_2_5'])).toBe('')
+  })
+
+  it('a firm read: a locked model is off with its reason — only that field counts (its modes / durations stay pickable)', () => {
+    const limits = limitsOf([sdp(), h3p({ can_create: false })])
+    expect(optionLimit(limits, [H3], 'model', 'minimax_h3')).toMatchObject({ state: 'off', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' })
+    expect(optionLimit(limits, [SD], 'model', 'minimax_h3').state).toBe('off')
+    expect(optionLimit(limits, [H3], 'model', 'seedance_2_5').state).toBe('ok')
+    expect(optionLimit(limits, [H3], 'mode', 't2v').state).toBe('ok')
+    expect(optionLimit(limits, [H3], 'duration', 10).state).toBe('ok')
+    expect(fieldBlock(limits, H3, 'duration', 10)).toBeNull()
+  })
+
+  it('a mode switched off, and Seedance’s narrowed lists (used as sent, like canvasapp’s page)', () => {
+    const limits = limitsOf([sdp({ durations: [5, 10] }), h3p({}, { disabled_modes: ['transform'] })])
+    expect(optionLimit(limits, [H3], 'mode', 'transform')).toMatchObject({ state: 'off', reason: 'Chế độ Khung đầu → cuối hiện tạm ngừng trên canvasapp.' })
+    // SD + H3 selected: 15s is refused for Seedance only → pickable, " · chỉ H3"; 30s only Seedance offers → off
+    const fifteen = optionLimit(limits, [SD, H3], 'duration', 15)
+    expect(fifteen).toMatchObject({ state: 'ok', okModels: ['minimax_h3'] })
+    expect(partialNote(fifteen, ['seedance_2_5', 'minimax_h3'])).toBe(' · chỉ H3')
+    expect(optionLimit(limits, [SD, H3], 'duration', 30)).toMatchObject({ state: 'off', reason: 'canvasapp không có thời lượng 30s cho Seedance 2.5.' })
+  })
+
+  it('a guess (fallbacks) or an older read: marked "có thể bị từ chối", never off', () => {
+    for (const limits of [limitsOf([], 'fallback'), limitsOf([sdp(), h3p({ can_create: false })], 'server', false)]) {
+      const lim = optionLimit(limits, [H3], 'model', 'minimax_h3')
+      expect(lim.state).toBe('risky')
+      expect(segmentPickable(false, lim)).toBe(true)
+      expect(optionTag(lim, site)).toBe(' · có thể bị từ chối')
+      expect(optionTitle('Model', 'MiniMax-H3', lim, site)).toMatch(/có thể bị từ chối khi gửi \(không tốn credit\): MiniMax-H3 hiện không khả dụng/)
+    }
+  })
+
+  it('development mode words its credits "credit dev" (option tooltips, the Run dialog warning)', () => {
+    const limits = limitsOf([], 'fallback')
+    const lim = optionLimit(limits, [H3], 'model', 'minimax_h3')
+    expect(limitsSite('dev').credit).toBe('credit dev')
+    expect(limitsSite('canvasapp').credit).toBe('credit')
+    expect(optionTitle('Model', 'MiniMax-H3', lim, limitsSite('dev'))).toContain('(không tốn credit dev)')
+    const settings: VideoSettings = { model: 'minimax_h3', mode: 'i2v', duration: 5, resolution: '768p', ratio: '16:9' }
+    expect(settingsRunWarning(limits, settings, 'dev')).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit dev\): /)
+    expect(settingsRunWarning(limits, settings, 'canvasapp')).toMatch(/^Có thể bị từ chối khi gửi \(không tốn credit\): /)
+  })
+
+  it('a refused segment is shown but not pickable; the tag names the site (a native select shows no tooltip)', () => {
+    const off = { state: 'off' as const, reason: 'x', okModels: [] }
+    expect(segmentPickable(false, off)).toBe(false)
+    expect(segmentPickable(true, { state: 'ok' })).toBe(false) // already selected
+    expect(segmentPickable(false, { state: 'ok' })).toBe(true)
+    expect(optionTag(off, site)).toBe(' · canvasapp đang tắt')
+    expect(optionTag(off, limitsSite('dev'))).toBe(' · canvasapp giả lập đang tắt')
+    expect(optionTag({ state: 'ok' }, site)).toBe('')
+    expect(optionTitle('Thời lượng', '30s', off, site)).toBe('Thời lượng: 30s — canvasapp đang tắt: x')
+    expect(optionTitle('Thời lượng', '30s', { state: 'ok', reason: '', okModels: [] }, site, ' · chỉ SD 2.5')).toBe('Thời lượng: 30s · chỉ SD 2.5')
+  })
+
+  it('100+ scenes collapse to their distinct settings: the rule runs per distinct one × option, not per scene', () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({ ...[SD, H3, { ...SD, duration: 5 }][i % 3] }))
+    expect(uniqueSettings(many)).toHaveLength(3)
+    expect(settingsListKey(many)).toBe(settingsListKey(uniqueSettings(many)))
+    expect(settingsListKey(many)).not.toBe(settingsListKey([SD]))
+    const issues = vi.fn((x: VideoSettings) => profileIssues(x, [sdp({ durations: [5] })]))
+    const limits: SettingsLimits = { source: 'server', firm: true, issues }
+    const distinct = uniqueSettings(many)
+    for (const d of MODELS.seedance_2_5.durations) optionLimit(limits, distinct, 'duration', d)
+    expect(issues.mock.calls.length).toBeLessThanOrEqual(distinct.length * MODELS.seedance_2_5.durations.length)
+  })
+
+  it('presets: refused somewhere → marked (they stay pickable: picking is not running)', () => {
+    const limits = limitsOf([sdp(), h3p({ can_create: false })])
+    expect(presetLimit(limits, H3)).toMatchObject({ state: 'off', reason: 'MiniMax-H3 hiện không khả dụng trên canvasapp.' })
+    expect(presetLimit(limits, SD).state).toBe('ok')
+    expect(presetLimit(NO_LIMITS, H3).state).toBe('ok')
+    expect(presetLimit(limitsOf([], 'fallback'), H3).state).toBe('risky')
+  })
+
+  it('batch changes: a scene the firm read refuses keeps its value; a guess or a model change never holds one back', () => {
+    const limits = limitsOf([sdp({ durations: [5, 10] }), h3p()])
+    expect(patchFitsLimits(SD, { duration: 15 }, limits)).toBe(false)
+    expect(patchFitsLimits(H3, { duration: 15 }, limits)).toBe(true)
+    expect(patchFitsLimits(SD, { duration: 10 }, limits)).toBe(true)
+    expect(patchFitsLimits(SD, { model: 'minimax_h3' }, limits)).toBe(true)
+    expect(patchFitsLimits(SD, { duration: 15 }, { ...limits, firm: false })).toBe(true)
+    expect(patchFitsLimits(SD, { duration: 15 }, limitsOf([], 'fallback'))).toBe(true)
+    // a refusal on another field than the patch's does not hold it back (the note names it)
+    expect(patchFitsLimits({ ...SD, duration: 30 }, { ratio: '9:16' }, limits)).toBe(true)
+    expect(batchSkipText('15s', 3, ['S01', 'S02'], 0, site)).toBe('15s chỉ áp dụng cho 3 cảnh — giữ nguyên 2 cảnh bị canvasapp tắt giá trị này (S01, S02).')
+    expect(batchSkipText('480P', 1, ['S01', 'S02', 'S03', 'S04', 'S05'], 5, site)).toBe('480P chỉ áp dụng cho 1 cảnh — giữ nguyên 5 cảnh có model không hỗ trợ (S01, S02, S03, S04…).')
+    expect(batchSkipText('15s', 1, ['S01', 'S02'], 1, limitsSite('dev'))).toMatch(/có model không hỗ trợ hoặc bị canvasapp giả lập tắt giá trị này/)
+  })
+
+  it('the note: which scenes are refused now (codes, reasons once), sure only with a firm read', () => {
+    const limits = limitsOf([sdp(), h3p({ can_create: false })])
+    expect(selectionIssues(NO_LIMITS, [{ settings: H3 }])).toBeNull()
+    expect(selectionIssues(limits, [{ settings: SD, code: 'S01' }])).toBeNull()
+    expect(selectionIssues(limits, [{ settings: H3, code: 'S01' }, { settings: SD, code: 'S02' }, { settings: { ...H3, duration: 10 }, code: 'S03' }])).toEqual({
+      sure: true,
+      count: 2,
+      codes: ['S01', 'S03'],
+      reasons: ['MiniMax-H3 hiện không khả dụng trên canvasapp.'],
+    })
+    expect(selectionIssues({ ...limits, firm: false }, [{ settings: H3 }])).toMatchObject({ sure: false, count: 1, codes: [] })
+  })
+
+  it('"Đọc lại" toasts say what happened', () => {
+    const at = new Date(2026, 9, 6, 9, 5).getTime()
+    expect(clockTime(at)).toBe('09:05')
+    expect(refreshToast('read', site, { at })).toEqual({ text: 'Đã đọc lại cấu hình model từ canvasapp.', tone: 'success' })
+    expect(refreshToast('fresh', site, { at }).text).toBe('Cấu hình model vừa được đọc lúc 09:05 — chưa cần đọc lại.')
+    expect(refreshToast('kept', site, { at })).toEqual({ text: 'Không đọc lại được cấu hình model từ canvasapp — vẫn dùng lần đọc lúc 09:05.', tone: 'warning' })
+    expect(refreshToast('failed', site, { at: null }).tone).toBe('error')
+    expect(refreshToast('failed', site, { at: null }).text).toMatch(/MiniMax-H3 tạm khoá/)
+    expect(refreshToast('login', limitsSite('dev'), { at: null })).toEqual({ text: 'Chưa đăng nhập canvasapp giả lập (chế độ Phát triển) — đăng nhập để đọc cấu hình model.', tone: 'warning', login: true })
+    expect(refreshToast('unavailable', site, { at: null }).text).toMatch(/bản desktop/)
+  })
+})
+
 describe('segmented settings controls', () => {
+  it('fits options to the measured editor width, independently of zoom', () => {
+    const resolutions = ['480p', '720p', '1080p', '768p', '2k']
+    expect(segmentsNeedFullRow([5, 10, 15], resolutions, 220)).toBe(false)
+    expect(segmentsNeedFullRow([5, 10, 15], resolutions, 150)).toBe(true)
+    expect(segmentsNeedFullRow([5, 10, 15], ['720p', '1080p'], 80)).toBe(true)
+  })
+  it('focuses native selects and tolerates an unavailable / denied picker', () => {
+    const focus = vi.fn()
+    const showPicker = vi.fn(() => { throw new Error('No user activation') })
+    const target = { matches: (s: string) => s === 'select', focus, showPicker }
+    const root = { querySelector: vi.fn(() => target) } as unknown as Pick<HTMLElement, 'querySelector'>
+    expect(() => focusSettingsField(root, 'model')).not.toThrow()
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(showPicker).toHaveBeenCalledOnce()
+    expect(root.querySelector).toHaveBeenCalledWith('[data-settings-field="model"]')
+  })
+  it('focuses the roving radio and leaves disabled or absent fields alone', () => {
+    const focus = vi.fn()
+    const radio = { matches: () => false, focus }
+    const group = { matches: () => false, querySelector: vi.fn(() => radio) }
+    focusSettingsField({ querySelector: () => group } as unknown as Pick<HTMLElement, 'querySelector'>, 'duration')
+    expect(group.querySelector).toHaveBeenCalledWith('[role="radio"][tabindex="0"]')
+    expect(focus).toHaveBeenCalledOnce()
+    focus.mockClear()
+    focusSettingsField({ querySelector: () => null }, 'duration')
+    focusSettingsField({ querySelector: () => ({ matches: () => true, focus }) } as unknown as Pick<HTMLElement, 'querySelector'>, 'mode')
+    expect(focus).not.toHaveBeenCalled()
+  })
   it('keep duration and resolution side by side for one model', () => {
     const sd = MODELS.seedance_2_5
     const h3 = MODELS.minimax_h3

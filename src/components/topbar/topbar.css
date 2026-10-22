@@ -3,14 +3,14 @@
   height: var(--topbar-h);
   flex: none;
   display: grid;
-  /* The right column never gets narrower than its buttons (running jobs widen it): the view switch then moves
-     left instead of the right cluster spilling over it. Wide windows keep the switch centred. */
+  /* The right column never gets narrower than its buttons (running jobs widen it): the centre ("Phát liền", the view
+     switch when shown) then moves left instead of the right cluster spilling over it. Wide windows keep it centred. */
   grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   gap: 12px;
   padding: 0 10px 0 14px;
-  /* background + backdrop blur: .material (base.css) */
-  border-bottom: 1px solid var(--border);
+  /* No strip of its own any more: each cluster floats as a glass pill (.tb-pill, UI-02 "viên nổi"). */
+  background: transparent;
   position: relative;
   z-index: 20;
   user-select: none;
@@ -51,6 +51,24 @@
   background: var(--border);
 }
 
+/* "Viên nổi" (docs/UI-MUOT.md UI-02): the left cluster, the centre and the right cluster each float as a glass pill.
+   min-width: 0 lets the left one shrink with its container (the project name ellipsises, the container queries hide
+   the labels). */
+.tb-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+
 /* Quiet toolbar buttons: icon (+ label), no fill until hover. */
 .tb .icon-btn,
 .tb-btn {
@@ -60,7 +78,7 @@
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb .icon-btn {
   width: 30px;
@@ -107,8 +125,8 @@
   border-radius: 5.25px; /* 22 %, the app icon's corner */
   display: inline-flex;
   flex: none;
-  /* Brand colours (base.css --brand-* tokens), fixed in both themes: the app icon's plate and ink. The light theme's
-     accent tokens are a deeper orange with WHITE ink, which would turn the mark into a low-contrast white S. */
+  /* The app icon's plate and white mark (base.css --brand-* tokens), the same in both themes: top→bottom like
+     build/icon-source/icon-master.svg, so the tile matches the taskbar icon. */
   background: linear-gradient(180deg, var(--brand-plate-top), var(--brand-plate-bottom));
   color: var(--brand-ink);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 12%, transparent), var(--shadow-sm);
@@ -139,7 +157,7 @@
   cursor: text;
   display: inline-flex;
   align-items: center;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-name:hover {
   background: var(--hover);
@@ -182,7 +200,7 @@
   color: var(--text-dim);
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb-save:hover {
   background: var(--hover);
@@ -233,7 +251,25 @@
   text-overflow: ellipsis;
 }
 
-/* view switch: segmented control with a sliding raised thumb */
+/* "Phát liền" (centre): a quiet pill like the old view switch, the play glyph in the accent colour */
+.tb-film {
+  gap: 6px;
+  padding: 0 12px 0 10px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.tb-film .lucide {
+  color: var(--accent);
+}
+.tb-film:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.tb-film:disabled .lucide {
+  color: inherit;
+}
+
+/* view switch: segmented control with a sliding raised thumb (rendered only while 2+ views are shown, core/shownViews) */
 .tb-seg {
   --seg-i: 0;
   --seg-n: 3;
@@ -243,7 +279,8 @@
   grid-auto-columns: 1fr;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--panel-2);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .tb-seg-thumb {
   position: absolute;
@@ -253,13 +290,13 @@
   width: calc((100% - 4px) / var(--seg-n));
   transform: translateX(calc(var(--seg-i) * 100%));
   border-radius: var(--radius-xs);
-  background: var(--panel-3);
-  box-shadow: var(--shadow-sm), 0 0 0 0.5px var(--border);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-sm);
   transition: transform 0.15s cubic-bezier(0.3, 0.7, 0.2, 1);
   pointer-events: none;
 }
 :root[data-theme='light'] .tb-seg-thumb {
-  background: var(--panel);
+  background: var(--accent-soft);
 }
 .tb-seg-btn {
   position: relative;
@@ -278,7 +315,7 @@
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.15s ease-out;
+  transition: color var(--motion-state) var(--ease-ui);
 }
 /* Thin separators between unselected segments (hidden next to the thumb), as in macOS. */
 .tb-seg-btn + .tb-seg-btn::before {
@@ -289,7 +326,7 @@
   bottom: 7px;
   width: 1px;
   background: var(--border-strong);
-  transition: opacity 0.15s ease-out;
+  transition: opacity var(--motion-state) var(--ease-ui);
 }
 .tb-seg-btn.active::before,
 .tb-seg-btn.active + .tb-seg-btn::before {
@@ -302,7 +339,7 @@
   background: var(--pressed);
 }
 .tb-seg-btn.active {
-  color: var(--text);
+  color: var(--accent-ink);
 }
 
 /* right side */
@@ -326,7 +363,7 @@
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-running:hover {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -371,7 +408,7 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .tb-update-icon {
   flex: none;
@@ -423,7 +460,7 @@
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .tb-provider:hover {
   background: color-mix(in srgb, var(--info) 22%, transparent);
@@ -455,8 +492,8 @@
   height: 15px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--warn);
-  color: var(--bg);
+  background: var(--warn-soft);
+  color: var(--warn);
   box-shadow: 0 0 0 1.5px var(--bg);
   font-family: var(--mono);
   font-size: 9px;
@@ -477,8 +514,8 @@
   height: 15px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--video);
-  color: var(--on-accent);
+  background: var(--video-soft);
+  color: var(--video-ink);
   box-shadow: 0 0 0 1.5px var(--bg);
   font-family: var(--mono);
   font-size: 9px;
@@ -552,11 +589,11 @@
 .tb:has(.tb-running) .tb-update .tb-hide-md {
   display: none;
 }
-/* Jobs running, an app update or a provider problem in a narrow window: the view switch shows icons only (like below
-   1120px; each button keeps its title) — the left cluster has nothing left to give way there, so the project name
-   would be cut to a few letters (or nothing) next to the labels. */
+/* Jobs running, an app update or a provider problem in a narrow window: the centre ("Phát liền", the view switch) shows
+   icons only (like below 1120px; each button keeps its title / aria-label) — the left cluster has nothing left to give
+   way there, so the project name would be cut to a few letters (or nothing) next to the labels. */
 @media (max-width: 1240px) {
-  .tb:has(.tb-running, .tb-update, .tb-provider) .tb-seg-label {
+  .tb:has(.tb-running, .tb-update, .tb-provider) :is(.tb-seg-label, .tb-film-label) {
     display: none;
   }
 }
@@ -568,15 +605,19 @@
   }
 }
 @media (max-width: 1320px) {
-  .tb:has(.tb-running):has(.tb-update) .tb-seg-label {
+  .tb:has(.tb-running):has(.tb-update) :is(.tb-seg-label, .tb-film-label) {
     display: none;
   }
 }
 @media (max-width: 1120px) {
   .tb-hide-sm,
   .tb-brand-text,
-  .tb-seg-label {
+  .tb-seg-label,
+  .tb-film-label {
     display: none;
+  }
+  .tb-film {
+    padding: 0 8px;
   }
   .tb-name {
     max-width: 160px;
@@ -599,6 +640,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .tb-film,
   .tb-seg-thumb,
   .tb-seg-btn,
   .tb-seg-btn + .tb-seg-btn::before,

@@ -1,5 +1,5 @@
 // The canvas board. Nodes and edges are DERIVED from the stores: scenes, on-canvas assets and folder nodes (project
-// store) and takes = video nodes (runs store). React Flow is fully controlled: drag positions live in ui.dragPos until drag end
+// store) and takes = video nodes (runs store). React Flow is fully controlled: drag positions live in useCanvasLocal.dragPos until drag end
 // (scenes/assets: one undo step in the project; takes: runs.setTakePositions, not undoable), selection is mirrored
 // into ui.selectedIds / ui.selectedEdgeIds. Resize handles (NodeSizer): the live box lives in useCanvasLocal.resizing
 // until resize end, then one commit (scenes/assets: project.setNodeSizes, one undo step; takes: runs.setTakeSizes).
@@ -16,6 +16,7 @@ import {
   useConnection,
   useReactFlow,
   useStoreApi,
+  useStore,
   type Connection,
   type EdgeChange,
   type EdgeMouseHandler,
@@ -24,78 +25,102 @@ import {
   type NodeChange,
   type NodeMouseHandler,
   type OnConnectStart,
+  type Viewport,
 } from '@xyflow/react'
 import { Clapperboard, Plus } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
+import { perfCount } from '../../perf/probe'
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type DragEvent,
+  type RefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import {
   canvasEvents,
   createAssetsFromFiles,
-  createSceneFromTake,
+  createSceneFromVideo,
   edgeId,
   linkAssets,
-  linkTakes,
   newScene,
   nextScene,
   parseEdgeId,
+  refuseTakesAsReference,
   REVEAL_EVENT,
   setCanvasViewSource,
-  takeLabel,
-  videoLabel,
   type EdgeKind,
 } from '../../actions'
 import { sceneCode } from '../../core/compile'
+import { planReplace } from '../../core/placeholders'
+import { replaceRefusalToast, replaceToast } from '../../core/replaceWire'
+import { mediaChangeNote } from '../../core/staleTokens'
+import { flushScenes } from '../../lib/promptDrafts'
 import { folderMapOf } from '../../core/folders'
-import { MODELS, usesVideoRefs } from '../../core/models'
+import { MODELS } from '../../core/models'
 import { keepsSlot } from '../../core/takes'
 import type { Asset, SaveFolder, Scene, Size, XY } from '../../core/types'
 import { linkScenesToFolder, linkTakesToFolder } from '../../folderActions'
 import { useCanvasPrefs, useMotionLevel } from '../../lib/canvasPrefs'
 import { usePlayback } from '../../lib/playback'
 import { useTheme } from '../../lib/theme'
-import { LAYOUT, refImageCount, undoToastAction, useProject, type Box } from '../../store/project'
+import { canvasObstacles, LAYOUT, refImageCount, rowHeightOf, undoToastAction, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { AssetNode, type AssetFlowNode } from './AssetNode'
-import { CanvasToolbar, SelectionHint } from './CanvasToolbar'
+import { CanvasToolbar } from './CanvasToolbar'
 import { ConnectMenu, type ConnectMenuState } from './ConnectMenu'
-import { cutEdge, edgeTypes, VIDEO_COLOR, type LinkEdge, type LinkEdgeData } from './edges'
+import { useCanvasContextMenu } from '../contextmenu/canvasContextMenu'
+import { cutEdge, edgeTypes, type LinkEdge, type LinkEdgeData } from './edges'
 import { FolderNode, type FolderFlowNode } from './FolderNode'
 import {
   assetMapOf,
-  assetNodeHeight,
-  ASSET_DEFAULT_W,
+  assetGraphOf,
+  bigCanvasState,
+  boxesIntersect,
+  canvasViewports,
+  sceneGraphOf,
+  wireViewport,
+  wireNearViewport,
+  alignToGuides,
   autoTakePosition,
   clientPoint,
+  GUIDE_TOLERANCE_PX,
+  type GuideBox,
   drawerInset,
+  toolbarInsets,
   fallbackNodeSize,
+  estimatedGeometry,
+  estimateDependsOnZoom,
+  initialViewport,
+  LOD_ZOOM,
   FIT_EVENT,
   focusViewport,
-  gridPositions,
   hasAssetDrag,
   hasFileDrag,
   hasTakeDrag,
   hitTest,
+  imageDropSpots,
   imageFiles,
   isAutoSlot,
   isEmptyCanvasTarget,
   keepHover,
   layoutTakes,
+  livePosition,
   MINIMAP_LIFT_W,
-  orphanTakePosition,
   readAssetIds,
   readTakeIds,
   resetNodeSize,
   revealViewport,
+  typingViewport,
+  TYPE_EVENT,
   sceneMapOf,
+  sceneNodeSize,
   scheduleHoverEnd,
   selectionSeed,
   snap,
@@ -115,9 +140,30 @@ import {
   type TakeLayout,
   type ToolbarDensity,
 } from './canvasModel'
-import { SceneNode, type SceneFlowNode, type SceneNodeData } from './SceneNode'
+import { maybeSpaceRows } from './rowSpacing'
+import { SceneNode, type SceneFlowNode } from './SceneNode'
+import { typeOnNode } from './SceneNodeEditor'
+import { AlignGuides } from './AlignGuides'
+import { NodeActionBar } from './NodeActionBar'
+import { setCanvasMoving, useFarView } from './NodeSizer'
 import { TakeNode, type TakeFlowNode, type TakeNodeData } from './TakeNode'
-import { isWireClick, markFreshWires, newWireIds, refDotTones, setWireReconnecting, wireClickAction, wireZ, type RefDotTone, type WirePress } from './wireFx'
+import {
+  connectingKind,
+  draggedWireEnd,
+  imageEndValid,
+  isWireClick,
+  markFreshWires,
+  newWireIds,
+  reconnectDrop,
+  refWireGrips,
+  setWireReconnecting,
+  wireClickAction,
+  wireZ,
+  type ReconnectDrop,
+  type ReconnectNodeKind,
+  type WireEnd,
+  type WirePress,
+} from './wireFx'
 import { WireConnectionLine, WireCutLayer } from './Wires'
 import './canvas.css'
 import './wires.css'
@@ -129,14 +175,10 @@ const nodeTypes = { scene: SceneNode, asset: AssetNode, take: TakeNode, folder: 
 const NO_FOLDERS: SaveFolder[] = []
 const SNAP_GRID: [number, number] = [16, 16]
 const MULTI_KEYS = ['Control', 'Meta', 'Shift']
-const FIT_OPTIONS = { padding: 0.12, maxZoom: 1 }
-/** Toolbar band above the queue drawer (toolbar sits at drawer + 12px, ~44px tall). */
-const TOOLBAR_ROOM = 56
 /** Room kept below the ConnectMenu's top edge (tallest menu ≈ 3 items) so it stays above the queue drawer. */
 const MENU_ROOM = 154
 const EMPTY_DATA: Record<string, unknown> = {}
-/** Scene node data per reference-dot color: constant objects, so a scene node only re-renders when its color changes. */
-const SCENE_DATA: Record<RefDotTone | 'image', SceneNodeData> = { image: {}, video: { refDot: 'video' }, mixed: { refDot: 'mixed' } }
+const minimapNotified = new Set<string>()
 
 interface RawEdge {
   id: string
@@ -145,55 +187,111 @@ interface RawEdge {
   target: string
   sourceHandle: string
   targetHandle: string
-  /** Reference wires (ref / vref): other reference wires end at the same dot (only a wire alone there can be dragged by its end unselected). */
+  /** Reference wires (ref): other reference wires end at the same scene dot (only a wire alone there can be dragged by its end unselected). */
   shared?: boolean
+  /** Reference wires (ref): other image wires (ref, H3 frames) leave the same asset dot (same rule, for the image end). */
+  sharedSource?: boolean
   color: string
 }
 
 export function CanvasView() {
   const projectId = useProject((s) => s.project.id)
+  const rootRef = useRef<HTMLDivElement>(null)
+  // React Flow mounts once the board's size is known (one synchronous re-render, before the first paint), so a project
+  // opens at its fitted viewport (defaultViewport) instead of mounting the nodes at the default transform first.
+  const [ready, setReady] = useState(false)
+  useLayoutEffect(() => setReady(true), [])
   return (
-    <div className="cv-root">
-      <ReactFlowProvider key={projectId}>
-        <CanvasInner />
-      </ReactFlowProvider>
+    <div className="cv-root" ref={rootRef}>
+      {ready && (
+        <ReactFlowProvider key={projectId}>
+          <CanvasInner rootRef={rootRef} />
+        </ReactFlowProvider>
+      )}
     </div>
   )
 }
 
 const samePos = (a: XY | undefined, b: XY) => !!a && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
-const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? s.size?.w ?? LAYOUT.sceneW
+const sceneWidth = (s: Scene, live?: ResizeBox) => live?.w ?? sceneNodeSize(s.size)?.w ?? LAYOUT.sceneW
 
-function CanvasInner() {
+function CanvasInner({ rootRef }: { rootRef: RefObject<HTMLDivElement | null> }) {
+  perfCount('CanvasInner')
+  const projectId = useProject((s) => s.project.id)
+  const [savedViewport] = useState(() => canvasViewports.get(projectId))
   const rf = useReactFlow<CanvasNode, LinkEdge>()
   const rfStore = useStoreApi<CanvasNode, LinkEdge>()
+  const far = useFarView()
   const stageRef = useRef<HTMLDivElement>(null)
 
-  const scenes = useProject((s) => s.project.scenes)
-  const assets = useProject((s) => s.project.assets)
+  const sceneSig = useProject((s) => sceneGraphOf(s.project.scenes))
+  const assetSig = useProject((s) => assetGraphOf(s.project.assets))
+  const scenes = useMemo(() => useProject.getState().project.scenes, [sceneSig])
+  const assets = useMemo(() => useProject.getState().project.assets, [assetSig])
   const folders = useProject((s) => s.project.folders ?? NO_FOLDERS)
   // Only what the take nodes' layout/status depends on (not progress): a string, so render ticks don't rebuild the graph.
   const takeSig = useRuns((s) => takeLayoutSig(s.takes))
+  const nodeColor = useCallback((node: CanvasNode) => minimapColor(node), [sceneSig, assetSig, takeSig])
   const takeDisplay = useUI((s) => s.takeDisplay)
-  const dragPos = useUI((s) => s.dragPos)
-  const measured = useUI((s) => s.measured)
+  const dragPos = useCanvasLocal((s) => s.dragPos)
+  const measuredVersion = useCanvasLocal((s) => s.measuredVersion)
   const selectedIds = useUI((s) => s.selectedIds)
   const selectedEdgeIds = useUI((s) => s.selectedEdgeIds)
-  const hoveredId = useUI((s) => s.hoveredId)
   const edgeMode = useUI((s) => s.edgeMode)
   const interaction = useUI((s) => s.interaction)
   const showMinimap = useUI((s) => s.showMinimap)
   const libraryDrag = useUI((s) => !!s.draggingAssetIds)
   const takeDrag = useUI((s) => !!s.draggingTakeIds)
-  const hoveredEdgeId = useCanvasLocal((s) => s.hoveredEdgeId)
   const resizing = useCanvasLocal((s) => s.resizing)
-  const connecting = useConnection((c) => (c.inProgress ? `${c.fromNode.type ?? ''}|${c.fromNode.id}` : null))
+  const connecting = useConnection((c) => (c.inProgress ? `${connectingKind(c.fromNode.type, c.fromHandle?.type)}|${c.fromNode.id}` : null))
   const connKind = connecting ? connecting.slice(0, connecting.indexOf('|')) : null
   const connFrom = connecting ? connecting.slice(connecting.indexOf('|') + 1) : null
   const [menu, setMenu] = useState<ConnectMenuState | null>(null)
   const theme = useTheme((s) => s.theme)
   const clickToCut = useCanvasPrefs((s) => s.clickToCut)
+  const wheel = useCanvasPrefs((s) => s.wheel)
   const motion = useMotionLevel()
+  const bigPref = useCanvasPrefs((s) => s.bigProject)
+  const shownFor = useUI((s) => s.minimapShownFor.includes(projectId))
+  // A project laid out for the 0.5.x cards (280 × 200, rows 248 apart): spread its rows once for the 352 × 304 node.
+  useEffect(() => {
+    if (!maybeSpaceRows() || savedViewport) return
+    // The opening fit (startViewport) was taken from the rows before they moved: fit once more when React Flow has the
+    // moved nodes. Not undone by the effect clean-up (StrictMode runs this twice; the second call spaces nothing).
+    const before = rfStore.getState().nodes
+    const off = rfStore.subscribe((s) => {
+      if (s.nodes === before || !(s.width > 0 && s.height > 0)) return
+      off()
+      const viewport = initialViewport(rf.getNodes(), s.width, s.height)
+      if (viewport) void rf.setViewport(viewport)
+    })
+    setTimeout(off, 3000)
+  }, [projectId])
+  useEffect(() => rfStore.subscribe((state) => {
+    const [x, y, zoom] = state.transform
+    if (state.width && state.height) canvasViewports.set(projectId, { x, y, zoom })
+  }), [projectId, rfStore])
+  useEffect(() => {
+    if (!__SANOVIDS_PERF__) return
+    let disposed = false
+    let unregister: (() => void) | undefined
+    void import('../../perf/probe').then(({ registerPerfCanvas }) => {
+      if (disposed) return
+      unregister = registerPerfCanvas({
+        getViewport: rf.getViewport,
+        setViewport: (viewport) => rf.setViewport(viewport),
+        measure: () => {
+          const updates = new Map<string, { id: string; nodeElement: HTMLDivElement; force: boolean }>()
+          for (const el of stageRef.current?.querySelectorAll<HTMLDivElement>('.react-flow__node') ?? []) {
+            const id = el.dataset.id
+            if (id) updates.set(id, { id, nodeElement: el, force: true })
+          }
+          rfStore.getState().updateNodeInternals(updates)
+        },
+      })
+    })
+    return () => { disposed = true; unregister?.() }
+  }, [rf, rfStore])
 
   // Canvas width → toolbar density (narrow center panel) and whether the minimap must sit above the toolbar.
   // Only the derived levels are state, so resizing a side panel does not re-render the board on every pixel.
@@ -230,39 +328,33 @@ function CanvasInner() {
     wireIds.current = new Set(ids)
     return list
   }, [scenes, assets, takeLayout, folders])
-  // Each scene's reference dot takes the color of the wires drawn into it.
-  const refTones = useMemo(() => refDotTones(rawEdges), [rawEdges])
 
-  // ---------------- derived nodes (cached per id so unchanged nodes keep their identity) ----------------
+  // ---------------- stored layout (unaffected by drag, selection and measurement frames) ----------------
   const nodeCache = useRef(new Map<string, CanvasNode>())
   const takeData = useRef(new Map<string, TakeNodeData>())
   /** Row offset of each take (accumulated widths of the takes before it) and its current auto spot. */
   const slotsRef = useRef(new Map<string, number>())
   const autoRef = useRef(new Map<string, XY>())
-  const nodes = useMemo(() => {
+  const baseNodes = useMemo(() => {
+    perfCount('baseNodes')
     const prevCache = nodeCache.current
     const next = new Map<string, CanvasNode>()
-    const sel = new Set(selectedIds)
     const out: CanvasNode[] = []
     const push = (id: string, type: NodeType, base: XY, data: Record<string, unknown>, size: Size | null | undefined) => {
       const prev = prevCache.get(id)
-      // A resize from the left / top edge moves the node live too.
-      const live = resizing[id]
-      let position = live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : (dragPos[id] ?? base)
+      let position = base
       if (prev && samePos(prev.position, position)) position = prev.position
-      const m = measured[id]
-      const selected = sel.has(id)
-      const dragging = id in dragPos
-      // Stored (or live) size sizes the React Flow wrapper; the card fills it. No size = CSS default (auto height).
-      const width = live?.w ?? size?.w
-      const height = live?.h ?? size?.h
+      const selected = false
+      const dragging = false
+      // Stored size sizes the React Flow wrapper; the card fills it. No size = CSS default (auto height).
+      const width = size?.w
+      const height = size?.h
       let node: CanvasNode
       if (
         prev &&
         prev.type === type &&
         prev.position === position &&
         prev.selected === selected &&
-        prev.measured === m &&
         prev.dragging === dragging &&
         prev.data === data &&
         prev.width === width &&
@@ -270,43 +362,36 @@ function CanvasInner() {
       ) {
         node = prev
       } else {
-        node = { id, type, position, data, selected, dragging, measured: m, width, height } as CanvasNode
+        node = { id, type, position, data, selected, dragging, width, height } as CanvasNode
       }
       next.set(id, node)
       out.push(node)
     }
     for (const a of assets) if (a.position) push(a.id, 'asset', a.position, EMPTY_DATA, a.size)
     for (const f of folders) push(f.id, 'folder', f.position, EMPTY_DATA, null)
-    for (const s of scenes) push(s.id, 'scene', s.position, SCENE_DATA[refTones.get(s.id) ?? 'image'], s.size)
+    // Every wire into a scene's reference dot is an image wire (reference videos were retired in 0.6.0): constant data.
+    for (const s of scenes) push(s.id, 'scene', s.position, EMPTY_DATA, sceneNodeSize(s.size))
     const sm = sceneMapOf(scenes)
     const dataNext = new Map<string, TakeNodeData>()
     // Takes sit right of their scene's ACTUAL width, each after the summed widths of the takes in the row before it
     // (a take dragged away leaves the row; one only nudged on its slot keeps it).
-    const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
+    const widthOf = (id: string) => takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
     const slots = takeSlots(takeLayout.items, widthOf, (id, slotX) => {
       const item = takeLayout.byId.get(id)
-      const anchor = item && sm.get(item.anchorId)
+      const anchor = item && sm.get(item.sceneId)
       if (!item?.explicit || !anchor) return false
-      const slot = item.orphan
-        ? orphanTakePosition(anchor.position, item.index, slotX, widthOf(id))
-        : autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      const slot = autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
       return keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
     })
     const autos = new Map<string, XY>()
     for (const item of takeLayout.items) {
-      const anchor = sm.get(item.anchorId)!
+      const anchor = sm.get(item.sceneId)!
       const slot = slots.get(item.id) ?? 0
-      const live = resizing[anchor.id]
-      const anchorPos = dragPos[anchor.id] ?? (live && live.x !== undefined && live.y !== undefined ? { x: live.x, y: live.y } : anchor.position)
-      // Auto-placed takes follow their scene live while it is dragged or resized. An orphan (its scene was just
-      // deleted) stays where it was shown; without a previous spot it goes next to the scene that uses it.
-      const auto = item.orphan ? null : autoTakePosition(anchorPos, sceneWidth(anchor, live), slot)
-      if (auto) autos.set(item.id, auto)
-      const base =
-        item.explicit ??
-        auto ??
-        prevCache.get(item.id)?.position ??
-        orphanTakePosition(anchor.position, item.index, slot, item.size?.w ?? LAYOUT.takeW)
+      const anchorPos = anchor.position
+      // Live scene movement is applied separately below.
+      const auto = autoTakePosition(anchorPos, sceneWidth(anchor), slot)
+      autos.set(item.id, auto)
+      const base = item.explicit ?? auto
       let data = takeData.current.get(item.id)
       if (!data || data.hidden !== item.hidden || data.status !== item.status) data = { hidden: item.hidden, status: item.status }
       dataNext.set(item.id, data)
@@ -317,7 +402,111 @@ function CanvasInner() {
     takeData.current = dataNext
     nodeCache.current = next
     return out
-  }, [scenes, assets, folders, takeLayout, refTones, dragPos, measured, selectedIds, resizing])
+  }, [scenes, assets, folders, takeLayout])
+
+  const liveCache = useRef(new Map<string, CanvasNode>())
+  const estimateState = useRef({ far, scenes })
+  const nodes = useMemo(() => {
+    const selected = new Set(selectedIds)
+    const local = useCanvasLocal.getState()
+    const sm = sceneMapOf(scenes)
+    const previousScenes = sceneMapOf(estimateState.current.scenes)
+    const widthOf = (id: string) => resizing[id]?.w ?? takeLayout.byId.get(id)?.size?.w ?? LAYOUT.takeW
+    const hasResize = Object.keys(resizing).length > 0
+    const slots = hasResize ? takeSlots(takeLayout.items, widthOf, (id, slotX) => {
+      const item = takeLayout.byId.get(id)!
+      const anchor = sm.get(item.sceneId)!
+      const slot = autoTakePosition(anchor.position, sceneWidth(anchor), slotX)
+      return !!item.explicit && keepsSlot(item.explicit, slot, widthOf(id), item.size?.h ?? LAYOUT.takeH)
+    }) : slotsRef.current
+    const next = new Map<string, CanvasNode>()
+    const out = baseNodes.map((base) => {
+      const id = base.id
+      const live = resizing[id]
+      let position = base.position
+      const item = takeLayout.byId.get(id)
+      if (item && (hasResize || dragPos[item.sceneId])) {
+        const anchor = sm.get(item.sceneId)!
+        const box = resizing[anchor.id]
+        const pos = livePosition(anchor.id, anchor.position, dragPos, resizing)
+        const auto = autoTakePosition(pos, sceneWidth(anchor, box), slots.get(id) ?? 0)
+        autoRef.current.set(id, auto)
+        if (!item.explicit) position = auto
+      }
+      position = livePosition(id, position, dragPos, resizing)
+      const prev = liveCache.current.get(id)
+      const measured = local.measured[id]
+      const width = live?.w ?? base.width, height = live?.h ?? base.height
+      const isSelected = selected.has(id), dragging = id in dragPos
+      const box = width && height ? { w: width, h: height } : null
+      // An unmeasured node keeps its estimate object across LOD_ZOOM unless its dots really move (folder, resized take).
+      const sameEstimate = measured || ((far === estimateState.current.far || !estimateDependsOnZoom(base.type, box)) &&
+        sm.get(id)?.settings.mode === previousScenes.get(id)?.settings.mode)
+      const node = prev && sameEstimate && prev.data === base.data && prev.type === base.type && samePos(prev.position, position) &&
+        prev.measured === measured && prev.width === width && prev.height === height && prev.selected === isSelected && prev.dragging === dragging
+        ? prev : { ...base, position, measured, width, height, selected: isSelected, dragging,
+          ...(!measured ? estimatedGeometry(base.type, box, far, sm.get(id)?.settings.mode) : {}) }
+      next.set(id, node)
+      return node
+    })
+    liveCache.current = next
+    estimateState.current = { far, scenes }
+    return out
+  }, [baseNodes, scenes, takeLayout, dragPos, resizing, selectedIds, measuredVersion, far])
+
+  // Opening viewport, decided once before React Flow mounts (defaultViewport): the one saved this session, else a fit of
+  // every node from its estimate. A board without a size yet (null) falls back to the onInit fit below, which waits
+  // for React Flow's first real size.
+  const startViewport = useRef<Viewport | null | undefined>(savedViewport)
+  if (startViewport.current === undefined) {
+    const root = rootRef.current
+    startViewport.current = root ? initialViewport(nodes, root.clientWidth, root.clientHeight) : null
+  }
+  const initialFit = useRef<{ done: boolean; off?: () => void }>({ done: !!startViewport.current })
+  const onInit = useCallback(() => {
+    const fit = () => {
+      if (initialFit.current.done) return true
+      const { width, height } = rfStore.getState()
+      if (!(width > 0 && height > 0)) return false
+      initialFit.current.done = true
+      const viewport = initialViewport(rf.getNodes(), width, height)
+      if (viewport) void rf.setViewport(viewport)
+      return true
+    }
+    if (!fit()) initialFit.current.off = rfStore.subscribe(() => {
+      if (fit()) initialFit.current.off?.()
+    })
+  }, [rf, rfStore])
+  useEffect(() => () => initialFit.current.off?.(), [])
+
+  const [wasBig, setWasBig] = useState(() => useCanvasLocal.getState().big)
+  const big = bigCanvasState(baseNodes.length, wasBig, bigPref)
+  useEffect(() => {
+    setWasBig(big)
+    if (useCanvasLocal.getState().big !== big) useCanvasLocal.setState({ big })
+  }, [big])
+  const minimapHidden = big && !shownFor
+  useEffect(() => {
+    useUI.setState({ minimapAutoHiddenFor: big ? projectId : null })
+    if (minimapHidden && showMinimap && !minimapNotified.has(projectId)) {
+      minimapNotified.add(projectId)
+      toast(`Dự án lớn (${baseNodes.length} thẻ): bản đồ thu nhỏ tạm ẩn để canvas mượt hơn.`, {
+        action: { label: 'Hiện lại', run: () => {
+          const ui = useUI.getState()
+          if (!ui.minimapShownFor.includes(projectId)) useUI.setState({ minimapShownFor: [...ui.minimapShownFor, projectId] })
+        } },
+      })
+    }
+    return () => { useUI.setState({ minimapAutoHiddenFor: null }) }
+  }, [big, minimapHidden, showMinimap, projectId, baseNodes.length])
+  const wireArea = useStore(useShallow((s) => big && edgeMode === 'all' ? wireViewport(s.transform, s.width, s.height) : null))
+  const nearNodes = useMemo(() => {
+    if (!wireArea) return null
+    return new Set(nodes.filter((n) => {
+      const fallback = fallbackNodeSize(n.type)
+      return boxesIntersect(wireArea, { ...n.position, w: n.measured?.width ?? n.width ?? fallback.w, h: n.measured?.height ?? n.height ?? fallback.h })
+    }).map((n) => n.id))
+  }, [nodes, wireArea])
 
   // ---------------- derived edges ----------------
   const edgeCache = useRef(new Map<string, LinkEdge>())
@@ -330,21 +519,19 @@ function CanvasInner() {
     // Selected reference wires also come last, so their reconnect grip is on top of the other wires at the dot.
     const grabbable: LinkEdge[] = []
     for (const r of rawEdges) {
-      const touchesHover = !!hoveredId && (r.source === hoveredId || r.target === hoveredId)
       const touchesSel = sel.has(r.source) || sel.has(r.target)
       const isSel = selEdges.has(r.id)
-      const isHover = hoveredEdgeId === r.id
       // Scene → take wires are shown with their scene/take whenever it is selected or hovered, whatever the mode.
-      const visible = edgeMode === 'all' || touchesHover || isSel || isHover || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
-      if (!visible) continue
-      const highlight = touchesHover || touchesSel || isSel || isHover
+      if (!wireNearViewport(r.source, r.target, nearNodes, isSel)) continue
+      const visible = edgeMode === 'all' || isSel || ((edgeMode === 'selected' || r.kind === 'out') && touchesSel)
+      const highlight = touchesSel || isSel
       // Every wire into one dot ends at its center, so React Flow puts their reconnect grips at the same spot (one
       // reconnect radius out from the dot): with several wires at one dot the last-drawn one would always be the one
-      // moved. Only a wire that is alone at its dot, or selected (clicked first), can be dragged by its end.
-      const isRef = r.kind === 'ref' || r.kind === 'vref'
-      const reconnectable = isRef && (isSel || !r.shared)
+      // moved. Only a wire that is alone at its dot, or selected (clicked first), can be dragged by that end.
+      const isRef = r.kind === 'ref'
+      const reconnectable = isRef ? refWireGrips({ selected: isSel, sharedAtScene: !!r.shared, sharedAtImage: !!r.sharedSource }) : false
       // Where wires share a dot, the one in focus is drawn on top (and stays under the cards).
-      const zIndex = wireZ({ selected: isSel, hovered: isHover, highlight })
+      const zIndex = wireZ({ selected: isSel, hovered: false, highlight })
       const prev = prevCache.get(r.id)
       const d = prev?.data
       let edge: LinkEdge
@@ -352,14 +539,15 @@ function CanvasInner() {
         prev &&
         d &&
         prev.selected === isSel &&
-        !!prev.reconnectable === reconnectable &&
+        (prev.reconnectable ?? false) === reconnectable &&
         prev.zIndex === zIndex &&
         d.highlight === highlight &&
+        d.visible === visible &&
         d.color === r.color
       ) {
         edge = prev
       } else {
-        const data: LinkEdgeData = { kind: r.kind, color: r.color, highlight }
+        const data: LinkEdgeData = { kind: r.kind, color: r.color, highlight, visible }
         const isOut = r.kind === 'out'
         edge = {
           id: r.id,
@@ -372,7 +560,7 @@ function CanvasInner() {
           selectable: !isOut,
           deletable: !isOut,
           focusable: !isOut,
-          reconnectable: reconnectable ? 'target' : false,
+          reconnectable,
           zIndex,
           data,
         }
@@ -383,7 +571,7 @@ function CanvasInner() {
     }
     edgeCache.current = next
     return grabbable.length ? out.concat(grabbable) : out
-  }, [rawEdges, selectedIds, selectedEdgeIds, hoveredId, hoveredEdgeId, edgeMode])
+  }, [rawEdges, selectedIds, selectedEdgeIds, edgeMode, nearNodes])
 
   // Wire selection must only hold wires that exist on the canvas. React Flow can only deselect wires it renders, so a
   // wire that vanished (asset taken off the canvas, ref removed elsewhere, undo…) would stay selected and be cut by Delete.
@@ -452,19 +640,6 @@ function CanvasInner() {
     }
   }, [])
 
-  // Dim everything not connected to the hovered node (pure CSS, no node churn).
-  const dimCss = useMemo(() => {
-    if (!hoveredId || connecting || libraryDrag || takeDrag) return ''
-    const lit = new Set([hoveredId])
-    for (const r of rawEdges) {
-      if (r.source === hoveredId) lit.add(r.target)
-      else if (r.target === hoveredId) lit.add(r.source)
-    }
-    if (lit.size < 2) return ''
-    const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
-    return `.cv-stage .react-flow__node${nots}{opacity:.38}`
-  }, [hoveredId, rawEdges, connecting, libraryDrag, takeDrag])
-
   // While wiring a take, its own scene is not a valid target (a scene cannot reference its own video).
   const ownSceneCss = useMemo(() => {
     if (connKind !== 'take' || !connFrom) return ''
@@ -512,20 +687,7 @@ function CanvasInner() {
     }
     if (Object.keys(live).length) useCanvasLocal.getState().setResizing(live)
     for (const id of ended) commitResize(id, autoRef.current)
-    if (Object.keys(dims).length) {
-      useUI.setState((s) => {
-        let changed = false
-        const m = { ...s.measured }
-        for (const [id, d] of Object.entries(dims)) {
-          const cur = m[id]
-          if (!cur || cur.width !== d.width || cur.height !== d.height) {
-            m[id] = d
-            changed = true
-          }
-        }
-        return changed ? { measured: m } : s
-      })
-    }
+    if (Object.keys(dims).length) useCanvasLocal.getState().setMeasured(dims)
 
     // An auto-placed take dragged together with its scene just follows the scene (stays auto-placed).
     const layout = layoutRef.current
@@ -541,7 +703,31 @@ function CanvasInner() {
         }
       }
     }
-    if (Object.keys(drag).length) ui.setDragPos(drag)
+    // UI-05 alignment guides: ONE dragged node snaps to the edges / centres of the others (canvasModel.alignToGuides),
+    // while it moves and where it is dropped (React Flow reports its own unsnapped end position).
+    // Counted after the auto-placed takes left: a scene dropped with its takes snaps like it did while dragging.
+    const dragIds = Object.keys(drag)
+    const dropIds = Object.keys(commit)
+    const guideId = dragIds.length === 1 && !dropIds.length ? dragIds[0] : !dragIds.length && dropIds.length === 1 ? dropIds[0] : null
+    const self = guideId ? lookup.get(guideId) : undefined
+    const sw = self?.measured?.width ?? 0, sh = self?.measured?.height ?? 0
+    if (guideId && sw && sh) {
+      // Never against itself nor the auto-placed takes that move with a dragged scene.
+      const skip = new Set([guideId])
+      for (const [id, item] of layout.byId) if (!item.explicit && item.sceneId === guideId) skip.add(id)
+      const others: GuideBox[] = []
+      for (const n of lookup.values()) {
+        const w = n.measured?.width, h = n.measured?.height
+        if (skip.has(n.id) || n.hidden || !w || !h) continue
+        others.push({ x: n.internals.positionAbsolute.x, y: n.internals.positionAbsolute.y, w, h })
+      }
+      const raw = drag[guideId] ?? commit[guideId]
+      const snapped = alignToGuides({ x: raw.x, y: raw.y, w: sw, h: sh }, others, GUIDE_TOLERANCE_PX / rfStore.getState().transform[2])
+      if (drag[guideId]) drag[guideId] = { x: snapped.x, y: snapped.y }
+      else commit[guideId] = { x: snapped.x, y: snapped.y }
+      useCanvasLocal.getState().setGuides(drag[guideId] ? snapped.guides : null)
+    } else if (!dragIds.length) useCanvasLocal.getState().setGuides(null)
+    if (dragIds.length) useCanvasLocal.getState().setDragPos(drag)
     if (commitIds.length) {
       const project = useProject.getState().project
       const sm = sceneMapOf(project.scenes)
@@ -554,13 +740,12 @@ function CanvasInner() {
       for (const [id, pos] of Object.entries(commit)) {
         const item = layout.byId.get(id)
         if (item) {
-          const scene = item.orphan ? undefined : sm.get(item.sceneId)
+          const scene = sm.get(item.sceneId)
           const take = takes.get(id)
-          if (!take || (!scene && !item.orphan)) continue
+          if (!take || !scene) continue
           // Dropped on its auto slot (snapped to the grid): keep it auto-placed (it keeps following the scene).
-          // Orphans (scene deleted) have no auto slot: wherever they are dropped is kept.
-          const auto = scene ? autoTakePosition(commit[scene.id] ?? scene.position, sceneWidth(scene), slotsRef.current.get(id) ?? 0) : null
-          const next = auto && isAutoSlot(auto, pos) ? null : pos
+          const auto = autoTakePosition(commit[scene.id] ?? scene.position, sceneWidth(scene), slotsRef.current.get(id) ?? 0)
+          const next = isAutoSlot(auto, pos) ? null : pos
           takeCommit[id] = next
           if (!(next === null ? take.position === null : samePos(take.position ?? undefined, next))) takesMoved = true
         } else {
@@ -574,14 +759,15 @@ function CanvasInner() {
       }
       if (projectMoved) useProject.getState().setPositions(projectCommit)
       if (takesMoved) useRuns.getState().setTakePositions(takeCommit)
-      ui.clearDragPos(commitIds)
+      useCanvasLocal.getState().clearDragPos(commitIds)
     }
     if (sel) {
       const s = sel
       const prev = ui.selectedIds
+      const prevSet = new Set(prev)
       rfSelecting.current = true
       try {
-        ui.select([...prev.filter((id) => s.has(id)), ...[...s].filter((id) => !prev.includes(id))])
+        ui.select([...prev.filter((id) => s.has(id)), ...[...s].filter((id) => !prevSet.has(id))])
       } finally {
         rfSelecting.current = false
       }
@@ -615,7 +801,7 @@ function CanvasInner() {
 
   // ---------------- connecting ----------------
   const handled = useRef(false)
-  const reconnecting = useRef<{ done: boolean } | null>(null)
+  const reconnecting = useRef<{ done: boolean; end: WireEnd; edge: LinkEdge } | null>(null)
 
   const onConnectStart: OnConnectStart = useCallback(() => {
     handled.current = false
@@ -680,9 +866,11 @@ function CanvasInner() {
 
   const isValidConnection = useCallback((c: LinkEdge | Connection) => {
     if (c.source === c.target) return false
+    const r = reconnecting.current
+    if (r?.end === 'image') return imageEndValid(r.edge, c, (id) => canReplaceRefEdge(r.edge.id, id))
     const p = useProject.getState().project
     if (folderMapOf(p.folders).has(c.target)) {
-      // Moving the scene end of an image / @video wire: it only goes to another scene (moveEdge), never into a folder.
+      // Moving the scene end of an image wire: it only goes to another scene (moveEdge), never into a folder.
       if (reconnecting.current) return false
       // Into a folder: a video from its purple dot, or a scene from its right dot (auto-save).
       if (sceneMapOf(p.scenes).has(c.source)) return c.sourceHandle === 'take'
@@ -690,21 +878,23 @@ function CanvasInner() {
     }
     if (!sceneMapOf(p.scenes).has(c.target)) return false
     const th = c.targetHandle ?? 'ref'
-    if (assetMapOf(p.assets).has(c.source)) return th === 'ref' || th === 'first' || th === 'last'
-    const take = takeIndexOf(useRuns.getState().takes).byId.get(c.source)
-    if (take) return th === 'ref' && take.status === 'completed' && take.sceneId !== c.target
-    return false
+    // A video never wires into a scene (reference videos were retired in 0.6.0): only into a folder (above).
+    return assetMapOf(p.assets).has(c.source) && (th === 'ref' || th === 'first' || th === 'last')
   }, [])
 
-  const onReconnectStart = useCallback((_e: ReactMouseEvent, _edge: LinkEdge, _h: HandleType) => {
-    reconnecting.current = { done: false }
-    setWireReconnecting(true)
+  const onReconnectStart = useCallback((_e: ReactMouseEvent, edge: LinkEdge, h: HandleType) => {
+    const end = draggedWireEnd(h)
+    reconnecting.current = { done: false, end, edge }
+    setWireReconnecting(true, end === 'image' ? (id) => canReplaceRefEdge(edge.id, id) : undefined)
     setMenu(null)
   }, [])
+  // Released on a dot React Flow accepted (isValidConnection): the card of the moved end decides.
   const onReconnect = useCallback((oldEdge: LinkEdge, c: Connection) => {
+    const end = reconnecting.current?.end ?? 'scene'
     if (reconnecting.current) reconnecting.current.done = true
-    moveEdge(oldEdge.id, c.target)
+    applyReconnectDrop(oldEdge.id, reconnectDrop(end, { kind: 'node', id: end === 'image' ? c.source : c.target }, oldEdge, nodeKindOf))
   }, [])
+  // Released anywhere else: the card (or empty canvas) under the pointer decides (wireFx.reconnectDrop).
   const onReconnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, edge: LinkEdge, _h: HandleType, _state: FinalConnectionState) => {
       const r = reconnecting.current
@@ -712,24 +902,7 @@ function CanvasInner() {
       setWireReconnecting(false)
       if (!r || r.done) return
       const pt = clientPoint(event)
-      const hit = hitTest(pt.x, pt.y, stageRef.current)
-      if (!hit) return
-      if (hit.kind === 'node') {
-        const project = useProject.getState().project
-        if (hit.id !== edge.target && sceneMapOf(project.scenes).has(hit.id)) moveEdge(edge.id, hit.id)
-        else if (folderMapOf(project.folders).has(hit.id)) {
-          // Released on a folder: the wire stays where it was (and says why, instead of doing nothing).
-          toast(
-            edge.type === 'vref'
-              ? 'Dây @video chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ. Để lưu video vào thư mục, kéo dây từ chấm tím của video vào thư mục.'
-              : 'Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.',
-            { tone: 'info', ms: 7000 },
-          )
-        }
-        return
-      }
-      // Dropped on empty canvas: cut the wire.
-      cutEdge(edge.id)
+      applyReconnectDrop(edge.id, reconnectDrop(r.end, hitTest(pt.x, pt.y, stageRef.current), edge, nodeKindOf))
     },
     [],
   )
@@ -745,10 +918,10 @@ function CanvasInner() {
   // ---------------- hover ----------------
   const onNodeMouseEnter: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => {
     keepHover()
-    useUI.getState().setHovered(node.id)
+    useCanvasLocal.getState().setHovered(node.id)
   }, [])
   const onNodeMouseLeave: NodeMouseHandler<CanvasNode> = useCallback(() => {
-    scheduleHoverEnd(() => useUI.getState().setHovered(null))
+    scheduleHoverEnd(() => useCanvasLocal.getState().setHovered(null))
   }, [])
   const onEdgeMouseEnter: EdgeMouseHandler<LinkEdge> = useCallback((_e, edge) => {
     if (edge.type === 'out') return
@@ -756,24 +929,26 @@ function CanvasInner() {
     useCanvasLocal.getState().setHoveredEdge(edge.id)
   }, [])
   const onEdgeMouseLeave: EdgeMouseHandler<LinkEdge> = useCallback(() => {
-    scheduleHoverEnd(() => useUI.getState().setHovered(null), 180)
+    scheduleHoverEnd(() => useCanvasLocal.getState().setHovered(null), 180)
   }, [])
   useEffect(
     () => () => {
       keepHover()
       useCanvasLocal.getState().setHoveredEdge(null)
-      useUI.getState().setHovered(null)
+      useCanvasLocal.getState().setHovered(null)
       setWireReconnecting(false)
     },
     [],
   )
 
   // ---------------- focus / reveal / fit requests ----------------
-  /** Stage size and the band the queue drawer (36px bar, 272px open) and the toolbar above it cover at the bottom. */
+  /** Stage size and the bands the queue drawer (36px bar, 272px open) and the toolbar (on its actual dock) cover. */
   const stageSize = useCallback((): StageSize | null => {
     const stage = stageRef.current
     if (!stage || !stage.clientWidth || !stage.clientHeight) return null
-    return { w: stage.clientWidth, h: stage.clientHeight, bottom: drawerInset(stage) + TOOLBAR_ROOM }
+    const bar = stage.querySelector<HTMLElement>('.cv-toolbar-bar')
+    const dock = bar?.closest<HTMLElement>('.cv-toolbar-host')?.dataset.dock
+    return { w: stage.clientWidth, h: stage.clientHeight, ...toolbarInsets(dock, bar?.getBoundingClientRect() ?? null, stage.getBoundingClientRect(), drawerInset(stage)) }
   }, [])
 
   // New nodes are placed next to what the canvas shows (actions.placementHint → project.newScenePosition).
@@ -799,10 +974,16 @@ function CanvasInner() {
       const p = n.internals.positionAbsolute
       return { x: p.x, y: p.y, w: n.measured?.width || n.width || fb.w, h: n.measured?.height || n.height || fb.h }
     }
-    type Mode = 'focus' | 'reveal' | 'fit'
+    type Mode = 'focus' | 'reveal' | 'fit' | 'type'
     const run = (ids: string[], mode: Mode, attempt = 0) => {
       if (!ids.length) {
-        if (mode === 'fit') void rf.fitView({ padding: 0.12, duration: 300, maxZoom: 1 })
+        // Fit everything (F / "Vừa màn hình" with nothing selected, after "Sắp xếp"). Never rf.fitView: it waits until
+        // EVERY node is measured and then fits the measured ones only, and nodes that were never on screen are never
+        // measured (estimated geometry, onlyRenderVisibleElements). Estimates count here, like on open.
+        if (mode !== 'fit') return
+        const { width, height } = rfStore.getState()
+        const next = initialViewport(rf.getNodes(), width, height)
+        if (next) void rf.setViewport(next, { duration: 300 })
         return
       }
       const boxes = ids.map(boxOf).filter((b): b is Box => !!b)
@@ -817,10 +998,12 @@ function CanvasInner() {
       const vp = rf.getViewport()
       let next: { x: number; y: number; zoom: number } | null
       if (mode === 'fit') {
-        // Same 0.25 padding as before on top/sides; the bottom also keeps the covered band clear.
-        const padding = { x: 0.25, top: 0.25, bottom: `${Math.round(size.bottom + size.h * 0.1)}px` as const }
+        // 10% of the stage on every side (= React Flow's 0.25), plus the band the drawer / toolbar covers there.
+        const pad = (covered = 0, length: number) => `${Math.round(covered + length * 0.1)}px` as const
+        const padding = { top: pad(size.top, size.h), bottom: pad(size.bottom, size.h), left: pad(size.left, size.w), right: pad(size.right, size.w) }
         next = getViewportForBounds({ x: box.x, y: box.y, width: box.w, height: box.h }, size.w, size.h, 0.1, 1.2, padding)
       } else if (mode === 'reveal') next = revealViewport(box, vp, size)
+      else if (mode === 'type') next = typingViewport(box, vp, size)
       else next = focusViewport(box, vp, size)
       if (next) void rf.setViewport(next, { duration: 300 })
     }
@@ -832,9 +1015,10 @@ function CanvasInner() {
       canvasEvents.addEventListener(type, handler)
       return () => canvasEvents.removeEventListener(type, handler)
     }
-    const offs = [listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30)]
+    const zoom = (e: Event) => { const { dir, repeat } = (e as CustomEvent<{ dir: number; repeat: boolean }>).detail; void (dir > 0 ? rf.zoomIn : rf.zoomOut)({ duration: repeat ? 0 : 120 }) }; canvasEvents.addEventListener('zoom', zoom)
+    const offs = [() => canvasEvents.removeEventListener('zoom', zoom), listen('focus', 'focus', 60), listen(REVEAL_EVENT, 'reveal', 60), listen(FIT_EVENT, 'fit', 30), listen(TYPE_EVENT, 'type', 0)]
     return () => offs.forEach((off) => off())
-  }, [rf, stageSize])
+  }, [rf, rfStore, stageSize])
 
   // ---------------- wires: click to cut ----------------
   // A plain click on a wire cuts it (pref clickToCut). Decided in the capture phase, before React Flow's own click
@@ -897,9 +1081,16 @@ function CanvasInner() {
   // The empty canvas' "Cảnh mới" button disappears on its first click: when it was double-clicked, the second click
   // lands on the canvas below and must not create another scene there.
   const emptyActionAt = useRef(-Infinity)
+  // A scene made on purpose where the user points (double-click, the empty canvas' "Cảnh mới" button) is ready to
+  // type in: its node opens its prompt field (N and the toolbar's + do not — they make several scenes in a row).
+  // typeOnNode, not a plain open: zoomed out (far view) the node has no field until the view zooms in, and it is
+  // typeOnNode that brings it near (the scene's own reveal is skipped: it would race that zoom and stop it far).
+  // With the node editor off there is no field: the new scene is only revealed.
   const onEmptyAction = () => {
     emptyActionAt.current = performance.now()
-    nextScene()
+    const typing = useCanvasPrefs.getState().nodeEditor !== 'off'
+    const id = nextScene(undefined, { reveal: !typing })
+    if (id && typing) typeOnNode(id, 0)
   }
   const onDoubleClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement
@@ -907,7 +1098,9 @@ function CanvasInner() {
     if (performance.now() - emptyActionAt.current < 600) return
     if (performance.now() - wireCutAt.current < 500) return
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    newScene({ x: snap(p.x - 140), y: snap(p.y - 40) })
+    const typing = useCanvasPrefs.getState().nodeEditor !== 'off'
+    const id = newScene({ x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) }, { reveal: !typing })
+    if (typing) typeOnNode(id, 0)
   }
 
   const onDragOver = (e: DragEvent) => {
@@ -926,48 +1119,51 @@ function CanvasInner() {
       if (!isEmptyCanvasTarget(e.target)) return
       const ids = readTakeIds(e.dataTransfer)
       if (ids.length === 1) {
-        // Continuation scene (take as @video_1) with its card's top-left corner near the drop point.
+        // "Tạo cảnh tiếp theo từ video này" with its card's top-left corner near the drop point.
         const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-        createSceneFromTake(ids[0], { x: snap(p.x - 140), y: snap(p.y - 40) })
+        createSceneFromVideo(ids[0], { x: snap(p.x - LAYOUT.sceneW / 2), y: snap(p.y - 40) })
       } else if (ids.length > 1) {
-        toast('Thả từng video ra nền để tạo cảnh tiếp nối — hoặc thả vào một cảnh để dùng làm @video.', { tone: 'info' })
+        toast('Thả từng video ra nền để tạo cảnh tiếp theo từ video đó.', { tone: 'info' })
       }
       return
     }
     if (!hasAssetDrag(e.dataTransfer) && !hasFileDrag(e.dataTransfer)) return
     e.preventDefault()
     useUI.getState().setDraggingAssets(null)
+    // Image tiles land like canvasapp's (one size, lined up): left of the scene column → one column next to the scene
+    // row under the pointer; elsewhere → a 2-column grid at the pointer, slid off whatever it would cover.
     const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const base = { x: snap(p.x - 90), y: snap(p.y - 100) }
+    const project = useProject.getState().project
+    const spotsFor = (count: number, moving: readonly string[] = []) =>
+      imageDropSpots(
+        p,
+        count,
+        project.scenes,
+        canvasObstacles(moving.length ? { ...project, assets: project.assets.filter((a) => !moving.includes(a.id)) } : project),
+        rowHeightOf,
+      )
     const ids = readAssetIds(e.dataTransfer)
     if (ids && ids.length) {
-      const map = assetMapOf(useProject.getState().project.assets)
+      const map = assetMapOf(project.assets)
       const valid = ids.filter((id) => map.has(id))
       if (!valid.length) return
       // One card goes where it is dropped (even one already on the canvas: the user moves it here). Several: the ones
-      // not on the canvas yet, in rows of 4 from the drop point; cards already on the canvas stay where they are.
+      // not on the canvas yet; cards already on the canvas stay where they are.
       const fresh = valid.length === 1 ? valid : valid.filter((id) => !map.get(id)!.position)
-      const measured = useUI.getState().measured
-      const spots = gridPositions(
-        base,
-        fresh.map((id) => {
-          const a = map.get(id)!
-          return { w: a.size?.w ?? ASSET_DEFAULT_W, h: assetNodeHeight(a, measured[id]?.height) }
-        }),
-      )
+      const spots = spotsFor(fresh.length, fresh)
       if (fresh.length) useProject.getState().setAssetsOnCanvas(Object.fromEntries(fresh.map((id, i) => [id, spots[i]])))
       useUI.getState().select(valid)
       const kept = valid.length - fresh.length
       toast(
         fresh.length
-          ? `Đã đặt ${fresh.length} mục lên canvas${kept ? ` (${kept} mục đã có sẵn trên canvas — giữ nguyên chỗ)` : ''} — kéo chấm bên phải vào cảnh để nối.`
-          : `${kept} mục này đã có trên canvas — đã chọn chúng, giữ nguyên chỗ.`,
+          ? `Đã đặt ${fresh.length} ảnh lên canvas${kept ? ` (${kept} ảnh đã có sẵn trên canvas — giữ nguyên chỗ)` : ''}. Kéo chấm bên phải ảnh vào node cảnh để nối.`
+          : `${kept} ảnh này đã có trên canvas — đã chọn chúng, giữ nguyên chỗ.`,
         { tone: fresh.length ? 'success' : 'info', ...(fresh.length ? { action: undoToastAction() } : {}) },
       )
       return
     }
     const files = imageFiles(e.dataTransfer)
-    if (files.length) void createAssetsFromFiles(files, { position: base })
+    if (files.length) void createAssetsFromFiles(files, { spots: spotsFor(files.length) })
   }
 
   const closeMenu = useCallback(() => setMenu(null), [])
@@ -978,6 +1174,19 @@ function CanvasInner() {
     dropOffCanvasSelection()
     usePlayback.getState().unpin()
   }, [dropOffCanvasSelection])
+  // Right-click menus: one delegated handler on the stage (contextmenu/canvasContextMenu), none on the nodes.
+  const ctxMenu = useCanvasContextMenu({
+    toFlow: (p) => rf.screenToFlowPosition(p),
+    busy: () => !!connKind || libraryDrag || takeDrag,
+    closeOthers: closeMenu,
+  })
+  const ctxMoveStart = ctxMenu.onMoveStart
+  const onMoveStart = useCallback(() => {
+    setCanvasMoving(true)
+    closeMenu()
+    ctxMoveStart()
+  }, [closeMenu, ctxMoveStart])
+  const onMoveEnd = useCallback(() => setCanvasMoving(false), [])
 
   const handMode = interaction === 'hand'
   const stageCls = [
@@ -997,13 +1206,20 @@ function CanvasInner() {
       ref={stageRef}
       className={stageCls}
       data-motion={motion}
-      onPointerDownCapture={onWirePress}
+      onPointerDownCapture={(e) => {
+        // ⌃+click on a Mac is a secondary click: kept away from React Flow (no selection box), the menu opens.
+        if (!ctxMenu.onSecondaryGuard(e)) onWirePress(e)
+      }}
+      onMouseDownCapture={ctxMenu.onSecondaryGuard}
       onClickCapture={onWireClick}
+      onContextMenu={ctxMenu.onContextMenu}
       onDoubleClick={onDoubleClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {(dimCss || ownSceneCss) && <style>{dimCss + ownSceneCss}</style>}
+      <HoverDim rawEdges={rawEdges} disabled={!!connecting || libraryDrag || takeDrag} />
+      {ownSceneCss && <style>{ownSceneCss}</style>}
+      <CanvasToolbar density={density} big={big} />
       <ReactFlow<CanvasNode, LinkEdge>
         nodes={nodes}
         edges={edges}
@@ -1026,7 +1242,8 @@ function CanvasInner() {
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
-        onMoveStart={closeMenu}
+        onMoveStart={onMoveStart}
+        onMoveEnd={onMoveEnd}
         deleteKeyCode={null}
         // The app has its own keyboard layer (useShortcuts). React Flow's would move the focused (= last clicked)
         // node with the arrow keys even while a dialog is open over the canvas (TakeViewer / image viewer ←/→).
@@ -1037,9 +1254,11 @@ function CanvasInner() {
         panOnDrag={handMode ? true : [1]}
         selectionOnDrag={!handMode}
         selectionMode={SelectionMode.Partial}
-        zoomOnScroll
+        // Settings "Con lăn chuột": the wheel pans by default (Ctrl / ⌘ + wheel and a pinch zoom), or zooms (0.5).
+        zoomOnScroll={wheel === 'zoom'}
         zoomOnPinch
-        panOnScroll={false}
+        panOnScroll={wheel === 'pan'}
+        panOnScrollSpeed={1}
         zoomOnDoubleClick={false}
         minZoom={0.1}
         maxZoom={2}
@@ -1050,20 +1269,25 @@ function CanvasInner() {
         connectionRadius={28}
         connectionLineComponent={WireConnectionLine}
         nodeDragThreshold={2}
+        // Same 2px as the drag threshold: a click that jittered 1px (pressed mouse, pen) is still a click — the static
+        // prompt text opens the field there. React Flow's default (0) swallowed it without moving the node.
+        nodeClickDistance={2}
         elevateEdgesOnSelect={false}
-        fitView
-        fitViewOptions={FIT_OPTIONS}
+        defaultViewport={startViewport.current ?? undefined}
+        onInit={onInit}
         colorMode={theme}
         attributionPosition="top-right"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--canvas-dot, var(--border-strong))" />
         <WireCutLayer />
-        {showMinimap && (
+        <NodeActionBar />
+        <AlignGuides />
+        {showMinimap && !minimapHidden && (
           <MiniMap<CanvasNode>
             position="bottom-right"
             pannable
             zoomable
-            nodeColor={minimapColor}
+            nodeColor={nodeColor}
             nodeStrokeWidth={0}
             nodeBorderRadius={10}
             // Theme tokens (React Flow passes these through CSS variables, so var() / color-mix() work): a veil of the canvas color
@@ -1076,8 +1300,6 @@ function CanvasInner() {
           />
         )}
       </ReactFlow>
-      <SelectionHint />
-      <CanvasToolbar density={density} />
       {menu && <ConnectMenu menu={menu} onClose={closeMenu} />}
       {scenes.length === 0 && !folders.length && assets.every((a) => !a.position) && (
         <div className="cv-empty">
@@ -1098,6 +1320,25 @@ function CanvasInner() {
   )
 }
 
+/** Hover updates the style and incident edges without rebuilding the graph. */
+function HoverDim({ rawEdges, disabled }: { rawEdges: RawEdge[]; disabled: boolean }) {
+  const hoveredId = useCanvasLocal((s) => s.hoveredId)
+  // Dim everything not connected to the hovered node (pure CSS, no node churn).
+  const dimCss = useMemo(() => {
+    if (!hoveredId || disabled) return ''
+    const lit = new Set([hoveredId])
+    for (const r of rawEdges) {
+      if (r.source === hoveredId) lit.add(r.target)
+      else if (r.target === hoveredId) lit.add(r.source)
+    }
+    if (lit.size < 2) return ''
+    const nots = [...lit].map((id) => `:not([data-id="${cssId(id)}"])`).join('')
+    return `.cv-stage .react-flow__node${nots}:not(:has(.is-editing)){opacity:.38}`
+  }, [hoveredId, rawEdges, disabled])
+
+  return dimCss ? <style>{dimCss}</style> : null
+}
+
 const cssId = (id: string) => id.replace(/["\\]/g, '')
 
 // ---------------------------------------------------------------------------------------------
@@ -1107,16 +1348,12 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
   for (const a of assets) if (a.position) onCanvas.set(a.id, a)
   const out: RawEdge[] = []
   for (const s of scenes) {
-    // Image refs and video refs both arrive at the left 'ref' dot.
+    // Image refs arrive at the left 'ref' dot.
     const incoming: RawEdge[] = []
     for (const r of s.refs) {
       const a = onCanvas.get(r)
       if (!a) continue
       incoming.push({ id: edgeId('ref', r, s.id), kind: 'ref', source: r, target: s.id, sourceHandle: 'out', targetHandle: 'ref', color: a.color })
-    }
-    for (const t of s.videoRefs) {
-      if (!takes.byId.has(t)) continue
-      incoming.push({ id: edgeId('vref', t, s.id), kind: 'vref', source: t, target: s.id, sourceHandle: 'out', targetHandle: 'ref', color: VIDEO_COLOR })
     }
     for (const e of incoming) {
       e.shared = incoming.length > 1
@@ -1138,8 +1375,12 @@ function buildRawEdges(scenes: Scene[], assets: Asset[], takes: TakeLayout, fold
       }
     }
   }
+  // Every image wire (ref, H3 frames) leaves its asset's one 'out' dot: the image end of a reference wire is grabbable
+  // unselected only when no other wire leaves that dot (a character used in many scenes has one grip per scene there).
+  const fromAsset = new Map<string, number>()
+  for (const e of out) fromAsset.set(e.source, (fromAsset.get(e.source) ?? 0) + 1)
+  for (const e of out) if (e.kind === 'ref') e.sharedSource = (fromAsset.get(e.source) ?? 0) > 1
   for (const item of takes.items) {
-    if (item.orphan) continue // its scene was deleted
     out.push({
       id: edgeId('out', item.sceneId, item.id),
       kind: 'out',
@@ -1206,7 +1447,7 @@ function commitResize(id: string, autos: Map<string, XY>) {
   if (pos && !samePos(shown ?? undefined, pos)) runs.setTakePositions({ [id]: pos })
 }
 
-/** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. Take: @video ref. */
+/** Apply a finished connection gesture. Asset: `targetHandle` decides ref vs first/last frame. A take links nothing (hint). */
 function connectNodes(source: string, target: string, targetHandle: string | null | undefined) {
   const project = useProject.getState().project
   if (folderMapOf(project.folders).has(target)) {
@@ -1228,22 +1469,85 @@ function connectNodes(source: string, target: string, targetHandle: string | nul
     linkAssets(targetScenesFor(target), sourceAssetsFor(source))
     return
   }
-  const take = takeIndexOf(useRuns.getState().takes).byId.get(source)
-  if (!take) return
-  if (take.status !== 'completed') {
-    toast('Video chưa tạo xong.', { tone: 'warning' })
-    return
-  }
-  // linkTakes checks readiness, own-scene loops and model limits, and reports.
-  linkTakes(targetScenesFor(target), sourceTakesFor(source))
+  // A video onto a scene: reference videos were retired (0.6.0) — nothing is linked, the user is told where it goes.
+  if (takeIndexOf(useRuns.getState().takes).byId.has(source)) refuseTakesAsReference()
 }
 
-/** Reconnect gesture: move an image or video reference wire to another scene. */
+/** What a card of the canvas is, for wireFx.reconnectDrop. */
+function nodeKindOf(id: string): ReconnectNodeKind {
+  const p = useProject.getState().project
+  if (sceneMapOf(p.scenes).has(id)) return 'scene'
+  if (assetMapOf(p.assets).has(id)) return 'asset'
+  return folderMapOf(p.folders).has(id) ? 'folder' : 'other'
+}
+
+/** Apply a released wire end (wireFx.reconnectDrop). Anything but replace / move / cut leaves the wire as it was. */
+function applyReconnectDrop(edgeId: string, drop: ReconnectDrop) {
+  switch (drop.do) {
+    case 'replace':
+      replaceRefEdge(edgeId, drop.assetId)
+      return
+    case 'move':
+      moveEdge(edgeId, drop.sceneId)
+      return
+    case 'cut':
+      cutEdge(edgeId)
+      return
+    case 'explain':
+      toast(
+        drop.end === 'image'
+          ? 'Đầu dây phía ảnh chỉ thả được lên một ảnh khác (thay ảnh tại chỗ) — giữ nguyên nối cũ.'
+          : 'Dây ảnh chỉ chuyển sang được cảnh khác — giữ nguyên nối cũ.',
+        { tone: 'info', ms: 7000 },
+      )
+      return
+    case 'none':
+      return
+  }
+}
+
+/** The store's replacement plan for the image end of reference wire `id` dropped on `newSource` (null: not a reference wire of a scene). */
+function replacePlanOf(id: string, newSource: string) {
+  const e = parseEdgeId(id)
+  if (!e || e.kind !== 'ref' || e.from === newSource) return null
+  const p = useProject.getState().project
+  const scene = sceneMapOf(p.scenes).get(e.to)
+  if (!scene) return null
+  return { e, plan: planReplace(scene, p.assets, e.from, newSource, { renumber: p.settings.autoRenumber, maxImages: MODELS[scene.settings.model].maxRefImages }) }
+}
+
+/** Preview and drop share the store's replacement rules; refusals never flush a draft or add undo history. */
+export function canReplaceRefEdge(id: string, newSource: string): boolean {
+  return !!replacePlanOf(id, newSource)?.plan.ok
+}
+
+/**
+ * Replace only the dragged reference, preserving its slot and flushing any prompt being typed first. A refused drop on
+ * a character (already in the scene, no picture, over the model's image limit) changes nothing and says why.
+ */
+export function replaceRefEdge(id: string, newSource: string): void {
+  const r = replacePlanOf(id, newSource)
+  if (!r) return
+  const { e, plan } = r
+  if (!plan.ok) {
+    const note = replaceRefusalToast(plan.why, useProject.getState().project, e.to, e.from, newSource)
+    if (note) toast(note.text, { tone: note.tone, ms: 7000 })
+    return
+  }
+  flushScenes([e.to])
+  const before = useProject.getState().project
+  if (!useProject.getState().replaceRef(e.to, e.from, newSource).ok) return
+  useUI.getState().setSelectedEdges([])
+  // Judged against the swap's own mapping (core/replaceWire): the swapped slot naming the new character is not stale.
+  const note = replaceToast(before, useProject.getState().project, e.to, e.from, newSource)
+  toast(note.text, { tone: note.tone, action: undoToastAction(), ...(note.ms ? { ms: note.ms } : {}) })
+}
+
+/** Reconnect gesture: move an image reference wire to another scene. */
 function moveEdge(id: string, newTarget: string) {
   const e = parseEdgeId(id)
   if (!e || e.to === newTarget) return
   if (e.kind === 'ref') moveRefEdge(e.from, e.to, newTarget)
-  else if (e.kind === 'vref') moveVideoEdge(e.from, e.to, newTarget)
 }
 
 function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
@@ -1257,42 +1561,24 @@ function moveRefEdge(assetId: string, fromSceneId: string, newTarget: string) {
     toast(`Không chuyển được ${asset.name} sang ${sceneCode(target.order)} (vượt giới hạn ảnh) — giữ nguyên nối cũ.`, { tone: 'warning' })
     return
   }
+  // The prompt being typed in the source scene is committed first (the moved picture's token turns red in it).
+  flushScenes([fromSceneId])
+  const before = useProject.getState().project
   useProject.getState().moveRefToScene(assetId, fromSceneId, newTarget)
   const after = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
   const added = !!after?.refs.includes(assetId)
   useUI.getState().setSelectedEdges([])
+  // red placeholders left in the source scene (core/staleTokens mediaChangeNote)
+  const note = mediaChangeNote(before, useProject.getState().project)
+  const red = note?.tone === 'warning' ? note.text : ''
   toast(
-    already
-      ? `${sceneCode(target.order)} đã có ${asset.name} — bỏ nối ở cảnh cũ.`
+    (already
+      ? `${sceneCode(target.order)} đã có ${asset.name} — bỏ nối ở cảnh cũ`
       : added
-        ? `Đã chuyển ${asset.name} sang ${sceneCode(target.order)}.`
-        : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh).`,
-    { tone: added || already ? 'success' : 'warning', action: undoToastAction() },
+        ? `Đã chuyển ${asset.name} sang ${sceneCode(target.order)}`
+        : `Không thêm được ${asset.name} vào ${sceneCode(target.order)} (vượt giới hạn ảnh)`) + `${red}.`,
+    { tone: red ? 'warning' : added || already ? 'success' : 'warning', action: undoToastAction(), ...(red ? { ms: note?.ms } : {}) },
   )
-}
-
-/** Move a @video reference to another scene in one undo step; refused (original link kept) when the target is full. */
-function moveVideoEdge(takeId: string, fromSceneId: string, newTarget: string) {
-  const take = takeIndexOf(useRuns.getState().takes).byId.get(takeId)
-  const target = sceneMapOf(useProject.getState().project.scenes).get(newTarget)
-  if (!take || !target) return
-  const label = takeLabel(takeId)
-  if (take.sceneId === newTarget) {
-    toast('Không thể dùng video của chính cảnh này làm tham chiếu cho nó — giữ nguyên nối cũ.', { tone: 'warning' })
-    return
-  }
-  const already = target.videoRefs.includes(takeId)
-  if (!useProject.getState().moveVideoRefToScene(takeId, fromSceneId, newTarget, videoLabel(takeId))) {
-    const spec = MODELS[target.settings.model]
-    const why = usesVideoRefs(target.settings) ? `đã đủ ${spec.maxRefVideos} video của ${spec.name}` : `chế độ hiện tại của ${spec.name} không nhận video`
-    toast(`${sceneCode(target.order)} không nhận thêm video tham chiếu (${why}) — giữ nguyên nối cũ.`, { tone: 'warning' })
-    return
-  }
-  useUI.getState().setSelectedEdges([])
-  toast(already ? `${sceneCode(target.order)} đã có ${label} — bỏ nối ở cảnh cũ.` : `Đã chuyển ${label} sang ${sceneCode(target.order)}.`, {
-    tone: 'success',
-    action: undoToastAction(),
-  })
 }
 
 /** Minimap fill (React Flow sets it as an inline style, so theme tokens work). */

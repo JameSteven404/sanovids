@@ -2,6 +2,7 @@
 // (providers/dev/bridge.ts), driven through the REAL api client + desktop transport (providers/canvasapp). No network.
 // Endpoints and strict validation, idempotency, charging / refunds / history, the top-up lifecycle (simulated SePay
 // sheet), faults, the request log, persistence / reset — and the gateway allowlist checked against electron/main.cjs.
+import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../lib/imageStore', () => ({
@@ -15,36 +16,53 @@ vi.mock('../../lib/imageStore', () => ({
 }))
 
 import mainSource from '../../../electron/main.cjs?raw'
+import { CUSTOM_FAULT_DEFAULT, customFaultInput } from '../../components/dev/devModel'
 import { costOf } from '../../core/models'
 import { checkoutUrlAllowed, TOPUP_ORDER_TTL_MS } from '../../core/topup'
 import { memoryStorage } from '../canvasapp/adapter'
 import { CanvasappError, createCanvasappApi, type CanvasPayload, type TransportRequest } from '../canvasapp/api'
-import { bridgeCanvas, canvasNodeId, clientRequestIdFor, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
-import { createDesktopTransport, openCheckout } from '../canvasapp/transport'
+import { bridgeCanvas, canvasNodeId, clientRequestIdFor, isUuid, uploadFilename, type BridgeEntry } from '../canvasapp/mapping'
+import { createDesktopTransport, openCheckout, type BridgeDownloadOpen } from '../canvasapp/transport'
 import {
   answerDevCheckout,
   answerDevLogin,
+  canvasProblem,
   clearDevLog,
   closeDevPrompts,
   createDevBridge,
   createDevCanvasapp,
+  defaultKeepLogin,
   DEV_CHECKOUT_ORIGIN,
+  DEV_ENCRYPTIONS,
   DEV_ENDPOINTS,
   DEV_FAULT_PRESETS,
+  DEV_KEEP_LOGIN_KEY,
+  DEV_LOGIN_COOKIES,
+  KEEP_LOGIN_DAYS,
+  KEEP_LOGIN_NOT_CLEARED_TEXT,
+  loginSurvivesRestart,
   DEV_LOG_MAX,
   DEV_PAYMENT_DELAY_MS,
   DEV_SPEED_MS,
+  devStreamReader,
   imageIdFromUploadFilename,
+  jobBodyProblem,
   matchDevRoute,
   memoryBlobStore,
+  siteJobBody,
   summarizeForLog,
   useDevLog,
   useDevPrompts,
   type DevConfig,
   type DevRenderInput,
+  type DevStreamReader,
+  type DownloadLimits,
 } from '../dev'
 
 type Json = Record<string, unknown>
+
+/** Video bytes of a given size (a pattern per job). */
+const videoBytes = (size: number, seed: number) => Uint8Array.from({ length: size }, (_, i) => (i * 13 + seed) % 256)
 
 /** electron/main.cjs's own endpoint allowlist (the <canvasapp-routes> block, run as-is). */
 function loadMainRoutes(): (method: string, path: string) => unknown {
@@ -55,7 +73,23 @@ function loadMainRoutes(): (method: string, path: string) => unknown {
 
 const START = Date.parse('2026-10-02T10:00:00Z')
 
-function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typeof memoryStorage>; blobs?: ReturnType<typeof memoryBlobStore>; cacheMs?: number; t?: number } = {}) {
+function setup(
+  config: Partial<DevConfig> = {},
+  opts: {
+    storage?: ReturnType<typeof memoryStorage>
+    blobs?: ReturnType<typeof memoryBlobStore>
+    cacheMs?: number
+    t?: number
+    /** Size of the rendered videos (default: the short text "WEBM:#n"). */
+    videoSize?: number
+    downloadLimits?: Partial<DownloadLimits>
+    /** The server's sleep (default: none — only recorded in `sleeps`). */
+    sleep?: (ms: number) => Promise<void>
+    /** "Vị trí chạy" for the keep-login switch's default (default: installer). */
+    placement?: string
+    keepStore?: ReturnType<typeof memoryStorage>
+  } = {},
+) {
   const clock = { t: opts.t ?? START }
   const storage = opts.storage ?? memoryStorage()
   const blobs = opts.blobs ?? memoryBlobStore()
@@ -66,16 +100,27 @@ function setup(config: Partial<DevConfig> = {}, opts: { storage?: ReturnType<typ
     blobs,
     now: () => clock.t,
     random: () => 0.5,
-    sleep: async (ms) => void sleeps.push(ms),
+    sleep: async (ms) => {
+      sleeps.push(ms)
+      if (opts.sleep) await opts.sleep(ms)
+    },
     render: async (input) => {
       renders.push({ input, contents: await Promise.all(input.images.map((i) => (i.blob ? i.blob.text() : Promise.resolve(null)))) })
+      if (opts.videoSize) return new Blob([videoBytes(opts.videoSize, input.jobNumber)], { type: 'video/webm' })
       return new Blob([`WEBM:#${input.jobNumber}`], { type: 'video/webm' })
     },
   })
   server.setConfig({ latencyMs: 0, ...config })
-  const bridge = createDevBridge(() => server, { now: () => clock.t, jobListCacheMs: opts.cacheMs ?? 0 })
+  const keepStore = opts.keepStore ?? memoryStorage()
+  const bridge = createDevBridge(() => server, {
+    now: () => clock.t,
+    jobListCacheMs: opts.cacheMs ?? 0,
+    downloadLimits: opts.downloadLimits,
+    keepLoginStorage: keepStore,
+    placement: () => opts.placement ?? 'installer',
+  })
   const api = createCanvasappApi(createDesktopTransport(() => bridge))
-  return { clock, storage, blobs, server, bridge, api, renders, sleeps, advance: (ms: number) => void (clock.t += ms) }
+  return { clock, storage, blobs, server, bridge, api, renders, sleeps, keepStore, advance: (ms: number) => void (clock.t += ms) }
 }
 
 type Setup = ReturnType<typeof setup>
@@ -158,7 +203,8 @@ describe('dev server: account and login', () => {
     await until(() => useDevPrompts.getState().login !== null)
     expect(b).toBe(a)
     answerDevLogin(true)
-    expect(await a).toEqual({ ok: true, authenticated: true })
+    // like main: the login is kept on this (simulated) computer — installer default, encryption ok
+    expect(await a).toEqual({ ok: true, authenticated: true, keepLogin: true })
     expect(useDevPrompts.getState().login).toBeNull()
     expect(await s.bridge.status()).toEqual({ ok: true, authenticated: true })
     // already logged in: no sheet
@@ -191,6 +237,141 @@ describe('dev server: account and login', () => {
     expect(all[1]).toMatchObject({ display_name: 'MiniMax-H3', can_create: true, options: { modes: ['t2v', 'i2v', 'transform'], disabled_modes: [], durations: [5, 10, 15] } })
     s.server.setConfig({ models: { ...s.server.config().models, minimax_h3: { can_create: false, disabled_modes: ['transform'] } } })
     expect((await s.api.videoProfiles())[1]).toMatchObject({ can_create: false, enabled: false, options: { disabled_modes: ['transform'] } })
+  })
+
+  it('narrowed lists (durations / resolutions / ratios left out): only values of the model are kept, saved, served', async () => {
+    const s = setup()
+    s.server.login()
+    const models = s.server.config().models
+    s.server.setConfig({
+      models: {
+        ...models,
+        seedance_2_5: { ...models.seedance_2_5, off_durations: [30, 7, '5' as never], off_resolutions: ['480p', '2k'], off_ratios: ['1:1', 'x'] },
+      },
+    })
+    // a value the model does not have (7, '2k', 'x') or of the wrong type is dropped; missing lists read as none
+    expect(s.server.config().models.seedance_2_5).toMatchObject({ off_durations: [30], off_resolutions: ['480p'], off_ratios: ['1:1'] })
+    expect(s.server.config().models.minimax_h3).toMatchObject({ off_durations: [], off_resolutions: [], off_ratios: [] })
+    const [sd, h3] = await s.api.videoProfiles()
+    expect(sd.options).toMatchObject({ durations: [5, 10, 15], resolutions: ['720p', '1080p'], aspect_ratios: ['16:9', '9:16', '4:3', '3:4'] })
+    expect(h3.options).toMatchObject({ durations: [5, 10, 15], resolutions: ['768p', '2k'] })
+  })
+})
+
+describe('dev server: "Giữ đăng nhập" and a simulated restart of the desktop app', () => {
+  const DAY = 86_400_000
+  const keepRules = createRequire(import.meta.url)('../../../electron/keeplogin-rules.cjs') as {
+    KEEP_LOGIN_DAYS: number
+    KEEP_LOGIN_NOT_CLEARED_TEXT: string
+    defaultKeepLogin: (k: unknown) => boolean
+  }
+
+  it('mirrors main: 30 days, the placement default and the "not cleared" text', () => {
+    expect(KEEP_LOGIN_DAYS).toBe(keepRules.KEEP_LOGIN_DAYS)
+    expect(KEEP_LOGIN_NOT_CLEARED_TEXT).toBe(keepRules.KEEP_LOGIN_NOT_CLEARED_TEXT)
+    for (const k of ['installer', 'dev', 'mac-applications', 'portable', 'temp-copy', 'mac-translocated', 'mac-volume', 'mac-other', 'unknown', undefined, null, '']) {
+      expect(defaultKeepLogin(k as string), String(k)).toBe(keepRules.defaultKeepLogin(k))
+    }
+  })
+
+  it('every login cookie × switch × encryption: the login survives exactly when the rule says so', async () => {
+    for (const loginCookie of DEV_LOGIN_COOKIES) {
+      for (const keep of [true, false]) {
+        for (const encryption of DEV_ENCRYPTIONS) {
+          const s = setup({ loginCookie, encryption })
+          s.server.login()
+          await s.bridge.setKeepLogin(keep)
+          const r = await s.bridge.simulateRestart()
+          const want = loginSurvivesRestart({ authenticated: true, loginCookie, keepLogin: keep, encryption, daysSinceSaved: 0 })
+          expect(r, `${loginCookie} ${keep} ${encryption}`).toMatchObject({ survived: want, keepLogin: keep })
+          expect(r.outcome).toBe(loginCookie === 'persistent' ? 'persistent' : !keep ? 'keep-off' : encryption === 'ok' ? 'kept' : encryption === 'unavailable' ? 'encryption-unavailable' : 'decrypt-fails')
+          expect(s.server.isAuthenticated()).toBe(want)
+          if (want) expect(await s.api.me()).toMatchObject({ credits_balance: 1000 })
+          else await expect(s.api.me()).rejects.toMatchObject({ code: 'login-required' })
+        }
+      }
+    }
+  })
+
+  it('30 days from the login, not from use; the login time survives a reload of the simulated site', async () => {
+    const storage = memoryStorage()
+    const s = setup({}, { storage })
+    s.server.login()
+    s.advance(KEEP_LOGIN_DAYS * DAY)
+    await s.api.me() // plain use does not extend it
+    const reloaded = setup({}, { storage, t: s.clock.t })
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: true, outcome: 'kept' })
+    reloaded.advance(1)
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: false, outcome: 'expired' })
+    expect(reloaded.server.isAuthenticated()).toBe(false)
+    // a new login starts a new 30 days
+    reloaded.server.login()
+    reloaded.advance(10 * DAY)
+    expect(await reloaded.bridge.simulateRestart()).toMatchObject({ survived: true })
+  })
+
+  it('logged out before: nothing changes (an armed "Hết phiên" stays armed); faults and settings are the site’s', async () => {
+    const s = setup({ loginCookie: 'persistent' })
+    expect(await s.bridge.simulateRestart()).toMatchObject({ survived: false, outcome: 'not-logged-in' })
+    s.server.login()
+    s.server.expireSession()
+    s.server.addFault({ endpoint: 'me', fault: { kind: 'network' }, sticky: true })
+    expect(await s.bridge.simulateRestart()).toMatchObject({ outcome: 'not-logged-in' })
+    expect(s.server.snapshot()).toMatchObject({ authenticated: false, sessionExpired: true, config: { loginCookie: 'persistent' } })
+    expect(s.server.faults()).toHaveLength(1)
+  })
+
+  it('the switch: placement default (installer / source on, Portable / temp copy off), the user’s choice, strict input', async () => {
+    for (const [placement, on] of [
+      ['installer', true],
+      ['dev', true],
+      ['portable', false],
+      ['temp-copy', false],
+      ['unknown', false],
+    ] as const) {
+      expect(await setup({}, { placement }).bridge.keepLogin(), placement).toEqual({ ok: true, keepLogin: on, available: true, chosen: false })
+    }
+    const s = setup({}, { placement: 'portable' })
+    expect(await s.bridge.setKeepLogin(true)).toEqual({ ok: true, keepLogin: true, available: true, chosen: true })
+    expect(s.keepStore.get(DEV_KEEP_LOGIN_KEY)).toBe('true')
+    expect(await s.bridge.setKeepLogin('yes' as unknown as boolean)).toMatchObject({ ok: false, code: 'bad-request' })
+    expect(await s.bridge.keepLogin()).toMatchObject({ keepLogin: true })
+    s.server.setConfig({ encryption: 'unavailable' })
+    expect(await s.bridge.keepLogin()).toEqual({ ok: true, keepLogin: true, available: false, chosen: true })
+    // a stored value that is not a boolean = never chose
+    s.keepStore.set(DEV_KEEP_LOGIN_KEY, '1')
+    expect(await s.bridge.keepLogin()).toMatchObject({ keepLogin: false, chosen: false })
+  })
+
+  it('login() says whether the login is kept (switch on AND the computer can encrypt)', async () => {
+    const login = async (s: ReturnType<typeof setup>) => {
+      const p = s.bridge.login()
+      await until(() => useDevPrompts.getState().login !== null)
+      answerDevLogin(true)
+      return p
+    }
+    expect(await login(setup({}, { placement: 'portable' }))).toEqual({ ok: true, authenticated: true, keepLogin: false })
+    expect(await login(setup({ encryption: 'unavailable' }))).toEqual({ ok: true, authenticated: true, keepLogin: false })
+    expect(await login(setup({ encryption: 'decrypt-fails' }))).toEqual({ ok: true, authenticated: true, keepLogin: true })
+  })
+
+  it('settings are checked: unknown login cookie / encryption values fall back to the defaults', () => {
+    const s = setup()
+    s.server.setConfig({ loginCookie: 'forever' as never, encryption: 'maybe' as never })
+    expect(s.server.config()).toMatchObject({ loginCookie: 'session', encryption: 'ok' })
+    s.server.setConfig({ loginCookie: 'persistent', encryption: 'decrypt-fails' })
+    expect(s.server.config()).toMatchObject({ loginCookie: 'persistent', encryption: 'decrypt-fails' })
+  })
+
+  it('fault "Đăng xuất: không xoá được bản sao": logged out all the same, the answer says so — once', async () => {
+    const s = setup()
+    s.server.login()
+    s.server.setJobFaults({ logoutCopyStuck: true })
+    expect(await s.bridge.logout()).toEqual({ ok: false, code: 'keep-login-not-cleared', message: KEEP_LOGIN_NOT_CLEARED_TEXT })
+    expect(s.server.isAuthenticated()).toBe(false)
+    expect(s.server.jobFaults().logoutCopyStuck).toBe(false)
+    s.server.login()
+    expect(await s.bridge.logout()).toEqual({ ok: true })
   })
 })
 
@@ -314,7 +495,7 @@ describe('dev server: video jobs', () => {
     s.server.setJobFaults({ expireNext: true })
     const expiring = jobIdOf(await s.api.createVideoJob(body({ client_request_id: clientRequestIdFor('b') }) as never))
     const forced = jobIdOf(await s.api.createVideoJob(body({ client_request_id: clientRequestIdFor('c') }) as never))
-    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0 })
+    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false })
     expect(s.server.snapshot().jobs.map((j) => j.planned)).toEqual([null, 'expire', 'fail'])
     expect(s.server.balance()).toBe(1000 - 3 * COST)
 
@@ -396,6 +577,87 @@ describe('dev server: video jobs', () => {
     await s.api.fetchVideo(jobId)
     expect(s.renders[0].input.images.map((i) => i.label)).toEqual(['khung đầu', 'khung cuối'])
     expect(s.renders[0].contents).toEqual(['IMG:elara', 'IMG:lumi'])
+  })
+})
+
+describe('dev server: "Tạo job như trên trang canvasapp" (a job SanoVids did not make)', () => {
+  it('builds exactly runVideoNode()’s body from the saved node, with a random key; billed and logged in the history like any job', async () => {
+    const s = setup()
+    const { projectId, u1, u2, body } = await prepared(s)
+    clearDevLog()
+    const res = s.server.createSiteJob({ nodeId: canvasNodeId('s1') })
+    expect(res).toMatchObject({ ok: true, number: 1, cost: COST })
+    // the site acted, not SanoVids: nothing in the request log
+    expect(useDevLog.getState().entries).toEqual([])
+    const job = s.server.snapshot().jobs[0]
+    expect(job).toMatchObject({ origin: 'site', project_id: projectId, canvas_node_id: canvasNodeId('s1'), upload_ids: [u1, u2], resolution: '1080p', prompt: '@image_1 ôm @image_2' })
+    expect(isUuid(job.client_request_id)).toBe(true)
+    expect(job.client_request_id).not.toBe(clientRequestIdFor('take_1'))
+    expect(s.server.balance()).toBe(1000 - COST)
+    expect((await s.api.creditHistory({ kind: 'video' })).items[0]).toMatchObject({ delta: -COST })
+    // the job list shows it like any canvas job (no key unless exposeKey); /prompt answers its prompt
+    const [listed] = await s.api.listVideoJobs(projectId)
+    expect(listed).toMatchObject({ job_id: job.job_id, canvas_node_id: canvasNodeId('s1'), creation_mode: 'canvas', model_profile: 'seedance_2_5', duration: 15 })
+    expect(listed).not.toHaveProperty('client_request_id')
+    expect(await s.api.jobPrompt(job.job_id)).toBe('@image_1 ôm @image_2')
+    // a SanoVids job keeps origin 'app'; the origin survives a reload
+    const mine = jobIdOf(await s.api.createVideoJob(body() as never))
+    const again = createDevCanvasapp({ storage: s.storage, blobs: s.blobs, now: () => s.clock.t })
+    const origins = Object.fromEntries(again.snapshot().jobs.map((j) => [j.job_id, j.origin]))
+    expect(origins).toEqual({ [job.job_id]: 'site', [mine]: 'app' })
+  })
+
+  it('an edit made on the page first: saved canvas still valid, the job uses it; refusals bill nothing', async () => {
+    const s = setup()
+    const { projectId } = await prepared(s)
+    const res = s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { prompt: '@image_2 chạy  ', resolution: '720P' } })
+    expect(res).toMatchObject({ ok: true })
+    const canvas = (await s.api.getProject(projectId)).canvas as CanvasPayload
+    expect(canvasProblem(canvas)).toBeNull()
+    const node = canvas.nodes.find((n) => n.id === canvasNodeId('s1'))!
+    expect(node.type === 'video' && node.data).toMatchObject({ prompt: '@image_2 chạy  ', resolution: '720p' })
+    const job = s.server.snapshot().jobs[0]
+    expect(job).toMatchObject({ prompt: '@image_2 chạy', resolution: '720p' })
+    const paid = s.server.balance()
+    expect(paid).toBe(1000 - costOf({ model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '720p', ratio: '16:9' }))
+    expect(s.server.createSiteJob({ nodeId: 'not-a-node' })).toMatchObject({ ok: false })
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { resolution: '2k' } })).toMatchObject({ ok: false })
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1'), edit: { prompt: '   ' } })).toMatchObject({ ok: false })
+    s.server.setBalance(1)
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1') })).toMatchObject({ ok: false, detail: expect.stringMatching(/Số dư không đủ/) })
+    expect(s.server.snapshot().jobs).toHaveLength(1)
+    expect(s.server.balance()).toBe(1)
+  })
+
+  it('no bridge session → refused; siteNodes lists the bridge’s video nodes (read-only)', async () => {
+    const s = setup()
+    expect(s.server.createSiteJob({ nodeId: canvasNodeId('s1') })).toMatchObject({ ok: false, detail: expect.stringMatching(/Chưa có phiên/) })
+    expect(s.server.siteNodes()).toBeNull()
+    const { projectId } = await prepared(s)
+    expect(s.server.siteNodes()).toEqual({
+      projectId,
+      name: 'SanoVids bridge',
+      nodes: [{ id: canvasNodeId('s1'), model: 'seedance_2_5', mode: 't2v', duration: 15, resolution: '1080p', aspectRatio: '16:9', prompt: '@image_1 ôm @image_2', pictures: 2 }],
+    })
+  })
+
+  it('siteJobBody: H3 transform sends the frames only, H3 t2v no picture — every body passes the strict validator', async () => {
+    const s = setup()
+    const { projectId, u1, u2 } = await prepared(s)
+    const entries: BridgeEntry[] = [
+      { sceneId: 't', model: 'minimax_h3', mode: 'transform', duration: 5, resolution: '768p', ratio: '16:9', prompt: 'biến', uploadIds: [], firstFrameUploadId: u1, lastFrameUploadId: u2, usedAt: 2 },
+      { sceneId: 'n', model: 'minimax_h3', mode: 't2v', duration: 5, resolution: '2k', ratio: '9:16', prompt: 'đi', uploadIds: [], firstFrameUploadId: null, lastFrameUploadId: null, usedAt: 1 },
+    ]
+    const canvas = bridgeCanvas(entries)
+    const t = siteJobBody(canvas, canvasNodeId('t'), projectId, '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e7f')
+    const n = siteJobBody(canvas, canvasNodeId('n'), projectId, '0b9d3c55-1d2a-4a6e-9f7e-2a1c4b5d6e70')
+    if ('problem' in t || 'problem' in n) throw new Error('no body')
+    expect(Object.keys(t.body)).toEqual(['project_id', 'model_profile', 'canvas_node_id', 'prompt', 'mode', 'duration', 'resolution', 'generate_audio', 'first_frame_upload_id', 'last_frame_upload_id', 'client_request_id'])
+    expect(n.body).toMatchObject({ upload_ids: [], aspect_ratio: '9:16' })
+    const has = (id: string) => [u1, u2].includes(id)
+    expect(jobBodyProblem(t.body, { hasUpload: has })).toBeNull()
+    expect(jobBodyProblem(n.body, { hasUpload: has })).toBeNull()
+    expect(siteJobBody(null, 'x', projectId, 'k')).toMatchObject({ problem: expect.any(String) })
   })
 })
 
@@ -539,7 +801,7 @@ describe('dev server: faults', () => {
     s.server.setJobFaults({ failNext: 'x', streamFailures: 3 })
     s.server.clearFaults()
     expect(s.server.faults()).toEqual([])
-    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0 })
+    expect(s.server.jobFaults()).toEqual({ failNext: null, expireNext: false, streamFailures: 0, logoutCopyStuck: false })
   })
 
   it('every preset targets a real endpoint and is accepted as is', () => {
@@ -632,6 +894,24 @@ describe('dev bridge: the desktop gateway, like electron/main.cjs', () => {
     s.advance(3000)
     await s.api.listVideoJobs(projectId)
     expect(reads()).toBe(3)
+  })
+
+  it('a cached job list is stamped with when its request was SENT (like main.cjs): a slow answer is never "fresh" for longer', async () => {
+    // the server's latency moves the clock
+    const held: { clock?: { t: number } } = {}
+    const s = setup({}, { cacheMs: 3000, sleep: async (ms) => void (held.clock && (held.clock.t += ms)) })
+    held.clock = s.clock
+    const { projectId } = await prepared(s)
+    s.server.setConfig({ latencyMs: 2000 })
+    const reads = () => useDevLog.getState().entries.filter((e) => e.endpoint === 'jobs-list' && e.fault === null).length
+    const before = reads()
+    const sent = s.clock.t
+    await s.api.listVideoJobs(projectId) // sent at `sent`, answered 2 s later
+    expect(s.clock.t).toBe(sent + 2000)
+    expect(reads()).toBe(before + 1)
+    s.clock.t = sent + 3000 // 1 s after the answer, 3 s after the list it shows
+    await s.api.listVideoJobs(projectId)
+    expect(reads()).toBe(before + 2) // read again: that answer may be 3 s old
   })
 })
 
@@ -889,5 +1169,252 @@ describe('request log', () => {
     expect(entries.every((e, i) => i === 0 || e.id > entries[i - 1].id)).toBe(true)
     clearDevLog()
     expect(useDevLog.getState().entries).toEqual([])
+  })
+})
+
+describe('dev server: streamed video downloads (openStream) and the dev bridge (main’s download rules)', () => {
+  /** A finished job of the prepared project. */
+  async function finishedJob(s: Setup): Promise<string> {
+    const { body } = await prepared(s)
+    const jobId = jobIdOf(await s.api.createVideoJob(body() as never))
+    s.advance(60_000)
+    return jobId
+  }
+  const path = (jobId: string) => `/api/video-jobs/${jobId}/stream`
+  async function readAll(r: DevStreamReader): Promise<{ bytes: number; error?: string }> {
+    let n = 0
+    for (;;) {
+      try {
+        const x = await r.read()
+        if (x.done) return { bytes: n }
+        n += x.value.byteLength
+      } catch (e) {
+        return { bytes: n, error: (e as Error).message }
+      }
+    }
+  }
+
+  it('Range off (default): always 200 from the start; on: 206 + Content-Range + ETag when If-Range matches, else 200; past the end → 416', async () => {
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    const off = await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: `"dev-${jobId}-1000"` } })
+    expect(off).toMatchObject({ ok: true, status: 200, headers: { 'content-length': '1000' } })
+    expect(off.ok && off.headers.etag).toBeUndefined()
+    expect(off.ok && off.headers['accept-ranges']).toBeUndefined()
+    expect(await readAll((off as { body: DevStreamReader }).body)).toEqual({ bytes: 1000 })
+
+    s.server.setConfig({ rangeSupport: true })
+    const full = await s.server.openStream({ path: path(jobId) })
+    expect(full).toMatchObject({ ok: true, status: 200, headers: { 'accept-ranges': 'bytes', etag: `"dev-${jobId}-1000"`, 'content-length': '1000' } })
+    const part = await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: `"dev-${jobId}-1000"` } })
+    expect(part).toMatchObject({ ok: true, status: 206, headers: { 'content-range': 'bytes 400-999/1000', 'content-length': '600' } })
+    expect(await readAll((part as { body: DevStreamReader }).body)).toEqual({ bytes: 600 })
+    expect(await s.server.openStream({ path: path(jobId), range: { from: 400, ifRange: '"other"' } })).toMatchObject({ status: 200 })
+    expect(await s.server.openStream({ path: path(jobId), range: { from: 1000, ifRange: `"dev-${jobId}-1000"` } })).toMatchObject({ status: 416, headers: { 'content-range': 'bytes */1000' } })
+    expect(useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').map((e) => e.status)).toEqual([200, 200, 206, 200, 416])
+    expect(useDevLog.getState().entries.find((e) => e.status === 206)?.note).toBe('tải tiếp từ byte 400')
+  })
+
+  it('canvasapp’s refusals and the request faults go through openStream like request(): 401, 409, the next-N 503s, network, 429', async () => {
+    const s = setup()
+    s.server.login()
+    const { body } = await prepared(s)
+    const jobId = jobIdOf(await s.api.createVideoJob(body() as never))
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 409, json: { detail: 'Video chưa sẵn sàng' } })
+    s.advance(60_000)
+    s.server.setJobFaults({ streamFailures: 1 })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ status: 503 })
+    expect(s.server.jobFaults().streamFailures).toBe(0)
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'network' } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: false, code: 'network' })
+    s.server.addFault({ endpoint: '*', fault: { kind: 'response', status: 429, json: { detail: 'Too many requests' } } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 429 })
+    s.server.logout()
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ status: 401 })
+    expect(useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').map((e) => [e.status, e.fault])).toEqual([
+      [409, null],
+      [503, null],
+      [null, 'network'],
+      [429, 'response 429'],
+      [401, null],
+    ])
+  })
+
+  it('body faults: cut throws after its share, stall waits until cancelled, trickle paces, oversize announces > 1 GB', async () => {
+    const s = setup({}, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'cut', fraction: 0.5 } })
+    const cut = await s.server.openStream({ path: path(jobId) })
+    expect(await readAll((cut as { body: DevStreamReader }).body)).toEqual({ bytes: 100_000, error: 'kết nối bị ngắt (lỗi giả)' })
+
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'stall', fraction: 0.25 } })
+    const stall = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    let got = 0
+    for (;;) {
+      const x = await Promise.race([stall.body.read(), new Promise<'pending'>((r) => setTimeout(() => r('pending'), 20))])
+      if (x === 'pending') break
+      if (!x.done) got += x.value.byteLength
+    }
+    expect(got).toBe(50_000)
+    const pending = stall.body.read()
+    await stall.body.cancel()
+    expect(await pending).toEqual({ done: true })
+
+    s.sleeps.length = 0
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 100_000 } })
+    const slow = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    expect(await readAll(slow.body)).toEqual({ bytes: 200_000 })
+    expect(s.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(1990) // ~2 s for 200 KB at 100 KB/s
+    s.server.clearFaults()
+
+    s.server.addFault({ endpoint: 'job-stream', fault: { kind: 'oversize' } })
+    expect(await s.server.openStream({ path: path(jobId) })).toMatchObject({ ok: true, status: 200, headers: { 'content-length': String(1024 ** 3 + 1) } })
+  })
+
+  it('presets: stream-cut / stall / oversize one-shot, stream-slow sticky; a sticky trickle and a one-shot cut fire on the same download', async () => {
+    const p = (id: string) => DEV_FAULT_PRESETS.find((x) => x.id === id)!.rule
+    expect(['stream-cut', 'stream-stall', 'stream-slow', 'stream-oversize'].map((id) => [p(id).endpoint, !!p(id).sticky])).toEqual([
+      ['job-stream', false],
+      ['job-stream', false],
+      ['job-stream', true],
+      ['job-stream', false],
+    ])
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(p('stream-slow'))
+    s.server.addFault(p('stream-cut'))
+    s.sleeps.length = 0
+    const both = (await s.server.openStream({ path: path(jobId) })) as { body: DevStreamReader }
+    expect(await readAll(both.body)).toEqual({ bytes: 500, error: 'kết nối bị ngắt (lỗi giả)' })
+    expect(s.sleeps.length).toBeGreaterThan(0) // paced too
+    expect(s.server.faults().map((r) => r.fault.kind)).toEqual(['trickle']) // the cut was used up, the sticky one stays
+    expect(useDevLog.getState().entries.at(-1)?.fault).toBe('trickle 100KB/s + stream-cut')
+  })
+
+  it('the dev bridge refuses the video stream through request() like main (matchCanvasappRequest): videos only come in pieces', async () => {
+    const s = setup()
+    const jobId = await finishedJob(s)
+    const before = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream').length
+    expect(await s.bridge.request({ method: 'GET', path: path(jobId), binary: true })).toEqual({
+      ok: false,
+      code: 'not-allowed',
+      message: `SanoVids không được phép gọi GET ${path(jobId)}.`,
+    })
+    expect(await s.bridge.request({ method: 'GET', path: path(jobId) })).toMatchObject({ ok: false, code: 'not-allowed' })
+    // nothing reached the simulated site: only the gateway's refusal is logged
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(before).map((e) => [e.status, e.fault])).toEqual([
+      [null, 'not-allowed'],
+      [null, 'not-allowed'],
+    ])
+    // the same path through downloadOpen is the way
+    expect(new Uint8Array(await (await s.api.fetchVideo(jobId)).arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  it('a slow body comes in small pieces about every 250 ms: even at the form’s minimum (1 KB/s) no idle stop (10 s in dev)', async () => {
+    const piece = async (bytesPerSec: number) => {
+      const sleeps: number[] = []
+      const r = devStreamReader(videoBytes(100_000, 1), { bytesPerSec, sleep: async (ms) => void sleeps.push(ms) })
+      const x = await r.read()
+      return [x.done ? 0 : x.value.byteLength, sleeps[0]]
+    }
+    expect(await piece(1024)).toEqual([256, 250])
+    expect(await piece(100 * 1024)).toEqual([25_600, 250])
+    expect(await piece(100_000 * 1024)).toEqual([64 * 1024, 1]) // fast: the usual 64 KiB pieces
+    expect(await piece(1)).toEqual([1, 1000]) // never an empty piece
+
+    vi.useFakeTimers()
+    const s = setup({}, { videoSize: 20_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) })
+    const jobId = await finishedJob(s)
+    const min = customFaultInput({ ...CUSTOM_FAULT_DEFAULT, endpoint: 'job-stream', kind: 'trickle', kbps: '1', sticky: true })
+    if (!min.ok) throw new Error(min.error)
+    s.server.addFault(min.input)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(25_000) // ~20 s for 20 KB at 1 KB/s
+    const video = await p
+    expect(video).toBeInstanceOf(Blob)
+    expect(new Uint8Array(await (video as Blob).arrayBuffer())).toEqual(videoBytes(20_000, 1))
+  })
+
+  it('a connection open past the dev limit (2 min, main: 60 min): continues on a new one with Range, else too-slow at once', async () => {
+    vi.useFakeTimers()
+    const crawl = DEV_FAULT_PRESETS.find((x) => x.id === 'stream-crawl')!.rule
+    expect(crawl).toMatchObject({ endpoint: 'job-stream', fault: { kind: 'trickle', bytesPerSec: 2048 }, sticky: true })
+    const s = setup({ rangeSupport: true }, { videoSize: 300_000, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) })
+    const jobId = await finishedJob(s)
+    s.server.addFault(crawl)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(160_000) // ~146 s at 2 KB/s, cut once at 2 min
+    const video = await p
+    expect(video).toBeInstanceOf(Blob)
+    expect(new Uint8Array(await (video as Blob).arrayBuffer())).toEqual(videoBytes(300_000, 1))
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(-3).map((e) => [e.status, e.fault])).toEqual([
+      [200, 'trickle 2KB/s'],
+      [null, 'download-too-slow'],
+      [206, 'trickle 2KB/s'],
+    ])
+    expect(streams.at(-2)?.res).toEqual({ code: 'too-slow', message: 'Tải video quá 2 phút nên SanoVids dừng lại.' })
+
+    s.server.setConfig({ rangeSupport: false })
+    const q = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect(await q).toMatchObject({ code: 'too-slow', message: 'Tải video quá 2 phút nên SanoVids dừng lại.' })
+  })
+
+  it('a redirect to http (fault stream-http): refused by the gateway, nothing sent there — forbidden, the engine tries again later', async () => {
+    const s = setup({}, { videoSize: 1000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-http')!.rule)
+    const e = await s.api.fetchVideo(jobId).catch((x: unknown) => x)
+    expect(e).toMatchObject({ code: 'forbidden' })
+    expect((e as Error).message).toContain('chuyển việc tải video sang một địa chỉ không mã hoá (http) — SanoVids không tải.')
+    const streams = useDevLog.getState().entries.filter((x) => x.endpoint === 'job-stream')
+    expect(streams.slice(-2).map((x) => [x.status, x.fault])).toEqual([
+      [null, 'http-redirect'],
+      [null, 'not-allowed'],
+    ])
+    expect(new Uint8Array(await (await s.api.fetchVideo(jobId)).arrayBuffer()).byteLength).toBe(1000) // one-shot
+  })
+
+  it('the dev bridge pulls 64 KiB pieces (progress), continues a cut download with Range when it is on, logs failures in dev words', async () => {
+    const s = setup({ rangeSupport: true }, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    const progress: number[] = []
+    const video = await s.api.fetchVideo(jobId, { onProgress: (x) => progress.push(x.received) })
+    expect(new Uint8Array(await video.arrayBuffer())).toEqual(videoBytes(200_000, 1))
+    expect(progress.at(-1)).toBe(200_000)
+
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-cut')!.rule)
+    const resumed = await s.api.fetchVideo(jobId)
+    expect(new Uint8Array(await resumed.arrayBuffer())).toEqual(videoBytes(200_000, 1))
+    const streams = useDevLog.getState().entries.filter((e) => e.endpoint === 'job-stream')
+    expect(streams.slice(-3).map((e) => [e.status, e.fault])).toEqual([
+      [200, 'stream-cut'],
+      [null, 'download-network'],
+      [206, null],
+    ])
+    expect(streams.at(-2)?.res).toEqual({ code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp giả lập.' })
+
+    s.server.setConfig({ rangeSupport: false })
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-cut')!.rule)
+    await expect(s.api.fetchVideo(jobId)).rejects.toMatchObject({ code: 'network', message: 'Mất kết nối khi đang tải video từ canvasapp giả lập.' })
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-oversize')!.rule)
+    await expect(s.api.fetchVideo(jobId)).rejects.toMatchObject({ code: 'too-large' })
+    expect(useDevLog.getState().entries.at(-1)).toMatchObject({ fault: 'download-too-large', status: null })
+  })
+
+  it('the dev bridge: a stalled download ends after the (dev) idle time; one id per download, only allowlisted video paths', async () => {
+    vi.useFakeTimers()
+    const s = setup({}, { videoSize: 200_000 })
+    const jobId = await finishedJob(s)
+    s.server.addFault(DEV_FAULT_PRESETS.find((x) => x.id === 'stream-stall')!.rule)
+    const p = s.api.fetchVideo(jobId).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(9_000)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(await p).toMatchObject({ code: 'network', message: 'canvasapp giả lập ngừng gửi video giữa chừng (10 giây không nhận thêm dữ liệu).' })
+    const refused = (await s.bridge.downloadOpen!({ id: 'abcdef00-0000-4000-8000-000000000001', path: '/api/me', from: 0 })) as BridgeDownloadOpen
+    expect(refused).toMatchObject({ ok: false, code: 'not-allowed' })
+    expect(await s.bridge.downloadRead!({ id: 'abcdef00-0000-4000-8000-000000000001' })).toMatchObject({ ok: false, code: 'gone' })
   })
 })

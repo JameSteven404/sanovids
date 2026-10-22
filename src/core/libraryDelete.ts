@@ -1,0 +1,242 @@
+// Deleting items from the library ("Thư viện"): what a delete takes, what it asks, what it says. Pure (no stores, no
+// React); libraryActions applies it, the library footer shows its counts. Tested in __tests__/libraryDelete.test.ts.
+//
+// Rules (0.6.0):
+// - Delete takes the selected cards the user can SEE (search box and kind tab applied) that still exist, in library
+//   order. Selected cards hidden by the search / tab are kept, still selected, and the toast says so.
+// - One question, asked only when the delete blocks scenes (GT1 Q7a, core/placeholders assetDeleteImpact /
+//   assetDeleteQuestion): prompts that name a deleted picture keep red placeholders "@image_?N(Tên)" and stop running,
+//   or scenes lose their H3 first / last frame. Everything else — items no scene uses, items only linked — goes at once
+//   (one Delete / one click, "Hoàn tác" in the toast).
+// - One removeAssets = one undo step; media blobs are never deleted here (duplicated projects share them, queued takes
+//   read them by imageKeysSnapshot, the undo history still points at them).
+// - Delete on the canvas only HIDES an image tile (actions.deleteSelection → hideAssetIds: the item stays in the
+//   library and in its scenes): a different path, never this one (plan §3.9.1).
+import { textsFor } from '../lib/platformText'
+import { assetDeleteImpact, assetDeleteQuestion, type AssetDeleteImpact } from './placeholders'
+import type { MediaChangeNote } from './staleTokens'
+import type { Project, Scene } from './types'
+
+export interface LibraryDeletePlan {
+  /** Asset ids to delete: selected ∩ visible ∩ existing, in library order. */
+  ids: string[]
+  /** Selected existing assets hidden by the search box / kind tab: kept, still selected. */
+  hidden: string[]
+  /** Scenes using a deleted asset (reference image or first / last frame), in scene order, each once. */
+  usedBy: string[]
+  /** The part of usedBy that has a deleted asset among its reference images (@image tokens). */
+  refScenes: string[]
+  /** The part of usedBy that has a deleted asset as its first / last frame. */
+  frameScenes: string[]
+  /** Deleted assets at least one scene uses, in library order. */
+  usingAssets: string[]
+  /** Deleted assets placed on the canvas. */
+  onCanvas: string[]
+  /** What the delete would do to prompts and frames (core/placeholders assetDeleteImpact): `needsConfirm` = ask first. */
+  impact: AssetDeleteImpact & { needsConfirm: boolean }
+}
+
+export interface AssetUsage {
+  /** Scenes using one of the assets, in scene order. */
+  usedBy: string[]
+  /** Scenes with one of the assets among their reference images. */
+  refScenes: string[]
+  /** Scenes with one of the assets as first / last frame. */
+  frameScenes: string[]
+  /** The assets used by at least one scene. */
+  usingAssets: Set<string>
+}
+
+/**
+ * Which scenes use these assets (reference images, first / last frames): whose drafts to commit, which wires go, what
+ * the toast counts. Whether to ASK is assetDeleteImpact's (the scenes the delete would block), not this.
+ */
+export function assetUsage(project: Pick<Project, 'scenes'>, ids: Iterable<string>): AssetUsage {
+  const dead = new Set(ids)
+  const usingAssets = new Set<string>()
+  const used: { id: string; order: number; refs: boolean; frames: boolean }[] = []
+  for (const s of project.scenes) {
+    let refs = false
+    for (const r of s.refs) if (dead.has(r)) {
+      refs = true
+      usingAssets.add(r)
+    }
+    let frames = false
+    for (const f of [s.firstFrame, s.lastFrame]) if (f && dead.has(f)) {
+      frames = true
+      usingAssets.add(f)
+    }
+    if (refs || frames) used.push({ id: s.id, order: s.order, refs, frames })
+  }
+  used.sort((a, b) => a.order - b.order)
+  return {
+    usedBy: used.map((u) => u.id),
+    refScenes: used.filter((u) => u.refs).map((u) => u.id),
+    frameScenes: used.filter((u) => u.frames).map((u) => u.id),
+    usingAssets,
+  }
+}
+
+/**
+ * How many scenes use each asset (reference image or first / last frame; a scene counts once per asset): the library
+ * card's "dùng ở N cảnh" badge. Same rule as assetUsage, so a card that says "chưa dùng" is never asked about (one
+ * that is used is asked about only when the delete would block a scene: libraryDeleteQuestion).
+ */
+export function assetSceneCounts(scenes: readonly Pick<Scene, 'refs' | 'firstFrame' | 'lastFrame'>[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  const seen = new Set<string>()
+  for (const s of scenes) {
+    seen.clear()
+    for (const id of s.refs) seen.add(id)
+    if (s.firstFrame) seen.add(s.firstFrame)
+    if (s.lastFrame) seen.add(s.lastFrame)
+    for (const id of seen) counts[id] = (counts[id] ?? 0) + 1
+  }
+  return counts
+}
+
+/**
+ * The delete of `selected` with the cards `visible` on screen (null = no filter: every selected item that exists, e.g.
+ * the asset dialog's own item). Duplicates and ids of deleted items are dropped.
+ */
+export function planLibraryDelete(project: Pick<Project, 'assets' | 'scenes'>, selected: readonly string[], visible: readonly string[] | null): LibraryDeletePlan {
+  const chosen = new Set(selected)
+  const shown = visible ? new Set(visible) : null
+  const ids: string[] = []
+  const hidden: string[] = []
+  const onCanvas: string[] = []
+  for (const a of project.assets) {
+    if (!chosen.has(a.id)) continue
+    if (shown && !shown.has(a.id)) {
+      hidden.push(a.id)
+      continue
+    }
+    ids.push(a.id)
+    if (a.position) onCanvas.push(a.id)
+  }
+  const usage = assetUsage(project, ids)
+  return {
+    ids,
+    hidden,
+    usedBy: usage.usedBy,
+    refScenes: usage.refScenes,
+    frameScenes: usage.frameScenes,
+    usingAssets: ids.filter((id) => usage.usingAssets.has(id)),
+    onCanvas,
+    impact: assetDeleteImpact(project, ids),
+  }
+}
+
+/**
+ * The card to give the keyboard focus after a delete (focus only — nothing gets selected): the one right after the
+ * last deleted card in list order, else the nearest one before it, else null.
+ */
+export function nextFocusAfterDelete(visibleIds: readonly string[], deleted: Iterable<string>): string | null {
+  const dead = new Set(deleted)
+  let last = -1
+  visibleIds.forEach((id, i) => {
+    if (dead.has(id)) last = i
+  })
+  if (last < 0) return null
+  for (let i = last + 1; i < visibleIds.length; i++) if (!dead.has(visibleIds[i])) return visibleIds[i]
+  for (let i = last - 1; i >= 0; i--) if (!dead.has(visibleIds[i])) return visibleIds[i]
+  return null
+}
+
+// ---------------- words ----------------
+const quoted = (name: string) => `“${name}”`
+/** The delete key as written in UI text. */
+export const deleteKeyLabel = (mac: boolean) => (mac ? '⌫' : 'Delete')
+const undoKeyLabel = (mac: boolean) => (mac ? '⌘Z' : 'Ctrl+Z')
+
+/**
+ * The one question asked before a delete that blocks scenes (plan.impact.needsConfirm: prompts naming a deleted picture
+ * keep red placeholders and stop running, scenes lose a first / last frame — core/placeholders assetDeleteQuestion), or
+ * null: the delete goes at once. `nameOf` gives an item's display name.
+ */
+export function libraryDeleteQuestion(plan: LibraryDeletePlan, nameOf: (id: string) => string, mac: boolean): string | null {
+  if (!plan.ids.length || !plan.impact.needsConfirm) return null
+  return assetDeleteQuestion(plan.ids.length === 1 ? nameOf(plan.ids[0]) : null, plan.ids.length, plan.impact, undoKeyLabel(mac))
+}
+
+/** Title of the question's dialog (store/confirm → ConfirmSheet). */
+export function libraryDeleteTitle(plan: Pick<LibraryDeletePlan, 'ids'>): string {
+  return plan.ids.length === 1 ? 'Xoá khỏi thư viện?' : `Xoá ${plan.ids.length} mục khỏi thư viện?`
+}
+
+export interface LibraryDeleteToast {
+  text: string
+  tone: 'info' | 'warning'
+  /** Longer than the default when there is more to read (items in use, several items, prompts to fix). */
+  ms?: number
+}
+
+/**
+ * The toast after a delete (its "Hoàn tác" button comes from undoToastAction). `note` = core/staleTokens
+ * mediaChangeNote(before, after): red placeholders left, numbers left stale (renumbering off), or prompts renumbered.
+ */
+export function libraryDeleteText(plan: LibraryDeletePlan, nameOf: (id: string) => string, note: MediaChangeNote | null): LibraryDeleteToast {
+  const n = plan.ids.length
+  const used = plan.usingAssets.length
+  const scenes = plan.usedBy.length
+  let text: string
+  if (n === 1) text = `Đã xoá ${quoted(nameOf(plan.ids[0]))} khỏi thư viện${used ? ` và ${scenes} cảnh` : ''}`
+  else text = `Đã xoá ${n} mục khỏi thư viện${used ? (used === n ? ` (đang dùng ở ${scenes} cảnh)` : ` (${used} mục đang dùng ở ${scenes} cảnh)`) : ''}`
+  if (note) text += note.text
+  text += '.'
+  if (plan.hidden.length) text += ` Giữ ${plan.hidden.length} mục đang chọn nhưng bị ẩn bởi ô tìm / thẻ lọc.`
+  const toast: LibraryDeleteToast = { text, tone: note?.tone ?? 'info' }
+  const ms = Math.max(note?.ms ?? 0, used || n > 1 || note?.tone === 'warning' ? 8000 : 0)
+  if (ms) toast.ms = ms
+  return toast
+}
+
+/** Hint for a Delete in the library with nothing to delete. `hiddenOnly`: every selected card is filtered out. */
+export function libraryNothingToDeleteHint(mac: boolean, hiddenOnly: boolean): string {
+  if (hiddenOnly) return 'Các thẻ đã chọn đang bị ẩn bởi ô tìm / thẻ lọc — xoá ô tìm hoặc chọn “Tất cả” để thấy chúng.'
+  return `Chưa chọn thẻ nào trong Thư viện — bấm vào thẻ (${textsFor(mac ? 'mac' : 'win').modShiftClick} để chọn nhiều) rồi bấm ${deleteKeyLabel(mac)}.`
+}
+
+/**
+ * Delete / Ctrl+A aimed at the library while its section is collapsed: nothing happens there (no card is on screen) and
+ * the key never falls through to the canvas — say how to go on.
+ */
+export function libraryCollapsedHint(action: 'delete' | 'select-all'): string {
+  return action === 'delete'
+    ? 'Thư viện đang thu gọn — mở Thư viện để xoá các thẻ đã chọn, hoặc bấm vào canvas để xoá trên canvas.'
+    : 'Thư viện đang thu gọn — mở Thư viện để chọn thẻ, hoặc bấm vào canvas để chọn mọi cảnh.'
+}
+
+/** Plain Backspace in the library on Windows (it never deletes: Vietnamese input tools send it). */
+export const BACKSPACE_HINT = 'Bấm phím Delete (Del) để xoá — Backspace dành cho bộ gõ tiếng Việt.'
+
+// ---------------- the library footer ----------------
+export interface LibrarySelectionCounts {
+  /** Selected items that exist. */
+  selected: number
+  /** ...of which visible (what Delete / the trash button take). */
+  visible: number
+  /** ...of which hidden by the search box / kind tab. */
+  hidden: number
+}
+
+/** `selection` must hold existing ids only (the library filters it). */
+export function librarySelectionCounts(selection: readonly string[], visible: ReadonlySet<string>): LibrarySelectionCounts {
+  let shown = 0
+  for (const id of selection) if (visible.has(id)) shown++
+  return { selected: selection.length, visible: shown, hidden: selection.length - shown }
+}
+
+/** " (1 đang ẩn)" after "3 đã chọn", '' without hidden cards. */
+export const hiddenSuffix = (c: LibrarySelectionCounts) => (c.hidden ? ` (${c.hidden} đang ẩn)` : '')
+
+/** Title / aria-label of the footer's trash button and whether it can delete anything. */
+export function deleteButtonState(c: LibrarySelectionCounts, mac: boolean): { label: string; enabled: boolean } {
+  if (!c.visible) return { label: 'Các thẻ đã chọn đều đang bị ẩn bởi ô tìm / thẻ lọc', enabled: false }
+  return { label: `Xoá ${c.visible} mục khỏi thư viện (${deleteKeyLabel(mac)}) — hoàn tác được`, enabled: true }
+}
+
+/** Footer line while nothing is selected. */
+export function libraryFooterHint(mac: boolean): string {
+  return `Kéo thả vào cảnh để nối · ${textsFor(mac ? 'mac' : 'win').modShiftClick}: chọn nhiều · C: nối · ${deleteKeyLabel(mac)}: xoá`
+}

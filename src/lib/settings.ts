@@ -3,7 +3,8 @@
 // another version or edited by hand can never put a store into a broken state).
 //
 // Each preference still lives in its own store and is saved by it (localStorage, validated on read):
-//   theme (lib/theme) · downloads (lib/downloads) · playback (lib/playback) · canvas (lib/canvasPrefs) ·
+//   theme (lib/theme) · downloads (lib/downloads, incl. the Recycle Bin on unlinking a folder wire) · playback (lib/playback) · canvas (lib/canvasPrefs: wire clicks,
+//   animations, the editor on a scene card + its width, big-project optimisations) · arrange (lib/arrangePrefs: last "Sắp xếp" style + options) ·
 //   ui (store/ui: wires, take display, minimap, mouse mode, toast time) · mock (store/runs: demo provider) ·
 //   updates (lib/updatePrefs: auto-download of app updates).
 // Not here on purpose: projects and their settings (autoRenumber travels with the project), the chosen download
@@ -16,39 +17,50 @@ import { DEFAULT_MOCK_SETTINGS, parseMockSettings, type MockSettings } from '../
 import { useProviderPrefs, type ProviderId } from '../providers'
 import { useRuns } from '../store/runs'
 import { EDGE_MODES, INTERACTION_MODES, TAKE_DISPLAYS, TOAST_TIMES, useUI, type InteractionMode, type TakeDisplay, type ToastTime } from '../store/ui'
-import { DEFAULT_CANVAS_PREFS, MOTION_LEVELS, useCanvasPrefs, type MotionLevel } from './canvasPrefs'
+import { BIG_PROJECT_MODES, DEFAULT_CANVAS_PREFS, isEditorWidth, MOTION_LEVELS, NODE_EDITOR_MODES, useCanvasPrefs, WHEEL_MODES, type CanvasPrefs } from './canvasPrefs'
 import { DEFAULT_DOWNLOAD_PREFS, useDownloadPrefs } from './downloads'
 import { PLAYBACK_RATES, usePlayback } from './playback'
-import { isThemePref, useTheme, type ThemePref } from './theme'
+import { isBackgroundPref, isThemePref, useTheme, type BackgroundPref, type ThemePref } from './theme'
 import { DEFAULT_UPDATE_PREFS, useUpdatePrefs } from './updatePrefs'
+import { changedBindingsCount, validateBindings, type BindingIssue } from '../core/keymap'
+import { IS_MAC } from './keyEvents'
+import { useKeymap } from './keymapPrefs'
+import { ARRANGE_RULES, cleanArrangePrefs, DEFAULT_ARRANGE_PREFS, isArrangeVideo, useArrangePrefs, type ArrangePrefs } from './arrangePrefs'
 
 export interface PortableSettings {
   theme: ThemePref
-  downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string }
+  background: BackgroundPref
+  downloads: { askWhere: boolean; withPrompt: boolean; autoDownload: boolean; zipPrompts: boolean; nameTemplate: string; folderUnlinkTrash: boolean }
   playback: { sound: boolean; volume: number; rate: number }
-  canvas: { clickToCut: boolean; animations: MotionLevel }
+  canvas: CanvasPrefs
+  arrange: ArrangePrefs
   ui: { edgeMode: EdgeMode; takeDisplay: TakeDisplay; showMinimap: boolean; interaction: InteractionMode; toastTime: ToastTime }
   mock: MockSettings
   updates: { autoDownload: boolean }
+  keys: Record<string, unknown>
 }
 
 /** Some settings (what a file or a reset changes). */
-export type SettingsPatch = { theme?: ThemePref } & { [K in Exclude<keyof PortableSettings, 'theme'>]?: Partial<PortableSettings[K]> }
+export type SettingsPatch = { theme?: ThemePref; background?: BackgroundPref } & { [K in Exclude<keyof PortableSettings, 'theme' | 'background'>]?: Partial<PortableSettings[K]> }
 
 export const DEFAULT_SETTINGS: PortableSettings = {
   theme: 'system',
+  background: 'than',
   downloads: {
     askWhere: DEFAULT_DOWNLOAD_PREFS.askWhere,
     withPrompt: DEFAULT_DOWNLOAD_PREFS.withPrompt,
     autoDownload: DEFAULT_DOWNLOAD_PREFS.autoDownload,
     zipPrompts: DEFAULT_DOWNLOAD_PREFS.zipPrompts,
     nameTemplate: DEFAULT_NAME_TEMPLATE,
+    folderUnlinkTrash: DEFAULT_DOWNLOAD_PREFS.folderUnlinkTrash,
   },
   playback: { sound: true, volume: 1, rate: 1 },
   canvas: { ...DEFAULT_CANVAS_PREFS },
+  arrange: cleanArrangePrefs(DEFAULT_ARRANGE_PREFS),
   ui: { edgeMode: 'selected', takeDisplay: 'all', showMinimap: true, interaction: 'hand', toastTime: 'normal' },
   mock: { ...DEFAULT_MOCK_SETTINGS },
   updates: { autoDownload: DEFAULT_UPDATE_PREFS.autoDownload },
+  keys: {},
 }
 
 /** Every setting as it is now. */
@@ -59,12 +71,22 @@ export function currentSettings(): PortableSettings {
   const u = useUI.getState()
   return {
     theme: useTheme.getState().pref,
-    downloads: { askWhere: d.askWhere, withPrompt: d.withPrompt, autoDownload: d.autoDownload, zipPrompts: d.zipPrompts, nameTemplate: d.nameTemplate },
+    background: useTheme.getState().background,
+    downloads: {
+      askWhere: d.askWhere,
+      withPrompt: d.withPrompt,
+      autoDownload: d.autoDownload,
+      zipPrompts: d.zipPrompts,
+      nameTemplate: d.nameTemplate,
+      folderUnlinkTrash: d.folderUnlinkTrash,
+    },
     playback: { sound: p.sound, volume: p.volume, rate: p.rate },
-    canvas: { clickToCut: c.clickToCut, animations: c.animations },
+    canvas: { clickToCut: c.clickToCut, animations: c.animations, nodeEditor: c.nodeEditor, editorWidth: c.editorWidth, bigProject: c.bigProject, wheel: c.wheel },
+    arrange: cleanArrangePrefs(useArrangePrefs.getState()),
     ui: { edgeMode: u.edgeMode, takeDisplay: u.takeDisplay, showMinimap: u.showMinimap, interaction: u.interaction, toastTime: u.toastTime },
     mock: { ...useRuns.getState().mock },
     updates: { autoDownload: useUpdatePrefs.getState().autoDownload },
+    keys: { ...useKeymap.getState().foreign, ...useKeymap.getState().bindings },
   }
 }
 
@@ -79,10 +101,10 @@ const isVolume = (v: unknown): v is number => typeof v === 'number' && Number.is
 const isTemplate = (v: unknown): v is string => checkNameTemplate(v).ok
 
 type Check = (v: unknown) => boolean
-const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'mock'>]: Record<keyof PortableSettings[K], Check> } = {
-  downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate },
+const RULES: { [K in Exclude<keyof PortableSettings, 'theme' | 'background' | 'mock' | 'keys' | 'arrange'>]: Record<keyof PortableSettings[K], Check> } = {
+  downloads: { askWhere: isBool, withPrompt: isBool, autoDownload: isBool, zipPrompts: isBool, nameTemplate: isTemplate, folderUnlinkTrash: isBool },
   playback: { sound: isBool, volume: isVolume, rate: inList(PLAYBACK_RATES) },
-  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS) },
+  canvas: { clickToCut: isBool, animations: inList(MOTION_LEVELS), nodeEditor: inList(NODE_EDITOR_MODES), editorWidth: isEditorWidth, bigProject: inList(BIG_PROJECT_MODES), wheel: inList(WHEEL_MODES) },
   ui: { edgeMode: inList(EDGE_MODES), takeDisplay: inList(TAKE_DISPLAYS), showMinimap: isBool, interaction: inList(INTERACTION_MODES), toastTime: inList(TOAST_TIMES) },
   updates: { autoDownload: isBool },
 }
@@ -100,22 +122,31 @@ export interface SanitizedSettings {
   accepted: number
   /** "group.key" of the values that were refused (wrong type / out of range / unknown option). */
   rejected: string[]
+  /** Detailed shortcut refusals, including cross-platform mac-system import messages. */
+  keyIssues?: BindingIssue[]
 }
 
 /**
  * Untrusted settings (an imported file) → the values that are valid. Unknown groups and keys are ignored (a file
  * from a newer version still imports what this one knows); a wrong value is refused, never "fixed" by guessing.
  */
-export function sanitizeSettings(input: unknown): SanitizedSettings {
+export function sanitizeSettings(input: unknown, mac = IS_MAC): SanitizedSettings {
   const patch: SettingsPatch = {}
   const rejected: string[] = []
   let accepted = 0
+  let keyIssues: BindingIssue[] = []
   if (!isObj(input)) return { patch, accepted, rejected }
   if ('theme' in input) {
     if (isThemePref(input.theme)) {
       patch.theme = input.theme
       accepted++
     } else rejected.push('theme')
+  }
+  if ('background' in input) {
+    if (isBackgroundPref(input.background)) {
+      patch.background = input.background
+      accepted++
+    } else rejected.push('background')
   }
   const groups: [keyof SettingsPatch, Record<string, Check>][] = [...Object.entries(RULES), ['mock', MOCK_RULES]] as [keyof SettingsPatch, Record<string, Check>][]
   for (const [group, rules] of groups) {
@@ -137,13 +168,49 @@ export function sanitizeSettings(input: unknown): SanitizedSettings {
     }
     if (Object.keys(out).length) (patch as Record<string, unknown>)[group] = out
   }
-  return { patch, accepted, rejected }
+  if ('keys' in input) {
+    const keys = validateBindings(input.keys, mac)
+    keyIssues = keys.issues
+    rejected.push(...keys.rejected)
+    const clean = { ...keys.foreign, ...keys.bindings }
+    // An empty group is meaningful: importing it restores the default bindings.
+    if (Object.keys(clean).length || (isObj(input.keys) && !Object.keys(input.keys).length)) {
+      patch.keys = clean
+      accepted += Math.max(1, Object.keys(clean).length)
+    }
+  }
+  if ('arrange' in input) {
+    if (!isObj(input.arrange)) rejected.push('arrange')
+    else {
+      const src = input.arrange, out: Partial<ArrangePrefs> = {}
+      for (const [key, valid] of Object.entries(ARRANGE_RULES)) {
+        if (!(key in src)) continue
+        if (valid(src[key])) { Object.assign(out, { [key]: src[key] }); accepted++ }
+        else rejected.push(`arrange.${key}`)
+      }
+      if ('videoBy' in src) {
+        if (!isObj(src.videoBy)) rejected.push('arrange.videoBy')
+        else {
+          const videoBy: Partial<ArrangePrefs['videoBy']> = {}
+          for (const style of ['rows', 'grid', 'strip'] as const) {
+            if (!(style in src.videoBy)) continue
+            if (isArrangeVideo(src.videoBy[style])) { videoBy[style] = src.videoBy[style] as 'all' | 'chosen'; accepted++ }
+            else rejected.push(`arrange.videoBy.${style}`)
+          }
+          if (Object.keys(videoBy).length) out.videoBy = videoBy as ArrangePrefs['videoBy']
+        }
+      }
+      if (Object.keys(out).length) patch.arrange = out
+    }
+  }
+  return { patch, accepted, rejected, ...(keyIssues.length ? { keyIssues } : {}) }
 }
 
 // ---------------- applying ----------------
 /** Apply some settings to their stores (each store saves its own; every value is checked again there). */
 export function applySettings(patch: SettingsPatch): void {
   if (patch.theme) useTheme.getState().setPref(patch.theme)
+  if (patch.background) useTheme.getState().setBackground(patch.background)
   if (patch.downloads) useDownloadPrefs.getState().set(patch.downloads)
   if (patch.playback) {
     const p = usePlayback.getState()
@@ -152,6 +219,7 @@ export function applySettings(patch: SettingsPatch): void {
     if (patch.playback.rate !== undefined) p.setRate(patch.playback.rate)
   }
   if (patch.canvas) useCanvasPrefs.getState().set(patch.canvas)
+  if (patch.arrange) useArrangePrefs.getState().set(patch.arrange)
   if (patch.ui) {
     const u = useUI.getState()
     if (patch.ui.edgeMode !== undefined) u.setEdgeMode(patch.ui.edgeMode)
@@ -162,12 +230,15 @@ export function applySettings(patch: SettingsPatch): void {
   }
   if (patch.mock) useRuns.getState().setMock(patch.mock)
   if (patch.updates) useUpdatePrefs.getState().set(patch.updates)
+  if (patch.keys) useKeymap.getState().replace(patch.keys)
 }
 
 /** What a reset / import changed, to put it back with "Hoàn tác". */
 export interface SettingsBackup {
   settings: PortableSettings
   provider: ProviderId
+  /** One-time tips a reset showed again (key → saved value): Hoàn tác hides them again. */
+  hints?: Record<string, string>
 }
 
 export function backupSettings(): SettingsBackup {
@@ -177,6 +248,11 @@ export function backupSettings(): SettingsBackup {
 export function restoreSettings(backup: SettingsBackup): void {
   applySettings(backup.settings)
   if (useProviderPrefs.getState().provider !== backup.provider) useProviderPrefs.getState().setProvider(backup.provider)
+  try {
+    for (const [k, v] of Object.entries(backup.hints ?? {})) if (k.startsWith(HINT_PREFIX)) localStorage.setItem(k, v)
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 /** Keys of one-time tips ("Đã hiểu"): a reset shows them again. */
@@ -190,28 +266,32 @@ export function resetAllSettings(): SettingsBackup {
   const before = backupSettings()
   applySettings(DEFAULT_SETTINGS)
   if (useProviderPrefs.getState().provider !== 'dev') useProviderPrefs.getState().setProvider('dev')
+  const hints: Record<string, string> = {}
   try {
-    const keys: string[] = []
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i)
-      if (k?.startsWith(HINT_PREFIX)) keys.push(k)
+      const v = k?.startsWith(HINT_PREFIX) ? localStorage.getItem(k) : null
+      if (k && v !== null) hints[k] = v
     }
-    for (const k of keys) localStorage.removeItem(k)
+    for (const k of Object.keys(hints)) localStorage.removeItem(k)
   } catch {
     /* storage unavailable */
   }
-  return before
+  return { ...before, hints }
 }
 
 /** Number of settings that differ from the defaults (shown next to "Khôi phục cài đặt mặc định"). */
 export function changedSettingsCount(s: PortableSettings = currentSettings()): number {
   let n = s.theme === DEFAULT_SETTINGS.theme ? 0 : 1
+  if (s.background !== DEFAULT_SETTINGS.background) n++
   for (const group of ['downloads', 'playback', 'canvas', 'ui', 'mock', 'updates'] as const) {
     const cur = s[group] as Record<string, unknown>
     const def = DEFAULT_SETTINGS[group] as Record<string, unknown>
     for (const k of Object.keys(def)) if (cur[k] !== def[k]) n++
   }
-  return n
+  for (const key of Object.keys(ARRANGE_RULES) as (keyof typeof ARRANGE_RULES)[]) if (s.arrange[key] !== DEFAULT_SETTINGS.arrange[key]) n++
+  for (const style of ['rows', 'grid', 'strip'] as const) if (s.arrange.videoBy[style] !== DEFAULT_SETTINGS.arrange.videoBy[style]) n++
+  return n + changedBindingsCount(s.keys, IS_MAC)
 }
 
 // ---------------- file ----------------

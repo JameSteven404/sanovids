@@ -1,20 +1,22 @@
 /*
- * Views (vw-): Bảng cảnh + Storyboard (+ the "Phát liền" player). Both fill .app-center and stay clear of the
+ * Views (vw-): Bảng cảnh + Storyboard. Both fill .app-center and stay clear of the
  * QueueDrawer (36px bar, 272px when open — `--rq-drawer-h` from runs.css).
+ * Hidden since 0.6.0 (core/shownViews.ts): this file is frozen and no longer bundled. The "Phát liền" player and its
+ * vw-player* / vw-seg rules moved to components/player/player.css.
  * Colors come only from the theme tokens in styles/base.css (light + dark) — see docs/DESIGN.md.
  */
 .vw-root {
   /*
    * Media (posters, video, the "Phát liền" player): dark letterbox and dark glass chips with light text in BOTH
    * themes, like Photos / QuickTime and the canvas take nodes (canvas.css) — the picture decides the background,
-   * not the theme. Theme-independent tokens (--media-bg / --media-scrim / --on-media) when base.css has them; the
-   * keyword fallbacks are deliberate media scrims, the only literal colors in this file.
+   * not the theme. Theme-independent tokens from base.css (--media-bg / --media-scrim / --on-media); no literal
+   * colors here (src/styles/__tests__/noLiteralColors.test.ts).
    */
-  --vw-on-media: var(--on-media, white);
+  --vw-on-media: var(--on-media);
   --vw-on-media-dim: color-mix(in srgb, var(--vw-on-media) 64%, transparent);
   --vw-on-media-faint: color-mix(in srgb, var(--vw-on-media) 42%, transparent);
-  --vw-media-chip: var(--media-scrim, color-mix(in srgb, black 58%, transparent));
-  --vw-media-bg: var(--media-bg, black);
+  --vw-media-chip: var(--media-scrim);
+  --vw-media-bg: var(--media-bg);
   /* glass buttons drawn on media (player end screen) */
   --vw-media-btn: color-mix(in srgb, var(--vw-on-media) 14%, transparent);
   --vw-media-btn-hover: color-mix(in srgb, var(--vw-on-media) 22%, transparent);
@@ -345,10 +347,6 @@
   --vw-row-bg: color-mix(in srgb, var(--ref) 14%, var(--bg));
   box-shadow: inset 0 0 0 1px var(--ref);
 }
-.vw-row.take-over {
-  --vw-row-bg: color-mix(in srgb, var(--video) 14%, var(--bg));
-  box-shadow: inset 0 0 0 1px var(--video);
-}
 /* reorder: a 2px accent line where the dragged row will land */
 .vw-row.drop-above::after,
 .vw-row.drop-below::after {
@@ -446,17 +444,6 @@
   border-color: color-mix(in srgb, var(--ref) 50%, transparent);
   background: color-mix(in srgb, var(--ref) 6%, transparent);
 }
-/* a take (video) is being dragged: rows that can use it as @video light up */
-.vw-row.take-drag:not(.take-over):not(.selected) {
-  --vw-row-bg: color-mix(in srgb, var(--video) 4%, var(--bg));
-}
-.vw-row.take-drag .vw-cell-videos {
-  border-color: color-mix(in srgb, var(--video) 55%, transparent);
-  background: var(--video-soft);
-}
-.vw-row.take-drag .vw-cell-videos .vw-faint-cell {
-  color: var(--video);
-}
 .vw-avatars {
   display: flex;
   align-items: center;
@@ -480,7 +467,8 @@
   padding: 0 3px;
   border-radius: 999px;
   background: var(--ref);
-  color: var(--on-accent);
+  /* dark ink on the light dark-mode teal / amber; near-white on the deeper light-mode fills */
+  color: var(--bg);
   font-family: var(--mono);
   font-size: 9.5px;
   font-weight: 600;
@@ -510,117 +498,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.vw-drop-hint.video {
-  color: var(--video);
-}
-/* reference videos (v1 = @video_1) */
-.vw-cell-videos {
-  display: flex;
-  align-items: center;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  border: 1px dashed transparent;
-}
-.vw-vrefs {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.vw-vref {
-  position: relative;
-  flex: none;
-  display: inline-flex;
-}
-.vw-vref-open {
-  position: relative;
-  display: block;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  overflow: hidden;
-  border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--video) 55%, transparent);
-  background: var(--panel-3);
-  cursor: pointer;
-}
-.vw-vref-open:hover {
-  border-color: var(--video);
-}
-.vw-vref-open:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.vw-vref-open:disabled {
-  cursor: default;
-}
-.vw-vref.pending .vw-vref-open {
-  border-style: dashed;
-  opacity: 0.7;
-}
-.vw-vref.missing .vw-vref-open {
-  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
-}
-.vw-vref-img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.vw-vref-ph {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.vw-vref-n {
-  position: absolute;
-  left: 1px;
-  bottom: 1px;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: var(--vw-media-chip);
-  color: color-mix(in srgb, var(--video) 70%, var(--vw-on-media));
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 12px;
-}
-/* Hidden with opacity (not display: none) so Tab can still reach it: it shows on hover and on keyboard focus. */
-.vw-vref-x {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border-radius: 50%;
-  border: 0;
-  background: var(--panel-3);
-  color: var(--text-dim);
-  box-shadow:
-    0 0 0 1px var(--border-strong),
-    var(--shadow-sm);
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s ease-out;
-}
-.vw-vref:hover .vw-vref-x,
-.vw-vref:focus-within .vw-vref-x {
-  opacity: 1;
-  pointer-events: auto;
-}
-/* opaque (it overlaps the thumbnail): a red tint mixed into the button color, not the translucent --danger-soft */
-.vw-vref-x:hover {
-  background: color-mix(in srgb, var(--danger) 22%, var(--panel-3));
-  color: var(--danger-text);
-}
-.vw-vref-x:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
 .vw-faint-cell {
   color: var(--text-faint);
   font-size: 12px;
@@ -645,8 +522,10 @@
   font-size: 11px;
   font-weight: 600;
 }
+/* retired @video text (reference videos were retired): kept as written, never sent — the scene does not run */
 .vw-mention.video {
-  color: var(--video);
+  color: var(--danger-text);
+  text-decoration: line-through var(--danger);
 }
 .vw-cell-settings {
   display: flex;
@@ -801,7 +680,7 @@
     transform 0.12s ease-out;
 }
 .vw-run:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--action-gradient);
   border-color: var(--accent);
   color: var(--on-accent);
 }
@@ -1181,7 +1060,7 @@
   height: 44px;
   border-radius: 50%;
   border: 0;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   display: inline-flex;
   align-items: center;
@@ -1379,7 +1258,7 @@
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  background: var(--accent);
+  background: var(--action-gradient);
   color: var(--on-accent);
   box-shadow: var(--shadow);
   font-family: var(--mono);
@@ -1454,333 +1333,26 @@
   border: 0;
 }
 
-/* =====================================================================================================
-   "Phát liền" player — full-window stage, glass caption, floating material controls
-   ===================================================================================================== */
-.vw-player {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: flex;
-  flex-direction: column;
-  background: var(--vw-media-bg);
-  color: var(--vw-on-media);
-  animation: vw-fade 0.18s ease-out;
-}
-@keyframes vw-fade {
-  from {
-    opacity: 0;
-  }
-}
-.vw-player .faint {
-  color: var(--vw-on-media-faint);
-}
-.vw-player .icon-btn {
-  color: var(--vw-on-media-dim);
-}
-.vw-player .icon-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--vw-on-media) 12%, transparent);
-  color: var(--vw-on-media);
-}
-.vw-player .icon-btn:focus-visible,
-.vw-player .btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-/* secondary buttons on the dark stage: glass, not the theme's panel fill (a light slab in the light theme) */
-.vw-player .btn:not(.btn-primary) {
-  background: var(--vw-media-btn);
-  border-color: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
-  color: var(--vw-on-media);
-}
-.vw-player .btn:not(.btn-primary):hover:not(:disabled) {
-  background: var(--vw-media-btn-hover);
-}
-.vw-player-top {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  height: 52px;
-  padding: 0 12px 0 20px;
-}
-.vw-player-title {
-  font-size: 13px;
-  white-space: nowrap;
-}
-.vw-player-title b {
-  font-family: var(--mono);
-  color: var(--accent);
-}
-.vw-player-note {
-  flex: 1;
-  text-align: right;
-  font-size: 11px;
-  color: var(--vw-on-media-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.vw-player-stage {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 24px;
-}
-.vw-player-frame {
-  position: relative;
-  width: min(100%, calc((100vh - 190px) * 16 / 9));
-  aspect-ratio: 16 / 9;
-  background: var(--vw-media-bg);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow-lg);
-}
-.vw-player-media {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: var(--vw-media-bg);
-}
-.vw-player-slate {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: radial-gradient(80% 80% at 50% 40%, color-mix(in srgb, var(--vw-on-media) 7%, var(--vw-media-bg)), var(--vw-media-bg));
-}
-.vw-player-slate span {
-  font-family: var(--mono);
-  font-size: 56px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--vw-on-media) 85%, transparent);
-}
-.vw-player-slate small {
-  font-size: 16px;
-  color: var(--vw-on-media-dim);
-}
-.vw-player-slate em {
-  margin-top: 10px;
-  font-style: normal;
-  font-size: 12px;
-  color: var(--vw-on-media-faint);
-  border: 1px dashed color-mix(in srgb, var(--vw-on-media) 25%, transparent);
-  border-radius: 999px;
-  padding: 3px 12px;
-}
-.vw-player-loading {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--vw-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
-  font-size: 11px;
-  color: var(--vw-on-media-dim);
-}
-.vw-player-caption {
-  position: absolute;
-  left: 14px;
-  bottom: 14px;
-  max-width: calc(100% - 28px);
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 2px 10px;
-  padding: 7px 12px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--vw-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
-  pointer-events: none;
-}
-.vw-player-code {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--accent);
-}
-.vw-player-take {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 12px;
-  color: var(--vw-on-media-dim);
-}
-.vw-player-scene-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--vw-on-media);
-}
-.vw-player-sub {
-  flex-basis: 100%;
-  font-size: 11.5px;
-  color: var(--vw-on-media-dim);
-}
-.vw-player-end {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: var(--vw-media-chip);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
-  animation: vw-fade 0.2s ease-out;
-}
-.vw-player-end h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 600;
-}
-.vw-player-end p {
-  margin: 0 0 12px;
-  color: var(--vw-on-media-dim);
-}
-.vw-player-end div {
-  display: flex;
-  gap: 8px;
-}
-/* floating material controls (like a QuickTime HUD) */
-.vw-player-controls {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  width: min(100% - 48px, 1120px);
-  margin: 6px auto 18px;
-  padding: 8px 8px 8px 12px;
-  border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--vw-on-media) 12%, transparent);
-  /* a lighter glass than the stage behind it (a dark scrim would vanish on the dark stage) */
-  background: color-mix(in srgb, var(--vw-on-media) 9%, transparent);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
-  box-shadow: var(--shadow);
-}
-.vw-player-buttons {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-.vw-player-pp {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 0;
-  background: var(--vw-on-media);
-  color: var(--vw-media-bg);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition:
-    opacity 0.12s ease-out,
-    transform 0.12s ease-out;
-}
-.vw-player-pp:hover {
-  opacity: 0.88;
-}
-.vw-player-pp:active {
-  transform: scale(0.94);
-}
-.vw-player-pp:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-/* "Tải video này": big download button for the clip on screen */
-.vw-player-dl {
-  flex: none;
-  height: 40px;
-  padding: 0 18px;
-  border-radius: var(--radius);
-  font-size: 13.5px;
-}
-.vw-player-timeline {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  min-width: 0;
-  height: 16px;
-}
-.vw-seg {
-  position: relative;
-  flex-basis: 0;
-  min-width: 4px;
-  height: 6px;
-  padding: 0;
-  border: 0;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--vw-on-media) 16%, transparent);
-  overflow: hidden;
-  cursor: pointer;
-  transition: height 0.12s ease-out;
-}
-.vw-seg:hover {
-  height: 12px;
-}
-.vw-seg:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.vw-seg.is-empty {
-  background: repeating-linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--vw-on-media) 12%, transparent) 0 3px,
-    color-mix(in srgb, var(--vw-on-media) 4%, transparent) 3px 6px
-  );
-}
-.vw-seg.current {
-  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
-}
-.vw-seg i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--accent);
-}
-
 /* ---------- motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .vw-root,
   .vw-row,
   .vw-handle,
   .vw-cell-input,
-  .vw-vref-x,
   .vw-run,
   .vw-card,
   .vw-card-hover,
   .vw-card-play,
-  .vw-sb-chip,
-  .vw-player-pp,
-  .vw-seg {
+  .vw-sb-chip {
     transition: none;
   }
   .vw-card:hover,
   .vw-run:active,
-  .vw-card-play:active,
-  .vw-player-pp:active {
+  .vw-card-play:active {
     transform: none;
   }
   .vw-menu,
-  .vw-card.flash,
-  .vw-player,
-  .vw-player-end {
+  .vw-card.flash {
     animation: none;
   }
   .vw-spin {

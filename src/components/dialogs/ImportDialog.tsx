@@ -1,3 +1,4 @@
+import { platformText } from '../../lib/platformText'
 import { ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Images, Info, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { fitNodes, placementHint } from '../../actions'
@@ -35,8 +36,9 @@ const fmt = (n: number) => n.toLocaleString('vi-VN')
 const TOKEN_SPLIT = /(@(?:image|video)(?:_\?|[ _])?\d+)\b/gi
 
 /**
- * Prompt text with @image_N (teal) / @video_N (purple) highlighted. `imageCount` marks numbers past it as unresolved;
- * "@image_?N" placeholders (a number left without a picture) are always unresolved.
+ * Prompt text with @image_N (teal) highlighted and @video_N marked as retired (red, struck through: reference videos
+ * were retired — the text is imported as written but blocks the run). `imageCount` marks numbers past it as
+ * unresolved; "@image_?N" placeholders (a number left without a picture) are always unresolved.
  */
 function TokenText({ text, imageCount }: { text: string; imageCount?: number }) {
   const parts = text.split(TOKEN_SPLIT)
@@ -414,7 +416,7 @@ function StepInput({
               Dòng <code>=== S03: Tên cảnh ===</code> vừa ngăn cách vừa đặt tên cảnh (định dạng của “Copy tất cả prompt”).
             </li>
             <li>
-              Prompt được giữ nguyên văn, kể cả token <code>@image_N</code> và <code>@video_N</code>. Bước sau có thể gán ảnh thư viện cho từng số.
+              Prompt được giữ nguyên văn, kể cả token <code>@image_N</code> (và chữ <code>@video_N</code> cũ). Bước sau có thể gán ảnh thư viện cho từng số.
             </li>
           </ul>
         </div>
@@ -477,8 +479,8 @@ function StepPreview({
                     </span>
                   )}
                   {p.videos.length > 0 && (
-                    <span className="dg-tok-count video" title={p.videos.map((n) => '@video_' + n).join(', ')}>
-                      {p.videos.length} video
+                    <span className="dg-tok-count video" title={`${p.videos.map((n) => '@video_' + n).join(', ')} — SanoVids đã bỏ video tham chiếu: chữ được giữ nguyên, cảnh chưa chạy được cho tới khi sửa`}>
+                      {p.videos.length} @video
                     </span>
                   )}
                   {!p.images.length && !p.videos.length && <span className="faint">không có token</span>}
@@ -522,7 +524,7 @@ function StepPreview({
           <div className="dg-callout video">
             <Info size={14} />
             <span>
-              {summary.withVideos} prompt có <code>@video_N</code>. Token được giữ nguyên; sau khi nhập, nối video (take) vào cảnh trên canvas để dùng làm video tham chiếu.
+              {summary.withVideos} prompt có <code>@video_N</code>. SanoVids không còn dùng video tham chiếu: chữ được giữ nguyên, các cảnh đó chưa chạy được cho tới khi bạn sửa.
             </span>
           </div>
         )}
@@ -535,7 +537,7 @@ function StepPreview({
           </div>
         )}
         <OutOfRangeNote numbers={outOfRange} />
-        <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng Ctrl+Z.</p>
+        <p className="dg-note">Toàn bộ thao tác nhập là một bước — có thể hoàn tác bằng {platformText.mod}+Z.</p>
       </aside>
     </div>
   )

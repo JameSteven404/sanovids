@@ -1,7 +1,15 @@
-import { Fragment, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
+import { KEY_ACTIONS, FIXED_KEYS, chordLabel, defaultsFor, type ActionId, type KeyAction } from '../../core/keymap'
+import { IS_MAC } from '../../lib/keyEvents'
+import { useKeymap } from '../../lib/keymapPrefs'
+import { platformText } from '../../lib/platformText'
+
+const GROUP_TITLES = { keys: 'Chung', keysScene: 'Cảnh & chọn', keysTake: 'Video', keysCanvas: 'Canvas' }
+const UNBOUND = 'Chưa gán'
+const FIXED_TITLE = 'Phím cố định'
 
 /** Keys: '+' joins a combo, ' / ' separates alternatives. */
 type Row = [keys: string, label: ReactNode]
@@ -10,79 +18,32 @@ interface Group {
   rows: Row[]
 }
 
-/** Same test as hooks/useShortcuts: Mac keyboards use ⌘ and ⌫ where Windows uses Ctrl and Delete. */
-const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent)
-/** Key names as printed on this keyboard. */
-const keyName = (k: string) => (IS_MAC && k === 'Ctrl' ? '⌘' : k)
-
-const KEY_GROUPS: Group[] = [
-  {
-    title: 'Chung',
-    rows: [
-      ['Ctrl+Z', 'Hoàn tác'],
-      ['Ctrl+Shift+Z / Ctrl+Y', 'Làm lại'],
-      ['Ctrl+S', 'Lưu ngay'],
-      ['Ctrl+K', 'Tìm trong thư viện'],
-      ['1 / 2 / 3', 'Canvas / Bảng cảnh / Storyboard'],
-      ['Esc', 'Bỏ chọn · đóng hộp thoại'],
-      ['?', 'Mở bảng phím tắt này'],
-    ],
-  },
-  {
-    title: 'Cảnh & chọn',
-    rows: [
-      ['N', 'Cảnh tiếp theo, đặt ngay bên dưới cảnh đang chọn (giữ ảnh/video tham chiếu và cấu hình) · cảnh mới khi chưa chọn gì'],
-      ['Ctrl+D', 'Nhân bản cảnh đang chọn'],
-      [
-        IS_MAC ? 'Delete / ⌫' : 'Delete',
-        'Xoá cảnh và video (take) đang chọn · ẩn thẻ khỏi canvas · cắt dây đang chọn. Video chọn cùng cảnh của nó chỉ ẩn theo cảnh (hoàn tác được).',
-      ],
-      ['Ctrl+A', 'Chọn tất cả cảnh (Canvas, Bảng cảnh, Storyboard)'],
-      ['C', 'Nối mọi nhân vật / video đang chọn vào mọi cảnh đang chọn'],
-      ['Ctrl+Enter', 'Chạy các cảnh đang chọn'],
-    ],
-  },
-  {
-    title: 'Canvas',
-    rows: [
-      ['F', 'Vừa màn hình (vùng chọn hoặc tất cả)'],
-      ['E', 'Đổi cách hiện dây: Ẩn → Đang chọn → Tất cả'],
-      ['H / V', 'Chế độ Tay / Chọn'],
-      ['M', 'Bật/tắt bản đồ nhỏ'],
-    ],
-  },
-  {
-    title: 'Bảng cảnh & Storyboard',
-    rows: [
-      ['↑ / ↓', 'Bảng cảnh: chuyển cảnh (Shift để chọn thêm)'],
-      ['← / → / ↑ / ↓', 'Storyboard: sang thẻ bên cạnh (Enter để xem take)'],
-      ['Alt+← / Alt+→', 'Storyboard: dời cảnh đang chọn lên trước / ra sau một chỗ (mã cảnh đánh số lại)'],
-      ['Alt+↑ / Alt+↓', 'Storyboard: dời cảnh đang chọn lên / xuống một hàng'],
-      ['Shift+Click / Ctrl+Click', 'Chọn một dải / chọn thêm từng cảnh'],
-      ['Space', 'Phát liền: phát / tạm dừng'],
-      ['← / →', 'Phát liền: cảnh trước / sau'],
-    ],
-  },
-]
-
 const GESTURES: Group[] = [
+  {
+    title: 'Sửa cảnh trên node',
+    rows: [
+      ['Enter', 'Gõ prompt ngay trên node của cảnh đang chọn (khi chỉ chọn một cảnh)'],
+      ['Esc', 'Đang gõ trên node: thôi gõ, cảnh vẫn được chọn'],
+      [`${platformText.mod}+Enter`, 'Chạy khi đang gõ trên node: chỉ cảnh đó'],
+    ],
+  },
   {
     title: 'Di chuyển trên canvas',
     rows: [
       ['Kéo nền', 'Di chuyển khung nhìn (chế độ Tay) · Shift+kéo để chọn vùng'],
       ['Chế độ Chọn', 'Kéo nền để chọn vùng · Space+kéo hoặc chuột giữa để di chuyển'],
-      ['Lăn chuột', 'Thu phóng (cả Ctrl+lăn và chụm hai ngón)'],
+      ['Lăn chuột', `Di chuyển lên xuống (Shift+lăn: sang ngang) · ${platformText.mod}+lăn hoặc chụm hai ngón: thu phóng. Muốn lăn để thu phóng như bản 0.5: Cài đặt › Con lăn chuột`],
       ['Nhấp đúp nền', 'Tạo cảnh mới tại đó'],
     ],
   },
   {
-    title: 'Sắp xếp cảnh',
+    title: 'Thứ tự cảnh',
     rows: [
+      ['▲ / ▼ cạnh mã cảnh', 'Ở bảng bên phải: dời cảnh đang chọn lên trước / ra sau một chỗ'],
       [
-        'Kéo thẻ Storyboard',
-        `Thả vào chỗ mới để đổi thứ tự cảnh: các thẻ khác dạt ra nhường chỗ, gần mép trên / dưới thì tự cuộn. Mã cảnh S01, S02… đánh số lại theo thứ tự mới; Phát liền và file .zip đi theo thứ tự này. Esc để huỷ khi đang kéo, ${IS_MAC ? '⌘' : 'Ctrl'}+Z để hoàn tác. Màn hình cảm ứng: giữ thẻ một chút rồi kéo.`,
+        'Bấm vào mã cảnh (S05)',
+        `Gõ vị trí mới để dời một lần tới đó. Các cảnh khác đánh số lại; Phát liền và file .zip đi theo thứ tự mới, thẻ trên canvas giữ chỗ cũ (bấm Sắp xếp để xếp lại). ${platformText.mod}+Z để hoàn tác.`,
       ],
-      ['Tay cầm ⋮⋮ trong Bảng cảnh', 'Kéo để đổi thứ tự cảnh ngay trong bảng.'],
     ],
   },
   {
@@ -93,69 +54,67 @@ const GESTURES: Group[] = [
         'Kéo từ chấm teal của nhân vật, thả ở bất kỳ đâu trên thẻ cảnh (không cần trúng chấm): thêm ảnh tham chiếu @image_N. Kéo từ một nhân vật trong nhóm đang chọn → nối cả nhóm; thả vào cảnh đang được chọn cùng cảnh khác → nối vào mọi cảnh đang chọn.',
       ],
       [
-        'Chấm tím của video → cảnh',
-        'Kéo từ video (take) đã tạo xong, thả ở bất kỳ đâu trên thẻ cảnh khác: dùng làm video tham chiếu @video_N. Cùng quy tắc nhóm như trên; video chưa xong hoặc của chính cảnh đó không nối được.',
+        'Chấm tím của video → Thư mục',
+        'Kéo từ video (take) vào một Thư mục để lưu file. Video không dùng làm tham chiếu cho cảnh được nữa (thả lên cảnh: không nối gì).',
       ],
       [
         'Thả ra chỗ trống',
-        'Từ nhân vật: “Tạo cảnh mới có @Tag” hoặc “Nối vào N cảnh đang chọn”. Từ video: “Tạo cảnh tiếp nối từ video này” (cảnh mới bên dưới, video thành @video_1) hoặc “Dùng làm @video cho N cảnh đang chọn”.',
+        'Từ nhân vật: “Tạo cảnh mới có @Tag” hoặc “Nối vào N cảnh đang chọn”. Từ video: “Tạo cảnh tiếp theo từ video này” (cảnh mới cạnh video, cùng ảnh tham chiếu và cấu hình của video đó, prompt để trống).',
       ],
-      ['Thư viện → cảnh', 'Kéo thẻ nhân vật hoặc video (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas hoặc dòng trong Bảng cảnh.'],
+      ['Thư viện → cảnh', 'Kéo thẻ nhân vật (một hay nhiều thẻ đã chọn) thả vào cảnh trên canvas.'],
       ['Thư viện → nền', 'Đặt nhân vật lên canvas tại điểm thả. Thả file ảnh → tạo nhân vật mới.'],
-      ['Đầu dây → cảnh khác', 'Kéo đầu dây sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây ra chỗ trống: cắt dây.'],
+      ['Đầu dây phía cảnh → cảnh khác', 'Kéo đầu dây phía cảnh sang cảnh khác: chuyển tham chiếu sang cảnh đó. Thả đầu dây đó ra chỗ trống: cắt dây.'],
+      ['Đầu dây phía ảnh → ảnh khác', 'Kéo đầu dây phía ảnh sang một nhân vật khác: thay ảnh tham chiếu tại chỗ. Thả đầu dây đó ra chỗ trống: giữ nguyên dây.'],
       [
         'Bấm dây',
-        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${IS_MAC ? '⌘' : 'Ctrl'}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image/@video trong prompt tự đánh lại (hoàn tác được).`,
+        `Bấm vào dây (con trỏ hình kéo) là cắt ngay; ${platformText.mod}/Shift + bấm để chọn dây rồi ${IS_MAC ? 'Delete / ⌫' : 'Delete'}. Tắt “Bấm vào dây để bỏ nối” trong Cài đặt thì bấm chỉ chọn dây (cắt bằng Delete hoặc nút × giữa dây). Số @image trong prompt tự đánh lại (hoàn tác được).`,
       ],
-      ['Gõ @', 'Trong prompt: chọn ảnh/video để chèn @image_N / @video_N (ảnh chưa nối sẽ được nối luôn).'],
+      ['Gõ @', 'Trong prompt: chọn ảnh để chèn @image_N (ảnh chưa nối sẽ được nối luôn).'],
       ['ĐẦU / CUỐI', 'MiniMax-H3 chế độ Khung đầu → cuối: thả nhân vật vào chấm ĐẦU hoặc CUỐI.'],
     ],
   },
 ]
 
-function Keys({ keys }: { keys: string }) {
-  const alts = keys.split(' / ')
-  return (
-    <span className="dg-keys">
-      {alts.map((alt, i) => (
-        <Fragment key={i}>
-          {i > 0 && <span className="dg-keys-or">/</span>}
-          {alt.split('+').map((k, j) => (
-            <Fragment key={j}>
-              {j > 0 && <span className="dg-keys-plus">+</span>}
-              <span className="kbd">{keyName(k)}</span>
-            </Fragment>
-          ))}
-        </Fragment>
-      ))}
-    </span>
-  )
+/** The Premiere chord of a command on this platform (a Mac default replaces it when the Mac table differs). */
+const premiereChord = (a: KeyAction): string => (IS_MAC && a.macDefaults ? defaultsFor(a, true)[0] : a.premiere?.chord) ?? ''
+
+/** First line (plan Premiere §3.9): where SanoVids differs from Premiere, with the keys in use. */
+export function premiereNote(labels: Readonly<Record<ActionId, string>>, mac = IS_MAC): string {
+  const diffs = [
+    `Enter mở khung sửa cảnh${labels['scene.run'] ? `, chạy cảnh là ${labels['scene.run']}` : ''}`,
+    ...(mac ? [] : [`Backspace không xoá trên Windows (dành cho bộ gõ tiếng Việt)${labels['selection.delete'] ? `, dùng ${labels['selection.delete']}` : ''}`]),
+    ...(labels['folder.new'] ? [`${labels['folder.new']} mở hộp chọn thư mục`] : []),
+  ]
+  return `Phím mặc định giống Adobe Premiere Pro. Khác Premiere: ${diffs.join(' · ')}.`
 }
 
 export function ShortcutsDialog() {
+  const resolved = useKeymap((s) => s.resolved)
   const closeDialog = useUI((s) => s.closeDialog)
   return (
     <Modal title="Phím tắt & thao tác" onClose={closeDialog} size="xwide">
       <div className="dg-shortcuts">
         <div className="dg-sc-col">
-          {KEY_GROUPS.map((g) => (
-            <section key={g.title} className="dg-sc-group">
-              <h4>{g.title}</h4>
-              <div className="dg-sc-list">
-                {g.rows.map(([keys, label]) => (
-                  <div key={keys} className="dg-sc-row">
-                    <span className="dg-sc-label">{label}</span>
-                    <Keys keys={keys} />
-                  </div>
-                ))}
-              </div>
+          <p className="dg-note">{premiereNote(resolved.labels)} Dưới đây là bộ phím đang dùng trên máy này.</p>
+          <button className="btn" onClick={() => useUI.getState().openDialog({ kind: 'settings', section: 'keys' })}>Đổi phím tắt…</button>
+          {(['keys', 'keysScene', 'keysTake', 'keysCanvas'] as const).map((group) => (
+            <section key={group} className="dg-sc-group">
+              <h4>{GROUP_TITLES[group]}</h4>
+              <div className="dg-sc-list">{KEY_ACTIONS.filter((a) => a.group === group).map((a) => (
+                <div key={a.id} className="dg-sc-row">
+                  <span className="dg-sc-label" title={a.help}>{a.label}{a.premiere && resolved.byAction[a.id].includes(premiereChord(a)) && <> <span className="badge" title={`Giống Premiere: ${a.premiere.name}`}>Premiere</span></>}</span>
+                  <span>{resolved.byAction[a.id].map((c) => <span className="kbd" key={c}>{chordLabel(c, IS_MAC)}</span>)}{!resolved.byAction[a.id].length && UNBOUND}</span>
+                </div>
+              ))}</div>
             </section>
           ))}
-          <p className="dg-note">
-            {IS_MAC
-              ? 'Trên Mac: ⌘ thay cho Ctrl; ⌫ (hoặc fn+⌫) để xoá — nếu ngay sau ⌫ có phím khác (bộ gõ tiếng Việt vừa bỏ dấu), không xoá gì.'
-              : 'Chỉ phím Delete xoá: Backspace không xoá trên Windows vì bộ gõ tiếng Việt (Unikey, EVKey, OpenKey…) gửi Backspace khi bỏ dấu, kể cả khi không gõ trong ô nhập. Trên Mac dùng ⌫.'}
-          </p>
+          <section className="dg-sc-group"><h4>{FIXED_TITLE}</h4>{FIXED_KEYS.filter((r) => !r.macOnly || IS_MAC).map((r, i) => (
+            <div className="dg-sc-row" key={i}><span className="dg-sc-label">{r.label}</span><span>{r.keys.map((c) => chordLabel(c, IS_MAC)).join(' / ')}</span></div>
+          ))}</section>
+          <section className="dg-sc-group"><h4>Thư viện</h4>
+            <p>Sau khi bấm vào Thư viện: {resolved.allLabels['selection.delete'] || UNBOUND}{IS_MAC ? ' / ⌫' : ''} xoá mục thư viện; {resolved.allLabels['selection.selectAll'] || UNBOUND} chọn mọi thẻ đang thấy. Không tác động lên cảnh trên canvas.</p>
+          </section>
+          <p className="dg-note">{platformText.deleteHint}</p>
         </div>
         <div className="dg-sc-col">
           {GESTURES.map((g) => (
@@ -171,7 +130,7 @@ export function ShortcutsDialog() {
               </div>
             </section>
           ))}
-          <p className="dg-note">Phím tắt không hoạt động khi đang gõ trong ô nhập, trừ {IS_MAC ? '⌘' : 'Ctrl'}+Enter, {IS_MAC ? '⌘' : 'Ctrl'}+S và Esc.</p>
+          <p className="dg-note">Khi đang gõ, chỉ dùng được Lưu ({resolved.allLabels['project.save'] || UNBOUND}), Chạy ({resolved.allLabels['scene.run'] || UNBOUND}) và Esc.</p>
         </div>
       </div>
     </Modal>

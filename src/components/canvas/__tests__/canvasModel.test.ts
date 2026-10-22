@@ -1,25 +1,141 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Scene, Take } from '../../../core/types'
 import { ASSETS_MIME, TAKES_MIME } from '../../../lib/dnd'
-import { defaultTakePosition, LAYOUT } from '../../../store/project'
+import { defaultTakePosition, useProject } from '../../../store/project'
 import { useRuns } from '../../../store/runs'
+import { useUI } from '../../../store/ui'
 import {
   chooseTake,
+  bigCanvasState,
+  boxesIntersect,
+  countScenes,
+  countTakes,
+  measuredOf,
+  PREVIEW_DELAY_MS,
+  sceneMapOf,
+  useCanvasLocal,
+  wireViewport,
+  wireNearViewport,
   hasAssetDrag,
   hasTakeDrag,
   inlineEditKeyBubbles,
+  inlineKeyBubbles,
   isAutoSlot,
   isEmptyCanvasTarget,
   layoutTakes,
-  orphanTakePosition,
   readAssetIds,
   readTakeIds,
   takeIndexOf,
   takeLayoutSig,
-  takesUsableFor,
   takeSummary,
-  videoUsageOf,
 } from '../canvasModel'
+
+describe('large canvas defaults', () => {
+  it('enters at 800, exits below 700, and obeys the setting', () => {
+    expect(bigCanvasState(799, false)).toBe(false)
+    expect(bigCanvasState(800, false)).toBe(true)
+    expect(bigCanvasState(799, true)).toBe(true)
+    expect(bigCanvasState(700, true)).toBe(true)
+    expect(bigCanvasState(699, true)).toBe(false)
+    expect(bigCanvasState(2000, true, 'off')).toBe(false)
+    expect(PREVIEW_DELAY_MS).toBe(200)
+  })
+
+  it('keeps at least 50% overscan across quarter-viewport pan steps, including negative coordinates', () => {
+    const first = wireViewport([0, 0, 1], 1000, 800)!
+    expect(wireViewport([-249, -199, 1], 1000, 800)).toEqual(first)
+    expect(wireViewport([-250, 0, 1], 1000, 800)).not.toEqual(first)
+    expect(wireViewport([0, 0, 1], 0, 800)).toBeNull()
+    for (const zoom of [0.15, 0.4, 1, 2]) for (const x of [-999, -249, 0, 1, 900]) {
+      const area = wireViewport([x, x, zoom], 1000, 800)!
+      expect(area.x).toBeLessThanOrEqual(-x / zoom - 500 / zoom)
+      expect(area.x + area.w).toBeGreaterThanOrEqual(-x / zoom + 1500 / zoom)
+      expect(area.y).toBeLessThanOrEqual(-x / zoom - 400 / zoom)
+      expect(area.y + area.h).toBeGreaterThanOrEqual(-x / zoom + 1200 / zoom)
+    }
+    expect(boxesIntersect(first, { x: -510, y: 0, w: 20, h: 20 })).toBe(true)
+    expect(boxesIntersect(first, { x: -1000, y: 0, w: 20, h: 20 })).toBe(false)
+    const near = new Set(['s1'])
+    expect(wireNearViewport('s1', 'far', near, false)).toBe(true)
+    expect(wireNearViewport('far', 's1', near, false)).toBe(true)
+    expect(wireNearViewport('farLeft', 'farRight', near, false)).toBe(false)
+    expect(wireNearViewport('farLeft', 'farRight', near, true)).toBe(true)
+    expect(wireNearViewport('farLeft', 'farRight', null, false)).toBe(true)
+  })
+
+  it('M reveals an auto-hidden minimap without persisting over the preference', () => {
+    const initial = useUI.getState()
+    const setItem = vi.fn()
+    vi.stubGlobal('localStorage', { setItem })
+    try {
+      useUI.setState({ showMinimap: true, minimapAutoHiddenFor: 'large', minimapShownFor: [] })
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().minimapShownFor).toEqual(['large'])
+      expect(useUI.getState().showMinimap).toBe(true)
+      expect(setItem).not.toHaveBeenCalled()
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().showMinimap).toBe(false)
+      expect(setItem).toHaveBeenCalledWith('bdp:pref:minimap', 'false')
+      useUI.getState().toggleMinimap()
+      expect(useUI.getState().minimapShownFor).toEqual(['large'])
+    } finally { useUI.setState(initial); vi.unstubAllGlobals() }
+  })
+})
+
+describe('canvas-local updates', () => {
+  it('batches measurements per frame, isolates drag/hover from UI, clears measurements on project switch', () => {
+    const project = useProject.getState().project
+    const frames = new Map<number, FrameRequestCallback>()
+    let seq = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++seq, cb); return seq })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
+    const uiChanged = vi.fn()
+    const off = useUI.subscribe(uiChanged)
+    try {
+      useCanvasLocal.getState().resetProject('p1')
+      const local = useCanvasLocal.getState()
+      local.setMeasured({ s1: { width: 280, height: 200 } })
+      local.setMeasured({ s2: { width: 280, height: 300 } })
+      expect(measuredOf('s2')).toEqual({ width: 280, height: 300 })
+      expect(frames.size).toBe(1)
+      expect(useCanvasLocal.getState().measuredVersion).toBe(0)
+      const frame = [...frames.values()][0]; frames.clear(); frame(0)
+      expect(useCanvasLocal.getState().measuredVersion).toBe(1)
+      local.setMeasured({ s1: { width: 280, height: 200 } })
+      expect(frames.size).toBe(0)
+      local.setDragPos({ s1: { x: 10, y: 20 } })
+      local.setHovered('s1')
+      expect(uiChanged).not.toHaveBeenCalled()
+      local.setMeasured({ s1: { width: 300, height: 200 } })
+      useProject.setState({ project: { ...project, id: 'p2' } })
+      expect(frames.size).toBe(0)
+      expect(measuredOf('s1')).toBeUndefined()
+      expect(useCanvasLocal.getState()).toMatchObject({ dragPos: {}, hoveredId: null, measuredVersion: 0 })
+    } finally { off(); useProject.setState({ project }); vi.unstubAllGlobals() }
+  })
+})
+
+describe('selection count caching', () => {
+  it('scans an unchanged selection/map only once and invalidates when membership changes', () => {
+    const project = useProject.getState().project, takes = useRuns.getState().takes
+    try {
+      const scenes = [scene('s1'), scene('s2')]
+      useProject.setState({ project: { ...project, scenes } })
+      useRuns.setState({ takes: [take('t1', 's1', 1)] })
+      const ids = ['s1', 's2', 't1']
+      const has = vi.spyOn(sceneMapOf(scenes), 'has')
+      expect(countScenes(ids)).toBe(2)
+      expect(countScenes(ids)).toBe(2)
+      expect(has).toHaveBeenCalledTimes(3)
+      expect(countTakes(ids)).toBe(1)
+      useProject.setState({ project: { ...project, scenes: [scenes[0]] } })
+      useRuns.setState({ takes: [] })
+      expect(countScenes(ids)).toBe(1)
+      expect(countTakes(ids)).toBe(0)
+      has.mockRestore()
+    } finally { useProject.setState({ project }); useRuns.setState({ takes }) }
+  })
+})
 
 const scene = (id: string, over: Partial<Scene> = {}): Scene => ({
   id,
@@ -101,63 +217,48 @@ describe('layoutTakes', () => {
   const scenes = [scene('s1'), scene('s2', { videoRefs: ['a1'] })]
   const takes = [take('a1', 's1', 1), take('a2', 's1', 2), take('a3', 's1', 3, { status: 'failed' }), take('b1', 's2', 1), take('orphan', 'gone', 1)]
 
-  it('all: every take of an existing scene, slot = rank by number', () => {
+  it('all: every take of an existing scene, in row order (scene order, then take number)', () => {
     const l = layoutTakes(takes, scenes, 'all')
-    expect(l.items.map((i) => [i.id, i.index])).toEqual([
-      ['a1', 0],
-      ['a2', 1],
-      ['a3', 2],
-      ['b1', 0],
+    expect(l.items.map((i) => [i.id, i.sceneId])).toEqual([
+      ['a1', 's1'],
+      ['a2', 's1'],
+      ['a3', 's1'],
+      ['b1', 's2'],
     ])
+    // Row order follows the take number, not the order the takes are stored in (takeSlots relies on it).
+    const shuffled = [takes[2], takes[3], takes[0], takes[1]]
+    expect(layoutTakes(shuffled, scenes, 'all').items.map((i) => i.id)).toEqual(['a1', 'a2', 'a3', 'b1'])
     expect(l.byId.has('orphan')).toBe(false)
     expect(l.items.every((i) => i.hidden === 0)).toBe(true)
   })
 
-  it('chosen: the chosen take + takes used as @video, with the hidden count on the chosen one', () => {
+  it('chosen: only the chosen take, with the hidden count on it (an old @video link keeps nothing: reference videos were retired)', () => {
     const l = layoutTakes(takes, scenes, 'chosen')
-    // s1: chosen = a2 (latest completed); a1 stays because s2 uses it as @video.
-    expect(l.items.map((i) => [i.id, i.index, i.hidden])).toEqual([
-      ['a1', 0, 0],
-      ['a2', 1, 1],
-      ['b1', 0, 0],
+    // s1: chosen = a2 (latest completed); a1 and a3 are hidden even though s2 once used a1 as @video.
+    expect(l.items.map((i) => [i.id, i.hidden])).toEqual([
+      ['a2', 2],
+      ['b1', 0],
     ])
   })
 
   it('keeps explicit positions', () => {
     const l = layoutTakes([take('x', 's1', 1, { position: { x: 5, y: 6 } })], scenes, 'all')
     expect(l.items[0].explicit).toEqual({ x: 5, y: 6 })
-    expect(l.items[0]).toMatchObject({ orphan: false, anchorId: 's1' })
+    expect(l.items[0]).toMatchObject({ sceneId: 's1' })
   })
 
-  it('keeps takes of a deleted scene while a scene uses them as @video (anchored at the first user by order)', () => {
-    // Array order is not scene order: s3 (order 3) comes first but s2 (order 2) is the anchor.
-    const withOrphans = [
-      scene('s3', { order: 3, videoRefs: ['o1'] }),
+  it('takes of a deleted scene are never on the canvas, whatever old @video links name them (they stay in the queue)', () => {
+    const withOldLinks = [
+      scene('s3', { order: 3, videoRefs: ['o1'], legacyVideoRefs: ['o1'] }),
       scene('s1', { order: 1 }),
-      scene('s2', { order: 2, videoRefs: ['o2', 'o1'] }),
+      scene('s2', { order: 2, legacyVideoRefs: ['o2', 'o1'] }),
     ]
     const list = [take('a1', 's1', 1), take('o1', 'gone', 1, { position: { x: 7, y: 8 } }), take('o2', 'gone', 2), take('o3', 'gone', 3)]
     for (const mode of ['all', 'chosen'] as const) {
-      const l = layoutTakes(list, withOrphans, mode)
-      expect(l.items.map((i) => [i.id, i.orphan, i.anchorId, i.index, i.hidden])).toEqual([
-        ['a1', false, 's1', 0, 0],
-        ['o1', true, 's2', 0, 0],
-        ['o2', true, 's2', 1, 0],
-      ])
-      expect(l.byId.get('o1')).toMatchObject({ sceneId: 'gone', explicit: { x: 7, y: 8 } })
-      expect(l.byId.has('o3')).toBe(false) // not used by any scene
+      const l = layoutTakes(list, withOldLinks, mode)
+      expect(l.items.map((i) => [i.id, i.sceneId, i.hidden])).toEqual([['a1', 's1', 0]])
+      for (const id of ['o1', 'o2', 'o3']) expect(l.byId.has(id)).toBe(false)
     }
-  })
-})
-
-describe('orphanTakePosition', () => {
-  it('sits left of the scene that uses it, one slot further left per orphan', () => {
-    const anchor = { x: 420, y: 308 }
-    const first = orphanTakePosition(anchor, 0)
-    const second = orphanTakePosition(anchor, 1)
-    expect(first.y).toBe(anchor.y)
-    expect(first.x + LAYOUT.takeW).toBeLessThan(anchor.x)
-    expect(second.x + LAYOUT.takeW).toBeLessThanOrEqual(first.x)
   })
 })
 
@@ -202,14 +303,35 @@ describe('inlineEditKeyBubbles', () => {
     expect(inlineEditKeyBubbles(key('Escape', { ctrlKey: true }))).toBe(false)
     for (const k of ['a', 'Delete', 'Backspace', 'Enter', 'Escape', 'c', 'n']) expect(inlineEditKeyBubbles(key(k))).toBe(false)
   })
+  it('a lone Ctrl / Cmd no longer leaks out of the field (React Flow took it as its multi-select key)', () => {
+    expect(inlineEditKeyBubbles(key('Control', { ctrlKey: true }))).toBe(false)
+    expect(inlineEditKeyBubbles(key('Meta', { metaKey: true }))).toBe(false)
+    expect(inlineEditKeyBubbles(key('Shift', { ctrlKey: true }))).toBe(false)
+  })
 })
 
-describe('videoUsageOf', () => {
-  it('counts scenes per referenced take', () => {
-    const m = videoUsageOf([scene('a', { videoRefs: ['t1', 't2'] }), scene('b', { videoRefs: ['t1'] })])
-    expect(m.get('t1')).toBe(2)
-    expect(m.get('t2')).toBe(1)
-    expect(m.get('t3')).toBeUndefined()
+describe('inlineKeyBubbles (keymap predicate injected)', () => {
+  type K = { key: string; ctrlKey: boolean; metaKey: boolean; altKey?: boolean }
+  const key = (k: string, mods: Partial<K> = {}): K => ({ key: k, ctrlKey: false, metaKey: false, ...mods })
+  it('only chords of commands that run while typing bubble — whatever they are', () => {
+    // e.g. a user who moved "Lưu" to F2 and "Tạo video" to Alt+Enter
+    const typing = (e: K) => e.key === 'F2' || (e.key === 'Enter' && !!e.altKey)
+    expect(inlineKeyBubbles(key('F2'), typing)).toBe(true)
+    expect(inlineKeyBubbles(key('Enter', { altKey: true }), typing)).toBe(true)
+    expect(inlineKeyBubbles(key('s', { ctrlKey: true }), typing)).toBe(false) // no longer a typing chord
+    expect(inlineKeyBubbles(key('Enter'), typing)).toBe(false)
+  })
+  it('never Escape, never a modifier alone, even when the predicate says yes', () => {
+    const always = () => true
+    expect(inlineKeyBubbles(key('Escape', { ctrlKey: true }), always)).toBe(false)
+    for (const m of ['Control', 'Meta', 'Alt', 'AltGraph', 'Shift', 'CapsLock']) expect(inlineKeyBubbles(key(m, { ctrlKey: true }), always), m).toBe(false)
+    expect(inlineKeyBubbles(key('a'), always)).toBe(true)
+  })
+  it('the predicate gets the event itself', () => {
+    const seen: K[] = []
+    const e = key('Enter', { ctrlKey: true })
+    inlineKeyBubbles(e, (x) => (seen.push(x), false))
+    expect(seen).toEqual([e])
   })
 })
 
@@ -233,19 +355,5 @@ describe('drag payloads (shared MIME types)', () => {
 
   it('isEmptyCanvasTarget is false without a DOM element', () => {
     expect(isEmptyCanvasTarget(null)).toBe(false)
-  })
-})
-
-describe('takesUsableFor', () => {
-  const initial = useRuns.getState().takes
-  afterEach(() => useRuns.setState({ takes: initial }))
-
-  it('needs a finished take from another scene', () => {
-    useRuns.setState({ takes: [take('done', 's1', 1), take('busy', 's1', 2, { status: 'processing', progress: 30 })] })
-    expect(takesUsableFor(['done'], 's2')).toBe(true)
-    expect(takesUsableFor(['done'], 's1')).toBe(false) // own scene
-    expect(takesUsableFor(['busy'], 's2')).toBe(false) // not finished
-    expect(takesUsableFor(['busy', 'done'], 's2')).toBe(true)
-    expect(takesUsableFor(['gone'], 's2')).toBe(false)
   })
 })

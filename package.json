@@ -2,7 +2,7 @@
   "name": "sanovids",
   "productName": "SanoVids",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "SanoVids — dựng phim AI theo từng cảnh trên canvas",
   "author": {
     "name": "Nguyễn Giang Minh (Jame Steven)"
@@ -16,14 +16,20 @@
     ]
   },
   "scripts": {
+    "perf:build": "vite build --mode perf",
+    "perf:serve": "node scripts/perf/serve.mjs",
+    "perf:run": "node scripts/perf/run-perf.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run",
+    "stress": "node scripts/stress/run-stress.mjs",
     "preview": "vite preview",
     "icons": "node scripts/make-icons.mjs",
     "desktop": "vite build && electron .",
     "dist:win": "node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --win nsis portable --publish never && node scripts/tidy-release.mjs",
+    "dist:mac": "node scripts/update-notes.mjs && node scripts/third-party-notices.mjs --check && vite build && node scripts/electron-build.mjs --mac dmg zip --arm64 --publish never -c.directories.output=release/mac && node scripts/mac-inspect.mjs",
+    "mac:fetch": "node scripts/fetch-mac-build.mjs",
     "tidy:release": "node scripts/tidy-release.mjs",
     "release:check": "node scripts/publish-release.mjs --dry-run",
     "release:publish": "node scripts/publish-release.mjs"
@@ -72,16 +78,6 @@
       "electron/**/*",
       "package.json"
     ],
-    "extraFiles": [
-      {
-        "from": "LICENSE.txt",
-        "to": "LICENSE.txt"
-      },
-      {
-        "from": "build/license-third-party.txt",
-        "to": "THIRD-PARTY-NOTICES.txt"
-      }
-    ],
     "extraMetadata": {
       "author": {
         "name": "Nguyễn Giang Minh (Jame Steven)"
@@ -122,7 +118,92 @@
         ],
         "rfc3161TimeStampServer": "http://timestamp.digicert.com",
         "publisherName": "Nguyễn Giang Minh (Jame Steven)"
+      },
+      "extraFiles": [
+        {
+          "from": "LICENSE.txt",
+          "to": "LICENSE.txt"
+        },
+        {
+          "from": "build/license-third-party.txt",
+          "to": "THIRD-PARTY-NOTICES.txt"
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": "-",
+      "forceCodeSigning": true,
+      "type": "distribution",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "category": "public.app-category.video",
+      "minimumSystemVersion": "13.0",
+      "darkModeSupport": true,
+      "icon": "build/icon.icns",
+      "artifactName": "SanoVids-Mac-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "LICENSE.txt",
+          "to": "LICENSE.txt"
+        },
+        {
+          "from": "build/license-third-party.txt",
+          "to": "THIRD-PARTY-NOTICES.txt"
+        },
+        {
+          "from": "node_modules/electron/dist/LICENSE",
+          "to": "LICENSE.electron.txt"
+        },
+        {
+          "from": "node_modules/electron/dist/LICENSES.chromium.html",
+          "to": "LICENSES.chromium.html"
+        }
+      ],
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "SanoVids lưu video và prompt vào thư mục bạn đã chọn trong Tài liệu.",
+        "NSDesktopFolderUsageDescription": "SanoVids lưu video và prompt vào thư mục bạn đã chọn trên Màn hình nền.",
+        "NSDownloadsFolderUsageDescription": "SanoVids lưu video và prompt vào thư mục Tải về hoặc thư mục bạn đã chọn trong đó.",
+        "NSRemovableVolumesUsageDescription": "SanoVids lưu video vào thư mục bạn đã chọn trên ổ ngoài.",
+        "NSNetworkVolumesUsageDescription": "SanoVids lưu video vào thư mục bạn đã chọn trên ổ mạng."
       }
+    },
+    "dmg": {
+      "title": "SanoVids ${version}",
+      "background": "build/dmg-background.png",
+      "iconSize": 96,
+      "contents": [
+        {
+          "x": 140,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "sign": false,
+      "writeUpdateInfo": false,
+      "license": null
     },
     "nsis": {
       "oneClick": false,

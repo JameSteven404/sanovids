@@ -34,6 +34,11 @@ export interface DownloadPrefs {
   zipPrompts: boolean
   /** Default file name of a video (core/nameTemplate), e.g. '{scene}_{take} - {title}'. A take's own "Tên file" wins. */
   nameTemplate: string
+  /**
+   * "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" (default on; desktop app only): cutting a take → folder
+   * wire moves the files that wire itself copied there, unchanged, to the Recycle Bin (core/folderTrash, folderActions).
+   */
+  folderUnlinkTrash: boolean
 }
 
 export const DOWNLOAD_PREFS_KEY = 'bdp:pref:downloads'
@@ -44,8 +49,9 @@ export const DEFAULT_DOWNLOAD_PREFS: DownloadPrefs = {
   askWhere: true,
   zipPrompts: true,
   nameTemplate: DEFAULT_NAME_TEMPLATE,
+  folderUnlinkTrash: true,
 }
-const BOOL_KEYS = ['autoDownload', 'withPrompt', 'askWhere', 'zipPrompts'] as const
+const BOOL_KEYS = ['autoDownload', 'withPrompt', 'askWhere', 'zipPrompts', 'folderUnlinkTrash'] as const
 
 /** The valid part of `patch` (wrong types, an invalid name template… are left out). */
 export function validDownloadPatch(patch: unknown): Partial<DownloadPrefs> {
@@ -71,11 +77,35 @@ export function parseDownloadPrefs(raw: string | null | undefined): DownloadPref
   }
 }
 
+/**
+ * "Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác" is ALSO stored under a key of its own: an older SanoVids
+ * sharing this storage (the Portable, a leftover temp copy) rewrites bdp:pref:downloads with only the keys it knows,
+ * which would silently turn a user's "off" back into the default "on". This key wins when it holds a boolean.
+ */
+export const FOLDER_TRASH_PREF_KEY = 'bdp:pref:folder-trash'
+
+/** bdp:pref:folder-trash as stored → the boolean, or undefined (missing / anything else). */
+export function parseFolderTrashPref(raw: string | null | undefined): boolean | undefined {
+  return raw === 'true' ? true : raw === 'false' ? false : undefined
+}
+
 function readPrefs(): DownloadPrefs {
   try {
-    return parseDownloadPrefs(localStorage.getItem(DOWNLOAD_PREFS_KEY))
+    const prefs = parseDownloadPrefs(localStorage.getItem(DOWNLOAD_PREFS_KEY))
+    const trash = parseFolderTrashPref(localStorage.getItem(FOLDER_TRASH_PREF_KEY))
+    return trash === undefined ? prefs : { ...prefs, folderUnlinkTrash: trash }
   } catch {
     return { ...DEFAULT_DOWNLOAD_PREFS }
+  }
+}
+
+/** The stored bdp:pref:downloads object (keys of newer builds included), or {}. */
+function storedDownloadPrefs(): Record<string, unknown> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(DOWNLOAD_PREFS_KEY) ?? 'null')
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
   }
 }
 
@@ -85,9 +115,12 @@ export const useDownloadPrefs = create<DownloadPrefs & { set: (patch: Partial<Do
     const next = validDownloadPatch(patch)
     if (!Object.keys(next).length) return
     setState(next)
-    const { autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate } = getState()
+    const { autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate, folderUnlinkTrash } = getState()
     try {
-      localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify({ autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate }))
+      // Merged into what is stored: keys a newer build wrote there survive this build's changes.
+      const known = { autoDownload, folderName, withPrompt, askWhere, zipPrompts, nameTemplate, folderUnlinkTrash }
+      localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify({ ...storedDownloadPrefs(), ...known }))
+      localStorage.setItem(FOLDER_TRASH_PREF_KEY, String(folderUnlinkTrash))
     } catch {
       /* storage unavailable: the choice lasts for this session */
     }

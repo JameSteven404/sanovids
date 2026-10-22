@@ -6,6 +6,71 @@ Ký hiệu: ✨ thêm mới · 🛠️ thay đổi · 🐞 sửa lỗi · ⚠️
 
 ---
 
+## [0.6.0] — 2026-10-22 — Sửa cảnh ngay trên canvas, canvas mượt hơn, giữ đúng ảnh tham chiếu
+
+✨ **Thẻ cảnh là nơi sửa prompt và cấu hình**
+- Bấm vào prompt trên thẻ để gõ ngay; bấm dòng thông số để đổi model, thời lượng, độ phân giải, tỉ lệ và preset tại chỗ.
+- Enter đưa con trỏ vào prompt của cảnh đang chọn, Esc rời ô và giữ chữ, Ctrl+Enter mở xác nhận tạo video cho cảnh đó. Chữ đang gõ được giữ khi đổi cảnh, lưu hay đóng app.
+- Nút **Tạo video · … credit** nói rõ chi phí; cảnh chưa chạy được hiện lý do ngay trên thẻ. Lựa chọn canvasapp đang tắt hiện mờ kèm lý do.
+
+✨ **Canvas mượt hơn**
+- Con lăn chuột **di chuyển** canvas, Ctrl+con lăn hoặc chụm hai ngón để thu phóng (đổi ở Cài đặt → **Con lăn chuột**). Kéo, thu phóng và di chuyển với nhiều cảnh nhẹ hơn.
+- Chọn một thẻ thì **thanh thao tác nổi** hiện ngay trên thẻ (Chạy, Nhân bản, Xoá, ★, Tải…; "⋯" là menu chuột phải của thẻ đó).
+- Nút **+** trên thanh công cụ mở bảng **Thêm vào canvas** có ô tìm, lọc theo loại: cảnh tiếp theo, cảnh trống, ảnh từ máy, nhập nhiều prompt, Thư mục lưu video.
+- Kéo một thẻ thì hiện **đường gióng** và thẻ tự bám thẳng hàng với các thẻ khác.
+- Thanh trên cùng và thanh công cụ kiểu viên nổi; thanh công cụ gọn, kéo đi đâu cũng được hoặc bám bốn cạnh.
+
+✨ **Cắt ảnh tham chiếu không làm mất chỗ nhắc trong prompt**
+- Cắt ảnh Lumi thì `@image_2` thành chữ đỏ **`@image_?2(Lumi)`**: biết câu đó cần ảnh nào, và app **chặn tạo video** tới khi điền ảnh hoặc chủ động sửa chữ.
+- Dải **Chữ đỏ chờ ảnh**, kéo ảnh vào chỗ chờ trên thẻ, hoặc bấm vào chữ đỏ để **Gắn ảnh đã nối…** / **Đổi thành chữ** / **Xoá chữ đỏ**. App không bao giờ tự gắn theo tên. Có Hoàn tác.
+
+✨ **Xem video trọn hình**
+- Thanh thời gian nằm dưới hình, video dọc/vuông/ngang hiện trọn khung. **Phóng to** mở toàn màn hình, Esc trở về thẻ.
+- Phím chung cho thẻ, cửa sổ xem và Phát liền: Space, J/K/L, ←/→ từng khung hình, Home/End.
+
+✨ **Giữ đăng nhập canvasapp sau khi mở lại**
+- Công tắc **Giữ đăng nhập canvasapp trên máy này** (Cài đặt → Cổng canvasapp.io.vn): mặc định **bật ở Setup**, **tắt ở Portable** nếu bạn chưa tự chọn. Phiên lưu có mã hoá, tối đa 30 ngày; **Đăng xuất** xoá ngay.
+
+🛠️ **Thận trọng hơn khi chưa rõ canvasapp đã nhận lượt tạo video**
+- Mất phản hồi thì SanoVids tìm job cũ trước; thiếu bằng chứng thì không tự gửi lại. **Tạo lại** là take mới, có thể trừ thêm credit.
+
+✨ **Tải video có tiến độ, huỷ và tải tiếp** — take hiện **Đang tải về …%**, mất mạng có thể tải tiếp; huỷ khi video đã xong sẽ hỏi trước.
+
+✨ **Nhập job tạo trên trang canvasapp** — **Hàng đợi → Nhập job** đưa job của dự án về đúng cảnh, không trừ thêm credit, không nhập trùng.
+
+🛠️ **Thư viện: chọn nhiều, xoá nhanh**
+- Ctrl/Shift+bấm, Ctrl+A rồi **Delete**. Ảnh chưa dùng xoá ngay (có Hoàn tác); xoá làm prompt có chữ đỏ hoặc mất khung đầu/cuối thì app hỏi trước.
+
+✨ **Menu chuột phải, phím tắt kiểu Premiere**
+- Menu riêng cho cảnh, video, ảnh, Thư mục, dây, nền canvas và Thư viện; chọn cảnh rồi chuột phải ảnh để ngắt nối nhanh.
+- Phím quen thuộc kiểu Premiere (Ctrl+N, Ctrl+F, Ctrl+I, M…), tự đổi phím ở Cài đặt → Phím tắt, có bộ **Bản 0.5**.
+
+✨ **Sắp xếp nhiều kiểu** — **Theo hàng**, **Lưới**, **Dải ngang** có xem trước. Preset mặc định đổi tên: Nháp → Bản nháp, Final → Bản chốt, H3 nháp → H3 từ ảnh.
+
+✨ **Giao diện mới, ba nền tối** — Cài đặt → Giao diện → **Màu nền: Than / Đen sâu / Xám xanh**.
+
+🛠️ **Tập trung vào Canvas**
+- Ẩn **Bảng cảnh** và **Storyboard**; **Phát liền** ra giữa thanh trên cùng. Đổi thứ tự cảnh bằng ▲/▼ ở mã cảnh hoặc Alt+↑/↓.
+
+🛠️ **Bỏ video tham chiếu**
+- Không còn nối video vào cảnh để làm `@video`. Chữ `@video` cũ được giữ nguyên, tô đỏ và chặn chạy tới khi bạn sửa (có nút xoá nhanh, có Hoàn tác).
+- Cảnh từng nối video mà prompt không nhắc `@video` nay chạy được và **chỉ gửi ảnh**; lần đầu mở dự án cũ, thông báo cho biết số cảnh, bấm **Xem** để kiểm tra.
+- Kéo video đã xong ra chỗ trống → **Tạo cảnh tiếp theo từ video này** (cùng ảnh và cấu hình, prompt trống).
+
+🛠️ **Chế độ Phát triển**
+- Chế độ Phát triển (canvasapp giả lập) nay chỉ dành cho nhà phát triển. Video DEV cũ vẫn xem được; tạo video mới dùng cổng canvasapp.io.vn.
+
+🛠️ **Lưu file và dự án lớn**
+- **Bỏ nối video khỏi Thư mục thì chuyển file vào Thùng rác** (Cài đặt → Tải video) **mặc định bật**: chỉ file do chính dây đó lưu và chưa bị sửa; Hoàn tác ghi lại bản mới.
+- Dự án rất lớn tự tạm ẩn bản đồ thu nhỏ và chỉ vẽ dây gần vùng đang xem.
+
+⚠️ **Lưu ý khi cập nhật**
+- Mở dự án cũ, xem chữ đỏ chờ ảnh và chữ `@video` cũ trước khi xác nhận chi phí.
+- File **Xuất dự án** chỉ có cảnh, prompt và ảnh, **không chứa video**: tải các video cần giữ trước.
+- Bản này chỉ có Windows.
+
+---
+
 ## [0.5.0] — 2026-10-03 — Tự động cập nhật, chữ ký số, icon mới
 
 ✨ **SanoVids tự cập nhật** (bản cài Setup)

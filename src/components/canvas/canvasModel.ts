@@ -2,13 +2,17 @@
 // and a tiny hover store.
 // Everything here is cheap and safe to call from zustand selectors.
 import { create } from 'zustand'
+import { getViewportForBounds, Position, type Node, type NodeHandle } from '@xyflow/react'
+import { assetByTag, extractMentions } from '../../core/compile'
 import { selectedSceneIds } from '../../actions'
 import { FOLDER_H, FOLDER_W } from '../../core/folders'
-import { chooseTake, videoUsageOf } from '../../core/takes'
+import { assetSceneCounts } from '../../core/libraryDelete'
+import { sceneMapOf } from '../../core/sceneIndex'
+import { foldLabel } from '../../core/tokenLabels'
+import { chooseTake } from '../../core/takes'
 import type { Asset, AssetKind, JobStatus, Scene, Size, Take, XY } from '../../core/types'
 import { ASSETS_MIME, readIds, TAKES_MIME } from '../../lib/dnd'
-import { aspectOf, useImageMeta } from '../../lib/imageMeta'
-import { defaultTakePosition, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
+import { defaultTakePosition, drawnSceneSize, LAYOUT, NODE_SIZE, useProject, type Box } from '../../store/project'
 import { useRuns } from '../../store/runs'
 import { useUI, type TakeDisplay } from '../../store/ui'
 
@@ -31,15 +35,8 @@ export function isAutoSlot(auto: XY, pos: XY): boolean {
 }
 
 // ---------------- cached lookups (keyed by array identity) ----------------
-const sceneMaps = new WeakMap<Scene[], Map<string, Scene>>()
-export function sceneMapOf(scenes: Scene[]): Map<string, Scene> {
-  let m = sceneMaps.get(scenes)
-  if (!m) {
-    m = new Map(scenes.map((s) => [s.id, s]))
-    sceneMaps.set(scenes, m)
-  }
-  return m
-}
+/** Scenes by id (core/sceneIndex: one map per scenes array, shared with the inspector and the library). */
+export { sceneMapOf }
 
 const assetMaps = new WeakMap<Asset[], Map<string, Asset>>()
 export function assetMapOf(assets: Asset[]): Map<string, Asset> {
@@ -51,16 +48,132 @@ export function assetMapOf(assets: Asset[]): Map<string, Asset> {
   return m
 }
 
-const usageMaps = new WeakMap<Scene[], Map<string, number>>()
+/** Every Scene field is classified, including individual settings fields (guarded by graphSig.test). */
+export const GRAPH_FIELDS = ['id', 'order', 'position', 'size', 'refs', 'settings.mode', 'firstFrame', 'lastFrame', 'color'] as const
+export const NON_GRAPH_FIELDS = ['title', 'prompt', 'note', 'presetId', 'settings.model', 'settings.duration', 'settings.resolution', 'settings.ratio', 'foreignModel', 'foreignSettings', 'videoRefs', 'legacyVideoRefs'] as const
+
+/** Array identities are weakly cached; only the most recent graph is retained for comparison. */
+function graphCache<T extends object>(fieldsOf: (item: T) => unknown[]) {
+  const items = new WeakMap<T, string>()
+  const arrays = new WeakMap<T[], readonly string[]>()
+  let last: readonly string[] = []
+  return (list: T[]): readonly string[] => {
+    const cached = arrays.get(list)
+    if (cached) return last = cached
+    const next = list.map((item) => {
+      let key = items.get(item)
+      if (key === undefined) {
+        key = JSON.stringify(fieldsOf(item))
+        items.set(item, key)
+      }
+      return key
+    })
+    if (next.length !== last.length || next.some((key, i) => key !== last[i])) last = next
+    arrays.set(list, last)
+    return last
+  }
+}
+
+export const sceneGraphOf = graphCache<Scene>((s) => GRAPH_FIELDS.map((key) => key === 'settings.mode' ? s.settings.mode : s[key]))
+export const assetGraphOf = graphCache<Asset>((a) => [a.id, a.position, a.size, a.color, a.kind])
+
+const sceneAssetInputs = new WeakMap<Scene, WeakMap<Asset[], Asset[]>>()
+const namesakeIndex = new WeakMap<Asset[], Map<string, Asset[]>>()
+/** The assets of an assets array by their folded name (core/tokenLabels foldLabel), built once per array. */
+function namesakesOf(assets: Asset[]): Map<string, Asset[]> {
+  let index = namesakeIndex.get(assets)
+  if (index) return index
+  index = new Map()
+  for (const a of assets) {
+    const key = foldLabel(a.name)
+    if (!key) continue
+    const list = index.get(key)
+    if (list) list.push(a)
+    else index.set(key, [a])
+  }
+  namesakeIndex.set(assets, index)
+  return index
+}
+
+/**
+ * Compile/excerpt inputs include frames and legacy tags, even when those assets are not linked as refs — and every
+ * character NAMED like a linked one: whether a label glued to a token fits its picture depends on whether another
+ * character of the project shares that name (core/tokenLabels nameShared), so the node's compile, red marks and Run
+ * reason match the engine's (store/runs check() compiles with all the project's assets).
+ */
+export function sceneAssetsOf(assets: Asset[], scene: Scene): Asset[] {
+  let byAssets = sceneAssetInputs.get(scene)
+  if (!byAssets) sceneAssetInputs.set(scene, byAssets = new WeakMap())
+  const cached = byAssets.get(assets)
+  if (cached) return cached
+  const map = assetMapOf(assets)
+  const ids = new Set([...scene.refs, scene.firstFrame, scene.lastFrame])
+  for (const tag of extractMentions(scene.prompt)) ids.add(assetByTag(assets, tag)?.id ?? null)
+  const names = namesakesOf(assets)
+  for (const id of scene.refs) {
+    const key = foldLabel(map.get(id)?.name ?? '')
+    const same = key ? names.get(key) : undefined
+    if (same && same.length > 1) for (const a of same) ids.add(a.id)
+  }
+  const inputs = [...ids].flatMap((id) => id && map.has(id) ? [map.get(id)!] : [])
+  byAssets.set(assets, inputs)
+  return inputs
+}
+
+/** Hysteresis prevents minimap/wires flickering around the large-project threshold. */
+export function bigCanvasState(count: number, wasBig: boolean, pref: 'auto' | 'off' = 'auto'): boolean {
+  return pref === 'auto' && count >= (wasBig ? 700 : 800)
+}
+
+/** Quantize pan to a quarter viewport; the extra quarter covers movement before the next update. */
+export function wireViewport(transform: readonly number[], width: number, height: number): Box | null {
+  const [x, y, zoom] = transform
+  if (!(width > 0 && height > 0 && zoom > 0)) return null
+  const w = width / zoom, h = height / zoom
+  return { x: Math.floor(-x / zoom / (w / 4)) * (w / 4) - w / 2, y: Math.floor(-y / zoom / (h / 4)) * (h / 4) - h / 2, w: w * 2.25, h: h * 2.25 }
+}
+
+export function boxesIntersect(a: Box, b: Box): boolean {
+  return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y
+}
+
+/** Endpoint culling deliberately excludes long wires crossing the viewport with both cards far away. */
+export function wireNearViewport(source: string, target: string, near: ReadonlySet<string> | null, selected: boolean): boolean {
+  return !near || selected || near.has(source) || near.has(target)
+}
+
+/** Session-only viewport: leaving Canvas unmounts React Flow today. */
+export const canvasViewports = new Map<string, { x: number; y: number; zoom: number }>()
+export const PREVIEW_DELAY_MS = 200
+
+// Counts derived from the scene GRAPH (refs, frames…), cached per graph signature (sceneGraphOf: the same array while
+// no graph field changed): typing in a prompt replaces the scenes array on every commit, but never recounts these.
+const usageMaps = new WeakMap<readonly string[], Map<string, number>>()
 /** asset id -> number of scenes whose refs include it. */
 export function usageOf(scenes: Scene[]): Map<string, number> {
-  let m = usageMaps.get(scenes)
+  const sig = sceneGraphOf(scenes)
+  let m = usageMaps.get(sig)
   if (!m) {
     m = new Map()
     for (const s of scenes) for (const r of s.refs) m.set(r, (m.get(r) ?? 0) + 1)
-    usageMaps.set(scenes, m)
+    usageMaps.set(sig, m)
   }
   return m
+}
+
+const sceneCounts = new WeakMap<readonly string[], Record<string, number>>()
+/**
+ * core/libraryDelete assetSceneCounts (scenes using each asset as reference image or first / last frame: the library's
+ * "dùng ở N cảnh" badge) of a scenes array, recomputed only when the scene graph changed (not on every keystroke).
+ */
+export function sceneCountsOf(scenes: Scene[]): Record<string, number> {
+  const sig = sceneGraphOf(scenes)
+  let c = sceneCounts.get(sig)
+  if (!c) {
+    c = assetSceneCounts(scenes)
+    sceneCounts.set(sig, c)
+  }
+  return c
 }
 
 // ---------------- takes (video nodes) ----------------
@@ -94,7 +207,7 @@ export function takeIndexOf(takes: Take[]): TakeIndex {
   return idx
 }
 
-export { chooseTake, videoUsageOf }
+export { chooseTake }
 
 export interface TakeSummary {
   count: number
@@ -155,19 +268,13 @@ export function takeLayoutSig(takes: Take[]): string {
 
 export interface TakeLayoutItem {
   id: string
-  /** The take's own scene (for an orphan: the deleted scene's id). */
+  /** The take's own scene. `items` lists a scene's shown takes in row order (by number); see takeSlots. */
   sceneId: string
-  /** Slot among the scene's SHOWN takes (auto placement to the right of the scene); orphans: slot among the orphans of `anchorId`. */
-  index: number
   /** Position the user dragged the node to; null = auto. */
   explicit: XY | null
   /** Takes of the same scene hidden by the "chosen only" display (badge "+N"; only on the chosen take). */
   hidden: number
   status: JobStatus
-  /** Its scene was deleted but a scene still uses it as @video: no 'out' wire and no auto slot. */
-  orphan: boolean
-  /** Scene the node is placed next to: its own scene, or (orphan) the first scene that uses it. */
-  anchorId: string
   /** Size set by the user (resize handle); null = default (LAYOUT.takeW × auto). */
   size: Size | null
 }
@@ -178,14 +285,10 @@ export interface TakeLayout {
 
 /**
  * Which take nodes are shown and where. `all`: every take of every existing scene. `chosen`: the chosen take of
- * each scene, plus takes that some scene uses as @video (so their wires stay visible). In both modes a take whose
- * scene was deleted stays (as an orphan) while some scene uses it as @video: its wire, and the node to select or
- * delete it, must not vanish while the video is still sent.
+ * each existing scene. Takes of deleted scenes stay in the queue, never on the canvas.
  */
 export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): TakeLayout {
   const idx = takeIndexOf(takes)
-  const usage = videoUsageOf(scenes)
-  const used = mode === 'chosen' ? usage : null
   const items: TakeLayoutItem[] = []
   const byId = new Map<string, TakeLayoutItem>()
   const add = (item: TakeLayoutItem) => {
@@ -196,52 +299,24 @@ export function layoutTakes(takes: Take[], scenes: Scene[], mode: TakeDisplay): 
     const list = idx.byScene.get(s.id)
     if (!list) continue
     const chosen = idx.chosen.get(s.id)
-    const shown = used ? list.filter((t) => t === chosen || used.has(t.id)) : list
+    const shown = mode === 'chosen' ? list.filter((t) => t === chosen) : list
     const hidden = list.length - shown.length
-    shown.forEach((t, index) =>
+    for (const t of shown)
       add({
         id: t.id,
         sceneId: s.id,
-        index,
         explicit: t.position,
         hidden: t === chosen ? hidden : 0,
         status: t.status,
-        orphan: false,
-        anchorId: s.id,
         size: t.size ?? null,
-      }),
-    )
-  }
-  let byOrder: Scene[] | null = null
-  const perAnchor = new Map<string, number>()
-  for (const takeId of usage.keys()) {
-    const t = idx.byId.get(takeId)
-    if (!t || sceneMapOf(scenes).has(t.sceneId)) continue
-    byOrder ??= [...scenes].sort((a, b) => a.order - b.order)
-    const anchor = byOrder.find((s) => s.videoRefs.includes(takeId))!
-    const index = perAnchor.get(anchor.id) ?? 0
-    perAnchor.set(anchor.id, index + 1)
-    add({ id: t.id, sceneId: t.sceneId, index, explicit: t.position, hidden: 0, status: t.status, orphan: true, anchorId: anchor.id, size: t.size ?? null })
+      })
   }
   return { items, byId }
 }
 
 /**
- * Fallback spot of the `index`-th orphan take of a scene (when it has no dragged or previously shown position): left
- * of the scene that uses it, so its @video wire into the scene's left handle stays short.
- */
-export function orphanTakePosition(
-  anchorPos: XY,
-  index: number,
-  slotX: number = index * (LAYOUT.takeW + LAYOUT.takeGapX),
-  width: number = LAYOUT.takeW,
-): XY {
-  return { x: anchorPos.x - LAYOUT.takeOffsetX - slotX - width, y: anchorPos.y }
-}
-
-/**
  * Horizontal offset of each take node inside its row: the summed widths (+ gaps) of the auto-placed takes before it
- * next to the same scene (orphans: left of their anchor, counted separately). Takes may have different widths
+ * next to the same scene. Takes may have different widths
  * (resized), so slots are accumulated instead of `index × (takeW + gap)`.
  * A take the user dragged away (`explicit`) leaves the row and reserves no room, so the next new take lands right
  * next to the scene instead of after every video ever made (10 takes, 9 dragged away: the 10th used to land ~2,200px
@@ -250,14 +325,14 @@ export function orphanTakePosition(
  * it there makes it auto-placed again, see isAutoSlot).
  */
 export function takeSlots(
-  items: readonly (Pick<TakeLayoutItem, 'id' | 'anchorId' | 'orphan'> & { explicit?: XY | null })[],
+  items: readonly (Pick<TakeLayoutItem, 'id' | 'sceneId'> & { explicit?: XY | null })[],
   widthOf: (id: string) => number,
   keeps?: (id: string, slotX: number) => boolean,
 ): Map<string, number> {
   const acc = new Map<string, number>()
   const out = new Map<string, number>()
   for (const item of items) {
-    const key = (item.orphan ? 'o:' : 's:') + item.anchorId
+    const key = item.sceneId
     const x = acc.get(key) ?? 0
     out.set(item.id, x)
     if (!item.explicit || keeps?.(item.id, x)) acc.set(key, x + widthOf(item.id) + LAYOUT.takeGapX)
@@ -274,20 +349,20 @@ export function autoTakePosition(scenePos: XY, sceneW: number, slotX: number): X
  * Row heights for project.autoLayout ("Sắp xếp"): per scene, its tallest node — the card (stored size, else the
  * height React Flow measured) and the take nodes shown in its row (same). Every take goes back to its auto slot next
  * to its scene, so a take resized to 420px makes its row 420px tall instead of covering the next scene. Takes hidden
- * by "Chỉ take chọn" and orphans (placed next to a scene that uses them, outside any row) do not count; unknown
+ * by "Chỉ take chọn" do not count; unknown
  * heights are left out (autoLayout keeps its default row height).
  */
 export function layoutRowHeights(
   scenes: readonly Pick<Scene, 'id' | 'size'>[],
-  layout: { items: readonly Pick<TakeLayoutItem, 'id' | 'sceneId' | 'orphan' | 'size'>[] },
+  layout: { items: readonly Pick<TakeLayoutItem, 'id' | 'sceneId' | 'size'>[] },
   measuredH: (id: string) => number | undefined,
 ): Record<string, number> {
   const out: Record<string, number> = {}
   const bump = (sceneId: string, h: number | undefined) => {
     if (h && h > (out[sceneId] ?? 0)) out[sceneId] = Math.ceil(h)
   }
-  for (const s of scenes) bump(s.id, s.size?.h ?? measuredH(s.id))
-  for (const item of layout.items) if (!item.orphan) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
+  for (const s of scenes) bump(s.id, drawnSceneSize(s.size)?.h ?? measuredH(s.id))
+  for (const item of layout.items) bump(item.sceneId, item.size?.h ?? measuredH(item.id))
   return out
 }
 
@@ -326,33 +401,27 @@ export interface ResizeBox {
   y?: number
 }
 
-/** Prompt line height of the scene card (12px × 1.42). */
-export const PROMPT_LINE_H = 17
-/** Scene card chrome around the prompt: head, refs row, footer (+ the take status line when the scene has takes). */
-export const SCENE_CHROME = 118
-export const SCENE_TAKE_LINE_H = 22
-/** Prompt lines that fit a scene card `h` px tall (at least 2, like the default card). */
-export function promptLines(h: number, hasTakeLine = false): number {
-  const avail = h - SCENE_CHROME - (hasTakeLine ? SCENE_TAKE_LINE_H : 0)
-  return Math.max(2, Math.floor(avail / PROMPT_LINE_H))
-}
-/** Characters of the prompt worth rendering for `lines` lines in a card `w` px wide (never below the default 280). */
-export function excerptChars(lines: number, w: number): number {
-  return Math.max(280, Math.ceil(lines * Math.max(1, (w - 22) / 5.5)))
+/** A left/top resize moves the node too; otherwise a drag overrides its stored/automatic position. */
+export function livePosition(id: string, base: XY, drag: Record<string, XY>, resizing: Record<string, ResizeBox>): XY {
+  const box = resizing[id]
+  return box?.x !== undefined && box.y !== undefined ? { x: box.x, y: box.y } : drag[id] ?? base
 }
 
-export const DEFAULT_AVATARS = 6
-const AVATAR_STEP = 19
-/** Avatars shown before "+N" in a scene card `w` px wide, leaving room for `videoThumbs` @video thumbs. */
-export function avatarSlots(w: number, videoThumbs = 0): number {
-  const videoW = videoThumbs ? 12 + videoThumbs * 38 : 0
-  const fit = Math.floor((w - 22 - videoW - 40) / AVATAR_STEP)
-  const wanted = DEFAULT_AVATARS + Math.floor((w - LAYOUT.sceneW) / AVATAR_STEP)
-  return Math.max(2, Math.min(wanted, fit))
+/** Detail level of nodes at a zoom: below LOD_ZOOM (0.55) the far view (big code and title, no editing controls). */
+export function lodOf(zoom: number): 'far' | 'near' {
+  return zoom < LOD_ZOOM ? 'far' : 'near'
 }
 
-/** Take node: chrome below the poster (footer + big download button). */
-export const TAKE_CHROME = 74
+/**
+ * Stored size of a scene node as drawn: null (= the default 352 × 304) for no size or a size from before 0.6.0 that is
+ * below today's minimum (cards were 280 × 200: such a size reads as the default, never as a squeezed node).
+ */
+export const sceneNodeSize = drawnSceneSize
+
+/** Take node: the player bar right under the picture (timeline + buttons; never drawn over it). */
+export const TAKE_BAR_H = 30
+/** Take node: chrome below the poster (player bar + footer + big download button). */
+export const TAKE_CHROME = 74 + TAKE_BAR_H
 /** Largest 16:9 box that fits a node `w` × `h` (1px borders) above `chrome` px of controls. */
 export function fitMedia(w: number, h: number, chrome: number): { w: number; h: number } {
   const innerW = Math.max(0, w - 2)
@@ -404,46 +473,131 @@ export function resizeEdgeClip(dotYs: readonly number[], gap: number = RESIZE_DO
   return `polygon(${pts.join(', ')})`
 }
 
-// ---------------- asset node: the WHOLE reference image at its own aspect ratio ----------------
+// ---------------- asset node: an image tile of one size, like canvasapp ----------------
 /**
- * Default width of an asset node (no size set by the user). Kept at the asset column width: a square card is then
- * 162 + 65 = 227px tall and still fits the LAYOUT.assetH + assetGapY (238px) slots that the seed, saved projects and
- * the "add to canvas" placement use. 200px made every square card ~247px tall, overlapping the card below it.
+ * Default image tile (the user has not resized it): 220 × 275 whatever the picture's shape (choice 3L, = canvasapp's
+ * tile), so dropped images line up instead of stacking at their own heights. The picture is shown WHOLE (contain) in
+ * a 204 × 240 frame — portrait characters fill it, wide images get bands — above one caption line (name · use).
  */
 export const ASSET_DEFAULT_W = LAYOUT.assetW
-/** Asset node: left + right borders and padding beside the image (1 + 8 + 8 + 1). */
-export const ASSET_PAD_X = 18
-/** Asset node: borders + padding + name + meta rows around the image (2 + 8+9 + 8+19 + 3+16). */
-export const ASSET_CHROME = 65
-/** Aspect ratio (w / h) clamp of the image in an asset node: extreme panoramas / strips stay usable. */
-export const ASSET_MIN_ASPECT = 0.4
-export const ASSET_MAX_ASPECT = 2.6
+export const ASSET_TILE = { w: LAYOUT.assetW, h: LAYOUT.assetH, pad: 7, caption: 26 } as const
+/** Where "Ảnh từ máy…" (the "+ Thêm" popover and its "⋯" row) puts new images: the middle of the visible canvas. */
+export function viewCenterSpot(toFlow: (p: XY) => XY): XY {
+  const box = document.querySelector('.cv-stage')?.getBoundingClientRect()
+  const p = toFlow(box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : { x: 0, y: 0 })
+  return { x: Math.round(p.x - LAYOUT.assetW / 2), y: Math.round(p.y - 100) }
+}
+/** Frame of the picture in a tile `w` × `h` (1px borders, padding on top and sides, the caption line below). */
+export function assetFrame(w: number = ASSET_TILE.w, h: number = ASSET_TILE.h): { w: number; h: number } {
+  return { w: Math.max(0, w - 2 - 2 * ASSET_TILE.pad), h: Math.max(0, h - 2 - ASSET_TILE.pad - ASSET_TILE.caption) }
+}
 
-/**
- * Default asset node (the user has not resized it): the image takes the card's inner width at its own aspect ratio
- * `aspect` (w / h, already clamped by aspectOf) and the card is image + name/meta rows tall, within NODE_SIZE.asset.
- * A very wide image in a card that would be shorter than minH gets a slightly taller (letterboxed) image box.
- */
-export function assetDefaultLayout(aspect: number, w: number = ASSET_DEFAULT_W): { w: number; h: number; imgW: number; imgH: number } {
-  const l = NODE_SIZE.asset
-  const cw = Math.max(l.minW, Math.min(l.maxW, Math.round(w)))
-  const imgW = cw - ASSET_PAD_X
-  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1
-  const imgH = Math.round(Math.max(l.minH - ASSET_CHROME, Math.min(l.maxH - ASSET_CHROME, imgW / a)))
-  return { w: cw, h: imgH + ASSET_CHROME, imgW, imgH }
+/** The default tile and its picture frame (the image's aspect ratio no longer changes the tile). */
+export function assetDefaultLayout(): { w: number; h: number; imgW: number; imgH: number } {
+  const f = assetFrame()
+  return { w: ASSET_TILE.w, h: ASSET_TILE.h, imgW: f.w, imgH: f.h }
+}
+
+/** Height an asset node is drawn at (layout of the asset column): its stored size, else the tile. */
+export function assetNodeHeight(asset: Pick<Asset, 'size'>, _measuredH?: number): number {
+  return asset.size?.h ?? ASSET_TILE.h
+}
+
+// ---------------- where dropped image tiles go ----------------
+/** Room for the reference wires between the image column and the scene column (40 + 220 + 204 = 464 = scenesX). */
+export const WIRE_GAP = LAYOUT.scenesX - LAYOUT.assetX - LAYOUT.assetW
+/** Least wire room kept between the image column and the scene column (old projects: after their one-time spacing). */
+export const MIN_WIRE_ROOM = 200
+/** One tile + a gap, across and down (the tiles' grid and the image column's step). */
+export const TILE_STEP = { x: LAYOUT.assetW + LAYOUT.assetGapY, y: LAYOUT.assetH + LAYOUT.assetGapY }
+/** Tiles never closer than this vertically to what is already there (half a gap). */
+const TILE_TOUCH = LAYOUT.assetGapY / 2
+
+type SceneBox = Pick<Scene, 'id' | 'position' | 'size'>
+
+/** Left edge of the scene column: the leftmost scene (none: LAYOUT.scenesX). */
+export function sceneColumnLeft(scenes: readonly SceneBox[]): number {
+  return scenes.length ? Math.min(...scenes.map((s) => s.position.x)) : LAYOUT.scenesX
 }
 
 /**
- * Height an asset node is drawn at (layout of the asset column): its stored size, else the default card for its
- * image's aspect ratio when that is known (measured once per session), else the size React Flow last measured
- * (`measuredH`, possibly from before the image was measured), else a square card. Works for culled nodes too.
+ * x of the image column for a scene column starting at `scenesLeft`: the default column (LAYOUT.assetX), moved left
+ * only as far as needed to keep MIN_WIRE_ROOM to the scenes (a 0.5.x project's scenes at x 420 → tiles at x 0, where
+ * its one-time spacing put the old tiles).
  */
-export function assetNodeHeight(asset: Pick<Asset, 'size' | 'imageIds'>, measuredH?: number): number {
-  if (asset.size) return asset.size.h
-  const id = asset.imageIds[0]
-  const known = id ? useImageMeta.getState().sizes[id] : undefined
-  if (!id || known) return assetDefaultLayout(aspectOf(known, 1, ASSET_MIN_ASPECT, ASSET_MAX_ASPECT)).h
-  return measuredH && measuredH > 0 ? measuredH : assetDefaultLayout(1).h
+export function imageColumnX(scenesLeft: number): number {
+  return Math.min(LAYOUT.assetX, scenesLeft - MIN_WIRE_ROOM - LAYOUT.assetW)
+}
+
+const touches = (a: Box, b: Box, gy = TILE_TOUCH) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h + gy && b.y < a.y + a.h + gy
+const tileAt = (p: XY): Box => ({ x: p.x, y: p.y, w: LAYOUT.assetW, h: LAYOUT.assetH })
+
+/**
+ * `count` tiles in one column at `x`, the first one at `top`: each steps down by TILE_STEP.y past whatever it would
+ * cover (cards, take rows, other tiles), so the column goes on below what is there.
+ */
+export function columnSpots(x: number, top: number, count: number, obstacles: readonly Box[]): XY[] {
+  const out: XY[] = []
+  const taken = [...obstacles]
+  let y = top
+  for (let i = 0; i < count; i++) {
+    for (let g = 0; g < 2000 && taken.some((o) => touches(o, tileAt({ x, y }))); g++) y += TILE_STEP.y
+    out.push({ x, y })
+    taken.push(tileAt({ x, y }))
+    y += TILE_STEP.y
+  }
+  return out
+}
+
+/** Row band of a scene (its card or its takes, whichever is taller, + the gap below): `rowH` gives the height. */
+function rowAt(scenes: readonly SceneBox[], p: XY, rowH: (s: SceneBox) => number): SceneBox | null {
+  let best: SceneBox | null = null
+  for (const s of scenes) {
+    if (p.y < s.position.y || p.y >= s.position.y + rowH(s) + LAYOUT.gapY || s.position.x < p.x) continue
+    if (!best || s.position.x < best.position.x) best = s
+  }
+  return best
+}
+
+/**
+ * Where `count` image tiles dropped at flow point `p` go (one undo step for the caller to apply):
+ * - in the image column's band left of the scene column (from the column to the scenes) → one column at
+ *   imageColumnX, its first tile at the top of the scene row under the pointer
+ *   (no row there: centred on the pointer), stepping down past what is there;
+ * - elsewhere → a 2-column grid (TILE_STEP) from snap(p − half a tile); when the block would cover a node, the whole
+ *   block slides to the nearest free spot (down / right first).
+ * `rowH(scene)` = the height of that scene's row (project.rowHeightOf).
+ */
+export function imageDropSpots(p: XY, count: number, scenes: readonly SceneBox[], obstacles: readonly Box[], rowH: (s: SceneBox) => number): XY[] {
+  if (count <= 0) return []
+  const left = sceneColumnLeft(scenes)
+  const colX = imageColumnX(left)
+  if (scenes.length && p.x < left && p.x < colX + LAYOUT.assetW + MIN_WIRE_ROOM) {
+    const row = rowAt(scenes, p, rowH)
+    return columnSpots(colX, row ? row.position.y : snap(p.y - LAYOUT.assetH / 2), count, obstacles)
+  }
+  const origin = { x: snap(p.x - LAYOUT.assetW / 2), y: snap(p.y - LAYOUT.assetH / 2) }
+  const cols = Math.min(2, count)
+  const rows = Math.ceil(count / 2)
+  const block = (o: XY): Box => ({ x: o.x, y: o.y, w: cols * TILE_STEP.x - LAYOUT.assetGapY, h: rows * TILE_STEP.y - LAYOUT.assetGapY })
+  const free = (o: XY) => !obstacles.some((b) => touches(b, block(o)))
+  let at = origin
+  if (!free(origin)) {
+    search: for (let d = GRID * 2; d <= 4000; d += GRID * 2) {
+      for (const o of [{ x: origin.x, y: origin.y + d }, { x: origin.x + d, y: origin.y }, { x: origin.x, y: origin.y - d }, { x: origin.x - d, y: origin.y }]) {
+        if (free(o)) {
+          at = o
+          break search
+        }
+      }
+    }
+  }
+  return Array.from({ length: count }, (_, i) => ({ x: at.x + (i % 2) * TILE_STEP.x, y: at.y + Math.floor(i / 2) * TILE_STEP.y }))
+}
+
+/** Tiles for image FILES dropped on a scene node: the image column next to the scene column, from that scene's row. */
+export function sceneRowImageSpots(scene: SceneBox, count: number, scenes: readonly SceneBox[], obstacles: readonly Box[]): XY[] {
+  return columnSpots(imageColumnX(sceneColumnLeft(scenes)), scene.position.y, count, obstacles)
 }
 
 // ---------------- hover preview of a reference image (scene card avatars) ----------------
@@ -518,20 +672,25 @@ export const KIND_LABEL: Record<AssetKind, string> = {
 
 /** Count of selected ids that are scenes (safe inside a ui selector: returns a number). */
 export function countScenes(ids: string[]): number {
-  if (!ids.length) return 0
-  const map = sceneMapOf(useProject.getState().project.scenes)
-  let n = 0
-  for (const id of ids) if (map.has(id)) n++
-  return n
+  return selectionCount(ids, sceneMapOf(useProject.getState().project.scenes))
 }
 
 /** Count of selected ids that are take nodes. */
 export function countTakes(ids: string[]): number {
-  if (!ids.length) return 0
-  const map = takeIndexOf(useRuns.getState().takes).byId
-  let n = 0
-  for (const id of ids) if (map.has(id)) n++
-  return n
+  return selectionCount(ids, takeIndexOf(useRuns.getState().takes).byId)
+}
+
+const selectionCounts = new WeakMap<string[], WeakMap<object, number>>()
+function selectionCount(ids: string[], map: ReadonlyMap<string, unknown>): number {
+  let counts = selectionCounts.get(ids)
+  if (!counts) selectionCounts.set(ids, counts = new WeakMap())
+  let count = counts.get(map)
+  if (count === undefined) {
+    count = 0
+    for (const id of ids) if (map.has(id)) count++
+    counts.set(map, count)
+  }
+  return count
 }
 
 // ---------------- multi-target expansion ----------------
@@ -563,18 +722,51 @@ export interface Viewport {
   y: number
   zoom: number
 }
-/** Stage of the canvas in px: `bottom` px at the bottom are covered (queue drawer + toolbar band). */
+/**
+ * Stage of the canvas in px: `bottom` px at the bottom are covered (queue drawer + a bottom-docked toolbar); `top` /
+ * `left` / `right` = a toolbar docked on that edge (toolbarInsets).
+ */
 export interface StageSize {
   w: number
   h: number
   bottom: number
+  top?: number
+  left?: number
+  right?: number
+}
+
+interface EdgeRect {
+  top: number
+  left: number
+  right: number
+  bottom: number
+}
+/**
+ * What the canvas toolbar covers on each edge of the stage (px), from the bar's real box and its ACTUAL dock (the host's
+ * data-dock: a side dock without the height falls back to the bottom); the queue drawer always covers the bottom. A free
+ * (floating) bar or none reserves nothing.
+ */
+export function toolbarInsets(dock: string | undefined, bar: EdgeRect | null, stage: EdgeRect, drawer: number): Required<Pick<StageSize, 'top' | 'left' | 'right' | 'bottom'>> {
+  const out = { top: 0, left: 0, right: 0, bottom: drawer }
+  if (!bar) return out
+  if (dock === 'top') out.top = Math.max(0, bar.bottom - stage.top)
+  else if (dock === 'left') out.left = Math.max(0, bar.right - stage.left)
+  else if (dock === 'right') out.right = Math.max(0, stage.right - bar.left)
+  else if (dock === 'bottom') out.bottom = Math.max(drawer, stage.bottom - bar.top)
+  return out
 }
 /** Room kept free around a revealed / focused node (px): the top keeps clear of the toasts below the top bar. */
 export const VIEW_MARGIN = { top: 64, side: 32, bottom: 24 }
 
-/** Visible part of the canvas in flow coordinates (without the covered bottom band). */
+/** Visible part of the canvas in flow coordinates (without the covered bands). */
 export function visibleFlowRect(vp: Viewport, stage: StageSize): Box {
-  return { x: -vp.x / vp.zoom, y: -vp.y / vp.zoom, w: stage.w / vp.zoom, h: Math.max(0, stage.h - stage.bottom) / vp.zoom }
+  const { top = 0, left = 0, right = 0 } = stage
+  return {
+    x: (left - vp.x) / vp.zoom,
+    y: (top - vp.y) / vp.zoom,
+    w: Math.max(0, stage.w - left - right) / vp.zoom,
+    h: Math.max(0, stage.h - top - stage.bottom) / vp.zoom,
+  }
 }
 
 /** Smallest box around all `boxes` (null when empty). */
@@ -601,9 +793,10 @@ export function boxOnScreen(box: Box, vp: Viewport, stage: StageSize): boolean {
 
 /** Free area of the stage (px) for a revealed / focused node. */
 function stageArea(stage: StageSize) {
-  const left = VIEW_MARGIN.side
-  const right = Math.max(left + 1, stage.w - VIEW_MARGIN.side)
-  const top = Math.min(VIEW_MARGIN.top, Math.max(0, (stage.h - stage.bottom) / 3))
+  const { top: covTop = 0, left: covLeft = 0, right: covRight = 0 } = stage
+  const left = covLeft + VIEW_MARGIN.side
+  const right = Math.max(left + 1, stage.w - covRight - VIEW_MARGIN.side)
+  const top = covTop + Math.min(VIEW_MARGIN.top, Math.max(0, (stage.h - covTop - stage.bottom) / 3))
   const bottom = Math.max(top + 1, stage.h - stage.bottom - VIEW_MARGIN.bottom)
   return { left, right, top, bottom }
 }
@@ -646,12 +839,97 @@ export function focusViewport(box: Box, vp: Viewport, stage: StageSize, readable
   return centred(box, stage, Math.max(minZoom, Math.min(Math.max(vp.zoom, readable), fit)))
 }
 
+/** Canvas event of SceneNodeEditor.typeOnNode: bring these scene nodes near enough to type in (typingViewport). */
+export const TYPE_EVENT = 'type'
+
+/**
+ * Typing on a scene node that is off-screen or drawn in the far view ("Gõ trên node" in the right panel, Enter on a far
+ * node): its prompt field only exists while the node is rendered AND near (zoom ≥ LOD_ZOOM). Centred, at the current
+ * zoom when it is already near enough, else at 100% (like the far node's double-click) — less only when the node
+ * cannot fit, never below LOD_ZOOM. null = it is on screen and near already (no move).
+ */
+export function typingViewport(box: Box, vp: Viewport, stage: StageSize): Viewport | null {
+  const near = vp.zoom >= LOD_ZOOM
+  if (near && boxOnScreen(box, vp, stage)) return null
+  const a = stageArea(stage)
+  const fit = Math.min((a.right - a.left) / Math.max(1, box.w), (a.bottom - a.top) / Math.max(1, box.h))
+  return centred(box, stage, Math.max(LOD_ZOOM, Math.min(near ? vp.zoom : 1, fit)))
+}
+
 /** Size a node is drawn at before React Flow measured it (new or never rendered): the default card sizes. */
 export function fallbackNodeSize(type: string | undefined): { w: number; h: number } {
   if (type === 'take') return { w: LAYOUT.takeW, h: LAYOUT.takeH }
   if (type === 'folder') return { w: FOLDER_W, h: FOLDER_H }
-  if (type === 'asset') return { w: ASSET_DEFAULT_W, h: assetDefaultLayout(1).h }
-  return { w: LAYOUT.sceneW, h: NODE_SIZE.scene.minH }
+  if (type === 'asset') return { w: ASSET_TILE.w, h: ASSET_TILE.h }
+  return { w: LAYOUT.sceneW, h: LAYOUT.sceneH }
+}
+
+/**
+ * Where the estimated dots sit, mirroring the CSS (fastOpen.test reads canvas.css / saving.css against these):
+ * the folder dot's `top` (saving.css `.cv-h-folder`, far card), the frame dots' distance from the card's bottom
+ * (canvas.css `.cv-h-first` / `.cv-h-last`: `top: calc(100% - Npx)`) and the side dots' -0.5px overhang.
+ */
+export const ESTIMATED_DOTS = { folderTop: 25, folderTopFar: 40, firstFromBottom: 52, lastFromBottom: 28, sideOverhang: 0.5 } as const
+/** Card border (1px): a dot's CSS `top` counts from inside it. */
+const CARD_BORDER = 1
+
+/** Initial geometry only: React Flow replaces it with DOM measurements, never persisted sizes. */
+export function estimatedGeometry(type: string | undefined, size?: Size | null, far = false, mode?: string) {
+  const box = type === 'scene' ? drawnSceneSize(size) : size
+  const { w, h } = box ?? fallbackNodeSize(type)
+  const handles: NodeHandle[] = []
+  const d = ESTIMATED_DOTS
+  // Handles have zero-sized boxes (canvas.css); the card's border adds 1px to CSS top.
+  const dot = (id: string, kind: 'source' | 'target', right: boolean, y: number) => handles.push({
+    id, type: kind, position: right ? Position.Right : Position.Left,
+    x: right ? w - CARD_BORDER + d.sideOverhang : CARD_BORDER - d.sideOverhang, y, width: 0, height: 0,
+  })
+  if (type === 'asset') dot('out', 'source', true, h / 2)
+  else if (type === 'folder') dot('in', 'target', false, (far ? d.folderTopFar : d.folderTop) + CARD_BORDER)
+  else if (type === 'take') {
+    const y = takeDotTop(box ?? null, far) + CARD_BORDER
+    dot('in', 'target', false, y)
+    dot('out', 'source', true, y)
+  } else {
+    dot('ref', 'target', false, DOT_TOP + CARD_BORDER)
+    dot('take', 'source', true, DOT_TOP + CARD_BORDER)
+    if (mode === 'transform') {
+      // `calc(100% - Npx)` of the card's padding box: border + (h - 2 borders) - N.
+      dot('first', 'target', false, h - CARD_BORDER - d.firstFromBottom)
+      dot('last', 'target', false, h - CARD_BORDER - d.lastFromBottom)
+    }
+  }
+  return { initialWidth: w, initialHeight: h, handles }
+}
+
+/**
+ * Whether a node's estimate changes with the zoom level (far / near): only the folder's dot and a resized take's
+ * dots move (takeDotTop). Scene, asset and default-size take estimates stay the same object across LOD_ZOOM, so
+ * crossing it does not make React Flow re-adopt every unmeasured node.
+ */
+export function estimateDependsOnZoom(type: string | undefined, size?: Size | null): boolean {
+  return type === 'folder' || (type === 'take' && !!size?.w && !!size?.h)
+}
+
+/**
+ * Viewport that shows every node (padding 0.12, zoom 0.1 – 1: the old `fitView` options), from each node's measured
+ * size, else its stored size, else its estimate (initialWidth / initialHeight) — never only the measured nodes:
+ * nodes that were never on screen are never measured. Used on open and by "fit everything" (F, toolbar, after
+ * "Sắp xếp"). null = no node, or a stage without a size yet.
+ */
+export function initialViewport(nodes: readonly Node[], width: number, height: number): Viewport | null {
+  if (!nodes.length || !(width > 0 && height > 0)) return null
+  // React Flow's getNodesBounds without a nodeLookup (= same chain: measured → width → initialWidth) warns in dev.
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+  for (const n of nodes) {
+    const w = n.measured?.width ?? n.width ?? n.initialWidth ?? 0
+    const h = n.measured?.height ?? n.height ?? n.initialHeight ?? 0
+    x1 = Math.min(x1, n.position.x)
+    y1 = Math.min(y1, n.position.y)
+    x2 = Math.max(x2, n.position.x + w)
+    y2 = Math.max(y2, n.position.y + h)
+  }
+  return getViewportForBounds({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, width, height, 0.1, 1, 0.12)
 }
 
 /**
@@ -688,12 +966,12 @@ export function clientPoint(e: MouseEvent | TouchEvent): { x: number; y: number 
 }
 
 /** Overlays on the stage that block a wire drop (it must not fall through to the canvas or a card underneath). */
-export const DROP_BLOCKERS = '.cv-toolbar, .cv-sel-hint, .cv-menu, .react-flow__minimap, .react-flow__panel'
+export const DROP_BLOCKERS = '.cv-toolbar-bar, .cv-toolbar-tray, .cv-node-bar, .cv-menu, .react-flow__minimap, .react-flow__panel'
 
 /**
  * The React Flow node under a screen point (ignores the connection line), or null. 'pane' when over empty canvas.
  * Anything on top of the canvas but outside `root` (queue drawer, toasts, panels) blocks the drop: null. So do the
- * stage's own overlays (DROP_BLOCKERS: toolbar, selection hint, menu, minimap).
+ * stage's own overlays (DROP_BLOCKERS: toolbar bar, its selection tray, menus, minimap).
  */
 export function hitTest(x: number, y: number, root: HTMLElement | null): { kind: 'node'; id: string } | { kind: 'pane' } | null {
   const els = document.elementsFromPoint(x, y)
@@ -720,18 +998,6 @@ export const readAssetIds = (dt: DataTransfer | null): string[] | null => (dt &&
 export const readTakeIds = (dt: DataTransfer | null): string[] => (dt && hasTakeDrag(dt) ? readIds(dt, TAKES_MIME) : [])
 export const imageFiles = (dt: DataTransfer | null) => (dt ? Array.from(dt.files).filter((f) => /^image\//.test(f.type)) : [])
 
-/**
- * Can these dragged takes become @video of `sceneId`? At least one must be finished and come from another scene.
- * Safe inside a ui selector (returns a boolean).
- */
-export function takesUsableFor(takeIds: string[], sceneId: string): boolean {
-  const byId = takeIndexOf(useRuns.getState().takes).byId
-  return takeIds.some((id) => {
-    const t = byId.get(id)
-    return !!t && t.status === 'completed' && t.sceneId !== sceneId
-  })
-}
-
 /** A drag over this element would land on empty canvas (not on a node, the minimap or another overlay). */
 export function isEmptyCanvasTarget(target: EventTarget | null): boolean {
   const el = typeof Element !== 'undefined' && target instanceof Element ? target : null
@@ -739,33 +1005,168 @@ export function isEmptyCanvasTarget(target: EventTarget | null): boolean {
   return !el.closest('.react-flow__node, .react-flow__panel, .react-flow__minimap, .react-flow__edgelabel-renderer')
 }
 
+/** What the inline-field key helpers read of a keyboard event. */
+export interface InlineKey {
+  key: string
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey?: boolean
+  shiftKey?: boolean
+}
+
+/** A modifier pressed on its own: never a shortcut (React Flow would take a lone Ctrl / Shift as its selection keys). */
+const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Alt', 'AltGraph', 'Shift', 'OS', 'Super', 'Hyper', 'CapsLock', 'Fn', 'FnLock'])
+
 /**
- * Should a key pressed in an inline text field on a node (scene title) reach the global shortcuts? Ctrl/Cmd combos
- * do (useShortcuts: Ctrl+S saves, Ctrl+Enter runs, the others are ignored while typing); plain keys and Escape (the
- * field cancels the edit itself) do not.
+ * Should a key pressed in an inline text field on a node (scene title, take name, the editor on a scene card) reach the
+ * global shortcuts? Only a chord of a command that runs while typing (`isTypingChord`, from the keymap: Ctrl+S saves,
+ * Ctrl+Enter runs…). Never Escape (the field cancels the edit itself), never a modifier pressed alone.
  */
-export function inlineEditKeyBubbles(e: { key: string; ctrlKey: boolean; metaKey: boolean }): boolean {
-  return (e.ctrlKey || e.metaKey) && e.key !== 'Escape'
+export function inlineKeyBubbles<E extends InlineKey>(e: E, isTypingChord: (e: E) => boolean): boolean {
+  if (e.key === 'Escape' || MODIFIER_KEYS.has(e.key)) return false
+  return isTypingChord(e)
 }
 
 /**
- * Ctrl/Cmd+S pressed in an inline text field: useShortcuts saves the project right after, so the field must put its
- * draft in the store first (other combos — copy, paste, undo inside the field — must not create history steps).
+ * The save chord pressed in an inline text field (`isSaveChord`, from the keymap): the global shortcut saves the
+ * project right after, so the field must put its draft in the store first (other combos — copy, paste, undo inside the
+ * field — must not create history steps).
  */
-export function inlineEditSavesDraft(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey?: boolean }): boolean {
-  return (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's'
+export function inlineKeySavesDraft<E extends InlineKey>(e: E, isSaveChord: (e: E) => boolean): boolean {
+  if (MODIFIER_KEYS.has(e.key)) return false
+  return isSaveChord(e)
+}
+
+/** Today's commands that run while typing (useShortcuts): any Ctrl/Cmd combination. The keymap (0.6.0) replaces it. */
+export const legacyTypingChord = (e: InlineKey): boolean => e.ctrlKey || e.metaKey
+/** Today's save chord (useShortcuts): Ctrl/Cmd+S without Alt. */
+export const legacySaveChord = (e: InlineKey): boolean => (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's'
+
+/**
+ * @deprecated use inlineKeyBubbles(e, isTypingChord). Wrapper with today's chords: Ctrl/Cmd combos bubble; plain keys,
+ * Escape — and now a lone Ctrl / Cmd — do not.
+ */
+export function inlineEditKeyBubbles(e: InlineKey): boolean {
+  return inlineKeyBubbles(e, legacyTypingChord)
+}
+
+/** @deprecated use inlineKeySavesDraft(e, isSaveChord). Wrapper with today's save chord (Ctrl/Cmd+S). */
+export function inlineEditSavesDraft(e: InlineKey): boolean {
+  return inlineKeySavesDraft(e, legacySaveChord)
+}
+
+/**
+ * Size React Flow measured for a node (undefined = not measured yet), read outside React.
+ */
+export function measuredOf(id: string): { width: number; height: number } | undefined {
+  return useCanvasLocal.getState().measured[id]
 }
 
 // ---------------- hover store (edges + cut button need a little grace period) ----------------
+// ---------------- UI-05 alignment guides (docs/UI-MUOT.md) ----------------
+/** A node's box in canvas coordinates. */
+export interface GuideBox { x: number; y: number; w: number; h: number }
+/** The guide lines to draw while a node is dragged (canvas coordinates): a vertical one at x, a horizontal one at y. */
+export interface Guides { v: { x: number; y1: number; y2: number } | null; h: { y: number; x1: number; x2: number } | null }
+/** How close (screen px) an edge or centre must come to snap; divided by the zoom for canvas units. */
+export const GUIDE_TOLERANCE_PX = 6
+
+/**
+ * Snap a dragged node's box to the others: on each axis its start / centre / end edge is compared with every other
+ * box's start / centre / end, and the nearest within `tolerance` wins (one snap per axis). Returns the snapped
+ * position and the guide segments, spanning both boxes. Pure; O(others).
+ */
+export function alignToGuides(box: GuideBox, others: readonly GuideBox[], tolerance: number): { x: number; y: number; guides: Guides } {
+  const near = (axis: 'x' | 'y') => {
+    const size = axis === 'x' ? 'w' : 'h'
+    let best: { delta: number; at: number; other: GuideBox } | null = null
+    for (const o of others) {
+      for (const a of [0, box[size] / 2, box[size]]) {
+        for (const b of [0, o[size] / 2, o[size]]) {
+          const delta = o[axis] + b - (box[axis] + a)
+          if (Math.abs(delta) <= tolerance && (!best || Math.abs(delta) < Math.abs(best.delta))) best = { delta, at: o[axis] + b, other: o }
+        }
+      }
+    }
+    return best
+  }
+  const nx = near('x'), ny = near('y')
+  const x = box.x + (nx?.delta ?? 0), y = box.y + (ny?.delta ?? 0)
+  return {
+    x,
+    y,
+    guides: {
+      v: nx ? { x: nx.at, y1: Math.min(y, nx.other.y), y2: Math.max(y + box.h, nx.other.y + nx.other.h) } : null,
+      h: ny ? { y: ny.at, x1: Math.min(x, ny.other.x), x2: Math.max(x + box.w, ny.other.x + ny.other.w) } : null,
+    },
+  }
+}
+
+const sameGuides = (a: Guides | null, b: Guides | null) =>
+  a === b || (!!a && !!b && JSON.stringify(a) === JSON.stringify(b))
+
 interface CanvasLocal {
+  projectId: string | null
+  big: boolean
+  resetProject: (id: string) => void
+  hoveredId: string | null
+  setHovered: (id: string | null) => void
+  dragPos: Record<string, XY>
+  setDragPos: (pos: Record<string, XY>) => void
+  clearDragPos: (ids?: string[]) => void
+  measured: Record<string, { width: number; height: number }>
+  measuredVersion: number
+  setMeasured: (sizes: Record<string, { width: number; height: number }>) => void
   hoveredEdgeId: string | null
   setHoveredEdge: (id: string | null) => void
   /** Nodes whose resize handle is being dragged: their live box (committed to the stores on resize end). */
   resizing: Record<string, ResizeBox>
   setResizing: (boxes: Record<string, ResizeBox>) => void
   clearResizing: (id: string) => void
+  /** UI-05: the guide lines of the node being dragged (null: none). */
+  guides: Guides | null
+  setGuides: (guides: Guides | null) => void
 }
+let measureFrame: number | null = null
 export const useCanvasLocal = create<CanvasLocal>()((set) => ({
+  projectId: null,
+  big: false,
+  resetProject: (projectId) => {
+    if (useCanvasLocal.getState().projectId === projectId) return
+    if (measureFrame !== null) cancelAnimationFrame(measureFrame)
+    measureFrame = null
+    keepHover()
+    set({ projectId, big: false, measured: {}, measuredVersion: 0, dragPos: {}, resizing: {}, hoveredId: null, hoveredEdgeId: null, guides: null })
+  },
+  guides: null,
+  setGuides: (guides) => set((s) => (sameGuides(s.guides, guides) ? s : { guides })),
+  hoveredId: null,
+  setHovered: (hoveredId) => set((s) => s.hoveredId === hoveredId ? s : { hoveredId }),
+  dragPos: {},
+  setDragPos: (pos) => set((s) => ({ dragPos: { ...s.dragPos, ...pos } })),
+  clearDragPos: (ids) => set((s) => {
+    const dragPos = ids ? { ...s.dragPos } : {}
+    for (const id of ids ?? []) delete dragPos[id]
+    return { dragPos }
+  }),
+  measured: {},
+  measuredVersion: 0,
+  setMeasured: (sizes) => {
+    // Measurements are readable immediately; subscribers are notified only once per animation frame.
+    const measured = useCanvasLocal.getState().measured
+    let changed = false
+    for (const [id, size] of Object.entries(sizes)) {
+      const old = measured[id]
+      if (!old || old.width !== size.width || old.height !== size.height) {
+        measured[id] = size
+        changed = true
+      }
+    }
+    if (changed && measureFrame === null) measureFrame = requestAnimationFrame(() => {
+      measureFrame = null
+      set((s) => ({ measuredVersion: s.measuredVersion + 1 }))
+    })
+  },
   hoveredEdgeId: null,
   setHoveredEdge: (hoveredEdgeId) => set((s) => (s.hoveredEdgeId === hoveredEdgeId ? s : { hoveredEdgeId })),
   resizing: {},
@@ -794,6 +1195,12 @@ export function scheduleHoverEnd(clearNode: () => void, ms = 140) {
     clearNode()
   }, ms)
 }
+
+// Project switches can happen while Canvas is unmounted; the sidebar must never read the previous measurements.
+useCanvasLocal.getState().resetProject(useProject.getState().project.id)
+useProject.subscribe((s, prev) => {
+  if (s.project.id !== prev.project.id) useCanvasLocal.getState().resetProject(s.project.id)
+})
 
 /**
  * Color with alpha: hex ('#4fb6a8', 0.7 -> '#4fb6a8b3'), anything else (a theme token such as 'var(--ref)') through

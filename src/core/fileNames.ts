@@ -9,22 +9,86 @@ const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout
 const FORMAT_CHARS = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g
 /** Half of a surrogate pair on its own (it would become U+FFFD on disk). */
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
-/** Longest base name kept (the extension and a " (12)" suffix are added after it). */
+/** Longest base name kept, in UTF-16 units (the extension and a " (12)" suffix are added after it). */
 export const MAX_BASE_LENGTH = 120
+/**
+ * Longest base name kept in UTF-8 bytes and in NFD units: APFS / HFS+ (macOS stores names decomposed, "ệ" = 3 units),
+ * ext4 and removable drives cap a name at 255 bytes / units, so this leaves room for the extension and " (12)".
+ */
+export const MAX_BASE_BYTES = 200
+export const MAX_BASE_NFD = 200
 /** Extensions SanoVids adds itself: typed at the end of a new name they are dropped ("Cảnh mở đầu.mp4" → "Cảnh mở đầu"). */
 const OWN_EXT = /\.(mp4|webm|mov|mkv|m4v|txt|jpe?g|png|webp|zip)$/i
+
+/** UTF-8 length of a string without lone surrogates (cleanFileBase removed them), without allocating. */
+function utf8Length(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff) {
+      n += 4 // a surrogate pair: one 4-byte character
+      i++
+    } else n += 3
+  }
+  return n
+}
+
+const withinBudget = (s: string): boolean => s.length <= MAX_BASE_LENGTH && utf8Length(s) <= MAX_BASE_BYTES && s.normalize('NFD').length <= MAX_BASE_NFD
+
+/** Created on first use; null where Intl.Segmenter does not exist (older engines: cut by code point instead). */
+let graphemes: Intl.Segmenter | null | undefined
+function graphemeSegmenter(): Intl.Segmenter | null {
+  if (graphemes === undefined) {
+    try {
+      graphemes = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('vi', { granularity: 'grapheme' }) : null
+    } catch {
+      graphemes = null
+    }
+  }
+  return graphemes
+}
+
+/** The longest prefix of whole graphemes within every budget, without trailing dots / spaces. */
+function cutToBudget(s: string): string {
+  // The longest prefix of whole code points that fits (every budget only grows with the prefix)…
+  let end = 0
+  let bytes = 0
+  let nfd = 0
+  for (const ch of s) {
+    const ascii = ch.charCodeAt(0) < 0x80
+    bytes += ascii ? 1 : utf8Length(ch)
+    nfd += ascii ? 1 : ch.normalize('NFD').length
+    if (end + ch.length > MAX_BASE_LENGTH || bytes > MAX_BASE_BYTES || nfd > MAX_BASE_NFD) break
+    end += ch.length
+  }
+  // …then back to the start of the grapheme it cuts (a letter and its marks, an emoji sequence stay whole). Without
+  // Intl.Segmenter (older engines) the cut stays between code points: never half of a surrogate pair.
+  const seg = end < s.length ? graphemeSegmenter() : null
+  if (seg) end = seg.segment(s).containing(end)?.index ?? end
+  return s.slice(0, end).replace(/[.\s]+$/, '')
+}
 
 /**
  * A base name that is safe on every OS, or '' when nothing usable is left: forbidden characters and path separators
  * become "-", runs of spaces one space, no leading / trailing dots or spaces (Windows drops trailing ones, a leading
- * one hides the file), never "." / "..", never a reserved device name (prefixed with "_"), at most MAX_BASE_LENGTH.
+ * one hides the file), never "." / "..", never a reserved device name (prefixed with "_"), at most MAX_BASE_LENGTH
+ * UTF-16 units, MAX_BASE_BYTES UTF-8 bytes and MAX_BASE_NFD NFD units, cut between whole graphemes. Idempotent:
+ * cleaning a cleaned name gives the same name (migrate re-cleans Take.fileName on every load).
  */
 export function cleanFileBase(raw: unknown): string {
   if (typeof raw !== 'string') return ''
   let s = raw.replace(LONE_SURROGATE, '').normalize('NFC').replace(FORMAT_CHARS, '')
   s = s.replace(BAD_CHARS, '-').replace(/\s+/g, ' ').trim()
-  s = cutText(s, MAX_BASE_LENGTH).replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
-  if (RESERVED.test(s)) s = '_' + s
+  s = s.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+  // Only an over-long name is segmented (the common short name costs one length check per budget).
+  if (!withinBudget(s)) s = cutToBudget(s)
+  // After the cut: cutting can leave a bare device name ("NUL …" → "NUL"); the "_" may need one more cut.
+  if (RESERVED.test(s)) {
+    s = '_' + s
+    if (!withinBudget(s)) s = cutToBudget(s)
+  }
   return s
 }
 

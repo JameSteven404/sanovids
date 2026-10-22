@@ -1,18 +1,28 @@
-import { ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, X, ZoomIn } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
+import { Check, ImagePlus, Library, Link2, Pencil, Pin, PinOff, Plus, Trash2, X, ZoomIn } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createAssetsFromFiles, ensureAssetToken, linkAssets, revealNodes, selectedSceneIds, viewAssetImages } from '../../actions'
+import { flushScenes } from '../../lib/promptDrafts'
 import { sceneCode } from '../../core/compile'
+import { deleteButtonState, deleteKeyLabel, hiddenSuffix, libraryFooterHint, librarySelectionCounts } from '../../core/libraryDelete'
 import { usesRefs } from '../../core/models'
 import type { Asset, AssetKind } from '../../core/types'
 import { ASSETS_MIME } from '../../lib/dnd'
 import { aspectOf, useImageMeta } from '../../lib/imageMeta'
 import { cachedUrl } from '../../lib/imageStore'
+import { IS_MAC } from '../../lib/platform'
+import { assetDragEnded, deleteLibrarySelection, registerLibraryView } from '../../libraryActions'
+import { linkToastWithFill } from '../../placeholderActions'
 import { useProject, type ProjectState } from '../../store/project'
 import { toast, useUI } from '../../store/ui'
+import { sceneCountsOf, sceneMapOf } from '../canvas/canvasModel'
 import { FullImage } from '../common/Media'
+import { openLibraryCardMenu } from '../contextmenu/libraryContextMenu'
+import type { LibraryCardCommands } from '../contextmenu/libraryMenu'
+import { isMenuKey } from '../contextmenu/menuModel'
 import { Section } from './bits'
 import { setDragGhost } from './ghost'
+import { libraryClick } from './librarySelection'
 import {
   imageTokenLabels,
   KIND_META,
@@ -75,11 +85,20 @@ function useColumnCount(): [number, (el: HTMLElement | null) => void] {
   return [cols, ref]
 }
 
-/** Number of scenes whose refs include each asset. */
-const usageSelector = (s: ProjectState) => {
-  const m: Record<string, number> = {}
-  for (const sc of s.project.scenes) for (const r of sc.refs) m[r] = (m[r] ?? 0) + 1
-  return m
+/**
+ * Number of scenes using each asset (reference image or first / last frame): the badge. Recounted only when the scene
+ * graph changed (canvasModel sceneCountsOf) — typing in a prompt never recounts it, and the same object comes back.
+ */
+const usageSelector = (s: ProjectState) => sceneCountsOf(s.project.scenes)
+
+const labelCache = new WeakMap<string[], { assets: Asset[]; labels: Record<string, string> }>()
+/** imageTokenLabels per refs array + assets array: the same object while only the prompt is typed (no rebuild). */
+export function tokenLabelsOf(assets: Asset[], refs: string[]): Record<string, string> {
+  const hit = labelCache.get(refs)
+  if (hit && hit.assets === assets) return hit.labels
+  const labels = imageTokenLabels(assets, refs)
+  labelCache.set(refs, { assets, labels })
+  return labels
 }
 
 // ---------------- drag & drop (HTML5) ----------------
@@ -116,13 +135,19 @@ function startAssetDrag(e: DragEvent<HTMLElement>, id: string) {
   useUI.getState().setDraggingAssets(list.map((a) => a.id))
 }
 
+/** Dropped outside the library (dropEffect not 'none'): the delete keys go to the canvas, a used multi-selection clears. */
 function endAssetDrag(e: DragEvent<HTMLElement>) {
-  const ui = useUI.getState()
-  ui.setDraggingAssets(null)
-  // A multi-card selection that was dropped somewhere has been used: forget it, so a later drag or "C" does not
-  // silently carry the same cards again.
-  if (e.dataTransfer.dropEffect !== 'none' && ui.librarySelection.length > 1) ui.setLibrarySelection([])
+  assetDragEnded(e.dataTransfer.dropEffect)
 }
+
+/** Keyboard focus on a library card (after a delete: the next card, nothing selected). */
+function focusLibraryCard(id: string) {
+  const sel = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/["\\]/g, '\\$&')
+  document.querySelector<HTMLElement>(`.sb-library [data-asset-id="${sel}"]`)?.focus()
+}
+
+/** " · Delete để xoá" in a card's tooltip (⌫ on a Mac). */
+const DELETE_TIP = `${deleteKeyLabel(IS_MAC)} để xoá`
 
 // ---------------- card actions ----------------
 function openAsset(id: string) {
@@ -145,17 +170,27 @@ function toggleOnCanvas(id: string) {
   }
 }
 
+/** What the card's right-click menu (contextmenu/libraryMenu) runs from here: the same toasts as the card buttons. */
+const CARD_COMMANDS: LibraryCardCommands = { toggleOnCanvas }
+
 function linkCardToSelection(id: string) {
   const scenes = selectedSceneIds()
   if (!scenes.length) {
-    toast('Chọn một hoặc nhiều cảnh trên canvas / bảng cảnh trước.', { tone: 'warning' })
+    toast('Chọn một hoặc nhiều cảnh trên canvas trước.', { tone: 'warning' })
     return
   }
   linkAssets(scenes, dragIdsFor(id))
 }
 
-/** "+ Nối" on a card while one scene is selected: link it and tell which @image number it got. */
-function linkToScene(sceneId: string, assetId: string) {
+/**
+ * "+ Nối" on a card while one scene is selected: link it and tell which @image number it got — and, when the scene
+ * still holds red placeholders, offer "Gắn vào chỗ …" (GT1 linkToastWithFill: an explicit click, never filled by itself).
+ * The prompt being typed is committed first, so the offer sees its red text. A mode that sends no reference picture
+ * keeps the warning toast (no offer: the fill would not let the scene run anyway).
+ */
+export function linkToScene(sceneId: string, assetId: string) {
+  flushScenes([sceneId])
+  const before = useProject.getState().project
   const token = ensureAssetToken(sceneId, assetId)
   const p = useProject.getState().project
   const scene = p.scenes.find((s) => s.id === sceneId)
@@ -163,12 +198,12 @@ function linkToScene(sceneId: string, assetId: string) {
   // Not linked: ensureAssetToken already explained why (image limit of the model).
   if (!scene || !asset || !scene.refs.includes(assetId)) return
   const sends = usesRefs(scene.settings)
-  toast(
-    `Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}${
-      sends ? '' : ' · chế độ hiện tại của cảnh không gửi ảnh tham chiếu (nối vẫn được giữ khi đổi chế độ)'
-    }.`,
-    { tone: sends ? 'success' : 'warning', action: undoToastAction() },
-  )
+  const text = `Đã nối “${asset.name}” vào ${sceneCode(scene.order)}${token ? ` → ${token}` : ' (chưa có ảnh nên chưa có số @image)'}${
+    sends ? '' : ' · chế độ hiện tại của cảnh không gửi ảnh tham chiếu (nối vẫn được giữ khi đổi chế độ)'
+  }`
+  // Newly linked to a scene that waits for a picture: the fill offer (only when this click added the link).
+  if (sends && !before.scenes.find((s) => s.id === sceneId)?.refs.includes(assetId) && linkToastWithFill(before, p, [assetId], text)) return
+  toast(`${text}.`, { tone: sends ? 'success' : 'warning', action: undoToastAction() })
 }
 
 async function copyToken(token: string, code: string) {
@@ -227,13 +262,15 @@ const AssetCard = memo(function AssetCard({
   const offNote = `${sceneModel || 'Model'} ở chế độ hiện tại của ${singleCode} không gửi ảnh tham chiếu`
   return (
     <div
-      className={`sb-card${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
+      className={`sb-card${selected ? ' selected' : ''}${many ? ' multi' : ''}${dragging ? ' dragging' : ''}`}
       style={{ '--sb-c': asset.color } as CSSProperties}
+      data-asset-id={asset.id}
       draggable
       role="option"
       tabIndex={0}
       aria-selected={selected}
-      title={`${asset.name} · @${asset.tag}\nKéo vào cảnh để nối · nháy đúp để sửa`}
+      aria-label={asset.name || asset.tag}
+      title={`${asset.name} · @${asset.tag}\nKéo vào cảnh để nối · nháy đúp để sửa · ${DELETE_TIP}`}
       onClick={(e) => {
         e.stopPropagation()
         // The 2nd click of a double-click must not undo the selection made by the 1st.
@@ -241,16 +278,13 @@ const AssetCard = memo(function AssetCard({
         onSelect(e, asset.id)
       }}
       onKeyDown={(e) => {
-        const action = libraryCardKey(e.key)
-        if (action === 'block') {
-          // Also from the card's own buttons: the global Delete shortcut acts on the canvas selection (scenes,
-          // generated videos), not on this card — it must never run from here.
-          e.preventDefault()
-          e.stopPropagation()
-          if (!e.repeat) toast('Phím Delete không xoá mục thư viện — mở mục (Enter) rồi bấm “Xoá khỏi thư viện”.', { tone: 'info' })
+        // Delete / ⌫ / Ctrl+A go up to the global shortcuts: their library scope acts on the library selection.
+        if (e.target !== e.currentTarget) return
+        if (isMenuKey(e)) {
+          openLibraryCardMenu(e.nativeEvent, asset.id, CARD_COMMANDS, 'keyboard')
           return
         }
-        if (e.target !== e.currentTarget) return
+        const action = libraryCardKey(e.key)
         if (action === 'open') {
           e.preventDefault()
           openAsset(asset.id)
@@ -259,6 +293,7 @@ const AssetCard = memo(function AssetCard({
           useUI.getState().toggleLibrary(asset.id, e.ctrlKey || e.metaKey || e.shiftKey)
         }
       }}
+      onContextMenu={(e) => openLibraryCardMenu(e, asset.id, CARD_COMMANDS)}
       onDoubleClick={(e) => {
         e.stopPropagation()
         openAsset(asset.id)
@@ -351,6 +386,7 @@ const AssetCard = memo(function AssetCard({
           <button
             className="sb-card-btn"
             title={asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}
+            aria-label={`${asset.position ? 'Bỏ khỏi canvas' : 'Đặt lên canvas'}: ${asset.name}`}
             onClick={(e) => {
               e.stopPropagation()
               toggleOnCanvas(asset.id)
@@ -363,6 +399,7 @@ const AssetCard = memo(function AssetCard({
             <button
               className={`sb-card-btn${selScenes ? ' ref' : ' off'}`}
               title={linkTitle}
+              aria-label={linkTitle}
               aria-disabled={!selScenes}
               onClick={(e) => {
                 e.stopPropagation()
@@ -376,6 +413,7 @@ const AssetCard = memo(function AssetCard({
           <button
             className="sb-card-btn"
             title="Sửa"
+            aria-label={`Sửa ${asset.name}`}
             onClick={(e) => {
               e.stopPropagation()
               openAsset(asset.id)
@@ -387,8 +425,13 @@ const AssetCard = memo(function AssetCard({
         </div>
       </div>
       <div className="sb-card-info">
+        {many && (
+          <span className="sb-card-check" aria-hidden="true">
+            <Check size={10} strokeWidth={3} />
+          </span>
+        )}
         <div className="sb-card-name">{asset.name || <span className="faint">Chưa đặt tên</span>}</div>
-        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Là ảnh tham chiếu của ${usage} cảnh` : 'Chưa nối vào cảnh nào'}>
+        <div className={`sb-card-usage${usage ? '' : ' zero'}`} title={usage ? `Đang dùng ở ${usage} cảnh (ảnh tham chiếu hoặc khung đầu / cuối)` : 'Chưa nối vào cảnh nào'}>
           {usage ? `dùng ở ${usage} cảnh` : 'chưa dùng'}
         </div>
       </div>
@@ -430,8 +473,8 @@ export function AssetLibrary({
   const tokens = useProject(
     useShallow((s) => {
       if (!singleId) return EMPTY_LABELS
-      const sc = s.project.scenes.find((x) => x.id === singleId)
-      return sc ? imageTokenLabels(s.project.assets, sc.refs) : EMPTY_LABELS
+      const sc = sceneMapOf(s.project.scenes).get(singleId)
+      return sc ? tokenLabelsOf(s.project.assets, sc.refs) : EMPTY_LABELS
     }),
   )
   const [kind, setKind] = usePrefState<KindFilter>('sb-kind', 'all')
@@ -442,6 +485,7 @@ export function AssetLibrary({
   }, [assets.length, kind, setKind])
   const [fileOver, setFileOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  useEffect(() => { const add = () => fileInput.current?.click(); window.addEventListener('bdp:add-images', add); return () => window.removeEventListener('bdp:add-images', add) }, [])
   const anchor = useRef<string | null>(null)
   const [cols, gridRef] = useColumnCount()
 
@@ -452,11 +496,29 @@ export function AssetLibrary({
     return c
   }, [matched])
   const visible = useMemo(() => (kind === 'all' ? matched : matched.filter((a) => a.kind === kind)), [matched, kind])
+  const visibleIds = useMemo(() => visible.map((a) => a.id), [visible])
   const selection = useMemo(() => {
     const exists = new Set(assets.map((a) => a.id))
     return librarySelection.filter((id) => exists.has(id))
   }, [assets, librarySelection])
   const selSet = useMemo(() => new Set(selection), [selection])
+  // Delete / the trash button take the selected cards on screen; selected cards hidden by the search / tab stay.
+  const selCounts = useMemo(() => librarySelectionCounts(selection, new Set(visibleIds)), [selection, visibleIds])
+
+  // What the library shows, for the delete / select-all commands and the keys (libraryActions).
+  const shown = useRef({ ids: visibleIds, collapsed })
+  useLayoutEffect(() => {
+    shown.current = { ids: visibleIds, collapsed }
+  })
+  useEffect(
+    () =>
+      registerLibraryView({
+        visibleIds: () => shown.current.ids,
+        collapsed: () => shown.current.collapsed,
+        focusCard: focusLibraryCard,
+      }),
+    [],
+  )
   const dragSet = useMemo(() => new Set(draggingIds ?? []), [draggingIds])
   const aspects = useCardAspects(visible)
   const columns = useMemo(
@@ -478,20 +540,11 @@ export function AssetLibrary({
   const onSelect = useCallback(
     (e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, id: string) => {
       const ui = useUI.getState()
-      if (e.shiftKey && anchor.current && anchor.current !== id) {
-        const ids = visible.map((a) => a.id)
-        const from = ids.indexOf(anchor.current)
-        const to = ids.indexOf(id)
-        if (from >= 0 && to >= 0) {
-          const range = ids.slice(Math.min(from, to), Math.max(from, to) + 1)
-          ui.setLibrarySelection([...new Set([...ui.librarySelection, ...range])])
-          return
-        }
-      }
-      ui.toggleLibrary(id, e.ctrlKey || e.metaKey || e.shiftKey)
-      anchor.current = id
+      const next = libraryClick(ui.librarySelection, visibleIds, anchor.current, id, e)
+      anchor.current = next.anchor
+      ui.setLibrarySelection(next.selection)
     },
-    [visible],
+    [visibleIds],
   )
 
   const defaultKind: AssetKind = newAssetKind(kind, assets.length)
@@ -520,12 +573,12 @@ export function AssetLibrary({
 
   const toolbar = (
     <>
-      <div className="sb-kinds" role="tablist" aria-label="Lọc theo loại">
+      <div className="sb-kinds" role="group" aria-label="Lọc theo loại">
         {kinds.map((k) => {
           const meta = k === 'all' ? null : KIND_META[k]
           const Icon = meta?.Icon
           return (
-            <button key={k} role="tab" aria-selected={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
+            <button key={k} aria-pressed={kind === k} className={`sb-kind${kind === k ? ' active' : ''}`} onClick={() => setKind(k)}>
               {Icon && <Icon size={11} />}
               <span>{meta ? meta.label : 'Tất cả'}</span>
               <span className="sb-kind-n">{counts[k]}</span>
@@ -549,28 +602,37 @@ export function AssetLibrary({
     </>
   )
 
+  const del = deleteButtonState(selCounts, IS_MAC)
   const footer = selection.length ? (
     <div className="sb-libfoot sel">
       <span className="sb-libfoot-count">
-        <b>{selection.length}</b> đã chọn
+        <b>{selection.length}</b> đã chọn{hiddenSuffix(selCounts)}
       </span>
       <button
         className="btn btn-sm sb-link-btn"
         disabled={!selectedScenes.length}
-        title={selectedScenes.length ? `Nối ${selection.length} mục vào ${selectedScenes.length} cảnh đang chọn (C)` : 'Chọn cảnh trên canvas / bảng cảnh trước'}
+        title={selectedScenes.length ? `Nối ${selection.length} mục vào ${selectedScenes.length} cảnh đang chọn (C)` : 'Chọn cảnh trên canvas trước'}
         onClick={() => linkAssets(selectedScenes, selection)}
       >
         <Link2 size={13} />
         {selectedScenes.length ? `Nối vào ${selectedScenes.length} cảnh` : 'Chưa chọn cảnh'}
+      </button>
+      {/* aria-disabled, not disabled: the tooltip still says why, and a click explains it again (hint toast). */}
+      <button
+        className={`icon-btn sb-xs sb-libfoot-del${del.enabled ? '' : ' off'}`}
+        title={del.label}
+        aria-label={del.label}
+        aria-disabled={!del.enabled}
+        onClick={() => deleteLibrarySelection()}
+      >
+        <Trash2 size={13} />
       </button>
       <button className="icon-btn sb-xs" title="Bỏ chọn" aria-label="Bỏ chọn" onClick={() => useUI.getState().setLibrarySelection([])}>
         <X size={13} />
       </button>
     </div>
   ) : (
-    <div className="sb-libfoot hint">
-      Kéo thả vào cảnh để nối · chọn nhiều + <span className="kbd">C</span> để nối hàng loạt
-    </div>
+    <div className="sb-libfoot hint">{libraryFooterHint(IS_MAC)}</div>
   )
 
   return (
@@ -594,7 +656,7 @@ export function AssetLibrary({
             <ImagePlus size={13} />
             Thêm
           </button>
-          <button className="icon-btn sb-xs" title={`Tạo ${kindLabel} trống (chưa có ảnh)`} onClick={createEmpty}>
+          <button className="icon-btn sb-xs" title={`Tạo ${kindLabel} trống (chưa có ảnh)`} aria-label={`Tạo ${kindLabel} trống (chưa có ảnh)`} onClick={createEmpty}>
             <Plus size={14} />
           </button>
           <input
@@ -675,7 +737,9 @@ export function AssetLibrary({
                   token={singleId ? tokens[a.id] : undefined}
                   sendsImages={media.images}
                   sceneModel={media.model}
-                  groupSize={selection.length}
+                  // Unselected cards get a constant: a selection change (Ctrl+A on hundreds of cards) re-renders only
+                  // the cards whose own state changed.
+                  groupSize={selSet.has(a.id) ? selection.length : 1}
                   onSelect={onSelect}
                 />
               ))}

@@ -1,7 +1,7 @@
 // Fake video renderer for the demo provider (providers/mock.ts): no network, no cost.
 // Produces a poster image (and, when the browser supports it, a short animated webm) for each finished take.
 // The picture is deterministic per take (seeded by take id) so re-opening a project shows the same frames.
-import { getUrl, putBlob } from './imageStore'
+import { getUrl, putBlob, releaseUrl } from './imageStore'
 
 export interface MockRenderInput {
   takeId: string
@@ -14,7 +14,7 @@ export interface MockRenderInput {
   color: string
   /** Image-store keys of the reference images, in @image order. */
   imageIds: string[]
-  /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "@video_1"); defaults to @image_<index>. */
+  /** Label drawn under each thumbnail (its real token, e.g. "@image_2", "khung đầu"); defaults to @image_<index>. */
   labels?: string[]
   /**
    * The pictures themselves, parallel to imageIds (dev mode: the files the simulated canvasapp received). A blob here
@@ -126,16 +126,18 @@ async function buildPainter(ctx: CanvasRenderingContext2D, w: number, h: number,
   const max = Math.max(1, input.maxImages ?? 4)
   const picked = input.imageIds.slice(0, max).map((id, i) => ({ id, label: input.labels?.[i] ?? `@image_${i + 1}`, blob: input.imageBlobs?.[i] ?? null }))
   const withUrls = await Promise.all(
-    picked.map(async (p) => (p.blob ? { ...p, url: URL.createObjectURL(p.blob), own: true } : { ...p, url: (await getUrl(p.id)) ?? '', own: false })),
+    picked.map(async (p) => (p.blob ? { ...p, url: URL.createObjectURL(p.blob), own: true } : { ...p, url: (await getUrl(p.id).catch(() => null)) ?? '', own: false })),
   )
   const withImgs = await Promise.all(
     withUrls
-      .filter((p) => p.url)
       .map(async (p) => {
-        const img = await loadImage(p.url)
-        // a decoded image keeps its pixels: the temporary URL of a passed blob can go
-        if (p.own) URL.revokeObjectURL(p.url)
-        return { label: p.label, img }
+        try {
+          return { label: p.label, img: p.url ? await loadImage(p.url) : null }
+        } finally {
+          // A decoded image keeps its pixels; release both passed blobs and stored media.
+          if (p.own) URL.revokeObjectURL(p.url)
+          else releaseUrl(p.id)
+        }
       }),
   )
   const loadedItems = withImgs.filter((p): p is { label: string; img: HTMLImageElement } => !!p.img)

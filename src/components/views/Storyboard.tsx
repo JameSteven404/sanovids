@@ -8,10 +8,13 @@ import type { Scene, Take } from '../../core/types'
 import { useMotionLevel, type MotionLevel } from '../../lib/canvasPrefs'
 import { useDownloadPrefs } from '../../lib/downloads'
 import { sortedScenes, undoToastAction, useProject } from '../../store/project'
+import { useRuns } from '../../store/runs'
 import { toast, useUI } from '../../store/ui'
 import { MediaImg } from '../common/Media'
+import { useSceneRunBlock } from '../runs/shared'
 import { formatRuntime, isEditingTarget, isSelectAllKey, latestOf, pickShowcaseTake, STATUS_LABEL, starredTake, useKeyboardArea, useTakesByScene } from './shared'
-import { StoryboardPlayer, type PlayerItem } from './StoryboardPlayer'
+import type { PlayerItem } from '../../core/filmItems'
+import { FilmPlayer as StoryboardPlayer } from '../player/FilmPlayer'
 import { edgeAnnouncement, gridStep, insertBar, moveAnnouncement, reorderToast, sceneOrderAt } from './storyboardOrder'
 import { useCardReorder, type DropTarget } from './useCardReorder'
 import './views.css'
@@ -383,6 +386,9 @@ const StoryCard = memo(function StoryCard({
   onPlay: (index: number) => void
 }) {
   const code = sceneCode(scene.order)
+  // Why "Chạy" is disabled: the engine's rule list (core/runRules = store/runs check()), like the canvas card and the
+  // inspector — as a string (stable selection): the cached compile only reruns when this scene or the assets change.
+  const runBlock = useSceneRunBlock(scene)
   const running = latest && (latest.status === 'processing' || latest.status === 'queued') ? latest : undefined
   const failed = latest?.status === 'failed' ? latest : undefined
   const accent = scene.color ?? 'var(--accent)'
@@ -480,8 +486,8 @@ const StoryCard = memo(function StoryCard({
             )}
             <button
               className="btn btn-sm"
-              disabled={!scene.prompt.trim()}
-              title={scene.prompt.trim() ? 'Chạy cảnh này' : 'Prompt trống'}
+              disabled={!!runBlock}
+              title={runBlock ? `Chưa chạy được: ${runBlock}` : 'Chạy cảnh này'}
               onClick={(e) => {
                 e.stopPropagation()
                 requestRun([scene.id])

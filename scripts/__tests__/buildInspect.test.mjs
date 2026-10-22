@@ -386,13 +386,15 @@ describe('code files, integrity resource, shipped files (helpers)', () => {
     ])
     fs.writeFileSync(path.join(d, 'LICENSE.txt'), 'licence\n')
     expect(inspectShippedFiles(d, [{ name: 'LICENSE.txt', source: src }])[0].text).toMatch(/khác/)
-    expect(inspectShippedFiles(d, [{ name: 'THIRD-PARTY-NOTICES.txt', source: src }])[0].text).toMatch(/^Thiếu THIRD-PARTY-NOTICES\.txt cạnh file exe \(package\.json build\.extraFiles/)
+    expect(inspectShippedFiles(d, [{ name: 'THIRD-PARTY-NOTICES.txt', source: src }])[0].text).toMatch(/^Thiếu THIRD-PARTY-NOTICES\.txt cạnh file exe \(package\.json build\.win\.extraFiles/)
     expect(inspectShippedFiles(d, [{ name: 'X.txt', source: path.join(dir, 'nope.txt') }])[0].text).toMatch(/^Thiếu file nguồn/)
     expect(inspectShippedFiles(d, undefined)).toEqual([])
   })
 })
 
-describe.skipIf(!hasSignatureModule)('inspectWindowsBuild over a fake build (canned PowerShell answers)', () => {
+// Windows only, like the other fake-spawn signature tests: electron/signature.cjs answers "unknown" on any other platform
+// before it spawns anything, so every signature check here would fail off Windows.
+describe.runIf(hasSignatureModule && process.platform === 'win32')('inspectWindowsBuild over a fake build (canned PowerShell answers)', () => {
   let dir
   let build
   let unpacked

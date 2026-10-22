@@ -43,6 +43,9 @@ interface SigRules {
 type SpawnFn = (cmd: string, args: string[], opts: Record<string, unknown>) => unknown
 interface SignatureMod {
   SIGNATURE_TIMEOUT_MS: number
+  DRIVE_TYPE_SCRIPT: string
+  parseDriveTypeOutput(stdout: unknown): number | null
+  checkDriveType(root: unknown, opts?: { timeoutMs?: number; log?: (line: string) => void; powershellPath?: string; spawnImpl?: SpawnFn }): Promise<number | null>
   readSignerPins(pkgJsonPath?: string): string[]
   checkFileSignature(
     file: unknown,
@@ -466,6 +469,57 @@ describe('readSignerPins', () => {
     } finally {
       nodeFs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('checkDriveType (files:trashSaved moves files only on a fixed disk)', () => {
+  it('the script: one line, no quote / backtick, the root only in the env; its output parsed strictly', () => {
+    expect(signature.DRIVE_TYPE_SCRIPT).not.toMatch(/["`\r\n]/)
+    expect(signature.DRIVE_TYPE_SCRIPT).toContain('$env:SANOVIDS_DRIVE_ROOT')
+    expect(signature.parseDriveTypeOutput('3')).toBe(3)
+    expect(signature.parseDriveTypeOutput(' 2\r\n')).toBe(2)
+    for (const bad of ['', '7', '33', 'Fixed', '3 4', null, 3]) expect(signature.parseDriveTypeOutput(bad), String(bad)).toBeNull()
+  })
+
+  it.runIf(process.platform === 'win32')('runs the hardened PowerShell once with the root in the env (no shell, no profile)', async () => {
+    const { spawnImpl, calls } = fakeSpawn((child) => {
+      child.stdout.write('3')
+      close(child, 0)
+    })
+    expect(await signature.checkDriveType('D:\\', { spawnImpl })).toBe(3)
+    expect(calls).toHaveLength(1)
+    const { cmd, args, opts } = calls[0]
+    expect(cmd).toMatch(/\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/)
+    expect(args).toEqual([...rules.powershellArgs().slice(0, -1), signature.DRIVE_TYPE_SCRIPT])
+    expect(args.join(' ')).not.toMatch(/EncodedCommand|Bypass|ExecutionPolicy/i)
+    expect(opts).toMatchObject({ shell: false, windowsHide: true })
+    const env = opts.env as Record<string, string>
+    expect(env.SANOVIDS_DRIVE_ROOT).toBe('D:\\')
+    expect(env.SANOVIDS_SIG_PATH).toBeUndefined()
+    expect(Object.keys(env).some((k) => k.toLowerCase() === 'psmodulepath')).toBe(false)
+  })
+
+  it.runIf(process.platform === 'win32')('anything else → null (never a rejection): bad root, garbage, an error, no PowerShell, timeout', async () => {
+    const never = fakeSpawn(() => undefined)
+    for (const bad of ['D:', 'D:\\Phim', '\\\\nas\\share\\', '', null]) expect(await signature.checkDriveType(bad, { spawnImpl: never.spawnImpl }), String(bad)).toBeNull()
+    expect(never.calls).toHaveLength(0)
+    const lines: string[] = []
+    const garbage = fakeSpawn((child) => {
+      child.stdout.write('Fixed')
+      close(child, 0)
+    })
+    expect(await signature.checkDriveType('D:\\', { spawnImpl: garbage.spawnImpl, log: (l) => lines.push(l) })).toBeNull()
+    expect(lines.some((l) => l.includes('drive type of D:\\ not read'))).toBe(true)
+    const clm = fakeSpawn((child) => {
+      child.stderr.write('Cannot invoke method. Method invocation is supported only on core types in this language mode.')
+      close(child, 1)
+    })
+    expect(await signature.checkDriveType('D:\\', { spawnImpl: clm.spawnImpl })).toBeNull()
+    const missing = fakeSpawn((child) => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })))
+    expect(await signature.checkDriveType('D:\\', { spawnImpl: missing.spawnImpl })).toBeNull()
+    const hang = fakeSpawn(() => undefined)
+    expect(await signature.checkDriveType('D:\\', { spawnImpl: hang.spawnImpl, timeoutMs: 30 })).toBeNull()
+    expect(hang.children[0].killed).toBe(1)
   })
 })
 

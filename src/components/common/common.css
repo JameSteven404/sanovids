@@ -4,6 +4,16 @@
  * Loaded after base.css, so these rules take over the older versions of the same classes there.
  */
 
+/* ---------- shortcut key caps ---------- */
+.cm-keys, .cm-key-chord {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cm-keys { flex-wrap: wrap; }
+.cm-keys-or { padding: 0 3px; color: var(--text-faint); }
+.cm-keys-plus { color: var(--text-dim); }
+
 /* ---------- modal (sheet) ---------- */
 .modal-backdrop {
   position: fixed;
@@ -18,6 +28,16 @@
   backdrop-filter: blur(3px);
   animation: cm-fade-in 0.2s ease-out;
 }
+/* a question asked above an open dialog (Modal layer 'top', ConfirmSheet): above dialogs (100), below toasts (200) */
+.modal-backdrop.is-top {
+  z-index: 140;
+}
+/* the question of a ConfirmSheet: its line breaks are kept */
+.cm-confirm-text {
+  margin: 0;
+  white-space: pre-line;
+  line-height: 1.5;
+}
 .modal {
   width: min(560px, 100%);
   max-height: calc(100vh - 48px);
@@ -27,9 +47,10 @@
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   animation: cm-sheet-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-color: var(--border-strong);
 }
 .modal:focus,
 .modal:focus-visible {
@@ -135,7 +156,7 @@
   /* docs/DESIGN.md: popovers, menus, hover previews and toasts share radius 12 (multi-line toasts stay tidy). */
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--material-strong);
+  background: var(--panel);
   -webkit-backdrop-filter: var(--blur);
   backdrop-filter: var(--blur);
   box-shadow: var(--shadow-lg);
@@ -144,12 +165,13 @@
   font-weight: 500;
   line-height: 1.4;
   animation: cm-toast-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-color: var(--border-strong);
 }
 /* Tone shows in the icon only: the capsule itself stays calm. */
 .toast.success,
 .toast.warning,
 .toast.error {
-  border-color: var(--border);
+  border-color: var(--border-strong);
 }
 .toast-icon {
   flex: none;
@@ -175,20 +197,20 @@
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui);
 }
 .toast .toast-action:hover {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 /* Light appearance: orange text on a pale orange fill is only ~2.5:1; a deeper orange keeps the label readable. */
 :root[data-theme='light'] .toast .toast-action {
-  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+  color: var(--accent-ink);
 }
 .toast .toast-close {
   flex: none;
@@ -203,7 +225,7 @@
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
-  transition: background 0.12s ease-out, color 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), color var(--motion-hover) var(--ease-ui);
 }
 .toast .toast-close:hover {
   background: var(--hover);
@@ -343,7 +365,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s ease-out, transform 0.12s ease-out;
+  transition: background var(--motion-hover) var(--ease-ui), transform var(--motion-hover) var(--ease-ui);
 }
 .lightbox-nav:hover {
   background: var(--panel-3);

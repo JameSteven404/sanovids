@@ -111,9 +111,10 @@ topupFlow.store.subscribe((s, prev) => {
   if (isOrderInFlight(prev.phase) && !isOrderInFlight(s.phase) && orderIsForeign()) queueMicrotask(releaseForeignOrder)
 })
 
-// The provider changed: an order of the old gateway that is not in flight is let go at once.
+// The provider changed (the Settings choice, or the development-mode lock): an order of the old gateway that is not in
+// flight is let go at once.
 useProviderPrefs.subscribe((s, prev) => {
-  if (s.provider !== prev.provider) releaseForeignOrder()
+  if (s.provider !== prev.provider || s.active !== prev.active) releaseForeignOrder()
 })
 
 /** The whole flow state (re-renders on every change — only the sheet uses it). */
