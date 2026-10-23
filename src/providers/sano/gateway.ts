@@ -11,6 +11,8 @@
 // `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
 // never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed). Only
 // /capabilities and a newly created job (202) say what SANO runs now: an old job's poll / recover marks its take only.
+// A take queued while SANO said 'simulator' (JobRequest.expectSimulated: no fee was promised) reads /capabilities again
+// before its POST and is never sent once SANO says otherwise (SANO_NOW_LIVE).
 // Auth: `Authorization: Bearer <the host page's token>` only (SANO's /api/video has no cookie auth): SANO's Google ID
 // token, null until sign-in, never renewed (refused after ~1 h). Its state (tokenState: 'none' | 'refused' — this very
 // token got a 401 | 'ok') is read from the gateway's creation inside SANO, on every request and every 3 s. A dead token
@@ -54,6 +56,8 @@ export const SANO_UNAVAILABLE = 'Nhà cung cấp SANO chỉ dùng được khi m
 export const SANO_OTHER_ACCOUNT = 'Take này thuộc tài khoản SANO khác — đăng nhập lại tài khoản đó trong app SANO để SanoVids theo dõi tiếp.'
 /** SANO_OTHER_ACCOUNT for takes that wait in the queue (store/runs parkedReason). */
 export const SANO_OTHER_ACCOUNT_WAIT = 'Chờ tài khoản SANO khác — đăng nhập lại trong app SANO bằng tài khoản đã gửi take, take tự chạy tiếp.'
+/** A take queued while SANO ran its simulator (JobRequest.expectSimulated) when SANO no longer says so: not sent. */
+export const SANO_NOW_LIVE = 'Take này vào hàng đợi khi máy chủ SANO còn chạy giả lập (không phát sinh phí), nay SANO không còn báo giả lập — SanoVids không gửi. Chạy lại cảnh để xem chi phí rồi gửi.'
 /** How often the host's token is read besides each request (SANO signs in / switches account without telling). */
 export const TOKEN_RECHECK_MS = 3_000
 /** Cap on a job's reference images, measured on what is sent (the base64 text of every ref). */
@@ -341,7 +345,15 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       const want = wanted()
       stopIfCancelled()
       const refs = await refsOf(req)
-      const models = freshCaps() ?? (await readCaps())
+      // queued under SANO's simulator (the Run dialog said: no fee): its mode is read again now, never trusted from cache
+      const models = req.expectSimulated ? await readCaps() : (freshCaps() ?? (await readCaps()))
+      // shortcut: a switch to live between this read and the POST is not seen; send the expected mode once SANO's POST /jobs checks it.
+      if (req.expectSimulated && mode !== 'simulator') {
+        // an earlier send of this take (a lost answer) may have made its job: that one, never a new one under the new mode
+        const found = await provider.recover(req)
+        if (found) return found
+        throw new ProviderError('refused', SANO_NOW_LIVE)
+      }
       const refused = sanoIssues(models, req, refs.length)[0]
       if (refused) throw new ProviderError('refused', refused.reason)
       // opts.retryOfUnknown needs nothing more: the same idempotency key never makes a second job.
@@ -387,8 +399,13 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     async recover(req) {
       // outside SANO a 404 of this origin is no answer: no news, the take waits to be opened inside SANO
       if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
-      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`, {}, undefined, wanted())
+      // a lost connection / a 5xx is no answer: asked again later (store/runs), only a 404 says "no such job"
+      const later = (why: string) => new ProviderError('deferred', `Chưa hỏi được máy chủ SANO về take này (${why}) — SanoVids hỏi lại sau.`)
+      const res = await call(`/jobs?idempotencyKey=${encodeURIComponent(req.key)}`, {}, undefined, wanted()).catch((e: unknown) => {
+        throw e instanceof ProviderError ? e : later((e as Error)?.message || 'mất kết nối')
+      })
       if (res.status === 404) return null
+      if (res.status >= 500) throw later(await serverText(res))
       if (!res.ok) throw new ProviderError('server', `Không hỏi được máy chủ SANO về take này (${await serverText(res)}).`)
       const b = await bodyOf(res)
       if (typeof b?.id !== 'string' || !b.id) throw new ProviderError('server', 'Máy chủ SANO trả về job không có mã.')
@@ -478,6 +495,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
           opts.onProgress({ received, total })
         }
       }
+      // a 200 with no bytes (Content-Length: 0, an empty stream) is a failed download, retried — never an empty video
+      if (!received) throw new ProviderError('download', 'Máy chủ SANO trả về video rỗng.')
       opts.onProgress?.({ received, total })
       return { video: new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'video/mp4' }) }
     },

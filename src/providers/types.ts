@@ -149,6 +149,8 @@ export interface JobRequest {
   lastFrame: JobFrame | null
   /** Local time the take started processing (the mock uses it for wall-clock progress). */
   startedAt: number
+  /** Take.expectSimulated: queued under SANO's simulator (no fee promised) — sent only while SANO still says so. */
+  expectSimulated?: boolean
 }
 
 export type RemoteState = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'

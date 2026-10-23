@@ -216,6 +216,11 @@ export interface Take {
   /** Its job came back with SANO's mode 'simulator': a sample clip, nothing billed (providers/sano). */
   simulated?: boolean
   /**
+   * Queued while SANO said it runs its simulator (the Run dialog: no fee): sent only while SANO still says so — never
+   * billed behind that promise (providers/sano SANO_NOW_LIVE).
+   */
+  expectSimulated?: boolean
+  /**
    * The provider account (VideoProvider.account: SANO's token sub as a key) its job was sent or looked up under: SANO
    * jobs are per account, so under another one the take waits (store/runs cannotRunHere), never failed or sent again.
    */

@@ -192,6 +192,9 @@ export interface CancelFacts {
  */
 export function cancelQuestion(f: CancelFacts): string | null {
   if (!f.videoReady || f.status !== 'processing' || f.provider === 'mock') return null
+  if (f.provider === 'sano-gateway') {
+    return `${f.label}: video đã tạo xong trên máy chủ SANO — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn lấy được trong app SANO); chạy lại cảnh sẽ tính phí lần nữa.\nVẫn huỷ?`
+  }
   return f.provider === 'dev'
     ? `${f.label}: video đã tạo xong trên canvasapp giả lập và đã trừ credit dev — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (job vẫn còn trong Bảng phát triển); chạy lại cảnh sẽ trừ credit dev lần nữa.\nVẫn huỷ?`
     : `${f.label}: video đã tạo xong trên canvasapp và đã trừ credit — SanoVids chưa tải về xong.\nHuỷ sẽ bỏ video này trong SanoVids (vẫn tải được trên canvasapp.io.vn, phiên “SanoVids bridge”); chạy lại cảnh sẽ trừ credit lần nữa.\nVẫn huỷ?`
@@ -208,7 +211,9 @@ export function cancelToastText(f: CancelFacts): { text: string; warning: boolea
       text:
         f.provider === 'dev'
           ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit dev) không được tải về; job vẫn còn trong Bảng phát triển.`
-          : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
+          : f.provider === 'sano-gateway'
+            ? `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong không được tải về; vẫn lấy được trong app SANO.`
+            : `Đã huỷ ${f.label} trong SanoVids — video đã tạo xong (đã trừ credit) không được tải về; vẫn tải được trên canvasapp.io.vn.`,
       warning: true,
     }
   }

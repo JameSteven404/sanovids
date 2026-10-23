@@ -4,8 +4,15 @@
 //   'server' + firm   → a sure refusal: the scene cannot run (settingsRunBlock), skipped by the queue, no credit spent.
 //   'fallback' / older → a warning only (settingsRunWarning): the submit reads again first and decides then.
 //   'none'            → nothing (not read yet: the submit reads and decides).
-import type { VideoSettings } from '../core/types'
+import type { CompiledPrompt, Scene, VideoSettings } from '../core/types'
 import type { ProviderId, SettingsLimits } from './types'
+
+/**
+ * The pictures a scene's job sends — its images + the frames of 'transform' — as settingsRunBlock's `refs` (SANO's
+ * maxRefs): the Run dialog / queue (store/runs check()) and every one-scene Run button count them alike.
+ */
+export const jobRefCount = (scene: Pick<Scene, 'settings' | 'firstFrame' | 'lastFrame'>, compiled: Pick<CompiledPrompt, 'images'>): number =>
+  compiled.images.length + (scene.settings.mode === 'transform' ? Number(!!scene.firstFrame) + Number(!!scene.lastFrame) : 0)
 
 /** A refusal text as a short reason (the run gate's reasons carry no final period). */
 const bare = (text: string) => text.replace(/\.\s*$/, '')

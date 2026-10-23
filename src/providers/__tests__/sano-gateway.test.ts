@@ -7,7 +7,7 @@ import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
 import { stubInsideSano } from './insideSano'
 import { accountKey } from '../canvasapp/adapter'
-import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
+import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_UNAVAILABLE, tokenAccount, type SanoGatewayDeps } from '../sano/gateway'
 import { jwt } from './insideSano'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -192,6 +192,43 @@ describe('sano-gateway provider', () => {
     s.opts.mode = 'bogus'
     await p.refreshLimits({ force: true })
     expect(p.mode()).toBeNull()
+  })
+
+  it('a take queued under the simulator (no fee said) reads the mode again before its POST: live now → refused, nothing made; a job of its earlier send is that one', async () => {
+    const s = fakeSano()
+    const p = make(s)
+    s.opts.mode = 'simulator'
+    await p.refreshLimits({ force: true })
+    s.opts.mode = 'live' // the read above stays firm for 10 min: only a read now sees it
+    await expect(p.submit(req({ expectSimulated: true }))).rejects.toMatchObject({ code: 'refused', message: SANO_NOW_LIVE })
+    expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+    s.jobs.set('job_9', { id: 'job_9', key: 'take_1', status: 'done', mode: 'simulator' }) // its earlier answer was lost
+    expect(await p.submit(req({ expectSimulated: true }), { retryOfUnknown: true })).toEqual({ remoteId: 'job_9', simulated: true })
+    expect(s.calls('POST', '/api/video/jobs')).toHaveLength(0)
+  })
+
+  it('recover: a 5xx or a lost connection is no answer (deferred, asked again later); only a 404 says there is no job', async () => {
+    const s = fakeSano()
+    const p = make(s)
+    const inner = s.fetch.getMockImplementation()!
+    s.fetch.mockImplementation(async (url, init) => (url.includes('idempotencyKey') ? json(503, { error: 'busy' }) : inner(url, init)))
+    await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred' })
+    s.fetch.mockImplementation(async (url, init) => {
+      if (url.includes('idempotencyKey')) throw new TypeError('Failed to fetch')
+      return inner(url, init)
+    })
+    await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred' })
+    s.fetch.mockImplementation(inner)
+    expect(await p.recover(req())).toBeNull()
+  })
+
+  it('a 200 /result with no bytes is a failed download (retried), never an empty video', async () => {
+    const s = fakeSano()
+    const p = make(s)
+    await p.submit(req())
+    const inner = s.fetch.getMockImplementation()!
+    s.fetch.mockImplementation(async (url, init) => (url.endsWith('/result') ? new Response(new Uint8Array(0), { headers: { 'Content-Length': '0' } }) : inner(url, init)))
+    await expect(p.fetchResult('job_1')).rejects.toMatchObject({ code: 'download' })
   })
 
   it('the same idempotency key after a crash recovers the existing job instead of submitting again', async () => {

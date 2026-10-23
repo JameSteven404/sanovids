@@ -3,6 +3,7 @@ import { Ban, Bug, CircleAlert, CircleArrowUp, CircleCheck, Cloud, Clock, Loader
 import { useEffect, useMemo, useState } from 'react'
 import { promptParts } from '../../core/compile'
 import { sceneRunBlock } from '../../core/runGate'
+import { compiledOf } from '../../core/runRules'
 import { sceneMapOf } from '../../core/sceneIndex'
 import type { JobStatus, Scene, Take, VideoSettings } from '../../core/types'
 import { getBlob } from '../../lib/imageStore'
@@ -20,7 +21,7 @@ import {
   type ProviderId,
   type SettingsLimits,
 } from '../../providers'
-import { settingsRunBlock } from '../../providers/limits'
+import { jobRefCount, settingsRunBlock } from '../../providers/limits'
 import { useProject } from '../../store/project'
 import { useRuns } from '../../store/runs'
 
@@ -63,13 +64,14 @@ export function useActiveLimits(): { provider: ProviderId; limits: SettingsLimit
 
 /**
  * The gateway's sure refusal of these settings (providers/limits settingsRunBlock: a firm 'server' read), or null —
- * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes.
+ * as a string selected from the revision store, so a card per scene re-renders only when ITS answer changes. `refs`: the
+ * pictures the job sends (providers/limits jobRefCount), for a gateway that caps them.
  */
-export function useSettingsRunBlock(settings: VideoSettings | undefined): string | null {
+export function useSettingsRunBlock(settings: VideoSettings | undefined, refs?: number): string | null {
   const provider = useActiveProvider()
   return useProviderLimits((s) => {
     void s.rev[provider]
-    return settings ? settingsRunBlock(providerLimits(provider), settings) : null
+    return settings ? settingsRunBlock(providerLimits(provider), settings, refs) : null
   })
 }
 
@@ -92,7 +94,7 @@ export function useSceneRunBlock(target: Scene | string | undefined): string | n
     const scene = pick(s.project.scenes)
     if (!scene) return null
     const assets = s.project.assets
-    const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings)
+    const settingsBlock = settingsRunBlock(providerLimits(provider), scene.settings, jobRefCount(scene, compiledOf(assets, scene)))
     return sceneRunBlock(scene, assets, settingsBlock)
   })
 }

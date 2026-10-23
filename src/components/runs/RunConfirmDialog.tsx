@@ -103,6 +103,8 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
   const sano = provider === 'sano-gateway'
   // What SANO said it runs (read with its limits, whose revision re-renders this): real costs only when it said 'live'.
   const sanoMode = sano ? sanoGatewayProvider().mode() : null
+  // SANO's simulator: a sample clip, nothing billed — the amounts below are shown struck, never as the run's cost
+  const free = sanoMode === 'simulator'
   const sanoSays = sanoMode === 'live' ? 'video thật, chi phí do SANO quản lý' : sanoMode === 'simulator' ? 'Giả lập — clip mẫu, không phát sinh phí' : 'Máy chủ SANO chưa báo chế độ chạy'
 
   // Development mode locked: a scene that had simulated (DEV) takes now runs for real — say so next to the cost.
@@ -200,7 +202,7 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
             }
           >
             <Play size={14} fill="currentColor" />
-            Chạy {runnable.length} cảnh · {formatCredits(total, kind)}
+            Chạy {runnable.length} cảnh · {free ? 'không phát sinh phí' : formatCredits(total, kind)}
           </button>
         </>
       }
@@ -211,10 +213,10 @@ export function RunConfirmDialog({ sceneIds, follow }: { sceneIds: string[]; fol
           <b className="mono">{runnable.length}</b>
           <small>trên {shown.length} cảnh</small>
         </div>
-        <div className={`rq-stat${sim ? '' : ' real'}`} title={CREDIT_HINT[kind] ?? undefined}>
+        <div className={`rq-stat${sim || free ? '' : ' real'}`} title={CREDIT_HINT[kind] ?? undefined}>
           <span>Chi phí</span>
-          <b className="mono">{sim ? formatCreditNumber(total) : `≈ ${formatCreditNumber(total)}`}</b>
-          <small>{sim ? `${unit} · giả lập` : sano ? `${unit} · ước tính` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
+          <b className="mono">{sim ? formatCreditNumber(total) : free ? <s>{`≈ ${formatCreditNumber(total)}`}</s> : `≈ ${formatCreditNumber(total)}`}</b>
+          <small>{sim ? `${unit} · giả lập` : free ? 'giả lập · không phát sinh phí' : sano ? `${unit} · ước tính` : `${unit} canvasapp · ≈ ${formatVnd(total)}`}</small>
         </div>
         {sano ? null : demo ? (
           <div className={`rq-stat${short ? ' short' : ''}`} title={CREDIT_HINT.demo ?? undefined}>

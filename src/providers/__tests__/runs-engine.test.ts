@@ -48,7 +48,7 @@ import { capabilitiesFromModels } from '../capabilities'
 import { retiredVideoReason } from '../../core/runRules'
 import type { SiteJobClaim, SiteTakeDraft } from '../canvasapp/siteJobs'
 import { accountKey } from '../canvasapp/adapter'
-import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT } from '../sano/gateway'
+import { SANO_LOGIN_TEXT, SANO_LOGIN_WAIT, SANO_NOW_LIVE, SANO_OTHER_ACCOUNT, SANO_OTHER_ACCOUNT_WAIT } from '../sano/gateway'
 import { getBlob } from '../../lib/imageStore'
 import { jwt, stubInsideSano } from './insideSano'
 
@@ -1122,11 +1122,13 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     expect(f.submitted).toHaveLength(0)
   })
 
-  it('a look-up the provider cannot make from this page (deferred: SANO outside SANO) leaves the take as it is', async () => {
+  it('a look-up the provider cannot make from this page (deferred: SANO outside SANO, its server down a moment) leaves the take as it is, asked again after a poll interval', async () => {
     ;(globalThis as { window?: unknown }).window = { bdpDesktop: { canvasapp: { request: async () => ({}) } } }
     const f = fakeProvider('canvasapp', 20_000)
     let reachable = false
+    let asked = 0
     f.p.recover = async () => {
+      asked++
       if (!reachable) throw new ProviderError('deferred', 'not here')
       return { remoteId: 'r_found', simulated: true }
     }
@@ -1137,8 +1139,9 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     await vi.advanceTimersByTimeAsync(1000)
     expect(take('t1')).toMatchObject({ status: 'processing', remoteId: null, error: null })
     expect(take('t1').submitUnknown).toBeUndefined()
+    expect(asked).toBe(1) // not again on every tick
     reachable = true // opened where it can ask: found, with what the job said
-    await vi.advanceTimersByTimeAsync(250)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(take('t1')).toMatchObject({ status: 'processing', remoteId: 'r_found', simulated: true })
     expect(f.submitted).toHaveLength(0)
   })
@@ -1195,6 +1198,7 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
    */
   function sanoServer() {
     const refused = new Set<string>()
+    const opts = { mode: undefined as string | undefined }
     const jobs = new Map<string, { owner: string; key: string; status: string; progress?: number }>()
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
@@ -1202,7 +1206,7 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       if (!token || refused.has(token)) return json(401, { error: 'unauthenticated' })
       const owner = String(JSON.parse(atob(token.split('.')[1])).sub)
       const u = new URL(String(url), 'https://sano.example')
-      if (u.pathname.endsWith('/capabilities')) return json(200, { models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9'], resolutions: ['480p'], durations: [5], maxRefs: 4 }] })
+      if (u.pathname.endsWith('/capabilities')) return json(200, { ...(opts.mode ? { mode: opts.mode } : {}), models: [{ id: 'seedance_2_5', label: 'Seedance 2.5', ratios: ['16:9'], resolutions: ['480p'], durations: [5], maxRefs: 4 }] })
       const result = u.pathname.match(/\/jobs\/([^/]+)\/result$/)
       if (result) {
         const job = jobs.get(decodeURIComponent(result[1]))
@@ -1221,7 +1225,7 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
       return job?.owner === owner ? json(200, { id, status: job.status, progress: job.progress }) : json(404, { error: 'not found' })
     })
     const sent = (path: string) => fetch.mock.calls.filter(([url]) => String(url) === `/api/video${path}`).length
-    return { fetch, jobs, refused, sent }
+    return { fetch, jobs, refused, sent, opts }
   }
 
   const sanoTake = (id: string, sceneId: string, over: Partial<Take> = {}) => legacyTake(id, sceneId, { provider: 'sano-gateway', charged: false, ...over })
@@ -1424,6 +1428,25 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     }
   })
 
+  it('▶ under the simulator: bound to the account read now (before the fresh read ends) and, SANO live by its POST, refused with nothing posted', async () => {
+    const { server, sano, done } = twoAccounts()
+    try {
+      server.opts.mode = 'simulator'
+      expect(await sano.refreshLimits?.({ force: true })).toBe('read') // signed in as A
+      useProviderPrefs.setState({ provider: 'sano-gateway' })
+      expect(useRuns.getState().enqueue(['s2']).queued).toBe(1)
+      const id = useRuns.getState().takes[0].id
+      // on the take at once: a project closed before the fresh read ends keeps it bound (never sent under the next one)
+      expect(take(id)).toMatchObject({ account: accountKey('A'), expectSimulated: true })
+      server.opts.mode = 'live' // within the 10 min the last read stays firm
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(take(id)).toMatchObject({ status: 'failed', error: SANO_NOW_LIVE, remoteId: null })
+      expect(server.sent('/jobs')).toBe(0)
+    } finally {
+      done()
+    }
+  })
+
   it("cancelled while its POST is out and its account switched away meanwhile: the job it made is not cancelled under the other account", async () => {
     const { server, tok, host, sano, done } = twoAccounts()
     let answer = () => {}
@@ -1526,6 +1549,21 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     await vi.advanceTimersByTimeAsync(250)
     expect(take(id)).toMatchObject({ remoteId: 'r_' + id, simulated: true })
     expect(migrateTake(JSON.parse(JSON.stringify(take(id)))).simulated).toBe(true)
+  })
+
+  it("…also on a take cancelled while its submit was on its way: the job id it gets late keeps SANO's simulator mark", async () => {
+    const f = fakeProvider('dev')
+    let answer = () => {}
+    f.p.mayHaveSent = () => true
+    f.p.submit = (req) => new Promise((r) => (answer = () => r({ remoteId: 'r_' + req.key, simulated: true })))
+    registerProvider(f.p)
+    useRuns.getState().enqueue(['s2'])
+    const id = useRuns.getState().takes[0].id
+    await vi.advanceTimersByTimeAsync(250)
+    useRuns.getState().cancel(id)
+    answer()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(take(id)).toMatchObject({ status: 'cancelled', remoteId: 'r_' + id, simulated: true })
   })
 
   /** What persist wrote for the open project (a JSON copy). */

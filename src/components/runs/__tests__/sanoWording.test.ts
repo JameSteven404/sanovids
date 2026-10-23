@@ -40,6 +40,8 @@ import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
 import { RunConfirmDialog } from '../RunConfirmDialog'
+import { cancelQuestion, cancelToastText } from '../creditText'
+import { checkTakeDelete } from '../../../core/deletePlan'
 
 const scene: Scene = {
   id: 's1',
@@ -94,6 +96,8 @@ describe('SANO wording', () => {
     expect(html).toContain(said)
     expect(html).toContain('chỉ dừng được job còn đang chờ trên SANO')
     if (mode !== 'live') expect(html).not.toMatch(/video thật|chi phí thật|chi phí do SANO/)
+    // the simulator's sample clip: no amount offered as the run's cost (the Run button, the summary)
+    if (mode === 'simulator') expect(html).toMatch(/Chạy \d+ cảnh · không phát sinh phí/)
     expect(html).not.toMatch(/canvasapp/i)
     expect(html).not.toContain('Số dư')
   })
@@ -141,6 +145,19 @@ describe('SANO wording', () => {
       paidCancelledRunWarning('S01', 'sano-gateway'),
     ]) {
       expect(text).toMatch(/SANO|Chạy lại/)
+      expect(text).not.toMatch(/canvasapp/i)
+    }
+  })
+
+  it('"Huỷ" / delete of a SANO take whose video is made (still downloading), maybe billed or sent: SANO words, never canvasapp', () => {
+    const facts = { label: 'S01·T1', provider: 'sano-gateway' as const, status: 'processing' as const, cost: 20, demoPaid: false, sentAway: true, videoReady: true }
+    const asked = checkTakeDelete(['a', 'b', 'c'], [
+      { id: 'a', status: 'processing', videoReady: true, sent: true, provider: 'sano-gateway' },
+      { id: 'b', status: 'failed', uncertain: true, provider: 'sano-gateway' },
+      { id: 'c', status: 'processing', sent: true, provider: 'sano-gateway' },
+    ]).question
+    for (const text of [cancelQuestion(facts), cancelToastText(facts).text, asked]) {
+      expect(text).toMatch(/app SANO|máy chủ SANO/)
       expect(text).not.toMatch(/canvasapp/i)
     }
   })
