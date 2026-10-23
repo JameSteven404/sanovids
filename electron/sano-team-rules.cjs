@@ -85,11 +85,13 @@ function createSanoTeamConnect(deps) {
     if (busy) return fail('busy')
     busy = true
     let win = null
+    // the whole flow's: the window may close after the login was confirmed, and open() may throw after the timers start
+    let closed = false
+    let timer, timeout
     try {
       await deps.clear()
       const outcome = await new Promise((resolve) => {
         let checking = false
-        let timer, timeout
         // the first outcome wins (resolve ignores the later ones)
         const end = (v) => {
           clearInterval(timer)
@@ -109,10 +111,19 @@ function createSanoTeamConnect(deps) {
         }
         timer = setInterval(() => void check(), SANO_TEAM_CHECK_MS)
         timeout = setTimeout(() => end('timeout'), SANO_TEAM_LOGIN_MS)
-        win = deps.open({ onNavigate: () => void check(), onClosed: () => end('closed') })
+        win = deps.open({
+          onNavigate: () => void check(),
+          onClosed: () => {
+            closed = true
+            end('closed')
+          },
+        })
       })
       if (outcome !== 'ok') return fail(outcome)
-      const payload = teamSessionPayload(await deps.cookies(), deps.host, deps.now())
+      const all = await deps.cookies()
+      // closed while the cookies were read: nothing was sent yet, so nothing is handed over
+      if (closed) return fail('closed')
+      const payload = teamSessionPayload(all, deps.host, deps.now())
       if (!payload || !payload.cookies.some((c) => c.name === 'canvas_csrf')) return fail('no-session')
       let res
       try {
@@ -122,6 +133,8 @@ function createSanoTeamConnect(deps) {
       }
       return res.status === 200 ? { ok: true, status: res.json && typeof res.json === 'object' ? res.json : null } : sanoRefusal(res.status, res.json)
     } finally {
+      clearInterval(timer)
+      clearTimeout(timeout)
       if (win) win.close()
       try {
         await deps.clear()

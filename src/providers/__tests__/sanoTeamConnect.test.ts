@@ -259,6 +259,29 @@ describe('createSanoTeamConnect', () => {
     expect(await next).toMatchObject({ code: 'closed' })
   })
 
+  it('a window closed while the cookies are read (after canvasapp confirmed) hands nothing over', async () => {
+    let give!: (v: unknown[]) => void
+    const h = harness({ cookies: () => new Promise((r) => (give = r)) })
+    const run = h.connect(token(60))
+    await h.flush()
+    await h.login()
+    h.state.handlers!.onClosed()
+    give([csrf, ck()])
+    expect(await run).toMatchObject({ ok: false, code: 'closed' })
+    expect(h.posted).toHaveLength(0)
+  })
+
+  it('a window that fails to open leaves no check or timeout running and frees the next connect', async () => {
+    const h = harness({
+      open: () => {
+        throw new Error('no window')
+      },
+    })
+    await expect(h.connect(token(60))).rejects.toThrow('no window')
+    expect(vi.getTimerCount()).toBe(0)
+    await expect(h.connect(token(60))).rejects.toThrow('no window')
+  })
+
   it('partition and SANO path are the shared contract', () => {
     expect(R.SANO_TEAM_PARTITION).toBe('canvasapp-team')
     expect(R.SANO_TEAM_SESSION_PATH).toBe('/api/video/admin/canvasapp-session')
