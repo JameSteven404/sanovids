@@ -1135,6 +1135,18 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     expect(f.submitted).toHaveLength(0)
   })
 
+  it('a queued SANO take opened outside SANO (Electron, the public web) stays queued: no POST, never failed', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      useRuns.getState().loadRuns({ takes: [legacyTake('t1', 's2', { provider: 'sano-gateway', charged: false })], credits: 100, spent: 0 })
+      await vi.advanceTimersByTimeAsync(20_000) // the real app provider, unavailable here: tried, deferred, tried again
+      expect(take('t1')).toMatchObject({ status: 'queued', startedAt: null, remoteId: null, error: null })
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it("a job made in SANO's simulator keeps that mark on its take, through save and migrate", async () => {
     const f = fakeProvider('dev')
     const submit = f.p.submit

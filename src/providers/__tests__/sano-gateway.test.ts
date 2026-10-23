@@ -36,6 +36,7 @@ interface Job {
   key: string
   status: string
   progress?: number
+  mode?: string
 }
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -55,8 +56,8 @@ function fakeSano() {
     if (u.pathname === '/api/video/jobs' && method === 'POST') {
       const body = JSON.parse(String(init.body))
       const had = [...jobs.values()].find((j) => j.key === body.idempotencyKey)
-      if (had) return json(200, { id: had.id, status: had.status })
-      const job: Job = { id: `job_${jobs.size + 1}`, key: body.idempotencyKey, status: 'queued' }
+      if (had) return json(200, { id: had.id, status: had.status, mode: had.mode })
+      const job: Job = { id: `job_${jobs.size + 1}`, key: body.idempotencyKey, status: 'queued', mode: opts.mode }
       jobs.set(job.id, job)
       if (opts.dropNextAnswer) {
         opts.dropNextAnswer = false
@@ -66,7 +67,7 @@ function fakeSano() {
     }
     if (u.pathname === '/api/video/jobs') {
       const had = [...jobs.values()].find((j) => j.key === u.searchParams.get('idempotencyKey'))
-      return had ? json(200, { id: had.id, status: had.status }) : json(404, { error: 'not found' })
+      return had ? json(200, { id: had.id, status: had.status, mode: had.mode }) : json(404, { error: 'not found' })
     }
     const m = u.pathname.match(/^\/api\/video\/jobs\/([^/]+)(\/result|\/cancel)?$/)
     const job = m ? jobs.get(decodeURIComponent(m[1])) : undefined
@@ -76,7 +77,7 @@ function fakeSano() {
       return json(200, { id: job.id, status: job.status })
     }
     if (m![2] === '/result') return new Response(video, { headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(video.length) } })
-    return json(200, { id: job.id, status: job.status, ...(job.progress !== undefined ? { progress: job.progress } : {}) })
+    return json(200, { id: job.id, status: job.status, mode: job.mode, ...(job.progress !== undefined ? { progress: job.progress } : {}) })
   })
   const calls = (method: string, path: string | RegExp) =>
     fetch.mock.calls.filter(([url, init]) => (init.method ?? 'GET') === method && (typeof path === 'string' ? url === path : path.test(url)))
@@ -177,6 +178,11 @@ describe('sano-gateway provider', () => {
     s.opts.mode = 'live'
     await p.refreshLimits({ force: true })
     expect(p.mode()).toBe('live')
+    // the old simulator job polled / recovered / resent (200) marks only its take: SANO runs live now
+    await p.poll(['job_1'])
+    expect(await p.recover(req())).toEqual({ remoteId: 'job_1', simulated: true })
+    expect(await p.submit(req())).toEqual({ remoteId: 'job_1', simulated: true })
+    expect(p.mode()).toBe('live')
     expect(await p.submit(req({ key: 'take_2', takeId: 'take_2' }))).toEqual({ remoteId: 'job_2' })
     s.opts.mode = 'bogus'
     await p.refreshLimits({ force: true })
@@ -262,11 +268,11 @@ describe('sano-gateway provider', () => {
     await expect(broken.cancel('job_x')).resolves.toBeUndefined()
   })
 
-  it("unavailable outside SANO: refuses, sends nothing; reads are no news (another origin's 404 never fails a take)", async () => {
+  it("unavailable outside SANO: sends nothing, a submit is deferred (not failed); reads are no news (another origin's 404 never fails a take)", async () => {
     const s = fakeSano()
     const p = make(s, { available: () => false })
     expect(await p.available()).toEqual({ ok: false, reason: SANO_UNAVAILABLE })
-    await expect(p.submit(req())).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(p.submit(req())).rejects.toMatchObject({ code: 'deferred' })
     expect(await p.refreshLimits()).toBe('unavailable')
     expect(await p.poll(['job_1'])).toEqual([])
     await expect(p.recover(req())).rejects.toMatchObject({ code: 'deferred' })

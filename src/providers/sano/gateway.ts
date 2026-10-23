@@ -9,7 +9,8 @@
 //   GET  /jobs/<id>/result                → the MP4
 //   POST /jobs/<id>/cancel                → { id, status } (only while queued)
 // `mode` ('simulator' | 'live', on /capabilities and on every job): what SANO runs. Missing (no backend) = unknown,
-// never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed).
+// never taken as 'live'; a job answered 'simulator' marks its take `simulated` (a sample clip, nothing billed). Only
+// /capabilities and a newly created job (202) say what SANO runs now: an old job's poll / recover marks its take only.
 // Auth: the SANO session cookie (credentials 'include') and, when the host page gives one, `Authorization: Bearer`.
 // 401 → SANO_LOGIN_TEXT (code 'login-required'), never retried here.
 // The idempotency key is the take id: sending a take again (lost answer, "Chạy lại") never creates — or pays for — a
@@ -77,7 +78,7 @@ export interface SanoGatewayDeps {
 
 export type SanoGatewayProvider = VideoProvider &
   Required<Pick<VideoProvider, 'recover' | 'mayHaveSent' | 'cancel' | 'reset' | 'settingsLimits' | 'limitsInfo' | 'refreshLimits'>> & {
-    /** What SANO last said it runs (/capabilities or a job answer); null = it has not said. */
+    /** What SANO last said it runs (/capabilities or a newly created job); null = it has not said. */
     mode(): SanoMode | null
   }
 
@@ -199,16 +200,7 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
     return reading
   }
 
-  /** A job answer's mode, also kept as what SANO runs now (the Run dialog says it). */
-  function jobMode(b: Record<string, unknown> | null): SanoMode | null {
-    const m = modeOf(b)
-    if (m && m !== mode) {
-      mode = m
-      deps.onLimitsChange?.()
-    }
-    return m
-  }
-  const job = (id: string, b: Record<string, unknown> | null) => (jobMode(b) === 'simulator' ? { remoteId: id, simulated: true } : { remoteId: id })
+  const job = (id: string, b: Record<string, unknown> | null) => (modeOf(b) === 'simulator' ? { remoteId: id, simulated: true } : { remoteId: id })
 
   const freshCaps = () => (caps && now() - caps.at < CAPS_TTL_MS ? caps.models : null)
 
@@ -250,7 +242,8 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       const stopIfCancelled = () => {
         if (opts.isCancelled?.()) throw new ProviderError('cancelled', 'Đã huỷ trước khi gửi lên SANO — không tạo job.')
       }
-      if (!deps.available()) throw new ProviderError('unavailable', SANO_UNAVAILABLE)
+      // outside SANO nothing is sent: the take stays queued and runs once its project is opened inside SANO (see recover)
+      if (!deps.available()) throw new ProviderError('deferred', SANO_UNAVAILABLE)
       stopIfCancelled()
       const refs = await refsOf(req)
       const models = freshCaps() ?? (await readCaps())
@@ -282,6 +275,12 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
         if (typeof b?.id !== 'string' || !b.id) throw uncertainError('câu trả lời không có mã job')
         const state = STATES[String(b.status)]
         if (state) states.set(b.id, state)
+        // 202 = made just now, so its mode is what SANO runs now (the Run dialog says it); 200 is an older job of this key
+        const m = modeOf(b)
+        if (res.status === 202 && m && m !== mode) {
+          mode = m
+          deps.onLimitsChange?.()
+        }
         return job(b.id, b)
       }
       if (res.status === 413) throw new ProviderError('too-large', 'Máy chủ SANO từ chối vì yêu cầu quá lớn — dùng ảnh nhỏ hơn hoặc bớt ảnh.')
@@ -321,7 +320,6 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
             if (!res.ok) throw new ProviderError('server', `Máy chủ SANO trả lỗi khi hỏi trạng thái job (${await serverText(res)}).`)
             const b = await bodyOf(res)
             const state = STATES[String(b?.status)]
-            jobMode(b)
             if (!state) return null // 'unknown' (or a status this build does not know): no news, asked again next time
             states.set(id, state)
             const progress = typeof b?.progress === 'number' ? { progress: b.progress } : {}
@@ -377,7 +375,6 @@ export function createSanoGatewayProvider(deps: SanoGatewayDeps): SanoGatewayPro
       try {
         const res = await call(`${jobPath(remoteId)}/cancel`, { method: 'POST' })
         const b = res.ok ? await bodyOf(res) : null
-        jobMode(b)
         const state = STATES[String(b?.status)]
         if (state) states.set(remoteId, state)
       } catch {

@@ -53,6 +53,11 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
       expect(takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status })).note).not.toContain('canvasapp')
     }
   })
+
+  it("a take of SANO's simulator is shown unbilled, never paid", () => {
+    const sim = takeCostLine({ ...take({ provider: 'sano-gateway', remoteId: 'job_1' }), simulated: true })
+    expect(sim).toMatchObject({ amount: '≈ 20 credit', note: 'giả lập — clip mẫu, không phát sinh phí', struck: true })
+  })
 })
 
 describe('takeCostLine — development mode (dev)', () => {

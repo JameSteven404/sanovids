@@ -79,7 +79,7 @@ export interface TakeCostLine {
 }
 
 type CostTake = Pick<Take, 'provider' | 'charged' | 'cost' | 'status' | 'remoteId' | 'error'> &
-  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus'>>
+  Partial<Pick<Take, 'startedAt' | 'submitUnknown' | 'imported' | 'foreignProvider' | 'foreignCharged' | 'foreignStatus' | 'simulated'>>
 
 /** Take viewer "Chi phí" line: the amount and which credits paid it (take.provider / take.charged / remoteId). */
 export function takeCostLine(t: CostTake): TakeCostLine {
@@ -105,6 +105,8 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   }
   const est = formatCredits(t.cost, kind)
   const amount = est === '—' || !w.approx ? est : `≈ ${est}`
+  // SANO's simulator made a sample clip: never billed, whatever became of the job (same words as the Run dialog)
+  if (t.simulated) return { kind, amount, note: 'giả lập — clip mẫu, không phát sinh phí', struck: true }
   if (t.remoteId) {
     return {
       kind,
