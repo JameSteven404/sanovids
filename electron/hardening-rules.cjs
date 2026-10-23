@@ -297,8 +297,10 @@ function sanoShell(o) {
   } catch {
     return false
   }
-  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]'
-  if (url.username || url.password || !(url.protocol === 'https:' || (url.protocol === 'http:' && local))) return false
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+  // Plain host names only: the origin goes into the page CSP (frame-ancestors), where '[::1]', '*' or ';' do not work.
+  if (url.username || url.password || !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(url.hostname)) return false
+  if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local))) return false
   return { url: `${url.origin}/`, origin: url.origin }
 }
 

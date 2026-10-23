@@ -20,15 +20,19 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 ## 3. Cách hoạt động
 
 - `SANO_URL` chỉ có tác dụng khi chạy từ mã nguồn (bản đóng gói bỏ qua). Nhận `https://…`, hoặc `http://` trên chính máy
-  (`localhost`, `127.0.0.1`, `[::1]`); chỉ lấy origin. Giá trị khác: SanoVids không mở (`hardening-rules.sanoShell`).
-- Cửa sổ chính mở trang SANO và chỉ ở origin đó; link ngoài mở trình duyệt. Riêng popup `https://accounts.google.com/`
-  (“Đăng nhập bằng Google” của SANO) mở thành cửa sổ con.
+  (`localhost`, `127.0.0.1`); chỉ lấy origin, tên máy chỉ gồm chữ, số, `-` và `.` (vì origin đi vào CSP). Giá trị khác:
+  SanoVids không mở (`hardening-rules.sanoShell`).
+- Cửa sổ chính mở trang SANO và chỉ ở origin đó, kể cả khi máy chủ chuyển hướng; link ngoài mở trình duyệt.
+- Riêng popup `https://accounts.google.com/` (“Đăng nhập bằng Google” của SANO) mở thành cửa sổ con. Popup chỉ đi trong các
+  trang đăng nhập của Google (`accounts.google.com`, `accounts.youtube.com`); link và popup con của nó mở trình duyệt. Đóng
+  popup thì cookie tài khoản Google nó để lại trong thư mục dữ liệu bị xoá (SANO đã nhận token).
 - Trang SANO thấy `window.sanoDesktop = { sanovidsUrl: 'app://bdp/' }` và đặt khung Dựng phim vào địa chỉ đó: bản SanoVids
   nằm trong app (`dist/`), không tải từ máy chủ SANO.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
-- CSP của trang SanoVids đổi đúng một chỉ thị: `frame-ancestors <origin SANO>` thay `'none'`.
+- CSP của trang SanoVids đổi đúng một chỉ thị: `frame-ancestors <origin SANO>` thay `'none'`. Khung Dựng phim của SANO
+  cho SanoVids dùng toàn màn hình và chép vào clipboard (`allow="fullscreen; clipboard-write"`).
 
 ## 4. Giới hạn
 

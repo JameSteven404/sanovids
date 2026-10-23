@@ -330,7 +330,6 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(shell('https://sano.example.vn/app?x=1#y')).toEqual({ url: 'https://sano.example.vn/', origin: 'https://sano.example.vn' })
     expect(shell('http://127.0.0.1:5173')).toEqual({ url: 'http://127.0.0.1:5173/', origin: 'http://127.0.0.1:5173' })
     expect(shell('http://localhost:8080/')).toEqual({ url: 'http://localhost:8080/', origin: 'http://localhost:8080' })
-    expect(shell('http://[::1]:5173/')).toEqual({ url: 'http://[::1]:5173/', origin: 'http://[::1]:5173' })
   })
 
   it('unset or packaged → null (plain SanoVids); anything else → false (main refuses to start)', () => {
@@ -338,7 +337,7 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(shell('')).toBeNull()
     expect(shell('https://sano.example.vn', true)).toBeNull()
     expect(h.sanoShell(null)).toBeNull()
-    for (const bad of ['http://sano.example.vn', 'http://127.0.0.1.evil.vn', 'file:///C:/x.html', 'app://bdp/', 'javascript:alert(1)', 'https://u:p@sano.example.vn', 'not a url', 'sano.example.vn']) {
+    for (const bad of ['http://sano.example.vn', 'http://127.0.0.1.evil.vn', 'file:///C:/x.html', 'app://bdp/', 'javascript:alert(1)', 'https://u:p@sano.example.vn', 'not a url', 'sano.example.vn', 'http://[::1]:5173/', 'https://*.example.vn', 'https://a;b.vn']) {
       expect(shell(bad), bad).toBe(false)
     }
   })
@@ -357,6 +356,17 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain('if (url.startsWith(home)) return')
     expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
+    // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(event\.isMainFrame\) leave\(event, url\)/)
+    expect(mainSource).toContain("if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))")
+    const [gs, ge] = [mainSource.indexOf('function guardGooglePopup(child)'), mainSource.indexOf('function showMainWindow()')]
+    const google = mainSource.slice(gs, ge)
+    expect(gs).toBeGreaterThan(-1)
+    expect(google).toContain("return { action: 'deny' }")
+    expect(google).toContain("wc.on('will-navigate', (event, url) => stay(event, url))")
+    expect(google).toMatch(/wc\.on\('will-redirect'/)
+    expect(google).toContain('keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
+    expect(mainSource).toContain('const GOOGLE_SIGN_IN = /^https:\\/\\/accounts\\.(google|youtube)\\.com\\//')
     // the gateway still answers app://bdp frames only
     expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
   })
@@ -864,6 +874,8 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // a navigation that happened (committed), never one main may still cancel (did-start-navigation fires before
     // will-navigate: a dropped link that opens in the browser would end every download of a page that stays)
     expect(watch).toContain("wc.on('did-navigate', closeAll)")
+    // SANO desktop: SanoVids' own reload inside SANO's page is a subframe navigation
+    expect(watch).toContain("if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()")
     expect(watch).not.toContain('did-start-navigation')
     // logout: no download may start from its first line (before anything awaits) until it is done; every download is
     // ended before the session is wiped and again after (properties, not line positions: the keep-login branch rewrites

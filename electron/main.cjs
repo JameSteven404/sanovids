@@ -417,14 +417,45 @@ function createWindow() {
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  webContents.on('will-navigate', (event, url) => {
+  if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
+  const leave = (event, url) => {
     if (url.startsWith(home)) return
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
+  }
+  webContents.on('will-navigate', (event, url) => leave(event, url))
+  // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
+  webContents.on('will-redirect', (event, url) => {
+    if (event.isMainFrame) leave(event, url)
   })
 
   void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win
+}
+
+/** Google's sign-in pages: the only places SANO desktop's Google popup may go. */
+const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
+
+/**
+ * SANO desktop: the Google sign-in popup stays on Google's sign-in pages; its links and popups open in the default
+ * browser. When it closes, the Google account cookies it left in the profile (plaintext, ~2 years) go: SANO has its token.
+ */
+function guardGooglePopup(child) {
+  const wc = child.webContents
+  wc.setWindowOpenHandler(({ url }) => {
+    if (isExternal(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  const stay = (event, url) => {
+    if (GOOGLE_SIGN_IN.test(url)) return
+    event.preventDefault()
+    if (isExternal(url)) void shell.openExternal(url)
+  }
+  wc.on('will-navigate', (event, url) => stay(event, url))
+  wc.on('will-redirect', (event, url) => {
+    if (event.isMainFrame) stay(event, url)
+  })
+  child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
 }
 
 /**
@@ -1718,6 +1749,10 @@ function watchDownloadOwner(wc) {
   // an in-page one). Not when a navigation only starts — that event fires before will-navigate can cancel it (a link
   // dropped on the window, opened in the browser instead), and the page that stays would lose every download.
   wc.on('did-navigate', closeAll)
+  // SANO desktop: SanoVids is a frame of SANO's page, so its own reload is a frame navigation.
+  wc.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {
+    if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()
+  })
 }
 
 async function canvasappStatus() {
