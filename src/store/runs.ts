@@ -559,16 +559,18 @@ export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bả
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) never counts either.
+ * across a restart, so waiting for it would wait forever. So is a queued SANO take outside the SANO app (Electron, the
+ * public web build): its submit defers until SanoVids opens inside SANO. A newer build's take (isForeignTake) never counts.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
   let processing = 0
   let sending = 0
+  const sanoBlocked = !!providerBlockedReason('sano-gateway')
   for (const t of takes) {
     if (isForeignTake(t)) continue
     if (t.status === 'queued') {
-      if (sceneIds.has(t.sceneId)) queued++
+      if (sceneIds.has(t.sceneId) && !(sanoBlocked && providerOf(t) === 'sano-gateway')) queued++
     } else if (t.status === 'processing') {
       processing++
       if (isSendingTake(t)) sending++

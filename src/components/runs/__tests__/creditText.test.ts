@@ -12,6 +12,7 @@ vi.mock('../../../lib/imageStore', () => ({
 }))
 
 import type { Take } from '../../../core/types'
+import { SANO_UNAVAILABLE } from '../../../providers/sano'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
 import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
 
@@ -47,11 +48,17 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
   it('names SANO, never canvasapp, as the site that accepts and bills the job', () => {
     const done = takeCostLine(take({ provider: 'sano-gateway', charged: false, remoteId: 'job_1' }))
     expect(done.note).toBe('đã trả bằng credit SANO · chi phí do SANO quản lý')
+    vi.stubEnv('VITE_SANO_GATEWAY', '1') // inside SANO
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' })).note).toBe('credit SANO · trừ trên máy chủ SANO khi job được nhận')
+    vi.unstubAllEnvs()
     expect(takeCostLabel(take({ provider: 'sano-gateway' }))).toBe('20 credit SANO')
     for (const status of ['completed', 'failed', 'cancelled', 'queued'] as const) {
       expect(takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status })).note).not.toContain('canvasapp')
     }
+  })
+
+  it('outside the SANO app a waiting take says it only runs inside SANO', () => {
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
   })
 
   it("a take of SANO's simulator is shown unbilled, never paid", () => {
