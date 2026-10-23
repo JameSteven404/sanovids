@@ -31,15 +31,17 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Preload chạy ở mọi khung (`nodeIntegrationInSubFrames`), nhưng chỉ trang `app://bdp` nhận `window.bdpDesktop`. Mọi lời gọi
   cổng vẫn bị main kiểm khung gửi (`fromApp`: chỉ `app://bdp/…`). SANO và SanoVids khác origin: trang SANO không đọc hay
   điều khiển được trang SanoVids.
-- SANO gỡ khung Dựng phim (sang khu khác) hoặc đưa khung sang địa chỉ khác: lượt tải video đang dở của SanoVids dừng ngay
-  (lúc `pagehide`, trang báo main `canvasapp:downloadCloseAll`), không giữ kết nối tới canvasapp đến khi hết giờ chờ.
+- SANO gỡ khung Dựng phim hoặc đưa khung sang địa chỉ khác: lượt tải video đang dở của SanoVids dừng (lúc `pagehide`, trang
+  báo main `canvasapp:downloadCloseAll`). Nếu lúc đó SanoVids đang bận quá khoảng nửa giây, lời báo không tới và lượt tải
+  dừng khi hết giờ chờ (10 phút). SANO giữ khung suốt phiên, nên việc này chỉ xảy ra khi khung bị gỡ.
+- Dùng chung dự án với SanoVids chạy riêng (D223): cùng thư mục dữ liệu, và ở chế độ SANO main tắt tính năng tách lưu trữ
+  theo trang chứa của Chromium (`ThirdPartyStoragePartitioning`), nên khung `app://bdp` mở đúng kho dự án của SanoVids.
 - CSP của trang SanoVids đổi đúng một chỉ thị: `frame-ancestors <origin SANO>` thay `'none'`. Khung Dựng phim của SANO
   cho SanoVids dùng toàn màn hình và chép vào clipboard (`allow="fullscreen; clipboard-write"`).
 
 ## 4. Giới hạn
 
-- Dự án SanoVids trong SANO desktop nằm ở kho riêng: Chromium tách lưu trữ của khung theo trang chứa nó, nên không thấy dự
-  án của SanoVids chạy riêng. Đổi `SANO_URL` sang địa chỉ khác là sang kho khác; dữ liệu cũ vẫn còn, mở lại địa chỉ cũ thì thấy.
+- Không mở cùng lúc SanoVids và SANO desktop (cùng thư mục dữ liệu: lần mở thứ hai chỉ đưa cửa sổ đang mở lên trước).
 - Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
   đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
 - `SANO_URL` phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở đầu thì SanoVids báo lỗi và thoát (exit 2).
@@ -48,4 +50,4 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) chỉ tới khung chính, nên SanoVids trong SANO không nhận.
   Chạy từ mã nguồn không ảnh hưởng (chế độ Phát triển mở sẵn, không có cập nhật tự động); cần sửa trước khi có bản cài SANO.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).
-- Bản cài SANO cần Minh chọn tên, biểu tượng, chữ ký và kênh cập nhật.
+- Chưa có bản cài: Minh đã chốt tên **Sano Agent**, ký số như SanoVids và kênh cập nhật trên GitHub (D220); đang làm.

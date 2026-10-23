@@ -97,6 +97,9 @@ if (SANO === false) {
   console.error('[SanoVids] SANO_URL must be https://… or http://localhost:<port>/')
   process.exit(2)
 }
+// D223: SanoVids inside SANO opens the same projects as SanoVids itself (same profile, same app://bdp storage), not a
+// copy Chromium would keep apart under SANO's page.
+if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')
 if (profile.source !== 'default') fs.mkdirSync(profile.dir, { recursive: true })
 app.setPath('userData', profile.dir)
 // The taskbar / notification identity exists on Windows only (app.setAppUserModelId is not defined on macOS: calling it

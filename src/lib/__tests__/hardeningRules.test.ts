@@ -353,6 +353,10 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(at('const SANO = hardening.sanoShell({ isPackaged: PACKAGED, value: process.env.SANO_URL })')).toBeLessThan(at('fs.mkdirSync(profile.dir'))
     expect(mainSource).toMatch(/if \(SANO === false\) \{\s+console\.error\([^)]*\)\s+process\.exit\(2\)/)
     expect(mainSource).toContain('nodeIntegrationInSubFrames: !!SANO,')
+    // D223: shared projects with SanoVids — set before ready, SANO mode only, the only Chromium switch main adds
+    const shared = at("if (SANO) app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning')")
+    expect(shared).toBeLessThan(at('app.whenReady()'))
+    expect(mainSource.split('commandLine.appendSwitch(').length - 1).toBe(1)
     expect(mainSource.split('nodeIntegrationInSubFrames').length - 1).toBe(1)
     expect(mainSource).toContain("const home = SANO ? SANO.url : ORIGIN + '/'")
     expect(mainSource).toContain('if (url.startsWith(home)) return')
