@@ -5,9 +5,10 @@
 // failure / cancel by SanoVids itself).
 import type { Take } from '../../core/types'
 import { chargedDemo, creditKindOf, formatCredits, type CreditKind } from '../../lib/credits'
-import { PROVIDER_LABEL, providerBlockedReason } from '../../providers'
+import { PROVIDER_LABEL } from '../../providers'
 import { providerOf, type ProviderId } from '../../providers/types'
-import { isUncertainSubmit } from '../../store/runs'
+import { SANO_UNAVAILABLE } from '../../providers/sano'
+import { cannotRunHere, isUncertainSubmit } from '../../store/runs'
 import { takeCostInferred, takeCostKnown } from './importedTake'
 
 /** Wallet a take was paid from: its provider decides, never the provider chosen now. */
@@ -107,6 +108,8 @@ export function takeCostLine(t: CostTake): TakeCostLine {
   const amount = est === '—' || !w.approx ? est : `≈ ${est}`
   // SANO's simulator made a sample clip: never billed, whatever became of the job (same words as the Run dialog)
   if (t.simulated) return { kind, amount, note: 'giả lập — clip mẫu, không phát sinh phí', struck: true }
+  // outside the SANO app it waits (submit defers, poll gets no news): say why instead of the usual note
+  if ((t.status === 'queued' || t.status === 'processing') && cannotRunHere(t)) return { kind, amount, note: SANO_UNAVAILABLE, struck: false }
   if (t.remoteId) {
     return {
       kind,
@@ -120,11 +123,7 @@ export function takeCostLine(t: CostTake): TakeCostLine {
     return { kind, amount, note: `${w.credit} · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại`, struck: false }
   }
   if (isUncertainSubmit(t)) return { kind, amount, note: `${w.credit} · không rõ đã bị trừ chưa — ${w.check}`, struck: false }
-  if (t.status === 'queued' || t.status === 'processing') {
-    // outside the SANO app its submit defers (stays queued): say why it waits instead of the usual note
-    const blocked = providerOf(t) === 'sano-gateway' ? providerBlockedReason('sano-gateway') : null
-    return { kind, amount, note: blocked ?? `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
-  }
+  if (t.status === 'queued' || t.status === 'processing') return { kind, amount, note: `${w.credit} · trừ trên ${w.site} khi job được nhận`, struck: false }
   if (t.status === 'failed') return { kind, amount, note: `${w.site} không nhận job — không bị trừ credit`, struck: true }
   if (t.status === 'cancelled') {
     // Started (startedAt) but no remote id: cancelled while the request was on its way — the site may still have

@@ -1139,12 +1139,27 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     try {
       useRuns.getState().loadRuns({ takes: [legacyTake('t1', 's2', { provider: 'sano-gateway', charged: false })], credits: 100, spent: 0 })
-      await vi.advanceTimersByTimeAsync(20_000) // the real app provider, unavailable here: tried, deferred, tried again
+      await vi.advanceTimersByTimeAsync(20_000) // the real app provider, unavailable here: never started
       expect(take('t1')).toMatchObject({ status: 'queued', startedAt: null, remoteId: null, error: null })
       expect(fetchSpy).not.toHaveBeenCalled()
     } finally {
       fetchSpy.mockRestore()
     }
+  })
+
+  it('outside SANO a tab with only SANO takes stays idle and never holds the engine lock (a tab inside SANO runs them)', async () => {
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    const sano = (id: string, over: Partial<Take>) => legacyTake(id, 's2', { provider: 'sano-gateway', charged: false, ...over })
+    const takes = [sano('q', {}), sano('p', { status: 'processing', startedAt: 5, remoteId: 'job_p' }), sano('s', { status: 'processing', startedAt: 5 })]
+    useRuns.getState().loadRuns({ takes, credits: 100, spent: 0 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(locks.held.size).toBe(0)
+    expect(useRuns.getState().takes.map((t) => [t.id, t.status, t.remoteId, t.error])).toEqual([
+      ['q', 'queued', null, null],
+      ['p', 'processing', 'job_p', null],
+      ['s', 'processing', null, null],
+    ])
   })
 
   it("a job made in SANO's simulator keeps that mark on its take, through save and migrate", async () => {

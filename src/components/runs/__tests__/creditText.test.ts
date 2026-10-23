@@ -59,6 +59,8 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
 
   it('outside the SANO app a waiting take says it only runs inside SANO', () => {
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
+    // running with its job id: poll gets no news here either
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
   })
 
   it("a take of SANO's simulator is shown unbilled, never paid", () => {

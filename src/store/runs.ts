@@ -514,8 +514,15 @@ export function holdNewSubmits(on: boolean): void {
   submitHold = on === true
 }
 
+/**
+ * A SANO take outside the SANO app (Electron, the public web build, SANO's /sanovids/ in a plain tab): its submit defers,
+ * its poll gets no news and its look-up defers, so it is no work here (engine, restart, update). It keeps its state
+ * and runs once its project is opened inside SANO.
+ */
+export const cannotRunHere = (t: Pick<Take, 'provider'>): boolean => providerOf(t) === 'sano-gateway' && !!providerBlockedReason('sano-gateway')
+
 /** A running remote take whose submit has no remote id yet: it is being sent right now. */
-export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t)
+export const isSendingTake = (t: Take): boolean => t.status === 'processing' && providerOf(t) !== 'mock' && !remoteIdOf(t) && !cannotRunHere(t)
 
 /** Takes being sent to their provider right now (see isSendingTake). */
 export function sendingCount(): number {
@@ -559,18 +566,17 @@ export const UNKNOWN_MODEL_ERROR = 'Model của video này không có trong bả
 /**
  * What an app restart would interrupt (updateActions "Cập nhật khi xong", UpdateDialog, the update pill). A queued take
  * whose scene was deleted is left out: the queue never starts it (it waits for an Undo of the delete) and it is kept
- * across a restart, so waiting for it would wait forever. So is a queued SANO take outside the SANO app (Electron, the
- * public web build): its submit defers until SanoVids opens inside SANO. A newer build's take (isForeignTake) never counts.
+ * across a restart, so waiting for it would wait forever. A newer build's take (isForeignTake) and a SANO take outside
+ * the SANO app (cannotRunHere) never count.
  */
 export function restartWork(takes: readonly Take[], sceneIds: ReadonlySet<string>): RestartWork {
   let queued = 0
   let processing = 0
   let sending = 0
-  const sanoBlocked = !!providerBlockedReason('sano-gateway')
   for (const t of takes) {
-    if (isForeignTake(t)) continue
+    if (isForeignTake(t) || cannotRunHere(t)) continue
     if (t.status === 'queued') {
-      if (sceneIds.has(t.sceneId) && !(sanoBlocked && providerOf(t) === 'sano-gateway')) queued++
+      if (sceneIds.has(t.sceneId)) queued++
     } else if (t.status === 'processing') {
       processing++
       if (isSendingTake(t)) sending++
@@ -967,7 +973,7 @@ function resetEngineState() {
   if (held && held !== engineLockName(useProject.getState().project.id)) engineLock.release()
 }
 
-const hasWork = (takes: Take[]) => takes.some((t) => t.status === 'queued' || t.status === 'processing')
+const hasWork = (takes: Take[]) => takes.some((t) => (t.status === 'queued' || t.status === 'processing') && !cannotRunHere(t))
 
 function setElsewhere(v: boolean) {
   if (useRuns.getState().engineElsewhere !== v) useRuns.setState({ engineElsewhere: v })
@@ -1200,7 +1206,8 @@ function tick() {
     return
   }
   parkForeignTakes()
-  const { takes } = useRuns.getState()
+  // only these keep the engine (and the lock): a tab inside SANO on the same project must get it
+  const takes = useRuns.getState().takes.filter((t) => !cannotRunHere(t))
   const active = takes.filter((t) => t.status === 'processing')
   const queued = takes.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)
   if (!active.length && !queued.length) {
