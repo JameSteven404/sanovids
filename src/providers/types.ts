@@ -169,6 +169,10 @@ export interface JobResult {
   video: Blob | null
   /** Poster frame. When missing, the engine extracts one from the video. */
   poster?: Blob | null
+  /** Release a provider's memory slot after the engine persists/discards this result, including errors/cancel.
+   * Optional and idempotent. Call in finally around the whole poster/blob persistence phase, not on HTTP completion.
+   */
+  release?: () => void
 }
 
 /** How much of a finished video has been downloaded (total null = the provider did not say). */
