@@ -378,7 +378,8 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(google).toContain("wc.on('will-navigate', (event, url) => stay(event, url, true))")
     expect(google).toMatch(/wc\.on\('will-redirect', \(event, url\) => \{\s+if \(event\.isMainFrame\) stay\(event, url, false\)/)
     expect(google).toContain('if (open && isExternal(url)) void shell.openExternal(url)')
-    expect(google).toContain('if (hardening.GOOGLE_SIGN_IN.test(url)) return')
+    expect(google).toContain('keepMainFrame(wc, (url) => hardening.GOOGLE_SIGN_IN.test(url))')
+    expect(google).toContain('if (allowed(url)) return')
     expect(google).toContain('keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
   })
 
@@ -426,6 +427,11 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(body).toContain('restrictCanvasappPermissions(ses)')
     expect(body).toContain("ses.on('will-download', (event) => event.preventDefault())")
     expect(body).toContain('guardLoginPopups(win, webPreferences)')
+    // no address bar under the pinned title: the main frame stays on canvasapp's login and its Google sign-in
+    expect(body).toContain("keepMainFrame(win.webContents, (url) => url.startsWith(CANVASAPP_ORIGIN + '/') || hardening.GOOGLE_SIGN_IN.test(url))")
+    // a beforeunload of the page cannot keep the window open after the partition is wiped
+    expect(body).toContain('return { close: () => !win.isDestroyed() && win.destroy() }')
+    expect(body).not.toContain('win.close()')
     // the session goes to SANO's own origin only, never through a redirect; never a canvasapp logout (it would end it)
     expect(body).toContain('await fetch(SANO.origin + sanoTeamRules.SANO_TEAM_SESSION_PATH, {')
     expect(body).toContain("redirect: 'error',")

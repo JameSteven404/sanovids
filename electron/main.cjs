@@ -455,17 +455,25 @@ function guardGooglePopup(child) {
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  keepMainFrame(wc, (url) => hardening.GOOGLE_SIGN_IN.test(url))
+  child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
+}
+
+/**
+ * A window without an address bar keeps its main frame on the pages `allowed(url)` accepts: the user's click elsewhere
+ * opens in the default browser; a redirect elsewhere is the site's own hop (e.g. a Workspace account's sign-in
+ * provider), not the user's click: refused, never opened.
+ */
+function keepMainFrame(wc, allowed) {
   const stay = (event, url, open) => {
-    if (hardening.GOOGLE_SIGN_IN.test(url)) return
+    if (allowed(url)) return
     event.preventDefault()
     if (open && isExternal(url)) void shell.openExternal(url)
   }
   wc.on('will-navigate', (event, url) => stay(event, url, true))
-  // A redirect is Google's own hop (e.g. a Workspace account's sign-in provider), not the user's click: never opened.
   wc.on('will-redirect', (event, url) => {
     if (event.isMainFrame) stay(event, url, false)
   })
-  child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
 }
 
 /**
@@ -2418,11 +2426,14 @@ function registerSanoTeamConnect() {
       guardLoginPopups(win, webPreferences)
       // the QTV must know which login this window is for: canvasapp's page title never replaces it
       win.on('page-title-updated', (event) => event.preventDefault())
+      // under that title, only canvasapp's own login and its Google sign-in (/api/auth/google/start) may show
+      keepMainFrame(win.webContents, (url) => url.startsWith(CANVASAPP_ORIGIN + '/') || hardening.GOOGLE_SIGN_IN.test(url))
       win.webContents.on('did-navigate', onNavigate)
       win.webContents.on('did-navigate-in-page', onNavigate)
       win.once('closed', onClosed)
       void win.loadURL(CANVASAPP_ORIGIN + '/')
-      return { close: () => !win.isDestroyed() && win.close() }
+      // destroy, not close: a beforeunload of the page could veto close() and keep the window filling the wiped partition
+      return { close: () => !win.isDestroyed() && win.destroy() }
     },
     authenticated: async () => {
       const res = await ses.fetch(CANVASAPP_ORIGIN + '/api/auth/state', {

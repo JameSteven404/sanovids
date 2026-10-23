@@ -88,4 +88,7 @@ Cách giữ an toàn (`electron/sano-team-rules.cjs`, `main.cjs registerSanoTeam
   khung con, trang SanoVids hay cửa sổ khác đều bị từ chối.
 - Cửa sổ dùng phân vùng riêng trong bộ nhớ `canvasapp-team` (không ghi đĩa, không phải `persist:canvasapp` của người dùng),
   sandbox, không preload, không tải tệp, quyền web như cửa sổ đăng nhập canvasapp, popup chỉ https.
+- Cửa sổ không có thanh địa chỉ: khung chính chỉ ở `https://canvasapp.io.vn/` và trang đăng nhập Google
+  (`accounts.google.com`, `accounts.youtube.com`); link khác mở trình duyệt, chuyển hướng khác bị chặn. Xong việc, app phá
+  cửa sổ (`destroy`): trang không giữ được nó lại bằng `beforeunload`.
 - Cookie không tới trang nào, không nằm trong câu trả lời IPC hay dòng log nào.
