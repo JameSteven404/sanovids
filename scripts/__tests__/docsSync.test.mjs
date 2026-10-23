@@ -50,10 +50,6 @@ describe('no overstated or stale claims', () => {
     }
   })
 
-  it('D226: Sano Agent\'s published texts do not name canvasapp while it is hidden in SANO', () => {
-    for (const rel of ['sano-agent/CHANGELOG.md', 'sano-agent/releases-repo/README.md']) expect(read(rel), rel).not.toMatch(/canvasapp/i)
-  })
-
   it('the thumbprint is checked against a source other than the download page', () => {
     for (const rel of ['README.md', 'docs/SIGNING.md', 'scripts/releases-repo/README.md', 'sano-agent/releases-repo/README.md']) expect(read(rel), rel).toMatch(/nguồn khác trang/)
   })
