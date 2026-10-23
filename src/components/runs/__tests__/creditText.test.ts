@@ -13,6 +13,7 @@ vi.mock('../../../lib/imageStore', () => ({
 
 import type { Take } from '../../../core/types'
 import { SANO_UNAVAILABLE } from '../../../providers/sano'
+import { stubInsideSano } from '../../../providers/__tests__/insideSano'
 import { UNKNOWN_SUBMIT_ERROR } from '../../../store/runs'
 import { cancelQuestion, cancelToastText, runCostPreview, takeCostLabel, takeCostLine, takeCreditKind, type CancelFacts } from '../creditText'
 
@@ -48,9 +49,10 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
   it('names SANO, never canvasapp, as the site that accepts and bills the job', () => {
     const done = takeCostLine(take({ provider: 'sano-gateway', charged: false, remoteId: 'job_1' }))
     expect(done.note).toBe('đã trả bằng credit SANO · chi phí do SANO quản lý')
-    vi.stubEnv('VITE_SANO_GATEWAY', '1') // inside SANO
+    stubInsideSano()
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' })).note).toBe('credit SANO · trừ trên máy chủ SANO khi job được nhận')
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
     expect(takeCostLabel(take({ provider: 'sano-gateway' }))).toBe('20 credit SANO')
     for (const status of ['completed', 'failed', 'cancelled', 'queued'] as const) {
       expect(takeCostLine(take({ provider: 'sano-gateway', remoteId: 'job_1', status })).note).not.toContain('canvasapp')
@@ -59,8 +61,14 @@ describe('takeCostLine / takeCostLabel — a take sent through the SANO gateway'
 
   it('outside the SANO app a waiting take says it only runs inside SANO', () => {
     expect(takeCostLine(take({ provider: 'sano-gateway', status: 'queued' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
-    // running with its job id: poll gets no news here either
-    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({ note: SANO_UNAVAILABLE, struck: false })
+    // what is (maybe) billed stays said: running with its job id (poll gets no news here either), an unknown earlier send
+    expect(takeCostLine(take({ provider: 'sano-gateway', status: 'processing', remoteId: 'job_1' }))).toMatchObject({
+      note: `${SANO_UNAVAILABLE} · đã trả bằng credit SANO · chi phí do SANO quản lý`,
+      struck: false,
+    })
+    expect(takeCostLine({ ...take({ provider: 'sano-gateway', status: 'queued' }), submitUnknown: true }).note).toBe(
+      `${SANO_UNAVAILABLE} · credit SANO · lần gửi trước không rõ đã bị trừ chưa — SanoVids tìm job cũ trước khi gửi lại`,
+    )
   })
 
   it("a take of SANO's simulator is shown unbilled, never paid", () => {

@@ -17,6 +17,7 @@ vi.mock('../../lib/imageStore', () => {
 
 import type { Project, Scene, Take } from '../../core/types'
 import { capabilitiesFromModels } from '../../providers/capabilities'
+import { stubInsideSano } from '../../providers/__tests__/insideSano'
 import { getProvider, registerProvider, useProviderPrefs } from '../../providers'
 import type { JobRequest, RemoteStatus, VideoProvider } from '../../providers/types'
 import { useProject } from '../project'
@@ -193,10 +194,11 @@ describe('restartWork', () => {
     useRuns.setState({ takes })
     expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 0, processing: 0, sending: 0 })
     expect(sendingCount()).toBe(0) // "Cập nhật ngay" never waits 15 s for it
-    vi.stubEnv('VITE_SANO_GATEWAY', '1') // inside SANO: the queue sends, polls and looks them up
+    stubInsideSano() // the queue sends, polls and looks them up
     expect(restartWork(takes, new Set(['s1']))).toEqual({ queued: 1, processing: 2, sending: 1 })
     expect(sendingCount()).toBe(1)
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
   })
 
   it('never waits for a take of a newer SanoVids build (it may still be running there, never here)', () => {

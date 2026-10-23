@@ -21,6 +21,7 @@ import {
   useProviderPrefs,
 } from '..'
 import { WEB_UNAVAILABLE } from '../canvasapp/transport'
+import { stubInsideSano } from './insideSano'
 import {
   applyDevAccessState,
   bareState,
@@ -39,6 +40,7 @@ afterEach(() => {
   applyDevAccessState(bareState('build'))
   useProviderPrefs.getState().setProvider('dev')
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   useUI.setState({ toasts: [] })
   useUI.getState().closeDialog()
 })
@@ -268,7 +270,7 @@ describe('browser simulation (loopback only, never in Electron)', () => {
 
   it('installDevAccessSim: never inside the SANO app, even on a loopback SANO dev server', async () => {
     const { installDevAccessSim } = await import('../dev/devAccess')
-    vi.stubGlobal('window', { __SANO_GATEWAY__: {} })
+    stubInsideSano()
     expect(installDevAccessSim('localhost')).toBe(false)
     expect(installDevAccessSim('127.0.0.1')).toBe(false)
   })

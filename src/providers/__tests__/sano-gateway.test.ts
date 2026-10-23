@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { activeGateway, activeProviderId, effectiveProvider, getProvider, normalizeProviderChoice, providerBlockedReason, selectableProviders } from '..'
 import { applyDevAccessState, bareState } from '../devAccess'
 import { sanoGatewayAvailable } from '../sano'
+import { stubInsideSano } from './insideSano'
 import { createSanoGatewayProvider, SANO_LOGIN_TEXT, SANO_UNAVAILABLE, type SanoGatewayDeps } from '../sano/gateway'
 import { isResultTooLarge, isSubmitUncertain, ProviderError, type JobRequest } from '../types'
 
@@ -288,25 +289,24 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('build'))
   })
 
-  it('the build flag turns it on on the web, never inside Electron', () => {
-    vi.stubEnv('VITE_SANO_GATEWAY', '1')
-    vi.stubGlobal('window', {})
-    expect(sanoGatewayAvailable()).toBe(true)
-    vi.stubGlobal('window', { bdpDesktop: {} })
+  it('on only for the flagged build in an iframe of a same-origin page, whatever sets __SANO_GATEWAY__', () => {
+    stubInsideSano()
+    expect(providerBlockedReason('sano-gateway')).toBeNull()
+    vi.stubEnv('VITE_SANO_GATEWAY', '') // the public web build, even framed
     expect(sanoGatewayAvailable()).toBe(false)
-    vi.stubGlobal('window', { __SANO_GATEWAY__: {}, bdpDesktop: {} })
-    expect(sanoGatewayAvailable()).toBe(false)
-  })
-
-  it('reads the host object of the same-origin SANO page around the iframe; a cross-origin parent is ignored', () => {
-    vi.stubGlobal('window', { parent: { __SANO_GATEWAY__: {} } })
-    expect(sanoGatewayAvailable()).toBe(true)
+    stubInsideSano({ bdpDesktop: {} }) // Electron
+    expect(providerBlockedReason('sano-gateway')).toBe(SANO_UNAVAILABLE)
+    // SANO's /sanovids/ opened in a plain tab, even with the host object on the page
+    const tab: Record<string, unknown> = { location: { origin: 'https://sano.example' }, __SANO_GATEWAY__: {} }
+    tab.parent = tab
+    vi.stubGlobal('window', tab)
+    expect(providerBlockedReason('sano-gateway')).toBe(SANO_UNAVAILABLE)
     const crossOrigin = {
-      get __SANO_GATEWAY__(): never {
+      get location(): never {
         throw new DOMException('Blocked a frame', 'SecurityError')
       },
     }
-    vi.stubGlobal('window', { parent: crossOrigin })
+    vi.stubGlobal('window', { location: { origin: 'https://sano.example' }, parent: crossOrigin })
     expect(sanoGatewayAvailable()).toBe(false)
   })
 
@@ -325,7 +325,7 @@ describe('sano-gateway in the registry', () => {
     expect(effectiveProvider({ access: 'build', saved: 'dev', bridge: false, sano: true })).toBe('dev')
     expect(effectiveProvider({ access: 'build', saved: 'sano-gateway', bridge: true, sano: true })).toBe('sano-gateway')
 
-    vi.stubGlobal('window', { __SANO_GATEWAY__: { token: async () => null } })
+    stubInsideSano({ __SANO_GATEWAY__: { token: async () => null } })
     applyDevAccessState(bareState('locked'))
     expect(sanoGatewayAvailable()).toBe(true)
     expect(activeProviderId()).toBe('sano-gateway')

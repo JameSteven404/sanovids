@@ -1149,17 +1149,36 @@ describe('runs engine: "Huỷ" while a submit is on its way never loses "maybe b
 
   it('outside SANO a tab with only SANO takes stays idle and never holds the engine lock (a tab inside SANO runs them)', async () => {
     const locks = fakeLocks()
+    const request = vi.spyOn(locks, 'request')
     setEngineLockManager(locks)
     const sano = (id: string, over: Partial<Take>) => legacyTake(id, 's2', { provider: 'sano-gateway', charged: false, ...over })
     const takes = [sano('q', {}), sano('p', { status: 'processing', startedAt: 5, remoteId: 'job_p' }), sano('s', { status: 'processing', startedAt: 5 })]
     useRuns.getState().loadRuns({ takes, credits: 100, spent: 0 })
     await vi.advanceTimersByTimeAsync(1000)
+    expect(request).not.toHaveBeenCalled()
     expect(locks.held.size).toBe(0)
     expect(useRuns.getState().takes.map((t) => [t.id, t.status, t.remoteId, t.error])).toEqual([
       ['q', 'queued', null, null],
       ['p', 'processing', 'job_p', null],
       ['s', 'processing', null, null],
     ])
+  })
+
+  it('outside SANO the engine lets the lock go once its other takes are done, leaving a queued SANO take as it is', async () => {
+    const locks = fakeLocks()
+    setEngineLockManager(locks)
+    const f = fakeProvider('dev')
+    registerProvider(f.p)
+    f.statuses.set('r_d', { remoteId: 'r_d', state: 'processing', progress: 10 })
+    const dev = legacyTake('d', 's1', { provider: 'dev', charged: false, status: 'processing', startedAt: 5, remoteId: 'r_d' })
+    useRuns.getState().loadRuns({ takes: [dev, legacyTake('q', 's2', { provider: 'sano-gateway', charged: false })], credits: 100, spent: 0 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(locks.held.size).toBe(1)
+    f.statuses.set('r_d', { remoteId: 'r_d', state: 'completed', progress: 100 })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(take('d').status).toBe('completed')
+    expect(locks.held.size).toBe(0)
+    expect(take('q')).toMatchObject({ status: 'queued', startedAt: null, error: null })
   })
 
   it("a job made in SANO's simulator keeps that mark on its take, through save and migrate", async () => {

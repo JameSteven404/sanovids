@@ -18,6 +18,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { Scene } from '../../../core/types'
 import { activeProviderId, sanoGatewayProvider } from '../../../providers'
 import { applyDevAccessState, bareState } from '../../../providers/devAccess'
+import { stubInsideSano } from '../../../providers/__tests__/insideSano'
 import { LAYOUT, useProject } from '../../../store/project'
 import { runNow } from '../../../actions'
 import {
@@ -60,13 +61,14 @@ async function sanoAnswers(body: unknown) {
 }
 
 beforeEach(() => {
-  vi.stubGlobal('window', { __SANO_GATEWAY__: {} })
+  stubInsideSano()
   applyDevAccessState(bareState('locked')) // what initialDevAccess gives inside SANO
   useProject.setState({ project: { ...blank, id: 'sano', scenes: [scene], assets: [], folders: [] } })
 })
 afterEach(() => {
   sanoGatewayProvider().reset()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   applyDevAccessState(bareState('build'))
   useProject.setState({ project: blank })
 })
