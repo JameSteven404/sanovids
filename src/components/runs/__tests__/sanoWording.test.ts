@@ -29,6 +29,7 @@ import {
   paidCancelledRunWarning,
   parkedCountText,
   parkedReasons,
+  requestInFlightText,
   SANO_UNKNOWN_SUBMIT_ERROR,
   UNKNOWN_SUBMIT_ERROR,
   unknownSubmitError,
@@ -40,6 +41,7 @@ import { GatewaySection } from '../../dialogs/GatewaySection'
 import { Inspector } from '../../inspector/Inspector'
 import { costTitle } from '../../sidebar/shared'
 import { RunConfirmDialog } from '../RunConfirmDialog'
+import { TakeViewer } from '../TakeViewer'
 import { cancelQuestion, cancelToastText } from '../creditText'
 import { checkTakeDelete } from '../../../core/deletePlan'
 
@@ -132,6 +134,46 @@ describe('SANO wording', () => {
     expect(SANO_UNKNOWN_SUBMIT_ERROR).not.toMatch(/canvasapp/i)
     expect(hasUncertainSubmitText(SANO_UNKNOWN_SUBMIT_ERROR)).toBe(true)
     expect(unknownSubmitError('canvasapp')).toBe(UNKNOWN_SUBMIT_ERROR)
+    // "Chạy lại" while the earlier SANO request is still on its way
+    expect(requestInFlightText('sano-gateway')).toContain('đang chờ máy chủ SANO trả lời')
+  })
+
+  it('take viewer: "Huỷ" of a SANO take whose earlier submit is unknown points to the SANO app', () => {
+    const take: Take = {
+      id: 'tk1',
+      sceneId: 's1',
+      number: 1,
+      status: 'queued',
+      progress: 0,
+      createdAt: 0,
+      startedAt: null,
+      finishedAt: null,
+      promptSnapshot: 'a cat walks',
+      rawPromptSnapshot: 'a cat walks',
+      refsSnapshot: [],
+      videoRefsSnapshot: [],
+      settings: scene.settings,
+      cost: 20,
+      starred: false,
+      posterId: null,
+      videoId: null,
+      error: null,
+      position: null,
+      provider: 'sano-gateway',
+      remoteId: null,
+      submitUnknown: true,
+    }
+    // a server render reads the store's initial state
+    const initial = useRuns.getInitialState()
+    const { takes } = initial
+    initial.takes = [take]
+    try {
+      const html = renderToStaticMarkup(createElement(TakeViewer, { takeId: 'tk1' }))
+      expect(html).toContain('kiểm tra lịch sử job trong app SANO')
+      expect(html).not.toContain('canvasapp.io.vn')
+    } finally {
+      initial.takes = takes
+    }
   })
 
   it('run toast, download failure and run warnings name SANO, never canvasapp', () => {
