@@ -284,6 +284,9 @@ function contentSecurityPolicy(html, frameAncestors = "'none'") {
   ].join('; ')
 }
 
+/** SANO desktop: Google's sign-in pages, the only places its Google sign-in popup may go (main.cjs guardGooglePopup). */
+const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
+
 /**
  * SANO desktop (docs/SANO-DESKTOP.md): from source only, SANO_URL names the SANO web app the window opens; SanoVids then
  * runs as its Dựng phim frame. https, or http on this machine only → { url, origin }; unset or packaged → null; else false.
@@ -626,6 +629,7 @@ module.exports = {
   inlineScriptHashes,
   contentSecurityPolicy,
   sanoShell,
+  GOOGLE_SIGN_IN,
   APP_SIGNATURE_STATUSES,
   appSignaturePayload,
   SIGNED_DLLS,

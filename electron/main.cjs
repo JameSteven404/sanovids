@@ -199,6 +199,8 @@ if (!app.requestSingleInstanceLock()) {
     registerCanvasappGateway()
     registerFileBridge()
     registerAppBridge()
+    // SANO desktop: a run that quit with the Google sign-in popup open left its Google account cookies (guardGooglePopup).
+    if (SANO) void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)
     try {
       updater = setupUpdater({ isAppSender: fromApp, getMainWindow: () => mainWindow, profileSource: profile.source, portableFile: portableFile() })
     } catch (e) {
@@ -419,22 +421,23 @@ function createWindow() {
   })
   if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))
   const leave = (event, url) => {
-    if (url.startsWith(home)) return
+    if (url.startsWith(home)) return false
     event.preventDefault()
     if (isExternal(url)) void shell.openExternal(url)
+    return true
   }
-  webContents.on('will-navigate', (event, url) => leave(event, url))
+  webContents.on('will-navigate', (event, url) => void leave(event, url))
   // SANO desktop: SANO's page comes from a server now, and a server redirect must not take the window elsewhere either.
+  // Refused on the very first load, the window would never show: say why and stop, like a wrong SANO_URL.
   webContents.on('will-redirect', (event, url) => {
-    if (event.isMainFrame) leave(event, url)
+    if (!event.isMainFrame || !leave(event, url) || mainWindowShown) return
+    console.error(`[SanoVids] SANO_URL redirects to ${url}: set SANO_URL to the address it ends at`)
+    app.exit(2)
   })
 
   void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)
   return win
 }
-
-/** Google's sign-in pages: the only places SANO desktop's Google popup may go. */
-const GOOGLE_SIGN_IN = /^https:\/\/accounts\.(google|youtube)\.com\//
 
 /**
  * SANO desktop: the Google sign-in popup stays on Google's sign-in pages; its links and popups open in the default
@@ -446,14 +449,15 @@ function guardGooglePopup(child) {
     if (isExternal(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  const stay = (event, url) => {
-    if (GOOGLE_SIGN_IN.test(url)) return
+  const stay = (event, url, open) => {
+    if (hardening.GOOGLE_SIGN_IN.test(url)) return
     event.preventDefault()
-    if (isExternal(url)) void shell.openExternal(url)
+    if (open && isExternal(url)) void shell.openExternal(url)
   }
-  wc.on('will-navigate', (event, url) => stay(event, url))
+  wc.on('will-navigate', (event, url) => stay(event, url, true))
+  // A redirect is Google's own hop (e.g. a Workspace account's sign-in provider), not the user's click: never opened.
   wc.on('will-redirect', (event, url) => {
-    if (event.isMainFrame) stay(event, url)
+    if (event.isMainFrame) stay(event, url, false)
   })
   child.once('closed', () => void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies))
 }

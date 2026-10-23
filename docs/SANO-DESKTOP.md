@@ -39,7 +39,10 @@ Máy chủ SANO không giữ phiên hay cookie canvasapp nào.
 - Dự án SanoVids trong SANO desktop nằm ở kho riêng: Chromium tách lưu trữ của khung theo trang chứa nó, nên không thấy dự
   án của SanoVids chạy riêng. Đổi `SANO_URL` sang địa chỉ khác là sang kho khác; dữ liệu cũ vẫn còn, mở lại địa chỉ cũ thì thấy.
 - Google có thể từ chối đăng nhập trong cửa sổ app. Khi đó SANO ở chế độ demo; Dựng phim với canvasapp vẫn chạy vì không cần
-  đăng nhập SANO.
+  đăng nhập SANO. Tài khoản Google Workspace đăng nhập qua nhà cung cấp riêng (SSO) bị chặn ở bước chuyển hướng đó.
+- `SANO_URL` phải là địa chỉ cuối: máy chủ chuyển hướng ngay lần mở đầu thì SanoVids báo lỗi và thoát (exit 2).
+- Trong khung, SanoVids không có nút “Chọn thư mục tải về” (trình duyệt không cho khung khác origin mở hộp chọn thư mục).
+  “Lưu video” và nút Thư mục trên canvas vẫn dùng hộp thoại của app.
 - Thông báo main gửi tới trang (`devAccess:state`, `updates:state`) chỉ tới khung chính, nên SanoVids trong SANO không nhận.
   Chạy từ mã nguồn không ảnh hưởng (chế độ Phát triển mở sẵn, không có cập nhật tự động); cần sửa trước khi có bản cài SANO.
 - Tải tệp từ trang SANO bị chặn (chỉ cho tải `blob:app://bdp/…`).

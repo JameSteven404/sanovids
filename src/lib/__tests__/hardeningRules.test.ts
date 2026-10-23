@@ -41,6 +41,7 @@ interface Hardening {
   inlineScriptHashes(html: unknown): string[]
   contentSecurityPolicy(html: unknown, frameAncestors?: string): string
   sanoShell(o: unknown): { url: string; origin: string } | null | false
+  GOOGLE_SIGN_IN: RegExp
   appSignaturePayload(verdict: unknown, opts: { packaged: boolean }): Payload
   SIGNED_DLLS: readonly string[]
   MICROSOFT_DLLS: readonly string[]
@@ -357,16 +358,25 @@ describe('SANO desktop (sanoShell, docs/SANO-DESKTOP.md)', () => {
     expect(mainSource).toContain("if (SANO && url.startsWith('https://accounts.google.com/')) return { action: 'allow', overrideBrowserWindowOptions: { parent: win, autoHideMenuBar: true } }")
     expect(mainSource).toContain('void win.loadURL(SANO ? SANO.url : `${ORIGIN}/index.html`)')
     // server redirects of SANO's page are held to the same home; the Google popup is guarded, its cookies dropped on close
-    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(event\.isMainFrame\) leave\(event, url\)/)
+    expect(mainSource).toMatch(/webContents\.on\('will-redirect', \(event, url\) => \{\s+if \(!event\.isMainFrame \|\| !leave\(event, url\) \|\| mainWindowShown\) return\s+console\.error\([^\n]*\)\s+app\.exit\(2\)/)
+    expect(mainSource).toContain('if (SANO) void keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
     expect(mainSource).toContain("if (SANO) webContents.on('did-create-window', (child) => guardGooglePopup(child))")
     const [gs, ge] = [mainSource.indexOf('function guardGooglePopup(child)'), mainSource.indexOf('function showMainWindow()')]
     const google = mainSource.slice(gs, ge)
     expect(gs).toBeGreaterThan(-1)
     expect(google).toContain("return { action: 'deny' }")
-    expect(google).toContain("wc.on('will-navigate', (event, url) => stay(event, url))")
-    expect(google).toMatch(/wc\.on\('will-redirect'/)
+    expect(google).toContain("wc.on('will-navigate', (event, url) => stay(event, url, true))")
+    expect(google).toMatch(/wc\.on\('will-redirect', \(event, url\) => \{\s+if \(event\.isMainFrame\) stay\(event, url, false\)/)
+    expect(google).toContain('if (open && isExternal(url)) void shell.openExternal(url)')
+    expect(google).toContain('if (hardening.GOOGLE_SIGN_IN.test(url)) return')
     expect(google).toContain('keepLoginRules.removeGoogleAccountCookies(session.defaultSession.cookies)')
-    expect(mainSource).toContain('const GOOGLE_SIGN_IN = /^https:\\/\\/accounts\\.(google|youtube)\\.com\\//')
+  })
+
+  it('GOOGLE_SIGN_IN: Google sign-in hosts over https only', () => {
+    for (const ok of ['https://accounts.google.com/o/oauth2/v2/auth?x=1', 'https://accounts.google.com/gsi/select', 'https://accounts.youtube.com/accounts/SetSID']) expect(h.GOOGLE_SIGN_IN.test(ok), ok).toBe(true)
+    for (const bad of ['http://accounts.google.com/', 'https://accounts.google.com.evil.vn/', 'https://accounts.google.com@evil.vn/', 'https://evil.vn/https://accounts.google.com/', 'https://myaccount.google.com/', 'https://sites.google.com/x', 'https://accounts.google.com', 'about:blank']) {
+      expect(h.GOOGLE_SIGN_IN.test(bad), bad).toBe(false)
+    }
     // the gateway still answers app://bdp frames only
     expect(mainSource).toContain("return url.startsWith(ORIGIN + '/')")
   })
@@ -875,6 +885,7 @@ describe('hardening wiring (main.cjs / preload.cjs sources)', () => {
     // will-navigate: a dropped link that opens in the browser would end every download of a page that stays)
     expect(watch).toContain("wc.on('did-navigate', closeAll)")
     // SANO desktop: SanoVids' own reload inside SANO's page is a subframe navigation
+    expect(watch).toContain("wc.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {")
     expect(watch).toContain("if (!isMainFrame && url.startsWith(ORIGIN + '/')) closeAll()")
     expect(watch).not.toContain('did-start-navigation')
     // logout: no download may start from its first line (before anything awaits) until it is done; every download is
