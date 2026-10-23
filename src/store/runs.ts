@@ -352,7 +352,7 @@ export function requestInFlight(takeId: string): boolean {
 
 /** "Chạy lại" / retry() while requestInFlight(take): nothing new is sent before that request's outcome is known. */
 export const requestInFlightText = (pid: ProviderId): string =>
-  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : pid === 'sano-gateway' ? 'máy chủ SANO' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
+  `Lần gửi trước của take này chưa xong — SanoVids đang chờ ${pid === 'dev' ? 'canvasapp giả lập' : 'canvasapp'} trả lời (có thể đã trừ ${pid === 'dev' ? 'credit dev' : 'credit'}). Đợi vài giây rồi bấm lại.`
 
 /**
  * What check() reads from the takes of `sceneIds` (the newest take of each: its "maybe billed" / paid-cancelled warning),

@@ -204,7 +204,6 @@ export function GatewaySection() {
   useProviderLimits((s) => s.rev['sano-gateway'])
   const sanoBlocked = sano ? providerBlockedReason('sano-gateway') : null
   const inSano = sanoGatewayAvailable()
-  const choices = selectableProviders() as readonly ProviderId[]
   /** Locked and the canvasapp gateway not turned on: nothing here may talk to canvasapp. */
   const off = !devOpen && provider !== 'canvasapp'
   // The gateway new takes use (re-read on every render: it follows the Settings choice above).
@@ -301,13 +300,8 @@ export function GatewaySection() {
         ) : devOpen ? (
           <p>
             <b>Phát triển (giả lập)</b> chạy đúng mã của cổng canvasapp thật (đăng nhập, tải ảnh, canvas, tạo job, theo dõi, tải video, nạp credit) nhưng tới một canvasapp giả
-            lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi.
-            {choices.includes('canvasapp') && (
-              <>
-                {' '}
-                <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản desktop).
-              </>
-            )}
+            lập ngay trong SanoVids — không gọi mạng, không tốn tiền — để tìm và sửa lỗi. <b>canvasapp.io.vn</b> tạo video thật bằng tài khoản canvasapp của chính bạn (bản
+            desktop).
           </p>
         ) : (
           <p>{CANVASAPP_LOCKED_INTRO}</p>
@@ -323,7 +317,7 @@ export function GatewaySection() {
             size="lg"
             value={provider}
             onChange={choose}
-            options={choices.map((p) => ({
+            options={(selectableProviders() as readonly ProviderId[]).map((p) => ({
               id: p,
               label: PROVIDER_LABEL[p],
               icon: p === 'dev' ? <Bug size={13} /> : <Cloud size={13} />,
@@ -341,7 +335,7 @@ export function GatewaySection() {
               title: p === 'canvasapp' && !desktop ? WEB_UNAVAILABLE : p === 'sano-gateway' && !inSano ? SANO_UNAVAILABLE : undefined,
             }))}
           />
-          {!desktop && choices.includes('canvasapp') && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
+          {!desktop && <div className="dg-field-hint">{WEB_UNAVAILABLE}</div>}
           {running > 0 && <div className="dg-field-hint">Đổi nhà cung cấp chỉ áp dụng cho take mới; {running} take đang chạy giữ nguyên nơi đã gửi.</div>}
         </div>
       )}

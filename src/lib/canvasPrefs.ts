@@ -15,7 +15,6 @@
 //   and a trackpad pinch zoom — like Magnific Spaces / ElevenLabs Flows; 'zoom' = the wheel zooms (0.5's behaviour).
 import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
-import { canvasappHidden } from '../providers/sano'
 
 export type MotionLevel = 'full' | 'reduced' | 'off'
 export type NodeEditorMode = 'click' | 'select' | 'off'
@@ -66,7 +65,7 @@ export const WHEEL_LABEL: Record<WheelMode, string> = { pan: 'Kéo canvas', zoom
 /** Texts of the Settings rows (SettingsDialog GROUPS 'canvas'), kept here so the settings search test reads the real ones. */
 export const NODE_EDITOR_ROW = {
   label: 'Sửa prompt & cấu hình trên thẻ cảnh',
-  hint: `Node cảnh là chỗ sửa${canvasappHidden() ? '' : ' (giống canvasapp)'}: bấm vào chữ prompt để gõ ngay, bấm dòng cấu hình để chọn model, thời lượng, độ phân giải, tỉ lệ rồi bấm Tạo video. Chỉ node đang gõ có ô gõ thật nên dự án nhiều cảnh vẫn nhanh. Esc để thôi gõ.`,
+  hint: 'Node cảnh là chỗ sửa (giống canvasapp): bấm vào chữ prompt để gõ ngay, bấm dòng cấu hình để chọn model, thời lượng, độ phân giải, tỉ lệ rồi bấm Tạo video. Chỉ node đang gõ có ô gõ thật nên dự án nhiều cảnh vẫn nhanh. Esc để thôi gõ.',
   keywords: 'node thẻ cảnh sửa prompt nhập trực tiếp cấu hình inline canvasapp trình sửa thu gọn thôi gõ',
 } as const
 export const BIG_PROJECT_ROW = {

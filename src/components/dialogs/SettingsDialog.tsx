@@ -16,7 +16,6 @@ import { CLICK_TO_CUT_TRASH_NOTE, FOLDER_UNLINK_TRASH_ROW } from '../../core/fol
 import { ABOUT_DESC, ABOUT_KEYWORDS, ABOUT_TITLE, PLACEMENT_KEYWORDS } from '../../lib/aboutModel'
 import { BIG_PROJECT_ROW, NODE_EDITOR_ROW, WHEEL_ROW } from '../../lib/canvasPrefs'
 import { useDevAllowed } from '../../providers'
-import { canvasappHidden } from '../../providers/sano'
 import { oneOf, parsePref, useUI } from '../../store/ui'
 import { Modal } from '../common/Modal'
 import './dialogs.css'
@@ -308,7 +307,7 @@ const GROUPS: Group[] = [
       {
         id: 'resetAll',
         label: 'Khôi phục cài đặt mặc định',
-        hint: `Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác).${canvasappHidden() ? '' : ' Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.'}`,
+        hint: 'Đưa mọi cài đặt trên máy này về như lúc mới cài (có Hoàn tác). Đăng nhập canvasapp và “Giữ đăng nhập” giữ nguyên.',
         keywords: 'reset mặc định đặt lại',
         C: ResetAllSetting,
       },
