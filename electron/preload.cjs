@@ -58,16 +58,11 @@ if (sanoArg && process.isMainFrame && location.origin === sanoArg.slice('--bdp-s
   })
 }
 const expose = location.origin === 'app://bdp' ? (key, api) => contextBridge.exposeInMainWorld(key, api) : () => undefined
-// D226: SanoVids learns it runs inside SANO (bdpDesktop.sano) and, while main hides canvasapp there, gets no canvasapp bridge.
-const sano = sanoArg ? { canvasapp: process.argv.includes('--bdp-sano-canvasapp=on') } : undefined
-const canvasappOff = !!sano && !sano.canvasapp
 // SANO removing SanoVids' frame (or sending it elsewhere) gives main no event of its own: the page ends its downloads as it goes.
-if (location.origin === 'app://bdp' && !canvasappOff) window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))
+if (location.origin === 'app://bdp') window.addEventListener('pagehide', () => void ipcRenderer.invoke('canvasapp:downloadCloseAll').catch(() => undefined))
 
 expose('bdpDesktop', {
   version: arg ? arg.slice('--bdp-version='.length) : '',
-  /** Only inside SANO (main.cjs SANO): { canvasapp } = whether canvasapp is offered there (CANVASAPP_IN_SANO). */
-  sano,
   electron: process.versions.electron,
   platform: process.platform,
   /** Self-check of the app's code signature (Cài đặt → Giới thiệu). */
@@ -145,8 +140,6 @@ expose('bdpDesktop', {
         fields: args && args.fields && typeof args.fields === 'object' ? { ...args.fields } : {},
       }),
   },
-  // D226: hidden inside SANO — the page sees no canvasapp bridge at all (main refuses canvasapp:* there too).
-  ...(canvasappOff ? { canvasapp: undefined } : {}),
   /**
    * Saving videos (src/lib/desktopFiles.ts). The page never names a path to write to: the save dialog or the folder
    * picker does, and main only writes into folders the user picked (its allowlist). Every call → { ok, … } | { ok: false, code, message }.

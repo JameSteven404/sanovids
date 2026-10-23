@@ -6,7 +6,7 @@ import { imageSlotsFor, MENTION_RE, parseTokens, sceneCode, slugTag, takeCode, u
 import { costOf, MODELS, normalizeSettings, usesRefs, type ModelSpec } from '../../core/models'
 import { CREDIT_HINT, CREDIT_SOURCE_LABEL, formatCreditNumber, formatCredits, formatVnd, isSimulatedCredit, type CreditKind } from '../../lib/credits'
 import type { Asset, AssetKind, ModelId, Preset, Project, Scene, Take, VideoSettings, XY } from '../../core/types'
-import { activeProviderId, canvasappHiddenInSano, SANO_PAUSED_REASON } from '../../providers'
+import { activeProviderId } from '../../providers'
 import { LAYOUT, redo, undo, useProject } from '../../store/project'
 import { ASSET_DEFAULT_W, assetNodeHeight, layoutTakes, measuredOf } from '../canvas/canvasModel'
 import { useUI, type TakeDisplay } from '../../store/ui'
@@ -481,8 +481,6 @@ export function costTitle(n: number | null | undefined, kind: CreditKind, lead =
   const hint = CREDIT_HINT[kind]
   if (hint) return `${lead}${formatCredits(n, kind)}\n${hint}`
   if (activeProviderId() === 'sano-gateway') return `${lead}≈ ${formatCredits(n, kind)}\n${SANO_COST_HINT}`
-  // D226: a canvasapp price inside SANO means generation is paused; say that instead of naming it.
-  if (canvasappHiddenInSano()) return `${lead}${SANO_PAUSED_REASON}`
   return `${lead}≈ ${formatCreditNumber(n)} ${CREDIT_SOURCE_LABEL.canvasapp} (≈ ${formatVnd(n)})\n${REAL_COST_HINT}`
 }
 

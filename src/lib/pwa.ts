@@ -29,8 +29,6 @@ export interface DesktopInfo {
   version: string
   electron?: string
   platform?: string
-  /** Only when SanoVids runs inside SANO's desktop frame: whether canvasapp is offered there (D226, electron/main.cjs). */
-  sano?: { canvasapp: boolean }
   /**
    * self-check of the app's code signature (missing in builds before 0.5.0) and where the app runs from
    * (`placement`, lib/appPlacement.ts; missing in builds before 0.6.0)

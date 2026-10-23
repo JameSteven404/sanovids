@@ -134,7 +134,6 @@ describe('formats and small rules', () => {
     expect(M.shouldNoticeHidden({ access: 'unlocked', hasDevTraces: true, noticed: false })).toBe(false)
     expect(M.shouldNoticeHidden({ access: 'locked', hasDevTraces: false, noticed: false })).toBe(false)
     expect(M.shouldNoticeHidden({ access: 'locked', hasDevTraces: true, noticed: true })).toBe(false)
-    expect(M.shouldNoticeHidden({ access: 'locked', hasDevTraces: true, noticed: false, inSano: true })).toBe(false)
     expect(M.DEV_HIDDEN_NOTICE_KEY.startsWith('bdp:notice:')).toBe(true) // not bdp:hint: (reset clears those)
   })
 })
