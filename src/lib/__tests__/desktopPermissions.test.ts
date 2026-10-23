@@ -73,7 +73,7 @@ describe('default session permissions: document and container boundaries', () =>
 
   it('denies check origin mismatches instead of trusting the top-level app URL', () => {
     const h = handlers()
-    const wc = { getURL: () => 'app://bdp/' }
+    const wc = { getURL: () => 'app://bdp/', isDestroyed: () => false }
     for (const origin of [undefined, '', 'null', 'https://untrusted.test', 'app://bdp.attacker.test']) {
       for (const p of permissions) expect(h.check(wc, p, origin, { requestingUrl: 'app://bdp/', isMainFrame: true })).toBe(false)
     }
@@ -90,11 +90,12 @@ describe('default session permissions: document and container boundaries', () =>
 
   it('retains permission-name and device denial for the trusted app', () => {
     const h = handlers()
+    const wc = { getURL: () => 'app://bdp/', isDestroyed: () => false }
     for (const permission of ['media', 'notifications', 'clipboard-read', 'unknown']) {
       const callbacks: boolean[] = []
-      h.request({ getURL: () => 'app://bdp/' }, permission, (v) => callbacks.push(v), { requestingUrl: 'app://bdp/', isMainFrame: true })
+      h.request(wc, permission, (v) => callbacks.push(v), { requestingUrl: 'app://bdp/', isMainFrame: true })
       expect(callbacks).toEqual([false])
-      expect(h.check({ getURL: () => 'app://bdp/' }, permission, 'app://bdp', { requestingUrl: 'app://bdp/', isMainFrame: true })).toBe(false)
+      expect(h.check(wc, permission, 'app://bdp', { requestingUrl: 'app://bdp/', isMainFrame: true })).toBe(false)
     }
     expect(h.device()).toBe(false)
   })
