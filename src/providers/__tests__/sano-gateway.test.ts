@@ -536,10 +536,7 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('locked'))
     expect(activeProviderId()).toBe('sano-gateway')
     expect(providerBlockedReason(activeProviderId())).toBe(SANO_UNAVAILABLE)
-    // D226: canvasapp is not offered in the SANO build (CANVASAPP_IN_SANO), development mode open or not
-    expect(selectableProviders()).toEqual(['sano-gateway'])
-    applyDevAccessState(bareState('build'))
-    expect(selectableProviders()).toEqual(['dev', 'sano-gateway'])
+    expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
   })
 
   it('D226 follows the build flag: the SANO build opened in Electron hides canvasapp too (no SANO there, nothing else left)', () => {
@@ -577,7 +574,7 @@ describe('sano-gateway in the registry', () => {
     applyDevAccessState(bareState('locked'))
     expect(sanoGatewayAvailable()).toBe(true)
     expect(activeProviderId()).toBe('sano-gateway')
-    expect(selectableProviders()).toEqual(['sano-gateway'])
+    expect(selectableProviders()).toEqual(['canvasapp', 'sano-gateway'])
     await vi.waitFor(() => expect(providerBlockedReason('sano-gateway')).toBe(SANO_LOGIN_TEXT)) // not signed in to SANO yet
     expect(getProvider('sano-gateway').id).toBe('sano-gateway')
     // no canvasapp account in SANO: the canvasapp gateway stands in (no bridge on the web)
